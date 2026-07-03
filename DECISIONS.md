@@ -39,6 +39,15 @@ A fully local file explorer: a Python server on `127.0.0.1` + a browser UI to br
 | D17 | Error DX | runPython failure the page doesn't catch → red traceback overlay auto-shown in iframe; python `print()` echoed to browser console | Architect default, unobjected |
 | D18 | pyarrow | Normal dependency (not extras) | Simplest install UX; revisit if weight bothers |
 
+### M2 decisions (2026-07-04, post-M1)
+
+| # | Decision | Choice | Rationale / rejected alternatives |
+|---|---|---|---|
+| D19 | Next feature | Left sidebar: Home entry + bookmarks of the current right-side view | Owner-defined scope |
+| D20 | Bookmark semantics | Save the **exact URL verbatim** at capture time (incl. all params); click = plain redirect; renamable + deletable | No structured bookmark model — URL is the whole state by design (PR-1/PR-7) |
+| D21 | Bookmark storage | Browser localStorage (`fused.bookmarks`) | Owner chose simplest over server-side JSON file; export path trivial if migrated later |
+| D22 | Bookmark naming | Default = basename of viewed path; rename covers the rest | Rejected params-in-name (noise) and prompt-at-create (friction) |
+
 ## Descoped / follow-up list (recorded, not built)
 
 Security layer (token, Origin/Host validation, sandboxed bridge — see threat note SPEC §9) · remaining templates (csv, json, markdown, media, pdf, syntax-highlighted code) · user template overrides (`~/.fused-render/templates/` checked before builtins) · per-directory templates · warm worker pool · DataFrame/Arrow returns · WebSocket/SSE push · exec console + structured logging · caching · search/sort/tree/keyboard-nav/hidden-file toggle · file editing · pushState opt-in · declarative param binding.

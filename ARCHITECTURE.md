@@ -163,6 +163,16 @@ Header actions always include `Raw` (opens raw endpoint in new tab). Iframe fill
 
 **Param hygiene:** when navigating between files/dirs, drop old view params (fresh query string except `_file` set by dispatch).
 
+### 6.5 Sidebar & bookmarks (M2)
+
+Layout: `#app` becomes two-column flex — fixed sidebar (~220px, `--bg-alt`, right border) + existing content column (breadcrumb + content).
+
+- **Home entry:** icon + "Home"; click → `navigate(config.home)`. `/api/config` response gains `"home": os.path.expanduser("~")`.
+- **Bookmark capture:** ★ button right-aligned in the breadcrumb bar (present on every view). On click: `{id: crypto.randomUUID(), name: basename(currentFsPath), url: location.pathname + location.search, created_at: Date.now()}` appended to store; sidebar re-renders.
+- **Store:** localStorage key `fused.bookmarks`, JSON array. Read/write helpers with try/catch (corrupt JSON → treat as empty, overwrite on next save).
+- **Bookmark row:** name (ellipsized, `title` = url). Click → `location.href = bookmark.url` (plain redirect, no SPA routing). Hover reveals ✎ rename (inline `<input>`, Enter/blur commits, Escape cancels) and ✕ delete (no confirm).
+- Order: creation time. Duplicates allowed.
+
 ---
 
 ## 7. Template contract
