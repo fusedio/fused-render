@@ -4,29 +4,32 @@
 <meta charset="utf-8" />
 <title>Parquet preview</title>
 <style>
+  :root { color-scheme: dark; }
   * { box-sizing: border-box; }
   body {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     font-size: 13px;
-    color: #1c1e21;
+    color: #e8eaed;
+    background: #131417;
   }
   #bar {
     display: flex;
     align-items: center;
     gap: 12px;
     padding: 8px 12px;
-    border-bottom: 1px solid #e3e5e8;
-    background: #f7f8fa;
+    border-bottom: 1px solid #2a2d33;
+    background: #1b1d21;
     position: sticky;
     top: 0;
   }
   #bar button {
     font: inherit;
     padding: 4px 10px;
-    border: 1px solid #e3e5e8;
+    border: 1px solid #2a2d33;
     border-radius: 6px;
-    background: #fff;
+    background: #131417;
+    color: #e8eaed;
     cursor: pointer;
   }
   #bar button:disabled {
@@ -34,7 +37,7 @@
     cursor: default;
   }
   #rowcount {
-    color: #6b7280;
+    color: #9aa0a6;
   }
   table {
     border-collapse: collapse;
@@ -42,7 +45,7 @@
   }
   th, td {
     padding: 5px 10px;
-    border-bottom: 1px solid #eee;
+    border-bottom: 1px solid #24262b;
     text-align: left;
     white-space: nowrap;
     max-width: 320px;
@@ -50,17 +53,17 @@
     text-overflow: ellipsis;
   }
   th {
-    background: #f7f8fa;
+    background: #1b1d21;
     position: sticky;
     top: 37px;
     font-weight: 600;
   }
   #status {
     padding: 24px;
-    color: #6b7280;
+    color: #9aa0a6;
   }
   #status.error {
-    color: #c0392b;
+    color: #ff6b6b;
   }
 </style>
 </head>

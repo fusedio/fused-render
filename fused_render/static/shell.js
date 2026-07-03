@@ -160,7 +160,6 @@
         <h1 title="${escapeHtml(fsPath)}">${escapeHtml(stat.name)}</h1>
         <div class="preview-actions">
           ${extraActionsHtml || ""}
-          <a href="${rawUrl(fsPath)}" target="_blank" rel="noopener">Raw</a>
         </div>
       </div>`;
   }
@@ -221,7 +220,7 @@
             <dt>Size</dt><dd>${formatSize(stat.size)}</dd>
             <dt>Modified</dt><dd>${formatMtime(stat.mtime)}</dd>
           </dl>
-          <a href="${rawUrl(fsPath)}" target="_blank" rel="noopener">Raw / download</a>
+          <a href="${rawUrl(fsPath)}" download="${escapeHtml(stat.name)}">Download</a>
         </div>
       </div>`;
   }

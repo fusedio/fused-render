@@ -4,12 +4,14 @@
 <meta charset="utf-8" />
 <title>Sine wave</title>
 <style>
+  :root { color-scheme: dark; }
   * { box-sizing: border-box; }
   body {
     margin: 0;
     padding: 24px;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    color: #1c1e21;
+    color: #e8eaed;
+    background: #131417;
   }
   #controls {
     display: flex;
@@ -18,7 +20,7 @@
     margin-bottom: 16px;
   }
   #controls label {
-    color: #6b7280;
+    color: #9aa0a6;
     font-size: 13px;
   }
   #freq {
@@ -29,9 +31,9 @@
     min-width: 3em;
   }
   svg {
-    border: 1px solid #e3e5e8;
+    border: 1px solid #2a2d33;
     border-radius: 8px;
-    background: #fafafa;
+    background: #1b1d21;
   }
 </style>
 </head>
@@ -73,8 +75,8 @@
 
       const { points } = await fused.runPython("./sine.py", { n: "160", freq: String(freq) });
 
-      const axis = `<line x1="${PAD}" y1="${H / 2}" x2="${W - PAD}" y2="${H / 2}" stroke="#ccc" />`;
-      const line = `<polyline points="${pointsToPolyline(points)}" fill="none" stroke="#2563eb" stroke-width="2" />`;
+      const axis = `<line x1="${PAD}" y1="${H / 2}" x2="${W - PAD}" y2="${H / 2}" stroke="#3a3d44" />`;
+      const line = `<polyline points="${pointsToPolyline(points)}" fill="none" stroke="#5b9dff" stroke-width="2" />`;
       svg.innerHTML = axis + line;
     }
 

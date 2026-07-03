@@ -1,11 +1,12 @@
 :root {
-  --fg: #1c1e21;
-  --fg-muted: #6b7280;
-  --border: #e3e5e8;
-  --bg: #ffffff;
-  --bg-alt: #f7f8fa;
-  --accent: #2563eb;
-  --error: #c0392b;
+  color-scheme: dark;
+  --fg: #e8eaed;
+  --fg-muted: #9aa0a6;
+  --border: #2a2d33;
+  --bg: #131417;
+  --bg-alt: #1b1d21;
+  --accent: #5b9dff;
+  --error: #ff6b6b;
 }
 
 * {
@@ -176,7 +177,7 @@ table.listing-table td.mtime {
 
 .preview-actions button.active {
   background: var(--accent);
-  color: #fff;
+  color: #10131a;
   border-color: var(--accent);
 }
 
