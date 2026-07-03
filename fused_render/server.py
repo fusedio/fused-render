@@ -59,6 +59,14 @@ def create_app(start_dir: str) -> FastAPI:
     app = FastAPI(title="fused-render")
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+    @app.middleware("http")
+    async def no_cache(request, call_next):
+        # App code changes between restarts and user files change on disk;
+        # stale browser caches of shell/runtime JS cause confusing half-old UIs.
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
     shell_path = os.path.join(STATIC_DIR, "shell.html")
 
     @app.get("/")
