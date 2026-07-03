@@ -71,7 +71,7 @@ def create_app(start_dir: str) -> FastAPI:
 
     @app.get("/api/config")
     def api_config():
-        return {"start_dir": start_dir}
+        return {"start_dir": start_dir, "home": os.path.expanduser("~")}
 
     @app.get("/api/fs/stat")
     def api_fs_stat(path: str):

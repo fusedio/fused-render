@@ -27,18 +27,152 @@ body {
 
 #app {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   height: 100vh;
+}
+
+/* Sidebar */
+#sidebar {
+  flex: 0 0 220px;
+  width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 0;
+  background: var(--bg-alt);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+}
+
+.sidebar-section {
+  padding: 4px 0;
+}
+
+.sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  color: var(--fg);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.sidebar-item:hover {
+  background: var(--border);
+}
+
+.sidebar-heading {
+  padding: 10px 16px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+}
+
+.sidebar-bookmarks {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-empty {
+  padding: 4px 16px;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.bookmark-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 16px;
+}
+
+.bookmark-row:hover {
+  background: var(--border);
+}
+
+.bookmark-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.bookmark-name:hover {
+  color: var(--accent);
+}
+
+.bookmark-actions {
+  display: none;
+  flex: 0 0 auto;
+  gap: 2px;
+}
+
+.bookmark-row:hover .bookmark-actions {
+  display: flex;
+}
+
+.icon-btn {
+  font: inherit;
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 5px;
+  border-radius: 4px;
+}
+
+.icon-btn:hover {
+  color: var(--fg);
+  background: var(--bg);
+}
+
+.bookmark-rename-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-size: 13px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+/* Main column */
+#main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 #breadcrumb {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 4px;
+  justify-content: space-between;
+  gap: 12px;
   padding: 10px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-alt);
+}
+
+#breadcrumb .crumbs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
   overflow-x: auto;
   white-space: nowrap;
 }
@@ -62,6 +196,23 @@ body {
 #breadcrumb .current {
   font-weight: 600;
   padding: 2px 4px;
+}
+
+.star-btn {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 14px;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.star-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 #content {

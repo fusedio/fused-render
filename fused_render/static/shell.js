@@ -13,8 +13,12 @@
   "use strict";
 
   const VIEW_PREFIX = "/view/";
+  const BOOKMARKS_KEY = "fused.bookmarks";
   const breadcrumbEl = document.getElementById("breadcrumb");
   const contentEl = document.getElementById("content");
+  const sidebarEl = document.getElementById("sidebar");
+
+  let config = null;
 
   // ---- fs-path <-> URL pathname -------------------------------------------
 
@@ -81,6 +85,136 @@
     return "/api/fs/raw?path=" + encodeURIComponent(fsPath);
   }
 
+  function basename(fsPath) {
+    const parts = fsPath.split("/").filter((s) => s.length > 0);
+    return parts.length ? parts[parts.length - 1] : "/";
+  }
+
+  // ---- bookmarks (localStorage) ----------------------------------------------
+
+  function loadBookmarks() {
+    try {
+      const raw = localStorage.getItem(BOOKMARKS_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return []; // corrupt JSON -> treat as empty; next save overwrites it
+    }
+  }
+
+  function saveBookmarks(bookmarks) {
+    try {
+      localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(bookmarks));
+    } catch (e) {
+      console.error("[fused] failed to save bookmarks:", e);
+    }
+  }
+
+  function addBookmark(fsPath) {
+    const bookmarks = loadBookmarks();
+    bookmarks.push({
+      id: crypto.randomUUID(),
+      name: basename(fsPath),
+      url: location.pathname + location.search,
+      created_at: Date.now(),
+    });
+    saveBookmarks(bookmarks);
+    renderSidebar();
+  }
+
+  function deleteBookmark(id) {
+    saveBookmarks(loadBookmarks().filter((b) => b.id !== id));
+    renderSidebar();
+  }
+
+  function renameBookmark(id, name) {
+    const bookmarks = loadBookmarks();
+    const bookmark = bookmarks.find((b) => b.id === id);
+    if (bookmark) bookmark.name = name;
+    saveBookmarks(bookmarks);
+    renderSidebar();
+  }
+
+  // ---- sidebar ----------------------------------------------------------------
+
+  function renderSidebar() {
+    const bookmarks = loadBookmarks(); // insertion order == creation-time order
+    const rows = bookmarks
+      .map(
+        (b) => `
+        <div class="bookmark-row" data-id="${escapeHtml(b.id)}">
+          <a class="bookmark-name" href="${escapeHtml(b.url)}" title="${escapeHtml(b.url)}">${escapeHtml(b.name)}</a>
+          <span class="bookmark-actions">
+            <button class="icon-btn rename-btn" title="Rename">&#9998;</button>
+            <button class="icon-btn delete-btn" title="Delete">&#10005;</button>
+          </span>
+        </div>`
+      )
+      .join("");
+
+    sidebarEl.innerHTML = `
+      <div class="sidebar-section">
+        <a href="#" id="home-link" class="sidebar-item">&#127968; Home</a>
+      </div>
+      <div class="sidebar-section sidebar-bookmarks">
+        <div class="sidebar-heading">Bookmarks</div>
+        ${rows || `<div class="sidebar-empty">No bookmarks yet</div>`}
+      </div>`;
+
+    document.getElementById("home-link").addEventListener("click", (e) => {
+      e.preventDefault();
+      if (config && config.home) navigate(config.home);
+    });
+
+    sidebarEl.querySelectorAll(".bookmark-row").forEach((row) => {
+      const id = row.getAttribute("data-id");
+      row.querySelector(".delete-btn").addEventListener("click", (e) => {
+        e.preventDefault();
+        deleteBookmark(id);
+      });
+      row.querySelector(".rename-btn").addEventListener("click", (e) => {
+        e.preventDefault();
+        startRename(row, id);
+      });
+    });
+  }
+
+  function startRename(row, id) {
+    const bookmark = loadBookmarks().find((b) => b.id === id);
+    if (!bookmark) return;
+    const nameEl = row.querySelector(".bookmark-name");
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "bookmark-rename-input";
+    input.value = bookmark.name;
+    nameEl.replaceWith(input);
+    input.focus();
+    input.select();
+
+    let settled = false;
+    const commit = () => {
+      if (settled) return;
+      settled = true;
+      renameBookmark(id, input.value.trim() || bookmark.name);
+    };
+    const cancel = () => {
+      if (settled) return;
+      settled = true;
+      renderSidebar();
+    };
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        commit();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        cancel();
+      }
+    });
+    input.addEventListener("blur", commit);
+  }
+
   // ---- breadcrumb -----------------------------------------------------------
 
   function renderBreadcrumb(fsPath) {
@@ -97,12 +231,17 @@
         pieces.push(`<a href="#" data-path="${escapeHtml(acc)}">${escapeHtml(part)}</a>`);
       }
     });
-    breadcrumbEl.innerHTML = pieces.join("");
+    breadcrumbEl.innerHTML = `
+      <div class="crumbs">${pieces.join("")}</div>
+      <button id="bookmark-btn" class="star-btn" title="Bookmark this view">&#9733;</button>`;
     breadcrumbEl.querySelectorAll("a[data-path]").forEach((a) => {
       a.addEventListener("click", (e) => {
         e.preventDefault();
         navigate(a.getAttribute("data-path"));
       });
+    });
+    document.getElementById("bookmark-btn").addEventListener("click", () => {
+      addBookmark(fsPath);
     });
   }
 
@@ -241,8 +380,7 @@
 
   async function route() {
     if (location.pathname === "/") {
-      const cfg = await fetch("/api/config").then((r) => r.json());
-      history.replaceState(null, "", urlForFsPath(cfg.start_dir));
+      history.replaceState(null, "", urlForFsPath(config.start_dir));
     }
 
     const fsPath = fsPathFromLocation();
@@ -269,5 +407,11 @@
     }
   }
 
-  route();
+  async function init() {
+    config = await fetch("/api/config").then((r) => r.json());
+    renderSidebar();
+    route();
+  }
+
+  init();
 })();
