@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fused-render"
+version = "0.1.0"
+description = "Local file explorer with Python-powered renderable HTML previews"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "pyarrow>=14",
+]
+
+[project.scripts]
+fused-render = "fused_render.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["fused_render"]

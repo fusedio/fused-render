@@ -1,0 +1,244 @@
+:root {
+  --fg: #1c1e21;
+  --fg-muted: #6b7280;
+  --border: #e3e5e8;
+  --bg: #ffffff;
+  --bg-alt: #f7f8fa;
+  --accent: #2563eb;
+  --error: #c0392b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+  font-size: 14px;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+#breadcrumb {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-alt);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+#breadcrumb a {
+  color: var(--fg-muted);
+  text-decoration: none;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+#breadcrumb a:hover {
+  background: var(--border);
+  color: var(--fg);
+}
+
+#breadcrumb .sep {
+  color: var(--fg-muted);
+}
+
+#breadcrumb .current {
+  font-weight: 600;
+  padding: 2px 4px;
+}
+
+#content {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Listing view */
+.listing {
+  overflow: auto;
+  flex: 1 1 auto;
+}
+
+table.listing-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+table.listing-table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--fg-muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+}
+
+table.listing-table td {
+  padding: 7px 16px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+table.listing-table tr.row {
+  cursor: pointer;
+}
+
+table.listing-table tr.row:hover {
+  background: var(--bg-alt);
+}
+
+table.listing-table td.name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+table.listing-table .icon {
+  flex: 0 0 auto;
+  opacity: 0.75;
+}
+
+table.listing-table td.size,
+table.listing-table td.mtime {
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Preview view */
+.preview {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.preview-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  gap: 12px;
+}
+
+.preview-header h1 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.preview-actions button,
+.preview-actions a {
+  font: inherit;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.preview-actions button.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.preview-actions button:hover,
+.preview-actions a:hover {
+  background: var(--bg-alt);
+}
+
+.preview-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+.preview-body iframe {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+.preview-body pre.source {
+  flex: 1 1 auto;
+  margin: 0;
+  padding: 16px;
+  overflow: auto;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.metadata-card {
+  margin: 24px;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-alt);
+  max-width: 480px;
+}
+
+.metadata-card dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 16px;
+  margin: 0 0 16px 0;
+}
+
+.metadata-card dt {
+  color: var(--fg-muted);
+}
+
+.metadata-card dd {
+  margin: 0;
+  word-break: break-all;
+}
+
+.status-message {
+  padding: 24px;
+  color: var(--fg-muted);
+}
+
+.status-message.error {
+  color: var(--error);
+}

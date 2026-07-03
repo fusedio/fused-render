@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Image preview</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    height: 100%;
+    margin: 0;
+  }
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #fafafa;
+  }
+  img {
+    max-width: 100%;
+    max-height: 85vh;
+    object-fit: contain;
+  }
+  figcaption {
+    margin-top: 10px;
+    font-size: 13px;
+    color: #6b7280;
+    word-break: break-all;
+    padding: 0 16px;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+  <figure style="margin: 0; text-align: center;">
+    <img id="img" alt="" />
+    <figcaption id="caption"></figcaption>
+  </figure>
+  <script>
+    const file = fused.params.get("_file") || "";
+    document.getElementById("img").src = "/api/fs/raw?path=" + encodeURIComponent(file);
+    document.getElementById("caption").textContent = file.split("/").pop();
+  </script>
+</body>
+</html>
