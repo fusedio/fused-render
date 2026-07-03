@@ -396,12 +396,6 @@
 
   // ---- preview view -----------------------------------------------------------
 
-  function mergeFileParam(fsPath) {
-    const params = new URLSearchParams(location.search);
-    params.set("_file", fsPath);
-    history.replaceState(null, "", location.pathname + "?" + params.toString());
-  }
-
   function renderPreviewHeader(fsPath, stat, extraActionsHtml) {
     return `
       <div class="preview-header">
@@ -413,11 +407,13 @@
   }
 
   function renderTemplatePreview(fsPath, stat) {
-    mergeFileParam(fsPath);
+    // Target file rides on the iframe's own URL, not the shell URL — the shell
+    // URL's pathname already names the file, so no ?_file= duplication there.
+    const src = `/render?path=${encodeURIComponent(stat.template)}&_file=${encodeURIComponent(fsPath)}`;
     contentEl.innerHTML = `
       ${renderPreviewHeader(fsPath, stat)}
       <div class="preview-body">
-        <iframe src="/render?path=${encodeURIComponent(stat.template)}"></iframe>
+        <iframe src="${src}"></iframe>
       </div>`;
   }
 

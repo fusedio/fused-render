@@ -40,10 +40,13 @@
   }
 
   function get(key) {
-    const params = currentParams();
     if (key === "_file") {
-      return params.has("_file") ? params.get("_file") : undefined;
+      // _file rides on this frame's own URL (set by the shell on the iframe
+      // src), keeping the shell URL free of path duplication.
+      const own = new URLSearchParams(window.location.search);
+      return own.has("_file") ? own.get("_file") : undefined;
     }
+    const params = currentParams();
     if (isReserved(key)) return undefined;
     return params.has(key) ? params.get(key) : undefined;
   }
@@ -52,13 +55,11 @@
     const params = currentParams();
     const result = {};
     for (const [key, value] of params) {
-      if (key === "_file") {
-        result[key] = value;
-        continue;
-      }
       if (isReserved(key)) continue;
       result[key] = value;
     }
+    const file = get("_file");
+    if (file !== undefined) result._file = file;
     return result;
   }
 

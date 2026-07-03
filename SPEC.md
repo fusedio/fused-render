@@ -195,7 +195,7 @@ Built-in renderable-HTML files that ship **inside the application code**, one pe
 ### 7.1 Dispatch
 
 - **PT-1** **DECIDED: the registry is server-side** — single source of truth. Extension → template path mapping lives in the server; `GET /api/fs/stat` response includes `template: <abs path>|null`, and the shell simply obeys.
-- **PT-2** When the user opens `data/trips.parquet`, the shell renders the returned template in the preview iframe and passes the target file via the reserved param `_file=<path>`. Reserved `_` params are readable by the template, not settable by page code.
+- **PT-2** When the user opens `data/trips.parquet`, the shell renders the returned template in the preview iframe and passes the target file as `_file=<path>` **on the iframe's own URL** (not the shell URL — its pathname already names the file, so no duplication like `/view/x.parquet?_file=/x.parquet`). Reserved `_` params are readable by the template, not settable by page code.
 - **PT-3** Templates are html + py pairs living side by side in a real directory inside the package (`fused_render/templates/`), so plain **relative** `runPython` paths work unchanged — no virtual-path mechanism needed:
 
 ```js
