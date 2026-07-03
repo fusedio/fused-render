@@ -61,7 +61,7 @@ The differentiating feature is the **renderable HTML** system: HTML files can ca
 
 ### Requirements
 
-- **FS-1** Directory listing with name, size, modified time, type. *(sortable columns: follow-up)*
+- **FS-1** Directory listing with name, size, modified time, type; sortable columns (sort state in URL params `sort`/`order`, dirs always grouped first).
 - **FS-2** Breadcrumb navigation. *(tree pane, keyboard nav: follow-up)*
 - **FS-3** **DECIDED:** the explorer browses the **entire computer** — there is no root-scoping concept. The CLI may take a *start directory* (`--start-dir`, default home) but it is only the initial UI location, not a restriction.
 - **FS-4** v1 shows all files including dotfiles. *(hide/toggle: follow-up)*
