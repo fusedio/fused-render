@@ -288,8 +288,9 @@ body {
 .star-btn {
   flex: 0 0 auto;
   font: inherit;
-  font-size: 14px;
-  padding: 4px 9px;
+  font-size: 12.5px;
+  white-space: nowrap;
+  padding: 4px 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);

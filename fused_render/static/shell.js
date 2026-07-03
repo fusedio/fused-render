@@ -293,7 +293,7 @@
     });
     breadcrumbEl.innerHTML = `
       <div class="crumbs">${pieces.join("")}</div>
-      <button id="bookmark-btn" class="star-btn" title="Bookmark this view">&#9733;</button>`;
+      <button id="bookmark-btn" class="star-btn" title="Bookmark this view">+ Bookmark</button>`;
     breadcrumbEl.querySelectorAll("a[data-path]").forEach((a) => {
       a.addEventListener("click", (e) => {
         e.preventDefault();
