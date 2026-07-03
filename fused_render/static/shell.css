@@ -339,6 +339,21 @@ table.listing-table th {
   position: sticky;
   top: 0;
   background: var(--bg);
+  cursor: pointer;
+  user-select: none;
+}
+
+table.listing-table th.sortable:hover {
+  color: var(--fg);
+}
+
+table.listing-table th.sorted {
+  color: var(--accent);
+}
+
+table.listing-table .sort-arrow {
+  margin-left: 5px;
+  font-size: 9px;
 }
 
 table.listing-table td {
