@@ -41,10 +41,13 @@
 
   function get(key) {
     if (key === "_file") {
-      // _file rides on this frame's own URL (set by the shell on the iframe
-      // src), keeping the shell URL free of path duplication.
+      // _file normally rides on this frame's own URL (set by the shell on the
+      // iframe src). Fall back to the shell URL for manually-opened views like
+      // /view/<template>.html?_file=<target>.
       const own = new URLSearchParams(window.location.search);
-      return own.has("_file") ? own.get("_file") : undefined;
+      if (own.has("_file")) return own.get("_file");
+      const outer = currentParams();
+      return outer.has("_file") ? outer.get("_file") : undefined;
     }
     const params = currentParams();
     if (isReserved(key)) return undefined;
