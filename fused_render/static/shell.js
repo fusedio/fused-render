@@ -138,13 +138,54 @@
 
   // ---- sidebar ----------------------------------------------------------------
 
+  function currentUrl() {
+    return location.pathname + location.search;
+  }
+
+  // Hover card showing a bookmark's target path + saved params.
+  const tooltipEl = document.createElement("div");
+  tooltipEl.id = "bookmark-tooltip";
+  document.body.appendChild(tooltipEl);
+
+  function showBookmarkTooltip(row, bookmark) {
+    let pathname = bookmark.url;
+    let search = "";
+    const qIdx = bookmark.url.indexOf("?");
+    if (qIdx !== -1) {
+      pathname = bookmark.url.slice(0, qIdx);
+      search = bookmark.url.slice(qIdx);
+    }
+    const fsPath = pathname.startsWith(VIEW_PREFIX)
+      ? "/" + pathname.slice(VIEW_PREFIX.length).split("/").map(decodeURIComponent).join("/")
+      : pathname;
+
+    const params = [...new URLSearchParams(search)];
+    const paramsHtml = params.length
+      ? `<div class="tip-params">${params
+          .map(([k, v]) => `<span class="tip-key">${escapeHtml(k)}</span><span class="tip-val">${escapeHtml(v)}</span>`)
+          .join("")}</div>`
+      : `<div class="tip-none">no params</div>`;
+
+    tooltipEl.innerHTML = `<div class="tip-path">${escapeHtml(fsPath)}</div>${paramsHtml}`;
+    tooltipEl.style.display = "block";
+    const rect = row.getBoundingClientRect();
+    tooltipEl.style.left = `${rect.right + 8}px`;
+    const top = Math.min(rect.top, window.innerHeight - tooltipEl.offsetHeight - 12);
+    tooltipEl.style.top = `${Math.max(8, top)}px`;
+  }
+
+  function hideBookmarkTooltip() {
+    tooltipEl.style.display = "none";
+  }
+
   function renderSidebar() {
     const bookmarks = loadBookmarks(); // insertion order == creation-time order
     const rows = bookmarks
       .map(
         (b) => `
-        <div class="bookmark-row" data-id="${escapeHtml(b.id)}">
-          <a class="bookmark-name" href="${escapeHtml(b.url)}" title="${escapeHtml(b.url)}">${escapeHtml(b.name)}</a>
+        <div class="bookmark-row${b.url === currentUrl() ? " active" : ""}" data-id="${escapeHtml(b.id)}">
+          <span class="bookmark-glyph">&#9733;</span>
+          <a class="bookmark-name" href="${escapeHtml(b.url)}">${escapeHtml(b.name)}</a>
           <span class="bookmark-actions">
             <button class="icon-btn rename-btn" title="Rename">&#9998;</button>
             <button class="icon-btn delete-btn" title="Delete">&#10005;</button>
@@ -154,8 +195,9 @@
       .join("");
 
     sidebarEl.innerHTML = `
+      <div class="sidebar-brand"><span class="logo">&#10022;</span> fused-render</div>
       <div class="sidebar-section">
-        <a href="#" id="home-link" class="sidebar-item">&#127968; Home</a>
+        <a href="#" id="home-link" class="sidebar-item"><span class="icon">&#127968;</span> Home</a>
       </div>
       <div class="sidebar-section sidebar-bookmarks">
         <div class="sidebar-heading">Bookmarks</div>
@@ -167,17 +209,35 @@
       if (config && config.home) navigate(config.home);
     });
 
+    const byId = new Map(bookmarks.map((b) => [b.id, b]));
     sidebarEl.querySelectorAll(".bookmark-row").forEach((row) => {
       const id = row.getAttribute("data-id");
       row.querySelector(".delete-btn").addEventListener("click", (e) => {
         e.preventDefault();
+        hideBookmarkTooltip();
         deleteBookmark(id);
       });
       row.querySelector(".rename-btn").addEventListener("click", (e) => {
         e.preventDefault();
+        hideBookmarkTooltip();
         startRename(row, id);
       });
+      row.addEventListener("mouseenter", () => {
+        // No tooltip while renaming this row.
+        if (!row.querySelector(".bookmark-rename-input")) showBookmarkTooltip(row, byId.get(id));
+      });
+      row.addEventListener("mouseleave", hideBookmarkTooltip);
     });
+
+    syncStarButton(bookmarks);
+  }
+
+  function syncStarButton(bookmarks) {
+    const btn = document.getElementById("bookmark-btn");
+    if (!btn) return;
+    const starred = (bookmarks || loadBookmarks()).some((b) => b.url === currentUrl());
+    btn.classList.toggle("starred", starred);
+    btn.title = starred ? "View is bookmarked (★ adds another)" : "Bookmark this view";
   }
 
   function startRename(row, id) {
@@ -243,6 +303,7 @@
     document.getElementById("bookmark-btn").addEventListener("click", () => {
       addBookmark(fsPath);
     });
+    syncStarButton();
   }
 
   // ---- listing view -----------------------------------------------------------
@@ -405,6 +466,7 @@
     } else {
       renderPreview(fsPath, stat);
     }
+    renderSidebar(); // refresh active-bookmark highlight for the new URL
   }
 
   async function init() {
