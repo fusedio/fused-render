@@ -13,6 +13,24 @@ dependencies = [
     "pyarrow>=14",
 ]
 
+[project.optional-dependencies]
+# Baked into the bundled CPython of the .app (SPEC DM-2): users of the packaged
+# app cannot pip install, so the interpreter ships with the popular data stack.
+# Dev installs: pip install -e ".[bundled]"
+bundled = [
+    "numpy",
+    "pandas",
+    "requests",
+    "duckdb",
+    "polars",
+    "matplotlib",
+    "scipy",
+    "pillow",
+    "openpyxl",
+    "shapely",
+    "geopandas",
+]
+
 [project.scripts]
 fused-render = "fused_render.cli:main"
 
