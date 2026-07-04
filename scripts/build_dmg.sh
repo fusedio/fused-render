@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
-# Build FusedRender.app + a distributable DMG (SPEC §12, DM-1/DM-4/DM-6).
+# Build FusedRender.app + a distributable DMG via py2app (SPEC §12, D33-D35).
 #
-# Pipeline: download a pinned standalone CPython -> unpack it into the .app's
-# Resources -> pip-install this repo (with [bundled,app]) onto it -> write the
-# launcher shim + Info.plist -> ad-hoc codesign -> hdiutil into a DMG.
+# Pipeline: pick/bootstrap a FRAMEWORK-build python (py2app needs one to
+# produce a real standalone bundle, see the note below) -> build a venv on it
+# -> pip install fused-render[bundled,app] + py2app + dmgbuild into that venv
+# -> generate the app icon -> run py2app -> ad-hoc codesign -> dmgbuild.
 #
-# The bundled interpreter is a REAL python (python-build-standalone
-# "install_only" build), not a PyInstaller freeze — the app runs
-# `python3 -m fused_render.app` on it unchanged, and the subprocess executor
-# (`sys.executable`) keeps working inside the bundle (DM-1).
+# This replaces the earlier hand-rolled tarball-shim assembly (D29-D32): that
+# approach's bare bash-shim launch was the likely cause of flaky
+# NSStatusItem/AppKit behavior under Finder launches. py2app's compiled stub
+# executable gives the process proper LaunchServices/AppKit identity, and
+# modern py2app still ships a REAL python interpreter in the bundle (not a
+# PyInstaller-style freeze) — `sys.executable` inside the running app is a
+# real, re-invokable interpreter, so the subprocess executor
+# (executor.py/_child.py) keeps working completely unchanged (D33).
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
@@ -17,17 +22,6 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="FusedRender"
-BUNDLE_ID="io.fused.render"
-
-# Pinned python-build-standalone release (aarch64/arm64 macOS only for now —
-# this script targets Apple Silicon; an x86_64-apple-darwin leg is a
-# copy-paste-and-swap-the-triple follow-up, not built here).
-PBS_RELEASE="20260623"
-PBS_PYTHON_VERSION="3.12.13"
-PBS_ASSET="cpython-${PBS_PYTHON_VERSION}+${PBS_RELEASE}-aarch64-apple-darwin-install_only.tar.gz"
-PBS_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_RELEASE}/${PBS_ASSET}"
-# Verified against that release's SHA256SUMS manifest at build-script-authoring time.
-PBS_SHA256="3724aa4dafb5f7b6c2cf98e89914e4248dc6bd2fe40407df4a2d73de99615f16"
 
 VERSION="$(python3 -c "
 import re
@@ -37,194 +31,218 @@ print(re.search(r'(?m)^version\s*=\s*\"([^\"]+)\"', text).group(1))
 
 BUILD_DIR="$REPO_ROOT/build"
 DIST_DIR="$REPO_ROOT/dist"
-CACHE_DIR="$BUILD_DIR/_cache"
-APP_DIR="$BUILD_DIR/${APP_NAME}.app"
+BUILD_VENV="$BUILD_DIR/py2app-venv"
+PY2APP_DIST="$BUILD_DIR/py2app-dist"
+ICNS_PATH="$BUILD_DIR/${APP_NAME}.icns"
+APP_DIR="$PY2APP_DIST/${APP_NAME}.app"
 DMG_PATH="$DIST_DIR/${APP_NAME}-${VERSION}.dmg"
 
-echo "==> fused-render ${VERSION} -> ${APP_NAME}.app -> ${DMG_PATH##*/}"
+echo "==> fused-render ${VERSION} -> ${APP_NAME}.app (py2app) -> ${DMG_PATH##*/}"
+mkdir -p "$BUILD_DIR" "$DIST_DIR"
 
 # ---------------------------------------------------------------------------
-# 1. Fresh build tree
+# 1. Pick a FRAMEWORK-build python for the build venv.
+#
+#    py2app assembles a standalone bundle by copying the interpreter's own
+#    Python.framework tree into Contents/Frameworks/ and pointing the app's
+#    stub launcher at it; a non-framework build (e.g. python-build-standalone
+#    "install_only" releases, or a plain --enable-shared/static Unix build)
+#    doesn't have that framework layout for py2app to copy, and standalone
+#    (non-"alias") builds on such interpreters are unreliable-to-broken.
+#
+#    Investigated on this machine:
+#      - ~/.local/bin/python3.12 (used by the old pipeline): PYTHONFRAMEWORK
+#        is empty -> NOT a framework build. Unusable for py2app standalone.
+#      - /usr/bin/python3 (Apple's system python, 3.9): IS a framework build,
+#        but 3.9 is below our >=3.10 floor and Apple could remove/relocate it
+#        under SIP in future OS updates - not something to build a pipeline
+#        around.
+#      - Homebrew's `python@3.12` formula: also a genuine framework build
+#        (Homebrew compiles CPython with --enable-framework on macOS) at
+#        /opt/homebrew/opt/python@3.12/Frameworks/Python.framework/..., and
+#        Homebrew itself needs no sudo on this machine (/opt/homebrew is
+#        user-owned). This is the one we use: pinned minor version (3.12,
+#        matching the rest of the [bundled] stack's wheel availability),
+#        no manual/relocatable-framework download needed, and — the actual
+#        ask here — it's a one-command bootstrap (`brew install python@3.12`)
+#        on a machine that doesn't have it yet, verified below by actually
+#        building and running the app on it.
 # ---------------------------------------------------------------------------
 
-rm -rf "$APP_DIR"
-mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources" "$CACHE_DIR" "$DIST_DIR"
+FRAMEWORK_FORMULA="python@3.12"
+FRAMEWORK_PYTHON="/opt/homebrew/opt/${FRAMEWORK_FORMULA}/bin/python3.12"
 
-# ---------------------------------------------------------------------------
-# 2. Fetch + verify the standalone CPython, unpack into Contents/Resources/python
-# ---------------------------------------------------------------------------
-
-TARBALL="$CACHE_DIR/$PBS_ASSET"
-if [[ ! -f "$TARBALL" ]]; then
-  echo "==> downloading $PBS_ASSET"
-  curl -fSL --retry 3 -o "$TARBALL" "$PBS_URL"
+if [[ ! -x "$FRAMEWORK_PYTHON" ]]; then
+  echo "==> $FRAMEWORK_FORMULA not found, installing via Homebrew (no sudo needed)"
+  brew install "$FRAMEWORK_FORMULA"
 fi
 
-echo "==> verifying sha256"
-ACTUAL_SHA256="$(shasum -a 256 "$TARBALL" | awk '{print $1}')"
-if [[ "$ACTUAL_SHA256" != "$PBS_SHA256" ]]; then
-  echo "FATAL: sha256 mismatch for $PBS_ASSET" >&2
-  echo "  expected: $PBS_SHA256" >&2
-  echo "  actual:   $ACTUAL_SHA256" >&2
+FRAMEWORK_TAG="$("$FRAMEWORK_PYTHON" -c "import sysconfig; print(sysconfig.get_config_var('PYTHONFRAMEWORK') or '')")"
+if [[ -z "$FRAMEWORK_TAG" ]]; then
+  echo "FATAL: $FRAMEWORK_PYTHON is not a framework build (PYTHONFRAMEWORK is empty)." >&2
+  echo "       py2app needs a framework python to produce a standalone .app; see the comment above this check." >&2
   exit 1
 fi
-
-echo "==> unpacking standalone CPython"
-tar -xzf "$TARBALL" -C "$APP_DIR/Contents/Resources/"
-# Tarball's top-level dir is literally "python/", landing exactly at
-# Contents/Resources/python/ with no extra mv needed.
-BUNDLED_PYTHON="$APP_DIR/Contents/Resources/python/bin/python3"
-test -x "$BUNDLED_PYTHON"
+echo "==> using framework python: $FRAMEWORK_PYTHON (PYTHONFRAMEWORK=$FRAMEWORK_TAG)"
 
 # ---------------------------------------------------------------------------
-# 3. Install fused-render (+ its bundled data stack + the rumps app shell)
-#    onto the bundled interpreter. Regular install, not editable — the
-#    shipped app must not depend on the dev checkout's path.
+# 2. Build venv: fused-render[bundled,app] + py2app + dmgbuild
 # ---------------------------------------------------------------------------
 
-echo "==> installing fused-render[bundled,app] onto the bundled interpreter"
-"$BUNDLED_PYTHON" -m pip install --quiet --upgrade pip
-"$BUNDLED_PYTHON" -m pip install --quiet "${REPO_ROOT}[bundled,app]"
+if [[ ! -x "$BUILD_VENV/bin/python" ]]; then
+  echo "==> creating build venv"
+  "$FRAMEWORK_PYTHON" -m venv "$BUILD_VENV"
+fi
+
+echo "==> installing fused-render[bundled,app] + py2app + dmgbuild into the build venv"
+"$BUILD_VENV/bin/pip" install --quiet --upgrade pip
+"$BUILD_VENV/bin/pip" install --quiet "${REPO_ROOT}[bundled,app]" py2app dmgbuild
 
 # ---------------------------------------------------------------------------
-# 4. Launcher shim
+# 3. App icon: a fresh, high-res render of the same four-pointed sparkle used
+#    for the menu-bar glyph (fused_render/assets/menubar-template.png, 36px,
+#    template/monochrome) on a rounded dark card, at the sizes iconutil wants.
+#    Build artifact only - never committed (BUILD_DIR is gitignored).
 # ---------------------------------------------------------------------------
 
-# "FusedRender" symlink to the interpreter: executing through it sets the
-# process name (p_comm) to FusedRender, so Activity Monitor shows the app by
-# its real name instead of "python3". Same binary — executor/sys.executable
-# behavior unchanged.
-ln -sfn python3 "$APP_DIR/Contents/Resources/python/bin/${APP_NAME}"
+echo "==> generating app icon"
+ICONSET_DIR="$BUILD_DIR/${APP_NAME}.iconset"
+rm -rf "$ICONSET_DIR" "$ICNS_PATH"
+mkdir -p "$ICONSET_DIR"
 
-cat > "$APP_DIR/Contents/MacOS/${APP_NAME}" <<'SHIM'
-#!/usr/bin/env bash
-# Launches the bundled interpreter's menu-bar entry point. Resolved relative
-# to this script's own location so the .app is relocatable (Applications,
-# a DMG mount point, anywhere). Runs via the "FusedRender" interpreter
-# symlink so the process is identifiable in Activity Monitor.
-set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RESOURCES="$HERE/../Resources"
-exec "$RESOURCES/python/bin/FusedRender" -m fused_render.app
-SHIM
-chmod +x "$APP_DIR/Contents/MacOS/${APP_NAME}"
+"$BUILD_VENV/bin/python" - "$ICONSET_DIR" <<'PYEOF'
+import math
+import sys
+from PIL import Image, ImageDraw
 
-# ---------------------------------------------------------------------------
-# 5. Info.plist
-# ---------------------------------------------------------------------------
+iconset_dir = sys.argv[1]
+SUPERSAMPLE = 4
+CANVAS = 1024 * SUPERSAMPLE
 
-cat > "$APP_DIR/Contents/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleIdentifier</key>
-    <string>${BUNDLE_ID}</string>
-    <key>CFBundleName</key>
-    <string>${APP_NAME}</string>
-    <key>CFBundleDisplayName</key>
-    <string>${APP_NAME}</string>
-    <key>CFBundleExecutable</key>
-    <string>${APP_NAME}</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleInfoDictionaryVersion</key>
-    <string>6.0</string>
-    <key>CFBundleShortVersionString</key>
-    <string>${VERSION}</string>
-    <key>CFBundleVersion</key>
-    <string>${VERSION}</string>
-    <key>LSUIElement</key>
-    <true/>
-    <key>LSMinimumSystemVersion</key>
-    <string>11.0</string>
-    <key>NSHighResolutionCapable</key>
-    <true/>
-    <!-- Finder integration: "Open with FusedRender" (SPEC DM-8).
-         parquet: rank Default (no other app owns it). Everything else the
-         template registry previews: rank Alternate - never steals the
-         user's default app, but appears in Open With / can be chosen. -->
-    <key>CFBundleDocumentTypes</key>
-    <array>
-        <dict>
-            <key>CFBundleTypeName</key>
-            <string>Apache Parquet data</string>
-            <key>CFBundleTypeRole</key>
-            <string>Viewer</string>
-            <key>LSHandlerRank</key>
-            <string>Default</string>
-            <key>CFBundleTypeExtensions</key>
-            <array>
-                <string>parquet</string>
-            </array>
-        </dict>
-        <dict>
-            <key>CFBundleTypeName</key>
-            <string>FusedRender previewable file</string>
-            <key>CFBundleTypeRole</key>
-            <string>Viewer</string>
-            <key>LSHandlerRank</key>
-            <string>Alternate</string>
-            <key>CFBundleTypeExtensions</key>
-            <array>
-                <string>html</string>
-                <string>htm</string>
-                <string>csv</string>
-                <string>json</string>
-                <string>md</string>
-                <string>txt</string>
-                <string>log</string>
-                <string>yaml</string>
-                <string>yml</string>
-                <string>toml</string>
-                <string>py</string>
-                <string>js</string>
-                <string>ts</string>
-                <string>sh</string>
-                <string>png</string>
-                <string>jpg</string>
-                <string>jpeg</string>
-                <string>gif</string>
-                <string>webp</string>
-                <string>svg</string>
-            </array>
-        </dict>
-    </array>
-</dict>
-</plist>
-PLIST
+# Dark rounded card, matching the shell's dark theme (--bg-alt).
+bg = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
+draw = ImageDraw.Draw(bg)
+margin = CANVAS * 0.06
+radius = CANVAS * 0.22
+draw.rounded_rectangle(
+    [margin, margin, CANVAS - margin, CANVAS - margin],
+    radius=radius,
+    fill=(27, 29, 33, 255),  # --bg-alt
+)
+
+# Four-pointed sparkle: 4 outer tips (N/E/S/W) joined by quadratic-Bezier
+# concave arcs whose control point sits close to the center, echoing the
+# menu-bar template glyph's shape at icon resolution.
+cx = cy = CANVAS / 2
+outer_r = CANVAS * 0.34
+waist_r = CANVAS * 0.09
+tips = [(-90, outer_r), (0, outer_r), (90, outer_r), (180, outer_r)]
+waists = [(-45, waist_r), (45, waist_r), (135, waist_r), (-135, waist_r)]
+
+
+def point(angle_deg, r):
+    a = math.radians(angle_deg)
+    return (cx + r * math.cos(a), cy + r * math.sin(a))
+
+
+poly = []
+for i in range(4):
+    tip = point(*tips[i])
+    nxt = point(*tips[(i + 1) % 4])
+    ctrl = point(*waists[i])
+    poly.append(tip)
+    for t in [x / 12 for x in range(1, 12)]:
+        x = (1 - t) ** 2 * tip[0] + 2 * (1 - t) * t * ctrl[0] + t**2 * nxt[0]
+        y = (1 - t) ** 2 * tip[1] + 2 * (1 - t) * t * ctrl[1] + t**2 * nxt[1]
+        poly.append((x, y))
+
+draw.polygon(poly, fill=(91, 157, 255, 255))  # --accent
+
+sizes = [16, 32, 128, 256, 512]
+for size in sizes:
+    img = bg.resize((size, size), Image.LANCZOS)
+    img.save(f"{iconset_dir}/icon_{size}x{size}.png")
+    img2x = bg.resize((size * 2, size * 2), Image.LANCZOS)
+    img2x.save(f"{iconset_dir}/icon_{size}x{size}@2x.png")
+PYEOF
+
+iconutil -c icns "$ICONSET_DIR" -o "$ICNS_PATH"
+test -f "$ICNS_PATH"
 
 # ---------------------------------------------------------------------------
-# 6. Ad-hoc codesign (DM-4). No Developer ID yet — testers right-click->Open
-#    once. Real signing + notarization is a future hook, not built here:
+# 4. Run py2app
+# ---------------------------------------------------------------------------
+
+echo "==> running py2app"
+rm -rf "$PY2APP_DIST" "$BUILD_DIR/py2app-build"
+# Run from BUILD_DIR, not REPO_ROOT: setuptools auto-discovers a
+# pyproject.toml in the current working directory and tries to merge its
+# [project] metadata into this ad-hoc setup() call, which errors ("install_
+# requires is no longer supported") against our real PEP 621 project file.
+# setup_py2app.py resolves REPO_ROOT itself, so cwd doesn't affect what gets
+# built - it just needs to not be a directory with its own pyproject.toml.
+(
+  cd "$BUILD_DIR"
+  FUSED_RENDER_ICNS="$ICNS_PATH" "$BUILD_VENV/bin/python" "$REPO_ROOT/scripts/setup_py2app.py" py2app \
+    --dist-dir "$PY2APP_DIST" \
+    --bdist-base "$BUILD_DIR/py2app-build"
+)
+
+test -d "$APP_DIR"
+
+# ---------------------------------------------------------------------------
+# 5. Ad-hoc codesign (D32/DM-4 carried forward). py2app signs ad-hoc on its
+#    own on Apple Silicon (unsigned binaries won't launch at all), but we
+#    re-sign explicitly here so the signature is deterministic and covers the
+#    whole bundle regardless of py2app version behavior. No Developer ID yet
+#    - testers right-click -> Open once. Real signing + notarization has a
+#    designated future home: Briefcase's "external app" packaging mode
+#    (wraps an already-built .app for signing/notarizing/DMG without
+#    reprocessing it through Briefcase's own app template, which breaks
+#    sys.executable - see D35). Not built here.
 # ---------------------------------------------------------------------------
 
 echo "==> ad-hoc codesigning"
 codesign --force --deep -s - "$APP_DIR"
 
-# --- future hook: Developer ID signing + notarization -----------------------
+# --- future hook: Developer ID signing + notarization ------------------------
 # codesign --force --deep --options runtime \
 #   -s "Developer ID Application: Your Name (TEAMID)" "$APP_DIR"
 # xcrun notarytool submit "$DMG_PATH" --keychain-profile "fused-render" --wait
 # xcrun stapler staple "$APP_DIR"
-# -----------------------------------------------------------------------------
+# briefcase package --target external-app  # future signing path, see D35
+# ------------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# 7. Assemble the DMG: app + Applications symlink, compressed UDZO
+# 6. DMG via dmgbuild: app + Applications symlink, compressed UDZO
 # ---------------------------------------------------------------------------
 
 echo "==> building dmg"
-STAGING_DIR="$BUILD_DIR/dmg-staging"
-rm -rf "$STAGING_DIR"
-mkdir -p "$STAGING_DIR"
-cp -R "$APP_DIR" "$STAGING_DIR/"
-ln -s /Applications "$STAGING_DIR/Applications"
+DMGBUILD_SETTINGS="$BUILD_DIR/dmgbuild_settings.py"
+cat > "$DMGBUILD_SETTINGS" <<'PYEOF'
+# Generated by build_dmg.sh - not committed.
+import os
+
+application = defines.get("app")  # noqa: F821 (dmgbuild injects `defines`)
+appname = os.path.basename(application)
+
+files = [application]
+symlinks = {"Applications": "/Applications"}
+format = "UDZO"
+PYEOF
 
 rm -f "$DMG_PATH"
-hdiutil create \
-  -volname "$APP_NAME" \
-  -srcfolder "$STAGING_DIR" \
-  -ov -format UDZO \
-  "$DMG_PATH"
+"$BUILD_VENV/bin/dmgbuild" -s "$DMGBUILD_SETTINGS" -D app="$APP_DIR" "$APP_NAME" "$DMG_PATH"
+
+# ---------------------------------------------------------------------------
+# 7. Hygiene: drop the built .app copies once they're sealed in the DMG.
+#    Leaving live .app bundles sitting in a gitignored build/ dir is a
+#    Spotlight/Time Machine indexing trap and an easy source of "which copy
+#    did I actually test" confusion; the DMG in dist/ is the deliverable.
+#    (The build venv is kept - it's a build tool, not a build artifact, and
+#    keeping it makes repeat builds much faster.)
+# ---------------------------------------------------------------------------
+
+rm -rf "$APP_DIR" "$ICONSET_DIR"
 
 echo "==> done: $DMG_PATH ($(du -h "$DMG_PATH" | cut -f1))"
