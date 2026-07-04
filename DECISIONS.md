@@ -69,6 +69,14 @@ A fully local file explorer: a Python server on `127.0.0.1` + a browser UI to br
 | D31 | Lifecycle | Menu bar icon via rumps: Open / Copy URL / Quit; LSUIElement, no Dock | Rejected fully-headless (invisible process) |
 | D32 | Signing | Ad-hoc unsigned for now; signing/notarization hook left in build script | Developer ID ($99/yr) deferred until public distribution |
 
+### M3.5 decisions — packaging rework (2026-07-04, after owner-requested research)
+
+| # | Decision | Choice | Rationale / rejected alternatives |
+|---|---|---|---|
+| D33 | Bundle builder | **py2app** replaces the hand-rolled shim+tarball assembly | Canonical rumps packager; modern py2app ships a real python interpreter in-bundle so `sys.executable` subprocess executor works; its stub executable gives proper LaunchServices/AppKit process identity — hand-rolled bash-shim launches were the likely cause of flaky NSStatusItem/event behavior under Finder |
+| D34 | Dock presence | **Regular app (no LSUIElement)** — Dock icon + menu bar ✦ both | Owner expects Dock presence; Dock right-click → Quit permanently solves lifecycle confusion. Supersedes D31's LSUIElement detail (menu bar item stays) |
+| D35 | DMG creation | `dmgbuild` (config-driven) replaces raw hdiutil; **Briefcase external-app mode** = designated future path for sign+notarize+DMG when Developer ID lands | Full Briefcase rejected: its app template breaks sys.executable |
+
 ## Descoped / follow-up list (recorded, not built)
 
 Security layer (token, Origin/Host validation, sandboxed bridge — see threat note SPEC §9) · remaining templates (csv, json, markdown, media, pdf, syntax-highlighted code) · user template overrides (`~/.fused-render/templates/` checked before builtins) · per-directory templates · warm worker pool · DataFrame/Arrow returns · WebSocket/SSE push · exec console + structured logging · caching · search/sort/tree/keyboard-nav/hidden-file toggle · file editing · pushState opt-in · declarative param binding.
