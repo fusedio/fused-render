@@ -145,6 +145,25 @@ def main() -> None:
 
     icon_path = os.path.join(os.path.dirname(__file__), "assets", "menubar-template.png")
 
+    # ---- Finder "Open with FusedRender" -------------------------------------
+    # AppKit delivers double-clicked documents to the app delegate's
+    # application:openFiles:. rumps's delegate (rumps.rumps.NSApp, a pyobjc
+    # NSObject subclass) doesn't implement it — adding the method to the class
+    # is all that's needed; pyobjc registers the selector automatically.
+    # Covers both cold launch and an already-running instance. (Cold launch
+    # via file double-click opens the home tab too — accepted quirk; reliable
+    # suppression raced with AppKit's event delivery timing.)
+    def open_file_view(fs_path: str) -> None:
+        from urllib.parse import quote
+
+        webbrowser.open(f"http://127.0.0.1:{port}/view{quote(fs_path)}")
+
+    def application_openFiles_(self, _app, filenames):
+        for name in filenames:
+            open_file_view(str(name))
+
+    rumps.rumps.NSApp.application_openFiles_ = application_openFiles_
+
     class FusedRenderStatusApp(rumps.App):
         def __init__(self):
             # Template icon (black+alpha) — macOS recolors it for menu bar

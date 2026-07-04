@@ -140,6 +140,56 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <string>11.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <!-- Finder integration: "Open with FusedRender" (SPEC DM-8).
+         parquet: rank Default (no other app owns it). Everything else the
+         template registry previews: rank Alternate - never steals the
+         user's default app, but appears in Open With / can be chosen. -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Apache Parquet data</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Default</string>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>parquet</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>FusedRender previewable file</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>html</string>
+                <string>htm</string>
+                <string>csv</string>
+                <string>json</string>
+                <string>md</string>
+                <string>txt</string>
+                <string>log</string>
+                <string>yaml</string>
+                <string>yml</string>
+                <string>toml</string>
+                <string>py</string>
+                <string>js</string>
+                <string>ts</string>
+                <string>sh</string>
+                <string>png</string>
+                <string>jpg</string>
+                <string>jpeg</string>
+                <string>gif</string>
+                <string>webp</string>
+                <string>svg</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>
 PLIST

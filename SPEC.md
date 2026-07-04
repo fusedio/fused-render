@@ -279,6 +279,7 @@ Distribute as a DMG containing a menu-bar app; all UI stays in the browser.
 - **DM-5** Launch flow: double-click → pidfile check (`~/Library/Application Support/fused-render/`) → already running ⇒ just open browser; else start server (port 8765, fall forward if taken), write pidfile, open browser.
 - **DM-6** DMG = drag-to-Applications window; built by `scripts/build_dmg.sh` (pinned python-build-standalone → pip install → assemble .app → ad-hoc sign → `hdiutil`). Build installs `.[bundled]`; expect a few hundred MB compressed (scipy/matplotlib/geopandas dominate).
 - **DM-7** New module `fused_render/app.py`: menu-bar entry point wrapping the existing server (uvicorn in a thread). CLI (`fused-render`) remains for dev use.
+- **DM-8** **Finder integration:** `CFBundleDocumentTypes` — `.parquet` rank Default, html + all template extensions rank Alternate (never steals user defaults, appears in Open With). Double-clicked files reach the app via the delegate's `application:openFiles:` (implemented by adding the method to rumps's delegate class); each file opens a browser tab at `/view/<path>`. Known quirk: cold launch via file double-click also opens the home tab (suppression raced with AppKit event timing; accepted).
 
 ## 12b. Milestones
 
