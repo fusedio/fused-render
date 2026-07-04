@@ -133,36 +133,61 @@ def main() -> None:
         return
 
     port = pick_port()
-    server = _start_server_thread(port)
-    if not _wait_until_ready(port):
-        raise RuntimeError(f"server did not become ready on port {port} within timeout")
-    _write_pidfile(port)
-
     url = f"http://127.0.0.1:{port}/"
-    webbrowser.open(url)
 
     import rumps  # macOS-only; see module docstring
 
     icon_path = os.path.join(os.path.dirname(__file__), "assets", "menubar-template.png")
+
+    # Startup ordering matters (learned the hard way): the AppKit run loop
+    # starts FIRST and the server boots in the background AFTER it. Document
+    # open events (Finder double-click) are delivered once the run loop is
+    # up; the server takes seconds to become ready. Deciding home-vs-file
+    # AFTER server readiness therefore happens long after any launch document
+    # event has arrived — no timing race, unlike every timer-window variant.
+    state = {
+        "ready": False,      # server answers; safe to open browser tabs
+        "docs": False,       # at least one document open event arrived
+        "pending": [],       # file views requested before the server was ready
+        "server": None,      # uvicorn.Server, set by the bootstrap thread
+    }
+
+    def open_file_view(fs_path: str) -> None:
+        from urllib.parse import quote
+
+        target = f"http://127.0.0.1:{port}/view{quote(fs_path)}"
+        if state["ready"]:
+            webbrowser.open(target)
+        else:
+            state["pending"].append(target)
 
     # ---- Finder "Open with FusedRender" -------------------------------------
     # AppKit delivers double-clicked documents to the app delegate's
     # application:openFiles:. rumps's delegate (rumps.rumps.NSApp, a pyobjc
     # NSObject subclass) doesn't implement it — adding the method to the class
     # is all that's needed; pyobjc registers the selector automatically.
-    # Covers both cold launch and an already-running instance. (Cold launch
-    # via file double-click opens the home tab too — accepted quirk; reliable
-    # suppression raced with AppKit's event delivery timing.)
-    def open_file_view(fs_path: str) -> None:
-        from urllib.parse import quote
-
-        webbrowser.open(f"http://127.0.0.1:{port}/view{quote(fs_path)}")
-
     def application_openFiles_(self, _app, filenames):
+        state["docs"] = True
         for name in filenames:
             open_file_view(str(name))
 
     rumps.rumps.NSApp.application_openFiles_ = application_openFiles_
+
+    def _bootstrap_server() -> None:
+        server = _start_server_thread(port)
+        state["server"] = server
+        if not _wait_until_ready(port):
+            print(f"fused-render: server did not become ready on port {port}", flush=True)
+            rumps.quit_application()
+            return
+        _write_pidfile(port)
+        state["ready"] = True
+        pending, state["pending"] = state["pending"], []
+        for target in pending:
+            webbrowser.open(target)
+        # Home tab only when this launch wasn't a document double-click.
+        if not state["docs"]:
+            webbrowser.open(url)
 
     class FusedRenderStatusApp(rumps.App):
         def __init__(self):
@@ -182,9 +207,18 @@ def main() -> None:
 
         @rumps.clicked("Quit")
         def quit(self, _sender):
-            server.should_exit = True
+            if state["server"] is not None:
+                state["server"].should_exit = True
             _remove_pidfile()
             rumps.quit_application()
+
+    def _kickoff(timer):
+        # One-shot, fired right after the run loop starts.
+        timer.stop()
+        threading.Thread(target=_bootstrap_server, daemon=True).start()
+
+    boot_timer = rumps.Timer(_kickoff, 0.1)
+    boot_timer.start()
 
     FusedRenderStatusApp().run()
 
