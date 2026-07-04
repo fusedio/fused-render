@@ -60,6 +60,15 @@ A fully local file explorer: a Python server on `127.0.0.1` + a browser UI to br
 | D27 | Caching | `Cache-Control: no-cache` on every response — stale JS caused half-old-UI bugs |
 | D28 | Frontend structure | shell.js split into ES modules (see ARCHITECTURE §1/§6): one-way deps, pure store/format modules, no build step kept (architect, owner asked) |
 
+### M3 decisions — DMG distribution (2026-07-04)
+
+| # | Decision | Choice | Rationale / rejected alternatives |
+|---|---|---|---|
+| D29 | Packaging | .app bundles standalone CPython (python-build-standalone); server runs `python3 -m fused_render.app` | Rejected PyInstaller freeze: breaks subprocess executor (sys.executable) + seals env |
+| D30 | User py env in app | Bundled interpreter ONLY, no override; pyarrow+pandas preinstalled | Owner chose hermetic-simplest over override-setting; supersedes D14 for packaged app (dev installs keep D14) |
+| D31 | Lifecycle | Menu bar icon via rumps: Open / Copy URL / Quit; LSUIElement, no Dock | Rejected fully-headless (invisible process) |
+| D32 | Signing | Ad-hoc unsigned for now; signing/notarization hook left in build script | Developer ID ($99/yr) deferred until public distribution |
+
 ## Descoped / follow-up list (recorded, not built)
 
 Security layer (token, Origin/Host validation, sandboxed bridge — see threat note SPEC §9) · remaining templates (csv, json, markdown, media, pdf, syntax-highlighted code) · user template overrides (`~/.fused-render/templates/` checked before builtins) · per-directory templates · warm worker pool · DataFrame/Arrow returns · WebSocket/SSE push · exec console + structured logging · caching · search/sort/tree/keyboard-nav/hidden-file toggle · file editing · pushState opt-in · declarative param binding.

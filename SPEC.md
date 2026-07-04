@@ -268,8 +268,21 @@ const page = await fused.runPython("./parquet_reader.py",
 
 ---
 
-## 12. Milestones
+## 12. macOS Distribution (DMG) — M3
+
+Distribute as a DMG containing a menu-bar app; all UI stays in the browser.
+
+- **DM-1** **DECIDED:** `.app` bundles a **standalone CPython** (python-build-standalone) with `fused_render` + deps preinstalled. Server and executor run on it unchanged (`Resources/python/bin/python3 -m fused_render.app`). No PyInstaller freezing — it would break the subprocess executor (`sys.executable`) and seal the env.
+- **DM-2** **DECIDED:** user `runPython` code executes on the **bundled interpreter only** — no override mechanism in v1. `pyarrow` ships preinstalled (parquet template works day one); ship `pandas` too since users cannot add libs through the product. (Escape hatch that costs us nothing: the bundled python is a real python — advanced users can pip into it manually.) This supersedes D14's "env the server was launched from" for the packaged app; dev installs (`pip install -e .`) keep D14 behavior.
+- **DM-3** **DECIDED:** lifecycle via **menu bar icon** (NSStatusItem through `rumps`): Open in browser / Copy URL / Quit. `LSUIElement=true` — no Dock icon, no windows. "No proper UI" preserved.
+- **DM-4** **DECIDED:** unsigned (ad-hoc) for now — testers right-click→Open once. Build script keeps a signing/notarization hook for a future Developer ID.
+- **DM-5** Launch flow: double-click → pidfile check (`~/Library/Application Support/fused-render/`) → already running ⇒ just open browser; else start server (port 8765, fall forward if taken), write pidfile, open browser.
+- **DM-6** DMG = drag-to-Applications window; built by `scripts/build_dmg.sh` (pinned python-build-standalone → pip install → assemble .app → ad-hoc sign → `hdiutil`). Expected ~100 MB compressed (pyarrow+pandas dominate).
+- **DM-7** New module `fused_render/app.py`: menu-bar entry point wrapping the existing server (uvicorn in a thread). CLI (`fused-render`) remains for dev use.
+
+## 12b. Milestones
 
 - **M1 — Base layer (current focus):** server + shell, whole-disk browsing, raw streaming, live-rendered HTML in plain iframe, `runPython` → `main()` subprocess execution, params ↔ URL sync (strings, replaceState), server-side template registry (dispatch: template > html > fallback) + **parquet, image, text templates**. No security, no WS, no caching.
-- **M2 — Sidebar & bookmarks:** Home entry + localStorage bookmarks (capture exact URL, rename, delete). See §3 Sidebar & Bookmarks.
+- **M2 — Sidebar & bookmarks:** SHIPPED.
+- **M3 — DMG distribution:** menu-bar app + bundled CPython + build script (§12).
 - **Follow-ups (unordered):** remaining preview templates (csv/json/markdown/media/pdf/syntax-highlighted code); user template overrides (`~/.fused-render/templates/` checked first); warm worker pool; DataFrame/Arrow returns; security layer (token, origin checks, sandboxed bridge); exec console; search/sort/tree/keyboard nav; caching; user template overrides; editing.
