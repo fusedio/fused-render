@@ -30,9 +30,16 @@ bundled = [
     "shapely",
     "geopandas",
 ]
+# Menu-bar app shell (SPEC DM-3/DM-7). macOS-only; not a core dependency so
+# `pip install fused-render` stays cross-platform. Only the packaged .app
+# build (scripts/build_dmg.sh) installs this extra.
+app = [
+    "rumps",
+]
 
 [project.scripts]
 fused-render = "fused_render.cli:main"
+fused-render-app = "fused_render.app:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["fused_render"]
