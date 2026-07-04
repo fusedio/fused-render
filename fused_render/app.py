@@ -141,9 +141,14 @@ def main() -> None:
 
     import rumps  # macOS-only; see module docstring
 
+    icon_path = os.path.join(os.path.dirname(__file__), "assets", "menubar-template.png")
+
     class FusedRenderStatusApp(rumps.App):
         def __init__(self):
-            super().__init__("fused-render", title="FR", quit_button=None)
+            # Template icon (black+alpha) — macOS recolors it for menu bar
+            # appearance. Icon beats a text title: recognizable and compact
+            # in a crowded (notched) menu bar.
+            super().__init__("fused-render", icon=icon_path, template=True, quit_button=None)
             self.menu = ["Open in browser", "Copy URL", "Quit"]
 
         @rumps.clicked("Open in browser")
