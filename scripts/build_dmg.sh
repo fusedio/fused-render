@@ -90,15 +90,22 @@ echo "==> installing fused-render[bundled,app] onto the bundled interpreter"
 # 4. Launcher shim
 # ---------------------------------------------------------------------------
 
+# "FusedRender" symlink to the interpreter: executing through it sets the
+# process name (p_comm) to FusedRender, so Activity Monitor shows the app by
+# its real name instead of "python3". Same binary — executor/sys.executable
+# behavior unchanged.
+ln -sfn python3 "$APP_DIR/Contents/Resources/python/bin/${APP_NAME}"
+
 cat > "$APP_DIR/Contents/MacOS/${APP_NAME}" <<'SHIM'
 #!/usr/bin/env bash
 # Launches the bundled interpreter's menu-bar entry point. Resolved relative
 # to this script's own location so the .app is relocatable (Applications,
-# a DMG mount point, anywhere).
+# a DMG mount point, anywhere). Runs via the "FusedRender" interpreter
+# symlink so the process is identifiable in Activity Monitor.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RESOURCES="$HERE/../Resources"
-exec "$RESOURCES/python/bin/python3" -m fused_render.app
+exec "$RESOURCES/python/bin/FusedRender" -m fused_render.app
 SHIM
 chmod +x "$APP_DIR/Contents/MacOS/${APP_NAME}"
 
