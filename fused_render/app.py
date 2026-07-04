@@ -49,16 +49,18 @@ def _read_int(path: str) -> int | None:
 def find_running_server() -> tuple[int, int] | None:
     """Return (pid, port) of an already-live fused-render instance, or None.
 
-    "Live" means: the recorded pid is running AND it actually answers
-    /api/config on the recorded port — guards against a stale pidfile whose
-    pid got reused by an unrelated process after a crash.
+    "Live" means: the recorded pid is running AND it serves the shell page
+    on the recorded port. Probing "/" (not /api/config) matters: "/" reads
+    shell.html from disk, so a zombie whose bundle files were deleted or
+    replaced (e.g. a build-dir instance clobbered by a rebuild) fails the
+    probe and a fresh healthy instance gets started instead.
     """
     pid = _read_int(PIDFILE)
     port = _read_int(PORTFILE)
     if pid is None or port is None or not _is_process_alive(pid):
         return None
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/config", timeout=1) as resp:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1) as resp:
             if resp.status == 200:
                 return pid, port
     except (urllib.error.URLError, OSError, ValueError):
