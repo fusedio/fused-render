@@ -14,6 +14,7 @@ A fully local file explorer: a Python server on `127.0.0.1` + a browser UI to br
 - 2026-07-03: initial spec drafted (SPEC.md), broad v1 with security layer, decorators, worker pools.
 - 2026-07-03/04: extended design discussion trimmed it down hard (all decisions below).
 - 2026-07-04: M1 scope locked; blueprint written (ARCHITECTURE.md); build delegated to a subagent with the main session architect-reviewing.
+- 2026-07-04 (later): M1 shipped + verified; M2 sidebar/bookmarks shipped; dark theme, sortable listing, `_file` URL cleanup, no-cache, shell.js ES-module split (D23–D28). An authoring skill for agents lives in `skills/fused-render-authoring/` with an eval workspace beside it.
 - Pre-existing partial code: `fused_render/_child.py`, `fused_render/executor.py`, `fused_render/__init__.py`, `pyproject.toml` (written before discussion finished; kept — they match the final design).
 
 ## Decisions (all explicitly made by the project owner)
@@ -47,6 +48,17 @@ A fully local file explorer: a Python server on `127.0.0.1` + a browser UI to br
 | D20 | Bookmark semantics | Save the **exact URL verbatim** at capture time (incl. all params); click = plain redirect; renamable + deletable | No structured bookmark model — URL is the whole state by design (PR-1/PR-7) |
 | D21 | Bookmark storage | Browser localStorage (`fused.bookmarks`) | Owner chose simplest over server-side JSON file; export path trivial if migrated later |
 | D22 | Bookmark naming | Default = basename of viewed path; rename covers the rest | Rejected params-in-name (noise) and prompt-at-create (friction) |
+
+### Post-M2 refinements (2026-07-04, all owner-directed unless noted)
+
+| # | Decision | Choice |
+|---|---|---|
+| D23 | Look | Dark theme everywhere; single palette via CSS vars; "Raw" header action removed (fallback card keeps a Download link) |
+| D24 | Bookmark UX | "+ Bookmark" text button (not a star glyph); hover card shows target path + saved params; active bookmark + starred button highlighted (architect) |
+| D25 | Listing sort | Sortable columns; sort state in URL params, dirs group first (URL-is-state philosophy) |
+| D26 | `_file` plumbing | `_file` rides on the template iframe's own URL, not the shell URL (no path duplication); runtime falls back to shell URL for manual/legacy links |
+| D27 | Caching | `Cache-Control: no-cache` on every response — stale JS caused half-old-UI bugs |
+| D28 | Frontend structure | shell.js split into ES modules (see ARCHITECTURE §1/§6): one-way deps, pure store/format modules, no build step kept (architect, owner asked) |
 
 ## Descoped / follow-up list (recorded, not built)
 

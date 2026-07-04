@@ -62,7 +62,7 @@ fused-render [--start-dir DIR] [--port N] [--no-browser]
 
 ## 3. HTTP API
 
-All paths in query strings are **absolute filesystem paths**. Server never scopes/rejects by location (v1 has no security layer — deliberate, see SPEC §9). Errors return `{"error": "<message>"}` with 4xx status.
+All paths in query strings are **absolute filesystem paths**. Server never scopes/rejects by location (v1 has no security layer — deliberate, see SPEC §9). Errors return `{"error": "<message>"}` with 4xx status. Every response carries `Cache-Control: no-cache` (middleware) — app code changes between restarts and user files change on disk; stale cached shell/runtime JS produced half-old UIs during development.
 
 ### `GET /` and `GET /view/{path:path}` → shell.html
 Same static shell for both; shell JS reads `location.pathname` to route. `/view/Users/vasu/data` means fs path `/Users/vasu/data` (strip `/view/`, prepend `/`).
@@ -161,11 +161,11 @@ SPA, no framework, native ES modules (`<script type="module">`, no build step). 
   - **dir** → listing view
   - **file** → preview view
 
-**Listing view:** breadcrumb bar (each segment navigates) + rows: icon (dir/file), name, human size, mtime. Click dir → `pushState` navigate. Click file → `pushState` navigate. `popstate` → re-route.
+**Listing view:** breadcrumb bar (each segment navigates) + rows: icon (dir/file), name, human size, mtime. Columns sortable — sort key/order live in URL params (`?sort=name|size|mtime&order=asc|desc`, replaceState), dirs always group before files, ties fall back to name. Click dir → `pushState` navigate. Click file → `pushState` navigate. `popstate` → re-route.
 
 **Preview view:** breadcrumb + filename header with actions, then dispatch **exactly three-way** (no other file-type logic in shell):
 
-1. `stat.template != null` → iframe `/render?path=<template>&_file=<target file>` — `_file` rides on the iframe's own URL; the shell URL stays clean (its pathname already names the file).
+1. `stat.template != null` → iframe `/render?path=<template>&_file=<target file>` — `_file` rides on the iframe's own URL; the shell URL stays clean (its pathname already names the file). The runtime reads `_file` from its own URL first and falls back to the shell URL, so manually opening `/view/<template>.html?_file=<target>` (old bookmarks) also works.
 2. extension `.html`/`.htm` → iframe `/render?path=<file itself>`. Header gets `Rendered | Source` toggle (Source shows fetched text in `<pre>`).
 3. else → fallback: metadata card (name, size, mtime, path) + `Raw / download` link to `/api/fs/raw?path=…`.
 
@@ -178,9 +178,9 @@ Header actions always include `Raw` (opens raw endpoint in new tab). Iframe fill
 Layout: `#app` becomes two-column flex — fixed sidebar (~220px, `--bg-alt`, right border) + existing content column (breadcrumb + content).
 
 - **Home entry:** icon + "Home"; click → `navigate(config.home)`. `/api/config` response gains `"home": os.path.expanduser("~")`.
-- **Bookmark capture:** ★ button right-aligned in the breadcrumb bar (present on every view). On click: `{id: crypto.randomUUID(), name: basename(currentFsPath), url: location.pathname + location.search, created_at: Date.now()}` appended to store; sidebar re-renders.
+- **Bookmark capture:** "+ Bookmark" button right-aligned in the breadcrumb bar (present on every view); shows accent "starred" state when the current URL is already bookmarked. On click: `{id: crypto.randomUUID(), name: basename(currentFsPath), url: location.pathname + location.search, created_at: Date.now()}` appended to store; sidebar re-renders.
 - **Store:** localStorage key `fused.bookmarks`, JSON array. Read/write helpers with try/catch (corrupt JSON → treat as empty, overwrite on next save).
-- **Bookmark row:** name (ellipsized, `title` = url). Click → `location.href = bookmark.url` (plain redirect, no SPA routing). Hover reveals ✎ rename (inline `<input>`, Enter/blur commits, Escape cancels) and ✕ delete (no confirm).
+- **Bookmark row:** name ellipsized, rendered as a real `<a href="<url>">` (verbatim-URL redirect per D20, plus native hover preview/middle-click). Hover shows a floating card beside the sidebar: decoded target path + saved params as a key/value grid ("no params" when none); card hides during rename/delete. Hover also reveals ✎ rename (inline `<input>`, Enter/blur commits, Escape cancels) and ✕ delete (no confirm). Active bookmark (url == current URL) is highlighted.
 - Order: creation time. Duplicates allowed.
 
 ---
@@ -242,5 +242,5 @@ Manual (browser, after build): browse dirs, click parquet → paged table, click
 
 - Python: stdlib + fastapi + uvicorn + pyarrow only. Type hints on public functions. No classes where a function does.
 - JS: no dependencies, no build. `const`/`let`, template literals, async/await. Small files > clever files.
-- Shell CSS: system font stack, clean neutral look, no framework.
+- Shell CSS: system font stack, no framework. Dark theme is the product look — single palette in shell.css `:root` vars (bg #131417, panel #1b1d21, border #2a2d33, text #e8eaed, accent #5b9dff), `color-scheme: dark`; templates and examples match it.
 - Error messages: always actionable — say what was wrong AND what shape was expected.
