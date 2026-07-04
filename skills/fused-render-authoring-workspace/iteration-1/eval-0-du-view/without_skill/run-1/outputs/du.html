@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Disk usage — largest files</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    color: #e8eaed;
+    background: #131417;
+  }
+  #bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 10px 12px;
+    border-bottom: 1px solid #2a2d33;
+    background: #1b1d21;
+    position: sticky;
+    top: 0;
+  }
+  #bar label {
+    color: #9aa0a6;
+    font-size: 12px;
+  }
+  #dir {
+    flex: 1 1 320px;
+    min-width: 200px;
+    font: inherit;
+    padding: 5px 8px;
+    border: 1px solid #2a2d33;
+    border-radius: 6px;
+    background: #131417;
+    color: #e8eaed;
+  }
+  #topn {
+    width: 70px;
+    font: inherit;
+    padding: 5px 8px;
+    border: 1px solid #2a2d33;
+    border-radius: 6px;
+    background: #131417;
+    color: #e8eaed;
+  }
+  #scan {
+    font: inherit;
+    padding: 5px 12px;
+    border: 1px solid #2a2d33;
+    border-radius: 6px;
+    background: #26292f;
+    color: #e8eaed;
+    cursor: pointer;
+  }
+  #scan:hover {
+    background: #2f333a;
+  }
+  #summary {
+    padding: 8px 12px;
+    color: #9aa0a6;
+    border-bottom: 1px solid #24262b;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+  }
+  th, td {
+    padding: 5px 10px;
+    border-bottom: 1px solid #24262b;
+    text-align: left;
+    white-space: nowrap;
+  }
+  td.path {
+    max-width: 1px;
+    width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+  }
+  td.size, th.size {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  td.rank {
+    color: #9aa0a6;
+    text-align: right;
+  }
+  th {
+    background: #1b1d21;
+    position: sticky;
+    top: 49px;
+    font-weight: 600;
+  }
+  #status {
+    padding: 24px;
+    color: #9aa0a6;
+  }
+  #status.error {
+    color: #ff6b6b;
+    white-space: pre-wrap;
+  }
+  a.raw {
+    color: #5b9dff;
+    text-decoration: none;
+    margin-left: 8px;
+  }
+  a.raw:hover {
+    text-decoration: underline;
+  }
+</style>
+</head>
+<body>
+  <div id="bar">
+    <label for="dir">directory</label>
+    <input id="dir" type="text" spellcheck="false" placeholder="/absolute/path" />
+    <label for="topn">top N</label>
+    <input id="topn" type="number" min="1" step="1" />
+    <button id="scan">Scan</button>
+  </div>
+  <div id="summary"></div>
+  <div id="tablewrap"></div>
+
+  <script>
+    const DEFAULT_N = "20";
+
+    const dirInput = document.getElementById("dir");
+    const nInput = document.getElementById("topn");
+    const scanBtn = document.getElementById("scan");
+    const summaryEl = document.getElementById("summary");
+    const wrap = document.getElementById("tablewrap");
+
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function currentDir() {
+      return fused.params.get("dir") || "";
+    }
+
+    function currentN() {
+      const raw = fused.params.get("n");
+      const n = raw ? parseInt(raw, 10) : parseInt(DEFAULT_N, 10);
+      return Number.isFinite(n) && n >= 1 ? n : parseInt(DEFAULT_N, 10);
+    }
+
+    function syncInputs() {
+      dirInput.value = currentDir();
+      nInput.value = String(currentN());
+    }
+
+    function render(data) {
+      summaryEl.textContent =
+        `${data.root} — top ${data.files.length} of ${data.total_found.toLocaleString()} files ` +
+        `(${data.scanned.toLocaleString()} scanned, ${data.skipped.toLocaleString()} skipped)`;
+
+      if (data.files.length === 0) {
+        wrap.innerHTML = `<div id="status">No files found under this directory.</div>`;
+        return;
+      }
+
+      const head = `<tr><th class="rank">#</th><th>path</th><th class="size">size</th><th></th></tr>`;
+      const body = data.files
+        .map((f) => {
+          const rawHref = "/api/fs/raw?path=" + encodeURIComponent(f.path);
+          return (
+            `<tr>` +
+            `<td class="rank">${f.rank}</td>` +
+            `<td class="path" title="${escapeHtml(f.path)}">${escapeHtml(f.path)}</td>` +
+            `<td class="size" title="${f.size.toLocaleString()} bytes">${escapeHtml(f.size_human)}</td>` +
+            `<td><a class="raw" href="${rawHref}" target="_blank" rel="noopener">raw</a></td>` +
+            `</tr>`
+          );
+        })
+        .join("");
+      wrap.innerHTML = `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+    }
+
+    async function load() {
+      const dir = currentDir();
+      if (!dir) {
+        summaryEl.textContent = "";
+        wrap.innerHTML = `<div id="status">Enter a directory and click Scan.</div>`;
+        return;
+      }
+      summaryEl.textContent = "";
+      wrap.innerHTML = `<div id="status">Scanning ${escapeHtml(dir)}…</div>`;
+      try {
+        const data = await fused.runPython("./du.py", {
+          dir,
+          n: String(currentN()),
+        });
+        render(data);
+      } catch (err) {
+        wrap.innerHTML =
+          `<div id="status" class="error"><strong>${escapeHtml(err.type || "Error")}</strong>: ${escapeHtml(err.message || "")}</div>`;
+      }
+    }
+
+    function scan() {
+      const dir = dirInput.value.trim();
+      const n = Math.max(1, parseInt(nInput.value, 10) || parseInt(DEFAULT_N, 10));
+      fused.params.set("dir", dir);
+      fused.params.set("n", String(n));
+      syncInputs();
+      load();
+    }
+
+    scanBtn.addEventListener("click", scan);
+    dirInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") scan();
+    });
+    nInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") scan();
+    });
+
+    fused.params.onChange(() => {
+      syncInputs();
+    });
+
+    async function init() {
+      let dir = currentDir();
+      if (!dir) {
+        try {
+          const cfg = await fetch("/api/config").then((r) => r.json());
+          dir = cfg.home || ".";
+        } catch (e) {
+          dir = ".";
+        }
+        fused.params.set("dir", dir);
+      }
+      if (!fused.params.get("n")) {
+        fused.params.set("n", DEFAULT_N);
+      }
+      syncInputs();
+      load();
+    }
+
+    init();
+  </script>
+</body>
+</html>

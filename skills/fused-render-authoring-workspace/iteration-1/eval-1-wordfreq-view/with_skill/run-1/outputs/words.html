@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Word frequency</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0;
+    padding: 16px 20px 40px;
+    background: #1e1e1e;
+    color: #e0e0e0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 14px;
+  }
+  h1 {
+    font-size: 16px;
+    font-weight: 600;
+    margin: 0 0 14px;
+    color: #f0f0f0;
+  }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    align-items: flex-end;
+    margin-bottom: 16px;
+  }
+  label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    color: #a0a0a0;
+  }
+  input {
+    background: #2a2a2a;
+    border: 1px solid #444;
+    color: #e0e0e0;
+    padding: 6px 8px;
+    border-radius: 4px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  #path { width: 420px; }
+  #minCount { width: 90px; }
+  input:focus { outline: none; border-color: #6699cc; }
+  .meta {
+    color: #888;
+    margin-bottom: 12px;
+    font-size: 12px;
+  }
+  .error {
+    color: #e07b7b;
+    background: #3a1f1f;
+    border: 1px solid #5a2f2f;
+    padding: 10px 12px;
+    border-radius: 4px;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    max-width: 520px;
+  }
+  th, td {
+    text-align: left;
+    padding: 5px 10px;
+    border-bottom: 1px solid #333;
+  }
+  th {
+    color: #a0a0a0;
+    font-weight: 600;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  td.count, th.count { text-align: right; }
+  tbody tr:hover { background: #262626; }
+  .bar {
+    display: inline-block;
+    height: 8px;
+    background: #4a7ab5;
+    border-radius: 2px;
+    vertical-align: middle;
+    margin-right: 8px;
+  }
+  .empty { color: #888; padding: 8px 0; }
+</style>
+</head>
+<body>
+  <h1>Word frequency</h1>
+
+  <div class="controls">
+    <label>File path
+      <input id="path" type="text" placeholder="/path/to/file.txt" spellcheck="false">
+    </label>
+    <label>Minimum count
+      <input id="minCount" type="number" min="1" step="1">
+    </label>
+  </div>
+
+  <div id="meta" class="meta"></div>
+  <div id="out">Loading…</div>
+
+  <script>
+    const pathEl = document.getElementById("path");
+    const minCountEl = document.getElementById("minCount");
+    const metaEl = document.getElementById("meta");
+    const out = document.getElementById("out");
+
+    let requestSeq = 0;
+    let debounceTimer = null;
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      }[c]));
+    }
+
+    function renderTable(words, maxCount) {
+      if (!words.length) {
+        return '<div class="empty">No words match the current filter.</div>';
+      }
+      const rows = words.map((w) => {
+        const pct = maxCount > 0 ? Math.max(2, Math.round((w.count / maxCount) * 100)) : 0;
+        return `<tr>
+          <td>${escapeHtml(w.word)}</td>
+          <td class="count"><span class="bar" style="width:${pct}px"></span>${w.count}</td>
+        </tr>`;
+      }).join("");
+      return `<table>
+        <thead><tr><th>Word</th><th class="count">Count</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+    }
+
+    async function draw() {
+      const path = fused.params.get("path") || "";
+      const minCount = fused.params.get("min_count") || "1";
+
+      // reflect URL state into controls
+      if (document.activeElement !== pathEl) pathEl.value = path;
+      if (document.activeElement !== minCountEl) minCountEl.value = minCount;
+
+      if (!path) {
+        metaEl.textContent = "";
+        out.innerHTML = '<div class="empty">Enter a file path above.</div>';
+        return;
+      }
+
+      const seq = ++requestSeq;
+      out.textContent = "Loading…";
+
+      try {
+        const data = await fused.runPython("./words.py", { path, min_count: minCount });
+        if (seq !== requestSeq) return; // stale response, a newer one is in flight
+
+        if (data.error) {
+          metaEl.textContent = "";
+          out.innerHTML = `<div class="error">${escapeHtml(data.error)}</div>`;
+          return;
+        }
+
+        metaEl.textContent =
+          `${data.total_words} words total, ${data.total_unique} unique, ` +
+          `${data.words.length} shown (count >= ${minCount})`;
+        const maxCount = data.words.length ? data.words[0].count : 0;
+        out.innerHTML = renderTable(data.words, maxCount);
+      } catch (err) {
+        if (seq !== requestSeq) return;
+        metaEl.textContent = "";
+        out.innerHTML = `<div class="error">${escapeHtml(err.type || "Error")}: ${escapeHtml(err.message || String(err))}</div>`;
+      }
+    }
+
+    pathEl.addEventListener("input", () => {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => fused.params.set("path", pathEl.value), 300);
+    });
+
+    minCountEl.addEventListener("input", () => {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        const v = parseInt(minCountEl.value, 10);
+        fused.params.set("min_count", String(Number.isFinite(v) && v > 0 ? v : 1));
+      }, 300);
+    });
+
+    fused.params.onChange(draw);
+    draw();
+  </script>
+</body>
+</html>

@@ -21,7 +21,17 @@ fused-render/
 │   ├── static/
 │   │   ├── shell.html          # explorer SPA shell
 │   │   ├── shell.css
-│   │   ├── shell.js
+│   │   ├── shell/              # ES modules, no build step
+│   │   │   ├── main.js         # entry: config load + route() dispatcher
+│   │   │   ├── router.js       # fs-path <-> URL codec, navigate(), route handler registry
+│   │   │   ├── api.js          # fetch wrappers (config/list/stat/rawUrl)
+│   │   │   ├── format.js       # escapeHtml/formatSize/formatMtime/basename (pure)
+│   │   │   ├── bookmarks.js    # localStorage store (pure data, no DOM)
+│   │   │   ├── sidebar.js      # sidebar UI: Home, bookmark rows, hover card, rename
+│   │   │   ├── breadcrumb.js   # crumb bar + "+ Bookmark" button
+│   │   │   └── views/
+│   │   │       ├── listing.js  # dir table + sortable columns
+│   │   │       └── preview.js  # three-way dispatch: template/html/fallback
 │   │   └── runtime.js          # injected into every rendered HTML
 │   └── templates/
 │       ├── parquet_template.html
@@ -145,7 +155,7 @@ Top-level `path` handling in shell URL vs iframe URL:
 
 ## 6. Shell (`shell.html/css/js`)
 
-SPA, no framework. Routing from `location.pathname`:
+SPA, no framework, native ES modules (`<script type="module">`, no build step). Dependency direction is one-way: `main → views/sidebar/breadcrumb → router/api/bookmarks/format`; router never imports UI (route handler is registered by main), the bookmark store never touches the DOM. Routing from `location.pathname`:
 - `/` → redirect (replaceState) to `/view/<start-dir>` (start dir from `GET /api/config` → `{"start_dir": "/Users/vasu"}` — add this tiny endpoint).
 - `/view/<path>` → `stat` it:
   - **dir** → listing view

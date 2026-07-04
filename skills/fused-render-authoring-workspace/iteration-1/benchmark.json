@@ -1,0 +1,440 @@
+{
+  "metadata": {
+    "skill_name": "fused-render-authoring",
+    "skill_path": "<path/to/skill>",
+    "executor_model": "<model-name>",
+    "analyzer_model": "<model-name>",
+    "timestamp": "2026-07-03T20:53:24Z",
+    "evals_run": [
+      0,
+      1,
+      2
+    ],
+    "runs_per_configuration": 3
+  },
+  "runs": [
+    {
+      "eval_id": 0,
+      "configuration": "with_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 8,
+        "failed": 0,
+        "total": 8,
+        "time_seconds": 41.0,
+        "tokens": 41565,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "py-defines-annotated-main",
+          "passed": true,
+          "evidence": "main(path:str, top_n:int), defaults=2/2"
+        },
+        {
+          "text": "py-returns-json-native",
+          "passed": true,
+          "evidence": "view rendered data live => main() output serialized to JSON without error"
+        },
+        {
+          "text": "html-uses-runPython-relative",
+          "passed": true,
+          "evidence": "runPython(\"./du.py\""
+        },
+        {
+          "text": "html-no-manual-runtime-script",
+          "passed": true,
+          "evidence": "no runtime.js script tag"
+        },
+        {
+          "text": "params-set-strings-only",
+          "passed": true,
+          "evidence": "2 set() calls; args: ['pathEl.value || DEFAULT_PATH', 'String(Number.isFinite(n) && n > 0 ? n : DEFAULT_TOP_N)']"
+        },
+        {
+          "text": "state-from-params-on-load",
+          "passed": true,
+          "evidence": "params.get present=True, control '.value =' reflection present=True"
+        },
+        {
+          "text": "rerender-via-onChange",
+          "passed": true,
+          "evidence": "fused.params.onChange wired"
+        },
+        {
+          "text": "renders-headless",
+          "passed": true,
+          "evidence": "elements(tbody tr)=5, overlay=false, sample=\"Largest files directory top N 250 files scanned under /private/tmp/claude-501/-Users-vasu-Documents-fused-fused-render/6\""
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": 1,
+      "configuration": "with_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 8,
+        "failed": 0,
+        "total": 8,
+        "time_seconds": 41.1,
+        "tokens": 41856,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "py-defines-annotated-main",
+          "passed": true,
+          "evidence": "main(path:str, min_count:int), defaults=2/2"
+        },
+        {
+          "text": "py-returns-json-native",
+          "passed": true,
+          "evidence": "view rendered data live => main() output serialized to JSON without error"
+        },
+        {
+          "text": "html-uses-runPython-relative",
+          "passed": true,
+          "evidence": "runPython(\"./words.py\""
+        },
+        {
+          "text": "html-no-manual-runtime-script",
+          "passed": true,
+          "evidence": "no runtime.js script tag"
+        },
+        {
+          "text": "params-set-strings-only",
+          "passed": true,
+          "evidence": "2 set() calls; args: ['pathEl.value', 'String(Number.isFinite(v) && v > 0 ? v : 1)']"
+        },
+        {
+          "text": "state-from-params-on-load",
+          "passed": true,
+          "evidence": "params.get present=True, control '.value =' reflection present=True"
+        },
+        {
+          "text": "rerender-via-onChange",
+          "passed": true,
+          "evidence": "fused.params.onChange wired"
+        },
+        {
+          "text": "renders-headless",
+          "passed": true,
+          "evidence": "elements(tbody tr)=10, overlay=false, sample=\"Word frequency File path Minimum count 3000 words total, 10 unique, 10 shown (count >= 2) WORD COUNT alpha 325 delta 314\""
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": 2,
+      "configuration": "with_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 10,
+        "failed": 0,
+        "total": 10,
+        "time_seconds": 103.0,
+        "tokens": 51626,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "py-defines-annotated-main",
+          "passed": true,
+          "evidence": "main(file:str, n:int), defaults=1/2"
+        },
+        {
+          "text": "py-returns-json-native",
+          "passed": true,
+          "evidence": "view rendered data live => main() output serialized to JSON without error"
+        },
+        {
+          "text": "html-uses-runPython-relative",
+          "passed": true,
+          "evidence": "runPython(\"./log_reader.py\""
+        },
+        {
+          "text": "html-no-manual-runtime-script",
+          "passed": true,
+          "evidence": "no runtime.js script tag"
+        },
+        {
+          "text": "params-set-strings-only",
+          "passed": true,
+          "evidence": "1 set() calls; args: ['String(Number.isFinite(n) && n > 0 ? n : DEFAULT_N)']"
+        },
+        {
+          "text": "state-from-params-on-load",
+          "passed": true,
+          "evidence": "params.get present=True, control '.value =' reflection present=True"
+        },
+        {
+          "text": "rerender-via-onChange",
+          "passed": true,
+          "evidence": "fused.params.onChange wired"
+        },
+        {
+          "text": "uses-file-param",
+          "passed": true,
+          "evidence": "_file read=True, missing-file guard=True"
+        },
+        {
+          "text": "registration-instructions",
+          "passed": true,
+          "evidence": "REGISTER.md mentions TEMPLATES/.log/server.py"
+        },
+        {
+          "text": "renders-headless",
+          "passed": true,
+          "evidence": "elements(body)=1, overlay=false, sample=\"last lines showing last 50 of 500 lines \u2014 /private/tmp/claude-501/-Users-vasu-Documents-fused-fused-render/6eca03f9-e222\""
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": 0,
+      "configuration": "without_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 8,
+        "failed": 0,
+        "total": 8,
+        "time_seconds": 112.5,
+        "tokens": 65804,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "py-defines-annotated-main",
+          "passed": true,
+          "evidence": "main(dir:str, n:int), defaults=2/2"
+        },
+        {
+          "text": "py-returns-json-native",
+          "passed": true,
+          "evidence": "view rendered data live => main() output serialized to JSON without error"
+        },
+        {
+          "text": "html-uses-runPython-relative",
+          "passed": true,
+          "evidence": "runPython(\"./du.py\""
+        },
+        {
+          "text": "html-no-manual-runtime-script",
+          "passed": true,
+          "evidence": "no runtime.js script tag"
+        },
+        {
+          "text": "params-set-strings-only",
+          "passed": true,
+          "evidence": "4 set() calls; args: ['dir', 'String(n)', 'dir', 'DEFAULT_N']"
+        },
+        {
+          "text": "state-from-params-on-load",
+          "passed": true,
+          "evidence": "params.get present=True, control '.value =' reflection present=True"
+        },
+        {
+          "text": "rerender-via-onChange",
+          "passed": true,
+          "evidence": "fused.params.onChange wired"
+        },
+        {
+          "text": "renders-headless",
+          "passed": true,
+          "evidence": "elements(tbody tr)=5, overlay=false, sample=\"directory top N Scan /private/tmp/claude-501/-Users-vasu-Documents-fused-fused-render/6eca03f9-e222-4ecd-b50e-5fc381d19a\""
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": 1,
+      "configuration": "without_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 8,
+        "failed": 0,
+        "total": 8,
+        "time_seconds": 151.3,
+        "tokens": 69050,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "py-defines-annotated-main",
+          "passed": true,
+          "evidence": "main(file:str, min_count:int), defaults=1/2"
+        },
+        {
+          "text": "py-returns-json-native",
+          "passed": true,
+          "evidence": "view rendered data live => main() output serialized to JSON without error"
+        },
+        {
+          "text": "html-uses-runPython-relative",
+          "passed": true,
+          "evidence": "runPython(\"./words.py\""
+        },
+        {
+          "text": "html-no-manual-runtime-script",
+          "passed": true,
+          "evidence": "no runtime.js script tag"
+        },
+        {
+          "text": "params-set-strings-only",
+          "passed": true,
+          "evidence": "2 set() calls; args: ['value', 'String(value)']"
+        },
+        {
+          "text": "state-from-params-on-load",
+          "passed": true,
+          "evidence": "params.get present=True, control '.value =' reflection present=True"
+        },
+        {
+          "text": "rerender-via-onChange",
+          "passed": true,
+          "evidence": "fused.params.onChange wired"
+        },
+        {
+          "text": "renders-headless",
+          "passed": true,
+          "evidence": "elements(tbody tr)=10, overlay=false, sample=\"file minimum count showing 10 of 10 unique words (3,000 words total) word count alpha 325 delta 314 epsilon 310 fused 30\""
+        }
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": 2,
+      "configuration": "without_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 10,
+        "failed": 0,
+        "total": 10,
+        "time_seconds": 141.9,
+        "tokens": 57859,
+        "tool_calls": 0,
+        "errors": 0
+      },
+      "expectations": [
+        {
+          "text": "py-defines-annotated-main",
+          "passed": true,
+          "evidence": "main(file:str, n:int), defaults=1/2"
+        },
+        {
+          "text": "py-returns-json-native",
+          "passed": true,
+          "evidence": "view rendered data live => main() output serialized to JSON without error"
+        },
+        {
+          "text": "html-uses-runPython-relative",
+          "passed": true,
+          "evidence": "runPython(\"./log_reader.py\""
+        },
+        {
+          "text": "html-no-manual-runtime-script",
+          "passed": true,
+          "evidence": "no runtime.js script tag"
+        },
+        {
+          "text": "params-set-strings-only",
+          "passed": true,
+          "evidence": "1 set() calls; args: ['String(Number.isFinite(n) && n > 0 ? n : DEFAULT_N)']"
+        },
+        {
+          "text": "state-from-params-on-load",
+          "passed": true,
+          "evidence": "params.get present=True, control '.value =' reflection present=True"
+        },
+        {
+          "text": "rerender-via-onChange",
+          "passed": true,
+          "evidence": "fused.params.onChange wired"
+        },
+        {
+          "text": "uses-file-param",
+          "passed": true,
+          "evidence": "_file read=True, missing-file guard=True"
+        },
+        {
+          "text": "registration-instructions",
+          "passed": true,
+          "evidence": "REGISTER.md mentions TEMPLATES/.log/server.py"
+        },
+        {
+          "text": "renders-headless",
+          "passed": true,
+          "evidence": "elements(body)=1, overlay=false, sample=\"Last lines Apply Reload showing last 50 lines (more above) \u00b7 21,690 bytes 1 2026-07-04 12:00:30 INFO ok step line 450 2 \""
+        }
+      ],
+      "notes": []
+    }
+  ],
+  "run_summary": {
+    "with_skill": {
+      "pass_rate": {
+        "mean": 1.0,
+        "stddev": 0.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "time_seconds": {
+        "mean": 61.7,
+        "stddev": 35.7669,
+        "min": 41.0,
+        "max": 103.0
+      },
+      "tokens": {
+        "mean": 45015.6667,
+        "stddev": 5726.5653,
+        "min": 41565,
+        "max": 51626
+      }
+    },
+    "without_skill": {
+      "pass_rate": {
+        "mean": 1.0,
+        "stddev": 0.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "time_seconds": {
+        "mean": 135.2333,
+        "stddev": 20.2409,
+        "min": 112.5,
+        "max": 151.3
+      },
+      "tokens": {
+        "mean": 64237.6667,
+        "stddev": 5757.575,
+        "min": 57859,
+        "max": 69050
+      }
+    },
+    "delta": {
+      "pass_rate": "+0.00",
+      "time_seconds": "-73.5",
+      "tokens": "-19222"
+    }
+  },
+  "notes": [],
+  "analyst_observations": [
+    "Pass rates are 100% in BOTH configs \u2014 the assertions verify convention compliance but do not discriminate, because the repo itself (committed SPEC.md/ARCHITECTURE.md, examples/, templates/) lets a no-skill agent reverse-engineer the API reliably.",
+    "The skill's measurable value in this eval set is efficiency: 2.2x faster wall-clock (61.7s vs 135.2s) and ~30% fewer tokens (45k vs 64k). Baselines spent 14-25 tool calls exploring the repo; with-skill runs used ~4.",
+    "First baseline batch was contaminated: agents discovered SKILL.md inside the repo and read it (verified via transcripts + a copied comment string). Quarantined in without_skill_contaminated/, excluded from stats; clean baselines were rerun with the skill dir hidden.",
+    "With-skill time variance is high (\u00b135.8s) \u2014 the log-template run self-tested its reader against a synthetic log (103s), the other two finished in 41s.",
+    "Iteration-2 candidates for discriminating evals: (a) debug-a-broken-view tasks targeting pitfalls (non-string set, DataFrame return, stale-state assumptions); (b) authoring in a directory OUTSIDE the repo so the skill is the only documentation source."
+  ]
+}

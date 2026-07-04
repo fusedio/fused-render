@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Word frequency</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    color: #e8eaed;
+    background: #131417;
+  }
+  #bar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 10px 12px;
+    border-bottom: 1px solid #2a2d33;
+    background: #1b1d21;
+    position: sticky;
+    top: 0;
+    flex-wrap: wrap;
+  }
+  #bar .field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  #bar label {
+    color: #9aa0a6;
+    font-size: 12px;
+  }
+  #file {
+    width: 420px;
+    max-width: 50vw;
+    font: inherit;
+    padding: 5px 8px;
+    border: 1px solid #2a2d33;
+    border-radius: 6px;
+    background: #131417;
+    color: #e8eaed;
+  }
+  #minCount {
+    width: 80px;
+    font: inherit;
+    padding: 5px 8px;
+    border: 1px solid #2a2d33;
+    border-radius: 6px;
+    background: #131417;
+    color: #e8eaed;
+  }
+  #summary {
+    color: #9aa0a6;
+    margin-left: auto;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+  }
+  th, td {
+    padding: 5px 10px;
+    border-bottom: 1px solid #24262b;
+    text-align: left;
+  }
+  td.count, th.count {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    width: 1%;
+    white-space: nowrap;
+  }
+  th {
+    background: #1b1d21;
+    position: sticky;
+    top: 45px;
+    font-weight: 600;
+  }
+  tr:hover td {
+    background: #1b1d21;
+  }
+  #status {
+    padding: 24px;
+    color: #9aa0a6;
+  }
+  #status.error {
+    color: #ff6b6b;
+    white-space: pre-wrap;
+  }
+</style>
+</head>
+<body>
+  <div id="bar">
+    <div class="field">
+      <label for="file">file</label>
+      <input id="file" type="text" placeholder="/absolute/path/to/file.txt" spellcheck="false" />
+    </div>
+    <div class="field">
+      <label for="minCount">minimum count</label>
+      <input id="minCount" type="number" min="1" step="1" value="1" />
+    </div>
+    <span id="summary"></span>
+  </div>
+  <div id="tablewrap"><div id="status">Enter a file path to begin.</div></div>
+
+  <script>
+    const fileInput = document.getElementById("file");
+    const minCountInput = document.getElementById("minCount");
+    const summaryEl = document.getElementById("summary");
+    const wrap = document.getElementById("tablewrap");
+
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function currentFile() {
+      return fused.params.get("file") || "";
+    }
+
+    function currentMinCount() {
+      const raw = fused.params.get("min_count");
+      const n = raw !== undefined ? parseInt(raw, 10) : 1;
+      return Number.isFinite(n) && n >= 1 ? n : 1;
+    }
+
+    function render(data) {
+      summaryEl.textContent =
+        `showing ${data.shown_words.toLocaleString()} of ${data.unique_words.toLocaleString()} unique words ` +
+        `(${data.total_words.toLocaleString()} words total)`;
+
+      if (data.rows.length === 0) {
+        wrap.innerHTML = `<div id="status">No words meet the minimum count filter.</div>`;
+        return;
+      }
+
+      const head = `<tr><th>word</th><th class="count">count</th></tr>`;
+      const body = data.rows
+        .map((r) => `<tr><td>${escapeHtml(r.word)}</td><td class="count">${r.count.toLocaleString()}</td></tr>`)
+        .join("");
+      wrap.innerHTML = `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+    }
+
+    async function load() {
+      const file = currentFile();
+      const minCount = currentMinCount();
+
+      fileInput.value = file;
+      minCountInput.value = String(minCount);
+
+      if (!file) {
+        summaryEl.textContent = "";
+        wrap.innerHTML = `<div id="status">Enter a file path to begin.</div>`;
+        return;
+      }
+
+      wrap.innerHTML = `<div id="status">Loading…</div>`;
+      try {
+        const data = await fused.runPython("./words.py", {
+          file,
+          min_count: String(minCount),
+        });
+        render(data);
+      } catch (err) {
+        summaryEl.textContent = "";
+        wrap.innerHTML = `<div id="status error"><strong>${escapeHtml(err.type || "Error")}</strong>: ${escapeHtml(err.message || "")}</div>`;
+      }
+    }
+
+    function commitFile() {
+      const value = fileInput.value.trim();
+      if (value !== currentFile()) {
+        fused.params.set("file", value);
+      }
+    }
+
+    function commitMinCount() {
+      const n = parseInt(minCountInput.value, 10);
+      const value = Number.isFinite(n) && n >= 1 ? n : 1;
+      if (value !== currentMinCount()) {
+        fused.params.set("min_count", String(value));
+      } else {
+        minCountInput.value = String(value);
+      }
+    }
+
+    fileInput.addEventListener("change", commitFile);
+    fileInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") fileInput.blur();
+    });
+
+    minCountInput.addEventListener("change", commitMinCount);
+    minCountInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") minCountInput.blur();
+    });
+
+    fused.params.onChange(load);
+    load();
+  </script>
+</body>
+</html>
