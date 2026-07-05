@@ -9,6 +9,14 @@ import { renderBreadcrumb } from "../breadcrumb.js";
 
 const contentEl = document.getElementById("content");
 
+// Abs path of the editable code template, used to render the HTML "Source"
+// view (code_template maps .html → CM.html()). Set once from /api/config.
+let sourceTemplate = null;
+
+export function initPreview(config) {
+  sourceTemplate = config.source_template;
+}
+
 function header(fsPath, stat, extraActionsHtml) {
   return `
     <div class="preview-header">
@@ -51,18 +59,15 @@ function renderHtmlPreview(fsPath, stat) {
     body.innerHTML = `<iframe src="/render?path=${encodeURIComponent(fsPath)}"></iframe>`;
   });
 
-  btnSource.addEventListener("click", async () => {
+  // Source view is the code template pointed at the HTML file — an editable
+  // CodeMirror buffer, same as opening any .py/.js/etc. (_file rides on the
+  // iframe URL, like renderTemplatePreview).
+  btnSource.addEventListener("click", () => {
     if (btnSource.classList.contains("active")) return;
     btnSource.classList.add("active");
     btnRendered.classList.remove("active");
-    body.innerHTML = `<div class="status-message">Loading…</div>`;
-    try {
-      const res = await fetch(rawUrl(fsPath));
-      const text = await res.text();
-      body.innerHTML = `<pre class="source">${escapeHtml(text)}</pre>`;
-    } catch (err) {
-      body.innerHTML = `<div class="status-message error">Failed to load source: ${escapeHtml(err.message)}</div>`;
-    }
+    const src = `/render?path=${encodeURIComponent(sourceTemplate)}&_file=${encodeURIComponent(fsPath)}`;
+    body.innerHTML = `<iframe src="${src}"></iframe>`;
   });
 }
 

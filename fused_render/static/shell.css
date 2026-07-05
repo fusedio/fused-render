@@ -459,17 +459,6 @@ table.listing-table td.mtime {
   border: none;
 }
 
-.preview-body pre.source {
-  flex: 1 1 auto;
-  margin: 0;
-  padding: 16px;
-  overflow: auto;
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 13px;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
 .metadata-card {
   margin: 24px;
   padding: 20px;

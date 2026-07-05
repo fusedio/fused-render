@@ -62,7 +62,7 @@ fused-render [--start-dir DIR] [--port N] [--no-browser]
 
 ## 3. HTTP API
 
-All paths in query strings are **absolute filesystem paths**. Server never scopes/rejects by location (v1 has no security layer — deliberate, see SPEC §9). Errors return `{"error": "<message>"}` with 4xx status. Every response carries `Cache-Control: no-cache` (middleware) — app code changes between restarts and user files change on disk; stale cached shell/runtime JS produced half-old UIs during development.
+All paths in query strings are **absolute filesystem paths**. Server never scopes/rejects by location (v1 has no security layer — deliberate, see SPEC §9). Errors return `{"error": "<message>"}` with 4xx status. Every response carries `Cache-Control: no-cache` (middleware) — app code changes between restarts and user files change on disk; stale cached shell/runtime JS produced half-old UIs during development. The two mutating/executing POSTs (`/api/run`, `/api/fs/write`) require an `X-Fused: 1` header (missing/wrong → 403); it forces a CORS preflight so a foreign page can't fire them blind. Not auth — D3 stands (see DECISIONS.md D36).
 
 ### `GET /` and `GET /view/{path:path}` → shell.html
 Same static shell for both; shell JS reads `location.pathname` to route. `/view/Users/vasu/data` means fs path `/Users/vasu/data` (strip `/view/`, prepend `/`).
@@ -95,13 +95,16 @@ Sorted: dirs first, then files, case-insensitive alpha. Includes dotfiles (FS-4 
 ### `GET /api/fs/raw?path=<abs file>`
 `FileResponse` — correct MIME via `mimetypes.guess_type`, Range support (free from Starlette). 404 if missing.
 
+### `POST /api/fs/write`  *(requires `X-Fused: 1`)*
+Body `{path: <abs>, content: str, expected_mtime?: float}`. Rejects non-absolute paths, directories, and missing parent dirs. Atomic write (temp file in the same dir → fsync → `os.replace`), preserving the target's permission bits on overwrite. Optimistic lock: if `expected_mtime` is given, a changed **or deleted** file → HTTP 409 `{error: "conflict", mtime: <current|null>}`; omitting it writes unconditionally (also how new files are created). Response = the same shape as `/api/fs/stat` (fresh mtime/size) so the editor can re-arm the lock.
+
 ### `GET /render?path=<abs .html file>`
 Reads file text, injects `<script src="/static/runtime.js"></script>`:
 - if `<head>` present (case-insensitive): right after it;
 - else: prepended to the document.
 Returns `text/html`. Used as iframe src by the shell for both user HTML and templates.
 
-### `POST /api/run`
+### `POST /api/run`  *(requires `X-Fused: 1`)*
 Request:
 ```json
 {"py": "./sine.py", "html": "/Users/vasu/views/sine.html", "params": {"freq": "2.4"}}
@@ -135,9 +138,15 @@ Iframe is **same-origin** (src = `/render?path=…` on the same host) → no pos
 ```js
 window.fused = {
   runPython(pyPath, params) -> Promise<result>,
+  rawUrl(path) -> string,                         // sync; /api/fs/raw?path=…
+  stat(path) -> Promise<statObj>,                 // GET /api/fs/stat
+  readFile(path) -> Promise<string>,              // GET raw endpoint as text
+  writeFile(path, content, opts?) -> Promise<statObj>,  // POST /api/fs/write
   params: { get(k), getAll(), set(k, v), onChange(cb) -> unsubscribe },
 };
 ```
+
+- **IO helpers:** `stat`/`readFile`/`writeFile` reject with an `Error` carrying the server's message (mirrors runPython's rejection style). `writeFile` opts = `{expectedMtime}` (optimistic lock); a 409 rejects with an error whose `.type === "conflict"` and `.mtime` = the server's current mtime, so a caller can offer reload/overwrite. `runPython` and `writeFile` send the `X-Fused: 1` header the server requires on its POSTs (see §3).
 
 Behavior:
 - **runPython:** POST `/api/run` with `{py: pyPath, html: <own file path>, params}`. Own file path = `path` query param of the iframe's own URL. Non-ok response → reject with `Error` carrying `.type`, `.traceback`, `.stdout`. If `stdout` non-empty (ok or not), `console.log` it prefixed `[python]`.
@@ -156,7 +165,7 @@ Top-level `path` handling in shell URL vs iframe URL:
 ## 6. Shell (`shell.html/css/js`)
 
 SPA, no framework, native ES modules (`<script type="module">`, no build step). Dependency direction is one-way: `main → views/sidebar/breadcrumb → router/api/bookmarks/format`; router never imports UI (route handler is registered by main), the bookmark store never touches the DOM. Routing from `location.pathname`:
-- `/` → redirect (replaceState) to `/view/<start-dir>` (start dir from `GET /api/config` → `{"start_dir": "/Users/vasu"}` — add this tiny endpoint).
+- `/` → redirect (replaceState) to `/view/<start-dir>` (start dir from `GET /api/config` → `{"start_dir": "/Users/vasu", "home": …, "source_template": <abs code_template.html>}`).
 - `/view/<path>` → `stat` it:
   - **dir** → listing view
   - **file** → preview view
@@ -166,7 +175,7 @@ SPA, no framework, native ES modules (`<script type="module">`, no build step). 
 **Preview view:** breadcrumb + filename header with actions, then dispatch **exactly three-way** (no other file-type logic in shell):
 
 1. `stat.template != null` → iframe `/render?path=<template>&_file=<target file>` — `_file` rides on the iframe's own URL; the shell URL stays clean (its pathname already names the file). The runtime reads `_file` from its own URL first and falls back to the shell URL, so manually opening `/view/<template>.html?_file=<target>` (old bookmarks) also works.
-2. extension `.html`/`.htm` → iframe `/render?path=<file itself>`. Header gets `Rendered | Source` toggle (Source shows fetched text in `<pre>`).
+2. extension `.html`/`.htm` → iframe `/render?path=<file itself>`. Header gets `Rendered | Source` toggle. Source loads the code template pointed at the HTML file — `/render?path=<source_template>&_file=<file>` (source_template = code_template's abs path, from `/api/config`) — an editable CodeMirror buffer, so HTML source editing comes free.
 3. else → fallback: metadata card (name, size, mtime, path) + `Raw / download` link to `/api/fs/raw?path=…`.
 
 Header actions always include `Raw` (opens raw endpoint in new tab). Iframe fills remaining viewport height, `border: none`.
@@ -207,7 +216,7 @@ TEMPLATES = {
   ".txt": "text_template.html", ".log": "text_template.html",
 }
 ```
-- Template receives target file as read-only param `_file`. Templates are ordinary renderable HTML: same runtime, same powers. Helper `.py` files sit next to the template; relative `runPython('./parquet_reader.py', …)` just works because `html` path sent to `/api/run` is the template's real path.
+- Template receives target file as read-only param `_file`. Templates are ordinary renderable HTML: same runtime, same powers. Templates reach the filesystem through the runtime IO helpers (`fused.rawUrl`/`stat`/`readFile`/`writeFile`), never by fetching `/api/fs/*` URLs directly — one code path, and the write guard/lock come for free. Helper `.py` files sit next to the template; relative `runPython('./parquet_reader.py', …)` just works because `html` path sent to `/api/run` is the template's real path.
 - Vendored JS libraries (marked, CodeMirror) live in `fused_render/templates/vendor/` and are served from a dedicated absolute mount `GET /template-assets/*` (a relative `<script src>` in a template would resolve against `/render`, not the templates dir). All committed local files — no CDN/network at runtime (D3). Regenerate the CodeMirror bundle via `scripts/vendor-codemirror/build.sh` (Node 22).
 
 **M1 templates:**
@@ -226,7 +235,7 @@ TEMPLATES = {
 - `xlsx_template.html` + `xlsx_reader.py`: openpyxl `read_only=True`, first row is header. Reader `main(file, sheet="", offset=0, limit=100)` → `{sheets, sheet, columns, rows, total_rows}`. Template adds a sheet `<select>` (shown when >1 sheet) wired to a `sheet` param (resets `offset` on change); paging like csv. JSON-safe cells (datetimes → isoformat, None → null).
 - `pdf_template.html`: thin filename header + full-height `<embed type="application/pdf">` of the raw endpoint.
 - `media_template.html`: branches on extension — `<video>` for mp4/mov/m4v/webm, `<audio>` for mp3/wav/m4a/ogg/flac. `controls`, centered, filename caption, video constrained to viewport.
-- `code_template.html`: read-only CodeMirror 6 (vendored `/template-assets/codemirror.bundle.js`, global `CM`), `CM.oneDark` theme to match the shell. `basicSetup` line numbers; language chosen by extension (py/js/ts/json/yaml/html/css + StreamLanguage shell/toml; unknown → plain). Guard: file > 2 MB → "too large" note + raw link.
+- `code_template.html`: **editable** CodeMirror 6 (vendored `/template-assets/codemirror.bundle.js`, global `CM`), `CM.oneDark` theme to match the shell. `basicSetup` line numbers; language chosen by extension (py/js/ts/json/yaml/html/css + StreamLanguage shell/toml; unknown → plain). Guard: file > 2 MB → "too large" note + raw link (no editor). Top bar (matches other templates' `#bar`): filename + Saved/Modified status + Save button (disabled when clean). Save flow: `fused.stat` arms the mtime on load → `fused.writeFile(file, doc, {expectedMtime})` on save; Cmd/Ctrl+S bound at the window (CM's `keymap` isn't in the bundle); dirty tracked via `EditorView.updateListener` (docChanged); `beforeunload` warns when dirty. On a 409 conflict a bar banner offers **Reload** (refetch + re-arm, discard local) or **Overwrite** (write with no lock, re-arm).
 
 ---
 

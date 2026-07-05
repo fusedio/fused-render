@@ -7,7 +7,7 @@ import { escapeHtml } from "./format.js";
 import { initSidebar, renderSidebar } from "./sidebar.js";
 import { renderBreadcrumb } from "./breadcrumb.js";
 import { renderListing } from "./views/listing.js";
-import { renderPreview } from "./views/preview.js";
+import { renderPreview, initPreview } from "./views/preview.js";
 
 const contentEl = document.getElementById("content");
 
@@ -44,6 +44,7 @@ async function route() {
 async function init() {
   config = await getConfig();
   initSidebar(config);
+  initPreview(config);
   setRouteHandler(route);
   renderSidebar();
   route();

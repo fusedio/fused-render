@@ -141,16 +141,16 @@
         root.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
         return;
       }
-      const rawUrl = "/api/fs/raw?path=" + encodeURIComponent(file);
+      const rawUrl = fused.rawUrl(file);
       let text;
       try {
-        const stat = await fetch("/api/fs/stat?path=" + encodeURIComponent(file)).then((r) => r.json());
+        const stat = await fused.stat(file);
         if (stat.size !== null && stat.size !== undefined && stat.size > MAX_BYTES) {
           root.innerHTML = `<div id="status">File is too large to render inline (${stat.size.toLocaleString()} bytes).
             <a href="${rawUrl}" target="_blank" rel="noopener">Open raw</a></div>`;
           return;
         }
-        text = await fetch(rawUrl).then((r) => r.text());
+        text = await fused.readFile(file);
       } catch (err) {
         root.innerHTML = `<div id="status" class="error">Failed to load file: ${escapeHtml(err.message)}</div>`;
         return;

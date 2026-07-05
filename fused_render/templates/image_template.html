@@ -40,7 +40,7 @@
   </figure>
   <script>
     const file = fused.params.get("_file") || "";
-    document.getElementById("img").src = "/api/fs/raw?path=" + encodeURIComponent(file);
+    document.getElementById("img").src = fused.rawUrl(file);
     document.getElementById("caption").textContent = file.split("/").pop();
   </script>
 </body>

@@ -77,9 +77,16 @@ A fully local file explorer: a Python server on `127.0.0.1` + a browser UI to br
 | D34 | Dock presence | **Regular app (no LSUIElement)** — Dock icon + menu bar ✦ both | Owner expects Dock presence; Dock right-click → Quit permanently solves lifecycle confusion. Supersedes D31's LSUIElement detail (menu bar item stays) |
 | D35 | DMG creation | `dmgbuild` (config-driven) replaces raw hdiutil; **Briefcase external-app mode** = designated future path for sign+notarize+DMG when Developer ID lands | Full Briefcase rejected: its app template breaks sys.executable |
 
+### Editing decisions (2026-07-05)
+
+| # | Decision | Choice | Rationale / rejected alternatives |
+|---|---|---|---|
+| D36 | Cross-origin POST guard | The two mutating/executing endpoints (`POST /api/run`, `POST /api/fs/write`) require a custom `X-Fused: 1` request header; missing/wrong → 403 | Read endpoints are already safe cross-origin (the browser blocks a foreign page from reading our response), but a POST can be fired blind via a no-cors fetch by any website open in the same browser. A custom header forces a CORS preflight, which fails cross-origin since we send no CORS headers, so only our own same-origin pages get through. **NOT authentication** (D3 stands — no tokens, no user accounts): it only blocks blind cross-origin POSTs; anything that can already run our JS is unaffected. Cheap and removable if the descoped security layer lands. |
+| D37 | File editing | `POST /api/fs/write` (atomic temp-file + `os.replace`, preserves mode) with optimistic locking on `st_mtime`; `code_template.html` is now an always-editable CodeMirror buffer (Save / Cmd+S, conflict banner offering Reload/Overwrite) | Supersedes SPEC §1 non-goal "no editing in v1". Optimistic lock (409 on stale/deleted mtime) chosen over no-lock (silent clobber) and over server-side locking (needs state, D-against SV-1). HTML "Source" view reuses the same editable template, so HTML editing came free |
+
 ## Descoped / follow-up list (recorded, not built)
 
-Security layer (token, Origin/Host validation, sandboxed bridge — see threat note SPEC §9) · remaining templates (csv, json, markdown, media, pdf, syntax-highlighted code) · user template overrides (`~/.fused-render/templates/` checked before builtins) · per-directory templates · warm worker pool · DataFrame/Arrow returns · WebSocket/SSE push · exec console + structured logging · caching · search/sort/tree/keyboard-nav/hidden-file toggle · file editing · pushState opt-in · declarative param binding.
+Security layer (token, Origin/Host validation, sandboxed bridge — see threat note SPEC §9; X-Fused preflight guard shipped, D36) · user template overrides (`~/.fused-render/templates/` checked before builtins) · per-directory templates · warm worker pool · DataFrame/Arrow returns · WebSocket/SSE push · exec console + structured logging · caching · search/sort/tree/keyboard-nav/hidden-file toggle · editing beyond code_template (text/markdown buffers, new-file/rename/delete APIs) · pushState opt-in · declarative param binding. *(Built since this list was written: M2 template set, file editing — D37.)*
 
 ## Open items (small, non-blocking)
 

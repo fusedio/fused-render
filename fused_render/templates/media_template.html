@@ -57,7 +57,7 @@
     } else {
       const name = file.split("/").pop();
       const ext = (name.split(".").pop() || "").toLowerCase();
-      const src = "/api/fs/raw?path=" + encodeURIComponent(file);
+      const src = fused.rawUrl(file);
       const tag = AUDIO_EXT.includes(ext) ? "audio" : (VIDEO_EXT.includes(ext) ? "video" : null);
       if (!tag) {
         document.getElementById("fig").innerHTML =

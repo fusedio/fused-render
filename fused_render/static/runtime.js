@@ -92,7 +92,9 @@
     const ownPath = new URLSearchParams(window.location.search).get("path");
     return fetch("/api/run", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      // X-Fused forces a CORS preflight so a foreign page can't fire this
+      // execute endpoint blind (see server.py _require_fused).
+      headers: { "Content-Type": "application/json", "X-Fused": "1" },
       body: JSON.stringify({ py: pyPath, html: ownPath, params: params || {} }),
     })
       .then((res) => res.json())
@@ -111,8 +113,64 @@
       });
   }
 
+  // Synchronous URL of the raw-bytes endpoint for a file — for <img>/<embed>
+  // src, "open raw" links, etc.
+  function rawUrl(path) {
+    return "/api/fs/raw?path=" + encodeURIComponent(path);
+  }
+
+  // Fetch file metadata (same shape as /api/fs/stat). Rejects with an Error
+  // carrying the server's message, mirroring runPython's rejection style.
+  function stat(path) {
+    return fetch("/api/fs/stat?path=" + encodeURIComponent(path))
+      .then((res) => res.json().then((data) => ({ res, data })))
+      .then(({ res, data }) => {
+        if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
+        return data;
+      });
+  }
+
+  // Read a file's text via the raw endpoint.
+  function readFile(path) {
+    return fetch(rawUrl(path)).then((res) => {
+      if (!res.ok) throw new Error("failed to read " + path + " (HTTP " + res.status + ")");
+      return res.text();
+    });
+  }
+
+  // Write UTF-8 text to a file, returning the fresh stat object. opts:
+  //   { expectedMtime } — optimistic lock; omit to write unconditionally.
+  // A 409 becomes an Error with `type: "conflict"` and the server's current
+  // `mtime` attached, so callers can offer reload/overwrite.
+  function writeFile(path, content, opts) {
+    const payload = { path: path, content: content };
+    if (opts && opts.expectedMtime !== undefined && opts.expectedMtime !== null) {
+      payload.expected_mtime = opts.expectedMtime;
+    }
+    return fetch("/api/fs/write", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Fused": "1" },
+      body: JSON.stringify(payload),
+    })
+      .then((res) => res.json().then((data) => ({ res, data })))
+      .then(({ res, data }) => {
+        if (res.status === 409) {
+          const err = new Error("file changed on disk");
+          err.type = "conflict";
+          err.mtime = data && data.mtime;
+          throw err;
+        }
+        if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
+        return data;
+      });
+  }
+
   window.fused = {
     runPython,
+    rawUrl,
+    stat,
+    readFile,
+    writeFile,
     params: { get, getAll, set, onChange },
   };
 

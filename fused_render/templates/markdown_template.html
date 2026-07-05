@@ -114,7 +114,7 @@
       for (const img of root.querySelectorAll("img")) {
         const src = img.getAttribute("src") || "";
         if (/^(\/|https?:|data:|file:)/i.test(src)) continue;
-        img.src = "/api/fs/raw?path=" + encodeURIComponent(resolvePath(dir, src));
+        img.src = fused.rawUrl(resolvePath(dir, src));
       }
     }
 
@@ -125,15 +125,15 @@
         doc.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
         return;
       }
-      const rawUrl = "/api/fs/raw?path=" + encodeURIComponent(file);
+      const rawUrl = fused.rawUrl(file);
       try {
-        const stat = await fetch("/api/fs/stat?path=" + encodeURIComponent(file)).then((r) => r.json());
+        const stat = await fused.stat(file);
         if (stat.size !== null && stat.size !== undefined && stat.size > MAX_BYTES) {
           doc.innerHTML = `<div id="status">File is too large to render inline (${stat.size.toLocaleString()} bytes).
             <a href="${rawUrl}" target="_blank" rel="noopener">Open raw</a></div>`;
           return;
         }
-        const text = await fetch(rawUrl).then((r) => r.text());
+        const text = await fused.readFile(file);
         // No sanitizer by design — local trust model (DECISIONS.md D3); the file
         // is the user's own and renders with full HTML powers, like any view.
         doc.innerHTML = marked.parse(text);

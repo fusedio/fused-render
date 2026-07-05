@@ -7,8 +7,10 @@ giving free concurrency for blocking filesystem/subprocess work.
 """
 import mimetypes
 import os
+import stat as stat_mod
+import tempfile
 
-from fastapi import Body, FastAPI
+from fastapi import Body, FastAPI, Header
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -63,6 +65,19 @@ def _error(message: str, status: int = 400) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status)
 
 
+def _require_fused(x_fused: str | None) -> JSONResponse | None:
+    # Guard for the mutating/executing POSTs. Read endpoints are already safe
+    # cross-origin because the browser blocks a foreign page from reading our
+    # response; but a POST can be fired blind (no-cors fetch) by any website,
+    # with no way to read the reply. Requiring a custom request header forces a
+    # CORS preflight, which fails cross-origin since we return no CORS headers —
+    # so only our own same-origin pages get through. Not authentication (D3
+    # stands): it only blocks blind cross-origin POSTs, nothing more.
+    if x_fused != "1":
+        return _error("missing or invalid X-Fused header", status=403)
+    return None
+
+
 def _template_for(path: str, is_dir: bool) -> str | None:
     if is_dir:
         return None
@@ -107,7 +122,13 @@ def create_app(start_dir: str) -> FastAPI:
 
     @app.get("/api/config")
     def api_config():
-        return {"start_dir": start_dir, "home": os.path.expanduser("~")}
+        return {
+            "start_dir": start_dir,
+            "home": os.path.expanduser("~"),
+            # The shell renders HTML "Source" view through this editable template
+            # (code_template maps .html → CM.html()), so it needs the abs path.
+            "source_template": os.path.join(TEMPLATES_DIR, "code_template.html"),
+        }
 
     @app.get("/api/fs/stat")
     def api_fs_stat(path: str):
@@ -158,6 +179,71 @@ def create_app(start_dir: str) -> FastAPI:
         media_type, _ = mimetypes.guess_type(path)
         return FileResponse(path, media_type=media_type or "application/octet-stream")
 
+    @app.post("/api/fs/write")
+    def api_fs_write(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+        guard = _require_fused(x_fused)
+        if guard is not None:
+            return guard
+
+        path = body.get("path")
+        content = body.get("content")
+        expected_mtime = body.get("expected_mtime")
+
+        if not path or not os.path.isabs(path):
+            return _error("'path' must be an absolute filesystem path")
+        if not isinstance(content, str):
+            return _error("'content' must be a string")
+        if os.path.isdir(path):
+            return _error(f"path is a directory: {path}")
+        parent = os.path.dirname(path)
+        if not os.path.isdir(parent):
+            return _error(f"parent directory does not exist: {parent}", status=404)
+
+        # Optimistic lock: the editor sends the mtime it last saw; if the file
+        # changed (or was deleted) underneath it, refuse so the edit doesn't
+        # clobber someone else's write. Compare against the raw st_mtime float
+        # that /api/fs/stat returns, with a tolerance for float round-tripping.
+        exists = os.path.exists(path)
+        if expected_mtime is not None:
+            if not exists:
+                return JSONResponse({"error": "conflict", "mtime": None}, status_code=409)
+            current = os.stat(path).st_mtime
+            if abs(current - expected_mtime) >= 1e-6:
+                return JSONResponse({"error": "conflict", "mtime": current}, status_code=409)
+
+        # Preserve the target's permission bits across an overwrite.
+        mode = stat_mod.S_IMODE(os.stat(path).st_mode) if exists else None
+
+        # Atomic write: land the bytes in a temp file in the same directory,
+        # fsync, then os.replace onto the target so a reader never sees a
+        # half-written file (and a crash leaves the original intact).
+        fd, tmp = tempfile.mkstemp(dir=parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(content)
+                f.flush()
+                os.fsync(f.fileno())
+            if mode is not None:
+                os.chmod(tmp, mode)
+            os.replace(tmp, path)
+        except OSError as e:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            return _error(f"cannot write {path}: {e}", status=400)
+
+        # Same shape as /api/fs/stat so the editor can re-arm its lock.
+        st = os.stat(path)
+        return {
+            "path": path,
+            "name": os.path.basename(path) or path,
+            "is_dir": False,
+            "size": st.st_size,
+            "mtime": st.st_mtime,
+            "template": _template_for(path, False),
+        }
+
     @app.get("/render")
     def render(path: str):
         if not os.path.isfile(path):
@@ -179,7 +265,11 @@ def create_app(start_dir: str) -> FastAPI:
         return HTMLResponse(html)
 
     @app.post("/api/run")
-    def api_run(body: dict = Body(...)):
+    def api_run(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+        guard = _require_fused(x_fused)
+        if guard is not None:
+            return guard
+
         py = body.get("py")
         html = body.get("html")
         params = body.get("params") or {}

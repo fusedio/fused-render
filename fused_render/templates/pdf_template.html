@@ -49,7 +49,7 @@
       mount.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
     } else {
       bar.textContent = file.split("/").pop();
-      const src = "/api/fs/raw?path=" + encodeURIComponent(file);
+      const src = fused.rawUrl(file);
       const embed = document.createElement("embed");
       embed.type = "application/pdf";
       embed.src = src;
