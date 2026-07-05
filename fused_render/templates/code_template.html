@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Code preview</title>
+<script src="/template-assets/codemirror.bundle.js"></script>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    background: #131417;
+  }
+  /* CM.oneDark theme (added to the extensions below) matches the dark shell.
+     Let the editor fill the viewport; monospace matches text_template's <pre>. */
+  .cm-editor { height: 100vh; font-size: 13px; }
+  .cm-scroller { font-family: ui-monospace, Menlo, Consolas, monospace; }
+  #status {
+    padding: 24px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    color: #9aa0a6;
+  }
+  #status.error { color: #ff6b6b; }
+  #status a { color: #5b9dff; }
+</style>
+</head>
+<body>
+  <div id="root"><div id="status">Loading…</div></div>
+  <script>
+    const MAX_BYTES = 2 * 1024 * 1024;
+
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    // Extension → CodeMirror language extension. Values are either a language
+    // function to call or a ready extension (the legacy StreamLanguage modes).
+    function languageFor(ext) {
+      switch (ext) {
+        case "py": return CM.python();
+        case "js": return CM.javascript();
+        case "ts": return CM.javascript({ typescript: true });
+        case "json": return CM.json();
+        case "yaml":
+        case "yml": return CM.yaml();
+        case "html":
+        case "htm": return CM.html();
+        case "css": return CM.css();
+        case "sh": return CM.shellLang;
+        case "toml": return CM.tomlLang;
+        default: return null; // unknown → plain text, no highlighting
+      }
+    }
+
+    async function load() {
+      const root = document.getElementById("root");
+      const file = fused.params.get("_file");
+      if (!file) {
+        root.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
+        return;
+      }
+      const rawUrl = "/api/fs/raw?path=" + encodeURIComponent(file);
+      let text;
+      try {
+        const stat = await fetch("/api/fs/stat?path=" + encodeURIComponent(file)).then((r) => r.json());
+        if (stat.size !== null && stat.size !== undefined && stat.size > MAX_BYTES) {
+          root.innerHTML = `<div id="status">File is too large to preview inline (${stat.size.toLocaleString()} bytes).
+            <a href="${rawUrl}" target="_blank" rel="noopener">Open raw</a></div>`;
+          return;
+        }
+        text = await fetch(rawUrl).then((r) => r.text());
+      } catch (err) {
+        root.innerHTML = `<div id="status" class="error">Failed to load file: ${escapeHtml(err.message)}</div>`;
+        return;
+      }
+
+      const ext = (file.split("/").pop().split(".").pop() || "").toLowerCase();
+      // basicSetup gives line numbers/gutter; the two facets make it strictly
+      // read-only (no edits, no caret editing) — a viewer, not an editor.
+      const extensions = [
+        CM.basicSetup,
+        CM.oneDark,
+        CM.EditorState.readOnly.of(true),
+        CM.EditorView.editable.of(false),
+      ];
+      const lang = languageFor(ext);
+      if (lang) extensions.push(lang);
+
+      root.innerHTML = "";
+      new CM.EditorView({ doc: text, extensions, parent: root });
+    }
+
+    load();
+  </script>
+</body>
+</html>

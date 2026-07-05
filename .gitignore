@@ -6,3 +6,4 @@ build/
 dist/
 *.egg-info/
 .DS_Store
+scripts/vendor-codemirror/node_modules/

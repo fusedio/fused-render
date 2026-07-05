@@ -26,18 +26,36 @@ TEMPLATES = {
     ".gif": "image_template.html",
     ".webp": "image_template.html",
     ".svg": "image_template.html",
+    ".md": "markdown_template.html",
+    ".csv": "csv_template.html",
+    ".tsv": "csv_template.html",
+    ".json": "json_template.html",
+    ".geojson": "json_template.html",
+    ".xlsx": "xlsx_template.html",
+    ".pdf": "pdf_template.html",
+    # audio/video — one template branches on extension
+    ".mp4": "media_template.html",
+    ".mov": "media_template.html",
+    ".m4v": "media_template.html",
+    ".webm": "media_template.html",
+    ".mp3": "media_template.html",
+    ".wav": "media_template.html",
+    ".m4a": "media_template.html",
+    ".ogg": "media_template.html",
+    ".flac": "media_template.html",
+    # source code — CodeMirror, mode chosen by extension (note: .json routes to
+    # the JSON tree template above, not here)
+    ".py": "code_template.html",
+    ".js": "code_template.html",
+    ".ts": "code_template.html",
+    ".sh": "code_template.html",
+    ".yaml": "code_template.html",
+    ".yml": "code_template.html",
+    ".toml": "code_template.html",
+    ".css": "code_template.html",
+    # plain text
     ".txt": "text_template.html",
-    ".py": "text_template.html",
-    ".js": "text_template.html",
-    ".ts": "text_template.html",
-    ".json": "text_template.html",
-    ".md": "text_template.html",
-    ".csv": "text_template.html",
     ".log": "text_template.html",
-    ".yaml": "text_template.html",
-    ".yml": "text_template.html",
-    ".toml": "text_template.html",
-    ".sh": "text_template.html",
 }
 
 
@@ -58,6 +76,16 @@ def _template_for(path: str, is_dir: bool) -> str | None:
 def create_app(start_dir: str) -> FastAPI:
     app = FastAPI(title="fused-render")
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    # Vendored JS libraries (marked, CodeMirror) that templates load by absolute
+    # URL. Templates render at /render?path=… so a relative <script src> in a
+    # template would resolve against /render, not the templates dir — hence a
+    # dedicated absolute mount. Everything here is a committed local file: the
+    # product has no network at runtime (no CDNs anywhere).
+    app.mount(
+        "/template-assets",
+        StaticFiles(directory=os.path.join(TEMPLATES_DIR, "vendor")),
+        name="template-assets",
+    )
 
     @app.middleware("http")
     async def no_cache(request, call_next):

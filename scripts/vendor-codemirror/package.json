@@ -1,0 +1,24 @@
+{
+  "name": "fused-render-codemirror-vendor",
+  "private": true,
+  "description": "Build workspace that bundles CodeMirror 6 into a single self-contained IIFE for fused-render's code_template.html. Not shipped; only the built bundle is committed. See README.md.",
+  "version": "0.0.0",
+  "scripts": {
+    "build": "./build.sh"
+  },
+  "dependencies": {
+    "@codemirror/lang-css": "^6.3.1",
+    "@codemirror/lang-html": "^6.4.9",
+    "@codemirror/lang-javascript": "^6.2.4",
+    "@codemirror/lang-json": "^6.0.2",
+    "@codemirror/lang-python": "^6.2.1",
+    "@codemirror/lang-yaml": "^6.1.2",
+    "@codemirror/language": "^6.11.3",
+    "@codemirror/legacy-modes": "^6.5.1",
+    "@codemirror/state": "^6.5.2",
+    "@codemirror/theme-one-dark": "^6.1.3",
+    "@codemirror/view": "^6.38.6",
+    "codemirror": "^6.0.2",
+    "esbuild": "^0.25.11"
+  }
+}

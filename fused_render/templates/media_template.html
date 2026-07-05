@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Media preview</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  :root { color-scheme: dark; }
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #131417;
+  }
+  video {
+    max-width: 100%;
+    max-height: 85vh;
+  }
+  audio {
+    width: min(90%, 480px);
+  }
+  figcaption {
+    margin-top: 12px;
+    font-size: 13px;
+    color: #9aa0a6;
+    word-break: break-all;
+    padding: 0 16px;
+    text-align: center;
+  }
+  #status {
+    padding: 24px;
+    color: #9aa0a6;
+  }
+  #status.error { color: #ff6b6b; }
+</style>
+</head>
+<body>
+  <figure id="fig" style="margin: 0; text-align: center; max-width: 100%;">
+    <div id="mount"></div>
+    <figcaption id="caption"></figcaption>
+  </figure>
+  <script>
+    // Which HTML element to use is decided purely by extension.
+    const VIDEO_EXT = ["mp4", "mov", "m4v", "webm"];
+    const AUDIO_EXT = ["mp3", "wav", "m4a", "ogg", "flac"];
+
+    const file = fused.params.get("_file");
+    const mount = document.getElementById("mount");
+    const caption = document.getElementById("caption");
+
+    if (!file) {
+      document.getElementById("fig").innerHTML =
+        `<div id="status" class="error">No file selected (missing _file param).</div>`;
+    } else {
+      const name = file.split("/").pop();
+      const ext = (name.split(".").pop() || "").toLowerCase();
+      const src = "/api/fs/raw?path=" + encodeURIComponent(file);
+      const tag = AUDIO_EXT.includes(ext) ? "audio" : (VIDEO_EXT.includes(ext) ? "video" : null);
+      if (!tag) {
+        document.getElementById("fig").innerHTML =
+          `<div id="status" class="error">Unsupported media type: .${ext}</div>`;
+      } else {
+        const el = document.createElement(tag);
+        el.controls = true;
+        el.src = src;
+        mount.appendChild(el);
+        caption.textContent = name;
+      }
+    }
+  </script>
+</body>
+</html>

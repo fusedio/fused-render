@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Markdown preview</title>
+<script src="/template-assets/marked.min.js"></script>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.6;
+    color: #e8eaed;
+    background: #131417;
+  }
+  #doc {
+    max-width: 46rem;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  #doc h1, #doc h2 {
+    border-bottom: 1px solid #2a2d33;
+    padding-bottom: 0.3em;
+  }
+  #doc h1, #doc h2, #doc h3, #doc h4, #doc h5, #doc h6 {
+    margin-top: 1.5em;
+    margin-bottom: 0.6em;
+    line-height: 1.25;
+    font-weight: 600;
+  }
+  #doc a { color: #5b9dff; }
+  #doc code {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 85%;
+    background: #1b1d21;
+    border: 1px solid #2a2d33;
+    border-radius: 4px;
+    padding: 0.15em 0.4em;
+  }
+  #doc pre {
+    background: #1b1d21;
+    border: 1px solid #2a2d33;
+    border-radius: 6px;
+    padding: 14px 16px;
+    overflow-x: auto;
+  }
+  #doc pre code {
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: 90%;
+  }
+  #doc blockquote {
+    margin: 1em 0;
+    padding: 0 1em;
+    color: #9aa0a6;
+    border-left: 3px solid #2a2d33;
+  }
+  #doc table {
+    border-collapse: collapse;
+    display: block;
+    overflow-x: auto;
+  }
+  #doc th, #doc td {
+    border: 1px solid #2a2d33;
+    padding: 6px 12px;
+  }
+  #doc th { background: #1b1d21; }
+  #doc img { max-width: 100%; }
+  #doc hr { border: none; border-top: 1px solid #2a2d33; }
+  #status {
+    padding: 24px;
+    color: #9aa0a6;
+  }
+  #status.error { color: #ff6b6b; }
+  #status a { color: #5b9dff; }
+</style>
+</head>
+<body>
+  <div id="doc"><div id="status">Loading…</div></div>
+  <script>
+    const MAX_BYTES = 2 * 1024 * 1024;
+
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    // Join an absolute POSIX dir with a relative path and collapse "." / ".."
+    // segments — pure string work (no fs access; paths are absolute POSIX).
+    function resolvePath(dir, rel) {
+      const parts = dir.split("/").concat(rel.split("/"));
+      const out = [];
+      for (const p of parts) {
+        if (p === "" || p === ".") continue;
+        if (p === "..") out.pop();
+        else out.push(p);
+      }
+      return "/" + out.join("/");
+    }
+
+    // Rewrite <img> tags whose markdown-authored src is relative. The page URL
+    // is /render?path=…, so a browser-relative src resolves against the server
+    // root, not the markdown file's directory — it would 404. Point relative
+    // images at the raw endpoint, resolved against the file's own dir. Uses
+    // getAttribute("src") (the authored value); .src is already absolutized.
+    function rewriteRelativeImages(root, file) {
+      const dir = file.slice(0, file.lastIndexOf("/"));
+      for (const img of root.querySelectorAll("img")) {
+        const src = img.getAttribute("src") || "";
+        if (/^(\/|https?:|data:|file:)/i.test(src)) continue;
+        img.src = "/api/fs/raw?path=" + encodeURIComponent(resolvePath(dir, src));
+      }
+    }
+
+    async function load() {
+      const doc = document.getElementById("doc");
+      const file = fused.params.get("_file");
+      if (!file) {
+        doc.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
+        return;
+      }
+      const rawUrl = "/api/fs/raw?path=" + encodeURIComponent(file);
+      try {
+        const stat = await fetch("/api/fs/stat?path=" + encodeURIComponent(file)).then((r) => r.json());
+        if (stat.size !== null && stat.size !== undefined && stat.size > MAX_BYTES) {
+          doc.innerHTML = `<div id="status">File is too large to render inline (${stat.size.toLocaleString()} bytes).
+            <a href="${rawUrl}" target="_blank" rel="noopener">Open raw</a></div>`;
+          return;
+        }
+        const text = await fetch(rawUrl).then((r) => r.text());
+        // No sanitizer by design — local trust model (DECISIONS.md D3); the file
+        // is the user's own and renders with full HTML powers, like any view.
+        doc.innerHTML = marked.parse(text);
+        rewriteRelativeImages(doc, file);
+      } catch (err) {
+        doc.innerHTML = `<div id="status" class="error">Failed to load file: ${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    load();
+  </script>
+</body>
+</html>

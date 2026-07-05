@@ -47,8 +47,10 @@ APP = [os.path.join(SCRIPT_DIR, "app_entry.py")]
 # Extensions the built-in template registry (server.py TEMPLATES) previews.
 # Kept in sync by hand — see ARCHITECTURE.md §7 for the source of truth.
 _PREVIEWABLE_EXTENSIONS = [
-    "html", "htm", "csv", "json", "md", "txt", "log", "yaml", "yml", "toml",
-    "py", "js", "ts", "sh", "png", "jpg", "jpeg", "gif", "webp", "svg",
+    "html", "htm", "csv", "tsv", "json", "geojson", "md", "txt", "log",
+    "yaml", "yml", "toml", "py", "js", "ts", "sh", "css",
+    "png", "jpg", "jpeg", "gif", "webp", "svg", "xlsx", "pdf",
+    "mp4", "mov", "m4v", "webm", "mp3", "wav", "m4a", "ogg", "flac",
 ]
 
 DOCUMENT_TYPES = [

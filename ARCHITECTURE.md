@@ -193,13 +193,22 @@ TEMPLATES = {
   ".parquet": "parquet_template.html",
   ".png": "image_template.html", ".jpg": "image_template.html", ".jpeg": "image_template.html",
   ".gif": "image_template.html", ".webp": "image_template.html", ".svg": "image_template.html",
-  ".txt": "text_template.html", ".py": "text_template.html", ".js": "text_template.html",
-  ".ts": "text_template.html", ".json": "text_template.html", ".md": "text_template.html",
-  ".csv": "text_template.html", ".log": "text_template.html", ".yaml": "text_template.html",
-  ".yml": "text_template.html", ".toml": "text_template.html", ".sh": "text_template.html",
+  ".md": "markdown_template.html",
+  ".csv": "csv_template.html", ".tsv": "csv_template.html",
+  ".json": "json_template.html", ".geojson": "json_template.html",
+  ".xlsx": "xlsx_template.html",
+  ".pdf": "pdf_template.html",
+  ".mp4": "media_template.html", ".mov": "media_template.html", ".m4v": "media_template.html",
+  ".webm": "media_template.html", ".mp3": "media_template.html", ".wav": "media_template.html",
+  ".m4a": "media_template.html", ".ogg": "media_template.html", ".flac": "media_template.html",
+  ".py": "code_template.html", ".js": "code_template.html", ".ts": "code_template.html",
+  ".sh": "code_template.html", ".yaml": "code_template.html", ".yml": "code_template.html",
+  ".toml": "code_template.html", ".css": "code_template.html",
+  ".txt": "text_template.html", ".log": "text_template.html",
 }
 ```
 - Template receives target file as read-only param `_file`. Templates are ordinary renderable HTML: same runtime, same powers. Helper `.py` files sit next to the template; relative `runPython('./parquet_reader.py', …)` just works because `html` path sent to `/api/run` is the template's real path.
+- Vendored JS libraries (marked, CodeMirror) live in `fused_render/templates/vendor/` and are served from a dedicated absolute mount `GET /template-assets/*` (a relative `<script src>` in a template would resolve against `/render`, not the templates dir). All committed local files — no CDN/network at runtime (D3). Regenerate the CodeMirror bundle via `scripts/vendor-codemirror/build.sh` (Node 22).
 
 **M1 templates:**
 
@@ -208,6 +217,16 @@ TEMPLATES = {
   - UI: table, row-count line ("rows 0–99 of 12,345"), Prev/Next buttons paging via `offset` param → `fused.params.set('offset', …)` → onChange → refetch. Loading + error states.
 - `image_template.html`: `<img src="/api/fs/raw?path=" + encodeURIComponent(fused.params.get('_file'))>`, centered, `max-width/height: 100%`, filename caption. No runPython needed.
 - `text_template.html`: `fetch('/api/fs/raw?path=…')` → text → `<pre>`. Guard: file > 2 MB → show "too large" note with raw link instead. Monospace, preserved whitespace.
+
+**M2 templates** (added alongside M1; same runtime, same `_file` contract, same dark palette):
+
+- `markdown_template.html`: `fetch` raw → render with vendored `marked` (`/template-assets/marked.min.js`). GitHub-ish readable column (~46rem, centered). No sanitizer by design — local trust model (D3). Guard: file > 2 MB → "too large" note + raw link.
+- `csv_template.html` + `csv_reader.py`: same UX as parquet (table, "rows X–Y of N", Prev/Next via `offset` param). Reader `main(file, offset=0, limit=100)` via pandas; `.tsv` → tab sep, else comma. Reads the full file once for an honest `total_rows`, returns only the page. Same JSON-safe cell stringifying as `parquet_reader.py` (NaN → null, timestamps/bytes/decimals coerced).
+- `json_template.html`: `fetch` raw → `JSON.parse` → collapsible tree in pure JS (no library). Objects/arrays fold (▾/▸), keys/primitives type-colored, arrays/objects show count, nodes deeper than depth 2 start collapsed. Parse failure → error + first 2 KB raw. Guard: file > 5 MB → "too large" note + raw link. Also serves `.geojson`.
+- `xlsx_template.html` + `xlsx_reader.py`: openpyxl `read_only=True`, first row is header. Reader `main(file, sheet="", offset=0, limit=100)` → `{sheets, sheet, columns, rows, total_rows}`. Template adds a sheet `<select>` (shown when >1 sheet) wired to a `sheet` param (resets `offset` on change); paging like csv. JSON-safe cells (datetimes → isoformat, None → null).
+- `pdf_template.html`: thin filename header + full-height `<embed type="application/pdf">` of the raw endpoint.
+- `media_template.html`: branches on extension — `<video>` for mp4/mov/m4v/webm, `<audio>` for mp3/wav/m4a/ogg/flac. `controls`, centered, filename caption, video constrained to viewport.
+- `code_template.html`: read-only CodeMirror 6 (vendored `/template-assets/codemirror.bundle.js`, global `CM`), `CM.oneDark` theme to match the shell. `basicSetup` line numbers; language chosen by extension (py/js/ts/json/yaml/html/css + StreamLanguage shell/toml; unknown → plain). Guard: file > 2 MB → "too large" note + raw link.
 
 ---
 
