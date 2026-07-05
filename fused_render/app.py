@@ -173,6 +173,24 @@ def main() -> None:
 
     rumps.rumps.NSApp.application_openFiles_ = application_openFiles_
 
+    # ---- Dock icon click on the running app ---------------------------------
+    # AppKit sends applicationShouldHandleReopen:hasVisibleWindows: when the
+    # user clicks the Dock icon (or double-clicks the app in Finder) while the
+    # app is already running. rumps's delegate doesn't implement it, so without
+    # this patch a Dock click does nothing. Open the home tab; if the server is
+    # still booting, queue it on the same pending list the bootstrap flushes.
+    # Must return a BOOL — returning None here breaks the pyobjc bridge.
+    def applicationShouldHandleReopen_hasVisibleWindows_(self, _app, _flag):
+        if state["ready"]:
+            webbrowser.open(url)
+        else:
+            state["pending"].append(url)
+        return True
+
+    rumps.rumps.NSApp.applicationShouldHandleReopen_hasVisibleWindows_ = (
+        applicationShouldHandleReopen_hasVisibleWindows_
+    )
+
     def _bootstrap_server() -> None:
         server = _start_server_thread(port)
         state["server"] = server
