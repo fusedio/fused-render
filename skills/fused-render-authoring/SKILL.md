@@ -1,6 +1,6 @@
 ---
 name: fused-render-authoring
-description: How to author HTML views and Python data files for fused-render — the local file explorer that live-renders HTML with a fused.runPython() bridge to local Python and URL-synced params. Use this whenever the user asks to create, edit, or debug an .html view, a .py data file, or a preview template for fused-render; mentions fused.runPython, fused.params, renderable HTML, preview templates, or _file; or asks for "a view for <some file/data>" inside a fused-render project. Also use it when a fused-render view renders blank, shows a red traceback overlay, or params don't sync to the URL.
+description: How to author HTML views and Python data files for fused-render — the local file explorer that live-renders HTML with a fused.runPython() bridge to local Python, URL-synced params, and file IO helpers (fused.readFile/writeFile/stat/rawUrl). Use this whenever the user asks to create, edit, or debug an .html view, a .py data file, or a preview template for fused-render; mentions fused.runPython, fused.params, fused.readFile, fused.writeFile, renderable HTML, preview templates, or _file; or asks for "a view for <some file/data>" or an editor for a file format inside a fused-render project. Also use it when a fused-render view renders blank, shows a red traceback overlay, or params don't sync to the URL.
 ---
 
 # Authoring fused-render views
@@ -16,11 +16,13 @@ fused-render is a local file explorer that renders `.html` files live in the bro
    ├─ fused.runPython("./data.py", {limit: "50"})   ← executes main() of the .py
    │        └─ returns a Promise of main()'s JSON return value
    │
-   └─ fused.params            ← string key/values mirrored into the browser URL
-            └─ ?limit=50      ← refresh/bookmark restores exact view state
+   ├─ fused.params            ← string key/values mirrored into the browser URL
+   │        └─ ?limit=50      ← refresh/bookmark restores exact view state
+   │
+   └─ fused.readFile / writeFile / stat / rawUrl   ← direct file IO, no Python needed
 ```
 
-Two primitives — `runPython` and `params` — are the entire API. Everything else is ordinary HTML/CSS/JS (no framework, no build step, ES2020 fine).
+Three primitives — `runPython`, `params`, and the file IO helpers — are the entire API. Everything else is ordinary HTML/CSS/JS (no framework, no build step, ES2020 fine).
 
 ## The Python side: `main()` contract
 
@@ -62,11 +64,33 @@ The runtime is injected automatically when the explorer renders the page. Never 
 | `fused.params.set(k, v)` | Writes to the URL (replaceState — no history spam). **Throws unless `v` is a string** — do `String(n)` yourself. Then fires `onChange`. |
 | `fused.params.onChange(cb)` | `cb(allParams)` after every applied `set`. Returns an unsubscribe function. |
 | `fused.params.get("_file")` | Read-only: the target file a **preview template** was opened for. Keys starting `_` are reserved — `set()` on them throws. |
+| `await fused.readFile(path)` | File contents as **text** (UTF-8). Rejects with an `Error` on failure. Use when a view just needs the bytes as a string — no reader `.py` required. |
+| `await fused.stat(path)` | Metadata object `{path, name, is_dir, size, mtime, template}`. Use for size guards before reading big files, and to capture `mtime` before editing. |
+| `await fused.writeFile(path, content, opts?)` | Writes UTF-8 text **atomically** (never a half-written file). `opts.expectedMtime` arms an optimistic lock: if the file changed on disk since that mtime, rejects with an error whose `.type === "conflict"` (and `.mtime` = current on-disk value) instead of clobbering. Omit it to write unconditionally — also how you create a new file. Resolves with a fresh stat object; keep its `.mtime` to re-arm the lock for the next save. |
+| `fused.rawUrl(path)` | **Sync**, returns a URL string serving the file's raw bytes. This is for embedding — `<img src>`, `<video src>`, `<embed>`, download links — where you need a URL, not text. |
 
 Notes:
 - Params are **strings only, always**. Parse numbers yourself (`parseInt(fused.params.get("limit") || "50", 10)`), JSON-encode structure yourself if you need it.
 - Uncaught `runPython` rejections auto-show a red traceback overlay — good default for debugging; catch the rejection yourself when you want custom error UI.
 - Concurrent `runPython` calls are fine; responses can arrive out of order — guard with a request counter if a stale response could overwrite a fresh one.
+- **Reach the filesystem only through these helpers**, never by fetching the server's `/api/fs/*` endpoints yourself — the helpers are the stable contract and carry required headers (writes are rejected without them).
+- `readFile`/`rawUrl` split: text you'll process → `readFile`; anything the browser should load itself (images, media, PDFs, download links) → `rawUrl`.
+
+The editing pattern (used by the built-in code editor template):
+
+```js
+const st = await fused.stat(file);       // 1. arm the lock
+let mtime = st.mtime;
+const text = await fused.readFile(file); // 2. load
+// … user edits `doc` …
+try {
+  const fresh = await fused.writeFile(file, doc, { expectedMtime: mtime });
+  mtime = fresh.mtime;                   // 3. re-arm for the next save
+} catch (err) {
+  if (err.type === "conflict") { /* offer reload vs overwrite (writeFile without expectedMtime) */ }
+  else throw err;
+}
+```
 
 ## The canonical wiring pattern
 
@@ -120,6 +144,8 @@ if (!file) { /* show "no file selected" state */ }
 const page = await fused.runPython("./my_reader.py", { file, offset: fused.params.get("offset") || "0" });
 ```
 
+A reader `.py` is only needed when Python adds value (parsing parquet/xlsx, paging, aggregation). Text formats can skip it entirely — `fused.stat` for a size guard, then `fused.readFile(file)` and render in JS (the markdown/JSON/code templates work this way); media formats just point a tag at `fused.rawUrl(file)`.
+
 Ship the reader `.py` next to the template html and call it with a relative path. Paging/sort/filter state goes in normal params (`offset`, `sort` …) exactly like any view. Built-in templates live in `fused_render/templates/` and follow this pattern (see `parquet_template.html` + `parquet_reader.py` for a worked example); registering a new extension means adding it to the `TEMPLATES` dict in `fused_render/server.py`.
 
 ## Testing an authored view
@@ -141,3 +167,6 @@ Sanity loop: page renders → interact with a control → URL query updates → 
 - Expecting module state to persist between `runPython` calls → each call is a fresh process.
 - Adding `<script src=".../runtime.js">` manually → double-injection; the explorer injects it.
 - Heavy import + slider wired without debounce → one full subprocess per tick; debounce inputs ~150 ms when `main` is slow.
+- Fetching `/api/fs/raw` (or POSTing `/api/fs/write`) directly instead of using the helpers → writes get rejected (missing required header) and you're coupled to internals.
+- `writeFile` without `expectedMtime` on an *existing* file → silently clobbers whatever is on disk now. Fine for new files; for edits, arm the lock and handle `.type === "conflict"`.
+- Using `readFile` for an image/video and stuffing bytes into the DOM → use `fused.rawUrl(path)` as the element's `src` instead.
