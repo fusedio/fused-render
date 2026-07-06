@@ -5,10 +5,10 @@ import { setRouteHandler, fsPathFromLocation, urlForFsPath, IS_EMBED } from "./r
 import { getConfig, statPath } from "./api.js";
 import { escapeHtml } from "./format.js";
 import { initSidebar, renderSidebar } from "./sidebar.js";
-import { renderBreadcrumb, renderLayoutBreadcrumb, renderTabsBreadcrumb, syncUpdateButton } from "./breadcrumb.js";
+import { renderBreadcrumb, renderPanelBreadcrumb, renderTabsBreadcrumb, syncUpdateButton } from "./breadcrumb.js";
 import { renderListing, stopListingWatch } from "./views/listing.js";
 import { renderPreview, initPreview } from "./views/preview.js";
-import { renderLayout, stopLayout } from "./views/panel.js";
+import { renderPanel, stopPanel } from "./views/panel.js";
 import { renderTabs, stopTabs } from "./views/tabs.js";
 
 const contentEl = document.getElementById("content");
@@ -17,19 +17,19 @@ let config = null;
 
 async function route() {
   stopListingWatch(); // close any listing watch when navigating away (LS-3)
-  stopLayout(); // detach layout pane listeners when navigating away (LM-6)
+  stopPanel(); // detach panel pane listeners when navigating away (LM-6)
   stopTabs(); // detach tab listeners when navigating away (TM-7)
   if (location.pathname === "/") {
     history.replaceState(null, "", urlForFsPath(config.start_dir));
   }
 
-  // Layout mode: `_panel` is a sentinel pathname, not a real file (LM-1) —
-  // intercept it before stat, under both prefixes so a layout can itself be
-  // embedded (or nested as a pane). Zero server changes: the server already
+  // Panel mode: `_panel` is a sentinel pathname, not a real file (LM-1) —
+  // intercept it before stat, under both prefixes so a panel layout can itself
+  // be embedded (or nested as a pane). Zero server changes: the server already
   // serves the shell for any /view/* and /embed/*.
   if (location.pathname === "/view/_panel" || location.pathname === "/embed/_panel") {
-    renderLayoutBreadcrumb();
-    renderLayout(config);
+    renderPanelBreadcrumb();
+    renderPanel(config);
     if (!IS_EMBED) renderSidebar();
     return;
   }

@@ -1,26 +1,21 @@
-// Layout mode (M5, SPEC §14 / DECISIONS D45): a split-pane grid of /embed
+// Panel mode (M5, SPEC §14 / DECISIONS D45): a split-pane grid of /embed
 // iframes whose whole arrangement + per-pane locations live in the reserved
-// `_layout` URL param, so a layout is bookmarkable/refreshable like any view.
-// Imports router.js only (one-way deps, ARCHITECTURE §6); format.js for
-// escapeHtml is a pure helper. The `_layout` codec + embed helpers are shared
-// with tabs.js via layout-codec.js (TM-10).
+// `_layout` URL param, so a panel layout is bookmarkable/refreshable like any
+// view. Imports router.js and the shared layout-codec.js only (one-way deps,
+// ARCHITECTURE §6).
 import { navigateUrl, urlForFsPath, IS_EMBED } from "../router.js";
-import { escapeHtml } from "../format.js";
 import {
   leaf,
-  encodePaneSegment,
   encodeNode,
   parseLayout,
   buildSentinelUrl,
   embedSrc,
   readEmbedLoc,
+  attachEmbedUrlChange,
+  detachEmbedUrlChange,
 } from "./layout-codec.js";
 
-// Re-export so breadcrumb.js (Split button) keeps importing the codec through
-// panel.js — the historical import path — without knowing about layout-codec.js.
-export { encodePaneSegment };
-
-// Layout mode lives under the page's own prefix (`/view/_panel` or
+// Panel mode lives under the page's own prefix (`/view/_panel` or
 // `/embed/_panel`), so entering/refreshing/exiting stays in the active mode.
 const PANEL_PATH = (IS_EMBED ? "/embed/" : "/view/") + "_panel";
 
@@ -28,7 +23,7 @@ const contentEl = document.getElementById("content");
 
 // Build <prefix>/_panel?... : the encoded tree plus the merged (top-level)
 // param pool. Exported for breadcrumb.js's Split button.
-export function layoutUrl(codecStr, merged) {
+export function panelUrl(codecStr, merged) {
   return buildSentinelUrl(PANEL_PATH, codecStr, merged);
 }
 
@@ -36,10 +31,10 @@ export function layoutUrl(codecStr, merged) {
 // replaceState only when the value actually changed (LM-6 guard). This fires
 // the shell's own fused:urlchange (main.js wraps replaceState), so the
 // bookmark buttons react.
-function syncLayoutUrl() {
+function syncPanelUrl() {
   const current = new URLSearchParams(location.search);
   const codecStr = encodeNode(tree);
-  const next = layoutUrl(codecStr, current);
+  const next = panelUrl(codecStr, current);
   if (location.pathname + location.search !== next) {
     history.replaceState(history.state, "", next);
   }
@@ -94,7 +89,7 @@ function closeLeaf(id) {
   if (!l) return;
   const parent = findParent(tree, l);
   if (!parent) {
-    // Closing the last pane exits layout mode to a plain view of its location
+    // Closing the last pane exits panel mode to a plain view of its location
     // (stays in the active prefix: view or embed).
     const loc = readPaneLocById(id) || { path: l.path, query: l.query };
     navigateUrl(urlForFsPath(loc.path, loc.query));
@@ -112,13 +107,13 @@ function closeLeaf(id) {
 }
 
 function readPaneLocById(id) {
-  const pane = contentEl.querySelector(`.layout-pane[data-id="${id}"]`);
+  const pane = contentEl.querySelector(`.panel-pane[data-id="${id}"]`);
   return pane ? readPaneLoc(pane) : null;
 }
 
 // --- Rendering -------------------------------------------------------------
 let tree = null;
-let layoutRootEl = null;
+let panelRootEl = null;
 
 const ICONS = {
   splitRight: `<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor"/><path d="M8 2.5h5a1.5 1.5 0 0 1 1.5 1.5v8a1.5 1.5 0 0 1-1.5 1.5H8z" fill="currentColor"/></svg>`,
@@ -130,105 +125,92 @@ const ICONS = {
 
 function render() {
   contentEl.innerHTML = "";
-  layoutRootEl = document.createElement("div");
-  layoutRootEl.className = "layout-root";
-  layoutRootEl.appendChild(build(tree));
-  contentEl.appendChild(layoutRootEl);
-  syncLayoutUrl();
+  panelRootEl = document.createElement("div");
+  panelRootEl.className = "panel-root";
+  panelRootEl.appendChild(build(tree));
+  contentEl.appendChild(panelRootEl);
+  syncPanelUrl();
 }
 
 function build(node) {
   if (node.type === "split") {
     const el = document.createElement("div");
-    el.className = "layout-split " + node.dir;
+    el.className = "panel-split " + node.dir;
     node.children.forEach((c) => el.appendChild(build(c)));
     return el;
   }
   return buildPane(node);
 }
 
+// Bar button: class + SVG icon + title. Icon strings are trusted constants, so
+// innerHTML stays confined to them.
+function barBtn(cls, icon, title) {
+  const btn = document.createElement("button");
+  btn.className = "panel-btn " + cls;
+  btn.title = title;
+  btn.innerHTML = icon;
+  return btn;
+}
+
 function buildPane(node) {
   const pane = document.createElement("div");
-  pane.className = "layout-pane";
+  pane.className = "panel-pane";
   pane.dataset.id = node.id;
-  pane.innerHTML = `
-    <div class="layout-bar">
-      <div class="layout-crumbs"></div>
-      <button class="layout-btn split-right" title="Split right">${ICONS.splitRight}</button>
-      <button class="layout-btn split-down" title="Split down">${ICONS.splitDown}</button>
-      <button class="layout-btn maximize" title="Maximize">${ICONS.max}</button>
-      <button class="layout-btn close" title="Close pane">${ICONS.close}</button>
-    </div>
-    <iframe src="${escapeHtml(embedSrc(node.path, node.query))}"></iframe>`;
 
-  const iframe = pane.querySelector("iframe");
+  const bar = document.createElement("div");
+  bar.className = "panel-bar";
+  const crumbs = document.createElement("div");
+  crumbs.className = "panel-crumbs";
+  const splitRight = barBtn("split-right", ICONS.splitRight, "Split right");
+  const splitDown = barBtn("split-down", ICONS.splitDown, "Split down");
+  const maximize = barBtn("maximize", ICONS.max, "Maximize");
+  const close = barBtn("close", ICONS.close, "Close pane");
+  bar.append(crumbs, splitRight, splitDown, maximize, close);
+
+  const iframe = document.createElement("iframe");
+  iframe.src = embedSrc(node.path, node.query);
+  pane.append(bar, iframe);
 
   // On each load: sync this leaf from the pane's live location, re-encode the
   // `_layout` URL, redraw crumbs, and (re)attach the fused:urlchange listener
   // to the pane window — the embed shell dispatches it on client-side (SPA)
   // navigation that fires no iframe `load` (LM-6/LM-8).
-  const onLoad = () => {
+  const onUrlChange = () => {
     const loc = readPaneLoc(pane);
     if (loc) {
       node.path = loc.path;
       node.query = loc.query;
-      syncLayoutUrl();
+      syncPanelUrl();
     }
     renderCrumbs(pane, node);
-    attachUrlChange(pane, node);
   };
-  iframe.addEventListener("load", onLoad);
+  iframe.addEventListener("load", () => {
+    onUrlChange();
+    // null when this document is already hooked — keep the existing hook.
+    const hook = attachEmbedUrlChange(iframe, onUrlChange);
+    if (hook) pane._hook = hook;
+  });
   renderCrumbs(pane, node);
 
-  pane.querySelector(".split-right").onclick = () => splitLeaf(node.id, "row");
-  pane.querySelector(".split-down").onclick = () => splitLeaf(node.id, "col");
-  pane.querySelector(".close").onclick = () => closeLeaf(node.id);
-  pane.querySelector(".maximize").onclick = () => {
+  splitRight.onclick = () => splitLeaf(node.id, "row");
+  splitDown.onclick = () => splitLeaf(node.id, "col");
+  close.onclick = () => closeLeaf(node.id);
+  maximize.onclick = () => {
     const on = pane.classList.toggle("maximized");
-    const btn = pane.querySelector(".maximize");
-    btn.innerHTML = on ? ICONS.restore : ICONS.max;
-    btn.title = on ? "Restore" : "Maximize";
+    maximize.innerHTML = on ? ICONS.restore : ICONS.max;
+    maximize.title = on ? "Restore" : "Maximize";
   };
   return pane;
 }
 
-// Attach a fused:urlchange listener to the pane's current contentWindow.
-// contentWindow is a WindowProxy whose identity never changes, but the
-// underlying Window (and any listeners on it) is replaced on every full
-// navigation — so the attached-marker must live as an expando on the window
-// itself: it dies with the document, making re-attachment exactly track the
-// listener's actual lifetime.
-function attachUrlChange(pane, node) {
-  let win;
-  try {
-    win = pane.querySelector("iframe").contentWindow;
-    if (win._fusedLayoutHooked) return; // this document already has the listener
-    win._fusedLayoutHooked = true;
-  } catch (e) {
-    return;
-  }
-  const handler = () => {
-    const loc = readPaneLoc(pane);
-    if (loc) {
-      node.path = loc.path;
-      node.query = loc.query;
-      syncLayoutUrl();
-    }
-    renderCrumbs(pane, node);
-  };
-  win.addEventListener("fused:urlchange", handler);
-  pane._urlchangeWin = win;
-  pane._urlchangeHandler = handler;
-}
-
 function renderCrumbs(pane, node) {
-  const el = pane.querySelector(".layout-crumbs");
+  const el = pane.querySelector(".panel-crumbs");
   el.innerHTML = "";
   const iframe = pane.querySelector("iframe");
   const parts = node.path.split("/").filter((s) => s.length > 0);
   const addCrumb = (label, targetPath, isLast) => {
     const c = document.createElement("span");
-    c.className = "layout-crumb" + (isLast ? " last" : "");
+    c.className = "panel-crumb" + (isLast ? " last" : "");
     c.textContent = label;
     // Clicking a crumb navigates the pane's iframe to that prefix (drops the
     // pane-local query — a fresh location).
@@ -243,7 +225,7 @@ function renderCrumbs(pane, node) {
     acc += "/" + p;
     if (i > 0) {
       const sep = document.createElement("span");
-      sep.className = "layout-crumb-sep";
+      sep.className = "panel-crumb-sep";
       sep.textContent = "/";
       el.appendChild(sep);
     }
@@ -255,7 +237,7 @@ function renderCrumbs(pane, node) {
 // --- Public API ------------------------------------------------------------
 // Build the pane tree from `_layout` on the shell URL and render it. Missing/
 // empty/unparseable `_layout` falls back to a single pane of the start dir.
-export function renderLayout(config) {
+export function renderPanel(config) {
   const raw = new URLSearchParams(location.search).get("_layout");
   if (raw && raw.trim()) {
     try {
@@ -270,20 +252,13 @@ export function renderLayout(config) {
 }
 
 // Tear down (parallels stopListingWatch): detach pane fused:urlchange
-// listeners so nothing fires after we navigate away from layout mode.
-export function stopLayout() {
-  if (!layoutRootEl) return;
-  layoutRootEl.querySelectorAll(".layout-pane").forEach((pane) => {
-    if (pane._urlchangeWin && pane._urlchangeHandler) {
-      try {
-        pane._urlchangeWin.removeEventListener("fused:urlchange", pane._urlchangeHandler);
-      } catch (e) {
-        /* window gone */
-      }
-    }
-    pane._urlchangeWin = null;
-    pane._urlchangeHandler = null;
+// listeners so nothing fires after we navigate away from panel mode.
+export function stopPanel() {
+  if (!panelRootEl) return;
+  panelRootEl.querySelectorAll(".panel-pane").forEach((pane) => {
+    detachEmbedUrlChange(pane._hook);
+    pane._hook = null;
   });
-  layoutRootEl = null;
+  panelRootEl = null;
   tree = null;
 }

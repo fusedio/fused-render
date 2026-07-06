@@ -3,11 +3,13 @@
 // set of /embed locations into the reserved `_layout` query param and parse it
 // back; breadcrumb.js reuses the segment encoder for its Split button. Keeping
 // one codec here means one escaping story and hand-convertible panel<->tab URLs.
-// Pure helpers only — imports nothing (respects the one-way dep rule).
-
+// Imports router.js only (for the shared embed prefix); everything here is a
+// helper both modes share — codec, embed-frame URL access, and the
+// fused:urlchange hook — with no view or chrome dependencies.
+//
 // Panes/tabs are /embed/<path> iframes (D39): a full chrome-free shell, so each
 // can browse dirs, open previews and use templates for free.
-export const EMBED_PREFIX = "/embed/";
+import { EMBED_PREFIX } from "../router.js";
 
 // --- Tree codec (`_layout` param) -----------------------------------------
 // `,` = row (side by side), `;` = column (stacked), `(…)` groups for nesting.
@@ -161,6 +163,39 @@ export function embedSrc(path, query) {
     .map(encodeURIComponent)
     .join("/");
   return EMBED_PREFIX + encoded + (query || "");
+}
+
+// Attach a fused:urlchange listener to an embed iframe's current document.
+// contentWindow is a WindowProxy whose identity never changes, but the
+// underlying Window (and any listeners on it) is replaced on every full
+// navigation — so the attached-marker must live as an expando on the window
+// itself: it dies with the document, making re-attachment (callers re-run this
+// from the iframe `load` handler) exactly track the listener's actual lifetime.
+// Returns a hook {win, handler} for detachEmbedUrlChange, or null when this
+// document is already hooked (keep the caller's existing hook) or unreachable.
+// One expando serves both modes: a panel and a tab shell never hook the same
+// window — each hooks only its direct child iframes.
+export function attachEmbedUrlChange(iframe, handler) {
+  let win;
+  try {
+    win = iframe.contentWindow;
+    if (win._fusedUrlHooked) return null;
+    win._fusedUrlHooked = true;
+  } catch (e) {
+    return null;
+  }
+  win.addEventListener("fused:urlchange", handler);
+  return { win, handler };
+}
+
+// Null-safe detach of a hook returned by attachEmbedUrlChange.
+export function detachEmbedUrlChange(hook) {
+  if (!hook) return;
+  try {
+    hook.win.removeEventListener("fused:urlchange", hook.handler);
+  } catch (e) {
+    /* window gone */
+  }
 }
 
 // Read a mounted iframe's live location (D39): fs path + query, so duplicates/

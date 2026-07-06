@@ -3,17 +3,18 @@ import { navigate, navigateUrl, currentUrl, IS_EMBED } from "./router.js";
 import { escapeHtml, basename } from "./format.js";
 import { addBookmark, allBookmarks, updateBookmarkUrl, armBookmark, disarmBookmark, getArmedBookmark } from "./bookmarks.js";
 import { renderSidebar, syncStarButton } from "./sidebar.js";
-import { encodePaneSegment, layoutUrl } from "./views/panel.js";
+import { encodePaneSegment } from "./views/layout-codec.js";
+import { panelUrl } from "./views/panel.js";
 
 const breadcrumbEl = document.getElementById("breadcrumb");
 
 // Shared bookmark/update button block (present on every view). `includeSplit`
-// adds the layout-mode entry point; layout mode itself hides it.
+// adds the panel-mode entry point; the layout modes themselves hide it.
 function actionsHtml(includeSplit) {
   return `
     <div class="crumb-actions">
       <button id="update-bookmark-btn" class="star-btn starred" title="Update bookmark to current params" style="display:none">Update bookmark</button>
-      ${includeSplit ? `<button id="split-btn" class="star-btn" title="Open this view in layout mode">Split</button>` : ""}
+      ${includeSplit ? `<button id="split-btn" class="star-btn" title="Open this view in panel mode">Split</button>` : ""}
       <button id="bookmark-btn" class="star-btn" title="Bookmark this view">+ Bookmark</button>
     </div>`;
 }
@@ -60,7 +61,7 @@ export function renderBreadcrumb(fsPath) {
       navigate(a.getAttribute("data-path"));
     });
   });
-  document.getElementById("split-btn").addEventListener("click", () => enterLayout(fsPath));
+  document.getElementById("split-btn").addEventListener("click", () => enterPanel(fsPath));
   wireActions(basename(fsPath));
 }
 
@@ -75,8 +76,8 @@ function renderStaticBreadcrumb(label) {
   wireActions(label);
 }
 
-export function renderLayoutBreadcrumb() {
-  renderStaticBreadcrumb("Layout");
+export function renderPanelBreadcrumb() {
+  renderStaticBreadcrumb("Panel");
 }
 
 export function renderTabsBreadcrumb() {
@@ -87,7 +88,7 @@ export function renderTabsBreadcrumb() {
 // params and the listing sort/order stay pane-local (carried inside the
 // `_layout` segment); every other param joins the merged top-level pool shared
 // by all panes (LM-3).
-function enterLayout(fsPath) {
+function enterPanel(fsPath) {
   const params = new URLSearchParams(location.search);
   const paneLocal = new URLSearchParams();
   const merged = [];
@@ -97,7 +98,7 @@ function enterLayout(fsPath) {
   }
   const paneQ = paneLocal.toString();
   const seg = encodePaneSegment(fsPath, paneQ ? "?" + paneQ : "");
-  navigateUrl(layoutUrl(seg, merged));
+  navigateUrl(panelUrl(seg, merged));
 }
 
 // Shows the "Update bookmark" button when the armed bookmark's saved params

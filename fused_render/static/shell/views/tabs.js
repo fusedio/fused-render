@@ -20,6 +20,8 @@ import {
   buildSentinelUrl,
   embedSrc,
   readEmbedLoc,
+  attachEmbedUrlChange,
+  detachEmbedUrlChange,
 } from "./layout-codec.js";
 
 // Tab mode lives under the page's own prefix, like layout mode.
@@ -86,47 +88,6 @@ function updateLabel(t) {
   if (el) el.textContent = tabLabel(t);
 }
 
-// --- fused:urlchange plumbing (copied from panel.js attachUrlChange) --------
-// contentWindow is a WindowProxy whose identity never changes, but the
-// underlying Window (and any listeners on it) is replaced on every full
-// navigation — so the attached-marker must live as an expando on the window
-// itself: it dies with the document, making re-attachment exactly track the
-// listener's lifetime. Re-attached from the iframe `load` handler.
-function attachUrlChange(t) {
-  let win;
-  try {
-    win = t._iframe.contentWindow;
-    if (win._fusedTabsHooked) return; // this document already has the listener
-    win._fusedTabsHooked = true;
-  } catch (e) {
-    return;
-  }
-  const handler = () => {
-    const loc = readEmbedLoc(t._iframe);
-    if (loc) {
-      t.path = loc.path;
-      t.query = loc.query;
-      syncTabsUrl();
-    }
-    updateLabel(t);
-  };
-  win.addEventListener("fused:urlchange", handler);
-  t._urlchangeWin = win;
-  t._urlchangeHandler = handler;
-}
-
-function detachUrlChange(t) {
-  if (t._urlchangeWin && t._urlchangeHandler) {
-    try {
-      t._urlchangeWin.removeEventListener("fused:urlchange", t._urlchangeHandler);
-    } catch (e) {
-      /* window gone */
-    }
-  }
-  t._urlchangeWin = null;
-  t._urlchangeHandler = null;
-}
-
 // --- Rendering -------------------------------------------------------------
 // The body container is built once and its iframes are never re-parented (that
 // would reload them). Only the bar is rebuilt on structural changes; iframes
@@ -184,7 +145,7 @@ function mountTab(t) {
   // On each load: sync this tab from its live location, re-encode `_layout`,
   // refresh the label, and (re)attach the fused:urlchange listener — the embed
   // shell dispatches it on client-side navigation that fires no `load` (TM-7).
-  iframe.addEventListener("load", () => {
+  const onUrlChange = () => {
     const loc = readEmbedLoc(iframe);
     if (loc) {
       t.path = loc.path;
@@ -192,7 +153,12 @@ function mountTab(t) {
       syncTabsUrl();
     }
     updateLabel(t);
-    attachUrlChange(t);
+  };
+  iframe.addEventListener("load", () => {
+    onUrlChange();
+    // null when this document is already hooked — keep the existing hook.
+    const hook = attachEmbedUrlChange(iframe, onUrlChange);
+    if (hook) t._hook = hook;
   });
   t._iframe = iframe;
   bodyEl.appendChild(iframe);
@@ -227,7 +193,8 @@ function closeTab(id) {
     navigateUrl(urlForFsPath(loc.path, loc.query));
     return;
   }
-  detachUrlChange(t);
+  detachEmbedUrlChange(t._hook);
+  t._hook = null;
   if (t._iframe) t._iframe.remove();
   tabs.splice(idx, 1);
   if (activeId === id) {
@@ -250,7 +217,7 @@ export function renderTabs(cfg) {
   render();
 }
 
-// Tear down (parallels stopLayout): detach tab fused:urlchange listeners so
+// Tear down (parallels stopPanel): detach tab fused:urlchange listeners so
 // nothing fires after we navigate away. main.js calls this at route() top.
 export function stopTabs() {
   // Clear the boundary even if never fully rendered: this shell window survives
@@ -258,7 +225,10 @@ export function stopTabs() {
   // rendered pages target themselves instead of the top window (TM-3).
   delete window._fusedParamBoundary;
   if (!tabsRootEl) return;
-  tabs.forEach(detachUrlChange);
+  tabs.forEach((t) => {
+    detachEmbedUrlChange(t._hook);
+    t._hook = null;
+  });
   tabsRootEl = null;
   barEl = null;
   bodyEl = null;
