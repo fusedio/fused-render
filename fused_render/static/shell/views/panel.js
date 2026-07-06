@@ -9,6 +9,7 @@ import {
   encodeNode,
   parseLayout,
   buildSentinelUrl,
+  splitShellSearch,
   embedSrc,
   readEmbedLoc,
   attachEmbedUrlChange,
@@ -32,9 +33,9 @@ export function panelUrl(codecStr, merged) {
 // the shell's own fused:urlchange (main.js wraps replaceState), so the
 // bookmark buttons react.
 function syncPanelUrl() {
-  const current = new URLSearchParams(location.search);
+  const { params } = splitShellSearch(location.search);
   const codecStr = encodeNode(tree);
-  const next = panelUrl(codecStr, current);
+  const next = panelUrl(codecStr, params);
   if (location.pathname + location.search !== next) {
     history.replaceState(history.state, "", next);
   }
@@ -238,7 +239,7 @@ function renderCrumbs(pane, node) {
 // Build the pane tree from `_layout` on the shell URL and render it. Missing/
 // empty/unparseable `_layout` falls back to a single pane of the start dir.
 export function renderPanel(config) {
-  const raw = new URLSearchParams(location.search).get("_layout");
+  const raw = splitShellSearch(location.search).layout;
   if (raw && raw.trim()) {
     try {
       tree = parseLayout(raw);

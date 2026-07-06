@@ -3,7 +3,7 @@ import { navigate, navigateUrl, currentUrl, IS_EMBED } from "./router.js";
 import { escapeHtml, basename } from "./format.js";
 import { addBookmark, allBookmarks, updateBookmarkUrl, armBookmark, disarmBookmark, getArmedBookmark } from "./bookmarks.js";
 import { renderSidebar, syncStarButton } from "./sidebar.js";
-import { encodePaneSegment } from "./views/layout-codec.js";
+import { encodePaneSegment, splitShellSearch } from "./views/layout-codec.js";
 import { panelUrl } from "./views/panel.js";
 
 const breadcrumbEl = document.getElementById("breadcrumb");
@@ -140,16 +140,20 @@ export function syncUpdateButton() {
     return hide();
   }
 
-  // Compare param SETS, not raw strings: the layout view and the runtime
-  // encode the same search differently (readable `_layout` vs
-  // URLSearchParams.toString()'s full percent-encoding), so a textual compare
-  // would flag divergence when nothing changed.
+  // Compare param SETS, not raw strings: different writers may order/encode
+  // the same params differently, so a textual compare would flag divergence
+  // when nothing changed.
   btn.style.display = sameSearch(location.search, armedSearch) ? "none" : "";
 }
 
-// True when two query strings carry the same key/value multiset, ignoring
-// encoding and ordering differences (URLSearchParams decodes both sides).
+// True when two query strings carry the same decoded `_layout` and the same
+// key/value multiset of remaining params, ignoring encoding and ordering
+// differences. `_layout` may contain literal `&` (D51), so both sides go
+// through the codec's splitShellSearch, never raw URLSearchParams.
 function sameSearch(a, b) {
-  const norm = (s) => JSON.stringify([...new URLSearchParams(s)].sort());
+  const norm = (s) => {
+    const { layout, params } = splitShellSearch(s);
+    return JSON.stringify([layout, [...params].sort()]);
+  };
   return norm(a) === norm(b);
 }

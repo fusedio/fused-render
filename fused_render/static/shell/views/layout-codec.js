@@ -128,30 +128,77 @@ export function flattenToLeaves(node) {
 }
 
 // --- `_layout` <-> shell URL ----------------------------------------------
-// The codec string keeps `, ; ( ) /` literal for a readable address bar
-// (SPEC §14 example). Only the chars that would break parsing of a query-param
-// value are escaped here; URLSearchParams.get('_layout') reverses this exactly.
+// Grammar (D51): the entire `_layout` value is parenthesized and emitted LAST —
+// `?global=1&_layout=(/a.html?x=1&y=2,/b.html)`. The parens delimit scope
+// visually (inside = iframe-local, outside = global) and structurally: `&` is
+// LITERAL inside them, so plain URLSearchParams cannot parse a layout URL —
+// every read of a shell query goes through splitShellSearch() below. The wrap
+// is codec-transparent (parseLayout treats `(A,B)` as `A,B`). Strict read: an
+// unwrapped `_layout` value is not this grammar and is treated as absent (no
+// lenient fallback; the key is dropped on the next sync).
+//
+// The codec string keeps `, ; ( ) / ? & =` literal for a readable address bar
+// (SPEC §14 example). Only `%` (escape ambiguity), `#` (fragment) and space
+// (invalid raw / browser re-encoding churn) are escaped when placing it inside
+// the parens; one decodeURIComponent pass in splitShellSearch reverses this —
+// literal parens inside segments are codec-escaped (`%28` → `%2528` here), so
+// the only literal parens in the span are structural and balanced.
 function urlSafeLayout(s) {
-  return s
-    .replace(/%/g, "%25")
-    .replace(/&/g, "%26")
-    .replace(/#/g, "%23")
-    .replace(/\+/g, "%2B")
-    .replace(/ /g, "%20");
+  return s.replace(/%/g, "%25").replace(/#/g, "%23").replace(/ /g, "%20");
 }
 
-// Build <sentinel>?_layout=... : the encoded tree/list plus the merged
-// (top-level) param pool. `merged` is an iterable of [k, v] entries; `_layout`
-// is dropped from it so callers can pass the full current query.
+// Build <sentinel>?...&_layout=(...) : the merged (top-level) param pool first,
+// the parenthesized layout always last. `merged` is an iterable of [k, v]
+// entries; `_layout` is dropped from it so callers can pass the full current
+// query (also discards any old-grammar unwrapped value, see splitShellSearch).
 export function buildSentinelUrl(sentinelPath, codecStr, merged) {
-  let s = sentinelPath + "?_layout=" + urlSafeLayout(codecStr);
+  const parts = [];
   if (merged) {
     for (const [k, v] of merged) {
       if (k === "_layout") continue;
-      s += "&" + encodeURIComponent(k) + "=" + encodeURIComponent(v);
+      parts.push(encodeURIComponent(k) + "=" + encodeURIComponent(v));
     }
   }
-  return s;
+  parts.push("_layout=(" + urlSafeLayout(codecStr) + ")");
+  return sentinelPath + "?" + parts.join("&");
+}
+
+// Parse a shell query string under the D51 grammar: extract the parenthesized
+// `_layout=(...)` span by balanced-paren scan, return the decoded codec string
+// plus the remaining params. `layout` is null when the param is absent,
+// unwrapped (old grammar — strict read, treated as absent), unbalanced
+// (paste-truncated URL, accepted breakage) or undecodable; the broken span is
+// still excluded from `params` so it can't leak junk keys. runtime.js carries
+// a small duplicate of this scan (it is injected standalone, no imports).
+export function splitShellSearch(search) {
+  const s = (search || "").replace(/^\?/, "");
+  const m = /(^|&)_layout=/.exec(s);
+  if (!m) return { layout: null, params: new URLSearchParams(s) };
+  const valStart = m.index + m[1].length + "_layout=".length;
+  if (s[valStart] !== "(") {
+    // Unwrapped value: not this grammar. URLSearchParams handles it as an
+    // ordinary param; buildSentinelUrl drops the key on the next sync.
+    return { layout: null, params: new URLSearchParams(s) };
+  }
+  let i = valStart + 1;
+  let depth = 1;
+  while (i < s.length && depth > 0) {
+    if (s[i] === "(") depth++;
+    else if (s[i] === ")") depth--;
+    i++;
+  }
+  // Span runs to the matching `)`, or to end-of-string when unbalanced (the
+  // truncated span is dropped from params either way).
+  const rest = (s.slice(0, m.index) + s.slice(i)).replace(/^&|&$/g, "");
+  const params = new URLSearchParams(rest);
+  if (depth !== 0) return { layout: null, params };
+  let layout = null;
+  try {
+    layout = decodeURIComponent(s.slice(valStart + 1, i - 1));
+  } catch (e) {
+    /* malformed percent escape → invalid layout */
+  }
+  return { layout, params };
 }
 
 // --- Embed URL helpers -----------------------------------------------------
