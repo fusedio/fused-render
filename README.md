@@ -21,12 +21,21 @@ built-in parquet preview).
 ### Shell development
 
 The browser shell is a React + TypeScript app in `frontend/`. Its build
-output (`fused_render/static/shell-dist/`) is not committed — build it once
-before running from a source checkout (Node 22):
+output (`fused_render/static/shell-dist/`) is not committed — a source
+checkout needs one build before the server will start (Node 22).
+
+The one-command dev loop (shell watch-build + python server together,
+Ctrl-C stops both; extra args go to `fused-render`):
 
 ```
-cd frontend && npm install && npm run build   # or `npm run watch`
+scripts/dev.sh                # e.g. scripts/dev.sh --port 9000
 ```
+
+Edit anything under `frontend/src/` and refresh the browser — the watch
+rebuilds and the server serves files per-request with no-cache. Manual
+equivalent: `cd frontend && npm install && npm run build` (or `watch`).
+The watch skips type checking for speed; `npm run typecheck` (or a full
+`npm run build`) before committing.
 
 Wheels and the DMG build the shell automatically at package time
 (`scripts/hatch_build.py`), so end users never need node.
