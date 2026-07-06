@@ -151,14 +151,14 @@
       conflictEl.style.display = "none";
     }
 
-    // Autosave 400 ms after the last edit (AS-1). Suspends while a conflict banner
+    // Autosave 250 ms after the last edit (AS-1). Suspends while a conflict banner
     // is up (AS-2 — never auto-overwrite); reschedules rather than stacking a
     // second write if a save is already in flight.
     function autosave() {
       if (!dirty) return;
       if (conflictEl.style.display === "flex") return;
       if (saving) {
-        saveTimer = setTimeout(autosave, 400);
+        saveTimer = setTimeout(autosave, 250);
         return;
       }
       save();
@@ -250,7 +250,7 @@
           if (update.docChanged) {
             setDirty(true);
             clearTimeout(saveTimer);
-            saveTimer = setTimeout(autosave, 400);
+            saveTimer = setTimeout(autosave, 250);
           }
         }),
       ];
