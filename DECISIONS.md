@@ -90,6 +90,7 @@ A fully local file explorer: a Python server on `127.0.0.1` + a browser UI to br
 | # | Decision | Choice | Rationale / rejected alternatives |
 |---|---|---|---|
 | D39 | Embed mode | `/embed/<path>?params` serves the same shell chrome-free: sidebar/breadcrumb/preview-header hidden via `body.embed` CSS, sidebar never initialized. Router prefix is dynamic (`/embed/` vs `/view/`, fixed at page load), so refresh, in-listing navigation, and param sync stay inside embed. View modules stay embed-unaware — CSS does all hiding | One server route + prefix switch reuses the whole shell; rejected separate embed page (duplication) and query-flag (`?embed=1` would collide with the user param namespace, D7/D8) |
+| D40 | HTML view mode param | Rendered/Source toggle driven by reserved shell param `_mode=render\|source` (absent = render, and switching back to render deletes the key). Clicks write it via `history.replaceState` (D8); `?_mode=source` on view/embed/bookmark URLs opens straight into source | URL-is-state (D8/D20/D25): mode was the last piece of view state living only in JS. `_`-prefix already hidden from `fused.params` by the runtime, so no collision with user params |
 
 ## Descoped / follow-up list (recorded, not built)
 

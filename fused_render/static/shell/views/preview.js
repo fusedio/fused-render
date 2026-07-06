@@ -39,35 +39,59 @@ function renderTemplatePreview(fsPath, stat) {
 }
 
 function renderHtmlPreview(fsPath, stat) {
+  // `_mode` is a reserved shell param (runtime already hides all `_`-prefixed
+  // keys from fused.params). It rides the shell URL so the Rendered/Source
+  // choice is bookmarkable: ?_mode=source opens straight into the source view.
+  const currentMode = () =>
+    new URLSearchParams(location.search).get("_mode") === "source" ? "source" : "render";
+
   const toggleHtml = `
-    <button id="btn-rendered" class="active">Rendered</button>
-    <button id="btn-source">Source</button>`;
+    <button id="btn-rendered" class="${currentMode() === "render" ? "active" : ""}">Rendered</button>
+    <button id="btn-source" class="${currentMode() === "source" ? "active" : ""}">Source</button>`;
   contentEl.innerHTML = `
     ${header(fsPath, stat, toggleHtml)}
-    <div class="preview-body">
-      <iframe src="/render?path=${encodeURIComponent(fsPath)}"></iframe>
-    </div>`;
+    <div class="preview-body"></div>`;
 
   const body = contentEl.querySelector(".preview-body");
   const btnRendered = document.getElementById("btn-rendered");
   const btnSource = document.getElementById("btn-source");
 
-  btnRendered.addEventListener("click", () => {
-    if (btnRendered.classList.contains("active")) return;
-    btnRendered.classList.add("active");
-    btnSource.classList.remove("active");
-    body.innerHTML = `<iframe src="/render?path=${encodeURIComponent(fsPath)}"></iframe>`;
-  });
-
   // Source view is the code template pointed at the HTML file — an editable
   // CodeMirror buffer, same as opening any .py/.js/etc. (_file rides on the
   // iframe URL, like renderTemplatePreview).
+  const iframeSrc = (mode) =>
+    mode === "source"
+      ? `/render?path=${encodeURIComponent(sourceTemplate)}&_file=${encodeURIComponent(fsPath)}`
+      : `/render?path=${encodeURIComponent(fsPath)}`;
+
+  // Sync the shell URL (writeUrl only — the initial render must not rewrite
+  // it, only clicks do; replaceState per the D8 no-history convention), then
+  // the iframe and button classes. Switching to render DELETES _mode (absent =
+  // default, keeps URLs clean); switching to source sets it. All other query
+  // params are preserved.
+  function setMode(mode, writeUrl) {
+    if (writeUrl) {
+      const params = new URLSearchParams(location.search);
+      if (mode === "source") params.set("_mode", "source");
+      else params.delete("_mode");
+      const search = params.toString();
+      history.replaceState(null, "", location.pathname + (search ? "?" + search : ""));
+    }
+    body.innerHTML = `<iframe src="${iframeSrc(mode)}"></iframe>`;
+    btnRendered.classList.toggle("active", mode === "render");
+    btnSource.classList.toggle("active", mode === "source");
+  }
+
+  // Initial render honors the URL but must not rewrite it.
+  setMode(currentMode(), false);
+
+  btnRendered.addEventListener("click", () => {
+    if (btnRendered.classList.contains("active")) return;
+    setMode("render", true);
+  });
   btnSource.addEventListener("click", () => {
     if (btnSource.classList.contains("active")) return;
-    btnSource.classList.add("active");
-    btnRendered.classList.remove("active");
-    const src = `/render?path=${encodeURIComponent(sourceTemplate)}&_file=${encodeURIComponent(fsPath)}`;
-    body.innerHTML = `<iframe src="${src}"></iframe>`;
+    setMode("source", true);
   });
 }
 
