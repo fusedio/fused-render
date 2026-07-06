@@ -184,10 +184,17 @@ def create_app(start_dir: str) -> FastAPI:
         response.headers["Cache-Control"] = "no-cache"
         return response
 
-    # React shell (D52): built by Vite from frontend/ into static/shell-dist/
-    # (committed output, like the vendored template libs — pip install needs
-    # no node). Rebuild with `cd frontend && npm run build`.
+    # React shell (D52/D54): built by Vite from frontend/ into static/
+    # shell-dist/. The output is NOT committed — dev machines build it
+    # themselves; wheels/DMG builds run it via the hatch hook
+    # (scripts/hatch_build.py). Fail at startup with the fix, not with a
+    # bare 404 on first page load.
     shell_path = os.path.join(STATIC_DIR, "shell-dist", "index.html")
+    if not os.path.exists(shell_path):
+        raise RuntimeError(
+            "React shell not built (fused_render/static/shell-dist/ missing). "
+            "Run: cd frontend && npm install && npm run build"
+        )
 
     @app.get("/")
     def shell_root():

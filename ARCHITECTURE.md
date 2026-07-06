@@ -40,7 +40,7 @@ fused-render/
 │   ├── executor.py             # subprocess-per-call runner (EXISTS — keep)
 │   ├── _child.py               # worker-process entry (EXISTS — keep)
 │   ├── static/
-│   │   ├── shell-dist/         # COMMITTED Vite build of frontend/ (pip install needs no node)
+│   │   ├── shell-dist/         # Vite build of frontend/ (gitignored, D54; built by dev / packaging hook)
 │   │   └── runtime.js          # injected into every rendered HTML (plain JS, NOT part of the React app)
 │   └── templates/
 │       ├── parquet_template.html
@@ -52,7 +52,7 @@ fused-render/
     └── sine.html
 ```
 
-Shell = React 18 + Vite + TypeScript (D52/D53; strict tsc gated in the build); rebuild with `cd frontend && npm run build` (output is committed). Templates, examples and `runtime.js` stay plain ES2020 JS with no build step and no JS dependencies — the rendering primitive is framework-free by design.
+Shell = React 18 + Vite + TypeScript (D52/D53; strict tsc gated in the build). Build with `cd frontend && npm run build` — output is NOT committed (D54): dev machines need node, wheels/DMG build it via the hatch hook (scripts/hatch_build.py). Templates, examples and `runtime.js` stay plain ES2020 JS with no build step and no JS dependencies — the rendering primitive is framework-free by design.
 
 ---
 

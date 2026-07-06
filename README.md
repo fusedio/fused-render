@@ -20,13 +20,16 @@ built-in parquet preview).
 
 ### Shell development
 
-The browser shell is a React + TypeScript app in `frontend/`; its build output is
-committed to `fused_render/static/shell-dist/`, so installing/running needs
-no node. To work on the shell itself (Node 22):
+The browser shell is a React + TypeScript app in `frontend/`. Its build
+output (`fused_render/static/shell-dist/`) is not committed — build it once
+before running from a source checkout (Node 22):
 
 ```
 cd frontend && npm install && npm run build   # or `npm run watch`
 ```
+
+Wheels and the DMG build the shell automatically at package time
+(`scripts/hatch_build.py`), so end users never need node.
 
 ### macOS app (DMG)
 
