@@ -81,7 +81,7 @@ Same static shell for both; shell JS reads `location.pathname` to route. `/view/
   "template": "/…/fused_render/templates/parquet_template.html"   // or null
 }
 ```
-`template` is the server-side registry lookup by extension (lowercased). `null` for dirs, `.html` files (those render live), and unmapped extensions.
+`template` is the server-side registry lookup by extension (lowercased). `null` for dirs, `.html` files (those render live), and unmapped extensions. The user registry (§7, SPEC §16) is consulted first; a binding that exists but is unusable (bad JSON, unsafe folder name, missing `template.html`) falls back to the built-in and adds a `"template_error": "<reason>"` field to this response (absent otherwise).
 
 ### `GET /api/fs/list?path=<abs dir>`
 ```json
@@ -220,6 +220,7 @@ TEMPLATES = {
   ".txt": "text_template.html", ".log": "text_template.html",
 }
 ```
+- **User overrides (M7, SPEC §16):** `_template_for()` consults `~/.fused-render/registry.json` before the dict above (after the `.html`/`.htm` exemption). Keys are dotted extensions matched **longest-suffix, case-insensitive** against the basename (so `.tar.gz` works and beats `.gz`); values are a folder name — resolving to `~/.fused-render/<name>/template.html` — or `null` (no template at all: shell fallback). Folder names must be a single safe path segment (no `/`, `\`, `.`, `..`) since they're joined into a path — correctness guard, not auth (D3). The registry is read on every resolution (no restart, no cache); missing dir/registry is a clean no-op; an unusable binding falls back to the built-in with `template_error` on the stat payload. Constants `USER_TEMPLATES_DIR`/`USER_REGISTRY` in `server.py`; zero shell/runtime changes — the shell obeys `template` as always, and M4 auto-reload already live-reloads previews when the user edits their template or readers (registry edits apply on next stat, open previews don't watch it).
 - Template receives target file as read-only param `_file`. Templates are ordinary renderable HTML: same runtime, same powers. Templates reach the filesystem through the runtime IO helpers (`fused.rawUrl`/`stat`/`readFile`/`writeFile`), never by fetching `/api/fs/*` URLs directly — one code path, and the write guard/lock come for free. Helper `.py` files sit next to the template; relative `runPython('./parquet_reader.py', …)` just works because `html` path sent to `/api/run` is the template's real path.
 - Vendored JS libraries (marked, CodeMirror) live in `fused_render/templates/vendor/` and are served from a dedicated absolute mount `GET /template-assets/*` (a relative `<script src>` in a template would resolve against `/render`, not the templates dir). All committed local files — no CDN/network at runtime (D3). Regenerate the CodeMirror bundle via `scripts/vendor-codemirror/build.sh` (Node 22).
 

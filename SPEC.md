@@ -222,7 +222,7 @@ const page = await fused.runPython("./parquet_reader.py",
 | `.html` | — | M1 | rendered live (§4); "Source" toggle shows text |
 | unknown | shell fallback | M1 | metadata + raw/download link (built into shell, not a template) |
 
-- **PT-5** **User overrides (v1.5):** a user templates directory (e.g. `~/.fused-render/templates/`) checked before built-ins, so users can replace or add format handlers using the exact same mechanism.
+- **PT-5** **User overrides:** DECIDED and specced as §16 (M7) — user template folders under `~/.fused-render/` bound to extensions by `~/.fused-render/registry.json`, checked before built-ins, using the exact same mechanism.
 
 ---
 
@@ -289,7 +289,8 @@ Distribute as a DMG containing a menu-bar app; all UI stays in the browser.
 - **M4 — Live editing:** autosave + SSE change feed + auto-reloading views (§13).
 - **M5 — Layout mode:** split-pane grid of embed views, layout + merged params in one bookmarkable URL (§14).
 - **M6 — Tab mode:** tabbed set of embed views on the §14 URL model; bookmark folders open as tab layouts (§15).
-- **Follow-ups (unordered):** remaining preview templates (csv/json/markdown/media/pdf/syntax-highlighted code); user template overrides (`~/.fused-render/templates/` checked first); warm worker pool; DataFrame/Arrow returns; security layer (token, origin checks, sandboxed bridge); exec console; search/sort/tree/keyboard nav; caching; user template overrides; editing.
+- **M7 — Custom templates:** user template folders in `~/.fused-render/` + `registry.json` extension bindings, overriding built-ins (§16).
+- **Follow-ups (unordered):** remaining preview templates (csv/json/markdown/media/pdf/syntax-highlighted code); warm worker pool; DataFrame/Arrow returns; security layer (token, origin checks, sandboxed bridge); exec console; search/sort/tree/keyboard nav; caching; editing.
 
 ## 13. Live Editing — Autosave & Auto-Reload (M4)
 
@@ -387,3 +388,36 @@ Goal: the same URL-is-state model as §14, but as **tabs instead of a grid**: on
 ### 15.4 Module
 
 - **TM-10** The §14 codec (escape/parse/encode/segment helpers) moves to a shared **`views/layout-codec.js`**; `views/panel.js`, the new **`views/tabs.js`**, and `breadcrumb.js` import it. `tabs.js` owns the tab bar DOM, lazy iframes, and URL sync; `main.js` gains the `_tab` sentinel branch; `shell.css` a `.tabs-*` section; `sidebar.js` changes only the folder-row click wiring.
+
+## 16. Custom Templates — User Overrides (M7)
+
+Goal: users replace or add preview templates using the **exact same mechanism** as the built-ins (§7). A user template is an ordinary renderable-HTML page (plus optional sibling `.py` readers) that receives the target file as `_file` — nothing new is exposed; only the server's extension → template resolution gains a user-controlled layer. This is a **server-only** feature: the shell already obeys whatever `template` path the stat response carries, and `/render` already renders any absolute path with the runtime injected.
+
+### 16.1 Layout on disk
+
+- **CT-1** A user template is a **self-contained folder** `~/.fused-render/<name>/` holding `template.html` plus any sibling files it needs (reader `.py` files, css, assets). `<name>` is an arbitrary label — it carries **no** binding semantics. Relative `fused.runPython("./reader.py")` works unchanged because the template renders from its real path (PT-3).
+- **CT-2** Bindings live in **`~/.fused-render/registry.json`** — a flat JSON object mapping **dotted extension keys** to a folder name, or to `null`:
+
+```json
+{
+  ".parquet": "geo",
+  ".geojson": "geo",
+  ".tar.gz": "archive",
+  ".png": null
+}
+```
+
+  A name binds the extension to `~/.fused-render/<name>/template.html`. **`null` disables the built-in** for that extension: the file gets no template at all and falls through to the shell's metadata/raw-download fallback (§7.2).
+
+### 16.2 Resolution
+
+- **CT-3** Matching is **longest-suffix, case-insensitive**: the registry key must be a suffix of the lowercased filename beginning at a dot (`report.TAR.GZ` matches `.tar.gz` before `.gz`). Dotted keys are what make compound extensions expressible — the built-in table stays single-extension (`splitext`). Precedence: **registry (longest matching key) > built-in table**. Any extension may be bound, including ones no built-in handles.
+- **CT-4** `.html`/`.htm` stay exempt — renderable HTML is the product's core semantic (§4) and is never routed through a template, registry or not.
+- **CT-5** The registry is read **per stat/render resolution** (tiny local file — no restart, no cache invalidation problem). Missing `~/.fused-render/` or `registry.json` = clean no-op, built-in behavior; first run creates nothing.
+- **CT-6** **Validation and fallback:** a folder name must be a single safe path segment (no `/`, no `..`, not empty) — it is joined into a filesystem path, so a malformed name must not stat arbitrary locations (correctness guard, not auth — §9 stands). An invalid registry (unparseable JSON, bad name, or a named folder missing `template.html`) falls back to the built-in template for that extension, and the stat response carries a **`template_error`** string naming the problem, so a typo is visible (via stat / server log) instead of silently ignored.
+- **CT-7** **No convention fallback:** a folder in `~/.fused-render/` without a registry entry is inert — a draft. Registration is only ever the registry line; deleting the line unregisters. One source of truth.
+
+### 16.3 Pipeline & dev loop
+
+- **CT-8** Zero shell changes: stat carries the resolved user-template path in the existing `template` field; the preview iframe renders it via `/render` with `_file` exactly like a built-in (PT-2). M4 auto-reload (§13) covers template development for free — the rendered page watches its own html and every `runPython` file, so editing `template.html` or a reader live-reloads open previews. Registry edits apply on the next stat (navigate/refresh); open previews do not watch `registry.json`.
+- **CT-9** **Authoring skill:** a repo skill `skills/fused-render-custom-templates/` covers folder layout, registry format, and registration workflow only; it **delegates all html/py authoring guidance to `skills/fused-render-authoring/`** (no duplicated instruction — one source for the runtime API and template patterns).

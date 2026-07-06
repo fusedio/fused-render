@@ -80,14 +80,86 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
     return None
 
 
-def _template_for(path: str, is_dir: bool) -> str | None:
+USER_TEMPLATES_DIR = os.path.expanduser("~/.fused-render")
+USER_REGISTRY = os.path.join(USER_TEMPLATES_DIR, "registry.json")
+
+# Sentinel distinguishing "registry maps this extension to null" (disable the
+# built-in, render nothing) from "registry has no binding" (None).
+_DISABLED = object()
+
+
+def _user_template_for(filename: str):
+    """Resolve a filename against ~/.fused-render/registry.json (SPEC §16).
+
+    Returns (resolution, error). resolution: absolute template.html path,
+    _DISABLED (extension bound to null), or None (no binding). error: string
+    when a binding exists but is unusable — the caller falls back to the
+    built-in and surfaces it as `template_error` so typos aren't silent.
+    Read per call: a tiny local file, and it makes registry edits apply on
+    the next stat with no restart and no cache to invalidate.
+    """
+    try:
+        with open(USER_REGISTRY, "r", encoding="utf-8") as f:
+            registry = json.load(f)
+    except FileNotFoundError:
+        return None, None
+    except (OSError, ValueError) as e:
+        return None, f"cannot read registry.json: {e}"
+    if not isinstance(registry, dict):
+        return None, "registry.json must be a JSON object"
+
+    # Longest-suffix match, case-insensitive. Dotted keys are what make
+    # compound extensions (".tar.gz") expressible — the built-in table can't.
+    lower = filename.lower()
+    best = None
+    for key in registry:
+        k = str(key).lower()
+        if k.startswith(".") and len(k) > 1 and lower.endswith(k):
+            if best is None or len(k) > len(best[0]):
+                best = (k, registry[key])
+    if best is None:
+        return None, None
+
+    ext, name = best
+    if name is None:
+        return _DISABLED, None
+    # The name is joined into a filesystem path, so it must be one plain
+    # segment — a stray "../x" must not stat arbitrary locations. Correctness
+    # guard, not auth (D3 stands).
+    if (
+        not isinstance(name, str)
+        or not name
+        or "/" in name
+        or "\\" in name
+        or name in (".", "..")
+    ):
+        return None, f"invalid template folder name for {ext}: {name!r}"
+    template = os.path.join(USER_TEMPLATES_DIR, name, "template.html")
+    if not os.path.isfile(template):
+        return None, f"{ext} -> {name}: no template.html in ~/.fused-render/{name}/"
+    return template, None
+
+
+def _template_for(path: str, is_dir: bool):
+    """Returns (template path | None, template_error | None).
+
+    Precedence: user registry (longest suffix) > built-in table. .html/.htm
+    never route through a template — renderable HTML is the core semantic
+    (SPEC §4) — so they skip the registry too.
+    """
     if is_dir:
-        return None
-    ext = os.path.splitext(path)[1].lower()
+        return None, None
+    filename = os.path.basename(path)
+    ext = os.path.splitext(filename)[1].lower()
     if ext in (".html", ".htm"):
-        return None
+        return None, None
+    user, err = _user_template_for(filename)
+    if user is _DISABLED:
+        return None, None
+    if isinstance(user, str):
+        return user, None
     name = TEMPLATES.get(ext)
-    return os.path.join(TEMPLATES_DIR, name) if name else None
+    return (os.path.join(TEMPLATES_DIR, name) if name else None), err
 
 
 def create_app(start_dir: str) -> FastAPI:
@@ -142,14 +214,18 @@ def create_app(start_dir: str) -> FastAPI:
             return _error(f"no such file or directory: {path}", status=404)
         is_dir = os.path.isdir(path)
         st = os.stat(path)
-        return {
+        template, template_error = _template_for(path, is_dir)
+        payload = {
             "path": path,
             "name": os.path.basename(path) or path,
             "is_dir": is_dir,
             "size": None if is_dir else st.st_size,
             "mtime": st.st_mtime,
-            "template": _template_for(path, is_dir),
+            "template": template,
         }
+        if template_error:
+            payload["template_error"] = template_error
+        return payload
 
     @app.get("/api/fs/list")
     def api_fs_list(path: str):
@@ -269,14 +345,18 @@ def create_app(start_dir: str) -> FastAPI:
 
         # Same shape as /api/fs/stat so the editor can re-arm its lock.
         st = os.stat(path)
-        return {
+        template, template_error = _template_for(path, False)
+        payload = {
             "path": path,
             "name": os.path.basename(path) or path,
             "is_dir": False,
             "size": st.st_size,
             "mtime": st.st_mtime,
-            "template": _template_for(path, False),
+            "template": template,
         }
+        if template_error:
+            payload["template_error"] = template_error
+        return payload
 
     @app.get("/render")
     def render(path: str):

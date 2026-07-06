@@ -146,7 +146,7 @@ const page = await fused.runPython("./my_reader.py", { file, offset: fused.param
 
 A reader `.py` is only needed when Python adds value (parsing parquet/xlsx, paging, aggregation). Text formats can skip it entirely — `fused.stat` for a size guard, then `fused.readFile(file)` and render in JS (the markdown/JSON/code templates work this way); media formats just point a tag at `fused.rawUrl(file)`.
 
-Ship the reader `.py` next to the template html and call it with a relative path. Paging/sort/filter state goes in normal params (`offset`, `sort` …) exactly like any view. Built-in templates live in `fused_render/templates/` and follow this pattern (see `parquet_template.html` + `parquet_reader.py` for a worked example); registering a new extension means adding it to the `TEMPLATES` dict in `fused_render/server.py`.
+Ship the reader `.py` next to the template html and call it with a relative path. Paging/sort/filter state goes in normal params (`offset`, `sort` …) exactly like any view. Built-in templates live in `fused_render/templates/` and follow this pattern (see `parquet_template.html` + `parquet_reader.py` for a worked example); registering a new extension for a **built-in** means adding it to the `TEMPLATES` dict in `fused_render/server.py`. **User-owned** templates that override or extend the built-ins live under `~/.fused-render/` and are bound via `registry.json` — layout and registration are covered by the `fused-render-custom-templates` skill (this skill still owns how the html/py themselves are written).
 
 ## Testing an authored view
 
