@@ -5,9 +5,10 @@ import { setRouteHandler, fsPathFromLocation, urlForFsPath, IS_EMBED } from "./r
 import { getConfig, statPath } from "./api.js";
 import { escapeHtml } from "./format.js";
 import { initSidebar, renderSidebar } from "./sidebar.js";
-import { renderBreadcrumb, syncUpdateButton } from "./breadcrumb.js";
+import { renderBreadcrumb, renderLayoutBreadcrumb, syncUpdateButton } from "./breadcrumb.js";
 import { renderListing, stopListingWatch } from "./views/listing.js";
 import { renderPreview, initPreview } from "./views/preview.js";
+import { renderLayout, stopLayout } from "./views/layout.js";
 
 const contentEl = document.getElementById("content");
 
@@ -15,8 +16,19 @@ let config = null;
 
 async function route() {
   stopListingWatch(); // close any listing watch when navigating away (LS-3)
+  stopLayout(); // detach layout pane listeners when navigating away (LM-6)
   if (location.pathname === "/") {
     history.replaceState(null, "", urlForFsPath(config.start_dir));
+  }
+
+  // Layout mode: `/view/_layout` is a sentinel pathname, not a real file (LM-1)
+  // — intercept it before stat. Zero server changes: the server already serves
+  // the shell for any /view/*.
+  if (location.pathname === "/view/_layout") {
+    renderLayoutBreadcrumb();
+    renderLayout(config);
+    if (!IS_EMBED) renderSidebar();
+    return;
   }
 
   const fsPath = fsPathFromLocation();
@@ -52,10 +64,17 @@ async function init() {
   // The preview iframe's injected runtime writes view params via
   // parent.history.replaceState (same history object), which fires no event.
   // Wrapping replaceState is the shell's only way to observe those param
-  // changes so the "Update bookmark" button can react to them.
+  // changes so the "Update bookmark" button can react to them. pushState is
+  // wrapped the same way so in-pane navigation is observable too — the layout
+  // view's runtime target dispatches fused:urlchange through both (LM-8, D46).
   const origReplaceState = history.replaceState.bind(history);
   history.replaceState = function (...args) {
     origReplaceState(...args);
+    window.dispatchEvent(new Event("fused:urlchange"));
+  };
+  const origPushState = history.pushState.bind(history);
+  history.pushState = function (...args) {
+    origPushState(...args);
     window.dispatchEvent(new Event("fused:urlchange"));
   };
   window.addEventListener("fused:urlchange", () => syncUpdateButton());

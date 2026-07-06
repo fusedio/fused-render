@@ -31,7 +31,8 @@ fused-render/
 │   │   │   ├── breadcrumb.js   # crumb bar + "+ Bookmark" button
 │   │   │   └── views/
 │   │   │       ├── listing.js  # dir table + sortable columns
-│   │   │       └── preview.js  # three-way dispatch: template/html/fallback
+│   │   │       ├── preview.js  # three-way dispatch: template/html/fallback
+│   │   │       └── layout.js   # split-pane grid (M5): _layout codec + pane bars
 │   │   └── runtime.js          # injected into every rendered HTML
 │   └── templates/
 │       ├── parquet_template.html
@@ -133,7 +134,7 @@ Fresh process per call = fresh code every call (PY-9); the env is whatever Pytho
 
 ## 5. Injected runtime (`runtime.js`)
 
-Iframe is **same-origin** (src = `/render?path=…` on the same host) → no postMessage protocol; runtime touches `window.parent` directly. Must also work when `/render?path=…` is opened as the top-level page (then `parent === window`; params live on the /render URL itself alongside `path` — `path` is owned by the server route, treat it as reserved too).
+Iframe is **same-origin** (src = `/render?path=…` on the same host) → no postMessage protocol; runtime touches an ancestor window directly. The param target is the **topmost same-origin ancestor** (D46): the runtime climbs `window.parent` while the next ancestor is same-origin (probed via a try/catch on `.location.href`). In normal view/embed mode the direct parent is already the top, so nothing changes; in layout mode a pane's rendered page climbs past its embed shell to the layout shell, so all panes share the layout URL (param merging + cross-pane sync are structural). Must also work when `/render?path=…` is opened as the top-level page (then `target === window`, also the fallback for a cross-origin ancestor; params live on the /render URL itself alongside `path` — `path` is owned by the server route, treat it as reserved too). Notification is a single channel: `set()` and any ancestor URL write both surface as a `fused:urlchange` event on the target window, and `onChange` fires only when the non-reserved param snapshot actually changed (diff guard — kills loops and the duplicate a self-`set` would otherwise cause).
 
 ```js
 window.fused = {
@@ -164,7 +165,7 @@ Top-level `path` handling in shell URL vs iframe URL:
 
 ## 6. Shell (`shell.html/css/js`)
 
-SPA, no framework, native ES modules (`<script type="module">`, no build step). Dependency direction is one-way: `main → views/sidebar/breadcrumb → router/api/bookmarks/format`; router never imports UI (route handler is registered by main), the bookmark store never touches the DOM. Routing from `location.pathname`:
+SPA, no framework, native ES modules (`<script type="module">`, no build step). Dependency direction is one-way: `main → views/sidebar/breadcrumb → router/api/bookmarks/format`; router never imports UI (route handler is registered by main), the bookmark store never touches the DOM. `views/layout.js` imports `router`/`format` only; `breadcrumb.js` may import `views/layout.js` (for the Split button's `_layout` codec) since `layout.js` never imports back — no cycle. Routing from `location.pathname`:
 - `/` → redirect (replaceState) to `/view/<start-dir>` (start dir from `GET /api/config` → `{"start_dir": "/Users/vasu", "home": …, "source_template": <abs code_template.html>}`).
 - `/view/<path>` → `stat` it:
   - **dir** → listing view
@@ -273,3 +274,19 @@ Manual (browser, after build): browse dirs, click parquet → paged table, click
 - JS: no dependencies, no build. `const`/`let`, template literals, async/await. Small files > clever files.
 - Shell CSS: system font stack, no framework. Dark theme is the product look — single palette in shell.css `:root` vars (bg #131417, panel #1b1d21, border #2a2d33, text #e8eaed, accent #5b9dff), `color-scheme: dark`; templates and examples match it.
 - Error messages: always actionable — say what was wrong AND what shape was expected.
+
+---
+
+## 11. Layout mode (M5) — contracts
+
+Split-pane grid of `/embed` iframes; the whole arrangement + per-pane locations + all params live in one bookmarkable URL. Full requirements in SPEC §14 (LM-1..LM-12), decisions D45/D46.
+
+**Route sentinel.** `/view/_layout` is a sentinel pathname, not a file. `main.js` `route()` intercepts `location.pathname === "/view/_layout"` **before** the `statPath` call, rendering the layout view + the layout-mode breadcrumb (still refreshing the sidebar). Zero server changes — the server already serves the shell for any `/view/*`.
+
+**`_layout` codec** (`views/layout.js`). The pane tree lives in the reserved query param `_layout` (`_` prefix → invisible to `fused.params`, PR-6). `,` = row (side by side), `;` = column (stacked), `(…)` groups for nesting; a leaf = the pane's fs path + optional pane-local query. Within a segment the structural chars `, ; ( ) %` (and `?` inside the path, so the first `?` always separates path from query) are percent-encoded (`%25 %2C %3B %28 %29 %3F`) so the delimiters stay unambiguous; one left-to-right decode pass reverses it (`%25` → `%` and scanning continues, so literal escaped chars survive). The codec string keeps `, ; ( ) /` literal for a readable address bar; only `% & # +`/space are escaped when placing it as a query-param value (`URLSearchParams.get('_layout')` reverses that exactly).
+
+**Merged vs pane-local params.** Non-underscore params on the layout URL form one merged pool shared by every pane — a pane's runtime climbs to the layout shell (D46) and reads them directly, so merging is structural. Pane-local shell state (listing `sort`/`order`, `_mode`) stays on the pane's own embed URL, captured per-pane inside the `_layout` segment. The Split entry (`breadcrumb.js`) partitions the current view's params accordingly: `_`-prefixed + `sort`/`order` → pane segment; everything else → merged top-level pool.
+
+**Panes.** Each pane is an `/embed/<path>` iframe (D39) with a bar: clickable path crumbs (click navigates that pane's iframe), split-right, split-down (new pane duplicates the pane's live location), maximize (transient — a `.maximized` class, `position:absolute inset:6px` inside the `position:relative` `.layout-root`, never encoded in the URL), close. Closing collapses single-child splits; closing the last pane exits to `/view/<that pane's path><query>`.
+
+**URL sync up.** The layout view observes each pane's live location on the iframe `load` event **and** the pane window's `fused:urlchange` event (attached to `iframe.contentWindow` after each load — the embed shell dispatches it on client-side SPA navigation that fires no `load`). On either, it reads the pane's same-origin `contentWindow.location` (pathname under `/embed/`), updates that leaf, and re-encodes `_layout` via `history.replaceState` — guarded to only write when the encoded value changed. That replaceState fires the shell's own `fused:urlchange` (main.js wraps both `replaceState` and `pushState`), so the update-bookmark button reacts (D38). `stopLayout()` (parallel to `stopListingWatch()`) detaches the pane listeners when navigating away; `main.js` calls it at the top of `route()`.

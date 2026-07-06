@@ -4,17 +4,40 @@
  *   fused.runPython(pyPath, params) -> Promise<result>
  *   fused.params.get(key) / getAll() / set(key, value) / onChange(cb) -> unsubscribe
  *
- * Same-origin iframe model: this script talks to `window.parent`'s URL directly
- * (no postMessage bridge — see DECISIONS.md D3/D4). When loaded as a top-level
- * page (parent === window, e.g. visiting /render?path=... directly) it falls
- * back to reading/writing its own URL, treating the `path` query key as
- * reserved alongside any `_`-prefixed key.
+ * Same-origin iframe model: this script talks to an ancestor window's URL
+ * directly (no postMessage bridge — see DECISIONS.md D3/D4). The param target
+ * is the TOPMOST same-origin ancestor (D46): it climbs window.parent while the
+ * next ancestor is same-origin and reachable. In normal view/embed mode the
+ * direct parent is already the top, so this is unchanged; inside layout mode
+ * every pane's rendered page climbs past its embed shell to the layout shell,
+ * so params read/write the shared layout URL (merging + cross-pane sync are
+ * then structural, not a synchronization mechanism). When loaded as a top-level
+ * page (target === window, e.g. visiting /render?path=... directly, or a
+ * cross-origin ancestor) it falls back to reading/writing its own URL, treating
+ * the `path` query key as reserved alongside any `_`-prefixed key.
  */
 (function () {
   "use strict";
 
-  const standalone = window.parent === window;
-  const target = standalone ? window : window.parent;
+  // Climb to the topmost same-origin ancestor (D46). Reading .location.href on
+  // a cross-origin window throws, so a try/catch marks the boundary.
+  function findTarget() {
+    let t = window;
+    try {
+      while (t.parent && t.parent !== t) {
+        // Probe: throws if t.parent is cross-origin — stop at the last
+        // same-origin ancestor.
+        void t.parent.location.href;
+        t = t.parent;
+      }
+    } catch (e) {
+      /* hit a cross-origin ancestor; t is the topmost same-origin one */
+    }
+    return t;
+  }
+
+  const target = findTarget();
+  const standalone = target === window;
 
   function isReserved(key) {
     if (key.startsWith("_")) return true;
@@ -28,8 +51,11 @@
 
   const listeners = new Set();
 
-  function notify() {
-    const snapshot = getAll();
+  // Only the visible (non-reserved) params matter to onChange; snapshotting
+  // that lets notifyIfChanged() skip no-op fires and notification loops (D46).
+  let lastSnapshot = null;
+
+  function fire(snapshot) {
     for (const cb of listeners) {
       try {
         cb(snapshot);
@@ -37,6 +63,18 @@
         console.error("[fused] params.onChange listener threw:", e);
       }
     }
+  }
+
+  // Fire onChange only when the visible param snapshot actually changed. This
+  // is the single notification channel — set() and any ancestor URL change
+  // both route through the fused:urlchange event, and the diff guard kills the
+  // duplicate a self-set would otherwise produce.
+  function notifyIfChanged() {
+    const snapshot = getAll();
+    const serialized = JSON.stringify(snapshot);
+    if (serialized === lastSnapshot) return;
+    lastSnapshot = serialized;
+    fire(snapshot);
   }
 
   function get(key) {
@@ -80,13 +118,26 @@
     const search = params.toString();
     const newUrl = target.location.pathname + (search ? "?" + search : "");
     target.history.replaceState(target.history.state, "", newUrl);
-    notify();
+    // Notify via the event path only (no direct notify(), D46). When the shell
+    // wrapper exists it also fires fused:urlchange on replaceState — the
+    // snapshot diff in notifyIfChanged() makes the duplicate harmless; this
+    // explicit dispatch covers standalone /render pages that have no wrapper.
+    target.dispatchEvent(new Event("fused:urlchange"));
   }
 
   function onChange(cb) {
     listeners.add(cb);
     return () => listeners.delete(cb);
   }
+
+  // Baseline the snapshot at load so the first no-op fused:urlchange doesn't
+  // fire, while a real set() (which changes a param) still does.
+  lastSnapshot = JSON.stringify(getAll());
+
+  // Single notification channel: any change to the target window's URL — our
+  // own set(), a sibling pane's set() (same target in layout mode), or the
+  // shell's own history writes — arrives as fused:urlchange (D46/LM-8).
+  target.addEventListener("fused:urlchange", notifyIfChanged);
 
   function runPython(pyPath, params) {
     const ownPath = new URLSearchParams(window.location.search).get("path");

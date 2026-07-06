@@ -578,3 +578,135 @@ body.embed #breadcrumb,
 body.embed .preview-header {
   display: none;
 }
+
+/* Layout mode (/view/_layout): a split-pane grid of /embed iframes (SPEC §14).
+   Modeled on the reference grid-viewer's pane styles, using our palette. The
+   root is position:relative so a maximized pane fills the layout area (inside
+   #content) without covering the sidebar or breadcrumb. */
+.layout-root {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 6px;
+}
+
+.layout-root > * {
+  width: 100%;
+  height: 100%;
+}
+
+.layout-split {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+  height: 100%;
+}
+
+.layout-split.row {
+  flex-direction: row;
+}
+
+.layout-split.col {
+  flex-direction: column;
+}
+
+.layout-split > * {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.layout-pane {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.layout-pane.maximized {
+  position: absolute;
+  inset: 6px;
+  z-index: 50;
+}
+
+.layout-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 28px;
+  padding: 3px 6px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+
+.layout-crumbs {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  overflow-x: auto;
+  scrollbar-width: none;
+  white-space: nowrap;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.layout-crumbs::-webkit-scrollbar {
+  display: none;
+}
+
+.layout-crumb {
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 2px 1px;
+  border-radius: 3px;
+}
+
+.layout-crumb:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.layout-crumb.last {
+  color: var(--fg);
+}
+
+.layout-crumb-sep {
+  color: var(--border);
+  margin: 0 1px;
+}
+
+.layout-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 4px 5px;
+  border-radius: 4px;
+}
+
+.layout-btn svg {
+  display: block;
+}
+
+.layout-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--fg);
+}
+
+.layout-btn.close:hover {
+  color: var(--error);
+}
+
+.layout-pane iframe {
+  flex: 1 1 auto;
+  width: 100%;
+  border: none;
+  background: var(--bg);
+}
