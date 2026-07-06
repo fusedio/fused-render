@@ -191,6 +191,51 @@ rm -rf "$PY2APP_DIST" "$BUILD_DIR/py2app-build"
 test -d "$APP_DIR"
 
 # ---------------------------------------------------------------------------
+# 4b. Bundle sanity checks.
+#     a) No Mach-O binary masquerading as a .py: py2app's `packages` option
+#        mis-copies a bare C-extension module (e.g. _duckdb) to
+#        lib/python3.12/<name>.py, which shadows the real lib-dynload .so
+#        and breaks the import with a null-byte SyntaxError.
+#     b) `import duckdb` actually works through the app's own worker
+#        (_child.py) — the exact path user UDFs take at runtime.
+# ---------------------------------------------------------------------------
+
+echo "==> bundle sanity: Mach-O-as-.py check"
+APP_PYLIB="$APP_DIR/Contents/Resources/lib/python3.12"
+BAD_PY="$(find "$APP_PYLIB" -name '*.py' -size +1M -print0 | \
+  xargs -0 -I{} sh -c 'head -c4 "{}" | xxd -p | grep -qE "^(cffaedfe|cafebabe|feedfacf)$" && echo "{}"' || true)"
+if [[ -n "$BAD_PY" ]]; then
+  echo "FATAL: Mach-O binary shipped as .py (would shadow the real extension):" >&2
+  echo "$BAD_PY" >&2
+  exit 1
+fi
+
+echo "==> bundle sanity: duckdb import smoke test via _child.py"
+SMOKE_DIR="$BUILD_DIR/smoke"
+rm -rf "$SMOKE_DIR"
+mkdir -p "$SMOKE_DIR"
+cat > "$SMOKE_DIR/duckdb_smoke.py" <<'PYEOF'
+def main() -> dict:
+    import duckdb
+    con = duckdb.connect()
+    return {
+        "duckdb_version": duckdb.__version__,
+        "answer": con.execute("SELECT 42").fetchone()[0],
+    }
+PYEOF
+SMOKE_OUT="$(echo "{\"path\":\"$SMOKE_DIR/duckdb_smoke.py\",\"params\":{}}" | \
+  env PYTHONHOME="$APP_DIR/Contents/Resources" \
+  "$APP_DIR/Contents/MacOS/python" \
+  "$APP_PYLIB/fused_render/_child.py")"
+if ! echo "$SMOKE_OUT" | grep -q '"ok": true'; then
+  echo "FATAL: duckdb smoke test failed through _child.py:" >&2
+  echo "$SMOKE_OUT" >&2
+  exit 1
+fi
+echo "    $SMOKE_OUT"
+rm -rf "$SMOKE_DIR"
+
+# ---------------------------------------------------------------------------
 # 5. Ad-hoc codesign (D32/DM-4 carried forward). py2app signs ad-hoc on its
 #    own on Apple Silicon (unsigned binaries won't launch at all), but we
 #    re-sign explicitly here so the signature is deterministic and covers the

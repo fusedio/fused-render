@@ -77,7 +77,14 @@ OPTIONS = {
         # actually resolved in the build venv (see build_dmg.sh comments).
         "numpy", "pandas", "dateutil", "six",
         "pyarrow",
-        "duckdb", "_duckdb", "adbc_driver_duckdb",
+        # _duckdb deliberately NOT here: it's a bare top-level C extension
+        # (site-packages/_duckdb.cpython-312-darwin.so), not a package.
+        # Forcing it via `packages` makes py2app copy the Mach-O binary to
+        # lib/python3.12/_duckdb.py, which shadows the real
+        # lib-dynload/_duckdb.so and breaks `import duckdb` with
+        # "SyntaxError: source code string cannot contain null bytes".
+        # It goes in `includes` below instead.
+        "duckdb", "adbc_driver_duckdb",
         "polars", "_polars_runtime_32",
         # mpl_toolkits deliberately excluded: it's a PEP 420 namespace
         # package (no __init__.py), and py2app's package-bootstrap lookup
@@ -105,6 +112,11 @@ OPTIONS = {
         # package via `packages` breaks on its bootstrap lookup.
         "rumps", "objc", "AppKit", "Foundation", "Cocoa", "CoreFoundation",
     ],
+    # Single modules (incl. bare C extensions) that modulegraph can't be
+    # trusted to find on its own — same runtime-import blindness as
+    # `packages` above, but `includes` handles non-package modules correctly
+    # (extension -> lib-dynload/*.so, never a bogus .py copy).
+    "includes": ["_duckdb"],
     "plist": {
         "CFBundleIdentifier": "io.fused.render",
         "CFBundleName": "FusedRender",
