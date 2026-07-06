@@ -18,6 +18,16 @@ pip install -e .
 Requires Python 3.10+. Installs FastAPI, uvicorn, and pyarrow (used by the
 built-in parquet preview).
 
+### macOS app (DMG)
+
+```
+bash scripts/build_dmg.sh
+```
+
+Builds a standalone `FusedRender.app` via py2app and packages it as
+`dist/FusedRender-<version>.dmg`. The build is ad-hoc signed — testers
+right-click → Open on first launch.
+
 ## Run
 
 ```
