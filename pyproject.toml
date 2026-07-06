@@ -6,11 +6,14 @@ build-backend = "hatchling.build"
 name = "fused-render"
 version = "0.1.0"
 description = "Local file explorer with Python-powered renderable HTML previews"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
     "pyarrow>=14",
+    # openfused local compute backend (dist name "fused"). Dev installs use the
+    # local sandbox checkout: pip install -e ~/Documents/fused/sandbox/openfused
+    "fused>=2.9",
 ]
 
 [project.optional-dependencies]

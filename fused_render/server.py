@@ -2,8 +2,9 @@
 
 No path restriction anywhere — the whole filesystem is in scope by design
 (see DECISIONS.md D2/D3). All `path` query params are absolute filesystem
-paths. Endpoints are sync `def` so FastAPI dispatches them to its threadpool,
-giving free concurrency for blocking filesystem/subprocess work.
+paths. Filesystem endpoints are sync `def` so FastAPI dispatches them to its
+threadpool, giving free concurrency for blocking filesystem work; /api/run is
+async and awaits the openfused backend.
 """
 import asyncio
 import json
@@ -16,7 +17,7 @@ from fastapi import Body, FastAPI, Header, Query
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from fused_render.executor import run_python
+from fused_render.engine import run_python
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
@@ -389,7 +390,10 @@ def create_app(start_dir: str) -> FastAPI:
         return HTMLResponse(html)
 
     @app.post("/api/run")
-    def api_run(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    async def api_run(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+        # Async def is safe here: backend.execute offloads its blocking
+        # subprocess to a thread executor, so concurrent runs don't block
+        # the event loop.
         guard = _require_fused(x_fused)
         if guard is not None:
             return guard
@@ -411,7 +415,7 @@ def create_app(start_dir: str) -> FastAPI:
                 )
             resolved = os.path.normpath(os.path.join(os.path.dirname(html), py))
 
-        result = run_python(resolved, params)
+        result = await run_python(resolved, params)
         # Tell the runtime which absolute file actually ran so it can watch it
         # for auto-reload (LR-2). Set on failed runs too, so a broken py that
         # gets fixed still triggers a reload.
