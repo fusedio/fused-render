@@ -265,7 +265,7 @@ def create_app(start_dir: str) -> FastAPI:
     async def api_fs_events(path: list[str] = Query(default=[])):
         # SSE change feed (SPEC §13.2). Async def on purpose: a sync def would pin
         # a threadpool thread per open view for the lifetime of the page. Polling
-        # stat every 500ms is dependency-free and cheap at local scale; upgrading
+        # stat every 200ms is dependency-free and cheap at local scale; upgrading
         # to real FS events later is internal to this endpoint.
         def mtime_of(p):
             try:
@@ -277,14 +277,14 @@ def create_app(start_dir: str) -> FastAPI:
             last = {p: mtime_of(p) for p in path}
             ticks = 0
             while True:
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.2)
                 for p in path:
                     m = mtime_of(p)
                     if m != last[p]:
                         last[p] = m
                         yield f"data: {json.dumps({'path': p, 'mtime': m})}\n\n"
                 ticks += 1
-                if ticks % 30 == 0:
+                if ticks % 75 == 0:  # 75 × 200ms = keepalive every 15 s (WF-3)
                     yield ": keepalive\n\n"
 
         return StreamingResponse(stream(), media_type="text/event-stream")
