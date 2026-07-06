@@ -197,6 +197,16 @@ def create_app(start_dir: str) -> FastAPI:
         StaticFiles(directory=os.path.join(TEMPLATES_DIR, "vendor")),
         name="template-assets",
     )
+    # First-party ESM shared by the sci preview templates (geotiff/netcdf/zarr
+    # sciViz core — colormaps, stretch/stats/histogram, canvas draw helpers, UI
+    # kit). Same absolute-URL rationale as /template-assets above. A dedicated
+    # mount (rather than nesting under templates/vendor/) keeps vendor/ strictly
+    # third-party.
+    app.mount(
+        "/template-shared",
+        StaticFiles(directory=os.path.join(TEMPLATES_DIR, "shared")),
+        name="template-shared",
+    )
 
     @app.middleware("http")
     async def no_cache(request, call_next):
