@@ -38,6 +38,17 @@ export function renameBookmark(id, name) {
   save(bookmarks);
 }
 
+// targetIndex is the index in the array AFTER the dragged item is removed;
+// the caller is responsible for that convention.
+export function moveBookmark(id, targetIndex) {
+  const bookmarks = loadBookmarks();
+  const from = bookmarks.findIndex((b) => b.id === id);
+  if (from === -1) return;
+  const [moved] = bookmarks.splice(from, 1);
+  bookmarks.splice(targetIndex, 0, moved);
+  save(bookmarks);
+}
+
 export function updateBookmarkUrl(id, url) {
   const bookmarks = loadBookmarks();
   const bookmark = bookmarks.find((b) => b.id === id);

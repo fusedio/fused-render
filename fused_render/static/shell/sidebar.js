@@ -1,11 +1,12 @@
 // Sidebar UI: brand, Home entry, bookmark rows with hover card + inline rename.
 import { navigate, navigateUrl, currentUrl, VIEW_PREFIX } from "./router.js";
 import { escapeHtml } from "./format.js";
-import { loadBookmarks, deleteBookmark, renameBookmark, armBookmark, disarmBookmark, getArmedBookmark } from "./bookmarks.js";
+import { loadBookmarks, deleteBookmark, renameBookmark, moveBookmark, armBookmark, disarmBookmark, getArmedBookmark } from "./bookmarks.js";
 
 const sidebarEl = document.getElementById("sidebar");
 
 let config = null;
+let draggedId = null; // id of the bookmark row currently being dragged
 
 export function initSidebar(cfg) {
   config = cfg;
@@ -52,9 +53,9 @@ export function renderSidebar() {
   const rows = bookmarks
     .map(
       (b) => `
-      <div class="bookmark-row${b.url === currentUrl() ? " active" : ""}" data-id="${escapeHtml(b.id)}">
+      <div class="bookmark-row${b.url === currentUrl() ? " active" : ""}" data-id="${escapeHtml(b.id)}" draggable="true">
         <span class="bookmark-glyph">&#9733;</span>
-        <a class="bookmark-name" href="${escapeHtml(b.url)}">${escapeHtml(b.name)}</a>
+        <a class="bookmark-name" href="${escapeHtml(b.url)}" draggable="false">${escapeHtml(b.name)}</a>
         <span class="bookmark-actions">
           <button class="icon-btn rename-btn" title="Rename">&#9998;</button>
           <button class="icon-btn delete-btn" title="Delete">&#10005;</button>
@@ -108,10 +109,59 @@ export function renderSidebar() {
       startRename(row, id);
     });
     row.addEventListener("mouseenter", () => {
-      // No tooltip while renaming this row.
+      // No tooltip while renaming this row or while a drag is in progress.
+      if (draggedId !== null) return;
       if (!row.querySelector(".bookmark-rename-input")) showBookmarkTooltip(row, byId.get(id));
     });
     row.addEventListener("mouseleave", hideBookmarkTooltip);
+
+    row.addEventListener("dragstart", (e) => {
+      // No drag while renaming — let the input keep native text selection.
+      if (row.querySelector(".bookmark-rename-input")) {
+        e.preventDefault();
+        return;
+      }
+      draggedId = id;
+      row.classList.add("dragging");
+      hideBookmarkTooltip();
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", id); // Firefox needs data set to start a drag
+    });
+    row.addEventListener("dragover", (e) => {
+      if (draggedId === null || draggedId === id) return;
+      e.preventDefault(); // required to allow a drop
+      e.dataTransfer.dropEffect = "move";
+      const rect = row.getBoundingClientRect();
+      const below = e.clientY > rect.top + rect.height / 2;
+      row.classList.toggle("drag-below", below);
+      row.classList.toggle("drag-above", !below);
+    });
+    row.addEventListener("dragleave", () => {
+      row.classList.remove("drag-above", "drag-below");
+    });
+    row.addEventListener("drop", (e) => {
+      e.preventDefault();
+      if (draggedId === null || draggedId === id) return;
+      const order = bookmarks.map((b) => b.id);
+      const rect = row.getBoundingClientRect();
+      const below = e.clientY > rect.top + rect.height / 2;
+      let target = order.indexOf(id) + (below ? 1 : 0);
+      // moveBookmark's targetIndex is post-removal, so drop past the dragged
+      // item's own slot shifts everything down by one.
+      if (order.indexOf(draggedId) < target) target -= 1;
+      moveBookmark(draggedId, target);
+      // Reset here, not just in dragend: renderSidebar() detaches the dragged
+      // row, and Chrome skips dragend on a removed source element.
+      draggedId = null;
+      renderSidebar();
+    });
+    row.addEventListener("dragend", () => {
+      // Fires even on Escape-cancelled drags — the universal cleanup.
+      draggedId = null;
+      sidebarEl.querySelectorAll(".bookmark-row").forEach((r) => {
+        r.classList.remove("dragging", "drag-above", "drag-below");
+      });
+    });
   });
 
   syncStarButton(bookmarks);

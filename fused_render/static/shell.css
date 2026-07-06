@@ -135,6 +135,18 @@ body {
   color: var(--accent);
 }
 
+.bookmark-row.dragging {
+  opacity: 0.4;
+}
+
+.bookmark-row.drag-above {
+  box-shadow: 0 -2px 0 0 var(--accent);
+}
+
+.bookmark-row.drag-below {
+  box-shadow: 0 2px 0 0 var(--accent);
+}
+
 .bookmark-name {
   flex: 1 1 auto;
   min-width: 0;
