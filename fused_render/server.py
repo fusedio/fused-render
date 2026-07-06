@@ -120,6 +120,10 @@ def create_app(start_dir: str) -> FastAPI:
     def shell_view(path: str):
         return FileResponse(shell_path)
 
+    @app.get("/embed/{path:path}")
+    def shell_embed(path: str):
+        return FileResponse(shell_path)
+
     @app.get("/api/config")
     def api_config():
         return {

@@ -1,7 +1,7 @@
 // Entry point: loads config, owns the route() dispatcher.
 //   "/"            -> redirect (replaceState) to /view/<start-dir>
 //   "/view/<path>" -> stat it: directory -> listing, file -> preview
-import { setRouteHandler, fsPathFromLocation, urlForFsPath } from "./router.js";
+import { setRouteHandler, fsPathFromLocation, urlForFsPath, IS_EMBED } from "./router.js";
 import { getConfig, statPath } from "./api.js";
 import { escapeHtml } from "./format.js";
 import { initSidebar, renderSidebar } from "./sidebar.js";
@@ -38,12 +38,13 @@ async function route() {
   } else {
     renderPreview(fsPath, stat);
   }
-  renderSidebar(); // refresh active-bookmark highlight for the new URL
+  if (!IS_EMBED) renderSidebar(); // refresh active-bookmark highlight for the new URL
 }
 
 async function init() {
+  if (IS_EMBED) document.body.classList.add("embed");
   config = await getConfig();
-  initSidebar(config);
+  if (!IS_EMBED) initSidebar(config);
   initPreview(config);
   setRouteHandler(route);
 
@@ -58,7 +59,7 @@ async function init() {
   };
   window.addEventListener("fused:urlchange", () => syncUpdateButton());
 
-  renderSidebar();
+  if (!IS_EMBED) renderSidebar();
   route();
 }
 

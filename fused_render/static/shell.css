@@ -502,3 +502,12 @@ table.listing-table td.mtime {
 .status-message.error {
   color: var(--error);
 }
+
+/* Embed mode (/embed/<path>): content only — all shell chrome hidden.
+   Views still render breadcrumb/header into the DOM; hiding here keeps
+   view modules embed-unaware. */
+body.embed #sidebar,
+body.embed #breadcrumb,
+body.embed .preview-header {
+  display: none;
+}

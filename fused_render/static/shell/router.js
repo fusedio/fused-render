@@ -3,6 +3,16 @@
 // without creating import cycles.
 export const VIEW_PREFIX = "/view/";
 
+// Embed = chrome-free variant of view (same shell, same routing, just no
+// sidebar/breadcrumb/preview-header). The mode is fixed at page load: both
+// prefixes are served by full page loads, so it can't change without one.
+export const EMBED_PREFIX = "/embed/";
+export const IS_EMBED =
+  location.pathname.startsWith(EMBED_PREFIX) || location.pathname === "/embed";
+// URL prefix for this page's mode. Keeps refresh, in-listing navigation, and
+// param sync (iframe runtime's history.replaceState) inside the active prefix.
+const PREFIX = IS_EMBED ? EMBED_PREFIX : VIEW_PREFIX;
+
 let routeHandler = () => {};
 
 export function setRouteHandler(fn) {
@@ -11,8 +21,8 @@ export function setRouteHandler(fn) {
 
 export function fsPathFromLocation() {
   const p = location.pathname;
-  if (!p.startsWith(VIEW_PREFIX)) return null;
-  const rest = p.slice(VIEW_PREFIX.length);
+  if (!p.startsWith(PREFIX)) return null;
+  const rest = p.slice(PREFIX.length);
   const decoded = rest
     .split("/")
     .filter((s) => s.length > 0)
@@ -28,7 +38,7 @@ export function urlForFsPath(fsPath, search) {
     .filter((s) => s.length > 0)
     .map(encodeURIComponent)
     .join("/");
-  return VIEW_PREFIX + encoded + (search || "");
+  return PREFIX + encoded + (search || "");
 }
 
 export function navigate(fsPath) {
