@@ -4,6 +4,7 @@
 //   3. else                   -> fallback metadata card
 // No other file-type logic lives in the shell.
 import { rawUrl } from "../api.js";
+import { navigateUrl } from "../router.js";
 import { escapeHtml, formatSize, formatMtime } from "../format.js";
 import { renderBreadcrumb } from "../breadcrumb.js";
 
@@ -31,11 +32,21 @@ function renderTemplatePreview(fsPath, stat) {
   // Target file rides on the iframe's own URL, not the shell URL — the shell
   // URL's pathname already names the file, so no ?_file= duplication there.
   const src = `/render?path=${encodeURIComponent(stat.template)}&_file=${encodeURIComponent(fsPath)}`;
+  // A directory preview (e.g. a .zarr store) keeps a way into the raw contents:
+  // ?listing=1 forces the shell's listing view for this same path (main.js).
+  const actions = stat.is_dir
+    ? `<button id="browse-contents" type="button">Browse contents</button>`
+    : "";
   contentEl.innerHTML = `
-    ${header(fsPath, stat)}
+    ${header(fsPath, stat, actions)}
     <div class="preview-body">
       <iframe src="${src}"></iframe>
     </div>`;
+  if (stat.is_dir) {
+    document
+      .getElementById("browse-contents")
+      .addEventListener("click", () => navigateUrl(location.pathname + "?listing=1"));
+  }
 }
 
 function renderHtmlPreview(fsPath, stat) {

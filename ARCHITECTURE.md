@@ -81,7 +81,7 @@ Same static shell for both; shell JS reads `location.pathname` to route. `/view/
   "template": "/…/fused_render/templates/parquet_template.html"   // or null
 }
 ```
-`template` is the server-side registry lookup by extension (lowercased). `null` for dirs, `.html` files (those render live), and unmapped extensions. The user registry (§7, SPEC §16) is consulted first; a binding that exists but is unusable (bad JSON, unsafe folder name, missing `template.html`) falls back to the built-in and adds a `"template_error": "<reason>"` field to this response (absent otherwise).
+`template` is the server-side registry lookup by extension (lowercased). `null` for `.html`/`.htm` files (those render live) and unmapped extensions. Files use `TEMPLATES`; directories are `null` too **except** one whose basename carries a registered directory-extension (e.g. `.zarr`), which maps via `DIR_TEMPLATES` and previews like a file (D52). For files the user registry (§7, SPEC §16) is consulted first; a binding that exists but is unusable (bad JSON, unsafe folder name, missing `template.html`) falls back to the built-in and adds a `"template_error": "<reason>"` field to this response (absent otherwise). Directory templates are package-only — the user registry does not extend to them yet (D52).
 
 ### `GET /api/fs/list?path=<abs dir>`
 ```json
@@ -170,6 +170,7 @@ Top-level `path` handling in shell URL vs iframe URL:
 SPA, no framework, native ES modules (`<script type="module">`, no build step). Dependency direction is one-way: `main → views/sidebar/breadcrumb → router/api/bookmarks/format`; router never imports UI (route handler is registered by main), the bookmark store never touches the DOM. `views/panel.js` and `views/tabs.js` import `router`/`format` plus the shared `views/layout-codec.js` (which itself imports only `router` for the embed prefix — one source of truth); `breadcrumb.js` may import `views/layout-codec.js` (Split button segment encoder) + `views/panel.js` (`panelUrl`), and `sidebar.js` may import `views/tabs.js` (`composeFolderTabsUrl`), since no view imports back — no cycles. Routing from `location.pathname`:
 - `/` → redirect (replaceState) to `/view/<start-dir>` (start dir from `GET /api/config` → `{"start_dir": "/Users/vasu", "home": …, "source_template": <abs code_template.html>}`).
 - `/view/<path>` → `stat` it:
+  - **dir with a `template`** (e.g. a `.zarr` store, D52) → preview view, unless `?listing=1` forces the listing
   - **dir** → listing view
   - **file** → preview view
 
@@ -177,7 +178,7 @@ SPA, no framework, native ES modules (`<script type="module">`, no build step). 
 
 **Preview view:** breadcrumb + filename header with actions, then dispatch **exactly three-way** (no other file-type logic in shell):
 
-1. `stat.template != null` → iframe `/render?path=<template>&_file=<target file>` — `_file` rides on the iframe's own URL; the shell URL stays clean (its pathname already names the file). The runtime reads `_file` from its own URL first and falls back to the shell URL, so manually opening `/view/<template>.html?_file=<target>` (old bookmarks) also works.
+1. `stat.template != null` → iframe `/render?path=<template>&_file=<target file>` — `_file` rides on the iframe's own URL; the shell URL stays clean (its pathname already names the file). The runtime reads `_file` from its own URL first and falls back to the shell URL, so manually opening `/view/<template>.html?_file=<target>` (old bookmarks) also works. This fires even when the target is a directory (a `.zarr` store, D52); such a preview adds a **Browse contents** action that navigates to `?listing=1` (forces the listing so the store's raw members stay browsable).
 2. extension `.html`/`.htm` → iframe `/render?path=<file itself>`. Header gets `Rendered | Source` toggle. Source loads the code template pointed at the HTML file — `/render?path=<source_template>&_file=<file>` (source_template = code_template's abs path, from `/api/config`) — an editable CodeMirror buffer, so HTML source editing comes free.
 3. else → fallback: metadata card (name, size, mtime, path) + `Raw / download` link to `/api/fs/raw?path=…`.
 
@@ -218,11 +219,19 @@ TEMPLATES = {
   ".sh": "code_template.html", ".yaml": "code_template.html", ".yml": "code_template.html",
   ".toml": "code_template.html", ".css": "code_template.html",
   ".txt": "text_template.html", ".log": "text_template.html",
+  ".tif": "geotiff_template.html", ".tiff": "geotiff_template.html",
+  ".nc": "netcdf_template.html", ".nc4": "netcdf_template.html", ".cdf": "netcdf_template.html",
+}
+# Directory templates (D52): a DIRECTORY whose basename carries one of these
+# extensions renders through a template instead of the listing view.
+DIR_TEMPLATES = {
+  ".zarr": "zarr_template.html",
 }
 ```
-- **User overrides (M7, SPEC §16):** `_template_for()` consults `~/.fused-render/registry.json` before the dict above (after the `.html`/`.htm` exemption). Keys are dotted extensions matched **longest-suffix, case-insensitive** against the basename (so `.tar.gz` works and beats `.gz`); values are a folder name — resolving to `~/.fused-render/<name>/template.html` — or `null` (no template at all: shell fallback). Folder names must be a single safe path segment (no `/`, `\`, `.`, `..`) since they're joined into a path — correctness guard, not auth (D3). The registry is read on every resolution (no restart, no cache); missing dir/registry is a clean no-op; an unusable binding falls back to the built-in with `template_error` on the stat payload. Constants `USER_TEMPLATES_DIR`/`USER_REGISTRY` in `server.py`; zero shell/runtime changes — the shell obeys `template` as always, and M4 auto-reload already live-reloads previews when the user edits their template or readers (registry edits apply on next stat, open previews don't watch it).
-- Template receives target file as read-only param `_file`. Templates are ordinary renderable HTML: same runtime, same powers. Templates reach the filesystem through the runtime IO helpers (`fused.rawUrl`/`stat`/`readFile`/`writeFile`), never by fetching `/api/fs/*` URLs directly — one code path, and the write guard/lock come for free. Helper `.py` files sit next to the template; relative `runPython('./parquet_reader.py', …)` just works because `html` path sent to `/api/run` is the template's real path.
-- Vendored JS libraries (marked, CodeMirror) live in `fused_render/templates/vendor/` and are served from a dedicated absolute mount `GET /template-assets/*` (a relative `<script src>` in a template would resolve against `/render`, not the templates dir). All committed local files — no CDN/network at runtime (D3). Regenerate the CodeMirror bundle via `scripts/vendor-codemirror/build.sh` (Node 22).
+- `_template_for(path, is_dir)` checks `DIR_TEMPLATES` (by the basename extension) when `is_dir`, else `TEMPLATES`; `.html`/`.htm` files stay `None` (they render live). So a `.zarr` store dir carries a `template` in its `stat` and previews like a file (D52); the shell forces the plain listing with `?listing=1` (a "Browse contents" action) to browse the store's raw members. Directory templates are package-only — the user registry below overrides files only, not dirs (D52).
+- **User overrides (M7, SPEC §16):** for files, `_template_for()` consults `~/.fused-render/registry.json` before the built-in `TEMPLATES` dict above (after the `.html`/`.htm` exemption). Keys are dotted extensions matched **longest-suffix, case-insensitive** against the basename (so `.tar.gz` works and beats `.gz`); values are a folder name — resolving to `~/.fused-render/<name>/template.html` — or `null` (no template at all: shell fallback). Folder names must be a single safe path segment (no `/`, `\`, `.`, `..`) since they're joined into a path — correctness guard, not auth (D3). The registry is read on every resolution (no restart, no cache); missing dir/registry is a clean no-op; an unusable binding falls back to the built-in with `template_error` on the stat payload. Constants `USER_TEMPLATES_DIR`/`USER_REGISTRY` in `server.py`; zero shell/runtime changes — the shell obeys `template` as always, and M4 auto-reload already live-reloads previews when the user edits their template or readers (registry edits apply on next stat, open previews don't watch it).
+- Template receives target file as read-only param `_file`. For a directory template `_file` is the store's absolute directory path. Templates are ordinary renderable HTML: same runtime, same powers. Templates reach the filesystem through the runtime IO helpers (`fused.rawUrl`/`stat`/`readFile`/`writeFile`), never by fetching `/api/fs/*` URLs directly — one code path, and the write guard/lock come for free. Helper `.py` files sit next to the template; relative `runPython('./parquet_reader.py', …)` just works because `html` path sent to `/api/run` is the template's real path.
+- Vendored JS libraries (marked, CodeMirror; and the sci decoders `geotiff.bundle.mjs`, `netcdfjs.bundle.mjs`, `zarrita.bundle.mjs`) live in `fused_render/templates/vendor/` and are served from a dedicated absolute mount `GET /template-assets/*` (a relative `<script src>`/`import` in a template would resolve against `/render`, not the templates dir). All committed local files — no CDN/network at runtime (D3). Regenerate the CodeMirror bundle via `scripts/vendor-codemirror/build.sh`, and the sci bundles via `scripts/vendor-sci/build.sh` (both Node 22; each emits a single self-contained module — the sci ones are ESM `import`ed, zarrita inlines its numcodecs WASM as base64).
 
 **M1 templates:**
 

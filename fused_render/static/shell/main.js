@@ -58,7 +58,13 @@ async function route() {
     return;
   }
 
-  if (stat.is_dir) {
+  // Dispatch on the template, not on is_dir: a directory can carry a template
+  // (e.g. a .zarr store), and it previews like a file. `?listing=1` forces the
+  // plain listing so the store's contents stay browsable (see preview.js).
+  const forceListing = new URLSearchParams(location.search).get("listing") === "1";
+  if (stat.template && !forceListing) {
+    renderPreview(fsPath, stat);
+  } else if (stat.is_dir) {
     await renderListing(fsPath);
   } else {
     renderPreview(fsPath, stat);

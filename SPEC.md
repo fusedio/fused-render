@@ -205,6 +205,7 @@ const page = await fused.runPython("./parquet_reader.py",
 ```
 
 - **PT-4** Template UI state (current page, selected columns, sort) uses normal params → survives refresh, e.g. `?_file=…&offset=500&sort=fare`.
+- **PT-6** **Directory templates (2026-07-06, D52):** a *directory* whose basename carries a registered directory-extension (e.g. `.zarr`) maps to a template through a separate `DIR_TEMPLATES` registry — `stat` carries the `template`, the shell previews the dir like a file, and `_file` is the store's absolute directory path. The store's raw members stay browsable via a "Browse contents" action that forces the listing with `?listing=1`.
 
 ### 7.2 Template set — **M1 ships parquet, image, and text templates**; rest are follow-ups
 
@@ -219,6 +220,9 @@ const page = await fused.runPython("./parquet_reader.py",
 | `.md` | markdown_template.html | later | rendered markdown (M1: text template) |
 | `.mp4 .mov .mp3 .wav` | media_template.html | later | raw endpoint w/ Range |
 | `.pdf` | pdf_template.html | later | browser-native embed |
+| `.tif`, `.tiff` | geotiff_template.html | later | GeoTIFF/COG via vendored geotiff; full metadata + dump, photometric routing (RGB/palette/YCbCr), band select + RGB stretch + colormaps, histogram, hover. Small files full-fetched; >32 MiB range-request `fromUrl` |
+| `.nc`, `.nc4`, `.cdf` | netcdf_template.html | later | NetCDF-3 via vendored netcdfjs (HDF5/NetCDF-4 → graceful card); leading-dim sliders, colormaps + stretch, histogram, hover |
+| `.zarr` **(directory)** | zarr_template.html | later | Zarr v2+v3 store via vendored zarrita; served as a **directory template** (`DIR_TEMPLATES`, PT-6). Tree (hidden for single-array), dim sliders, coordinates, attrs, histogram; members fetched per-key over the raw endpoint (404 = missing chunk → zero-fill) |
 | `.html` | — | M1 | rendered live (§4); "Source" toggle shows text |
 | unknown | shell fallback | M1 | metadata + raw/download link (built into shell, not a template) |
 

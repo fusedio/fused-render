@@ -60,6 +60,20 @@ TEMPLATES = {
     # plain text
     ".txt": "text_template.html",
     ".log": "text_template.html",
+    # scientific rasters / arrays — vendored decoders (see scripts/vendor-sci).
+    # .zarr is a directory, not a file, so it lives in DIR_TEMPLATES below.
+    ".tif": "geotiff_template.html",
+    ".tiff": "geotiff_template.html",
+    ".nc": "netcdf_template.html",
+    ".nc4": "netcdf_template.html",
+    ".cdf": "netcdf_template.html",
+}
+
+# Directory templates: a directory whose basename carries one of these
+# extensions renders through a template instead of the listing view (e.g. a
+# `.zarr` store is one logical dataset spread across many chunk files).
+DIR_TEMPLATES = {
+    ".zarr": "zarr_template.html",
 }
 
 
@@ -143,12 +157,20 @@ def _user_template_for(filename: str):
 def _template_for(path: str, is_dir: bool):
     """Returns (template path | None, template_error | None).
 
-    Precedence: user registry (longest suffix) > built-in table. .html/.htm
-    never route through a template — renderable HTML is the core semantic
-    (SPEC §4) — so they skip the registry too.
+    Files: precedence is user registry (longest suffix) > built-in table.
+    .html/.htm never route through a template — renderable HTML is the core
+    semantic (SPEC §4) — so they skip the registry too.
+
+    Directories: mapped only by the built-in `DIR_TEMPLATES` (e.g. a `.zarr`
+    store). The user registry (M7/D50) is a per-file suffix match and does not
+    extend to directory templates yet (D52); dir templates are package-only.
     """
     if is_dir:
-        return None, None
+        # A directory maps to a template by the extension on its basename (e.g. a
+        # `.zarr` store). normpath strips any trailing slash so basename is real.
+        ext = os.path.splitext(os.path.basename(os.path.normpath(path)))[1].lower()
+        name = DIR_TEMPLATES.get(ext)
+        return (os.path.join(TEMPLATES_DIR, name) if name else None), None
     filename = os.path.basename(path)
     ext = os.path.splitext(filename)[1].lower()
     if ext in (".html", ".htm"):

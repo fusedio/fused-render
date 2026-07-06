@@ -1,0 +1,595 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NetCDF preview</title>
+<!--
+  fused-render NetCDF-3 preview template — zero React, no build step.
+  Port of app/src/ui/components/sci/NetCdfPreview.tsx (+ sciViz.ts, SciHistogram,
+  SciPreviewParts, useCanvasHover). netcdfjs is vendored (scripts/vendor-sci).
+
+  Input: the reserved `_file` param (absolute filesystem path). The whole file is
+  fetched from the raw endpoint, then parsed. NetCDF-4 / HDF5 files (magic
+  \x89HDF) are not decoded in-browser → a graceful card.
+-->
+<style>
+  /* ===== dark theme — fused-render palette (matches the shell + sibling templates) ===== */
+  :root{
+    color-scheme: dark;
+    --background:#131417;
+    --foreground:#e8eaed;
+    --card:#1b1d21;
+    --muted:#2a2d33;
+    --muted-foreground:#9aa0a6;
+    --border:#2a2d33;
+    --input:#2a2d33;
+    --ring:#5b9dff;
+    --primary:#e8eaed;
+    --muted-30:rgba(42,45,51,0.35);
+  }
+  *{ box-sizing:border-box; }
+  html,body{ height:100%; margin:0; }
+  body{ background:var(--background); color:var(--foreground); font:13px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; overflow:hidden; -webkit-font-smoothing:antialiased; }
+  .mono{ font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .app{ height:100vh; display:flex; flex-direction:column; }
+  .topbar{ height:44px; flex:0 0 auto; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:0 16px; border-bottom:1px solid var(--border); }
+  .titlewrap{ display:flex; align-items:center; gap:10px; min-width:0; }
+  .badge{ font-size:11px; font-weight:600; letter-spacing:.02em; padding:2px 8px; border:1px solid var(--border); border-radius:999px; color:var(--muted-foreground); text-transform:uppercase; white-space:nowrap; }
+  .fname{ font-family:ui-monospace,monospace; font-size:12px; color:var(--foreground); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .surface{ flex:1 1 auto; min-height:0; overflow:auto; position:relative; }
+  /* preview layout */
+  .preview{ height:100%; display:flex; flex-direction:row; }
+  .mainpane{ display:flex; flex-direction:column; flex:1 1 auto; min-width:0; min-height:0; }
+  .canvas-area{ flex:1 1 auto; min-height:10rem; display:flex; align-items:center; justify-content:center; background:var(--muted-30); padding:16px; }
+  canvas.viz{ max-width:100%; max-height:100%; width:100%; height:100%; object-fit:contain; cursor:crosshair; image-rendering:pixelated; }
+  .hover-readout{ flex:0 0 auto; height:24px; display:flex; align-items:center; overflow:hidden; white-space:nowrap; border-top:1px solid var(--border); padding:0 12px; font-family:ui-monospace,monospace; font-size:11px; color:var(--muted-foreground); }
+  .controls{ flex:0 0 auto; display:flex; flex-wrap:wrap; align-items:center; gap:6px 16px; border-top:1px solid var(--border); padding:6px 12px; }
+  .hist-wrap{ flex:0 0 auto; border-top:1px solid var(--border); padding:8px; }
+  .meta-pane{ flex:0 0 auto; overflow:auto; border-top:1px solid var(--border); padding:16px; display:flex; flex-direction:column; gap:12px; }
+  @media (min-width:1000px){ .meta-pane{ width:320px; border-top:0; border-left:1px solid var(--border); } }
+  /* stacked mode: grow + scroll — a viewport-clamped height would squeeze .mainpane and its fixed children would paint over the meta pane */
+  @media (max-width:999px){ .preview{ flex-direction:column; height:auto; min-height:100%; } .canvas-area{ height:40vh; } }
+  /* control widgets */
+  label.field{ display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--muted-foreground); }
+  label.field select{ height:24px; border:1px solid var(--input); background:transparent; color:var(--foreground); border-radius:4px; padding:0 4px; font-family:ui-monospace,monospace; font-size:11px; }
+  label.field select option{ background:var(--card); }
+  label.slider{ display:inline-flex; align-items:center; gap:8px; font-size:11px; color:var(--muted-foreground); min-width:0; }
+  label.slider input[type=range]{ width:128px; height:4px; cursor:pointer; accent-color:var(--foreground); }
+  label.slider .val{ color:var(--foreground); }
+  label.slider .val .dim{ color:var(--muted-foreground); }
+  /* histogram */
+  .collapsible{ border:1px solid var(--border); border-radius:6px; }
+  .collapsible>summary{ cursor:pointer; user-select:none; padding:6px 12px; font-size:12px; font-weight:500; color:var(--muted-foreground); list-style:none; }
+  .collapsible>summary::-webkit-details-marker{ display:none; }
+  .collapsible>summary:hover{ color:var(--foreground); }
+  .collapsible>.body{ border-top:1px solid var(--border); padding:8px 12px; }
+  .hist-toolbar{ display:flex; justify-content:flex-end; }
+  .log-btn{ border:1px solid var(--border); background:transparent; color:var(--muted-foreground); border-radius:4px; padding:0 6px; font-family:ui-monospace,monospace; font-size:10px; cursor:pointer; }
+  .log-btn[aria-pressed=true]{ border-color:color-mix(in oklab,var(--foreground) 40%,transparent); color:var(--foreground); }
+  canvas.hist{ width:100%; height:120px; border-radius:3px; background:var(--muted-30); image-rendering:pixelated; display:block; margin-top:4px; }
+  .hist-canvas-wrap{ position:relative; }
+  .hist-tip{ position:absolute; top:6px; z-index:5; pointer-events:none; background:var(--card); border:1px solid var(--border); border-radius:4px; padding:4px 6px; font-family:ui-monospace,monospace; font-size:10px; color:var(--foreground); white-space:nowrap; box-shadow:0 4px 12px rgba(0,0,0,.4); }
+  .hist-tip .rng{ color:var(--muted-foreground); margin-bottom:2px; }
+  .hist-tip .row{ display:flex; align-items:center; gap:5px; }
+  .hist-tip .sw{ width:8px; height:8px; border-radius:2px; flex:0 0 auto; }
+  .hist-axis{ display:flex; justify-content:space-between; font-family:ui-monospace,monospace; font-size:10px; color:var(--muted-foreground); margin-top:2px; }
+  .stat-line{ font-family:ui-monospace,monospace; font-size:10px; color:var(--muted-foreground); margin:2px 0 0; }
+  /* meta list */
+  dl.meta{ display:grid; grid-template-columns:auto 1fr; gap:4px 16px; font-size:12px; margin:0; }
+  dl.meta dt{ color:var(--muted-foreground); }
+  dl.meta dd{ margin:0; font-family:ui-monospace,monospace; color:var(--foreground); word-break:break-word; }
+  .meta-section>.lbl{ font-size:12px; color:var(--muted-foreground); margin-bottom:4px; }
+  .var-list{ list-style:none; margin:0; padding:0; font-size:12px; display:flex; flex-direction:column; gap:4px; }
+  .var-list li{ font-family:ui-monospace,monospace; color:var(--foreground); }
+  .var-list .dim{ color:var(--muted-foreground); }
+  pre.json{ max-height:16rem; overflow:auto; white-space:pre-wrap; word-break:break-word; font-family:ui-monospace,monospace; font-size:11px; color:var(--foreground); margin:0; }
+  pre.json .j-key{ color:#7dd3fc; }
+  pre.json .j-str{ color:#86efac; }
+  pre.json .j-num{ color:#fbbf24; }
+  pre.json .j-bool,pre.json .j-null{ color:#c4b5fd; }
+  pre.json .j-punc{ color:var(--muted-foreground); }
+  /* status / graceful card */
+  .status{ padding:16px; font-size:13px; color:var(--muted-foreground); }
+  .status.error{ color:#ff6b6b; }
+  .card{ height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; padding:32px; text-align:center; }
+  .card .ico{ font-size:34px; opacity:.4; }
+  .card .t{ font-size:14px; color:var(--foreground); }
+  .card .s{ font-size:12px; color:var(--muted-foreground); max-width:26rem; }
+</style>
+
+<div class="app">
+  <header class="topbar">
+    <div class="titlewrap"><span class="badge">NetCDF</span><span class="fname" id="fname">no file</span></div>
+  </header>
+  <main class="surface" id="surface"></main>
+</div>
+
+<script type="module">
+import { NetCDFReader } from "/template-assets/netcdfjs.bundle.mjs";
+
+/* ===========================================================================
+ * sciViz core — ported 1:1 from app/src/ui/components/sci/sciViz.ts
+ * ======================================================================== */
+function clampByte(v){ if(v<=0) return 0; if(v>=255) return 255; return Math.round(v); }
+const VIRIDIS_LUT = (()=>{
+  const C=[
+    [0.2777273272234177,0.005407344544966578,0.3340998053353061],
+    [0.1050930431085774,1.404613529898575,1.384590162594685],
+    [-0.3308618287255563,0.214847559468213,0.09509516302823659],
+    [-4.634230498983486,-5.799100973351585,-19.33244095627987],
+    [6.228269936347081,14.17993336680509,56.69055260068105],
+    [4.776384997670288,-13.74514537774601,-65.35303263337234],
+    [-5.435455855934631,4.645852612178535,26.3124352495832],
+  ];
+  const lut=new Uint8Array(256*3);
+  for(let i=0;i<256;i++){ const t=i/255; let r=0,g=0,b=0;
+    for(let k=C.length-1;k>=0;k--){ r=C[k][0]+t*r; g=C[k][1]+t*g; b=C[k][2]+t*b; }
+    lut[i*3]=clampByte(r*255); lut[i*3+1]=clampByte(g*255); lut[i*3+2]=clampByte(b*255);
+  }
+  return lut;
+})();
+function buildAnchorLut(anchors){
+  const lut=new Uint8Array(256*3); const spans=anchors.length-1;
+  for(let i=0;i<256;i++){ const t=(i/255)*spans; const k=Math.min(spans-1,Math.floor(t)); const f=t-k;
+    for(let c=0;c<3;c++) lut[i*3+c]=clampByte(anchors[k][c]+f*(anchors[k+1][c]-anchors[k][c]));
+  }
+  return lut;
+}
+const MAGMA_LUT = buildAnchorLut([[0,0,4],[29,17,71],[81,18,124],[130,38,129],[182,54,121],[230,81,100],[251,136,97],[254,194,135],[252,253,191]]);
+const GRAY_LUT = (()=>{ const lut=new Uint8Array(256*3); for(let i=0;i<256;i++) lut[i*3]=lut[i*3+1]=lut[i*3+2]=i; return lut; })();
+const COLORMAPS = { viridis:VIRIDIS_LUT, magma:MAGMA_LUT, gray:GRAY_LUT };
+
+function isValid(v,nodata){ return Number.isFinite(v) && (nodata==null || v!==nodata); }
+function percentileStretch(values, opts={}){
+  const lo=opts.lo??2, hi=opts.hi??98, n=values.length;
+  const step=n>200000?Math.ceil(n/100000):1; const finite=[];
+  for(let i=0;i<n;i+=step){ const v=values[i]; if(isValid(v,opts.nodata)) finite.push(v); }
+  if(finite.length===0) return {min:0,max:1};
+  finite.sort((a,b)=>a-b);
+  const at=(p)=>finite[Math.min(finite.length-1,Math.max(0,Math.round((p/100)*(finite.length-1))))];
+  const min=at(lo), max=at(hi);
+  return max>min?{min,max}:{min,max:min+1};
+}
+function minMaxStretch(values, opts={}){
+  let min=Infinity,max=-Infinity;
+  for(let i=0;i<values.length;i++){ const v=values[i]; if(!isValid(v,opts.nodata)) continue; if(v<min)min=v; if(v>max)max=v; }
+  if(!Number.isFinite(min)||!Number.isFinite(max)) return {min:0,max:1};
+  return max>min?{min,max}:{min,max:min+1};
+}
+function computeStretch(values, mode, opts={}){ return mode==="minmax"?minMaxStretch(values,opts):percentileStretch(values,opts); }
+const SAMPLE_CAP=4000000;
+function computeStats(values, opts={}){
+  const n=values.length; const step=n>SAMPLE_CAP?Math.ceil(n/SAMPLE_CAP):1;
+  let min=Infinity,max=-Infinity,sum=0,sumSq=0,valid=0,invalid=0;
+  for(let i=0;i<n;i+=step){ const v=values[i];
+    if(!isValid(v,opts.nodata)){ invalid++; continue; }
+    valid++; if(v<min)min=v; if(v>max)max=v; sum+=v; sumSq+=v*v;
+  }
+  const sampled=valid+invalid;
+  const validCount=step===1||sampled===0?valid:Math.round((valid/sampled)*n);
+  const nanCount=n-validCount;
+  if(valid===0) return {min:NaN,max:NaN,mean:NaN,std:NaN,validCount:0,nanCount:n};
+  const mean=sum/valid; const variance=Math.max(0,sumSq/valid-mean*mean);
+  return {min,max,mean,std:Math.sqrt(variance),validCount,nanCount};
+}
+function computeHistogram(values, bins, opts){
+  const counts=new Uint32Array(Math.max(1,bins)); const {min,max}=opts; const span=max-min;
+  const n=values.length; const step=n>SAMPLE_CAP?Math.ceil(n/SAMPLE_CAP):1;
+  for(let i=0;i<n;i+=step){ const v=values[i]; if(!isValid(v,opts.nodata)) continue;
+    const idx=span>0?Math.floor(((v-min)/span)*counts.length):0;
+    counts[idx<0?0:idx>=counts.length?counts.length-1:idx]++;
+  }
+  return counts;
+}
+function canvasPixelAt(offsetX,offsetY,boxW,boxH,imgW,imgH){
+  if(imgW<=0||imgH<=0||boxW<=0||boxH<=0) return null;
+  const scale=Math.min(boxW/imgW,boxH/imgH);
+  const x=Math.floor((offsetX-(boxW-imgW*scale)/2)/scale);
+  const y=Math.floor((offsetY-(boxH-imgH*scale)/2)/scale);
+  if(x<0||y<0||x>=imgW||y>=imgH) return null;
+  return {x,y};
+}
+const CF_TIME_MS={second:1e3,seconds:1e3,minute:60e3,minutes:60e3,hour:3.6e6,hours:3.6e6,day:86.4e6,days:86.4e6};
+function cfTimeLabel(value,units){
+  if(!units||!Number.isFinite(value)) return null;
+  const m=/^\s*([a-z]+)\s+since\s+(\d{1,4})-(\d{1,2})-(\d{1,2})(?:[T ](\d{1,2}):(\d{1,2})(?::(\d{1,2}(?:\.\d+)?))?)?/i.exec(units);
+  if(!m) return null;
+  const ms=CF_TIME_MS[m[1].toLowerCase()]; if(!ms) return null;
+  const base=Date.UTC(+m[2],+m[3]-1,+m[4],+(m[5]??0),+(m[6]??0),Math.floor(+(m[7]??0)));
+  const d=new Date(base+value*ms);
+  if(Number.isNaN(d.getTime())) return null;
+  return `${d.toISOString().slice(0,16).replace("T"," ")}Z`;
+}
+function fmtNum(v){
+  if(!Number.isFinite(v)) return String(v);
+  if(Number.isInteger(v)&&Math.abs(v)<1e9) return String(v);
+  const a=Math.abs(v);
+  if(a!==0&&(a>=1e6||a<1e-4)) return v.toExponential(2);
+  return String(Number(v.toPrecision(5)));
+}
+function bucket(v,s){ const t=(v-s.min)/(s.max-s.min); return clampByte(t*255); }
+function drawHeatmap(canvas,data,width,height,stretch,opts={}){
+  const ctx=canvas.getContext("2d"); if(!ctx) return;
+  const lut=opts.lut??VIRIDIS_LUT;
+  canvas.width=width; canvas.height=height;
+  const img=ctx.createImageData(width,height); const out=img.data;
+  for(let y=0;y<height;y++){ const srcRow=opts.flipY?height-1-y:y;
+    for(let x=0;x<width;x++){ const v=data[srcRow*width+x]; const o=(y*width+x)*4;
+      if(!isValid(v,opts.nodata)){ out[o+3]=0; continue; }
+      const b=bucket(v,stretch)*3; out[o]=lut[b]; out[o+1]=lut[b+1]; out[o+2]=lut[b+2]; out[o+3]=255;
+    }
+  }
+  ctx.putImageData(img,0,0);
+}
+
+/* ===========================================================================
+ * UI kit — plain-DOM equivalents of SciPreviewParts / SciHistogram / useCanvasHover.
+ * ======================================================================== */
+function el(tag, attrs={}, ...kids){
+  const n=document.createElement(tag);
+  for(const [k,v] of Object.entries(attrs)){
+    if(v==null) continue;
+    if(k==="class") n.className=v;
+    else if(k==="text") n.textContent=v;
+    else if(k==="html") n.innerHTML=v;
+    else if(k==="style"&&typeof v==="object") Object.assign(n.style,v);
+    else if(k.startsWith("on")&&typeof v==="function") n.addEventListener(k.slice(2).toLowerCase(),v);
+    else n.setAttribute(k,v);
+  }
+  for(const kid of kids.flat()){ if(kid==null||kid===false) continue; n.append(kid.nodeType?kid:document.createTextNode(String(kid))); }
+  return n;
+}
+function statusEl(kind,msg){ return el("p",{class:"status"+(kind==="error"?" error":"")}, msg); }
+function metaList(rows){
+  const shown=rows.filter(([,v])=>v!=null && v!=="");
+  if(shown.length===0) return null;
+  const dl=el("dl",{class:"meta"});
+  for(const [k,v] of shown) dl.append(el("dt",{},k), el("dd",{}, v));
+  return dl;
+}
+function collapsible(label, child, open=false){
+  const d=el("details",{class:"collapsible"}); if(open) d.setAttribute("open","");
+  d.append(el("summary",{},label), el("div",{class:"body"}, child));
+  return d;
+}
+const JSON_TOKEN=/"(?:\\.|[^"\\])*"|\b(?:true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|[{}\[\],:]/g;
+function jsonBlock(value){
+  let text; try{ text=JSON.stringify(value,(k,v)=>typeof v==="bigint"?v.toString():v,2); }catch{ text=String(value); }
+  const pre=el("pre",{class:"json"}); if(!text){ pre.append("(none)"); return pre; }
+  let last=0, m; JSON_TOKEN.lastIndex=0; // syntax-highlight: each token → text-only span (never innerHTML with raw values) ⇒ XSS-safe
+  while((m=JSON_TOKEN.exec(text))){
+    if(m.index>last) pre.append(document.createTextNode(text.slice(last,m.index)));
+    const tok=m[0]; let cls;
+    if(tok[0]==='"') cls=text[JSON_TOKEN.lastIndex]===":"?"j-key":"j-str"; // a string immediately before ':' is an object key
+    else if(tok==="true"||tok==="false") cls="j-bool";
+    else if(tok==="null") cls="j-null";
+    else if(tok.length===1&&"{}[],:".includes(tok)) cls="j-punc";
+    else cls="j-num";
+    pre.append(el("span",{class:cls}, tok));
+    last=JSON_TOKEN.lastIndex;
+  }
+  if(last<text.length) pre.append(document.createTextNode(text.slice(last)));
+  return pre;
+}
+function tinySelect(label, value, options, onChange){
+  const sel=el("select");
+  for(const [v,t] of options){ const o=el("option",{value:v},t); if(v===value) o.selected=true; sel.append(o); }
+  sel.addEventListener("change",()=>onChange(sel.value));
+  return el("label",{class:"field"}, label, sel);
+}
+/* One leading-dimension slider (ports DimSlider). setDisplay updates the live
+ * index + coord label without rebuilding the element (keeps drag focus). */
+function makeDimSlider(label, size, initial, onChange){
+  const input=el("input",{type:"range",min:"0",max:String(Math.max(0,size-1)),step:"1",value:String(initial),"aria-label":label+" index"});
+  const valSpan=el("span",{class:"val mono"});
+  function setDisplay(v, coordLabel){
+    valSpan.replaceChildren();
+    valSpan.append(String(v), el("span",{class:"dim"}, ` / ${size-1}`));
+    if(coordLabel!=null && coordLabel!=="") valSpan.append(el("span",{class:"dim"}, ` · ${coordLabel}`));
+  }
+  input.addEventListener("input",()=> onChange(Number(input.value)));
+  return { element: el("label",{class:"slider"}, el("span",{class:"mono"},label), input, valSpan), setDisplay };
+}
+function makeHistogram(){
+  const BINS=256, HEIGHT=120;
+  let logY=false, current=null, lastColormap="viridis", hoverBin=-1;
+  const canvas=el("canvas",{class:"hist"});
+  const logBtn=el("button",{class:"log-btn",type:"button",title:"Toggle logarithmic Y axis","aria-pressed":"false"},"log");
+  const loSpan=el("span",{class:"mono"}), hiSpan=el("span",{class:"mono"});
+  const statsBox=el("div");
+  const tip=el("div",{class:"hist-tip",hidden:""});
+  const canvasWrap=el("div",{class:"hist-canvas-wrap"}, canvas, tip);
+  const body=el("div",{}, el("div",{class:"hist-toolbar"}, logBtn), canvasWrap, el("div",{class:"hist-axis"}, loSpan, hiSpan), statsBox);
+  const details=collapsible("Histogram", body, true);
+  function compute(bands){
+    const stats=bands.map(b=>computeStats(b.data,{nodata:b.nodata}));
+    let lo=Infinity,hi=-Infinity;
+    for(const s of stats){ if(s.validCount>0){ if(s.min<lo)lo=s.min; if(s.max>hi)hi=s.max; } }
+    if(!Number.isFinite(lo)){ lo=0; hi=1; } else if(hi<=lo){ hi=lo+1; }
+    const hists=bands.map(b=>computeHistogram(b.data,BINS,{min:lo,max:hi,nodata:b.nodata}));
+    return {stats,hists,lo,hi};
+  }
+  function paint(){
+    if(!current) return;
+    const ctx=canvas.getContext("2d"); if(!ctx) return;
+    canvas.width=BINS; canvas.height=HEIGHT; ctx.clearRect(0,0,BINS,HEIGHT);
+    let maxCount=1; for(const h of current.hists) for(let i=0;i<h.length;i++) if(h[i]>maxCount) maxCount=h[i];
+    const norm=c=> logY? Math.log1p(c)/Math.log1p(maxCount) : c/maxCount;
+    const lut=COLORMAPS[lastColormap];
+    current.hists.forEach((hist,bi)=>{
+      const color=current.bands[bi]?.color;
+      if(color){ ctx.globalCompositeOperation="screen"; ctx.fillStyle=color; }
+      else ctx.globalCompositeOperation="source-over";
+      for(let i=0;i<hist.length;i++){ if(hist[i]===0) continue;
+        if(!color){ const b=Math.round((i/(hist.length-1))*255)*3; ctx.fillStyle=`rgb(${lut[b]},${lut[b+1]},${lut[b+2]})`; }
+        const h=Math.max(1,Math.round(norm(hist[i])*HEIGHT));
+        ctx.fillRect(i,HEIGHT-h,1,h);
+      }
+    });
+    ctx.globalCompositeOperation="source-over";
+    if(hoverBin>=0&&hoverBin<BINS){ ctx.fillStyle="rgba(255,255,255,0.18)"; ctx.fillRect(hoverBin,0,1,HEIGHT); } // highlight hovered bin column
+  }
+  function renderStats(){
+    statsBox.replaceChildren();
+    current.stats.forEach((s,i)=>{
+      const band=current.bands[i]; const p=el("p",{class:"stat-line"});
+      if(band?.label){ const sp=el("span",{},band.label+" "); if(band.color) sp.style.color=band.color; p.append(sp); }
+      if(s.validCount===0) p.append("no valid samples");
+      else p.append(`min ${fmtNum(s.min)} · max ${fmtNum(s.max)} · mean ${fmtNum(s.mean)} · σ ${fmtNum(s.std)} · valid ${s.validCount.toLocaleString()} px`);
+      statsBox.append(p);
+    });
+  }
+  logBtn.addEventListener("click",()=>{ logY=!logY; logBtn.setAttribute("aria-pressed",String(logY)); paint(); });
+  function binAt(clientX){ const rect=canvas.getBoundingClientRect(); if(rect.width<=0) return -1; const b=Math.floor(((clientX-rect.left)/rect.width)*BINS); return b<0?0:b>=BINS?BINS-1:b; }
+  function showTip(clientX){
+    if(!current){ tip.hidden=true; return; }
+    const bin=binAt(clientX); if(bin<0){ hideTip(); return; }
+    hoverBin=bin; paint(); // repaint so the hovered column highlight follows the cursor
+    const span=current.hi-current.lo, lo=current.lo+(bin/BINS)*span, hi=current.lo+((bin+1)/BINS)*span;
+    tip.replaceChildren(el("div",{class:"rng"}, `${fmtNum(lo)}–${fmtNum(hi)}`)); // range = bin's value interval
+    const multi=current.bands.length>1;
+    current.hists.forEach((h,i)=>{ const band=current.bands[i]; const row=el("div",{class:"row"}); // raw counts per band (not log-scaled)
+      if(multi&&band?.color) row.append(el("span",{class:"sw",style:{background:band.color}}));
+      row.append(el("span",{}, `${band?.label?band.label+" ":"count "}${h[bin].toLocaleString()}`)); tip.append(row); });
+    tip.hidden=false;
+    const rect=canvas.getBoundingClientRect(); const px=((bin+0.5)/BINS)*rect.width; const tw=tip.offsetWidth;
+    let left=px+10; if(left+tw>rect.width) left=px-10-tw; if(left<0) left=0; tip.style.left=`${left}px`; // flip left near the right edge, clamp at 0
+  }
+  function hideTip(){ if(hoverBin===-1&&tip.hidden) return; hoverBin=-1; tip.hidden=true; paint(); }
+  canvas.addEventListener("mousemove",(e)=>showTip(e.clientX));
+  canvas.addEventListener("mouseleave",hideTip);
+  return {
+    element: details,
+    update(bands, colormap){ lastColormap=colormap; current={...compute(bands), bands}; loSpan.textContent=fmtNum(current.lo); hiSpan.textContent=fmtNum(current.hi); paint(); renderStats(); },
+    setColormap(colormap){ lastColormap=colormap; paint(); },
+  };
+}
+function attachHover(canvas, getSize, onPixel){
+  let raf=null;
+  canvas.addEventListener("mousemove",(e)=>{
+    if(raf!=null) return;
+    const {clientX,clientY}=e;
+    raf=requestAnimationFrame(()=>{ raf=null;
+      const rect=canvas.getBoundingClientRect(); const {w,h}=getSize();
+      onPixel(canvasPixelAt(clientX-rect.left,clientY-rect.top,rect.width,rect.height,w,h));
+    });
+  });
+  canvas.addEventListener("mouseleave",()=>{ if(raf!=null) cancelAnimationFrame(raf); raf=null; onPixel(null); });
+}
+
+/* ===========================================================================
+ * Shell — top bar + fetch helpers. Input is the reserved `_file` param.
+ * ======================================================================== */
+const surface=document.getElementById("surface");
+const fnameEl=document.getElementById("fname");
+function setFname(n){ fnameEl.textContent=n||"no file"; }
+function baseName(u){ try{ const p=new URL(u,location.href).pathname; return decodeURIComponent(p.replace(/\/+$/,"").split("/").pop()||u); }catch{ return u; } }
+function fetchHint(e,what){ return e instanceof TypeError ? new Error(`Failed to fetch ${what} — network failure or the raw endpoint returned no body.`) : e; }
+async function fetchBytes(url){ let res; try{ res=await fetch(url); }catch(e){ throw fetchHint(e,url); } if(!res.ok) throw new Error(`HTTP ${res.status} fetching ${url}`); return await res.arrayBuffer(); }
+
+/* ===========================================================================
+ * NetCDF controller — ports NetCdfPreview.tsx parse + render logic.
+ * ======================================================================== */
+const COLORMAP_OPTIONS=[["viridis","viridis"],["magma","magma"],["gray","gray"]];
+const STRETCH_OPTIONS=[["p2-98","2–98%"],["minmax","min–max"]];
+const TYPE_LABEL={ byte:"int8", char:"char", short:"int16", int:"int32", float:"float32", double:"float64" };
+function attrsOf(v){ return Array.isArray(v)?v:[]; }
+function attrValue(list, name){ return list.find(a=>a.name===name)?.value; }
+function sameIndices(a,b){ return a.length===b.length && a.every((v,i)=>v===b[i]); }
+/* Flatten `raw` (flat numbers or array-per-record) into `size` values, unpacking
+ * CF packing: _FillValue/missing_value (raw match) → NaN, then raw*scale+offset. */
+function flattenVar(raw, size, opts={}){
+  const scale=opts.scale??1, offset=opts.offset??0, nodata=opts.nodata??null;
+  const out=new Float64Array(size); let count=0;
+  const push=(v)=>{ const num=typeof v==="number"?v:NaN; out[count++]= (nodata!=null && num===nodata)?NaN:num*scale+offset; };
+  for(const item of raw){ if(count>=size) break;
+    if(Array.isArray(item)){ for(const x of item){ if(count>=size) break; push(x); } }
+    else push(item);
+  }
+  return out;
+}
+
+// Input is the reserved `_file` param — an absolute filesystem path. NetCDF-3 is
+// compact and self-describing, so the whole file is fetched, then parsed.
+function noFileCard(){
+  surface.replaceChildren(el("div",{class:"card"},
+    el("div",{class:"ico"},"🌐"),
+    el("div",{class:"t"},"No NetCDF file selected"),
+    el("div",{class:"s"},"This template renders the file named by the _file parameter."),
+  ));
+}
+async function loadTarget(){
+  const file=fused.params.get("_file");
+  if(!file){ noFileCard(); return; }
+  setFname(baseName(file));
+  renderNetCdf(()=>fetchBytes(fused.rawUrl(file)));
+}
+
+async function renderNetCdf(getBuffer){
+  surface.replaceChildren(statusEl("loading","Loading NetCDF…"));
+  let buffer;
+  try{ buffer=await getBuffer(); }
+  catch(err){ surface.replaceChildren(statusEl("error",(err&&err.message)||String(err))); return; }
+  surface.replaceChildren(statusEl("loading","Parsing NetCDF…"));
+  try{
+    // Magic-byte sniff before handing bytes to netcdfjs.
+    const head=new Uint8Array(buffer.slice(0,4));
+    const isHdf5 = head[0]===0x89 && head[1]===0x48 && head[2]===0x44 && head[3]===0x46;
+    if(isHdf5){ showHdf5Card(); return; }
+    const isCdf = head[0]===0x43 && head[1]===0x44 && head[2]===0x46; // "CDF"
+    if(!isCdf) throw new Error("Not a NetCDF-3 file (unexpected magic bytes).");
+
+    const reader=new NetCDFReader(buffer);
+    const dims=reader.dimensions;
+    const vars=reader.variables;
+    const globalAttrs={}; for(const a of attrsOf(reader.globalAttributes)) globalAttrs[a.name]=a.value;
+    const dimName=(idx)=> dims[idx]?.name ?? `dim${idx}`;
+    const isCoord=(v)=> v.dimensions.length===1 && dims[v.dimensions[0]]?.name===v.name;
+    const variables=vars.map(v=>({
+      name:v.name,
+      dimLabel:`(${v.dimensions.map(dimName).join(", ")})`,
+      dtype: TYPE_LABEL[v.type] ?? v.type,
+      units: attrValue(attrsOf(v.attributes),"units"),
+    }));
+    const readCoord=(name,size)=>{
+      if(!reader.dataVariableExists(name)) return null;
+      const cv=vars.find(v=>v.name===name);
+      const cvAttrs=cv?attrsOf(cv.attributes):[];
+      const fill=attrValue(cvAttrs,"_FillValue") ?? attrValue(cvAttrs,"missing_value");
+      return { coords: flattenVar(reader.getDataVariable(name), size, { nodata: typeof fill==="number"?fill:null }), units: attrValue(cvAttrs,"units") };
+    };
+    const dataVar=vars.find(v=> !isCoord(v) && v.dimensions.length>=2 && v.type!=="char");
+    let varData=null;
+    if(dataVar){
+      const shape=dataVar.dimensions.map(i=>dims[i].size);
+      const ndim=shape.length, w=shape[ndim-1], h=shape[ndim-2];
+      const total=shape.reduce((a,b)=>a*b,1);
+      const varAttrs=attrsOf(dataVar.attributes);
+      const fill=attrValue(varAttrs,"_FillValue") ?? attrValue(varAttrs,"missing_value");
+      const scale=attrValue(varAttrs,"scale_factor"), offset=attrValue(varAttrs,"add_offset");
+      const full=flattenVar(reader.getDataVariable(dataVar.name), total, {
+        scale: typeof scale==="number"?scale:1,
+        offset: typeof offset==="number"?offset:0,
+        nodata: typeof fill==="number"?fill:null,
+      });
+      const dimNames=dataVar.dimensions.map(dimName);
+      const lat=readCoord(dimNames[ndim-2], h);
+      const lon=readCoord(dimNames[ndim-1], w);
+      const flipY = lat!=null && lat.coords.length>=2 && lat.coords[0] > lat.coords[lat.coords.length-1];
+      const leading=[];
+      for(let d=0; d<ndim-2; d++){ const c=readCoord(dimNames[d], shape[d]); leading.push({name:dimNames[d], size:shape[d], coords:c?.coords??null, units:c?.units}); }
+      varData={ name:dataVar.name, units:attrValue(varAttrs,"units"), shape, dimNames, w, h, full, flipY, leading, latCoords: lat?.coords??null, lonCoords: lon?.coords??null };
+    }
+    mountNetCdf({dims, variables, globalAttrs}, varData);
+  } catch(err){
+    surface.replaceChildren(statusEl("error",(err&&err.message)||String(err)||"Failed to read NetCDF."));
+  }
+}
+
+function showHdf5Card(){
+  surface.replaceChildren(el("div",{class:"preview"}, el("div",{class:"mainpane"}, el("div",{class:"card"},
+    el("div",{class:"ico"},"📄"),
+    el("div",{class:"t"},"NetCDF-4 / HDF5"),
+    el("div",{class:"s"},"This file uses the HDF5-based NetCDF-4 format, which is not decoded in the browser yet. Download it to open in a desktop tool."),
+  ))));
+}
+
+function mountNetCdf(meta, varData){
+  let colormap="viridis", stretchMode="minmax";
+  // metadata panel (always shown)
+  const metaPane=el("aside",{class:"meta-pane"});
+  function buildMeta(){
+    metaPane.replaceChildren();
+    const ml=metaList([
+      ["Dimensions", meta.dims.map(d=>`${d.name} (${d.size})`).join(", ")],
+      ["Preview", varData ? `${varData.name} ${varData.dimNames.join("×")} — ${varData.h}×${varData.w} slice` : null],
+    ]);
+    if(ml) metaPane.append(ml);
+    const varSection=el("div",{class:"meta-section"}, el("p",{class:"lbl"},"Variables"));
+    const ul=el("ul",{class:"var-list"});
+    for(const v of meta.variables){
+      ul.append(el("li",{}, el("span",{},v.name), el("span",{class:"dim"}, ` ${v.dimLabel} · ${v.dtype}${v.units?` · ${v.units}`:""}`)));
+    }
+    varSection.append(ul); metaPane.append(varSection);
+    if(Object.keys(meta.globalAttrs).length>0) metaPane.append(collapsible("Global attributes", jsonBlock(meta.globalAttrs)));
+  }
+  buildMeta();
+
+  if(!varData){
+    surface.replaceChildren(el("div",{class:"preview"},
+      el("div",{class:"mainpane"}, el("div",{class:"canvas-area"}, statusEl("empty","No 2-D variable to preview."))),
+      metaPane,
+    ));
+    return;
+  }
+
+  const canvas=el("canvas",{class:"viz"});
+  const hover=el("div",{class:"hover-readout"},"—");
+  const hist=makeHistogram();
+
+  // slider state: indices (live) + committed (debounced ~100ms → re-slice/redraw)
+  const nLead=varData.shape.length-2;
+  let indices=new Array(Math.max(0,nLead)).fill(0);
+  let committed=indices.slice();
+  let commitTimer=null;
+  const sliders=[];
+
+  function coordLabelFor(dim, idx){
+    if(!dim.coords) return null;
+    const v=dim.coords[Math.min(idx, dim.coords.length-1)];
+    if(!Number.isFinite(v)) return "—"; // fill/missing coord → clear marker
+    return cfTimeLabel(v, dim.units) ?? `${fmtNum(v)}${dim.units?` ${dim.units}`:""}`;
+  }
+  function sliceFor(committedIdx){
+    const {shape,w,h}=varData; let idx=0;
+    for(let d=0; d<committedIdx.length; d++) idx = idx*shape[d] + Math.min(Math.max(0,committedIdx[d]), shape[d]-1);
+    const size=w*h; return varData.full.subarray(idx*size, (idx+1)*size);
+  }
+
+  let slice=sliceFor(committed);
+  let stretch=computeStretch(slice, stretchMode, {});
+  function paint(){ drawHeatmap(canvas, slice, varData.w, varData.h, stretch, { flipY:varData.flipY, lut:COLORMAPS[colormap] }); }
+  function recompute(){ slice=sliceFor(committed); stretch=computeStretch(slice, stretchMode, {}); paint(); hist.update([{data:slice}], colormap); }
+
+  // controls: leading-dim sliders, then colormap + stretch
+  const controls=el("div",{class:"controls"});
+  varData.leading.forEach((dim,d)=>{
+    const s=makeDimSlider(dim.name, dim.size, indices[d]??0, (v)=>{
+      indices[d]=v; s.setDisplay(v, coordLabelFor(dim, v));
+      if(commitTimer) clearTimeout(commitTimer);
+      commitTimer=setTimeout(()=>{ if(!sameIndices(committed, indices)){ committed=indices.slice(); recompute(); } }, 100);
+    });
+    s.setDisplay(indices[d]??0, coordLabelFor(dim, indices[d]??0));
+    sliders.push(s); controls.append(s.element);
+  });
+  controls.append(
+    tinySelect("colormap", colormap, COLORMAP_OPTIONS, (v)=>{ colormap=v; paint(); hist.setColormap(colormap); }),
+    tinySelect("stretch", stretchMode, STRETCH_OPTIONS, (v)=>{ stretchMode=v; stretch=computeStretch(slice, stretchMode, {}); paint(); }),
+  );
+
+  attachHover(canvas, ()=>({w:varData.w,h:varData.h}), (pixel)=>{
+    if(!pixel){ hover.textContent="—"; return; }
+    const row=varData.flipY ? varData.h-1-pixel.y : pixel.y; // map canvas → data row
+    const v=slice[row*varData.w + pixel.x];
+    const value=Number.isFinite(v) ? `${fmtNum(v)}${varData.units?` ${varData.units}`:""}` : "NaN";
+    let geo="";
+    if(varData.latCoords && varData.lonCoords){
+      const lat=varData.latCoords[row], lon=varData.lonCoords[pixel.x];
+      geo=` · lat ${Number.isFinite(lat)?fmtNum(lat):"—"}, lon ${Number.isFinite(lon)?fmtNum(lon):"—"}`;
+    }
+    hover.textContent=`x ${pixel.x}, y ${row} · ${value}${geo}`;
+  });
+
+  const mainpane=el("div",{class:"mainpane"},
+    el("div",{class:"canvas-area"}, canvas),
+    hover, controls,
+    el("div",{class:"hist-wrap"}, hist.element),
+  );
+  surface.replaceChildren(el("div",{class:"preview"}, mainpane, metaPane));
+  recompute();
+}
+
+/* ===========================================================================
+ * Boot
+ * ======================================================================== */
+loadTarget();
+</script>
