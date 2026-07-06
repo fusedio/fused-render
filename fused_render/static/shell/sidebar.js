@@ -1,7 +1,7 @@
 // Sidebar UI: brand, Home entry, bookmark rows with hover card + inline rename.
-import { navigate, currentUrl, VIEW_PREFIX } from "./router.js";
+import { navigate, navigateUrl, currentUrl, VIEW_PREFIX } from "./router.js";
 import { escapeHtml } from "./format.js";
-import { loadBookmarks, deleteBookmark, renameBookmark } from "./bookmarks.js";
+import { loadBookmarks, deleteBookmark, renameBookmark, armBookmark, disarmBookmark, getArmedBookmark } from "./bookmarks.js";
 
 const sidebarEl = document.getElementById("sidebar");
 
@@ -81,10 +81,25 @@ export function renderSidebar() {
   const byId = new Map(bookmarks.map((b) => [b.id, b]));
   sidebarEl.querySelectorAll(".bookmark-row").forEach((row) => {
     const id = row.getAttribute("data-id");
+    row.querySelector(".bookmark-name").addEventListener("click", (e) => {
+      // Open the bookmark and arm it for tracking. href is kept for
+      // middle-click / copy-link, but a plain click routes in-shell.
+      e.preventDefault();
+      hideBookmarkTooltip();
+      const b = byId.get(id);
+      armBookmark(b.id, b.url);
+      navigateUrl(b.url);
+    });
     row.querySelector(".delete-btn").addEventListener("click", (e) => {
       e.preventDefault();
       hideBookmarkTooltip();
+      const armed = getArmedBookmark();
       deleteBookmark(id);
+      if (armed && armed.id === id) {
+        disarmBookmark();
+        // No breadcrumb import (one-way dep rule); let main.js re-sync.
+        window.dispatchEvent(new Event("fused:urlchange"));
+      }
       renderSidebar();
     });
     row.querySelector(".rename-btn").addEventListener("click", (e) => {

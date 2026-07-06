@@ -37,6 +37,13 @@ export function navigate(fsPath) {
   routeHandler();
 }
 
+export function navigateUrl(url) {
+  // Like navigate(), but preserves the full url (incl. query string) — used
+  // when opening a bookmark, whose url carries saved view params.
+  history.pushState(null, "", url);
+  routeHandler();
+}
+
 export function currentUrl() {
   return location.pathname + location.search;
 }

@@ -5,7 +5,7 @@ import { setRouteHandler, fsPathFromLocation, urlForFsPath } from "./router.js";
 import { getConfig, statPath } from "./api.js";
 import { escapeHtml } from "./format.js";
 import { initSidebar, renderSidebar } from "./sidebar.js";
-import { renderBreadcrumb } from "./breadcrumb.js";
+import { renderBreadcrumb, syncUpdateButton } from "./breadcrumb.js";
 import { renderListing } from "./views/listing.js";
 import { renderPreview, initPreview } from "./views/preview.js";
 
@@ -46,6 +46,18 @@ async function init() {
   initSidebar(config);
   initPreview(config);
   setRouteHandler(route);
+
+  // The preview iframe's injected runtime writes view params via
+  // parent.history.replaceState (same history object), which fires no event.
+  // Wrapping replaceState is the shell's only way to observe those param
+  // changes so the "Update bookmark" button can react to them.
+  const origReplaceState = history.replaceState.bind(history);
+  history.replaceState = function (...args) {
+    origReplaceState(...args);
+    window.dispatchEvent(new Event("fused:urlchange"));
+  };
+  window.addEventListener("fused:urlchange", () => syncUpdateButton());
+
   renderSidebar();
   route();
 }

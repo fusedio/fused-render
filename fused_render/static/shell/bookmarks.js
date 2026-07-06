@@ -37,3 +37,45 @@ export function renameBookmark(id, name) {
   if (bookmark) bookmark.name = name;
   save(bookmarks);
 }
+
+export function updateBookmarkUrl(id, url) {
+  const bookmarks = loadBookmarks();
+  const bookmark = bookmarks.find((b) => b.id === id);
+  if (bookmark) bookmark.url = url;
+  save(bookmarks);
+}
+
+// Armed-bookmark tracking on sessionStorage. Records the bookmark being
+// "followed" so the shell can offer to update its saved url when the current
+// params diverge. `url` is the SAVED bookmark url at arm/update time.
+const ARMED_KEY = "fused.armedBookmark";
+
+export function armBookmark(id, url) {
+  try {
+    sessionStorage.setItem(ARMED_KEY, JSON.stringify({ id, url }));
+  } catch (e) {
+    console.error("[fused] failed to arm bookmark:", e);
+  }
+}
+
+export function disarmBookmark() {
+  try {
+    sessionStorage.removeItem(ARMED_KEY);
+  } catch (e) {
+    console.error("[fused] failed to disarm bookmark:", e);
+  }
+}
+
+export function getArmedBookmark() {
+  try {
+    const raw = sessionStorage.getItem(ARMED_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed.id === "string" && typeof parsed.url === "string") {
+      return parsed;
+    }
+    return null;
+  } catch {
+    return null; // corrupt JSON -> treat as not armed
+  }
+}
