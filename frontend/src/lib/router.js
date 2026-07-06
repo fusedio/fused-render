@@ -1,6 +1,7 @@
-// fs-path <-> /view/ URL codec + navigation. UI-free: the actual route
-// handler is registered by main.js, so every module can import navigate()
-// without creating import cycles.
+// fs-path <-> /view/ URL codec + navigation. UI-free. The vanilla shell
+// registered a route() handler here; the React shell instead listens for the
+// "fused:navigate" event (useNavEpoch in location.js) — navigate/navigateUrl
+// dispatch it after pushState, popstate is subscribed alongside it.
 export const VIEW_PREFIX = "/view/";
 
 // Embed = chrome-free variant of view (same shell, same routing, just no
@@ -13,10 +14,10 @@ export const IS_EMBED =
 // param sync (iframe runtime's history.replaceState) inside the active prefix.
 const PREFIX = IS_EMBED ? EMBED_PREFIX : VIEW_PREFIX;
 
-let routeHandler = () => {};
+export const NAV_EVENT = "fused:navigate";
 
-export function setRouteHandler(fn) {
-  routeHandler = fn;
+function notifyNavigate() {
+  window.dispatchEvent(new Event(NAV_EVENT));
 }
 
 export function fsPathFromLocation() {
@@ -44,18 +45,16 @@ export function urlForFsPath(fsPath, search) {
 export function navigate(fsPath) {
   // Navigating between files/dirs drops old view params (fresh query string).
   history.pushState(null, "", urlForFsPath(fsPath));
-  routeHandler();
+  notifyNavigate();
 }
 
 export function navigateUrl(url) {
   // Like navigate(), but preserves the full url (incl. query string) — used
   // when opening a bookmark, whose url carries saved view params.
   history.pushState(null, "", url);
-  routeHandler();
+  notifyNavigate();
 }
 
 export function currentUrl() {
   return location.pathname + location.search;
 }
-
-window.addEventListener("popstate", () => routeHandler());

@@ -18,6 +18,16 @@ pip install -e .
 Requires Python 3.10+. Installs FastAPI, uvicorn, and pyarrow (used by the
 built-in parquet preview).
 
+### Shell development
+
+The browser shell is a React app in `frontend/`; its build output is
+committed to `fused_render/static/shell-dist/`, so installing/running needs
+no node. To work on the shell itself (Node 22):
+
+```
+cd frontend && npm install && npm run build   # or `npm run watch`
+```
+
 ### macOS app (DMG)
 
 ```

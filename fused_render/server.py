@@ -184,7 +184,10 @@ def create_app(start_dir: str) -> FastAPI:
         response.headers["Cache-Control"] = "no-cache"
         return response
 
-    shell_path = os.path.join(STATIC_DIR, "shell.html")
+    # React shell (D52): built by Vite from frontend/ into static/shell-dist/
+    # (committed output, like the vendored template libs — pip install needs
+    # no node). Rebuild with `cd frontend && npm run build`.
+    shell_path = os.path.join(STATIC_DIR, "shell-dist", "index.html")
 
     @app.get("/")
     def shell_root():

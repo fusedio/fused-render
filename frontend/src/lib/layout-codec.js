@@ -9,7 +9,7 @@
 //
 // Panes/tabs are /embed/<path> iframes (D39): a full chrome-free shell, so each
 // can browse dirs, open previews and use templates for free.
-import { EMBED_PREFIX } from "../router.js";
+import { EMBED_PREFIX } from "./router.js";
 
 // --- Tree codec (`_layout` param) -----------------------------------------
 // `,` = row (side by side), `;` = column (stacked), `(…)` groups for nesting.
