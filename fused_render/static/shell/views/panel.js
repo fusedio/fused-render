@@ -3,8 +3,12 @@
 // `_layout` URL param, so a layout is bookmarkable/refreshable like any view.
 // Imports router.js only (one-way deps, ARCHITECTURE §6); format.js for
 // escapeHtml is a pure helper.
-import { navigateUrl } from "../router.js";
+import { navigateUrl, urlForFsPath, IS_EMBED } from "../router.js";
 import { escapeHtml } from "../format.js";
+
+// Layout mode lives under the page's own prefix (`/view/_panel` or
+// `/embed/_panel`), so entering/refreshing/exiting stays in the active mode.
+const PANEL_PATH = (IS_EMBED ? "/embed/" : "/view/") + "_panel";
 
 const contentEl = document.getElementById("content");
 
@@ -133,11 +137,11 @@ function urlSafeLayout(s) {
     .replace(/ /g, "%20");
 }
 
-// Build /view/_layout?... : the encoded tree plus the merged (top-level) param
-// pool. `merged` is an iterable of [k, v] entries; `_layout` is dropped from it
-// so callers can pass the full current query.
+// Build <prefix>/_panel?... : the encoded tree plus the merged (top-level)
+// param pool. `merged` is an iterable of [k, v] entries; `_layout` is dropped
+// from it so callers can pass the full current query.
 export function layoutUrl(codecStr, merged) {
-  let s = "/view/_layout?_layout=" + urlSafeLayout(codecStr);
+  let s = PANEL_PATH + "?_layout=" + urlSafeLayout(codecStr);
   if (merged) {
     for (const [k, v] of merged) {
       if (k === "_layout") continue;
@@ -238,9 +242,10 @@ function closeLeaf(id) {
   if (!l) return;
   const parent = findParent(tree, l);
   if (!parent) {
-    // Closing the last pane exits layout mode to a plain view of its location.
+    // Closing the last pane exits layout mode to a plain view of its location
+    // (stays in the active prefix: view or embed).
     const loc = readPaneLocById(id) || { path: l.path, query: l.query };
-    navigateUrl("/view" + embedPathToView(loc.path) + loc.query);
+    navigateUrl(urlForFsPath(loc.path, loc.query));
     return;
   }
   parent.children.splice(parent.children.indexOf(l), 1);
@@ -252,17 +257,6 @@ function closeLeaf(id) {
     else gp.children[gp.children.indexOf(parent)] = only;
   }
   render();
-}
-
-// fs path -> /view/<encoded> tail (leading slash included).
-function embedPathToView(path) {
-  const encoded = path
-    .replace(/^\/+/, "")
-    .split("/")
-    .filter((s) => s.length > 0)
-    .map(encodeURIComponent)
-    .join("/");
-  return "/" + encoded;
 }
 
 function readPaneLocById(id) {

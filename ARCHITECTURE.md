@@ -32,7 +32,7 @@ fused-render/
 │   │   │   └── views/
 │   │   │       ├── listing.js  # dir table + sortable columns
 │   │   │       ├── preview.js  # three-way dispatch: template/html/fallback
-│   │   │       └── layout.js   # split-pane grid (M5): _layout codec + pane bars
+│   │   │       └── panel.js    # split-pane grid (M5): _layout codec + pane bars
 │   │   └── runtime.js          # injected into every rendered HTML
 │   └── templates/
 │       ├── parquet_template.html
@@ -165,7 +165,7 @@ Top-level `path` handling in shell URL vs iframe URL:
 
 ## 6. Shell (`shell.html/css/js`)
 
-SPA, no framework, native ES modules (`<script type="module">`, no build step). Dependency direction is one-way: `main → views/sidebar/breadcrumb → router/api/bookmarks/format`; router never imports UI (route handler is registered by main), the bookmark store never touches the DOM. `views/layout.js` imports `router`/`format` only; `breadcrumb.js` may import `views/layout.js` (for the Split button's `_layout` codec) since `layout.js` never imports back — no cycle. Routing from `location.pathname`:
+SPA, no framework, native ES modules (`<script type="module">`, no build step). Dependency direction is one-way: `main → views/sidebar/breadcrumb → router/api/bookmarks/format`; router never imports UI (route handler is registered by main), the bookmark store never touches the DOM. `views/panel.js` imports `router`/`format` only; `breadcrumb.js` may import `views/panel.js` (for the Split button's `_layout` codec) since `panel.js` never imports back — no cycle. Routing from `location.pathname`:
 - `/` → redirect (replaceState) to `/view/<start-dir>` (start dir from `GET /api/config` → `{"start_dir": "/Users/vasu", "home": …, "source_template": <abs code_template.html>}`).
 - `/view/<path>` → `stat` it:
   - **dir** → listing view
@@ -281,9 +281,9 @@ Manual (browser, after build): browse dirs, click parquet → paged table, click
 
 Split-pane grid of `/embed` iframes; the whole arrangement + per-pane locations + all params live in one bookmarkable URL. Full requirements in SPEC §14 (LM-1..LM-12), decisions D45/D46.
 
-**Route sentinel.** `/view/_layout` is a sentinel pathname, not a file. `main.js` `route()` intercepts `location.pathname === "/view/_layout"` **before** the `statPath` call, rendering the layout view + the layout-mode breadcrumb (still refreshing the sidebar). Zero server changes — the server already serves the shell for any `/view/*`.
+**Route sentinel.** `/view/_panel` (and `/embed/_panel`) is a sentinel pathname, not a file. `main.js` `route()` intercepts it under both prefixes **before** the `statPath` call, rendering the layout view + the layout-mode breadcrumb (sidebar only outside embed). The pane tree lives in the reserved `_layout` query param. Zero server changes — the server already serves the shell for any `/view/*` and `/embed/*`.
 
-**`_layout` codec** (`views/layout.js`). The pane tree lives in the reserved query param `_layout` (`_` prefix → invisible to `fused.params`, PR-6). `,` = row (side by side), `;` = column (stacked), `(…)` groups for nesting; a leaf = the pane's fs path + optional pane-local query. Within a segment the structural chars `, ; ( ) %` (and `?` inside the path, so the first `?` always separates path from query) are percent-encoded (`%25 %2C %3B %28 %29 %3F`) so the delimiters stay unambiguous; one left-to-right decode pass reverses it (`%25` → `%` and scanning continues, so literal escaped chars survive). The codec string keeps `, ; ( ) /` literal for a readable address bar; only `% & # +`/space are escaped when placing it as a query-param value (`URLSearchParams.get('_layout')` reverses that exactly).
+**`_layout` codec** (`views/panel.js`). The pane tree lives in the reserved query param `_layout` (`_` prefix → invisible to `fused.params`, PR-6). `,` = row (side by side), `;` = column (stacked), `(…)` groups for nesting; a leaf = the pane's fs path + optional pane-local query. Within a segment the structural chars `, ; ( ) %` (and `?` inside the path, so the first `?` always separates path from query) are percent-encoded (`%25 %2C %3B %28 %29 %3F`) so the delimiters stay unambiguous; one left-to-right decode pass reverses it (`%25` → `%` and scanning continues, so literal escaped chars survive). The codec string keeps `, ; ( ) /` literal for a readable address bar; only `% & # +`/space are escaped when placing it as a query-param value (`URLSearchParams.get('_layout')` reverses that exactly).
 
 **Merged vs pane-local params.** Non-underscore params on the layout URL form one merged pool shared by every pane — a pane's runtime climbs to the layout shell (D46) and reads them directly, so merging is structural. Pane-local shell state (listing `sort`/`order`, `_mode`) stays on the pane's own embed URL, captured per-pane inside the `_layout` segment. The Split entry (`breadcrumb.js`) partitions the current view's params accordingly: `_`-prefixed + `sort`/`order` → pane segment; everything else → merged top-level pool.
 

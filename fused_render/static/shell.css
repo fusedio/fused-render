@@ -579,7 +579,7 @@ body.embed .preview-header {
   display: none;
 }
 
-/* Layout mode (/view/_layout): a split-pane grid of /embed iframes (SPEC §14).
+/* Layout mode (/view/_panel, /embed/_panel): a split-pane grid of /embed iframes (SPEC §14).
    Modeled on the reference grid-viewer's pane styles, using our palette. The
    root is position:relative so a maximized pane fills the layout area (inside
    #content) without covering the sidebar or breadcrumb. */

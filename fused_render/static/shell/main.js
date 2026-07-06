@@ -8,7 +8,7 @@ import { initSidebar, renderSidebar } from "./sidebar.js";
 import { renderBreadcrumb, renderLayoutBreadcrumb, syncUpdateButton } from "./breadcrumb.js";
 import { renderListing, stopListingWatch } from "./views/listing.js";
 import { renderPreview, initPreview } from "./views/preview.js";
-import { renderLayout, stopLayout } from "./views/layout.js";
+import { renderLayout, stopLayout } from "./views/panel.js";
 
 const contentEl = document.getElementById("content");
 
@@ -21,10 +21,11 @@ async function route() {
     history.replaceState(null, "", urlForFsPath(config.start_dir));
   }
 
-  // Layout mode: `/view/_layout` is a sentinel pathname, not a real file (LM-1)
-  // — intercept it before stat. Zero server changes: the server already serves
-  // the shell for any /view/*.
-  if (location.pathname === "/view/_layout") {
+  // Layout mode: `_panel` is a sentinel pathname, not a real file (LM-1) —
+  // intercept it before stat, under both prefixes so a layout can itself be
+  // embedded (or nested as a pane). Zero server changes: the server already
+  // serves the shell for any /view/* and /embed/*.
+  if (location.pathname === "/view/_panel" || location.pathname === "/embed/_panel") {
     renderLayoutBreadcrumb();
     renderLayout(config);
     if (!IS_EMBED) renderSidebar();

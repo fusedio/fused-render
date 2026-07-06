@@ -3,7 +3,7 @@ import { navigate, navigateUrl, currentUrl, IS_EMBED } from "./router.js";
 import { escapeHtml, basename } from "./format.js";
 import { addBookmark, allBookmarks, updateBookmarkUrl, armBookmark, disarmBookmark, getArmedBookmark } from "./bookmarks.js";
 import { renderSidebar, syncStarButton } from "./sidebar.js";
-import { encodePaneSegment, layoutUrl } from "./views/layout.js";
+import { encodePaneSegment, layoutUrl } from "./views/panel.js";
 
 const breadcrumbEl = document.getElementById("breadcrumb");
 
