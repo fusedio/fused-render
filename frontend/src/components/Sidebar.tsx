@@ -1,11 +1,11 @@
 // Sidebar UI: brand, Home entry, bookmark rows with hover card + inline rename.
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { navigate, navigateUrl, currentUrl, VIEW_PREFIX } from "../lib/router.js";
+import { navigate, navigateUrl, currentUrl, VIEW_PREFIX } from "../lib/router";
 // Folder-as-tabs entry (TM-8): composeFolderTabsUrl builds the `/view/_tab` url
 // from a folder's children. This sidebar -> views/Tabs.jsx import is the
 // documented acyclic exception (Tabs.jsx never imports back), mirroring
 // Breadcrumb.jsx -> views/Panel.jsx.
-import { composeFolderTabsUrl } from "../views/Tabs.jsx";
+import { composeFolderTabsUrl } from "../views/Tabs";
 import {
   loadBookmarks,
   isFolder,
@@ -18,8 +18,10 @@ import {
   armBookmark,
   disarmBookmark,
   getArmedBookmark,
-} from "../lib/bookmarks.js";
-import { useUrlVersion, useBookmarksVersion, notifyBookmarksChanged } from "../lib/hooks.js";
+} from "../lib/bookmarks";
+import type { Bookmark, BookmarkFolder } from "../lib/bookmarks";
+import { useUrlVersion, useBookmarksVersion, notifyBookmarksChanged } from "../lib/hooks";
+import type { Config } from "../lib/api";
 
 // Folder shape drawn inline so it inherits currentColor — an emoji folder
 // ignores the theme and looks heavy at this size.
@@ -32,7 +34,7 @@ const FOLDER_ICON = (
 // Hover card content: target fs path + saved params, decoded like the
 // vanilla shell (raw URLSearchParams on the saved search — bookmark
 // tooltips predate the `_layout` grammar; parity over cleverness).
-function TooltipContent({ bookmark }) {
+function TooltipContent({ bookmark }: { bookmark: Bookmark }) {
   let pathname = bookmark.url;
   let search = "";
   const qIdx = bookmark.url.indexOf("?");
@@ -66,9 +68,15 @@ function TooltipContent({ bookmark }) {
 
 // Inline rename input. Uncontrolled-feeling but React-controlled; a "settled"
 // guard mirrors the vanilla one so blur-after-Enter doesn't double-commit.
-function RenameInput({ initialName, onCommit, onCancel }) {
+interface RenameInputProps {
+  initialName: string;
+  onCommit: (value: string) => void;
+  onCancel: () => void;
+}
+
+function RenameInput({ initialName, onCommit, onCancel }: RenameInputProps) {
   const [value, setValue] = useState(initialName);
-  const inputRef = useRef(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
   const settledRef = useRef(false);
 
   useEffect(() => {
@@ -93,8 +101,8 @@ function RenameInput({ initialName, onCommit, onCancel }) {
       type="text"
       className="bookmark-rename-input"
       value={value}
-      onChange={(e) => setValue(e.target.value)}
-      onKeyDown={(e) => {
+      onChange={(e: React.ChangeEvent<HTMLInputElement>) => setValue(e.target.value)}
+      onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
         if (e.key === "Enter") {
           e.preventDefault();
           commit();
@@ -108,8 +116,32 @@ function RenameInput({ initialName, onCommit, onCancel }) {
   );
 }
 
+interface DragProps {
+  onDragStart: (e: React.DragEvent<HTMLDivElement>) => void;
+  onDragOver: (e: React.DragEvent<HTMLDivElement>) => void;
+  onDragLeave: (e: React.DragEvent<HTMLDivElement>) => void;
+  onDrop: (e: React.DragEvent<HTMLDivElement>) => void;
+  onDragEnd: () => void;
+}
+
+interface BookmarkRowProps {
+  b: Bookmark;
+  child?: boolean;
+  parentId?: string;
+  isRenaming: boolean;
+  onNameClick: (e: React.MouseEvent<HTMLAnchorElement>) => void;
+  onRename: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  onDelete: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  onCommitRename: (value: string) => void;
+  onCancelRename: () => void;
+  onMouseEnter: (e: React.MouseEvent<HTMLDivElement>) => void;
+  onMouseLeave: () => void;
+  registerRef: (el: HTMLDivElement | null) => void;
+  dragProps: DragProps;
+}
+
 // Template for a bookmark row (top-level or, with child=true, inside a folder).
-function BookmarkRow({ b, child, parentId, isRenaming, onNameClick, onRename, onDelete, onCommitRename, onCancelRename, onMouseEnter, onMouseLeave, registerRef, dragProps }) {
+function BookmarkRow({ b, child, parentId, isRenaming, onNameClick, onRename, onDelete, onCommitRename, onCancelRename, onMouseEnter, onMouseLeave, registerRef, dragProps }: BookmarkRowProps) {
   return (
     <div
       className={"bookmark-row" + (child ? " child-row" : "") + (b.url === currentUrl() ? " active" : "")}
@@ -141,9 +173,23 @@ function BookmarkRow({ b, child, parentId, isRenaming, onNameClick, onRename, on
   );
 }
 
+interface FolderRowProps {
+  folder: BookmarkFolder;
+  activeHint: boolean;
+  isRenaming: boolean;
+  onGlyphClick: (e: React.MouseEvent<HTMLSpanElement>) => void;
+  onRowClick: (e: React.MouseEvent<HTMLDivElement>) => void;
+  onRename: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  onDelete: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  onCommitRename: (value: string) => void;
+  onCancelRename: () => void;
+  registerRef: (el: HTMLDivElement | null) => void;
+  dragProps: DragProps;
+}
+
 // activeHint: folder is collapsed but holds the current view's bookmark —
 // highlight the row so the selection isn't invisible while folded away.
-function FolderRow({ folder, activeHint, isRenaming, onGlyphClick, onRowClick, onRename, onDelete, onCommitRename, onCancelRename, registerRef, dragProps }) {
+function FolderRow({ folder, activeHint, isRenaming, onGlyphClick, onRowClick, onRename, onDelete, onCommitRename, onCancelRename, registerRef, dragProps }: FolderRowProps) {
   return (
     <div
       className={"bookmark-row folder-row" + (folder.collapsed ? " collapsed" : "") + (activeHint ? " active" : "")}
@@ -174,27 +220,36 @@ function FolderRow({ folder, activeHint, isRenaming, onGlyphClick, onRowClick, o
   );
 }
 
-export default function Sidebar({ config }) {
+interface SidebarProps {
+  config: Config;
+}
+
+interface HoverState {
+  bookmark: Bookmark;
+  rect: { top: number; right: number };
+}
+
+export default function Sidebar({ config }: SidebarProps) {
   // Re-render on any nav/url change (active-row highlight) and on every
   // bookmark-store mutation (this component is itself the primary subscriber
   // of the store it renders).
   useUrlVersion();
   useBookmarksVersion();
 
-  const [renamingId, setRenamingId] = useState(null);
-  const [hover, setHover] = useState(null); // { bookmark, rect: {top, right} }
-  const tooltipRef = useRef(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [hover, setHover] = useState<HoverState | null>(null);
+  const tooltipRef = useRef<HTMLDivElement | null>(null);
   // id -> row DOM node, for imperative drag-class toggling (mirrors the
   // vanilla module's querySelectorAll(".bookmark-row") sweep on dragend).
-  const rowRefs = useRef(new Map());
+  const rowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   // Drag state lives in refs, not React state — it changes on every
   // dragover and must never trigger a re-render (that would fight the
   // imperative classList toggling below).
-  const draggedIdRef = useRef(null);
+  const draggedIdRef = useRef<string | null>(null);
   const draggedIsFolderRef = useRef(false);
 
   const items = loadBookmarks(); // top-level items: bookmarks and folders
-  const folderById = new Map(items.filter(isFolder).map((f) => [f.id, f]));
+  const folderById = new Map<string, BookmarkFolder>(items.filter(isFolder).map((f) => [f.id, f]));
   const topOrder = items.map((it) => it.id); // top-level display order
 
   // Position the tooltip after its content has rendered, same timing as the
@@ -209,19 +264,19 @@ export default function Sidebar({ config }) {
 
   const hideTooltip = () => setHover(null);
 
-  const registerRow = (id) => (el) => {
+  const registerRow = (id: string) => (el: HTMLDivElement | null) => {
     if (el) rowRefs.current.set(id, el);
     else rowRefs.current.delete(id);
   };
 
-  const onHomeClick = (e) => {
+  const onHomeClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
     e.preventDefault();
     if (config && config.home) navigate(config.home);
   };
 
   // --- bookmark row handlers -------------------------------------------------
 
-  const onBookmarkNameClick = (e, b) => {
+  const onBookmarkNameClick = (e: React.MouseEvent<HTMLAnchorElement>, b: Bookmark) => {
     // Open the bookmark and arm it for tracking. href is kept for
     // middle-click / copy-link, but a plain click routes in-shell.
     e.preventDefault();
@@ -230,7 +285,7 @@ export default function Sidebar({ config }) {
     navigateUrl(b.url);
   };
 
-  const onDeleteBookmark = (e, id) => {
+  const onDeleteBookmark = (e: React.MouseEvent<HTMLButtonElement>, id: string) => {
     e.preventDefault();
     hideTooltip();
     const armed = getArmedBookmark();
@@ -243,13 +298,13 @@ export default function Sidebar({ config }) {
     notifyBookmarksChanged();
   };
 
-  const onRenameBookmark = (e, id) => {
+  const onRenameBookmark = (e: React.MouseEvent<HTMLButtonElement>, id: string) => {
     e.preventDefault();
     hideTooltip();
     setRenamingId(id);
   };
 
-  const onRowMouseEnter = (e, b) => {
+  const onRowMouseEnter = (e: React.MouseEvent<HTMLDivElement>, b: Bookmark) => {
     // No tooltip while renaming this row or while a drag is in progress.
     if (draggedIdRef.current !== null) return;
     if (renamingId === b.id) return;
@@ -257,7 +312,7 @@ export default function Sidebar({ config }) {
     setHover({ bookmark: b, rect: { top: rect.top, right: rect.right } });
   };
 
-  const commitRename = (id, value, fallbackName) => {
+  const commitRename = (id: string, value: string, fallbackName: string) => {
     renameBookmark(id, value.trim() || fallbackName);
     setRenamingId(null);
     notifyBookmarksChanged();
@@ -266,7 +321,7 @@ export default function Sidebar({ config }) {
 
   // --- folder row handlers ----------------------------------------------------
 
-  const onFolderGlyphClick = (e, id) => {
+  const onFolderGlyphClick = (e: React.MouseEvent<HTMLSpanElement>, id: string) => {
     e.preventDefault();
     e.stopPropagation(); // don't also trigger the row's open handler
     toggleFolder(id);
@@ -276,11 +331,12 @@ export default function Sidebar({ config }) {
   // Name or row click opens the folder as tabs, except over the glyph, the
   // action buttons, or the inline rename input. Opening arms nothing — a
   // folder is not a bookmark.
-  const onFolderRowClick = (e, folder) => {
+  const onFolderRowClick = (e: React.MouseEvent<HTMLDivElement>, folder: BookmarkFolder) => {
+    const target = e.target as HTMLElement;
     if (
-      e.target.closest(".folder-glyph") ||
-      e.target.closest(".bookmark-actions") ||
-      e.target.closest(".bookmark-rename-input")
+      target.closest(".folder-glyph") ||
+      target.closest(".bookmark-actions") ||
+      target.closest(".bookmark-rename-input")
     ) {
       return;
     }
@@ -292,7 +348,7 @@ export default function Sidebar({ config }) {
     navigateUrl(composeFolderTabsUrl(folder.children));
   };
 
-  const onDeleteFolder = (e, id, folder) => {
+  const onDeleteFolder = (e: React.MouseEvent<HTMLButtonElement>, id: string, folder: BookmarkFolder) => {
     e.preventDefault();
     // Deleting a folder removes its children too; disarm if the armed
     // bookmark is one of them (mirrors the bookmark delete handler).
@@ -309,7 +365,12 @@ export default function Sidebar({ config }) {
 
   // Compute the active drop zone for a row given the dragged item, or null
   // when the drag should be ignored entirely. Zones: "above" | "below" | "into".
-  const dropZone = (e, row, rowIsFolder, rowIsChild) => {
+  const dropZone = (
+    e: React.DragEvent<HTMLDivElement>,
+    row: HTMLDivElement,
+    rowIsFolder: boolean,
+    rowIsChild: boolean
+  ): "above" | "below" | "into" | null => {
     // A folder cannot be dropped inside a folder.
     if (rowIsChild && draggedIsFolderRef.current) return null;
     const rect = row.getBoundingClientRect();
@@ -326,14 +387,14 @@ export default function Sidebar({ config }) {
   };
 
   // Top-level reorder: move dragged to sit above/below the target row.
-  const moveTopLevel = (targetId, below) => {
+  const moveTopLevel = (targetId: string, below: boolean) => {
     let target = topOrder.indexOf(targetId) + (below ? 1 : 0);
     // Post-removal convention: a top-level dragged item earlier in the array
     // shifts every later index down by one. Items dragged out of a folder are
     // not in topOrder, so they need no adjustment.
-    const from = topOrder.indexOf(draggedIdRef.current);
+    const from = topOrder.indexOf(draggedIdRef.current as string);
     if (from !== -1 && from < target) target -= 1;
-    moveItem(draggedIdRef.current, null, target);
+    moveItem(draggedIdRef.current as string, null, target);
   };
 
   const clearDragClasses = () => {
@@ -342,7 +403,7 @@ export default function Sidebar({ config }) {
     });
   };
 
-  const onRowDragStart = (e, id, rowIsFolder) => {
+  const onRowDragStart = (e: React.DragEvent<HTMLDivElement>, id: string, rowIsFolder: boolean) => {
     const row = e.currentTarget;
     // No drag while renaming — let the input keep native text selection.
     if (row.querySelector(".bookmark-rename-input")) {
@@ -357,7 +418,12 @@ export default function Sidebar({ config }) {
     e.dataTransfer.setData("text/plain", id); // Firefox needs data set to start a drag
   };
 
-  const onRowDragOver = (e, id, rowIsFolder, rowIsChild) => {
+  const onRowDragOver = (
+    e: React.DragEvent<HTMLDivElement>,
+    id: string,
+    rowIsFolder: boolean,
+    rowIsChild: boolean
+  ) => {
     if (draggedIdRef.current === null || draggedIdRef.current === id) return;
     const row = e.currentTarget;
     const zone = dropZone(e, row, rowIsFolder, rowIsChild);
@@ -369,12 +435,18 @@ export default function Sidebar({ config }) {
     row.classList.toggle("drag-into", zone === "into");
   };
 
-  const onRowDragLeave = (e) => {
+  const onRowDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
     e.currentTarget.classList.remove("drag-above", "drag-below", "drag-into");
   };
 
-  const onRowDrop = (e, id, rowIsFolder, rowIsChild) => {
+  const onRowDrop = (
+    e: React.DragEvent<HTMLDivElement>,
+    id: string,
+    rowIsFolder: boolean,
+    rowIsChild: boolean
+  ) => {
     if (draggedIdRef.current === null || draggedIdRef.current === id) return;
+    const draggedId = draggedIdRef.current;
     const row = e.currentTarget;
     const zone = dropZone(e, row, rowIsFolder, rowIsChild);
     if (zone === null) return;
@@ -384,7 +456,7 @@ export default function Sidebar({ config }) {
     if (zone === "into" && !rowIsFolder) {
       // Bookmark onto a top-level bookmark: make a folder of the two, then
       // immediately rename it.
-      const folderId = createFolderWith(id, draggedIdRef.current);
+      const folderId = createFolderWith(id, draggedId);
       draggedIdRef.current = null;
       draggedIsFolderRef.current = false;
       notifyBookmarksChanged();
@@ -395,18 +467,18 @@ export default function Sidebar({ config }) {
     if (zone === "into" && rowIsFolder) {
       // Bookmark into a folder: append to its children.
       const folder = folderById.get(id);
-      const inThisFolder = folder && folder.children.some((c) => c.id === draggedIdRef.current);
+      const inThisFolder = folder && folder.children.some((c) => c.id === draggedId);
       const targetIndex = (folder ? folder.children.length : 0) - (inThisFolder ? 1 : 0);
-      moveItem(draggedIdRef.current, id, targetIndex);
+      moveItem(draggedId, id, targetIndex);
     } else if (rowIsChild) {
       // Reorder within the target's folder.
       const parentId = row.getAttribute("data-parent");
-      const folder = folderById.get(parentId);
+      const folder = parentId ? folderById.get(parentId) : undefined;
       const childOrder = folder ? folder.children.map((c) => c.id) : [];
       let index = childOrder.indexOf(id) + (below ? 1 : 0);
-      const from = childOrder.indexOf(draggedIdRef.current);
+      const from = childOrder.indexOf(draggedId);
       if (from !== -1 && from < index) index -= 1; // dragged in same folder, earlier
-      moveItem(draggedIdRef.current, parentId, index);
+      moveItem(draggedId, parentId, index);
     } else {
       // Top-level reorder (target is a top-level bookmark or a folder row).
       moveTopLevel(id, below);
@@ -427,7 +499,7 @@ export default function Sidebar({ config }) {
     clearDragClasses();
   };
 
-  const dragProps = (id, rowIsFolder, rowIsChild) => ({
+  const dragProps = (id: string, rowIsFolder: boolean, rowIsChild: boolean): DragProps => ({
     onDragStart: (e) => onRowDragStart(e, id, rowIsFolder),
     onDragOver: (e) => onRowDragOver(e, id, rowIsFolder, rowIsChild),
     onDragLeave: onRowDragLeave,

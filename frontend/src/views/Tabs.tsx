@@ -12,9 +12,9 @@
 // reload an iframe). The frames render as a flat keyed list that only ever
 // appends (new tab) or removes (close); src is frozen at mount and never
 // written again by React.
-import React, { useEffect, useRef, useState } from "react";
-import { navigateUrl, urlForFsPath, IS_EMBED, VIEW_PREFIX } from "../lib/router.js";
-import { basename } from "../lib/format.js";
+import { useEffect, useRef, useState } from "react";
+import { navigateUrl, urlForFsPath, IS_EMBED, VIEW_PREFIX } from "../lib/router";
+import { basename } from "../lib/format";
 import {
   leaf,
   encodePaneSegment,
@@ -26,7 +26,11 @@ import {
   readEmbedLoc,
   attachEmbedUrlChange,
   detachEmbedUrlChange,
-} from "../lib/layout-codec.js";
+  type LayoutLeaf,
+  type UrlChangeHook,
+} from "../lib/layout-codec";
+import type { Config } from "../lib/api";
+import type { Bookmark } from "../lib/bookmarks";
 
 // Tab mode lives under the page's own prefix, like panel mode.
 const TAB_PATH = (IS_EMBED ? "/embed/" : "/view/") + "_tab";
@@ -35,8 +39,8 @@ const TAB_PATH = (IS_EMBED ? "/embed/" : "/view/") + "_tab";
 // entry). Tab params are independent (TM-3/D47): each child's WHOLE saved
 // query stays segment-local — no hoisting, no merged pool, no collision
 // handling — so every tab reproduces its bookmark verbatim. Exported for
-// Sidebar.jsx (documented acyclic exception, mirrors breadcrumb -> Panel).
-export function composeFolderTabsUrl(children) {
+// Sidebar.tsx (documented acyclic exception, mirrors breadcrumb -> Panel).
+export function composeFolderTabsUrl(children: Bookmark[]): string {
   const segments = children.map((b) => {
     const qIdx = b.url.indexOf("?");
     const pathname = qIdx === -1 ? b.url : b.url.slice(0, qIdx);
@@ -60,12 +64,12 @@ export function composeFolderTabsUrl(children) {
 // Missing/empty/unparseable `_layout` → single tab of the start dir. Any
 // nested `;`/`()` structure is defensively flattened to its leaves in
 // document order (TM-2), each leaf a tab.
-function parseTabs(raw, startDir) {
+function parseTabs(raw: string | null, startDir: string): LayoutLeaf[] {
   if (raw && raw.trim()) {
     try {
       const leaves = flattenToLeaves(parseLayout(raw));
       if (leaves.length) return leaves;
-    } catch (e) {
+    } catch {
       /* fall through to the start-dir fallback */
     }
   }
@@ -74,7 +78,7 @@ function parseTabs(raw, startDir) {
 
 // Basename of the tab's live path (mutated into the leaf by the URL sync) —
 // sentinel paths label as Panel / Tabs (TM-6).
-function tabLabel(t) {
+function tabLabel(t: LayoutLeaf): string {
   const b = basename(t.path);
   if (b === "_panel") return "Panel";
   if (b === "_tab") return "Tabs";
@@ -84,10 +88,10 @@ function tabLabel(t) {
 // One keep-alive tab iframe. src frozen at mount; visibility via display so
 // hidden tabs keep receiving fused:urlchange (the runtime listens on the top
 // window, D46) and stay param-synced while hidden.
-function TabFrame({ tab, active, onLocSync }) {
-  const iframeRef = useRef(null);
-  const hookRef = useRef(null);
-  const srcRef = useRef(null);
+function TabFrame({ tab, active, onLocSync }: { tab: LayoutLeaf; active: boolean; onLocSync: () => void }) {
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const hookRef = useRef<UrlChangeHook | null>(null);
+  const srcRef = useRef<string | null>(null);
   if (srcRef.current === null) srcRef.current = embedSrc(tab.path, tab.query);
 
   // On each load: sync this tab from its live location, re-encode `_layout`,
@@ -108,6 +112,7 @@ function TabFrame({ tab, active, onLocSync }) {
   const onLoad = () => {
     onUrlChange();
     // null when this document is already hooked — keep the existing hook.
+    if (!iframeRef.current) return;
     const hook = attachEmbedUrlChange(iframeRef.current, onUrlChange);
     if (hook) hookRef.current = hook;
   };
@@ -124,7 +129,7 @@ function TabFrame({ tab, active, onLocSync }) {
   );
 }
 
-export default function Tabs({ config }) {
+export default function Tabs({ config }: { config: Config }) {
   // Mark this window a param boundary BEFORE any iframe mounts (TM-3): a page
   // rendered inside a tab must not climb past its own embed shell to here.
   // Render-time set matches the vanilla ordering (renderTabs set it before
@@ -138,17 +143,17 @@ export default function Tabs({ config }) {
     []
   );
 
-  const [tabs, setTabs] = useState(() =>
+  const [tabs, setTabs] = useState<LayoutLeaf[]>(() =>
     parseTabs(splitShellSearch(location.search).layout, config.start_dir)
   );
-  const [activeId, setActiveId] = useState(() => tabs[0].id);
+  const [activeId, setActiveId] = useState<number>(() => tabs[0].id);
   // Lazy mount (TM-5): a tab's iframe exists only once it has been activated.
-  const [mountedIds, setMountedIds] = useState(() => [tabs[0].id]);
+  const [mountedIds, setMountedIds] = useState<number[]>(() => [tabs[0].id]);
   // Leaf objects are mutated in place by the URL sync (path/query); this
   // counter re-renders the bar so labels track live locations.
   const [, bumpLabels] = useState(0);
 
-  const tabsRef = useRef(tabs);
+  const tabsRef = useRef<LayoutLeaf[]>(tabs);
   tabsRef.current = tabs;
 
   // Tab list encodes as a flat comma row (TM-2). Re-encode `_layout`, passing
@@ -176,7 +181,7 @@ export default function Tabs({ config }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const activate = (id) => {
+  const activate = (id: number) => {
     setActiveId(id);
     setMountedIds((ids) => (ids.includes(id) ? ids : [...ids, id]));
   };
@@ -190,7 +195,7 @@ export default function Tabs({ config }) {
     syncUrl();
   };
 
-  const closeTab = (id) => {
+  const closeTab = (id: number) => {
     const ts = tabsRef.current;
     const idx = ts.findIndex((t) => t.id === id);
     if (idx === -1) return;

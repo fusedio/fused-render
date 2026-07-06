@@ -8,14 +8,14 @@
 //    iframe runtimes and the layout modes' `_layout` sync. Chrome (bookmark
 //    buttons, active-bookmark highlight) re-renders; views do NOT remount.
 //
-// main.jsx wraps history.replaceState/pushState to dispatch "fused:urlchange"
+// main.tsx wraps history.replaceState/pushState to dispatch "fused:urlchange"
 // (the injected runtime writes params through the parent's history object,
 // which fires no native event) — that wrapping is load-bearing for the
 // layout modes and the update-bookmark flow, not just for these hooks.
 import { useEffect, useState } from "react";
-import { NAV_EVENT } from "./router.js";
+import { NAV_EVENT } from "./router";
 
-function useEventCounter(events) {
+function useEventCounter(events: readonly string[]): number {
   const [n, setN] = useState(0);
   useEffect(() => {
     const bump = () => setN((v) => v + 1);
@@ -29,23 +29,23 @@ function useEventCounter(events) {
   return n;
 }
 
-export function useNavEpoch() {
+export function useNavEpoch(): number {
   return useEventCounter(["popstate", NAV_EVENT]);
 }
 
-export function useUrlVersion() {
+export function useUrlVersion(): number {
   return useEventCounter(["popstate", NAV_EVENT, "fused:urlchange"]);
 }
 
-// Bookmark store change signal. The localStorage store (lib/bookmarks.js)
+// Bookmark store change signal. The localStorage store (lib/bookmarks.ts)
 // stays a pure data layer; every UI mutation calls notifyBookmarksChanged()
 // so all subscribed components (sidebar, breadcrumb star) re-read it.
 const BOOKMARKS_EVENT = "fused:bookmarks";
 
-export function notifyBookmarksChanged() {
+export function notifyBookmarksChanged(): void {
   window.dispatchEvent(new Event(BOOKMARKS_EVENT));
 }
 
-export function useBookmarksVersion() {
+export function useBookmarksVersion(): number {
   return useEventCounter([BOOKMARKS_EVENT]);
 }

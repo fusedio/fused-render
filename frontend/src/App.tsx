@@ -6,19 +6,24 @@
 // The active view is keyed by the nav epoch: every navigation remounts it,
 // which is the React equivalent of the vanilla shell rebuilding the view DOM
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
-import React, { useEffect, useState } from "react";
-import { IS_EMBED, fsPathFromLocation, urlForFsPath } from "./lib/router.js";
-import { statPath } from "./lib/api.js";
-import { useNavEpoch } from "./lib/hooks.js";
-import Sidebar from "./components/Sidebar.jsx";
-import { Breadcrumb, StaticBreadcrumb } from "./components/Breadcrumb.jsx";
-import Listing from "./views/Listing.jsx";
-import Preview from "./views/Preview.jsx";
-import Panel from "./views/Panel.jsx";
-import Tabs from "./views/Tabs.jsx";
+import { useEffect, useState } from "react";
+import { IS_EMBED, fsPathFromLocation, urlForFsPath } from "./lib/router";
+import { statPath, type Config, type StatResult } from "./lib/api";
+import { useNavEpoch } from "./lib/hooks";
+import Sidebar from "./components/Sidebar";
+import { Breadcrumb, StaticBreadcrumb } from "./components/Breadcrumb";
+import Listing from "./views/Listing";
+import Preview from "./views/Preview";
+import Panel from "./views/Panel";
+import Tabs from "./views/Tabs";
 
-function useStat(fsPath, epoch) {
-  const [state, setState] = useState({ status: "loading" });
+type StatState =
+  | { status: "loading" }
+  | { status: "ok"; stat: StatResult }
+  | { status: "error"; message: string };
+
+function useStat(fsPath: string | null, epoch: number): StatState {
+  const [state, setState] = useState<StatState>({ status: "loading" });
   useEffect(() => {
     if (!fsPath) {
       setState({ status: "loading" });
@@ -28,7 +33,7 @@ function useStat(fsPath, epoch) {
     setState({ status: "loading" });
     statPath(fsPath).then(
       (stat) => alive && setState({ status: "ok", stat }),
-      (err) => alive && setState({ status: "error", message: err.message })
+      (err: Error) => alive && setState({ status: "error", message: err.message })
     );
     return () => {
       alive = false;
@@ -37,46 +42,36 @@ function useStat(fsPath, epoch) {
   return state;
 }
 
-// Stat-backed views (listing/preview). Split out so useStat only runs when
-// the pathname is a real fs path, not a sentinel.
-function StatRoute({ fsPath, epoch, config }) {
+// Stat-backed views (listing/preview): breadcrumb + content under one hook
+// component so useStat only runs when the pathname is a real fs path, not a
+// sentinel.
+function StatView({ fsPath, epoch, config }: { fsPath: string; epoch: number; config: Config }) {
   const stat = useStat(fsPath, epoch);
-  if (stat.status === "loading") {
-    return { crumb: <Breadcrumb fsPath={fsPath} />, content: null };
-  }
+  let content = null;
   if (stat.status === "error") {
-    return {
-      crumb: <Breadcrumb fsPath={fsPath} />,
-      content: (
-        <div className="status-message error">
-          Failed to stat {fsPath}: {stat.message}
-        </div>
-      ),
-    };
-  }
-  return {
-    crumb: <Breadcrumb fsPath={fsPath} />,
-    content: stat.stat.is_dir ? (
+    content = (
+      <div className="status-message error">
+        Failed to stat {fsPath}: {stat.message}
+      </div>
+    );
+  } else if (stat.status === "ok") {
+    content = stat.stat.is_dir ? (
       <Listing fsPath={fsPath} />
     ) : (
       <Preview fsPath={fsPath} stat={stat.stat} config={config} />
-    ),
-  };
-}
-
-// A component wrapper so StatRoute can use hooks while App picks routes
-// with plain conditionals.
-function StatView({ fsPath, epoch, config }) {
-  const { crumb, content } = StatRoute({ fsPath, epoch, config });
+    );
+  }
   return (
     <>
-      <div id="breadcrumb">{crumb}</div>
+      <div id="breadcrumb">
+        <Breadcrumb fsPath={fsPath} />
+      </div>
       <div id="content">{content}</div>
     </>
   );
 }
 
-export default function App({ config }) {
+export default function App({ config }: { config: Config }) {
   const epoch = useNavEpoch();
 
   // Root redirect, exactly like the vanilla route(): replaceState so "/"

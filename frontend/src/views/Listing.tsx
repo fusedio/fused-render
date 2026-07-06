@@ -1,26 +1,30 @@
 // Directory listing view with sortable columns.
 // Sort state lives in the URL (?sort=name|size|mtime&order=asc|desc) so a
 // sorted listing is refresh-proof and bookmarkable like any other view state.
-import React, { useEffect, useState } from "react";
-import { navigate } from "../lib/router.js";
-import { listDir } from "../lib/api.js";
-import { formatSize, formatMtime } from "../lib/format.js";
+import { useEffect, useState } from "react";
+import { navigate } from "../lib/router";
+import { listDir } from "../lib/api";
+import type { FsEntry } from "../lib/api";
+import { formatSize, formatMtime } from "../lib/format";
 
 const SORT_KEYS = { name: "Name", size: "Size", mtime: "Modified" };
+type SortKey = keyof typeof SORT_KEYS;
+type SortOrder = "asc" | "desc";
 
-function currentSort() {
+function currentSort(): { sort: SortKey; order: SortOrder } {
   const q = new URLSearchParams(location.search);
-  const sort = SORT_KEYS[q.get("sort")] ? q.get("sort") : "name";
-  const order = q.get("order") === "desc" ? "desc" : "asc";
+  const key = q.get("sort");
+  const sort: SortKey = key && key in SORT_KEYS ? (key as SortKey) : "name";
+  const order: SortOrder = q.get("order") === "desc" ? "desc" : "asc";
   return { sort, order };
 }
 
-function sortEntries(entries, sort, order) {
+function sortEntries(entries: FsEntry[], sort: SortKey, order: SortOrder): FsEntry[] {
   const flip = order === "desc" ? -1 : 1;
-  const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+  const byName = (a: FsEntry, b: FsEntry) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
   return [...entries].sort((a, b) => {
     if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1; // dirs always group first
-    let cmp;
+    let cmp: number;
     if (sort === "size") cmp = (a.size ?? -1) - (b.size ?? -1);
     else if (sort === "mtime") cmp = (a.mtime ?? 0) - (b.mtime ?? 0);
     else cmp = byName(a, b);
@@ -29,18 +33,23 @@ function sortEntries(entries, sort, order) {
   });
 }
 
-export default function Listing({ fsPath }) {
-  const [state, setState] = useState({ status: "loading" });
+type ListingState =
+  | { status: "loading" }
+  | { status: "ok"; entries: FsEntry[] }
+  | { status: "error"; message: string };
+
+export default function Listing({ fsPath }: { fsPath: string }) {
+  const [state, setState] = useState<ListingState>({ status: "loading" });
   // Sort lives in the URL; mirror it in state so clicks re-render without a
   // navigation (vanilla re-ran renderListing after its replaceState).
-  const [{ sort, order }, setSortState] = useState(currentSort);
+  const [{ sort, order }, setSortState] = useState<{ sort: SortKey; order: SortOrder }>(currentSort);
   const [refresh, setRefresh] = useState(0); // bumped by the SSE dir watch
 
   useEffect(() => {
     let alive = true;
     listDir(fsPath).then(
       (data) => alive && setState({ status: "ok", entries: data.entries }),
-      (err) => alive && setState({ status: "error", message: err.message })
+      (err: Error) => alive && setState({ status: "error", message: err.message })
     );
     return () => {
       alive = false;
@@ -54,19 +63,19 @@ export default function Listing({ fsPath }) {
   // refetch preserves them.
   useEffect(() => {
     const es = new EventSource("/api/fs/events?path=" + encodeURIComponent(fsPath));
-    let timer = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     es.onmessage = () => {
-      clearTimeout(timer);
+      if (timer !== null) clearTimeout(timer);
       timer = setTimeout(() => setRefresh((n) => n + 1), 300);
     };
     return () => {
-      clearTimeout(timer);
+      if (timer !== null) clearTimeout(timer);
       es.close();
     };
   }, [fsPath]);
 
-  const setSort = (key) => {
-    const next = {
+  const setSort = (key: SortKey) => {
+    const next: { sort: SortKey; order: SortOrder } = {
       sort: key,
       order: key === sort && order === "asc" ? "desc" : "asc",
     };
@@ -104,7 +113,7 @@ export default function Listing({ fsPath }) {
       <table className="listing-table">
         <thead>
           <tr>
-            {Object.entries(SORT_KEYS).map(([key, label]) => (
+            {(Object.entries(SORT_KEYS) as [SortKey, string][]).map(([key, label]) => (
               <th
                 key={key}
                 className={"sortable" + (key === sort ? " sorted" : "")}

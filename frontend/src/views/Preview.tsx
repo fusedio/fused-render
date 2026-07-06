@@ -4,10 +4,17 @@
 //   3. else                   -> fallback metadata card
 // No other file-type logic lives in the shell.
 import React, { useState } from "react";
-import { rawUrl } from "../lib/api.js";
-import { formatSize, formatMtime } from "../lib/format.js";
+import { rawUrl } from "../lib/api";
+import type { Config, StatResult } from "../lib/api";
+import { formatSize, formatMtime } from "../lib/format";
 
-function Header({ fsPath, stat, children }) {
+interface HeaderProps {
+  fsPath: string;
+  stat: StatResult;
+  children?: React.ReactNode;
+}
+
+function Header({ fsPath, stat, children }: HeaderProps) {
   return (
     <div className="preview-header">
       <h1 title={fsPath}>{stat.name}</h1>
@@ -16,10 +23,11 @@ function Header({ fsPath, stat, children }) {
   );
 }
 
-function TemplatePreview({ fsPath, stat }) {
+function TemplatePreview({ fsPath, stat }: { fsPath: string; stat: StatResult }) {
   // Target file rides on the iframe's own URL, not the shell URL — the shell
   // URL's pathname already names the file, so no ?_file= duplication there.
-  const src = `/render?path=${encodeURIComponent(stat.template)}&_file=${encodeURIComponent(fsPath)}`;
+  // Caller only renders this when stat.template is set (Preview's dispatch).
+  const src = `/render?path=${encodeURIComponent(stat.template as string)}&_file=${encodeURIComponent(fsPath)}`;
   return (
     <>
       <Header fsPath={fsPath} stat={stat} />
@@ -30,17 +38,23 @@ function TemplatePreview({ fsPath, stat }) {
   );
 }
 
-function HtmlPreview({ fsPath, stat, config }) {
+interface HtmlPreviewProps {
+  fsPath: string;
+  stat: StatResult;
+  config: Config;
+}
+
+function HtmlPreview({ fsPath, stat, config }: HtmlPreviewProps) {
   // `_mode` is a reserved shell param (runtime already hides all `_`-prefixed
   // keys from fused.params). It rides the shell URL so the Rendered/Source
   // choice is bookmarkable: ?_mode=source opens straight into the source view.
   // Initial render honors the URL but must not rewrite it — only clicks do
   // (replaceState per the D8 no-history convention).
-  const [mode, setModeState] = useState(() =>
+  const [mode, setModeState] = useState<"render" | "source">(() =>
     new URLSearchParams(location.search).get("_mode") === "source" ? "source" : "render"
   );
 
-  const setMode = (next) => {
+  const setMode = (next: "render" | "source") => {
     if (next === mode) return;
     const params = new URLSearchParams(location.search);
     // Switching to render DELETES _mode (absent = default, keeps URLs clean);
@@ -80,7 +94,7 @@ function HtmlPreview({ fsPath, stat, config }) {
   );
 }
 
-function FallbackPreview({ fsPath, stat }) {
+function FallbackPreview({ fsPath, stat }: { fsPath: string; stat: StatResult }) {
   return (
     <>
       <Header fsPath={fsPath} stat={stat} />
@@ -105,7 +119,13 @@ function FallbackPreview({ fsPath, stat }) {
   );
 }
 
-export default function Preview({ fsPath, stat, config }) {
+interface PreviewProps {
+  fsPath: string;
+  stat: StatResult;
+  config: Config;
+}
+
+export default function Preview({ fsPath, stat, config }: PreviewProps) {
   const ext = fsPath.toLowerCase().split(".").pop();
   if (stat.template) return <TemplatePreview fsPath={fsPath} stat={stat} />;
   if (ext === "html" || ext === "htm") return <HtmlPreview fsPath={fsPath} stat={stat} config={config} />;

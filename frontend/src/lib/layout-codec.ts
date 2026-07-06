@@ -1,15 +1,15 @@
 // Shared `_layout` codec for the URL-is-state layout modes (SPEC §14/§15, D45/
-// D47). Both views/panel.js (split panes) and views/tabs.js (tabs) encode a
+// D47). Both views/Panel.tsx (split panes) and views/Tabs.tsx (tabs) encode a
 // set of /embed locations into the reserved `_layout` query param and parse it
-// back; breadcrumb.js reuses the segment encoder for its Split button. Keeping
+// back; Breadcrumb.tsx reuses the segment encoder for its Split button. Keeping
 // one codec here means one escaping story and hand-convertible panel<->tab URLs.
-// Imports router.js only (for the shared embed prefix); everything here is a
+// Imports router.ts only (for the shared embed prefix); everything here is a
 // helper both modes share — codec, embed-frame URL access, and the
 // fused:urlchange hook — with no view or chrome dependencies.
 //
 // Panes/tabs are /embed/<path> iframes (D39): a full chrome-free shell, so each
 // can browse dirs, open previews and use templates for free.
-import { EMBED_PREFIX } from "./router.js";
+import { EMBED_PREFIX } from "./router";
 
 // --- Tree codec (`_layout` param) -----------------------------------------
 // `,` = row (side by side), `;` = column (stacked), `(…)` groups for nesting.
@@ -20,18 +20,35 @@ import { EMBED_PREFIX } from "./router.js";
 // The reference grid-viewer's splitDepthAware() is the model; per-segment
 // escaping is the addition it lacks.
 
+export interface LayoutLeaf {
+  type: "leaf";
+  id: number;
+  path: string;
+  query: string;
+}
+
+export interface LayoutSplit {
+  type: "split";
+  dir: "row" | "col";
+  children: LayoutNode[];
+  // Assigned by Panel.tsx for React keys (parseLayout leaves it unset).
+  id?: number;
+}
+
+export type LayoutNode = LayoutLeaf | LayoutSplit;
+
 // Monotonic node ids — unique per session, never reset (only one layout mode is
 // live at a time, so uniqueness is all that matters; no reset needed).
 let idSeq = 0;
 
-export function leaf(path, query) {
+export function leaf(path: string, query?: string): LayoutLeaf {
   return { type: "leaf", id: ++idSeq, path, query: query || "" };
 }
 
 // Escape a path component: % first (so escapes aren't re-escaped), then the
 // codec delimiters, plus `?` so the path can never contain the path/query
 // separator.
-function encPath(s) {
+function encPath(s: string): string {
   return s
     .replace(/%/g, "%25")
     .replace(/,/g, "%2C")
@@ -44,7 +61,7 @@ function encPath(s) {
 // Escape a query segment: same as encPath but keep `?` literal (the leading
 // `?` is the separator; any later `?` in a value is harmless once we split on
 // the first one).
-function encQuery(s) {
+function encQuery(s: string): string {
   return s
     .replace(/%/g, "%25")
     .replace(/,/g, "%2C")
@@ -56,20 +73,20 @@ function encQuery(s) {
 // Reverse either escaping in one left-to-right pass. %25 decodes to `%` and
 // scanning continues past it, so a literal `%2C` (escaped to `%252C`) survives
 // while a structural `%2C` (an escaped comma) becomes `,`.
-function decSeg(s) {
+function decSeg(s: string): string {
   return s.replace(/%(25|2C|3B|28|29|3F)/g, (_, hex) =>
     String.fromCharCode(parseInt(hex, 16))
   );
 }
 
 // Encode one segment (fs path + optional query, query includes its `?`).
-// Exported so the breadcrumb's Split button and tabs.js can turn a location
+// Exported so the breadcrumb's Split button and Tabs.tsx can turn a location
 // into a segment without duplicating the codec.
-export function encodePaneSegment(path, query) {
+export function encodePaneSegment(path: string, query?: string): string {
   return encPath(path) + encQuery(query || "");
 }
 
-export function encodeNode(node, parentDir) {
+export function encodeNode(node: LayoutNode, parentDir?: "row" | "col"): string {
   if (node.type === "leaf") return encodePaneSegment(node.path, node.query);
   const sep = node.dir === "row" ? "," : ";";
   const s = node.children.map((c) => encodeNode(c, node.dir)).join(sep);
@@ -79,8 +96,8 @@ export function encodeNode(node, parentDir) {
 }
 
 // Split on `sep` only at bracket depth 0.
-function splitDepthAware(str, sep) {
-  const out = [];
+function splitDepthAware(str: string, sep: string): string[] {
+  const out: string[] = [];
   let depth = 0;
   let cur = "";
   for (const ch of str) {
@@ -97,7 +114,7 @@ function splitDepthAware(str, sep) {
   return out;
 }
 
-function parseLeaf(seg) {
+function parseLeaf(seg: string): LayoutLeaf {
   // First `?` separates path from query (path escaping guarantees no earlier
   // `?`). Both halves are un-escaped; the query keeps its leading `?`.
   const q = seg.indexOf("?");
@@ -105,9 +122,9 @@ function parseLeaf(seg) {
   return leaf(decSeg(seg.slice(0, q)), "?" + decSeg(seg.slice(q + 1)));
 }
 
-export function parseLayout(str) {
-  const rows = splitDepthAware(str, ";").map((row) => {
-    const cells = splitDepthAware(row, ",").map((cell) => {
+export function parseLayout(str: string): LayoutNode {
+  const rows = splitDepthAware(str, ";").map((row): LayoutNode => {
+    const cells = splitDepthAware(row, ",").map((cell): LayoutNode => {
       cell = cell.trim();
       if (cell.startsWith("(") && cell.endsWith(")")) return parseLayout(cell.slice(1, -1));
       return parseLeaf(cell);
@@ -120,9 +137,9 @@ export function parseLayout(str) {
 // Flatten any tree to its leaves in document order. Tab mode (TM-2) produces a
 // flat `,` row but defensively flattens any nested `;`/`()` structure it is
 // handed, each leaf becoming a tab.
-export function flattenToLeaves(node) {
+export function flattenToLeaves(node: LayoutNode): LayoutLeaf[] {
   if (node.type === "leaf") return [node];
-  const out = [];
+  const out: LayoutLeaf[] = [];
   for (const c of node.children) out.push(...flattenToLeaves(c));
   return out;
 }
@@ -143,7 +160,7 @@ export function flattenToLeaves(node) {
 // the parens; one decodeURIComponent pass in splitShellSearch reverses this —
 // literal parens inside segments are codec-escaped (`%28` → `%2528` here), so
 // the only literal parens in the span are structural and balanced.
-function urlSafeLayout(s) {
+function urlSafeLayout(s: string): string {
   return s.replace(/%/g, "%25").replace(/#/g, "%23").replace(/ /g, "%20");
 }
 
@@ -151,8 +168,12 @@ function urlSafeLayout(s) {
 // the parenthesized layout always last. `merged` is an iterable of [k, v]
 // entries; `_layout` is dropped from it so callers can pass the full current
 // query (also discards any old-grammar unwrapped value, see splitShellSearch).
-export function buildSentinelUrl(sentinelPath, codecStr, merged) {
-  const parts = [];
+export function buildSentinelUrl(
+  sentinelPath: string,
+  codecStr: string,
+  merged?: Iterable<[string, string]> | null
+): string {
+  const parts: string[] = [];
   if (merged) {
     for (const [k, v] of merged) {
       if (k === "_layout") continue;
@@ -163,6 +184,11 @@ export function buildSentinelUrl(sentinelPath, codecStr, merged) {
   return sentinelPath + "?" + parts.join("&");
 }
 
+export interface ShellSearch {
+  layout: string | null;
+  params: URLSearchParams;
+}
+
 // Parse a shell query string under the D51 grammar: extract the parenthesized
 // `_layout=(...)` span by balanced-paren scan, return the decoded codec string
 // plus the remaining params. `layout` is null when the param is absent,
@@ -170,7 +196,7 @@ export function buildSentinelUrl(sentinelPath, codecStr, merged) {
 // (paste-truncated URL, accepted breakage) or undecodable; the broken span is
 // still excluded from `params` so it can't leak junk keys. runtime.js carries
 // a small duplicate of this scan (it is injected standalone, no imports).
-export function splitShellSearch(search) {
+export function splitShellSearch(search: string): ShellSearch {
   const s = (search || "").replace(/^\?/, "");
   const m = /(^|&)_layout=/.exec(s);
   if (!m) return { layout: null, params: new URLSearchParams(s) };
@@ -192,17 +218,17 @@ export function splitShellSearch(search) {
   const rest = (s.slice(0, m.index) + s.slice(i)).replace(/^&|&$/g, "");
   const params = new URLSearchParams(rest);
   if (depth !== 0) return { layout: null, params };
-  let layout = null;
+  let layout: string | null = null;
   try {
     layout = decodeURIComponent(s.slice(valStart + 1, i - 1));
-  } catch (e) {
+  } catch {
     /* malformed percent escape → invalid layout */
   }
   return { layout, params };
 }
 
 // --- Embed URL helpers -----------------------------------------------------
-export function embedSrc(path, query) {
+export function embedSrc(path: string, query?: string): string {
   const encoded = path
     .replace(/^\/+/, "")
     .split("/")
@@ -210,6 +236,11 @@ export function embedSrc(path, query) {
     .map(encodeURIComponent)
     .join("/");
   return EMBED_PREFIX + encoded + (query || "");
+}
+
+export interface UrlChangeHook {
+  win: Window;
+  handler: () => void;
 }
 
 // Attach a fused:urlchange listener to an embed iframe's current document.
@@ -222,13 +253,17 @@ export function embedSrc(path, query) {
 // document is already hooked (keep the caller's existing hook) or unreachable.
 // One expando serves both modes: a panel and a tab shell never hook the same
 // window — each hooks only its direct child iframes.
-export function attachEmbedUrlChange(iframe, handler) {
-  let win;
+export function attachEmbedUrlChange(
+  iframe: HTMLIFrameElement,
+  handler: () => void
+): UrlChangeHook | null {
+  let win: Window;
   try {
+    if (!iframe.contentWindow) return null;
     win = iframe.contentWindow;
     if (win._fusedUrlHooked) return null;
     win._fusedUrlHooked = true;
-  } catch (e) {
+  } catch {
     return null;
   }
   win.addEventListener("fused:urlchange", handler);
@@ -236,21 +271,27 @@ export function attachEmbedUrlChange(iframe, handler) {
 }
 
 // Null-safe detach of a hook returned by attachEmbedUrlChange.
-export function detachEmbedUrlChange(hook) {
+export function detachEmbedUrlChange(hook: UrlChangeHook | null): void {
   if (!hook) return;
   try {
     hook.win.removeEventListener("fused:urlchange", hook.handler);
-  } catch (e) {
+  } catch {
     /* window gone */
   }
+}
+
+export interface EmbedLoc {
+  path: string;
+  query: string;
 }
 
 // Read a mounted iframe's live location (D39): fs path + query, so duplicates/
 // crumbs/sync/labels follow in-pane navigation. Returns null when the iframe is
 // cross-origin (shouldn't happen) or not under /embed/.
-export function readEmbedLoc(iframe) {
+export function readEmbedLoc(iframe: HTMLIFrameElement): EmbedLoc | null {
   try {
-    const loc = iframe.contentWindow.location;
+    const loc = iframe.contentWindow?.location;
+    if (!loc) return null;
     const p = loc.pathname;
     if (p && p.startsWith(EMBED_PREFIX)) {
       const rest = p.slice(EMBED_PREFIX.length);
@@ -263,7 +304,7 @@ export function readEmbedLoc(iframe) {
           .join("/");
       return { path, query: loc.search || "" };
     }
-  } catch (e) {
+  } catch {
     // Cross-origin (shouldn't happen — same-origin) — ignore.
   }
   return null;

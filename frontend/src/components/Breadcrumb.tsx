@@ -2,8 +2,8 @@
 // Rendered by every view: path crumbs for listing/preview, a static label for
 // the layout modes (LM-11 / TM-9 — ★/update still operate on currentUrl()).
 import React, { useEffect, useState } from "react";
-import { navigate, navigateUrl, currentUrl, IS_EMBED } from "../lib/router.js";
-import { basename } from "../lib/format.js";
+import { navigate, navigateUrl, currentUrl, IS_EMBED } from "../lib/router";
+import { basename } from "../lib/format";
 import {
   addBookmark,
   allBookmarks,
@@ -11,17 +11,17 @@ import {
   armBookmark,
   disarmBookmark,
   getArmedBookmark,
-} from "../lib/bookmarks.js";
-import { useUrlVersion, useBookmarksVersion, notifyBookmarksChanged } from "../lib/hooks.js";
-import { encodePaneSegment, splitShellSearch } from "../lib/layout-codec.js";
-import { panelUrl } from "../views/Panel.jsx";
+} from "../lib/bookmarks";
+import { useUrlVersion, useBookmarksVersion, notifyBookmarksChanged } from "../lib/hooks";
+import { encodePaneSegment, splitShellSearch } from "../lib/layout-codec";
+import { panelUrl } from "../views/Panel";
 
 // True when two query strings carry the same decoded `_layout` and the same
 // key/value multiset of remaining params, ignoring encoding and ordering
 // differences. `_layout` may contain literal `&` (D51), so both sides go
 // through the codec's splitShellSearch, never raw URLSearchParams.
-function sameSearch(a, b) {
-  const norm = (s) => {
+function sameSearch(a: string, b: string): boolean {
+  const norm = (s: string) => {
     const { layout, params } = splitShellSearch(s);
     return JSON.stringify([layout, [...params].sort()]);
   };
@@ -32,7 +32,7 @@ function sameSearch(a, b) {
 // change or a deleted bookmark disarms permanently), so it runs in an effect,
 // re-evaluated on every URL or bookmark-store change — the React equivalent
 // of the vanilla syncUpdateButton() wired to fused:urlchange.
-function useUpdateButton(urlVersion, bookmarksVersion) {
+function useUpdateButton(urlVersion: number, bookmarksVersion: number): boolean {
   const [visible, setVisible] = useState(false);
   useEffect(() => {
     // Embed pages (layout panes included) share the tab's sessionStorage.
@@ -68,7 +68,12 @@ function useUpdateButton(urlVersion, bookmarksVersion) {
 // Shared action block (present on every view). `name` is the default bookmark
 // name; `onSplit` present adds the panel-mode entry point (the layout modes
 // themselves pass none).
-function CrumbActions({ name, onSplit }) {
+interface CrumbActionsProps {
+  name: string;
+  onSplit?: () => void;
+}
+
+function CrumbActions({ name, onSplit }: CrumbActionsProps) {
   const urlVersion = useUrlVersion();
   const bookmarksVersion = useBookmarksVersion();
   const showUpdate = useUpdateButton(urlVersion, bookmarksVersion);
@@ -121,10 +126,10 @@ function CrumbActions({ name, onSplit }) {
 // pane carries the `_`-prefixed params and the listing sort/order pane-local
 // (inside its `_layout` segment); every other param joins the merged top-level
 // pool shared by all panes (LM-3).
-function enterPanel(fsPath) {
+function enterPanel(fsPath: string): void {
   const params = new URLSearchParams(location.search);
   const paneLocal = new URLSearchParams();
-  const merged = [];
+  const merged: [string, string][] = [];
   for (const [k, v] of params) {
     if (k.startsWith("_") || k === "sort" || k === "order") paneLocal.set(k, v);
     else merged.push([k, v]);
@@ -134,9 +139,9 @@ function enterPanel(fsPath) {
   navigateUrl(panelUrl(seg + "," + seg, merged));
 }
 
-export function Breadcrumb({ fsPath }) {
+export function Breadcrumb({ fsPath }: { fsPath: string }) {
   const parts = fsPath.split("/").filter((s) => s.length > 0);
-  const pieces = [];
+  const pieces: React.ReactNode[] = [];
   let acc = "";
   parts.forEach((part, i) => {
     acc += "/" + part;
@@ -184,7 +189,7 @@ export function Breadcrumb({ fsPath }) {
   );
 }
 
-export function StaticBreadcrumb({ label }) {
+export function StaticBreadcrumb({ label }: { label: string }) {
   return (
     <>
       <div className="crumbs">

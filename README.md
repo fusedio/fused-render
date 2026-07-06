@@ -20,7 +20,7 @@ built-in parquet preview).
 
 ### Shell development
 
-The browser shell is a React app in `frontend/`; its build output is
+The browser shell is a React + TypeScript app in `frontend/`; its build output is
 committed to `fused_render/static/shell-dist/`, so installing/running needs
 no node. To work on the shell itself (Node 22):
 

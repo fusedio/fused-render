@@ -10,8 +10,8 @@
 // freeze their src at mount: React must never write the src attribute again,
 // or the pane would reload on every re-render (the vanilla shell set src once
 // at creation; crumb clicks write it imperatively).
-import React, { useEffect, useRef, useState } from "react";
-import { navigateUrl, urlForFsPath, IS_EMBED } from "../lib/router.js";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { navigateUrl, urlForFsPath, IS_EMBED } from "../lib/router";
 import {
   leaf,
   encodeNode,
@@ -22,7 +22,13 @@ import {
   readEmbedLoc,
   attachEmbedUrlChange,
   detachEmbedUrlChange,
-} from "../lib/layout-codec.js";
+  type LayoutNode,
+  type LayoutLeaf,
+  type LayoutSplit,
+  type UrlChangeHook,
+  type EmbedLoc,
+} from "../lib/layout-codec";
+import type { Config } from "../lib/api";
 
 // Panel mode lives under the page's own prefix (`/view/_panel` or
 // `/embed/_panel`), so entering/refreshing/exiting stays in the active mode.
@@ -31,7 +37,7 @@ const PANEL_PATH = (IS_EMBED ? "/embed/" : "/view/") + "_panel";
 // Build <prefix>/_panel?... : the encoded tree plus the merged (top-level)
 // param pool. Exported for the breadcrumb's Split button (same acyclic
 // exception as the vanilla breadcrumb.js -> views/panel.js import).
-export function panelUrl(codecStr, merged) {
+export function panelUrl(codecStr: string, merged?: Iterable<[string, string]> | null): string {
   return buildSentinelUrl(PANEL_PATH, codecStr, merged);
 }
 
@@ -39,19 +45,25 @@ export function panelUrl(codecStr, merged) {
 // get their own monotonic ids on creation/parse (a stable key keeps an
 // untouched subtree's iframes alive across structural re-renders).
 let splitSeq = 0;
-function ensureIds(node) {
+function ensureIds(node: LayoutNode): LayoutNode {
   if (node.type === "split") {
     if (!node.id) node.id = ++splitSeq;
     node.children.forEach(ensureIds);
   }
   return node;
 }
-function nodeKey(node) {
+function nodeKey(node: LayoutNode): string {
   return (node.type === "split" ? "s" : "l") + node.id;
 }
 
 // --- Tree ops (verbatim from the vanilla module) ----------------------------
-function findParent(node, target, parent) {
+// findParent returns: the parent split, null when target IS the root, or
+// false when target is not in this subtree.
+function findParent(
+  node: LayoutNode,
+  target: LayoutNode,
+  parent?: LayoutSplit
+): LayoutSplit | null | false {
   if (node === target) return parent === undefined ? null : parent;
   if (node.type === "split") {
     for (const c of node.children) {
@@ -62,7 +74,7 @@ function findParent(node, target, parent) {
   return false;
 }
 
-function findLeaf(node, id) {
+function findLeaf(node: LayoutNode, id: number): LayoutLeaf | null {
   if (node.type === "leaf") return node.id === id ? node : null;
   for (const c of node.children) {
     const r = findLeaf(c, id);
@@ -111,19 +123,25 @@ const ICONS = {
   ),
 };
 
+interface PaneCtx {
+  syncUrl: () => void;
+  split: (id: number, dir: "row" | "col") => void;
+  close: (id: number) => void;
+}
+
 // One pane: bar (crumbs + split/maximize/close buttons) over a frozen-src
 // /embed iframe. Crumbs track the pane's LIVE location (loc state); the leaf
 // node is mutated in place so `_layout` re-encoding sees it without a
 // re-render.
-function Pane({ node, onLocSync, onSplit, onClose }) {
-  const iframeRef = useRef(null);
-  const hookRef = useRef(null);
+function Pane({ node, ctx }: { node: LayoutLeaf; ctx: PaneCtx }) {
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const hookRef = useRef<UrlChangeHook | null>(null);
   // Frozen at mount — a structural remount re-freezes from the (synced) node.
-  const srcRef = useRef(null);
+  const srcRef = useRef<string | null>(null);
   if (srcRef.current === null) srcRef.current = embedSrc(node.path, node.query);
-  const [loc, setLoc] = useState({ path: node.path, query: node.query });
+  const [loc, setLoc] = useState<EmbedLoc>({ path: node.path, query: node.query });
   const [maximized, setMaximized] = useState(false);
-  const crumbsRef = useRef(null);
+  const crumbsRef = useRef<HTMLDivElement | null>(null);
 
   // On each load: sync this leaf from the pane's live location, re-encode the
   // `_layout` URL, redraw crumbs, and (re)attach the fused:urlchange listener
@@ -136,7 +154,7 @@ function Pane({ node, onLocSync, onSplit, onClose }) {
     if (live) {
       node.path = live.path;
       node.query = live.query;
-      onLocSync();
+      ctx.syncUrl();
       setLoc(live);
     }
   };
@@ -144,6 +162,7 @@ function Pane({ node, onLocSync, onSplit, onClose }) {
   const onLoad = () => {
     onUrlChange();
     // null when this document is already hooked — keep the existing hook.
+    if (!iframeRef.current) return;
     const hook = attachEmbedUrlChange(iframeRef.current, onUrlChange);
     if (hook) hookRef.current = hook;
   };
@@ -159,8 +178,8 @@ function Pane({ node, onLocSync, onSplit, onClose }) {
   }, [loc]);
 
   const parts = loc.path.split("/").filter((s) => s.length > 0);
-  const crumbs = [];
-  const addCrumb = (label, targetPath, isLast, key) => {
+  const crumbs: ReactNode[] = [];
+  const addCrumb = (label: string, targetPath: string, isLast: boolean, key: string) => {
     crumbs.push(
       <span
         key={key}
@@ -190,10 +209,10 @@ function Pane({ node, onLocSync, onSplit, onClose }) {
         <div className="panel-crumbs" ref={crumbsRef}>
           {crumbs}
         </div>
-        <button className="panel-btn split-right" title="Split right" onClick={() => onSplit(node.id, "row")}>
+        <button className="panel-btn split-right" title="Split right" onClick={() => ctx.split(node.id, "row")}>
           {ICONS.splitRight}
         </button>
-        <button className="panel-btn split-down" title="Split down" onClick={() => onSplit(node.id, "col")}>
+        <button className="panel-btn split-down" title="Split down" onClick={() => ctx.split(node.id, "col")}>
           {ICONS.splitDown}
         </button>
         <button
@@ -203,7 +222,7 @@ function Pane({ node, onLocSync, onSplit, onClose }) {
         >
           {maximized ? ICONS.restore : ICONS.max}
         </button>
-        <button className="panel-btn close" title="Close pane" onClick={() => onClose(node.id)}>
+        <button className="panel-btn close" title="Close pane" onClick={() => ctx.close(node.id)}>
           {ICONS.close}
         </button>
       </div>
@@ -212,7 +231,7 @@ function Pane({ node, onLocSync, onSplit, onClose }) {
   );
 }
 
-function Build({ node, ctx }) {
+function Build({ node, ctx }: { node: LayoutNode; ctx: PaneCtx }) {
   if (node.type === "split") {
     return (
       <div className={"panel-split " + node.dir}>
@@ -222,21 +241,21 @@ function Build({ node, ctx }) {
       </div>
     );
   }
-  return <Pane node={node} onLocSync={ctx.syncUrl} onSplit={ctx.split} onClose={ctx.close} />;
+  return <Pane node={node} ctx={ctx} />;
 }
 
-export default function Panel({ config }) {
+export default function Panel({ config }: { config: Config }) {
   // Build the pane tree from `_layout` on the shell URL once per mount (App
   // remounts Panel on every navigation). Missing/empty/unparseable `_layout`
   // falls back to a single pane of the start dir.
-  const treeRef = useRef(null);
+  const treeRef = useRef<LayoutNode | null>(null);
   if (treeRef.current === null) {
     const raw = splitShellSearch(location.search).layout;
-    let tree = null;
+    let tree: LayoutNode | null = null;
     if (raw && raw.trim()) {
       try {
         tree = parseLayout(raw);
-      } catch (e) {
+      } catch {
         tree = null;
       }
     }
@@ -246,19 +265,19 @@ export default function Panel({ config }) {
 
   // Re-encode `_layout` on the shell URL, preserving the merged pool, and
   // replaceState only when the value actually changed (LM-6 guard). This
-  // fires the shell's own fused:urlchange (main.jsx wraps replaceState), so
+  // fires the shell's own fused:urlchange (main.tsx wraps replaceState), so
   // the bookmark buttons react.
   const syncUrl = () => {
     const { params } = splitShellSearch(location.search);
-    const codecStr = encodeNode(treeRef.current);
+    const codecStr = encodeNode(treeRef.current!);
     const next = panelUrl(codecStr, params);
     if (location.pathname + location.search !== next) {
       history.replaceState(history.state, "", next);
     }
   };
 
-  const split = (id, dir) => {
-    const tree = treeRef.current;
+  const split = (id: number, dir: "row" | "col") => {
+    const tree = treeRef.current!;
     const l = findLeaf(tree, id);
     if (!l) return;
     // The new pane duplicates the current pane's live location — the leaf is
@@ -268,15 +287,15 @@ export default function Panel({ config }) {
     if (parent && parent.dir === dir) {
       parent.children.splice(parent.children.indexOf(l) + 1, 0, newLeaf);
     } else {
-      const splitNode = ensureIds({ type: "split", dir, children: [l, newLeaf] });
+      const splitNode = ensureIds({ type: "split", dir, children: [l, newLeaf] }) as LayoutSplit;
       if (!parent) treeRef.current = splitNode;
       else parent.children[parent.children.indexOf(l)] = splitNode;
     }
     setVersion((v) => v + 1);
   };
 
-  const close = (id) => {
-    const tree = treeRef.current;
+  const close = (id: number) => {
+    const tree = treeRef.current!;
     const l = findLeaf(tree, id);
     if (!l) return;
     const parent = findParent(tree, l);
@@ -304,7 +323,7 @@ export default function Panel({ config }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [version]);
 
-  const ctx = { syncUrl, split, close };
+  const ctx: PaneCtx = { syncUrl, split, close };
   return (
     <div className="panel-root">
       <Build node={treeRef.current} ctx={ctx} />

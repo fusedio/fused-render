@@ -1,8 +1,27 @@
-// Bookmark store on localStorage. Pure data layer — no DOM. UI (sidebar.js)
-// subscribes by re-rendering after each mutation it triggers.
+// Bookmark store on localStorage. Pure data layer — no DOM, no React. UI
+// components subscribe via useBookmarksVersion (lib/hooks.ts) and call
+// notifyBookmarksChanged() after each mutation they trigger.
 const KEY = "fused.bookmarks";
 
-export function loadBookmarks() {
+export interface Bookmark {
+  id: string;
+  name: string;
+  url: string;
+  created_at: number;
+  type?: undefined; // discriminant vs BookmarkFolder
+}
+
+export interface BookmarkFolder {
+  id: string;
+  type: "folder";
+  name: string;
+  collapsed: boolean;
+  children: Bookmark[];
+}
+
+export type BookmarkItem = Bookmark | BookmarkFolder;
+
+export function loadBookmarks(): BookmarkItem[] {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return [];
@@ -13,7 +32,7 @@ export function loadBookmarks() {
   }
 }
 
-function save(bookmarks) {
+function save(bookmarks: BookmarkItem[]): void {
   try {
     localStorage.setItem(KEY, JSON.stringify(bookmarks));
   } catch (e) {
@@ -21,14 +40,14 @@ function save(bookmarks) {
   }
 }
 
-export function isFolder(item) {
+export function isFolder(item: BookmarkItem): item is BookmarkFolder {
   return item.type === "folder";
 }
 
 // Flatten to bookmarks only (no folders): top-level bookmarks and all folder
 // children, in display order.
-export function allBookmarks() {
-  const out = [];
+export function allBookmarks(): Bookmark[] {
+  const out: Bookmark[] = [];
   for (const item of loadBookmarks()) {
     if (isFolder(item)) out.push(...item.children);
     else out.push(item);
@@ -37,20 +56,21 @@ export function allBookmarks() {
 }
 
 // Remove folders left empty by a mutation. Mutates in place, returns items.
-function prune(items) {
+function prune(items: BookmarkItem[]): BookmarkItem[] {
   for (let i = items.length - 1; i >= 0; i--) {
-    if (isFolder(items[i]) && items[i].children.length === 0) items.splice(i, 1);
+    const item = items[i];
+    if (isFolder(item) && item.children.length === 0) items.splice(i, 1);
   }
   return items;
 }
 
-export function addBookmark(name, url) {
+export function addBookmark(name: string, url: string): void {
   const bookmarks = loadBookmarks();
   bookmarks.push({ id: crypto.randomUUID(), name, url, created_at: Date.now() });
   save(bookmarks);
 }
 
-export function deleteBookmark(id) {
+export function deleteBookmark(id: string): void {
   const items = loadBookmarks();
   const at = items.findIndex((it) => it.id === id);
   if (at !== -1) {
@@ -70,15 +90,15 @@ export function deleteBookmark(id) {
 }
 
 // Remove a folder (and its children) entirely.
-export function deleteFolder(id) {
+export function deleteFolder(id: string): void {
   save(loadBookmarks().filter((it) => it.id !== id));
 }
 
 // Rename a bookmark or a folder. Top-level items are searched first, then
 // folder children.
-export function renameBookmark(id, name) {
+export function renameBookmark(id: string, name: string): void {
   const items = loadBookmarks();
-  let target = items.find((it) => it.id === id);
+  let target: BookmarkItem | undefined = items.find((it) => it.id === id);
   if (!target) {
     for (const item of items) {
       if (!isFolder(item)) continue;
@@ -94,12 +114,12 @@ export function renameBookmark(id, name) {
 // level; otherwise the id of the destination folder. targetIndex is the index
 // in the destination array AFTER the moved item is removed; the caller is
 // responsible for that convention. Folders can only move to the top level.
-export function moveItem(id, parentId, targetIndex) {
+export function moveItem(id: string, parentId: string | null, targetIndex: number): void {
   const items = loadBookmarks();
 
   // Locate the item first so a folder→folder move can abort before removal.
-  let moved = items.find((it) => it.id === id);
-  let isFolderItem = moved && isFolder(moved);
+  let moved: BookmarkItem | undefined = items.find((it) => it.id === id);
+  const isFolderItem = moved !== undefined && isFolder(moved);
   if (isFolderItem && parentId !== null) return;
 
   // Remove from top level or whichever folder holds it.
@@ -121,8 +141,8 @@ export function moveItem(id, parentId, targetIndex) {
     items.splice(targetIndex, 0, moved);
   } else {
     const dest = items.find((it) => it.id === parentId && isFolder(it));
-    if (!dest) return; // destination gone; bail without saving so nothing is lost
-    dest.children.splice(targetIndex, 0, moved);
+    if (!dest || !isFolder(dest)) return; // destination gone; bail without saving so nothing is lost
+    dest.children.splice(targetIndex, 0, moved as Bookmark);
   }
   save(prune(items));
 }
@@ -131,13 +151,13 @@ export function moveItem(id, parentId, targetIndex) {
 // [target, dragged], preserving the target's slot. Returns the folder id
 // (or null if either lookup fails). draggedId is removed from wherever it
 // lives (top level or another folder), then the folder is created.
-export function createFolderWith(targetId, draggedId) {
+export function createFolderWith(targetId: string, draggedId: string): string | null {
   const items = loadBookmarks();
   const targetIdx = items.findIndex((it) => it.id === targetId && !isFolder(it));
   if (targetIdx === -1) return null;
 
   // Remove dragged from top level or a folder's children.
-  let dragged = items.find((it) => it.id === draggedId && !isFolder(it));
+  let dragged = items.find((it) => it.id === draggedId && !isFolder(it)) as Bookmark | undefined;
   if (dragged) {
     items.splice(items.indexOf(dragged), 1);
   } else {
@@ -153,9 +173,9 @@ export function createFolderWith(targetId, draggedId) {
   if (!dragged) return null;
 
   // Target index may have shifted if dragged was an earlier top-level item.
-  const target = items.find((it) => it.id === targetId);
+  const target = items.find((it) => it.id === targetId) as Bookmark;
   const at = items.indexOf(target);
-  const folder = {
+  const folder: BookmarkFolder = {
     id: crypto.randomUUID(),
     type: "folder",
     name: "New folder",
@@ -167,16 +187,16 @@ export function createFolderWith(targetId, draggedId) {
   return folder.id;
 }
 
-export function toggleFolder(id) {
+export function toggleFolder(id: string): void {
   const items = loadBookmarks();
   const folder = items.find((it) => it.id === id && isFolder(it));
-  if (folder) folder.collapsed = !folder.collapsed;
+  if (folder && isFolder(folder)) folder.collapsed = !folder.collapsed;
   save(items);
 }
 
-export function updateBookmarkUrl(id, url) {
+export function updateBookmarkUrl(id: string, url: string): void {
   const items = loadBookmarks();
-  let bookmark = items.find((it) => it.id === id && !isFolder(it));
+  let bookmark = items.find((it) => it.id === id && !isFolder(it)) as Bookmark | undefined;
   if (!bookmark) {
     for (const item of items) {
       if (!isFolder(item)) continue;
@@ -195,7 +215,12 @@ export function updateBookmarkUrl(id, url) {
 // params diverge. `url` is the SAVED bookmark url at arm/update time.
 const ARMED_KEY = "fused.armedBookmark";
 
-export function armBookmark(id, url) {
+export interface ArmedBookmark {
+  id: string;
+  url: string;
+}
+
+export function armBookmark(id: string, url: string): void {
   try {
     sessionStorage.setItem(ARMED_KEY, JSON.stringify({ id, url }));
   } catch (e) {
@@ -203,7 +228,7 @@ export function armBookmark(id, url) {
   }
 }
 
-export function disarmBookmark() {
+export function disarmBookmark(): void {
   try {
     sessionStorage.removeItem(ARMED_KEY);
   } catch (e) {
@@ -211,7 +236,7 @@ export function disarmBookmark() {
   }
 }
 
-export function getArmedBookmark() {
+export function getArmedBookmark(): ArmedBookmark | null {
   try {
     const raw = sessionStorage.getItem(ARMED_KEY);
     if (!raw) return null;

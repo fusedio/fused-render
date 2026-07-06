@@ -1,6 +1,6 @@
 // fs-path <-> /view/ URL codec + navigation. UI-free. The vanilla shell
 // registered a route() handler here; the React shell instead listens for the
-// "fused:navigate" event (useNavEpoch in location.js) — navigate/navigateUrl
+// "fused:navigate" event (useNavEpoch in lib/hooks.ts) — navigate/navigateUrl
 // dispatch it after pushState, popstate is subscribed alongside it.
 export const VIEW_PREFIX = "/view/";
 
@@ -16,11 +16,11 @@ const PREFIX = IS_EMBED ? EMBED_PREFIX : VIEW_PREFIX;
 
 export const NAV_EVENT = "fused:navigate";
 
-function notifyNavigate() {
+function notifyNavigate(): void {
   window.dispatchEvent(new Event(NAV_EVENT));
 }
 
-export function fsPathFromLocation() {
+export function fsPathFromLocation(): string | null {
   const p = location.pathname;
   if (!p.startsWith(PREFIX)) return null;
   const rest = p.slice(PREFIX.length);
@@ -32,7 +32,7 @@ export function fsPathFromLocation() {
   return "/" + decoded;
 }
 
-export function urlForFsPath(fsPath, search) {
+export function urlForFsPath(fsPath: string, search?: string): string {
   const rest = fsPath.replace(/^\/+/, "");
   const encoded = rest
     .split("/")
@@ -42,19 +42,19 @@ export function urlForFsPath(fsPath, search) {
   return PREFIX + encoded + (search || "");
 }
 
-export function navigate(fsPath) {
+export function navigate(fsPath: string): void {
   // Navigating between files/dirs drops old view params (fresh query string).
   history.pushState(null, "", urlForFsPath(fsPath));
   notifyNavigate();
 }
 
-export function navigateUrl(url) {
+export function navigateUrl(url: string): void {
   // Like navigate(), but preserves the full url (incl. query string) — used
   // when opening a bookmark, whose url carries saved view params.
   history.pushState(null, "", url);
   notifyNavigate();
 }
 
-export function currentUrl() {
+export function currentUrl(): string {
   return location.pathname + location.search;
 }
