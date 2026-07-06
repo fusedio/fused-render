@@ -10,6 +10,21 @@ const contentEl = document.getElementById("content");
 
 const SORT_KEYS = { name: "Name", size: "Size", mtime: "Modified" };
 
+// SSE watch on the currently-listed directory (LS-1). A directory's mtime
+// changes on create/delete/rename of entries (not on child content changes —
+// LS-2, accepted). The shell closes this when navigating away (LS-3).
+let watchES = null;
+let watchTimer = null;
+
+export function stopListingWatch() {
+  clearTimeout(watchTimer);
+  watchTimer = null;
+  if (watchES) {
+    watchES.close();
+    watchES = null;
+  }
+}
+
 function currentSort() {
   const q = new URLSearchParams(location.search);
   const sort = SORT_KEYS[q.get("sort")] ? q.get("sort") : "name";
@@ -40,6 +55,7 @@ function sortEntries(entries, sort, order) {
 }
 
 export async function renderListing(fsPath) {
+  stopListingWatch();
   renderBreadcrumb(fsPath);
   contentEl.innerHTML = `<div class="status-message">Loading…</div>`;
   let data;
@@ -88,4 +104,12 @@ export async function renderListing(fsPath) {
   contentEl.querySelectorAll("tr.row[data-path]").forEach((tr) => {
     tr.addEventListener("click", () => navigate(tr.getAttribute("data-path")));
   });
+
+  // Watch this directory; on change, debounce 300 ms then re-render. Sort
+  // params live in the URL, so a plain renderListing(fsPath) preserves them.
+  watchES = new EventSource("/api/fs/events?path=" + encodeURIComponent(fsPath));
+  watchES.onmessage = () => {
+    clearTimeout(watchTimer);
+    watchTimer = setTimeout(() => renderListing(fsPath), 300);
+  };
 }

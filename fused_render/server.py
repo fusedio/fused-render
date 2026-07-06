@@ -5,13 +5,15 @@ No path restriction anywhere — the whole filesystem is in scope by design
 paths. Endpoints are sync `def` so FastAPI dispatches them to its threadpool,
 giving free concurrency for blocking filesystem/subprocess work.
 """
+import asyncio
+import json
 import mimetypes
 import os
 import stat as stat_mod
 import tempfile
 
-from fastapi import Body, FastAPI, Header
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi import Body, FastAPI, Header, Query
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from fused_render.executor import run_python
@@ -183,6 +185,34 @@ def create_app(start_dir: str) -> FastAPI:
         media_type, _ = mimetypes.guess_type(path)
         return FileResponse(path, media_type=media_type or "application/octet-stream")
 
+    @app.get("/api/fs/events")
+    async def api_fs_events(path: list[str] = Query(default=[])):
+        # SSE change feed (SPEC §13.2). Async def on purpose: a sync def would pin
+        # a threadpool thread per open view for the lifetime of the page. Polling
+        # stat every 500ms is dependency-free and cheap at local scale; upgrading
+        # to real FS events later is internal to this endpoint.
+        def mtime_of(p):
+            try:
+                return os.stat(p).st_mtime
+            except OSError:
+                return None
+
+        async def stream():
+            last = {p: mtime_of(p) for p in path}
+            ticks = 0
+            while True:
+                await asyncio.sleep(0.5)
+                for p in path:
+                    m = mtime_of(p)
+                    if m != last[p]:
+                        last[p] = m
+                        yield f"data: {json.dumps({'path': p, 'mtime': m})}\n\n"
+                ticks += 1
+                if ticks % 30 == 0:
+                    yield ": keepalive\n\n"
+
+        return StreamingResponse(stream(), media_type="text/event-stream")
+
     @app.post("/api/fs/write")
     def api_fs_write(body: dict = Body(...), x_fused: str | None = Header(default=None)):
         guard = _require_fused(x_fused)
@@ -292,6 +322,10 @@ def create_app(start_dir: str) -> FastAPI:
             resolved = os.path.normpath(os.path.join(os.path.dirname(html), py))
 
         result = run_python(resolved, params)
+        # Tell the runtime which absolute file actually ran so it can watch it
+        # for auto-reload (LR-2). Set on failed runs too, so a broken py that
+        # gets fixed still triggers a reload.
+        result["resolved_py"] = resolved
         return JSONResponse(result)
 
     return app

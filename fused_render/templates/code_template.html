@@ -85,6 +85,8 @@
   </div>
   <div id="root"><div id="status">Loading…</div></div>
   <script>
+    fused.autoReload(false); // editor must not reload out from under the cursor — own autosave changes mtime; external edits are the conflict lock's job (SPEC LR-5)
+
     const MAX_BYTES = 2 * 1024 * 1024;
 
     const barEl = document.getElementById("bar");
@@ -100,6 +102,8 @@
     let file = null;
     let mtime = null;   // last known on-disk mtime; the optimistic-lock token
     let dirty = false;
+    let saveTimer = null;  // pending autosave debounce (AS-1)
+    let saving = false;    // a save() write is in flight
 
     function escapeHtml(s) {
       return String(s)
@@ -147,12 +151,27 @@
       conflictEl.style.display = "none";
     }
 
+    // Autosave 1 s after the last edit (AS-1). Suspends while a conflict banner
+    // is up (AS-2 — never auto-overwrite); reschedules rather than stacking a
+    // second write if a save is already in flight.
+    function autosave() {
+      if (!dirty) return;
+      if (conflictEl.style.display === "flex") return;
+      if (saving) {
+        saveTimer = setTimeout(autosave, 1000);
+        return;
+      }
+      save();
+    }
+
     async function save() {
+      clearTimeout(saveTimer); // manual Save / Cmd+S cancels a pending autosave (AS-1)
       if (!view || !dirty) return;
       const doc = view.state.doc.toString();
       saveBtn.disabled = true;
       statusTextEl.textContent = "Saving…";
       statusTextEl.classList.remove("error");
+      saving = true;
       try {
         const st = await fused.writeFile(file, doc, { expectedMtime: mtime });
         mtime = st.mtime;
@@ -166,6 +185,8 @@
           statusTextEl.classList.add("error");
           saveBtn.disabled = false;
         }
+      } finally {
+        saving = false;
       }
     }
 
@@ -226,7 +247,11 @@
         CM.oneDark,
         // docChanged fires on any user edit → mark the buffer modified.
         CM.EditorView.updateListener.of((update) => {
-          if (update.docChanged) setDirty(true);
+          if (update.docChanged) {
+            setDirty(true);
+            clearTimeout(saveTimer);
+            saveTimer = setTimeout(autosave, 1000);
+          }
         }),
       ];
       const lang = languageFor(ext);

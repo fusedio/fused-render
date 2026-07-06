@@ -102,6 +102,10 @@
         if (data.stdout) {
           console.log("[python]", data.stdout);
         }
+        // Watch the executed file for auto-reload, even on failure (LR-2): a
+        // broken py that gets fixed must still trigger a reload. Read before
+        // the ok check so it's recorded either way.
+        if (data.resolved_py) watchPath(data.resolved_py);
         if (!data.ok) {
           const err = new Error(data.error && data.error.message);
           err.type = data.error && data.error.type;
@@ -165,12 +169,78 @@
       });
   }
 
+  // --- Auto-reload (SPEC §13.3) ---------------------------------------------
+  // This page watches a set of files via the SSE change feed; on any change it
+  // reloads THIS frame (honest re-execution — we can't replay what the page did
+  // with a python result). All reload logic lives here so every rendered page
+  // (view, embed, standalone /render) gets it for free.
+  let autoReloadEnabled = true;
+  const watched = new Set();
+  let es = null;
+  let started = false;       // watching begins on DOMContentLoaded (LR-5)
+  let resubscribeTimer = null;
+  let reloadTimer = null;
+
+  function resubscribe() {
+    resubscribeTimer = null;
+    if (es) {
+      es.close();
+      es = null;
+    }
+    if (!autoReloadEnabled || watched.size === 0) return;
+    const query = [...watched].map((p) => "path=" + encodeURIComponent(p)).join("&");
+    es = new EventSource("/api/fs/events?" + query);
+    es.onmessage = () => {
+      // Any change (including deletion, mtime: null → LR-6) reloads after a
+      // 300 ms debounce that coalesces bursts.
+      clearTimeout(reloadTimer);
+      reloadTimer = setTimeout(() => window.location.reload(), 300);
+    };
+    // EventSource reconnects on error by default — leave it.
+  }
+
+  function watchPath(p) {
+    if (!p || watched.has(p)) return;
+    watched.add(p);
+    if (!autoReloadEnabled || !started) return; // before start, paths just accumulate
+    // Debounce resubscribe so a page firing several runPython calls on load
+    // reconnects once (LR-4).
+    clearTimeout(resubscribeTimer);
+    resubscribeTimer = setTimeout(resubscribe, 100);
+  }
+
+  function autoReload(enabled) {
+    autoReloadEnabled = !!enabled;
+    if (!autoReloadEnabled) {
+      clearTimeout(resubscribeTimer);
+      clearTimeout(reloadTimer);
+      if (es) {
+        es.close();
+        es = null;
+      }
+    } else if (started) {
+      resubscribe();
+    }
+  }
+
+  function startAutoReload() {
+    started = true;
+    // Union of: this page's own rendered file, _file if present (LR-1).
+    const params = new URLSearchParams(window.location.search);
+    const own = params.get("path");
+    if (own) watched.add(own);
+    const file = params.get("_file");
+    if (file) watched.add(file);
+    if (autoReloadEnabled) resubscribe();
+  }
+
   window.fused = {
     runPython,
     rawUrl,
     stat,
     readFile,
     writeFile,
+    autoReload,
     params: { get, getAll, set, onChange },
   };
 
@@ -203,4 +273,12 @@
       showOverlay(err);
     }
   });
+
+  // Start watching after inline page scripts have run, so an opt-out via
+  // fused.autoReload(false) (e.g. the code editor) wins the race (LR-5).
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", startAutoReload);
+  } else {
+    startAutoReload();
+  }
 })();

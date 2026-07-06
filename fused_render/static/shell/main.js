@@ -6,7 +6,7 @@ import { getConfig, statPath } from "./api.js";
 import { escapeHtml } from "./format.js";
 import { initSidebar, renderSidebar } from "./sidebar.js";
 import { renderBreadcrumb, syncUpdateButton } from "./breadcrumb.js";
-import { renderListing } from "./views/listing.js";
+import { renderListing, stopListingWatch } from "./views/listing.js";
 import { renderPreview, initPreview } from "./views/preview.js";
 
 const contentEl = document.getElementById("content");
@@ -14,6 +14,7 @@ const contentEl = document.getElementById("content");
 let config = null;
 
 async function route() {
+  stopListingWatch(); // close any listing watch when navigating away (LS-3)
   if (location.pathname === "/") {
     history.replaceState(null, "", urlForFsPath(config.start_dir));
   }

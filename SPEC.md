@@ -286,4 +286,45 @@ Distribute as a DMG containing a menu-bar app; all UI stays in the browser.
 - **M1 — Base layer (current focus):** server + shell, whole-disk browsing, raw streaming, live-rendered HTML in plain iframe, `runPython` → `main()` subprocess execution, params ↔ URL sync (strings, replaceState), server-side template registry (dispatch: template > html > fallback) + **parquet, image, text templates**. No security, no WS, no caching.
 - **M2 — Sidebar & bookmarks:** SHIPPED.
 - **M3 — DMG distribution:** menu-bar app + bundled CPython + build script (§12).
+- **M4 — Live editing:** autosave + SSE change feed + auto-reloading views (§13).
 - **Follow-ups (unordered):** remaining preview templates (csv/json/markdown/media/pdf/syntax-highlighted code); user template overrides (`~/.fused-render/templates/` checked first); warm worker pool; DataFrame/Arrow returns; security layer (token, origin checks, sandboxed bridge); exec console; search/sort/tree/keyboard nav; caching; user template overrides; editing.
+
+## 13. Live Editing — Autosave & Auto-Reload (M4)
+
+Goal: a live-preview loop. Edit a file (in our editor or externally) → it saves itself → every open view of it reacts. Combined with embed mode (D39) this gives "source in one tab, rendered output in another, updates as you type".
+
+### 13.1 Autosave (code editor)
+
+Applies to `code_template.html`, the only editable surface (D37).
+
+- **AS-1** The editor autosaves **1 s after the last edit** (debounced). Manual Save / Cmd+S remain and save immediately, cancelling any pending autosave timer.
+- **AS-2** Autosave uses the same optimistic lock as manual save (`expected_mtime`). On 409 the existing conflict banner shows and **autosave suspends** until the user resolves via Reload or Overwrite. Autosave must never auto-overwrite a conflict — that would reduce the lock to decoration.
+- **AS-3** Status text is the save lifecycle: `Modified → Saving… → Saved`. A non-conflict save failure shows the error; the next edit re-arms autosave (transient failures self-heal).
+- **AS-4** Always-on. No toggle, no setting. Consequence accepted: half-typed code reaches disk and triggers reloads of watching views (that is the point of a live-preview loop; the D17 traceback overlay makes broken intermediate states self-explanatory).
+- **AS-5** The `beforeunload` dirty guard stays — it covers the sub-second window between last keystroke and autosave completion.
+
+### 13.2 Change feed (server)
+
+- **WF-1** New endpoint `GET /api/fs/events?path=A&path=B&…` — an **SSE** stream (`text/event-stream`). Watched paths arrive as **repeated `path` query params** (paths may contain commas; repetition avoids a delimiter).
+- **WF-2** v1 implementation: async loop stats every watched path every **500 ms**; baseline mtimes captured at connect. When a path's mtime differs from the last seen value (or the file appears/disappears) emit one event: `data: {"path": "<abs path>", "mtime": <float|null>}` — `null` means deleted. No event replay: changes that happen while disconnected are missed by design (the client reloads on reconnect-relevant changes anyway).
+- **WF-3** A comment line (`: keepalive`) every 15 s keeps intermediaries and buffers honest. The endpoint must be `async def` (a sync def would pin a threadpool thread per open view for the lifetime of the page).
+- **WF-4** No filesystem-watcher dependency (watchdog/fsevents) in v1 — polling stat is cheap and dependency-free at local scale. A later upgrade to real FS events is internal to this endpoint; the client contract (SSE, same event shape) does not change.
+- **WF-5** Read-only GET — no `X-Fused` guard, consistent with the other read endpoints (D36 covers only mutating/executing POSTs).
+
+### 13.3 Auto-reload (runtime)
+
+The reload logic lives **entirely in the injected runtime** — the shell needs no per-view watching, and every rendered page (view mode, embed mode, standalone `/render`) gets the behavior for free.
+
+- **LR-1** Each rendered page watches the union of: **its own rendered file** (the `path` param of its `/render` URL), **`_file`** if present (templates watching their target), and **every Python file executed via `runPython` this page-life**.
+- **LR-2** `POST /api/run` response gains a `resolved_py` field — the absolute resolved path of the executed file — so the runtime learns dependency paths authoritatively instead of re-implementing the server's relative-path resolution. Recorded for failed runs too (a broken py that gets fixed must still trigger reload).
+- **LR-3** On any change event: debounce **300 ms** (coalesce bursts), then `location.reload()` on the iframe itself. Full reload is the honest re-execution — the runtime cannot replay what the page did with a python result. State survives because view state lives in URL params (D8/D20/D25).
+- **LR-4** When the watch set grows (a new py runs), the runtime closes and reopens its `EventSource` with the full set. Resubscribe is debounced so a page firing several `runPython` calls on load reconnects once.
+- **LR-5** Opt-out: `fused.autoReload(false)` disables watching/reloading for that page. `code_template.html` calls it — the editor must not reload out from under the cursor (its own autosave changes the mtime; external changes are the conflict lock's job). To make the opt-out race-free, the runtime starts watching on `DOMContentLoaded`, after inline page scripts have run.
+- **LR-6** Deletion (`mtime: null`) reloads too — the resulting 404/error view is the truthful state.
+- **LR-7** Reload works identically for standalone `/render?path=…` pages (runtime is the same code).
+
+### 13.4 Listing refresh (shell)
+
+- **LS-1** The directory listing view watches the directory path via the same endpoint; on change it re-fetches `/api/fs/list` and re-renders, preserving sort params.
+- **LS-2** Known limitation, accepted: a directory's mtime changes on create/delete/rename of entries — not when a child file's content or size changes. Stale sizes in an open listing are fine.
+- **LS-3** The shell closes the listing's `EventSource` when navigating away (to a preview or another directory).
