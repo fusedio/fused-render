@@ -422,3 +422,42 @@ Goal: users replace or add preview templates using the **exact same mechanism** 
 
 - **CT-8** Zero shell changes: stat carries the resolved user-template path in the existing `template` field; the preview iframe renders it via `/render` with `_file` exactly like a built-in (PT-2). M4 auto-reload (§13) covers template development for free — the rendered page watches its own html and every `runPython` file, so editing `template.html` or a reader live-reloads open previews. Registry edits apply on the next stat (navigate/refresh); open previews do not watch `registry.json`.
 - **CT-9** **Authoring skill:** a repo skill `skills/fused-render-custom-templates/` covers folder layout, registry format, and registration workflow only; it **delegates all html/py authoring guidance to `skills/fused-render-authoring/`** (no duplicated instruction — one source for the runtime API and template patterns).
+
+## 17. Export — Portable Bundles for Hosted Serving (M8)
+
+Goal: pack a renderable page into a portable *bundle* that a **separate** hosting
+layer (the `fused` wheel's `build_html_artifact`) can serve — without weakening the
+local-only invariant (§1). Export is an **offline build step** (`fused-render export
+<page.html> --out <dir>`): it opens no socket, uploads nothing, and reaches no
+network. fused-render itself still hosts nothing. Full detail: `docs/EXPORT.md`.
+
+### 17.1 Bundle format
+
+- **EX-1** A bundle is a directory holding `page.html` (the page verbatim),
+  `manifest.json` (the hosting contract), `code/<name>.py` (one per `runPython`
+  target), and `assets/<key>` (one per `rawUrl`/`readFile` target).
+- **EX-2** `manifest.json` (`{"fused_render_bundle": 1, "page", "entrypoints",
+  "assets"}`) maps each `runPython` literal path to a served route name + bundled
+  file, and each `rawUrl`/`readFile` literal path to an asset key + bundled file. The
+  hosting layer wires the served page's runtime from this map — it never re-parses
+  the HTML.
+
+### 17.2 Portable subset
+
+- **EX-3** Only the transport-agnostic part of the injected `window.fused` API is
+  portable: `runPython` (→ a served route the page posts to), `rawUrl`/`readFile`
+  (→ read-only bundled assets), and `params` (pure client-side URL state, unchanged).
+  `writeFile`, `stat`, and SSE live-reload are **unsupported** — a hosted artifact is
+  immutable and has no filesystem behind it.
+
+### 17.3 Static resolution & fail-loud
+
+- **EX-4** Every `runPython`/`rawUrl`/`readFile` path must be a **string literal**
+  resolvable at build time. A computed path, an unsupported API call, an absolute or
+  `..`-escaping path, or a missing target is a **blocking error** — export writes
+  nothing and reports all problems at once, rather than shipping a page whose calls
+  404 when hosted.
+- **EX-5** Route names derive from the `.py` stem (`sine.py` → `sine`), are prefixed
+  `run-` when they'd collide with a reserved serve route (`data`, `health`, the
+  `_`-prefixed control/shell/asset routes), and are suffixed `-2`, `-3`, … on
+  duplicate stems — so the map is always valid and injective.

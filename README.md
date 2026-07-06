@@ -44,6 +44,20 @@ fused-render --start-dir ~/data --port 9000 --no-browser
 `--start-dir` only sets the initial location — the whole filesystem stays
 browsable from there.
 
+## Export for hosted serving
+
+fused-render is local-only, but you can pack a page into a portable bundle that a
+hosting layer (the `fused` wheel) can serve:
+
+```
+fused-render export examples/sine.html --out ./bundle
+```
+
+This is an offline build step — it starts no server and touches no network. It
+collects the page's `runPython`/`rawUrl` dependencies into a self-contained
+bundle. Only the portable subset of the runtime API is supported (no `writeFile`,
+`stat`, or live-reload). See `docs/EXPORT.md` for the bundle format and rules.
+
 ## Authoring model
 
 Any `.py` file is a runnable target as long as it defines a `main()`
