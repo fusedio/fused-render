@@ -151,13 +151,16 @@ body {
 }
 
 .bookmark-actions {
-  display: none;
+  /* visibility (not display) so the buttons always occupy layout space —
+     display:none → flex on hover made the bookmark name shift width. */
+  display: flex;
+  visibility: hidden;
   flex: 0 0 auto;
   gap: 2px;
 }
 
 .bookmark-row:hover .bookmark-actions {
-  display: flex;
+  visibility: visible;
 }
 
 /* Bookmark hover card (params preview) */
