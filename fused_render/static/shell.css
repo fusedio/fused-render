@@ -147,6 +147,61 @@ body {
   box-shadow: 0 2px 0 0 var(--accent);
 }
 
+.bookmark-row.drag-into {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+/* Folder rows: folder icon (aligned with the bookmark stars) + semibold name
+   + child-count pill pinned far right. Icon and name toggle the fold; the
+   count pill swaps out for the rename/delete actions on hover. */
+.folder-row {
+  position: relative;
+}
+
+.folder-glyph {
+  display: flex;
+  cursor: pointer;
+}
+
+.folder-row .folder-name {
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.folder-count {
+  /* Overlays the always-reserved (but invisible until hover) actions area,
+     so it sits at the row's far right without shifting the name. */
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 10.5px;
+  line-height: 1;
+  color: var(--fg-muted);
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  padding: 3px 6px;
+}
+
+.folder-row:hover .folder-count {
+  display: none;
+}
+
+/* Indent rail: children sit inside a wrapper whose left border draws the
+   tree line, aligned under the folder icon. */
+.folder-children {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-left: 20px;
+  padding-left: 5px;
+  border-left: 1px solid rgba(255, 255, 255, 0.13);
+}
+
+.child-row {
+  padding-left: 8px;
+}
+
 .bookmark-name {
   flex: 1 1 auto;
   min-width: 0;
