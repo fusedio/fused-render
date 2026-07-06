@@ -18,6 +18,7 @@ import {
   parseLayout,
   flattenToLeaves,
   buildSentinelUrl,
+  splitShellSearch,
   embedSrc,
   readEmbedLoc,
   attachEmbedUrlChange,
@@ -44,9 +45,9 @@ let bodyEl = null;
 // which fires the shell's own fused:urlchange (main.js wraps replaceState) so
 // the bookmark buttons react.
 function syncTabsUrl() {
-  const current = new URLSearchParams(location.search);
+  const { params } = splitShellSearch(location.search);
   const codecStr = tabs.map((t) => encodePaneSegment(t.path, t.query)).join(",");
-  const next = buildSentinelUrl(TAB_PATH, codecStr, current);
+  const next = buildSentinelUrl(TAB_PATH, codecStr, params);
   if (location.pathname + location.search !== next) {
     history.replaceState(history.state, "", next);
   }
@@ -212,7 +213,7 @@ export function renderTabs(cfg) {
   // Mark this window a param boundary BEFORE any iframe mounts (TM-3): a page
   // rendered inside a tab must not climb past its own embed shell to here.
   window._fusedParamBoundary = true;
-  tabs = parseTabs(new URLSearchParams(location.search).get("_layout"));
+  tabs = parseTabs(splitShellSearch(location.search).layout);
   activeId = tabs[0].id;
   render();
 }

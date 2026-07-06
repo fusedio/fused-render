@@ -342,7 +342,8 @@ Goal: view several files/directories side by side in a resizable grid of panes, 
 - **LM-2** The pane tree lives in the reserved query param **`_layout`** (underscore prefix → already invisible to `fused.params`, PR-6). Codec (borrowed from the reference grid-viewer):
   - `,` separates panes in a **row** (side by side), `;` separates **columns** (stacked), `(…)` groups for nesting. Single pane = bare path.
   - Each pane segment is the pane's **fs path plus optional pane-local query** (`/data/a.parquet?_mode=source&sort=name`). Within a segment, the characters `, ; ( ) % ?` occurring *inside* path components or the query are percent-encoded so the codec's delimiters stay unambiguous.
-  - Example: `?_layout=/data/a.parquet,/data/b.parquet;/notes.md` → a and b side by side on top, notes below.
+  - **URL grammar (D51): the entire `_layout` value is parenthesized and emitted last** — `?city=sf&_layout=(/data/a.parquet?_mode=source&sort=name,/notes.md)`. The parens delimit scope both visually (inside = iframe-local, outside = global) and structurally: **`&` is literal inside them**, so segment queries read exactly as they appear. Every read of a shell query goes through the codec's `splitShellSearch` (balanced-paren scan; the runtime carries a small standalone duplicate) — plain `URLSearchParams` cannot parse a layout URL. Strict read, no lenient fallback: an unwrapped `_layout` value is treated as absent (the key is dropped on the next sync); an unbalanced span (paste-truncated URL — auto-linkers may eat the trailing `)`, accepted breakage) is invalid and falls back per LM-2's missing-layout rule. Params appearing *after* the `)` are ordinary globals — position is convention, the parens are the boundary.
+  - Example: `?_layout=(/data/a.parquet,/data/b.parquet;/notes.md)` → a and b side by side on top, notes below.
 - **LM-3** All **non-underscore params on the layout URL form one merged pool shared by every pane** (see LM-6). Same key = same value in all panes, by construction. Pane-local shell state (listing `sort`/`order`, `_mode`) stays on the pane's own embed URL and is captured per-pane inside the `_layout` segment (LM-2), not merged.
 
 ### 14.2 Panes
@@ -359,7 +360,7 @@ Goal: view several files/directories side by side in a resizable grid of panes, 
 
 ### 14.4 Entry & chrome
 
-- **LM-10** Entry: a **"Split" button** in the breadcrumb's crumb-actions (next to ★ Bookmark). Click → navigate to `<prefix>/_panel?_layout=<seg>,<seg>&<current user params>` where `<seg>` is the current fs path + pane-local query — two side-by-side panes, both the current view with its params carried over (a single pane on entry looked like nothing happened).
+- **LM-10** Entry: a **"Split" button** in the breadcrumb's crumb-actions (next to ★ Bookmark). Click → navigate to `<prefix>/_panel?<current user params>&_layout=(<seg>,<seg>)` (D51 grammar) where `<seg>` is the current fs path + pane-local query — two side-by-side panes, both the current view with its params carried over (a single pane on entry looked like nothing happened).
 - **LM-11** In layout mode the sidebar stays visible (bookmarks reachable, ★ button works on the layout URL — bookmarking a layout needs zero bookmark-layer changes, D20). Breadcrumb shows a static "Panel" label. The armed-bookmark "Update bookmark" flow (D38) works unchanged: pane/param drift rewrites the shell URL via replaceState → `fused:urlchange` → `syncUpdateButton`.
 - **LM-12** Module: **`views/panel.js`** — tree codec, tree ops (split/close/collapse), pane DOM + bar, URL sync. Imports `router.js` only (one-way deps, ARCHITECTURE §6). `main.js` gains one sentinel branch; `shell.css` a `.layout-*` section; sidebar/bookmarks/api untouched.
 

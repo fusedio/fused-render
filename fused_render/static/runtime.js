@@ -53,8 +53,37 @@
     return false;
   }
 
+  // In layout mode the target URL carries the reserved `_layout` param, which
+  // is parenthesized and may contain LITERAL `&` (D51 — see the shell's
+  // layout-codec.js, whose balanced-paren scan this duplicates: the runtime is
+  // injected standalone and imports nothing). Raw URLSearchParams would split
+  // inside the parens and leak layout fragments as visible params, so every
+  // read/write splits the search string first: `layoutSpan` is the raw
+  // `_layout=(...)` span (preserved byte-for-byte, reinserted last on write —
+  // never decoded here; only the layout shells parse it), `rest` is the
+  // remainder. Literal parens in the span are structural and balanced by
+  // construction (codec-escaped otherwise); an unbalanced span (truncated URL)
+  // runs to end-of-string so it still can't pollute `rest`.
+  function splitSearch(search) {
+    const s = (search || "").replace(/^\?/, "");
+    const m = /(^|&)_layout=\(/.exec(s);
+    if (!m) return { layoutSpan: null, rest: s };
+    const start = m.index + m[1].length;
+    let i = start + "_layout=(".length;
+    let depth = 1;
+    while (i < s.length && depth > 0) {
+      if (s[i] === "(") depth++;
+      else if (s[i] === ")") depth--;
+      i++;
+    }
+    return {
+      layoutSpan: s.slice(start, i),
+      rest: (s.slice(0, m.index) + s.slice(i)).replace(/^&|&$/g, ""),
+    };
+  }
+
   function currentParams() {
-    return new URLSearchParams(target.location.search);
+    return new URLSearchParams(splitSearch(target.location.search).rest);
   }
 
   const listeners = new Set();
@@ -121,9 +150,14 @@
         `fused.params.set: value for '${key}' must be a string, got ${typeof value}`
       );
     }
-    const params = currentParams();
+    const { layoutSpan, rest } = splitSearch(target.location.search);
+    const params = new URLSearchParams(rest);
     params.set(key, value);
-    const search = params.toString();
+    // Rebuild with the raw `_layout=(...)` span untouched and LAST (D51): the
+    // layout stays readable (no URLSearchParams.toString() percent-soup) and
+    // the global/local boundary stays visually stable.
+    let search = params.toString();
+    if (layoutSpan) search += (search ? "&" : "") + layoutSpan;
     const newUrl = target.location.pathname + (search ? "?" + search : "");
     target.history.replaceState(target.history.state, "", newUrl);
     // Notify via the event path only (no direct notify(), D46). When the shell
