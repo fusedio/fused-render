@@ -288,6 +288,7 @@ Distribute as a DMG containing a menu-bar app; all UI stays in the browser.
 - **M3 — DMG distribution:** menu-bar app + bundled CPython + build script (§12).
 - **M4 — Live editing:** autosave + SSE change feed + auto-reloading views (§13).
 - **M5 — Layout mode:** split-pane grid of embed views, layout + merged params in one bookmarkable URL (§14).
+- **M6 — Tab mode:** tabbed set of embed views on the §14 URL model; bookmark folders open as tab layouts (§15).
 - **Follow-ups (unordered):** remaining preview templates (csv/json/markdown/media/pdf/syntax-highlighted code); user template overrides (`~/.fused-render/templates/` checked first); warm worker pool; DataFrame/Arrow returns; security layer (token, origin checks, sandboxed bridge); exec console; search/sort/tree/keyboard nav; caching; user template overrides; editing.
 
 ## 13. Live Editing — Autosave & Auto-Reload (M4)
@@ -351,7 +352,7 @@ Goal: view several files/directories side by side in a resizable grid of panes, 
 
 ### 14.3 Params — merge & sync (runtime change)
 
-- **LM-7** The injected runtime's param target becomes the **topmost same-origin ancestor window** (was: direct parent). In normal view/embed mode this is the same window as before (parent = top), so behavior is unchanged; inside layout mode every rendered page in every pane reads/writes params **directly on the layout shell URL**. Merging and cross-pane sync are structural, not a synchronization mechanism.
+- **LM-7** The injected runtime's param target becomes the **topmost same-origin ancestor window** (was: direct parent), stopping **below** any ancestor marked as a param boundary (`_fusedParamBoundary` — only tab mode sets one, TM-3). In normal view/embed mode this is the same window as before (parent = top), so behavior is unchanged; inside layout mode every rendered page in every pane reads/writes params **directly on the layout shell URL**. Merging and cross-pane sync are structural, not a synchronization mechanism.
 - **LM-8** Change notification: the shell wraps **both** `history.replaceState` and `history.pushState` to dispatch `fused:urlchange` (today: only replaceState). The runtime listens for `fused:urlchange` on its target window and re-notifies `params.onChange` listeners — but only when the **visible (non-reserved) param snapshot actually changed** (snapshot diff). The diff guard prevents notification loops and duplicate fires (a `set()` would otherwise notify twice: once directly, once via the event; direct notify is removed in favor of the event path).
 - **LM-9** Consequence, intended: two panes rendering pages that use the same param key (e.g. `city`) are automatically linked — either pane's `set()` updates the shared URL and fires `onChange` in both. Pages wanting pane-private state must namespace their keys themselves (documented, not enforced).
 
@@ -360,3 +361,29 @@ Goal: view several files/directories side by side in a resizable grid of panes, 
 - **LM-10** Entry: a **"Split" button** in the breadcrumb's crumb-actions (next to ★ Bookmark). Click → navigate to `<prefix>/_panel?_layout=<current fs path + pane-local query>&<current user params>` — the current view becomes the first pane with its params carried over.
 - **LM-11** In layout mode the sidebar stays visible (bookmarks reachable, ★ button works on the layout URL — bookmarking a layout needs zero bookmark-layer changes, D20). Breadcrumb shows a static "Layout" label. The armed-bookmark "Update bookmark" flow (D38) works unchanged: pane/param drift rewrites the shell URL via replaceState → `fused:urlchange` → `syncUpdateButton`.
 - **LM-12** Module: **`views/panel.js`** — tree codec, tree ops (split/close/collapse), pane DOM + bar, URL sync. Imports `router.js` only (one-way deps, ARCHITECTURE §6). `main.js` gains one sentinel branch; `shell.css` a `.layout-*` section; sidebar/bookmarks/api untouched.
+
+## 15. Tab Mode — Tabbed Views (M6)
+
+Goal: the same URL-is-state model as §14, but as **tabs instead of a grid**: one page visible at a time, a tab bar to switch. Primary use: a **bookmark folder rendered as one view** — click the folder, get its bookmarks as tabs, bookmark the result as a dashboard.
+
+### 15.1 URL & route
+
+- **TM-1** Route: `/view/_tab?...` and `/embed/_tab?...` — a sentinel pathname exactly like `_panel` (LM-1), intercepted by `route()` under both prefixes. Zero server changes.
+- **TM-2** The tab list lives in the same reserved **`_layout`** param, as a **flat top-level `,` row** of the §14 codec — a tab segment is a fs path + optional segment-local query, same escaping (LM-2). Produced URLs are always a flat list; on parse, any nested structure (`;`, `()`) is defensively **flattened to its leaves in document order**, each leaf becoming a tab.
+- **TM-3** Params are **tab-independent — no merged pool** (deliberate inversion of LM-3). The tab shell marks its window as a **param boundary** (`window._fusedParamBoundary = true`, set on render, cleared on teardown); the runtime's ancestor climb (LM-7) stops **below** a boundary-marked ancestor, so a page rendered inside a tab targets its own pane's `/embed/...` URL. Each tab's full query — user params included — is therefore captured **segment-local** inside `_layout` by the ordinary sync (TM-7); the tab URL's own top-level query carries no user params.
+- **TM-4** A tab segment's path may itself be a sentinel (`_panel`, `_tab`): the iframe src is just `/embed/<segment path>` + segment query, so a panel layout nests inside a tab through the ordinary pipeline (D45 embed support), its `_layout` riding inside the segment query. A nested panel keeps its LM-7 merged-pool semantics **among its own panes** (the climb stops at the panel shell, just below the tab boundary) while staying isolated from every other tab.
+
+### 15.2 Tabs
+
+- **TM-5** A tab is an **`/embed/<path>` iframe**, mounted **lazily on first activation** and kept alive afterwards (`display:none` when inactive) — scroll/editor state survives switching, and hidden tabs keep receiving `fused:urlchange` (the runtime listens on the top window, LM-8), so param sync is live while hidden.
+- **TM-6** Tab bar (top of the layout area): one button per tab — label = basename of the tab's **current** path (sentinel paths label as `Panel` / `Tabs`) — plus a close `×` per tab and a trailing `+` that opens a new tab at the configured start dir. Click activates. The **active tab index is NOT encoded in the URL**: refresh/bookmark restores the first tab (avoids "Update bookmark" churn on every switch).
+- **TM-7** URL sync up, same machinery as LM-6: iframe `load` + tab-window `fused:urlchange` → read the tab's live location → re-encode `_layout` via guarded `replaceState`. Closing a tab removes its segment; closing the **last** tab exits to a plain view of its location (active prefix, like LM-5).
+
+### 15.3 Entry — bookmark folders
+
+- **TM-8** Clicking a bookmark **folder's name or row** opens the folder as a tab layout: each child bookmark's pathname becomes the segment path and its **entire saved query stays segment-local** (TM-3 — no hoisting, no cross-child key collisions; every bookmark keeps exactly its own params). A child that is itself a `_panel`/`_tab` bookmark just works (TM-4). Opening also **expands the folder** if it was collapsed (the sidebar should show what the tabs now show); the **folder glyph** keeps the plain collapse/expand toggle.
+- **TM-9** A folder is not a bookmark: opening it arms nothing. ★ Bookmark on the tab view saves the composed URL as a normal bookmark; a tab layout opened *from* such a bookmark gets the full armed/update flow (D38) unchanged. Breadcrumb shows a static "Tabs" label; no breadcrumb entry button (folder-only entry).
+
+### 15.4 Module
+
+- **TM-10** The §14 codec (escape/parse/encode/segment helpers) moves to a shared **`views/layout-codec.js`**; `views/panel.js`, the new **`views/tabs.js`**, and `breadcrumb.js` import it. `tabs.js` owns the tab bar DOM, lazy iframes, and URL sync; `main.js` gains the `_tab` sentinel branch; `shell.css` a `.tabs-*` section; `sidebar.js` changes only the folder-row click wiring.

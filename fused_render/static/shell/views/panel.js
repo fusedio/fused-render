@@ -2,9 +2,23 @@
 // iframes whose whole arrangement + per-pane locations live in the reserved
 // `_layout` URL param, so a layout is bookmarkable/refreshable like any view.
 // Imports router.js only (one-way deps, ARCHITECTURE §6); format.js for
-// escapeHtml is a pure helper.
+// escapeHtml is a pure helper. The `_layout` codec + embed helpers are shared
+// with tabs.js via layout-codec.js (TM-10).
 import { navigateUrl, urlForFsPath, IS_EMBED } from "../router.js";
 import { escapeHtml } from "../format.js";
+import {
+  leaf,
+  encodePaneSegment,
+  encodeNode,
+  parseLayout,
+  buildSentinelUrl,
+  embedSrc,
+  readEmbedLoc,
+} from "./layout-codec.js";
+
+// Re-export so breadcrumb.js (Split button) keeps importing the codec through
+// panel.js — the historical import path — without knowing about layout-codec.js.
+export { encodePaneSegment };
 
 // Layout mode lives under the page's own prefix (`/view/_panel` or
 // `/embed/_panel`), so entering/refreshing/exiting stays in the active mode.
@@ -12,143 +26,10 @@ const PANEL_PATH = (IS_EMBED ? "/embed/" : "/view/") + "_panel";
 
 const contentEl = document.getElementById("content");
 
-// Panes are /embed/<path> iframes (D39): a full chrome-free shell, so each
-// pane can browse dirs, open previews and use templates for free.
-const EMBED_PREFIX = "/embed/";
-
-// --- Tree codec (`_layout` param) -----------------------------------------
-// `,` = row (side by side), `;` = column (stacked), `(…)` groups for nesting.
-// A leaf = the pane's fs path + optional pane-local query, e.g.
-// `/data/a.parquet?_mode=source&sort=name`. The structural chars `, ; ( ) %`
-// (and `?` inside the path, so the first `?` always separates path from query)
-// are percent-encoded within a segment so the delimiters stay unambiguous.
-// The reference grid-viewer's splitDepthAware() is the model; per-segment
-// escaping is the addition it lacks.
-
-let idSeq = 0;
-
-function leaf(path, query) {
-  return { type: "leaf", id: ++idSeq, path, query: query || "" };
-}
-
-// Escape a path component: % first (so escapes aren't re-escaped), then the
-// codec delimiters, plus `?` so the path can never contain the path/query
-// separator.
-function encPath(s) {
-  return s
-    .replace(/%/g, "%25")
-    .replace(/,/g, "%2C")
-    .replace(/;/g, "%3B")
-    .replace(/\(/g, "%28")
-    .replace(/\)/g, "%29")
-    .replace(/\?/g, "%3F");
-}
-
-// Escape a query segment: same as encPath but keep `?` literal (the leading
-// `?` is the separator; any later `?` in a value is harmless once we split on
-// the first one).
-function encQuery(s) {
-  return s
-    .replace(/%/g, "%25")
-    .replace(/,/g, "%2C")
-    .replace(/;/g, "%3B")
-    .replace(/\(/g, "%28")
-    .replace(/\)/g, "%29");
-}
-
-// Reverse either escaping in one left-to-right pass. %25 decodes to `%` and
-// scanning continues past it, so a literal `%2C` (escaped to `%252C`) survives
-// while a structural `%2C` (an escaped comma) becomes `,`.
-function decSeg(s) {
-  return s.replace(/%(25|2C|3B|28|29|3F)/g, (_, hex) =>
-    String.fromCharCode(parseInt(hex, 16))
-  );
-}
-
-function encodeLeaf(node) {
-  return encPath(node.path) + encQuery(node.query);
-}
-
-// Encode one pane segment (fs path + optional query, query includes its `?`).
-// Exported so the breadcrumb's Split button can turn the current view into the
-// first pane without duplicating the codec (breadcrumb -> layout is acyclic).
-export function encodePaneSegment(path, query) {
-  return encPath(path) + encQuery(query || "");
-}
-
-function encodeNode(node, parentDir) {
-  if (node.type === "leaf") return encodeLeaf(node);
-  const sep = node.dir === "row" ? "," : ";";
-  const s = node.children.map((c) => encodeNode(c, node.dir)).join(sep);
-  // Parenthesize when nesting would be misread (a column inside a row, or a
-  // column inside a column).
-  return node.dir === "col" && parentDir ? "(" + s + ")" : s;
-}
-
-// Split on `sep` only at bracket depth 0.
-function splitDepthAware(str, sep) {
-  const out = [];
-  let depth = 0;
-  let cur = "";
-  for (const ch of str) {
-    if (ch === "(") depth++;
-    else if (ch === ")") depth--;
-    if (ch === sep && depth === 0) {
-      out.push(cur);
-      cur = "";
-    } else {
-      cur += ch;
-    }
-  }
-  out.push(cur);
-  return out;
-}
-
-function parseLeaf(seg) {
-  // First `?` separates path from query (path escaping guarantees no earlier
-  // `?`). Both halves are un-escaped; the query keeps its leading `?`.
-  const q = seg.indexOf("?");
-  if (q === -1) return leaf(decSeg(seg), "");
-  return leaf(decSeg(seg.slice(0, q)), "?" + decSeg(seg.slice(q + 1)));
-}
-
-function parseLayout(str) {
-  const rows = splitDepthAware(str, ";").map((row) => {
-    const cells = splitDepthAware(row, ",").map((cell) => {
-      cell = cell.trim();
-      if (cell.startsWith("(") && cell.endsWith(")")) return parseLayout(cell.slice(1, -1));
-      return parseLeaf(cell);
-    });
-    return cells.length === 1 ? cells[0] : { type: "split", dir: "row", children: cells };
-  });
-  return rows.length === 1 ? rows[0] : { type: "split", dir: "col", children: rows };
-}
-
-// --- `_layout` <-> shell URL ----------------------------------------------
-// The codec string keeps `, ; ( ) /` literal for a readable address bar
-// (SPEC §14 example). Only the chars that would break parsing of a query-param
-// value are escaped here; URLSearchParams.get('_layout') reverses this exactly.
-function urlSafeLayout(s) {
-  return s
-    .replace(/%/g, "%25")
-    .replace(/&/g, "%26")
-    .replace(/#/g, "%23")
-    .replace(/\+/g, "%2B")
-    .replace(/ /g, "%20");
-}
-
 // Build <prefix>/_panel?... : the encoded tree plus the merged (top-level)
-// param pool. `merged` is an iterable of [k, v] entries; `_layout` is dropped
-// from it so callers can pass the full current query.
+// param pool. Exported for breadcrumb.js's Split button.
 export function layoutUrl(codecStr, merged) {
-  let s = PANEL_PATH + "?_layout=" + urlSafeLayout(codecStr);
-  if (merged) {
-    for (const [k, v] of merged) {
-      if (k === "_layout") continue;
-      s += "&" + encodeURIComponent(k) + "=" + encodeURIComponent(v);
-    }
-  }
-  return s;
+  return buildSentinelUrl(PANEL_PATH, codecStr, merged);
 }
 
 // Re-encode `_layout` on the shell URL, preserving the merged pool, and
@@ -164,39 +45,10 @@ function syncLayoutUrl() {
   }
 }
 
-// --- Embed URL helpers -----------------------------------------------------
-function embedSrc(path, query) {
-  const encoded = path
-    .replace(/^\/+/, "")
-    .split("/")
-    .filter((s) => s.length > 0)
-    .map(encodeURIComponent)
-    .join("/");
-  return EMBED_PREFIX + encoded + (query || "");
-}
-
 // Read a pane's live location from its same-origin iframe (D39): fs path +
 // query, so duplicates/crumbs/sync follow in-pane navigation.
 function readPaneLoc(pane) {
-  const iframe = pane.querySelector("iframe");
-  try {
-    const loc = iframe.contentWindow.location;
-    const p = loc.pathname;
-    if (p && p.startsWith(EMBED_PREFIX)) {
-      const rest = p.slice(EMBED_PREFIX.length);
-      const path =
-        "/" +
-        rest
-          .split("/")
-          .filter((s) => s.length > 0)
-          .map(decodeURIComponent)
-          .join("/");
-      return { path, query: loc.search || "" };
-    }
-  } catch (e) {
-    // Cross-origin (shouldn't happen — panes are same-origin) — ignore.
-  }
-  return null;
+  return readEmbedLoc(pane.querySelector("iframe"));
 }
 
 // --- Tree ops (borrowed from the reference grid-viewer) --------------------
@@ -405,7 +257,6 @@ function renderCrumbs(pane, node) {
 // empty/unparseable `_layout` falls back to a single pane of the start dir.
 export function renderLayout(config) {
   const raw = new URLSearchParams(location.search).get("_layout");
-  idSeq = 0;
   if (raw && raw.trim()) {
     try {
       tree = parseLayout(raw);

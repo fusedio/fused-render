@@ -5,10 +5,11 @@ import { setRouteHandler, fsPathFromLocation, urlForFsPath, IS_EMBED } from "./r
 import { getConfig, statPath } from "./api.js";
 import { escapeHtml } from "./format.js";
 import { initSidebar, renderSidebar } from "./sidebar.js";
-import { renderBreadcrumb, renderLayoutBreadcrumb, syncUpdateButton } from "./breadcrumb.js";
+import { renderBreadcrumb, renderLayoutBreadcrumb, renderTabsBreadcrumb, syncUpdateButton } from "./breadcrumb.js";
 import { renderListing, stopListingWatch } from "./views/listing.js";
 import { renderPreview, initPreview } from "./views/preview.js";
 import { renderLayout, stopLayout } from "./views/panel.js";
+import { renderTabs, stopTabs } from "./views/tabs.js";
 
 const contentEl = document.getElementById("content");
 
@@ -17,6 +18,7 @@ let config = null;
 async function route() {
   stopListingWatch(); // close any listing watch when navigating away (LS-3)
   stopLayout(); // detach layout pane listeners when navigating away (LM-6)
+  stopTabs(); // detach tab listeners when navigating away (TM-7)
   if (location.pathname === "/") {
     history.replaceState(null, "", urlForFsPath(config.start_dir));
   }
@@ -28,6 +30,15 @@ async function route() {
   if (location.pathname === "/view/_panel" || location.pathname === "/embed/_panel") {
     renderLayoutBreadcrumb();
     renderLayout(config);
+    if (!IS_EMBED) renderSidebar();
+    return;
+  }
+
+  // Tab mode: `_tab` is a sentinel pathname like `_panel` (TM-1), intercepted
+  // under both prefixes before stat.
+  if (location.pathname === "/view/_tab" || location.pathname === "/embed/_tab") {
+    renderTabsBreadcrumb();
+    renderTabs(config);
     if (!IS_EMBED) renderSidebar();
     return;
   }

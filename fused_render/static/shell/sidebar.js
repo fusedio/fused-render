@@ -1,6 +1,11 @@
 // Sidebar UI: brand, Home entry, bookmark rows with hover card + inline rename.
 import { navigate, navigateUrl, currentUrl, VIEW_PREFIX } from "./router.js";
 import { escapeHtml } from "./format.js";
+// Folder-as-tabs entry (TM-8): composeFolderTabsUrl builds the `/view/_tab` URL
+// from a folder's children. This sidebar -> views/tabs import is the documented
+// acyclic exception (tabs.js never imports back), mirroring breadcrumb.js ->
+// views/panel.js.
+import { composeFolderTabsUrl } from "./views/tabs.js";
 import {
   loadBookmarks,
   allBookmarks,
@@ -182,15 +187,28 @@ function wireBookmarkRow(row, id, bookmark) {
   row.addEventListener("mouseleave", hideBookmarkTooltip);
 }
 
-// Chevron/name toggle + rename/delete handlers for a folder row.
+// Folder row: the glyph toggles collapse/expand; the name/row opens the folder
+// as a tab layout AND expands it (TM-8) — the sidebar should show what the
+// tabs now show. Opening arms nothing — a folder is not a bookmark.
 function wireFolderRow(row, id, folder) {
-  const toggle = (e) => {
+  row.querySelector(".folder-glyph").addEventListener("click", (e) => {
     e.preventDefault();
+    e.stopPropagation(); // don't also trigger the row's open handler
     toggleFolder(id);
     renderSidebar();
-  };
-  row.querySelector(".folder-glyph").addEventListener("click", toggle);
-  row.querySelector(".folder-name").addEventListener("click", toggle);
+  });
+  // Name or row click opens the folder as tabs, except over the glyph, the
+  // action buttons, or the inline rename input.
+  row.addEventListener("click", (e) => {
+    if (e.target.closest(".folder-glyph") || e.target.closest(".bookmark-actions") || e.target.closest(".bookmark-rename-input")) {
+      return;
+    }
+    e.preventDefault();
+    if (!folder || !folder.children.length) return;
+    if (folder.collapsed) toggleFolder(id); // expand only — never re-collapse
+    // No renderSidebar() here: navigateUrl re-renders the sidebar via route().
+    navigateUrl(composeFolderTabsUrl(folder.children));
+  });
   row.querySelector(".rename-btn").addEventListener("click", (e) => {
     e.preventDefault();
     startRename(row, id);

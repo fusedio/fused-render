@@ -710,3 +710,109 @@ body.embed .preview-header {
   border: none;
   background: var(--bg);
 }
+
+/* Tab mode (/view/_tab, /embed/_tab): a tabbed set of /embed iframes, one
+   visible at a time (SPEC §15). Bar of tab buttons on top, iframes fill the
+   rest; the active tab's iframe is shown, the others display:none. */
+.tabs-root {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.tabs-bar {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  min-height: 30px;
+  padding: 3px 6px 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.tabs-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  max-width: 200px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 5px 8px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.tab:hover {
+  color: var(--fg);
+}
+
+.tab.active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+  background: var(--bg-alt);
+}
+
+.tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  border-radius: 3px;
+  color: var(--fg-muted);
+  font-size: 14px;
+  line-height: 1;
+}
+
+.tab-close:hover {
+  color: var(--error);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.tab-add {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.tab-add:hover {
+  color: var(--fg);
+}
+
+.tabs-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.tabs-body iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: var(--bg);
+}

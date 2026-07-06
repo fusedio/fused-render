@@ -6,12 +6,17 @@
  *
  * Same-origin iframe model: this script talks to an ancestor window's URL
  * directly (no postMessage bridge — see DECISIONS.md D3/D4). The param target
- * is the TOPMOST same-origin ancestor (D46): it climbs window.parent while the
- * next ancestor is same-origin and reachable. In normal view/embed mode the
- * direct parent is already the top, so this is unchanged; inside layout mode
- * every pane's rendered page climbs past its embed shell to the layout shell,
- * so params read/write the shared layout URL (merging + cross-pane sync are
- * then structural, not a synchronization mechanism). When loaded as a top-level
+ * is the TOPMOST same-origin ancestor (D46), stopping BELOW any ancestor
+ * marked as a param boundary (`_fusedParamBoundary` — only tab mode sets one,
+ * TM-3/D47): it climbs window.parent while the next ancestor is same-origin,
+ * reachable, and not a boundary. In normal view/embed mode the direct parent is
+ * already the top, so this is unchanged; inside layout mode every pane's
+ * rendered page climbs past its embed shell to the layout shell, so params
+ * read/write the shared layout URL (merging + cross-pane sync are then
+ * structural). Inside tab mode the tab shell is a boundary, so the climb stops
+ * at each tab's own embed shell — tab params stay tab-independent (a nested
+ * panel still pools among its own panes, its climb halting at the panel shell
+ * just below the boundary). When loaded as a top-level
  * page (target === window, e.g. visiting /render?path=... directly, or a
  * cross-origin ancestor) it falls back to reading/writing its own URL, treating
  * the `path` query key as reserved alongside any `_`-prefixed key.
@@ -26,8 +31,11 @@
     try {
       while (t.parent && t.parent !== t) {
         // Probe: throws if t.parent is cross-origin — stop at the last
-        // same-origin ancestor.
+        // same-origin ancestor. Probe first so cross-origin catch semantics are
+        // unchanged, then honor a param boundary (tab shell, TM-3): stop below
+        // it so the page targets its own pane's URL, not the shared tab URL.
         void t.parent.location.href;
+        if (t.parent._fusedParamBoundary) break;
         t = t.parent;
       }
     } catch (e) {

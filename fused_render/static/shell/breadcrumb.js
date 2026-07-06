@@ -64,15 +64,23 @@ export function renderBreadcrumb(fsPath) {
   wireActions(basename(fsPath));
 }
 
-// Layout-mode breadcrumb (LM-11): a static "Layout" label, no Split button.
-// ★ Bookmark and Update-bookmark still work — they operate on currentUrl(),
-// which is the layout URL, so bookmarking a layout needs zero bookmark-layer
-// changes (D20/D38).
-export function renderLayoutBreadcrumb() {
+// Static-label breadcrumb for the URL-is-state modes (LM-11 / TM-9): a fixed
+// label, no Split button. ★ Bookmark and Update-bookmark still work — they
+// operate on currentUrl() (the layout/tab URL), so bookmarking one needs zero
+// bookmark-layer changes (D20/D38).
+function renderStaticBreadcrumb(label) {
   breadcrumbEl.innerHTML = `
-    <div class="crumbs"><span class="current">Layout</span></div>
+    <div class="crumbs"><span class="current">${escapeHtml(label)}</span></div>
     ${actionsHtml(false)}`;
-  wireActions("Layout");
+  wireActions(label);
+}
+
+export function renderLayoutBreadcrumb() {
+  renderStaticBreadcrumb("Layout");
+}
+
+export function renderTabsBreadcrumb() {
+  renderStaticBreadcrumb("Tabs");
 }
 
 // Split entry (LM-10): the current view becomes the first pane. Its `_`-prefixed
