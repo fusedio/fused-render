@@ -34,18 +34,27 @@ function renderTemplatePreview(fsPath, stat) {
   const src = `/render?path=${encodeURIComponent(stat.template)}&_file=${encodeURIComponent(fsPath)}`;
   // A directory preview (e.g. a .zarr store) keeps a way into the raw contents:
   // ?listing=1 forces the shell's listing view for this same path (main.js).
+  // The header button serves normal view mode; embed mode hides the whole
+  // header (shell.css `body.embed .preview-header`), so a directory template
+  // also gets an unobtrusive corner chip over the preview that CSS reveals only
+  // in embed — keeping the PT-6/D52 "browse contents" promise reachable there.
+  // A file (non-directory) template renders neither, so embed stays chrome-free.
   const actions = stat.is_dir
     ? `<button id="browse-contents" type="button">Browse contents</button>`
+    : "";
+  const chip = stat.is_dir
+    ? `<button id="browse-contents-embed" type="button" class="preview-browse-chip">Browse contents</button>`
     : "";
   contentEl.innerHTML = `
     ${header(fsPath, stat, actions)}
     <div class="preview-body">
       <iframe src="${src}"></iframe>
+      ${chip}
     </div>`;
   if (stat.is_dir) {
-    document
-      .getElementById("browse-contents")
-      .addEventListener("click", () => navigateUrl(location.pathname + "?listing=1"));
+    const browse = () => navigateUrl(location.pathname + "?listing=1");
+    document.getElementById("browse-contents").addEventListener("click", browse);
+    document.getElementById("browse-contents-embed").addEventListener("click", browse);
   }
 }
 
