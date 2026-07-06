@@ -359,7 +359,7 @@ Goal: view several files/directories side by side in a resizable grid of panes, 
 
 ### 14.4 Entry & chrome
 
-- **LM-10** Entry: a **"Split" button** in the breadcrumb's crumb-actions (next to ★ Bookmark). Click → navigate to `<prefix>/_panel?_layout=<current fs path + pane-local query>&<current user params>` — the current view becomes the first pane with its params carried over.
+- **LM-10** Entry: a **"Split" button** in the breadcrumb's crumb-actions (next to ★ Bookmark). Click → navigate to `<prefix>/_panel?_layout=<seg>,<seg>&<current user params>` where `<seg>` is the current fs path + pane-local query — two side-by-side panes, both the current view with its params carried over (a single pane on entry looked like nothing happened).
 - **LM-11** In layout mode the sidebar stays visible (bookmarks reachable, ★ button works on the layout URL — bookmarking a layout needs zero bookmark-layer changes, D20). Breadcrumb shows a static "Panel" label. The armed-bookmark "Update bookmark" flow (D38) works unchanged: pane/param drift rewrites the shell URL via replaceState → `fused:urlchange` → `syncUpdateButton`.
 - **LM-12** Module: **`views/panel.js`** — tree codec, tree ops (split/close/collapse), pane DOM + bar, URL sync. Imports `router.js` only (one-way deps, ARCHITECTURE §6). `main.js` gains one sentinel branch; `shell.css` a `.layout-*` section; sidebar/bookmarks/api untouched.
 

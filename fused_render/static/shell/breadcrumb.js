@@ -84,10 +84,11 @@ export function renderTabsBreadcrumb() {
   renderStaticBreadcrumb("Tabs");
 }
 
-// Split entry (LM-10): the current view becomes the first pane. Its `_`-prefixed
-// params and the listing sort/order stay pane-local (carried inside the
-// `_layout` segment); every other param joins the merged top-level pool shared
-// by all panes (LM-3).
+// Split entry (LM-10): two side-by-side panes, both showing the current view —
+// entering split mode with a single pane looked like nothing happened. Each
+// pane carries the `_`-prefixed params and the listing sort/order pane-local
+// (inside its `_layout` segment); every other param joins the merged top-level
+// pool shared by all panes (LM-3).
 function enterPanel(fsPath) {
   const params = new URLSearchParams(location.search);
   const paneLocal = new URLSearchParams();
@@ -98,7 +99,7 @@ function enterPanel(fsPath) {
   }
   const paneQ = paneLocal.toString();
   const seg = encodePaneSegment(fsPath, paneQ ? "?" + paneQ : "");
-  navigateUrl(panelUrl(seg, merged));
+  navigateUrl(panelUrl(seg + "," + seg, merged));
 }
 
 // Shows the "Update bookmark" button when the armed bookmark's saved params
