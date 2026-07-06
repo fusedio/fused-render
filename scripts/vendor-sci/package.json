@@ -1,0 +1,15 @@
+{
+  "name": "fused-render-sci-vendor",
+  "private": true,
+  "description": "Build workspace that bundles the scientific-file libraries (geotiff, netcdfjs, zarrita) into self-contained ESM bundles for fused-render's geotiff/netcdf/zarr templates. Not shipped; only the built bundles are committed. See README.md.",
+  "version": "0.0.0",
+  "scripts": {
+    "build": "./build.sh"
+  },
+  "dependencies": {
+    "esbuild": "^0.25.11",
+    "geotiff": "3.0.5",
+    "netcdfjs": "4.0.0",
+    "zarrita": "0.7.3"
+  }
+}
