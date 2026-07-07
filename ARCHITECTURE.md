@@ -39,6 +39,7 @@ fused-render/
 │   ├── server.py               # FastAPI app factory, all endpoints
 │   ├── executor.py             # subprocess-per-call runner (EXISTS — keep)
 │   ├── _child.py               # worker-process entry (EXISTS — keep)
+│   ├── logs.py                 # rotating app log for 500 / right-click-open diagnostics (D68)
 │   ├── static/
 │   │   ├── shell-dist/         # Vite build of frontend/ (gitignored, D54; built by dev / packaging hook)
 │   │   └── runtime.js          # injected into every rendered HTML (plain JS, NOT part of the React app)

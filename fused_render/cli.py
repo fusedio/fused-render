@@ -9,10 +9,15 @@ Two subcommands:
     starts no server and touches no network.
 """
 import argparse
+import logging
 import os
 import sys
 import threading
 import webbrowser
+
+from fused_render.logs import setup_logging
+
+logger = logging.getLogger("fused_render")
 
 DEFAULT_PORT = 8765
 
@@ -54,12 +59,17 @@ def _run_serve(args: argparse.Namespace) -> None:
 
     from fused_render.server import create_app
 
+    log_file = setup_logging()
     start_dir = os.path.abspath(os.path.expanduser(args.start_dir))
     app = create_app(start_dir=start_dir)
 
     url = f"http://127.0.0.1:{args.port}/"
     print(f"fused-render serving at {url}")
     print(f"start dir: {start_dir}")
+    print(f"log file: {log_file}")
+    # Explicit startup marker in the log (the boot line already timestamps it,
+    # but this records the bind + start dir a session is running with).
+    logger.info("serving at %s (start dir %s)", url, start_dir)
 
     if not args.no_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()

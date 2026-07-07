@@ -1,7 +1,7 @@
 """Runs a Python file through the fused local compute backend, when installed.
 
 Re-introduction of the D55-era engine (rolled back in D67) with a different
-posture (D68): the fused engine is **optional**. When the `fused` package is
+posture (D69): the fused engine is **optional**. When the `fused` package is
 importable, /api/run executes code through `LocalPythonComputeBackend` —
 fresh subprocess per call in a temp exec dir, PEP 723 inline requirements
 resolved into a cached venv, params delivered via `_params.json`. When it is

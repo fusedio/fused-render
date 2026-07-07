@@ -1,4 +1,4 @@
-"""Tests for the optional fused execution engine (fused_render/engine.py, D68).
+"""Tests for the optional fused execution engine (fused_render/engine.py, D69).
 
 The pure parts (PEP 723 parsing, code wrapping + the bare-main compat bridge,
 traceback cleaning, wire-shape adaptation) run everywhere — the wrapped code is

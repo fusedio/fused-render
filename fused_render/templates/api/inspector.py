@@ -3,7 +3,7 @@
 needs: module docstring, PEP 723 dependencies, and the entrypoint function's
 signature (params, annotations, defaults, docstring). Stdlib only.
 
-Entrypoint resolution mirrors the **active** execution engine (D68) — the
+Entrypoint resolution mirrors the **active** execution engine (D69) — the
 template passes ``engine`` from ``/api/config`` so the form always describes
 the function that will actually run: under the fused engine a function
 decorated with ``@fused.udf`` wins (any name; the **last** decorated one, the

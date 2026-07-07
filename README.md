@@ -92,6 +92,29 @@ collects the page's `runPython`/`rawUrl` dependencies into a self-contained
 bundle. Only the portable subset of the runtime API is supported (no `writeFile`,
 `stat`, or live-reload). See `docs/EXPORT.md` for the bundle format and rules.
 
+## Logs
+
+The server writes an application log so that when something goes wrong — an
+"Internal Server Error" in the browser, or a right-click "Open with
+FusedRender" that misbehaves — there's a traceback to look at. It records:
+
+- **startup** — a `boot:` line (version, python, platform) every launch, plus
+  the bind address / start dir;
+- **every browser request** — one line per request with status + duration
+  (`GET /view/… -> 200 (3 ms)`), so the log reconstructs the sequence of calls
+  a page made (static-asset fetches are skipped to keep it readable);
+- **every 500** — its full traceback and the request that caused it;
+- **failed Python runs** and the macOS app's file-open / reopen events.
+
+Each run writes its own file, `fused-render-<pid>.log`, in your system temp
+directory (e.g. `/tmp/fused-render-4521.log`; the CLI prints the exact path on
+startup, and in the packaged app **menu bar → Open logs** reveals it). A file
+per process means two instances running at once (say, on different ports) never
+interleave or clobber each other's logs. It's disposable diagnostic output: it
+rotates at 2 MB with one backup, and living in temp means the OS reclaims it —
+and a reboot gives you a fresh slate — rather than logs piling up in a permanent
+directory. Set `FUSED_RENDER_LOG_DIR` to keep logs somewhere persistent instead.
+
 ## Authoring model
 
 Any `.py` file is a runnable target as long as it defines a `main()`
