@@ -255,7 +255,8 @@ TEMPLATES = {
     ".pdf": ["pdf"],
     ".mp4": ["media"], ".mov": ["media"], ".m4v": ["media"], ".webm": ["media"],
     ".mp3": ["media"], ".wav": ["media"], ".m4a": ["media"], ".ogg": ["media"], ".flac": ["media"],
-    ".py": ["code"], ".js": ["code"], ".ts": ["code"], ".sh": ["code"],
+    ".py": ["code", "api"],              # api = @fused.udf run form (D63)
+    ".js": ["code"], ".ts": ["code"], ".sh": ["code"],
     ".yaml": ["code"], ".yml": ["code"], ".toml": ["code"], ".css": ["code"],
     ".txt": ["text", "code"], ".log": ["text", "code"],
     ".html": ["_render", "code"], ".htm": ["_render", "code"],  # hardcoded — registry-exempt (CT-4); _render = shell sentinel (PT-12)

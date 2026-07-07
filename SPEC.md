@@ -240,7 +240,8 @@ const page = await fused.runPython("./reader.py",
 | `.png .jpg .jpeg .gif .webp` | `image` | `<img>` via raw endpoint |
 | `.pdf` | `pdf` | browser-native embed |
 | `.mp4 .mov .m4v .webm .mp3 .wav .m4a .ogg .flac` | `media` | raw endpoint w/ Range |
-| `.py .js .ts .sh .yaml .yml .toml .css` | `code` | editable CodeMirror |
+| `.py` | `code`, `api` | editable CodeMirror; `api` = swagger-style run form over the `@fused.udf` entry point (D63) |
+| `.js .ts .sh .yaml .yml .toml .css` | `code` | editable CodeMirror |
 | `.txt .log` | `text`, `code` | `<pre>` |
 | `.html .htm` | `_render`, `code` | list **hardcoded server-side**, registry-exempt (CT-4); `_render` is a shell sentinel (PT-12) rendering the file itself live (§4) |
 | unknown | shell fallback | metadata + raw/download link (built into shell, not a template) |
