@@ -54,7 +54,7 @@ Rules that matter (each has a reason):
 
 - **Params arrive exactly as the JS sent them — no coercion.** Pass numbers as numbers from the page (`{limit: 50}`, not `{limit: "50"}`); URL params are strings, so convert where you read them (`parseInt`/`parseFloat`/`Number`). Annotations on `main` are documentation only.
 - **Give every parameter a default** unless it is genuinely required; a missing required arg raises an ordinary `TypeError` shown to the page.
-- **Declare third-party imports in the `# /// script` header.** The engine builds a cached venv per requirement set (first call takes seconds, then fast). **The server's environment is not visible to your script** — an undeclared import fails even if it's installed where the server runs. Stdlib-only scripts need no header.
+- **Declare third-party imports in a `# /// script` comment header** (see "Declaring external dependencies" below). The server's environment is never visible to your script, so an undeclared import fails even if it's installed where the server runs; stdlib-only scripts need no header.
 - **Return JSON-native values only** (dict / list / str / int / float / bool / None). A DataFrame or bytes return is an error — convert first: `df.to_dict("records")`. Non-JSON scalars inside structures (datetime, Decimal, numpy types) also break serialization — stringify or cast them (`str(ts)`, `float(x)`).
 - **Relative paths inside `main()` resolve next to the .py file** (the working directory is re-homed there for the call). `open("./data.csv")` next to your script just works. Module-level code runs in a temp exec dir — do file work inside `main()`.
 - **Each call is a fresh subprocess.** Edits to the .py apply on the next call — but so does full import cost (pandas ≈ 1 s per call). No state survives between calls; don't cache in globals.
@@ -65,6 +65,31 @@ Rules that matter (each has a reason):
   - **Standard library** — always (the default venv is stdlib-only).
   - **Third-party** — only what the `# /// script` header declares. The engine resolves the header into a cached per-requirements venv (uv; first call per set takes seconds, then reused). This is identical for a `pip install -e .` checkout and the packaged `.app`.
   - **Offline (`.app`):** PEP 723 installs resolve **first** from the bundle's wheelhouse, which ships numpy, pandas, requests, duckdb, polars, matplotlib, scipy, pillow, openpyxl, shapely, geopandas (+ pyarrow) — a view built on those works with no network. Anything outside that set needs network to reach PyPI (an editable checkout always resolves from PyPI). Guard optional imports and return a clear error rather than letting a raw `ImportError` hit the overlay.
+
+### Declaring external dependencies (PEP 723)
+
+Third-party packages are declared **inline, in a comment header** at the top of the `.py` — the [PEP 723](https://peps.python.org/pep-0723/) `# /// script` block. There is no `requirements.txt`, no separate `pip install` step, and no reliance on the server's environment: the engine reads the header, builds a cached venv for exactly that dependency set, and runs `main()` inside it.
+
+```python
+# /// script
+# dependencies = [
+#     "pandas",
+#     "shapely>=2.0",
+#     "duckdb==1.1.3",
+# ]
+# ///
+import fused
+import pandas as pd
+
+@fused.udf
+def main(...): ...
+```
+
+- **It stays a comment block, so the file remains a runnable, importable `.py`.** Every line starts with `#`; the fence is exactly `# /// script` … `# ///`. `dependencies` is a TOML list of [PEP 508](https://peps.python.org/pep-0508/) requirement strings — bare (`"pandas"`), pinned (`"duckdb==1.1.3"`), or ranged (`"shapely>=2.0"`).
+- **One venv per distinct dependency set.** The set is hashed order-independently, so two scripts declaring the same `dependencies` share a venv and install once; the first call for a new set builds it (seconds), then it's cached under `~/.openfused/venvs`. Pin consistently across files to maximize reuse — `"pandas"` and `"pandas==2.2"` count as different sets.
+- **Omit the header entirely for stdlib-only scripts** — they run in the bare stdlib venv with no build step.
+- **Malformed TOML** in the header surfaces as a structured error on the page, not a 500 — fix or remove the block.
+- **Offline (`.app`):** these installs resolve from the bundled wheelhouse first (the package list above); anything outside it needs network.
 
 ### Keep `main()` statically checkable
 
