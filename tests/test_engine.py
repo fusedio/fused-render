@@ -19,11 +19,20 @@ from fused_render import engine
 
 # --- script_requirements (PEP 723) ------------------------------------------
 
+# tomllib is 3.11+; the engine itself is unreachable on 3.10 (the fused package
+# needs 3.11, so available() is False), but requires-python is >=3.10 — keep a
+# 3.10 dev `pytest` green by skipping the parser tests there.
+requires_tomllib = pytest.mark.skipif(
+    sys.version_info < (3, 11), reason="tomllib (PEP 723 parsing) needs Python 3.11+"
+)
 
+
+@requires_tomllib
 def test_requirements_absent_is_empty():
     assert engine.script_requirements("def main():\n    return 1\n") == []
 
 
+@requires_tomllib
 def test_requirements_parsed():
     src = (
         "# /// script\n"
@@ -34,6 +43,7 @@ def test_requirements_parsed():
     assert engine.script_requirements(src) == ["pyarrow", "requests"]
 
 
+@requires_tomllib
 def test_requirements_malformed_toml_raises():
     src = "# /// script\n# dependencies = [oops\n# ///\n"
     with pytest.raises(ValueError, match="PEP 723"):

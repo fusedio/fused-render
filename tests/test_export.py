@@ -134,6 +134,39 @@ def test_same_asset_literal_across_methods_deduped(tmp_path):
     assert [a.path for a in plan.assets] == ["./x.csv"]
 
 
+def test_reexport_clears_stale_bundle_files(tmp_path):
+    # Re-exporting after removing a dependency must not leave the old files
+    # in code/ or assets/ — a stale orphan beside a fresh manifest reads as
+    # part of the bundle.
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.py").write_text("def main():\n    return 1\n")
+    (src / "b.py").write_text("def main():\n    return 2\n")
+    (src / "page.html").write_text(
+        "<script>fused.runPython('./a.py',{}); fused.runPython('./b.py',{});</script>"
+    )
+    out = tmp_path / "bundle"
+    export_page(str(src / "page.html"), str(out))
+    assert (out / "code" / "b.py").is_file()
+
+    (src / "page.html").write_text("<script>fused.runPython('./a.py',{});</script>")
+    export_page(str(src / "page.html"), str(out))
+    assert (out / "code" / "a.py").is_file()
+    assert not (out / "code" / "b.py").exists()  # stale entry cleared
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert [e["name"] for e in manifest["entrypoints"]] == ["a"]
+
+
+def test_dotfile_asset_key_not_mangled(tmp_path):
+    # lstrip("./") would strip the leading dot of a dotfile; keys must keep it.
+    html = "<script>fused.rawUrl('./.data.bin');</script>"
+    _write(tmp_path, ".data.bin", "X")
+    plan = plan_export(html, str(tmp_path))
+    assert not plan.errors
+    assert plan.assets[0].name == ".data.bin"
+    assert plan.assets[0].file == "assets/.data.bin"
+
+
 def test_symlink_escaping_page_dir_rejected(tmp_path):
     import os
 

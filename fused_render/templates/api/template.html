@@ -333,7 +333,15 @@
         return;
       }
       try {
-        const info = await fused.runPython("./inspector.py", { file });
+        // Entrypoint resolution depends on the active engine (PY-12/PY-13):
+        // under the fused engine a @fused.udf-decorated function wins; the
+        // builtin executor only ever calls main(). Pass the engine so the
+        // form always describes the function that will actually run.
+        let engine = "builtin";
+        try {
+          engine = (await (await fetch("/api/config")).json()).engine || "builtin";
+        } catch (e) { /* config unavailable — builtin is the safe default */ }
+        const info = await fused.runPython("./inspector.py", { file, engine });
         if (info.parse_error) {
           page.innerHTML = `<div id="status" class="error">Syntax error — ${escapeHtml(info.parse_error)}\n\nFix it in the code mode; this view reloads on save.</div>`;
           return;

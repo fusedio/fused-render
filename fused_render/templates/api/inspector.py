@@ -3,9 +3,12 @@
 needs: module docstring, PEP 723 dependencies, and the entrypoint function's
 signature (params, annotations, defaults, docstring). Stdlib only.
 
-Entrypoint resolution mirrors the execution engines (D68): a function
+Entrypoint resolution mirrors the **active** execution engine (D68) — the
+template passes ``engine`` from ``/api/config`` so the form always describes
+the function that will actually run: under the fused engine a function
 decorated with ``@fused.udf`` wins (any name; the **last** decorated one, the
-same pick the fused engine makes), else a bare ``main()``.
+same pick the engine makes), else a bare ``main()``; under the builtin
+executor only ``main()`` is ever called, so only it is shown.
 """
 import ast
 
@@ -22,8 +25,12 @@ def _is_fused_udf_decorator(node) -> bool:
     )
 
 
-def _find_entrypoint(tree):
-    """The last ``@fused.udf``-decorated function, else a bare ``main()``."""
+def _find_entrypoint(tree, engine: str):
+    """The function the active engine will call.
+
+    fused engine: the last ``@fused.udf``-decorated function, else a bare
+    ``main()`` (the compat bridge). builtin executor: ``main()`` only.
+    """
     decorated = None
     main_fn = None
     for node in tree.body:
@@ -33,7 +40,9 @@ def _find_entrypoint(tree):
             decorated = node  # last one wins, matching the engine's pick
         elif node.name == "main":
             main_fn = node
-    return decorated or main_fn
+    if engine == "fused":
+        return decorated or main_fn
+    return main_fn
 
 
 def _params(fn) -> list:
@@ -62,7 +71,7 @@ def _params(fn) -> list:
     return params
 
 
-def main(file: str) -> dict:
+def main(file: str, engine: str = "builtin") -> dict:
     with open(file, encoding="utf-8", errors="replace") as f:
         source = f.read()
     try:
@@ -70,7 +79,7 @@ def main(file: str) -> dict:
     except SyntaxError as e:
         return {"parse_error": f"line {e.lineno}: {e.msg}"}
 
-    fn = _find_entrypoint(tree)
+    fn = _find_entrypoint(tree, engine)
     result = {
         "parse_error": None,
         "module_docstring": ast.get_docstring(tree),

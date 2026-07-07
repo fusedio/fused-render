@@ -244,7 +244,10 @@ def plan_export(html: str, page_dir: str) -> ExportPlan:
             if not os.path.isfile(src):
                 plan.errors.append(f"{method} target {path!r} not found next to the page ({src})")
                 continue
-            key = os.path.normpath(path).replace(os.sep, "/").lstrip("./")
+            # removeprefix, NOT lstrip: lstrip("./") strips any leading run of
+            # '.'/'/' chars, mangling dotfiles ("./.env" -> "env"). normpath
+            # already collapses "./x" to "x"; this only guards a residual "./".
+            key = os.path.normpath(path).replace(os.sep, "/").removeprefix("./")
             seen_asset_paths.add(path)
             plan.assets.append(Asset(path=path, name=key, file=f"assets/{key}"))
 
@@ -300,6 +303,12 @@ def export_page(html_path: str, out_dir: str) -> ExportPlan:
         )
 
     os.makedirs(out_dir, exist_ok=True)
+    # Re-export must be deterministic: a previous bundle's code/ and assets/
+    # may hold files the new manifest no longer lists, and stale orphans beside
+    # a fresh manifest read as part of the bundle. Only these two bundle-owned
+    # subdirs are cleared — anything else the user put in --out is untouched.
+    for owned in ("code", "assets"):
+        shutil.rmtree(os.path.join(out_dir, owned), ignore_errors=True)
     page_file = "page.html"
     shutil.copyfile(html_path, os.path.join(out_dir, page_file))
 
