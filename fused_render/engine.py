@@ -181,10 +181,14 @@ async def run_python(path: str, params: dict) -> dict:
     # The backend hands return_value back JSON-encoded; decode it here so the
     # wire carries real values ({"x": 1}, not "{\"x\": 1}"). Base64 binary
     # bodies stay strings, and anything that isn't valid JSON passes through.
+    # parse_constant: python's json accepts NaN/Infinity/-Infinity and would
+    # decode them to floats that the response serializer re-emits as bare NaN,
+    # which the browser's strict JSON.parse rejects — the whole /api/run
+    # response would fail to parse. Decode them as their literal names instead.
     return_value = r.return_value
     if isinstance(return_value, str) and not (r.response and r.response.body_encoding == "base64"):
         try:
-            return_value = json.loads(return_value)
+            return_value = json.loads(return_value, parse_constant=lambda c: c)
         except ValueError:
             pass
     return {
