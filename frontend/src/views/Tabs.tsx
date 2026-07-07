@@ -44,7 +44,26 @@ export function composeFolderTabsUrl(children: Bookmark[]): string {
   const segments = children.map((b) => {
     const qIdx = b.url.indexOf("?");
     const pathname = qIdx === -1 ? b.url : b.url.slice(0, qIdx);
-    const search = qIdx === -1 ? "" : b.url.slice(qIdx); // keeps its leading "?"
+    let search = qIdx === -1 ? "" : b.url.slice(qIdx); // keeps its leading "?"
+    // Carry the bookmark's NAME into the segment as reserved `_label` so the
+    // tab bar shows it verbatim (tabLabel) — a renamed bookmark or a saved
+    // `_panel` layout must not degrade to a basename/"Panel" label. Inserted
+    // BEFORE any `_layout` span to keep the layout-last convention (D51);
+    // `_`-prefix keeps it invisible to fused.params (PR-6).
+    if (b.name) {
+      // Split at the raw `_layout=(...)` span (kept byte-identical — it may
+      // contain literal `&` and even nested `_label`s of its own segments);
+      // the head is plain params, so URLSearchParams can REPLACE any `_label`
+      // already saved in the bookmark URL (a stale one would win otherwise —
+      // get() returns the first occurrence).
+      const layoutIdx = search.indexOf("_layout=(");
+      const head = layoutIdx === -1 ? search : search.slice(0, layoutIdx);
+      const tail = layoutIdx === -1 ? "" : search.slice(layoutIdx);
+      const params = new URLSearchParams(head.replace(/^\?/, "").replace(/&$/, ""));
+      params.set("_label", b.name);
+      const qs = params.toString();
+      search = "?" + qs + (tail ? (qs ? "&" : "") + tail : "");
+    }
     // Sentinel pathnames (/view/_panel, /view/_tab) decode to segment paths
     // "/_panel" / "/_tab" — round-trips through embedSrc/readEmbedLoc (TM-4).
     const fsPath = pathname.startsWith(VIEW_PREFIX)
@@ -76,9 +95,15 @@ function parseTabs(raw: string | null, startDir: string): LayoutLeaf[] {
   return [leaf(startDir, "")];
 }
 
-// Basename of the tab's live path (mutated into the leaf by the URL sync) —
-// sentinel paths label as Panel / Tabs (TM-6).
+// A reserved `_label` param on the tab's query wins (set by folder-as-tabs
+// entry so tabs carry their BOOKMARK names, TM-8). It rides the segment query,
+// so it survives refresh/bookmark and is dropped naturally when the tab
+// navigates elsewhere (navigation replaces the embed query wholesale).
+// Fallback: basename of the tab's live path (mutated into the leaf by the URL
+// sync) — sentinel paths label as Panel / Tabs (TM-6).
 function tabLabel(t: LayoutLeaf): string {
+  const named = splitShellSearch(t.query || "").params.get("_label");
+  if (named) return named;
   const b = basename(t.path);
   if (b === "_panel") return "Panel";
   if (b === "_tab") return "Tabs";
