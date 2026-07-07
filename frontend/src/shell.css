@@ -558,9 +558,29 @@ table.listing-table td.mtime {
 }
 
 /* Annotate toggle (AN-2): same icon-button family as .mode-switcher-btn, but
-   position:relative for the badge. */
+   position:relative for the badge, and separated from the mode switcher by a
+   hairline divider — it is an orthogonal on/off, not a fourth mode. */
 .preview-actions .annotate-toggle {
   position: relative;
+  margin-left: 10px;
+}
+.preview-actions .annotate-toggle::before {
+  content: "";
+  position: absolute;
+  left: -10px;
+  top: 4px;
+  bottom: 4px;
+  width: 1px;
+  background: var(--border);
+}
+
+/* Solid accent fill is reserved for the single-select mode switcher; the
+   binary annotate toggle gets a tinted-outline on-state so "armed to comment"
+   and "active mode" never read as the same thing. */
+.preview-actions .mode-switcher-btn.annotate-toggle.active {
+  background: color-mix(in srgb, var(--accent) 18%, var(--bg));
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 /* Template-mode icon: monochrome SVG tinted via mask-image + currentColor

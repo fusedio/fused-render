@@ -72,7 +72,7 @@ def script_requirements(text: str) -> list[str]:
     return []
 
 
-def build_code(user_code: str, script_dir: str) -> str:
+def build_code(user_code: str, script_dir: str, script_path: str) -> str:
     """Wrap user code so its imports and data paths resolve next to the .py.
 
     Preamble is ONE physical line so user tracebacks are offset by exactly 1.
@@ -81,10 +81,16 @@ def build_code(user_code: str, script_dir: str) -> str:
     until then. The epilogue instead wraps the registered UDF so the chdir to
     the script's dir happens just before main() runs — relative data paths in
     main() resolve against the script, params still get found.
+
+    `__file__` is set to the script's real path: the backend exec()s the code
+    as "<lambda_exec>" where Python defines no __file__ at all, but scripts
+    legitimately use it (os.path.dirname(__file__)) — the old subprocess
+    executor ran the real file, so this keeps that contract.
     """
     preamble = (
         f"import os as _fused_os, sys as _fused_sys; "
-        f"_fused_sys.path.insert(0, {script_dir!r})\n"
+        f"_fused_sys.path.insert(0, {script_dir!r}); "
+        f"__file__ = {script_path!r}\n"
     )
     epilogue = f"""
 try:
@@ -175,7 +181,8 @@ async def run_python(path: str, params: dict) -> dict:
     except ValueError as e:
         return _error(str(e))
 
-    code = build_code(user_code, os.path.dirname(os.path.abspath(path)))
+    abs_path = os.path.abspath(path)
+    code = build_code(user_code, os.path.dirname(abs_path), abs_path)
     r = await get_backend().execute(
         code=code,
         requirements=reqs or None,

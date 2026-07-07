@@ -468,9 +468,22 @@
        so it never mutates the user's layout (AN-10). */
     #__fa_hl {
       position: fixed; pointer-events: none; z-index: ${Z};
-      border: 2px solid var(--fa-accent);
-      background: color-mix(in srgb, var(--fa-accent) 12%, transparent);
+      border: 1.5px solid var(--fa-accent);
+      background: color-mix(in srgb, var(--fa-accent) 8%, transparent);
       border-radius: 3px; display: none;
+      transition: left 90ms cubic-bezier(0.4, 0, 0.2, 1),
+                  top 90ms cubic-bezier(0.4, 0, 0.2, 1),
+                  width 90ms cubic-bezier(0.4, 0, 0.2, 1),
+                  height 90ms cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    /* Anchor dot: while a draft is open, marks the exact click point so the
+       composer is visually tethered to what it annotates. */
+    #__fa_dot {
+      position: fixed; pointer-events: none; z-index: ${Z};
+      width: 10px; height: 10px; border-radius: 50%;
+      background: var(--fa-accent); border: 2px solid var(--fa-bg);
+      transform: translate(-50%, -50%); display: none;
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--fa-accent) 40%, transparent);
     }
     /* Pins live in document coords (absolute, scroll with content — AN-11). */
     #__fa_pins { position: absolute; top: 0; left: 0; pointer-events: none; }
@@ -509,7 +522,11 @@
     }
     .__fa_pop textarea:focus { border-color: var(--fa-accent); }
     .__fa_draftwrap, .__fa_replywrap { padding: 8px; }
-    .__fa_hint { color: var(--fa-muted); font-size: 10px; margin-top: 4px; }
+    .__fa_hint { color: var(--fa-muted); font-size: 11px; margin-top: 4px; }
+    .__fa_btn.__fa_primary {
+      background: var(--fa-accent); color: #10131a; border-color: var(--fa-accent);
+    }
+    .__fa_btn.__fa_primary:hover { filter: brightness(1.1); }
     .__fa_footer {
       display: flex; gap: 8px; padding: 8px 12px;
       border-top: 1px solid var(--fa-border); background: var(--fa-bg-alt);
@@ -561,6 +578,7 @@
   root.id = "__fa_root";
   root.innerHTML = `
     <div id="__fa_hl"></div>
+    <div id="__fa_dot"></div>
     <div id="__fa_pins"></div>
     <div id="__fa_tray"><div id="__fa_tray_title">Detached comments</div><div id="__fa_tray_list"></div></div>
     <div id="__fa_toast"></div>
@@ -615,6 +633,13 @@
   function pageAnchorPoint(el) {
     const r = el.getBoundingClientRect();
     return { x: r.right + window.scrollX, y: r.top + window.scrollY };
+  }
+
+  // Clamp a pin's document coords so it never straddles/overruns the page edge
+  // (a full-width element's top-right corner sits exactly on the boundary).
+  function clampPin(x, y) {
+    const maxX = Math.max(document.documentElement.scrollWidth, window.innerWidth) - 12;
+    return { x: Math.max(12, Math.min(x, maxX)), y: Math.max(12, y) };
   }
 
   // ===========================================================================
@@ -699,12 +724,26 @@
     const anchor = anchorFields || buildAnchor(el, pageX, pageY);
     hlEl().style.display = "none";
 
+    // Tether the composer to what it annotates: an anchor dot at the click
+    // point, removed when the popover closes.
+    const dot = root.querySelector("#__fa_dot");
+    dot.style.left = clientX + "px";
+    dot.style.top = clientY + "px";
+    dot.style.display = "block";
+
     const pop = document.createElement("div");
     pop.className = "__fa_pop";
+    // The composer needs a VISIBLE primary action, not just the keyboard hint
+    // — the thread popover already has a button footer; mirror it.
     pop.innerHTML = `
       <div class="__fa_draftwrap">
         <textarea placeholder="Add a comment…"></textarea>
         <div class="__fa_hint">Enter to save · Shift+Enter for newline · Esc to cancel</div>
+      </div>
+      <div class="__fa_footer">
+        <span class="__fa_spacer"></span>
+        <button class="__fa_btn" data-act="cancel">Cancel</button>
+        <button class="__fa_btn __fa_primary" data-act="save">Comment</button>
       </div>`;
     root.appendChild(pop);
     positionPopover(pop, clientX, clientY);
@@ -712,12 +751,18 @@
     const ta = pop.querySelector("textarea");
     ta.focus();
 
+    const submit = () => {
+      const content = ta.value.trim();
+      if (!content) return; // empty submit = ignore (AN-10)
+      submitDraft(anchor, content);
+    };
+    pop.querySelector('[data-act="save"]').addEventListener("click", submit);
+    pop.querySelector('[data-act="cancel"]').addEventListener("click", () => closePopover());
+
     ta.addEventListener("keydown", (ev) => {
       if (ev.key === "Enter" && !ev.shiftKey) {
         ev.preventDefault();
-        const content = ta.value.trim();
-        if (!content) return; // empty submit = ignore (AN-10)
-        submitDraft(anchor, content);
+        submit();
       } else if (ev.key === "Escape") {
         ev.preventDefault();
         closePopover();
@@ -936,6 +981,8 @@
   function closePopover() {
     if (openPopover && openPopover.el) openPopover.el.remove();
     openPopover = null;
+    const dot = root.querySelector("#__fa_dot");
+    if (dot) dot.style.display = "none";
   }
 
   // ===========================================================================
@@ -944,7 +991,9 @@
 
   function pinGlyph(thread) {
     if (thread.status === "resolved") return "✓"; // ✓
-    return thread.replies.length > 0 ? String(thread.replies.length) : "•"; // •
+    // Zero replies: empty — the teardrop pin shape itself is the comment
+    // marker ("•" read as a stray bullet). Reply count carries thread size.
+    return thread.replies.length > 0 ? String(thread.replies.length) : "";
   }
 
   // Full render: place a pin for every attached/free thread, dock detached ones
@@ -975,8 +1024,9 @@
       }
       const pin = document.createElement("div");
       pin.className = "__fa_pin" + (thread.status === "resolved" ? " __fa_resolved" : "");
-      pin.style.left = x + "px";
-      pin.style.top = y + "px";
+      const cp = clampPin(x, y);
+      pin.style.left = cp.x + "px";
+      pin.style.top = cp.y + "px";
       pin.textContent = pinGlyph(thread);
       pin.title = thread.content;
       // pointerup, not click: if an async page mutation rebuilds pins between
@@ -1041,8 +1091,9 @@
         x = p.x;
         y = p.y;
       }
-      pin.style.left = x + "px";
-      pin.style.top = y + "px";
+      const cp = clampPin(x, y);
+      pin.style.left = cp.x + "px";
+      pin.style.top = cp.y + "px";
     }
     if (i !== pins.length) render(); // count mismatch → rebuild
     // Keep an open thread popover glued to its anchor while scrolling.
@@ -1149,6 +1200,12 @@
     elementModeWired = true;
     document.body.classList.add("__fa_active"); // crosshair cursor (AN-10)
     render();
+
+    // First-run guidance: with zero comments the mode is just a crosshair —
+    // say what clicking does. (Editor surfaces show their own status line.)
+    if (comments.length === 0) {
+      showToast("Click any element to leave a comment");
+    }
 
     document.addEventListener("mousemove", onMouseMove, true);
     window.addEventListener("click", onClickCapture, true); // capture: page clicks
