@@ -102,8 +102,10 @@ OPTIONS = {
         # import for modulegraph to trace — and ensurepip's bundled pip
         # wheel is data a zip can't serve.
         "venv", "ensurepip",
-        # [bundled] extra (SPEC DM-2) + its native transitive deps, as
-        # actually resolved in the build venv (see build_dmg.sh comments).
+        # Engine (fused dist) hard dependencies with native/binary payloads —
+        # NOT the old [bundled] user stack (dropped from the bundle: user
+        # scripts import from openfused venvs fed by the wheelhouse, D56/D58).
+        # These ship only because the fused dist requires them.
         "numpy", "pandas", "dateutil", "six",
         "pyarrow",
         # _duckdb deliberately NOT here: it's a bare top-level C extension
@@ -113,20 +115,7 @@ OPTIONS = {
         # lib-dynload/_duckdb.so and breaks `import duckdb` with
         # "SyntaxError: source code string cannot contain null bytes".
         # It goes in `includes` below instead.
-        "duckdb", "adbc_driver_duckdb",
-        "polars", "_polars_runtime_32",
-        # mpl_toolkits deliberately excluded: it's a PEP 420 namespace
-        # package (no __init__.py), and py2app's package-bootstrap lookup
-        # (imp.find_module, pre-namespace-package semantics) can't resolve
-        # it when forced via `packages`. matplotlib's core plotting (Agg,
-        # pyplot, figures) works fine without it; only mpl_toolkits-specific
-        # features (3D axes, axes_grid1, ...) are unavailable to user scripts.
-        "matplotlib", "contourpy", "cycler", "fontTools", "kiwisolver", "pyparsing",
-        "scipy",
-        "PIL",
-        "openpyxl", "et_xmlfile",
-        "shapely",
-        "geopandas", "pyogrio", "pyproj",
+        "duckdb",
         "requests", "urllib3", "certifi", "charset_normalizer", "idna",
         # web server stack: forced full-copy too, since uvicorn/pydantic-core
         # do dynamic/compiled imports modulegraph can't always follow.
@@ -146,6 +135,9 @@ OPTIONS = {
     # `packages` above, but `includes` handles non-package modules correctly
     # (extension -> lib-dynload/*.so, never a bogus .py copy).
     "includes": ["_duckdb"],
+    # PIL is present in the BUILD venv (icon generation is a build step) but
+    # is not app code — keep modulegraph from dragging it into the bundle.
+    "excludes": ["PIL"],
     # Copied verbatim into Contents/Resources/: the wheelhouse dir (named
     # "wheels") lands at Contents/Resources/wheels, the uv dir (named
     # "appbin") at Contents/Resources/appbin.

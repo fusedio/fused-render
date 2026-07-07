@@ -26,9 +26,10 @@ allow-direct-references = true
 [project.optional-dependencies]
 # The packaged .app's data-stack manifest (SPEC DM-2, D58): build_dmg.sh mirrors
 # this list (+ pyarrow) into the in-bundle wheelhouse that scripts' PEP 723 venv
-# installs resolve from offline. Still also baked into the bundled CPython for
-# now — redundant for user code since D56 (scripts import from openfused venvs,
-# not the interpreter's site-packages); slimming flagged in D58, not done.
+# installs resolve from offline. NOT installed into the bundle itself (D58
+# slimming): user scripts import from openfused venvs, never the bundled
+# interpreter's site-packages — the fused dist's own hard deps (numpy, pandas,
+# pyarrow, duckdb, requests) are the only data packages that still ship baked.
 # Dev installs: pip install -e ".[bundled]"
 bundled = [
     "numpy",

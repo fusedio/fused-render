@@ -88,17 +88,32 @@ fi
 echo "==> using framework python: $FRAMEWORK_PYTHON (PYTHONFRAMEWORK=$FRAMEWORK_TAG)"
 
 # ---------------------------------------------------------------------------
-# 2. Build venv: fused-render[bundled,app] + py2app + dmgbuild
+# 2. Build venv: fused-render[app] + build tools.
+#
+#    The [bundled] extra is deliberately NOT installed: user scripts run in
+#    openfused-managed venvs (D56) and cannot import from the bundled
+#    interpreter's site-packages, so baking the full data stack in only
+#    bloated the .app. Scripts get those packages from the in-bundle
+#    wheelhouse instead (§2b, D58) — the [bundled] list in pyproject.toml
+#    lives on as that wheelhouse's manifest. Note the ceiling: the fused
+#    dist itself requires numpy/pandas/pyarrow/duckdb/requests, so those
+#    still ship as engine dependencies; what this saves is the rest
+#    (matplotlib, scipy, polars, shapely/geopandas, openpyxl, pillow).
+#    pillow is installed as a build TOOL (icon generation below); nothing
+#    in the app imports it, so py2app doesn't ship it.
+#
+#    The venv is recreated per build: an incremental venv reused across a
+#    dependency-set change would let py2app sweep stale packages into the
+#    bundle. pip's wheel cache keeps the rebuild fast.
 # ---------------------------------------------------------------------------
 
-if [[ ! -x "$BUILD_VENV/bin/python" ]]; then
-  echo "==> creating build venv"
-  "$FRAMEWORK_PYTHON" -m venv "$BUILD_VENV"
-fi
+echo "==> creating build venv (fresh)"
+rm -rf "$BUILD_VENV"
+"$FRAMEWORK_PYTHON" -m venv "$BUILD_VENV"
 
-echo "==> installing fused-render[bundled,app] + py2app + dmgbuild into the build venv"
+echo "==> installing fused-render[app] + build tools into the build venv"
 "$BUILD_VENV/bin/pip" install --quiet --upgrade pip
-"$BUILD_VENV/bin/pip" install --quiet "${REPO_ROOT}[bundled,app]" py2app dmgbuild
+"$BUILD_VENV/bin/pip" install --quiet "${REPO_ROOT}[app]" py2app dmgbuild pillow
 
 # ---------------------------------------------------------------------------
 # 2b. Wheelhouse: wheels for the blessed data stack, shipped inside the .app
