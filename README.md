@@ -117,3 +117,31 @@ themselves just HTML files built on these same two primitives — open
 `fused_render/templates/` to see how.
 
 See `examples/sine.py` + `examples/sine.html` for a complete working example.
+
+## Claude Code plugin
+
+This repo doubles as a [Claude Code](https://code.claude.com/docs) plugin
+marketplace. Installing the plugin adds skills that teach Claude how to author
+fused-render views (the `fused.runPython` bridge, URL-synced params, file IO
+helpers) and custom preview templates.
+
+This is a **private repo**, so add the marketplace by its **SSH git URL**
+(the `owner/repo` shorthand only works for public repos). You need SSH access
+to `fusedio/fused-render` — i.e. an SSH key registered with GitHub.
+
+From inside Claude Code:
+
+```
+/plugin marketplace add git@github.com:fusedio/fused-render.git
+/plugin install fused-render@fused-render
+```
+
+Or from the command line:
+
+```
+claude plugin marketplace add git@github.com:fusedio/fused-render.git
+claude plugin install fused-render@fused-render
+```
+
+The manifests live in `.claude-plugin/` (`marketplace.json` +
+`plugin.json`); the skills themselves are under `skills/`.

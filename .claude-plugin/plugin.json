@@ -1,0 +1,19 @@
+{
+  "name": "fused-render",
+  "displayName": "Fused Render",
+  "description": "Skills for authoring fused-render views: HTML pages with a fused.runPython() bridge to local Python, URL-synced params, file IO helpers, and custom preview templates.",
+  "author": {
+    "name": "Fused",
+    "url": "https://github.com/fusedio"
+  },
+  "homepage": "https://github.com/fusedio/fused-render",
+  "repository": "https://github.com/fusedio/fused-render",
+  "keywords": [
+    "fused-render",
+    "html",
+    "python",
+    "preview",
+    "templates",
+    "data-viz"
+  ]
+}
