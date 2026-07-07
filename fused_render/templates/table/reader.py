@@ -1,7 +1,11 @@
+# /// script
+# dependencies = ["pyarrow"]
+# ///
 """Reader backing table/template.html. Returns a JSON-safe page of rows."""
 import datetime
 import decimal
 
+import fused
 import pyarrow.parquet as pq
 
 
@@ -16,6 +20,7 @@ def _jsonify(value):
     return value
 
 
+@fused.udf
 def main(file: str, offset: int = 0, limit: int = 100) -> dict:
     table = pq.read_table(file)
     total_rows = table.num_rows

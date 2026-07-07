@@ -10,7 +10,7 @@ This file is the concrete contract an implementer can build from without further
 
 ```
 fused-render/
-├── pyproject.toml              # hatchling; deps: fastapi, uvicorn, pyarrow; script: fused-render
+├── pyproject.toml              # hatchling; deps: fastapi, uvicorn, fused (openfused); script: fused-render
 ├── SPEC.md  ARCHITECTURE.md  DECISIONS.md  README.md
 ├── frontend/                   # React shell source (D52/D53): Vite + React 18, TypeScript
 │   ├── package.json  vite.config.js  index.html
@@ -37,8 +37,7 @@ fused-render/
 │   ├── __init__.py             # __version__
 │   ├── cli.py                  # arg parse → uvicorn.run + open browser
 │   ├── server.py               # FastAPI app factory, all endpoints
-│   ├── executor.py             # subprocess-per-call runner (EXISTS — keep)
-│   ├── _child.py               # worker-process entry (EXISTS — keep)
+│   ├── engine.py               # openfused local-backend runner (PEP 723 deps, udf wrapping, traceback cleaning)
 │   ├── static/
 │   │   ├── shell-dist/         # Vite build of frontend/ (gitignored, D54; built by dev / packaging hook)
 │   │   └── runtime.js          # injected into every rendered HTML (plain JS, NOT part of the React app)
@@ -136,27 +135,44 @@ Returns `text/html`. Used as iframe src by the shell for both user HTML and temp
 ### `POST /api/run`  *(requires `X-Fused: 1`)*
 Request:
 ```json
-{"py": "./sine.py", "html": "/Users/vasu/views/sine.html", "params": {"freq": "2.4"}}
+{"py": "./sine.py", "html": "/Users/vasu/views/sine.html", "params": {"freq": 2.4, "n": 160}}
 ```
 - `py` relative → resolved against `dirname(html)`; absolute → used as-is. (`html` may be null only if `py` is absolute.)
-- Response is the executor result verbatim (HTTP 200 even for user-code errors — the `ok` field carries success):
+- `params` values are **raw JSON types** (D56): pass numbers as numbers, booleans as booleans — the engine does no coercion; the udf receives them exactly as sent.
+- Response (HTTP 200 even for user-code errors — `error == null` is the success test):
 ```json
-{"ok": true,  "result": …, "stdout": "…"}
-{"ok": false, "error": {"type": "ZeroDivisionError", "message": "…", "traceback": "…"}, "stdout": "…"}
+{"stdout": "…", "stderr": "…", "return_value": …, "duration_ms": 45,
+ "error": null, "response": null, "resolved_py": "/abs/path/sine.py"}
 ```
-Endpoint is sync `def` → FastAPI runs it in its threadpool → concurrent runPython calls work (RH-4).
+  - `error`: `null` on success; otherwise **cleaned traceback text** whose frames point at the script's real path and line (see §4), or a plain message for non-traceback failures (missing file, bad PEP 723 header, `"Execution timed out after 30s"`).
+  - `return_value`: the udf's (or `result` variable's) value, **decoded server-side** to real JSON — except when `response.body_encoding == "base64"`, where it stays a string of encoded bytes.
+  - `response`: `null`, or `ResponseMeta.to_wire()` when the script returned a `fused.Response` subclass — `{media_type, status_code, headers, body_encoding}`.
+  - `resolved_py`: absolute path of the executed file, set on failures too (auto-reload dependency learning, LR-2).
+- Endpoint is `async def` and awaits the engine; concurrency is preserved because the backend offloads its blocking subprocess to a thread executor (RH-4).
 
 ### `GET /static/*`
 StaticFiles mount for shell + runtime. Templates dir is NOT statically mounted — templates are served through `/render` like any HTML file.
 
 ---
 
-## 4. Executor protocol (`executor.py` + `_child.py`) — ALREADY IMPLEMENTED
+## 4. Execution engine (`engine.py`) — openfused local backend
 
-- `run_python(path, params, timeout=30.0) -> dict`: spawns `[sys.executable, _child.py]`, writes `{"path", "params"}` JSON to stdin, `subprocess.run(timeout=…)`, parses **last stdout line** as result JSON. Timeout → `TimeoutError` error dict. Garbage/no output → `ExecutorError` with stderr tail.
-- `_child.py`: chdir to the .py's dir (relative data paths work), prepend dir to `sys.path`, import via `importlib.util.spec_from_file_location`, find callable `main`, bind params with annotation-based coercion (`"100"`→int, `"2.4"`→float, `"true"/"1"/"yes"/"on"`→bool), missing required arg / non-callable main → structured error. Extra params ignored unless `**kwargs`. Return value must be JSON-native, else clear TypeError suggesting `df.to_dict('records')`. User `print()` captured → returned as `stdout` field. Catches `BaseException` (incl. SystemExit).
+`run_python(path, params) -> dict` (async) drives openfused's `LocalPythonComputeBackend` (D55). Fresh subprocess per call is preserved (PY-9); what changed is who owns the process, the env, and the contract.
 
-Fresh process per call = fresh code every call (PY-9); the env is whatever Python launched the server.
+**Backend.** Lazy module singleton via `get_backend()`: `LocalPythonComputeBackend(timeout_seconds=30)` — 30 s per-run timeout (RH-5), result caching disabled. The backend exec()s the (wrapped) code string in a fresh child process inside a unique temp exec dir.
+
+**Script contract (D56).**
+- Parameterized scripts register `@fused.udf def main(...)` (`import fused` resolves inside the sandbox — an injected shim). The backend calls the **last-registered** udf with kwargs read from `_params.json`, which the engine ships via `input_files` — the wire params, raw JSON types, **no coercion**.
+- Parameterless scripts may instead just set a module-level `result` variable. Setting `result` AND registering a udf is an error (mutually exclusive). A plain `def main` without the decorator runs at module level only — params are silently unused (PY-1).
+- Module-level cwd is the **exec dir**; cwd during `main()` is the **script's dir** (PY-8, see wrapping below).
+
+**Requirements (PEP 723).** `script_requirements()` parses the `# /// script` inline header (reference regex + tomllib); its `dependencies` list goes to the backend, which resolves it into a **cached venv keyed by interpreter+requirements** under `~/.openfused/venvs` (built with uv, pip fallback — first call per set takes seconds, then cached). No header → bare stdlib venv. **The server's own env is never visible to scripts.** Malformed TOML → structured error on the wire, not a 500.
+
+**Code wrapping (`build_code`).**
+- Preamble: **exactly one physical line** (`_PREAMBLE_LINES = 1`) inserting the script's dir into `sys.path` (sibling `import helper` works). One line so `<lambda_exec>` traceback line numbers are user-file line + 1, which `_clean_error` reverses. It must NOT chdir: the backend's runner reads `_params.json` from the exec cwd **after** module-level code finishes.
+- Epilogue: wraps the registered udf's inner function so the chdir to the script's dir happens only when `main()` is invoked — relative data paths resolve next to the .py during the call, while the params file is still findable before it.
+
+**Result mapping.** The wire dict is §3's shape. `return_value` comes back from the backend JSON-encoded and is decoded here (base64 bodies excepted). `r.error` is passed through `_clean_error(error_text, script_path)`: drops backend-internal frames (runner, shim) and the epilogue wrapper frame, rewrites `File "<lambda_exec>", line N` → the script's real path at `N - _PREAMBLE_LINES`. Frames below the first user frame (user code calling into libraries) are kept with their source lines; the rewritten user frames carry no source line (exec'd code has no file for traceback to read). Non-traceback errors (timeout, backend messages) and anything that doesn't parse cleanly pass through unchanged — a raw traceback beats a mangled one. Engine-level failures (missing file, unreadable file, bad PEP 723 header) return the same wire shape with `error` set and everything else empty.
 
 ---
 
@@ -178,11 +194,11 @@ window.fused = {
 - **IO helpers:** `stat`/`readFile`/`writeFile` reject with an `Error` carrying the server's message (mirrors runPython's rejection style). `writeFile` opts = `{expectedMtime}` (optimistic lock); a 409 rejects with an error whose `.type === "conflict"` and `.mtime` = the server's current mtime, so a caller can offer reload/overwrite. `runPython` and `writeFile` send the `X-Fused: 1` header the server requires on its POSTs (see §3).
 
 Behavior:
-- **runPython:** POST `/api/run` with `{py: pyPath, html: <own file path>, params}`. Own file path = `path` query param of the iframe's own URL. Non-ok response → reject with `Error` carrying `.type`, `.traceback`, `.stdout`. If `stdout` non-empty (ok or not), `console.log` it prefixed `[python]`.
+- **runPython:** POST `/api/run` with `{py: pyPath, html: <own file path>, params}` — params pass through as-is, so callers send real JSON types (numbers as numbers, D56). Own file path = `path` query param of the iframe's own URL. `data.error != null` → reject with an `Error` whose `.message` = the traceback's **last non-empty line** (reads like `"ZeroDivisionError: division by zero"`), `.traceback` = the full cleaned traceback text, `.stdout` attached. Success resolves with `data.return_value`. If `stdout` non-empty (success or not), `console.log` it prefixed `[python]`.
 - **params.get/getAll:** read `parent.location.search`, excluding reserved keys (`_`-prefixed). `_file` is special: read-only, sourced from the iframe's **own** URL query (the shell puts it on the iframe src), so the shell URL never duplicates the path.
 - **params.set(k, v):** throws if `k` starts with `_` or `v` is not a string. Updates parent URL via `parent.history.replaceState` (always replace — PR-3), then fires local onChange listeners. Strings only (PR-5).
 - **onChange(cb):** called with `getAll()` result after every applied `set`. (No cross-source change feed in v1 — params only change via the page itself.)
-- **Error overlay:** module-level helper — on unhandled promise rejection carrying `.traceback` (i.e. a runPython failure the page didn't catch), render a fixed-position red-bordered overlay with type, message, `<pre>` traceback. Author-handled rejections show nothing.
+- **Error overlay:** module-level helper — on unhandled promise rejection carrying `.traceback` (i.e. a runPython failure the page didn't catch), render a fixed-position red-bordered overlay: title = `err.message` (already `"ExcType: msg"` — there is no separate `.type` field), `<pre>` traceback. Author-handled rejections show nothing.
 
 Top-level `path` handling in shell URL vs iframe URL:
 - Shell URL: `/view/<fs-path>?freq=2.4` — params live here (source of truth, PR-1).
@@ -243,7 +259,7 @@ TEMPLATES = {
     ".pdf": ["pdf"],
     ".mp4": ["media"], ".mov": ["media"], ".m4v": ["media"], ".webm": ["media"],
     ".mp3": ["media"], ".wav": ["media"], ".m4a": ["media"], ".ogg": ["media"], ".flac": ["media"],
-    ".py": ["code", "api"],              # api = main() run form (D63)
+    ".py": ["code", "api"],              # api = @fused.udf run form (D63)
     ".js": ["code"], ".ts": ["code"], ".sh": ["code"],
     ".yaml": ["code"], ".yml": ["code"], ".toml": ["code"], ".css": ["code"],
     ".tif": ["geotiff"], ".tiff": ["geotiff"],            # in-browser decode, no reader.py (D64)
@@ -270,7 +286,7 @@ DIR_TEMPLATES = {
 **M1 templates** (folder names per M8 renames — `table/`, `image/`, `text/`):
 
 - `table/` (`template.html` + `reader.py`):
-  - reader `main(file: str, offset: int = 0, limit: int = 100)` → `{"columns": [...], "rows": [...], "total_rows": N}` via pyarrow (`pq.read_table(file).slice(offset, limit).to_pylist()`); cell values must be JSON-safe — stringify non-JSON scalars (timestamps, bytes, decimals) in the reader.
+  - reader `@fused.udf main(file: str, offset: int = 0, limit: int = 100)` (PEP 723 header `dependencies = ["pyarrow"]`, D56) → `{"columns": [...], "rows": [...], "total_rows": N}` via pyarrow (`pq.read_table(file).slice(offset, limit).to_pylist()`); cell values must be JSON-safe — stringify non-JSON scalars (timestamps, bytes, decimals) in the reader.
   - UI: table, row-count line ("rows 0–99 of 12,345"), Prev/Next buttons paging via `offset` param → `fused.params.set('offset', …)` → onChange → refetch; the call site passes `offset`/`limit` as **numbers** (params are URL strings — `Number()` where read). Loading + error states.
 - `image/`: `<img src="/api/fs/raw?path=" + encodeURIComponent(fused.params.get('_file'))>`, centered, `max-width/height: 100%`, filename caption. No runPython needed.
 - `text/`: `fetch('/api/fs/raw?path=…')` → text → `<pre>`. Guard: file > 2 MB → show "too large" note with raw link instead. Monospace, preserved whitespace.
@@ -278,9 +294,9 @@ DIR_TEMPLATES = {
 **M2 templates** (added alongside M1; same runtime, same `_file` contract, same dark palette):
 
 - `markdown/`: `fetch` raw → render with vendored `marked` (`/template-assets/marked.min.js`). GitHub-ish readable column (~46rem, centered). No sanitizer by design — local trust model (D3). Guard: file > 2 MB → "too large" note + raw link.
-- `csv/` (`template.html` + `reader.py`): same UX as table (table, "rows X–Y of N", Prev/Next via `offset` param, typed call-site params). Reader `main(file, offset=0, limit=100)` via pandas; `.tsv` → tab sep, else comma. Reads the full file once for an honest `total_rows`, returns only the page. Same JSON-safe cell stringifying as `table/reader.py` (NaN → null, timestamps/bytes/decimals coerced).
+- `csv/` (`template.html` + `reader.py`): same UX as table (table, "rows X–Y of N", Prev/Next via `offset` param, typed call-site params). Reader `@fused.udf main(file, offset=0, limit=100)` (PEP 723 `dependencies = ["pandas"]`) via pandas; `.tsv` → tab sep, else comma. Reads the full file once for an honest `total_rows`, returns only the page. Same JSON-safe cell stringifying as `table/reader.py` (NaN → null, timestamps/bytes/decimals coerced).
 - `tree/`: `fetch` raw → `JSON.parse` → collapsible tree in pure JS (no library). Objects/arrays fold (▾/▸), keys/primitives type-colored, arrays/objects show count, nodes deeper than depth 2 start collapsed. Parse failure → error + first 2 KB raw. Guard: file > 5 MB → "too large" note + raw link. Also serves `.geojson`.
-- `xlsx/` (`template.html` + `reader.py`): openpyxl `read_only=True`, first row is header. Reader `main(file, sheet="", offset=0, limit=100)` → `{sheets, sheet, columns, rows, total_rows}`. Template adds a sheet `<select>` (shown when >1 sheet) wired to a `sheet` param (resets `offset` on change); paging like csv, typed call-site params (`sheet` stays a string). JSON-safe cells (datetimes → isoformat, None → null).
+- `xlsx/` (`template.html` + `reader.py`): openpyxl `read_only=True`, first row is header. Reader `@fused.udf main(file, sheet="", offset=0, limit=100)` (PEP 723 `dependencies = ["openpyxl"]`) → `{sheets, sheet, columns, rows, total_rows}`. Template adds a sheet `<select>` (shown when >1 sheet) wired to a `sheet` param (resets `offset` on change); paging like csv, typed call-site params (`sheet` stays a string). JSON-safe cells (datetimes → isoformat, None → null).
 - `pdf/`: thin filename header + full-height `<embed type="application/pdf">` of the raw endpoint.
 - `media/`: branches on extension — `<video>` for mp4/mov/m4v/webm, `<audio>` for mp3/wav/m4a/ogg/flac. `controls`, centered, filename caption, video constrained to viewport.
 - `code/`: **editable** CodeMirror 6 (vendored `/template-assets/codemirror.bundle.js`, global `CM`), `CM.oneDark` theme to match the shell. `basicSetup` line numbers; language chosen by extension (py/js/ts/json/yaml/html/css + StreamLanguage shell/toml; unknown → plain). Guard: file > 2 MB → "too large" note + raw link (no editor). Top bar (matches other templates' `#bar`): filename + Saved/Modified status + Save button (disabled when clean). Save flow: `fused.stat` arms the mtime on load → `fused.writeFile(file, doc, {expectedMtime})` on save; Cmd/Ctrl+S bound at the window (CM's `keymap` isn't in the bundle); dirty tracked via `EditorView.updateListener` (docChanged); `beforeunload` warns when dirty. On a 409 conflict a bar banner offers **Reload** (refetch + re-arm, discard local) or **Overwrite** (write with no lock, re-arm).
@@ -289,9 +305,9 @@ DIR_TEMPLATES = {
 
 ## 8. Examples
 
-- `examples/sine.py` — `main(n: int = 80, freq: float = 1.0)` → `{"points": [[x, y], …]}` (math.sin, stdlib only).
+- `examples/sine.py` — `@fused.udf main(n: int = 80, freq: float = 1.0)` → `{"points": [[x, y], …]}` (math.sin, stdlib only — deliberately **no** PEP 723 header: zero-dep scripts need none).
 - `examples/sine.html` — range slider bound to `freq` param, SVG polyline chart (hand-rolled, no deps), wiring pattern:
-  slider input → `fused.params.set('freq', value)`; `fused.params.onChange(draw)`; initial `draw()` reads param-or-default. Demonstrates: URL sync, refresh restores state, runPython round-trip, python print → browser console.
+  slider input → `fused.params.set('freq', value)`; `fused.params.onChange(draw)`; initial `draw()` reads param-or-default and calls `runPython("./sine.py", { n: 160, freq })` with **numbers** (parseFloat where the param is read). Demonstrates: URL sync, refresh restores state, runPython round-trip, python print → browser console.
 
 ---
 
@@ -305,10 +321,11 @@ Automatable (curl / CLI):
    - `/api/fs/stat` on a `.parquet` → `templates[0]` is `{"mode": "table", …}` pointing at templates/table/template.html
    - `/api/fs/raw` on a text file → bytes + MIME
    - `/render?path=<examples/sine.html>` → contains `runtime.js` script tag
-   - `POST /api/run` `{py: <abs examples/sine.py>, params: {freq: "2"}}` → `ok: true`, points array
-   - `POST /api/run` with missing main / raising main / non-JSON return → `ok: false`, structured error
-   - executor timeout: `main` sleeping past a short timeout → TimeoutError dict
-3. Parquet reader: generate small parquet via pyarrow in a temp dir, `POST /api/run` the reader with offset/limit → correct slice + total.
+   - `POST /api/run` `{py: <abs examples/sine.py>, params: {freq: 2, n: 5}}` → `error: null`, decoded points array in `return_value`, print output in `stdout`
+   - `POST /api/run` with a raising udf → `error` = cleaned traceback pointing at the script's real path/line; syntax error → SyntaxError traceback; malformed PEP 723 header → actionable message (never a 500)
+   - a script with a `# /// script` requirements header → runs in its resolved venv (first call builds the venv — seconds; repeat calls are fast)
+   - engine timeout: a sleeping script past the timeout → `error` mentions "timed out"
+3. Parquet reader: generate small parquet via pyarrow in a temp dir, `POST /api/run` the reader with numeric offset/limit → correct slice + total.
 
 Manual (browser, after build): browse dirs, click parquet → paged table, click png → image, click sine.html → slider updates URL live, refresh restores, back/forward navigates dirs.
 
@@ -316,7 +333,7 @@ Manual (browser, after build): browse dirs, click parquet → paged table, click
 
 ## 10. Style constraints
 
-- Python: stdlib + fastapi + uvicorn + pyarrow only. Type hints on public functions. No classes where a function does.
+- Python: stdlib + fastapi + uvicorn + fused (openfused) only. Type hints on public functions. No classes where a function does. (Reader deps like pyarrow live in the readers' own PEP 723 headers, not the server's dependency list.)
 - Shell: React 18 + Vite + strict TypeScript (D52/D53), function components + hooks only; no state library, no router library (the URL model is bespoke — `_layout` cannot ride a stock router). Small files > clever files.
 - Template/runtime JS: no dependencies, no build. `const`/`let`, template literals, async/await.
 - Shell CSS: system font stack, no framework. Dark theme is the product look — single palette in shell.css `:root` vars (bg #131417, panel #1b1d21, border #2a2d33, text #e8eaed, accent #5b9dff), `color-scheme: dark`; templates and examples match it.

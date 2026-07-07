@@ -9,9 +9,11 @@ pyproject.toml) — it is imported lazily, inside `main()`, so that
 `import fused_render.app` never fails on another platform or in CI.
 """
 import json
+import logging
 import os
 import socket
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -20,6 +22,7 @@ import webbrowser
 
 import uvicorn
 
+from fused_render.logs import log_path, setup_logging
 from fused_render.server import create_app
 
 APP_SUPPORT_DIR = os.path.expanduser("~/Library/Application Support/fused-render")
@@ -110,6 +113,44 @@ def _remove_pidfile() -> None:
             pass
 
 
+def _configure_wheelhouse_env() -> None:
+    """Point pip/uv at the bundled wheelhouse, when one is present.
+
+    openfused's local backend installs each user script's PEP 723
+    dependencies into a cached venv via uv (or pip), and those install
+    subprocesses inherit this process's environment. Inside the packaged
+    .app, sys.prefix is Contents/Resources (py2app launches the interpreter
+    with PYTHONHOME pointed there), where build_dmg.sh ships a wheels/ dir
+    holding the blessed data stack — pointing PIP_FIND_LINKS / UV_FIND_LINKS
+    at it makes first use of those packages work offline, with PyPI as the
+    fallback when online (find-links, deliberately not --no-index). Dev runs
+    have no wheels/ under sys.prefix, so this is a no-op there.
+    """
+    wheels = os.path.join(sys.prefix, "wheels")
+    if not os.path.isdir(wheels):
+        return
+    # Prepend to any caller-set value so the bundled wheels are seen first:
+    # PIP_FIND_LINKS is space-separated (pip's multi-value env convention),
+    # UV_FIND_LINKS is comma-separated (uv's env docs; `uv help pip install`).
+    pip_links = os.environ.get("PIP_FIND_LINKS")
+    os.environ["PIP_FIND_LINKS"] = f"{wheels} {pip_links}" if pip_links else wheels
+    uv_links = os.environ.get("UV_FIND_LINKS")
+    os.environ["UV_FIND_LINKS"] = f"{wheels},{uv_links}" if uv_links else wheels
+
+    # The bundled uv (Contents/Resources/appbin, build_dmg.sh §2c) must win
+    # the engine's `shutil.which("uv")` lookup. This is load-bearing, not an
+    # optimization: the stub's PYTHONHOME rides into openfused's install
+    # subprocesses, and under an inherited PYTHONHOME `<venv-python> -m pip`
+    # resolves its prefix to the app bundle — it "installs" there, exits 0,
+    # and the empty venv gets cached as ready (ModuleNotFoundError forever
+    # after). uv resolves the target venv itself and is immune. Finder
+    # launches have a minimal PATH with no uv, so without this prepend the
+    # poisonous pip fallback is exactly what runs.
+    appbin = os.path.join(sys.prefix, "appbin")
+    if os.path.isfile(os.path.join(appbin, "uv")):
+        os.environ["PATH"] = appbin + os.pathsep + os.environ.get("PATH", "")
+
+
 def _start_server_thread(port: int) -> uvicorn.Server:
     """Start uvicorn serving create_app(start_dir=home) on a daemon thread."""
     home = os.path.expanduser("~")
@@ -123,6 +164,8 @@ def _start_server_thread(port: int) -> uvicorn.Server:
 
 def main() -> None:
     os.makedirs(APP_SUPPORT_DIR, exist_ok=True)
+    setup_logging()  # first: everything after this can crash-report to the file
+    _configure_wheelhouse_env()  # before the server thread: installs inherit os.environ
 
     existing = find_running_server()
     if existing is not None:
@@ -195,7 +238,10 @@ def main() -> None:
         server = _start_server_thread(port)
         state["server"] = server
         if not _wait_until_ready(port):
-            print(f"fused-render: server did not become ready on port {port}", flush=True)
+            # Log file, not print: Finder-launched apps have no visible stderr.
+            logging.getLogger("fused_render").error(
+                "server did not become ready on port %s", port
+            )
             rumps.quit_application()
             return
         _write_pidfile(port)
@@ -213,7 +259,7 @@ def main() -> None:
             # appearance. Icon beats a text title: recognizable and compact
             # in a crowded (notched) menu bar.
             super().__init__("fused-render", icon=icon_path, template=True, quit_button=None)
-            self.menu = ["Open in browser", "Copy URL", "Quit"]
+            self.menu = ["Open in browser", "Copy URL", "Open logs", "Quit"]
 
         @rumps.clicked("Open in browser")
         def open_browser(self, _sender):
@@ -222,6 +268,13 @@ def main() -> None:
         @rumps.clicked("Copy URL")
         def copy_url(self, _sender):
             subprocess.run(["pbcopy"], input=url.encode(), check=False)
+
+        @rumps.clicked("Open logs")
+        def open_logs(self, _sender):
+            # Reveal in Finder rather than opening the file: users are asked
+            # to zip/attach it, and Console.app (the .log default handler)
+            # confuses more than it helps.
+            subprocess.run(["open", "-R", log_path()], check=False)
 
         @rumps.clicked("Quit")
         def quit(self, _sender):

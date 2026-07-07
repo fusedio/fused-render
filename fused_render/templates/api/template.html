@@ -198,7 +198,7 @@
       }
 
       if (!info.function) {
-        html += `<div id="status">No <code>main()</code> function in this file — nothing to execute. Define one to get a form here (see script contract, SPEC §5).</div>`;
+        html += `<div id="status">No <code>@fused.udf</code> entry point in this file — nothing to execute. Add one to get a form here (see script contract, SPEC §5).</div>`;
         page.innerHTML = html;
         return;
       }
@@ -270,15 +270,15 @@
     function renderResponse(data) {
       const wrap = document.getElementById("responsewrap");
       let html = `<div class="card" id="response">`;
-      if (!data.ok) {
-        const err = data.error || {};
+      if (data.error != null) {
         html += `<div class="card-head"><span class="badge" style="background:#3a1d1d;color:#ff6b6b">ERROR</span></div>
-                 <pre class="traceback">${escapeHtml(err.traceback || err.message || "run failed")}</pre>`;
+                 <pre class="traceback">${escapeHtml(data.error)}</pre>`;
       } else {
         html += `<div class="card-head"><span class="badge">RESULT</span></div>
-                 <pre>${escapeHtml(JSON.stringify(data.result, null, 2))}</pre>`;
+                 <pre>${escapeHtml(JSON.stringify(data.return_value, null, 2))}</pre>`;
       }
       if (data.stdout) html += `<details open><summary>stdout</summary><pre>${escapeHtml(data.stdout)}</pre></details>`;
+      if (data.stderr) html += `<details><summary>stderr</summary><pre>${escapeHtml(data.stderr)}</pre></details>`;
       html += `</div>`;
       wrap.innerHTML = html;
     }
@@ -307,8 +307,8 @@
       meta.textContent = "Running…";
       try {
         // Direct /api/run call (not fused.runPython): the response panel
-        // needs the full wire shape — stdout and the structured error —
-        // which the runtime helper flattens. Auto-reload is unaffected:
+        // needs the full wire shape — stdout/stderr/duration — which the
+        // runtime helper flattens to return_value. Auto-reload is unaffected:
         // the runtime already watches _file (LR-1).
         const ownPath = new URLSearchParams(window.location.search).get("path");
         const res = await fetch("/api/run", {
@@ -317,11 +317,11 @@
           body: JSON.stringify({ py: file, html: ownPath, params: collected.params }),
         });
         const data = await res.json();
-        meta.textContent = "";
+        meta.textContent = data.duration_ms != null ? `${data.duration_ms} ms` : "";
         renderResponse(data);
       } catch (err) {
         meta.textContent = "";
-        renderResponse({ ok: false, error: { message: err.message || "request failed" } });
+        renderResponse({ error: err.message || "request failed" });
       } finally {
         btn.disabled = false;
       }

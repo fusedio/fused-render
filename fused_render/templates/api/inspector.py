@@ -1,16 +1,61 @@
 """Inspector backing api/template.html. Statically parses a target .py via
 `ast` — never imports or executes it — and returns the shape the form UI
-needs: module docstring and the `main()` function's signature (params,
-annotations, defaults, docstring). Stdlib only.
+needs: module docstring, PEP 723 deps, and the @fused.udf function's
+signature (params, annotations, defaults, docstring). Stdlib only, so the
+backend's bare venv runs it without a PEP 723 header of its own.
 """
 import ast
+import re
+import tomllib
+
+import fused
+
+# Same PEP 723 block grammar the engine uses (SPEC PY-6).
+_PEP723 = re.compile(
+    r"^# /// script\s*$(.*?)^# ///\s*$", re.MULTILINE | re.DOTALL
+)
 
 
-def _find_main_function(tree):
+def _pep723_dependencies(source: str) -> list:
+    m = _PEP723.search(source)
+    if not m:
+        return []
+    toml_text = "\n".join(
+        line[2:] if line.startswith("# ") else line[1:]
+        for line in m.group(1).splitlines()
+        if line.startswith("#")
+    )
+    try:
+        deps = tomllib.loads(toml_text).get("dependencies", [])
+    except tomllib.TOMLDecodeError:
+        return []
+    if not isinstance(deps, list):
+        return []
+    return [d for d in deps if isinstance(d, str)]
+
+
+def _is_udf_decorator(node) -> bool:
+    """Matches @fused.udf, @udf, and their called forms @fused.udf(...)."""
+    if isinstance(node, ast.Call):
+        node = node.func
+    if isinstance(node, ast.Attribute):
+        return (
+            node.attr == "udf"
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "fused"
+        )
+    return isinstance(node, ast.Name) and node.id == "udf"
+
+
+def _find_udf_function(tree):
+    # Last decorated function wins, matching what the engine executes
+    # (it invokes _registered_udfs[-1] — see engine.build_code).
+    found = None
     for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "main":
-            return node
-    return None
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if any(_is_udf_decorator(d) for d in node.decorator_list):
+                found = node
+    return found
 
 
 def _params(fn) -> list:
@@ -39,6 +84,7 @@ def _params(fn) -> list:
     return params
 
 
+@fused.udf
 def main(file: str) -> dict:
     with open(file, encoding="utf-8", errors="replace") as f:
         source = f.read()
@@ -47,11 +93,11 @@ def main(file: str) -> dict:
     except SyntaxError as e:
         return {"parse_error": f"line {e.lineno}: {e.msg}"}
 
-    fn = _find_main_function(tree)
+    fn = _find_udf_function(tree)
     result = {
         "parse_error": None,
         "module_docstring": ast.get_docstring(tree),
-        "dependencies": [],
+        "dependencies": _pep723_dependencies(source),
         "function": None,
     }
     if fn is not None:

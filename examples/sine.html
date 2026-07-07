@@ -73,7 +73,7 @@
       slider.value = String(freq);
       freqValueEl.textContent = freq.toFixed(1);
 
-      const { points } = await fused.runPython("./sine.py", { n: "160", freq: String(freq) });
+      const { points } = await fused.runPython("./sine.py", { n: 160, freq });
 
       const axis = `<line x1="${PAD}" y1="${H / 2}" x2="${W - PAD}" y2="${H / 2}" stroke="#3a3d44" />`;
       const line = `<polyline points="${pointsToPolyline(points)}" fill="none" stroke="#5b9dff" stroke-width="2" />`;
