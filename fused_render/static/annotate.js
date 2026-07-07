@@ -451,7 +451,7 @@
     #__fa_root, #__fa_root * { box-sizing: border-box; }
     #__fa_root {
       --fa-bg: #1b1d21; --fa-bg-alt: #131417; --fa-fg: #e8eaed;
-      --fa-muted: #9aa0a6; --fa-border: #2a2d33; --fa-accent: #5b9dff;
+      --fa-muted: #9aa0a6; --fa-border: #2a2d33; --fa-accent: #E5FF44;
       position: absolute; top: 0; left: 0; width: 0; height: 0;
       z-index: ${Z};
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -460,7 +460,7 @@
     @media (prefers-color-scheme: light) {
       #__fa_root {
         --fa-bg: #ffffff; --fa-bg-alt: #f2f3f5; --fa-fg: #1a1c1f;
-        --fa-muted: #6b7178; --fa-border: #d7dade; --fa-accent: #2f6bff;
+        --fa-muted: #6b7178; --fa-border: #d7dade; --fa-accent: #8a9a00;
       }
     }
     body.__fa_active { cursor: crosshair; }

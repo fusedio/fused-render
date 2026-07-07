@@ -5,7 +5,7 @@
   --border: #2a2d33;
   --bg: #131417;
   --bg-alt: #1b1d21;
-  --accent: #5b9dff;
+  --accent: #E5FF44;
   --error: #ff6b6b;
 }
 
@@ -55,6 +55,8 @@ body {
 
 .sidebar-brand .logo {
   color: var(--accent);
+  display: flex;
+  align-items: center;
 }
 
 .sidebar-section {
@@ -118,7 +120,7 @@ body {
 }
 
 .bookmark-row.active {
-  background: rgba(91, 157, 255, 0.13);
+  background: rgba(229, 255, 68, 0.13);
 }
 
 .bookmark-row.active .bookmark-name {
@@ -383,7 +385,7 @@ body {
 .star-btn.starred {
   color: var(--accent);
   border-color: var(--accent);
-  background: rgba(91, 157, 255, 0.13);
+  background: rgba(229, 255, 68, 0.13);
 }
 
 #content {
