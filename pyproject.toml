@@ -16,8 +16,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Baked into the bundled CPython of the .app (SPEC DM-2): users of the packaged
-# app cannot pip install, so the interpreter ships with the popular data stack.
+# The packaged .app's data-stack manifest (SPEC DM-2, D58): build_dmg.sh mirrors
+# this list (+ pyarrow) into the in-bundle wheelhouse that scripts' PEP 723 venv
+# installs resolve from offline. Still also baked into the bundled CPython for
+# now — redundant for user code since D56 (scripts import from openfused venvs,
+# not the interpreter's site-packages); slimming flagged in D58, not done.
 # Dev installs: pip install -e ".[bundled]"
 bundled = [
     "numpy",

@@ -2,8 +2,8 @@
 
 A local file explorer for your whole computer. Browse any directory in the
 browser, preview files, and author your own interactive views: any `.html`
-file you open gets a tiny injected runtime that can call a Python `main()`
-function and sync its state to the URL.
+file you open gets a tiny injected runtime that can call a local Python
+script's `@fused.udf` entry point and sync its state to the URL.
 
 Runs entirely on `127.0.0.1`. No accounts, no cloud, no sandboxing — your own
 machine, your own trusted code. See `SPEC.md` / `ARCHITECTURE.md` / `DECISIONS.md`
@@ -15,8 +15,9 @@ for the full design.
 pip install -e .
 ```
 
-Requires Python 3.10+. Installs FastAPI, uvicorn, and pyarrow (used by the
-built-in parquet preview).
+Requires Python 3.11+. Installs FastAPI, uvicorn, and `fused` (the openfused
+execution engine). Preview readers declare their own deps (pyarrow, pandas,
+openpyxl) via PEP 723 headers — resolved into cached venvs on first use.
 
 ### Shell development
 
@@ -68,13 +69,18 @@ browsable from there.
 
 ## Authoring model
 
-Any `.py` file is a runnable target as long as it defines a `main()`
-function:
+Any `.py` file is a runnable target as long as it registers a `@fused.udf`
+entry point (the `fused` module is available inside the sandbox — nothing to
+install). Third-party deps go in a PEP 723 header; stdlib-only scripts need
+none:
 
 ```python
 # sine.py
 import math
 
+import fused
+
+@fused.udf
 def main(n: int = 80, freq: float = 1.0):
     return {"points": [[i / n, math.sin(2 * math.pi * freq * i / n)] for i in range(n)]}
 ```
@@ -89,7 +95,7 @@ Any `.html` file can call it and bind the result to the URL:
   fused.params.onChange(draw);
 
   async function draw() {
-    const freq = fused.params.get("freq") || "1.0";
+    const freq = parseFloat(fused.params.get("freq") || "1.0");
     const { points } = await fused.runPython("./sine.py", { freq });
     // ...render points...
   }
@@ -97,9 +103,11 @@ Any `.html` file can call it and bind the result to the URL:
 </script>
 ```
 
-- `fused.runPython(pyPath, params)` — runs `main(**params)` of a local `.py`
-  file in a fresh subprocess and returns its JSON result. `pyPath` may be
-  relative (to the HTML file) or absolute.
+- `fused.runPython(pyPath, params)` — runs the script's udf in a fresh
+  subprocess (openfused local backend) and returns its JSON result. Params
+  arrive exactly as sent — pass numbers as numbers (URL params are strings,
+  so convert where you read them). `pyPath` may be relative (to the HTML
+  file) or absolute.
 - `fused.params` — a string-only key/value store synced into the browser
   URL (`get`, `getAll`, `set`, `onChange`). Refreshing or bookmarking a view
   reproduces its exact state.

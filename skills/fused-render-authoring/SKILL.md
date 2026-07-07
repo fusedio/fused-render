@@ -13,7 +13,7 @@ fused-render is a local file explorer that renders `.html` files live in the bro
 .html file (rendered in an iframe)
    │  window.fused  ← injected runtime, do NOT <script src> anything for it
    │
-   ├─ fused.runPython("./data.py", {limit: "50"})   ← executes main() of the .py
+   ├─ fused.runPython("./data.py", {limit: 50})    ← executes the .py's @fused.udf main()
    │        └─ returns a Promise of main()'s JSON return value
    │
    ├─ fused.params            ← string key/values mirrored into the browser URL
@@ -24,13 +24,21 @@ fused-render is a local file explorer that renders `.html` files live in the bro
 
 Three primitives — `runPython`, `params`, and the file IO helpers — are the entire API. Everything else is ordinary HTML/CSS/JS (no framework, no build step, ES2020 fine).
 
-## The Python side: `main()` contract
+## The Python side: `@fused.udf` contract
 
-A data file exposes **one plain function named `main`**. No decorator, no import, no registration:
+A data file registers **one entry point named `main`** with the `@fused.udf` decorator. `import fused` works inside the execution sandbox automatically — nothing to install. Third-party deps are declared in a PEP 723 header (omit it for stdlib-only scripts):
 
 ```python
+# /// script
+# dependencies = ["pandas"]
+# ///
+import os
+
+import fused
+import pandas as pd
+
+@fused.udf
 def main(path: str = ".", limit: int = 50, min_size: float = 0.0):
-    import os
     entries = []
     for name in os.listdir(path):
         full = os.path.join(path, name)
@@ -44,13 +52,15 @@ def main(path: str = ".", limit: int = 50, min_size: float = 0.0):
 
 Rules that matter (each has a reason):
 
-- **Type-annotate parameters.** Params arrive as strings (they live in URLs). Annotations drive coercion: `limit: int` receives `int("50")`; `bool` accepts `"true"/"1"/"yes"/"on"`. Unannotated args get the raw string — a classic source of `"50" < 10` bugs.
-- **Give every parameter a default** unless it is genuinely required; missing required args become an error shown to the page.
+- **Params arrive exactly as the JS sent them — no coercion.** Pass numbers as numbers from the page (`{limit: 50}`, not `{limit: "50"}`); URL params are strings, so convert where you read them (`parseInt`/`parseFloat`/`Number`). Annotations on `main` are documentation only.
+- **Give every parameter a default** unless it is genuinely required; a missing required arg raises an ordinary `TypeError` shown to the page.
+- **Declare third-party imports in the `# /// script` header.** The engine builds a cached venv per requirement set (first call takes seconds, then fast). **The server's environment is not visible to your script** — an undeclared import fails even if it's installed where the server runs. Stdlib-only scripts need no header.
 - **Return JSON-native values only** (dict / list / str / int / float / bool / None). A DataFrame or bytes return is an error — convert first: `df.to_dict("records")`. Non-JSON scalars inside structures (datetime, Decimal, numpy types) also break serialization — stringify or cast them (`str(ts)`, `float(x)`).
-- **Relative paths in your code resolve next to the .py file** (the working directory is set there). `open("./data.csv")` next to your script just works.
+- **Relative paths inside `main()` resolve next to the .py file** (the working directory is re-homed there for the call). `open("./data.csv")` next to your script just works. Module-level code runs in a temp exec dir — do file work inside `main()`.
 - **Each call is a fresh subprocess.** Edits to the .py apply on the next call — but so does full import cost (pandas ≈ 1 s per call). No state survives between calls; don't cache in globals.
 - **`print()` output goes to the browser console** (prefixed `[python]`) — use it freely for debugging; it cannot corrupt the result.
-- **Calls time out at 30 s** and errors return `{type, message, traceback}` to the page. The environment is whatever Python launched the server — assume stdlib plus whatever the user installed there.
+- **Calls time out at 30 s.** Errors reach the page as a cleaned traceback pointing at your script's real path and line.
+- A parameterless script may skip the udf entirely and set a module-level `result = {...}` instead. But a plain `def main` **without** the decorator is never called — the page gets `null` back and params are silently ignored.
 
 ## The HTML side: `window.fused` API
 
@@ -58,7 +68,7 @@ The runtime is injected automatically when the explorer renders the page. Never 
 
 | Call | Behavior |
 |---|---|
-| `await fused.runPython(pyPath, params)` | Runs `main(**params)` of the file at `pyPath` — relative to **this html file's directory**, or absolute. Resolves with the return value; rejects with an `Error` carrying `.type`, `.message`, `.traceback`, `.stdout`. |
+| `await fused.runPython(pyPath, params)` | Runs the `@fused.udf` `main(**params)` of the file at `pyPath` — relative to **this html file's directory**, or absolute. Params pass through as raw JSON types. Resolves with the return value; rejects with an `Error` whose `.message` is the traceback's last line (`"ZeroDivisionError: division by zero"`), plus `.traceback` (full text) and `.stdout`. |
 | `fused.params.get(k)` | Current value from the URL, as a **string** (or `undefined`). |
 | `fused.params.getAll()` | All non-reserved params as an object. |
 | `fused.params.set(k, v)` | Writes to the URL (replaceState — no history spam). **Throws unless `v` is a string** — do `String(n)` yourself. Then fires `onChange`. |
@@ -70,7 +80,7 @@ The runtime is injected automatically when the explorer renders the page. Never 
 | `fused.rawUrl(path)` | **Sync**, returns a URL string serving the file's raw bytes. This is for embedding — `<img src>`, `<video src>`, `<embed>`, download links — where you need a URL, not text. |
 
 Notes:
-- Params are **strings only, always**. Parse numbers yourself (`parseInt(fused.params.get("limit") || "50", 10)`), JSON-encode structure yourself if you need it.
+- **URL params are strings only, always** (`fused.params`). But `runPython` params are **typed JSON** — parse at the boundary: `const limit = parseInt(fused.params.get("limit") || "50", 10)` then `runPython("./x.py", { limit })`. Passing the raw string means `main` receives a string.
 - Uncaught `runPython` rejections auto-show a red traceback overlay — good default for debugging; catch the rejection yourself when you want custom error UI.
 - Concurrent `runPython` calls are fine; responses can arrive out of order — guard with a request counter if a stale response could overwrite a fresh one.
 - **Reach the filesystem only through these helpers**, never by fetching the server's `/api/fs/*` endpoints yourself — the helpers are the stable contract and carry required headers (writes are rejected without them).
@@ -108,14 +118,14 @@ Every interactive view is the same loop: **params are the state; controls write 
     const out = document.getElementById("out");
 
     async function draw() {
-      const limit = fused.params.get("limit") || "20";   // URL wins; default only when absent
-      limitEl.value = limit;                              // reflect state INTO controls
+      const limit = parseInt(fused.params.get("limit") || "20", 10);  // URL wins; parse at the boundary
+      limitEl.value = String(limit);                      // reflect state INTO controls
       out.textContent = "Loading…";
       try {
-        const data = await fused.runPython("./largest.py", { limit });
+        const data = await fused.runPython("./largest.py", { limit });  // typed param
         out.innerHTML = renderTable(data.entries);        // author's own rendering
       } catch (err) {
-        out.textContent = `${err.type}: ${err.message}`;  // or rethrow for the overlay
+        out.textContent = err.message;                    // or rethrow for the overlay
       }
     }
 
@@ -130,7 +140,7 @@ Every interactive view is the same loop: **params are the state; controls write 
 Why this shape:
 - `draw()` reads **params, not the control**, so a bookmarked/refreshed URL renders identically before any interaction.
 - The control writes the param and nothing else; `onChange` is the single re-render path — no double-render logic, no drift between URL and UI.
-- Values passed to `runPython` can stay strings; annotations on `main` coerce them.
+- Types are converted once, where the param is read — everything downstream (control, `runPython`) gets the right type.
 
 Style: views render inside a dark-themed explorer. Match it (dark background, light text) unless the user wants otherwise; there is no imposed CSS — the iframe is a blank canvas.
 
@@ -141,7 +151,8 @@ A template is the same kind of html file, but the explorer opens it *for* a targ
 ```js
 const file = fused.params.get("_file");
 if (!file) { /* show "no file selected" state */ }
-const page = await fused.runPython("./my_reader.py", { file, offset: fused.params.get("offset") || "0" });
+const offset = parseInt(fused.params.get("offset") || "0", 10);
+const page = await fused.runPython("./my_reader.py", { file, offset });
 ```
 
 A reader `.py` is only needed when Python adds value (parsing parquet/xlsx, paging, aggregation). Text formats can skip it entirely — `fused.stat` for a size guard, then `fused.readFile(file)` and render in JS (the markdown/JSON/code templates work this way); media formats just point a tag at `fused.rawUrl(file)`.
@@ -160,11 +171,14 @@ Sanity loop: page renders → interact with a control → URL query updates → 
 
 ## Pitfalls checklist
 
-- `fused.params.set("n", 5)` → **throws** (number). Use `String(5)`.
+- `fused.params.set("n", 5)` → **throws** (number). Use `String(5)`. (URL params are strings; `runPython` params are the opposite — typed.)
+- Passing URL-param strings straight into `runPython` (`{limit: fused.params.get("limit")}`) → `main` receives `"50"` (string) and comparisons silently misbehave. Parse at the boundary; annotations no longer coerce.
+- Forgetting `@fused.udf` on `main` → the script runs top-to-bottom, `main` is never called, the page gets `null`, params silently ignored. No error — check the decorator first when a view gets nothing back.
+- Importing a third-party package without a `# /// script` dependencies header → `ModuleNotFoundError`, even if the package is installed where the server runs (scripts get their own venv).
 - Reading `input.value` inside `draw()` instead of `fused.params.get()` → refresh loses state.
 - `main` returning a DataFrame / datetime / Decimal / numpy value → serialization error; convert to JSON-native first.
-- Missing annotation on a numeric param → `main` receives `"50"` (string) and comparisons silently misbehave.
 - Expecting module state to persist between `runPython` calls → each call is a fresh process.
+- Opening files at module level → wrong cwd (temp exec dir). Do relative-path file work inside `main()`, where cwd is the script's directory.
 - Adding `<script src=".../runtime.js">` manually → double-injection; the explorer injects it.
 - Heavy import + slider wired without debounce → one full subprocess per tick; debounce inputs ~150 ms when `main` is slow.
 - Fetching `/api/fs/raw` (or POSTing `/api/fs/write`) directly instead of using the helpers → writes get rejected (missing required header) and you're coupled to internals.
