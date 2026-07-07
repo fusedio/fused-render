@@ -66,6 +66,24 @@ fused-render --start-dir ~/data --port 9000 --no-browser
 `--start-dir` only sets the initial location — the whole filesystem stays
 browsable from there.
 
+## Logs
+
+The server writes an application log so that when something goes wrong — an
+"Internal Server Error" in the browser, or a right-click "Open with
+FusedRender" that misbehaves — there's a traceback to look at. Every 500
+records its full traceback (and the request that caused it); failed Python
+runs and the macOS app's open/reopen events are logged too.
+
+The log file is `fused-render.log`, in:
+
+- `~/Library/Application Support/fused-render/` on macOS (next to the app's
+  pid/port files — in the packaged app, **menu bar → Open logs** reveals it),
+- `~/.fused-render/` elsewhere.
+
+The CLI prints the exact path on startup. Set `FUSED_RENDER_LOG_DIR` to write
+it somewhere else (e.g. `FUSED_RENDER_LOG_DIR=/tmp fused-render`). It rotates
+at 2 MB with one backup, so it can't grow without bound.
+
 ## Authoring model
 
 Any `.py` file is a runnable target as long as it defines a `main()`
