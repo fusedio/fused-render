@@ -1384,6 +1384,11 @@
     // --fa-sidew feeds the tray's CSS offset the same live width.
     document.body.style.marginRight = open ? sideEl().offsetWidth + "px" : "";
     root.style.setProperty("--fa-sidew", sideEl().offsetWidth + "px");
+    // Re-clamp any open popover: positionPopover's usable width changes with
+    // the panel, and a popover placed pre-toggle would otherwise sit under it.
+    if (openPopover && openPopover.el) {
+      positionPopover(openPopover.el, openPopover.clientX, openPopover.clientY);
+    }
     if (open) renderSidebar();
   }
 
