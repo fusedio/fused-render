@@ -9,7 +9,6 @@ pyproject.toml) — it is imported lazily, inside `main()`, so that
 `import fused_render.app` never fails on another platform or in CI.
 """
 import json
-import logging
 import os
 import socket
 import subprocess
@@ -22,7 +21,6 @@ import webbrowser
 
 import uvicorn
 
-from fused_render.logs import log_path, setup_logging
 from fused_render.server import create_app
 
 APP_SUPPORT_DIR = os.path.expanduser("~/Library/Application Support/fused-render")
@@ -164,7 +162,6 @@ def _start_server_thread(port: int) -> uvicorn.Server:
 
 def main() -> None:
     os.makedirs(APP_SUPPORT_DIR, exist_ok=True)
-    setup_logging()  # first: everything after this can crash-report to the file
     _configure_wheelhouse_env()  # before the server thread: installs inherit os.environ
 
     existing = find_running_server()
@@ -238,10 +235,7 @@ def main() -> None:
         server = _start_server_thread(port)
         state["server"] = server
         if not _wait_until_ready(port):
-            # Log file, not print: Finder-launched apps have no visible stderr.
-            logging.getLogger("fused_render").error(
-                "server did not become ready on port %s", port
-            )
+            print(f"fused-render: server did not become ready on port {port}", flush=True)
             rumps.quit_application()
             return
         _write_pidfile(port)
@@ -259,7 +253,7 @@ def main() -> None:
             # appearance. Icon beats a text title: recognizable and compact
             # in a crowded (notched) menu bar.
             super().__init__("fused-render", icon=icon_path, template=True, quit_button=None)
-            self.menu = ["Open in browser", "Copy URL", "Open logs", "Quit"]
+            self.menu = ["Open in browser", "Copy URL", "Quit"]
 
         @rumps.clicked("Open in browser")
         def open_browser(self, _sender):
@@ -268,13 +262,6 @@ def main() -> None:
         @rumps.clicked("Copy URL")
         def copy_url(self, _sender):
             subprocess.run(["pbcopy"], input=url.encode(), check=False)
-
-        @rumps.clicked("Open logs")
-        def open_logs(self, _sender):
-            # Reveal in Finder rather than opening the file: users are asked
-            # to zip/attach it, and Console.app (the .log default handler)
-            # confuses more than it helps.
-            subprocess.run(["open", "-R", log_path()], check=False)
 
         @rumps.clicked("Quit")
         def quit(self, _sender):
