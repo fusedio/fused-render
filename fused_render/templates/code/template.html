@@ -273,6 +273,11 @@
         if (annCore.isDraftOpen()) annCore.closePopover();
         return;
       }
+      // A draft is already open for this selection (the mouseup path fired
+      // first): a late CM selectionSet must NOT re-schedule — openDraftAt is
+      // close-then-open, so re-firing would replace a draft the user is
+      // already typing in.
+      if (annCore.isDraftOpen()) return;
       selDebounce = setTimeout(openDraftForSelection, 400);
     }
 
@@ -541,6 +546,18 @@
         e.returnValue = "";
       }
     });
+
+    // Flush hook for the shell (AN-2): entering annotate mode remounts this
+    // iframe, which would silently discard edits newer than the last autosave
+    // (or a conflict-suspended buffer). The shell calls this before flipping
+    // `_annotate`; resolves {ok:false} when the buffer could not be made safe
+    // (save failure / unresolved conflict) so the shell can refuse the switch.
+    window.__fusedFlushEdits = async () => {
+      if (!view || !dirty) return { ok: true };
+      if (conflictEl.style.display === "flex") return { ok: false };
+      await save();
+      return { ok: !dirty && conflictEl.style.display !== "flex" };
+    };
 
     load();
   </script>
