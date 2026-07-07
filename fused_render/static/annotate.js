@@ -459,7 +459,17 @@
         if (path) base = { anchorPath: path };
       }
       if (base) {
-        if (el.tagName === "IMG" && clientX !== undefined && clientY !== undefined) {
+        // iu/iv only once the intrinsic size is known: before decode,
+        // imgContentBox falls back to the layout box, and fractions taken of
+        // the wrong box would persist a wrong pixel into the URL (AN-24). An
+        // undecoded image gets a plain element anchor instead.
+        if (
+          el.tagName === "IMG" &&
+          el.naturalWidth > 0 &&
+          el.naturalHeight > 0 &&
+          clientX !== undefined &&
+          clientY !== undefined
+        ) {
           const b = imgContentBox(el);
           if (b.width > 0 && b.height > 0) {
             // Letterbox clicks clamp to the nearest content edge (AN-24).
