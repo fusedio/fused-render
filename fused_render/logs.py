@@ -20,7 +20,7 @@ import tempfile
 # FUSED_RENDER_LOG_DIR relocates the log; unset, it lands in the system temp
 # directory.
 LOG_DIR_ENV = "FUSED_RENDER_LOG_DIR"
-LOG_FILENAME = "fused-render.log"
+LOG_NAME_PREFIX = "fused-render"
 
 
 def log_dir() -> str:
@@ -43,7 +43,19 @@ def log_dir() -> str:
 
 
 def log_path() -> str:
-    return os.path.join(log_dir(), LOG_FILENAME)
+    """Path to THIS process's log file (`fused-render-<pid>.log`).
+
+    Per-process, not a single fixed name, so concurrent instances (e.g. two
+    `fused-render` on different ports) can't collide: a shared name would be
+    safe for *sequential* launches — RotatingFileHandler opens append, so it
+    never truncates — but two live writers would interleave their lines, and
+    size rotation is not multi-process safe (when one process renames the file
+    and opens a fresh one, the other's open fd keeps writing to the renamed
+    file and the next rotation clobbers it). A per-pid file sidesteps both. The
+    writer always knows its own path via getpid(), so `Open logs` and the CLI's
+    startup print still point at the right file; `ls -t` orders sessions.
+    """
+    return os.path.join(log_dir(), f"{LOG_NAME_PREFIX}-{os.getpid()}.log")
 
 
 def setup_logging() -> str:

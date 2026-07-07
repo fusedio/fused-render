@@ -80,13 +80,14 @@ FusedRender" that misbehaves — there's a traceback to look at. It records:
 - **every 500** — its full traceback and the request that caused it;
 - **failed Python runs** and the macOS app's file-open / reopen events.
 
-The log file is `fused-render.log` in your system temp directory (e.g.
-`/tmp/fused-render.log`; the CLI prints the exact path on startup, and in the
-packaged app **menu bar → Open logs** reveals it). It's disposable diagnostic
-output: it rotates at 2 MB with one backup, and living in temp means the OS
-reclaims it — and a reboot gives you a fresh log — rather than old logs piling
-up in a permanent directory. Set `FUSED_RENDER_LOG_DIR` to keep it somewhere
-persistent instead.
+Each run writes its own file, `fused-render-<pid>.log`, in your system temp
+directory (e.g. `/tmp/fused-render-4521.log`; the CLI prints the exact path on
+startup, and in the packaged app **menu bar → Open logs** reveals it). A file
+per process means two instances running at once (say, on different ports) never
+interleave or clobber each other's logs. It's disposable diagnostic output: it
+rotates at 2 MB with one backup, and living in temp means the OS reclaims it —
+and a reboot gives you a fresh slate — rather than logs piling up in a permanent
+directory. Set `FUSED_RENDER_LOG_DIR` to keep logs somewhere persistent instead.
 
 ## Authoring model
 
