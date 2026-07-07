@@ -15,30 +15,31 @@ import logging.handlers
 import os
 import platform
 import sys
+import tempfile
 
-# Escape hatch honoring the "written to /tmp or something" ask: point the log
-# anywhere with FUSED_RENDER_LOG_DIR (e.g. `/tmp`). Unset, the default below is
-# the stable per-user dir the app already owns — persistent across reboots and
-# co-located with the pid/port files, so it's one folder to hand over, unlike
-# /tmp which the OS may sweep out from under a running app.
+# FUSED_RENDER_LOG_DIR relocates the log; unset, it lands in the system temp
+# directory.
 LOG_DIR_ENV = "FUSED_RENDER_LOG_DIR"
 LOG_FILENAME = "fused-render.log"
 
 
 def log_dir() -> str:
-    """Directory holding the log file.
+    """Directory holding the log file: the system temp dir, or
+    FUSED_RENDER_LOG_DIR if set.
 
-    FUSED_RENDER_LOG_DIR wins if set. Otherwise, macOS: the app-support dir the
-    menu-bar app already owns (pid/port files live there — one folder to zip).
-    Elsewhere: ~/.fused-render, which the template registry already establishes
-    as ours.
+    Temp by default because the log is disposable diagnostic output with no
+    long-term retention policy: rotation bounds a single file's size, but
+    nothing prunes the directory, so a permanent home (a user dotdir, app
+    support) would silently accumulate stale logs forever. Temp storage is
+    reclaimed by the OS and cleared on reboot — which also gives a fresh log
+    per session, exactly the scope you want when diagnosing what went wrong
+    this run. Point FUSED_RENDER_LOG_DIR at a persistent directory to keep
+    logs across reboots.
     """
     override = os.environ.get(LOG_DIR_ENV)
     if override:
         return os.path.expanduser(override)
-    if sys.platform == "darwin":
-        return os.path.expanduser("~/Library/Application Support/fused-render")
-    return os.path.expanduser("~/.fused-render")
+    return tempfile.gettempdir()
 
 
 def log_path() -> str:
