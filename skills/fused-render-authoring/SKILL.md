@@ -50,7 +50,11 @@ Rules that matter (each has a reason):
 - **Relative paths in your code resolve next to the .py file** (the working directory is set there). `open("./data.csv")` next to your script just works.
 - **Each call is a fresh subprocess.** Edits to the .py apply on the next call — but so does full import cost (pandas ≈ 1 s per call). No state survives between calls; don't cache in globals.
 - **`print()` output goes to the browser console** (prefixed `[python]`) — use it freely for debugging; it cannot corrupt the result.
-- **Calls time out at 30 s** and errors return `{type, message, traceback}` to the page. The environment is whatever Python launched the server — assume stdlib plus whatever the user installed there.
+- **Calls time out at 30 s** and errors return `{type, message, traceback}` to the page (see the timeout section below for workarounds).
+- **What you can `import` depends on how fused-render was installed.** `main()` runs under the *same* interpreter as the server (`sys.executable`), so its importable packages are that environment's:
+  - **pip / editable (`pip install -e .`) install:** stdlib + the core deps (fastapi, uvicorn, **pyarrow** — always present) + whatever else is `pip install`ed into that venv. Beyond stdlib, only pyarrow is guaranteed; if a view needs pandas/numpy/etc., install it into that environment (or tell the user to) — don't assume it's there.
+  - **Packaged macOS `.app`:** a frozen bundled interpreter you **cannot** add to (no pip). It ships a fixed data stack you *can* rely on: numpy, pandas, requests, duckdb, polars, matplotlib, scipy, pillow, openpyxl, shapely, geopandas (+ pyarrow). Known gap: `mpl_toolkits` (matplotlib 3D axes) is excluded.
+  - For a view meant to run in **both**, stick to stdlib + pyarrow/pandas; guard any optional import and return a clear error if the package is missing rather than letting the raw `ImportError` hit the overlay.
 
 ## The HTML side: `window.fused` API
 
