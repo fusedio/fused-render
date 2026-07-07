@@ -205,14 +205,16 @@ Verify a view by opening it in a real browser against the running server — do 
 | Path | What it renders | Use it to |
 |---|---|---|
 | `/` | The explorer at `start_dir` — file listing with chrome. | Browse to a file by clicking. |
-| `/view/<abs-path-without-leading-slash>` | **Normal view mode**: the file inside the full shell — sidebar, breadcrumb, preview header — with your page in an iframe. | The default way to open and test a view. |
-| `/embed/<abs-path-without-leading-slash>` | **Embed mode**: the exact same page and routing, but chrome-free (no sidebar/breadcrumb/header). | Test how the view looks when iframed into a dashboard or another view. |
+| `/embed/<abs-path-without-leading-slash>` | **Embed mode**: the page chrome-free (no sidebar/breadcrumb/header). | **The default way to open and test a view** — you see just the view itself. |
+| `/view/<abs-path-without-leading-slash>` | **Full-shell mode**: the same page inside the explorer shell — sidebar, breadcrumb, preview header — with your page in an iframe. | Check how the view sits inside the explorer chrome, or when browsing. |
 
-Path encoding: the fs path rides in the URL after the prefix with its **leading slash dropped** and each segment URL-encoded. `/Users/me/proj/dash.html` → `http://127.0.0.1:8765/view/Users/me/proj/dash.html`. A space becomes `%20`, etc.
+**Default to embed.** When you open a link to test a view or show it to the user, use `/embed/` — it renders the view alone, which is what you're iterating on. Reach for `/view/` only to inspect the surrounding chrome or when the user is browsing.
+
+Path encoding: the fs path rides in the URL after the prefix with its **leading slash dropped** and each segment URL-encoded. `/Users/me/proj/dash.html` → `http://127.0.0.1:8765/embed/Users/me/proj/dash.html`. A space becomes `%20`, etc.
 
 **View vs embed** is a fixed page-load mode (the prefix picks it; it cannot toggle without a full navigation). Both serve the same shell and route identically — embed just hides chrome. Params sync the same way in both; in nested embeds, param sync stops at each embed shell boundary so a tab's params stay tab-independent.
 
-**Preview templates** open at the target file's path (`/view/<abs path to the data file>`) — the shell resolves the template by extension and hands it the file via the read-only `_file` param. To test a template's html directly, open it and pass the target yourself: `/view/<abs path to template>.html?_file=<abs target path>`.
+**Preview templates** open at the target file's path (`/embed/<abs path to the data file>`) — the shell resolves the template by extension and hands it the file via the read-only `_file` param. To test a template's html directly, open it and pass the target yourself: `/embed/<abs path to template>.html?_file=<abs target path>`.
 
 **API endpoints** (`/api/config`, `/api/fs/stat|list|raw|events`, `/api/fs/write`, `/api/run`) back the runtime — reach them only through the `fused.*` helpers, never by hand (see the note above). They're listed here only so you recognize them in the network tab while debugging.
 
