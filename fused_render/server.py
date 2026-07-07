@@ -51,10 +51,9 @@ TEMPLATES = {
     ".flac": ["media"],
     # source code — CodeMirror, mode chosen by extension (note: .json routes to
     # the JSON tree template above, not here)
-    # python — editable buffer only. The swagger-style `api` run form (D63)
-    # is unbound by default to keep the header to code + annotate; rebind via
-    # the user registry (`".py": ["code", "api"]` in ~/.fused-render/registry.json).
-    ".py": ["code"],
+    # python — code default, with the swagger-style `api` run form (D63)
+    # available as a second mode.
+    ".py": ["code", "api"],
     ".js": ["code"],
     ".ts": ["code"],
     ".sh": ["code"],
