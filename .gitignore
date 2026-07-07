@@ -7,6 +7,7 @@ dist/
 *.egg-info/
 .DS_Store
 scripts/vendor-codemirror/node_modules/
+scripts/vendor-sci/node_modules/
 .claude/worktrees/
 frontend/node_modules/
 fused_render/static/shell-dist/

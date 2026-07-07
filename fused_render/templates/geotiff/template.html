@@ -1,0 +1,412 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GeoTIFF preview</title>
+<!--
+  fused-render GeoTIFF / COG preview template — zero React, no build step.
+  Port of app/src/ui/components/sci/GeoTiffPreview.tsx (+ sciViz.ts, SciHistogram,
+  SciPreviewParts, useCanvasHover). geotiff is vendored (scripts/vendor-sci).
+
+  Input: the reserved `_file` param (absolute filesystem path). Small files are
+  fetched whole via the raw endpoint; files >32 MiB use geotiff.fromUrl, which
+  range-requests like a COG (Starlette FileResponse honors Range).
+-->
+<style>
+  /* ===== dark theme — fused-render palette (matches the shell + sibling templates) ===== */
+  :root{
+    color-scheme: dark;
+    --background:#131417;
+    --foreground:#e8eaed;
+    --card:#1b1d21;
+    --muted:#2a2d33;
+    --muted-foreground:#9aa0a6;
+    --border:#2a2d33;
+    --input:#2a2d33;
+    --ring:#5b9dff;
+    --primary:#e8eaed;
+    --muted-30:rgba(42,45,51,0.35);
+  }
+  *{ box-sizing:border-box; }
+  html,body{ height:100%; margin:0; }
+  body{
+    background:var(--background); color:var(--foreground);
+    font:13px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    overflow:hidden; -webkit-font-smoothing:antialiased;
+  }
+  .mono{ font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .app{ height:100vh; display:flex; flex-direction:column; }
+  /* top bar */
+  .topbar{ height:44px; flex:0 0 auto; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:0 16px; border-bottom:1px solid var(--border); }
+  .titlewrap{ display:flex; align-items:center; gap:10px; min-width:0; }
+  .badge{ font-size:11px; font-weight:600; letter-spacing:.02em; padding:2px 8px; border:1px solid var(--border); border-radius:999px; color:var(--muted-foreground); text-transform:uppercase; white-space:nowrap; }
+  .fname{ font-family:ui-monospace,monospace; font-size:12px; color:var(--foreground); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* surface */
+  .surface{ flex:1 1 auto; min-height:0; overflow:auto; position:relative; }
+  /* no-file / empty state card */
+  .card{ height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; padding:32px; text-align:center; }
+  .card .ico{ font-size:34px; opacity:.4; }
+  .card .t{ font-size:14px; color:var(--foreground); }
+  .card .s{ font-size:12px; color:var(--muted-foreground); max-width:26rem; }
+  /* preview layout */
+  .preview{ height:100%; display:flex; flex-direction:row; }
+  .mainpane{ display:flex; flex-direction:column; flex:1 1 auto; min-width:0; min-height:0; }
+  .canvas-area{ flex:1 1 auto; min-height:10rem; display:flex; align-items:center; justify-content:center; background:var(--muted-30); padding:16px; }
+  canvas.viz{ max-width:100%; max-height:100%; width:100%; height:100%; object-fit:contain; cursor:crosshair; }
+  .hover-readout{ flex:0 0 auto; height:24px; display:flex; align-items:center; overflow:hidden; white-space:nowrap; border-top:1px solid var(--border); padding:0 12px; font-family:ui-monospace,monospace; font-size:11px; color:var(--muted-foreground); }
+  .controls{ flex:0 0 auto; display:flex; flex-wrap:wrap; align-items:center; gap:6px 16px; border-top:1px solid var(--border); padding:6px 12px; }
+  .hist-wrap{ flex:0 0 auto; border-top:1px solid var(--border); padding:8px; }
+  .meta-pane{ flex:0 0 auto; overflow:auto; border-top:1px solid var(--border); padding:16px; display:flex; flex-direction:column; gap:12px; }
+  @media (min-width:900px){ .meta-pane{ width:288px; border-top:0; border-left:1px solid var(--border); } }
+  /* stacked mode: grow + scroll — a viewport-clamped height would squeeze .mainpane and its fixed children would paint over the meta pane */
+  @media (max-width:899px){ .preview{ flex-direction:column; height:auto; min-height:100%; } .canvas-area{ height:40vh; } }
+  /* control widgets */
+  label.field{ display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--muted-foreground); }
+  label.field select{ height:24px; border:1px solid var(--input); background:transparent; color:var(--foreground); border-radius:4px; padding:0 4px; font-family:ui-monospace,monospace; font-size:11px; }
+  label.field select option{ background:var(--card); }
+  /* histogram */
+  .collapsible{ border:1px solid var(--border); border-radius:6px; }
+  .collapsible>summary{ cursor:pointer; user-select:none; padding:6px 12px; font-size:12px; font-weight:500; color:var(--muted-foreground); list-style:none; }
+  .collapsible>summary::-webkit-details-marker{ display:none; }
+  .collapsible>summary:hover{ color:var(--foreground); }
+  .collapsible>.body{ border-top:1px solid var(--border); padding:8px 12px; }
+  .hist-toolbar{ display:flex; justify-content:flex-end; }
+  .log-btn{ border:1px solid var(--border); background:transparent; color:var(--muted-foreground); border-radius:4px; padding:0 6px; font-family:ui-monospace,monospace; font-size:10px; cursor:pointer; }
+  .log-btn[aria-pressed=true]{ border-color:color-mix(in oklab,var(--foreground) 40%,transparent); color:var(--foreground); }
+  canvas.hist{ width:100%; height:120px; border-radius:3px; background:var(--muted-30); image-rendering:pixelated; display:block; margin-top:4px; }
+  .hist-canvas-wrap{ position:relative; }
+  .hist-tip{ position:absolute; top:6px; z-index:5; pointer-events:none; background:var(--card); border:1px solid var(--border); border-radius:4px; padding:4px 6px; font-family:ui-monospace,monospace; font-size:10px; color:var(--foreground); white-space:nowrap; box-shadow:0 4px 12px rgba(0,0,0,.4); }
+  .hist-tip .rng{ color:var(--muted-foreground); margin-bottom:2px; }
+  .hist-tip .row{ display:flex; align-items:center; gap:5px; }
+  .hist-tip .sw{ width:8px; height:8px; border-radius:2px; flex:0 0 auto; }
+  .hist-axis{ display:flex; justify-content:space-between; font-family:ui-monospace,monospace; font-size:10px; color:var(--muted-foreground); margin-top:2px; }
+  .stat-line{ font-family:ui-monospace,monospace; font-size:10px; color:var(--muted-foreground); margin:2px 0 0; }
+  /* meta list */
+  dl.meta{ display:grid; grid-template-columns:auto 1fr; gap:4px 16px; font-size:12px; margin:0; }
+  dl.meta dt{ color:var(--muted-foreground); }
+  dl.meta dd{ margin:0; font-family:ui-monospace,monospace; color:var(--foreground); word-break:break-word; }
+  pre.json{ max-height:16rem; overflow:auto; white-space:pre-wrap; word-break:break-word; font-family:ui-monospace,monospace; font-size:11px; color:var(--foreground); margin:0; }
+  pre.json .j-key{ color:#7dd3fc; }
+  pre.json .j-str{ color:#86efac; }
+  pre.json .j-num{ color:#fbbf24; }
+  pre.json .j-bool,pre.json .j-null{ color:#c4b5fd; }
+  pre.json .j-punc{ color:var(--muted-foreground); }
+  /* status */
+  .status{ padding:16px; font-size:13px; color:var(--muted-foreground); }
+  .status.error{ color:#ff6b6b; }
+</style>
+
+<div class="app">
+  <header class="topbar">
+    <div class="titlewrap"><span class="badge">GeoTIFF</span><span class="fname" id="fname">no file</span></div>
+  </header>
+  <main class="surface" id="surface"></main>
+</div>
+
+<script type="module">
+import * as geotiff from "/template-assets/geotiff.bundle.mjs";
+import { clampByte, COLORMAPS, percentileStretch, minMaxStretch, computeStretch, fmtNum, bucket, drawHeatmap, el, statusEl, metaList, collapsible, jsonBlock, tinySelect, makeHistogram, attachHover } from "/template-shared/sciviz.mjs";
+
+/* ===========================================================================
+ * GeoTIFF-only draw helpers — RGB compositing has no equivalent in netcdf/zarr
+ * (both are single-band heatmaps), so these stay local rather than joining
+ * the shared sciViz core in /template-shared/sciviz.mjs.
+ * ======================================================================== */
+function drawRgb(canvas,r,g,b,alpha,width,height){
+  const ctx=canvas.getContext("2d"); if(!ctx) return;
+  canvas.width=width; canvas.height=height;
+  const img=ctx.createImageData(width,height); const out=img.data; const n=width*height;
+  for(let i=0;i<n;i++){ const o=i*4; out[o]=clampByte(r[i]); out[o+1]=clampByte(g[i]); out[o+2]=clampByte(b[i]); out[o+3]=alpha?clampByte(alpha[i]):255; }
+  ctx.putImageData(img,0,0);
+}
+function stretchToBytes(data,s){ const out=new Uint8ClampedArray(data.length); for(let i=0;i<data.length;i++) out[i]=bucket(data[i],s); return out; }
+
+/* ===========================================================================
+ * Shell — top bar + fetch helpers. Input is the reserved `_file` param.
+ * ======================================================================== */
+const surface=document.getElementById("surface");
+const fnameEl=document.getElementById("fname");
+function setFname(n){ fnameEl.textContent=n||"no file"; }
+function baseName(u){ try{ const p=new URL(u,location.href).pathname; return decodeURIComponent(p.replace(/\/+$/,"").split("/").pop()||u); }catch{ return u; } }
+function fetchHint(e,what){ return e instanceof TypeError ? new Error(`Failed to fetch ${what} — network failure or the raw endpoint returned no body.`) : e; }
+async function fetchBytes(url){ let res; try{ res=await fetch(url); }catch(e){ throw fetchHint(e,url); } if(!res.ok) throw new Error(`HTTP ${res.status} fetching ${url}`); return await res.arrayBuffer(); }
+
+/* ===========================================================================
+ * GeoTIFF controller — ports GeoTiffPreview.tsx render + interaction logic.
+ * ======================================================================== */
+const MAX_PREVIEW=1024;
+const COLORMAP_OPTIONS=[["viridis","viridis"],["magma","magma"],["gray","gray"]];
+const STRETCH_OPTIONS=[["p2-98","2–98%"],["minmax","min–max"]];
+function ctorDtype(a){
+  if(a instanceof Uint8Array||a instanceof Uint8ClampedArray) return "uint8";
+  if(a instanceof Int8Array) return "int8";
+  if(a instanceof Uint16Array) return "uint16";
+  if(a instanceof Int16Array) return "int16";
+  if(a instanceof Uint32Array) return "uint32";
+  if(a instanceof Int32Array) return "int32";
+  if(a instanceof Float32Array) return "float32";
+  if(a instanceof Float64Array) return "float64";
+  return "unknown";
+}
+function fmt(n){ return Number.isInteger(n)?String(n):n.toFixed(4); }
+const TIFF_COMPRESSION={1:"none",5:"LZW",6:"JPEG (old)",7:"JPEG",8:"deflate",32946:"deflate",32773:"packbits",34887:"LERC",50000:"zstd",50001:"webp"};
+function tiffUnit(geoKeys){ if(!geoKeys) return ""; if(geoKeys.ProjLinearUnitsGeoKey===9001) return "m"; if(geoKeys.ProjectedCSTypeGeoKey==null && geoKeys.GeographicTypeGeoKey!=null) return "°"; return ""; }
+function fmtPair(a,b,unit){ if(a==null||b==null) return null; return `${fmtNum(Math.abs(a))} × ${fmtNum(Math.abs(b))}${unit?` ${unit}`:""}`; }
+function nVals(n){ return `[${n} value${n===1?"":"s"}]`; }
+/* Drop the huge binary tag arrays; cap other typed/array tags at 64 entries so the JSON stays readable. */
+function sanitizeDir(dir){
+  const skip=new Set(["StripOffsets","StripByteCounts","TileOffsets","TileByteCounts","ColorMap"]);
+  const out={};
+  for(const [k,v] of Object.entries(dir||{})){
+    const isArr=ArrayBuffer.isView(v)||Array.isArray(v);
+    if(isArr && (skip.has(k) || v.length>64)) out[k]=nVals(v.length);
+    else if(isArr) out[k]=Array.from(v);
+    else out[k]=v;
+  }
+  return out;
+}
+/* geotiff 3.x fileDirectory is a lazy ImageFileDirectory (Map-backed) — plain property reads return undefined. */
+function fdTag(fd, name){ if(!fd) return undefined; if(typeof fd.getValue!=="function") return fd[name]; try{ return fd.getValue(name); }catch{ return undefined; } } // sync: eager/actualized tags only; deferred → undefined
+const DEFERRED_ARRAY_TAGS={273:"StripOffsets",279:"StripByteCounts",320:"ColorMap",324:"TileOffsets",325:"TileByteCounts"};
+async function dumpFileDirectory(fd){
+  if(!fd || typeof fd.toObject!=="function") return sanitizeDir(fd); // plain-object fileDirectory (geotiff 2.x shape)
+  for(const tag of [...fd.deferredFields.keys()]){ try{ await fd.loadValue(tag); }catch{ /* skip unreadable */ } } // resolve small deferred tags (Software, DateTime, GDAL_METADATA, …) into real values
+  const out=sanitizeDir(fd.toObject()); // actualized tags under their proper TIFF names
+  for(const [tag,arr] of fd.deferredArrays) out[DEFERRED_ARRAY_TAGS[tag] ?? `Tag${tag}`]=nVals(arr.length); // huge offset/bytecount arrays stay unfetched
+  return out;
+}
+
+// Input is the reserved `_file` param — an absolute filesystem path. Small files
+// are fetched whole; files over RANGE_THRESHOLD use geotiff.fromUrl over the raw
+// endpoint, which range-requests like a COG (Starlette FileResponse honors Range).
+const RANGE_THRESHOLD=32*1024*1024;
+function noFileCard(){
+  surface.replaceChildren(el("div",{class:"card"},
+    el("div",{class:"ico"},"🗺"),
+    el("div",{class:"t"},"No GeoTIFF selected"),
+    el("div",{class:"s"},"This template renders the file named by the _file parameter."),
+  ));
+}
+async function loadTarget(){
+  const file=fused.params.get("_file");
+  if(!file){ noFileCard(); return; }
+  setFname(baseName(file));
+  const rawUrl=fused.rawUrl(file);
+  renderGeoTiff(async()=>{
+    let size=null; try{ size=(await fused.stat(file)).size; }catch{ /* stat failed → just full-fetch */ }
+    if(size!=null && size>RANGE_THRESHOLD) return await geotiff.fromUrl(rawUrl); // COG range path
+    return geotiff.fromArrayBuffer(await fetchBytes(rawUrl));                     // full fetch
+  });
+}
+
+async function renderGeoTiff(getTiff){
+  surface.replaceChildren(statusEl("loading","Decoding GeoTIFF…"));
+  try{
+    const tiff=await getTiff();
+    const image=await tiff.getImage();
+    const width=image.getWidth(), height=image.getHeight(), bands=image.getSamplesPerPixel();
+    const scale=Math.min(1, MAX_PREVIEW/Math.max(width,height));
+    const outW=Math.max(1,Math.round(width*scale)), outH=Math.max(1,Math.round(height*scale));
+    const rasters=await image.readRasters({width:outW,height:outH,interleave:false});
+    const bandArrays=rasters;
+    const dtype=bandArrays.length>0?ctorDtype(bandArrays[0]):"unknown";
+    const geoKeys=image.getGeoKeys?.() ?? null;
+    const epsg=geoKeys?.ProjectedCSTypeGeoKey ?? geoKeys?.GeographicTypeGeoKey ?? undefined;
+    const nodata=image.getGDALNoData();
+    let bbox; try{ bbox=image.getBoundingBox(); }catch{ bbox=undefined; }
+
+    // Full-metadata extraction — getResolution/getOrigin throw when the tags are
+    // absent, so both are guarded with a tag-read fallback.
+    const fd=image.fileDirectory;
+    let resolution; try{ resolution=image.getResolution?.(); }catch{ resolution=undefined; }
+    if(!resolution) resolution=fdTag(fd,"ModelPixelScale");
+    let origin; try{ origin=image.getOrigin?.(); }catch{ origin=undefined; }
+    const tiePoint=origin?null:fdTag(fd,"ModelTiepoint");
+    if(!origin && tiePoint && tiePoint.length>=6) origin=[tiePoint[3], tiePoint[4]];
+    const unit=tiffUnit(geoKeys);
+    const pixelSize=resolution?fmtPair(resolution[0],resolution[1],unit):null;
+    const originStr=origin && origin.length>=2 && origin[0]!=null ? `${fmtNum(origin[0])}, ${fmtNum(origin[1])}` : null;
+    const crsName=geoKeys?.GTCitationGeoKey || geoKeys?.GeogCitationGeoKey || null;
+    const compressionTag=fdTag(fd,"Compression");
+    const compression=compressionTag!=null ? (TIFF_COMPRESSION[compressionTag] ?? `code ${compressionTag}`) : null;
+    const tileW=fdTag(fd,"TileWidth"), rowsPerStrip=fdTag(fd,"RowsPerStrip");
+    const tiling=tileW ? `${tileW}×${fdTag(fd,"TileLength")} tiles` : (rowsPerStrip ? `strips of ${rowsPerStrip}` : null);
+    const bps=fdTag(fd,"BitsPerSample");
+    const bitsPerSample=(Array.isArray(bps)||ArrayBuffer.isView(bps))
+      ? (Array.from(bps).every(x=>x===bps[0])?String(bps[0]):Array.from(bps).join(", "))
+      : (bps!=null?String(bps):null);
+    let overviews=0; try{ overviews=(await tiff.getImageCount())-1; }catch{ overviews=0; } // getImageCount is async on the tiff object (not the image)
+    const allMeta={ fileDirectory:await dumpFileDirectory(fd), geoKeys };
+
+    // PhotometricInterpretation (when present) drives routing: 2=RGB, 3=palette,
+    // 6=YCbCr→RGB, else single-band heatmap. Absent → legacy ≥3-band-composite heuristic.
+    const photometric=fdTag(fd,"PhotometricInterpretation");
+    let colorMap;
+    if(photometric===3){ // ColorMap is a deferred array in geotiff 3.x — must be loaded async
+      try{ colorMap = typeof fd?.loadValue==="function" ? await fd.loadValue("ColorMap") : fd?.ColorMap; }catch{ /* palette unavailable */ }
+    }
+    if(photometric===6 && bandArrays.length>=3){
+      // JPEG/YCbCr: readRasters returns RAW Y/Cb/Cr planes — convert like geotiff's own readRGB (fromYCbCr, BT.601).
+      const [yy,cb,cr]=bandArrays; const n=yy.length;
+      const r=new Uint8ClampedArray(n), g=new Uint8ClampedArray(n), b=new Uint8ClampedArray(n);
+      for(let i=0;i<n;i++){ const Y=yy[i], B=cb[i]-128, R=cr[i]-128; r[i]=Y+1.402*R; g[i]=Y-0.34414*B-0.71414*R; b[i]=Y+1.772*B; }
+      bandArrays[0]=r; bandArrays[1]=g; bandArrays[2]=b;
+    }
+    const rgbOk = bandArrays.length>=3 && (photometric===2 || photometric===6 || photometric==null); // 6: channels already converted above
+    let render;
+    if(photometric===3 && colorMap){
+      // Palette: map the index band → RGB via the embedded color table (categorical; no stretch/controls).
+      const idx=bandArrays[0], n=idx.length, e=colorMap.length/3; // ColorMap: [R…][G…][B…], 16-bit
+      const r=new Uint8Array(n), g=new Uint8Array(n), b=new Uint8Array(n);
+      for(let i=0;i<n;i++){ const c=idx[i]; r[i]=colorMap[c]>>8; g[i]=colorMap[e+c]>>8; b[i]=colorMap[2*e+c]>>8; }
+      render={mode:"rgb", palette:true, draw:{r,g,b,a:null}, nodata, w:outW, h:outH};
+    } else if(rgbOk){
+      // Keep the RAW bands — composite stretch and per-band heatmap are picked in mount.
+      render={mode:"rgb", palette:false, bands:[...bandArrays], nodata, w:outW, h:outH};
+    } else {
+      // single-band, or multiband non-RGB (photometric present but not RGB/palette) → band 1 heatmap
+      render={mode:"heatmap", data:bandArrays[0], w:outW, h:outH, nodata};
+    }
+    const meta={width,height,bands,dtype,epsg,crsName,bbox,nodata,pixelSize,origin:originStr,compression,tiling,bitsPerSample,overviews,allMeta};
+    mountGeoTiff(meta, render);
+  } catch(err){
+    surface.replaceChildren(statusEl("error", (err&&err.message)||String(err)||"Failed to read GeoTIFF."));
+  }
+}
+
+function mountGeoTiff(meta, render){
+  const palette = render.mode==="rgb" && render.palette;
+  const multiBand = render.mode==="rgb" && !palette; // real multi-band RGB → offers stretch + per-band controls
+  const allBands = multiBand ? render.bands : null;
+  const nBands = allBands ? allBands.length : 0;
+  const rgbUint8 = multiBand && (allBands[0] instanceof Uint8Array || allBands[0] instanceof Uint8ClampedArray);
+  // Defaults reproduce the pre-controls look: uint8 → raw pass-through, else 2–98% stretch.
+  let colormap="viridis", heatStretch="p2-98", rgbStretch=rgbUint8?"raw":"p2-98", bandSel="rgb";
+  const canvas=el("canvas",{class:"viz",style:{imageRendering:render.mode==="heatmap"?"pixelated":"auto"}});
+  const hover=el("div",{class:"hover-readout"},"—");
+  const hist=makeHistogram();
+
+  // view(): what the canvas currently shows — the RGB composite, or one band as a heatmap.
+  function view(){ if(render.mode==="heatmap") return "heatmap"; if(palette) return "composite"; return bandSel==="rgb"?"composite":"heatmap"; }
+  function heatData(){ return render.mode==="heatmap" ? render.data : allBands[Number(bandSel)]; }
+  function chanBytes(arr){
+    if(rgbStretch==="raw") return arr;
+    const s=rgbStretch==="minmax"?minMaxStretch(arr,{nodata:render.nodata}):percentileStretch(arr,{nodata:render.nodata});
+    return stretchToBytes(arr,s);
+  }
+  function compositeDraw(){
+    if(palette) return render.draw;
+    const a=(rgbStretch==="raw"&&nBands>=4)?allBands[3]:null;
+    return { r:chanBytes(allBands[0]), g:chanBytes(allBands[1]), b:chanBytes(allBands[2]), a };
+  }
+  function paint(){
+    canvas.style.imageRendering = view()==="heatmap" ? "pixelated" : "auto";
+    if(view()==="heatmap"){
+      const d=heatData(); const s=computeStretch(d,heatStretch,{nodata:render.nodata});
+      drawHeatmap(canvas, d, render.w, render.h, s, {nodata:render.nodata, lut:COLORMAPS[colormap]});
+    } else {
+      const dr=compositeDraw();
+      drawRgb(canvas, dr.r, dr.g, dr.b, dr.a, render.w, render.h);
+    }
+  }
+  function histBands(){
+    if(view()==="heatmap") return [{data:heatData(), nodata:render.nodata}];
+    const src=palette?[render.draw.r,render.draw.g,render.draw.b]:allBands;
+    return [
+      {label:"R",data:src[0],nodata:render.nodata,color:"#f87171"},
+      {label:"G",data:src[1],nodata:render.nodata,color:"#4ade80"},
+      {label:"B",data:src[2],nodata:render.nodata,color:"#60a5fa"},
+    ];
+  }
+
+  // controls — rebuilt on band switch: composite offers per-channel stretch,
+  // a single band reuses the heatmap builders (palette keeps no controls).
+  const controls=el("div",{class:"controls"});
+  const BAND_OPTIONS = multiBand ? [["rgb","RGB"], ...allBands.map((_,i)=>[String(i),`Band ${i+1}`])] : null;
+  const RGB_STRETCH_OPTIONS = rgbUint8 ? [["raw","raw"],["p2-98","2–98%"],["minmax","min–max"]] : [["p2-98","2–98%"],["minmax","min–max"]];
+  function rebuildControls(){
+    controls.replaceChildren();
+    if(palette) return;
+    if(multiBand) controls.append(tinySelect("band", bandSel, BAND_OPTIONS, (v)=>{ bandSel=v; rebuildControls(); paint(); hist.update(histBands(), colormap); updateMeta(); }));
+    if(view()==="heatmap"){
+      controls.append(
+        tinySelect("colormap", colormap, COLORMAP_OPTIONS, (v)=>{ colormap=v; paint(); hist.setColormap(colormap); updateMeta(); }),
+        tinySelect("stretch", heatStretch, STRETCH_OPTIONS, (v)=>{ heatStretch=v; paint(); updateMeta(); }),
+      );
+    } else if(multiBand){
+      controls.append(tinySelect("stretch", rgbStretch, RGB_STRETCH_OPTIONS, (v)=>{ rgbStretch=v; paint(); hist.update(histBands(), colormap); updateMeta(); }));
+    }
+  }
+
+  // hover readout
+  attachHover(canvas, ()=>({w:render.w,h:render.h}), (pixel)=>{
+    if(!pixel){ hover.textContent="—"; return; }
+    const i=pixel.y*render.w+pixel.x;
+    let value;
+    if(view()==="heatmap"){
+      const v=heatData()[i];
+      // Only "(nodata)" when a sentinel is declared AND the raw value equals it
+      // (NaN sentinel matched via Number.isNaN, since NaN !== NaN).
+      const isNodata = render.nodata!=null && (Number.isNaN(render.nodata)?Number.isNaN(v):v===render.nodata);
+      value=isNodata?`${fmtNum(v)} (nodata)`:fmtNum(v);
+    } else {
+      const s=palette?render.draw:null;
+      const rr=s?s.r:allBands[0], gg=s?s.g:allBands[1], bb=s?s.b:allBands[2];
+      value=`R ${fmtNum(Number(rr[i]))} · G ${fmtNum(Number(gg[i]))} · B ${fmtNum(Number(bb[i]))}`;
+    }
+    let geo="";
+    const bbox=meta.bbox;
+    if(bbox && bbox.length===4){
+      const gx=bbox[0]+((pixel.x+0.5)/render.w)*(bbox[2]-bbox[0]);
+      const gy=bbox[3]-((pixel.y+0.5)/render.h)*(bbox[3]-bbox[1]);
+      geo=` · ${fmtNum(gx)}, ${fmtNum(gy)}`;
+    }
+    hover.textContent=`x ${pixel.x}, y ${pixel.y} · ${value}${geo}`;
+  });
+
+  // metadata panel
+  const metaPane=el("aside",{class:"meta-pane"});
+  function renderedLabel(){
+    if(palette) return "palette (color table)";
+    const st=(m)=> m==="raw"?"raw":(m==="minmax"?"min–max":"2–98%");
+    if(view()==="heatmap"){ const lbl=render.mode==="heatmap"?"band 1":`Band ${Number(bandSel)+1}`; return `${lbl} · ${colormap} (${st(heatStretch)})`; }
+    return `${nBands>=4?"RGBA":"RGB"} (${st(rgbStretch)})`;
+  }
+  function updateMeta(){
+    metaPane.replaceChildren(metaList([
+      ["Dimensions", `${meta.width} × ${meta.height}`],
+      ["Bands", String(meta.bands)],
+      ["Data type", meta.dtype],
+      ["Bits/sample", meta.bitsPerSample],
+      ["Pixel size", meta.pixelSize],
+      ["Origin", meta.origin],
+      ["EPSG", meta.epsg?String(meta.epsg):null],
+      ["CRS", meta.crsName],
+      ["No-data", meta.nodata!=null?fmt(meta.nodata):null],
+      ["Bounds", meta.bbox?meta.bbox.map(fmt).join(", "):null],
+      ["Compression", meta.compression],
+      ["Tiling", meta.tiling],
+      ["Overviews", meta.overviews>0?String(meta.overviews):null],
+      ["Render", renderedLabel()],
+    ]));
+    if(meta.allMeta) metaPane.append(collapsible("All metadata", jsonBlock(meta.allMeta)));
+  }
+
+  rebuildControls();
+  const mainpane=el("div",{class:"mainpane"},
+    el("div",{class:"canvas-area"}, canvas),
+    hover,
+    palette?null:controls,
+    el("div",{class:"hist-wrap"}, hist.element),
+  );
+  surface.replaceChildren(el("div",{class:"preview"}, mainpane, metaPane));
+
+  paint();
+  hist.update(histBands(), colormap);
+  updateMeta();
+}
+
+/* ===========================================================================
+ * Boot
+ * ======================================================================== */
+loadTarget();
+</script>
