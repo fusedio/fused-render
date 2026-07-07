@@ -9,54 +9,18 @@ User print() output is captured and returned in the result payload so it
 cannot corrupt the stdout protocol.
 """
 import importlib.util
-import inspect
 import io
 import json
 import os
 import sys
 import traceback
 
-
-class ParamError(TypeError):
-    pass
-
-
-def coerce(value, annotation):
-    """Best-effort coercion of string params using type annotations."""
-    if annotation is inspect.Parameter.empty:
-        return value
-    try:
-        if annotation is bool:
-            if isinstance(value, bool):
-                return value
-            if isinstance(value, str):
-                return value.strip().lower() in ("1", "true", "yes", "on")
-            return bool(value)
-        if annotation in (int, float, str) and not isinstance(value, annotation):
-            return annotation(value)
-    except (TypeError, ValueError) as e:
-        raise ParamError(f"could not convert param to {annotation.__name__}: {e}") from e
-    return value
-
-
-def bind_params(fn, params):
-    sig = inspect.signature(fn)
-    has_var_kwargs = any(
-        p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
-    )
-    kwargs = {}
-    for name, p in sig.parameters.items():
-        if p.kind in (inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL):
-            continue
-        if name in params:
-            kwargs[name] = coerce(params[name], p.annotation)
-        elif p.default is inspect.Parameter.empty:
-            raise ParamError(f"missing required param: {name!r}")
-    if has_var_kwargs:
-        for k, v in params.items():
-            if k not in kwargs:
-                kwargs[k] = v
-    return kwargs
+# Top-level (not `fused_render._binding`) import on purpose: this file is
+# invoked as a standalone script (`python .../fused_render/_child.py`), so its
+# own directory is sys.path[0] and `_binding.py` next to it always resolves —
+# even when the package isn't pip-installed (dev-from-source). The import runs
+# before run() mutates sys.path, so a user module dir can't shadow it.
+from _binding import bind_params
 
 
 def run():
