@@ -1,3 +1,6 @@
+# /// script
+# dependencies = ["pandas"]
+# ///
 """Reader backing csv_template.html. Returns a JSON-safe page of rows.
 
 Mirrors parquet_reader.py's contract and cell-stringifying approach, but reads
@@ -9,6 +12,7 @@ import datetime
 import decimal
 import os
 
+import fused
 import pandas as pd
 
 
@@ -37,6 +41,7 @@ def _jsonify(value):
     return value
 
 
+@fused.udf
 def main(file: str, offset: int = 0, limit: int = 100) -> dict:
     # .tsv is tab-delimited; for everything else default to comma (pandas'
     # own default). Explicit sep keeps the fast C parser — sniffing forces the
