@@ -24,6 +24,15 @@ Every path argument to ``runPython`` / ``rawUrl`` / ``readFile`` must be a **str
 literal**. A dynamically-computed path (a variable, a template string) cannot be
 resolved at build time, so the export fails loudly rather than shipping a page
 whose data calls 404 at request time.
+
+Known limitation: dependency scanning is a regex over the whole HTML, so a
+``fused.runPython("…")``-shaped snippet sitting inside a JS string literal or an
+HTML comment (never actually executed) is still treated as a real call. The
+consequence is only a **loud** export error (a spurious missing-file or
+non-literal-path failure) or a harmlessly-bundled extra file — never silent wrong
+behavior at request time. Robustly excluding commented/quoted occurrences would
+require a full JS tokenizer, which is disproportionate here; author pages so that
+such look-alike text is not present, or split it out.
 """
 
 from __future__ import annotations
@@ -157,6 +166,19 @@ def _reject_unsafe_rel(path: str, kind: str, errors: list[str]) -> bool:
     return True
 
 
+def _within_page_dir(page_dir: str, target: str) -> bool:
+    """True iff ``target``'s **real** path stays inside ``page_dir``.
+
+    ``_reject_unsafe_rel`` blocks lexical escapes (``..``, absolute), but a symlink that
+    lexically stays under the page can still point outside the tree — and ``copyfile``
+    would follow it into the bundle. Compare resolved real paths so such a symlink is
+    caught before it is bundled.
+    """
+    root = os.path.realpath(page_dir)
+    real = os.path.realpath(target)
+    return real == root or real.startswith(root + os.sep)
+
+
 def plan_export(html: str, page_dir: str) -> ExportPlan:
     """Scan a page's HTML and build an :class:`ExportPlan` (pure — no files written).
 
@@ -186,6 +208,12 @@ def plan_export(html: str, page_dir: str) -> ExportPlan:
         if not _reject_unsafe_rel(path, "runPython", plan.errors):
             continue
         src = os.path.join(page_dir, path)
+        if not _within_page_dir(page_dir, src):
+            plan.errors.append(
+                f"runPython target {path!r} resolves outside the page directory "
+                "(a symlink escaping the bundle); only files under the page can be bundled"
+            )
+            continue
         if not os.path.isfile(src):
             plan.errors.append(f"runPython target {path!r} not found next to the page ({src})")
             continue
@@ -194,20 +222,30 @@ def plan_export(html: str, page_dir: str) -> ExportPlan:
             Entrypoint(path=path, name=name, file=f"code/{name}.py")
         )
 
-    # rawUrl and readFile both resolve to read-only bundled assets.
-    asset_keys: set[str] = set()
+    # rawUrl and readFile both resolve to read-only bundled assets. De-duplicate by the
+    # LITERAL path (not the derived key): two literals that normalize to the same key
+    # (``./logo.png`` vs ``logo.png``) must BOTH appear in the manifest so the served
+    # runtime — which looks up by the exact string the page passed — never 404s. They
+    # share one key/file, so the bundle stores the bytes once.
+    seen_asset_paths: set[str] = set()
     for method in ("rawUrl", "readFile"):
         for path in _literal_paths(html, method):
+            if path in seen_asset_paths:
+                continue
             if not _reject_unsafe_rel(path, method, plan.errors):
                 continue
             src = os.path.join(page_dir, path)
+            if not _within_page_dir(page_dir, src):
+                plan.errors.append(
+                    f"{method} target {path!r} resolves outside the page directory "
+                    "(a symlink escaping the bundle); only files under the page can be bundled"
+                )
+                continue
             if not os.path.isfile(src):
                 plan.errors.append(f"{method} target {path!r} not found next to the page ({src})")
                 continue
             key = os.path.normpath(path).replace(os.sep, "/").lstrip("./")
-            if key in asset_keys:
-                continue
-            asset_keys.add(key)
+            seen_asset_paths.add(path)
             plan.assets.append(Asset(path=path, name=key, file=f"assets/{key}"))
 
     return plan

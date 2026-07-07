@@ -113,3 +113,40 @@ def test_non_html_input_rejected(tmp_path):
     p = _write(tmp_path, "notes.txt", "hi")
     with pytest.raises(ExportError):
         export_page(str(p), str(tmp_path / "out"))
+
+
+def test_equivalent_asset_literals_both_mapped(tmp_path):
+    # `./logo.png` and `logo.png` normalize to the same key but are distinct literals —
+    # both must appear in the manifest (the served runtime looks up by exact string).
+    html = "<script>fused.rawUrl('./logo.png'); fused.rawUrl('logo.png');</script>"
+    _write(tmp_path, "logo.png", "PNG")
+    plan = plan_export(html, str(tmp_path))
+    assert not plan.errors
+    by_path = {a.path: a.name for a in plan.assets}
+    assert by_path == {"./logo.png": "logo.png", "logo.png": "logo.png"}
+
+
+def test_same_asset_literal_across_methods_deduped(tmp_path):
+    # The same literal via rawUrl and readFile is one asset, not two.
+    html = "<script>fused.rawUrl('./x.csv'); fused.readFile('./x.csv');</script>"
+    _write(tmp_path, "x.csv", "a,b")
+    plan = plan_export(html, str(tmp_path))
+    assert [a.path for a in plan.assets] == ["./x.csv"]
+
+
+def test_symlink_escaping_page_dir_rejected(tmp_path):
+    import os
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.py").write_text("def main():\n    return 'leak'\n")
+    page = tmp_path / "page"
+    page.mkdir()
+    # A symlink beside the page that lexically stays local but points outside the tree.
+    try:
+        os.symlink(outside / "secret.py", page / "linked.py")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not supported on this platform")
+    html = "<script>fused.runPython('./linked.py', {});</script>"
+    plan = plan_export(html, str(page))
+    assert any("outside the page directory" in e for e in plan.errors)
