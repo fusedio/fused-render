@@ -421,7 +421,12 @@
     async function save() {
       clearTimeout(saveTimer); // manual Save / Cmd+S cancels a pending autosave (AS-1)
       if (!view || !dirty) return;
-      const doc = view.state.doc.toString();
+      // Snapshot the doc we are writing. CM's Text is immutable, so a plain
+      // reference compare after the await detects edits that landed while the
+      // write was in flight — those must NOT be masked by setDirty(false), or
+      // "Saved" lies and the 250ms autosave (which checks dirty) skips them.
+      const docState = view.state.doc;
+      const doc = docState.toString();
       saveBtn.disabled = true;
       statusTextEl.textContent = "Saving…";
       statusTextEl.classList.remove("error");
@@ -430,7 +435,13 @@
         const st = await fused.writeFile(file, doc, { expectedMtime: mtime });
         mtime = st.mtime;
         hideConflict();
-        setDirty(false);
+        if (view.state.doc === docState) {
+          setDirty(false);
+        } else {
+          // Newer edits arrived during the write: stay dirty, re-arm autosave.
+          setDirty(true);
+          saveTimer = setTimeout(autosave, 250);
+        }
       } catch (err) {
         if (err.type === "conflict") {
           showConflict();
