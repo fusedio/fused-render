@@ -51,13 +51,18 @@ export function composeFolderTabsUrl(children: Bookmark[]): string {
     // BEFORE any `_layout` span to keep the layout-last convention (D51);
     // `_`-prefix keeps it invisible to fused.params (PR-6).
     if (b.name) {
-      const labelKv = "_label=" + encodeURIComponent(b.name);
+      // Split at the raw `_layout=(...)` span (kept byte-identical — it may
+      // contain literal `&` and even nested `_label`s of its own segments);
+      // the head is plain params, so URLSearchParams can REPLACE any `_label`
+      // already saved in the bookmark URL (a stale one would win otherwise —
+      // get() returns the first occurrence).
       const layoutIdx = search.indexOf("_layout=(");
-      if (layoutIdx === -1) {
-        search += (search && search !== "?" ? "&" : search === "?" ? "" : "?") + labelKv;
-      } else {
-        search = search.slice(0, layoutIdx) + labelKv + "&" + search.slice(layoutIdx);
-      }
+      const head = layoutIdx === -1 ? search : search.slice(0, layoutIdx);
+      const tail = layoutIdx === -1 ? "" : search.slice(layoutIdx);
+      const params = new URLSearchParams(head.replace(/^\?/, "").replace(/&$/, ""));
+      params.set("_label", b.name);
+      const qs = params.toString();
+      search = "?" + qs + (tail ? (qs ? "&" : "") + tail : "");
     }
     // Sentinel pathnames (/view/_panel, /view/_tab) decode to segment paths
     // "/_panel" / "/_tab" — round-trips through embedSrc/readEmbedLoc (TM-4).
