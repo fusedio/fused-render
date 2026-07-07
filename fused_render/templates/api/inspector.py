@@ -26,9 +26,12 @@ def _pep723_dependencies(source: str) -> list:
         if line.startswith("#")
     )
     try:
-        return tomllib.loads(toml_text).get("dependencies", []) or []
+        deps = tomllib.loads(toml_text).get("dependencies", [])
     except tomllib.TOMLDecodeError:
         return []
+    if not isinstance(deps, list):
+        return []
+    return [d for d in deps if isinstance(d, str)]
 
 
 def _is_udf_decorator(node) -> bool:
@@ -45,11 +48,14 @@ def _is_udf_decorator(node) -> bool:
 
 
 def _find_udf_function(tree):
+    # Last decorated function wins, matching what the engine executes
+    # (it invokes _registered_udfs[-1] — see engine.build_code).
+    found = None
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if any(_is_udf_decorator(d) for d in node.decorator_list):
-                return node
-    return None
+                found = node
+    return found
 
 
 def _params(fn) -> list:
