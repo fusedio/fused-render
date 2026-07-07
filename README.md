@@ -121,9 +121,10 @@ See `examples/sine.py` + `examples/sine.html` for a complete working example.
 ## Claude Code plugin
 
 This repo doubles as a [Claude Code](https://code.claude.com/docs) plugin
-marketplace. Installing the plugin adds skills that teach Claude how to author
-fused-render views (the `fused.runPython` bridge, URL-synced params, file IO
-helpers) and custom preview templates.
+marketplace. Installing the plugin adds skills that teach Claude how to use a fused-render
+project (running the explorer, opening views by URL), author fused-render
+views (the `fused.runPython` bridge, URL-synced params, file IO helpers), and
+build custom preview templates.
 
 This is a **private repo**, so add the marketplace by its **SSH git URL**
 (the `owner/repo` shorthand only works for public repos). You need SSH access
