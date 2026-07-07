@@ -22,44 +22,46 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
 TEMPLATES_DIR = os.path.join(HERE, "templates")
 
+# ext -> ordered list of template names, first = default (SPEC PT-7, D60).
+# A name is a folder name (fused_render/templates/<name>/), never a filename.
 TEMPLATES = {
-    ".parquet": "parquet_template.html",
-    ".png": "image_template.html",
-    ".jpg": "image_template.html",
-    ".jpeg": "image_template.html",
-    ".gif": "image_template.html",
-    ".webp": "image_template.html",
-    ".svg": "image_template.html",
-    ".md": "markdown_template.html",
-    ".csv": "csv_template.html",
-    ".tsv": "csv_template.html",
-    ".json": "json_template.html",
-    ".geojson": "json_template.html",
-    ".xlsx": "xlsx_template.html",
-    ".pdf": "pdf_template.html",
+    ".parquet": ["table"],  # binary — code mode would be garbage
+    ".csv": ["csv", "code"],
+    ".tsv": ["csv", "code"],
+    ".xlsx": ["xlsx"],
+    ".json": ["tree", "code"],
+    ".geojson": ["tree", "code"],
+    ".md": ["markdown", "code"],
+    ".svg": ["image", "code"],
+    ".png": ["image"],
+    ".jpg": ["image"],
+    ".jpeg": ["image"],
+    ".gif": ["image"],
+    ".webp": ["image"],
+    ".pdf": ["pdf"],
     # audio/video — one template branches on extension
-    ".mp4": "media_template.html",
-    ".mov": "media_template.html",
-    ".m4v": "media_template.html",
-    ".webm": "media_template.html",
-    ".mp3": "media_template.html",
-    ".wav": "media_template.html",
-    ".m4a": "media_template.html",
-    ".ogg": "media_template.html",
-    ".flac": "media_template.html",
+    ".mp4": ["media"],
+    ".mov": ["media"],
+    ".m4v": ["media"],
+    ".webm": ["media"],
+    ".mp3": ["media"],
+    ".wav": ["media"],
+    ".m4a": ["media"],
+    ".ogg": ["media"],
+    ".flac": ["media"],
     # source code — CodeMirror, mode chosen by extension (note: .json routes to
     # the JSON tree template above, not here)
-    ".py": "code_template.html",
-    ".js": "code_template.html",
-    ".ts": "code_template.html",
-    ".sh": "code_template.html",
-    ".yaml": "code_template.html",
-    ".yml": "code_template.html",
-    ".toml": "code_template.html",
-    ".css": "code_template.html",
+    ".py": ["code"],
+    ".js": ["code"],
+    ".ts": ["code"],
+    ".sh": ["code"],
+    ".yaml": ["code"],
+    ".yml": ["code"],
+    ".toml": ["code"],
+    ".css": ["code"],
     # plain text
-    ".txt": "text_template.html",
-    ".log": "text_template.html",
+    ".txt": ["text", "code"],
+    ".log": ["text", "code"],
 }
 
 
@@ -83,30 +85,83 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
 USER_TEMPLATES_DIR = os.path.expanduser("~/.fused-render")
 USER_REGISTRY = os.path.join(USER_TEMPLATES_DIR, "registry.json")
 
-# Sentinel distinguishing "registry maps this extension to null" (disable the
-# built-in, render nothing) from "registry has no binding" (None).
-_DISABLED = object()
+
+def _resolve_name(name):
+    """Single template-name resolution rule, used identically for built-in
+    table entries and registry entries (SPEC PT-6): `<name>` resolves to
+    `~/.fused-render/<name>/template.html` if present, else
+    `fused_render/templates/<name>/template.html`, else unusable. A user
+    folder shadows a built-in of the same name — the deliberate override
+    channel. Returns (abs template.html path | None, error | None).
+    """
+    # The name is joined into a filesystem path, so it must be one plain
+    # segment — a stray "../x" must not stat arbitrary locations. Correctness
+    # guard, not auth (D3 stands). `.` is banned outright (SPEC CT-6): it
+    # keeps names unambiguous against the "..." splice sigil and dotted
+    # registry keys.
+    if (
+        not isinstance(name, str)
+        or not name
+        or "/" in name
+        or "\\" in name
+        or "." in name
+    ):
+        return None, f"invalid template name: {name!r}"
+    user = os.path.join(USER_TEMPLATES_DIR, name, "template.html")
+    if os.path.isfile(user):
+        return user, None
+    builtin = os.path.join(TEMPLATES_DIR, name, "template.html")
+    if os.path.isfile(builtin):
+        return builtin, None
+    return None, f"no template.html for {name!r} (looked in ~/.fused-render/{name}/ and built-in templates/{name}/)"
 
 
-def _user_template_for(filename: str):
-    """Resolve a filename against ~/.fused-render/registry.json (SPEC §16).
+def _icon_for(template_path: str):
+    """abs icon.svg beside the resolved template.html, or None (SPEC PT-11)."""
+    icon = os.path.join(os.path.dirname(template_path), "icon.svg")
+    return icon if os.path.isfile(icon) else None
 
-    Returns (resolution, error). resolution: absolute template.html path,
-    _DISABLED (extension bound to null), or None (no binding). error: string
-    when a binding exists but is unusable — the caller falls back to the
-    built-in and surfaces it as `template_error` so typos aren't silent.
-    Read per call: a tiny local file, and it makes registry edits apply on
-    the next stat with no restart and no cache to invalidate.
+
+def _resolve_mode_list(names):
+    """Resolve an ordered list of template names into `templates` stat
+    entries (SPEC PT-8). Per-entry validation (SPEC CT-6): a name that can't
+    resolve is dropped; `error` is the first dropped name's message.
+    """
+    entries = []
+    error = None
+    for name in names:
+        path, err = _resolve_name(name)
+        if path is None:
+            if error is None:
+                error = err
+            continue
+        entries.append({"mode": name, "path": path, "icon": _icon_for(path)})
+    return entries, error
+
+
+def _user_names_for(filename: str, builtin_names: list):
+    """Resolve the registry-configured template name list for filename
+    against ~/.fused-render/registry.json (SPEC §16, CT-10/CT-11).
+
+    Returns (names, disabled, error). names: ordered list[str] of (possibly
+    still-unresolved) template names, or None when no registry binding
+    applies at all. disabled: True when the matching value is `null` (SPEC
+    CT-2) — no template at all, no error. error: a parse/shape-level problem
+    (unreadable registry.json, non-dict, value not list/string/null, >1
+    "..." splice) — the caller falls back to the built-in list and surfaces
+    this as `template_error` so typos aren't silent. Read per call: a tiny
+    local file, and it makes registry edits apply on the next stat with no
+    restart and no cache to invalidate.
     """
     try:
         with open(USER_REGISTRY, "r", encoding="utf-8") as f:
             registry = json.load(f)
     except FileNotFoundError:
-        return None, None
+        return None, False, None
     except (OSError, ValueError) as e:
-        return None, f"cannot read registry.json: {e}"
+        return None, False, f"cannot read registry.json: {e}"
     if not isinstance(registry, dict):
-        return None, "registry.json must be a JSON object"
+        return None, False, "registry.json must be a JSON object"
 
     # Longest-suffix match, case-insensitive. Dotted keys are what make
     # compound extensions (".tar.gz") expressible — the built-in table can't.
@@ -118,48 +173,65 @@ def _user_template_for(filename: str):
             if best is None or len(k) > len(best[0]):
                 best = (k, registry[key])
     if best is None:
-        return None, None
+        return None, False, None
 
-    ext, name = best
-    if name is None:
-        return _DISABLED, None
-    # The name is joined into a filesystem path, so it must be one plain
-    # segment — a stray "../x" must not stat arbitrary locations. Correctness
-    # guard, not auth (D3 stands).
-    if (
-        not isinstance(name, str)
-        or not name
-        or "/" in name
-        or "\\" in name
-        or name in (".", "..")
-    ):
-        return None, f"invalid template folder name for {ext}: {name!r}"
-    template = os.path.join(USER_TEMPLATES_DIR, name, "template.html")
-    if not os.path.isfile(template):
-        return None, f"{ext} -> {name}: no template.html in ~/.fused-render/{name}/"
-    return template, None
+    ext, value = best
+    if value is None:
+        return None, True, None
+    if isinstance(value, str):
+        # String = exactly today's meaning: a single-mode list (D50).
+        return [value], False, None
+    if isinstance(value, list):
+        # "..." splices the built-in list in place (CT-11); >1 is invalid.
+        splice_count = sum(1 for entry in value if entry == "...")
+        if splice_count > 1:
+            return None, False, f"{ext}: more than one '...' splice in template list"
+        if splice_count == 0:
+            return list(value), False, None
+        explicit = {e for e in value if isinstance(e, str) and e != "..."}
+        names = []
+        for entry in value:
+            if entry == "...":
+                for bname in builtin_names:
+                    if bname not in explicit and bname not in names:
+                        names.append(bname)
+            else:
+                names.append(entry)
+        return names, False, None
+    return None, False, f"{ext}: registry value must be a list, string, or null"
 
 
-def _template_for(path: str, is_dir: bool):
-    """Returns (template path | None, template_error | None).
+def _templates_for(path: str, is_dir: bool):
+    """Returns (templates: list[dict], template_error: str|None) — SPEC PT-8.
 
     Precedence: user registry (longest suffix) > built-in table. .html/.htm
-    never route through a template — renderable HTML is the core semantic
-    (SPEC §4) — so they skip the registry too.
+    never route through a template (SPEC §4/CT-4) — renderable HTML is the
+    core semantic — so they skip the registry too.
     """
     if is_dir:
-        return None, None
+        return [], None
     filename = os.path.basename(path)
     ext = os.path.splitext(filename)[1].lower()
     if ext in (".html", ".htm"):
-        return None, None
-    user, err = _user_template_for(filename)
-    if user is _DISABLED:
-        return None, None
-    if isinstance(user, str):
-        return user, None
-    name = TEMPLATES.get(ext)
-    return (os.path.join(TEMPLATES_DIR, name) if name else None), err
+        return [], None
+
+    builtin_names = TEMPLATES.get(ext, [])
+    names, disabled, err = _user_names_for(filename, builtin_names)
+    if disabled:
+        return [], None
+    if names is None:
+        # No registry binding, or a parse/shape-level problem — either way
+        # fall back to the plain built-in list (CT-6); `err` is None in the
+        # former case, set in the latter.
+        entries, _ = _resolve_mode_list(builtin_names)
+        return entries, err
+
+    entries, entry_err = _resolve_mode_list(names)
+    error = err or entry_err
+    if not entries:
+        # The user's value resolved to nothing at all -> built-in fallback.
+        entries, _ = _resolve_mode_list(builtin_names)
+    return entries, error
 
 
 def create_app(start_dir: str) -> FastAPI:
@@ -214,8 +286,8 @@ def create_app(start_dir: str) -> FastAPI:
             "start_dir": start_dir,
             "home": os.path.expanduser("~"),
             # The shell renders HTML "Source" view through this editable template
-            # (code_template maps .html → CM.html()), so it needs the abs path.
-            "source_template": os.path.join(TEMPLATES_DIR, "code_template.html"),
+            # (code/template.html maps .html → CM.html()), so it needs the abs path.
+            "source_template": os.path.join(TEMPLATES_DIR, "code", "template.html"),
         }
 
     @app.get("/api/fs/stat")
@@ -224,14 +296,14 @@ def create_app(start_dir: str) -> FastAPI:
             return _error(f"no such file or directory: {path}", status=404)
         is_dir = os.path.isdir(path)
         st = os.stat(path)
-        template, template_error = _template_for(path, is_dir)
+        templates, template_error = _templates_for(path, is_dir)
         payload = {
             "path": path,
             "name": os.path.basename(path) or path,
             "is_dir": is_dir,
             "size": None if is_dir else st.st_size,
             "mtime": st.st_mtime,
-            "template": template,
+            "templates": templates,
         }
         if template_error:
             payload["template_error"] = template_error
@@ -355,14 +427,14 @@ def create_app(start_dir: str) -> FastAPI:
 
         # Same shape as /api/fs/stat so the editor can re-arm its lock.
         st = os.stat(path)
-        template, template_error = _template_for(path, False)
+        templates, template_error = _templates_for(path, False)
         payload = {
             "path": path,
             "name": os.path.basename(path) or path,
             "is_dir": False,
             "size": st.st_size,
             "mtime": st.st_mtime,
-            "template": template,
+            "templates": templates,
         }
         if template_error:
             payload["template_error"] = template_error

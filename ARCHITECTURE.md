@@ -42,11 +42,18 @@ fused-render/
 │   ├── static/
 │   │   ├── shell-dist/         # Vite build of frontend/ (gitignored, D54; built by dev / packaging hook)
 │   │   └── runtime.js          # injected into every rendered HTML (plain JS, NOT part of the React app)
-│   └── templates/
-│       ├── parquet_template.html
-│       ├── parquet_reader.py
-│       ├── image_template.html
-│       └── text_template.html
+│   └── templates/              # one self-contained folder per template (M8); folder name = template name = _mode value
+│       ├── table/              # template.html + reader.py + icon.svg   (was parquet_template.html)
+│       ├── csv/                # template.html + reader.py + icon.svg
+│       ├── xlsx/               # template.html + reader.py + icon.svg
+│       ├── tree/               # template.html + icon.svg               (was json_template.html)
+│       ├── markdown/           # template.html + icon.svg
+│       ├── image/              # template.html + icon.svg
+│       ├── media/              # template.html + icon.svg
+│       ├── pdf/                # template.html + icon.svg
+│       ├── code/               # template.html + icon.svg
+│       ├── text/               # template.html + icon.svg
+│       └── vendor/             # vendored JS libs (/template-assets mount) — no template.html, never a template name
 └── examples/
     ├── sine.py
     └── sine.html
@@ -84,10 +91,13 @@ Same static shell for both; shell JS reads `location.pathname` to route. `/view/
   "is_dir": false,
   "size": 123456,
   "mtime": 1751600000.0,
-  "template": "/…/fused_render/templates/parquet_template.html"   // or null
+  "templates": [
+    {"mode": "table", "path": "/…/fused_render/templates/table/template.html", "icon": "/…/fused_render/templates/table/icon.svg"},
+    {"mode": "code",  "path": "/…/fused_render/templates/code/template.html",  "icon": null}
+  ]
 }
 ```
-`template` is the server-side registry lookup by extension (lowercased). `null` for dirs, `.html` files (those render live), and unmapped extensions. The user registry (§7, SPEC §16) is consulted first; a binding that exists but is unusable (bad JSON, unsafe folder name, missing `template.html`) falls back to the built-in and adds a `"template_error": "<reason>"` field to this response (absent otherwise).
+`templates` is the server-side registry lookup by extension (lowercased): the ordered **mode list** (SPEC PT-7/PT-8), first entry = default. Each entry carries the template **name** (`mode`), the resolved abs `template.html` path, and the abs path of the `icon.svg` sitting next to the resolved `template.html` (user folder's icon when a user template resolved) or `null` when absent. `templates` is `[]` for dirs, `.html` files (those render live), unmapped extensions, and `null` registry bindings. The user registry (§7, SPEC §16) is consulted first; validation is **per entry** — an entry whose name can't resolve (unsafe name, `template.html` missing in both locations) is dropped from the list and a `"template_error": "<reason>"` field names the first problem (absent otherwise); if the user's value resolves to nothing at all, the built-in list for the extension is used. There is no singular `template` field — removed in M8, no compat alias (shell is same repo).
 
 ### `GET /api/fs/list?path=<abs dir>`
 ```json
@@ -174,7 +184,7 @@ Top-level `path` handling in shell URL vs iframe URL:
 ## 6. Shell (`frontend/` → `static/shell-dist/`)
 
 SPA, React 18 + Vite (D52/D53; TypeScript, strict). `src/lib/` is non-React and ported ~verbatim from the vanilla shell (router/api/format/bookmarks/layout-codec — same contracts as before); components consume it. Dependency direction is one-way as before: `App → views/Sidebar/Breadcrumb → lib/*`; the router never imports UI (it dispatches a `fused:navigate` event; `lib/hooks.ts` turns it plus `popstate` into a **nav epoch** that keys — i.e. remounts — the active view, the React equivalent of the vanilla per-route DOM rebuild), the bookmark store never touches the DOM (mutations signal via `notifyBookmarksChanged()`). `Breadcrumb.tsx` may import `views/Panel.tsx` (`panelUrl`), and `Sidebar.tsx` may import `views/Tabs.tsx` (`composeFolderTabsUrl`), since no view imports back — no cycles. The history replaceState/pushState wrapping (→ `fused:urlchange`) lives in `main.tsx` and is load-bearing for the iframe runtimes (D46), not just for the shell's own re-renders; chrome (bookmark buttons, active highlight) re-renders on a **url version** signal that also counts `fused:urlchange`, without remounting views. Layout-mode iframes freeze their `src` at mount — React never rewrites it (a src write reloads an iframe); pane crumb clicks write it imperatively via a ref, and tab frames render as a flat keyed list that only appends/removes (never re-parents/reorders). Routing from `location.pathname`:
-- `/` → redirect (replaceState) to `/view/<start-dir>` (start dir from `GET /api/config` → `{"start_dir": "/Users/vasu", "home": …, "source_template": <abs code_template.html>}`).
+- `/` → redirect (replaceState) to `/view/<start-dir>` (start dir from `GET /api/config` → `{"start_dir": "/Users/vasu", "home": …, "source_template": <abs path of the code template's template.html>}`).
 - `/view/<path>` → `stat` it:
   - **dir** → listing view
   - **file** → preview view
@@ -183,9 +193,11 @@ SPA, React 18 + Vite (D52/D53; TypeScript, strict). `src/lib/` is non-React and 
 
 **Preview view:** breadcrumb + filename header with actions, then dispatch **exactly three-way** (no other file-type logic in shell):
 
-1. `stat.template != null` → iframe `/render?path=<template>&_file=<target file>` — `_file` rides on the iframe's own URL; the shell URL stays clean (its pathname already names the file). The runtime reads `_file` from its own URL first and falls back to the shell URL, so manually opening `/view/<template>.html?_file=<target>` (old bookmarks) also works.
-2. extension `.html`/`.htm` → iframe `/render?path=<file itself>`. Header gets `Rendered | Source` toggle. Source loads the code template pointed at the HTML file — `/render?path=<source_template>&_file=<file>` (source_template = code_template's abs path, from `/api/config`) — an editable CodeMirror buffer, so HTML source editing comes free.
+1. `stat.templates` non-empty → pick the active entry: `_mode=<name>` on the **shell URL** selects by `mode`, absent or unknown/stale value → `templates[0]` (the default). Iframe src = `/render?path=<entry.path>&_file=<target file>` with `key={mode}` — a mode switch swaps the src and gets a fresh document, exactly like today's HTML toggle. `_file` rides on the iframe's own URL; the shell URL stays clean (its pathname already names the file). The runtime reads `_file` from its own URL first and falls back to the shell URL, so manually opening `/view/<template>.html?_file=<target>` (old bookmarks) also works. Selecting the default mode **deletes** `_mode` (replaceState, clean URLs). Accepted quirk: non-reserved template params (`offset`, …) persist on the shell URL across switches; two modes using one param name differently collide — documented, not prevented.
+2. extension `.html`/`.htm` → iframe `/render?path=<file itself>`. Header keeps the `Rendered | Source` pair, now rendered by the **same switcher component** as the mode switcher (below) with two fixed entries (`render`, `source`) and shell-baked icons (eye / code-brackets). Source loads the code template pointed at the HTML file — `/render?path=<source_template>&_file=<file>` (source_template = the `code` template's abs `template.html`, from `/api/config`) — an editable CodeMirror buffer, so HTML source editing comes free. `.html` never routes through the registry (SPEC CT-4).
 3. else → fallback: metadata card (name, size, mtime, path) + `Raw / download` link to `/api/fs/raw?path=…`.
+
+**Mode switcher** (in `Preview.tsx`): rendered only when there is more than one entry (`templates.length > 1`, or the fixed html pair); positioned right side of the preview header bar. One **icon-only button** per mode; mode name via native `title` tooltip; active mode tinted accent. Icons load through `GET /api/fs/raw?path=<entry.icon>` (existing endpoint, no new routes) and are **monochrome SVGs** tinted via CSS `mask-image: url(...)` + `background-color: currentColor`, so active/inactive coloring is free. `entry.icon === null` → placeholder: first letter of the mode name in a small rounded box (shell-rendered, no file involved). Clicking a mode writes/deletes `_mode` via `history.replaceState` (D8; same mechanics as the old D40 toggle).
 
 Header actions always include `Raw` (opens raw endpoint in new tab). Iframe fills remaining viewport height, `border: none`.
 
@@ -206,47 +218,46 @@ Layout: `#app` becomes two-column flex — fixed sidebar (~220px, `--bg-alt`, ri
 
 ## 7. Template contract
 
-- Server-side registry (in `server.py`):
+- Server-side registry (in `server.py`) — **ext → ordered list of template names, first = default** (M8). A name is a folder name, never a filename:
 ```python
 TEMPLATES = {
-  ".parquet": "parquet_template.html",
-  ".png": "image_template.html", ".jpg": "image_template.html", ".jpeg": "image_template.html",
-  ".gif": "image_template.html", ".webp": "image_template.html", ".svg": "image_template.html",
-  ".md": "markdown_template.html",
-  ".csv": "csv_template.html", ".tsv": "csv_template.html",
-  ".json": "json_template.html", ".geojson": "json_template.html",
-  ".xlsx": "xlsx_template.html",
-  ".pdf": "pdf_template.html",
-  ".mp4": "media_template.html", ".mov": "media_template.html", ".m4v": "media_template.html",
-  ".webm": "media_template.html", ".mp3": "media_template.html", ".wav": "media_template.html",
-  ".m4a": "media_template.html", ".ogg": "media_template.html", ".flac": "media_template.html",
-  ".py": "code_template.html", ".js": "code_template.html", ".ts": "code_template.html",
-  ".sh": "code_template.html", ".yaml": "code_template.html", ".yml": "code_template.html",
-  ".toml": "code_template.html", ".css": "code_template.html",
-  ".txt": "text_template.html", ".log": "text_template.html",
+    ".parquet": ["table"],                # binary — code mode would be garbage
+    ".csv": ["csv", "code"], ".tsv": ["csv", "code"],
+    ".xlsx": ["xlsx"],
+    ".json": ["tree", "code"], ".geojson": ["tree", "code"],
+    ".md": ["markdown", "code"],
+    ".svg": ["image", "code"],
+    ".png": ["image"], ".jpg": ["image"], ".jpeg": ["image"], ".gif": ["image"], ".webp": ["image"],
+    ".pdf": ["pdf"],
+    ".mp4": ["media"], ".mov": ["media"], ".m4v": ["media"], ".webm": ["media"],
+    ".mp3": ["media"], ".wav": ["media"], ".m4a": ["media"], ".ogg": ["media"], ".flac": ["media"],
+    ".py": ["code"], ".js": ["code"], ".ts": ["code"], ".sh": ["code"],
+    ".yaml": ["code"], ".yml": ["code"], ".toml": ["code"], ".css": ["code"],
+    ".txt": ["text", "code"], ".log": ["text", "code"],
 }
 ```
-- **User overrides (M7, SPEC §16):** `_template_for()` consults `~/.fused-render/registry.json` before the dict above (after the `.html`/`.htm` exemption). Keys are dotted extensions matched **longest-suffix, case-insensitive** against the basename (so `.tar.gz` works and beats `.gz`); values are a folder name — resolving to `~/.fused-render/<name>/template.html` — or `null` (no template at all: shell fallback). Folder names must be a single safe path segment (no `/`, `\`, `.`, `..`) since they're joined into a path — correctness guard, not auth (D3). The registry is read on every resolution (no restart, no cache); missing dir/registry is a clean no-op; an unusable binding falls back to the built-in with `template_error` on the stat payload. Constants `USER_TEMPLATES_DIR`/`USER_REGISTRY` in `server.py`; zero shell/runtime changes — the shell obeys `template` as always, and M4 auto-reload already live-reloads previews when the user edits their template or readers (registry edits apply on next stat, open previews don't watch it).
-- Template receives target file as read-only param `_file`. Templates are ordinary renderable HTML: same runtime, same powers. Templates reach the filesystem through the runtime IO helpers (`fused.rawUrl`/`stat`/`readFile`/`writeFile`), never by fetching `/api/fs/*` URLs directly — one code path, and the write guard/lock come for free. Helper `.py` files sit next to the template; relative `runPython('./parquet_reader.py', …)` just works because `html` path sent to `/api/run` is the template's real path.
+- **Name resolution — one rule everywhere (SPEC PT-6):** `<name>` → `~/.fused-render/<name>/template.html` if it exists, else `fused_render/templates/<name>/template.html`, else unresolvable. Applies identically to built-in table entries and registry entries; a user folder shadows a built-in of the same name. `icon` = the `icon.svg` beside the resolved `template.html`, or `null`. `templates/vendor/` has no `template.html` so it can never resolve; the `/template-assets` mount is unchanged.
+- **User overrides (M7 + M8, SPEC §16):** the resolver consults `~/.fused-render/registry.json` before the dict above (after the `.html`/`.htm` exemption). Keys are dotted extensions matched **longest-suffix, case-insensitive** against the basename (so `.tar.gz` works and beats `.gz`); values are `list | string | null`: a **list** is the full ordered mode list (replace semantics; the `"..."` entry splices the built-in list in place — dedup against explicit names, more than one `"..."` invalidates the entry, splice with no built-ins expands to nothing); a **string** is a single-mode list of that name (unchanged D50 meaning); **`null`** = no template at all, shell fallback. Names must be a single safe path segment (no `/`, `\`, `.`, `..`) since they're joined into a path — correctness guard, not auth (D3). Validation is per entry: an unresolvable entry is dropped and `template_error` on the stat payload names the first problem; a user value resolving to nothing falls back to the built-in list. The registry is read on every resolution (no restart, no cache); missing dir/registry is a clean no-op. Constants `USER_TEMPLATES_DIR`/`USER_REGISTRY` in `server.py`; runtime untouched — the shell obeys `templates` (§3, §6), and M4 auto-reload already live-reloads previews when the user edits their template or readers (registry edits apply on next stat, open previews don't watch it).
+- Template receives target file as read-only param `_file`. Templates are ordinary renderable HTML: same runtime, same powers. Templates reach the filesystem through the runtime IO helpers (`fused.rawUrl`/`stat`/`readFile`/`writeFile`), never by fetching `/api/fs/*` URLs directly — one code path, and the write guard/lock come for free. Helper files sit inside the folder as `reader.py` etc.; relative `runPython('./reader.py', …)` just works because the `html` path sent to `/api/run` is the template's real path. Each built-in folder also ships a **monochrome `icon.svg`** (single fill — `currentColor` or plain black, only alpha matters since the shell masks it; square viewBox, 24×24 suggested, legible at 16px).
 - Vendored JS libraries (marked, CodeMirror) live in `fused_render/templates/vendor/` and are served from a dedicated absolute mount `GET /template-assets/*` (a relative `<script src>` in a template would resolve against `/render`, not the templates dir). All committed local files — no CDN/network at runtime (D3). Regenerate the CodeMirror bundle via `scripts/vendor-codemirror/build.sh` (Node 22).
 
-**M1 templates:**
+**M1 templates** (folder names per M8 renames — `table/`, `image/`, `text/`):
 
-- `parquet_template.html` + `parquet_reader.py`:
+- `table/` (`template.html` + `reader.py`):
   - reader `main(file: str, offset: int = 0, limit: int = 100)` → `{"columns": [...], "rows": [...], "total_rows": N}` via pyarrow (`pq.read_table(file).slice(offset, limit).to_pylist()`); cell values must be JSON-safe — stringify non-JSON scalars (timestamps, bytes, decimals) in the reader.
   - UI: table, row-count line ("rows 0–99 of 12,345"), Prev/Next buttons paging via `offset` param → `fused.params.set('offset', …)` → onChange → refetch. Loading + error states.
-- `image_template.html`: `<img src="/api/fs/raw?path=" + encodeURIComponent(fused.params.get('_file'))>`, centered, `max-width/height: 100%`, filename caption. No runPython needed.
-- `text_template.html`: `fetch('/api/fs/raw?path=…')` → text → `<pre>`. Guard: file > 2 MB → show "too large" note with raw link instead. Monospace, preserved whitespace.
+- `image/`: `<img src="/api/fs/raw?path=" + encodeURIComponent(fused.params.get('_file'))>`, centered, `max-width/height: 100%`, filename caption. No runPython needed.
+- `text/`: `fetch('/api/fs/raw?path=…')` → text → `<pre>`. Guard: file > 2 MB → show "too large" note with raw link instead. Monospace, preserved whitespace.
 
 **M2 templates** (added alongside M1; same runtime, same `_file` contract, same dark palette):
 
-- `markdown_template.html`: `fetch` raw → render with vendored `marked` (`/template-assets/marked.min.js`). GitHub-ish readable column (~46rem, centered). No sanitizer by design — local trust model (D3). Guard: file > 2 MB → "too large" note + raw link.
-- `csv_template.html` + `csv_reader.py`: same UX as parquet (table, "rows X–Y of N", Prev/Next via `offset` param). Reader `main(file, offset=0, limit=100)` via pandas; `.tsv` → tab sep, else comma. Reads the full file once for an honest `total_rows`, returns only the page. Same JSON-safe cell stringifying as `parquet_reader.py` (NaN → null, timestamps/bytes/decimals coerced).
-- `json_template.html`: `fetch` raw → `JSON.parse` → collapsible tree in pure JS (no library). Objects/arrays fold (▾/▸), keys/primitives type-colored, arrays/objects show count, nodes deeper than depth 2 start collapsed. Parse failure → error + first 2 KB raw. Guard: file > 5 MB → "too large" note + raw link. Also serves `.geojson`.
-- `xlsx_template.html` + `xlsx_reader.py`: openpyxl `read_only=True`, first row is header. Reader `main(file, sheet="", offset=0, limit=100)` → `{sheets, sheet, columns, rows, total_rows}`. Template adds a sheet `<select>` (shown when >1 sheet) wired to a `sheet` param (resets `offset` on change); paging like csv. JSON-safe cells (datetimes → isoformat, None → null).
-- `pdf_template.html`: thin filename header + full-height `<embed type="application/pdf">` of the raw endpoint.
-- `media_template.html`: branches on extension — `<video>` for mp4/mov/m4v/webm, `<audio>` for mp3/wav/m4a/ogg/flac. `controls`, centered, filename caption, video constrained to viewport.
-- `code_template.html`: **editable** CodeMirror 6 (vendored `/template-assets/codemirror.bundle.js`, global `CM`), `CM.oneDark` theme to match the shell. `basicSetup` line numbers; language chosen by extension (py/js/ts/json/yaml/html/css + StreamLanguage shell/toml; unknown → plain). Guard: file > 2 MB → "too large" note + raw link (no editor). Top bar (matches other templates' `#bar`): filename + Saved/Modified status + Save button (disabled when clean). Save flow: `fused.stat` arms the mtime on load → `fused.writeFile(file, doc, {expectedMtime})` on save; Cmd/Ctrl+S bound at the window (CM's `keymap` isn't in the bundle); dirty tracked via `EditorView.updateListener` (docChanged); `beforeunload` warns when dirty. On a 409 conflict a bar banner offers **Reload** (refetch + re-arm, discard local) or **Overwrite** (write with no lock, re-arm).
+- `markdown/`: `fetch` raw → render with vendored `marked` (`/template-assets/marked.min.js`). GitHub-ish readable column (~46rem, centered). No sanitizer by design — local trust model (D3). Guard: file > 2 MB → "too large" note + raw link.
+- `csv/` (`template.html` + `reader.py`): same UX as table (table, "rows X–Y of N", Prev/Next via `offset` param). Reader `main(file, offset=0, limit=100)` via pandas; `.tsv` → tab sep, else comma. Reads the full file once for an honest `total_rows`, returns only the page. Same JSON-safe cell stringifying as `table/reader.py` (NaN → null, timestamps/bytes/decimals coerced).
+- `tree/`: `fetch` raw → `JSON.parse` → collapsible tree in pure JS (no library). Objects/arrays fold (▾/▸), keys/primitives type-colored, arrays/objects show count, nodes deeper than depth 2 start collapsed. Parse failure → error + first 2 KB raw. Guard: file > 5 MB → "too large" note + raw link. Also serves `.geojson`.
+- `xlsx/` (`template.html` + `reader.py`): openpyxl `read_only=True`, first row is header. Reader `main(file, sheet="", offset=0, limit=100)` → `{sheets, sheet, columns, rows, total_rows}`. Template adds a sheet `<select>` (shown when >1 sheet) wired to a `sheet` param (resets `offset` on change); paging like csv. JSON-safe cells (datetimes → isoformat, None → null).
+- `pdf/`: thin filename header + full-height `<embed type="application/pdf">` of the raw endpoint.
+- `media/`: branches on extension — `<video>` for mp4/mov/m4v/webm, `<audio>` for mp3/wav/m4a/ogg/flac. `controls`, centered, filename caption, video constrained to viewport.
+- `code/`: **editable** CodeMirror 6 (vendored `/template-assets/codemirror.bundle.js`, global `CM`), `CM.oneDark` theme to match the shell. `basicSetup` line numbers; language chosen by extension (py/js/ts/json/yaml/html/css + StreamLanguage shell/toml; unknown → plain). Guard: file > 2 MB → "too large" note + raw link (no editor). Top bar (matches other templates' `#bar`): filename + Saved/Modified status + Save button (disabled when clean). Save flow: `fused.stat` arms the mtime on load → `fused.writeFile(file, doc, {expectedMtime})` on save; Cmd/Ctrl+S bound at the window (CM's `keymap` isn't in the bundle); dirty tracked via `EditorView.updateListener` (docChanged); `beforeunload` warns when dirty. On a 409 conflict a bar banner offers **Reload** (refetch + re-arm, discard local) or **Overwrite** (write with no lock, re-arm).
 
 ---
 
@@ -265,7 +276,7 @@ Automatable (curl / CLI):
 2. Start `fused-render --no-browser --port <test>`; then:
    - `/api/config` → start_dir
    - `/api/fs/list?path=/tmp`-equivalent → entries
-   - `/api/fs/stat` on a `.parquet` → template field points at parquet_template.html
+   - `/api/fs/stat` on a `.parquet` → `templates[0]` is `{"mode": "table", …}` pointing at templates/table/template.html
    - `/api/fs/raw` on a text file → bytes + MIME
    - `/render?path=<examples/sine.html>` → contains `runtime.js` script tag
    - `POST /api/run` `{py: <abs examples/sine.py>, params: {freq: "2"}}` → `ok: true`, points array

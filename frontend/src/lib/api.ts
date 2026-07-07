@@ -17,13 +17,20 @@ export interface ListResult {
   entries: FsEntry[];
 }
 
+// One entry per resolved template mode (SPEC PT-8), in order, first = default.
+export interface TemplateEntry {
+  mode: string;
+  path: string;
+  icon: string | null;
+}
+
 export interface StatResult {
   path: string;
   name: string;
   is_dir: boolean;
   size: number | null;
   mtime: number | null;
-  template: string | null;
+  templates: TemplateEntry[];
   template_error?: string;
 }
 

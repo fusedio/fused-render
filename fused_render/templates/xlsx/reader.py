@@ -1,4 +1,4 @@
-"""Reader backing xlsx_template.html. Returns a JSON-safe page of one sheet.
+"""Reader backing xlsx/template.html. Returns a JSON-safe page of one sheet.
 
 openpyxl in read_only mode streams rows without loading the whole workbook into
 memory, so we iterate once: first row is the header, the rest are data. Only the

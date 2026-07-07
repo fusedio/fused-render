@@ -149,7 +149,7 @@
         return;
       }
       try {
-        const data = await fused.runPython("./xlsx_reader.py", {
+        const data = await fused.runPython("./reader.py", {
           file,
           sheet,
           offset: String(offset),
