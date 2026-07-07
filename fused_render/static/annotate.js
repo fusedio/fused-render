@@ -769,8 +769,11 @@
       margin-top: 4px; word-break: break-word; overflow: hidden;
       display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
     }
-    /* Sidebar open shifts the detached tray out from under the panel. */
-    #__fa_root.__fa_sideopen #__fa_tray { right: 344px; }
+    /* Sidebar open shifts the detached tray out from under the panel. The
+       offset tracks the panel's LIVE width (85vw-capped) via --fa-sidew,
+       kept current by setSidebarOpen()/resize — a hard-coded 344px overlaps
+       on narrow viewports. */
+    #__fa_root.__fa_sideopen #__fa_tray { right: calc(var(--fa-sidew, 320px) + 24px); }
   `;
 
   const root = document.createElement("div");
@@ -1378,7 +1381,9 @@
     // content — push the page over by the panel's real width (85vw-capped),
     // restore on close. Inline margin beats a class here because the width is
     // computed; the transition is set once in start() so both directions ease.
+    // --fa-sidew feeds the tray's CSS offset the same live width.
     document.body.style.marginRight = open ? sideEl().offsetWidth + "px" : "";
+    root.style.setProperty("--fa-sidew", sideEl().offsetWidth + "px");
     if (open) renderSidebar();
   }
 
@@ -1779,7 +1784,9 @@
     // keep the pushed margin in sync (both modes; element mode's reposition
     // only moves pins).
     window.addEventListener("resize", () => {
-      if (sidebarOpen) document.body.style.marginRight = sideEl().offsetWidth + "px";
+      if (!sidebarOpen) return;
+      document.body.style.marginRight = sideEl().offsetWidth + "px";
+      root.style.setProperty("--fa-sidew", sideEl().offsetWidth + "px");
     });
     setSidebarOpen(true);
 
