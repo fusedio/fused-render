@@ -1,3 +1,6 @@
+# /// script
+# dependencies = ["openpyxl"]
+# ///
 """Reader backing xlsx_template.html. Returns a JSON-safe page of one sheet.
 
 openpyxl in read_only mode streams rows without loading the whole workbook into
@@ -7,6 +10,7 @@ requested page is collected; total_rows is the honest data-row count.
 import datetime
 import decimal
 
+import fused
 import openpyxl
 
 
@@ -23,6 +27,7 @@ def _jsonify(value):
     return value
 
 
+@fused.udf
 def main(file: str, sheet: str = "", offset: int = 0, limit: int = 100) -> dict:
     # data_only=True returns the last-computed value of formula cells rather than
     # the formula string — matches what a spreadsheet viewer shows.

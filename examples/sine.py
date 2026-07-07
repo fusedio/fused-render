@@ -1,7 +1,13 @@
-"""Example runPython target: computes a sine wave. Stdlib only."""
+"""Example runPython target: computes a sine wave.
+
+Stdlib only — no '# /// script' dependency block needed for zero-dep scripts.
+"""
 import math
 
+import fused
 
+
+@fused.udf
 def main(n: int = 80, freq: float = 1.0) -> dict:
     print(f"computing {n} points at freq={freq}")
     points = []

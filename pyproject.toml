@@ -10,7 +10,6 @@ requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
-    "pyarrow>=14",
     # openfused local compute backend (dist name "fused"). Dev installs use the
     # local sandbox checkout: pip install -e ~/Documents/fused/sandbox/openfused
     "fused>=2.9",

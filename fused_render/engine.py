@@ -15,6 +15,15 @@ _PEP723_BLOCK = re.compile(
     r"(?m)^# /// (?P<type>[a-zA-Z0-9-]+)$\s(?P<content>(^#(| .*)$\s)+)^# ///$"
 )
 
+# build_code's preamble is exactly this many physical lines, so a line N in a
+# "<lambda_exec>" traceback frame is line N - _PREAMBLE_LINES of the user's
+# file. _clean_error relies on this; if the preamble ever grows, change both.
+_PREAMBLE_LINES = 1
+
+# A traceback frame header: `  File "<path>", line N[, in func]`. SyntaxError
+# frames have no `, in func` part.
+_FRAME_LINE = re.compile(r'^  File "(?P<file>[^"]*)", line (?P<line>\d+)(?P<rest>, in (?P<func>\S+))?')
+
 _backend = None
 
 
@@ -91,6 +100,52 @@ except ImportError:
     return preamble + user_code + "\n" + epilogue
 
 
+def _clean_error(error_text: str, script_path: str) -> str:
+    """Rewrite a backend traceback so it points at the user's real file.
+
+    The backend exec()s our wrapped code as "<lambda_exec>", so raw tracebacks
+    lead with backend internals (_runner.py, the fused shim) and our epilogue
+    wrapper (_fused_chdir_call), and their line numbers are shifted by the
+    preamble. This drops the noise frames and rewrites
+    `File "<lambda_exec>", line N` to the script's path at line
+    N - _PREAMBLE_LINES. Text with no "<lambda_exec>" frame (timeouts, backend
+    errors) and anything that doesn't parse cleanly passes through unchanged —
+    a raw traceback beats a mangled one.
+    """
+    if '  File "<lambda_exec>"' not in error_text:
+        return error_text
+    try:
+        out = []
+        seen_user_frame = False
+        dropping = False  # inside a frame we decided to drop
+        for line in error_text.splitlines():
+            m = _FRAME_LINE.match(line)
+            if m:
+                if m.group("file") == "<lambda_exec>":
+                    if m.group("func") == "_fused_chdir_call":
+                        dropping = True  # our epilogue wrapper, not user code
+                        continue
+                    seen_user_frame = True
+                    dropping = False
+                    lineno = int(m.group("line")) - _PREAMBLE_LINES
+                    out.append(f'  File "{script_path}", line {lineno}{m.group("rest") or ""}')
+                    continue
+                # Backend internals sit above the first user frame; frames below
+                # it (user code calling into libraries) are kept.
+                dropping = not seen_user_frame
+                if not dropping:
+                    out.append(line)
+                continue
+            # Source/caret lines belong to the frame above them; anything not
+            # indented (header, exception message, chain separators) is kept.
+            if line.startswith("    ") and dropping:
+                continue
+            out.append(line)
+        return "\n".join(out) + ("\n" if error_text.endswith("\n") else "")
+    except Exception:
+        return error_text
+
+
 def _error(message: str) -> dict:
     # Same wire shape as a real run so the page handles all failures uniformly.
     return {
@@ -123,11 +178,20 @@ async def run_python(path: str, params: dict) -> dict:
         requirements=reqs or None,
         input_files={"_params.json": json.dumps(params or {}).encode()},
     )
+    # The backend hands return_value back JSON-encoded; decode it here so the
+    # wire carries real values ({"x": 1}, not "{\"x\": 1}"). Base64 binary
+    # bodies stay strings, and anything that isn't valid JSON passes through.
+    return_value = r.return_value
+    if isinstance(return_value, str) and not (r.response and r.response.body_encoding == "base64"):
+        try:
+            return_value = json.loads(return_value)
+        except ValueError:
+            pass
     return {
         "stdout": r.stdout,
         "stderr": r.stderr,
-        "return_value": r.return_value,
+        "return_value": return_value,
         "duration_ms": r.duration_ms,
-        "error": r.error,
+        "error": _clean_error(r.error, path) if r.error else r.error,
         "response": r.response.to_wire() if r.response else None,
     }
