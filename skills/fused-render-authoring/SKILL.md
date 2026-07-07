@@ -148,15 +148,36 @@ A reader `.py` is only needed when Python adds value (parsing parquet/xlsx, pagi
 
 Ship the reader `.py` next to the template html and call it with a relative path. Paging/sort/filter state goes in normal params (`offset`, `sort` …) exactly like any view. Built-in templates live in `fused_render/templates/` and follow this pattern (see `parquet_template.html` + `parquet_reader.py` for a worked example); registering a new extension for a **built-in** means adding it to the `TEMPLATES` dict in `fused_render/server.py`. **User-owned** templates that override or extend the built-ins live under `~/.fused-render/` and are bound via `registry.json` — layout and registration are covered by the `fused-render-custom-templates` skill (this skill still owns how the html/py themselves are written).
 
-## Testing an authored view
+## Testing in the browser: URL paths & modes
 
-With the server running (`fused-render --port 8765`), open:
+Verify a view by opening it in a real browser against the running server — do not rely on reading the files alone. Start the server (`fused-render --port 8765 --no-browser` keeps it from stealing focus) and open one of these on `http://127.0.0.1:<port>`:
 
-```
-http://127.0.0.1:8765/view/<absolute path to your .html>
-```
+| Path | What it renders | Use it to |
+|---|---|---|
+| `/` | The explorer at `start_dir` — file listing with chrome. | Browse to a file by clicking. |
+| `/view/<abs-path-without-leading-slash>` | **Normal view mode**: the file inside the full shell — sidebar, breadcrumb, preview header — with your page in an iframe. | The default way to open and test a view. |
+| `/embed/<abs-path-without-leading-slash>` | **Embed mode**: the exact same page and routing, but chrome-free (no sidebar/breadcrumb/header). | Test how the view looks when iframed into a dashboard or another view. |
 
-Sanity loop: page renders → interact with a control → URL query updates → hard refresh → identical view. Python errors appear as the red overlay (with full traceback) and `print()` output in the browser console.
+Path encoding: the fs path rides in the URL after the prefix with its **leading slash dropped** and each segment URL-encoded. `/Users/me/proj/dash.html` → `http://127.0.0.1:8765/view/Users/me/proj/dash.html`. A space becomes `%20`, etc.
+
+**View vs embed** is a fixed page-load mode (the prefix picks it; it cannot toggle without a full navigation). Both serve the same shell and route identically — embed just hides chrome. Params sync the same way in both; in nested embeds, param sync stops at each embed shell boundary so a tab's params stay tab-independent.
+
+**Preview templates** open at the target file's path (`/view/<abs path to the data file>`) — the shell resolves the template by extension and hands it the file via the read-only `_file` param. To test a template's html directly, open it and pass the target yourself: `/view/<abs path to template>.html?_file=<abs target path>`.
+
+**API endpoints** (`/api/config`, `/api/fs/stat|list|raw|events`, `/api/fs/write`, `/api/run`) back the runtime — reach them only through the `fused.*` helpers, never by hand (see the note above). They're listed here only so you recognize them in the network tab while debugging.
+
+Sanity loop: page renders → interact with a control → URL query updates → hard refresh → identical view. Python errors appear as the red overlay (with full traceback) and `print()` output in the browser console (prefixed `[python]`).
+
+## Long-running work and the 30 s timeout
+
+Every `fused.runPython` call runs `main()` in a fresh subprocess that the server **kills at 30 s** (`DEFAULT_TIMEOUT` in `fused_render/executor.py`). On timeout the call rejects with an error whose `.type === "TimeoutError"` and message `execution exceeded 30s and was killed` — which, uncaught, becomes the red overlay. The `/api/run` route does not expose a per-call override, so you cannot raise the limit from the page; design around it instead:
+
+- **Precompute and cache to disk.** Do the expensive work once, write the result next to the script (`.json`/`.parquet`), and have `main()` return the cached bytes when they're fresh (compare mtimes) — recompute only when the input changed. Reading a cached file is near-instant.
+- **Chunk / paginate.** Slice the work so each call stays well under 30 s, pass an `offset`/`page` param, and accumulate results in JS across several `runPython` calls. This also keeps the UI responsive.
+- **Move the heavy job out of band.** For a genuinely long build, run it as a separate process/script that writes an output file, and have the view just `fused.readFile`/`runPython` the finished result.
+- **Cut per-call cost.** Each call re-pays import cost (pandas ≈ 1 s); import lazily inside `main`, and debounce sliders (~150 ms) so a drag doesn't spawn a subprocess per tick.
+
+Escape hatch: because fused-render runs your own trusted code on your own machine, you *can* raise `DEFAULT_TIMEOUT` in `fused_render/executor.py` — but that's editing the package, applies globally, and lets any view hang a worker that long. Prefer the caching/chunking patterns; reach for the constant only for a deliberate, local one-off.
 
 ## Pitfalls checklist
 
