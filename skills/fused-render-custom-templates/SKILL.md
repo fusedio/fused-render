@@ -10,7 +10,7 @@ fused-render resolves a preview template for each file by extension. Built-ins s
 **Division of labor between skills (do not duplicate):**
 
 - **This skill:** where files go, how the registry binds extensions, how to test registration.
-- **`skills/fused-render-authoring/SKILL.md`:** how to write the `template.html` and reader `.py` themselves — the `fused` API, the `main()` contract, the params-are-state wiring pattern, the `_file` handling, the pitfalls. **Read it before writing any html/py.** In particular its "Preview templates" section is exactly what a custom template is.
+- **`skills/fused-render-authoring/SKILL.md`:** how to write the `template.html` and reader `.py` themselves — the `fused` API, the `@fused.udf` contract, the params-are-state wiring pattern, the `_file` handling, the pitfalls. **Read it before writing any html/py.** In particular its "Preview templates" section is exactly what a custom template is.
 
 ## Layout on disk
 
