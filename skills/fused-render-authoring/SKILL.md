@@ -56,6 +56,15 @@ Rules that matter (each has a reason):
   - **Packaged macOS `.app`:** a frozen bundled interpreter you **cannot** add to (no pip). It ships a fixed data stack you *can* rely on: numpy, pandas, requests, duckdb, polars, matplotlib, scipy, pillow, openpyxl, shapely, geopandas (+ pyarrow). Known gap: `mpl_toolkits` (matplotlib 3D axes) is excluded.
   - For a view meant to run in **both**, stick to stdlib + pyarrow/pandas; guard any optional import and return a clear error if the package is missing rather than letting the raw `ImportError` hit the overlay.
 
+### Keep `main()` statically checkable
+
+Type the signature so a checker (mypy/pyright) can verify the data file on its own — each `.py` is imported standalone, so it type-checks standalone. The built-in readers model the convention: `def main(file: str, offset: int = 0, limit: int = 100) -> dict:`.
+
+- **Only annotate params with the four coercible scalars — `str`, `int`, `float`, `bool`.** The runtime coerces exactly these from the incoming URL string; anything else (`list[int]`, `datetime`, a `TypedDict`, `Optional[...]`) is a **lie the checker will trust** — at runtime that arg still arrives as the raw `str` (or is absent). For structured input, keep the param `str` and parse it *inside* `main` (`json.loads(...)`, `int(...)`), where the narrowed type is real.
+- **Annotate the return type.** `-> dict` matches the repo; tighten to a `TypedDict` when you want the exact JSON shape documented and checked — it doubles as the contract the HTML consumes. Keep every field JSON-native (the runtime rejects anything else), so a JSON-native TypedDict is both checkable and honest.
+- **Keep the module import-clean:** imports resolvable, no top-level side effects, no work at module scope — so `mypy data.py` / `pyright data.py` passes without the server running. Lazy-importing a heavy lib inside `main` (for call-cost) is fine and still checks.
+- No type-checker config ships with the project; run your checker ad hoc against the file. Treat annotations as a **documentation + static-check aid**, never as runtime enforcement — the only runtime coercion is the scalar rule above.
+
 ## The HTML side: `window.fused` API
 
 The runtime is injected automatically when the explorer renders the page. Never add a script tag for it; just use the global.
