@@ -1,6 +1,6 @@
 ---
 name: fused-render-authoring
-description: How to author HTML views and Python data files for fused-render — the local file explorer that live-renders HTML with a fused.runPython() bridge to local Python, URL-synced params, and file IO helpers (fused.readFile/writeFile/stat/rawUrl). Use this whenever the user asks to create, edit, or debug an .html view, a .py data file, or a preview template for fused-render; mentions fused.runPython, fused.params, fused.readFile, fused.writeFile, renderable HTML, preview templates, or _file; or asks for "a view for <some file/data>" or an editor for a file format inside a fused-render project. Also use it when a fused-render view renders blank, shows a red traceback overlay, or params don't sync to the URL.
+description: How to author HTML views and Python data files for fused-render (the local HTML explorer with a fused.runPython() bridge, URL-synced params, and file IO helpers). Use when creating, editing, or debugging an .html view, a .py data file, or a preview template; when a view renders blank, shows a traceback overlay, or params don't sync to the URL; or when the user mentions fused.runPython/params/readFile/writeFile or asks for "a view for <file/data>".
 ---
 
 # Authoring fused-render views
