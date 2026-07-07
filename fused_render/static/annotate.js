@@ -568,6 +568,14 @@
     }
     .__fa_pin.__fa_resolved { background: var(--fa-muted); opacity: 0.7; }
     .__fa_pin:hover { transform: translate(-50%, -50%) scale(1.12); }
+    /* Reveal pulse for image pins (AN-30): grow-and-settle beats an accent
+       ring, which disappears against light/white imagery. */
+    .__fa_pin.__fa_pulse { animation: __fa_pinpulse 700ms cubic-bezier(0.34, 1.56, 0.64, 1); }
+    @keyframes __fa_pinpulse {
+      0% { transform: translate(-50%, -50%) scale(1); }
+      35% { transform: translate(-50%, -50%) scale(1.6); }
+      100% { transform: translate(-50%, -50%) scale(1); }
+    }
     /* Popovers (draft + thread) — fixed, interactive. Enter decelerating from
        the anchor corner; removal is instant (no exit animation needed). */
     .__fa_pop {
@@ -1289,6 +1297,7 @@
       }
       const pin = document.createElement("div");
       pin.className = "__fa_pin" + (thread.status === "resolved" ? " __fa_resolved" : "");
+      pin.setAttribute("data-thread", thread.id); // reveal pulse lookup (AN-30)
       const cp = clampPin(x, y);
       pin.style.left = cp.x + "px";
       pin.style.top = cp.y + "px";
@@ -1486,8 +1495,13 @@
     if (el) {
       el.scrollIntoView({ block: "center", behavior: "smooth" });
       if (t.iu !== undefined && t.iv !== undefined && el.tagName === "IMG") {
-        const p = pinPoint(t, el);
-        flashPoint(p.x, p.y);
+        // Image pins: pulse the PIN itself instead of drawing an accent ring
+        // — a lime outline vanishes on light/white imagery, the pin's own
+        // scale change reads on any background.
+        if (!pulsePin(t.id)) {
+          const p = pinPoint(t, el);
+          flashPoint(p.x, p.y);
+        }
       } else {
         flashRect(el);
       }
@@ -1513,6 +1527,18 @@
     setTimeout(() => f.remove(), 1500);
   }
 
+  // Scale-pulse an existing pin (image reveals, AN-30). Returns false when the
+  // pin isn't rendered (caller falls back to a coordinate flash).
+  function pulsePin(id) {
+    const pin = pinsEl().querySelector(`[data-thread="${CSS.escape(id)}"]`);
+    if (!pin) return false;
+    pin.classList.remove("__fa_pulse");
+    void pin.offsetWidth; // restart the animation on repeat reveals
+    pin.classList.add("__fa_pulse");
+    setTimeout(() => pin.classList.remove("__fa_pulse"), 800);
+    return true;
+  }
+
   function flashPoint(x, y) {
     const f = document.createElement("div");
     f.className = "__fa_flash __fa_flash_dot";
@@ -1533,6 +1559,7 @@
     const pins = pinsEl().children;
     let i = 0;
     for (const thread of comments) {
+      if (isForeign(thread)) continue; // no pin slot — mirror render() (AN-34)
       if (isDetached(thread)) {
         // A previously-attached thread went detached (or vice versa) → structure
         // changed under us; do a full render to rebuild pins + tray.
@@ -1553,15 +1580,19 @@
       pin.style.top = cp.y + "px";
     }
     if (i !== pins.length) render(); // count mismatch → rebuild
-    // Keep an open thread popover glued to its anchor while scrolling.
+    // Keep an open thread popover glued to its anchor while scrolling. Glue to
+    // the PIN's point (pinPoint is iu/iv-aware), not the element's top-right —
+    // an image thread's popover must track the pixel pin the user clicked.
     if (openPopover && openPopover.kind === "thread") {
       const t = findThread(openPopover.threadId);
       const el = t ? resolveElement(t) : null;
       if (el) {
-        const r = el.getBoundingClientRect();
-        openPopover.clientX = r.right;
-        openPopover.clientY = r.top;
-        positionPopover(openPopover.el, r.right, r.top);
+        const p = pinPoint(t, el);
+        const cx = p.x - window.scrollX;
+        const cy = p.y - window.scrollY;
+        openPopover.clientX = cx;
+        openPopover.clientY = cy;
+        positionPopover(openPopover.el, cx, cy);
       }
     }
   }
@@ -1730,6 +1761,12 @@
     document.body.style.transition = "margin-right 240ms cubic-bezier(0.32, 0.72, 0, 1)";
     sideBtnEl().addEventListener("click", () => setSidebarOpen(true));
     root.querySelector("#__fa_side_close").addEventListener("click", () => setSidebarOpen(false));
+    // The panel is 85vw-capped, so its real width changes with the viewport —
+    // keep the pushed margin in sync (both modes; element mode's reposition
+    // only moves pins).
+    window.addEventListener("resize", () => {
+      if (sidebarOpen) document.body.style.marginRight = sideEl().offsetWidth + "px";
+    });
     setSidebarOpen(true);
 
     // Core listeners kept in BOTH modes (AN-17): Escape closes popovers,
