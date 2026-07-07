@@ -35,7 +35,10 @@ def get_backend():
     if _backend is None:
         from fused.agent_core.backends.local.python_compute import LocalPythonComputeBackend
 
-        _backend = LocalPythonComputeBackend(timeout_seconds=30)
+        # cache_storage=None disables result caching explicitly (D55, PY-9:
+        # fresh execution every call). It is the upstream default today, but
+        # we track a nightly wheel — don't rely on a default staying put.
+        _backend = LocalPythonComputeBackend(timeout_seconds=30, cache_storage=None)
     return _backend
 
 
