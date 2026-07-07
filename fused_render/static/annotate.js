@@ -1119,10 +1119,14 @@
           ev.preventDefault();
           const content = replyTa.value.trim();
           if (content) addReply(thread.id, content);
-        } else if (ev.key === "Escape" && !rerender) {
-          // Popover host only: Escape dismisses it (the sidebar card stays).
+        } else if (ev.key === "Escape") {
+          // The capture-phase handler defers to overlay textareas, so Escape
+          // must be handled here in BOTH hosts: the popover dismisses, the
+          // sidebar card blurs the composer — the NEXT Escape then reaches
+          // the capture handler and walks the AN-33 chain (sidebar → exit).
           ev.preventDefault();
-          closePopover();
+          if (!rerender) closePopover();
+          else replyTa.blur();
         }
       });
     }
