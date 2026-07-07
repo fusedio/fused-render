@@ -53,7 +53,8 @@ Rules:
 - **Dotted keys, longest suffix wins, case-insensitive.** `.tar.gz` beats `.gz` for `backup.tar.gz`. Compound extensions work only through the registry — always include the leading dot.
 - **Many-to-one is normal** — several extension keys may reference the same template name.
 - **Any extension is allowed**, including ones fused-render has no built-in for.
-- **`.html`/`.htm` cannot be bound** — renderable HTML is the product's core behavior and never goes through a template.
+- **Names starting with `_` are reserved** — they're shell sentinels (modes the shell itself implements, like `_render`, the "render this HTML file" mode), not template folders. A `_`-prefixed name in a registry list is invalid: it's dropped and `template_error` is set, the rest of the list still works. Same reservation as `_mode`/`_file` params.
+- **`.html`/`.htm` cannot be bound** — renderable HTML is the product's core behavior. HTML has a hardcoded server-side mode list (`["_render", "code"]`: rendered page first, source editor second) that the registry cannot touch.
 - Registry (longest matching key) beats the built-in table; no registry entry (or no `registry.json` at all) means built-in behavior.
 - A folder without a registry entry does nothing — that's the draft state. Registering = adding the line; unregistering = deleting it. No restart needed: the registry is re-read on every file open, so the next navigation/refresh picks changes up.
 
@@ -70,7 +71,7 @@ Rules:
 
 - **One mode missing, rest of the list fine:** a single bad entry (typo, folder name mismatch, `template.html` missing in both locations) is dropped silently — everything else in the list still renders. Check `template_error` on the stat response (`fused.stat(path)` or `GET /api/fs/stat?path=…`) for the first bad name.
 - **Whole extension falls back to built-ins:** happens when the registry value resolves to nothing at all — invalid JSON, an empty list, or two `"..."` in one list (only one splice per list is allowed).
-- **Folder name rejected:** names must be a single path segment — no `/`, no `..`, no `.` (dots are reserved for the `"..."` splice token), not empty.
+- **Folder name rejected:** names must be a single path segment — no `/`, no `..`, no `.` (dots are reserved for the `"..."` splice token), no leading `_` (reserved for shell sentinels), not empty.
 - **Template renders but is blank / errors:** that's an authoring problem, not registration — debug with the `fused-render-authoring` skill (red traceback overlay, `print()` → browser console).
 - **Registry edits not applying to an already-open preview:** open previews watch their files, not the registry — refresh or re-navigate.
 - **Mode switcher doesn't show up:** it only renders when a file has more than one mode (`templates.length > 1`) — a single-mode extension, or a `null` override, never shows it.

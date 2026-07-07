@@ -45,7 +45,7 @@ function useStat(fsPath: string | null, epoch: number): StatState {
 // Stat-backed views (listing/preview): breadcrumb + content under one hook
 // component so useStat only runs when the pathname is a real fs path, not a
 // sentinel.
-function StatView({ fsPath, epoch, config }: { fsPath: string; epoch: number; config: Config }) {
+function StatView({ fsPath, epoch }: { fsPath: string; epoch: number }) {
   const stat = useStat(fsPath, epoch);
   let content = null;
   if (stat.status === "error") {
@@ -58,7 +58,7 @@ function StatView({ fsPath, epoch, config }: { fsPath: string; epoch: number; co
     content = stat.stat.is_dir ? (
       <Listing fsPath={fsPath} />
     ) : (
-      <Preview fsPath={fsPath} stat={stat.stat} config={config} />
+      <Preview fsPath={fsPath} stat={stat.stat} />
     );
   }
   return (
@@ -117,7 +117,7 @@ export default function App({ config }: { config: Config }) {
         </>
       );
     } else {
-      main = <StatView key={epoch + ":" + fsPath} fsPath={fsPath} epoch={epoch} config={config} />;
+      main = <StatView key={epoch + ":" + fsPath} fsPath={fsPath} epoch={epoch} />;
     }
   }
 

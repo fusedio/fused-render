@@ -1,18 +1,18 @@
-// File preview. Dispatch is exactly three-way (ARCHITECTURE §6):
+// File preview. Dispatch is exactly two-way (ARCHITECTURE §6):
 //   1. stat.templates non-empty -> render active mode in iframe (+_file on iframe URL)
-//   2. .html/.htm                -> render the file itself in iframe
-//   3. else                      -> fallback metadata card
-// No other file-type logic lives in the shell.
-import React, { useState } from "react";
+//   2. else                      -> fallback metadata card
+// No file-type checks live in the shell — html arrives through stat.templates
+// like everything else, via the "_render" sentinel (SPEC PT-12).
+import { useState, type ReactNode } from "react";
 import { rawUrl } from "../lib/api";
-import type { Config, StatResult, TemplateEntry } from "../lib/api";
+import type { StatResult, TemplateEntry } from "../lib/api";
 import { formatSize, formatMtime } from "../lib/format";
 import ModeSwitcher, { templateModeIcon } from "../components/ModeSwitcher";
 
 interface HeaderProps {
   fsPath: string;
   stat: StatResult;
-  children?: React.ReactNode;
+  children?: ReactNode;
 }
 
 function Header({ fsPath, stat, children }: HeaderProps) {
@@ -31,9 +31,9 @@ function activeTemplate(templates: TemplateEntry[]): TemplateEntry {
   return templates.find((t) => t.mode === requested) || templates[0];
 }
 
-function TemplatePreview({ fsPath, stat }: { fsPath: string; stat: StatResult }) {
-  // Caller only renders this when stat.templates is non-empty (Preview's dispatch).
-  const templates = stat.templates;
+function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: StatResult; templates: TemplateEntry[] }) {
+  // Caller only renders this when `templates` (already sentinel-filtered by
+  // Preview's dispatch, SPEC PT-12) is non-empty.
   const [mode, setModeState] = useState<string>(() => activeTemplate(templates).mode);
   const entry = templates.find((t) => t.mode === mode) || templates[0];
 
@@ -48,9 +48,13 @@ function TemplatePreview({ fsPath, stat }: { fsPath: string; stat: StatResult })
     setModeState(next);
   };
 
-  // Target file rides on the iframe's own URL, not the shell URL — the shell
-  // URL's pathname already names the file, so no ?_file= duplication there.
-  const src = `/render?path=${encodeURIComponent(entry.path)}&_file=${encodeURIComponent(fsPath)}`;
+  // "_render" sentinel (PT-12): render the target file itself, no _file param.
+  // Ordinary entries: target file rides on the iframe's own URL as _file —
+  // the shell URL's pathname already names the file, so no duplication there.
+  const src =
+    entry.mode === "_render"
+      ? `/render?path=${encodeURIComponent(fsPath)}`
+      : `/render?path=${encodeURIComponent(entry.path as string)}&_file=${encodeURIComponent(fsPath)}`;
 
   return (
     <>
@@ -63,80 +67,6 @@ function TemplatePreview({ fsPath, stat }: { fsPath: string; stat: StatResult })
       </Header>
       <div className="preview-body">
         {/* key: switching modes replaces the iframe (fresh document per switch). */}
-        <iframe key={mode} src={src} />
-      </div>
-    </>
-  );
-}
-
-// Shell-baked icons for the html Rendered|Source pair (ARCHITECTURE §6) —
-// component-local, not fetched, unlike template-mode icons.
-const RENDER_ICON = (
-  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z" />
-    <circle cx="12" cy="12" r="3" />
-  </svg>
-);
-
-const SOURCE_ICON = (
-  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <polyline points="8 6 2 12 8 18" />
-    <polyline points="16 6 22 12 16 18" />
-  </svg>
-);
-
-interface HtmlPreviewProps {
-  fsPath: string;
-  stat: StatResult;
-  config: Config;
-}
-
-function HtmlPreview({ fsPath, stat, config }: HtmlPreviewProps) {
-  // `_mode` is a reserved shell param (runtime already hides all `_`-prefixed
-  // keys from fused.params). It rides the shell URL so the Rendered/Source
-  // choice is bookmarkable: ?_mode=source opens straight into the source view.
-  // Initial render honors the URL but must not rewrite it — only clicks do
-  // (replaceState per the D8 no-history convention).
-  const [mode, setModeState] = useState<"render" | "source">(() =>
-    new URLSearchParams(location.search).get("_mode") === "source" ? "source" : "render"
-  );
-
-  const setMode = (next: "render" | "source") => {
-    if (next === mode) return;
-    const params = new URLSearchParams(location.search);
-    // Switching to render DELETES _mode (absent = default, keeps URLs clean);
-    // switching to source sets it. All other query params are preserved.
-    if (next === "source") params.set("_mode", "source");
-    else params.delete("_mode");
-    const search = params.toString();
-    history.replaceState(null, "", location.pathname + (search ? "?" + search : ""));
-    setModeState(next);
-  };
-
-  // Source view is the code template pointed at the HTML file — an editable
-  // CodeMirror buffer, same as opening any .py/.js/etc. (_file rides on the
-  // iframe URL, like TemplatePreview). config.source_template is the abs path
-  // of the editable code template (from /api/config).
-  const src =
-    mode === "source"
-      ? `/render?path=${encodeURIComponent(config.source_template)}&_file=${encodeURIComponent(fsPath)}`
-      : `/render?path=${encodeURIComponent(fsPath)}`;
-
-  return (
-    <>
-      <Header fsPath={fsPath} stat={stat}>
-        <ModeSwitcher
-          entries={[
-            { mode: "render", icon: RENDER_ICON },
-            { mode: "source", icon: SOURCE_ICON },
-          ]}
-          active={mode}
-          onSelect={setMode}
-        />
-      </Header>
-      <div className="preview-body">
-        {/* key: switching modes replaces the iframe (fresh document), matching
-            the vanilla shell's innerHTML swap. */}
         <iframe key={mode} src={src} />
       </div>
     </>
@@ -171,12 +101,14 @@ function FallbackPreview({ fsPath, stat }: { fsPath: string; stat: StatResult })
 interface PreviewProps {
   fsPath: string;
   stat: StatResult;
-  config: Config;
 }
 
-export default function Preview({ fsPath, stat, config }: PreviewProps) {
-  const ext = fsPath.toLowerCase().split(".").pop();
-  if (stat.templates.length > 0) return <TemplatePreview fsPath={fsPath} stat={stat} />;
-  if (ext === "html" || ext === "htm") return <HtmlPreview fsPath={fsPath} stat={stat} config={config} />;
+export default function Preview({ fsPath, stat }: PreviewProps) {
+  // Defensive filter (SPEC PT-12): an entry with path===null whose mode isn't
+  // a recognized sentinel is dropped — only "_render" exists today. Filtering
+  // here keeps the non-empty dispatch check honest (an all-unknown list falls
+  // back instead of crashing TemplatePreview).
+  const templates = stat.templates.filter((t) => t.path !== null || t.mode === "_render");
+  if (templates.length > 0) return <TemplatePreview fsPath={fsPath} stat={stat} templates={templates} />;
   return <FallbackPreview fsPath={fsPath} stat={stat} />;
 }

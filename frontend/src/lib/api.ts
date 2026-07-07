@@ -2,7 +2,6 @@
 export interface Config {
   start_dir: string;
   home: string;
-  source_template: string;
 }
 
 export interface FsEntry {
@@ -18,9 +17,11 @@ export interface ListResult {
 }
 
 // One entry per resolved template mode (SPEC PT-8), in order, first = default.
+// path is null for a sentinel mode (PT-12, e.g. "_render") — no template
+// folder backs it, the shell knows what to do from the mode name alone.
 export interface TemplateEntry {
   mode: string;
-  path: string;
+  path: string | null;
   icon: string | null;
 }
 

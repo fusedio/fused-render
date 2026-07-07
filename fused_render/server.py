@@ -62,6 +62,11 @@ TEMPLATES = {
     # plain text
     ".txt": ["text", "code"],
     ".log": ["text", "code"],
+    # hardcoded, registry-exempt (SPEC CT-4): users can't rebind .html/.htm
+    # or drop _render. _render is a shell sentinel (PT-12, D62) — no
+    # template folder behind it.
+    ".html": ["_render", "code"],
+    ".htm": ["_render", "code"],
 }
 
 
@@ -107,6 +112,12 @@ def _resolve_name(name):
         or "." in name
     ):
         return None, f"invalid template name: {name!r}"
+    if name.startswith("_"):
+        return None, (
+            f"invalid template name: {name!r} — the '_' prefix is reserved "
+            "for shell sentinel modes (SPEC PT-12) and cannot be used in "
+            "the registry"
+        )
     user = os.path.join(USER_TEMPLATES_DIR, name, "template.html")
     if os.path.isfile(user):
         return user, None
@@ -122,14 +133,24 @@ def _icon_for(template_path: str):
     return icon if os.path.isfile(icon) else None
 
 
-def _resolve_mode_list(names):
+def _resolve_mode_list(names, allow_sentinel=False):
     """Resolve an ordered list of template names into `templates` stat
     entries (SPEC PT-8). Per-entry validation (SPEC CT-6): a name that can't
     resolve is dropped; `error` is the first dropped name's message.
+
+    `allow_sentinel` is set only when `names` is a built-in list (SPEC
+    PT-12): a `_`-prefixed name there is a shell sentinel and is emitted as
+    `{"mode": name, "path": None, "icon": None}` without touching the
+    filesystem. When False (registry-resolved names), a `_`-prefixed name
+    falls through to `_resolve_name`, which rejects it — the sentinel
+    namespace is shell-owned, not user-addressable (CT-4/CT-6).
     """
     entries = []
     error = None
     for name in names:
+        if allow_sentinel and isinstance(name, str) and name.startswith("_"):
+            entries.append({"mode": name, "path": None, "icon": None})
+            continue
         path, err = _resolve_name(name)
         if path is None:
             if error is None:
@@ -205,17 +226,19 @@ def _templates_for(path: str, is_dir: bool):
     """Returns (templates: list[dict], template_error: str|None) — SPEC PT-8.
 
     Precedence: user registry (longest suffix) > built-in table. .html/.htm
-    never route through a template (SPEC §4/CT-4) — renderable HTML is the
-    core semantic — so they skip the registry too.
+    skip the registry entirely (SPEC §4/CT-4, D62) — renderable HTML is the
+    core semantic, so their mode list is hardcoded — but still resolve
+    through the ordinary built-in-list path like any other extension,
+    `allow_sentinel=True` so `_render` emits without touching the fs.
     """
     if is_dir:
         return [], None
     filename = os.path.basename(path)
     ext = os.path.splitext(filename)[1].lower()
-    if ext in (".html", ".htm"):
-        return [], None
-
     builtin_names = TEMPLATES.get(ext, [])
+    if ext in (".html", ".htm"):
+        return _resolve_mode_list(builtin_names, allow_sentinel=True)
+
     names, disabled, err = _user_names_for(filename, builtin_names)
     if disabled:
         return [], None
@@ -223,14 +246,14 @@ def _templates_for(path: str, is_dir: bool):
         # No registry binding, or a parse/shape-level problem — either way
         # fall back to the plain built-in list (CT-6); `err` is None in the
         # former case, set in the latter.
-        entries, _ = _resolve_mode_list(builtin_names)
+        entries, _ = _resolve_mode_list(builtin_names, allow_sentinel=True)
         return entries, err
 
     entries, entry_err = _resolve_mode_list(names)
     error = err or entry_err
     if not entries:
         # The user's value resolved to nothing at all -> built-in fallback.
-        entries, _ = _resolve_mode_list(builtin_names)
+        entries, _ = _resolve_mode_list(builtin_names, allow_sentinel=True)
     return entries, error
 
 
@@ -285,9 +308,6 @@ def create_app(start_dir: str) -> FastAPI:
         return {
             "start_dir": start_dir,
             "home": os.path.expanduser("~"),
-            # The shell renders HTML "Source" view through this editable template
-            # (code/template.html maps .html → CM.html()), so it needs the abs path.
-            "source_template": os.path.join(TEMPLATES_DIR, "code", "template.html"),
         }
 
     @app.get("/api/fs/stat")

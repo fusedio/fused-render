@@ -1,8 +1,9 @@
-// Icon-only mode switcher for the preview header (SPEC PT-10). Shared by
-// TemplatePreview (template registry modes, icons fetched via /api/fs/raw)
-// and HtmlPreview (fixed render/source pair, shell-baked inline SVG icons).
-// Rendered only when there is more than one entry — a single mode needs no
-// switcher, for either caller.
+// Icon-only mode switcher for the preview header (SPEC PT-10), used by
+// TemplatePreview for every template-mode list, including the hardcoded
+// html `["_render", "code"]` pair (PT-12) — real modes get icons fetched via
+// /api/fs/raw, the "_render" sentinel gets a shell-baked inline SVG (no
+// folder to ship icon.svg from). Rendered only when there is more than one
+// entry — a single mode needs no switcher.
 import React from "react";
 import { rawUrl } from "../lib/api";
 import type { TemplateEntry } from "../lib/api";
@@ -37,11 +38,24 @@ export default function ModeSwitcher<M extends string>({ entries, active, onSele
   );
 }
 
-// Icon for a template-registry mode entry (PT-11): a monochrome SVG tinted
-// via CSS mask-image + currentColor (so active/inactive coloring is free),
-// or — when the resolved template ships no icon.svg — a placeholder box with
-// the mode's first letter.
+// Shell-baked icon for the "_render" sentinel (PT-12) — sentinels have no
+// template folder, so there's no icon.svg to fetch. Component-local, matches
+// the old hardcoded Rendered|Source eye glyph.
+const RENDER_SENTINEL_ICON = (
+  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z" />
+    <circle cx="12" cy="12" r="3" />
+  </svg>
+);
+
+// Icon for a template-mode entry (PT-11): the "_render" sentinel gets a
+// shell-baked SVG; a resolved template with no icon.svg gets a placeholder
+// box with the mode's first letter; otherwise a monochrome SVG tinted via
+// CSS mask-image + currentColor (so active/inactive coloring is free).
 export function templateModeIcon(entry: TemplateEntry): React.ReactNode {
+  if (entry.mode === "_render") {
+    return RENDER_SENTINEL_ICON;
+  }
   if (entry.icon === null) {
     return <span className="mode-icon-placeholder">{entry.mode.charAt(0).toUpperCase()}</span>;
   }
