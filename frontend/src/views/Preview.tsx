@@ -85,15 +85,16 @@ function useAnnotate(): [boolean, () => void] {
       // silently discarded. Same-origin, so ask the iframe to flush first
       // (code template exposes __fusedFlushEdits); refuse the switch when the
       // buffer can't be made safe (save failure / unresolved conflict — the
-      // template's own banner explains). 2s race so a hung save can't wedge
-      // the toggle when nothing is at risk.
+      // template's own banner explains). The 10s bound only catches a truly
+      // hung write (localhost saves are near-instant) so the toggle can't
+      // wedge forever; timing out aborts the switch, never the save.
       const frame = document.querySelector<HTMLIFrameElement>(".preview-body iframe");
       const flush = frame?.contentWindow && (frame.contentWindow as any).__fusedFlushEdits;
       if (typeof flush === "function") {
         try {
           const res = await Promise.race([
             flush(),
-            new Promise((r) => setTimeout(() => r({ ok: false }), 2000)),
+            new Promise((r) => setTimeout(() => r({ ok: false }), 10000)),
           ]);
           if (res && (res as { ok: boolean }).ok === false) return;
         } catch {

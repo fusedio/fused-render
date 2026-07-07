@@ -418,9 +418,21 @@
       save();
     }
 
+    // Single-flight save: concurrent callers (autosave timer, Save button,
+    // Cmd+S, __fusedFlushEdits) must never issue two writeFile calls for the
+    // same buffer — later callers wait out the in-flight write, then re-check
+    // dirty (the finished write usually cleared it).
+    let savePromise = null;
+
     async function save() {
       clearTimeout(saveTimer); // manual Save / Cmd+S cancels a pending autosave (AS-1)
+      while (saving && savePromise) await savePromise;
       if (!view || !dirty) return;
+      savePromise = doSave();
+      await savePromise;
+    }
+
+    async function doSave() {
       // Snapshot the doc we are writing. CM's Text is immutable, so a plain
       // reference compare after the await detects edits that landed while the
       // write was in flight — those must NOT be masked by setDirty(false), or
