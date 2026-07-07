@@ -649,7 +649,7 @@ body.embed .preview-header {
    "Browse contents" header button. Embed mode hides that whole header, so the
    same action also rides as an unobtrusive corner chip pinned over the preview,
    revealed only in embed. File (non-directory) previews render no chip, so
-   embed chrome stays empty for them (PT-13/D64). */
+   embed chrome stays empty for them (PT-13/D65). */
 .preview-browse-chip {
   display: none;
 }

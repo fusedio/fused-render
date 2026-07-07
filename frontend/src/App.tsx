@@ -56,7 +56,7 @@ function StatView({ fsPath, epoch }: { fsPath: string; epoch: number }) {
     );
   } else if (stat.status === "ok") {
     // Dispatch (ARCHITECTURE §6): a target with templates previews — even a
-    // directory (a `.zarr` store maps to a directory template, D64) — UNLESS
+    // directory (a `.zarr` store maps to a directory template, D65) — UNLESS
     // the shell-owned `?listing=1` param forces the plain listing view.
     // `listing` never reaches a template: it only takes effect on a directory,
     // and when set it selects Listing (no template iframe is mounted), so it

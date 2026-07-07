@@ -124,7 +124,7 @@ function CrumbActions({ name, onSplit }: CrumbActionsProps) {
 // Split entry (LM-10): two side-by-side panes, both showing the current view —
 // entering split mode with a single pane looked like nothing happened. Each
 // pane carries the `_`-prefixed params and the shell-owned view state —
-// listing sort/order and the `listing` directory-override (PT-13/D64) —
+// listing sort/order and the `listing` directory-override (PT-13/D65) —
 // pane-local (inside its `_layout` segment); every other param joins the
 // merged top-level pool shared by all panes (LM-3). Pane iframes only read
 // segment-local query, so shell state left in the merged pool would be

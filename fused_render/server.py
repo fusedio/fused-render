@@ -257,7 +257,7 @@ def _templates_for(path: str, is_dir: bool):
     PACKAGE-ONLY: the user registry (`_user_names_for`) is a per-file suffix
     match — it walks a filename against dotted registry keys — and there is no
     coherent way for such a file-suffix rule to bind a directory, so the
-    registry deliberately does not apply here (D64). A directory with no
+    registry deliberately does not apply here (D65). A directory with no
     DIR_TEMPLATES match returns empty, i.e. the plain listing view.
     """
     if is_dir:

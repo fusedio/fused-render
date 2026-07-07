@@ -10,7 +10,7 @@ import { formatSize, formatMtime } from "../lib/format";
 import { navigateUrl } from "../lib/router";
 import ModeSwitcher, { templateModeIcon } from "../components/ModeSwitcher";
 
-// Directory previews (a `.zarr` store maps to a directory template, D64) keep
+// Directory previews (a `.zarr` store maps to a directory template, D65) keep
 // a way into the raw members: navigate to the same path with `?listing=1`,
 // which App's dispatch honors to force the plain listing view. The pathname
 // (which already carries the /view/ or /embed/ prefix) is preserved.
@@ -69,7 +69,7 @@ function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: St
     <>
       <Header fsPath={fsPath} stat={stat}>
         {/* Directory template (e.g. a .zarr store): a "Browse contents" action
-            drops into the raw member listing (D64). */}
+            drops into the raw member listing (D65). */}
         {stat.is_dir && (
           <button type="button" onClick={browseContents}>
             Browse contents
