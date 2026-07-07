@@ -4,7 +4,10 @@
 // Everything code/template.html needs must be re-exported here — anything not
 // referenced would be tree-shaken out of the bundle.
 import { EditorView, basicSetup } from "codemirror";
-import { EditorState } from "@codemirror/state";
+// AN-23: selection-anchor decorations for annotate mode (SPEC §17.5). Decoration
+// lives in @codemirror/view; StateField/StateEffect/RangeSet in @codemirror/state.
+import { Decoration } from "@codemirror/view";
+import { EditorState, StateField, StateEffect, RangeSet } from "@codemirror/state";
 import { python } from "@codemirror/lang-python";
 import { javascript } from "@codemirror/lang-javascript";
 import { json } from "@codemirror/lang-json";
@@ -26,6 +29,11 @@ export {
   EditorView,
   EditorState,
   basicSetup,
+  // AN-23: annotate-mode selection decorations.
+  Decoration,
+  StateField,
+  StateEffect,
+  RangeSet,
   python,
   javascript,
   json,

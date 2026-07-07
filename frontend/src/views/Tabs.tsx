@@ -44,7 +44,21 @@ export function composeFolderTabsUrl(children: Bookmark[]): string {
   const segments = children.map((b) => {
     const qIdx = b.url.indexOf("?");
     const pathname = qIdx === -1 ? b.url : b.url.slice(0, qIdx);
-    const search = qIdx === -1 ? "" : b.url.slice(qIdx); // keeps its leading "?"
+    let search = qIdx === -1 ? "" : b.url.slice(qIdx); // keeps its leading "?"
+    // Carry the bookmark's NAME into the segment as reserved `_label` so the
+    // tab bar shows it verbatim (tabLabel) — a renamed bookmark or a saved
+    // `_panel` layout must not degrade to a basename/"Panel" label. Inserted
+    // BEFORE any `_layout` span to keep the layout-last convention (D51);
+    // `_`-prefix keeps it invisible to fused.params (PR-6).
+    if (b.name) {
+      const labelKv = "_label=" + encodeURIComponent(b.name);
+      const layoutIdx = search.indexOf("_layout=(");
+      if (layoutIdx === -1) {
+        search += (search && search !== "?" ? "&" : search === "?" ? "" : "?") + labelKv;
+      } else {
+        search = search.slice(0, layoutIdx) + labelKv + "&" + search.slice(layoutIdx);
+      }
+    }
     // Sentinel pathnames (/view/_panel, /view/_tab) decode to segment paths
     // "/_panel" / "/_tab" — round-trips through embedSrc/readEmbedLoc (TM-4).
     const fsPath = pathname.startsWith(VIEW_PREFIX)
@@ -76,9 +90,15 @@ function parseTabs(raw: string | null, startDir: string): LayoutLeaf[] {
   return [leaf(startDir, "")];
 }
 
-// Basename of the tab's live path (mutated into the leaf by the URL sync) —
-// sentinel paths label as Panel / Tabs (TM-6).
+// A reserved `_label` param on the tab's query wins (set by folder-as-tabs
+// entry so tabs carry their BOOKMARK names, TM-8). It rides the segment query,
+// so it survives refresh/bookmark and is dropped naturally when the tab
+// navigates elsewhere (navigation replaces the embed query wholesale).
+// Fallback: basename of the tab's live path (mutated into the leaf by the URL
+// sync) — sentinel paths label as Panel / Tabs (TM-6).
 function tabLabel(t: LayoutLeaf): string {
+  const named = splitShellSearch(t.query || "").params.get("_label");
+  if (named) return named;
   const b = basename(t.path);
   if (b === "_panel") return "Panel";
   if (b === "_tab") return "Tabs";

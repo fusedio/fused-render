@@ -502,7 +502,7 @@ def create_app(start_dir: str) -> FastAPI:
         return payload
 
     @app.get("/render")
-    def render(path: str):
+    def render(path: str, annotate: str | None = Query(default=None, alias="_annotate")):
         if not os.path.isfile(path):
             return _error(f"no such file: {path}", status=404)
         try:
@@ -511,7 +511,15 @@ def create_app(start_dir: str) -> FastAPI:
         except OSError as e:
             return _error(f"cannot read {path}: {e}", status=400)
 
+        # Always inject the runtime. Only when the iframe URL carries `_annotate=1`
+        # (annotate mode, AN-4/AN-15) is the annotation overlay injected alongside
+        # it — normal pages pay zero cost. annotate.js self-activates off the same
+        # flag on its own window.location, so this conditional and the flag must
+        # agree; ordering after runtime.js is intentional (the overlay reuses the
+        # same shell-URL replaceState channel the runtime establishes, §17.4).
         injection = '<script src="/static/runtime.js"></script>'
+        if annotate == "1":
+            injection += '<script src="/static/annotate.js"></script>'
         lower = html.lower()
         head_idx = lower.find("<head>")
         if head_idx != -1:

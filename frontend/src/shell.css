@@ -557,6 +557,12 @@ table.listing-table td.mtime {
   border-color: var(--accent);
 }
 
+/* Annotate toggle (AN-2): same icon-button family as .mode-switcher-btn, but
+   position:relative for the badge. */
+.preview-actions .annotate-toggle {
+  position: relative;
+}
+
 /* Template-mode icon: monochrome SVG tinted via mask-image + currentColor
    (mask-image url set inline per icon, PT-11). */
 .mode-icon-mask {
@@ -584,6 +590,27 @@ table.listing-table td.mtime {
   font-size: 9px;
   font-weight: 700;
   line-height: 1;
+}
+
+/* Open-comment count badge on the Annotate toggle (AN-3), visible whether or
+   not annotate is on. fg-token colors read on both the idle (--bg) and active
+   (--accent) button backgrounds; the bg-colored ring separates it from icon
+   strokes underneath. */
+.annotate-badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  min-width: 13px;
+  height: 13px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--fg);
+  color: #10131a;
+  font-size: 9px;
+  line-height: 13px;
+  font-weight: 700;
+  text-align: center;
+  box-shadow: 0 0 0 1.5px var(--bg);
 }
 
 .preview-body {
