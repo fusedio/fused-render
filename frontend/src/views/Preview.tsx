@@ -7,7 +7,16 @@ import { useState, type ReactNode } from "react";
 import { rawUrl } from "../lib/api";
 import type { StatResult, TemplateEntry } from "../lib/api";
 import { formatSize, formatMtime } from "../lib/format";
+import { navigateUrl } from "../lib/router";
 import ModeSwitcher, { templateModeIcon } from "../components/ModeSwitcher";
+
+// Directory previews (a `.zarr` store maps to a directory template, D64) keep
+// a way into the raw members: navigate to the same path with `?listing=1`,
+// which App's dispatch honors to force the plain listing view. The pathname
+// (which already carries the /view/ or /embed/ prefix) is preserved.
+function browseContents() {
+  navigateUrl(location.pathname + "?listing=1");
+}
 
 interface HeaderProps {
   fsPath: string;
@@ -59,6 +68,13 @@ function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: St
   return (
     <>
       <Header fsPath={fsPath} stat={stat}>
+        {/* Directory template (e.g. a .zarr store): a "Browse contents" action
+            drops into the raw member listing (D64). */}
+        {stat.is_dir && (
+          <button type="button" onClick={browseContents}>
+            Browse contents
+          </button>
+        )}
         <ModeSwitcher
           entries={templates.map((t) => ({ mode: t.mode, icon: templateModeIcon(t) }))}
           active={entry.mode}
@@ -68,6 +84,15 @@ function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: St
       <div className="preview-body">
         {/* key: switching modes replaces the iframe (fresh document per switch). */}
         <iframe key={mode} src={src} />
+        {/* Embed mode hides the whole preview-header (shell.css), so a directory
+            template also surfaces "Browse contents" as a corner chip pinned over
+            the iframe — CSS reveals it only in embed. File previews render no
+            chip, so embed chrome stays empty for them. */}
+        {stat.is_dir && (
+          <button type="button" className="preview-browse-chip" onClick={browseContents}>
+            Browse contents
+          </button>
+        )}
       </div>
     </>
   );

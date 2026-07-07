@@ -590,6 +590,9 @@ table.listing-table td.mtime {
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
+  /* Positioning context for the embed-only .preview-browse-chip pinned over
+     the iframe. */
+  position: relative;
 }
 
 .preview-body iframe {
@@ -640,6 +643,38 @@ body.embed #sidebar,
 body.embed #breadcrumb,
 body.embed .preview-header {
   display: none;
+}
+
+/* Directory templates (.zarr etc.) surface their member listing through the
+   "Browse contents" header button. Embed mode hides that whole header, so the
+   same action also rides as an unobtrusive corner chip pinned over the preview,
+   revealed only in embed. File (non-directory) previews render no chip, so
+   embed chrome stays empty for them (PT-13/D64). */
+.preview-browse-chip {
+  display: none;
+}
+
+body.embed .preview-browse-chip {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+body.embed .preview-browse-chip:hover {
+  color: var(--fg);
+  border-color: var(--accent);
 }
 
 /* Panel mode (/view/_panel, /embed/_panel): a split-pane grid of /embed iframes (SPEC §14).

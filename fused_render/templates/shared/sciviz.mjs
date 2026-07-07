@@ -1,7 +1,6 @@
 /* ===========================================================================
  * sciViz core + UI kit — shared by the sci preview templates
- * (geotiff_template.html, netcdf_template.html; the zarr template joins in a
- * follow-up PR). Ported 1:1 from app/src/ui/components/sci/sciViz.ts +
+ * (geotiff, netcdf, and zarr). Ported 1:1 from app/src/ui/components/sci/sciViz.ts +
  * SciPreviewParts.tsx / SciHistogram.tsx / useCanvasHover.ts.
  *
  * Extracted (2026-07) after confirming, function-by-function, that the

@@ -80,6 +80,15 @@ TEMPLATES = {
     ".htm": ["_render", "code"],
 }
 
+# Directory templates: a DIRECTORY whose basename carries one of these
+# extensions resolves through the same ordered-name model as files (e.g. a
+# `.zarr` store is one logical dataset spread across many chunk files, so it
+# previews as a dataset rather than as a folder listing). Same {ext: [names]}
+# shape as TEMPLATES; names resolve through `_resolve_name` identically.
+DIR_TEMPLATES = {
+    ".zarr": ["zarr"],
+}
+
 
 def _error(message: str, status: int = 400) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status)
@@ -241,9 +250,19 @@ def _templates_for(path: str, is_dir: bool):
     core semantic, so their mode list is hardcoded — but still resolve
     through the ordinary built-in-list path like any other extension,
     `allow_sentinel=True` so `_render` emits without touching the fs.
+
+    Directories resolve against `DIR_TEMPLATES` by the extension on their
+    basename (a `.zarr` store), through the same `_resolve_mode_list` path so
+    entries come out identically shaped. Directory templates are
+    PACKAGE-ONLY: the user registry (`_user_names_for`) is a per-file suffix
+    match — it walks a filename against dotted registry keys — and there is no
+    coherent way for such a file-suffix rule to bind a directory, so the
+    registry deliberately does not apply here (D64). A directory with no
+    DIR_TEMPLATES match returns empty, i.e. the plain listing view.
     """
     if is_dir:
-        return [], None
+        ext = os.path.splitext(os.path.basename(os.path.normpath(path)))[1].lower()
+        return _resolve_mode_list(DIR_TEMPLATES.get(ext, []))
     filename = os.path.basename(path)
     ext = os.path.splitext(filename)[1].lower()
     builtin_names = TEMPLATES.get(ext, [])
