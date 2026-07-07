@@ -523,6 +523,69 @@ table.listing-table td.mtime {
   background: var(--bg-alt);
 }
 
+/* Icon-only mode switcher (PT-10) — same border/bg/hover/active language as
+   .preview-actions buttons above, sized as compact squares. Selectors carry
+   the .preview-actions ancestor so they win over the generic button rules
+   above at equal-or-lower specificity conflicts (e.g. padding). */
+.preview-actions .mode-switcher {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.preview-actions .mode-switcher-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.preview-actions .mode-switcher-btn:hover {
+  background: var(--bg-alt);
+}
+
+.preview-actions .mode-switcher-btn.active {
+  background: var(--accent);
+  color: #10131a;
+  border-color: var(--accent);
+}
+
+/* Template-mode icon: monochrome SVG tinted via mask-image + currentColor
+   (mask-image url set inline per icon, PT-11). */
+.mode-icon-mask {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  background-color: currentColor;
+  -webkit-mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+}
+
+/* Placeholder for a mode with no icon.svg: first letter in a small rounded box. */
+.mode-icon-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid currentColor;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .preview-body {
   flex: 1 1 auto;
   min-height: 0;

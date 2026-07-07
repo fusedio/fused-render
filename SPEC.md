@@ -206,39 +206,51 @@ The core state-sharing mechanism between an HTML view and the browser URL.
 
 ## 7. Preview Templates
 
-Built-in renderable-HTML files that ship **inside the application code**, one per supported format. They are ordinary renderable HTML — same runtime, same `runPython`, same params — proving the primitive is sufficient.
+Built-in renderable-HTML files that ship **inside the application code**. They are ordinary renderable HTML — same runtime, same `runPython`, same params — proving the primitive is sufficient. Since M8 (template modes) an extension maps to an **ordered list** of templates; each list entry is a **mode** the user can switch between.
 
 ### 7.1 Dispatch
 
-- **PT-1** **DECIDED: the registry is server-side** — single source of truth. Extension → template path mapping lives in the server; `GET /api/fs/stat` response includes `template: <abs path>|null`, and the shell simply obeys.
+- **PT-1** **DECIDED: the registry is server-side** — single source of truth. The extension → template mapping lives in the server; `GET /api/fs/stat` carries the resolved result and the shell simply obeys. *(Originally a single `template: <abs path>|null` field; since M8 the field is the `templates` array of PT-8 — clean break, no compat alias, shell is same repo.)*
 - **PT-2** When the user opens `data/trips.parquet`, the shell renders the returned template in the preview iframe and passes the target file as `_file=<path>` **on the iframe's own URL** (not the shell URL — its pathname already names the file, so no duplication like `/view/x.parquet?_file=/x.parquet`). Reserved `_` params are readable by the template, not settable by page code.
-- **PT-3** Templates are html + py pairs living side by side in a real directory inside the package (`fused_render/templates/`), so plain **relative** `runPython` paths work unchanged — no virtual-path mechanism needed:
+- **PT-3** Every template — built-in or user — is a **self-contained folder** named after the template: `fused_render/templates/<name>/` (built-ins) or `~/.fused-render/<name>/` (user, §16), holding `template.html` (required), any sibling helper files (`reader.py`, css, assets), and optionally `icon.svg` (PT-11). Templates render from their real path, so plain **relative** `runPython` paths work unchanged — no virtual-path mechanism needed:
 
 ```js
-const page = await fused.runPython("./parquet_reader.py",
+const page = await fused.runPython("./reader.py",
                                    { file: fused.params.get("_file"),
                                      offset: 0, limit: 500 });
 ```
 
 - **PT-4** Template UI state (current page, selected columns, sort) uses normal params → survives refresh, e.g. `?_file=…&offset=500&sort=fare`.
+- **PT-6** **One name-resolution rule everywhere:** a template name resolves to `~/.fused-render/<name>/template.html` if that exists, else `fused_render/templates/<name>/template.html`, else it is unusable (error). A user folder **shadows** a built-in of the same name — the deliberate override channel. The template **name is public stable API**: it is the registry reference, the `_mode` URL value, and the switcher tooltip label. (`fused_render/templates/vendor/` has no `template.html`, so it can never resolve as a template name — the `/template-assets` mount is unchanged.)
 
-### 7.2 Template set — **M1 ships parquet, image, and text templates**; rest are follow-ups
+### 7.2 Template set — modes per extension
 
-**Shell dispatch is exactly three-way: template > html > fallback.** No file-type special-casing in the shell — image and text handling are templates like any other.
+**Shell dispatch is exactly two-way: `templates` non-empty > fallback.** No file-type special-casing in the shell — image, text, and (via the `_render` sentinel, PT-12) HTML handling all arrive through the `templates` list like any other mode.
 
-| Extension(s) | Template | M1? | Notes |
-|---|---|---|---|
-| `.parquet` | parquet_template.html | **M1** | paged table via pyarrow, row count |
-| `.png .jpg .gif .webp .svg` | image_template.html | **M1** | `<img>` via raw endpoint |
-| text/code (`.txt .py .js .ts .json .md .csv .log .yaml .toml …`) | text_template.html | **M1** | fetches raw, `<pre>`; syntax highlight later |
-| `.csv`, `.tsv` | csv_template.html | later | paged table, delimiter sniffing (M1: text template) |
-| `.md` | markdown_template.html | later | rendered markdown (M1: text template) |
-| `.mp4 .mov .mp3 .wav` | media_template.html | later | raw endpoint w/ Range |
-| `.pdf` | pdf_template.html | later | browser-native embed |
-| `.html` | — | M1 | rendered live (§4); "Source" toggle shows text |
-| unknown | shell fallback | M1 | metadata + raw/download link (built into shell, not a template) |
+- **PT-7** The built-in table maps each extension to an **ordered list of template names**. Each entry is a **mode**; the **first entry is the default**. Rule of thumb: `code` (the editable CodeMirror buffer) appears as a secondary mode only for text formats where raw text is meaningful — never for binary formats (a code view of `.parquet` is garbage).
 
-- **PT-5** **User overrides:** DECIDED and specced as §16 (M7) — user template folders under `~/.fused-render/` bound to extensions by `~/.fused-render/registry.json`, checked before built-ins, using the exact same mechanism.
+| Extension(s) | Modes (first = default) | Notes |
+|---|---|---|
+| `.parquet` | `table` | paged table via pyarrow; binary — no `code` mode |
+| `.csv .tsv` | `csv`, `code` | paged table, delimiter sniffing |
+| `.xlsx` | `xlsx` | sheet select + paged table |
+| `.json .geojson` | `tree`, `code` | collapsible tree |
+| `.md` | `markdown`, `code` | rendered markdown |
+| `.svg` | `image`, `code` | `<img>` via raw endpoint; svg source is text |
+| `.png .jpg .jpeg .gif .webp` | `image` | `<img>` via raw endpoint |
+| `.pdf` | `pdf` | browser-native embed |
+| `.mp4 .mov .m4v .webm .mp3 .wav .m4a .ogg .flac` | `media` | raw endpoint w/ Range |
+| `.py .js .ts .sh .yaml .yml .toml .css` | `code` | editable CodeMirror |
+| `.txt .log` | `text`, `code` | `<pre>` |
+| `.html .htm` | `_render`, `code` | list **hardcoded server-side**, registry-exempt (CT-4); `_render` is a shell sentinel (PT-12) rendering the file itself live (§4) |
+| unknown | shell fallback | metadata + raw/download link (built into shell, not a template) |
+
+- **PT-8** `GET /api/fs/stat` carries the resolved mode list as **`templates`**: an array of `{"mode": <name>, "path": <abs template.html>, "icon": <abs icon.svg|null>}`, in order, first = default. `templates: []` when nothing applies (dirs, unmapped extension, `null` binding). The old singular `template` field is **removed**.
+- **PT-9** **`_mode` param (shell URL):** non-default modes are selected via reserved param `_mode=<template name>` on the **shell URL** (bookmarkable, same URL-is-state pattern D40 established for the old HTML `_mode=render|source` toggle — that toggle itself is now the ordinary `["_render", "code"]` mode list, PT-12; old `_mode=source` bookmarks fall to the default, accepted break). Absent `_mode` = default = `templates[0]`; selecting the default **deletes** the param (clean URLs); an unknown/stale value falls back to the default with no error. Switching swaps the iframe src to the selected template's `/render?path=<template>&_file=<file>` with a fresh document per switch. Known accepted quirk: template params (e.g. `offset`) persist on the shell URL across mode switches; a param name used differently by two modes collides — documented, not prevented.
+- **PT-10** **Mode switcher (shell, preview header):** rendered only when `templates.length > 1`, right side of the preview header bar. **Icon-only buttons**, mode name via native `title` tooltip, active mode in accent color. When an entry's `icon` is `null`, the shell renders a placeholder: the first letter of the mode name in a small rounded box. The `.html` Rendered|Source pair is **not a special case**: it is the ordinary mode list `["_render", "code"]` (PT-12) riding this same switcher — `_render` gets a shell-baked eye icon (sentinels have no folder to ship `icon.svg`); `code` gets its real folder icon. `.html` stays registry-exempt (CT-4).
+- **PT-11** **Icons:** a template folder may ship `icon.svg` — **monochrome** (single fill; the shell tints it via CSS `mask-image` + `currentColor`, so only alpha matters), square viewBox (24×24 suggested), legible at 16px. `icon` in the stat entry is the abs path of the `icon.svg` sitting next to the *resolved* `template.html` (the user folder's icon when a user template resolved), or `null`. The shell loads it through the existing `/api/fs/raw` endpoint — no new routes. Every built-in folder ships one.
+- **PT-12** **Sentinel modes:** a mode name starting with `_` is a **shell sentinel** — no template folder backs it; the shell knows what it means. Server resolution special-cases sentinels: the stat entry is emitted as `{"mode": "_<name>", "path": null, "icon": null}` without touching the filesystem. The `_` prefix matches the reserved-param convention (`_mode`, `_file`). The sentinel namespace is **shell-owned, not user-addressable**: a `_`-prefixed name in a registry list is invalid (dropped + `template_error`, CT-6). Only one sentinel exists today: **`_render`** — "render the file itself" — the default mode of the hardcoded `.html`/`.htm` list `["_render", "code"]` (users cannot remove `_render`; renderable HTML stays the core semantic, §4). Shell handling: `_render` → iframe src `/render?path=<the file itself>` (no `_file`), shell-baked eye icon; unknown sentinel entries (path `null`, mode not recognized) are filtered out defensively. Non-sentinel entries in the same list (e.g. `code`) work exactly like any template mode. Future html modes are added to the server-side list and flow through the framework normally.
+- **PT-5** **User overrides:** DECIDED and specced as §16 (M7, extended by M8) — user template folders under `~/.fused-render/` bound to extensions by `~/.fused-render/registry.json`, replacing or extending the built-in mode list, using the exact same mechanism.
 
 ---
 
@@ -306,6 +318,7 @@ Distribute as a DMG containing a menu-bar app; all UI stays in the browser.
 - **M5 — Layout mode:** split-pane grid of embed views, layout + merged params in one bookmarkable URL (§14).
 - **M6 — Tab mode:** tabbed set of embed views on the §14 URL model; bookmark folders open as tab layouts (§15).
 - **M7 — Custom templates:** user template folders in `~/.fused-render/` + `registry.json` extension bindings, overriding built-ins (§16).
+- **M8 — Template modes:** 1:n extension→template mapping — folder-per-template built-ins (renamed to public names), ordered mode lists (first = default), registry `list|string|null` grammar with the `"..."` splice, `_mode` shell param + icon-only mode switcher, stat `templates` array replacing `template`, html folded in as the hardcoded `["_render", "code"]` sentinel list (§7, §16 / PT-6..PT-12, CT-10..CT-11).
 - **Follow-ups (unordered):** remaining preview templates (csv/json/markdown/media/pdf/syntax-highlighted code); warm worker pool; DataFrame/Arrow returns; security layer (token, origin checks, sandboxed bridge); exec console; search/sort/tree/keyboard nav; caching; editing.
 
 ## 13. Live Editing — Autosave & Auto-Reload (M4)
@@ -314,7 +327,7 @@ Goal: a live-preview loop. Edit a file (in our editor or externally) → it save
 
 ### 13.1 Autosave (code editor)
 
-Applies to `code_template.html`, the only editable surface (D37).
+Applies to the `code` template (`templates/code/`), the only editable surface (D37).
 
 - **AS-1** The editor autosaves **250 ms after the last edit** (debounced). Manual Save / Cmd+S remain and save immediately, cancelling any pending autosave timer.
 - **AS-2** Autosave uses the same optimistic lock as manual save (`expected_mtime`). On 409 the existing conflict banner shows and **autosave suspends** until the user resolves via Reload or Overwrite. Autosave must never auto-overwrite a conflict — that would reduce the lock to decoration.
@@ -338,7 +351,7 @@ The reload logic lives **entirely in the injected runtime** — the shell needs 
 - **LR-2** `POST /api/run` response gains a `resolved_py` field — the absolute resolved path of the executed file — so the runtime learns dependency paths authoritatively instead of re-implementing the server's relative-path resolution. Recorded for failed runs too (a broken py that gets fixed must still trigger reload).
 - **LR-3** On any change event: debounce **300 ms** (coalesce bursts), then `location.reload()` on the iframe itself. Full reload is the honest re-execution — the runtime cannot replay what the page did with a python result. State survives because view state lives in URL params (D8/D20/D25).
 - **LR-4** When the watch set grows (a new py runs), the runtime closes and reopens its `EventSource` with the full set. Resubscribe is debounced so a page firing several `runPython` calls on load reconnects once.
-- **LR-5** Opt-out: `fused.autoReload(false)` disables watching/reloading for that page. `code_template.html` calls it — the editor must not reload out from under the cursor (its own autosave changes the mtime; external changes are the conflict lock's job). To make the opt-out race-free, the runtime starts watching on `DOMContentLoaded`, after inline page scripts have run.
+- **LR-5** Opt-out: `fused.autoReload(false)` disables watching/reloading for that page. The `code` template calls it — the editor must not reload out from under the cursor (its own autosave changes the mtime; external changes are the conflict lock's job). To make the opt-out race-free, the runtime starts watching on `DOMContentLoaded`, after inline page scripts have run.
 - **LR-6** Deletion (`mtime: null`) reloads too — the resulting 404/error view is the truthful state.
 - **LR-7** Reload works identically for standalone `/render?path=…` pages (runtime is the same code).
 
@@ -408,12 +421,12 @@ Goal: the same URL-is-state model as §14, but as **tabs instead of a grid**: on
 
 ## 16. Custom Templates — User Overrides (M7)
 
-Goal: users replace or add preview templates using the **exact same mechanism** as the built-ins (§7). A user template is an ordinary renderable-HTML page (plus optional sibling `.py` readers) that receives the target file as `_file` — nothing new is exposed; only the server's extension → template resolution gains a user-controlled layer. This is a **server-only** feature: the shell already obeys whatever `template` path the stat response carries, and `/render` already renders any absolute path with the runtime injected.
+Goal: users replace or add preview templates using the **exact same mechanism** as the built-ins (§7). A user template is an ordinary renderable-HTML page (plus optional sibling `.py` readers) that receives the target file as `_file` — nothing new is exposed; only the server's extension → template resolution gains a user-controlled layer. The resolution layer is server-only: the shell obeys whatever `templates` list the stat response carries (PT-8), and `/render` already renders any absolute path with the runtime injected.
 
 ### 16.1 Layout on disk
 
-- **CT-1** A user template is a **self-contained folder** `~/.fused-render/<name>/` holding `template.html` plus any sibling files it needs (reader `.py` files, css, assets). `<name>` is an arbitrary label — it carries **no** binding semantics. Relative `fused.runPython("./reader.py")` works unchanged because the template renders from its real path (PT-3).
-- **CT-2** Bindings live in **`~/.fused-render/registry.json`** — a flat JSON object mapping **dotted extension keys** to a folder name, or to `null`:
+- **CT-1** A user template is a **self-contained folder** `~/.fused-render/<name>/` holding `template.html` plus any sibling files it needs (reader `.py` files, css, assets) and optionally `icon.svg` (PT-11) — identical in shape to a built-in folder (PT-3). `<name>` carries **no** binding-by-convention semantics (CT-7), but it is the template's public name: it resolves by the single rule of PT-6, so a user folder named like a built-in **shadows** it. Relative `fused.runPython("./reader.py")` works unchanged because the template renders from its real path (PT-3).
+- **CT-2** Bindings live in **`~/.fused-render/registry.json`** — a flat JSON object mapping **dotted extension keys** to a template name, or to `null`:
 
 ```json
 {
@@ -424,17 +437,27 @@ Goal: users replace or add preview templates using the **exact same mechanism** 
 }
 ```
 
-  A name binds the extension to `~/.fused-render/<name>/template.html`. **`null` disables the built-in** for that extension: the file gets no template at all and falls through to the shell's metadata/raw-download fallback (§7.2).
+  A name binds the extension to a single-mode list of that template, resolved by the PT-6 rule. **`null` disables** templating for that extension entirely: the file gets no template at all and falls through to the shell's metadata/raw-download fallback (§7.2).
+- **CT-10** **Mode lists (M8):** a registry value may also be a **JSON list of template names** — the full ordered mode list for that extension, **replace semantics**, first = default (PT-7). The string form of CT-2 is exactly a single-mode list; existing registries keep working unchanged.
+- **CT-11** **`"..."` splice token:** inside a list value, the entry `"..."` expands, in place, to **the built-in mode list for that extension** — users add modes without knowing built-in names, and future built-in additions flow in automatically. `.` is forbidden in folder names (CT-6), so `"..."` can never collide with a real name. Rules: names already listed explicitly are skipped when the splice expands (`["code", "..."]` promotes `code` to default without duplication); more than one `"..."` in a list = invalid entry (built-in fallback + `template_error`, CT-6); a splice on an extension with no built-ins expands to nothing (harmless).
+
+```json
+{
+  ".parquet": ["geo-view", "..."],
+  ".md": "my-markdown",
+  ".csv": null
+}
+```
 
 ### 16.2 Resolution
 
 - **CT-3** Matching is **longest-suffix, case-insensitive**: the registry key must be a suffix of the lowercased filename beginning at a dot (`report.TAR.GZ` matches `.tar.gz` before `.gz`). Dotted keys are what make compound extensions expressible — the built-in table stays single-extension (`splitext`). Precedence: **registry (longest matching key) > built-in table**. Any extension may be bound, including ones no built-in handles.
-- **CT-4** `.html`/`.htm` stay exempt — renderable HTML is the product's core semantic (§4) and is never routed through a template, registry or not.
+- **CT-4** `.html`/`.htm` stay exempt from the registry — renderable HTML is the product's core semantic (§4). Their mode list `["_render", "code"]` is **hardcoded server-side** (PT-12): users cannot rebind the extension or remove `_render`. Relatedly, `_`-prefixed names (the sentinel namespace, PT-12) are invalid anywhere in a registry list — dropped per CT-6 with `template_error`.
 - **CT-5** The registry is read **per stat/render resolution** (tiny local file — no restart, no cache invalidation problem). Missing `~/.fused-render/` or `registry.json` = clean no-op, built-in behavior; first run creates nothing.
-- **CT-6** **Validation and fallback:** a folder name must be a single safe path segment (no `/`, no `..`, not empty) — it is joined into a filesystem path, so a malformed name must not stat arbitrary locations (correctness guard, not auth — §9 stands). An invalid registry (unparseable JSON, bad name, or a named folder missing `template.html`) falls back to the built-in template for that extension, and the stat response carries a **`template_error`** string naming the problem, so a typo is visible (via stat / server log) instead of silently ignored.
+- **CT-6** **Validation and fallback — per entry:** a folder name must be a single safe path segment (no `/`, no `..`, no `.`, not empty) — it is joined into a filesystem path, so a malformed name must not stat arbitrary locations (correctness guard, not auth — §9 stands). Within a mode list, an entry whose name cannot resolve (unsafe name, `template.html` missing in both PT-6 locations) is **dropped** from the list, and the stat response carries a **`template_error`** string naming the first problem, so a typo is visible (via stat / server log) instead of silently ignored. If the user's value resolves to nothing at all (unparseable JSON, empty result, double splice per CT-11), fall back to the **built-in list** for that extension.
 - **CT-7** **No convention fallback:** a folder in `~/.fused-render/` without a registry entry is inert — a draft. Registration is only ever the registry line; deleting the line unregisters. One source of truth.
 
 ### 16.3 Pipeline & dev loop
 
-- **CT-8** Zero shell changes: stat carries the resolved user-template path in the existing `template` field; the preview iframe renders it via `/render` with `_file` exactly like a built-in (PT-2). M4 auto-reload (§13) covers template development for free — the rendered page watches its own html and every `runPython` file, so editing `template.html` or a reader live-reloads open previews. Registry edits apply on the next stat (navigate/refresh); open previews do not watch `registry.json`.
+- **CT-8** No new pipeline: stat carries the resolved user templates inside the ordinary `templates` list (PT-8); the preview iframe renders the selected mode via `/render` with `_file` exactly like a built-in (PT-2), and the switcher (PT-10) shows user modes indistinguishably from built-ins. M4 auto-reload (§13) covers template development for free — the rendered page watches its own html and every `runPython` file, so editing `template.html` or a reader live-reloads open previews. Registry edits apply on the next stat (navigate/refresh); open previews do not watch `registry.json`.
 - **CT-9** **Authoring skill:** a repo skill `skills/fused-render-custom-templates/` covers folder layout, registry format, and registration workflow only; it **delegates all html/py authoring guidance to `skills/fused-render-authoring/`** (no duplicated instruction — one source for the runtime API and template patterns).

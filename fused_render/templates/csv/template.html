@@ -126,7 +126,7 @@
         return;
       }
       try {
-        const data = await fused.runPython("./csv_reader.py", {
+        const data = await fused.runPython("./reader.py", {
           file,
           offset,
           limit: LIMIT,

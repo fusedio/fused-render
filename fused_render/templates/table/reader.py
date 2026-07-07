@@ -1,7 +1,7 @@
 # /// script
 # dependencies = ["pyarrow"]
 # ///
-"""Reader backing parquet_template.html. Returns a JSON-safe page of rows."""
+"""Reader backing table/template.html. Returns a JSON-safe page of rows."""
 import datetime
 import decimal
 

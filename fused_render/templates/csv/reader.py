@@ -1,9 +1,9 @@
 # /// script
 # dependencies = ["pandas"]
 # ///
-"""Reader backing csv_template.html. Returns a JSON-safe page of rows.
+"""Reader backing csv/template.html. Returns a JSON-safe page of rows.
 
-Mirrors parquet_reader.py's contract and cell-stringifying approach, but reads
+Mirrors table/reader.py's contract and cell-stringifying approach, but reads
 delimited text via pandas. The full file is read once to get an honest
 total_rows and to slice the requested page; only the page is returned, so the
 payload stays small even for large files (per ARCHITECTURE.md §7).

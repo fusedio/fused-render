@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8" />
-<title>Parquet preview</title>
+<title>Spreadsheet preview</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -35,6 +35,15 @@
   #bar button:disabled {
     opacity: 0.4;
     cursor: default;
+  }
+  #sheet {
+    font: inherit;
+    padding: 4px 8px;
+    border: 1px solid #2a2d33;
+    border-radius: 6px;
+    background: #131417;
+    color: #e8eaed;
+    margin-left: auto;
   }
   #rowcount {
     color: #9aa0a6;
@@ -72,6 +81,7 @@
     <button id="prev">&larr; Prev</button>
     <button id="next">Next &rarr;</button>
     <span id="rowcount"></span>
+    <select id="sheet" hidden></select>
   </div>
   <div id="tablewrap"></div>
   <script>
@@ -79,6 +89,7 @@
     const prevBtn = document.getElementById("prev");
     const nextBtn = document.getElementById("next");
     const rowcountEl = document.getElementById("rowcount");
+    const sheetSel = document.getElementById("sheet");
     const wrap = document.getElementById("tablewrap");
 
     function escapeHtml(s) {
@@ -89,13 +100,29 @@
         .replace(/"/g, "&quot;");
     }
 
+    function cell(v) {
+      return v === null || v === undefined ? "" : String(v);
+    }
+
     function currentOffset() {
       const raw = fused.params.get("offset");
       const n = raw ? parseInt(raw, 10) : 0;
       return Number.isFinite(n) && n >= 0 ? n : 0;
     }
 
+    function renderSheetSelector(sheets, active) {
+      if (!sheets || sheets.length <= 1) {
+        sheetSel.hidden = true;
+        return;
+      }
+      sheetSel.hidden = false;
+      sheetSel.innerHTML = sheets
+        .map((s) => `<option value="${escapeHtml(s)}"${s === active ? " selected" : ""}>${escapeHtml(s)}</option>`)
+        .join("");
+    }
+
     function render(data, offset) {
+      renderSheetSelector(data.sheets, data.sheet);
       const total = data.total_rows;
       const shown = data.rows.length;
       const from = shown === 0 ? 0 : offset + 1;
@@ -107,7 +134,7 @@
       const cols = data.columns;
       const head = `<tr>${cols.map((c) => `<th>${escapeHtml(c)}</th>`).join("")}</tr>`;
       const body = data.rows
-        .map((row) => `<tr>${cols.map((c) => `<td title="${escapeHtml(row[c])}">${escapeHtml(row[c])}</td>`).join("")}</tr>`)
+        .map((row) => `<tr>${cols.map((c) => `<td title="${escapeHtml(cell(row[c]))}">${escapeHtml(cell(row[c]))}</td>`).join("")}</tr>`)
         .join("");
       wrap.innerHTML = `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
     }
@@ -115,14 +142,16 @@
     async function load() {
       const file = fused.params.get("_file");
       const offset = currentOffset();
+      const sheet = fused.params.get("sheet") || "";
       wrap.innerHTML = `<div id="status">Loading…</div>`;
       if (!file) {
         wrap.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
         return;
       }
       try {
-        const data = await fused.runPython("./parquet_reader.py", {
+        const data = await fused.runPython("./reader.py", {
           file,
+          sheet,
           offset,
           limit: LIMIT,
         });
@@ -137,6 +166,12 @@
     });
     nextBtn.addEventListener("click", () => {
       fused.params.set("offset", String(currentOffset() + LIMIT));
+    });
+    sheetSel.addEventListener("change", () => {
+      // New sheet starts at the top. Reset offset first so the change lands on
+      // page 0, then switch sheet (each set fires onChange → reload).
+      fused.params.set("offset", "0");
+      fused.params.set("sheet", sheetSel.value);
     });
     fused.params.onChange(load);
     load();

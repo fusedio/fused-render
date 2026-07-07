@@ -1,7 +1,7 @@
 // Entry point bundled into fused_render/templates/vendor/codemirror.bundle.js.
 // esbuild wraps these exports in an IIFE assigned to the global `CM`, so the
 // template can do `CM.EditorView`, `CM.python()`, etc. with no module loader.
-// Everything code_template.html needs must be re-exported here — anything not
+// Everything code/template.html needs must be re-exported here — anything not
 // referenced would be tree-shaken out of the bundle.
 import { EditorView, basicSetup } from "codemirror";
 import { EditorState } from "@codemirror/state";
