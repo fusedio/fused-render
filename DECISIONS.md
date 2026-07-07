@@ -200,7 +200,7 @@ Security layer (token, Origin/Host validation, sandboxed bridge — see threat n
 
 | # | Decision | Choice | Rationale / rejected alternatives |
 |---|---|---|---|
-| D67 | Roll back the openfused engine | Reverts #8 (D55–D58), #18 (default data-stack venv deps), and #19 (D66 run-error logging, which existed to surface openfused backend 500s). `executor.py`/`_child.py` return: bare `main()` with annotation-driven string coercion (D1), server-env imports (D14/D30), old `{ok, result, error:{type,message,traceback}}` wire shape, `requires-python >=3.9`. Kept features that landed on top were retargeted, not reverted: template folders/mode lists (D59–D62) keep their new paths; built-in readers lose `@fused.udf` + PEP 723 headers; the `api` template (D63) inspects a bare `main()` and consumes the old wire shape | Owner call 2026-07-07: roll back all engine changes, keep everything else |
+| D67 | Roll back the openfused engine | Reverts #8 (D55–D58), #18 (default data-stack venv deps), and #19 (D66 run-error logging, which existed to surface openfused backend 500s). `executor.py`/`_child.py` return: bare `main()` with annotation-driven string coercion (D1), server-env imports (D14/D30), old `{ok, result, error:{type,message,traceback}}` wire shape, `requires-python >=3.10`. Kept features that landed on top were retargeted, not reverted: template folders/mode lists (D59–D62) keep their new paths; built-in readers lose `@fused.udf` + PEP 723 headers; the `api` template (D63) inspects a bare `main()` and consumes the old wire shape | Owner call 2026-07-07: roll back all engine changes, keep everything else |
 
 ## Open items (small, non-blocking)
 
