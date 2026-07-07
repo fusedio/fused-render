@@ -40,6 +40,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import tempfile
 from dataclasses import dataclass, field
 
 # Route names the hosting layer reserves (serve control paths + the shell/asset
@@ -303,27 +304,39 @@ def export_page(html_path: str, out_dir: str) -> ExportPlan:
         )
 
     os.makedirs(out_dir, exist_ok=True)
-    # Re-export must be deterministic: a previous bundle's code/ and assets/
-    # may hold files the new manifest no longer lists, and stale orphans beside
-    # a fresh manifest read as part of the bundle. Only these two bundle-owned
-    # subdirs are cleared — anything else the user put in --out is untouched.
-    for owned in ("code", "assets"):
-        shutil.rmtree(os.path.join(out_dir, owned), ignore_errors=True)
     page_file = "page.html"
-    shutil.copyfile(html_path, os.path.join(out_dir, page_file))
 
-    if plan.entrypoints:
-        os.makedirs(os.path.join(out_dir, "code"), exist_ok=True)
-    for e in plan.entrypoints:
-        shutil.copyfile(os.path.join(page_dir, e.path), os.path.join(out_dir, e.file))
+    # Stage the whole bundle first and only swap it into place once every copy
+    # and the manifest write has succeeded — otherwise a mid-export failure
+    # (missing file, disk full) could leave code/assets cleared or partially
+    # rewritten under a stale manifest.json that no longer matches them.
+    with tempfile.TemporaryDirectory(prefix=".fused-render-export-", dir=out_dir) as stage:
+        shutil.copyfile(html_path, os.path.join(stage, page_file))
 
-    for a in plan.assets:
-        dest = os.path.join(out_dir, a.file)
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        shutil.copyfile(os.path.join(page_dir, a.path), dest)
+        if plan.entrypoints:
+            os.makedirs(os.path.join(stage, "code"), exist_ok=True)
+        for e in plan.entrypoints:
+            shutil.copyfile(os.path.join(page_dir, e.path), os.path.join(stage, e.file))
 
-    with open(os.path.join(out_dir, "manifest.json"), "w", encoding="utf-8") as f:
-        json.dump(_manifest(plan, page_file), f, indent=2, sort_keys=True)
-        f.write("\n")
+        for a in plan.assets:
+            dest = os.path.join(stage, a.file)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.copyfile(os.path.join(page_dir, a.path), dest)
+
+        with open(os.path.join(stage, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump(_manifest(plan, page_file), f, indent=2, sort_keys=True)
+            f.write("\n")
+
+        # Everything staged successfully — now replace the bundle-owned paths.
+        # A previous bundle's code/assets may hold files the new manifest no
+        # longer lists, so those two subdirs are cleared before the move;
+        # anything else the user has in --out is left untouched.
+        for owned in ("code", "assets"):
+            shutil.rmtree(os.path.join(out_dir, owned), ignore_errors=True)
+            staged = os.path.join(stage, owned)
+            if os.path.isdir(staged):
+                shutil.move(staged, os.path.join(out_dir, owned))
+        shutil.move(os.path.join(stage, page_file), os.path.join(out_dir, page_file))
+        shutil.move(os.path.join(stage, "manifest.json"), os.path.join(out_dir, "manifest.json"))
 
     return plan

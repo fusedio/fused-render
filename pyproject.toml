@@ -40,13 +40,13 @@ bundled = [
 app = [
     "rumps",
 ]
-# Optional execution engine (D68): when installed, /api/run runs code through
-# the fused local compute backend; absent, the built-in executor runs. The
-# public nightly wheel URL (D55's owner call) — the filename version is
-# deliberately unconstrained, the URL's content is what installs. The engine
-# needs 3.11+; on 3.10 the marker skips it and the built-in executor runs.
+# Optional execution engine (D69): when installed, /api/run runs code through
+# the fused local compute backend; absent, the built-in executor runs. Pinned
+# to the same wheel `openfused_server` serves hosted pages from, so local and
+# hosted execution stay on one build. The engine needs 3.11+; on 3.10 the
+# marker skips it and the built-in executor runs.
 fused = [
-    'fused @ https://fused-magic.s3.amazonaws.com/fused-py-nightly/fused-0.0.0.post0-py3-none-any.whl ; python_version >= "3.11"',
+    'fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.2.post5-py3-none-any.whl ; python_version >= "3.11"',
 ]
 
 [project.scripts]
