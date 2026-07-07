@@ -53,6 +53,11 @@ fused = [
 fused-render = "fused_render.cli:main"
 fused-render-app = "fused_render.app:main"
 
+[tool.hatch.metadata]
+# The `fused` extra pins a direct wheel URL (not a PyPI dependency) — hatchling
+# refuses that unless explicitly allowed.
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
 packages = ["fused_render"]
 # The Vite-built shell is gitignored (D54) but must ship in the wheel;
