@@ -1,6 +1,5 @@
 {
   "name": "fused-render",
-  "version": "1.0.0",
   "displayName": "Fused Render",
   "description": "Skills for authoring fused-render views: HTML pages with a fused.runPython() bridge to local Python, URL-synced params, file IO helpers, and custom preview templates.",
   "author": {
