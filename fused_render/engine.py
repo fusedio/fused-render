@@ -26,25 +26,6 @@ _FRAME_LINE = re.compile(r'^  File "(?P<file>[^"]*)", line (?P<line>\d+)(?P<rest
 
 _backend = None
 
-# Installed into every script's venv on top of its PEP 723 dependencies.
-# Mirrors the `bundled` extra in pyproject.toml (SPEC DM-2): the packaged
-# .app's wheelhouse ships exactly these wheels (+ pyarrow), so the one-time
-# venv build resolves offline. Keep the two lists in sync.
-DEFAULT_REQUIREMENTS = [
-    "numpy",
-    "pandas",
-    "pyarrow",
-    "requests",
-    "duckdb",
-    "polars",
-    "matplotlib",
-    "scipy",
-    "pillow",
-    "openpyxl",
-    "shapely",
-    "geopandas",
-]
-
 
 def get_backend():
     # Lazy singleton: importing the backend pulls in the fused package tree,
@@ -194,14 +175,10 @@ async def run_python(path: str, params: dict) -> dict:
     except ValueError as e:
         return _error(str(e))
 
-    # Sorted union so the venv cache key is stable regardless of how a script
-    # orders its PEP 723 block; scripts with no block all share one defaults venv.
-    requirements = sorted(set(DEFAULT_REQUIREMENTS) | set(reqs))
-
     code = build_code(user_code, os.path.dirname(os.path.abspath(path)))
     r = await get_backend().execute(
         code=code,
-        requirements=requirements,
+        requirements=reqs or None,
         input_files={"_params.json": json.dumps(params or {}).encode()},
     )
     # The backend hands return_value back JSON-encoded; decode it here so the
