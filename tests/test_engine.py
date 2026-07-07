@@ -110,6 +110,15 @@ def test_result_script_untouched(tmp_path):
     assert g["result"] == {"x": 1}
 
 
+def test_main_wins_over_stale_result(tmp_path):
+    # The built-in executor's worker always calls main(**params), overwriting
+    # any module-level `result` the script also assigned — the fused engine
+    # must match, not silently keep the stale `result`.
+    src = "result = {'x': 'stale'}\ndef main():\n    return {'x': 'fresh'}\n"
+    g = _run_wrapped(tmp_path, src, {})
+    assert g["result"] == {"x": "fresh"}
+
+
 def test_no_entrypoint_raises(tmp_path):
     with pytest.raises(AttributeError, match="target.py"):
         _run_wrapped(tmp_path, "x = 1\n", {})

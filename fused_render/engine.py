@@ -141,10 +141,15 @@ def build_code(user_code: str, script_dir: str, script_path: str = "script") -> 
       * wraps a registered ``@fused.udf`` function so the chdir to the
         script's dir happens just before it runs (relative data paths resolve
         against the script, params still get found);
-      * otherwise — compat bridge — if the module defines a bare ``main()``
-        and did not set ``result``, reads ``_params.json`` itself, coerces
-        string params by ``main``'s annotations (same table as the built-in
-        executor's worker), chdirs, and sets ``result = main(**bound)``;
+      * otherwise — compat bridge — if the module defines a bare ``main()``,
+        reads ``_params.json`` itself, coerces string params by ``main``'s
+        annotations (same table as the built-in executor's worker), chdirs,
+        and sets ``result = main(**bound)``. ``main()`` wins even if the
+        module also assigned a module-level ``result`` — the built-in
+        executor's worker (``_child.py``) always calls ``main(**params)`` and
+        overwrites whatever ``result`` the module set, so a file defining both
+        must behave identically under either engine;
+      * otherwise, if the module set ``result`` itself, leaves it untouched;
       * otherwise raises the built-in executor's "no callable 'main'" error
         (extended with the fused-contract alternatives), so a file with no
         entrypoint fails identically under either engine.
@@ -167,7 +172,7 @@ if _fused_udfs:
         _fused_os.chdir({script_dir!r})
         return _fused_inner(*_a, **_k)
     _fused_udf._fn = _fused_chdir_call
-elif "result" not in globals():
+else:
     import inspect as _fused_inspect
     import json as _fused_json
 
@@ -215,6 +220,8 @@ elif "result" not in globals():
     def _fused_run_main():
         _fn = globals().get("main")
         if not callable(_fn):
+            if "result" in globals():
+                return globals()["result"]
             raise AttributeError(
                 _fused_os.path.basename({script_path!r})
                 + " does not define a callable 'main' function, a "
