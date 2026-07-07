@@ -202,6 +202,12 @@ Security layer (token, Origin/Host validation, sandboxed bridge — see threat n
 |---|---|---|---|
 | D67 | Roll back the openfused engine | Reverts #8 (D55–D58), #18 (default data-stack venv deps), and #19 (D66 run-error logging, which existed to surface openfused backend 500s). `executor.py`/`_child.py` return: bare `main()` with annotation-driven string coercion (D1), server-env imports (D14/D30), old `{ok, result, error:{type,message,traceback}}` wire shape, `requires-python >=3.10`. Kept features that landed on top were retargeted, not reverted: template folders/mode lists (D59–D62) keep their new paths; built-in readers lose `@fused.udf` + PEP 723 headers; the `api` template (D63) inspects a bare `main()` and consumes the old wire shape | Owner call 2026-07-07: roll back all engine changes, keep everything else |
 
+### Error DX — point at the user's line (2026-07-07)
+
+| # | Decision | Choice | Rationale / rejected alternatives |
+|---|---|---|---|
+| D68 | User-script error clarity | Extends D17. `_child.py` trims the traceback to **start at user code**: leading runner frames (`_child.py` itself, `<frozen importlib…>` bootstrap) are dropped; harness-raised errors (bad params, missing `main`, unserializable return) format as the exception line only — no stack, no chained runner frames. The error dict gains **`where`** = `{file, line, func, source}` of the deepest traceback frame **in the user's own file** (an error inside a library blames the user line that called it; SyntaxError location read off the exception), `null` when the error never touched the user's file (harness errors, timeout, missing file — `executor.py` errors carry `where: null` for shape uniformity). Both display surfaces headline it above the traceback: the runtime overlay and the `api` template render `<file>, line N, in <func>` + the source line. Additive wire change — `{type, message, traceback}` consumers unaffected | The raw `format_exc()` led with 2–4 lines of runner internals before any user frame, and the deepest frames (often library internals) are what the eye lands on — the user's own line was the hardest thing to find. Rejected: rewriting frame paths inside the traceback text (the openfused-era `_clean_error` approach) — trimming + a structured headline is simpler and keeps the traceback honest; a `full_traceback` escape hatch — runner frames carry no user-debuggable information |
+
 ## Open items (small, non-blocking)
 
 - Shell visual design: v1 = clean minimal; real design pass later.

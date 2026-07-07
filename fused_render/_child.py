@@ -21,6 +21,54 @@ class ParamError(TypeError):
     pass
 
 
+def _trim_harness_frames(tb):
+    """Drop the leading traceback frames that belong to this runner.
+
+    Every user-code traceback starts with run()'s own frame plus the frozen
+    importlib frames exec_module routes through — constant noise that buries
+    the user's file. Skip leading frames whose file is this module or a
+    `<frozen …>` bootstrap; everything from the first user/library frame down
+    is kept untouched. Returns None when nothing remains — the error was
+    raised by the harness itself (bad params, missing main, unserializable
+    return), where the message alone is the whole story.
+    """
+    here = os.path.abspath(__file__)
+    while tb is not None:
+        filename = tb.tb_frame.f_code.co_filename
+        if not filename.startswith("<frozen") and os.path.abspath(filename) != here:
+            break
+        tb = tb.tb_next
+    return tb
+
+
+def _user_location(exc, path):
+    """The deepest traceback frame inside the user's own file, as a dict.
+
+    This is the line to blame in the script the user wrote: an error raised
+    inside a library still points at the user line that called into it. A
+    SyntaxError never gets a frame for the unparsed file, so its location
+    comes off the exception itself. None when the error never touched the
+    user's file (harness-raised errors).
+    """
+    if isinstance(exc, SyntaxError) and exc.filename and os.path.abspath(exc.filename) == path:
+        return {
+            "file": path,
+            "line": exc.lineno,
+            "func": None,
+            "source": (exc.text or "").strip() or None,
+        }
+    location = None
+    for frame in traceback.extract_tb(exc.__traceback__):
+        if os.path.abspath(frame.filename) == path:
+            location = {
+                "file": path,
+                "line": frame.lineno,
+                "func": frame.name,
+                "source": frame.line or None,
+            }
+    return location
+
+
 def coerce(value, annotation):
     """Best-effort coercion of string params using type annotations."""
     if annotation is inspect.Parameter.empty:
@@ -92,12 +140,21 @@ def run():
             ) from None
         out = {"ok": True, "result": result}
     except BaseException as e:  # noqa: BLE001 — includes SystemExit from user code
+        tb = _trim_harness_frames(e.__traceback__)
+        if tb is None:
+            # Harness-raised (bad params, missing main, unserializable
+            # return): the message is the whole story — no stack, and no
+            # chained-cause frames (those would be runner internals too).
+            formatted = "".join(traceback.format_exception_only(type(e), e))
+        else:
+            formatted = "".join(traceback.format_exception(type(e), e, tb))
         out = {
             "ok": False,
             "error": {
                 "type": type(e).__name__,
                 "message": str(e),
-                "traceback": traceback.format_exc(),
+                "traceback": formatted,
+                "where": _user_location(e, path),
             },
         }
     finally:

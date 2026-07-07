@@ -114,7 +114,7 @@ fused.params.onChange(callback)   // fires whenever params change; author re-run
 
 - **RH-1** **DECIDED:** `path` may be **relative to the HTML file's own location** or **absolute** (anywhere on the machine — whole filesystem is in scope, consistent with FS-3).
 - **RH-2** `params` is a flat JSON object; keys map to the Python function's keyword arguments (§5.2).
-- **RH-3** Returns a Promise. Resolves with the deserialized return value; rejects with a structured error `{ type, message, traceback }` on Python exception, missing file, missing `main` function, or timeout.
+- **RH-3** Returns a Promise. Resolves with the deserialized return value; rejects with a structured error `{ type, message, traceback, where }` on Python exception, missing file, missing `main` function, or timeout. `traceback` starts at user code (runner frames trimmed, D68); `where` = `{file, line, func, source}` of the deepest frame in the user's own script, or `null` when the error never touched it.
 - **RH-4** Concurrent calls are allowed (e.g. a page fires 3 data fetches on load). Server may queue or parallelize; ordering is not guaranteed.
 - **RH-5** Calls have a configurable timeout (default e.g. 30 s), after which the worker is killed and the promise rejects.
 

@@ -9,9 +9,11 @@ DEFAULT_TIMEOUT = 30.0
 
 
 def _error(err_type: str, message: str, detail: str = "") -> dict:
+    # `where` is None: these errors (missing file, timeout, worker crash) have
+    # no user-script frame to point at. Same shape as _child.py's error dict.
     return {
         "ok": False,
-        "error": {"type": err_type, "message": message, "traceback": detail},
+        "error": {"type": err_type, "message": message, "traceback": detail, "where": None},
         "stdout": "",
     }
 

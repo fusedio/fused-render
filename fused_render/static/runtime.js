@@ -203,6 +203,7 @@
           const err = new Error(data.error && data.error.message);
           err.type = data.error && data.error.type;
           err.traceback = data.error && data.error.traceback;
+          err.where = data.error && data.error.where; // {file, line, func, source} in the USER's script, or null
           err.stdout = data.stdout;
           throw err;
         }
@@ -352,10 +353,25 @@
     const title = document.createElement("div");
     title.style.cssText = "font-size:16px;font-weight:bold;margin-bottom:12px;color:#ff6b6b;";
     title.textContent = `${err.type || "Error"}: ${err.message || ""}`;
+    overlay.appendChild(title);
+    // Headline the failing line of the USER's script (err.where, set by the
+    // executor) so the culprit is readable without scanning the traceback.
+    if (err.where && err.where.file) {
+      const loc = document.createElement("div");
+      loc.style.cssText = "margin-bottom:12px;color:#ffb3b3;";
+      const func = err.where.func ? `, in ${err.where.func}` : "";
+      loc.textContent = `${err.where.file}, line ${err.where.line}${func}`;
+      if (err.where.source) {
+        const src = document.createElement("div");
+        src.style.cssText = "opacity:0.8;padding-left:2ch;";
+        src.textContent = err.where.source;
+        loc.appendChild(src);
+      }
+      overlay.appendChild(loc);
+    }
     const pre = document.createElement("pre");
     pre.style.cssText = "margin:0;white-space:pre-wrap;word-break:break-word;";
     pre.textContent = err.traceback || "";
-    overlay.appendChild(title);
     overlay.appendChild(pre);
     document.body.appendChild(overlay);
   }
