@@ -163,6 +163,13 @@
     }
     if (typeof t.anchorId === "string" && t.anchorId) thread.anchorId = t.anchorId;
     if (typeof t.anchorPath === "string" && t.anchorPath) thread.anchorPath = t.anchorPath;
+    // Image pixel refinement (AN-24): fractions of the image's displayed
+    // content box, riding ALONGSIDE the element anchor (they refine placement,
+    // they are not an anchor form of their own).
+    if (t.iu !== undefined && t.iv !== undefined) {
+      thread.iu = Math.min(1, Math.max(0, Number(t.iu) || 0));
+      thread.iv = Math.min(1, Math.max(0, Number(t.iv) || 0));
+    }
     if (t.x !== undefined && t.y !== undefined) {
       thread.x = Number(t.x) || 0;
       thread.y = Number(t.y) || 0;
@@ -191,6 +198,11 @@
     else {
       o.x = thread.x || 0;
       o.y = thread.y || 0;
+    }
+    // iu/iv accompany an element anchor only (AN-26) — meaningless on sel/free.
+    if ((o.anchorId || o.anchorPath) && thread.iu !== undefined && thread.iv !== undefined) {
+      o.iu = Math.round(thread.iu * 1000) / 1000;
+      o.iv = Math.round(thread.iv * 1000) / 1000;
     }
     return o;
   }
@@ -233,6 +245,7 @@
   function commit(arr) {
     let working = arr.slice();
     let json = serialize(working);
+    let dropped = 0; // resolved threads evicted by the budget — surfaced, not silent (AN-7)
     while (encodeURIComponent(json).length > BUDGET) {
       // Oldest resolved thread = smallest resolvedAt (fallback updatedAt).
       let oldestIdx = -1;
@@ -252,7 +265,15 @@
         return false;
       }
       working.splice(oldestIdx, 1);
+      dropped++;
       json = serialize(working);
+    }
+    if (dropped > 0) {
+      showToast(
+        dropped === 1
+          ? "Oldest resolved comment removed — URL size limit"
+          : dropped + " oldest resolved comments removed — URL size limit"
+      );
     }
     comments = working;
     lastJson = working.length ? json : "";
@@ -314,6 +335,7 @@
       showToast: (msg) => showToast(msg),
       setDetached: (ids) => setDetachedByIds(ids),
       isDraftOpen: () => !!(openPopover && openPopover.kind === "draft"),
+      focusCard: (id) => focusCard(id), // anchor → sidebar card (AN-31/AN-32)
     };
     return currentCore;
   }
@@ -339,10 +361,20 @@
 
   // Render the given thread ids in the existing detached tray (AN-21). The
   // adapter computes detachment (quote no longer resolves); we reuse the same
-  // tray + pointerup→openThread wiring element mode uses (AN-14).
+  // tray + pointerup→openThread wiring element mode uses (AN-14). Also feeds
+  // the sidebar's "detached" tags (AN-30) — in adapter mode this call is the
+  // only detachment signal the core gets.
   function setDetachedByIds(ids) {
-    const set = new Set(ids || []);
-    renderTray(comments.filter((t) => set.has(t.id)));
+    // Belt-and-braces: strip foreign threads (AN-34) even if an adapter still
+    // reports them — cross-surface comments must never read as "detached".
+    detachedIds = new Set(
+      (ids || []).filter((id) => {
+        const t = findThread(id);
+        return t && !isForeign(t);
+      })
+    );
+    renderTray(comments.filter((t) => detachedIds.has(t.id)));
+    renderSidebar();
   }
 
   // Exposed synchronously (before start()) so a page whose inline script runs
@@ -350,7 +382,13 @@
   // — can register during parse. A page that loads AFTER us instead listens for
   // the `fused-annotate:ready` event start() dispatches, and/or pre-sets
   // window.__fusedAnnotateAdapter which start() picks up (AN-17).
-  window.__fusedAnnotate = { registerAdapter: registerAdapter };
+  // toggleSidebar is the SHELL's entry (AN-28): the preview header's Comments
+  // button reaches into its same-origin iframe and calls it — the sidebar
+  // toggle lives next to the Annotate toggle, not floating over page content.
+  window.__fusedAnnotate = {
+    registerAdapter: registerAdapter,
+    toggleSidebar: () => setSidebarOpen(!sidebarOpen),
+  };
 
   // ===========================================================================
   // 3. Anchors (AN-6) — builder, resolver, path codec.
@@ -410,11 +448,27 @@
   // Build the anchor fields for a freshly-created thread from a click.
   // Precedence: an element with an id → anchorId; otherwise anchorPath; a click
   // on body/html or an unanchorable element → free pin at document coords.
-  function buildAnchor(el, pageX, pageY) {
+  // A click on an <img> additionally records iu/iv — the click point as
+  // fractions of the painted image (AN-24) — so the pin marks the exact spot.
+  function buildAnchor(el, pageX, pageY, clientX, clientY) {
     if (el && el !== document.body && el !== document.documentElement) {
-      if (el.id) return { anchorId: el.id };
-      const path = buildAnchorPath(el);
-      if (path) return { anchorPath: path };
+      let base = null;
+      if (el.id) base = { anchorId: el.id };
+      else {
+        const path = buildAnchorPath(el);
+        if (path) base = { anchorPath: path };
+      }
+      if (base) {
+        if (el.tagName === "IMG" && clientX !== undefined && clientY !== undefined) {
+          const b = imgContentBox(el);
+          if (b.width > 0 && b.height > 0) {
+            // Letterbox clicks clamp to the nearest content edge (AN-24).
+            base.iu = Math.round(Math.min(1, Math.max(0, (clientX - b.left) / b.width)) * 1000) / 1000;
+            base.iv = Math.round(Math.min(1, Math.max(0, (clientY - b.top) / b.height)) * 1000) / 1000;
+          }
+        }
+        return base;
+      }
     }
     return { x: Math.round(pageX), y: Math.round(pageY) };
   }
@@ -427,15 +481,20 @@
     return null; // free pin — positioned by x/y
   }
 
+  // FOREIGN thread (AN-34): `_comments` is shared across a file's preview
+  // modes, so a selection comment (made in the code editor) is visible to the
+  // element overlay and vice versa. Those are NOT detached — their anchor is
+  // fine, it just lives on the other surface. They get no pin/decoration and
+  // never enter the tray; the sidebar lists them with a surface tag instead.
+  function isForeign(thread) {
+    const isSel = !!(thread.selFrom && thread.selTo);
+    return adapter ? !isSel : isSel;
+  }
+
   // Is this thread anchored to something that no longer exists? (Detached →
-  // tray, AN-14.) Free pins (x/y only) are never "detached".
+  // tray, AN-14.) Free pins (x/y only) are never "detached". Foreign threads
+  // (AN-34) are filtered out before this is asked.
   function isDetached(thread) {
-    // A selection-anchored thread (AN-18) belongs to an editor surface; in
-    // element mode it has no DOM anchor and no x/y — dock it in the tray
-    // rather than drawing a bogus pin at the page origin. (The converse —
-    // element threads seen by the selection adapter — is handled by the
-    // adapter's own detachment pass.)
-    if (thread.selFrom && thread.selTo) return true;
     if (!thread.anchorId && !thread.anchorPath) return false;
     return resolveElement(thread) === null;
   }
@@ -495,32 +554,57 @@
       display: flex; align-items: center; justify-content: center;
       font-size: 11px; font-weight: 700; cursor: pointer;
       box-shadow: 0 1px 4px rgba(0,0,0,0.4); user-select: none;
+      animation: __fa_pinin 160ms cubic-bezier(0.34, 1.56, 0.64, 1);
+      transition: transform 120ms cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    @keyframes __fa_pinin {
+      from { transform: translate(-50%, -50%) scale(0); }
+      to { transform: translate(-50%, -50%) scale(1); }
+    }
+    /* A 0-reply pin carries a small dot so the teardrop reads as "a comment",
+       not a stray blob; numerals appear only once there are replies. */
+    .__fa_pin:empty::after {
+      content: ""; width: 6px; height: 6px; border-radius: 50%; background: #10131a;
     }
     .__fa_pin.__fa_resolved { background: var(--fa-muted); opacity: 0.7; }
-    .__fa_pin:hover { filter: brightness(1.1); }
-    /* Popovers (draft + thread) — fixed, interactive. */
+    .__fa_pin:hover { transform: translate(-50%, -50%) scale(1.12); }
+    /* Popovers (draft + thread) — fixed, interactive. Enter decelerating from
+       the anchor corner; removal is instant (no exit animation needed). */
     .__fa_pop {
       position: fixed; z-index: ${Z};
       width: 300px; max-width: calc(100vw - 24px);
       background: var(--fa-bg); color: var(--fa-fg);
       border: 1px solid var(--fa-border); border-radius: 10px;
       box-shadow: 0 8px 28px rgba(0,0,0,0.5); overflow: hidden;
+      transform-origin: top left;
+      animation: __fa_popin 140ms cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    @keyframes __fa_popin {
+      from { opacity: 0; transform: scale(0.96); }
+      to { opacity: 1; transform: scale(1); }
     }
     .__fa_msgs { max-height: 300px; overflow-y: auto; padding: 4px 0; }
     .__fa_msg { padding: 8px 12px; }
     .__fa_msg + .__fa_msg { border-top: 1px solid var(--fa-border); }
     .__fa_msg_top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
     .__fa_time { color: var(--fa-muted); font-size: 11px; white-space: nowrap; }
-    .__fa_edit { color: var(--fa-muted); font-size: 11px; cursor: pointer; background: none; border: none; padding: 0; }
-    .__fa_edit:hover { color: var(--fa-accent); }
+    /* Edit is a small ghost button — same family as __fa_btn, scaled down. */
+    .__fa_edit {
+      font: inherit; font-size: 11px; padding: 2px 8px; cursor: pointer;
+      border: 1px solid var(--fa-border); border-radius: 5px;
+      background: none; color: var(--fa-muted);
+    }
+    .__fa_edit:hover { border-color: var(--fa-accent); color: var(--fa-accent); }
     .__fa_body { white-space: pre-wrap; word-break: break-word; margin-top: 2px; }
-    .__fa_pop textarea {
+    /* One textarea style for every composer host — popover AND sidebar card
+       (reply + inline edit) — so the shared thread body renders identically. */
+    .__fa_pop textarea, .__fa_card textarea {
       width: 100%; resize: vertical; min-height: 34px; max-height: 160px;
       font: inherit; padding: 6px 8px; border-radius: 6px;
       border: 1px solid var(--fa-border); background: var(--fa-bg-alt);
       color: var(--fa-fg); outline: none;
     }
-    .__fa_pop textarea:focus { border-color: var(--fa-accent); }
+    .__fa_pop textarea:focus, .__fa_card textarea:focus { border-color: var(--fa-accent); }
     .__fa_draftwrap, .__fa_replywrap { padding: 8px; }
     .__fa_hint { color: var(--fa-muted); font-size: 11px; margin-top: 4px; }
     .__fa_btn.__fa_primary {
@@ -558,7 +642,7 @@
     .__fa_trayitem:last-child { border-bottom: none; }
     .__fa_trayitem:hover { background: var(--fa-bg-alt); }
     .__fa_traydot {
-      flex: 0 0 auto; width: 18px; height: 18px; border-radius: 50%;
+      flex: 0 0 auto; width: 18px; height: 18px; border-radius: 50% 50% 50% 2px;
       background: var(--fa-muted); color: #10131a; font-size: 10px; font-weight: 700;
       display: flex; align-items: center; justify-content: center;
     }
@@ -572,6 +656,103 @@
       padding: 8px 14px; box-shadow: 0 8px 28px rgba(0,0,0,0.5);
       display: none; max-width: calc(100vw - 24px);
     }
+    /* Reveal flashes (AN-30) — document coords like pins, so they scroll with
+       content and smooth-scroll timing can't strand them. Own container: a
+       child of #__fa_pins would break reposition()'s index-parallel walk. */
+    #__fa_fx { position: absolute; top: 0; left: 0; pointer-events: none; }
+    .__fa_flash {
+      position: absolute; pointer-events: none;
+      border: 2px solid var(--fa-accent); border-radius: 4px;
+      background: color-mix(in srgb, var(--fa-accent) 20%, transparent);
+      animation: __fa_flashpulse 900ms ease-out forwards;
+    }
+    .__fa_flash_dot { border-radius: 50%; }
+    /* Pulse in → hold → fade: reads "look here", not "something faded". */
+    @keyframes __fa_flashpulse {
+      0% { opacity: 0; transform: scale(1.04); }
+      15% { opacity: 1; transform: scale(1); }
+      60% { opacity: 1; }
+      100% { opacity: 0; }
+    }
+    /* Sidebar toggle (AN-28) — floating pill, top-right; hidden while open. */
+    #__fa_sidebtn {
+      position: fixed; top: 12px; right: 12px; z-index: ${Z};
+      display: flex; align-items: center; gap: 6px; padding: 6px 10px;
+      background: var(--fa-bg); color: var(--fa-fg);
+      border: 1px solid var(--fa-border); border-radius: 999px;
+      cursor: pointer; font: inherit; font-size: 12px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.35);
+    }
+    #__fa_sidebtn:hover { border-color: var(--fa-accent); }
+    #__fa_sidecount { font-weight: 700; }
+    /* Comments sidebar (AN-28…AN-31). */
+    #__fa_side {
+      position: fixed; top: 0; right: 0; bottom: 0; z-index: ${Z};
+      width: 320px; max-width: 85vw;
+      background: var(--fa-bg); color: var(--fa-fg);
+      border-left: 1px solid var(--fa-border);
+      box-shadow: -8px 0 28px rgba(0,0,0,0.35);
+      transform: translateX(105%);
+      transition: transform 240ms cubic-bezier(0.32, 0.72, 0, 1);
+      display: flex; flex-direction: column;
+    }
+    #__fa_side.__fa_open { transform: translateX(0); }
+    /* Card list settles in just after the panel (fade + small rise). */
+    #__fa_side.__fa_open #__fa_side_list {
+      animation: __fa_listin 180ms cubic-bezier(0.16, 1, 0.3, 1) 60ms backwards;
+    }
+    @keyframes __fa_listin {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    #__fa_side_head {
+      display: flex; align-items: center; gap: 8px; padding: 12px 16px;
+      font-size: 14px; font-weight: 600;
+      border-bottom: 1px solid var(--fa-border);
+    }
+    #__fa_side_close {
+      display: flex; align-items: center; justify-content: center;
+      width: 22px; height: 22px; border-radius: 6px;
+      background: none; border: none; color: var(--fa-muted); cursor: pointer; padding: 0;
+    }
+    #__fa_side_close:hover { background: var(--fa-bg-alt); color: var(--fa-fg); }
+    #__fa_side_list { flex: 1 1 auto; overflow-y: auto; }
+    .__fa_side_empty { padding: 40px 24px; color: var(--fa-muted); text-align: center; }
+    .__fa_side_empty svg { opacity: 0.5; margin-bottom: 12px; }
+    .__fa_side_empty_title { font-weight: 600; color: var(--fa-fg); margin-bottom: 4px; }
+    /* Section label splitting resolved threads from open ones (AN-29). */
+    .__fa_side_sect {
+      padding: 10px 16px 4px; font-size: 11px; font-weight: 600;
+      color: var(--fa-muted); border-top: 1px solid var(--fa-border);
+    }
+    .__fa_card {
+      padding: 12px 16px; border-bottom: 1px solid var(--fa-border);
+      border-left: 3px solid transparent; cursor: pointer;
+    }
+    .__fa_card:hover { background: var(--fa-bg-alt); }
+    .__fa_card.__fa_card_resolved { opacity: 0.72; }
+    .__fa_card_open {
+      padding: 0; cursor: default; opacity: 1;
+      border-left-color: var(--fa-accent); background: var(--fa-bg-alt);
+    }
+    .__fa_card_top { display: flex; align-items: center; gap: 8px; }
+    .__fa_carddot {
+      flex: 0 0 auto; width: 16px; height: 16px; border-radius: 50% 50% 50% 2px;
+      background: var(--fa-accent); color: #10131a; font-size: 9px; font-weight: 700;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .__fa_carddot_resolved { background: var(--fa-muted); opacity: 0.7; }
+    .__fa_tag {
+      font-size: 10px; color: var(--fa-muted);
+      border: 1px solid var(--fa-border); border-radius: 4px; padding: 0 4px;
+    }
+    .__fa_card_replies { font-size: 11px; color: var(--fa-muted); }
+    .__fa_card_snip {
+      margin-top: 4px; word-break: break-word; overflow: hidden;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    }
+    /* Sidebar open shifts the detached tray out from under the panel. */
+    #__fa_root.__fa_sideopen #__fa_tray { right: 344px; }
   `;
 
   const root = document.createElement("div");
@@ -580,7 +761,16 @@
     <div id="__fa_hl"></div>
     <div id="__fa_dot"></div>
     <div id="__fa_pins"></div>
+    <div id="__fa_fx"></div>
     <div id="__fa_tray"><div id="__fa_tray_title">Detached comments</div><div id="__fa_tray_list"></div></div>
+    <button id="__fa_sidebtn" title="All comments">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="13" y2="12"/></svg>
+      <span id="__fa_sidecount">0</span>
+    </button>
+    <div id="__fa_side">
+      <div id="__fa_side_head"><span>Comments</span><span class="__fa_spacer"></span><button id="__fa_side_close" title="Close"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg></button></div>
+      <div id="__fa_side_list"></div>
+    </div>
     <div id="__fa_toast"></div>
   `;
 
@@ -596,6 +786,10 @@
   const trayEl = () => root.querySelector("#__fa_tray");
   const trayListEl = () => root.querySelector("#__fa_tray_list");
   const toastEl = () => root.querySelector("#__fa_toast");
+  const fxEl = () => root.querySelector("#__fa_fx");
+  const sideEl = () => root.querySelector("#__fa_side");
+  const sideListEl = () => root.querySelector("#__fa_side_list");
+  const sideBtnEl = () => root.querySelector("#__fa_sidebtn");
 
   let toastTimer = null;
   function showToast(msg) {
@@ -640,6 +834,53 @@
   function clampPin(x, y) {
     const maxX = Math.max(document.documentElement.scrollWidth, window.innerWidth) - 12;
     return { x: Math.max(12, Math.min(x, maxX)), y: Math.max(12, y) };
+  }
+
+  // Displayed CONTENT box of an <img> in client coords, object-fit-aware
+  // (AN-24): with `contain`/`cover`/`scale-down` the painted image doesn't fill
+  // the element box, so pixel fractions must be taken of the painted area, not
+  // the layout rect — otherwise letterbox padding shifts the pin between
+  // renders at different sizes.
+  function imgContentBox(img) {
+    const r = img.getBoundingClientRect();
+    const natW = img.naturalWidth;
+    const natH = img.naturalHeight;
+    if (!natW || !natH || !r.width || !r.height) {
+      return { left: r.left, top: r.top, width: r.width, height: r.height };
+    }
+    const fit = (getComputedStyle(img).objectFit || "fill");
+    let w, h;
+    if (fit === "none") {
+      w = natW;
+      h = natH;
+    } else if (fit === "contain" || fit === "cover" || fit === "scale-down") {
+      let s =
+        fit === "cover"
+          ? Math.max(r.width / natW, r.height / natH)
+          : Math.min(r.width / natW, r.height / natH);
+      if (fit === "scale-down") s = Math.min(s, 1);
+      w = natW * s;
+      h = natH * s;
+    } else {
+      // fill (default): content box === element box.
+      w = r.width;
+      h = r.height;
+    }
+    return { left: r.left + (r.width - w) / 2, top: r.top + (r.height - h) / 2, width: w, height: h };
+  }
+
+  // Document-coord pin position for a thread on its resolved element: an image
+  // thread with iu/iv pins at that fraction of the painted image (AN-25);
+  // everything else keeps the top-right corner (AN-11).
+  function pinPoint(thread, el) {
+    if (thread.iu !== undefined && thread.iv !== undefined && el.tagName === "IMG") {
+      const b = imgContentBox(el);
+      return {
+        x: b.left + thread.iu * b.width + window.scrollX,
+        y: b.top + thread.iv * b.height + window.scrollY,
+      };
+    }
+    return pageAnchorPoint(el);
   }
 
   // ===========================================================================
@@ -702,13 +943,15 @@
   let openPopover = null; // { el, thread? } bookkeeping for reposition/close.
 
   function positionPopover(pop, clientX, clientY) {
-    // Clamp to viewport with a small margin.
+    // Clamp to viewport with a small margin; an open sidebar (AN-28) shrinks
+    // the usable width so popovers never slide underneath the panel.
     const margin = 8;
+    const usableRight = window.innerWidth - (sidebarOpen ? sideEl().offsetWidth : 0);
     const w = pop.offsetWidth || 300;
     const h = pop.offsetHeight || 120;
     let left = clientX + 12;
     let top = clientY + 12;
-    if (left + w + margin > window.innerWidth) left = window.innerWidth - w - margin;
+    if (left + w + margin > usableRight) left = usableRight - w - margin;
     if (top + h + margin > window.innerHeight) top = window.innerHeight - h - margin;
     if (left < margin) left = margin;
     if (top < margin) top = margin;
@@ -721,7 +964,7 @@
   // thread on submit. When absent (element mode) we build the anchor from the
   // clicked element/coords (AN-6).
   function openDraft(el, pageX, pageY, clientX, clientY, anchorFields) {
-    const anchor = anchorFields || buildAnchor(el, pageX, pageY);
+    const anchor = anchorFields || buildAnchor(el, pageX, pageY, clientX, clientY);
     hlEl().style.display = "none";
 
     // Tether the composer to what it annotates: an anchor dot at the click
@@ -808,15 +1051,15 @@
     renderThread(pop, thread);
     positionPopover(pop, clientX, clientY);
     openPopover = { kind: "thread", el: pop, threadId: id, clientX, clientY };
+    focusCard(id); // anchor → list: highlight the card in an open sidebar (AN-31)
   }
 
-  // (Re)render a thread popover's contents from the current thread state.
-  function renderThread(pop, thread) {
-    const resolved = thread.status === "resolved";
+  // Root + chronological replies as .__fa_msg markup — shared by the thread
+  // popover (AN-12) and the expanded sidebar card (AN-29).
+  function threadMessagesHtml(thread) {
     const msgs = [{ id: thread.id, content: thread.content, createdAt: thread.createdAt, root: true }]
       .concat(thread.replies.slice().sort((a, b) => a.createdAt - b.createdAt));
-
-    const msgHtml = msgs
+    return msgs
       .map(
         (m) => `
         <div class="__fa_msg" data-msg="${esc(m.id)}">
@@ -828,13 +1071,21 @@
         </div>`
       )
       .join("");
+  }
 
-    pop.innerHTML = `
-      <div class="__fa_msgs">${msgHtml}</div>
+  // ONE thread body for BOTH hosts — the popover (AN-12) and the expanded
+  // sidebar card (AN-29) render byte-identical markup through here: messages,
+  // reply composer (Enter submits — no button), Resolve/Delete footer.
+  // `rerender` is the host's restore hook for edit-cancel (null = popover).
+  function renderThreadBody(container, thread, rerender) {
+    const resolved = thread.status === "resolved";
+
+    container.innerHTML = `
+      <div class="__fa_msgs">${threadMessagesHtml(thread)}</div>
       ${
         resolved
           ? ""
-          : `<div class="__fa_replywrap"><textarea placeholder="Reply…"></textarea></div>`
+          : `<div class="__fa_replywrap"><textarea placeholder="Reply…"></textarea><div class="__fa_hint">Enter to reply · Shift+Enter for newline</div></div>`
       }
       <div class="__fa_footer">
         <button class="__fa_btn" data-act="toggle">${resolved ? "Reopen" : "Resolve"}</button>
@@ -842,16 +1093,16 @@
         <button class="__fa_btn __fa_danger" data-act="delete">Delete</button>
       </div>`;
 
-    // Reply submit.
-    const replyTa = pop.querySelector(".__fa_replywrap textarea");
+    // Reply submit — Enter, mirroring the draft composer.
+    const replyTa = container.querySelector(".__fa_replywrap textarea");
     if (replyTa) {
       replyTa.addEventListener("keydown", (ev) => {
         if (ev.key === "Enter" && !ev.shiftKey) {
           ev.preventDefault();
           const content = replyTa.value.trim();
-          if (!content) return;
-          addReply(thread.id, content);
-        } else if (ev.key === "Escape") {
+          if (content) addReply(thread.id, content);
+        } else if (ev.key === "Escape" && !rerender) {
+          // Popover host only: Escape dismisses it (the sidebar card stays).
           ev.preventDefault();
           closePopover();
         }
@@ -859,21 +1110,36 @@
     }
 
     // Inline edit per message (AN-12).
-    pop.querySelectorAll("[data-edit]").forEach((btn) => {
-      btn.addEventListener("click", () => beginEdit(pop, thread, btn.getAttribute("data-edit")));
+    container.querySelectorAll("[data-edit]").forEach((btn) => {
+      btn.addEventListener("click", () => beginEdit(container, thread, btn.getAttribute("data-edit"), rerender));
     });
 
     // Footer actions.
-    pop.querySelector('[data-act="toggle"]').addEventListener("click", () => toggleResolved(thread.id));
-    pop.querySelector('[data-act="delete"]').addEventListener("click", () => deleteThread(thread.id));
+    container.querySelector('[data-act="toggle"]').addEventListener("click", () => toggleResolved(thread.id));
+    container.querySelector('[data-act="delete"]').addEventListener("click", () => deleteThread(thread.id));
+  }
+
+  // (Re)render a thread popover's contents from the current thread state.
+  function renderThread(pop, thread) {
+    renderThreadBody(pop, thread, null);
   }
 
   // Swap a message body for an edit textarea; Enter/blur saves, Escape cancels.
-  function beginEdit(pop, thread, msgId) {
-    const msgEl = pop.querySelector(`.__fa_msg[data-msg="${CSS.escape(msgId)}"]`);
+  // `rerender` restores the container on cancel/no-change: the popover re-runs
+  // renderThread on itself (default), the sidebar card re-runs renderSidebar
+  // (AN-29) — same edit path, two hosts.
+  function beginEdit(container, thread, msgId, rerender) {
+    const msgEl = container.querySelector(`.__fa_msg[data-msg="${CSS.escape(msgId)}"]`);
     if (!msgEl) return;
     const bodyEl = msgEl.querySelector(".__fa_body");
     const current = msgId === thread.id ? thread.content : (thread.replies.find((r) => r.id === msgId) || {}).content || "";
+
+    const restore = () => {
+      const t = findThread(thread.id);
+      if (!t) return;
+      if (rerender) rerender();
+      else if (openPopover && openPopover.el === container) renderThread(container, t);
+    };
 
     const ta = document.createElement("textarea");
     ta.value = current;
@@ -889,9 +1155,7 @@
       if (content && content !== current) {
         editMessage(thread.id, msgId, content);
       } else {
-        // No change / empty → re-render to restore the original body.
-        const t = findThread(thread.id);
-        if (t && openPopover && openPopover.el === pop) renderThread(pop, t);
+        restore(); // no change / empty → restore the original body
       }
     };
     ta.addEventListener("keydown", (ev) => {
@@ -901,8 +1165,7 @@
       } else if (ev.key === "Escape") {
         ev.preventDefault();
         done = true;
-        const t = findThread(thread.id);
-        if (t) renderThread(pop, t);
+        restore();
       }
     });
     ta.addEventListener("blur", save);
@@ -999,6 +1262,7 @@
   // Full render: place a pin for every attached/free thread, dock detached ones
   // into the tray (AN-11/AN-14).
   function render() {
+    renderSidebar(); // sidebar mirrors the same data in BOTH modes (AN-29)
     // Adapter mode owns anchor visuals (decorations + its own detachment via
     // core.setDetached); element pins/tray are not drawn here (AN-17).
     if (adapter) return;
@@ -1007,6 +1271,7 @@
     const detached = [];
 
     for (const thread of comments) {
+      if (isForeign(thread)) continue; // other surface — sidebar lists it (AN-34)
       if (isDetached(thread)) {
         detached.push(thread);
         continue;
@@ -1014,7 +1279,7 @@
       const el = resolveElement(thread);
       let x, y;
       if (el) {
-        const p = pageAnchorPoint(el);
+        const p = pinPoint(thread, el); // iu/iv-aware for images (AN-25)
         x = p.x;
         y = p.y;
       } else {
@@ -1039,6 +1304,7 @@
       pins.appendChild(pin);
     }
 
+    detachedIds = new Set(detached.map((t) => t.id)); // sidebar "detached" tags (AN-30)
     renderTray(detached);
   }
 
@@ -1067,6 +1333,197 @@
     }
   }
 
+  // ===========================================================================
+  // 10b. Comments sidebar (SPEC §17.7, AN-28…AN-33) — a Google-Docs-style
+  // review panel over the SAME thread data. View only: every mutation routes
+  // through the existing commit()/render() path, which re-renders the sidebar.
+  // ===========================================================================
+
+  let sidebarOpen = false; // ephemeral, per pane — deliberately NOT URL state (AN-28)
+  let expandedCardId = null; // the one card showing the full thread (AN-29)
+  let detachedIds = new Set(); // last-known detachment set, both modes (AN-30)
+
+  // The sidebar is the annotate-mode home for comments: it AUTO-OPENS with the
+  // mode (AN-28) — no header button, no hunting. The floating pill exists only
+  // as the reopen affordance after an explicit close (×/Escape).
+  function setSidebarOpen(open) {
+    sidebarOpen = open;
+    root.classList.toggle("__fa_sideopen", open); // shifts the tray (CSS)
+    sideEl().classList.toggle("__fa_open", open);
+    sideBtnEl().style.display = open ? "none" : "flex";
+    // Google-Docs behavior: the panel RESERVES space instead of covering
+    // content — push the page over by the panel's real width (85vw-capped),
+    // restore on close. Inline margin beats a class here because the width is
+    // computed; the transition is set once in start() so both directions ease.
+    document.body.style.marginRight = open ? sideEl().offsetWidth + "px" : "";
+    if (open) renderSidebar();
+  }
+
+  // Rebuild the toggle count + (when open) the card list. Open threads first,
+  // newest-first within each group (AN-29).
+  function renderSidebar() {
+    const openCount = comments.filter((t) => t.status !== "resolved").length;
+    sideBtnEl().querySelector("#__fa_sidecount").textContent = String(openCount);
+    if (!sidebarOpen) return;
+    const list = sideListEl();
+    list.innerHTML = "";
+    if (comments.length === 0) {
+      const hint = adapter
+        ? "Select some text in the editor to leave a comment."
+        : "Click any element on the page to leave a comment.";
+      list.innerHTML = `
+        <div class="__fa_side_empty">
+          <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          <div class="__fa_side_empty_title">No comments yet</div>
+          <div>${hint}</div>
+        </div>`;
+      return;
+    }
+    const sorted = comments.slice().sort((a, b) => {
+      const ra = a.status === "resolved" ? 1 : 0;
+      const rb = b.status === "resolved" ? 1 : 0;
+      if (ra !== rb) return ra - rb;
+      return b.createdAt - a.createdAt;
+    });
+    let sectAdded = false;
+    for (const t of sorted) {
+      // Label the resolved group so the open→resolved break is scannable.
+      if (!sectAdded && t.status === "resolved") {
+        sectAdded = true;
+        const n = sorted.filter((x) => x.status === "resolved").length;
+        const sect = document.createElement("div");
+        sect.className = "__fa_side_sect";
+        sect.textContent = "Resolved (" + n + ")";
+        list.appendChild(sect);
+      }
+      list.appendChild(t.id === expandedCardId ? expandedCard(t) : collapsedCard(t));
+    }
+  }
+
+  // Collapsed-card header row (the expanded card renders the shared thread
+  // body instead — no header, so timestamps never duplicate).
+  function cardTopHtml(thread) {
+    const replies = thread.replies.length;
+    // Foreign threads (AN-34) are tagged with the surface they belong to —
+    // "detached" is reserved for anchors that truly no longer resolve.
+    const tag = isForeign(thread)
+      ? adapter
+        ? "preview"
+        : "code"
+      : detachedIds.has(thread.id)
+        ? "detached"
+        : "";
+    return `
+      <div class="__fa_card_top">
+        <span class="__fa_carddot${thread.status === "resolved" ? " __fa_carddot_resolved" : ""}">${esc(pinGlyph(thread))}</span>
+        <span class="__fa_time">${esc(relTime(thread.updatedAt || thread.createdAt))}</span>
+        ${tag ? `<span class="__fa_tag">${tag}</span>` : ""}
+        <span class="__fa_spacer"></span>
+        ${replies ? `<span class="__fa_card_replies">${replies} ${replies === 1 ? "reply" : "replies"}</span>` : ""}
+      </div>`;
+  }
+
+  function collapsedCard(thread) {
+    const card = document.createElement("div");
+    card.className = "__fa_card" + (thread.status === "resolved" ? " __fa_card_resolved" : "");
+    card.setAttribute("data-card", thread.id);
+    card.innerHTML = cardTopHtml(thread) + `<div class="__fa_card_snip">${esc((thread.content || "").slice(0, 120))}</div>`;
+    card.addEventListener("click", () => {
+      expandedCardId = thread.id;
+      renderSidebar();
+      revealAnchor(thread.id); // list → anchor (AN-30)
+      scrollCardIntoView(thread.id);
+    });
+    return card;
+  }
+
+  // Expanded card = the SAME thread body the popover renders (AN-12/AN-29),
+  // hosted inline in the sidebar. Clicking the message area collapses it;
+  // controls keep their own clicks.
+  function expandedCard(thread) {
+    const card = document.createElement("div");
+    card.className = "__fa_card __fa_card_open";
+    card.setAttribute("data-card", thread.id);
+    renderThreadBody(card, thread, renderSidebar);
+    card.addEventListener("click", (e) => {
+      if (e.target.closest("textarea, button")) return;
+      expandedCardId = null;
+      renderSidebar();
+    });
+    return card;
+  }
+
+  function scrollCardIntoView(id) {
+    const card = sideListEl().querySelector(`[data-card="${CSS.escape(id)}"]`);
+    if (card) card.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+
+  // Anchor → list (AN-31): opening a thread from its pin/range highlights its
+  // card in an ALREADY-open sidebar. Never force-opens the panel.
+  function focusCard(id) {
+    if (!sidebarOpen) return;
+    expandedCardId = id;
+    renderSidebar();
+    scrollCardIntoView(id);
+  }
+
+  // List → anchor (AN-30): scroll the thread's anchor into view and flash it.
+  // Adapters own their surfaces — delegate when they implement reveal (AN-32).
+  function revealAnchor(id) {
+    const t = findThread(id);
+    if (!t) return;
+    if (isForeign(t)) {
+      // Anchor lives on the other surface (AN-34) — say where, don't guess.
+      showToast("This comment is on the " + (adapter ? "rendered view" : "code view") + " — switch modes to jump to it");
+      return;
+    }
+    if (adapter) {
+      if (typeof adapter.reveal === "function") adapter.reveal(id);
+      return;
+    }
+    if (isDetached(t)) return; // tagged "detached" in the card; nowhere to go
+    const el = resolveElement(t);
+    if (el) {
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+      if (t.iu !== undefined && t.iv !== undefined && el.tagName === "IMG") {
+        const p = pinPoint(t, el);
+        flashPoint(p.x, p.y);
+      } else {
+        flashRect(el);
+      }
+    } else {
+      // Free pin: center it vertically, flash at the stored point.
+      const cp = clampPin(t.x || 0, t.y || 0);
+      window.scrollTo({ top: Math.max(0, cp.y - window.innerHeight / 2), behavior: "smooth" });
+      flashPoint(cp.x, cp.y);
+    }
+  }
+
+  // Flashes live in #__fa_fx at DOCUMENT coords: they scroll with the content,
+  // so smooth-scroll timing can't strand them mid-viewport (AN-30).
+  function flashRect(el) {
+    const r = el.getBoundingClientRect();
+    const f = document.createElement("div");
+    f.className = "__fa_flash";
+    f.style.left = r.left + window.scrollX + "px";
+    f.style.top = r.top + window.scrollY + "px";
+    f.style.width = r.width + "px";
+    f.style.height = r.height + "px";
+    fxEl().appendChild(f);
+    setTimeout(() => f.remove(), 1500);
+  }
+
+  function flashPoint(x, y) {
+    const f = document.createElement("div");
+    f.className = "__fa_flash __fa_flash_dot";
+    f.style.left = x - 16 + "px";
+    f.style.top = y - 16 + "px";
+    f.style.width = "32px";
+    f.style.height = "32px";
+    fxEl().appendChild(f);
+    setTimeout(() => f.remove(), 1500);
+  }
+
   // Lightweight reposition: only moves existing pins to follow their anchors and
   // re-checks detachment; used on scroll/resize/RAF. A structural DOM change
   // (MutationObserver) triggers a full render() instead, so attach/detach
@@ -1087,7 +1544,7 @@
       let x = thread.x || 0;
       let y = thread.y || 0;
       if (el) {
-        const p = pageAnchorPoint(el);
+        const p = pinPoint(thread, el); // iu/iv-aware for images (AN-25)
         x = p.x;
         y = p.y;
       }
@@ -1115,14 +1572,22 @@
 
   function onKeyDown(e) {
     if (e.key !== "Escape") return;
+    // Textareas inside the overlay own their Escape (draft cancel, edit
+    // cancel) — this capture-phase handler must not close the sidebar/popover
+    // over their heads.
+    if (e.target && insideOverlay(e.target) && e.target.tagName === "TEXTAREA") return;
     e.preventDefault();
-    // Escape closes an open popover/draft first; a second Escape exits
-    // annotate (AN-12) by deleting the reserved `_annotate` key on the target
-    // shell URL through the same replaceState channel `_comments` uses — the
-    // shell's toggle derives its state from the URL (fused:urlchange), so it
-    // re-renders the plain iframe.
+    // Escape order (AN-33): close an open popover/draft, then the sidebar,
+    // then exit annotate (AN-12) by deleting the reserved `_annotate` key on
+    // the target shell URL through the same replaceState channel `_comments`
+    // uses — the shell's toggle derives its state from the URL
+    // (fused:urlchange), so it re-renders the plain iframe.
     if (openPopover) {
       closePopover();
+      return;
+    }
+    if (sidebarOpen) {
+      setSidebarOpen(false);
       return;
     }
     const { layoutSpan, rest } = splitSearch(target.location.search);
@@ -1248,12 +1713,24 @@
     hlEl().style.display = "none";
     pinsEl().innerHTML = "";
     trayEl().style.display = "none";
+    // A first-run toast fired before a late adapter registration must not
+    // linger over the editor (the element-mode hint is wrong there).
+    clearTimeout(toastTimer);
+    toastEl().style.display = "none";
   }
 
   function start() {
     mount();
     loadFromUrl();
     coreReady = true;
+
+    // Sidebar chrome (AN-28) exists in both modes and opens WITH the mode —
+    // entering annotate always shows the comment list, pushing content over
+    // rather than covering it (margin transition matches the panel slide).
+    document.body.style.transition = "margin-right 240ms cubic-bezier(0.32, 0.72, 0, 1)";
+    sideBtnEl().addEventListener("click", () => setSidebarOpen(true));
+    root.querySelector("#__fa_side_close").addEventListener("click", () => setSidebarOpen(false));
+    setSidebarOpen(true);
 
     // Core listeners kept in BOTH modes (AN-17): Escape closes popovers,
     // click-outside dismisses them, urlchange re-reads shared comments.

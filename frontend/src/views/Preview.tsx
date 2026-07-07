@@ -111,10 +111,10 @@ function useAnnotate(): [boolean, () => void] {
   return [on, toggle];
 }
 
-// Comment-bubble toggle button in the icon-button family of ModeSwitcher (AN-2)
-// with the open-comment badge (AN-3). The badge recomputes on every URL change
-// — comments written inside the iframe surface via replaceState +
-// fused:urlchange (useUrlVersion).
+// Comment-bubble toggle button in the icon+label button family of
+// ModeSwitcher (AN-2) with the open-comment badge (AN-3). The badge
+// recomputes on every URL change — comments written inside the iframe
+// surface via replaceState + fused:urlchange (useUrlVersion).
 function AnnotateToggle({ on, onToggle }: { on: boolean; onToggle: () => void }) {
   useUrlVersion();
   const count = openCommentCount();
@@ -126,6 +126,7 @@ function AnnotateToggle({ on, onToggle }: { on: boolean; onToggle: () => void })
       onClick={onToggle}
     >
       {ANNOTATE_ICON}
+      <span className="mode-switcher-label">Annotate</span>
       {count > 0 && <span className="annotate-badge">{count}</span>}
     </button>
   );

@@ -223,9 +223,9 @@
       for (const c of annCore.getComments()) {
         if (!c.selFrom || !c.selTo) {
           // Element/free-pin threads (`_comments` is shared across preview
-          // modes) have no meaning in an editor — dock them in the tray so
-          // they stay visible and answerable instead of silently vanishing.
-          detached.push(c.id);
+          // modes) belong to the RENDERED surface, not this editor — they are
+          // foreign (AN-34), not detached. The core's sidebar lists them with
+          // a "preview" tag; reporting them here would wrongly tray them.
           continue;
         }
         const r = resolveSel(doc, c);
@@ -340,11 +340,24 @@
     // normally already present; the event/global fallbacks cover the reverse
     // order defensively.
     if (ANNOTATE) {
+      let revealTimer = null;
       const adapter = {
         init(core) {
           annCore = core;
           core.onChange(rebuildDecorations); // re-resolve on any data change
           connectAnnotate();
+        },
+        // Sidebar card → anchor (AN-30/AN-32): center the comment's range and
+        // light every span of it briefly, reusing the hover highlight class.
+        reveal(id) {
+          if (!view) return false;
+          const r = resolvedRanges.find((x) => x.id === id);
+          if (!r) return false; // detached — nothing to scroll to
+          view.dispatch({ effects: CM.EditorView.scrollIntoView(r.from, { y: "center" }) });
+          setHoverId(id);
+          clearTimeout(revealTimer);
+          revealTimer = setTimeout(() => setHoverId(null), 1600);
+          return true;
         },
       };
       if (window.__fusedAnnotate && window.__fusedAnnotate.registerAdapter) {

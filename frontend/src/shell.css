@@ -525,10 +525,10 @@ table.listing-table td.mtime {
   background: var(--bg-alt);
 }
 
-/* Icon-only mode switcher (PT-10) — same border/bg/hover/active language as
-   .preview-actions buttons above, sized as compact squares. Selectors carry
-   the .preview-actions ancestor so they win over the generic button rules
-   above at equal-or-lower specificity conflicts (e.g. padding). */
+/* Icon + label mode switcher (PT-10, AN-2) — same border/bg/hover/active
+   language as .preview-actions buttons above, sized as compact pills.
+   Selectors carry the .preview-actions ancestor so they win over the generic
+   button rules above at equal-or-lower specificity conflicts (e.g. padding). */
 .preview-actions .mode-switcher {
   display: flex;
   align-items: center;
@@ -536,12 +536,11 @@ table.listing-table td.mtime {
 }
 
 .preview-actions .mode-switcher-btn {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 28px;
+  gap: 6px;
   height: 28px;
-  padding: 0;
+  padding: 0 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);
@@ -549,9 +548,19 @@ table.listing-table td.mtime {
   cursor: pointer;
 }
 
+/* Text label alongside the icon (AN-2): the "_render" sentinel reads
+   "Preview", the annotate toggle reads "Annotate" — see modeTitle() in
+   ModeSwitcher and AnnotateToggle in Preview. */
+.mode-switcher-label {
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
 .preview-actions .mode-switcher-btn:hover {
   background: var(--bg-alt);
 }
+
 
 .preview-actions .mode-switcher-btn.active {
   background: var(--accent);
@@ -559,9 +568,9 @@ table.listing-table td.mtime {
   border-color: var(--accent);
 }
 
-/* Annotate toggle (AN-2): same icon-button family as .mode-switcher-btn, but
-   position:relative for the badge, and separated from the mode switcher by a
-   hairline divider — it is an orthogonal on/off, not a fourth mode. */
+/* Annotate toggle (AN-2): same icon+label button family as .mode-switcher-btn,
+   but position:relative for the badge, and separated from the mode switcher
+   by a hairline divider — it is an orthogonal on/off, not a fourth mode. */
 .preview-actions .annotate-toggle {
   position: relative;
   margin-left: 10px;

@@ -1,5 +1,5 @@
-// Icon-only mode switcher for the preview header (SPEC PT-10), used by
-// TemplatePreview for every template-mode list, including the hardcoded
+// Icon + label mode switcher for the preview header (SPEC PT-10, AN-2), used
+// by TemplatePreview for every template-mode list, including the hardcoded
 // html `["_render", "code"]` pair (PT-12) — real modes get icons fetched via
 // /api/fs/raw, the "_render" sentinel gets a shell-baked inline SVG (no
 // folder to ship icon.svg from). Rendered only when there is more than one
@@ -13,10 +13,11 @@ export interface ModeSwitcherEntry<M extends string> {
   icon: React.ReactNode;
 }
 
-// Human-readable tooltip for a mode name: the "_render" sentinel reads as
-// "Rendered", ordinary mode names are capitalized ("code" → "Code").
+// Human-readable label (and tooltip) for a mode name (AN-2): the "_render"
+// sentinel reads as "Preview", ordinary mode names are capitalized ("code" →
+// "Code").
 function modeTitle(mode: string): string {
-  if (mode === "_render") return "Rendered";
+  if (mode === "_render") return "Preview";
   return mode.charAt(0).toUpperCase() + mode.slice(1);
 }
 
@@ -39,6 +40,7 @@ export default function ModeSwitcher<M extends string>({ entries, active, onSele
           onClick={() => onSelect(e.mode)}
         >
           {e.icon}
+          <span className="mode-switcher-label">{modeTitle(e.mode)}</span>
         </button>
       ))}
     </div>

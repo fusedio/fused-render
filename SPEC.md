@@ -465,7 +465,7 @@ Goal: comment on rendered output. An annotate overlay on any preview: hovering h
 ### 17.1 Mode & entry
 
 - **AN-1** Annotate is an **orthogonal toggle**, not a `_mode` value — `_mode` belongs to template-mode selection (PT-9, M8). State = reserved **`_annotate=1`** shell param (absent = off); bookmarkable, key deleted when toggled off. Annotate therefore overlays **whichever template mode is active** (rendered html, code editor, parquet table, …).
-- **AN-2** The preview header gains a **comment-bubble toggle button** (inline SVG + tooltip) next to the mode switcher, same icon-button family. Shown for every templated preview — even single-mode files, where the mode switcher itself is hidden (PT-10 renders nothing for one entry); the fallback metadata view has none.
+- **AN-2** The preview header gains a **comment-bubble toggle button** next to the mode switcher, same button family. Shown for every templated preview — even single-mode files, where the mode switcher itself is hidden (PT-10 renders nothing for one entry); the fallback metadata view has none. Mode-switcher buttons and the annotate toggle render **icon + text label** (label = mode title; `_render` reads "Preview", the toggle reads "Annotate") — icon-only proved too cryptic.
 - **AN-3** The Annotate icon carries a **count badge** (number of open comments) whenever `_comments` is non-empty — visible whether or not annotate is on.
 - **AN-4** With annotate on, the shell renders the active mode's **same iframe** plus `_annotate=1` on the iframe URL; the server injects the overlay script only then, and the overlay activates off the flag on its own window. The overlay lives entirely in the injected layer (same pattern as auto-reload §13.3), so view, embed, panel panes, tabs, and standalone `/render` pages all get identical behavior with zero per-surface wiring.
 
@@ -515,6 +515,28 @@ Element anchoring makes no sense inside a text editor. On editor surfaces, annot
 - **AN-21** **Re-resolution:** on load, if the doc slice at the stored range still matches `quote` → attached. Else search the doc for `quote` (first match) → re-anchor in memory (URL rewritten only on the next actual write). No match → detached tray (AN-14 behavior).
 - **AN-22** Edits made outside annotate mode may shift ranges; comments re-resolve by quote on the next annotate session. Accepted drift — the quote is the truth, the line/ch pair is a hint.
 - **AN-23** The vendored CM bundle (`scripts/vendor-codemirror/entry.js`) gains `Decoration`, `StateField`, `StateEffect`, `RangeSet` exports; rebuilt via `build.sh` (Node 22).
+
+### 17.6 Image pixel anchors (AN-24…AN-27)
+
+Anchoring a comment to a whole `<img>` loses the point being made — image feedback is about a *spot*. Clicks on images therefore carry a pixel-level anchor refinement. This is element mode behavior (no adapter): it works in the image template and equally on any `<img>` inside rendered HTML/markdown.
+
+- **AN-24** **Anchor form:** clicking an `<img>` stores the ordinary element anchor (AN-6: `anchorId`/`anchorPath`) **plus** `iu`/`iv` — the click point as fractions (0–1, 3 decimals) of the image's **displayed content box**, computed `object-fit`-aware (`contain`/`cover`/`fill`; letterbox clicks clamp to the nearest content edge). Fractions of the content, not the element box, so the pin stays on the same pixel across window resizes and different render sizes.
+- **AN-25** **Rendering:** a thread with `iu`/`iv` pins at that fractional point **inside** the image (not the element's top-right corner). Repositioning shares the existing pin pipeline (scroll/resize/mutation, AN-11/AN-14); detachment is unchanged — the element anchor is still the resolvable thing, `iu`/`iv` only refine placement.
+- **AN-26** **Serialization:** `iu`/`iv` ride alongside the element anchor in `_comments` (AN-5 schema extended); `compact()` emits them only when present, `normalizeThread()` clamps to [0,1]. Threads without the fields behave exactly as before — fully backward compatible.
+- **AN-27** The draft anchor dot and hover highlight are unchanged (the highlight outlines the whole `<img>`; the dot marks the exact click point while composing).
+
+### 17.7 Comments sidebar (AN-28…AN-33)
+
+Google-Docs-style review panel: all of a pane's comments in one glance, with two-way focus between list and anchors. A *view* over the same threads — creation stays the in-place flow (AN-10/AN-19).
+
+- **AN-28** **Surface:** a **slide-in panel** docked to the pane's right edge, rendered by annotate.js inside the overlay root — so it exists in element mode *and* adapter mode, per pane, on every surface (view/embed/panel/tabs/standalone). The panel **auto-opens with annotate mode** — entering annotate always shows the comment list, no separate toggle button. It can be dismissed (× / Escape); a floating count pill then appears as the reopen affordance. `window.__fusedAnnotate.toggleSidebar()` remains for programmatic use. Open state is ephemeral (not URL state — `_annotate`/`_comments` stay the only reserved keys).
+- **AN-29** **Cards:** every thread, open before resolved, newest-first within each group. Card = status dot/glyph, root snippet, reply count, relative time. The active card expands in place: full root + replies, reply input, per-message Edit, Resolve/Reopen, Delete — the full AN-12 action set, driven through the same mutation path (commit/budget/URL). Popovers and sidebar re-render from the same data on any change.
+- **AN-30** **List → anchor:** clicking a card scrolls its anchor into view and **flashes** it (element: highlight box pulse; image: pin pulse; selection: temporary full-range decoration via the adapter). Detached threads show a "detached" tag and skip the scroll.
+- **AN-31** **Anchor → list:** opening a thread from its pin/range (AN-12/AN-20) highlights + scrolls its card in an open sidebar. Bidirectional focus, no state duplication — both directions key off thread id.
+- **AN-32** **Adapter seam extension (AN-17):** adapters may implement `reveal(id)` (scroll to + flash the anchor; returns true if handled) and receive `core.focusCard(id)` to drive AN-31. Both optional — element mode implements reveal natively.
+- **AN-33** Escape order becomes: close popover → close sidebar → exit annotate (extends AN-12).
+- **AN-34** **Foreign-surface threads:** `_comments` is shared across a file's preview modes, so each surface sees threads anchored on the *other* surface (a selection comment while in Rendered; an element/image comment while in Code). Those are **foreign, not detached** — no pin/decoration, never the tray. The sidebar lists them with a surface tag (`preview`/`code`); clicking one toasts which mode to switch to. "Detached" is reserved for anchors that truly no longer resolve (AN-14/AN-21).
+- **AN-35** **Budget eviction is visible:** when a write drops oldest-resolved threads to fit the AN-7 cap, the overlay toasts how many were removed — comments are never silently discarded.
 
 ## 18. Export — Portable Bundles for Hosted Serving (M10)
 
