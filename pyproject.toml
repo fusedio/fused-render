@@ -10,10 +10,18 @@ requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
-    # openfused local compute backend (dist name "fused"). Dev installs use the
-    # local sandbox checkout: pip install -e ~/Documents/fused/sandbox/openfused
-    "fused>=2.9",
+    # openfused local compute backend (dist name "fused"), pinned to the public
+    # nightly wheel (s3://fused-magic/fused-py-nightly, served over HTTP). A
+    # direct-URL reference installs whatever the wheel carries — its filename
+    # version (0.0.0.post0) is deliberately not constrained. Dev installs may
+    # still override: pip install -e ~/Documents/fused/sandbox/openfused
+    "fused @ https://fused-magic.s3.amazonaws.com/fused-py-nightly/fused-0.0.0.post0-py3-none-any.whl",
 ]
+
+# Required for the direct-URL `fused @ https://...` dependency above — hatchling
+# refuses direct references in wheel metadata unless explicitly allowed.
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [project.optional-dependencies]
 # The packaged .app's data-stack manifest (SPEC DM-2, D58): build_dmg.sh mirrors
