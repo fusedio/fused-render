@@ -114,9 +114,9 @@ fused.params.onChange(callback)   // fires whenever params change; author re-run
 
 - **RH-1** **DECIDED:** `path` may be **relative to the HTML file's own location** or **absolute** (anywhere on the machine — whole filesystem is in scope, consistent with FS-3).
 - **RH-2** `params` is a flat JSON object; keys map to the Python function's keyword arguments (§5.2).
-- **RH-3** Returns a Promise. Resolves with the deserialized return value; rejects with a structured error `{ type, message, traceback }` on Python exception, missing file, missing `main` function, or timeout.
+- **RH-3** Returns a Promise. Resolves with the deserialized return value; rejects with an `Error` whose `.message` is the **final line of the traceback** (reads like `"ZeroDivisionError: division by zero"`), `.traceback` is the full cleaned traceback text (frames point at the script's real path and line), and `.stdout` carries any print output — on Python exception, missing file, bad dependency header, or timeout.
 - **RH-4** Concurrent calls are allowed (e.g. a page fires 3 data fetches on load). Server may queue or parallelize; ordering is not guaranteed.
-- **RH-5** Calls have a configurable timeout (default e.g. 30 s), after which the worker is killed and the promise rejects.
+- **RH-5** Calls time out at 30 s (backend-enforced), after which the worker is killed and the promise rejects.
 
 ### 4.3 Isolation — DESCOPED (v1)
 
@@ -130,34 +130,50 @@ fused.params.onChange(callback)   // fires whenever params change; author re-run
 
 ### 5.1 Authoring model
 
-**Convention over annotation:** a user Python file exposes a function named **`main`**. No decorator, no import required — a plain `.py` file works as-is:
+A user Python file registers its entry point with **`@fused.udf`** (the `fused` module is provided inside the execution sandbox — no install needed in the script's env):
 
 ```python
+import fused
+
+@fused.udf
 def main(city: str = "oslo", limit: int = 100):
-    import pandas as pd
-    df = pd.read_parquet(f"./data/{city}.parquet").head(limit)
-    return df
+    return {"city": city, "rows": list(range(limit))}
 ```
 
-- **PY-1** When called from HTML, the executor imports the module and calls its `main` with the params. Missing or non-callable `main` → structured error.
-- **PY-2** Module top-level code runs on import (normal Python semantics); side effects there are the user's responsibility.
+Third-party dependencies are declared per-script with a **PEP 723** inline header; the engine resolves them into a cached venv (D56):
+
+```python
+# /// script
+# dependencies = ["pandas", "pyarrow"]
+# ///
+import fused
+import pandas as pd
+
+@fused.udf
+def main(city: str = "oslo", limit: int = 100):
+    df = pd.read_parquet(f"./data/{city}.parquet").head(limit)
+    return df.to_dict("records")
+```
+
+- **PY-1** The engine runs the file through openfused; a registered `@fused.udf` entry point is called with the params. Scripts with no udf may set a module-level `result` variable instead (parameterless style). A plain `def main` without the decorator is **not called**: the module runs top-to-bottom and any params sent are silently unused — no error.
+- **PY-2** Module top-level code runs on every call (the file is compiled and exec'd fresh, not imported); side effects there are the user's responsibility.
 
 ### 5.2 Parameter binding
 
 - **PY-3** The JS `params` object maps to keyword arguments by name.
-- **PY-4** Values arrive as JSON types. If the function has type annotations, the executor coerces (`"100"` → `int 100`, `"true"` → `bool`) since URL-derived params are strings. Unannotated args receive the raw JSON value.
-- **PY-5** Extra params not in the signature: ignored unless the function has `**kwargs`. Missing required args → structured error naming the missing arg.
+- **PY-4** Values arrive as **raw JSON types — no coercion**. The calling JS owns types: pass numbers as numbers, booleans as booleans (URL params are strings, so convert where you read them — `Number(fused.params.get("offset"))`). Annotations on `main` are documentation, not a coercion table. *(Inverts the original string-coercion model, D56/D57.)*
+- **PY-5** Extra or missing params surface as an ordinary Python `TypeError` traceback from the call (no special structured error).
 
 ### 5.3 Execution environment
 
 - **PY-6** **DECIDED (v1):** execution is a **fresh subprocess per call** — always-fresh code, zero stale state, trivial timeout/kill; a crash or `sys.exit` cannot take down the server. Cost: interpreter + import time on every call. A warm worker pool is the designated v2 upgrade if interactivity demands it (API unchanged).
-- **PY-7** The worker's Python interpreter/venv is configurable; default is the environment the server was launched from. (User installs pandas etc. there.)
-- **PY-8** Working directory of execution = the Python file's directory, so relative data paths in user code behave intuitively.
+- **PY-7** Scripts run in an **openfused-managed venv**, never the server's own environment: bare stdlib by default; a PEP 723 `# /// script` header's `dependencies` are resolved into a **cached per-requirements venv** (uv, pip fallback; first call per requirement set builds it — seconds — then it's reused). The server's site-packages are not importable from scripts. *(Supersedes "the environment the server was launched from", D56.)*
+- **PY-8** Working directory during `main()` = the Python file's directory, so relative data paths in user code behave intuitively. (At module-import time the cwd is the engine's exec dir — the backend must read its params file from there before the udf runs; only the `main()` call itself is re-homed.)
 - **PY-9** Module reload: automatic — every call is a fresh process, so edits to the .py file take effect on the next call.
 
 ### 5.4 Return value serialization
 
-**DECIDED (v1): JSON only.** `main` must return JSON-native values (dict / list / str / num / bool / None). Anything else — including DataFrames and bytes — is a structured "return type not serializable" error; the user converts himself (e.g. `df.to_dict("records")`).
+**DECIDED (v1): JSON only.** `main` must return JSON-native values (dict / list / str / num / bool / None). Anything else — including DataFrames and bytes — fails serialization and rejects with the resulting traceback; the user converts himself (e.g. `df.to_dict("records")`).
 
 Deferred to later milestones (needed for data templates):
 
@@ -201,7 +217,7 @@ Built-in renderable-HTML files that ship **inside the application code**. They a
 ```js
 const page = await fused.runPython("./reader.py",
                                    { file: fused.params.get("_file"),
-                                     offset: "0", limit: "500" });
+                                     offset: 0, limit: 500 });
 ```
 
 - **PT-4** Template UI state (current page, selected columns, sort) uses normal params → survives refresh, e.g. `?_file=…&offset=500&sort=fare`.
@@ -272,10 +288,10 @@ const page = await fused.runPython("./reader.py",
 ## 11. Open Questions
 
 1. ~~Whole-disk vs scoped root~~ — **RESOLVED: whole computer, no root concept (FS-3).**
-2. ~~Python env~~ — **RESOLVED: the env the server was launched from. Good enough.**
+2. ~~Python env~~ — ~~RESOLVED: the env the server was launched from~~ — **re-resolved 2026-07-07: openfused-managed venvs + PEP 723 headers (PY-7, D56).**
 3. ~~Streaming/partial results~~ — **RESOLVED: not required.**
 4. **Editing** — is write support (rename/delete/save) wanted in v1 or strictly v2?
-5. **Multiple entry functions per file** addressed by name (`runPython("f.py#chart")`) — needed, or keep `main`-only?
+5. **Multiple entry functions per file** addressed by name (`runPython("f.py#chart")`) — needed, or keep `main`-only? *(2026-07-07 note: openfused calls the **last-registered** `@fused.udf` in a file — one effective entry point per file is the current engine constraint.)*
 6. ~~Param change → auto re-run?~~ — **RESOLVED: manual — author wires `runPython` inside `params.onChange`. Declarative binding possible later, layered on top.**
 
 ---
@@ -285,7 +301,7 @@ const page = await fused.runPython("./reader.py",
 Distribute as a DMG containing a menu-bar app; all UI stays in the browser.
 
 - **DM-1** **DECIDED (v2, D33):** the `.app` is built by **py2app** from a framework-build python (Homebrew `python@3.12`, bootstrapped by the build script). py2app ships a real re-invokable interpreter in-bundle (`Contents/MacOS/python`) — `sys.executable` subprocess executor works unchanged — and its compiled stub gives proper LaunchServices/AppKit process identity (the earlier hand-rolled bash-shim caused flaky NSStatusItem behavior under Finder launches).
-- **DM-2** **DECIDED:** user `runPython` code executes on the **bundled interpreter only**. The `[bundled]` extra ships preinstalled (numpy, pandas, requests, duckdb, polars, matplotlib, scipy, pillow, openpyxl, shapely, geopandas + core pyarrow). py2app note: these are force-copied via `packages` — the executor imports them only in child processes, so import tracing can't see them. Known gap: `mpl_toolkits` (3D axes) excluded (namespace-package vs py2app limitation).
+- **DM-2** **DECIDED:** user `runPython` code executes on the **bundled interpreter only**. The `[bundled]` extra ships preinstalled (numpy, pandas, requests, duckdb, polars, matplotlib, scipy, pillow, openpyxl, shapely, geopandas + core pyarrow). py2app note: these are force-copied via `packages` — the engine imports them only in child processes, so import tracing can't see them. Known gap: `mpl_toolkits` (3D axes) excluded (namespace-package vs py2app limitation). **Wheelhouse (D58):** the .app also ships an in-bundle wheelhouse (`Contents/Resources/wheels/`, the `[bundled]` list + pyarrow); scripts' PEP 723 dependency installs resolve **offline from it first** (`PIP_FIND_LINKS`/`UV_FIND_LINKS`), PyPI fallback when online — since D56 user code imports from openfused venvs, not the interpreter's site-packages, this is what preserves offline first-use.
 - **DM-3** **DECIDED (v2, D34):** regular app — **Dock icon AND menu bar ✦** (Open in browser / Copy URL / Quit). No LSUIElement. Dock right-click → Quit is the discoverable lifecycle path.
 - **DM-4** **DECIDED:** ad-hoc signed for now; future signing/notarization path = **Briefcase external-app mode** (D35), hook noted in build script.
 - **DM-5** Launch flow: pidfile+portfile in `~/Library/Application Support/fused-render/`; liveness probe = GET `/` (file-backed, catches zombies); already running ⇒ open browser only; else start (8765, fall forward to 8775), write pidfile, open browser.
