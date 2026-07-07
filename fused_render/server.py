@@ -7,16 +7,21 @@ giving free concurrency for blocking filesystem/subprocess work.
 """
 import asyncio
 import json
+import logging
 import mimetypes
 import os
 import stat as stat_mod
 import tempfile
+import time
+import traceback
 
 from fastapi import Body, FastAPI, Header, Query
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from fused_render.executor import run_python
+
+logger = logging.getLogger(__name__)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
@@ -288,6 +293,27 @@ def _templates_for(path: str, is_dir: bool):
 
 def create_app(start_dir: str) -> FastAPI:
     app = FastAPI(title="fused-render")
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception(request, exc):
+        # A bare "Internal Server Error" with an empty body is undebuggable on
+        # a DMG install: Finder-launched apps have no visible stderr, so the
+        # traceback used to vanish (e.g. a right-click "Open with FusedRender"
+        # that 500s on /render or /api/run leaves nothing to report). Put the
+        # traceback in the response body (local single-user tool, D3 — the
+        # only reader owns the machine) AND in the log file so a later
+        # `Open logs` gives the full story. Log with the request line so a
+        # noisy log still pins the failure to a URL.
+        tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        logger.error(
+            "unhandled error on %s %s\n%s", request.method, request.url.path, tb
+        )
+        return _error(
+            f"fused-render internal error on {request.method} "
+            f"{request.url.path}:\n\n{tb}",
+            status=500,
+        )
+
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     # Vendored JS libraries (marked, CodeMirror) that templates load by absolute
     # URL. Templates render at /render?path=… so a relative <script src> in a
@@ -311,11 +337,38 @@ def create_app(start_dir: str) -> FastAPI:
         name="template-shared",
     )
 
+    # Static asset mounts are high-volume (every preview pulls runtime.js,
+    # icons, vendored bundles) and almost never the cause of an "Internal
+    # Server Error" or a bad right-click-open — logging them would churn the
+    # rotating file and push the interesting lines out. The request flow that
+    # matters (/view, /render, /api/*) is everything else.
+    _LOG_SKIP_PREFIXES = ("/static/", "/template-assets/", "/template-shared/")
+
     @app.middleware("http")
-    async def no_cache(request, call_next):
+    async def no_cache_and_log(request, call_next):
         # App code changes between restarts and user files change on disk;
         # stale browser caches of shell/runtime JS cause confusing half-old UIs.
-        response = await call_next(request)
+        # Also the browser request log (SPEC SV-3): one INFO line per request
+        # with status + duration, so the log reconstructs the sequence of calls
+        # a page made — the context you need to see *which* request 500'd and
+        # what led to it. A 500 raised in a route escapes call_next; log the
+        # request line before re-raising so the access trail stays complete
+        # (the catch-all handler then logs the traceback).
+        path = request.url.path
+        logged = not path.startswith(_LOG_SKIP_PREFIXES)
+        start = time.monotonic()
+        try:
+            response = await call_next(request)
+        except Exception:
+            if logged:
+                dur = (time.monotonic() - start) * 1000
+                logger.info("%s %s -> 500 (%.0f ms)", request.method, path, dur)
+            raise
+        if logged:
+            dur = (time.monotonic() - start) * 1000
+            logger.info(
+                "%s %s -> %s (%.0f ms)", request.method, path, response.status_code, dur
+            )
         response.headers["Cache-Control"] = "no-cache"
         return response
 

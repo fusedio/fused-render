@@ -9,6 +9,7 @@ pyproject.toml) — it is imported lazily, inside `main()`, so that
 `import fused_render.app` never fails on another platform or in CI.
 """
 import json
+import logging
 import os
 import socket
 import subprocess
@@ -20,7 +21,10 @@ import webbrowser
 
 import uvicorn
 
+from fused_render.logs import log_path, setup_logging
 from fused_render.server import create_app
+
+logger = logging.getLogger("fused_render")
 
 APP_SUPPORT_DIR = os.path.expanduser("~/Library/Application Support/fused-render")
 PIDFILE = os.path.join(APP_SUPPORT_DIR, "server.pid")
@@ -123,12 +127,15 @@ def _start_server_thread(port: int) -> uvicorn.Server:
 
 def main() -> None:
     os.makedirs(APP_SUPPORT_DIR, exist_ok=True)
+    setup_logging()  # first: everything after this can crash-report to the file
+    logger.info("app starting (pid %s)", os.getpid())
 
     existing = find_running_server()
     if existing is not None:
-        _, port = existing
+        pid, port = existing
         # Another instance already owns the menu bar and the pidfile; don't
         # start a second server, just point the browser at it and exit.
+        logger.info("found live server (pid %s, port %s); reusing it", pid, port)
         webbrowser.open(f"http://127.0.0.1:{port}/")
         return
 
@@ -157,8 +164,10 @@ def main() -> None:
 
         target = f"http://127.0.0.1:{port}/view{quote(fs_path)}"
         if state["ready"]:
+            logger.info("opening file view: %s", target)
             webbrowser.open(target)
         else:
+            logger.info("queuing file view until server is ready: %s", target)
             state["pending"].append(target)
 
     # ---- Finder "Open with FusedRender" -------------------------------------
@@ -167,9 +176,14 @@ def main() -> None:
     # NSObject subclass) doesn't implement it — adding the method to the class
     # is all that's needed; pyobjc registers the selector automatically.
     def application_openFiles_(self, _app, filenames):
+        # This is the "Right-Click open" path: Finder "Open with FusedRender".
+        # Log the raw filenames the OS handed us — if a view later 500s, the
+        # log ties the failing URL back to the file the user actually clicked.
+        names = [str(n) for n in filenames]
+        logger.info("Finder open-files event: %s", names)
         state["docs"] = True
-        for name in filenames:
-            open_file_view(str(name))
+        for name in names:
+            open_file_view(name)
 
     rumps.rumps.NSApp.application_openFiles_ = application_openFiles_
 
@@ -181,6 +195,7 @@ def main() -> None:
     # still booting, queue it on the same pending list the bootstrap flushes.
     # Must return a BOOL — returning None here breaks the pyobjc bridge.
     def applicationShouldHandleReopen_hasVisibleWindows_(self, _app, _flag):
+        logger.info("dock reopen event (server ready=%s)", state["ready"])
         if state["ready"]:
             webbrowser.open(url)
         else:
@@ -192,14 +207,17 @@ def main() -> None:
     )
 
     def _bootstrap_server() -> None:
+        logger.info("starting server on port %s", port)
         server = _start_server_thread(port)
         state["server"] = server
         if not _wait_until_ready(port):
-            print(f"fused-render: server did not become ready on port {port}", flush=True)
+            # Log file, not print: Finder-launched apps have no visible stderr.
+            logger.error("server did not become ready on port %s", port)
             rumps.quit_application()
             return
         _write_pidfile(port)
         state["ready"] = True
+        logger.info("server ready on port %s", port)
         pending, state["pending"] = state["pending"], []
         for target in pending:
             webbrowser.open(target)
@@ -213,7 +231,7 @@ def main() -> None:
             # appearance. Icon beats a text title: recognizable and compact
             # in a crowded (notched) menu bar.
             super().__init__("fused-render", icon=icon_path, template=True, quit_button=None)
-            self.menu = ["Open in browser", "Copy URL", "Quit"]
+            self.menu = ["Open in browser", "Copy URL", "Open logs", "Quit"]
 
         @rumps.clicked("Open in browser")
         def open_browser(self, _sender):
@@ -222,6 +240,13 @@ def main() -> None:
         @rumps.clicked("Copy URL")
         def copy_url(self, _sender):
             subprocess.run(["pbcopy"], input=url.encode(), check=False)
+
+        @rumps.clicked("Open logs")
+        def open_logs(self, _sender):
+            # Reveal in Finder rather than opening the file: users are asked to
+            # zip/attach it, and Console.app (the .log default handler) confuses
+            # more than it helps.
+            subprocess.run(["open", "-R", log_path()], check=False)
 
         @rumps.clicked("Quit")
         def quit(self, _sender):
