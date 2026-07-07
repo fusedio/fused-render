@@ -65,6 +65,14 @@ TEMPLATES = {
     # plain text
     ".txt": ["text", "code"],
     ".log": ["text", "code"],
+    # scientific rasters / arrays — decoded in-browser by vendored ESM bundles
+    # (see scripts/vendor-sci); no reader.py involved. Binary formats, so no
+    # code mode.
+    ".tif": ["geotiff"],
+    ".tiff": ["geotiff"],
+    ".nc": ["netcdf"],
+    ".nc4": ["netcdf"],
+    ".cdf": ["netcdf"],
     # hardcoded, registry-exempt (SPEC CT-4): users can't rebind .html/.htm
     # or drop _render. _render is a shell sentinel (PT-12, D62) — no
     # template folder behind it.
@@ -272,6 +280,17 @@ def create_app(start_dir: str) -> FastAPI:
         "/template-assets",
         StaticFiles(directory=os.path.join(TEMPLATES_DIR, "vendor")),
         name="template-assets",
+    )
+    # First-party ESM shared by the sci preview templates (geotiff/netcdf
+    # sciViz core — colormaps, stretch/stats/histogram, canvas draw helpers, UI
+    # kit). Same absolute-URL rationale as /template-assets above. A dedicated
+    # mount (rather than nesting under templates/vendor/) keeps vendor/ strictly
+    # third-party; templates/shared/ has no template.html, so it can never be
+    # resolved as a template name.
+    app.mount(
+        "/template-shared",
+        StaticFiles(directory=os.path.join(TEMPLATES_DIR, "shared")),
+        name="template-shared",
     )
 
     @app.middleware("http")
