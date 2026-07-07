@@ -3,10 +3,18 @@
 No path restriction anywhere — the whole filesystem is in scope by design
 (see DECISIONS.md D2/D3). All `path` query params are absolute filesystem
 paths. Endpoints are sync `def` so FastAPI dispatches them to its threadpool,
-giving free concurrency for blocking filesystem/subprocess work.
+giving free concurrency for blocking filesystem/subprocess work; /api/run is
+async (the fused engine is async; the built-in executor is offloaded).
+
+Execution engine (D68): when the `fused` package is installed, /api/run runs
+code through its local compute backend (`engine.py`); otherwise the built-in
+executor runs, unchanged. `FUSED_RENDER_ENGINE` overrides: `auto` (default),
+`fused` (require it — fail loudly at startup if missing), `builtin` (never
+use it).
 """
 import asyncio
 import json
+import logging
 import mimetypes
 import os
 import stat as stat_mod
@@ -17,6 +25,42 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 
 from fused_render.executor import run_python
+
+logger = logging.getLogger(__name__)
+
+
+def _select_engine() -> str:
+    """Pick the /api/run engine for this process: "fused" or "builtin".
+
+    Availability-driven (D68): `auto` uses fused iff importable; `fused`
+    demands it (a missing package is a startup error, not a silent fallback);
+    `builtin` skips it. Logged either way — engine choice changes the code
+    contract, so it must never be silent.
+    """
+    requested = os.environ.get("FUSED_RENDER_ENGINE", "auto").strip().lower()
+    if requested not in ("auto", "fused", "builtin"):
+        raise RuntimeError(
+            f"FUSED_RENDER_ENGINE={requested!r} is not one of: auto, fused, builtin"
+        )
+    if requested == "builtin":
+        logger.info("execution engine: builtin (forced by FUSED_RENDER_ENGINE)")
+        return "builtin"
+    try:
+        from fused_render import engine as _engine
+
+        ok = _engine.available()
+    except ImportError:
+        ok = False
+    if ok:
+        logger.info("execution engine: fused (local compute backend)")
+        return "fused"
+    if requested == "fused":
+        raise RuntimeError(
+            "FUSED_RENDER_ENGINE=fused but the `fused` package is not importable; "
+            "install it (pip install 'fused-render[fused]') or unset the override"
+        )
+    logger.info("execution engine: builtin (`fused` package not installed)")
+    return "builtin"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
@@ -287,6 +331,7 @@ def _templates_for(path: str, is_dir: bool):
 
 
 def create_app(start_dir: str) -> FastAPI:
+    engine_name = _select_engine()  # "fused" | "builtin" (D68); raises on a bad override
     app = FastAPI(title="fused-render")
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     # Vendored JS libraries (marked, CodeMirror) that templates load by absolute
@@ -348,6 +393,8 @@ def create_app(start_dir: str) -> FastAPI:
         return {
             "start_dir": start_dir,
             "home": os.path.expanduser("~"),
+            # Which /api/run engine this process uses (D68): "fused" | "builtin".
+            "engine": engine_name,
         }
 
     @app.get("/api/fs/stat")
@@ -529,7 +576,7 @@ def create_app(start_dir: str) -> FastAPI:
         return HTMLResponse(html)
 
     @app.post("/api/run")
-    def api_run(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    async def api_run(body: dict = Body(...), x_fused: str | None = Header(default=None)):
         guard = _require_fused(x_fused)
         if guard is not None:
             return guard
@@ -551,7 +598,17 @@ def create_app(start_dir: str) -> FastAPI:
                 )
             resolved = os.path.normpath(os.path.join(os.path.dirname(html), py))
 
-        result = run_python(resolved, params)
+        # Engine dispatch (D68): both paths return the same wire shape
+        # ({ok, result, error:{type,message,traceback}, stdout} — the fused
+        # engine adds stderr/duration_ms), so pages never see which ran.
+        if engine_name == "fused":
+            from fused_render import engine as _engine
+
+            result = await _engine.run_python(resolved, params)
+        else:
+            # The built-in executor blocks on a subprocess; keep the event
+            # loop free (the endpoint is async now for the engine's sake).
+            result = await asyncio.to_thread(run_python, resolved, params)
         # Tell the runtime which absolute file actually ran so it can watch it
         # for auto-reload (LR-2). Set on failed runs too, so a broken py that
         # gets fixed still triggers a reload.

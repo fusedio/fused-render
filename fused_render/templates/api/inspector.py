@@ -1,16 +1,39 @@
 """Inspector backing api/template.html. Statically parses a target .py via
 `ast` — never imports or executes it — and returns the shape the form UI
-needs: module docstring and the `main()` function's signature (params,
-annotations, defaults, docstring). Stdlib only.
+needs: module docstring, PEP 723 dependencies, and the entrypoint function's
+signature (params, annotations, defaults, docstring). Stdlib only.
+
+Entrypoint resolution mirrors the execution engines (D68): a function
+decorated with ``@fused.udf`` wins (any name; the **last** decorated one, the
+same pick the fused engine makes), else a bare ``main()``.
 """
 import ast
 
 
-def _find_main_function(tree):
+def _is_fused_udf_decorator(node) -> bool:
+    # Matches `@fused.udf` and `@fused.udf(...)`.
+    if isinstance(node, ast.Call):
+        node = node.func
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "udf"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "fused"
+    )
+
+
+def _find_entrypoint(tree):
+    """The last ``@fused.udf``-decorated function, else a bare ``main()``."""
+    decorated = None
+    main_fn = None
     for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "main":
-            return node
-    return None
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if any(_is_fused_udf_decorator(d) for d in node.decorator_list):
+            decorated = node  # last one wins, matching the engine's pick
+        elif node.name == "main":
+            main_fn = node
+    return decorated or main_fn
 
 
 def _params(fn) -> list:
@@ -47,7 +70,7 @@ def main(file: str) -> dict:
     except SyntaxError as e:
         return {"parse_error": f"line {e.lineno}: {e.msg}"}
 
-    fn = _find_main_function(tree)
+    fn = _find_entrypoint(tree)
     result = {
         "parse_error": None,
         "module_docstring": ast.get_docstring(tree),

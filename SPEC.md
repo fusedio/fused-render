@@ -172,6 +172,12 @@ Deferred to later milestones (needed for data templates):
 
 - **PY-11** Optional per-call cache keyed by `(resolved py path, file mtime, params)`. Opt-in via config (per-directory or global). Keeps re-renders during param tweaking snappy.
 
+### 5.6 Optional fused engine (D68)
+
+- **PY-12** When the **`fused` package is importable**, `/api/run` executes code through its local compute backend (`engine.py`) instead of the built-in executor: fresh subprocess per call in a temp exec dir (PY-6 semantics preserved), PEP 723 `# /// script` inline requirements resolved into a cached venv (plus a default data-stack set mirroring the `bundled` extra), params delivered via `_params.json`. Absent, the built-in executor runs unchanged. `FUSED_RENDER_ENGINE` overrides: `auto` (default) / `fused` (required — startup error if missing) / `builtin`. The active engine is reported in `GET /api/config` (`engine`) and logged at startup — the choice changes the code contract, so it is never silent.
+- **PY-13** **Code contract under the fused engine:** a function decorated with **`@fused.udf`** — any name, the last decorated one is the entrypoint — receiving params as **raw JSON values** (no annotation coercion; the calling JS owns types); or a plain script assigning **`result = ...`**. A bare **`main()`** remains supported as a compat bridge with PY-4 coercion and PY-8 cwd semantics, so pages and the built-in templates behave identically under either engine. A file with none of the three → the PY-1 structured error, extended to name the alternatives.
+- **PY-14** Both engines return **one wire shape** — `{ok, result, error: {type, message, traceback}, stdout}` (the fused engine adds `stderr`/`duration_ms`) — so `runtime.js` and templates never see which ran. Tracebacks under the fused engine point at the user's real file (the source is compiled as its own unit under its own filename); backend/wrapper plumbing frames are stripped.
+
 ---
 
 ## 6. Params & URL Sync
