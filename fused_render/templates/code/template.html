@@ -221,7 +221,13 @@
       const ranges = [];
       const detached = [];
       for (const c of annCore.getComments()) {
-        if (!c.selFrom || !c.selTo) continue; // only selection-anchored comments
+        if (!c.selFrom || !c.selTo) {
+          // Element/free-pin threads (`_comments` is shared across preview
+          // modes) have no meaning in an editor — dock them in the tray so
+          // they stay visible and answerable instead of silently vanishing.
+          detached.push(c.id);
+          continue;
+        }
         const r = resolveSel(doc, c);
         if (r && r.from < r.to) {
           ranges.push({ from: r.from, to: r.to, id: c.id, resolved: c.status === "resolved" });

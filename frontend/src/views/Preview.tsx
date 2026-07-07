@@ -70,20 +70,20 @@ function openCommentCount(): number {
   }
 }
 
-// URL-backed annotate state, same replaceState discipline as setMode: the
-// initial render honors the URL without rewriting it; only clicks write.
+// URL-backed annotate state: the URL is the ONLY source of truth (no mirrored
+// useState) because the overlay itself can turn annotate off — Escape inside
+// the iframe deletes `_annotate` on this shell URL (AN-12) and fires
+// fused:urlchange, which useUrlVersion turns into a re-render here. Toggle
+// clicks write with the same replaceState discipline as setMode.
 function useAnnotate(): [boolean, () => void] {
-  const [on, setOn] = useState<boolean>(
-    () => new URLSearchParams(location.search).get("_annotate") === "1"
-  );
+  useUrlVersion();
+  const on = new URLSearchParams(location.search).get("_annotate") === "1";
   const toggle = () => {
-    const next = !on;
     const params = new URLSearchParams(location.search);
-    if (next) params.set("_annotate", "1");
+    if (!on) params.set("_annotate", "1");
     else params.delete("_annotate");
     const search = params.toString();
     history.replaceState(null, "", location.pathname + (search ? "?" + search : ""));
-    setOn(next);
   };
   return [on, toggle];
 }

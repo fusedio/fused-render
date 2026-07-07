@@ -430,6 +430,12 @@
   // Is this thread anchored to something that no longer exists? (Detached →
   // tray, AN-14.) Free pins (x/y only) are never "detached".
   function isDetached(thread) {
+    // A selection-anchored thread (AN-18) belongs to an editor surface; in
+    // element mode it has no DOM anchor and no x/y — dock it in the tray
+    // rather than drawing a bogus pin at the page origin. (The converse —
+    // element threads seen by the selection adapter — is handled by the
+    // adapter's own detachment pass.)
+    if (thread.selFrom && thread.selTo) return true;
     if (!thread.anchorId && !thread.anchorPath) return false;
     return resolveElement(thread) === null;
   }
@@ -1058,13 +1064,24 @@
 
   function onKeyDown(e) {
     if (e.key !== "Escape") return;
-    // Escape closes an open popover/draft. Mode exit is the SHELL's job via the
-    // toggle — the iframe cannot change the shell's `_mode` (AN-12), so we stop
-    // at closing the popover and never try.
+    e.preventDefault();
+    // Escape closes an open popover/draft first; a second Escape exits
+    // annotate (AN-12) by deleting the reserved `_annotate` key on the target
+    // shell URL through the same replaceState channel `_comments` uses — the
+    // shell's toggle derives its state from the URL (fused:urlchange), so it
+    // re-renders the plain iframe.
     if (openPopover) {
-      e.preventDefault();
       closePopover();
+      return;
     }
+    const { layoutSpan, rest } = splitSearch(target.location.search);
+    const params = new URLSearchParams(rest);
+    params.delete("_annotate");
+    let search = params.toString();
+    if (layoutSpan) search += (search ? "&" : "") + layoutSpan;
+    const newUrl = target.location.pathname + (search ? "?" + search : "");
+    target.history.replaceState(target.history.state, "", newUrl);
+    target.dispatchEvent(new Event("fused:urlchange"));
   }
 
   // Click-outside closes the popover (AN-12). Registered in the bubble phase so
