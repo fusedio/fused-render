@@ -6,9 +6,13 @@ a cached venv, and — when the code registers a `@fused.udf` — calls the
 last-registered UDF with kwargs read from `_params.json` in that exec dir.
 """
 import json
+import logging
 import os
 import re
 import tomllib
+import traceback
+
+logger = logging.getLogger(__name__)
 
 # PEP 723 reference regex (verbatim from the spec) for inline script metadata.
 _PEP723_BLOCK = re.compile(
@@ -199,11 +203,24 @@ async def run_python(path: str, params: dict) -> dict:
     requirements = sorted(set(DEFAULT_REQUIREMENTS) | set(reqs))
 
     code = build_code(user_code, os.path.dirname(os.path.abspath(path)))
-    r = await get_backend().execute(
-        code=code,
-        requirements=requirements,
-        input_files={"_params.json": json.dumps(params or {}).encode()},
-    )
+    try:
+        r = await get_backend().execute(
+            code=code,
+            requirements=requirements,
+            input_files={"_params.json": json.dumps(params or {}).encode()},
+        )
+    except Exception:
+        # The backend itself blew up (import failure, venv/dep resolution,
+        # subprocess spawn…) — not the user's script. Historically this
+        # escaped as a bare 500 with no body, undebuggable on a DMG install
+        # where stderr is invisible. Return the same wire shape as every
+        # other failure so the page's error overlay (D17) shows the full
+        # traceback, and log it so the log file has it too.
+        logger.exception("backend execute failed for %s", path)
+        return _error(
+            f"fused-render internal error (not your script) while running "
+            f"{path}:\n\n{traceback.format_exc()}"
+        )
     # The backend hands return_value back JSON-encoded; decode it here so the
     # wire carries real values ({"x": 1}, not "{\"x\": 1}"). Base64 binary
     # bodies stay strings, and anything that isn't valid JSON passes through.
