@@ -14,14 +14,15 @@ reasons every one of these needs it:
   1. Binary/data-bearing packages (numpy, pandas, pyarrow, scipy, geopandas,
      matplotlib's mpl-data, ...) ship .so/.dylib files and non-Python data
      that a zipped archive can't hold anyway.
-  2. fused-render's own executor model: `runPython` loads arbitrary user .py
-     files via importlib in a CHILD PROCESS (_child.py), not via a static
-     `import` anywhere in fused_render's own source. py2app's modulegraph
-     only sees imports it can trace from app_entry.py's call graph, so it
-     is structurally blind to whatever a user's script imports at runtime
-     (pandas, pyarrow, PIL, ...). Every package promised by the `[bundled]`
-     extra (SPEC DM-2) must therefore be forced in explicitly — there is no
-     static import for modulegraph to find in the first place.
+  2. fused-render's own execution model: user scripts run through openfused's
+     local backend (fused_render/engine.py) in CHILD PROCESSES inside venvs
+     created at runtime, not via a static `import` anywhere in fused_render's
+     own source. py2app's modulegraph only sees imports it can trace from
+     app_entry.py's call graph, so it is structurally blind to whatever a
+     user's script imports at runtime (pandas, pyarrow, PIL, ...). Every
+     package promised by the `[bundled]` extra (SPEC DM-2) must therefore be
+     forced in explicitly — there is no static import for modulegraph to find
+     in the first place.
 """
 import os
 import re
@@ -41,6 +42,14 @@ VERSION = re.search(r'(?m)^version\s*=\s*"([^"]+)"', _pyproject).group(1)
 ICONFILE = os.environ.get("FUSED_RENDER_ICNS")
 if not ICONFILE or not os.path.isfile(ICONFILE):
     sys.exit(f"FUSED_RENDER_ICNS must point at an existing .icns file (got: {ICONFILE!r})")
+
+# Built by build_dmg.sh (pip download into build/wheels) before invoking
+# py2app — the offline wheelhouse for openfused's PEP 723 venv installs.
+# Shipped via `resources` below so it lands at Contents/Resources/wheels;
+# fused_render/app.py points PIP_FIND_LINKS/UV_FIND_LINKS at it at startup.
+WHEELS_DIR = os.environ.get("FUSED_RENDER_WHEELS")
+if not WHEELS_DIR or not os.path.isdir(WHEELS_DIR):
+    sys.exit(f"FUSED_RENDER_WHEELS must point at an existing wheels directory (got: {WHEELS_DIR!r})")
 
 APP = [os.path.join(SCRIPT_DIR, "app_entry.py")]
 
@@ -73,6 +82,16 @@ OPTIONS = {
     "iconfile": ICONFILE,
     "packages": [
         "fused_render",
+        # openfused local backend ("fused" dist): fused_render/engine.py
+        # imports it lazily (inside get_backend), and it reads its handler
+        # files off disk via Path(__file__) — both patterns a zipped copy
+        # breaks, so whole-dir copy.
+        "fused",
+        # stdlib venv machinery: openfused creates per-script venvs by
+        # re-invoking `sys.executable -m venv` in a SUBPROCESS — no static
+        # import for modulegraph to trace — and ensurepip's bundled pip
+        # wheel is data a zip can't serve.
+        "venv", "ensurepip",
         # [bundled] extra (SPEC DM-2) + its native transitive deps, as
         # actually resolved in the build venv (see build_dmg.sh comments).
         "numpy", "pandas", "dateutil", "six",
@@ -117,6 +136,9 @@ OPTIONS = {
     # `packages` above, but `includes` handles non-package modules correctly
     # (extension -> lib-dynload/*.so, never a bogus .py copy).
     "includes": ["_duckdb"],
+    # Copied verbatim into Contents/Resources/: the wheelhouse dir (named
+    # "wheels") lands at Contents/Resources/wheels.
+    "resources": [WHEELS_DIR],
     "plist": {
         "CFBundleIdentifier": "io.fused.render",
         "CFBundleName": "FusedRender",

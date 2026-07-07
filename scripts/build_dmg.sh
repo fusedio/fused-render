@@ -12,8 +12,10 @@
 # executable gives the process proper LaunchServices/AppKit identity, and
 # modern py2app still ships a REAL python interpreter in the bundle (not a
 # PyInstaller-style freeze) — `sys.executable` inside the running app is a
-# real, re-invokable interpreter, so the subprocess executor
-# (executor.py/_child.py) keeps working completely unchanged (D33).
+# real, re-invokable interpreter. openfused's local backend (which now runs
+# all user scripts, see fused_render/engine.py) depends on exactly that: it
+# creates per-script venvs via `sys.executable -m venv` and re-invokes the
+# interpreter to run user code — impossible from a frozen single-binary (D33).
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
@@ -97,6 +99,40 @@ fi
 echo "==> installing fused-render[bundled,app] + py2app + dmgbuild into the build venv"
 "$BUILD_VENV/bin/pip" install --quiet --upgrade pip
 "$BUILD_VENV/bin/pip" install --quiet "${REPO_ROOT}[bundled,app]" py2app dmgbuild
+
+# ---------------------------------------------------------------------------
+# 2b. Wheelhouse: wheels for the blessed data stack, shipped inside the .app
+#     at Contents/Resources/wheels (via setup_py2app.py's `resources`).
+#
+#     The openfused engine installs each user script's PEP 723 dependencies
+#     into a cached venv at first use, and those install subprocesses inherit
+#     the app process's environment — fused_render/app.py points
+#     PIP_FIND_LINKS/UV_FIND_LINKS at this directory, so first use of the
+#     popular stack resolves locally and works offline, with PyPI as fallback
+#     when online (find-links, deliberately NOT --no-index hard-offline mode).
+#
+#     The set = the [bundled] extra's packages (read live from pyproject.toml
+#     so the two can't drift) + pyarrow (the parquet readers need it and it is
+#     no longer a core dep). Downloading with the build venv's pip guarantees
+#     cp312/arm64-compatible wheels (that venv IS the bundled interpreter);
+#     transitive deps are included by pip download's default resolution.
+#     --only-binary keeps sdists out: an offline bare venv could not build one.
+# ---------------------------------------------------------------------------
+
+echo "==> building wheelhouse"
+WHEELS_DIR="$BUILD_DIR/wheels"
+rm -rf "$WHEELS_DIR"
+mkdir -p "$WHEELS_DIR"
+WHEEL_PKGS="$("$BUILD_VENV/bin/python" -c "
+import tomllib
+with open('${REPO_ROOT}/pyproject.toml', 'rb') as f:
+    deps = tomllib.load(f)['project']['optional-dependencies']['bundled']
+print(' '.join(deps))
+")"
+# shellcheck disable=SC2086  # word-splitting WHEEL_PKGS is the point
+"$BUILD_VENV/bin/pip" download --quiet --only-binary=:all: \
+  --dest "$WHEELS_DIR" $WHEEL_PKGS pyarrow
+echo "    $(find "$WHEELS_DIR" -name '*.whl' | wc -l | tr -d ' ') wheels in $WHEELS_DIR"
 
 # ---------------------------------------------------------------------------
 # 3. App icon: a fresh, high-res render of the same four-pointed sparkle used
@@ -183,7 +219,8 @@ rm -rf "$PY2APP_DIST" "$BUILD_DIR/py2app-build"
 # built - it just needs to not be a directory with its own pyproject.toml.
 (
   cd "$BUILD_DIR"
-  FUSED_RENDER_ICNS="$ICNS_PATH" "$BUILD_VENV/bin/python" "$REPO_ROOT/scripts/setup_py2app.py" py2app \
+  FUSED_RENDER_ICNS="$ICNS_PATH" FUSED_RENDER_WHEELS="$WHEELS_DIR" \
+    "$BUILD_VENV/bin/python" "$REPO_ROOT/scripts/setup_py2app.py" py2app \
     --dist-dir "$PY2APP_DIST" \
     --bdist-base "$BUILD_DIR/py2app-build"
 )
@@ -196,8 +233,14 @@ test -d "$APP_DIR"
 #        mis-copies a bare C-extension module (e.g. _duckdb) to
 #        lib/python3.12/<name>.py, which shadows the real lib-dynload .so
 #        and breaks the import with a null-byte SyntaxError.
-#     b) `import duckdb` actually works through the app's own worker
-#        (_child.py) — the exact path user UDFs take at runtime.
+#     b) The bundled interpreter runs a script end-to-end through the
+#        openfused engine (fused_render.engine.run_python): the fused package
+#        imports from inside the bundle, and — the load-bearing part —
+#        openfused can create its bare venv by re-invoking
+#        `sys.executable -m venv` from the bundle (the D29-class risk).
+#        The script is stdlib-only result-style, so no install/network runs.
+#     c) The wheelhouse shipped: Contents/Resources/wheels holds >0 wheels,
+#        including pyarrow.
 # ---------------------------------------------------------------------------
 
 echo "==> bundle sanity: Mach-O-as-.py check"
@@ -210,30 +253,52 @@ if [[ -n "$BAD_PY" ]]; then
   exit 1
 fi
 
-echo "==> bundle sanity: duckdb import smoke test via _child.py"
+echo "==> bundle sanity: engine smoke test via the bundled interpreter"
 SMOKE_DIR="$BUILD_DIR/smoke"
 rm -rf "$SMOKE_DIR"
-mkdir -p "$SMOKE_DIR"
-cat > "$SMOKE_DIR/duckdb_smoke.py" <<'PYEOF'
-def main() -> dict:
-    import duckdb
-    con = duckdb.connect()
-    return {
-        "duckdb_version": duckdb.__version__,
-        "answer": con.execute("SELECT 42").fetchone()[0],
-    }
+mkdir -p "$SMOKE_DIR/home"
+cat > "$SMOKE_DIR/engine_smoke.py" <<'PYEOF'
+import platform
+
+result = {"smoke": "ok", "python": platform.python_version()}
 PYEOF
-SMOKE_OUT="$(echo "{\"path\":\"$SMOKE_DIR/duckdb_smoke.py\",\"params\":{}}" | \
-  env PYTHONHOME="$APP_DIR/Contents/Resources" \
-  "$APP_DIR/Contents/MacOS/python" \
-  "$APP_PYLIB/fused_render/_child.py")"
-if ! echo "$SMOKE_OUT" | grep -q '"ok": true'; then
-  echo "FATAL: duckdb smoke test failed through _child.py:" >&2
+# HOME is redirected into the smoke dir: openfused caches its venvs under
+# ~/.openfused/venvs keyed by interpreter path, and this build .app's path is
+# deleted in step 7 — don't leave a dead cached venv in the real HOME.
+SMOKE_OUT="$(env PYTHONHOME="$APP_DIR/Contents/Resources" HOME="$SMOKE_DIR/home" \
+  "$APP_DIR/Contents/MacOS/python" -c "
+import asyncio, json, sys
+from fused_render import engine
+out = asyncio.run(engine.run_python('$SMOKE_DIR/engine_smoke.py', {}))
+if out['error'] is not None:
+    sys.exit('engine error: %s' % out['error'])
+rv = out['return_value']
+if isinstance(rv, str):
+    rv = json.loads(rv)
+if not rv or rv.get('smoke') != 'ok':
+    sys.exit('unexpected return_value: %r' % (out['return_value'],))
+print('SMOKE_OK', json.dumps(rv))
+" 2>&1 || true)"
+if ! echo "$SMOKE_OUT" | grep -q 'SMOKE_OK'; then
+  echo "FATAL: engine smoke test failed through the bundled interpreter:" >&2
   echo "$SMOKE_OUT" >&2
   exit 1
 fi
-echo "    $SMOKE_OUT"
+echo "    $(echo "$SMOKE_OUT" | grep 'SMOKE_OK')"
 rm -rf "$SMOKE_DIR"
+
+echo "==> bundle sanity: wheelhouse shipped"
+BUNDLE_WHEELS="$APP_DIR/Contents/Resources/wheels"
+WHL_COUNT="$(find "$BUNDLE_WHEELS" -name '*.whl' 2>/dev/null | wc -l | tr -d ' ')"
+if [[ "$WHL_COUNT" -eq 0 ]]; then
+  echo "FATAL: no wheels found in $BUNDLE_WHEELS" >&2
+  exit 1
+fi
+if ! find "$BUNDLE_WHEELS" -name 'pyarrow-*.whl' | grep -q .; then
+  echo "FATAL: pyarrow wheel missing from $BUNDLE_WHEELS" >&2
+  exit 1
+fi
+echo "    $WHL_COUNT wheels (pyarrow present)"
 
 # ---------------------------------------------------------------------------
 # 5. Ad-hoc codesign (D32/DM-4 carried forward). py2app signs ad-hoc on its
