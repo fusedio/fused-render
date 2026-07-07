@@ -55,11 +55,20 @@ function StatView({ fsPath, epoch }: { fsPath: string; epoch: number }) {
       </div>
     );
   } else if (stat.status === "ok") {
-    content = stat.stat.is_dir ? (
-      <Listing fsPath={fsPath} />
-    ) : (
-      <Preview fsPath={fsPath} stat={stat.stat} />
-    );
+    // Dispatch (ARCHITECTURE §6): a target with templates previews — even a
+    // directory (a `.zarr` store maps to a directory template, D65) — UNLESS
+    // the shell-owned `?listing=1` param forces the plain listing view.
+    // `listing` never reaches a template: it only takes effect on a directory,
+    // and when set it selects Listing (no template iframe is mounted), so it
+    // can't leak into fused.params.
+    const s = stat.stat;
+    const forceListing = new URLSearchParams(location.search).get("listing") === "1";
+    content =
+      s.is_dir && (forceListing || s.templates.length === 0) ? (
+        <Listing fsPath={fsPath} />
+      ) : (
+        <Preview fsPath={fsPath} stat={s} />
+      );
   }
   return (
     <>

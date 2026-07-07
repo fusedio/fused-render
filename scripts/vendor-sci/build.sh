@@ -5,7 +5,8 @@
 #
 # Each library is emitted as its OWN self-contained ESM bundle (no code splitting,
 # so a single file per lib). geotiff's decoders load via dynamic import() which
-# esbuild inlines when --splitting is off — so nothing fetches at runtime.
+# esbuild inlines when --splitting is off; numcodecs (pulled in by zarrita for
+# zstd/blosc) inlines its WASM as base64 — so nothing fetches at runtime.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -22,3 +23,4 @@ build() {
 
 build geotiff-entry.mjs  geotiff.bundle.mjs
 build netcdfjs-entry.mjs netcdfjs.bundle.mjs
+build zarrita-entry.mjs  zarrita.bundle.mjs

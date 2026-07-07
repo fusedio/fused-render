@@ -1,0 +1,502 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zarr preview</title>
+<!--
+  fused-render Zarr (v2 + v3) store preview template — zero React, no build step.
+  Port of app/src/ui/components/sci/ZarrPreview.tsx (+ sciViz.ts, SciHistogram,
+  SciPreviewParts, useCanvasHover). zarrita is vendored (scripts/vendor-sci).
+
+  Input: the reserved `_file` param — an absolute filesystem path to the store
+  DIRECTORY (a .zarr dir maps to this template server-side; see DIR_TEMPLATES).
+  Each member is fetched at rawUrl(root + "/" + key); a 404 = missing member,
+  which zarrita treats as an absent chunk (zero-fill).
+-->
+<style>
+  /* ===== dark theme — fused-render palette (matches the shell + sibling templates) ===== */
+  :root{
+    color-scheme: dark;
+    --background:#131417;
+    --foreground:#e8eaed;
+    --card:#1b1d21;
+    --muted:#2a2d33;
+    --muted-foreground:#9aa0a6;
+    --border:#2a2d33;
+    --input:#2a2d33;
+    --ring:#5b9dff;
+    --primary:#e8eaed;
+    --muted-30:rgba(42,45,51,0.35);
+    --muted-50:rgba(42,45,51,0.6);
+  }
+  *{ box-sizing:border-box; }
+  html,body{ height:100%; margin:0; }
+  body{ background:var(--background); color:var(--foreground); font:13px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; overflow:hidden; -webkit-font-smoothing:antialiased; }
+  .mono{ font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .app{ height:100vh; display:flex; flex-direction:column; }
+  .topbar{ height:44px; flex:0 0 auto; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:0 16px; border-bottom:1px solid var(--border); }
+  .titlewrap{ display:flex; align-items:center; gap:10px; min-width:0; }
+  .badge{ font-size:11px; font-weight:600; letter-spacing:.02em; padding:2px 8px; border:1px solid var(--border); border-radius:999px; color:var(--muted-foreground); text-transform:uppercase; white-space:nowrap; }
+  .fname{ font-family:ui-monospace,monospace; font-size:12px; color:var(--foreground); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .surface{ flex:1 1 auto; min-height:0; overflow:auto; position:relative; }
+  /* no-store / empty state card */
+  .card{ height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; padding:32px; text-align:center; }
+  .card .ico{ font-size:34px; opacity:.4; }
+  .card .t{ font-size:14px; color:var(--foreground); }
+  .card .s{ font-size:12px; color:var(--muted-foreground); max-width:26rem; }
+  /* preview layout: tree | detail */
+  .preview{ height:100%; display:flex; flex-direction:row; }
+  .tree{ flex:0 0 auto; overflow:auto; border-bottom:1px solid var(--border); padding:8px; }
+  @media (min-width:768px){ .tree{ width:256px; border-bottom:0; border-right:1px solid var(--border); } }
+  /* stacked mode: grow + scroll — a viewport-clamped height would squeeze .zdetail and its fixed children would paint past it */
+  @media (max-width:767px){ .preview{ flex-direction:column; height:auto; min-height:100%; } .canvas-area{ height:40vh; } }
+  .tree ul{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:2px; }
+  .tree button{ display:flex; width:100%; align-items:flex-start; gap:8px; border:0; background:transparent; text-align:left; border-radius:4px; padding:4px 8px; font-size:12px; color:var(--muted-foreground); cursor:pointer; }
+  .tree button:hover{ background:var(--muted-50); }
+  .tree button.sel{ background:var(--muted); color:var(--foreground); }
+  .tree .nm{ font-family:ui-monospace,monospace; display:block; word-break:break-word; }
+  .tree .shp{ display:block; color:color-mix(in oklab,var(--muted-foreground) 70%, transparent); font-family:ui-monospace,monospace; }
+  .tree .ico{ flex:0 0 auto; margin-top:1px; opacity:.8; }
+  .zdetail{ display:flex; flex-direction:column; flex:1 1 auto; min-width:0; min-height:0; }
+  .canvas-area{ flex:1 1 auto; min-height:10rem; display:flex; align-items:center; justify-content:center; background:var(--muted-30); padding:16px; }
+  canvas.viz{ max-width:100%; max-height:100%; width:100%; height:100%; object-fit:contain; cursor:crosshair; image-rendering:pixelated; }
+  .hover-readout{ flex:0 0 auto; height:24px; display:flex; align-items:center; overflow:hidden; white-space:nowrap; border-top:1px solid var(--border); padding:0 12px; font-family:ui-monospace,monospace; font-size:11px; color:var(--muted-foreground); }
+  .controls{ flex:0 0 auto; display:flex; flex-wrap:wrap; align-items:center; gap:6px 16px; border-top:1px solid var(--border); padding:6px 12px; }
+  .hist-wrap{ flex:0 0 auto; border-top:1px solid var(--border); padding:8px; }
+  .zmeta{ flex:0 0 auto; max-height:13rem; overflow:auto; border-top:1px solid var(--border); padding:16px; display:flex; flex-direction:column; gap:12px; }
+  /* control widgets */
+  label.field{ display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--muted-foreground); }
+  label.field select{ height:24px; border:1px solid var(--input); background:transparent; color:var(--foreground); border-radius:4px; padding:0 4px; font-family:ui-monospace,monospace; font-size:11px; }
+  label.field select option{ background:var(--card); }
+  label.slider{ display:inline-flex; align-items:center; gap:8px; font-size:11px; color:var(--muted-foreground); min-width:0; }
+  label.slider input[type=range]{ width:128px; height:4px; cursor:pointer; accent-color:var(--foreground); }
+  label.slider .val{ color:var(--foreground); }
+  label.slider .val .dim{ color:var(--muted-foreground); }
+  /* histogram */
+  .collapsible{ border:1px solid var(--border); border-radius:6px; }
+  .collapsible>summary{ cursor:pointer; user-select:none; padding:6px 12px; font-size:12px; font-weight:500; color:var(--muted-foreground); list-style:none; }
+  .collapsible>summary::-webkit-details-marker{ display:none; }
+  .collapsible>summary:hover{ color:var(--foreground); }
+  .collapsible>.body{ border-top:1px solid var(--border); padding:8px 12px; }
+  .hist-toolbar{ display:flex; justify-content:flex-end; }
+  .log-btn{ border:1px solid var(--border); background:transparent; color:var(--muted-foreground); border-radius:4px; padding:0 6px; font-family:ui-monospace,monospace; font-size:10px; cursor:pointer; }
+  .log-btn[aria-pressed=true]{ border-color:color-mix(in oklab,var(--foreground) 40%,transparent); color:var(--foreground); }
+  canvas.hist{ width:100%; height:120px; border-radius:3px; background:var(--muted-30); image-rendering:pixelated; display:block; margin-top:4px; }
+  .hist-canvas-wrap{ position:relative; }
+  .hist-tip{ position:absolute; top:6px; z-index:5; pointer-events:none; background:var(--card); border:1px solid var(--border); border-radius:4px; padding:4px 6px; font-family:ui-monospace,monospace; font-size:10px; color:var(--foreground); white-space:nowrap; box-shadow:0 4px 12px rgba(0,0,0,.4); }
+  .hist-tip .rng{ color:var(--muted-foreground); margin-bottom:2px; }
+  .hist-tip .row{ display:flex; align-items:center; gap:5px; }
+  .hist-tip .sw{ width:8px; height:8px; border-radius:2px; flex:0 0 auto; }
+  .hist-axis{ display:flex; justify-content:space-between; font-family:ui-monospace,monospace; font-size:10px; color:var(--muted-foreground); margin-top:2px; }
+  .stat-line{ font-family:ui-monospace,monospace; font-size:10px; color:var(--muted-foreground); margin:2px 0 0; }
+  /* meta list */
+  dl.meta{ display:grid; grid-template-columns:auto 1fr; gap:4px 16px; font-size:12px; margin:0; }
+  dl.meta dt{ color:var(--muted-foreground); }
+  dl.meta dd{ margin:0; font-family:ui-monospace,monospace; color:var(--foreground); word-break:break-word; }
+  pre.json{ max-height:16rem; overflow:auto; white-space:pre-wrap; word-break:break-word; font-family:ui-monospace,monospace; font-size:11px; color:var(--foreground); margin:0; }
+  pre.json .j-key{ color:#7dd3fc; }
+  pre.json .j-str{ color:#86efac; }
+  pre.json .j-num{ color:#fbbf24; }
+  pre.json .j-bool,pre.json .j-null{ color:#c4b5fd; }
+  pre.json .j-punc{ color:var(--muted-foreground); }
+  /* status */
+  .status{ padding:16px; font-size:13px; color:var(--muted-foreground); }
+  .status.error{ color:#ff6b6b; }
+</style>
+
+<div class="app">
+  <header class="topbar">
+    <div class="titlewrap"><span class="badge">Zarr</span><span class="fname" id="fname">no store</span></div>
+  </header>
+  <main class="surface" id="surface"></main>
+</div>
+
+<script type="module">
+import * as zarr from "/template-assets/zarrita.bundle.mjs";
+import { COLORMAPS, computeStretch, fmtNum, drawHeatmap, el, statusEl, metaList, collapsible, jsonBlock, tinySelect, makeHistogram, attachHover } from "/template-shared/sciviz.mjs";
+
+/* ===========================================================================
+ * Zarr-only helpers — CF-time labeling and the leading-dimension slider have
+ * no geotiff equivalent (it has no CF-time axis or leading dims beyond the
+ * 2-D raster), so they stay local rather than joining the shared sciViz core
+ * in /template-shared/sciviz.mjs.
+ * ======================================================================== */
+const CF_TIME_MS={second:1e3,seconds:1e3,minute:60e3,minutes:60e3,hour:3.6e6,hours:3.6e6,day:86.4e6,days:86.4e6};
+function cfTimeLabel(value,units){
+  if(!units||!Number.isFinite(value)) return null;
+  const m=/^\s*([a-z]+)\s+since\s+(\d{1,4})-(\d{1,2})-(\d{1,2})(?:[T ](\d{1,2}):(\d{1,2})(?::(\d{1,2}(?:\.\d+)?))?)?/i.exec(units);
+  if(!m) return null;
+  const ms=CF_TIME_MS[m[1].toLowerCase()]; if(!ms) return null;
+  const base=Date.UTC(+m[2],+m[3]-1,+m[4],+(m[5]??0),+(m[6]??0),Math.floor(+(m[7]??0)));
+  const d=new Date(base+value*ms);
+  if(Number.isNaN(d.getTime())) return null;
+  return `${d.toISOString().slice(0,16).replace("T"," ")}Z`;
+}
+function makeDimSlider(label, size, initial, onChange){
+  const input=el("input",{type:"range",min:"0",max:String(Math.max(0,size-1)),step:"1",value:String(initial),"aria-label":label+" index"});
+  const valSpan=el("span",{class:"val mono"});
+  function setDisplay(v, coordLabel){
+    valSpan.replaceChildren();
+    valSpan.append(String(v), el("span",{class:"dim"}, ` / ${size-1}`));
+    if(coordLabel!=null && coordLabel!=="") valSpan.append(el("span",{class:"dim"}, ` · ${coordLabel}`));
+  }
+  input.addEventListener("input",()=> onChange(Number(input.value)));
+  return { element: el("label",{class:"slider"}, el("span",{class:"mono"},label), input, valSpan), setDisplay };
+}
+
+/* ===========================================================================
+ * Shell — top bar + the byte-store adapter. Input is the reserved `_file` param.
+ * ======================================================================== */
+const surface=document.getElementById("surface");
+const fnameEl=document.getElementById("fname");
+function setFname(n){ fnameEl.textContent=n||"no store"; }
+function baseName(u){ try{ const p=new URL(u,location.href).pathname; return decodeURIComponent(p.replace(/\/+$/,"").split("/").pop()||u); }catch{ return u; } }
+function fetchHint(e,what){ return e instanceof TypeError ? new Error(`Failed to fetch ${what} — network failure or the raw endpoint returned no body.`) : e; }
+
+/* zarrita byte-store over the raw endpoint. Root = the store's absolute dir path
+ * (_file); each member is fetched at rawUrl(root + key) — keys start with "/" —
+ * and a 404 is treated as a missing member (zarrita zero-fills absent chunks). */
+class FusedStore{
+  constructor(root){ this.root=root.replace(/\/+$/,""); }
+  async get(key){
+    const rel=key.startsWith("/")?key:"/"+key;
+    const url=fused.rawUrl(this.root+rel);
+    let res; try{ res=await fetch(url); }catch(e){ throw fetchHint(e,this.root+rel); }
+    if(res.status===404) return undefined;
+    if(!res.ok) throw new Error(`HTTP ${res.status} for ${rel}`);
+    return new Uint8Array(await res.arrayBuffer());
+  }
+}
+
+function noStoreCard(){
+  surface.replaceChildren(el("div",{class:"card"},
+    el("div",{class:"ico"},"🧊"),
+    el("div",{class:"t"},"No Zarr store selected"),
+    el("div",{class:"s"},"This template renders the store directory named by the _file parameter."),
+  ));
+}
+
+/* ===========================================================================
+ * Zarr helpers — ported from ZarrPreview.tsx module scope.
+ * ======================================================================== */
+const COLORMAP_OPTIONS=[["viridis","viridis"],["magma","magma"],["gray","gray"]];
+const STRETCH_OPTIONS=[["p2-98","2–98%"],["minmax","min–max"]];
+function nodeLabel(path){ return path==="/" ? "root" : path.replace(/^\//,""); }
+function multiscaleDatasetPaths(attrs){
+  const ms=attrs?.multiscales; if(!Array.isArray(ms)) return [];
+  const out=[];
+  for(const m of ms){ const datasets=m?.datasets; if(!Array.isArray(datasets)) continue;
+    for(const d of datasets){ const p=d?.path; if(typeof p==="string") out.push(p); } }
+  return out;
+}
+function multiscaleAxisNames(attrs){
+  const ms=attrs?.multiscales; if(!Array.isArray(ms)||ms.length===0) return null;
+  const axes=ms[0]?.axes; if(!Array.isArray(axes)||axes.length===0) return null;
+  return axes.map(a=>String(a?.name ?? "?"));
+}
+function pickDefault(nodes, rootAttrs){
+  const arrays=nodes.filter(n=>n.kind==="array"); if(arrays.length===0) return null;
+  const ms=multiscaleDatasetPaths(rootAttrs);
+  if(ms.length>0){
+    const smallest=ms[ms.length-1]; const abs=smallest.startsWith("/")?smallest:`/${smallest}`;
+    const found=arrays.find(a=>a.path===abs); if(found) return found.path;
+  }
+  return (arrays.find(a=>(a.shape?.length??0)>=2) ?? arrays[0]).path;
+}
+function dimNamesFor(node, rootAttrs){
+  if(!node || node.kind!=="array" || !node.shape) return null;
+  const ndim=node.shape.length;
+  if(node.dims && node.dims.length===ndim) return node.dims;
+  const ad=node.attrs?._ARRAY_DIMENSIONS;
+  if(Array.isArray(ad) && ad.length===ndim && ad.every(s=>typeof s==="string")) return ad;
+  const axes=multiscaleAxisNames(rootAttrs) ?? multiscaleAxisNames(node.attrs);
+  if(axes && axes.length===ndim) return axes;
+  return node.shape.map((_,i)=>`dim ${i}`);
+}
+
+/* ===========================================================================
+ * Zarr controller — ports the ZarrPreview effects into imperative state.
+ * ======================================================================== */
+function openStore(rawStore){
+  const state={
+    active:null, nodes:[], rootAttrs:undefined, selected:null,
+    openedArr:null, // {path, arr} cache so slider moves don't re-read metadata
+    colormap:"viridis", stretchMode:"p2-98",
+    indices:{path:null, values:[]}, committed:{path:null, values:[]},
+    dimCoords:null, render:null,
+    commitTimer:null, sliceToken:0,
+    dimNames:null, sliders:[],
+  };
+  surface.replaceChildren(statusEl("loading","Opening Zarr store…"));
+
+  (async()=>{
+    const listable=await zarr.withMaybeConsolidatedMetadata(rawStore, { format:["v3","v2"] });
+    const active=listable;
+    state.active=active;
+
+    const readArray=async(path)=>{
+      const arr=await zarr.open(zarr.root(active).resolve(path), {kind:"array"});
+      return { path, kind:"array", shape:[...arr.shape], dtype:String(arr.dtype), chunks:[...arr.chunks], attrs:arr.attrs, dims: arr.dimensionNames ? [...arr.dimensionNames] : undefined };
+    };
+
+    const out=[]; let root;
+    const contents = listable.contents;
+    if(typeof contents==="function"){
+      for(const {path, kind} of contents.call(listable)){
+        if(kind==="array"){ try{ out.push(await readArray(path)); }catch{ /* skip unreadable */ } }
+        else {
+          let attrs; try{ attrs=(await zarr.open(zarr.root(active).resolve(path), {kind:"group"})).attrs; }catch{ /* no attrs */ }
+          out.push({ path, kind:"group", attrs });
+          if(path==="/") root=attrs;
+        }
+      }
+    } else {
+      // No consolidated metadata: open the root; if OME group, walk its scales.
+      const node=await zarr.open(active);
+      if(node.kind==="array"){
+        out.push({ path:"/", kind:"array", shape:[...node.shape], dtype:String(node.dtype), chunks:[...node.chunks], attrs:node.attrs, dims: node.dimensionNames ? [...node.dimensionNames] : undefined });
+      } else {
+        root=node.attrs;
+        out.push({ path:"/", kind:"group", attrs:node.attrs });
+        for(const p of multiscaleDatasetPaths(node.attrs)){ const abs=p.startsWith("/")?p:`/${p}`; try{ out.push(await readArray(abs)); }catch{ /* skip */ } }
+      }
+    }
+
+    state.nodes=out; state.rootAttrs=root;
+    mountZarr(state);
+    selectNode(state, pickDefault(out, root));
+  })().catch(err=>{
+    surface.replaceChildren(statusEl("error",(err&&err.message)||String(err)||"Failed to open Zarr store."));
+  });
+}
+
+/* Visible tree nodes: hide 1-D coordinate arrays, but only when a ≥2-D array exists to fall back to. */
+function visibleNodes(state){
+  const has2d=state.nodes.some(n=>n.kind==="array" && (n.shape?.length??0)>=2);
+  return has2d ? state.nodes.filter(n=>!(n.kind==="array" && (n.shape?.length??0)<2)) : state.nodes;
+}
+
+function mountZarr(state){
+  if(state.nodes.length===0){ surface.replaceChildren(statusEl("empty","No arrays or groups found in this store.")); return; }
+  // Single-array store → the tree is pure noise; the array is auto-selected and the
+  // detail pane takes the full width (its Path meta row still names the array).
+  const visibleArrays=visibleNodes(state).filter(n=>n.kind==="array");
+  state.soleArray = visibleArrays.length===1 && (visibleArrays[0].shape?.length??0)>=2;
+  state.treeUl=el("ul");
+  const tree=state.soleArray ? null : el("div",{class:"tree"}, state.treeUl);
+  state.canvasArea=el("div",{class:"canvas-area"});
+  state.hover=el("div",{class:"hover-readout"},"—");
+  state.controls=el("div",{class:"controls"});
+  state.hist=makeHistogram();
+  state.histWrap=el("div",{class:"hist-wrap"}, state.hist.element);
+  state.zmeta=el("div",{class:"zmeta"});
+  const detail=el("div",{class:"zdetail"}, state.canvasArea, state.hover, state.controls, state.histWrap, state.zmeta);
+  surface.replaceChildren(el("div",{class:"preview"}, tree, detail));
+  renderTree(state);
+}
+
+function renderTree(state){
+  if(state.soleArray) return; // no tree panel mounted (single-array store)
+  state.treeUl.replaceChildren();
+  for(const n of visibleNodes(state)){
+    const ico = n.kind==="group"
+      ? '<svg class="ico" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>'
+      : '<svg class="ico" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/></svg>';
+    const label=el("span",{class:"min-w-0"},
+      el("span",{class:"nm"}, nodeLabel(n.path)),
+      n.kind==="array" ? el("span",{class:"shp"}, `[${n.shape?.join(", ")}] ${n.dtype}`) : null,
+    );
+    const btn=el("button",{class: n.path===state.selected?"sel":"", type:"button", onclick:()=>selectNode(state, n.path)}, el("span",{class:"ico",html:ico}), label);
+    state.treeUl.append(el("li",{}, btn));
+  }
+}
+
+function selectedNodeOf(state){ return state.nodes.find(n=>n.path===state.selected) ?? null; }
+
+/* Selection changed: reset sliders, refresh detail, fetch coord arrays, load slice. */
+function selectNode(state, path){
+  state.selected=path;
+  const node=selectedNodeOf(state);
+  const ndim = node?.kind==="array" ? (node.shape?.length ?? 0) : 0;
+  state.indices={ path, values:new Array(Math.max(0,ndim-2)).fill(0) };
+  state.committed={ path, values:state.indices.values.slice() };
+  state.dimCoords=null;
+  state.dimNames=dimNamesFor(node, state.rootAttrs);
+  state.render=null;
+  if(state.commitTimer){ clearTimeout(state.commitTimer); state.commitTimer=null; }
+  renderTree(state);
+  renderDetail(state);       // shows sliders/selects + placeholder while loading
+  fetchCoords(state, node);  // async — updates slider coord labels + hover when ready
+  loadSlice(state);          // async — fetches only the intersecting chunks
+}
+
+async function fetchCoords(state, node){
+  const shape=node?.shape;
+  if(!state.active || !node || node.kind!=="array" || !shape || !state.dimNames) return;
+  // xarray writes coords BESIDE the data var, so a nested array's coords live at
+  // the parent-group prefix; look there FIRST, then fall back to root-level "/<name>".
+  const groupPrefix=node.path.slice(0, node.path.lastIndexOf("/"));
+  const isCoordArray=(n,d)=> n.kind==="array" && n.shape?.length===1 && n.shape[0]===shape[d];
+  const coords=await Promise.all(state.dimNames.map(async(name,d)=>{
+    const sib = state.nodes.find(n=>n.path===`${groupPrefix}/${name}` && isCoordArray(n,d))
+             ?? state.nodes.find(n=>n.path===`/${name}` && isCoordArray(n,d));
+    if(!sib) return null;
+    try{
+      const arr=await zarr.open(zarr.root(state.active).resolve(sib.path), {kind:"array"});
+      if(!arr.is("number")) return null;
+      const chunk=await zarr.get(arr);
+      const values=new Float64Array(chunk.data.length);
+      for(let i=0;i<values.length;i++) values[i]=Number(chunk.data[i]);
+      const units=typeof sib.attrs?.units==="string" ? sib.attrs.units : undefined;
+      return { values, units };
+    }catch{ return null; }
+  }));
+  if(state.selected!==node.path) return; // selection moved on
+  if(coords.some(c=>c!=null)){ state.dimCoords=coords; refreshSliderLabels(state); paintZarr(state); } // repaint: y-coord may set flipY
+}
+
+function coordLabelFor(state, d, idx){
+  const c=state.dimCoords?.[d]; if(!c) return null;
+  const v=c.values[Math.min(idx, c.values.length-1)];
+  return cfTimeLabel(v, c.units) ?? `${fmtNum(v)}${c.units?` ${c.units}`:""}`;
+}
+function refreshSliderLabels(state){
+  state.sliders.forEach((s,d)=> s.setDisplay(state.indices.values[d]??0, coordLabelFor(state, d, state.indices.values[d]??0)));
+}
+
+/* Render the detail pane's controls + metadata + canvas placeholder for the
+ * current selection (independent of the async slice fetch). */
+function renderDetail(state){
+  const node=selectedNodeOf(state);
+  const ndim = node?.kind==="array" ? (node.shape?.length ?? 0) : 0;
+
+  // canvas-area placeholder (loadSlice swaps in the canvas when ready)
+  if(!node) state.canvasArea.replaceChildren(statusEl("empty","Select an array to preview."));
+  else if(node.kind==="group") state.canvasArea.replaceChildren(statusEl("empty","Group — select an array to render a heatmap."));
+  else state.canvasArea.replaceChildren(statusEl("loading","Reading chunks…"));
+
+  // controls (sliders + selects), only for a renderable array
+  state.controls.replaceChildren();
+  state.sliders=[];
+  const showControls = node?.kind==="array" && ndim>=2;
+  state.controls.style.display = showControls ? "" : "none";
+  state.histWrap.style.display = showControls ? "" : "none";
+  if(showControls){
+    state.indices.values.forEach((v,d)=>{
+      const s=makeDimSlider(state.dimNames?.[d] ?? `dim ${d}`, node.shape?.[d] ?? 1, v, (next)=>{
+        state.indices.values[d]=next; s.setDisplay(next, coordLabelFor(state, d, next));
+        if(state.commitTimer) clearTimeout(state.commitTimer);
+        state.commitTimer=setTimeout(()=>{
+          if(!(state.committed.path===state.indices.path && state.committed.values.every((x,i)=>x===state.indices.values[i]))){
+            state.committed={ path:state.indices.path, values:state.indices.values.slice() };
+            loadSlice(state);
+          }
+        }, 100);
+      });
+      s.setDisplay(v, coordLabelFor(state, d, v));
+      state.sliders.push(s); state.controls.append(s.element);
+    });
+    state.controls.append(
+      tinySelect("colormap", state.colormap, COLORMAP_OPTIONS, (val)=>{ state.colormap=val; paintZarr(state); state.hist.setColormap(val); }),
+      tinySelect("stretch", state.stretchMode, STRETCH_OPTIONS, (val)=>{ state.stretchMode=val; recomputeStretch(state); }),
+    );
+  }
+
+  // metadata
+  state.zmeta.replaceChildren();
+  if(node){
+    if(node.kind==="array"){
+      // 1-D coordinate arrays are hidden from the tree — summarize them here instead.
+      const coords1d=state.nodes.filter(n=>n.kind==="array" && (n.shape?.length??0)===1);
+      const coordText=coords1d.length ? coords1d.map(c=>`${nodeLabel(c.path)} (${c.shape[0]})`).join(" · ") : null;
+      const ml=metaList([
+        ["Path", nodeLabel(node.path)],
+        ["Shape", `[${node.shape?.join(", ")}]`],
+        ["Dims", state.dimNames ? state.dimNames.join(" × ") : null],
+        ["Data type", node.dtype ?? null],
+        ["Chunks", node.chunks ? `[${node.chunks.join(", ")}]` : null],
+        ["Coordinates", coordText],
+      ]);
+      if(ml) state.zmeta.append(ml);
+    }
+    if(node.attrs && Object.keys(node.attrs).length>0) state.zmeta.append(collapsible("Attributes", jsonBlock(node.attrs)));
+    if(node.path!=="/" && state.rootAttrs && Object.keys(state.rootAttrs).length>0) state.zmeta.append(collapsible("Root attributes", jsonBlock(state.rootAttrs)));
+  }
+}
+
+/* Load the active 2-D slice — zarrita fetches ONLY the chunks intersecting
+ * [...indices, null, null] from the byte store (chunk-granular refetch). */
+async function loadSlice(state){
+  const node=selectedNodeOf(state);
+  if(!state.active || !node || node.kind!=="array") return;
+  const ndim=node.shape?.length ?? 0;
+  if(ndim<2){ state.canvasArea.replaceChildren(statusEl("error","1-D array — not shown as a heatmap.")); return; }
+  // A commit for a previously selected array (or not yet reset) must not fetch.
+  if(state.committed.path!==state.selected || state.committed.values.length!==ndim-2) return;
+
+  const token=++state.sliceToken;
+  state.canvasArea.replaceChildren(statusEl("loading","Reading chunks…"));
+  try{
+    let arr = state.openedArr?.path===node.path ? state.openedArr.arr : null;
+    if(!arr){ arr=await zarr.open(zarr.root(state.active).resolve(node.path), {kind:"array"}); state.openedArr={ path:node.path, arr }; }
+    if(!arr.is("number")) throw new Error(`dtype ${String(arr.dtype)} is not previewable as a heatmap.`);
+    const sel=[...state.committed.values, null, null];
+    const chunk=await zarr.get(arr, sel);
+    if(token!==state.sliceToken) return; // a newer slice superseded this one
+    const h=chunk.shape[0], w=chunk.shape[1]; const [s0,s1]=chunk.stride;
+    // CF packing (xarray writes it): report physical values.
+    const sf=typeof node.attrs?.scale_factor==="number" ? node.attrs.scale_factor : 1;
+    const off=typeof node.attrs?.add_offset==="number" ? node.attrs.add_offset : 0;
+    // CF _FillValue/missing_value → mask to NaN BEFORE scale/offset (matches the netcdf path).
+    const fill=typeof node.attrs?._FillValue==="number" ? node.attrs._FillValue
+             : (typeof node.attrs?.missing_value==="number" ? node.attrs.missing_value : null);
+    const flat=new Float64Array(w*h);
+    for(let y=0;y<h;y++) for(let x=0;x<w;x++){ const raw=chunk.data[y*s0+x*s1]; flat[y*w+x]=(fill!=null && raw===fill)?NaN:raw*sf+off; }
+    // Zarr's own fill_value is VALID data (default for sparse chunks), NOT a nodata
+    // sentinel — so nodata:null. Masked fills + NaN/±Inf are dropped by drawHeatmap.
+    state.render={ data:flat, w, h, nodata:null };
+    showCanvas(state);
+  }catch(err){
+    if(token!==state.sliceToken) return;
+    state.canvasArea.replaceChildren(statusEl("error",(err&&err.message)||String(err)));
+  }
+}
+
+function showCanvas(state){
+  const canvas=el("canvas",{class:"viz"});
+  state.canvas=canvas;
+  state.canvasArea.replaceChildren(canvas);
+  attachHover(canvas, ()=>({w:state.render?.w??0, h:state.render?.h??0}), (pixel)=>{
+    if(!pixel || !state.render){ state.hover.textContent="—"; return; }
+    const row=flipYOf(state) ? state.render.h-1-pixel.y : pixel.y; // map canvas → data row
+    const v=state.render.data[row*state.render.w + pixel.x];
+    let geo="";
+    const node=selectedNodeOf(state); const ndim = node?.kind==="array" ? (node.shape?.length??0) : 0;
+    const latArr=state.dimCoords?.[ndim-2], lonArr=state.dimCoords?.[ndim-1];
+    if(latArr && lonArr) geo=` · lat ${fmtNum(latArr.values[row])}, lon ${fmtNum(lonArr.values[pixel.x])}`;
+    state.hover.textContent=`x ${pixel.x}, y ${row} · ${fmtNum(v)}${geo}`;
+  });
+  recomputeStretch(state);
+}
+function recomputeStretch(state){
+  if(!state.render) return;
+  state.stretch=computeStretch(state.render.data, state.stretchMode, {nodata:state.render.nodata});
+  paintZarr(state);
+  state.hist.update([{data:state.render.data, nodata:state.render.nodata}], state.colormap);
+}
+function flipYOf(state){
+  const node=selectedNodeOf(state); const ndim = node?.kind==="array" ? (node.shape?.length??0) : 0;
+  const yc=state.dimCoords?.[ndim-2]; // descending y-coord (e.g. lat N→S) → flip for display
+  return !!(yc && yc.values.length>=2 && yc.values[0] > yc.values[yc.values.length-1]);
+}
+function paintZarr(state){
+  if(!state.canvas || !state.render || !state.stretch) return;
+  drawHeatmap(state.canvas, state.render.data, state.render.w, state.render.h, state.stretch, {nodata:state.render.nodata, lut:COLORMAPS[state.colormap], flipY:flipYOf(state)});
+}
+
+/* ===========================================================================
+ * Boot
+ * ======================================================================== */
+const root=fused.params.get("_file");
+if(root){ setFname(baseName(root)); openStore(new FusedStore(root)); }
+else noStoreCard();
+</script>
