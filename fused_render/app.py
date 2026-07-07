@@ -12,7 +12,6 @@ import json
 import os
 import socket
 import subprocess
-import sys
 import threading
 import time
 import urllib.error
@@ -111,44 +110,6 @@ def _remove_pidfile() -> None:
             pass
 
 
-def _configure_wheelhouse_env() -> None:
-    """Point pip/uv at the bundled wheelhouse, when one is present.
-
-    openfused's local backend installs each user script's PEP 723
-    dependencies into a cached venv via uv (or pip), and those install
-    subprocesses inherit this process's environment. Inside the packaged
-    .app, sys.prefix is Contents/Resources (py2app launches the interpreter
-    with PYTHONHOME pointed there), where build_dmg.sh ships a wheels/ dir
-    holding the blessed data stack — pointing PIP_FIND_LINKS / UV_FIND_LINKS
-    at it makes first use of those packages work offline, with PyPI as the
-    fallback when online (find-links, deliberately not --no-index). Dev runs
-    have no wheels/ under sys.prefix, so this is a no-op there.
-    """
-    wheels = os.path.join(sys.prefix, "wheels")
-    if not os.path.isdir(wheels):
-        return
-    # Prepend to any caller-set value so the bundled wheels are seen first:
-    # PIP_FIND_LINKS is space-separated (pip's multi-value env convention),
-    # UV_FIND_LINKS is comma-separated (uv's env docs; `uv help pip install`).
-    pip_links = os.environ.get("PIP_FIND_LINKS")
-    os.environ["PIP_FIND_LINKS"] = f"{wheels} {pip_links}" if pip_links else wheels
-    uv_links = os.environ.get("UV_FIND_LINKS")
-    os.environ["UV_FIND_LINKS"] = f"{wheels},{uv_links}" if uv_links else wheels
-
-    # The bundled uv (Contents/Resources/appbin, build_dmg.sh §2c) must win
-    # the engine's `shutil.which("uv")` lookup. This is load-bearing, not an
-    # optimization: the stub's PYTHONHOME rides into openfused's install
-    # subprocesses, and under an inherited PYTHONHOME `<venv-python> -m pip`
-    # resolves its prefix to the app bundle — it "installs" there, exits 0,
-    # and the empty venv gets cached as ready (ModuleNotFoundError forever
-    # after). uv resolves the target venv itself and is immune. Finder
-    # launches have a minimal PATH with no uv, so without this prepend the
-    # poisonous pip fallback is exactly what runs.
-    appbin = os.path.join(sys.prefix, "appbin")
-    if os.path.isfile(os.path.join(appbin, "uv")):
-        os.environ["PATH"] = appbin + os.pathsep + os.environ.get("PATH", "")
-
-
 def _start_server_thread(port: int) -> uvicorn.Server:
     """Start uvicorn serving create_app(start_dir=home) on a daemon thread."""
     home = os.path.expanduser("~")
@@ -162,7 +123,6 @@ def _start_server_thread(port: int) -> uvicorn.Server:
 
 def main() -> None:
     os.makedirs(APP_SUPPORT_DIR, exist_ok=True)
-    _configure_wheelhouse_env()  # before the server thread: installs inherit os.environ
 
     existing = find_running_server()
     if existing is not None:

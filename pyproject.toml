@@ -6,30 +6,16 @@ build-backend = "hatchling.build"
 name = "fused-render"
 version = "0.1.0"
 description = "Local file explorer with Python-powered renderable HTML previews"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
-    # openfused local compute backend (dist name "fused"), pinned to the public
-    # nightly wheel (s3://fused-magic/fused-py-nightly, served over HTTP). A
-    # direct-URL reference installs whatever the wheel carries — its filename
-    # version (0.0.0.post0) is deliberately not constrained. Dev installs may
-    # still override: pip install -e ~/Documents/fused/sandbox/openfused
-    "fused @ https://fused-magic.s3.amazonaws.com/fused-py-nightly/fused-0.0.0.post0-py3-none-any.whl",
+    "pyarrow>=14",
 ]
 
-# Required for the direct-URL `fused @ https://...` dependency above — hatchling
-# refuses direct references in wheel metadata unless explicitly allowed.
-[tool.hatch.metadata]
-allow-direct-references = true
-
 [project.optional-dependencies]
-# The packaged .app's data-stack manifest (SPEC DM-2, D58): build_dmg.sh mirrors
-# this list (+ pyarrow) into the in-bundle wheelhouse that scripts' PEP 723 venv
-# installs resolve from offline. NOT installed into the bundle itself (D58
-# slimming): user scripts import from openfused venvs, never the bundled
-# interpreter's site-packages — the fused dist's own hard deps (numpy, pandas,
-# pyarrow, duckdb, requests) are the only data packages that still ship baked.
+# Baked into the bundled CPython of the .app (SPEC DM-2): users of the packaged
+# app cannot pip install, so the interpreter ships with the popular data stack.
 # Dev installs: pip install -e ".[bundled]"
 bundled = [
     "numpy",

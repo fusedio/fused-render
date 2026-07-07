@@ -7,7 +7,7 @@ A fresh session should be able to continue the project from these three files al
 
 ## What we are building (one paragraph)
 
-A fully local file explorer: a Python server on `127.0.0.1` + a browser UI to browse the **entire computer's** filesystem and preview files. The core primitive is **renderable HTML**: any `.html` file previews live and gets an injected JS runtime with (a) `fused.runPython(pyPath, params)` — executes a local Python file's `@fused.udf` entry point (D56) and returns its JSON result — and (b) `fused.params` — string key/values synced into the browser URL, so any view's state is bookmarkable/refreshable. **Preview templates** (parquet table, image, text …) are just renderable HTML files shipped inside the app that receive the target file as a reserved `_file` param — the same two primitives are the entire rendering power of the system. Local only, forever; never cloud.
+A fully local file explorer: a Python server on `127.0.0.1` + a browser UI to browse the **entire computer's** filesystem and preview files. The core primitive is **renderable HTML**: any `.html` file previews live and gets an injected JS runtime with (a) `fused.runPython(pyPath, params)` — executes the `main()` function of a local Python file and returns its JSON result — and (b) `fused.params` — string key/values synced into the browser URL, so any view's state is bookmarkable/refreshable. **Preview templates** (parquet table, image, text …) are just renderable HTML files shipped inside the app that receive the target file as a reserved `_file` param — the same two primitives are the entire rendering power of the system. Local only, forever; never cloud.
 
 ## Project timeline / conversation state
 
@@ -15,9 +15,8 @@ A fully local file explorer: a Python server on `127.0.0.1` + a browser UI to br
 - 2026-07-03/04: extended design discussion trimmed it down hard (all decisions below).
 - 2026-07-04: M1 scope locked; blueprint written (ARCHITECTURE.md); build delegated to a subagent with the main session architect-reviewing.
 - 2026-07-04 (later): M1 shipped + verified; M2 sidebar/bookmarks shipped; dark theme, sortable listing, `_file` URL cleanup, no-cache, shell.js ES-module split (D23–D28). An authoring skill for agents lives in `skills/fused-render-authoring/` with an eval workspace beside it.
-- Pre-existing partial code: `fused_render/_child.py`, `fused_render/executor.py`, `fused_render/__init__.py`, `pyproject.toml` (written before discussion finished; they matched the design and served through M7 — the executor pair was replaced by `engine.py` in the openfused migration, D55).
+- Pre-existing partial code: `fused_render/_child.py`, `fused_render/executor.py`, `fused_render/__init__.py`, `pyproject.toml` (written before discussion finished; kept — they match the final design).
 - 2026-07-07: shell migrated to React (D52) on the owner's direction; templates/runtime/server contracts unchanged.
-- 2026-07-07 (later): execution engine migrated to openfused (D55–D58); script contract, /api/run wire shape, and packaged-app install model all changed — pre-launch, no backward compat kept (D57).
 
 ## Decisions (all explicitly made by the project owner)
 
@@ -155,7 +154,9 @@ A fully local file explorer: a Python server on `127.0.0.1` + a browser UI to br
 
 | D54 | Shell build output | `fused_render/static/shell-dist/` is **not committed** (gitignored). Dev machines are expected to have node: run `cd frontend && npm run build` (or `npm run watch`); the server fails at startup with that exact instruction when the dist is missing. Shipped artifacts get the shell at package-build time: a hatchling build hook (`scripts/hatch_build.py`, wired in pyproject) runs `npm install && npm run build` when building a wheel, and `artifacts` overrides the VCS-ignore so the output ships; the DMG pipeline pip-installs this repo into its build venv, so it inherits the same hook. Editable installs skip the hook (dev owns the build loop). Supersedes D52's committed-output detail; owner call | Owner: "don't commit build files; node on dev machines is fine; shipping puts everything in the dmg or the wheel". Committed dist had the usual costs: binary-ish diffs on every shell change, drift risk between source and checked-in bundle |
 
-### openfused engine migration (2026-07-07)
+### openfused engine migration (2026-07-07) — REVERTED
+
+> **Reverted 2026-07-07 (D67):** D55–D58 rolled back — the openfused backend, `@fused.udf` contract, PEP 723 venvs, and wheelhouse are removed; `executor.py`/`_child.py` with string-coerced params and the `{ok, result, error:{type,message,traceback}}` wire shape are restored. Rows kept for history.
 
 | # | Decision | Choice | Rationale / rejected alternatives |
 |---|---|---|---|
@@ -194,6 +195,12 @@ A fully local file explorer: a Python server on `127.0.0.1` + a browser UI to br
 ## Descoped / follow-up list (recorded, not built)
 
 Security layer (token, Origin/Host validation, sandboxed bridge — see threat note SPEC §9; X-Fused preflight guard shipped, D36) · warm worker pool · DataFrame/Arrow returns · WebSocket/SSE push · exec console + structured logging · caching · search/sort/tree/keyboard-nav/hidden-file toggle · editing beyond code_template (text/markdown buffers, new-file/rename/delete APIs) · pushState opt-in · declarative param binding. *(Built since this list was written: M2 template set, file editing — D37; directory templates — D64.)*
+
+### Engine rollback (2026-07-07)
+
+| # | Decision | Choice | Rationale / rejected alternatives |
+|---|---|---|---|
+| D67 | Roll back the openfused engine | Reverts #8 (D55–D58), #18 (default data-stack venv deps), and #19 (D66 run-error logging, which existed to surface openfused backend 500s). `executor.py`/`_child.py` return: bare `main()` with annotation-driven string coercion (D1), server-env imports (D14/D30), old `{ok, result, error:{type,message,traceback}}` wire shape, `requires-python >=3.9`. Kept features that landed on top were retargeted, not reverted: template folders/mode lists (D59–D62) keep their new paths; built-in readers lose `@fused.udf` + PEP 723 headers; the `api` template (D63) inspects a bare `main()` and consumes the old wire shape | Owner call 2026-07-07: roll back all engine changes, keep everything else |
 
 ## Open items (small, non-blocking)
 

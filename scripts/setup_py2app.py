@@ -14,15 +14,14 @@ reasons every one of these needs it:
   1. Binary/data-bearing packages (numpy, pandas, pyarrow, scipy, geopandas,
      matplotlib's mpl-data, ...) ship .so/.dylib files and non-Python data
      that a zipped archive can't hold anyway.
-  2. fused-render's own execution model: user scripts run through openfused's
-     local backend (fused_render/engine.py) in CHILD PROCESSES inside venvs
-     created at runtime, not via a static `import` anywhere in fused_render's
-     own source. py2app's modulegraph only sees imports it can trace from
-     app_entry.py's call graph, so it is structurally blind to whatever a
-     user's script imports at runtime (pandas, pyarrow, PIL, ...). Every
-     package promised by the `[bundled]` extra (SPEC DM-2) must therefore be
-     forced in explicitly — there is no static import for modulegraph to find
-     in the first place.
+  2. fused-render's own executor model: `runPython` loads arbitrary user .py
+     files via importlib in a CHILD PROCESS (_child.py), not via a static
+     `import` anywhere in fused_render's own source. py2app's modulegraph
+     only sees imports it can trace from app_entry.py's call graph, so it
+     is structurally blind to whatever a user's script imports at runtime
+     (pandas, pyarrow, PIL, ...). Every package promised by the `[bundled]`
+     extra (SPEC DM-2) must therefore be forced in explicitly — there is no
+     static import for modulegraph to find in the first place.
 """
 import os
 import re
@@ -42,24 +41,6 @@ VERSION = re.search(r'(?m)^version\s*=\s*"([^"]+)"', _pyproject).group(1)
 ICONFILE = os.environ.get("FUSED_RENDER_ICNS")
 if not ICONFILE or not os.path.isfile(ICONFILE):
     sys.exit(f"FUSED_RENDER_ICNS must point at an existing .icns file (got: {ICONFILE!r})")
-
-# Built by build_dmg.sh (pip download into build/wheels) before invoking
-# py2app — the offline wheelhouse for openfused's PEP 723 venv installs.
-# Shipped via `resources` below so it lands at Contents/Resources/wheels;
-# fused_render/app.py points PIP_FIND_LINKS/UV_FIND_LINKS at it at startup.
-WHEELS_DIR = os.environ.get("FUSED_RENDER_WHEELS")
-if not WHEELS_DIR or not os.path.isdir(WHEELS_DIR):
-    sys.exit(f"FUSED_RENDER_WHEELS must point at an existing wheels directory (got: {WHEELS_DIR!r})")
-
-# Built by build_dmg.sh (§2c): the bundled uv binary, shipped to
-# Contents/Resources/appbin. openfused's PEP 723 venv installs must go through
-# uv — under the stub's inherited PYTHONHOME, `<venv-python> -m pip install`
-# poisons the venv cache (installs into the bundle, leaves the venv empty) —
-# and Finder-launched apps have no uv on their minimal PATH, so
-# fused_render/app.py prepends this directory at startup.
-BIN_DIR = os.environ.get("FUSED_RENDER_BIN")
-if not BIN_DIR or not os.path.isfile(os.path.join(BIN_DIR, "uv")):
-    sys.exit(f"FUSED_RENDER_BIN must point at a directory containing uv (got: {BIN_DIR!r})")
 
 APP = [os.path.join(SCRIPT_DIR, "app_entry.py")]
 
@@ -92,20 +73,8 @@ OPTIONS = {
     "iconfile": ICONFILE,
     "packages": [
         "fused_render",
-        # openfused local backend ("fused" dist): fused_render/engine.py
-        # imports it lazily (inside get_backend), and it reads its handler
-        # files off disk via Path(__file__) — both patterns a zipped copy
-        # breaks, so whole-dir copy.
-        "fused",
-        # stdlib venv machinery: openfused creates per-script venvs by
-        # re-invoking `sys.executable -m venv` in a SUBPROCESS — no static
-        # import for modulegraph to trace — and ensurepip's bundled pip
-        # wheel is data a zip can't serve.
-        "venv", "ensurepip",
-        # Engine (fused dist) hard dependencies with native/binary payloads —
-        # NOT the old [bundled] user stack (dropped from the bundle: user
-        # scripts import from openfused venvs fed by the wheelhouse, D56/D58).
-        # These ship only because the fused dist requires them.
+        # [bundled] extra (SPEC DM-2) + its native transitive deps, as
+        # actually resolved in the build venv (see build_dmg.sh comments).
         "numpy", "pandas", "dateutil", "six",
         "pyarrow",
         # _duckdb deliberately NOT here: it's a bare top-level C extension
@@ -115,7 +84,20 @@ OPTIONS = {
         # lib-dynload/_duckdb.so and breaks `import duckdb` with
         # "SyntaxError: source code string cannot contain null bytes".
         # It goes in `includes` below instead.
-        "duckdb",
+        "duckdb", "adbc_driver_duckdb",
+        "polars", "_polars_runtime_32",
+        # mpl_toolkits deliberately excluded: it's a PEP 420 namespace
+        # package (no __init__.py), and py2app's package-bootstrap lookup
+        # (imp.find_module, pre-namespace-package semantics) can't resolve
+        # it when forced via `packages`. matplotlib's core plotting (Agg,
+        # pyplot, figures) works fine without it; only mpl_toolkits-specific
+        # features (3D axes, axes_grid1, ...) are unavailable to user scripts.
+        "matplotlib", "contourpy", "cycler", "fontTools", "kiwisolver", "pyparsing",
+        "scipy",
+        "PIL",
+        "openpyxl", "et_xmlfile",
+        "shapely",
+        "geopandas", "pyogrio", "pyproj",
         "requests", "urllib3", "certifi", "charset_normalizer", "idna",
         # web server stack: forced full-copy too, since uvicorn/pydantic-core
         # do dynamic/compiled imports modulegraph can't always follow.
@@ -135,13 +117,6 @@ OPTIONS = {
     # `packages` above, but `includes` handles non-package modules correctly
     # (extension -> lib-dynload/*.so, never a bogus .py copy).
     "includes": ["_duckdb"],
-    # PIL is present in the BUILD venv (icon generation is a build step) but
-    # is not app code — keep modulegraph from dragging it into the bundle.
-    "excludes": ["PIL"],
-    # Copied verbatim into Contents/Resources/: the wheelhouse dir (named
-    # "wheels") lands at Contents/Resources/wheels, the uv dir (named
-    # "appbin") at Contents/Resources/appbin.
-    "resources": [WHEELS_DIR, BIN_DIR],
     "plist": {
         "CFBundleIdentifier": "io.fused.render",
         "CFBundleName": "FusedRender",

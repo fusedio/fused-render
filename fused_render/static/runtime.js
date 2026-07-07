@@ -199,16 +199,14 @@
         // broken py that gets fixed must still trigger a reload. Read before
         // the ok check so it's recorded either way.
         if (data.resolved_py) watchPath(data.resolved_py);
-        if (data.error != null) {
-          // error is traceback text; its last non-empty line already reads
-          // like "ZeroDivisionError: division by zero" — use it as the message.
-          const lines = data.error.split("\n").filter((l) => l.trim() !== "");
-          const err = new Error(lines[lines.length - 1] || "python execution failed");
-          err.traceback = data.error;
+        if (!data.ok) {
+          const err = new Error(data.error && data.error.message);
+          err.type = data.error && data.error.type;
+          err.traceback = data.error && data.error.traceback;
           err.stdout = data.stdout;
           throw err;
         }
-        return data.return_value;
+        return data.result;
       });
   }
 
@@ -353,7 +351,7 @@
     ].join(";");
     const title = document.createElement("div");
     title.style.cssText = "font-size:16px;font-weight:bold;margin-bottom:12px;color:#ff6b6b;";
-    title.textContent = err.message || "Error";
+    title.textContent = `${err.type || "Error"}: ${err.message || ""}`;
     const pre = document.createElement("pre");
     pre.style.cssText = "margin:0;white-space:pre-wrap;word-break:break-word;";
     pre.textContent = err.traceback || "";
