@@ -125,9 +125,12 @@ function CrumbActions({ name, onSplit }: CrumbActionsProps) {
 // entering split mode with a single pane looked like nothing happened. Each
 // pane carries the `_`-prefixed params and the listing sort/order pane-local
 // (inside its `_layout` segment); every other param joins the merged top-level
-// pool shared by all panes (LM-3).
+// pool shared by all panes (LM-3). Read via splitShellSearch, not raw
+// URLSearchParams (D51): a stray `_layout=(…)` span carries literal `&` that
+// would parse as junk keys; the codec read excludes the span, so it is
+// dropped — the strict-read semantics.
 function enterPanel(fsPath: string): void {
-  const params = new URLSearchParams(location.search);
+  const { params } = splitShellSearch(location.search);
   const paneLocal = new URLSearchParams();
   const merged: [string, string][] = [];
   for (const [k, v] of params) {
