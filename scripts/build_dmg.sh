@@ -135,6 +135,32 @@ print(' '.join(deps))
 echo "    $(find "$WHEELS_DIR" -name '*.whl' | wc -l | tr -d ' ') wheels in $WHEELS_DIR"
 
 # ---------------------------------------------------------------------------
+# 2c. Bundled uv: the installer the app's venv builds MUST use.
+#
+#     The py2app stub launches everything with PYTHONHOME=Contents/Resources,
+#     and openfused's install subprocesses inherit that environment. Under an
+#     inherited PYTHONHOME, `<venv>/bin/python -m pip install` resolves its
+#     prefix from PYTHONHOME instead of the venv: pip "installs" into the app
+#     bundle, exits 0, and openfused then marks the EMPTY venv ready — every
+#     later run of that script fails with ModuleNotFoundError from a poisoned
+#     cache entry. uv is immune (it resolves the --python target venv itself,
+#     without running Python's prefix detection), but Finder-launched apps get
+#     a minimal PATH with no uv on it — so we ship uv in the bundle and
+#     fused_render/app.py prepends Contents/Resources/appbin to PATH. The uv
+#     binary comes from the uv wheel installed into the build venv (arm64,
+#     matches the bundle).
+# ---------------------------------------------------------------------------
+
+echo "==> bundling uv"
+BIN_DIR="$BUILD_DIR/appbin"
+rm -rf "$BIN_DIR"
+mkdir -p "$BIN_DIR"
+"$BUILD_VENV/bin/pip" install --quiet uv
+cp "$BUILD_VENV/bin/uv" "$BIN_DIR/uv"
+"$BIN_DIR/uv" --version >/dev/null  # runnable, right arch
+echo "    $("$BIN_DIR/uv" --version)"
+
+# ---------------------------------------------------------------------------
 # 3. App icon: a fresh, high-res render of the same four-pointed sparkle used
 #    for the menu-bar glyph (fused_render/assets/menubar-template.png, 36px,
 #    template/monochrome) on a rounded dark card, at the sizes iconutil wants.
@@ -219,7 +245,7 @@ rm -rf "$PY2APP_DIST" "$BUILD_DIR/py2app-build"
 # built - it just needs to not be a directory with its own pyproject.toml.
 (
   cd "$BUILD_DIR"
-  FUSED_RENDER_ICNS="$ICNS_PATH" FUSED_RENDER_WHEELS="$WHEELS_DIR" \
+  FUSED_RENDER_ICNS="$ICNS_PATH" FUSED_RENDER_WHEELS="$WHEELS_DIR" FUSED_RENDER_BIN="$BIN_DIR" \
     "$BUILD_VENV/bin/python" "$REPO_ROOT/scripts/setup_py2app.py" py2app \
     --dist-dir "$PY2APP_DIST" \
     --bdist-base "$BUILD_DIR/py2app-build"
@@ -285,6 +311,47 @@ if ! echo "$SMOKE_OUT" | grep -q 'SMOKE_OK'; then
   exit 1
 fi
 echo "    $(echo "$SMOKE_OUT" | grep 'SMOKE_OK')"
+
+# d) PEP 723 install smoke under FINDER-LAUNCH conditions: PYTHONHOME set
+#    (the stub sets it), a minimal GUI PATH with ONLY the bundled uv added
+#    (as app.py's PATH prepend produces), find-links at the bundle wheels
+#    (as app.py sets them). This is the regression test for the poisoned-venv
+#    bug: with pip instead of uv, this install succeeds vacuously (pip
+#    resolves its prefix from PYTHONHOME, "installs" into the bundle, exits
+#    0) and the run then dies with ModuleNotFoundError from a cached empty
+#    venv. openpyxl is used because it's small and already in the wheelhouse.
+echo "==> bundle sanity: PEP 723 install smoke (GUI-launch env, bundled uv)"
+cat > "$SMOKE_DIR/reqs_smoke.py" <<'PYEOF'
+# /// script
+# dependencies = ["openpyxl"]
+# ///
+import openpyxl
+
+result = {"openpyxl": openpyxl.__version__}
+PYEOF
+REQS_OUT="$(env PYTHONHOME="$APP_DIR/Contents/Resources" HOME="$SMOKE_DIR/home" \
+  PATH="$APP_DIR/Contents/Resources/appbin:/usr/bin:/bin" \
+  PIP_FIND_LINKS="$APP_DIR/Contents/Resources/wheels" \
+  UV_FIND_LINKS="$APP_DIR/Contents/Resources/wheels" \
+  "$APP_DIR/Contents/MacOS/python" -c "
+import asyncio, json, sys
+from fused_render import engine
+out = asyncio.run(engine.run_python('$SMOKE_DIR/reqs_smoke.py', {}))
+if out['error'] is not None:
+    sys.exit('engine error: %s' % out['error'])
+rv = out['return_value']
+if isinstance(rv, str):
+    rv = json.loads(rv)
+if not rv or not rv.get('openpyxl'):
+    sys.exit('unexpected return_value: %r' % (out['return_value'],))
+print('REQS_SMOKE_OK', json.dumps(rv))
+" 2>&1 || true)"
+if ! echo "$REQS_OUT" | grep -q 'REQS_SMOKE_OK'; then
+  echo "FATAL: PEP 723 install smoke failed (poisoned-venv regression?):" >&2
+  echo "$REQS_OUT" >&2
+  exit 1
+fi
+echo "    $(echo "$REQS_OUT" | grep 'REQS_SMOKE_OK')"
 rm -rf "$SMOKE_DIR"
 
 echo "==> bundle sanity: wheelhouse shipped"

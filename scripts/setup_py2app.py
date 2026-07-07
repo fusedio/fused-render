@@ -51,6 +51,16 @@ WHEELS_DIR = os.environ.get("FUSED_RENDER_WHEELS")
 if not WHEELS_DIR or not os.path.isdir(WHEELS_DIR):
     sys.exit(f"FUSED_RENDER_WHEELS must point at an existing wheels directory (got: {WHEELS_DIR!r})")
 
+# Built by build_dmg.sh (§2c): the bundled uv binary, shipped to
+# Contents/Resources/appbin. openfused's PEP 723 venv installs must go through
+# uv — under the stub's inherited PYTHONHOME, `<venv-python> -m pip install`
+# poisons the venv cache (installs into the bundle, leaves the venv empty) —
+# and Finder-launched apps have no uv on their minimal PATH, so
+# fused_render/app.py prepends this directory at startup.
+BIN_DIR = os.environ.get("FUSED_RENDER_BIN")
+if not BIN_DIR or not os.path.isfile(os.path.join(BIN_DIR, "uv")):
+    sys.exit(f"FUSED_RENDER_BIN must point at a directory containing uv (got: {BIN_DIR!r})")
+
 APP = [os.path.join(SCRIPT_DIR, "app_entry.py")]
 
 # Extensions the built-in template registry (server.py TEMPLATES) previews.
@@ -137,8 +147,9 @@ OPTIONS = {
     # (extension -> lib-dynload/*.so, never a bogus .py copy).
     "includes": ["_duckdb"],
     # Copied verbatim into Contents/Resources/: the wheelhouse dir (named
-    # "wheels") lands at Contents/Resources/wheels.
-    "resources": [WHEELS_DIR],
+    # "wheels") lands at Contents/Resources/wheels, the uv dir (named
+    # "appbin") at Contents/Resources/appbin.
+    "resources": [WHEELS_DIR, BIN_DIR],
     "plist": {
         "CFBundleIdentifier": "io.fused.render",
         "CFBundleName": "FusedRender",

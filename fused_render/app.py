@@ -135,6 +135,19 @@ def _configure_wheelhouse_env() -> None:
     uv_links = os.environ.get("UV_FIND_LINKS")
     os.environ["UV_FIND_LINKS"] = f"{wheels},{uv_links}" if uv_links else wheels
 
+    # The bundled uv (Contents/Resources/appbin, build_dmg.sh §2c) must win
+    # the engine's `shutil.which("uv")` lookup. This is load-bearing, not an
+    # optimization: the stub's PYTHONHOME rides into openfused's install
+    # subprocesses, and under an inherited PYTHONHOME `<venv-python> -m pip`
+    # resolves its prefix to the app bundle — it "installs" there, exits 0,
+    # and the empty venv gets cached as ready (ModuleNotFoundError forever
+    # after). uv resolves the target venv itself and is immune. Finder
+    # launches have a minimal PATH with no uv, so without this prepend the
+    # poisonous pip fallback is exactly what runs.
+    appbin = os.path.join(sys.prefix, "appbin")
+    if os.path.isfile(os.path.join(appbin, "uv")):
+        os.environ["PATH"] = appbin + os.pathsep + os.environ.get("PATH", "")
+
 
 def _start_server_thread(port: int) -> uvicorn.Server:
     """Start uvicorn serving create_app(start_dir=home) on a daemon thread."""
