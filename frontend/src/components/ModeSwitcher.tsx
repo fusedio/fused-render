@@ -13,6 +13,13 @@ export interface ModeSwitcherEntry<M extends string> {
   icon: React.ReactNode;
 }
 
+// Human-readable tooltip for a mode name: the "_render" sentinel reads as
+// "Rendered", ordinary mode names are capitalized ("code" → "Code").
+function modeTitle(mode: string): string {
+  if (mode === "_render") return "Rendered";
+  return mode.charAt(0).toUpperCase() + mode.slice(1);
+}
+
 interface ModeSwitcherProps<M extends string> {
   entries: ModeSwitcherEntry<M>[];
   active: M;
@@ -28,7 +35,7 @@ export default function ModeSwitcher<M extends string>({ entries, active, onSele
           key={e.mode}
           type="button"
           className={"mode-switcher-btn" + (e.mode === active ? " active" : "")}
-          title={e.mode}
+          title={modeTitle(e.mode)}
           onClick={() => onSelect(e.mode)}
         >
           {e.icon}

@@ -5,7 +5,7 @@
   --border: #2a2d33;
   --bg: #131417;
   --bg-alt: #1b1d21;
-  --accent: #5b9dff;
+  --accent: #E5FF44;
   --error: #ff6b6b;
 }
 
@@ -55,6 +55,8 @@ body {
 
 .sidebar-brand .logo {
   color: var(--accent);
+  display: flex;
+  align-items: center;
 }
 
 .sidebar-section {
@@ -118,7 +120,7 @@ body {
 }
 
 .bookmark-row.active {
-  background: rgba(91, 157, 255, 0.13);
+  background: rgba(229, 255, 68, 0.13);
 }
 
 .bookmark-row.active .bookmark-name {
@@ -383,7 +385,7 @@ body {
 .star-btn.starred {
   color: var(--accent);
   border-color: var(--accent);
-  background: rgba(91, 157, 255, 0.13);
+  background: rgba(229, 255, 68, 0.13);
 }
 
 #content {
@@ -558,9 +560,29 @@ table.listing-table td.mtime {
 }
 
 /* Annotate toggle (AN-2): same icon-button family as .mode-switcher-btn, but
-   position:relative for the badge. */
+   position:relative for the badge, and separated from the mode switcher by a
+   hairline divider — it is an orthogonal on/off, not a fourth mode. */
 .preview-actions .annotate-toggle {
   position: relative;
+  margin-left: 10px;
+}
+.preview-actions .annotate-toggle::before {
+  content: "";
+  position: absolute;
+  left: -10px;
+  top: 4px;
+  bottom: 4px;
+  width: 1px;
+  background: var(--border);
+}
+
+/* Solid accent fill is reserved for the single-select mode switcher; the
+   binary annotate toggle gets a tinted-outline on-state so "armed to comment"
+   and "active mode" never read as the same thing. */
+.preview-actions .mode-switcher-btn.annotate-toggle.active {
+  background: color-mix(in srgb, var(--accent) 18%, var(--bg));
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 /* Template-mode icon: monochrome SVG tinted via mask-image + currentColor
