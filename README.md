@@ -70,9 +70,15 @@ browsable from there.
 
 The server writes an application log so that when something goes wrong — an
 "Internal Server Error" in the browser, or a right-click "Open with
-FusedRender" that misbehaves — there's a traceback to look at. Every 500
-records its full traceback (and the request that caused it); failed Python
-runs and the macOS app's open/reopen events are logged too.
+FusedRender" that misbehaves — there's a traceback to look at. It records:
+
+- **startup** — a `boot:` line (version, python, platform) every launch, plus
+  the bind address / start dir;
+- **every browser request** — one line per request with status + duration
+  (`GET /view/… -> 200 (3 ms)`), so the log reconstructs the sequence of calls
+  a page made (static-asset fetches are skipped to keep it readable);
+- **every 500** — its full traceback and the request that caused it;
+- **failed Python runs** and the macOS app's file-open / reopen events.
 
 The log file is `fused-render.log`, in:
 

@@ -12,6 +12,7 @@ import mimetypes
 import os
 import stat as stat_mod
 import tempfile
+import time
 import traceback
 
 from fastapi import Body, FastAPI, Header, Query
@@ -336,11 +337,38 @@ def create_app(start_dir: str) -> FastAPI:
         name="template-shared",
     )
 
+    # Static asset mounts are high-volume (every preview pulls runtime.js,
+    # icons, vendored bundles) and almost never the cause of an "Internal
+    # Server Error" or a bad right-click-open — logging them would churn the
+    # rotating file and push the interesting lines out. The request flow that
+    # matters (/view, /render, /api/*) is everything else.
+    _LOG_SKIP_PREFIXES = ("/static/", "/template-assets/", "/template-shared/")
+
     @app.middleware("http")
-    async def no_cache(request, call_next):
+    async def no_cache_and_log(request, call_next):
         # App code changes between restarts and user files change on disk;
         # stale browser caches of shell/runtime JS cause confusing half-old UIs.
-        response = await call_next(request)
+        # Also the browser request log (SPEC SV-3): one INFO line per request
+        # with status + duration, so the log reconstructs the sequence of calls
+        # a page made — the context you need to see *which* request 500'd and
+        # what led to it. A 500 raised in a route escapes call_next; log the
+        # request line before re-raising so the access trail stays complete
+        # (the catch-all handler then logs the traceback).
+        path = request.url.path
+        logged = not path.startswith(_LOG_SKIP_PREFIXES)
+        start = time.monotonic()
+        try:
+            response = await call_next(request)
+        except Exception:
+            if logged:
+                dur = (time.monotonic() - start) * 1000
+                logger.info("%s %s -> 500 (%.0f ms)", request.method, path, dur)
+            raise
+        if logged:
+            dur = (time.monotonic() - start) * 1000
+            logger.info(
+                "%s %s -> %s (%.0f ms)", request.method, path, response.status_code, dur
+            )
         response.headers["Cache-Control"] = "no-cache"
         return response
 

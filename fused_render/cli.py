@@ -1,5 +1,6 @@
 """Command-line entry point: `fused-render [--start-dir DIR] [--port N] [--no-browser]`."""
 import argparse
+import logging
 import os
 import threading
 import webbrowser
@@ -8,6 +9,8 @@ import uvicorn
 
 from fused_render.logs import setup_logging
 from fused_render.server import create_app
+
+logger = logging.getLogger("fused_render")
 
 DEFAULT_PORT = 8765
 
@@ -32,6 +35,9 @@ def main() -> None:
     print(f"fused-render serving at {url}")
     print(f"start dir: {start_dir}")
     print(f"log file: {log_file}")
+    # Explicit startup marker in the log (the boot line already timestamps it,
+    # but this records the bind + start dir a session is running with).
+    logger.info("serving at %s (start dir %s)", url, start_dir)
 
     if not args.no_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
