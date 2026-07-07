@@ -61,6 +61,20 @@ BIN_DIR = os.environ.get("FUSED_RENDER_BIN")
 if not BIN_DIR or not os.path.isfile(os.path.join(BIN_DIR, "uv")):
     sys.exit(f"FUSED_RENDER_BIN must point at a directory containing uv (got: {BIN_DIR!r})")
 
+# Built by build_dmg.sh (§2d): python-build-standalone, shipped to
+# Contents/Resources/python-standalone — the base interpreter for user-script
+# venvs (D67). The frozen py2app interpreter can't reliably serve as a venv
+# base (PYTHONHOME-stripped children must self-locate its stdlib);
+# fused_render/engine.py auto-detects this directory and passes it to the
+# openfused backend as python_executable. Directory name matters: engine.py
+# looks for sys.prefix + "/python-standalone/bin/python3".
+PYSTANDALONE_DIR = os.environ.get("FUSED_RENDER_PYSTANDALONE")
+if not PYSTANDALONE_DIR or not os.path.isfile(os.path.join(PYSTANDALONE_DIR, "bin", "python3")):
+    sys.exit(
+        "FUSED_RENDER_PYSTANDALONE must point at a directory containing bin/python3 "
+        f"(got: {PYSTANDALONE_DIR!r})"
+    )
+
 APP = [os.path.join(SCRIPT_DIR, "app_entry.py")]
 
 # Extensions the built-in template registry (server.py TEMPLATES) previews.
@@ -140,8 +154,9 @@ OPTIONS = {
     "excludes": ["PIL"],
     # Copied verbatim into Contents/Resources/: the wheelhouse dir (named
     # "wheels") lands at Contents/Resources/wheels, the uv dir (named
-    # "appbin") at Contents/Resources/appbin.
-    "resources": [WHEELS_DIR, BIN_DIR],
+    # "appbin") at Contents/Resources/appbin, the standalone interpreter
+    # (named "python-standalone") at Contents/Resources/python-standalone.
+    "resources": [WHEELS_DIR, BIN_DIR, PYSTANDALONE_DIR],
     "plist": {
         "CFBundleIdentifier": "io.fused.render",
         "CFBundleName": "FusedRender",

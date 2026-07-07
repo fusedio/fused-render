@@ -176,6 +176,47 @@ cp "$BUILD_VENV/bin/uv" "$BIN_DIR/uv"
 echo "    $("$BIN_DIR/uv" --version)"
 
 # ---------------------------------------------------------------------------
+# 2d. Bundled standalone CPython: the base interpreter for user-script venvs
+#     (D67), shipped to Contents/Resources/python-standalone.
+#
+#     openfused bases its cached venvs on a python executable. The frozen
+#     py2app interpreter cannot play that role reliably: stdlib `venv` strips
+#     PYTHONHOME from the ensurepip child (and the runner strips it from
+#     user-code children), leaving the frozen binary to self-locate its
+#     stdlib — machine-dependent, and on machines where it fails every venv
+#     creation exits 1 instantly (real DMG user report). python-build-
+#     standalone is CPython built to be relocatable: standard bin/../lib
+#     layout, self-locates with no PYTHONHOME from any path (verified even
+#     under `env -i`). Version MUST stay cp312 to match the wheelhouse (§2b).
+#     fused_render/engine.py auto-detects this directory and passes it to the
+#     backend as python_executable.
+#
+#     The tarball is pinned (URL + sha256) and cached under build/; the
+#     `install_only_stripped` variant is the full interpreter minus debug
+#     symbols (~24 MB compressed).
+# ---------------------------------------------------------------------------
+
+echo "==> bundling standalone CPython (venv base, D67)"
+PBS_TAG="20260623"
+PBS_VER="3.12.13"
+PBS_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_TAG}/cpython-${PBS_VER}%2B${PBS_TAG}-aarch64-apple-darwin-install_only_stripped.tar.gz"
+PBS_SHA256="41df7d3ae4757e84b97874f76d634268456aaa271740d33f968d826374998fb7"
+PBS_TARBALL="$BUILD_DIR/cpython-${PBS_VER}+${PBS_TAG}-aarch64-install_only_stripped.tar.gz"
+PBS_DIR="$BUILD_DIR/python-standalone"
+
+if [[ ! -f "$PBS_TARBALL" ]] || ! echo "$PBS_SHA256  $PBS_TARBALL" | shasum -a 256 -c - >/dev/null 2>&1; then
+  curl -fsSL -o "$PBS_TARBALL" "$PBS_URL"
+fi
+echo "$PBS_SHA256  $PBS_TARBALL" | shasum -a 256 -c - >/dev/null
+rm -rf "$PBS_DIR"
+mkdir -p "$PBS_DIR"
+# Tarball's top-level dir is python/ — extract its contents directly into
+# python-standalone/ so the bundle path is Resources/python-standalone/bin/...
+tar xzf "$PBS_TARBALL" -C "$PBS_DIR" --strip-components 1
+"$PBS_DIR/bin/python3" -c "import sys; assert sys.version_info[:2] == (3, 12)"
+echo "    $("$PBS_DIR/bin/python3" --version) at $PBS_DIR"
+
+# ---------------------------------------------------------------------------
 # 3. App icon: a fresh, high-res render of the same four-pointed sparkle used
 #    for the menu-bar glyph (fused_render/assets/menubar-template.png, 36px,
 #    template/monochrome) on a rounded dark card, at the sizes iconutil wants.
@@ -261,6 +302,7 @@ rm -rf "$PY2APP_DIST" "$BUILD_DIR/py2app-build"
 (
   cd "$BUILD_DIR"
   FUSED_RENDER_ICNS="$ICNS_PATH" FUSED_RENDER_WHEELS="$WHEELS_DIR" FUSED_RENDER_BIN="$BIN_DIR" \
+    FUSED_RENDER_PYSTANDALONE="$PBS_DIR" \
     "$BUILD_VENV/bin/python" "$REPO_ROOT/scripts/setup_py2app.py" py2app \
     --dist-dir "$PY2APP_DIST" \
     --bdist-base "$BUILD_DIR/py2app-build"
@@ -367,6 +409,25 @@ if ! echo "$REQS_OUT" | grep -q 'REQS_SMOKE_OK'; then
   exit 1
 fi
 echo "    $(echo "$REQS_OUT" | grep 'REQS_SMOKE_OK')"
+
+# e) Standalone interpreter shipped intact and actually used (D67): py2app's
+#    resource copy must preserve exec bits/symlinks well enough that the
+#    bundled python runs, and the venvs the smokes above created must be
+#    BASED on it (pyvenv.cfg home points into python-standalone) — not on the
+#    frozen py2app interpreter. This is the regression gate for the
+#    ensurepip-exit-1 class of DMG failures.
+echo "==> bundle sanity: standalone venv-base python (D67)"
+APP_PBS="$APP_DIR/Contents/Resources/python-standalone/bin/python3"
+if ! "$APP_PBS" -c "import sys; assert sys.version_info[:2] == (3, 12)"; then
+  echo "FATAL: bundled python-standalone does not run from inside the .app" >&2
+  exit 1
+fi
+if ! grep -rq "python-standalone" "$SMOKE_DIR"/home/.openfused/venvs/*/pyvenv.cfg; then
+  echo "FATAL: smoke venvs were not based on the bundled standalone python:" >&2
+  cat "$SMOKE_DIR"/home/.openfused/venvs/*/pyvenv.cfg >&2
+  exit 1
+fi
+echo "    venv base: $("$APP_PBS" --version) (python-standalone)"
 rm -rf "$SMOKE_DIR"
 
 echo "==> bundle sanity: wheelhouse shipped"

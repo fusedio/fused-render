@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import sys
 import tomllib
 import traceback
 
@@ -50,6 +51,21 @@ DEFAULT_REQUIREMENTS = [
 ]
 
 
+def _bundled_base_python():
+    """Real relocatable CPython shipped in the packaged .app, or None (D67).
+
+    In the .app, sys.prefix is Contents/Resources and build_dmg.sh ships
+    python-build-standalone there. The backend bases its script venvs on it
+    instead of the frozen py2app interpreter — which can't reliably
+    self-locate its stdlib once stdlib `venv`/the runner strips PYTHONHOME
+    (the ensurepip exit-1 class of DMG failures). Dev runs have no
+    python-standalone under sys.prefix, so this is None and the backend
+    defaults to sys.executable — today's behavior.
+    """
+    p = os.path.join(sys.prefix, "python-standalone", "bin", "python3")
+    return p if os.path.isfile(p) else None
+
+
 def get_backend():
     # Lazy singleton: importing the backend pulls in the fused package tree,
     # and constructing it is only needed once per server process. 30s matches
@@ -61,7 +77,16 @@ def get_backend():
         # cache_storage=None disables result caching explicitly (D55, PY-9:
         # fresh execution every call). It is the upstream default today, but
         # we track a nightly wheel — don't rely on a default staying put.
-        _backend = LocalPythonComputeBackend(timeout_seconds=30, cache_storage=None)
+        # python_executable passed only when the bundled interpreter exists,
+        # so dev machines on a pre-D67 fused wheel don't hit an unknown-kwarg
+        # TypeError.
+        kwargs = {}
+        base = _bundled_base_python()
+        if base:
+            kwargs["python_executable"] = base
+        _backend = LocalPythonComputeBackend(
+            timeout_seconds=30, cache_storage=None, **kwargs
+        )
     return _backend
 
 
