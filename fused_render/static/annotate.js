@@ -869,7 +869,8 @@
     if (!natW || !natH || !r.width || !r.height) {
       return { left: r.left, top: r.top, width: r.width, height: r.height };
     }
-    const fit = (getComputedStyle(img).objectFit || "fill");
+    const cs = getComputedStyle(img);
+    const fit = cs.objectFit || "fill";
     let w, h;
     if (fit === "none") {
       w = natW;
@@ -887,7 +888,19 @@
       w = r.width;
       h = r.height;
     }
-    return { left: r.left + (r.width - w) / 2, top: r.top + (r.height - h) / 2, width: w, height: h };
+    // object-position places the painted box inside the element box: a
+    // percentage is a fraction of the FREE space (element − painted, may be
+    // negative under cover), a length is a literal offset. Computed style
+    // always yields two components.
+    const pos = (cs.objectPosition || "50% 50%").split(" ");
+    const off = (component, free) =>
+      component.endsWith("%") ? ((parseFloat(component) || 0) / 100) * free : parseFloat(component) || 0;
+    return {
+      left: r.left + off(pos[0] || "50%", r.width - w),
+      top: r.top + off(pos[1] || "50%", r.height - h),
+      width: w,
+      height: h,
+    };
   }
 
   // Document-coord pin position for a thread on its resolved element: an image
@@ -1792,6 +1805,11 @@
       if (!sidebarOpen) return;
       document.body.style.marginRight = sideEl().offsetWidth + "px";
       root.style.setProperty("--fa-sidew", sideEl().offsetWidth + "px");
+      // Re-clamp open popovers here too: adapter (code) mode has no
+      // reposition listener, and the 85vw cap moves the usable right edge.
+      if (openPopover && openPopover.el) {
+        positionPopover(openPopover.el, openPopover.clientX, openPopover.clientY);
+      }
     });
     setSidebarOpen(true);
 
