@@ -1,0 +1,357 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NetCDF preview</title>
+<!--
+  fused-render NetCDF-3 preview template — zero React, no build step.
+  Port of app/src/ui/components/sci/NetCdfPreview.tsx (+ sciViz.ts, SciHistogram,
+  SciPreviewParts, useCanvasHover). netcdfjs is vendored (scripts/vendor-sci).
+
+  Input: the reserved `_file` param (absolute filesystem path). The whole file is
+  fetched from the raw endpoint, then parsed. NetCDF-4 / HDF5 files (magic
+  \x89HDF) are not decoded in-browser → a graceful card.
+-->
+<style>
+  /* ===== dark theme — fused-render palette (matches the shell + sibling templates) ===== */
+  :root{
+    color-scheme: dark;
+    --background:#131417;
+    --foreground:#e8eaed;
+    --card:#1b1d21;
+    --muted:#2a2d33;
+    --muted-foreground:#9aa0a6;
+    --border:#2a2d33;
+    --input:#2a2d33;
+    --ring:#E5FF44;
+    --primary:#e8eaed;
+    --muted-30:rgba(42,45,51,0.35);
+  }
+  *{ box-sizing:border-box; }
+  html,body{ height:100%; margin:0; }
+  body{ background:var(--background); color:var(--foreground); font:13px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; overflow:hidden; -webkit-font-smoothing:antialiased; }
+  .mono{ font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .app{ height:100vh; display:flex; flex-direction:column; }
+  .topbar{ height:44px; flex:0 0 auto; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:0 16px; border-bottom:1px solid var(--border); }
+  .titlewrap{ display:flex; align-items:center; gap:10px; min-width:0; }
+  .badge{ font-size:11px; font-weight:600; letter-spacing:.02em; padding:2px 8px; border:1px solid var(--border); border-radius:999px; color:var(--muted-foreground); text-transform:uppercase; white-space:nowrap; }
+  .fname{ font-family:ui-monospace,monospace; font-size:12px; color:var(--foreground); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .surface{ flex:1 1 auto; min-height:0; overflow:auto; position:relative; }
+  /* preview layout */
+  .preview{ height:100%; display:flex; flex-direction:row; }
+  .mainpane{ display:flex; flex-direction:column; flex:1 1 auto; min-width:0; min-height:0; }
+  .canvas-area{ flex:1 1 auto; min-height:10rem; display:flex; align-items:center; justify-content:center; background:var(--muted-30); padding:16px; }
+  canvas.viz{ max-width:100%; max-height:100%; width:100%; height:100%; object-fit:contain; cursor:crosshair; image-rendering:pixelated; }
+  .hover-readout{ flex:0 0 auto; height:24px; display:flex; align-items:center; overflow:hidden; white-space:nowrap; border-top:1px solid var(--border); padding:0 12px; font-family:ui-monospace,monospace; font-size:11px; color:var(--muted-foreground); }
+  .controls{ flex:0 0 auto; display:flex; flex-wrap:wrap; align-items:center; gap:6px 16px; border-top:1px solid var(--border); padding:6px 12px; }
+  .hist-wrap{ flex:0 0 auto; border-top:1px solid var(--border); padding:8px; }
+  .meta-pane{ flex:0 0 auto; overflow:auto; border-top:1px solid var(--border); padding:16px; display:flex; flex-direction:column; gap:12px; }
+  @media (min-width:1000px){ .meta-pane{ width:320px; border-top:0; border-left:1px solid var(--border); } }
+  /* stacked mode: grow + scroll — a viewport-clamped height would squeeze .mainpane and its fixed children would paint over the meta pane */
+  @media (max-width:999px){ .preview{ flex-direction:column; height:auto; min-height:100%; } .canvas-area{ height:40vh; } }
+  /* control widgets */
+  label.field{ display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--muted-foreground); }
+  label.field select{ height:24px; border:1px solid var(--input); background:transparent; color:var(--foreground); border-radius:4px; padding:0 4px; font-family:ui-monospace,monospace; font-size:11px; }
+  label.field select option{ background:var(--card); }
+  label.slider{ display:inline-flex; align-items:center; gap:8px; font-size:11px; color:var(--muted-foreground); min-width:0; }
+  label.slider input[type=range]{ width:128px; height:4px; cursor:pointer; accent-color:var(--foreground); }
+  label.slider .val{ color:var(--foreground); }
+  label.slider .val .dim{ color:var(--muted-foreground); }
+  /* histogram */
+  .collapsible{ border:1px solid var(--border); border-radius:6px; }
+  .collapsible>summary{ cursor:pointer; user-select:none; padding:6px 12px; font-size:12px; font-weight:500; color:var(--muted-foreground); list-style:none; }
+  .collapsible>summary::-webkit-details-marker{ display:none; }
+  .collapsible>summary:hover{ color:var(--foreground); }
+  .collapsible>.body{ border-top:1px solid var(--border); padding:8px 12px; }
+  .hist-toolbar{ display:flex; justify-content:flex-end; }
+  .log-btn{ border:1px solid var(--border); background:transparent; color:var(--muted-foreground); border-radius:4px; padding:0 6px; font-family:ui-monospace,monospace; font-size:10px; cursor:pointer; }
+  .log-btn[aria-pressed=true]{ border-color:color-mix(in oklab,var(--foreground) 40%,transparent); color:var(--foreground); }
+  canvas.hist{ width:100%; height:120px; border-radius:3px; background:var(--muted-30); image-rendering:pixelated; display:block; margin-top:4px; }
+  .hist-canvas-wrap{ position:relative; }
+  .hist-tip{ position:absolute; top:6px; z-index:5; pointer-events:none; background:var(--card); border:1px solid var(--border); border-radius:4px; padding:4px 6px; font-family:ui-monospace,monospace; font-size:10px; color:var(--foreground); white-space:nowrap; box-shadow:0 4px 12px rgba(0,0,0,.4); }
+  .hist-tip .rng{ color:var(--muted-foreground); margin-bottom:2px; }
+  .hist-tip .row{ display:flex; align-items:center; gap:5px; }
+  .hist-tip .sw{ width:8px; height:8px; border-radius:2px; flex:0 0 auto; }
+  .hist-axis{ display:flex; justify-content:space-between; font-family:ui-monospace,monospace; font-size:10px; color:var(--muted-foreground); margin-top:2px; }
+  .stat-line{ font-family:ui-monospace,monospace; font-size:10px; color:var(--muted-foreground); margin:2px 0 0; }
+  /* meta list */
+  dl.meta{ display:grid; grid-template-columns:auto 1fr; gap:4px 16px; font-size:12px; margin:0; }
+  dl.meta dt{ color:var(--muted-foreground); }
+  dl.meta dd{ margin:0; font-family:ui-monospace,monospace; color:var(--foreground); word-break:break-word; }
+  .meta-section>.lbl{ font-size:12px; color:var(--muted-foreground); margin-bottom:4px; }
+  .var-list{ list-style:none; margin:0; padding:0; font-size:12px; display:flex; flex-direction:column; gap:4px; }
+  .var-list li{ font-family:ui-monospace,monospace; color:var(--foreground); }
+  .var-list .dim{ color:var(--muted-foreground); }
+  pre.json{ max-height:16rem; overflow:auto; white-space:pre-wrap; word-break:break-word; font-family:ui-monospace,monospace; font-size:11px; color:var(--foreground); margin:0; }
+  pre.json .j-key{ color:#7dd3fc; }
+  pre.json .j-str{ color:#86efac; }
+  pre.json .j-num{ color:#fbbf24; }
+  pre.json .j-bool,pre.json .j-null{ color:#c4b5fd; }
+  pre.json .j-punc{ color:var(--muted-foreground); }
+  /* status / graceful card */
+  .status{ padding:16px; font-size:13px; color:var(--muted-foreground); }
+  .status.error{ color:#ff6b6b; }
+  .card{ height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; padding:32px; text-align:center; }
+  .card .ico{ font-size:34px; opacity:.4; }
+  .card .t{ font-size:14px; color:var(--foreground); }
+  .card .s{ font-size:12px; color:var(--muted-foreground); max-width:26rem; }
+</style>
+
+<div class="app">
+  <header class="topbar">
+    <div class="titlewrap"><span class="badge">NetCDF</span><span class="fname" id="fname">no file</span></div>
+  </header>
+  <main class="surface" id="surface"></main>
+</div>
+
+<script type="module">
+import { NetCDFReader } from "/template-assets/netcdfjs.bundle.mjs";
+import { COLORMAPS, computeStretch, fmtNum, drawHeatmap, el, statusEl, metaList, collapsible, jsonBlock, tinySelect, makeHistogram, attachHover } from "/template-shared/sciviz.mjs";
+
+/* ===========================================================================
+ * NetCDF-only helpers — CF-time labeling and the leading-dimension slider
+ * have no geotiff equivalent (it has no CF-time axis or leading dims beyond
+ * the 2-D raster), so they stay local rather than joining the shared sciViz
+ * core in /template-shared/sciviz.mjs.
+ * ======================================================================== */
+const CF_TIME_MS={second:1e3,seconds:1e3,minute:60e3,minutes:60e3,hour:3.6e6,hours:3.6e6,day:86.4e6,days:86.4e6};
+function cfTimeLabel(value,units){
+  if(!units||!Number.isFinite(value)) return null;
+  const m=/^\s*([a-z]+)\s+since\s+(\d{1,4})-(\d{1,2})-(\d{1,2})(?:[T ](\d{1,2}):(\d{1,2})(?::(\d{1,2}(?:\.\d+)?))?)?/i.exec(units);
+  if(!m) return null;
+  const ms=CF_TIME_MS[m[1].toLowerCase()]; if(!ms) return null;
+  const base=Date.UTC(+m[2],+m[3]-1,+m[4],+(m[5]??0),+(m[6]??0),Math.floor(+(m[7]??0)));
+  const d=new Date(base+value*ms);
+  if(Number.isNaN(d.getTime())) return null;
+  return `${d.toISOString().slice(0,16).replace("T"," ")}Z`;
+}
+/* One leading-dimension slider (ports DimSlider). setDisplay updates the live
+ * index + coord label without rebuilding the element (keeps drag focus). */
+function makeDimSlider(label, size, initial, onChange){
+  const input=el("input",{type:"range",min:"0",max:String(Math.max(0,size-1)),step:"1",value:String(initial),"aria-label":label+" index"});
+  const valSpan=el("span",{class:"val mono"});
+  function setDisplay(v, coordLabel){
+    valSpan.replaceChildren();
+    valSpan.append(String(v), el("span",{class:"dim"}, ` / ${size-1}`));
+    if(coordLabel!=null && coordLabel!=="") valSpan.append(el("span",{class:"dim"}, ` · ${coordLabel}`));
+  }
+  input.addEventListener("input",()=> onChange(Number(input.value)));
+  return { element: el("label",{class:"slider"}, el("span",{class:"mono"},label), input, valSpan), setDisplay };
+}
+
+/* ===========================================================================
+ * Shell — top bar + fetch helpers. Input is the reserved `_file` param.
+ * ======================================================================== */
+const surface=document.getElementById("surface");
+const fnameEl=document.getElementById("fname");
+function setFname(n){ fnameEl.textContent=n||"no file"; }
+function baseName(u){ try{ const p=new URL(u,location.href).pathname; return decodeURIComponent(p.replace(/\/+$/,"").split("/").pop()||u); }catch{ return u; } }
+function fetchHint(e,what){ return e instanceof TypeError ? new Error(`Failed to fetch ${what} — network failure or the raw endpoint returned no body.`) : e; }
+async function fetchBytes(url){ let res; try{ res=await fetch(url); }catch(e){ throw fetchHint(e,url); } if(!res.ok) throw new Error(`HTTP ${res.status} fetching ${url}`); return await res.arrayBuffer(); }
+
+/* ===========================================================================
+ * NetCDF controller — ports NetCdfPreview.tsx parse + render logic.
+ * ======================================================================== */
+const COLORMAP_OPTIONS=[["viridis","viridis"],["magma","magma"],["gray","gray"]];
+const STRETCH_OPTIONS=[["p2-98","2–98%"],["minmax","min–max"]];
+const TYPE_LABEL={ byte:"int8", char:"char", short:"int16", int:"int32", float:"float32", double:"float64" };
+function attrsOf(v){ return Array.isArray(v)?v:[]; }
+function attrValue(list, name){ return list.find(a=>a.name===name)?.value; }
+function sameIndices(a,b){ return a.length===b.length && a.every((v,i)=>v===b[i]); }
+/* Flatten `raw` (flat numbers or array-per-record) into `size` values, unpacking
+ * CF packing: _FillValue/missing_value (raw match) → NaN, then raw*scale+offset. */
+function flattenVar(raw, size, opts={}){
+  const scale=opts.scale??1, offset=opts.offset??0, nodata=opts.nodata??null;
+  const out=new Float64Array(size); let count=0;
+  const push=(v)=>{ const num=typeof v==="number"?v:NaN; out[count++]= (nodata!=null && num===nodata)?NaN:num*scale+offset; };
+  for(const item of raw){ if(count>=size) break;
+    if(Array.isArray(item)){ for(const x of item){ if(count>=size) break; push(x); } }
+    else push(item);
+  }
+  return out;
+}
+
+// Input is the reserved `_file` param — an absolute filesystem path. NetCDF-3 is
+// compact and self-describing, so the whole file is fetched, then parsed.
+function noFileCard(){
+  surface.replaceChildren(el("div",{class:"card"},
+    el("div",{class:"ico"},"🌐"),
+    el("div",{class:"t"},"No NetCDF file selected"),
+    el("div",{class:"s"},"This template renders the file named by the _file parameter."),
+  ));
+}
+async function loadTarget(){
+  const file=fused.params.get("_file");
+  if(!file){ noFileCard(); return; }
+  setFname(baseName(file));
+  renderNetCdf(()=>fetchBytes(fused.rawUrl(file)));
+}
+
+async function renderNetCdf(getBuffer){
+  surface.replaceChildren(statusEl("loading","Loading NetCDF…"));
+  let buffer;
+  try{ buffer=await getBuffer(); }
+  catch(err){ surface.replaceChildren(statusEl("error",(err&&err.message)||String(err))); return; }
+  surface.replaceChildren(statusEl("loading","Parsing NetCDF…"));
+  try{
+    // Magic-byte sniff before handing bytes to netcdfjs.
+    const head=new Uint8Array(buffer.slice(0,4));
+    const isHdf5 = head[0]===0x89 && head[1]===0x48 && head[2]===0x44 && head[3]===0x46;
+    if(isHdf5){ showHdf5Card(); return; }
+    const isCdf = head[0]===0x43 && head[1]===0x44 && head[2]===0x46; // "CDF"
+    if(!isCdf) throw new Error("Not a NetCDF-3 file (unexpected magic bytes).");
+
+    const reader=new NetCDFReader(buffer);
+    const dims=reader.dimensions;
+    const vars=reader.variables;
+    const globalAttrs={}; for(const a of attrsOf(reader.globalAttributes)) globalAttrs[a.name]=a.value;
+    const dimName=(idx)=> dims[idx]?.name ?? `dim${idx}`;
+    const isCoord=(v)=> v.dimensions.length===1 && dims[v.dimensions[0]]?.name===v.name;
+    const variables=vars.map(v=>({
+      name:v.name,
+      dimLabel:`(${v.dimensions.map(dimName).join(", ")})`,
+      dtype: TYPE_LABEL[v.type] ?? v.type,
+      units: attrValue(attrsOf(v.attributes),"units"),
+    }));
+    const readCoord=(name,size)=>{
+      if(!reader.dataVariableExists(name)) return null;
+      const cv=vars.find(v=>v.name===name);
+      const cvAttrs=cv?attrsOf(cv.attributes):[];
+      const fill=attrValue(cvAttrs,"_FillValue") ?? attrValue(cvAttrs,"missing_value");
+      return { coords: flattenVar(reader.getDataVariable(name), size, { nodata: typeof fill==="number"?fill:null }), units: attrValue(cvAttrs,"units") };
+    };
+    const dataVar=vars.find(v=> !isCoord(v) && v.dimensions.length>=2 && v.type!=="char");
+    let varData=null;
+    if(dataVar){
+      const shape=dataVar.dimensions.map(i=>dims[i].size);
+      const ndim=shape.length, w=shape[ndim-1], h=shape[ndim-2];
+      const total=shape.reduce((a,b)=>a*b,1);
+      const varAttrs=attrsOf(dataVar.attributes);
+      const fill=attrValue(varAttrs,"_FillValue") ?? attrValue(varAttrs,"missing_value");
+      const scale=attrValue(varAttrs,"scale_factor"), offset=attrValue(varAttrs,"add_offset");
+      const full=flattenVar(reader.getDataVariable(dataVar.name), total, {
+        scale: typeof scale==="number"?scale:1,
+        offset: typeof offset==="number"?offset:0,
+        nodata: typeof fill==="number"?fill:null,
+      });
+      const dimNames=dataVar.dimensions.map(dimName);
+      const lat=readCoord(dimNames[ndim-2], h);
+      const lon=readCoord(dimNames[ndim-1], w);
+      const flipY = lat!=null && lat.coords.length>=2 && lat.coords[0] > lat.coords[lat.coords.length-1];
+      const leading=[];
+      for(let d=0; d<ndim-2; d++){ const c=readCoord(dimNames[d], shape[d]); leading.push({name:dimNames[d], size:shape[d], coords:c?.coords??null, units:c?.units}); }
+      varData={ name:dataVar.name, units:attrValue(varAttrs,"units"), shape, dimNames, w, h, full, flipY, leading, latCoords: lat?.coords??null, lonCoords: lon?.coords??null };
+    }
+    mountNetCdf({dims, variables, globalAttrs}, varData);
+  } catch(err){
+    surface.replaceChildren(statusEl("error",(err&&err.message)||String(err)||"Failed to read NetCDF."));
+  }
+}
+
+function showHdf5Card(){
+  surface.replaceChildren(el("div",{class:"preview"}, el("div",{class:"mainpane"}, el("div",{class:"card"},
+    el("div",{class:"ico"},"📄"),
+    el("div",{class:"t"},"NetCDF-4 / HDF5"),
+    el("div",{class:"s"},"This file uses the HDF5-based NetCDF-4 format, which is not decoded in the browser yet. Download it to open in a desktop tool."),
+  ))));
+}
+
+function mountNetCdf(meta, varData){
+  let colormap="viridis", stretchMode="minmax";
+  // metadata panel (always shown)
+  const metaPane=el("aside",{class:"meta-pane"});
+  function buildMeta(){
+    metaPane.replaceChildren();
+    const ml=metaList([
+      ["Dimensions", meta.dims.map(d=>`${d.name} (${d.size})`).join(", ")],
+      ["Preview", varData ? `${varData.name} ${varData.dimNames.join("×")} — ${varData.h}×${varData.w} slice` : null],
+    ]);
+    if(ml) metaPane.append(ml);
+    const varSection=el("div",{class:"meta-section"}, el("p",{class:"lbl"},"Variables"));
+    const ul=el("ul",{class:"var-list"});
+    for(const v of meta.variables){
+      ul.append(el("li",{}, el("span",{},v.name), el("span",{class:"dim"}, ` ${v.dimLabel} · ${v.dtype}${v.units?` · ${v.units}`:""}`)));
+    }
+    varSection.append(ul); metaPane.append(varSection);
+    if(Object.keys(meta.globalAttrs).length>0) metaPane.append(collapsible("Global attributes", jsonBlock(meta.globalAttrs)));
+  }
+  buildMeta();
+
+  if(!varData){
+    surface.replaceChildren(el("div",{class:"preview"},
+      el("div",{class:"mainpane"}, el("div",{class:"canvas-area"}, statusEl("empty","No 2-D variable to preview."))),
+      metaPane,
+    ));
+    return;
+  }
+
+  const canvas=el("canvas",{class:"viz"});
+  const hover=el("div",{class:"hover-readout"},"—");
+  const hist=makeHistogram();
+
+  // slider state: indices (live) + committed (debounced ~100ms → re-slice/redraw)
+  const nLead=varData.shape.length-2;
+  let indices=new Array(Math.max(0,nLead)).fill(0);
+  let committed=indices.slice();
+  let commitTimer=null;
+  const sliders=[];
+
+  function coordLabelFor(dim, idx){
+    if(!dim.coords) return null;
+    const v=dim.coords[Math.min(idx, dim.coords.length-1)];
+    if(!Number.isFinite(v)) return "—"; // fill/missing coord → clear marker
+    return cfTimeLabel(v, dim.units) ?? `${fmtNum(v)}${dim.units?` ${dim.units}`:""}`;
+  }
+  function sliceFor(committedIdx){
+    const {shape,w,h}=varData; let idx=0;
+    for(let d=0; d<committedIdx.length; d++) idx = idx*shape[d] + Math.min(Math.max(0,committedIdx[d]), shape[d]-1);
+    const size=w*h; return varData.full.subarray(idx*size, (idx+1)*size);
+  }
+
+  let slice=sliceFor(committed);
+  let stretch=computeStretch(slice, stretchMode, {});
+  function paint(){ drawHeatmap(canvas, slice, varData.w, varData.h, stretch, { flipY:varData.flipY, lut:COLORMAPS[colormap] }); }
+  function recompute(){ slice=sliceFor(committed); stretch=computeStretch(slice, stretchMode, {}); paint(); hist.update([{data:slice}], colormap); }
+
+  // controls: leading-dim sliders, then colormap + stretch
+  const controls=el("div",{class:"controls"});
+  varData.leading.forEach((dim,d)=>{
+    const s=makeDimSlider(dim.name, dim.size, indices[d]??0, (v)=>{
+      indices[d]=v; s.setDisplay(v, coordLabelFor(dim, v));
+      if(commitTimer) clearTimeout(commitTimer);
+      commitTimer=setTimeout(()=>{ if(!sameIndices(committed, indices)){ committed=indices.slice(); recompute(); } }, 100);
+    });
+    s.setDisplay(indices[d]??0, coordLabelFor(dim, indices[d]??0));
+    sliders.push(s); controls.append(s.element);
+  });
+  controls.append(
+    tinySelect("colormap", colormap, COLORMAP_OPTIONS, (v)=>{ colormap=v; paint(); hist.setColormap(colormap); }),
+    tinySelect("stretch", stretchMode, STRETCH_OPTIONS, (v)=>{ stretchMode=v; stretch=computeStretch(slice, stretchMode, {}); paint(); }),
+  );
+
+  attachHover(canvas, ()=>({w:varData.w,h:varData.h}), (pixel)=>{
+    if(!pixel){ hover.textContent="—"; return; }
+    const row=varData.flipY ? varData.h-1-pixel.y : pixel.y; // map canvas → data row
+    const v=slice[row*varData.w + pixel.x];
+    const value=Number.isFinite(v) ? `${fmtNum(v)}${varData.units?` ${varData.units}`:""}` : "NaN";
+    let geo="";
+    if(varData.latCoords && varData.lonCoords){
+      const lat=varData.latCoords[row], lon=varData.lonCoords[pixel.x];
+      geo=` · lat ${Number.isFinite(lat)?fmtNum(lat):"—"}, lon ${Number.isFinite(lon)?fmtNum(lon):"—"}`;
+    }
+    hover.textContent=`x ${pixel.x}, y ${row} · ${value}${geo}`;
+  });
+
+  const mainpane=el("div",{class:"mainpane"},
+    el("div",{class:"canvas-area"}, canvas),
+    hover, controls,
+    el("div",{class:"hist-wrap"}, hist.element),
+  );
+  surface.replaceChildren(el("div",{class:"preview"}, mainpane, metaPane));
+  recompute();
+}
+
+/* ===========================================================================
+ * Boot
+ * ======================================================================== */
+loadTarget();
+</script>

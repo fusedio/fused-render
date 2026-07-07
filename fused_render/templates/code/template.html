@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Code editor</title>
+<script src="/template-assets/codemirror.bundle.js"></script>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex;
+    flex-direction: column;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    background: #131417;
+    color: #e8eaed;
+  }
+  /* Top bar mirrors the other templates' #bar (parquet/pdf): filename left,
+     status + Save right. Sans-serif to match the shell chrome. */
+  #bar {
+    display: none;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    border-bottom: 1px solid #2a2d33;
+    background: #1b1d21;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+  }
+  #filename {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #bar .grow { flex: 1 1 auto; }
+  #status-text { color: #9aa0a6; }
+  #status-text.error { color: #ff6b6b; }
+  #conflict {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    color: #ff6b6b;
+  }
+  #bar button {
+    font: inherit;
+    padding: 4px 10px;
+    border: 1px solid #2a2d33;
+    border-radius: 6px;
+    background: #131417;
+    color: #e8eaed;
+    cursor: pointer;
+  }
+  #bar button:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  #root {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+  .cm-editor { height: 100%; font-size: 13px; }
+  .cm-scroller { font-family: ui-monospace, Menlo, Consolas, monospace; }
+  #status {
+    padding: 24px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    color: #9aa0a6;
+  }
+  #status.error { color: #ff6b6b; }
+  #status a { color: #E5FF44; }
+  /* Selection-anchor decorations (SPEC §17.5, AN-20). Attached comments tint
+     their range; resolved comments use a muted grey. Applied to CM6 mark
+     decorations built by the annotate adapter below. */
+  /* Commented ranges must read as INTERACTIVE, not as a text selection: faint
+     wash + solid accent underline + pointer cursor; the whole range brightens
+     on hover (all spans of the comment get .__fa_sel_hover via delegation,
+     since one CM mark can split into several DOM spans). */
+  .__fa_sel {
+    background: rgba(229, 255, 68, 0.18);
+    border-bottom: 2px solid rgba(229, 255, 68, 0.85);
+    cursor: pointer;
+  }
+  .__fa_sel.__fa_sel_hover { background: rgba(229, 255, 68, 0.3); }
+  .__fa_sel_resolved {
+    background: rgba(154, 160, 166, 0.08);
+    border-bottom: 2px dashed rgba(154, 160, 166, 0.5);
+    cursor: pointer;
+  }
+  .__fa_sel_resolved.__fa_sel_hover { background: rgba(154, 160, 166, 0.2); }
+</style>
+</head>
+<body>
+  <div id="bar">
+    <span id="filename"></span>
+    <span class="grow"></span>
+    <span id="conflict">
+      File changed on disk
+      <button id="reload">Reload</button>
+      <button id="overwrite">Overwrite</button>
+    </span>
+    <span id="status-text">Saved</span>
+    <button id="save" disabled>Save</button>
+  </div>
+  <div id="root"><div id="status">Loading…</div></div>
+  <script>
+    fused.autoReload(false); // editor must not reload out from under the cursor — own autosave changes mtime; external edits are the conflict lock's job (SPEC LR-5)
+
+    const MAX_BYTES = 2 * 1024 * 1024;
+
+    const barEl = document.getElementById("bar");
+    const filenameEl = document.getElementById("filename");
+    const statusTextEl = document.getElementById("status-text");
+    const conflictEl = document.getElementById("conflict");
+    const saveBtn = document.getElementById("save");
+    const reloadBtn = document.getElementById("reload");
+    const overwriteBtn = document.getElementById("overwrite");
+    const root = document.getElementById("root");
+
+    let view = null;
+    let file = null;
+    let mtime = null;   // last known on-disk mtime; the optimistic-lock token
+    let dirty = false;
+    let saveTimer = null;  // pending autosave debounce (AS-1)
+    let saving = false;    // a save() write is in flight
+
+    // =========================================================================
+    // Annotate mode — selection-anchor adapter (SPEC §17.5, AN-16…AN-21).
+    // Only active when the iframe URL carries `_annotate=1`. In this mode the
+    // editor is read-only (AN-19), text selections become comment anchors
+    // (AN-18), and CM6 range decorations tint each comment (AN-20). annotate.js
+    // (injected in <head>) owns the popovers/tray/URL storage; this adapter owns
+    // anchor build/resolution and calls back into its core (AN-17).
+    // =========================================================================
+    const ANNOTATE = new URLSearchParams(location.search).get("_annotate") === "1";
+    let annCore = null;        // core handed to us by annotate.js via init(core).
+    let resolvedRanges = [];   // [{from, to, id}] for click hit-testing (AN-20).
+    let selDebounce = null;    // keyboard-selection debounce timer (AN-19).
+    let setSelDecos = null;    // StateEffect carrying the new decoration set.
+    let selDecoField = null;   // StateField holding the decoration RangeSet.
+
+    // Build the read-only + decoration extensions (AN-19/AN-20). Called from
+    // load() so the field exists before the EditorView is constructed.
+    function annotateExtensions() {
+      // Marks are built per range so each carries its comment id — the hover
+      // delegation below lights every span of the same comment at once.
+      const markFor = (r) =>
+        CM.Decoration.mark({
+          class: r.resolved ? "__fa_sel_resolved" : "__fa_sel",
+          attributes: { "data-fa-id": r.id },
+        });
+      setSelDecos = CM.StateEffect.define();
+      selDecoField = CM.StateField.define({
+        create() { return CM.Decoration.none; },
+        update(deco, tr) {
+          deco = deco.map(tr.changes); // keeps ranges valid (doc is read-only, but safe)
+          for (const e of tr.effects) {
+            if (e.is(setSelDecos)) {
+              // Rebuild the whole set from the effect payload; sorted=true so CM
+              // accepts unsorted input. RangeSet virtualizes rendering (AN-20).
+              deco = CM.Decoration.set(
+                e.value.map((r) => markFor(r).range(r.from, r.to)),
+                true
+              );
+            }
+          }
+          return deco;
+        },
+        provide: (f) => CM.EditorView.decorations.from(f),
+      });
+      return [
+        CM.EditorState.readOnly.of(true),   // AN-19: annotate is a review mode
+        CM.EditorView.editable.of(false),
+        selDecoField,
+        CM.EditorView.updateListener.of(onSelectionUpdate),
+      ];
+    }
+
+    // 1-based line + 0-based ch → absolute doc offset, clamped to doc bounds.
+    // Returns null when the line no longer exists (doc shrank) → forces a quote
+    // search / detach (AN-21).
+    function posFromLineCh(doc, lc) {
+      if (!lc || lc.line > doc.lines) return null;
+      const line = doc.line(Math.max(1, lc.line));
+      return Math.min(line.from + Math.max(0, lc.ch), line.to);
+    }
+
+    // Quote match for re-resolution (AN-21). The stored quote is capped at 120
+    // chars (AN-18), so a selection longer than 120 stored only its prefix —
+    // compare min(quote.length, slice.length) chars (startsWith semantics).
+    function quoteMatches(slice, quote) {
+      if (!quote) return false;
+      if (slice === quote) return true;
+      const n = Math.min(quote.length, slice.length);
+      return n > 0 && slice.slice(0, n) === quote.slice(0, n);
+    }
+
+    // Resolve a sel-comment to a live {from, to} range (AN-21):
+    //  1. stored line/ch range whose slice still matches the quote → attached;
+    //  2. else first indexOf(quote) in the doc → re-anchor in memory;
+    //  3. else null → detached (caller sends id to core.setDetached).
+    function resolveSel(doc, c) {
+      const quote = c.quote || "";
+      const from = posFromLineCh(doc, c.selFrom);
+      const to = posFromLineCh(doc, c.selTo);
+      if (from != null && to != null && from < to) {
+        if (quoteMatches(doc.sliceString(from, to), quote)) return { from, to };
+      }
+      if (quote) {
+        const idx = doc.toString().indexOf(quote);
+        if (idx !== -1) return { from: idx, to: idx + quote.length };
+      }
+      return null;
+    }
+
+    // Recompute decorations + detachment from current comment data (AN-20/AN-21).
+    // Called on adapter init, after the view is built, and on every core.onChange.
+    function rebuildDecorations() {
+      if (!view || !annCore || !selDecoField) return;
+      const doc = view.state.doc;
+      const ranges = [];
+      const detached = [];
+      for (const c of annCore.getComments()) {
+        if (!c.selFrom || !c.selTo) {
+          // Element/free-pin threads (`_comments` is shared across preview
+          // modes) have no meaning in an editor — dock them in the tray so
+          // they stay visible and answerable instead of silently vanishing.
+          detached.push(c.id);
+          continue;
+        }
+        const r = resolveSel(doc, c);
+        if (r && r.from < r.to) {
+          ranges.push({ from: r.from, to: r.to, id: c.id, resolved: c.status === "resolved" });
+        } else {
+          detached.push(c.id);
+        }
+      }
+      resolvedRanges = ranges;
+      view.dispatch({ effects: setSelDecos.of(ranges) });
+      annCore.setDetached(detached); // AN-21: orphaned comments dock into the tray
+    }
+
+    // A completed non-empty selection pops a draft near its end (AN-19).
+    function openDraftForSelection() {
+      if (!view || !annCore) return;
+      const sel = view.state.selection.main;
+      if (sel.empty) return;
+      const from = Math.min(sel.anchor, sel.head);
+      const to = Math.max(sel.anchor, sel.head);
+      const doc = view.state.doc;
+      const lf = doc.lineAt(from);
+      const lt = doc.lineAt(to);
+      const anchorFields = {
+        selFrom: { line: lf.number, ch: from - lf.from }, // 1-based line, 0-based ch (AN-18)
+        selTo: { line: lt.number, ch: to - lt.from },
+        quote: doc.sliceString(from, to).slice(0, 120),   // cap 120 (AN-18)
+      };
+      const coords = view.coordsAtPos(to) || view.coordsAtPos(from);
+      const x = coords ? coords.right : 0;
+      const y = coords ? coords.bottom : 0;
+      annCore.openDraftAt(x + 4, y + 4, anchorFields); // below-right of selection end
+    }
+
+    // Selection listener (AN-19). Mouse selections are handled immediately on
+    // mouseup; keyboard selections debounce ~400ms after the last change (we
+    // can't tell the source here, so we debounce always — the mouseup path just
+    // fires sooner and openDraftAt is close-then-open so it stays idempotent).
+    // Collapsing the selection cancels a pending DRAFT (not a thread popover).
+    function onSelectionUpdate(update) {
+      if (!ANNOTATE || !annCore || !update.selectionSet) return;
+      clearTimeout(selDebounce);
+      if (update.state.selection.main.empty) {
+        if (annCore.isDraftOpen()) annCore.closePopover();
+        return;
+      }
+      // A draft is already open for this selection (the mouseup path fired
+      // first): a late CM selectionSet must NOT re-schedule — openDraftAt is
+      // close-then-open, so re-firing would replace a draft the user is
+      // already typing in.
+      if (annCore.isDraftOpen()) return;
+      selDebounce = setTimeout(openDraftForSelection, 400);
+    }
+
+    // Click inside a decorated range → open its thread (AN-20). Runs on mouseup
+    // via a 0ms defer so CM has committed the selection; only fires for a click
+    // (empty selection) so a drag-select ending inside a range opens a DRAFT
+    // (handled by onSelectionUpdate/openDraftForSelection) rather than a thread.
+    function onEditorMouseUp(e) {
+      if (!view || !annCore) return;
+      setTimeout(() => {
+        const sel = view.state.selection.main;
+        if (!sel.empty) {
+          clearTimeout(selDebounce);
+          openDraftForSelection();
+          return;
+        }
+        const pos = view.posAtCoords({ x: e.clientX, y: e.clientY });
+        if (pos == null) return;
+        const hit = resolvedRanges.find((r) => pos >= r.from && pos < r.to);
+        if (hit) annCore.openThread(hit.id, e.clientX, e.clientY);
+      }, 0);
+    }
+
+    // Connect editor ↔ core once BOTH exist (registration and view creation
+    // race — load() is async, annotate.js starts on DOMContentLoaded). Idempotent.
+    // Hover affordance: a CM mark may split into several spans, so :hover on one
+    // span alone looks broken — delegate and light every span of the comment.
+    let hoveredFaId = null;
+    function setHoverId(id) {
+      if (id === hoveredFaId) return;
+      if (hoveredFaId != null) {
+        view.dom
+          .querySelectorAll(`[data-fa-id="${CSS.escape(hoveredFaId)}"]`)
+          .forEach((s) => s.classList.remove("__fa_sel_hover"));
+      }
+      hoveredFaId = id;
+      if (id != null) {
+        view.dom
+          .querySelectorAll(`[data-fa-id="${CSS.escape(id)}"]`)
+          .forEach((s) => s.classList.add("__fa_sel_hover"));
+      }
+    }
+    function onEditorMouseMove(e) {
+      const span = e.target.closest && e.target.closest("[data-fa-id]");
+      setHoverId(span ? span.getAttribute("data-fa-id") : null);
+    }
+
+    let annConnected = false;
+    function connectAnnotate() {
+      if (annConnected || !annCore || !view) return;
+      annConnected = true;
+      view.dom.addEventListener("mouseup", onEditorMouseUp);
+      view.dom.addEventListener("mousemove", onEditorMouseMove);
+      view.dom.addEventListener("mouseleave", () => setHoverId(null));
+      rebuildDecorations();
+    }
+
+    // Register the adapter with annotate.js (AN-17). annotate.js is injected in
+    // <head> and runs before this body script, so window.__fusedAnnotate is
+    // normally already present; the event/global fallbacks cover the reverse
+    // order defensively.
+    if (ANNOTATE) {
+      const adapter = {
+        init(core) {
+          annCore = core;
+          core.onChange(rebuildDecorations); // re-resolve on any data change
+          connectAnnotate();
+        },
+      };
+      if (window.__fusedAnnotate && window.__fusedAnnotate.registerAdapter) {
+        window.__fusedAnnotate.registerAdapter(adapter);
+      } else {
+        window.__fusedAnnotateAdapter = adapter; // picked up by start()
+        window.addEventListener(
+          "fused-annotate:ready",
+          () => window.__fusedAnnotate.registerAdapter(adapter),
+          { once: true }
+        );
+      }
+    }
+
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    // Extension → CodeMirror language extension. Values are either a language
+    // function to call or a ready extension (the legacy StreamLanguage modes).
+    function languageFor(ext) {
+      switch (ext) {
+        case "py": return CM.python();
+        case "js": return CM.javascript();
+        case "ts": return CM.javascript({ typescript: true });
+        case "json": return CM.json();
+        case "yaml":
+        case "yml": return CM.yaml();
+        case "html":
+        case "htm": return CM.html();
+        case "css": return CM.css();
+        case "sh": return CM.shellLang;
+        case "toml": return CM.tomlLang;
+        default: return null; // unknown → plain text, no highlighting
+      }
+    }
+
+    function setDirty(d) {
+      dirty = d;
+      saveBtn.disabled = !d;
+      if (conflictEl.style.display !== "flex") {
+        statusTextEl.textContent = d ? "Modified" : "Saved";
+        statusTextEl.classList.remove("error");
+      }
+    }
+
+    function showConflict() {
+      conflictEl.style.display = "flex";
+      statusTextEl.textContent = "";
+      saveBtn.disabled = false;
+    }
+
+    function hideConflict() {
+      conflictEl.style.display = "none";
+    }
+
+    // Autosave 250 ms after the last edit (AS-1). Suspends while a conflict banner
+    // is up (AS-2 — never auto-overwrite); reschedules rather than stacking a
+    // second write if a save is already in flight.
+    function autosave() {
+      if (!dirty) return;
+      if (conflictEl.style.display === "flex") return;
+      if (saving) {
+        saveTimer = setTimeout(autosave, 250);
+        return;
+      }
+      save();
+    }
+
+    // Single-flight save: concurrent callers (autosave timer, Save button,
+    // Cmd+S, __fusedFlushEdits) must never issue two writeFile calls for the
+    // same buffer — later callers wait out the in-flight write, then re-check
+    // dirty (the finished write usually cleared it).
+    let savePromise = null;
+
+    async function save() {
+      clearTimeout(saveTimer); // manual Save / Cmd+S cancels a pending autosave (AS-1)
+      while (saving && savePromise) await savePromise;
+      if (!view || !dirty) return;
+      savePromise = doSave();
+      await savePromise;
+    }
+
+    async function doSave() {
+      // Snapshot the doc we are writing. CM's Text is immutable, so a plain
+      // reference compare after the await detects edits that landed while the
+      // write was in flight — those must NOT be masked by setDirty(false), or
+      // "Saved" lies and the 250ms autosave (which checks dirty) skips them.
+      const docState = view.state.doc;
+      const doc = docState.toString();
+      saveBtn.disabled = true;
+      statusTextEl.textContent = "Saving…";
+      statusTextEl.classList.remove("error");
+      saving = true;
+      try {
+        const st = await fused.writeFile(file, doc, { expectedMtime: mtime });
+        mtime = st.mtime;
+        hideConflict();
+        if (view.state.doc === docState) {
+          setDirty(false);
+        } else {
+          // Newer edits arrived during the write: stay dirty, re-arm autosave.
+          setDirty(true);
+          saveTimer = setTimeout(autosave, 250);
+        }
+      } catch (err) {
+        if (err.type === "conflict") {
+          showConflict();
+        } else {
+          statusTextEl.textContent = "Save failed: " + (err.message || "");
+          statusTextEl.classList.add("error");
+          saveBtn.disabled = false;
+        }
+      } finally {
+        saving = false;
+      }
+    }
+
+    // Reload discards local edits and re-arms the lock from disk.
+    async function reloadFromDisk() {
+      try {
+        const st = await fused.stat(file);
+        const text = await fused.readFile(file);
+        view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
+        mtime = st.mtime;
+        hideConflict();
+        setDirty(false); // after dispatch, whose docChanged had flipped us dirty
+      } catch (err) {
+        statusTextEl.textContent = "Reload failed: " + (err.message || "");
+        statusTextEl.classList.add("error");
+      }
+    }
+
+    // Overwrite forces the write with no lock, then re-arms from the response.
+    async function overwrite() {
+      const doc = view.state.doc.toString();
+      try {
+        const st = await fused.writeFile(file, doc);
+        mtime = st.mtime;
+        hideConflict();
+        setDirty(false);
+      } catch (err) {
+        statusTextEl.textContent = "Save failed: " + (err.message || "");
+        statusTextEl.classList.add("error");
+      }
+    }
+
+    async function load() {
+      file = fused.params.get("_file");
+      if (!file) {
+        root.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
+        return;
+      }
+      const rawUrl = fused.rawUrl(file);
+      let text;
+      try {
+        const stat = await fused.stat(file);
+        if (stat.size !== null && stat.size !== undefined && stat.size > MAX_BYTES) {
+          root.innerHTML = `<div id="status">File is too large to edit inline (${stat.size.toLocaleString()} bytes).
+            <a href="${rawUrl}" target="_blank" rel="noopener">Open raw</a></div>`;
+          return;
+        }
+        text = await fused.readFile(file);
+        mtime = stat.mtime;
+      } catch (err) {
+        root.innerHTML = `<div id="status" class="error">Failed to load file: ${escapeHtml(err.message)}</div>`;
+        return;
+      }
+
+      const ext = (file.split("/").pop().split(".").pop() || "").toLowerCase();
+      const extensions = [
+        CM.basicSetup,
+        CM.oneDark,
+        // docChanged fires on any user edit → mark the buffer modified.
+        CM.EditorView.updateListener.of((update) => {
+          if (update.docChanged) {
+            setDirty(true);
+            clearTimeout(saveTimer);
+            saveTimer = setTimeout(autosave, 250);
+          }
+        }),
+      ];
+      const lang = languageFor(ext);
+      if (lang) extensions.push(lang);
+      // Annotate mode: read-only + selection-decoration extensions (AN-19/AN-20).
+      if (ANNOTATE) extensions.push(...annotateExtensions());
+
+      root.innerHTML = "";
+      view = new CM.EditorView({ doc: text, extensions, parent: root });
+      filenameEl.textContent = file.split("/").pop();
+      barEl.style.display = "flex";
+      setDirty(false);
+      if (ANNOTATE) {
+        // Read-only review mode (AN-19): no Save/autosave, distinct status.
+        saveBtn.style.display = "none";
+        statusTextEl.textContent = "Annotate mode — read-only";
+        statusTextEl.classList.remove("error");
+        connectAnnotate(); // core may already be registered (init ran first)
+      }
+    }
+
+    saveBtn.addEventListener("click", save);
+    reloadBtn.addEventListener("click", reloadFromDisk);
+    overwriteBtn.addEventListener("click", overwrite);
+
+    // CM's own save keymap isn't bundled (keymap isn't exported), so bind
+    // Cmd/Ctrl+S at the window instead and swallow the browser's Save dialog.
+    window.addEventListener("keydown", (e) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === "s" || e.key === "S")) {
+        e.preventDefault();
+        save();
+      }
+    });
+
+    window.addEventListener("beforeunload", (e) => {
+      if (dirty) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    });
+
+    // Flush hook for the shell (AN-2): entering annotate mode remounts this
+    // iframe, which would silently discard edits newer than the last autosave
+    // (or a conflict-suspended buffer). The shell calls this before flipping
+    // `_annotate`; resolves {ok:false} when the buffer could not be made safe
+    // (save failure / unresolved conflict) so the shell can refuse the switch.
+    window.__fusedFlushEdits = async () => {
+      if (!view || !dirty) return { ok: true };
+      if (conflictEl.style.display === "flex") return { ok: false };
+      await save();
+      return { ok: !dirty && conflictEl.style.display !== "flex" };
+    };
+
+    load();
+  </script>
+</body>
+</html>

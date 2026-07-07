@@ -1,0 +1,971 @@
+:root {
+  color-scheme: dark;
+  --fg: #e8eaed;
+  --fg-muted: #9aa0a6;
+  --border: #2a2d33;
+  --bg: #131417;
+  --bg-alt: #1b1d21;
+  --accent: #E5FF44;
+  --error: #ff6b6b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+  font-size: 14px;
+}
+
+#app {
+  display: flex;
+  flex-direction: row;
+  height: 100vh;
+}
+
+/* Sidebar */
+#sidebar {
+  flex: 0 0 232px;
+  width: 232px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-alt);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 14px 16px;
+  font-size: 13.5px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar-brand .logo {
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+}
+
+.sidebar-section {
+  padding: 8px;
+}
+
+.sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  color: var(--fg);
+  text-decoration: none;
+  cursor: pointer;
+  font-size: 13.5px;
+}
+
+.sidebar-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.sidebar-item .icon {
+  opacity: 0.85;
+}
+
+.sidebar-heading {
+  padding: 10px 10px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+}
+
+.sidebar-bookmarks {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.sidebar-empty {
+  padding: 6px 10px;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.bookmark-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  border-radius: 8px;
+}
+
+.bookmark-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.bookmark-row.active {
+  background: rgba(229, 255, 68, 0.13);
+}
+
+.bookmark-row.active .bookmark-name {
+  color: var(--accent);
+}
+
+.bookmark-glyph {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.bookmark-row.active .bookmark-glyph {
+  color: var(--accent);
+}
+
+.bookmark-row.dragging {
+  opacity: 0.4;
+}
+
+.bookmark-row.drag-above {
+  box-shadow: 0 -2px 0 0 var(--accent);
+}
+
+.bookmark-row.drag-below {
+  box-shadow: 0 2px 0 0 var(--accent);
+}
+
+.bookmark-row.drag-into {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+/* Folder rows: folder icon (aligned with the bookmark stars) + semibold name
+   + child-count pill pinned far right. Icon and name toggle the fold; the
+   count pill swaps out for the rename/delete actions on hover. */
+.folder-row {
+  position: relative;
+}
+
+.folder-glyph {
+  display: flex;
+  cursor: pointer;
+}
+
+.folder-row .folder-name {
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.folder-count {
+  /* Overlays the always-reserved (but invisible until hover) actions area,
+     so it sits at the row's far right without shifting the name. */
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 10.5px;
+  line-height: 1;
+  color: var(--fg-muted);
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  padding: 3px 6px;
+}
+
+.folder-row:hover .folder-count {
+  display: none;
+}
+
+/* Indent rail: children sit inside a wrapper whose left border draws the
+   tree line, aligned under the folder icon. */
+.folder-children {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-left: 20px;
+  padding-left: 5px;
+  border-left: 1px solid rgba(255, 255, 255, 0.13);
+}
+
+.child-row {
+  padding-left: 8px;
+}
+
+.bookmark-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.bookmark-name:hover {
+  color: var(--accent);
+}
+
+.bookmark-actions {
+  /* visibility (not display) so the buttons always occupy layout space —
+     display:none → flex on hover made the bookmark name shift width. */
+  display: flex;
+  visibility: hidden;
+  flex: 0 0 auto;
+  gap: 2px;
+}
+
+.bookmark-row:hover .bookmark-actions {
+  visibility: visible;
+}
+
+/* Bookmark hover card (params preview) */
+#bookmark-tooltip {
+  position: fixed;
+  z-index: 1000;
+  min-width: 200px;
+  max-width: 340px;
+  background: #202329;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  padding: 10px 12px;
+  font-size: 12px;
+  pointer-events: none;
+  display: none;
+}
+
+#bookmark-tooltip .tip-path {
+  color: var(--fg);
+  font-weight: 600;
+  word-break: break-all;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+}
+
+#bookmark-tooltip .tip-params {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 10px;
+  margin-top: 8px;
+}
+
+#bookmark-tooltip .tip-key {
+  color: var(--fg-muted);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+
+#bookmark-tooltip .tip-val {
+  color: var(--fg);
+  word-break: break-all;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+
+#bookmark-tooltip .tip-none {
+  color: var(--fg-muted);
+  font-style: italic;
+  margin-top: 6px;
+}
+
+.icon-btn {
+  font: inherit;
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 5px;
+  border-radius: 4px;
+}
+
+.icon-btn:hover {
+  color: var(--fg);
+  background: var(--bg);
+}
+
+.bookmark-rename-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-size: 13px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+/* Main column */
+#main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+#breadcrumb {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-alt);
+}
+
+#breadcrumb .crumbs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+#breadcrumb a {
+  color: var(--fg-muted);
+  text-decoration: none;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+#breadcrumb a:hover {
+  background: var(--border);
+  color: var(--fg);
+}
+
+#breadcrumb .sep {
+  color: var(--fg-muted);
+}
+
+#breadcrumb .current {
+  font-weight: 600;
+  padding: 2px 4px;
+}
+
+.crumb-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.star-btn {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 12.5px;
+  white-space: nowrap;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.star-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.star-btn.starred {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(229, 255, 68, 0.13);
+}
+
+#content {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Listing view */
+.listing {
+  overflow: auto;
+  flex: 1 1 auto;
+}
+
+table.listing-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+table.listing-table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--fg-muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  cursor: pointer;
+  user-select: none;
+}
+
+table.listing-table th.sortable:hover {
+  color: var(--fg);
+}
+
+table.listing-table th.sorted {
+  color: var(--accent);
+}
+
+table.listing-table .sort-arrow {
+  margin-left: 5px;
+  font-size: 9px;
+}
+
+table.listing-table td {
+  padding: 7px 16px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+table.listing-table tr.row {
+  cursor: pointer;
+}
+
+table.listing-table tr.row:hover {
+  background: var(--bg-alt);
+}
+
+table.listing-table td.name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+table.listing-table .icon {
+  flex: 0 0 auto;
+  opacity: 0.75;
+}
+
+table.listing-table td.size,
+table.listing-table td.mtime {
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Preview view */
+.preview {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.preview-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  gap: 12px;
+}
+
+.preview-header h1 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.preview-actions button,
+.preview-actions a {
+  font: inherit;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.preview-actions button.active {
+  background: var(--accent);
+  color: #10131a;
+  border-color: var(--accent);
+}
+
+.preview-actions button:hover,
+.preview-actions a:hover {
+  background: var(--bg-alt);
+}
+
+/* Icon-only mode switcher (PT-10) — same border/bg/hover/active language as
+   .preview-actions buttons above, sized as compact squares. Selectors carry
+   the .preview-actions ancestor so they win over the generic button rules
+   above at equal-or-lower specificity conflicts (e.g. padding). */
+.preview-actions .mode-switcher {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.preview-actions .mode-switcher-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.preview-actions .mode-switcher-btn:hover {
+  background: var(--bg-alt);
+}
+
+.preview-actions .mode-switcher-btn.active {
+  background: var(--accent);
+  color: #10131a;
+  border-color: var(--accent);
+}
+
+/* Annotate toggle (AN-2): same icon-button family as .mode-switcher-btn, but
+   position:relative for the badge, and separated from the mode switcher by a
+   hairline divider — it is an orthogonal on/off, not a fourth mode. */
+.preview-actions .annotate-toggle {
+  position: relative;
+  margin-left: 10px;
+}
+.preview-actions .annotate-toggle::before {
+  content: "";
+  position: absolute;
+  left: -10px;
+  top: 4px;
+  bottom: 4px;
+  width: 1px;
+  background: var(--border);
+}
+
+/* Solid accent fill is reserved for the single-select mode switcher; the
+   binary annotate toggle gets a tinted-outline on-state so "armed to comment"
+   and "active mode" never read as the same thing. */
+.preview-actions .mode-switcher-btn.annotate-toggle.active {
+  background: color-mix(in srgb, var(--accent) 18%, var(--bg));
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Template-mode icon: monochrome SVG tinted via mask-image + currentColor
+   (mask-image url set inline per icon, PT-11). */
+.mode-icon-mask {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  background-color: currentColor;
+  -webkit-mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+}
+
+/* Placeholder for a mode with no icon.svg: first letter in a small rounded box. */
+.mode-icon-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid currentColor;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* Open-comment count badge on the Annotate toggle (AN-3), visible whether or
+   not annotate is on. fg-token colors read on both the idle (--bg) and active
+   (--accent) button backgrounds; the bg-colored ring separates it from icon
+   strokes underneath. */
+.annotate-badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  min-width: 13px;
+  height: 13px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--fg);
+  color: #10131a;
+  font-size: 9px;
+  line-height: 13px;
+  font-weight: 700;
+  text-align: center;
+  box-shadow: 0 0 0 1.5px var(--bg);
+}
+
+.preview-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  /* Positioning context for the embed-only .preview-browse-chip pinned over
+     the iframe. */
+  position: relative;
+}
+
+.preview-body iframe {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+.metadata-card {
+  margin: 24px;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-alt);
+  max-width: 480px;
+}
+
+.metadata-card dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 16px;
+  margin: 0 0 16px 0;
+}
+
+.metadata-card dt {
+  color: var(--fg-muted);
+}
+
+.metadata-card dd {
+  margin: 0;
+  word-break: break-all;
+}
+
+.status-message {
+  padding: 24px;
+  color: var(--fg-muted);
+}
+
+.status-message.error {
+  color: var(--error);
+}
+
+/* Embed mode (/embed/<path>): content only — all shell chrome hidden.
+   Views still render breadcrumb/header into the DOM; hiding here keeps
+   view modules embed-unaware. */
+body.embed #sidebar,
+body.embed #breadcrumb,
+body.embed .preview-header {
+  display: none;
+}
+
+/* Directory templates (.zarr etc.) surface their member listing through the
+   "Browse contents" header button. Embed mode hides that whole header, so the
+   same action also rides as an unobtrusive corner chip pinned over the preview,
+   revealed only in embed. File (non-directory) previews render no chip, so
+   embed chrome stays empty for them (PT-13/D65). */
+.preview-browse-chip {
+  display: none;
+}
+
+body.embed .preview-browse-chip {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+body.embed .preview-browse-chip:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+/* Panel mode (/view/_panel, /embed/_panel): a split-pane grid of /embed iframes (SPEC §14).
+   Modeled on the reference grid-viewer's pane styles, using our palette. The
+   root is position:relative so a maximized pane fills the panel area (inside
+   #content) without covering the sidebar or breadcrumb. */
+.panel-root {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 6px;
+}
+
+.panel-root > * {
+  width: 100%;
+  height: 100%;
+}
+
+.panel-split {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+  height: 100%;
+}
+
+.panel-split.row {
+  flex-direction: row;
+}
+
+.panel-split.col {
+  flex-direction: column;
+}
+
+.panel-split > * {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.panel-pane {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.panel-pane.maximized {
+  position: absolute;
+  inset: 6px;
+  z-index: 50;
+}
+
+.panel-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 28px;
+  padding: 3px 6px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+
+.panel-crumbs {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  overflow-x: auto;
+  scrollbar-width: none;
+  white-space: nowrap;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.panel-crumbs::-webkit-scrollbar {
+  display: none;
+}
+
+.panel-crumb {
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 2px 1px;
+  border-radius: 3px;
+}
+
+.panel-crumb:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.panel-crumb.last {
+  color: var(--fg);
+}
+
+.panel-crumb-sep {
+  color: var(--border);
+  margin: 0 1px;
+}
+
+.panel-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 4px 5px;
+  border-radius: 4px;
+}
+
+.panel-btn svg {
+  display: block;
+}
+
+.panel-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--fg);
+}
+
+.panel-btn.close:hover {
+  color: var(--error);
+}
+
+.panel-pane iframe {
+  flex: 1 1 auto;
+  width: 100%;
+  border: none;
+  background: var(--bg);
+}
+
+/* Tab mode (/view/_tab, /embed/_tab): a tabbed set of /embed iframes, one
+   visible at a time (SPEC §15). Bar of tab buttons on top, iframes fill the
+   rest; the active tab's iframe is shown, the others display:none. */
+.tabs-root {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.tabs-bar {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  min-height: 30px;
+  padding: 3px 6px 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.tabs-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  max-width: 200px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 5px 8px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.tab:hover {
+  color: var(--fg);
+}
+
+.tab.active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+  background: var(--bg-alt);
+}
+
+.tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  border-radius: 3px;
+  color: var(--fg-muted);
+  font-size: 14px;
+  line-height: 1;
+}
+
+.tab-close:hover {
+  color: var(--error);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.tab-add {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.tab-add:hover {
+  color: var(--fg);
+}
+
+.tabs-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.tabs-body iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: var(--bg);
+}
+
+/* React mount point (frontend/index.html) — transparent to the flex layout
+   above: #app stays the layout root exactly as in the vanilla shell. */
+#root {
+  display: contents;
+}

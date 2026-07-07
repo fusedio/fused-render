@@ -1,7 +1,7 @@
 {
   "name": "fused-render-codemirror-vendor",
   "private": true,
-  "description": "Build workspace that bundles CodeMirror 6 into a single self-contained IIFE for fused-render's code_template.html. Not shipped; only the built bundle is committed. See README.md.",
+  "description": "Build workspace that bundles CodeMirror 6 into a single self-contained IIFE for fused-render's code/template.html. Not shipped; only the built bundle is committed. See README.md.",
   "version": "0.0.0",
   "scripts": {
     "build": "./build.sh"

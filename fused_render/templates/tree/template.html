@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>JSON preview</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    color: #e8eaed;
+    background: #131417;
+  }
+  #tree {
+    padding: 16px;
+    white-space: nowrap;
+  }
+  .node { padding-left: 16px; }
+  .row { cursor: default; }
+  .row.foldable { cursor: pointer; }
+  .toggle {
+    display: inline-block;
+    width: 1em;
+    color: #9aa0a6;
+    user-select: none;
+  }
+  .row.foldable:hover > .toggle { color: #e8eaed; }
+  .key { color: #E5FF44; }
+  .punct, .count { color: #9aa0a6; }
+  .count { font-style: italic; }
+  .collapsed > .node { display: none; }
+  .collapsed > .row .preview { color: #9aa0a6; }
+  .str { color: #98c379; }
+  .num { color: #d19a66; }
+  .bool { color: #c678dd; }
+  .null { color: #9aa0a6; }
+  #status {
+    padding: 24px;
+    color: #9aa0a6;
+    white-space: normal;
+  }
+  #status.error { color: #ff6b6b; }
+  #status a { color: #E5FF44; }
+  pre.raw {
+    margin: 16px 0 0;
+    padding: 12px;
+    background: #1b1d21;
+    border: 1px solid #2a2d33;
+    border-radius: 6px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: #e8eaed;
+  }
+</style>
+</head>
+<body>
+  <div id="root"><div id="status">Loading…</div></div>
+  <script>
+    const MAX_BYTES = 5 * 1024 * 1024;
+    const DEFAULT_OPEN_DEPTH = 2; // collapse everything nested deeper than this
+
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function primitiveHtml(value) {
+      if (value === null) return `<span class="null">null</span>`;
+      const t = typeof value;
+      if (t === "string") return `<span class="str">"${escapeHtml(value)}"</span>`;
+      if (t === "number") return `<span class="num">${escapeHtml(value)}</span>`;
+      if (t === "boolean") return `<span class="bool">${value}</span>`;
+      return `<span>${escapeHtml(String(value))}</span>`;
+    }
+
+    // Build one node. `keyHtml` is the "key: " prefix (empty at the root).
+    function buildNode(value, keyHtml, depth) {
+      const el = document.createElement("div");
+      const isArray = Array.isArray(value);
+      const isObject = value !== null && typeof value === "object";
+
+      if (!isObject) {
+        el.className = "row";
+        el.innerHTML = `${keyHtml}${primitiveHtml(value)}`;
+        return el;
+      }
+
+      const entries = isArray
+        ? value.map((v, i) => [i, v])
+        : Object.entries(value);
+      const open = isArray ? "[" : "{";
+      const close = isArray ? "]" : "}";
+      const countLabel = isArray
+        ? `${entries.length} item${entries.length === 1 ? "" : "s"}`
+        : `${entries.length} key${entries.length === 1 ? "" : "s"}`;
+
+      const container = document.createElement("div");
+      const row = document.createElement("div");
+      row.className = "row foldable";
+      row.innerHTML =
+        `<span class="toggle">▾</span>${keyHtml}` +
+        `<span class="punct">${open}</span>` +
+        `<span class="count preview"> ${countLabel} </span>` +
+        `<span class="punct">${close}</span>`;
+      container.appendChild(row);
+
+      const children = document.createElement("div");
+      children.className = "node";
+      for (const [k, v] of entries) {
+        const childKey = isArray
+          ? ""
+          : `<span class="key">"${escapeHtml(k)}"</span><span class="punct">: </span>`;
+        children.appendChild(buildNode(v, childKey, depth + 1));
+      }
+      container.appendChild(children);
+
+      // Toggle open/collapsed; the ▾/▸ glyph and child visibility both key off
+      // the `collapsed` class on the container.
+      function setCollapsed(collapsed) {
+        container.classList.toggle("collapsed", collapsed);
+        row.querySelector(".toggle").textContent = collapsed ? "▸" : "▾";
+      }
+      row.addEventListener("click", () => {
+        setCollapsed(!container.classList.contains("collapsed"));
+      });
+      if (entries.length > 0 && depth >= DEFAULT_OPEN_DEPTH) setCollapsed(true);
+
+      return container;
+    }
+
+    async function load() {
+      const root = document.getElementById("root");
+      const file = fused.params.get("_file");
+      if (!file) {
+        root.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
+        return;
+      }
+      const rawUrl = fused.rawUrl(file);
+      let text;
+      try {
+        const stat = await fused.stat(file);
+        if (stat.size !== null && stat.size !== undefined && stat.size > MAX_BYTES) {
+          root.innerHTML = `<div id="status">File is too large to render inline (${stat.size.toLocaleString()} bytes).
+            <a href="${rawUrl}" target="_blank" rel="noopener">Open raw</a></div>`;
+          return;
+        }
+        text = await fused.readFile(file);
+      } catch (err) {
+        root.innerHTML = `<div id="status" class="error">Failed to load file: ${escapeHtml(err.message)}</div>`;
+        return;
+      }
+
+      let parsed;
+      try {
+        parsed = JSON.parse(text);
+      } catch (err) {
+        // Malformed JSON: show the parse error plus a head of the raw text so
+        // the user can see where it went wrong.
+        root.innerHTML =
+          `<div id="status" class="error">Could not parse JSON: ${escapeHtml(err.message)}</div>` +
+          `<pre class="raw">${escapeHtml(text.slice(0, 2048))}</pre>`;
+        return;
+      }
+
+      const tree = document.createElement("div");
+      tree.id = "tree";
+      tree.appendChild(buildNode(parsed, "", 0));
+      root.innerHTML = "";
+      root.appendChild(tree);
+    }
+
+    load();
+  </script>
+</body>
+</html>

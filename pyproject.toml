@@ -47,3 +47,12 @@ fused-render-app = "fused_render.app:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["fused_render"]
+# The Vite-built shell is gitignored (D54) but must ship in the wheel;
+# `artifacts` overrides hatchling's VCS-based exclusion for it.
+artifacts = ["fused_render/static/shell-dist/**"]
+
+# Builds frontend/ -> fused_render/static/shell-dist/ at package-build time
+# (wheel and the DMG pipeline, which pip-installs this repo). Editable
+# installs skip it — see scripts/hatch_build.py.
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "scripts/hatch_build.py"

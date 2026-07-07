@@ -1,6 +1,6 @@
 # CodeMirror 6 vendor build
 
-`code_template.html` uses a single self-contained CodeMirror 6 bundle
+`code/template.html` uses a single self-contained CodeMirror 6 bundle
 (`fused_render/templates/vendor/codemirror.bundle.js`) so the product stays
 fully local at runtime — no CDN, no module loader in the browser.
 

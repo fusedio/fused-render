@@ -1,6 +1,6 @@
 ---
 name: fused-render-authoring
-description: How to author HTML views and Python data files for fused-render — the local file explorer that live-renders HTML with a fused.runPython() bridge to local Python, URL-synced params, and file IO helpers (fused.readFile/writeFile/stat/rawUrl). Use this whenever the user asks to create, edit, or debug an .html view, a .py data file, or a preview template for fused-render; mentions fused.runPython, fused.params, fused.readFile, fused.writeFile, renderable HTML, preview templates, or _file; or asks for "a view for <some file/data>" or an editor for a file format inside a fused-render project. Also use it when a fused-render view renders blank, shows a red traceback overlay, or params don't sync to the URL.
+description: How to author HTML views and Python data files for fused-render (the local HTML explorer with a fused.runPython() bridge, URL-synced params, and file IO helpers). Use when creating, editing, or debugging an .html view, a .py data file, or a preview template; when a view renders blank, shows a traceback overlay, or params don't sync to the URL; or when the user mentions fused.runPython/params/readFile/writeFile or asks for "a view for <file/data>".
 ---
 
 # Authoring fused-render views
@@ -60,12 +60,12 @@ The runtime is injected automatically when the explorer renders the page. Never 
 |---|---|
 | `await fused.runPython(pyPath, params)` | Runs `main(**params)` of the file at `pyPath` — relative to **this html file's directory**, or absolute. Resolves with the return value; rejects with an `Error` carrying `.type`, `.message`, `.traceback`, `.stdout`. |
 | `fused.params.get(k)` | Current value from the URL, as a **string** (or `undefined`). |
-| `fused.params.getAll()` | All non-reserved params as an object. |
+| `fused.params.getAll()` | All non-reserved params as an object — plus `_file` (read-only) when the page was opened as a preview template, even though `_file` is otherwise a reserved key. |
 | `fused.params.set(k, v)` | Writes to the URL (replaceState — no history spam). **Throws unless `v` is a string** — do `String(n)` yourself. Then fires `onChange`. |
 | `fused.params.onChange(cb)` | `cb(allParams)` after every applied `set`. Returns an unsubscribe function. |
 | `fused.params.get("_file")` | Read-only: the target file a **preview template** was opened for. Keys starting `_` are reserved — `set()` on them throws. |
 | `await fused.readFile(path)` | File contents as **text** (UTF-8). Rejects with an `Error` on failure. Use when a view just needs the bytes as a string — no reader `.py` required. |
-| `await fused.stat(path)` | Metadata object `{path, name, is_dir, size, mtime, template}`. Use for size guards before reading big files, and to capture `mtime` before editing. |
+| `await fused.stat(path)` | Metadata object `{path, name, is_dir, size, mtime, templates}` (`templates` is the ordered mode-list array, usually irrelevant to page code). Use for size guards before reading big files, and to capture `mtime` before editing. |
 | `await fused.writeFile(path, content, opts?)` | Writes UTF-8 text **atomically** (never a half-written file). `opts.expectedMtime` arms an optimistic lock: if the file changed on disk since that mtime, rejects with an error whose `.type === "conflict"` (and `.mtime` = current on-disk value) instead of clobbering. Omit it to write unconditionally — also how you create a new file. Resolves with a fresh stat object; keep its `.mtime` to re-arm the lock for the next save. |
 | `fused.rawUrl(path)` | **Sync**, returns a URL string serving the file's raw bytes. This is for embedding — `<img src>`, `<video src>`, `<embed>`, download links — where you need a URL, not text. |
 
@@ -146,17 +146,40 @@ const page = await fused.runPython("./my_reader.py", { file, offset: fused.param
 
 A reader `.py` is only needed when Python adds value (parsing parquet/xlsx, paging, aggregation). Text formats can skip it entirely — `fused.stat` for a size guard, then `fused.readFile(file)` and render in JS (the markdown/JSON/code templates work this way); media formats just point a tag at `fused.rawUrl(file)`.
 
-Ship the reader `.py` next to the template html and call it with a relative path. Paging/sort/filter state goes in normal params (`offset`, `sort` …) exactly like any view. Built-in templates live in `fused_render/templates/` and follow this pattern (see `parquet_template.html` + `parquet_reader.py` for a worked example); registering a new extension for a **built-in** means adding it to the `TEMPLATES` dict in `fused_render/server.py`. **User-owned** templates that override or extend the built-ins live under `~/.fused-render/` and are bound via `registry.json` — layout and registration are covered by the `fused-render-custom-templates` skill (this skill still owns how the html/py themselves are written).
+Ship the reader `.py` next to the template html and call it with a relative path. Paging/sort/filter state goes in normal params (`offset`, `sort` …) exactly like any view. Built-in templates live one folder per template under `fused_render/templates/<name>/` and follow this pattern (see `templates/table/template.html` + `templates/table/reader.py` for a worked example); each extension maps to an **ordered list of mode names** (first = default) in the `TEMPLATES` dict in `fused_render/server.py`. **User-owned** templates that override, reorder, or extend that list live under `~/.fused-render/` and are bound via `registry.json` — layout, the mode-list/registry grammar, and registration are covered by the `fused-render-custom-templates` skill (this skill still owns how the html/py themselves are written).
 
-## Testing an authored view
+## Testing in the browser: URL paths & modes
 
-With the server running (`fused-render --port 8765`), open:
+Verify a view by opening it in a real browser against the running server — do not rely on reading the files alone. Start the server (`fused-render --port 8765 --no-browser` keeps it from stealing focus) and open one of these on `http://127.0.0.1:<port>`:
 
-```
-http://127.0.0.1:8765/view/<absolute path to your .html>
-```
+| Path | What it renders | Use it to |
+|---|---|---|
+| `/` | The explorer at `start_dir` — file listing with chrome. | Browse to a file by clicking. |
+| `/embed/<abs-path-without-leading-slash>` | **Embed mode**: the page chrome-free (no sidebar/breadcrumb/header). | **The default way to open and test a view** — you see just the view itself. |
+| `/view/<abs-path-without-leading-slash>` | **Full-shell mode**: the same page inside the explorer shell — sidebar, breadcrumb, preview header — with your page in an iframe. | Check how the view sits inside the explorer chrome, or when browsing. |
 
-Sanity loop: page renders → interact with a control → URL query updates → hard refresh → identical view. Python errors appear as the red overlay (with full traceback) and `print()` output in the browser console.
+**Default to embed.** When you open a link to test a view or show it to the user, use `/embed/` — it renders the view alone, which is what you're iterating on. Reach for `/view/` only to inspect the surrounding chrome or when the user is browsing.
+
+Path encoding: the fs path rides in the URL after the prefix with its **leading slash dropped** and each segment URL-encoded. `/Users/me/proj/dash.html` → `http://127.0.0.1:8765/embed/Users/me/proj/dash.html`. A space becomes `%20`, etc.
+
+**View vs embed** is a fixed page-load mode (the prefix picks it; it cannot toggle without a full navigation). Both serve the same shell and route identically — embed just hides chrome. Params sync the same way in both; in nested embeds, param sync stops at each embed shell boundary so a tab's params stay tab-independent.
+
+**Preview templates** open at the target file's path (`/embed/<abs path to the data file>`) — the shell resolves the template by extension and hands it the file via the read-only `_file` param. To test a template's html directly, open it and pass the target yourself: `/embed/<abs path to template>.html?_file=<abs target path>`.
+
+**API endpoints** (`/api/config`, `/api/fs/stat|list|raw|events`, `/api/fs/write`, `/api/run`) back the runtime — reach them only through the `fused.*` helpers, never by hand (see the note above). They're listed here only so you recognize them in the network tab while debugging.
+
+Sanity loop: page renders → interact with a control → URL query updates → hard refresh → identical view. Python errors appear as the red overlay (with full traceback) and `print()` output in the browser console (prefixed `[python]`).
+
+## Long-running work and the 30 s timeout
+
+Every `fused.runPython` call runs `main()` in a fresh subprocess that the server **kills at 30 s** (`DEFAULT_TIMEOUT` in `fused_render/executor.py`). On timeout the call rejects with a `TimeoutError` — which, uncaught, becomes the red overlay. The `/api/run` route does not expose a per-call override, so you cannot raise the limit from the page; design around it instead:
+
+- **Precompute and cache to disk.** Do the expensive work once, write the result next to the script (`.json`/`.parquet`), and have `main()` return the cached bytes when they're fresh (compare mtimes) — recompute only when the input changed. Reading a cached file is near-instant.
+- **Chunk / paginate.** Slice the work so each call stays well under 30 s, pass an `offset`/`page` param, and accumulate results in JS across several `runPython` calls. This also keeps the UI responsive.
+- **Move the heavy job out of band.** For a genuinely long build, run it as a separate process/script that writes an output file, and have the view just `fused.readFile`/`runPython` the finished result.
+- **Cut per-call cost.** Each call re-pays import cost (pandas ≈ 1 s); import lazily inside `main`, and debounce sliders (~150 ms) so a drag doesn't spawn a subprocess per tick.
+
+Escape hatch: because fused-render runs your own trusted code on your own machine, you *can* raise `DEFAULT_TIMEOUT` in `fused_render/executor.py` — but that's editing the package, applies globally, and lets any view hang a worker that long. Prefer the caching/chunking patterns; reach for the constant only for a deliberate, local one-off.
 
 ## Pitfalls checklist
 
