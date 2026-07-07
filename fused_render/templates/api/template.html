@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Python API</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    color: #e8eaed;
+    background: #131417;
+  }
+  #page { max-width: 860px; margin: 0 auto; padding: 20px 24px 60px; }
+  #status { padding: 24px; color: #9aa0a6; }
+  #status.error { color: #ff6b6b; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+  .docstring {
+    color: #b8bcc2;
+    white-space: pre-wrap;
+    margin: 8px 0 0;
+    line-height: 1.5;
+  }
+  #deps { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .dep {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    padding: 2px 8px;
+    border: 1px solid #2a2d33;
+    border-radius: 10px;
+    color: #9aa0a6;
+  }
+
+  .card {
+    margin-top: 20px;
+    border: 1px solid #2a2d33;
+    border-radius: 8px;
+    background: #1b1d21;
+    overflow: hidden;
+  }
+  .card-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border-bottom: 1px solid #2a2d33;
+  }
+  .badge {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    padding: 3px 8px;
+    border-radius: 5px;
+    background: #1d3a2a;
+    color: #6fdb8f;
+  }
+  .fn-name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 600; }
+  .card-body { padding: 14px; }
+
+  table.params { border-collapse: collapse; width: 100%; }
+  table.params th, table.params td {
+    padding: 8px 10px;
+    border-bottom: 1px solid #24262b;
+    text-align: left;
+    vertical-align: top;
+  }
+  table.params th { color: #9aa0a6; font-weight: 600; font-size: 12px; }
+  table.params tr:last-child td { border-bottom: none; }
+  .pname { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
+  .required { color: #ff6b6b; }
+  .ptype {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    color: #8ab4f8;
+    white-space: nowrap;
+  }
+  .pdefault { color: #9aa0a6; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  input[type="text"], input[type="number"], textarea {
+    font: inherit;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    width: 100%;
+    min-width: 180px;
+    padding: 5px 8px;
+    border: 1px solid #2a2d33;
+    border-radius: 6px;
+    background: #131417;
+    color: #e8eaed;
+  }
+  textarea { resize: vertical; min-height: 32px; }
+  input.invalid, textarea.invalid { border-color: #ff6b6b; }
+
+  #runbar { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-top: 1px solid #2a2d33; }
+  #execute {
+    font: inherit;
+    font-weight: 600;
+    padding: 6px 18px;
+    border: none;
+    border-radius: 6px;
+    background: #3d7bd9;
+    color: #fff;
+    cursor: pointer;
+  }
+  #execute:disabled { opacity: 0.4; cursor: default; }
+  #runmeta { color: #9aa0a6; }
+
+  #response pre {
+    margin: 0;
+    padding: 12px 14px;
+    overflow-x: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  #response pre.traceback { color: #ff6b6b; }
+  details { border-top: 1px solid #2a2d33; }
+  details summary {
+    cursor: pointer;
+    padding: 8px 14px;
+    color: #9aa0a6;
+    font-size: 12px;
+    user-select: none;
+  }
+</style>
+</head>
+<body>
+  <div id="page"><div id="status">Inspecting…</div></div>
+  <script>
+    const page = document.getElementById("page");
+    const file = fused.params.get("_file");
+
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    // Widget kind from the annotation source string (PY-4: the JS side owns
+    // JSON types — coercion here must match what main() expects).
+    function widgetKind(annotation) {
+      if (annotation === "int") return "int";
+      if (annotation === "float") return "float";
+      if (annotation === "bool") return "bool";
+      if (annotation === "str") return "str";
+      return "json"; // unannotated or complex (list, dict, Optional[...], …)
+    }
+
+    function defaultText(p) {
+      if (!p.has_default) return "";
+      if (p.default_repr !== null) return "";
+      const kind = widgetKind(p.annotation);
+      if (kind === "str") return p.default === null ? "" : String(p.default);
+      return JSON.stringify(p.default);
+    }
+
+    function paramRow(p) {
+      const kind = widgetKind(p.annotation);
+      const required = !p.has_default;
+      const name = escapeHtml(p.name);
+      const star = required ? `<span class="required" title="required">*</span>` : "";
+      const type = p.annotation ? `<span class="ptype">${escapeHtml(p.annotation)}</span>` : "";
+      const shownDefault = p.has_default
+        ? `<div class="pdefault">default: ${escapeHtml(p.default_repr !== null ? p.default_repr : JSON.stringify(p.default))}</div>`
+        : "";
+
+      // Prefill: URL param (shareable runs) wins over the signature default.
+      const fromUrl = fused.params.get(p.name);
+      const value = fromUrl !== undefined && fromUrl !== null ? fromUrl : defaultText(p);
+
+      let widget;
+      if (kind === "bool") {
+        const checked = value === "true" ? "checked" : "";
+        widget = `<input type="checkbox" data-param="${name}" data-kind="bool" ${checked} />`;
+      } else if (kind === "int" || kind === "float") {
+        const step = kind === "int" ? "1" : "any";
+        widget = `<input type="number" step="${step}" data-param="${name}" data-kind="${kind}" data-required="${required}" value="${escapeHtml(value)}" />`;
+      } else if (kind === "str") {
+        widget = `<input type="text" data-param="${name}" data-kind="str" data-required="${required}" value="${escapeHtml(value)}" />`;
+      } else {
+        widget = `<textarea rows="1" data-param="${name}" data-kind="json" data-required="${required}" placeholder="JSON">${escapeHtml(value)}</textarea>`;
+      }
+      return `<tr>
+        <td class="pname">${name}${star}</td>
+        <td>${type}${shownDefault}</td>
+        <td>${widget}</td>
+      </tr>`;
+    }
+
+    function render(info) {
+      const name = file.split("/").pop();
+      let html = `<h2 style="margin:0">${escapeHtml(name)}</h2>`;
+      if (info.module_docstring) html += `<p class="docstring">${escapeHtml(info.module_docstring)}</p>`;
+      if (info.dependencies.length) {
+        html += `<div id="deps">${info.dependencies.map((d) => `<span class="dep">${escapeHtml(d)}</span>`).join("")}</div>`;
+      }
+
+      if (!info.function) {
+        html += `<div id="status">No <code>@fused.udf</code> entry point in this file — nothing to execute. Add one to get a form here (see script contract, SPEC §5).</div>`;
+        page.innerHTML = html;
+        return;
+      }
+
+      const fn = info.function;
+      html += `<div class="card">
+        <div class="card-head">
+          <span class="badge">RUN</span>
+          <span class="fn-name">${escapeHtml(fn.name)}(…)</span>
+        </div>
+        <div class="card-body">
+          ${fn.docstring ? `<p class="docstring" style="margin:0 0 12px">${escapeHtml(fn.docstring)}</p>` : ""}
+          ${fn.params.length
+            ? `<table class="params">
+                 <thead><tr><th>Parameter</th><th>Type</th><th>Value</th></tr></thead>
+                 <tbody>${fn.params.map(paramRow).join("")}</tbody>
+               </table>`
+            : `<span style="color:#9aa0a6">No parameters.</span>`}
+        </div>
+        <div id="runbar">
+          <button id="execute">Execute</button>
+          <span id="runmeta"></span>
+        </div>
+      </div>
+      <div id="responsewrap"></div>`;
+      page.innerHTML = html;
+      document.getElementById("execute").addEventListener("click", execute);
+    }
+
+    // Read + coerce all widgets. Returns {params} or {error} on a bad field.
+    function collectParams() {
+      const params = {};
+      for (const el of page.querySelectorAll("[data-param]")) {
+        const name = el.dataset.param;
+        const kind = el.dataset.kind;
+        el.classList.remove("invalid");
+        if (kind === "bool") {
+          params[name] = el.checked;
+          continue;
+        }
+        const raw = el.value.trim();
+        if (raw === "") {
+          if (el.dataset.required === "true") {
+            el.classList.add("invalid");
+            return { error: `missing required parameter: ${name}` };
+          }
+          continue; // omitted → python default applies
+        }
+        if (kind === "int" || kind === "float") {
+          const n = Number(raw);
+          if (!Number.isFinite(n) || (kind === "int" && !Number.isInteger(n))) {
+            el.classList.add("invalid");
+            return { error: `${name} must be ${kind === "int" ? "an integer" : "a number"}` };
+          }
+          params[name] = n;
+        } else if (kind === "str") {
+          params[name] = raw;
+        } else {
+          try {
+            params[name] = JSON.parse(raw);
+          } catch {
+            params[name] = raw; // unannotated free text — send as string
+          }
+        }
+      }
+      return { params };
+    }
+
+    function renderResponse(data) {
+      const wrap = document.getElementById("responsewrap");
+      let html = `<div class="card" id="response">`;
+      if (data.error != null) {
+        html += `<div class="card-head"><span class="badge" style="background:#3a1d1d;color:#ff6b6b">ERROR</span></div>
+                 <pre class="traceback">${escapeHtml(data.error)}</pre>`;
+      } else {
+        html += `<div class="card-head"><span class="badge">RESULT</span></div>
+                 <pre>${escapeHtml(JSON.stringify(data.return_value, null, 2))}</pre>`;
+      }
+      if (data.stdout) html += `<details open><summary>stdout</summary><pre>${escapeHtml(data.stdout)}</pre></details>`;
+      if (data.stderr) html += `<details><summary>stderr</summary><pre>${escapeHtml(data.stderr)}</pre></details>`;
+      html += `</div>`;
+      wrap.innerHTML = html;
+    }
+
+    async function execute() {
+      const btn = document.getElementById("execute");
+      const meta = document.getElementById("runmeta");
+      const collected = collectParams();
+      if (collected.error) {
+        meta.textContent = collected.error;
+        return;
+      }
+
+      // Persist inputs to the URL (URL-is-state) so the run is shareable.
+      // Cleared optional fields are written as "" (runtime set() has no
+      // delete) so a stale value from an earlier run can't survive on the
+      // URL — prefill reads "" as an empty field, matching this run.
+      for (const el of page.querySelectorAll("[data-param]")) {
+        const k = el.dataset.param;
+        const v = collected.params[k];
+        if (v === undefined) fused.params.set(k, "");
+        else fused.params.set(k, typeof v === "string" ? v : JSON.stringify(v));
+      }
+
+      btn.disabled = true;
+      meta.textContent = "Running…";
+      try {
+        // Direct /api/run call (not fused.runPython): the response panel
+        // needs the full wire shape — stdout/stderr/duration — which the
+        // runtime helper flattens to return_value. Auto-reload is unaffected:
+        // the runtime already watches _file (LR-1).
+        const ownPath = new URLSearchParams(window.location.search).get("path");
+        const res = await fetch("/api/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Fused": "1" },
+          body: JSON.stringify({ py: file, html: ownPath, params: collected.params }),
+        });
+        const data = await res.json();
+        meta.textContent = data.duration_ms != null ? `${data.duration_ms} ms` : "";
+        renderResponse(data);
+      } catch (err) {
+        meta.textContent = "";
+        renderResponse({ error: err.message || "request failed" });
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function load() {
+      if (!file) {
+        page.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
+        return;
+      }
+      try {
+        const info = await fused.runPython("./inspector.py", { file });
+        if (info.parse_error) {
+          page.innerHTML = `<div id="status" class="error">Syntax error — ${escapeHtml(info.parse_error)}\n\nFix it in the code mode; this view reloads on save.</div>`;
+          return;
+        }
+        render(info);
+      } catch (err) {
+        page.innerHTML = `<div id="status" class="error">${escapeHtml(err.traceback || err.message || "Error")}</div>`;
+      }
+    }
+
+    load();
+  </script>
+</body>
+</html>

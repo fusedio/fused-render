@@ -52,7 +52,9 @@ TEMPLATES = {
     ".flac": ["media"],
     # source code — CodeMirror, mode chosen by extension (note: .json routes to
     # the JSON tree template above, not here)
-    ".py": ["code"],
+    # python — editable buffer first; `api` is the swagger-style run form
+    # over the @fused.udf entry point (D63)
+    ".py": ["code", "api"],
     ".js": ["code"],
     ".ts": ["code"],
     ".sh": ["code"],
