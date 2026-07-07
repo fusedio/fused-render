@@ -12,6 +12,27 @@ This file is the concrete contract an implementer can build from without further
 fused-render/
 ├── pyproject.toml              # hatchling; deps: fastapi, uvicorn, pyarrow; script: fused-render
 ├── SPEC.md  ARCHITECTURE.md  DECISIONS.md  README.md
+├── frontend/                   # React shell source (D52/D53): Vite + React 18, TypeScript
+│   ├── package.json  vite.config.js  index.html
+│   └── src/
+│       ├── main.tsx            # bootstrap: history wrapping, embed class, config load, mount
+│       ├── App.tsx             # route dispatch: "/" redirect, _panel/_tab sentinels, stat -> listing/preview
+│       ├── shell.css           # the shell stylesheet (same selectors as the vanilla shell)
+│       ├── lib/                # non-React modules (ported ~verbatim from the vanilla shell)
+│       │   ├── router.ts       # fs-path <-> URL codec, navigate(); dispatches "fused:navigate"
+│       │   ├── api.ts          # fetch wrappers (config/list/stat/rawUrl)
+│       │   ├── format.ts       # formatSize/formatMtime/basename (pure)
+│       │   ├── bookmarks.ts    # localStorage store (pure data, no DOM)
+│       │   ├── layout-codec.ts # shared _layout codec + embed helpers (M5/M6)
+│       │   └── hooks.ts        # useNavEpoch/useUrlVersion/useBookmarksVersion signals
+│       ├── components/
+│       │   ├── Sidebar.tsx     # Home, bookmark rows, folders, hover card, rename, DnD
+│       │   └── Breadcrumb.tsx  # crumb bar + Bookmark/Update/Split buttons
+│       └── views/
+│           ├── Listing.tsx     # dir table + sortable columns + SSE dir watch
+│           ├── Preview.tsx     # three-way dispatch: template/html/fallback
+│           ├── Panel.tsx       # split-pane grid (M5): tree ops + pane bars
+│           └── Tabs.tsx        # tab mode (M6): tab bar + lazy keep-alive iframes
 ├── fused_render/
 │   ├── __init__.py             # __version__
 │   ├── cli.py                  # arg parse → uvicorn.run + open browser
@@ -19,23 +40,8 @@ fused-render/
 │   ├── executor.py             # subprocess-per-call runner (EXISTS — keep)
 │   ├── _child.py               # worker-process entry (EXISTS — keep)
 │   ├── static/
-│   │   ├── shell.html          # explorer SPA shell
-│   │   ├── shell.css
-│   │   ├── shell/              # ES modules, no build step
-│   │   │   ├── main.js         # entry: config load + route() dispatcher
-│   │   │   ├── router.js       # fs-path <-> URL codec, navigate(), route handler registry
-│   │   │   ├── api.js          # fetch wrappers (config/list/stat/rawUrl)
-│   │   │   ├── format.js       # escapeHtml/formatSize/formatMtime/basename (pure)
-│   │   │   ├── bookmarks.js    # localStorage store (pure data, no DOM)
-│   │   │   ├── sidebar.js      # sidebar UI: Home, bookmark rows, hover card, rename
-│   │   │   ├── breadcrumb.js   # crumb bar + "+ Bookmark" button
-│   │   │   └── views/
-│   │   │       ├── listing.js  # dir table + sortable columns
-│   │   │       ├── preview.js  # three-way dispatch: template/html/fallback
-│   │   │       ├── layout-codec.js # shared _layout codec + embed helpers (M5/M6)
-│   │   │       ├── panel.js    # split-pane grid (M5): tree ops + pane bars
-│   │   │       └── tabs.js     # tab mode (M6): tab bar + lazy keep-alive iframes
-│   │   └── runtime.js          # injected into every rendered HTML
+│   │   ├── shell-dist/         # Vite build of frontend/ (gitignored, D54; built by dev / packaging hook)
+│   │   └── runtime.js          # injected into every rendered HTML (plain JS, NOT part of the React app)
 │   └── templates/
 │       ├── parquet_template.html
 │       ├── parquet_reader.py
@@ -46,7 +52,7 @@ fused-render/
     └── sine.html
 ```
 
-No frontend build step. Plain ES2020 JS, plain CSS. No JS dependencies.
+Shell = React 18 + Vite + TypeScript (D52/D53; strict tsc gated in the build). Build with `cd frontend && npm run build` — output is NOT committed (D54): dev machines need node, wheels/DMG build it via the hatch hook (scripts/hatch_build.py). Templates, examples and `runtime.js` stay plain ES2020 JS with no build step and no JS dependencies — the rendering primitive is framework-free by design.
 
 ---
 
@@ -165,9 +171,9 @@ Top-level `path` handling in shell URL vs iframe URL:
 
 ---
 
-## 6. Shell (`shell.html/css/js`)
+## 6. Shell (`frontend/` → `static/shell-dist/`)
 
-SPA, no framework, native ES modules (`<script type="module">`, no build step). Dependency direction is one-way: `main → views/sidebar/breadcrumb → router/api/bookmarks/format`; router never imports UI (route handler is registered by main), the bookmark store never touches the DOM. `views/panel.js` and `views/tabs.js` import `router`/`format` plus the shared `views/layout-codec.js` (which itself imports only `router` for the embed prefix — one source of truth); `breadcrumb.js` may import `views/layout-codec.js` (Split button segment encoder) + `views/panel.js` (`panelUrl`), and `sidebar.js` may import `views/tabs.js` (`composeFolderTabsUrl`), since no view imports back — no cycles. Routing from `location.pathname`:
+SPA, React 18 + Vite (D52/D53; TypeScript, strict). `src/lib/` is non-React and ported ~verbatim from the vanilla shell (router/api/format/bookmarks/layout-codec — same contracts as before); components consume it. Dependency direction is one-way as before: `App → views/Sidebar/Breadcrumb → lib/*`; the router never imports UI (it dispatches a `fused:navigate` event; `lib/hooks.ts` turns it plus `popstate` into a **nav epoch** that keys — i.e. remounts — the active view, the React equivalent of the vanilla per-route DOM rebuild), the bookmark store never touches the DOM (mutations signal via `notifyBookmarksChanged()`). `Breadcrumb.tsx` may import `views/Panel.tsx` (`panelUrl`), and `Sidebar.tsx` may import `views/Tabs.tsx` (`composeFolderTabsUrl`), since no view imports back — no cycles. The history replaceState/pushState wrapping (→ `fused:urlchange`) lives in `main.tsx` and is load-bearing for the iframe runtimes (D46), not just for the shell's own re-renders; chrome (bookmark buttons, active highlight) re-renders on a **url version** signal that also counts `fused:urlchange`, without remounting views. Layout-mode iframes freeze their `src` at mount — React never rewrites it (a src write reloads an iframe); pane crumb clicks write it imperatively via a ref, and tab frames render as a flat keyed list that only appends/removes (never re-parents/reorders). Routing from `location.pathname`:
 - `/` → redirect (replaceState) to `/view/<start-dir>` (start dir from `GET /api/config` → `{"start_dir": "/Users/vasu", "home": …, "source_template": <abs code_template.html>}`).
 - `/view/<path>` → `stat` it:
   - **dir** → listing view
@@ -274,7 +280,8 @@ Manual (browser, after build): browse dirs, click parquet → paged table, click
 ## 10. Style constraints
 
 - Python: stdlib + fastapi + uvicorn + pyarrow only. Type hints on public functions. No classes where a function does.
-- JS: no dependencies, no build. `const`/`let`, template literals, async/await. Small files > clever files.
+- Shell: React 18 + Vite + strict TypeScript (D52/D53), function components + hooks only; no state library, no router library (the URL model is bespoke — `_layout` cannot ride a stock router). Small files > clever files.
+- Template/runtime JS: no dependencies, no build. `const`/`let`, template literals, async/await.
 - Shell CSS: system font stack, no framework. Dark theme is the product look — single palette in shell.css `:root` vars (bg #131417, panel #1b1d21, border #2a2d33, text #e8eaed, accent #5b9dff), `color-scheme: dark`; templates and examples match it.
 - Error messages: always actionable — say what was wrong AND what shape was expected.
 
@@ -286,7 +293,7 @@ Split-pane grid of `/embed` iframes; the whole arrangement + per-pane locations 
 
 **Route sentinel.** `/view/_panel` (and `/embed/_panel`) is a sentinel pathname, not a file. `main.js` `route()` intercepts it under both prefixes **before** the `statPath` call, rendering the layout view + the layout-mode breadcrumb (sidebar only outside embed). The pane tree lives in the reserved `_layout` query param. Zero server changes — the server already serves the shell for any `/view/*` and `/embed/*`.
 
-**`_layout` codec** (`views/layout-codec.js`, shared with tab mode §12). The pane tree lives in the reserved query param `_layout` (`_` prefix → invisible to `fused.params`, PR-6). `,` = row (side by side), `;` = column (stacked), `(…)` groups for nesting; a leaf = the pane's fs path + optional pane-local query. Within a segment the structural chars `, ; ( ) %` (and `?` inside the path, so the first `?` always separates path from query) are percent-encoded (`%25 %2C %3B %28 %29 %3F`) so the delimiters stay unambiguous; one left-to-right decode pass reverses it (`%25` → `%` and scanning continues, so literal escaped chars survive). URL grammar (D51): the whole value is **parenthesized and emitted last** — `?global=1&_layout=(…)` — and `&` is **literal inside the parens**, so the codec string keeps `, ; ( ) / ? & =` literal for a readable address bar; only `% #`/space are escaped when placing it inside the parens (one `decodeURIComponent` pass reverses that). Because `&` is literal, plain `URLSearchParams` cannot parse a layout URL: every shell-query read goes through the codec's `splitShellSearch` (balanced-paren scan — safe because literal parens inside segments are codec-escaped, so the only literal parens in the span are structural and balanced; returns the decoded codec string + the remaining params, excluding the span even when it is broken). Strict read: an unwrapped `_layout` value is not this grammar and reads as absent; an unbalanced span (paste-truncated trailing `)`, accepted breakage) is invalid → the mode's missing-layout fallback. The runtime (injected standalone, imports nothing) duplicates the scan as `splitSearch`: `fused.params` get/getAll parse only the non-layout remainder, and `set()` rebuilds the query with the raw `_layout=(…)` span untouched and last — layout URLs stay readable across param writes.
+**`_layout` codec** (`views/layout-codec.ts`, shared with tab mode §12). The pane tree lives in the reserved query param `_layout` (`_` prefix → invisible to `fused.params`, PR-6). `,` = row (side by side), `;` = column (stacked), `(…)` groups for nesting; a leaf = the pane's fs path + optional pane-local query. Within a segment the structural chars `, ; ( ) %` (and `?` inside the path, so the first `?` always separates path from query) are percent-encoded (`%25 %2C %3B %28 %29 %3F`) so the delimiters stay unambiguous; one left-to-right decode pass reverses it (`%25` → `%` and scanning continues, so literal escaped chars survive). URL grammar (D51): the whole value is **parenthesized and emitted last** — `?global=1&_layout=(…)` — and `&` is **literal inside the parens**, so the codec string keeps `, ; ( ) / ? & =` literal for a readable address bar; only `% #`/space are escaped when placing it inside the parens (one `decodeURIComponent` pass reverses that). Because `&` is literal, plain `URLSearchParams` cannot parse a layout URL: every shell-query read goes through the codec's `splitShellSearch` (balanced-paren scan — safe because literal parens inside segments are codec-escaped, so the only literal parens in the span are structural and balanced; returns the decoded codec string + the remaining params, excluding the span even when it is broken). Strict read: an unwrapped `_layout` value is not this grammar and reads as absent; an unbalanced span (paste-truncated trailing `)`, accepted breakage) is invalid → the mode's missing-layout fallback. The runtime (injected standalone, imports nothing) duplicates the scan as `splitSearch`: `fused.params` get/getAll parse only the non-layout remainder, and `set()` rebuilds the query with the raw `_layout=(…)` span untouched and last — layout URLs stay readable across param writes.
 
 **Merged vs pane-local params.** Non-underscore params on the layout URL form one merged pool shared by every pane — a pane's runtime climbs to the layout shell (D46) and reads them directly, so merging is structural. Pane-local shell state (listing `sort`/`order`, `_mode`) stays on the pane's own embed URL, captured per-pane inside the `_layout` segment. The Split entry (`breadcrumb.js`) partitions the current view's params accordingly: `_`-prefixed + `sort`/`order` → pane segment; everything else → merged top-level pool.
 

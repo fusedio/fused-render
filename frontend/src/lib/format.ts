@@ -1,13 +1,6 @@
-// Pure formatting/escaping helpers. No DOM, no fetch.
-export function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-export function formatSize(bytes) {
+// Pure formatting helpers. No DOM, no fetch. (The vanilla module also carried
+// escapeHtml — dropped: JSX escapes text content itself.)
+export function formatSize(bytes: number | null | undefined): string {
   if (bytes === null || bytes === undefined) return "";
   if (bytes < 1024) return `${bytes} B`;
   const units = ["KB", "MB", "GB", "TB"];
@@ -20,12 +13,12 @@ export function formatSize(bytes) {
   return `${v.toFixed(v < 10 ? 1 : 0)} ${units[u]}`;
 }
 
-export function formatMtime(epochSeconds) {
+export function formatMtime(epochSeconds: number | null | undefined): string {
   if (!epochSeconds) return "";
   return new Date(epochSeconds * 1000).toLocaleString();
 }
 
-export function basename(fsPath) {
+export function basename(fsPath: string): string {
   const parts = fsPath.split("/").filter((s) => s.length > 0);
   return parts.length ? parts[parts.length - 1] : "/";
 }

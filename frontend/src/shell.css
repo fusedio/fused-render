@@ -816,3 +816,9 @@ body.embed .preview-header {
   border: none;
   background: var(--bg);
 }
+
+/* React mount point (frontend/index.html) — transparent to the flex layout
+   above: #app stays the layout root exactly as in the vanilla shell. */
+#root {
+  display: contents;
+}
