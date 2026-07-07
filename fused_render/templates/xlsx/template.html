@@ -152,12 +152,12 @@
         const data = await fused.runPython("./reader.py", {
           file,
           sheet,
-          offset,
-          limit: LIMIT,
+          offset: String(offset),
+          limit: String(LIMIT),
         });
         render(data, offset);
       } catch (err) {
-        wrap.innerHTML = `<div id="status" class="error">${escapeHtml(err.message || "Error")}</div>`;
+        wrap.innerHTML = `<div id="status" class="error"><strong>${escapeHtml(err.type || "Error")}</strong>: ${escapeHtml(err.message || "")}</div>`;
       }
     }
 

@@ -6,7 +6,6 @@ import webbrowser
 
 import uvicorn
 
-from fused_render.logs import setup_logging
 from fused_render.server import create_app
 
 DEFAULT_PORT = 8765
@@ -24,14 +23,12 @@ def main() -> None:
     parser.add_argument("--no-browser", action="store_true", help="do not open a browser tab on startup")
     args = parser.parse_args()
 
-    log_file = setup_logging()
     start_dir = os.path.abspath(os.path.expanduser(args.start_dir))
     app = create_app(start_dir=start_dir)
 
     url = f"http://127.0.0.1:{args.port}/"
     print(f"fused-render serving at {url}")
     print(f"start dir: {start_dir}")
-    print(f"log file: {log_file}")
 
     if not args.no_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
