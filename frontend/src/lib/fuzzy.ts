@@ -31,6 +31,18 @@ export function fuzzyMatch(query: string, text: string): FuzzyResult | null {
   if (query === "") return { score: 0, positions: [], longestRun: 0 };
   const q = query.toLowerCase();
   const t = text.toLowerCase();
+  const sub = t.indexOf(q);
+  if (sub !== -1) {
+    const positions: number[] = [];
+    let score = 0;
+    for (let ti = sub; ti < sub + q.length; ti++) {
+      positions.push(ti);
+      score += 1;
+      if (ti > sub) score += 3; // consecutive run
+      if (isSegmentStart(text, ti)) score += 5; // landed on a word boundary
+    }
+    return { score, positions, longestRun: q.length };
+  }
   const positions: number[] = [];
   let qi = 0;
   let score = 0;
