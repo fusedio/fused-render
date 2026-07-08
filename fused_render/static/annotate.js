@@ -1245,18 +1245,33 @@
     const sel = window.getSelection();
     if (sel && !sel.isCollapsed) return;
     // Click landing inside an existing text-range highlight opens its thread.
+    // caretRangeFromPoint is Chrome/Safari; Firefox spells it
+    // caretPositionFromPoint — support both or Firefox clicks inside a
+    // highlight would open a duplicate draft instead of the thread.
+    let caretNode = null;
+    let caretOff = 0;
     if (document.caretRangeFromPoint) {
       const caret = document.caretRangeFromPoint(e.clientX, e.clientY);
       if (caret) {
-        for (const [id, range] of textRanges) {
-          try {
-            if (range.comparePoint(caret.startContainer, caret.startOffset) === 0) {
-              closePopover();
-              openThread(id, e.clientX, e.clientY);
-              return;
-            }
-          } catch (err) {}
-        }
+        caretNode = caret.startContainer;
+        caretOff = caret.startOffset;
+      }
+    } else if (document.caretPositionFromPoint) {
+      const pos = document.caretPositionFromPoint(e.clientX, e.clientY);
+      if (pos) {
+        caretNode = pos.offsetNode;
+        caretOff = pos.offset;
+      }
+    }
+    if (caretNode) {
+      for (const [id, range] of textRanges) {
+        try {
+          if (range.comparePoint(caretNode, caretOff) === 0) {
+            closePopover();
+            openThread(id, e.clientX, e.clientY);
+            return;
+          }
+        } catch (err) {}
       }
     }
     closePopover();
@@ -1628,10 +1643,12 @@
   // Full render: place a pin for every attached/free thread, dock detached ones
   // into the tray (AN-11/AN-14).
   function render() {
-    renderSidebar(); // sidebar mirrors the same data in BOTH modes (AN-29)
     // Adapter mode owns anchor visuals (decorations + its own detachment via
     // core.setDetached); element pins/tray are not drawn here (AN-17).
-    if (adapter) return;
+    if (adapter) {
+      renderSidebar(); // sidebar mirrors the same data in BOTH modes (AN-29)
+      return;
+    }
     const pins = pinsEl();
     pins.innerHTML = "";
     const detached = [];
@@ -1692,6 +1709,9 @@
     renderTray(detached);
     renderMarks();
     paintTextHighlights();
+    // Sidebar last: cardTopHtml reads detachedIds, so it must render AFTER
+    // the detachment set above is fresh — not before the loop (AN-29/AN-30).
+    renderSidebar();
   }
 
   // Which threads get a timestamp marker: this view's video comments whose
