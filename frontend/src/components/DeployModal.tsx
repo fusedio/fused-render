@@ -69,18 +69,24 @@ function PreviewSection({ preview }: { preview: DeployPreview }) {
       </div>
     );
   }
+  // Display each file as a plain relative name. The backend gives the page as a
+  // bare basename but entrypoints/assets as their literal fused.runPython/rawUrl
+  // argument, which usually carries a leading "./" — so the list mixed "sine.html"
+  // with "./sine.py". Strip a leading "./" for the shown text (one consistent root);
+  // the exact literal stays in the title tooltip so nothing is lost.
+  const rel = (p: string) => p.replace(/^\.\//, "");
   return (
     <div className="deploy-preview">
       <span className="deploy-muted">Will publish:</span>
-      <code>{preview.page}</code>
+      <code>{rel(preview.page)}</code>
       {preview.entrypoints.map((e) => (
         <code key={"e" + e.path} title={`fused.runPython(${JSON.stringify(e.path)}) → route “${e.name}”`}>
-          {e.path}
+          {rel(e.path)}
         </code>
       ))}
       {preview.assets.map((a) => (
-        <code key={"a" + a.path} title={`asset “${a.name}” (fused.rawUrl/readFile)`}>
-          {a.path}
+        <code key={"a" + a.path} title={`asset “${a.name}” (fused.rawUrl/readFile) — ${a.path}`}>
+          {rel(a.path)}
         </code>
       ))}
       {preview.entrypoints.length === 0 && preview.assets.length === 0 && (
