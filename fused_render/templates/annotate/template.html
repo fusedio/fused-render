@@ -102,6 +102,19 @@
   .card button:hover { border-color: #E5FF44; }
   .card.resolved { opacity: 0.6; }
   #empty { padding: 40px 20px; color: #9aa0a6; text-align: center; }
+  #sidefoot {
+    flex: 0 0 auto;
+    padding: 10px 16px;
+    border-top: 1px solid #2a2d33;
+  }
+  #sidefoot button {
+    width: 100%;
+    font: inherit; font-weight: 600; cursor: pointer;
+    color: #10131a; background: #E5FF44;
+    border: none; border-radius: 8px; padding: 8px 0;
+  }
+  #sidefoot button:hover { filter: brightness(1.06); }
+  #sidefoot button:disabled { opacity: 0.4; cursor: default; }
   #status { padding: 24px; color: #9aa0a6; }
   #status.error { color: #ff6b6b; }
 </style>
@@ -126,6 +139,9 @@
     <div id="side">
       <h1>Comments</h1>
       <div id="list"></div>
+      <div id="sidefoot">
+        <button id="toclaude">Send to Claude</button>
+      </div>
     </div>
   </div>
   <script>
@@ -666,6 +682,18 @@
       new MutationObserver(queueRender).observe(doc.body || doc.documentElement, { childList: true, subtree: true });
       render();
     });
+    // Send to Claude: hand the whole review to the claude chat mode. Copies
+    // the current comments verbatim into a `claudeComments` param and flips
+    // the BROWSER URL (window.top — the address bar, not this iframe) to
+    // _mode=claude. `comments` stays untouched, so switching back to annotate
+    // shows the same review.
+    document.getElementById("toclaude").addEventListener("click", () => {
+      const u = new URL(window.top.location.href);
+      u.searchParams.set("_mode", "claude");
+      u.searchParams.set("claudeComments", JSON.stringify(load()));
+      window.top.location.href = u.pathname + u.search;
+    });
+
     window.addEventListener("resize", () => render());
 
     // Remount-safety relay: the shell flushes __fusedFlushEdits on the TOP
