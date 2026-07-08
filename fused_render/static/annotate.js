@@ -67,6 +67,23 @@
 
   const target = findTarget();
 
+  // Which VIEW this overlay instance lives in (AN-36) — derived from this
+  // frame's own /render URL, not the shell: an ordinary template renders
+  // `path=<…>/<mode>/template.html&_file=<file>`, so the template folder name
+  // IS the mode name; a page with no `_file` is the file itself (the
+  // "_render" sentinel / standalone pages). New threads are stamped with this
+  // so element comments from two different views never cross-resolve (an id
+  // that exists in both views would otherwise pin the comment in both).
+  const currentMode = (() => {
+    const p = new URLSearchParams(window.location.search);
+    if (!p.has("_file")) return "_render";
+    const parts = (p.get("path") || "").replace(/\\/g, "/").split("/");
+    if (parts.length >= 2 && parts[parts.length - 1].toLowerCase() === "template.html") {
+      return parts[parts.length - 2];
+    }
+    return "_render";
+  })();
+
   // Split a query string, preserving the raw `_layout=(...)` span byte-for-byte
   // (balanced-paren scan, D51). Identical to runtime.js splitSearch() — a layout
   // URL cannot be parsed by plain URLSearchParams because `&` is literal inside
@@ -144,6 +161,9 @@
       updatedAt: Number(t.updatedAt) || Number(t.createdAt) || now,
       resolvedAt: Number(t.resolvedAt) || 0,
     };
+    // Origin view (AN-36): mode name the thread was created in. Optional —
+    // pre-AN-36 threads lack it and fall back to anchor-shape inference.
+    if (typeof t.m === "string" && t.m) thread.m = t.m;
     // Anchor forms are mutually exclusive with precedence handled at resolve
     // time (AN-6/AN-18: sel > anchorId > anchorPath > x/y); we simply carry
     // whichever fields are present.
@@ -182,6 +202,7 @@
   // the defaults back in).
   function compact(thread) {
     const o = { id: thread.id, content: thread.content, createdAt: thread.createdAt };
+    if (thread.m) o.m = thread.m; // origin view (AN-36)
     if (thread.replies.length) {
       o.replies = thread.replies.map((r) => ({ id: r.id, content: r.content, createdAt: r.createdAt }));
     }
@@ -491,14 +512,25 @@
     return null; // free pin — positioned by x/y
   }
 
-  // FOREIGN thread (AN-34): `_comments` is shared across a file's preview
-  // modes, so a selection comment (made in the code editor) is visible to the
-  // element overlay and vice versa. Those are NOT detached — their anchor is
-  // fine, it just lives on the other surface. They get no pin/decoration and
-  // never enter the tray; the sidebar lists them with a surface tag instead.
+  // FOREIGN thread (AN-34/AN-36): `_comments` is shared across a file's
+  // preview modes, so every surface sees threads created on the others. Those
+  // are NOT detached — their anchor is fine, it just belongs to another view.
+  // They get no pin/decoration and never enter the tray; the sidebar lists
+  // them with their view's tag instead. Stamped threads compare mode names
+  // exactly (two element-mode views must not cross-resolve — a coincidentally
+  // shared element id would pin the comment in both); legacy threads without
+  // `m` fall back to anchor-shape inference (sel ↔ editor).
   function isForeign(thread) {
+    if (thread.m) return thread.m !== currentMode;
     const isSel = !!(thread.selFrom && thread.selTo);
     return adapter ? !isSel : isSel;
+  }
+
+  // Display name for the view a foreign thread belongs to (sidebar tag,
+  // reveal toast). "_render" reads as "preview"; legacy threads infer.
+  function foreignLabel(thread) {
+    if (thread.m) return thread.m === "_render" ? "preview" : thread.m;
+    return thread.selFrom && thread.selTo ? "code" : "preview";
   }
 
   // Is this thread anchored to something that no longer exists? (Detached →
@@ -1053,7 +1085,9 @@
     const now = Date.now();
     const thread = normalizeThread(
       Object.assign(
-        { id: uuid(), content, replies: [], status: "open", createdAt: now, updatedAt: now },
+        // Stamped with the creating view's mode (AN-36) so other views treat
+        // it as foreign instead of trying to resolve its anchor.
+        { id: uuid(), content, replies: [], status: "open", createdAt: now, updatedAt: now, m: currentMode },
         anchor
       )
     );
@@ -1450,12 +1484,10 @@
   // body instead — no header, so timestamps never duplicate).
   function cardTopHtml(thread) {
     const replies = thread.replies.length;
-    // Foreign threads (AN-34) are tagged with the surface they belong to —
+    // Foreign threads (AN-34/AN-36) are tagged with the view they belong to —
     // "detached" is reserved for anchors that truly no longer resolve.
     const tag = isForeign(thread)
-      ? adapter
-        ? "preview"
-        : "code"
+      ? foreignLabel(thread)
       : detachedIds.has(thread.id)
         ? "detached"
         : "";
@@ -1520,7 +1552,7 @@
     if (!t) return;
     if (isForeign(t)) {
       // Anchor lives on the other surface (AN-34) — say where, don't guess.
-      showToast("This comment is on the " + (adapter ? "rendered view" : "code view") + " — switch modes to jump to it");
+      showToast("This comment is on the " + foreignLabel(t) + " view — switch modes to jump to it");
       return;
     }
     if (adapter) {
