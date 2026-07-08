@@ -3,20 +3,73 @@
 No path restriction anywhere — the whole filesystem is in scope by design
 (see DECISIONS.md D2/D3). All `path` query params are absolute filesystem
 paths. Endpoints are sync `def` so FastAPI dispatches them to its threadpool,
-giving free concurrency for blocking filesystem/subprocess work.
+giving free concurrency for blocking filesystem/subprocess work; /api/run is
+async (the fused engine is async; the built-in executor is offloaded).
+
+Execution engine (D69/D70): /api/run runs the built-in executor by **default**,
+whether or not the `fused` package is installed — set `FUSED_RENDER_ENGINE=auto`
+(use fused if importable, else fall back) or `=fused` (require it — fail loudly
+at startup if missing) to opt in to the local compute backend (`engine.py`).
 """
 import asyncio
 import json
+import logging
 import mimetypes
 import os
 import stat as stat_mod
 import tempfile
+import time
+import traceback
 
 from fastapi import Body, FastAPI, Header, Query
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from fused_render.executor import run_python
+
+logger = logging.getLogger(__name__)
+
+
+def _select_engine() -> str:
+    """Pick the /api/run engine for this process: "fused" or "builtin".
+
+    Availability-driven (D69), builtin-by-default (D70): unset/`builtin` never
+    touches the `fused` package even if it's importable; `auto` opts in to it
+    iff importable; `fused` demands it (a missing package is a startup error,
+    not a silent fallback). Logged either way — engine choice changes the code
+    contract, so it must never be silent.
+    """
+    is_default = "FUSED_RENDER_ENGINE" not in os.environ
+    requested = os.environ.get("FUSED_RENDER_ENGINE", "builtin").strip().lower()
+    if requested not in ("auto", "fused", "builtin"):
+        raise RuntimeError(
+            f"FUSED_RENDER_ENGINE={requested!r} is not one of: auto, fused, builtin"
+        )
+    if requested == "builtin":
+        if is_default:
+            logger.info(
+                "execution engine: builtin (default; set FUSED_RENDER_ENGINE=auto or "
+                "=fused to opt in to the fused engine)"
+            )
+        else:
+            logger.info("execution engine: builtin (forced by FUSED_RENDER_ENGINE)")
+        return "builtin"
+    try:
+        from fused_render import engine as _engine
+
+        ok = _engine.available()
+    except ImportError:
+        ok = False
+    if ok:
+        logger.info("execution engine: fused (local compute backend)")
+        return "fused"
+    if requested == "fused":
+        raise RuntimeError(
+            "FUSED_RENDER_ENGINE=fused but the `fused` package is not importable; "
+            "install it (pip install 'fused-render[fused]') or unset the override"
+        )
+    logger.info("execution engine: builtin (`fused` package not installed)")
+    return "builtin"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
@@ -287,7 +340,29 @@ def _templates_for(path: str, is_dir: bool):
 
 
 def create_app(start_dir: str) -> FastAPI:
+    engine_name = _select_engine()  # "fused" | "builtin" (D69/D70); raises on a bad override
     app = FastAPI(title="fused-render")
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception(request, exc):
+        # A bare "Internal Server Error" with an empty body is undebuggable on
+        # a DMG install: Finder-launched apps have no visible stderr, so the
+        # traceback used to vanish (e.g. a right-click "Open with FusedRender"
+        # that 500s on /render or /api/run leaves nothing to report). Put the
+        # traceback in the response body (local single-user tool, D3 — the
+        # only reader owns the machine) AND in the log file so a later
+        # `Open logs` gives the full story. Log with the request line so a
+        # noisy log still pins the failure to a URL.
+        tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        logger.error(
+            "unhandled error on %s %s\n%s", request.method, request.url.path, tb
+        )
+        return _error(
+            f"fused-render internal error on {request.method} "
+            f"{request.url.path}:\n\n{tb}",
+            status=500,
+        )
+
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     # Vendored JS libraries (marked, CodeMirror) that templates load by absolute
     # URL. Templates render at /render?path=… so a relative <script src> in a
@@ -311,11 +386,38 @@ def create_app(start_dir: str) -> FastAPI:
         name="template-shared",
     )
 
+    # Static asset mounts are high-volume (every preview pulls runtime.js,
+    # icons, vendored bundles) and almost never the cause of an "Internal
+    # Server Error" or a bad right-click-open — logging them would churn the
+    # rotating file and push the interesting lines out. The request flow that
+    # matters (/view, /render, /api/*) is everything else.
+    _LOG_SKIP_PREFIXES = ("/static/", "/template-assets/", "/template-shared/")
+
     @app.middleware("http")
-    async def no_cache(request, call_next):
+    async def no_cache_and_log(request, call_next):
         # App code changes between restarts and user files change on disk;
         # stale browser caches of shell/runtime JS cause confusing half-old UIs.
-        response = await call_next(request)
+        # Also the browser request log (SPEC SV-3): one INFO line per request
+        # with status + duration, so the log reconstructs the sequence of calls
+        # a page made — the context you need to see *which* request 500'd and
+        # what led to it. A 500 raised in a route escapes call_next; log the
+        # request line before re-raising so the access trail stays complete
+        # (the catch-all handler then logs the traceback).
+        path = request.url.path
+        logged = not path.startswith(_LOG_SKIP_PREFIXES)
+        start = time.monotonic()
+        try:
+            response = await call_next(request)
+        except Exception:
+            if logged:
+                dur = (time.monotonic() - start) * 1000
+                logger.info("%s %s -> 500 (%.0f ms)", request.method, path, dur)
+            raise
+        if logged:
+            dur = (time.monotonic() - start) * 1000
+            logger.info(
+                "%s %s -> %s (%.0f ms)", request.method, path, response.status_code, dur
+            )
         response.headers["Cache-Control"] = "no-cache"
         return response
 
@@ -348,6 +450,8 @@ def create_app(start_dir: str) -> FastAPI:
         return {
             "start_dir": start_dir,
             "home": os.path.expanduser("~"),
+            # Which /api/run engine this process uses (D69): "fused" | "builtin".
+            "engine": engine_name,
         }
 
     @app.get("/api/fs/stat")
@@ -529,7 +633,7 @@ def create_app(start_dir: str) -> FastAPI:
         return HTMLResponse(html)
 
     @app.post("/api/run")
-    def api_run(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    async def api_run(body: dict = Body(...), x_fused: str | None = Header(default=None)):
         guard = _require_fused(x_fused)
         if guard is not None:
             return guard
@@ -551,11 +655,47 @@ def create_app(start_dir: str) -> FastAPI:
                 )
             resolved = os.path.normpath(os.path.join(os.path.dirname(html), py))
 
-        result = run_python(resolved, params)
+        # Engine dispatch (D69): both paths return the same wire shape
+        # ({ok, result, error:{type,message,traceback,where}, stdout} — the
+        # fused engine adds stderr/duration_ms), so pages never see which ran.
+        if engine_name == "fused":
+            from fused_render import engine as _engine
+
+            result = await _engine.run_python(resolved, params)
+        else:
+            # The built-in executor blocks on a subprocess; keep the event
+            # loop free (the endpoint is async now for the engine's sake).
+            result = await asyncio.to_thread(run_python, resolved, params)
         # Tell the runtime which absolute file actually ran so it can watch it
         # for auto-reload (LR-2). Set on failed runs too, so a broken py that
         # gets fixed still triggers a reload.
         result["resolved_py"] = resolved
         return JSONResponse(result)
+
+    @app.post("/api/export")
+    def api_export(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+        guard = _require_fused(x_fused)
+        if guard is not None:
+            return guard
+
+        from fused_render.export import ExportError, export_page
+
+        page = body.get("page")
+        out = body.get("out")
+        if not page or not os.path.isabs(page):
+            return _error("'page' must be an absolute path to the .html page")
+        if not out or not os.path.isabs(out):
+            return _error("'out' must be an absolute path to the output directory")
+
+        try:
+            plan = export_page(page, out)
+        except ExportError as e:
+            return _error(str(e))
+
+        return {
+            "out": os.path.abspath(out),
+            "entrypoints": [{"path": e.path, "name": e.name, "file": e.file} for e in plan.entrypoints],
+            "assets": [{"path": a.path, "name": a.name, "file": a.file} for a in plan.assets],
+        }
 
     return app

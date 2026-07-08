@@ -39,6 +39,7 @@ fused-render/
 │   ├── server.py               # FastAPI app factory, all endpoints
 │   ├── executor.py             # subprocess-per-call runner (EXISTS — keep)
 │   ├── _child.py               # worker-process entry (EXISTS — keep)
+│   ├── logs.py                 # rotating app log for 500 / right-click-open diagnostics (D68)
 │   ├── static/
 │   │   ├── shell-dist/         # Vite build of frontend/ (gitignored, D54; built by dev / packaging hook)
 │   │   └── runtime.js          # injected into every rendered HTML (plain JS, NOT part of the React app)
@@ -155,7 +156,7 @@ StaticFiles mount for shell + runtime. Templates dir is NOT statically mounted �
 
 - `run_python(path, params, timeout=30.0) -> dict`: spawns `[sys.executable, _child.py]`, writes `{"path", "params"}` JSON to stdin, `subprocess.run(timeout=…)`, parses **last stdout line** as result JSON. Timeout → `TimeoutError` error dict. Garbage/no output → `ExecutorError` with stderr tail.
 - `_child.py`: chdir to the .py's dir (relative data paths work), prepend dir to `sys.path`, import via `importlib.util.spec_from_file_location`, find callable `main`, bind params with annotation-based coercion (`"100"`→int, `"2.4"`→float, `"true"/"1"/"yes"/"on"`→bool), missing required arg / non-callable main → structured error. Extra params ignored unless `**kwargs`. Return value must be JSON-native, else clear TypeError suggesting `df.to_dict('records')`. User `print()` captured → returned as `stdout` field. Catches `BaseException` (incl. SystemExit).
-- Error DX (D68): the `traceback` string is **trimmed to start at user code** — leading `_child.py` and `<frozen importlib…>` frames are dropped; a harness-raised error (bad params, missing `main`, unserializable return) formats as the exception line only, no stack. `error.where` = `{file, line, func, source}` of the **deepest frame in the user's own file** (an error inside a library points at the user line that called it; SyntaxError location comes off the exception), or `null` when the error never touched the user's file (harness errors, timeout, missing file).
+- Error DX (D72): the `traceback` string is **trimmed to start at user code** — leading `_child.py` and `<frozen importlib…>` frames are dropped; a harness-raised error (bad params, missing `main`, unserializable return) formats as the exception line only, no stack. `error.where` = `{file, line, func, source}` of the **deepest frame in the user's own file** (an error inside a library points at the user line that called it; SyntaxError location comes off the exception), or `null` when the error never touched the user's file (harness errors, timeout, missing file).
 
 Fresh process per call = fresh code every call (PY-9); the env is whatever Python launched the server.
 
