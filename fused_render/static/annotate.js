@@ -621,8 +621,36 @@
       transform: translate(-50%, -50%); display: none;
       box-shadow: 0 0 0 2px color-mix(in srgb, var(--fa-accent) 40%, transparent);
     }
+    /* Point ghost: hover affordance on pixel surfaces (image/video/canvas,
+       AN-40) — a small ring at the cursor instead of a whole-element box, so
+       "this comment lands on a POINT" is legible before the click. */
+    #__fa_ghost {
+      position: fixed; pointer-events: none; z-index: ${Z};
+      width: 18px; height: 18px; border-radius: 50%;
+      border: 2px solid var(--fa-accent);
+      background: color-mix(in srgb, var(--fa-accent) 18%, transparent);
+      transform: translate(-50%, -50%); display: none;
+      box-shadow: 0 0 0 1.5px color-mix(in srgb, #000 35%, transparent);
+    }
+    #__fa_ghost::after {
+      content: ""; position: absolute; left: 50%; top: 50%;
+      width: 3px; height: 3px; border-radius: 50%;
+      background: var(--fa-accent); transform: translate(-50%, -50%);
+    }
     /* Pins live in document coords (absolute, scroll with content — AN-11). */
     #__fa_pins { position: absolute; top: 0; left: 0; pointer-events: none; }
+    /* Video timestamp markers (AN-40): Frame.io-style ticks pinned to the
+       video's bottom edge at t/duration. Click = seek + open the thread. */
+    #__fa_marks { position: absolute; top: 0; left: 0; pointer-events: none; }
+    .__fa_mark {
+      position: absolute; pointer-events: auto; transform: translate(-50%, -50%);
+      width: 10px; height: 10px; border-radius: 50%;
+      background: var(--fa-accent); border: 2px solid #10131a;
+      cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,0.5);
+      transition: transform 120ms cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .__fa_mark:hover { transform: translate(-50%, -50%) scale(1.4); }
+    .__fa_mark.__fa_mark_resolved { opacity: 0.55; }
     .__fa_pin {
       position: absolute; pointer-events: auto; transform: translate(-50%, -50%);
       width: 22px; height: 22px; border-radius: 50% 50% 50% 2px;
@@ -851,8 +879,10 @@
   root.id = "__fa_root";
   root.innerHTML = `
     <div id="__fa_hl"></div>
+    <div id="__fa_ghost"></div>
     <div id="__fa_dot"></div>
     <div id="__fa_pins"></div>
+    <div id="__fa_marks"></div>
     <div id="__fa_fx"></div>
     <div id="__fa_tray"><div id="__fa_tray_title">Detached comments</div><div id="__fa_tray_list"></div></div>
     <button id="__fa_sidebtn" title="All comments">
@@ -874,7 +904,9 @@
   }
 
   const pinsEl = () => root.querySelector("#__fa_pins");
+  const marksEl = () => root.querySelector("#__fa_marks");
   const hlEl = () => root.querySelector("#__fa_hl");
+  const ghostEl = () => root.querySelector("#__fa_ghost");
   const trayEl = () => root.querySelector("#__fa_tray");
   const trayListEl = () => root.querySelector("#__fa_tray_list");
   const toastEl = () => root.querySelector("#__fa_toast");
@@ -1019,17 +1051,31 @@
   function onMouseMove(e) {
     if (openPopover) {
       hlEl().style.display = "none";
+      ghostEl().style.display = "none";
       return;
     }
     const el = e.target;
     if (!el || insideOverlay(el) || isPassthrough(el) || el === document.body || el === document.documentElement) {
       hlEl().style.display = "none";
+      ghostEl().style.display = "none";
       hovered = null;
       return;
     }
     hovered = el;
-    const r = el.getBoundingClientRect();
     const hl = hlEl();
+    // Pixel surfaces (image/video/PDF-page canvas, AN-40): the comment targets
+    // a POINT, so a full-element highlight box reads as "commenting on this
+    // whole thing" — show a point ghost at the cursor instead, no box.
+    if (mediaIntrinsic(el)) {
+      hl.style.display = "none";
+      const g = ghostEl();
+      g.style.display = "block";
+      g.style.left = e.clientX + "px";
+      g.style.top = e.clientY + "px";
+      return;
+    }
+    ghostEl().style.display = "none";
+    const r = el.getBoundingClientRect();
     hl.style.display = "block";
     hl.style.left = r.left + "px";
     hl.style.top = r.top + "px";
@@ -1112,10 +1158,16 @@
     pop.className = "__fa_pop";
     // The composer needs a VISIBLE primary action, not just the keyboard hint
     // — the thread popover already has a button footer; mirror it.
+    // A video draft names the frozen frame (AN-40) — the anchor is a moment,
+    // not just a spot, and the composer should say so.
+    const atTime =
+      el && el.tagName === "VIDEO" && isFinite(el.currentTime)
+        ? `<span class="__fa_tag">${esc(fmtTime(el.currentTime))}</span> `
+        : "";
     pop.innerHTML = `
       <div class="__fa_draftwrap">
         <textarea placeholder="Add a comment…"></textarea>
-        <div class="__fa_hint">Enter to save · Shift+Enter for newline · Esc to cancel</div>
+        <div class="__fa_hint">${atTime}Enter to save · Shift+Enter for newline · Esc to cancel</div>
       </div>
       <div class="__fa_footer">
         <span class="__fa_spacer"></span>
@@ -1450,6 +1502,53 @@
 
     detachedIds = new Set(detached.map((t) => t.id)); // sidebar "detached" tags (AN-30)
     renderTray(detached);
+    renderMarks();
+  }
+
+  // Which threads get a timestamp marker: this view's video comments whose
+  // video has metadata (duration) loaded.
+  function markableThreads() {
+    const out = [];
+    for (const thread of comments) {
+      if (thread.t === undefined || isForeign(thread)) continue;
+      const el = resolveElement(thread);
+      if (el && el.tagName === "VIDEO" && el.duration > 0) out.push({ thread, el });
+    }
+    return out;
+  }
+
+  // Document-coord position of a thread's timestamp marker: on the video's
+  // bottom edge at the t/duration fraction of the painted content box (AN-40).
+  function markPoint(thread, el) {
+    const b = imgContentBox(el);
+    const f = Math.min(1, Math.max(0, thread.t / el.duration));
+    return {
+      x: b.left + f * b.width + window.scrollX,
+      y: b.top + b.height - 7 + window.scrollY,
+    };
+  }
+
+  // Timestamp marker track (AN-40, Frame.io-style): every video comment gets a
+  // tick on the video's bottom edge at its t. Click = pause + seek + open.
+  function renderMarks() {
+    const marks = marksEl();
+    marks.innerHTML = "";
+    for (const { thread, el } of markableThreads()) {
+      const m = document.createElement("div");
+      m.className = "__fa_mark" + (thread.status === "resolved" ? " __fa_mark_resolved" : "");
+      m.setAttribute("data-mark", thread.id);
+      const p = markPoint(thread, el);
+      m.style.left = p.x + "px";
+      m.style.top = p.y + "px";
+      m.title = fmtTime(thread.t) + " — " + thread.content;
+      m.addEventListener("pointerup", (ev) => {
+        ev.stopPropagation();
+        el.pause();
+        el.currentTime = thread.t;
+        openThread(thread.id, ev.clientX, ev.clientY);
+      });
+      marks.appendChild(m);
+    }
   }
 
   function renderTray(detached) {
@@ -1591,13 +1690,21 @@
     const replies = thread.replies.length;
     // Foreign threads (AN-34/AN-36) are tagged with the view they belong to,
     // off-page threads (AN-38) with where the resolver says they live —
-    // "detached" is reserved for anchors that truly no longer resolve.
+    // "detached" is reserved for anchors that truly no longer resolve. An
+    // ON-page anchor the resolver recognizes gets its location label too
+    // ("page 2", "row 41") — Acrobat-style context in the list (AN-40).
     let tag = "";
     if (isForeign(thread)) tag = foreignLabel(thread);
     else if (detachedIds.has(thread.id)) tag = "detached";
     else {
       const off = offpageInfo(thread);
       if (off) tag = off.label || "off page";
+      else if (anchorResolver && thread.anchorId) {
+        try {
+          const loc = anchorResolver.match(thread.anchorId);
+          if (loc && loc.label) tag = loc.label;
+        } catch (e) {}
+      }
     }
     return `
       <div class="__fa_card_top">
@@ -1785,7 +1892,20 @@
       pin.style.left = cp.x + "px";
       pin.style.top = cp.y + "px";
     }
-    if (i !== pins.length) render(); // count mismatch → rebuild
+    if (i !== pins.length) return render(); // count mismatch → rebuild
+    // Timestamp markers (AN-40) follow their video; a marker count change
+    // (video metadata just loaded → duration now known) needs a rebuild.
+    const markable = markableThreads();
+    const marks = marksEl().children;
+    if (markable.length !== marks.length) {
+      renderMarks();
+    } else {
+      for (let k = 0; k < markable.length; k++) {
+        const p = markPoint(markable[k].thread, markable[k].el);
+        marks[k].style.left = p.x + "px";
+        marks[k].style.top = p.y + "px";
+      }
+    }
     // Keep an open thread popover glued to its anchor while scrolling. Glue to
     // the PIN's point (pinPoint is iu/iv-aware), not the element's top-right —
     // an image thread's popover must track the pixel pin the user clicked.
