@@ -672,4 +672,30 @@ def create_app(start_dir: str) -> FastAPI:
         result["resolved_py"] = resolved
         return JSONResponse(result)
 
+    @app.post("/api/export")
+    def api_export(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+        guard = _require_fused(x_fused)
+        if guard is not None:
+            return guard
+
+        from fused_render.export import ExportError, export_page
+
+        page = body.get("page")
+        out = body.get("out")
+        if not page or not os.path.isabs(page):
+            return _error("'page' must be an absolute path to the .html page")
+        if not out or not os.path.isabs(out):
+            return _error("'out' must be an absolute path to the output directory")
+
+        try:
+            plan = export_page(page, out)
+        except ExportError as e:
+            return _error(str(e))
+
+        return {
+            "out": os.path.abspath(out),
+            "entrypoints": [{"path": e.path, "name": e.name, "file": e.file} for e in plan.entrypoints],
+            "assets": [{"path": a.path, "name": a.name, "file": a.file} for a in plan.assets],
+        }
+
     return app

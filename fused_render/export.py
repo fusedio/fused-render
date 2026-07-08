@@ -2,10 +2,11 @@
 
 fused-render is local-only by design (SPEC §1 "Never deployed to cloud"): the
 server binds 127.0.0.1 and hosts nothing. This module does **not** change that.
-It adds a pure, offline *build* step — ``fused-render export`` — that statically
-collects a page's dependencies into a self-contained bundle directory. A separate
-hosting layer (the ``fused`` wheel's ``build_html_artifact``) turns that bundle
-into a served app; nothing here opens a socket, uploads, or phones home.
+It adds a pure, local *build* step — called via ``POST /api/export`` on the
+already-running server (D71; see server.py) — that statically collects a page's
+dependencies into a self-contained bundle directory. A separate hosting layer
+(the ``fused`` wheel's ``build_html_artifact``) turns that bundle into a served
+app; nothing here uploads or phones home.
 
 Only the **portable subset** of the injected ``window.fused`` API is supported on
 a hosted page, because a served page has no local filesystem behind it:
@@ -77,7 +78,8 @@ _UNSUPPORTED = re.compile(r"fused\.(writeFile|stat)\s*\(")
 
 
 class ExportError(Exception):
-    """A user-correctable failure while exporting a page (CLI prints it verbatim)."""
+    """A user-correctable failure while exporting a page (POST /api/export
+    returns its message verbatim as a 400 {"error"})."""
 
 
 @dataclass(frozen=True)

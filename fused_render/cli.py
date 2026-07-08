@@ -1,12 +1,13 @@
 """Command-line entry point.
 
-Two subcommands:
+One subcommand:
   * ``fused-render serve`` (the default when no subcommand is given, preserving the
     original ``fused-render [--start-dir DIR] [--port N]`` invocation) — the local
     127.0.0.1 file explorer.
-  * ``fused-render export <page.html> --out <dir>`` — an offline build step that packs
-    a renderable page into a portable bundle for hosted serving (see export.py). It
-    starts no server and touches no network.
+
+Packing a renderable page into a portable bundle for hosted serving is a
+``POST /api/export`` call on the running server (see server.py/export.py), not a
+CLI subcommand — it needs no separate offline step.
 """
 import argparse
 import logging
@@ -23,7 +24,7 @@ DEFAULT_PORT = 8765
 
 # Subcommand names; anything else as argv[1] falls through to the implicit `serve`
 # so the historical bare `fused-render --port 9000` invocation keeps working.
-_SUBCOMMANDS = ("serve", "export")
+_SUBCOMMANDS = ("serve",)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -42,14 +43,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument(
         "--no-browser", action="store_true", help="do not open a browser tab on startup"
-    )
-
-    export = sub.add_parser(
-        "export", help="pack a renderable page into a portable bundle for hosted serving"
-    )
-    export.add_argument("page", help="path to the .html page to export")
-    export.add_argument(
-        "--out", "-o", required=True, help="output directory for the bundle (created if absent)"
     )
     return parser
 
@@ -77,24 +70,6 @@ def _run_serve(args: argparse.Namespace) -> None:
     uvicorn.run(app, host="127.0.0.1", port=args.port)
 
 
-def _run_export(args: argparse.Namespace) -> None:
-    from fused_render.export import ExportError, export_page
-
-    try:
-        plan = export_page(args.page, args.out)
-    except ExportError as e:
-        print(f"error: {e}", file=sys.stderr)
-        raise SystemExit(1) from None
-
-    out = os.path.abspath(args.out)
-    print(f"exported {os.path.basename(args.page)} -> {out}")
-    print(f"  {len(plan.entrypoints)} runPython entrypoint(s), {len(plan.assets)} asset(s)")
-    for e in plan.entrypoints:
-        print(f"    runPython {e.path} -> route {e.name!r}")
-    for a in plan.assets:
-        print(f"    asset     {a.path} -> {a.name}")
-
-
 def main() -> None:
     parser = _build_parser()
 
@@ -106,10 +81,7 @@ def main() -> None:
         argv = ["serve", *argv]
 
     args = parser.parse_args(argv)
-    if args.command == "export":
-        _run_export(args)
-    else:
-        _run_serve(args)
+    _run_serve(args)
 
 
 if __name__ == "__main__":

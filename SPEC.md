@@ -520,9 +520,11 @@ Element anchoring makes no sense inside a text editor. On editor surfaces, annot
 
 Goal: pack a renderable page into a portable *bundle* that a **separate** hosting
 layer (the `fused` wheel's `build_html_artifact`) can serve — without weakening the
-local-only invariant (§1). Export is an **offline build step** (`fused-render export
-<page.html> --out <dir>`): it opens no socket, uploads nothing, and reaches no
-network. fused-render itself still hosts nothing. Full detail: `docs/EXPORT.md`.
+local-only invariant (§1). Export is a **local, offline call on the already-running
+server** (`POST /api/export {"page", "out"}`, both absolute paths): it uploads
+nothing and reaches no network — it writes the bundle to a local directory, the same
+as every other filesystem-touching endpoint. fused-render itself still hosts
+nothing. Full detail: `docs/EXPORT.md`.
 
 ### 18.1 Bundle format
 

@@ -1,4 +1,4 @@
-"""Tests for `fused-render export` (fused_render/export.py)."""
+"""Tests for the export logic (fused_render/export.py), served via POST /api/export."""
 import json
 import os
 

@@ -1,15 +1,25 @@
 # Exporting a page for hosted serving
 
 fused-render is local-only: the server binds `127.0.0.1` and hosts nothing (SPEC
-§1). `fused-render export` does not change that. It is an offline **build step**
-that packs a renderable page and its dependencies into a portable *bundle*
-directory. A separate hosting layer — the `fused` wheel's `build_html_artifact`
-— turns that bundle into a served app. Export opens no socket and touches no
-network.
+§1). Exporting does not change that. It is a **local `POST /api/export` call on
+the already-running server** that packs a renderable page and its dependencies
+into a portable *bundle* directory. A separate hosting layer — the `fused`
+wheel's `build_html_artifact` — turns that bundle into a served app. Export
+touches no network — it only writes files to a local directory.
 
 ```
-fused-render export path/to/page.html --out ./bundle
+curl -X POST http://127.0.0.1:8765/api/export \
+  -H 'Content-Type: application/json' -H 'X-Fused: 1' \
+  -d '{"page": "/abs/path/to/page.html", "out": "/abs/path/to/bundle"}'
 ```
+
+`page` and `out` must both be absolute filesystem paths (same convention as
+every other endpoint). On success the response is
+`{"out", "entrypoints": [...], "assets": [...]}` — the same shape written into
+`manifest.json` below, plus the resolved `out` directory. On a blocking export
+problem (see "Rules the exporter enforces" below) the response is a `400`
+`{"error": "..."}`; the `X-Fused` header is required on every call, like any
+other mutating endpoint (a missing/invalid header is a `403`).
 
 ## What a bundle contains
 

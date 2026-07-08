@@ -81,17 +81,20 @@ active engine shows in `GET /api/config`.
 
 ## Export for hosted serving
 
-fused-render is local-only, but you can pack a page into a portable bundle that a
-hosting layer (the `fused` wheel) can serve:
+fused-render is local-only, but the running server can pack a page into a portable
+bundle that a hosting layer (the `fused` wheel) can serve:
 
 ```
-fused-render export examples/sine.html --out ./bundle
+curl -X POST http://127.0.0.1:8765/api/export \
+  -H 'Content-Type: application/json' -H 'X-Fused: 1' \
+  -d '{"page": "/abs/path/to/examples/sine.html", "out": "/abs/path/to/bundle"}'
 ```
 
-This is an offline build step — it starts no server and touches no network. It
-collects the page's `runPython`/`rawUrl` dependencies into a self-contained
-bundle. Only the portable subset of the runtime API is supported (no `writeFile`,
-`stat`, or live-reload). See `docs/EXPORT.md` for the bundle format and rules.
+Both `page` and `out` must be absolute filesystem paths (same convention as every
+other endpoint — see the module docstring in `server.py`). It collects the page's
+`runPython`/`rawUrl` dependencies into a self-contained bundle. Only the portable
+subset of the runtime API is supported (no `writeFile`, `stat`, or live-reload).
+See `docs/EXPORT.md` for the bundle format and rules.
 
 ## Logs
 
