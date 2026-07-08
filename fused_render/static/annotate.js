@@ -183,6 +183,13 @@
     }
     if (typeof t.anchorId === "string" && t.anchorId) thread.anchorId = t.anchorId;
     if (typeof t.anchorPath === "string" && t.anchorPath) thread.anchorPath = t.anchorPath;
+    // Element-mode TEXT anchor (AN-42): a quote riding an element anchor marks
+    // a selection INSIDE that element (qn = which occurrence of the quote).
+    // Distinct from the sel form: that one is adapter-owned line/ch.
+    if (!thread.selFrom && (thread.anchorId || thread.anchorPath) && typeof t.quote === "string" && t.quote) {
+      thread.quote = t.quote.slice(0, 120);
+      thread.qn = Math.max(0, Math.round(Number(t.qn)) || 0);
+    }
     // Image pixel refinement (AN-24): fractions of the image's displayed
     // content box, riding ALONGSIDE the element anchor (they refine placement,
     // they are not an anchor form of their own).
@@ -231,6 +238,11 @@
     // Video timestamp rides the element anchor the same way (AN-37).
     if ((o.anchorId || o.anchorPath) && thread.t !== undefined) {
       o.t = Math.round(thread.t * 10) / 10;
+    }
+    // Element-mode text anchor (AN-42): quote + occurrence ride the element.
+    if ((o.anchorId || o.anchorPath) && thread.quote && !thread.selFrom) {
+      o.quote = thread.quote.slice(0, 120);
+      if (thread.qn) o.qn = thread.qn;
     }
     return o;
   }
@@ -572,6 +584,8 @@
   // are NOT detached — they're reachable, just not on the current page.
   function isDetached(thread) {
     if (!thread.anchorId && !thread.anchorPath) return false;
+    // Text anchors (AN-42) detach when the QUOTE is gone, not just the element.
+    if (isTextThread(thread)) return resolveTextRange(thread) === null && !offpageInfo(thread);
     if (resolveElement(thread) !== null) return false;
     return !offpageInfo(thread);
   }
@@ -600,6 +614,11 @@
       }
     }
     body.__fa_active { cursor: crosshair; }
+    /* Element-mode text anchors (AN-42) — painted via the Custom Highlight
+       API so the user's DOM is never mutated. */
+    ::highlight(__fa_thl) { background-color: rgba(229, 255, 68, 0.30); }
+    ::highlight(__fa_thl_res) { background-color: rgba(229, 255, 68, 0.12); }
+    ::highlight(__fa_thl_pending) { background-color: rgba(229, 255, 68, 0.38); }
     /* Hover highlight — a fixed, non-interactive box tracking getBoundingClientRect,
        so it never mutates the user's layout (AN-10). */
     #__fa_hl {
@@ -1039,6 +1058,122 @@
   }
 
   // ===========================================================================
+  // 5b. Element-mode text anchors (AN-42): a drag-selection inside the page
+  // becomes a comment on that exact text — container element anchor + quote
+  // (≤120) + qn (occurrence index). Re-resolution is quote-based, painting is
+  // the CSS Custom Highlight API (no DOM mutation of the user's page).
+  // ===========================================================================
+
+  function isTextThread(t) {
+    return !!(t.quote && !t.selFrom && (t.anchorId || t.anchorPath));
+  }
+
+  // The qn-th occurrence of the quote inside the container, as a live Range.
+  // Null when container or quote is gone (→ detached).
+  function resolveTextRange(t) {
+    const el = resolveElement(t);
+    if (!el) return null;
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    let full = "";
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      nodes.push({ node: n, start: full.length });
+      full += n.nodeValue;
+    }
+    let idx = -1;
+    for (let occ = 0; occ <= (t.qn || 0); occ++) {
+      idx = full.indexOf(t.quote, idx + 1);
+      if (idx === -1) return null;
+    }
+    const end = idx + t.quote.length;
+    const locate = (off, isEnd) => {
+      for (let i = nodes.length - 1; i >= 0; i--) {
+        const rec = nodes[i];
+        if (off > rec.start || (!isEnd && off === rec.start) || i === 0) {
+          return { node: rec.node, off: Math.min(off - rec.start, rec.node.nodeValue.length) };
+        }
+      }
+      return null;
+    };
+    const a = locate(idx, false);
+    const b = locate(end, true);
+    if (!a || !b) return null;
+    const range = document.createRange();
+    try {
+      range.setStart(a.node, a.off);
+      range.setEnd(b.node, b.off);
+    } catch (e) {
+      return null;
+    }
+    return range;
+  }
+
+  let textRanges = new Map(); // threadId -> Range, rebuilt each render()
+  let pendingTextRange = null; // drafted selection, painted while composer open
+
+  // Paint all text-thread ranges. Custom Highlight API = zero DOM mutation;
+  // engines without it (old Safari) just get pins without inline tinting.
+  function paintTextHighlights() {
+    if (!window.Highlight || !CSS.highlights) return;
+    const open = [];
+    const resolved = [];
+    for (const [id, range] of textRanges) {
+      const t = findThread(id);
+      if (!t) continue;
+      (t.status === "resolved" ? resolved : open).push(range);
+    }
+    const set = (name, ranges) => {
+      if (ranges.length) CSS.highlights.set(name, new Highlight(...ranges));
+      else CSS.highlights.delete(name);
+    };
+    set("__fa_thl", open);
+    set("__fa_thl_res", resolved);
+    set("__fa_thl_pending", pendingTextRange ? [pendingTextRange] : []);
+  }
+
+  // Document-coord point for a text thread's pin: end of its range.
+  function textRangePoint(range) {
+    const rects = range.getClientRects();
+    const r = rects.length ? rects[rects.length - 1] : range.getBoundingClientRect();
+    return { x: r.right + window.scrollX, y: r.top + r.height / 2 + window.scrollY };
+  }
+
+  // Element-mode selection → draft (AN-42). Runs on mouseup (deferred so the
+  // browser commits the selection). Returns true when it consumed the gesture.
+  function maybeOpenSelectionDraft() {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return false;
+    const range = sel.getRangeAt(0);
+    const quote = range.toString();
+    if (!quote.trim()) return false;
+    let container = range.commonAncestorContainer;
+    if (container.nodeType !== 1) container = container.parentElement;
+    if (!container || insideOverlay(container) || isPassthrough(container)) return false;
+    const base = buildAnchor(container, 0, 0); // element part only (no iu/iv without clientXY)
+    if (!base.anchorId && !base.anchorPath) return false;
+    // Occurrence index: how many times the quote appears before the selection.
+    const el = resolveElement(base) || container;
+    const pre = document.createRange();
+    pre.selectNodeContents(el);
+    try {
+      pre.setEnd(range.startContainer, range.startOffset);
+    } catch (e) {
+      return false;
+    }
+    const before = pre.toString();
+    const capped = quote.slice(0, 120);
+    let qn = 0;
+    for (let at = before.indexOf(capped); at !== -1; at = before.indexOf(capped, at + 1)) qn++;
+    const anchorFields = { anchorId: base.anchorId, anchorPath: base.anchorPath, quote: capped, qn };
+    const rect = range.getBoundingClientRect();
+    pendingTextRange = range.cloneRange();
+    paintTextHighlights();
+    closePopover();
+    openDraft(el, rect.right + window.scrollX, rect.bottom + window.scrollY, rect.right, rect.bottom, anchorFields);
+    return true;
+  }
+
+  // ===========================================================================
   // 6. Hover highlight + click-to-create (AN-10).
   // ===========================================================================
 
@@ -1099,6 +1234,25 @@
     if (insideOverlay(e.target) || isPassthrough(e.target)) return;
     e.preventDefault();
     e.stopPropagation();
+    // A drag-selection's trailing click must not stomp the selection draft the
+    // mouseup handler just opened (AN-42).
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed) return;
+    // Click landing inside an existing text-range highlight opens its thread.
+    if (document.caretRangeFromPoint) {
+      const caret = document.caretRangeFromPoint(e.clientX, e.clientY);
+      if (caret) {
+        for (const [id, range] of textRanges) {
+          try {
+            if (range.comparePoint(caret.startContainer, caret.startOffset) === 0) {
+              closePopover();
+              openThread(id, e.clientX, e.clientY);
+              return;
+            }
+          } catch (err) {}
+        }
+      }
+    }
     closePopover();
     openDraft(e.target, e.pageX, e.pageY, e.clientX, e.clientY);
   }
@@ -1106,9 +1260,18 @@
   // Interactive elements react before `click` fires — a range input moves its
   // thumb on mousedown, a button takes focus — so annotate mode must swallow
   // the whole pointer sequence at capture, not just the click. Overlay UI
-  // (pins, popovers, tray) and passthrough chrome keep their events.
+  // (pins, popovers, tray) and passthrough chrome keep their events. Plain
+  // content keeps its DEFAULT (not its handlers): preventDefault on mousedown
+  // would kill native text selection, and selections are anchors now (AN-42).
+  const INTERACTIVE =
+    "a[href], button, input, select, textarea, option, label, summary, [role='button'], [contenteditable], audio, video";
   function onPointerCapture(e) {
     if (insideOverlay(e.target) || isPassthrough(e.target)) return;
+    if (!(e.target.closest && e.target.closest(INTERACTIVE))) {
+      e.stopPropagation(); // page handlers stay off; browser selection stays on
+      if (e.type === "mouseup") setTimeout(maybeOpenSelectionDraft, 0);
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
   }
@@ -1438,6 +1601,11 @@
     openPopover = null;
     const dot = root.querySelector("#__fa_dot");
     if (dot) dot.style.display = "none";
+    // A closed composer must not leave its drafted selection tinted (AN-42).
+    if (pendingTextRange) {
+      pendingTextRange = null;
+      paintTextHighlights();
+    }
   }
 
   // ===========================================================================
@@ -1461,6 +1629,7 @@
     const pins = pinsEl();
     pins.innerHTML = "";
     const detached = [];
+    textRanges = new Map();
 
     for (const thread of comments) {
       if (isForeign(thread)) continue; // other surface — sidebar lists it (AN-34)
@@ -1468,12 +1637,25 @@
         detached.push(thread);
         continue;
       }
+      // Text anchor (AN-42): pin sits at the end of its quote's range.
+      if (isTextThread(thread)) {
+        const range = resolveTextRange(thread);
+        if (!range) {
+          detached.push(thread);
+          continue;
+        }
+        textRanges.set(thread.id, range);
+      }
       const el = resolveElement(thread);
       // Off-page (AN-38): reachable via the resolver but not on the current
       // page — no pin, no tray; the sidebar lists it with a location tag.
       if (!el && thread.anchorId && offpageInfo(thread)) continue;
       let x, y;
-      if (el) {
+      if (textRanges.has(thread.id)) {
+        const p = textRangePoint(textRanges.get(thread.id));
+        x = p.x;
+        y = p.y;
+      } else if (el) {
         const p = pinPoint(thread, el); // iu/iv-aware for images (AN-25)
         x = p.x;
         y = p.y;
@@ -1503,6 +1685,7 @@
     detachedIds = new Set(detached.map((t) => t.id)); // sidebar "detached" tags (AN-30)
     renderTray(detached);
     renderMarks();
+    paintTextHighlights();
   }
 
   // Which threads get a timestamp marker: this view's video comments whose
@@ -1850,6 +2033,26 @@
   // The reveal itself, given a live element — shared by the resolved and the
   // off-page (post-navigation) paths so both get identical treatment.
   function revealResolved(t, el) {
+    // Text anchor (AN-42): scroll the RANGE into view and flash its box.
+    if (isTextThread(t)) {
+      const range = textRanges.get(t.id) || resolveTextRange(t);
+      if (range) {
+        const r = range.getBoundingClientRect();
+        window.scrollTo({
+          top: Math.max(0, r.top + window.scrollY - window.innerHeight / 2),
+          behavior: "smooth",
+        });
+        const f = document.createElement("div");
+        f.className = "__fa_flash";
+        f.style.left = r.left + window.scrollX - 3 + "px";
+        f.style.top = r.top + window.scrollY - 3 + "px";
+        f.style.width = r.width + 6 + "px";
+        f.style.height = r.height + 6 + "px";
+        fxEl().appendChild(f);
+        setTimeout(() => f.remove(), 1500);
+        return;
+      }
+    }
     // Pixel threads scroll to the PIN, not the element center: a PDF page
     // canvas is taller than the viewport, so centering the ELEMENT can put
     // the pin itself above the fold (AN-40).
@@ -1941,7 +2144,12 @@
       const el = resolveElement(thread);
       let x = thread.x || 0;
       let y = thread.y || 0;
-      if (el) {
+      if (textRanges.has(thread.id)) {
+        // Live Range objects track DOM edits; re-derive the pin point (AN-42).
+        const p = textRangePoint(textRanges.get(thread.id));
+        x = p.x;
+        y = p.y;
+      } else if (el) {
         const p = pinPoint(thread, el); // iu/iv-aware for images (AN-25)
         x = p.x;
         y = p.y;
