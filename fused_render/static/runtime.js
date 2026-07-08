@@ -343,6 +343,9 @@
   let reloadTimer = null;
 
   function resubscribe() {
+    // A reconnect timer may be pending (onclose below); a direct call must
+    // cancel it or the stale timer would close and reopen the fresh socket.
+    clearTimeout(resubscribeTimer);
     resubscribeTimer = null;
     if (es) {
       const old = es;
