@@ -512,6 +512,7 @@
     }
 
     function render() {
+      if (!activeView) return; // still booting — no framed view to resolve against
       const doc = frame.contentDocument;
       const frameWin = frame.contentWindow;
       const comments = load();
@@ -530,7 +531,7 @@
         // that's currently framed; others are listed with their view's tag.
         // A missing stamp (hand-edited URL) belongs to the DEFAULT view — a
         // wildcard would resolve against whatever happens to be framed.
-        const ownView = !activeView || (c.view || defaultViewMode || activeView.mode) === activeView.mode;
+        const ownView = (c.view || defaultViewMode) === activeView.mode;
         const range = ownView && doc && isRangeAnchor(c) ? rangeFor(c, doc) : null;
         const el = ownView && doc && !isRangeAnchor(c) ? resolveAnchor(c, doc) : null;
         if (range) {
