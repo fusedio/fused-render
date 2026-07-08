@@ -107,7 +107,10 @@ def _venv_python():
     import shutil
     uv = shutil.which("uv") or os.path.expanduser("~/.local/bin/uv")
     if not os.path.exists(uv):
-        raise RuntimeError("uv not found — needed to build the laspy venv")
+        raise RuntimeError(
+            "reading .las/.laz needs the 'uv' tool to set up a one-time "
+            "Python environment (laspy). Install it with: "
+            "brew install uv  —  or:  curl -LsSf https://astral.sh/uv/install.sh | sh")
     subprocess.run([uv, "venv", "--python", "3.12", os.path.join(CACHE, "venv")],
                    check=True, capture_output=True)
     subprocess.run([uv, "pip", "install", "-p", py, *VENV_DEPS],

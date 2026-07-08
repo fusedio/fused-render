@@ -410,6 +410,7 @@ async function refreshExplorer(dir){
 let loadedSlice = null, loadedQuery = null;
 
 async function loadSlice(){
+  if (!P.file()){ status('no file — use Browse or enter a path'); return; }
   const sq = sliceQuery().toString();
   status('Loading slice…');
   await styleReady();
