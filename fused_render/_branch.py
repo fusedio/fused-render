@@ -18,9 +18,9 @@ import re
 import sys
 
 _MAX_LEN = 12
-_BASE_PORT = 8765
+_BASE_PORT = 1777
 _PORT_RANGE_SIZE = 1000
-_PORT_OFFSET = 8776
+_PORT_OFFSET = 1788
 
 
 def sanitize(ref: str) -> str:

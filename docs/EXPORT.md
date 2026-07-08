@@ -8,7 +8,7 @@ wheel's `build_html_artifact` — turns that bundle into a served app. Export
 touches no network — it only writes files to a local directory.
 
 ```
-curl -X POST http://127.0.0.1:8765/api/export \
+curl -X POST http://127.0.0.1:1777/api/export \
   -H 'Content-Type: application/json' -H 'X-Fused: 1' \
   -d '{"page": "/abs/path/to/page.html", "out": "/abs/path/to/bundle"}'
 ```

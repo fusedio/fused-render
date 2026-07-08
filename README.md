@@ -73,7 +73,7 @@ FUSED_RENDER_NOTARY_PROFILE=FUSED_RENDER_NOTARY bash scripts/build_dmg.sh
 fused-render
 ```
 
-Opens a browser tab at `http://127.0.0.1:8765/`, starting in your home
+Opens a browser tab at `http://127.0.0.1:1777/`, starting in your home
 directory. Useful flags:
 
 ```
@@ -102,7 +102,7 @@ fused-render is local-only, but the running server can pack a page into a portab
 bundle that a hosting layer (the `fused` wheel) can serve:
 
 ```
-curl -X POST http://127.0.0.1:8765/api/export \
+curl -X POST http://127.0.0.1:1777/api/export \
   -H 'Content-Type: application/json' -H 'X-Fused: 1' \
   -d '{"page": "/abs/path/to/examples/sine.html", "out": "/abs/path/to/bundle"}'
 ```

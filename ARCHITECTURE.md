@@ -73,7 +73,7 @@ fused-render [--start-dir DIR] [--port N] [--no-browser]
 ```
 
 - `--start-dir` default `~` (home). UI starting location only — **whole filesystem is browsable** (no root-scoping concept anywhere).
-- `--port` default `8765`.
+- `--port` default `1777`.
 - Binds `127.0.0.1` only. Prints URL, opens browser after short delay (threading.Timer) unless `--no-browser`.
 - `uvicorn.run(app, host="127.0.0.1", port=port)`.
 
