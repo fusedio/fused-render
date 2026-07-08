@@ -318,6 +318,7 @@ export function toggleFolder(id: string): Promise<void> {
 
 export async function updateBookmarkUrl(id: string, url: string): Promise<void> {
   let name: string | undefined;
+  let found = false;
   await mutate((items) => {
     let bookmark = items.find((it) => it.id === id && !isFolder(it)) as Bookmark | undefined;
     if (!bookmark) {
@@ -330,8 +331,10 @@ export async function updateBookmarkUrl(id: string, url: string): Promise<void> 
     if (!bookmark) return null;
     bookmark.url = url;
     name = bookmark.name;
+    found = true;
     return items;
   });
+  if (!found) return;
   // Record the new url for that id (server upserts, refreshing updated_at).
   recordBookmarkHistory({ id, url, name })
     .catch((e) => console.error("[fused] failed to record bookmark history:", e));
