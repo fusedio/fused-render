@@ -93,6 +93,13 @@ BUILTIN_REGISTRY = os.path.join(TEMPLATES_DIR, "registry.json")
 # reference (D73); any other `_` name is invalid (CT-6).
 KNOWN_SENTINELS = {"_render"}
 
+# Recursive-walk cap (/api/fs/walk): stop collecting after this many entries so
+# a search over a huge tree stays bounded. Module-level so tests can shrink it.
+WALK_MAX_ENTRIES = 20000
+# Directories never descended into by the walk (nor emitted as entries): heavy,
+# machine-managed trees that only add noise to a file search.
+WALK_IGNORE_DIRS = {"node_modules", "__pycache__", "venv"}
+
 
 def _error(message: str, status: int = 400) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status)
@@ -504,6 +511,48 @@ def create_app(start_dir: str) -> FastAPI:
             )
         entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
         return {"path": path, "entries": entries}
+
+    @app.get("/api/fs/walk")
+    def api_fs_walk(path: str):
+        # Recursive listing of a directory subtree, for the explorer search
+        # (flat, ranked client-side). Prunes hidden entries (leading `.`) and
+        # WALK_IGNORE_DIRS from descent, skips hidden files, and never follows
+        # symlinks. Capped at WALK_MAX_ENTRIES; `rel` is posix-relative to
+        # `path`. Unreadable entries are skipped silently (matches /api/fs/list).
+        if not os.path.isdir(path):
+            return _error(f"not a directory: {path}", status=400)
+        entries = []
+        truncated = False
+        for root, dirs, files in os.walk(path, followlinks=False):
+            # Mutating dirs in place both drops them from descent and, since we
+            # emit from the (already pruned) list, keeps them out of the results.
+            dirs[:] = sorted(
+                d for d in dirs if not d.startswith(".") and d not in WALK_IGNORE_DIRS
+            )
+            batch = [(d, True) for d in dirs] + [
+                (f, False) for f in sorted(files) if not f.startswith(".")
+            ]
+            for name, is_dir in batch:
+                full = os.path.join(root, name)
+                try:
+                    st = os.stat(full)
+                except OSError:
+                    continue  # unreadable entries skipped silently
+                rel = os.path.relpath(full, path).replace(os.sep, "/")
+                entries.append(
+                    {
+                        "rel": rel,
+                        "is_dir": is_dir,
+                        "size": None if is_dir else st.st_size,
+                        "mtime": st.st_mtime,
+                    }
+                )
+                if len(entries) >= WALK_MAX_ENTRIES:
+                    truncated = True
+                    break
+            if truncated:
+                break
+        return {"path": path, "entries": entries, "truncated": truncated}
 
     @app.get("/api/fs/raw")
     def api_fs_raw(path: str):

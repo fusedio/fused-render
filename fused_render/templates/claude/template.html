@@ -524,6 +524,10 @@ async function sendMessage(message) {
       await sleep(400);
     }
   } catch (err) {
+    // Mirror the data.error cleanup: kill the rAF loop and drop the partial
+    // bubble so a failed run never leaves a half-streamed reply behind.
+    if (typer) typer.abort();
+    if (reply) reply.remove();
     addError(err.message);
   } finally {
     if (w.el.isConnected) { w.stop(); w.el.remove(); }

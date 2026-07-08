@@ -182,16 +182,30 @@ function enterPanel(fsPath: string, dir: "row" | "col"): void {
 
 export function Breadcrumb({ fsPath }: { fsPath: string }) {
   const parts = fsPath.split("/").filter((s) => s.length > 0);
-  const pieces: React.ReactNode[] = [];
+  const pieces: React.ReactNode[] = [
+    <a
+      key="root"
+      href="#"
+      className={"path-crumb" + (parts.length === 0 ? " last" : "")}
+      onClick={(e) => {
+        e.preventDefault();
+        navigate("/");
+      }}
+    >
+      /
+    </a>,
+  ];
   let acc = "";
   parts.forEach((part, i) => {
     acc += "/" + part;
     const target = acc;
     const isLast = i === parts.length - 1;
-    pieces.push(<span key={"sep" + i} className="sep">/</span>);
+    // Separator only between segments (root already carries the leading
+    // slash) — matches the panel path bar's tight `/Users/name/...` format.
+    if (i > 0) pieces.push(<span key={"sep" + i} className="path-crumb-sep">/</span>);
     if (isLast) {
       pieces.push(
-        <span key={target} className="current">
+        <span key={target} className="path-crumb last">
           {part}
         </span>
       );
@@ -200,6 +214,7 @@ export function Breadcrumb({ fsPath }: { fsPath: string }) {
         <a
           key={target}
           href="#"
+          className="path-crumb"
           onClick={(e) => {
             e.preventDefault();
             navigate(target);
@@ -214,15 +229,6 @@ export function Breadcrumb({ fsPath }: { fsPath: string }) {
   return (
     <>
       <div className="crumbs">
-        <a
-          href="#"
-          onClick={(e) => {
-            e.preventDefault();
-            navigate("/");
-          }}
-        >
-          /
-        </a>
         {pieces}
         <RevealButton fsPath={fsPath} />
       </div>

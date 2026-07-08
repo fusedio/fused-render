@@ -322,10 +322,14 @@ def _history(file: str, session_id: str) -> dict:
     Resolved ONLY at the target file's own project dir — with copied files
     the same session id exists in several project dirs with divergent
     content, and a glob would render some other copy's conversation while
-    resume continues this one's."""
+    resume continues this one's. Migrates first (same as `start`) so a moved
+    file's saved session shows its turns immediately, without waiting for the
+    user to send a message."""
     if not session_id or "/" in session_id:
         return {"turns": []}
-    path = os.path.join(PROJECTS, _munge(os.path.dirname(os.path.abspath(file))),
+    file = os.path.abspath(file)
+    _migrate_session(file, session_id)
+    path = os.path.join(PROJECTS, _munge(os.path.dirname(file)),
                         session_id + ".jsonl")
     if not os.path.isfile(path):
         return {"turns": []}
@@ -363,6 +367,10 @@ def _history(file: str, session_id: str) -> dict:
 
 def _cancel(run_id: str) -> dict:
     run_dir = os.path.join(RUNS, run_id)
+    # Same guard as _poll: run_id is joined into a path and drives a kill,
+    # so reject anything that could resolve outside the runs dir.
+    if "/" in run_id or run_id.startswith(".") or not os.path.isdir(run_dir):
+        return {"cancelled": run_id}
     try:
         pid = int(open(os.path.join(run_dir, "pid")).read())
         os.killpg(pid, signal.SIGTERM)  # start_new_session=True -> pid is pgid

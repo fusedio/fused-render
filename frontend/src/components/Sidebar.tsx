@@ -20,8 +20,31 @@ import {
   getArmedBookmark,
 } from "../lib/bookmarks";
 import type { Bookmark, BookmarkFolder } from "../lib/bookmarks";
-import { useUrlVersion, useBookmarksVersion, notifyBookmarksChanged } from "../lib/hooks";
+import { useUrlVersion, useBookmarksVersion, useSearchFuzzyVersion, notifyBookmarksChanged } from "../lib/hooks";
 import type { Config } from "../lib/api";
+import { fuzzyMatch, substringMatch, highlightSegments, isFuzzyEnabled, setFuzzyEnabled } from "../lib/fuzzy";
+
+// The fs path a bookmark targets, decoded from its /view/ url (same rule as
+// the hover card). Used for search matching and the tooltip.
+function bookmarkFsPath(url: string): string {
+  const qIdx = url.indexOf("?");
+  const pathname = qIdx !== -1 ? url.slice(0, qIdx) : url;
+  return pathname.startsWith(VIEW_PREFIX)
+    ? "/" + pathname.slice(VIEW_PREFIX.length).split("/").map(decodeURIComponent).join("/")
+    : pathname;
+}
+
+function renderHighlight(text: string, positions: number[]) {
+  return highlightSegments(text, positions).map((seg, i) =>
+    seg.match ? (
+      <mark key={i} className="search-mark">
+        {seg.text}
+      </mark>
+    ) : (
+      <span key={i}>{seg.text}</span>
+    )
+  );
+}
 
 // Folder shape drawn inline so it inherits currentColor — an emoji folder
 // ignores the theme and looks heavy at this size.
@@ -35,16 +58,9 @@ const FOLDER_ICON = (
 // vanilla shell (raw URLSearchParams on the saved search — bookmark
 // tooltips predate the `_layout` grammar; parity over cleverness).
 function TooltipContent({ bookmark }: { bookmark: Bookmark }) {
-  let pathname = bookmark.url;
-  let search = "";
   const qIdx = bookmark.url.indexOf("?");
-  if (qIdx !== -1) {
-    pathname = bookmark.url.slice(0, qIdx);
-    search = bookmark.url.slice(qIdx);
-  }
-  const fsPath = pathname.startsWith(VIEW_PREFIX)
-    ? "/" + pathname.slice(VIEW_PREFIX.length).split("/").map(decodeURIComponent).join("/")
-    : pathname;
+  const search = qIdx !== -1 ? bookmark.url.slice(qIdx) : "";
+  const fsPath = bookmarkFsPath(bookmark.url);
 
   const params = [...new URLSearchParams(search)];
   return (
@@ -129,6 +145,7 @@ interface BookmarkRowProps {
   child?: boolean;
   parentId?: string;
   isRenaming: boolean;
+  namePositions?: number[]; // search-match highlight positions in b.name
   onNameClick: (e: React.MouseEvent<HTMLAnchorElement>) => void;
   onRename: (e: React.MouseEvent<HTMLButtonElement>) => void;
   onDelete: (e: React.MouseEvent<HTMLButtonElement>) => void;
@@ -141,7 +158,7 @@ interface BookmarkRowProps {
 }
 
 // Template for a bookmark row (top-level or, with child=true, inside a folder).
-function BookmarkRow({ b, child, parentId, isRenaming, onNameClick, onRename, onDelete, onCommitRename, onCancelRename, onMouseEnter, onMouseLeave, registerRef, dragProps }: BookmarkRowProps) {
+function BookmarkRow({ b, child, parentId, isRenaming, namePositions, onNameClick, onRename, onDelete, onCommitRename, onCancelRename, onMouseEnter, onMouseLeave, registerRef, dragProps }: BookmarkRowProps) {
   return (
     <div
       className={"bookmark-row" + (child ? " child-row" : "") + (b.url === currentUrl() ? " active" : "")}
@@ -158,7 +175,7 @@ function BookmarkRow({ b, child, parentId, isRenaming, onNameClick, onRename, on
         <RenameInput initialName={b.name} onCommit={onCommitRename} onCancel={onCancelRename} />
       ) : (
         <a className="bookmark-name" href={b.url} draggable={false} onClick={onNameClick}>
-          {b.name}
+          {namePositions && namePositions.length ? renderHighlight(b.name, namePositions) : b.name}
         </a>
       )}
       <span className="bookmark-actions">
@@ -235,8 +252,11 @@ export default function Sidebar({ config }: SidebarProps) {
   // of the store it renders).
   useUrlVersion();
   useBookmarksVersion();
+  useSearchFuzzyVersion();
+  const fuzzyOn = isFuzzyEnabled();
 
   const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [bmQuery, setBmQuery] = useState("");
   const [hover, setHover] = useState<HoverState | null>(null);
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   // id -> row DOM node, for imperative drag-class toggling (mirrors the
@@ -251,6 +271,41 @@ export default function Sidebar({ config }: SidebarProps) {
   const items = loadBookmarks(); // top-level items: bookmarks and folders
   const folderById = new Map<string, BookmarkFolder>(items.filter(isFolder).map((f) => [f.id, f]));
   const topOrder = items.map((it) => it.id); // top-level display order
+
+  // Bookmark search: a non-empty query flattens the tree to matching rows.
+  // Matches a bookmark on its name OR target path; a folder-name match pulls in
+  // all of that folder's children. Highlight positions come from the name match
+  // (a path-only or folder-name hit shows the name unhighlighted).
+  const bq = bmQuery.trim();
+  const bmSearching = bq !== "";
+  const matched: { b: Bookmark; namePositions: number[] }[] = [];
+  const matcher = fuzzyOn ? fuzzyMatch : substringMatch;
+  if (bmSearching) {
+    for (const it of items) {
+      if (isFolder(it)) {
+        const folderHit = matcher(bq, it.name) !== null;
+        for (const c of it.children) {
+          const nameM = matcher(bq, c.name);
+          const pathHit = matcher(bq, bookmarkFsPath(c.url)) !== null;
+          if (folderHit || nameM || pathHit) matched.push({ b: c, namePositions: nameM ? nameM.positions : [] });
+        }
+      } else {
+        const nameM = matcher(bq, it.name);
+        const pathHit = matcher(bq, bookmarkFsPath(it.url)) !== null;
+        if (nameM || pathHit) matched.push({ b: it, namePositions: nameM ? nameM.positions : [] });
+      }
+    }
+  }
+
+  // Rows in search results are not reorderable; a no-op drag keeps the shared
+  // BookmarkRow contract without letting a filtered view mutate the store order.
+  const noDrag: DragProps = {
+    onDragStart: (e) => e.preventDefault(),
+    onDragOver: () => {},
+    onDragLeave: () => {},
+    onDrop: () => {},
+    onDragEnd: () => {},
+  };
 
   // Position the tooltip after its content has rendered, same timing as the
   // vanilla code reading tooltipEl.offsetHeight right after setting innerHTML.
@@ -533,8 +588,55 @@ export default function Sidebar({ config }: SidebarProps) {
         {items.length === 0 ? (
           <div className="sidebar-empty">No bookmarks yet</div>
         ) : (
-          items.map((it) => {
-            if (isFolder(it)) {
+          <>
+            <div className="bookmark-search">
+              <input
+                type="search"
+                className="bookmark-search-input"
+                placeholder="Search bookmarks…"
+                value={bmQuery}
+                onChange={(e) => setBmQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    setBmQuery("");
+                    e.currentTarget.blur();
+                  }
+                }}
+              />
+              <button
+                className={"search-fuzzy-toggle bookmark-search-fuzzy-toggle" + (fuzzyOn ? " active" : "")}
+                title="Fuzzy matching on/off"
+                onClick={() => setFuzzyEnabled(!fuzzyOn)}
+              >
+                fuzzy
+              </button>
+            </div>
+            {bmSearching ? (
+              matched.length ? (
+                matched.map(({ b, namePositions }) => (
+                  <BookmarkRow
+                    key={b.id}
+                    b={b}
+                    namePositions={namePositions}
+                    isRenaming={renamingId === b.id}
+                    registerRef={() => {}}
+                    onNameClick={(e) => onBookmarkNameClick(e, b)}
+                    onRename={(e) => onRenameBookmark(e, b.id)}
+                    onDelete={(e) => onDeleteBookmark(e, b.id)}
+                    onCommitRename={(value) => commitRename(b.id, value, b.name)}
+                    onCancelRename={cancelRename}
+                    onMouseEnter={(e) => onRowMouseEnter(e, b)}
+                    onMouseLeave={hideTooltip}
+                    dragProps={noDrag}
+                  />
+                ))
+              ) : (
+                <div className="sidebar-empty">No matches</div>
+              )
+            ) : (
+              items.map((it) => {
+                if (isFolder(it)) {
               const activeHint = it.collapsed && it.children.some((c) => c.url === currentUrl());
               return (
                 <React.Fragment key={it.id}>
@@ -594,8 +696,10 @@ export default function Sidebar({ config }: SidebarProps) {
                 onMouseLeave={hideTooltip}
                 dragProps={dragProps(it.id, false, false)}
               />
-            );
-          })
+                );
+              })
+            )}
+          </>
         )}
       </div>
       <div id="bookmark-tooltip" ref={tooltipRef} style={hover ? { display: "block" } : undefined}>

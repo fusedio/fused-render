@@ -81,7 +81,9 @@ fused_render/templates/claude/
   reads only `<munged(dirname(file))>/<id>.jsonl`. With *copied* files the
   same session id exists in several project dirs with divergent content —
   a glob could render some other copy's conversation while resume continues
-  this one's.
+  this one's. History also runs `_migrate_session` first (like `start`), so
+  opening a moved file's saved session shows its turns immediately instead
+  of appearing empty until the first new message triggers migration.
 - **Permissions:** spawned with `--permission-mode acceptEdits` so headless
   Claude can actually edit the file (non-interactive runs can't answer
   permission prompts; the default would stall/deny every Edit).
