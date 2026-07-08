@@ -329,6 +329,15 @@ export default function Panel({ config }: { config: Config }) {
       if (!gp) treeRef.current = only;
       else gp.children[gp.children.indexOf(parent)] = only;
     }
+    // A layout of one pane is pointless chrome — when the collapse leaves a
+    // lone leaf at the root, exit panel mode to a plain view of it (same
+    // semantics as closing the last pane above). Only close() can get here;
+    // a hand-typed single-segment `_layout` still renders as a single pane.
+    const root = treeRef.current!;
+    if (root.type === "leaf") {
+      navigateUrl(urlForFsPath(root.path, root.query));
+      return;
+    }
     setVersion((v) => v + 1);
   };
 
