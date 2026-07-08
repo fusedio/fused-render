@@ -214,6 +214,32 @@ def test_importable_fused_autodetects_via_shim_and_deploys(tmp_path, monkeypatch
     assert call["bundle_files"] == ["code", "manifest.json", "page.html"]
 
 
+def test_setup_cli_hint_names_the_bundle_wrapper_when_frozen(tmp_path, monkeypatch):
+    # In the packaged .app, one-time setup guidance must point at the bundle's
+    # own CLI wrapper (Contents/Resources/bin/fused — under Resources because
+    # a script in Contents/MacOS breaks the codesign bundle seal), resolved
+    # relative to sys.executable (Contents/MacOS/python).
+    macos = tmp_path / "FusedRender.app" / "Contents" / "MacOS"
+    wrapper = tmp_path / "FusedRender.app" / "Contents" / "Resources" / "bin" / "fused"
+    macos.mkdir(parents=True)
+    wrapper.parent.mkdir(parents=True)
+    (macos / "python").write_text("", encoding="utf-8")
+    wrapper.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    monkeypatch.setattr(deploy_mod.sys, "frozen", "macosx_app", raising=False)
+    monkeypatch.setattr(deploy_mod.sys, "executable", str(macos / "python"))
+    assert deploy_mod._setup_cli_hint() == str(wrapper)
+
+    # No wrapper on disk (an older .app build) -> fall back to plain "fused".
+    wrapper.unlink()
+    assert deploy_mod._setup_cli_hint() == "fused"
+
+
+def test_setup_cli_hint_is_plain_fused_when_not_frozen(tmp_path, monkeypatch):
+    monkeypatch.delattr(deploy_mod.sys, "frozen", raising=False)
+    assert deploy_mod._setup_cli_hint() == "fused"
+
+
 def test_external_override_scrubs_interpreter_env(tmp_path, monkeypatch):
     # A FUSED_RENDER_FUSED_BIN CLI is an external interpreter: the packaged
     # app's bundle-scoped PYTHONHOME/PYTHONPATH must not leak into it (they

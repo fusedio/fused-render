@@ -260,7 +260,7 @@ rm -rf "$SMOKE_DIR"
 # ---------------------------------------------------------------------------
 # 4c. Bundled fused CLI (SPEC §19 DP-3): the [fused] extra installed above
 #     ships in the bundle so Deploy works with zero setup. Two artifacts:
-#     - Contents/MacOS/fused: a terminal wrapper over the SAME baked-in CLI
+#     - Contents/Resources/bin/fused: a terminal wrapper over the SAME baked-in CLI
 #       (bundled python + fused_render/_fused_cli.py shim), for the one-time
 #       setup steps a modal can't do (`fused cloud setup`, `fused cloud
 #       login`, `fused env create`). The Deploy modal's guidance names this
@@ -272,24 +272,32 @@ rm -rf "$SMOKE_DIR"
 # ---------------------------------------------------------------------------
 
 echo "==> bundled fused CLI: terminal wrapper + smoke test"
+# The wrapper lives under Contents/Resources/bin, NOT Contents/MacOS:
+# everything in Contents/MacOS is nested CODE to codesign, and a shell
+# script there cannot carry a normal code signature - the bundle seal then
+# fails with "code object is not signed at all / In subcomponent: ...fused".
+# A script under Resources is sealed by the resource rules instead, which is
+# exactly what Apple's bundle format intends for helper scripts.
 PYLIB_NAME="$(basename "$APP_PYLIB")"   # e.g. python3.12
-cat > "$APP_DIR/Contents/MacOS/fused" <<WRAPPER
+WRAPPER_PATH="$APP_DIR/Contents/Resources/bin/fused"
+mkdir -p "$(dirname "$WRAPPER_PATH")"
+cat > "$WRAPPER_PATH" <<WRAPPER
 #!/bin/sh
 # fused CLI bundled with FusedRender.app - the same interpreter + fused
 # package the app's Deploy button uses (fused_render/_fused_cli.py, SPEC §19).
 # PYTHONHOME points the bundled python at its own runtime, exactly as the
 # app's own smoke tests / py2app launcher do.
-HERE="\$(cd "\$(dirname "\$0")" && pwd)"
-RES="\$HERE/../Resources"
-exec env PYTHONHOME="\$RES" "\$HERE/python" "\$RES/lib/${PYLIB_NAME}/fused_render/_fused_cli.py" "\$@"
+HERE="\$(cd "\$(dirname "\$0")" && pwd)"        # .../Contents/Resources/bin
+RES="\$(cd "\$HERE/.." && pwd)"                  # .../Contents/Resources
+exec env PYTHONHOME="\$RES" "\$RES/../MacOS/python" "\$RES/lib/${PYLIB_NAME}/fused_render/_fused_cli.py" "\$@"
 WRAPPER
-chmod +x "$APP_DIR/Contents/MacOS/fused"
+chmod +x "$WRAPPER_PATH"
 
 # --help imports the whole click command tree; `env list` (against an empty,
 # isolated store) exercises the environments stack (pydantic models et al).
 for probe in "--help" "share --help" "env list"; do
   if ! PROBE_OUT="$(env OPENFUSED_ENVS_FILE="$BUILD_DIR/smoke-envs.json" \
-      "$APP_DIR/Contents/MacOS/fused" $probe 2>&1)"; then
+      "$WRAPPER_PATH" $probe 2>&1)"; then
     echo "FATAL: bundled fused CLI failed on: fused $probe" >&2
     echo "$PROBE_OUT" >&2
     echo "(a py2app packaging gap? see setup_py2app.py's fused packages block)" >&2

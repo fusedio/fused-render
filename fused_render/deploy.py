@@ -611,12 +611,16 @@ def _setup_cli_hint() -> str:
 
     Inside the packaged macOS app (py2app sets sys.frozen) there is no
     user-facing `fused` on PATH — but the bundle ships a terminal wrapper
-    beside its interpreter (Contents/MacOS/fused, build_dmg.sh) that runs the
-    same baked-in CLI the Deploy button uses. Point guidance at it so a .app
-    user never needs a separate fused install.
+    that runs the same baked-in CLI the Deploy button uses, at
+    ``Contents/Resources/bin/fused`` (build_dmg.sh §4c — under Resources, not
+    MacOS, because a shell script in a code directory breaks the codesign
+    bundle seal). sys.executable is ``…/Contents/MacOS/python``; the wrapper
+    is resolved relative to it. Point guidance at it so a .app user never
+    needs a separate fused install.
     """
     if getattr(sys, "frozen", None) == "macosx_app":
-        wrapper = os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "fused")
+        contents = os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))
+        wrapper = os.path.join(contents, "Resources", "bin", "fused")
         if os.path.isfile(wrapper):
             return wrapper
     return "fused"

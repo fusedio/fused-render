@@ -624,11 +624,15 @@ the product gains network access.
   data-bearing deps — `setup_py2app.py`), so DP-3's autodetected source is
   always present and the install panel never appears in the .app (its sealed,
   notarized bundle could not be pip-installed into anyway). The build also
-  ships a terminal wrapper, `Contents/MacOS/fused` (bundled python + the
-  DP-3 shim), for the one-time interactive setup a modal can't do —
+  ships a terminal wrapper, `Contents/Resources/bin/fused` (bundled python +
+  the DP-3 shim), for the one-time interactive setup a modal can't do —
   `fused cloud setup` / `cloud login` / `env create` — and smoke-tests real
   CLI verbs through the shim before signing, so a py2app packaging gap fails
-  the build rather than the user's first deploy. `GET /api/deploy/config`
+  the build rather than the user's first deploy. The wrapper lives under
+  `Resources`, not `MacOS`: everything in a bundle's `MacOS/` is nested code
+  to codesign, and a shell script there cannot carry a code signature — the
+  bundle seal fails ("code object is not signed at all"); a script under
+  `Resources` is sealed by the resource rules instead. `GET /api/deploy/config`
   carries `setup_cli` — the wrapper's absolute path when frozen
   (`sys.frozen == "macosx_app"`), else `"fused"` — and the modal's
   no-envs guidance names it.

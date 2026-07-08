@@ -131,7 +131,7 @@ The modal handles the whole flow:
   extra into the server's environment (Python 3.11+ with pip), or names the
   manual command: `pip install "fused-render[fused]"`. The packaged macOS app
   ships the CLI built in — no setup — plus a terminal wrapper at
-  `FusedRender.app/Contents/MacOS/fused` for the one-time
+  `FusedRender.app/Contents/Resources/bin/fused` for the one-time
   `fused cloud setup` / `fused env create` steps.
 - **Environment choice.** Deploy targets are the *hosted* environments from the
   fused CLI's own store (`~/.openfused/envs.json`): a managed `fused` env (the
