@@ -29,6 +29,7 @@ import {
   type EmbedLoc,
 } from "../lib/layout-codec";
 import type { Config } from "../lib/api";
+import { ShareIcon } from "../components/ShareIcon";
 
 // Panel mode lives under the page's own prefix (`/view/_panel` or
 // `/embed/_panel`), so entering/refreshing/exiting stays in the active mode.
@@ -208,6 +209,15 @@ function Pane({ node, ctx }: { node: LayoutLeaf; ctx: PaneCtx }) {
       <div className="panel-bar">
         <div className="panel-crumbs" ref={crumbsRef}>
           {crumbs}
+          {/* Inside the crumbs container so it hugs the last crumb instead of
+              being pushed to the bar's right edge by the flex:1 crumbs. */}
+          <button
+            className="panel-btn open-plain"
+            title="Open in a new tab"
+            onClick={() => window.open(urlForFsPath(loc.path, loc.query), "_blank")}
+          >
+            <ShareIcon size={14} />
+          </button>
         </div>
         <button className="panel-btn split-right" title="Split right" onClick={() => ctx.split(node.id, "row")}>
           {ICONS.splitRight}

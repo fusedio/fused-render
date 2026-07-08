@@ -938,6 +938,26 @@ body.embed .preview-browse-chip:hover {
   white-space: nowrap;
 }
 
+.panel-btn.open-plain {
+  margin-left: 3px;
+}
+
+.tab-open-plain {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  border-radius: 3px;
+  color: var(--fg-muted);
+}
+
+.tab-open-plain:hover {
+  color: var(--fg);
+  background: rgba(255, 255, 255, 0.08);
+}
+
 .tab-close {
   display: inline-flex;
   align-items: center;
