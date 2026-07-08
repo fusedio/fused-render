@@ -62,16 +62,18 @@ _RESERVED_NAMES = frozenset(
 # A `fused.<method>(` call whose first argument is a single- or double-quoted
 # string literal. Group 2 is the literal's contents. Calls that don't match this
 # (first arg is a variable/expression) are caught separately as dynamic-path errors.
+# `\s*` before the `(` tolerates `fused.runPython (...)` — valid JS a page author
+# could write, which must not silently vanish from export.
 _LITERAL_CALL = {
-    method: re.compile(r"fused\.%s\(\s*(['\"])(.*?)\1" % method)
+    method: re.compile(r"fused\.%s\s*\(\s*(['\"])(.*?)\1" % method)
     for method in ("runPython", "rawUrl", "readFile")
 }
 # Any `fused.<method>(` occurrence, literal or not — used to detect dynamic paths
 # (an occurrence not covered by the literal match above).
-_ANY_CALL = {method: re.compile(r"fused\.%s\(" % method) for method in _LITERAL_CALL}
+_ANY_CALL = {method: re.compile(r"fused\.%s\s*\(" % method) for method in _LITERAL_CALL}
 
 # Unsupported API surface: present in an exported page => hard error.
-_UNSUPPORTED = re.compile(r"fused\.(writeFile|stat)\(")
+_UNSUPPORTED = re.compile(r"fused\.(writeFile|stat)\s*\(")
 
 
 class ExportError(Exception):

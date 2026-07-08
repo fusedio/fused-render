@@ -45,6 +45,28 @@ def test_unsupported_api_is_an_error(tmp_path):
     assert sum("not supported on a hosted page" in e for e in plan.errors) == 2
 
 
+def test_space_before_call_parens_is_still_scanned(tmp_path):
+    # `fused.runPython (...)` is valid JS a page author could write — it must
+    # not silently vanish from the export (no bundle entry, no error either).
+    html = "<script>fused.runPython (\"./sine.py\", {});</script>"
+    _write(tmp_path, "sine.py", "def main():\n    return 1\n")
+    plan = plan_export(html, str(tmp_path))
+    assert not plan.errors
+    assert [e.path for e in plan.entrypoints] == ["./sine.py"]
+
+
+def test_space_before_call_parens_dynamic_path_still_an_error(tmp_path):
+    html = "<script>const p = './x.py'; fused.runPython (p, {});</script>"
+    plan = plan_export(html, str(tmp_path))
+    assert any("non-literal" in e for e in plan.errors)
+
+
+def test_space_before_call_parens_unsupported_api_still_an_error(tmp_path):
+    html = "<script>fused.writeFile ('./x.txt', 'hi');</script>"
+    plan = plan_export(html, str(tmp_path))
+    assert any("not supported on a hosted page" in e for e in plan.errors)
+
+
 def test_missing_target_is_an_error(tmp_path):
     html = "<script>fused.runPython('./missing.py', {});</script>"
     plan = plan_export(html, str(tmp_path))
