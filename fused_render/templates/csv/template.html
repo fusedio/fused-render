@@ -152,9 +152,6 @@
     nextBtn.addEventListener("click", () => {
       fused.params.set("offset", String(currentOffset() + LIMIT));
     });
-    fused.params.onChange(load);
-    load();
-
     // Annotation anchor resolver (AN-38): tells the annotate overlay that an
     // unresolved __fr_r<row>_c<col> cell id is merely on another PAGE — not
     // detached — and navigates there on reveal (offset change → reload).
@@ -176,6 +173,10 @@
     if (window.__fusedAnnotate) {
       window.__fusedAnnotate.registerAnchorResolver(window.__fusedAnnotateAnchorResolver);
     }
+
+    fused.params.onChange(load);
+    load();
+
   </script>
 </body>
 </html>

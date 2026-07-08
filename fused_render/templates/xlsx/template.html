@@ -186,9 +186,6 @@
       fused.params.set("offset", "0");
       fused.params.set("sheet", sheetSel.value);
     });
-    fused.params.onChange(load);
-    load();
-
     // Annotation anchor resolver (AN-38): an unresolved __fr_s<sheet>_r<row>_c<col>
     // cell id is on another page or sheet — not detached. reveal() switches
     // sheet and/or offset (param changes → reload) to bring the cell on screen.
@@ -228,6 +225,10 @@
     if (window.__fusedAnnotate) {
       window.__fusedAnnotate.registerAnchorResolver(window.__fusedAnnotateAnchorResolver);
     }
+
+    fused.params.onChange(load);
+    load();
+
   </script>
 </body>
 </html>
