@@ -27,12 +27,28 @@
   #status a {
     color: #E5FF44;
   }
+  /* Comment range marks (annotate mode) — same visual language as the code
+     editor's selection decorations. */
+  .__fa_sel {
+    background: color-mix(in srgb, #E5FF44 22%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, #E5FF44 55%, transparent);
+    cursor: pointer;
+  }
+  .__fa_sel_resolved {
+    background: color-mix(in srgb, #E5FF44 10%, transparent);
+    border-bottom: 1px dashed color-mix(in srgb, #E5FF44 30%, transparent);
+    cursor: pointer;
+  }
+  .__fa_sel_hover {
+    background: color-mix(in srgb, #E5FF44 38%, transparent);
+  }
 </style>
 </head>
 <body>
   <div id="root">Loading…</div>
   <script>
     const MAX_BYTES = 2 * 1024 * 1024;
+    const ANNOTATE = new URLSearchParams(location.search).get("_annotate") === "1";
 
     function escapeHtml(s) {
       return String(s)
@@ -40,6 +56,195 @@
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;");
+    }
+
+    // =========================================================================
+    // Annotate mode — selection-anchor adapter over a plain <pre> (AN-41).
+    // Same anchor schema as the code editor (SPEC AN-18/AN-21: selFrom/selTo
+    // as 1-based line + 0-based ch, quote ≤120, quote-first re-resolution);
+    // decorations are <span> wraps rebuilt from the raw text on every change.
+    // =========================================================================
+    let rawText = null;     // file contents once loaded
+    let lineStarts = null;  // absolute offset of each line start (0-based array)
+    let annCore = null;
+    let resolvedRanges = []; // [{from, to, id, resolved}] absolute offsets
+    let preEl = null;
+
+    function computeLineStarts(text) {
+      const starts = [0];
+      for (let i = 0; i < text.length; i++) if (text[i] === "\n") starts.push(i + 1);
+      return starts;
+    }
+
+    // {line (1-based), ch} -> absolute offset, clamped to the line; null when
+    // the line no longer exists (forces quote search / detach).
+    function posFromLineCh(lc) {
+      if (!lc || lc.line > lineStarts.length) return null;
+      const li = Math.max(1, lc.line) - 1;
+      const lineFrom = lineStarts[li];
+      const lineTo = li + 1 < lineStarts.length ? lineStarts[li + 1] - 1 : rawText.length;
+      return Math.min(lineFrom + Math.max(0, lc.ch), lineTo);
+    }
+
+    function lineChFromPos(pos) {
+      let li = 0;
+      while (li + 1 < lineStarts.length && lineStarts[li + 1] <= pos) li++;
+      return { line: li + 1, ch: pos - lineStarts[li] };
+    }
+
+    function quoteMatches(slice, quote) {
+      if (!quote) return false;
+      if (slice === quote) return true;
+      const n = Math.min(quote.length, slice.length);
+      return n > 0 && slice.slice(0, n) === quote.slice(0, n);
+    }
+
+    // Stored line/ch range whose slice still matches the quote → attached;
+    // else first indexOf(quote) → re-anchor; else null → detached (AN-21).
+    function resolveSel(c) {
+      const quote = c.quote || "";
+      const from = posFromLineCh(c.selFrom);
+      const to = posFromLineCh(c.selTo);
+      if (from != null && to != null && from < to) {
+        if (quoteMatches(rawText.slice(from, to), quote)) return { from, to };
+      }
+      if (quote) {
+        const idx = rawText.indexOf(quote);
+        if (idx !== -1) return { from: idx, to: idx + quote.length };
+      }
+      return null;
+    }
+
+    // Rebuild the <pre> with mark spans from current comment data. Boundary
+    // segmentation handles overlapping ranges (a segment under several
+    // comments carries the topmost id for click/hover).
+    function rebuildDecorations() {
+      if (!preEl || !annCore || rawText == null) return;
+      const ranges = [];
+      const detached = [];
+      for (const c of annCore.getComments()) {
+        if (!c.selFrom || !c.selTo) continue; // other-surface threads — foreign, not ours
+        const r = resolveSel(c);
+        if (r && r.from < r.to) {
+          ranges.push({ from: r.from, to: r.to, id: c.id, resolved: c.status === "resolved" });
+        } else {
+          detached.push(c.id);
+        }
+      }
+      resolvedRanges = ranges;
+      const bounds = new Set([0, rawText.length]);
+      for (const r of ranges) { bounds.add(r.from); bounds.add(r.to); }
+      const cuts = [...bounds].sort((a, b) => a - b);
+      let html = "";
+      for (let i = 0; i + 1 < cuts.length; i++) {
+        const a = cuts[i], b = cuts[i + 1];
+        const covering = ranges.filter((r) => r.from <= a && b <= r.to);
+        const piece = escapeHtml(rawText.slice(a, b));
+        if (covering.length) {
+          const top = covering[covering.length - 1];
+          html += `<span class="${top.resolved ? "__fa_sel_resolved" : "__fa_sel"}" data-fa-id="${escapeHtml(top.id)}">${piece}</span>`;
+        } else {
+          html += piece;
+        }
+      }
+      preEl.innerHTML = html;
+      annCore.setDetached(detached);
+    }
+
+    // Absolute text offset of a selection boundary: length of a range spanning
+    // from the start of <pre> to that point (span wrapping doesn't disturb it).
+    function offsetOfPoint(node, nodeOffset) {
+      const r = document.createRange();
+      r.selectNodeContents(preEl);
+      r.setEnd(node, nodeOffset);
+      return r.toString().length;
+    }
+
+    function openDraftForSelection() {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
+      const range = sel.getRangeAt(0);
+      if (!preEl.contains(range.startContainer) || !preEl.contains(range.endContainer)) return;
+      const from = offsetOfPoint(range.startContainer, range.startOffset);
+      const to = offsetOfPoint(range.endContainer, range.endOffset);
+      if (from >= to) return;
+      const anchorFields = {
+        selFrom: lineChFromPos(from),
+        selTo: lineChFromPos(to),
+        quote: rawText.slice(from, to).slice(0, 120),
+      };
+      const rect = range.getBoundingClientRect();
+      annCore.openDraftAt(rect.right + 4, rect.bottom + 4, anchorFields);
+    }
+
+    let hoveredFaId = null;
+    function setHoverId(id) {
+      if (id === hoveredFaId) return;
+      if (hoveredFaId != null) {
+        preEl.querySelectorAll(`[data-fa-id="${CSS.escape(hoveredFaId)}"]`)
+          .forEach((s) => s.classList.remove("__fa_sel_hover"));
+      }
+      hoveredFaId = id;
+      if (id != null) {
+        preEl.querySelectorAll(`[data-fa-id="${CSS.escape(id)}"]`)
+          .forEach((s) => s.classList.add("__fa_sel_hover"));
+      }
+    }
+
+    function onPreMouseUp(e) {
+      // Defer so the browser commits the selection before we read it.
+      setTimeout(() => {
+        const sel = window.getSelection();
+        if (sel && !sel.isCollapsed) {
+          openDraftForSelection();
+          return;
+        }
+        const span = e.target.closest && e.target.closest("[data-fa-id]");
+        if (span) annCore.openThread(span.getAttribute("data-fa-id"), e.clientX, e.clientY);
+      }, 0);
+    }
+
+    let annConnected = false; // init(core) and load() race; whichever finishes second connects
+    function connectAnnotate() {
+      if (annConnected || !annCore || !preEl) return;
+      annConnected = true;
+      preEl.addEventListener("mouseup", onPreMouseUp);
+      preEl.addEventListener("mousemove", (e) => {
+        const span = e.target.closest && e.target.closest("[data-fa-id]");
+        setHoverId(span ? span.getAttribute("data-fa-id") : null);
+      });
+      preEl.addEventListener("mouseleave", () => setHoverId(null));
+      rebuildDecorations();
+    }
+
+    if (ANNOTATE) {
+      let revealTimer = null;
+      const adapter = {
+        init(core) {
+          annCore = core;
+          core.onChange(rebuildDecorations);
+          connectAnnotate();
+        },
+        reveal(id) {
+          const span = preEl && preEl.querySelector(`[data-fa-id="${CSS.escape(id)}"]`);
+          if (!span) return false;
+          span.scrollIntoView({ block: "center", behavior: "smooth" });
+          setHoverId(id);
+          clearTimeout(revealTimer);
+          revealTimer = setTimeout(() => setHoverId(null), 1600);
+          return true;
+        },
+      };
+      if (window.__fusedAnnotate && window.__fusedAnnotate.registerAdapter) {
+        window.__fusedAnnotate.registerAdapter(adapter);
+      } else {
+        window.__fusedAnnotateAdapter = adapter;
+        window.addEventListener(
+          "fused-annotate:ready",
+          () => window.__fusedAnnotate && window.__fusedAnnotate.registerAdapter(adapter),
+          { once: true }
+        );
+      }
     }
 
     async function load() {
@@ -58,7 +263,11 @@
           return;
         }
         const text = await fused.readFile(file);
-        root.innerHTML = `<pre>${escapeHtml(text)}</pre>`;
+        rawText = String(text);
+        lineStarts = computeLineStarts(rawText);
+        root.innerHTML = `<pre>${escapeHtml(rawText)}</pre>`;
+        preEl = root.querySelector("pre");
+        if (ANNOTATE && annCore) connectAnnotate();
       } catch (err) {
         root.innerHTML = `<div id="status">Failed to load file: ${escapeHtml(err.message)}</div>`;
       }
