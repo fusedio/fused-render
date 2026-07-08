@@ -99,3 +99,37 @@ def test_put_overwrites(tmp_path):
     PUT(body={"path": str(f), "search": "a=1"}, x_fused="1")
     PUT(body={"path": str(f), "search": "a=2"}, x_fused="1")
     assert GET(path=str(f))["lastSession"]["search"] == "a=2"
+
+
+# --- LSN-3 _mode gate (server-side authority) -------------------------------
+
+
+def test_mode_only_does_not_start_session(tmp_path):
+    # _mode alone must not CREATE a lastSession.
+    f = _target(tmp_path)
+    r = PUT(body={"path": str(f), "search": "_mode=code"}, x_fused="1")
+    assert r == {"ok": True, "skipped": True}
+    assert GET(path=str(f)) == {"lastSession": None}
+
+
+def test_empty_query_does_not_start_session(tmp_path):
+    f = _target(tmp_path)
+    assert PUT(body={"path": str(f), "search": ""}, x_fused="1")["skipped"] is True
+    assert GET(path=str(f)) == {"lastSession": None}
+
+
+def test_mode_only_updates_existing_session(tmp_path):
+    # Once a session exists (started by a qualifying param), a later _mode-only
+    # query IS recorded so the file's last _mode is remembered.
+    f = _target(tmp_path)
+    PUT(body={"path": str(f), "search": "city=oslo"}, x_fused="1")
+    r = PUT(body={"path": str(f), "search": "_mode=map"}, x_fused="1")
+    assert r == {"ok": True}
+    assert GET(path=str(f))["lastSession"]["search"] == "_mode=map"
+
+
+def test_empty_query_does_not_clobber_existing_session(tmp_path):
+    f = _target(tmp_path)
+    PUT(body={"path": str(f), "search": "city=oslo"}, x_fused="1")
+    assert PUT(body={"path": str(f), "search": ""}, x_fused="1")["skipped"] is True
+    assert GET(path=str(f))["lastSession"]["search"] == "city=oslo"

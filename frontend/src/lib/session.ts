@@ -10,13 +10,6 @@ function stripQ(): string {
   return location.search.replace(/^\?/, "");
 }
 
-// A "qualifying" query has at least one key other than _mode. _mode-only or an
-// empty query never creates or updates a lastSession (LSN-3).
-function hasQualifyingParam(search: string): boolean {
-  for (const k of new URLSearchParams(search).keys()) if (k !== "_mode") return true;
-  return false;
-}
-
 // Restore-on-open (LSN-4/5/9). Returns "ready" once the restore decision is
 // made so the caller can hold the preview until the URL is settled (no param
 // flash). Non-empty query wins; embed panes and directories opt out.
@@ -49,15 +42,19 @@ export function useSessionRestore(fsPath: string, isDir: boolean): boolean {
   return ready;
 }
 
-// Track-on-change (LSN-3/10). Debounced fire-and-forget PUT whenever the shell
-// query carries a qualifying param. Embed panes and directories opt out.
+// Track-on-change (LSN-3/10). Debounced fire-and-forget PUT of the current
+// query. Empty queries are skipped here; the _mode-only-vs-qualifying gate
+// (LSN-3: _mode alone never STARTS a session but updates one once it exists)
+// lives server-side in _session_put, which is the authority — it reads the
+// sidecar to know whether a lastSession already exists. Embed panes and
+// directories opt out.
 export function useSessionTracking(fsPath: string, isDir: boolean): void {
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => {
     if (IS_EMBED || isDir) return;
     const maybeSave = () => {
       const search = stripQ();
-      if (!hasQualifyingParam(search)) return; // _mode-only / empty: no upsert
+      if (search === "") return; // nothing to record for a bare url
       window.clearTimeout(timer.current);
       timer.current = window.setTimeout(() => {
         void putSession(fsPath, search);

@@ -35,8 +35,20 @@ def test_create_writes_sidecar(tmp_path):
     assert len(hist) == 1
     e = hist[0]
     assert e["id"] == "bk-1"
-    assert e["url"] == _url_for(f) + "?a=1"
+    # Portable: the entry stores only the query string, never the absolute
+    # /view/<abs-path> url — the target file is the sidecar's owner.
+    assert e["search"] == "a=1"
+    assert "url" not in e
     assert e["recorded_at"] == e["updated_at"]
+
+
+def test_bare_url_stores_empty_search(tmp_path):
+    f = tmp_path / "sample.html"
+    f.write_text("<html></html>")
+    _post({"id": "bk-1", "name": "n", "url": _url_for(f)})  # no query
+    e = json.loads((tmp_path / "sample.html.json").read_text())["bookmarkHistory"][0]
+    assert e["search"] == ""
+    assert "url" not in e
 
 
 def test_preserves_existing_sessions(tmp_path):
@@ -61,7 +73,7 @@ def test_update_by_id(tmp_path):
     hist = json.loads((tmp_path / "sample.html.json").read_text())["bookmarkHistory"]
     assert len(hist) == 1
     e = hist[0]
-    assert e["url"] == _url_for(f) + "?a=2"
+    assert e["search"] == "a=2"
     assert e["recorded_at"] == first["recorded_at"]  # unchanged
     assert e["updated_at"] >= first["updated_at"]
 

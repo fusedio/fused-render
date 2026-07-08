@@ -22,6 +22,7 @@ import sys
 import tempfile
 import time
 import traceback
+from urllib.parse import parse_qsl
 
 from fastapi import Body, FastAPI, Header, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -137,6 +138,12 @@ def _read_sidecar(file: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _has_non_mode_param(search: str) -> bool:
+    # A "qualifying" query has at least one key other than _mode (mirrors the
+    # frontend hasQualifyingParam). keep_blank_values so "?city=" still counts.
+    return any(k != "_mode" for k, _ in parse_qsl(search, keep_blank_values=True))
+
+
 def _session_get(path: str):
     if not os.path.isfile(path):
         return _error(f"no such file: {path}", status=404)
@@ -159,6 +166,14 @@ def _session_put(body: dict, x_fused: str | None):
     # Read-merge-write the whole dict so claudeSessions / bookmarkHistory
     # survive alongside lastSession (see _read_sidecar comment).
     data = _read_sidecar(path)
+    # LSN-3 gate (authoritative, server-side): a _mode-only or empty query must
+    # not START a session, but once one exists we DO record _mode-only updates
+    # so the file's last _mode is remembered. Save when the query carries a
+    # non-_mode param, OR (query is non-empty AND a lastSession already exists).
+    # Empty query never clobbers an existing session down to "".
+    has_session = isinstance(data.get("lastSession"), dict)
+    if not (_has_non_mode_param(search) or (search != "" and has_session)):
+        return {"ok": True, "skipped": True}
     data["lastSession"] = {"search": search, "updated_at": time.time()}
     try:
         storage.write_json(_sidecar_path(path), data)

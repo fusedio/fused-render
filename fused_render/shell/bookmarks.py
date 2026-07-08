@@ -152,10 +152,16 @@ def post_bookmark_history(
     if fs_path is None:
         # Sentinel / directory-that-vanished / non-file url -> nothing to record.
         return {"recorded": False}
+    # Store only the portable query string, NOT the incoming url: the sidecar
+    # lives next to fs_path, so the target file is implicit (it is the sidecar's
+    # owner). Persisting the absolute /view/<abs-path> url would break every
+    # history entry the moment the file + its sidecar are moved together. The
+    # search reconstructs the bookmark relative to whatever file owns the
+    # sidecar. Empty search ("") is a bare bookmark of the file itself.
     entry = {
         "id": bid,
         "name": payload.get("name"),
-        "url": url,
+        "search": urlsplit(url).query,
         "created_at": payload.get("created_at"),
         "icon": payload.get("icon"),
     }
