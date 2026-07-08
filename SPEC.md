@@ -694,11 +694,12 @@ the product gains network access.
   `share list` → `share repoint <token>` (stable URL); revoked tombstone →
   `share recreate --same-token` then repoint (a failed repoint best-effort
   re-revokes, so a deliberately taken-down link never comes back silently live
-  with old content — and when that compensating revoke lands, a pointer that
-  stale-ly read "active" is persisted as revoked, so the preview dot never
-  advertises the now-dead link; when compensation fails, the last-known
-  pointer state stands and the raised error says a manual revoke may be
-  needed); token absent from the list entirely (e.g. after an
+  with old content; the pointer is then persisted to the TRUE resulting state
+  and the raised error names it — compensation succeeded → the link is down →
+  pointer `revoked`; compensation ALSO failed → the mount is live with its old
+  content → pointer `active` (so the dot matches reality) and the error names
+  the token for a manual `fused share revoke`); token absent from the list
+  entirely (e.g. after an
   `infra teardown`) → fresh `create`. Deploying to a **different** env always
   creates fresh there and repoints the pointer — the old env's mount stays
   live, and the modal says so inline.

@@ -57,11 +57,12 @@ async function getJson<T>(url: string): Promise<T> {
   return data as T;
 }
 
-async function putJson<T>(url: string, body: unknown): Promise<T> {
+// One mutating-request helper for both PUT and POST — they differ only in the
+// method. X-Fused forces a CORS preflight so a foreign page can't write blind
+// (the D3 guard the reveal/write/deploy endpoints require).
+async function mutateJson<T>(method: "PUT" | "POST", url: string, body: unknown): Promise<T> {
   const res = await fetch(url, {
-    method: "PUT",
-    // X-Fused forces a CORS preflight so a foreign page can't write blind,
-    // same D3 guard as the reveal/write POSTs.
+    method,
     headers: { "Content-Type": "application/json", "X-Fused": "1" },
     body: JSON.stringify(body),
   });
@@ -70,17 +71,8 @@ async function putJson<T>(url: string, body: unknown): Promise<T> {
   return data as T;
 }
 
-async function postJson<T>(url: string, body: unknown): Promise<T> {
-  const res = await fetch(url, {
-    method: "POST",
-    // Same X-Fused D3 guard as putJson above.
-    headers: { "Content-Type": "application/json", "X-Fused": "1" },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  return data as T;
-}
+const putJson = <T>(url: string, body: unknown) => mutateJson<T>("PUT", url, body);
+const postJson = <T>(url: string, body: unknown) => mutateJson<T>("POST", url, body);
 
 export function getConfig(): Promise<Config> {
   return getJson<Config>("/api/config");

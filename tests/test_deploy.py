@@ -435,6 +435,34 @@ def test_failed_revive_with_compensation_flips_a_stale_active_pointer(tmp_path, 
     assert h.pointer()["status"] == "revoked"
 
 
+def test_failed_revive_and_failed_compensation_persists_active_and_names_it(tmp_path, monkeypatch):
+    # recreate succeeds, repoint fails, AND the compensating revoke also fails:
+    # the mount is LIVE with old content. The pointer must read active (the dot
+    # must match reality — not the pre-deploy revoked state), and the error must
+    # name the token so the user can revoke manually.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
+    )
+    h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+
+    # Revoked tombstone; recreate ok; repoint + revoke both missing -> both fail.
+    h.set_scenario(
+        {
+            "list": [{"token": "abc123", "status": "revoked"}],
+            "recreate": {"token": "abc123", "status": "active"},
+        }
+    )
+    resp = h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    assert resp.status_code == 400
+    assert "abc123" in resp.json()["error"]
+    assert "LIVE" in resp.json()["error"] or "live" in resp.json()["error"]
+    verbs = [c["argv"][1] for c in h.calls()]
+    assert verbs == ["create", "list", "recreate", "repoint", "revoke"]
+    # The mount is live -> the pointer reflects active, not a stale revoked.
+    assert h.pointer()["status"] == "active"
+
+
 def test_redeploy_absent_mount_falls_back_to_fresh_create(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
     h.set_scenario(

@@ -616,29 +616,33 @@ def deploy_page(page: str, env_name: str) -> dict:
                 _run_share(env_name, ["recreate", token, "--same-token"])
                 try:
                     raw = _run_share(env_name, ["repoint", token, bundle])
-                except DeployError:
-                    # The revive succeeded but the publish didn't: best-effort
-                    # re-revoke so a deliberately taken-down link doesn't come
-                    # back silently live with its OLD content.
-                    compensated = False
+                except DeployError as repoint_err:
+                    # The revive (recreate) succeeded but the republish
+                    # (repoint) failed — so the mount is live again with its
+                    # OLD content. Best-effort take it back down, then persist
+                    # the TRUE resulting state and raise an error that names it
+                    # (the preview dot reads the pointer, so it must match
+                    # reality either way).
                     try:
                         _run_share(env_name, ["revoke", token])
-                        compensated = True
                     except DeployError:
-                        pass
-                    # When the compensating revoke landed, the mount is DOWN —
-                    # persist that on a pointer that (stale-ly) read "active"
-                    # (an out-of-band revoke this branch just discovered via
-                    # share list), or the preview dot keeps advertising a dead
-                    # link. When it did NOT land, the mount is live with its
-                    # old content and the last-known pointer state stands —
-                    # the raised error tells the user a manual revoke may be
-                    # needed.
-                    if compensated and same_env.get("status") != "revoked":
+                        # Couldn't take it down either: it is LIVE with previous
+                        # content. Persist active (not the pre-deploy state —
+                        # the dot would otherwise show it down while it serves)
+                        # and tell the user a manual revoke may be needed.
                         set_deployment(
-                            page,
-                            {**same_env, "status": "revoked", "updated_at": _now_iso()},
+                            page, {**same_env, "status": "active", "updated_at": _now_iso()}
                         )
+                        raise DeployError(
+                            f"redeploy could not publish new content and then could not take "
+                            f"the link down: mount {token!r} on {env_name!r} is LIVE with its "
+                            f"previous content. Revoke it (Deploy dialog, or `fused share revoke "
+                            f"{token}`) if that link must not stay up. Cause: {repoint_err}"
+                        ) from repoint_err
+                    # The compensating revoke landed — the link is down; reflect it.
+                    set_deployment(
+                        page, {**same_env, "status": "revoked", "updated_at": _now_iso()}
+                    )
                     raise
             else:  # absent — e.g. after an infra teardown; nothing to revive
                 raw = _run_share(env_name, ["create", bundle, "--public"])
