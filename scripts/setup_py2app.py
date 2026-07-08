@@ -29,6 +29,8 @@ import sys
 
 from setuptools import setup
 
+from fused_render._branch import branch_ref, branch_suffix
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR)
 
@@ -118,9 +120,9 @@ OPTIONS = {
     # (extension -> lib-dynload/*.so, never a bogus .py copy).
     "includes": ["_duckdb"],
     "plist": {
-        "CFBundleIdentifier": "io.fused.render",
-        "CFBundleName": "FusedRender",
-        "CFBundleDisplayName": "FusedRender",
+        "CFBundleIdentifier": "io.fused.render" + (f".{branch_ref()}" if branch_ref() else ""),
+        "CFBundleName": f"FusedRender{branch_suffix()}",
+        "CFBundleDisplayName": f"FusedRender{branch_suffix()}",
         "CFBundleShortVersionString": VERSION,
         "CFBundleVersion": VERSION,
         "LSMinimumSystemVersion": "11.0",
@@ -133,7 +135,7 @@ OPTIONS = {
 
 setup(
     app=APP,
-    name="FusedRender",
+    name=f"FusedRender{branch_suffix()}",
     version=VERSION,
     options={"py2app": OPTIONS},
     # py2app is already installed into the build venv directly (see

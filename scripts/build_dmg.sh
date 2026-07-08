@@ -21,7 +21,9 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_NAME="FusedRender"
+REF="$(PYTHONPATH="$REPO_ROOT" python3 -m fused_render._branch ref)"
+SUFFIX="$(PYTHONPATH="$REPO_ROOT" python3 -m fused_render._branch suffix)"
+APP_NAME="FusedRender${SUFFIX}"
 
 VERSION="$(python3 -c "
 import re
@@ -95,6 +97,7 @@ if [[ ! -x "$BUILD_VENV/bin/python" ]]; then
 fi
 
 echo "==> installing fused-render[bundled,app] + py2app + dmgbuild into the build venv"
+export FUSED_RENDER_BRANCH="$REF"
 "$BUILD_VENV/bin/pip" install --quiet --upgrade pip
 "$BUILD_VENV/bin/pip" install --quiet "${REPO_ROOT}[bundled,app]" py2app dmgbuild
 
