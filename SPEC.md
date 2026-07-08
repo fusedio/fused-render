@@ -580,8 +580,16 @@ the product gains network access.
 - **DP-2** The modal handles its states in order: the fused CLI missing → an
   install panel; no hosted env configured → guidance (`fused env create` /
   `fused cloud setup`, naming the envs file); else the form — env picker,
-  current-deployment card (status chip, URL with copy/open), Deploy/Redeploy,
-  Revoke, and the chosen env's share list (DP-13).
+  current-deployment card (status chip, URL with copy/open), a **"Will
+  publish" preview** (DP-2a), Deploy/Redeploy, Revoke, and the chosen env's
+  deployment list (DP-13).
+- **DP-2a** Before the click, the modal shows exactly what a deploy would
+  publish (`GET /api/deploy/preview` → `preview_deploy`, the same pure
+  `plan_export` scan the real export runs, resolved fresh, no files written):
+  the page plus each `runPython` target (and its served route name) and each
+  `rawUrl`/`readFile` asset. Export blockers come back in the same response
+  and **disable Deploy** with the full list — an unexportable page reads as
+  "fix these" up front, never as a failed deploy.
 
 ### 19.2 The fused CLI seam
 
@@ -696,13 +704,21 @@ the product gains network access.
   likewise never carried onto a *different* token (DP-11's fallback applies
   only while the token is unchanged).
 - **DP-13** `GET /api/deploy/shares?env=…` is the "what's deployed on this
-  env" view: every mount from `share list --all`, joined back to the local
-  page that deployed it via the pointer store (`page: null` for mounts this
-  machine doesn't track), local pages first, live before revoked.
+  env" view: every mount from `share list --all` — the modal titles it "All
+  deployments on <env>" and says so, since most rows are typically *other*
+  apps'/machines' mounts — joined back to the local page that deployed it via
+  the pointer store (`page: null`, rendered "not from this app"), local pages
+  first, live before revoked. `share list` returns no URLs on either backend;
+  each mount's URL is the pointer's recorded one, else **derived from the
+  env's base URL**: every mount on one env serves as `<base>/<token>`
+  (share-links.md §6), so any recorded absolute URL whose path ends in its
+  own token reveals the base for all the rest (`_serve_base_url`). With no
+  recorded link to derive from (e.g. only AWS deploys so far), URLs stay
+  null and the cell says why on hover.
 - **DP-14** Endpoints (`fused_render/deploy.py`, an APIRouter like
   shell/bookmarks): `GET /api/deploy/config`, `GET /api/deploy/status`,
-  `GET /api/deploy/shares`, `POST /api/deploy`, `POST /api/deploy/revoke`,
-  `POST /api/deploy/install`; the POSTs carry the `X-Fused` guard (D36). CLI
-  failures surface their last stderr line verbatim (click's `Error: ` prefix
-  stripped) — the fused CLI's messages already name the fix
-  (`fused cloud login`, `fused infra serve`, …).
+  `GET /api/deploy/preview`, `GET /api/deploy/shares`, `POST /api/deploy`,
+  `POST /api/deploy/revoke`, `POST /api/deploy/install`; the POSTs carry the
+  `X-Fused` guard (D36). CLI failures surface their last stderr line verbatim
+  (click's `Error: ` prefix stripped) — the fused CLI's messages already name
+  the fix (`fused cloud login`, `fused infra serve`, …).

@@ -578,8 +578,10 @@ def test_shares_joins_mounts_to_local_pages(tmp_path, monkeypatch):
     )
     h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
 
-    # Neither backend's `share list` carries a URL — ours comes back from the
-    # pointer; the foreign mount (CLI-created / another machine) has none.
+    # `share list` carries no URLs on either backend — ours comes back from
+    # the pointer, and the foreign mounts' are DERIVED from the env's base
+    # URL (every mount on an env serves under one base as <base>/<token>,
+    # share-links.md §6), which our recorded link reveals.
     h.set_scenario(
         {
             "list": [
@@ -599,7 +601,49 @@ def test_shares_joins_mounts_to_local_pages(tmp_path, monkeypatch):
         ("old111", None),
     ]
     assert mounts[0]["url"] == "https://serve.example/abc123"
-    assert mounts[1]["url"] is None
+    assert mounts[1]["url"] == "https://serve.example/zzz999"
+
+
+def test_shares_urls_stay_null_with_no_recorded_link_to_derive_from(tmp_path, monkeypatch):
+    # No pointer on this env carries an absolute URL (e.g. every deploy so far
+    # was AWS, which returns none) -> nothing to derive a base from; foreign
+    # mounts honestly show no URL rather than a guessed one.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario({"list": [{"token": "zzz999", "status": "active"}]})
+    resp = h.client.get("/api/deploy/shares", params={"env": "cloud"})
+    assert resp.json()["mounts"][0]["url"] is None
+
+
+# -- preview -------------------------------------------------------------------
+
+
+def test_preview_lists_what_would_be_published(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    resp = h.client.get("/api/deploy/preview", params={"path": str(h.page)})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["page"] == "view.html"
+    assert body["entrypoints"] == [{"path": "./sine.py", "name": "sine"}]
+    assert body["assets"] == []
+    assert body["errors"] == []
+    assert h.calls() == []  # a preview is a pure local scan — no CLI, no files
+
+
+def test_preview_reports_export_blockers(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    h.page.write_text(
+        "<html><body><script>fused.writeFile('/x', 'y');</script></body></html>",
+        encoding="utf-8",
+    )
+    body = h.client.get("/api/deploy/preview", params={"path": str(h.page)}).json()
+    assert len(body["errors"]) == 1
+    assert "writeFile" in body["errors"][0]
+
+
+def test_preview_rejects_non_html(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    resp = h.client.get("/api/deploy/preview", params={"path": str(tmp_path / "sine.py")})
+    assert resp.status_code == 400
 
 
 def test_shares_cli_failure_is_400(tmp_path, monkeypatch):

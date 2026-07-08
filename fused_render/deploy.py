@@ -62,7 +62,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
-from fused_render.export import ExportError, export_page
+from fused_render.export import ExportError, export_page, plan_export
 from fused_render.shell import storage
 
 router = APIRouter()
@@ -465,6 +465,33 @@ def _record_from(raw: dict, *, page: str, env_name: str, backend: str,
     }
 
 
+def preview_deploy(page: str) -> dict:
+    """What a deploy of `page` would publish, resolved fresh — no files written.
+
+    The modal shows this BEFORE the Deploy click (the flow app's
+    DeployPreview precedent): the page itself, each runPython target and the
+    route it becomes, each rawUrl/readFile asset — and any export blockers,
+    so an unexportable page reads as "fix these" up front instead of a failed
+    deploy. Same scan the real export runs (export.plan_export).
+    """
+    if not os.path.isfile(page):
+        raise DeployError(f"no such file: {page}")
+    if os.path.splitext(page)[1].lower() not in (".html", ".htm"):
+        raise DeployError(f"{page} is not an .html/.htm page")
+    try:
+        with open(page, "r", encoding="utf-8", errors="replace") as f:
+            html = f.read()
+    except OSError as e:
+        raise DeployError(f"cannot read {page}: {e}") from None
+    plan = plan_export(html, os.path.dirname(os.path.abspath(page)))
+    return {
+        "page": os.path.basename(page),
+        "entrypoints": [{"path": e.path, "name": e.name} for e in plan.entrypoints],
+        "assets": [{"path": a.path, "name": a.name} for a in plan.assets],
+        "errors": plan.errors,
+    }
+
+
 def deploy_page(page: str, env_name: str) -> dict:
     """Export `page` to a temp bundle and publish it on `env_name`; returns the
     stored deployment record (token, URL when the backend returned one).
@@ -567,17 +594,39 @@ def deployment_status(page: str, reconcile: bool) -> dict:
     return {"deployment": pointer, "reconciled": True, "live": live}
 
 
+def _serve_base_url(env_name: str) -> str | None:
+    """The env's serving-plane base URL, derived from any stored pointer.
+
+    `share list` never returns URLs (either backend) — but every mount on one
+    env is served under one base as ``<base>/<token>`` (the fused repo's
+    spec/serve/share-links.md §6), so a single recorded absolute URL whose
+    path ends in its own token yields the base for every other token on that
+    env. Best-effort: None when no such pointer exists yet.
+    """
+    for record in _load_store().values():
+        if not isinstance(record, dict) or record.get("env") != env_name:
+            continue
+        url, token = record.get("url"), record.get("token")
+        if isinstance(url, str) and isinstance(token, str) and token:
+            trimmed = url.rstrip("/")
+            if trimmed.endswith("/" + token):
+                return trimmed[: -len(token)]
+    return None
+
+
 def list_shares(env_name: str) -> dict:
     """Every mount on `env_name` (`share list --all`), joined back to local
     pages via the pointer store — the "which of my files is deployed" view.
-    A mount with no matching pointer (CLI-created, another machine) has
-    page=null; neither backend's list carries a URL, so the pointer's
-    last-known one is used when available."""
+    A mount with no matching pointer (another app/machine, or the CLI) has
+    page=null. `share list` carries no URLs, so each mount's URL is the
+    pointer's recorded one, else derived from the env's base URL
+    (_serve_base_url) when a recorded link reveals it."""
     mounts = _list_mounts(env_name)
     by_token: dict[str, dict] = {}
     for page, record in _load_store().items():
         if isinstance(record, dict) and record.get("env") == env_name and record.get("token"):
             by_token[record["token"]] = {"page": page, "record": record}
+    base = _serve_base_url(env_name)
 
     out = []
     for m in mounts:
@@ -588,6 +637,8 @@ def list_shares(env_name: str) -> dict:
         url = m.get("url")
         if not isinstance(url, str) or not url:
             url = hit["record"].get("url") if hit else None
+        if (not isinstance(url, str) or not url) and base:
+            url = base + token
         out.append(
             {
                 "token": token,
@@ -636,6 +687,16 @@ def api_deploy_status(path: str, reconcile: str = "0"):
     if not os.path.isabs(path):
         return _error("'path' must be an absolute filesystem path")
     return deployment_status(path, reconcile == "1")
+
+
+@router.get("/api/deploy/preview")
+def api_deploy_preview(path: str):
+    if not os.path.isabs(path):
+        return _error("'path' must be an absolute filesystem path")
+    try:
+        return preview_deploy(path)
+    except DeployError as e:
+        return _error(str(e))
 
 
 @router.get("/api/deploy/shares")

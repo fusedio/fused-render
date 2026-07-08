@@ -1668,3 +1668,41 @@ body.embed .preview-browse-chip:hover {
   opacity: 0.4;
   cursor: default;
 }
+
+/* Busy/disabled primary keeps readable dark-on-accent contrast: the generic
+   button:disabled opacity darkened the accent under it into near-black-on-
+   black while "Deploying…" showed. Slight desaturation signals inactive
+   instead. */
+.deploy-body .deploy-primary:disabled {
+  opacity: 1;
+  background: var(--accent);
+  color: #10131a;
+  filter: saturate(0.45) brightness(0.85);
+}
+
+.deploy-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 7px;
+  vertical-align: -1px;
+  border: 2px solid rgba(16, 19, 26, 0.35);
+  border-top-color: #10131a;
+  border-radius: 50%;
+  animation: deploy-spin 0.8s linear infinite;
+}
+
+@keyframes deploy-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* "Will publish:" preview — the page + each bundled runPython/rawUrl target
+   as compact chips. */
+.deploy-preview {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}

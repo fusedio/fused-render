@@ -177,13 +177,25 @@ export interface DeployStatusResult {
 }
 
 // One mount from `fused share list` on an env, joined back to the local page
-// that deployed it (null for mounts this machine doesn't track).
+// that deployed it (null for mounts this app doesn't track). `share list`
+// itself carries no URLs; url is the pointer's recorded link, else derived
+// from the env's base URL when a recorded link reveals it, else null.
 export interface ShareMount {
   token: string;
   status: string;
   type: string | null;
   url: string | null;
   page: string | null;
+}
+
+// What deploying a page would publish, resolved fresh from on-disk state —
+// shown BEFORE the Deploy click. Non-empty `errors` means the page cannot be
+// exported as-is (Deploy would fail with exactly these).
+export interface DeployPreview {
+  page: string;
+  entrypoints: { path: string; name: string }[];
+  assets: { path: string; name: string }[];
+  errors: string[];
 }
 
 export interface SharesResult {
@@ -199,6 +211,10 @@ export function getDeployStatus(fsPath: string, reconcile: boolean): Promise<Dep
   const url =
     "/api/deploy/status?path=" + encodeURIComponent(fsPath) + (reconcile ? "&reconcile=1" : "");
   return getJson<DeployStatusResult>(url);
+}
+
+export function getDeployPreview(fsPath: string): Promise<DeployPreview> {
+  return getJson<DeployPreview>("/api/deploy/preview?path=" + encodeURIComponent(fsPath));
 }
 
 export function deployPage(fsPath: string, env: string): Promise<Deployment> {
