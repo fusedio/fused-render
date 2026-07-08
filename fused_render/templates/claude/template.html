@@ -37,6 +37,21 @@
     flex-shrink: 0;
   }
   #banner .star { color: var(--orange); }
+  #banner { display: flex; align-items: flex-start; gap: 10px; }
+  #banner .banner-main { flex: 1; min-width: 0; }
+  #back {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--dim);
+    font: inherit;
+    font-size: 12px;
+    padding: 2px 8px;
+    cursor: pointer;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+  #back:hover { color: var(--fg); border-color: #4a4e57; }
   #banner .title { font-weight: bold; }
   #banner .sub { color: var(--dim); }
   .beta {
@@ -299,8 +314,11 @@
 <body class="home">
   <!-- chat view -->
   <div id="banner">
-    <span class="star">✻</span> <span class="title">Claude Code</span><span class="beta">Beta</span><br>
-    <span class="sub" id="banner-sub"></span>
+    <button id="back" type="button" aria-label="Back to home">← back</button>
+    <div class="banner-main">
+      <span class="star">✻</span> <span class="title">Claude Code</span><span class="beta">Beta</span><br>
+      <span class="sub" id="banner-sub"></span>
+    </div>
   </div>
   <div id="log"></div>
   <div id="attachments-chat"></div>
@@ -407,6 +425,21 @@ function showSession() {
   sessionEl.textContent = id ? id.slice(0, 8) : "";
 }
 showSession();
+
+// Back to home: clear the session param so a reload lands on the landing page,
+// wipe the visible transcript, and rebuild the session list (it may have grown).
+document.getElementById("back").onclick = () => {
+  if (sending) return;  // mid-turn back would orphan the streaming run's UI
+  fused.params.set("session_id", "");
+  showSession();
+  log.innerHTML = "";
+  document.body.classList.add("home");
+  const recentlist = document.getElementById("recentlist");
+  recentlist.innerHTML = "";
+  document.getElementById("recent").style.display = "";
+  loadRecent();
+  homebox.focus();
+};
 
 function enterChat() {
   document.body.classList.remove("home");
