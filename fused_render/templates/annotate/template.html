@@ -110,6 +110,7 @@
   <div id="bar">
     <span>Annotating</span>
     <select id="viewsel" title="Which view to annotate"></select>
+    <span id="budgetnote" style="color:#ffb64d"></span>
     <span style="margin-left:auto">comments live in the URL — share it to share the review</span>
   </div>
   <div id="main">
@@ -199,7 +200,15 @@
             resolved: t.status === "resolved" || undefined,
             anchorPath: typeof t.anchorPath === "string" ? t.anchorPath : undefined,
             anchorId: typeof t.anchorId === "string" ? t.anchorId : undefined,
-            view: typeof t.mode === "string" ? t.mode : undefined,
+            // Unstamped legacy threads infer their view from anchor shape
+            // (selection ↔ editor, everything else ↔ preview) — leaving view
+            // unset would resolve them against WHATEVER view is framed.
+            view:
+              typeof t.mode === "string"
+                ? t.mode
+                : t.selFrom && t.selTo
+                  ? "code"
+                  : "_render",
           };
         });
       } catch (e) {
@@ -218,7 +227,27 @@
         return [];
       }
     }
+    // The URL is the store, so it has a budget (~6 KB, matching the removed
+    // overlay): over it, evict oldest RESOLVED threads first — open comments
+    // are never dropped silently; if still over, keep the write (a long URL
+    // beats lost data) and say so in the bar.
+    const BUDGET = 6000;
     function save(arr) {
+      let dropped = 0;
+      while (JSON.stringify(arr).length > BUDGET) {
+        const resolved = arr.filter((c) => c.resolved);
+        if (!resolved.length) break;
+        const oldest = resolved.reduce((a, b) => (a.createdAt <= b.createdAt ? a : b));
+        arr = arr.filter((c) => c.id !== oldest.id);
+        dropped++;
+      }
+      const over = JSON.stringify(arr).length > BUDGET;
+      const note = document.getElementById("budgetnote");
+      note.textContent = dropped
+        ? `${dropped} oldest resolved comment${dropped === 1 ? "" : "s"} removed — URL size limit`
+        : over
+          ? "comment list exceeds the URL budget — resolve or delete some"
+          : "";
       // Always a string — the runtime's set() rejects non-strings (there is
       // no delete API), so an emptied list persists as "[]".
       fused.params.set("comments", JSON.stringify(arr));
