@@ -133,6 +133,14 @@ body {
   flex: 0 0 auto;
   color: var(--fg-muted);
   font-size: 11px;
+  cursor: pointer;
+  width: 14px;
+  text-align: center;
+}
+
+/* Custom emoji icons render at natural color, slightly larger than the star. */
+.bookmark-glyph.custom-icon {
+  font-size: 12px;
 }
 
 .bookmark-row.active .bookmark-glyph {
@@ -317,6 +325,99 @@ a.bookmark-name::after {
   border: 1px solid var(--accent);
   border-radius: 4px;
   padding: 2px 6px;
+}
+
+/* Icon picker popover (Notion-style): search + Remove header, categorized
+   emoji grid. Fixed-position; the component keeps it on-screen. */
+.icon-picker {
+  position: fixed;
+  z-index: 1001;
+  width: 264px;
+  background: #202329;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  padding: 8px;
+}
+
+.icon-picker-head {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.icon-picker-search {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-size: 12px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+.icon-picker-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.icon-picker-remove {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 11.5px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 4px 8px;
+}
+
+.icon-picker-remove:hover {
+  color: var(--fg);
+  background: var(--bg);
+}
+
+.icon-picker-body {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.icon-picker-cat {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+  padding: 6px 4px 3px;
+}
+
+.icon-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+}
+
+.icon-picker-cell {
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  padding: 5px 0;
+  text-align: center;
+}
+
+.icon-picker-cell:hover {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.icon-picker-empty {
+  color: var(--fg-muted);
+  font-size: 12px;
+  padding: 10px 4px;
 }
 
 /* Main column */

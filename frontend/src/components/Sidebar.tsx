@@ -18,7 +18,9 @@ import {
   armBookmark,
   disarmBookmark,
   getArmedBookmark,
+  setBookmarkIcon,
 } from "../lib/bookmarks";
+import IconPicker from "./IconPicker";
 import type { Bookmark, BookmarkFolder } from "../lib/bookmarks";
 import { useUrlVersion, useBookmarksVersion, useSearchFuzzyVersion, notifyBookmarksChanged } from "../lib/hooks";
 import type { Config } from "../lib/api";
@@ -153,12 +155,13 @@ interface BookmarkRowProps {
   onCancelRename: () => void;
   onMouseEnter: (e: React.MouseEvent<HTMLDivElement>) => void;
   onMouseLeave: () => void;
+  onGlyphClick: (e: React.MouseEvent<HTMLSpanElement>) => void;
   registerRef: (el: HTMLDivElement | null) => void;
   dragProps: DragProps;
 }
 
 // Template for a bookmark row (top-level or, with child=true, inside a folder).
-function BookmarkRow({ b, child, parentId, isRenaming, namePositions, onNameClick, onRename, onDelete, onCommitRename, onCancelRename, onMouseEnter, onMouseLeave, registerRef, dragProps }: BookmarkRowProps) {
+function BookmarkRow({ b, child, parentId, isRenaming, namePositions, onNameClick, onRename, onDelete, onCommitRename, onCancelRename, onMouseEnter, onMouseLeave, onGlyphClick, registerRef, dragProps }: BookmarkRowProps) {
   return (
     <div
       className={"bookmark-row" + (child ? " child-row" : "") + (b.url === currentUrl() ? " active" : "")}
@@ -170,7 +173,13 @@ function BookmarkRow({ b, child, parentId, isRenaming, namePositions, onNameClic
       onMouseLeave={onMouseLeave}
       {...dragProps}
     >
-      <span className="bookmark-glyph">★</span>
+      <span
+        className={"bookmark-glyph" + (b.icon ? " custom-icon" : "")}
+        title="Change icon"
+        onClick={onGlyphClick}
+      >
+        {b.icon ?? "★"}
+      </span>
       {isRenaming ? (
         <RenameInput initialName={b.name} onCommit={onCommitRename} onCancel={onCancelRename} />
       ) : (
@@ -258,6 +267,10 @@ export default function Sidebar({ config }: SidebarProps) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [bmQuery, setBmQuery] = useState("");
   const [hover, setHover] = useState<HoverState | null>(null);
+  // Icon picker: which bookmark's glyph was clicked + where to anchor it.
+  const [iconPicker, setIconPicker] = useState<{ id: string; top: number; left: number } | null>(
+    null
+  );
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   // id -> row DOM node, for imperative drag-class toggling (mirrors the
   // vanilla module's querySelectorAll(".bookmark-row") sweep on dragend).
@@ -365,6 +378,20 @@ export default function Sidebar({ config }: SidebarProps) {
     if (renamingId === b.id) return;
     const rect = e.currentTarget.getBoundingClientRect();
     setHover({ bookmark: b, rect: { top: rect.top, right: rect.right } });
+  };
+
+  const onBookmarkGlyphClick = (e: React.MouseEvent<HTMLSpanElement>, id: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    hideTooltip();
+    const rect = e.currentTarget.getBoundingClientRect();
+    setIconPicker((cur) => (cur?.id === id ? null : { id, top: rect.top, left: rect.left }));
+  };
+
+  const onPickIcon = (icon: string | null) => {
+    if (iconPicker) setBookmarkIcon(iconPicker.id, icon);
+    setIconPicker(null);
+    notifyBookmarksChanged();
   };
 
   const commitRename = (id: string, value: string, fallbackName: string) => {
@@ -628,6 +655,7 @@ export default function Sidebar({ config }: SidebarProps) {
                     onCancelRename={cancelRename}
                     onMouseEnter={(e) => onRowMouseEnter(e, b)}
                     onMouseLeave={hideTooltip}
+                    onGlyphClick={(e) => onBookmarkGlyphClick(e, b.id)}
                     dragProps={noDrag}
                   />
                 ))
@@ -673,6 +701,7 @@ export default function Sidebar({ config }: SidebarProps) {
                           onCancelRename={cancelRename}
                           onMouseEnter={(e) => onRowMouseEnter(e, c)}
                           onMouseLeave={hideTooltip}
+                          onGlyphClick={(e) => onBookmarkGlyphClick(e, c.id)}
                           dragProps={dragProps(c.id, false, true)}
                         />
                       ))}
@@ -694,6 +723,7 @@ export default function Sidebar({ config }: SidebarProps) {
                 onCancelRename={cancelRename}
                 onMouseEnter={(e) => onRowMouseEnter(e, it)}
                 onMouseLeave={hideTooltip}
+                onGlyphClick={(e) => onBookmarkGlyphClick(e, it.id)}
                 dragProps={dragProps(it.id, false, false)}
               />
                 );
@@ -705,6 +735,14 @@ export default function Sidebar({ config }: SidebarProps) {
       <div id="bookmark-tooltip" ref={tooltipRef} style={hover ? { display: "block" } : undefined}>
         {hover && <TooltipContent bookmark={hover.bookmark} />}
       </div>
+      {iconPicker && (
+        <IconPicker
+          anchor={iconPicker}
+          onPick={(icon) => onPickIcon(icon)}
+          onRemove={() => onPickIcon(null)}
+          onClose={() => setIconPicker(null)}
+        />
+      )}
     </nav>
   );
 }
