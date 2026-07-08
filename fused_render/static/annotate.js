@@ -2013,6 +2013,11 @@
               revealResolved(t, nowEl);
             } else if (Date.now() < deadline) {
               requestAnimationFrame(waitFor);
+            } else {
+              // Navigation didn't surface the anchor (e.g. a PDF page beyond
+              // the render cap) — say so instead of silently doing nothing.
+              const off = offpageInfo(t);
+              showToast("Couldn't jump to " + ((off && off.label) || "this comment's location"));
             }
           })();
         })
@@ -2178,8 +2183,15 @@
     if (openPopover && openPopover.kind === "thread") {
       const t = findThread(openPopover.threadId);
       const el = t ? resolveElement(t) : null;
-      if (el) {
-        const p = pinPoint(t, el);
+      // Text threads glue to their RANGE end (where the pin is), not the
+      // container element's point (AN-42).
+      const p =
+        t && textRanges.has(t.id)
+          ? textRangePoint(textRanges.get(t.id))
+          : el
+            ? pinPoint(t, el)
+            : null;
+      if (p) {
         const cx = p.x - window.scrollX;
         const cy = p.y - window.scrollY;
         openPopover.clientX = cx;

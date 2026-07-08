@@ -85,6 +85,7 @@
         const pdf = await pdfjs.getDocument({ data }).promise;
         numPages = pdf.numPages;
         const shown = Math.min(pdf.numPages, MAX_PAGES);
+        shownPages = shown;
         bar.textContent =
           pdf.numPages > MAX_PAGES
             ? `${name} — showing ${shown} of ${pdf.numPages} pages`
@@ -120,8 +121,11 @@
 
     // Annotation anchor resolver (AN-38/AN-40): labels page anchors in the
     // comments sidebar ("page 3") and covers the render-cap edge — a comment
-    // on page 101+ of a capped document is recognized, not "detached".
+    // on page 101+ of a capped document is recognized, not "detached". Its
+    // canvas is never created though, so reveal can't reach it: the label says
+    // so, and the overlay's reveal timeout toasts instead of silently failing.
     let numPages = 0; // set after load; 0 = unknown, accept any page
+    let shownPages = 0; // rendered canvases (<= numPages, MAX_PAGES cap)
     const PAGE_ID = /^__fr_page_(\d+)$/;
     window.__fusedAnnotateAnchorResolver = {
       match(id) {
@@ -129,7 +133,8 @@
         if (!m) return null;
         const n = parseInt(m[1], 10);
         if (numPages && n > numPages) return null; // page truly gone
-        return { label: "page " + n };
+        const capped = shownPages && n > shownPages;
+        return { label: "page " + n + (capped ? " · not rendered" : "") };
       },
       reveal(id) {
         const el = document.getElementById(id);
