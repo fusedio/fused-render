@@ -123,6 +123,7 @@
       wrap.innerHTML = `<div id="status">Loading…</div>`;
       if (!file) {
         wrap.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
+        totalRows = 0; // unknown — resolver must not classify with a stale count
         return;
       }
       try {
@@ -136,6 +137,7 @@
       } catch (err) {
         if (seq !== loadSeq) return;
         wrap.innerHTML = `<div id="status" class="error"><strong>${escapeHtml(err.type || "Error")}</strong>: ${escapeHtml(err.message || "")}</div>`;
+        totalRows = 0; // unknown — resolver must not classify with a stale count
       }
     }
 

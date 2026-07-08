@@ -155,6 +155,7 @@
       wrap.innerHTML = `<div id="status">Loading…</div>`;
       if (!file) {
         wrap.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
+        resetResolverState(); // unknown — resolver must not classify with stale counts
         return;
       }
       try {
@@ -169,6 +170,7 @@
       } catch (err) {
         if (seq !== loadSeq) return;
         wrap.innerHTML = `<div id="status" class="error"><strong>${escapeHtml(err.type || "Error")}</strong>: ${escapeHtml(err.message || "")}</div>`;
+        resetResolverState(); // unknown — resolver must not classify with stale counts
       }
     }
 
@@ -192,7 +194,13 @@
     // sheet and/or offset (param changes → reload) to bring the cell on screen.
     let sheetsCache = [];
     let activeSheetIdx = 0;
-    const totalRowsBySheet = {}; // honest counts per visited sheet
+    let totalRowsBySheet = {}; // honest counts per visited sheet
+    // After a failed load nothing about the workbook is trustworthy — clear so
+    // match() answers "unknown, accept" instead of misclassifying anchors.
+    function resetResolverState() {
+      sheetsCache = [];
+      totalRowsBySheet = {};
+    }
     const CELL_ID = /^__fr_s(\d+)_r(\d+)_c(\d+)$/;
     window.__fusedAnnotateAnchorResolver = {
       match(id) {
