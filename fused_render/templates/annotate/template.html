@@ -62,6 +62,22 @@
     background: rgba(229, 255, 68, 0.08);
     border-radius: 3px;
   }
+  /* Point ghost: hover affordance on pixel surfaces (image/video/PDF page
+     canvas) — a small ring at the cursor instead of a whole-element box, so
+     "this comment lands on a POINT" is legible before the click. */
+  #ghost {
+    position: absolute; pointer-events: none; display: none;
+    width: 18px; height: 18px; border-radius: 50%;
+    border: 2px solid #E5FF44;
+    background: rgba(229, 255, 68, 0.18);
+    transform: translate(-50%, -50%);
+    box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.35);
+  }
+  #ghost::after {
+    content: ""; position: absolute; left: 50%; top: 50%;
+    width: 3px; height: 3px; border-radius: 50%;
+    background: #E5FF44; transform: translate(-50%, -50%);
+  }
   /* Composer popover, stage coordinates. */
   #pop {
     position: absolute; display: none; z-index: 10;
@@ -143,6 +159,7 @@
     <div id="stage">
       <iframe id="page"></iframe>
       <div id="hl"></div>
+      <div id="ghost"></div>
       <div id="pins"></div>
       <div id="pop">
         <textarea placeholder="Add a comment…"></textarea>
@@ -179,6 +196,7 @@
     const stage = document.getElementById("stage");
     const pinsEl = document.getElementById("pins");
     const hl = document.getElementById("hl");
+    const ghost = document.getElementById("ghost");
     const pop = document.getElementById("pop");
     const ta = pop.querySelector("textarea");
     const list = document.getElementById("list");
@@ -387,6 +405,22 @@
     }
     const isRangeAnchor = (c) => !!c.quote;
 
+    // Optional anchor-resolver convention: a paged framed view (table, PDF)
+    // may expose window.__fusedAnnotateAnchorResolver = { match(id) ->
+    // {label?} | null, reveal(id) } to classify element ids it owns but
+    // hasn't mounted (another table page, a canvas past the render cap) as
+    // navigable rather than detached. Same-origin, probed defensively — a
+    // view without one changes nothing.
+    function frameResolver() {
+      const w = frame.contentWindow;
+      return (w && w.__fusedAnnotateAnchorResolver) || null;
+    }
+    function resolverMatch(anchorId) {
+      const r = frameResolver();
+      if (!r || typeof r.match !== "function") return null;
+      try { return r.match(anchorId) || null; } catch (err) { return null; }
+    }
+
     function resolveAnchor(c, doc) {
       // Code-line anchors resolve through the gutter (virtualized editor).
       if (c.line != null && doc && isCmDoc(doc)) return cmResolve(doc, c.line);
@@ -576,6 +610,10 @@
         }
         const resolvedHere = el || free || range;
         const chip = (t) => `<span style="color:#9aa0a6;border:1px solid #2a2d33;border-radius:4px;padding:0 5px">${t}</span>`;
+        // Off-page, not broken: a paged view (table pagination, capped PDF)
+        // can vouch for an unresolved element id via its anchor resolver —
+        // the comment's row/page just isn't mounted right now.
+        const off = !resolvedHere && ownView && c.anchorId ? resolverMatch(c.anchorId) : null;
         const tag = !ownView
           ? chip(c.view === "_render" ? "preview" : c.view)
           : resolvedHere
@@ -584,7 +622,9 @@
               : ""
             : c.line != null && doc && isCmDoc(doc)
               ? chip("line " + c.line) // scrolled out of the virtualized viewport, not broken
-              : "<span style='color:#ff6b6b'>detached</span>";
+              : off
+                ? chip(off.label || "off-page")
+                : "<span style='color:#ff6b6b'>detached</span>";
         const card = document.createElement("div");
         card.className = "card" + (c.resolved ? " resolved" : "") + (c.id === activeId ? " active" : "");
         card.setAttribute("data-id", c.id);
@@ -671,6 +711,16 @@
             scroller.scrollTo({ top: Math.max(0, (c.line - 1) * lh - scroller.clientHeight / 2), behavior: "smooth" });
           }
           return;
+        }
+        // Off-page element anchor (paged table / capped PDF): the framed
+        // view's resolver navigates to it — the MutationObserver re-renders
+        // the pin once the right page mounts.
+        if (c.anchorId && resolverMatch(c.anchorId)) {
+          const r = frameResolver();
+          if (r && typeof r.reveal === "function") {
+            try { r.reveal(c.anchorId); } catch (err) {}
+            return;
+          }
         }
         // Free pin: center its stored document coords in the framed view.
         if (doc && typeof c.y === "number" && frame.contentWindow) {
@@ -787,7 +837,24 @@
       const INTERACTIVE = "button, a[href], input, select, textarea, summary, [role=button]";
       doc.addEventListener("mousemove", (e) => {
         const el = elementOf(e.target);
-        if (!el || el === doc.body || el === doc.documentElement || el.closest(INTERACTIVE)) { hl.style.display = "none"; return; }
+        if (!el || el === doc.body || el === doc.documentElement || el.closest(INTERACTIVE)) {
+          hl.style.display = "none";
+          ghost.style.display = "none";
+          return;
+        }
+        // Pixel surface (image/video/PDF page canvas): the comment targets a
+        // POINT, so a full-element box reads as "commenting on this whole
+        // thing" — show a point ghost at the cursor instead.
+        if (el.tagName === "VIDEO" || intrinsic(el)) {
+          const fr = frame.getBoundingClientRect();
+          const st = stage.getBoundingClientRect();
+          hl.style.display = "none";
+          ghost.style.display = "block";
+          ghost.style.left = fr.left - st.left + e.clientX + "px";
+          ghost.style.top = fr.top - st.top + e.clientY + "px";
+          return;
+        }
+        ghost.style.display = "none";
         const r = stageRect(el);
         hl.style.display = "block";
         hl.style.left = r.left + "px";

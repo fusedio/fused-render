@@ -83,6 +83,7 @@
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.arrayBuffer();
         const pdf = await pdfjs.getDocument({ data }).promise;
+        numPages = pdf.numPages;
         const shown = Math.min(pdf.numPages, MAX_PAGES);
         bar.textContent =
           pdf.numPages > MAX_PAGES
@@ -116,6 +117,26 @@
     }
 
     load();
+
+    // Annotation anchor resolver (probed by the annotate view on this frame's
+    // window): labels page anchors in the comments sidebar ("page 3") and
+    // covers the render-cap edge — a comment on page 101+ of a capped
+    // document is recognized, not "detached".
+    let numPages = 0; // set after load; 0 = unknown, accept any page
+    const PAGE_ID = /^__fr_page_(\d+)$/;
+    window.__fusedAnnotateAnchorResolver = {
+      match(id) {
+        const m = PAGE_ID.exec(id);
+        if (!m) return null;
+        const n = parseInt(m[1], 10);
+        if (numPages && n > numPages) return null; // page truly gone
+        return { label: "page " + n };
+      },
+      reveal(id) {
+        const el = document.getElementById(id);
+        if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
+      },
+    };
   </script>
 </body>
 </html>
