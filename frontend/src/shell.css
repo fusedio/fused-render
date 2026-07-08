@@ -399,12 +399,13 @@ body {
 
 /* Icon-only split buttons: same chrome as .star-btn, tighter padding so the
    14px glyph sits centred at the text buttons' height. The pair sits closer
-   together than the 8px crumb-actions gap, with extra room before Bookmark;
-   hover is a quiet light-grey lift, not the accent used by the text buttons. */
+   together than the 8px crumb-actions gap, with matching extra room on both
+   sides; hover is a quiet light-grey lift, not the accent of text buttons. */
 .star-btn.split-dir {
   display: inline-flex;
   align-items: center;
   padding: 4px 7px;
+  margin-left: 6px;
 }
 
 .star-btn.split-dir + .star-btn.split-dir {
