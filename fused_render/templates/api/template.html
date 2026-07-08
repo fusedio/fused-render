@@ -198,6 +198,26 @@
       }
 
       if (!info.function) {
+        if (info.static_result) {
+          // No main()/@fused.udf, but a static `result = ...` still runs
+          // under the fused engine (engine.py leaves it untouched) — offer
+          // Execute with no params rather than reporting "nothing to execute".
+          html += `<div class="card">
+            <div class="card-head">
+              <span class="badge">RUN</span>
+              <span class="fn-name">result = &hellip;</span>
+            </div>
+            <div class="card-body"><span style="color:#9aa0a6">Static script — assigns <code>result</code> directly, no parameters.</span></div>
+            <div id="runbar">
+              <button id="execute">Execute</button>
+              <span id="runmeta"></span>
+            </div>
+          </div>
+          <div id="responsewrap"></div>`;
+          page.innerHTML = html;
+          document.getElementById("execute").addEventListener("click", execute);
+          return;
+        }
         html += `<div id="status">No <code>main()</code> function in this file — nothing to execute. Define one to get a form here (see script contract, SPEC §5).</div>`;
         page.innerHTML = html;
         return;

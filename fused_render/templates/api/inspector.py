@@ -9,6 +9,12 @@ the function that will actually run: under the fused engine a function
 decorated with ``@fused.udf`` wins (any name; the **last** decorated one, the
 same pick the engine makes), else a bare ``main()``; under the builtin
 executor only ``main()`` is ever called, so only it is shown.
+
+A ``result = ...`` script (fused engine only — engine.py's compat bridge
+leaves it untouched when there's no ``main``/``@fused.udf``) has no function
+to describe, but it's still a runnable, parameterless entrypoint — flagged
+via ``static_result`` so the template can offer Execute instead of reporting
+"no main()".
 """
 import ast
 
@@ -43,6 +49,19 @@ def _find_entrypoint(tree, engine: str):
     if engine == "fused":
         return decorated or main_fn
     return main_fn
+
+
+def _has_module_result(tree) -> bool:
+    """Whether the module assigns ``result`` at the top level (the fused
+    engine's "leave it untouched" case — see build_code)."""
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            if any(isinstance(t, ast.Name) and t.id == "result" for t in node.targets):
+                return True
+        elif isinstance(node, ast.AnnAssign):
+            if isinstance(node.target, ast.Name) and node.target.id == "result":
+                return True
+    return False
 
 
 def _params(fn) -> list:
@@ -85,6 +104,7 @@ def main(file: str, engine: str = "builtin") -> dict:
         "module_docstring": ast.get_docstring(tree),
         "dependencies": [],
         "function": None,
+        "static_result": False,
     }
     if fn is not None:
         result["function"] = {
@@ -92,4 +112,6 @@ def main(file: str, engine: str = "builtin") -> dict:
             "docstring": ast.get_docstring(fn),
             "params": _params(fn),
         }
+    elif engine == "fused" and _has_module_result(tree):
+        result["static_result"] = True
     return result
