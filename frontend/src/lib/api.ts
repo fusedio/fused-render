@@ -70,6 +70,19 @@ async function putJson<T>(url: string, body: unknown): Promise<T> {
   return data as T;
 }
 
+async function postJson<T>(url: string, body: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method: "POST",
+    // X-Fused forces a CORS preflight so a foreign page can't write blind,
+    // same D3 guard as putJson.
+    headers: { "Content-Type": "application/json", "X-Fused": "1" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data as T;
+}
+
 export function getConfig(): Promise<Config> {
   return getJson<Config>("/api/config");
 }
@@ -107,4 +120,18 @@ export function getBookmarks(): Promise<BookmarksResult> {
 
 export function putBookmarks(bookmarks: unknown[]): Promise<void> {
   return putJson<unknown>("/api/bookmarks", bookmarks).then(() => undefined);
+}
+
+export interface BookmarkHistoryEntry {
+  id: string;
+  url: string;
+  name?: string;
+  created_at?: number;
+  icon?: string;
+}
+
+// Best-effort: append/refresh this bookmark in its target file's .html.json
+// sidecar (bookmarkHistory). Server no-ops for sentinel/dir-gone/non-file urls.
+export function recordBookmarkHistory(entry: BookmarkHistoryEntry): Promise<void> {
+  return postJson<unknown>("/api/bookmarks/history", entry).then(() => undefined);
 }

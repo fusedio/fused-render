@@ -73,8 +73,10 @@ def _load_sidecar(file: str) -> dict:
     try:
         with open(_sidecar_path(file), encoding="utf-8") as fh:
             data = json.load(fh)
-        if isinstance(data, dict) and isinstance(data.get("claudeSessions"), list):
-            return data
+        if isinstance(data, dict):
+            data.setdefault("claudeSessions", [])
+            if isinstance(data["claudeSessions"], list):
+                return data           # keeps bookmarkHistory + any other keys
     except (OSError, json.JSONDecodeError):
         pass
     return {"claudeSessions": []}
