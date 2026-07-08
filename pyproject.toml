@@ -10,6 +10,9 @@ requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
+    # /api/fs/events is a WebSocket (D74); plain uvicorn has no WS protocol
+    # implementation, so the ws library is a hard dependency, not an extra.
+    "websockets>=12",
     "pyarrow>=14",
 ]
 

@@ -29,7 +29,7 @@ fused-render/
 │       │   ├── Sidebar.tsx     # Home, bookmark rows, folders, hover card, rename, DnD
 │       │   └── Breadcrumb.tsx  # crumb bar + Bookmark/Update/split-icon buttons
 │       └── views/
-│           ├── Listing.tsx     # dir table + sortable columns + SSE dir watch
+│           ├── Listing.tsx     # dir table + sortable columns + WS dir watch
 │           ├── Preview.tsx     # two-way dispatch: templates non-empty → TemplatePreview, else fallback
 │           ├── Panel.tsx       # split-pane grid (M5): tree ops + pane bars
 │           └── Tabs.tsx        # tab mode (M6): tab bar + lazy keep-alive iframes
