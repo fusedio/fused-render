@@ -68,7 +68,7 @@
 </style>
 </head>
 <body>
-  <div id="bar">
+  <div id="bar" data-fa-passthrough>
     <button id="prev">&larr; Prev</button>
     <button id="next">Next &rarr;</button>
     <span id="rowcount"></span>
@@ -111,13 +111,18 @@
 
       const cols = data.columns;
       const head = `<tr>${cols.map((c) => `<th>${escapeHtml(c)}</th>`).join("")}</tr>`;
+      // Cell ids carry the ABSOLUTE data-row index, so an annotation anchored
+      // to a cell stays on that row across pagination (AN-38).
       const body = data.rows
-        .map((row) => `<tr>${cols.map((c) => `<td title="${escapeHtml(cell(row[c]))}">${escapeHtml(cell(row[c]))}</td>`).join("")}</tr>`)
+        .map((row, i) => `<tr>${cols.map((c, j) => `<td id="__fr_r${offset + i}_c${j}" title="${escapeHtml(cell(row[c]))}">${escapeHtml(cell(row[c]))}</td>`).join("")}</tr>`)
         .join("");
       wrap.innerHTML = `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+      totalRows = total;
     }
 
+    let loadSeq = 0; // stale-response guard: two rapid param changes race their reloads
     async function load() {
+      const seq = ++loadSeq;
       const file = fused.params.get("_file");
       const offset = currentOffset();
       wrap.innerHTML = `<div id="status">Loading…</div>`;
@@ -131,8 +136,10 @@
           offset: String(offset),
           limit: String(LIMIT),
         });
+        if (seq !== loadSeq) return; // a newer load superseded this one
         render(data, offset);
       } catch (err) {
+        if (seq !== loadSeq) return;
         wrap.innerHTML = `<div id="status" class="error"><strong>${escapeHtml(err.type || "Error")}</strong>: ${escapeHtml(err.message || "")}</div>`;
       }
     }
@@ -145,6 +152,28 @@
     });
     fused.params.onChange(load);
     load();
+
+    // Annotation anchor resolver (AN-38): tells the annotate overlay that an
+    // unresolved __fr_r<row>_c<col> cell id is merely on another PAGE — not
+    // detached — and navigates there on reveal (offset change → reload).
+    let totalRows = 0; // honest count from the last load, 0 before it
+    const CELL_ID = /^__fr_r(\d+)_c(\d+)$/;
+    window.__fusedAnnotateAnchorResolver = {
+      match(id) {
+        const m = CELL_ID.exec(id);
+        if (!m) return null;
+        const row = parseInt(m[1], 10);
+        if (totalRows && row >= totalRows) return null; // row truly gone → detached
+        return { label: "row " + (row + 1).toLocaleString() };
+      },
+      reveal(id) {
+        const m = CELL_ID.exec(id);
+        if (m) fused.params.set("offset", String(Math.floor(parseInt(m[1], 10) / LIMIT) * LIMIT));
+      },
+    };
+    if (window.__fusedAnnotate) {
+      window.__fusedAnnotate.registerAnchorResolver(window.__fusedAnnotateAnchorResolver);
+    }
   </script>
 </body>
 </html>

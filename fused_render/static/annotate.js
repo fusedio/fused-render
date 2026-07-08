@@ -318,6 +318,12 @@
   // ===========================================================================
 
   let adapter = null; // registered adapter, or null for element mode.
+  // Anchor resolver (AN-38): a lighter seam than a full adapter, for paged
+  // element-mode surfaces (tables). Element mode stays fully on; the resolver
+  // is only consulted when an anchorId doesn't resolve, to answer "is this
+  // anchor merely on another page (navigable), or truly gone (detached)?"
+  // Shape: { match(anchorId) -> {label?} | null, reveal(anchorId) -> Promise? }.
+  let anchorResolver = null;
   let coreReady = false; // true once start() has built + wired the core.
   let currentCore = null; // memoized core object handed to the adapter.
   const changeListeners = []; // adapter onChange() callbacks.
@@ -413,8 +419,18 @@
   // toggleSidebar is the SHELL's entry (AN-28): the preview header's Comments
   // button reaches into its same-origin iframe and calls it — the sidebar
   // toggle lives next to the Annotate toggle, not floating over page content.
+  // Registration entry for the AN-38 anchor resolver — same before/after-start
+  // contract as registerAdapter, but element mode stays wired (the resolver
+  // only reclassifies unresolved anchorIds and navigates to them).
+  function registerAnchorResolver(r) {
+    if (!r || anchorResolver === r) return;
+    anchorResolver = r;
+    if (coreReady) render(); // off-page threads may leave the tray now
+  }
+
   window.__fusedAnnotate = {
     registerAdapter: registerAdapter,
+    registerAnchorResolver: registerAnchorResolver,
     toggleSidebar: () => setSidebarOpen(!sidebarOpen),
   };
 
@@ -537,12 +553,27 @@
     return thread.selFrom && thread.selTo ? "code" : "preview";
   }
 
+  // Off-page (AN-38): the anchor doesn't resolve NOW, but the surface's
+  // resolver recognizes it and can navigate to it (paged table row). Returns
+  // the resolver's match info ({label?}) or null.
+  function offpageInfo(thread) {
+    if (!anchorResolver || !thread.anchorId) return null;
+    if (document.getElementById(thread.anchorId)) return null; // on-page — normal pin
+    try {
+      return anchorResolver.match(thread.anchorId) || null;
+    } catch (e) {
+      return null;
+    }
+  }
+
   // Is this thread anchored to something that no longer exists? (Detached →
   // tray, AN-14.) Free pins (x/y only) are never "detached". Foreign threads
-  // (AN-34) are filtered out before this is asked.
+  // (AN-34) are filtered out before this is asked. Off-page anchors (AN-38)
+  // are NOT detached — they're reachable, just not on the current page.
   function isDetached(thread) {
     if (!thread.anchorId && !thread.anchorPath) return false;
-    return resolveElement(thread) === null;
+    if (resolveElement(thread) !== null) return false;
+    return !offpageInfo(thread);
   }
 
   // ===========================================================================
@@ -987,7 +1018,7 @@
       return;
     }
     const el = e.target;
-    if (!el || insideOverlay(el) || el === document.body || el === document.documentElement) {
+    if (!el || insideOverlay(el) || isPassthrough(el) || el === document.body || el === document.documentElement) {
       hlEl().style.display = "none";
       hovered = null;
       return;
@@ -1002,12 +1033,20 @@
     hl.style.height = r.height + "px";
   }
 
+  // Template chrome opted out of annotation (AN-38): navigation controls
+  // (pagination bar, sheet selector) must keep WORKING in annotate mode —
+  // commenting on a Next button is never the intent, and swallowing it strands
+  // the user on page 1. Templates mark such containers data-fa-passthrough.
+  function isPassthrough(node) {
+    return !!(node && node.closest && node.closest("[data-fa-passthrough]"));
+  }
+
   // Capture-phase click: a click NOT inside our overlay is a page click → open a
   // draft (and suppress the page's own default, so links/buttons don't fire).
   // Clicks inside the overlay (pins, popover) fall through to their own
   // bubbling handlers.
   function onClickCapture(e) {
-    if (insideOverlay(e.target)) return;
+    if (insideOverlay(e.target) || isPassthrough(e.target)) return;
     e.preventDefault();
     e.stopPropagation();
     closePopover();
@@ -1017,9 +1056,9 @@
   // Interactive elements react before `click` fires — a range input moves its
   // thumb on mousedown, a button takes focus — so annotate mode must swallow
   // the whole pointer sequence at capture, not just the click. Overlay UI
-  // (pins, popovers, tray) keeps its events.
+  // (pins, popovers, tray) and passthrough chrome keep their events.
   function onPointerCapture(e) {
-    if (insideOverlay(e.target)) return;
+    if (insideOverlay(e.target) || isPassthrough(e.target)) return;
     e.preventDefault();
     e.stopPropagation();
   }
@@ -1374,6 +1413,9 @@
         continue;
       }
       const el = resolveElement(thread);
+      // Off-page (AN-38): reachable via the resolver but not on the current
+      // page — no pin, no tray; the sidebar lists it with a location tag.
+      if (!el && thread.anchorId && offpageInfo(thread)) continue;
       let x, y;
       if (el) {
         const p = pinPoint(thread, el); // iu/iv-aware for images (AN-25)
@@ -1515,13 +1557,16 @@
   // body instead — no header, so timestamps never duplicate).
   function cardTopHtml(thread) {
     const replies = thread.replies.length;
-    // Foreign threads (AN-34/AN-36) are tagged with the view they belong to —
+    // Foreign threads (AN-34/AN-36) are tagged with the view they belong to,
+    // off-page threads (AN-38) with where the resolver says they live —
     // "detached" is reserved for anchors that truly no longer resolve.
-    const tag = isForeign(thread)
-      ? foreignLabel(thread)
-      : detachedIds.has(thread.id)
-        ? "detached"
-        : "";
+    let tag = "";
+    if (isForeign(thread)) tag = foreignLabel(thread);
+    else if (detachedIds.has(thread.id)) tag = "detached";
+    else {
+      const off = offpageInfo(thread);
+      if (off) tag = off.label || "off page";
+    }
     return `
       <div class="__fa_card_top">
         <span class="__fa_carddot${thread.status === "resolved" ? " __fa_carddot_resolved" : ""}">${esc(pinGlyph(thread))}</span>
@@ -1592,6 +1637,26 @@
       return;
     }
     if (isDetached(t)) return; // tagged "detached" in the card; nowhere to go
+    // Off-page (AN-38): ask the surface to navigate (page flip / sheet
+    // switch), then wait for the anchor to appear — the page rebuild is
+    // async — and finish with the normal scroll + flash.
+    if (!resolveElement(t) && t.anchorId && offpageInfo(t)) {
+      Promise.resolve(anchorResolver.reveal(t.anchorId))
+        .then(() => {
+          const deadline = Date.now() + 3000;
+          (function waitFor() {
+            const nowEl = document.getElementById(t.anchorId);
+            if (nowEl) {
+              nowEl.scrollIntoView({ block: "center", behavior: "smooth" });
+              flashRect(nowEl);
+            } else if (Date.now() < deadline) {
+              requestAnimationFrame(waitFor);
+            }
+          })();
+        })
+        .catch(() => {});
+      return;
+    }
     const el = resolveElement(t);
     if (el) {
       el.scrollIntoView({ block: "center", behavior: "smooth" });
@@ -1672,6 +1737,8 @@
         // changed under us; do a full render to rebuild pins + tray.
         return render();
       }
+      // No pin slot for off-page threads either — mirror render() (AN-38).
+      if (!resolveElement(thread) && thread.anchorId && offpageInfo(thread)) continue;
       const pin = pins[i++];
       if (!pin) return render();
       const el = resolveElement(thread);
@@ -1896,6 +1963,10 @@
     // Pre-set global adapter fallback (AN-17): a page whose script ran before us
     // can stash its adapter on window.__fusedAnnotateAdapter.
     if (!adapter && window.__fusedAnnotateAdapter) adapter = window.__fusedAnnotateAdapter;
+    // Same pre-set fallback for the AN-38 anchor resolver.
+    if (!anchorResolver && window.__fusedAnnotateAnchorResolver) {
+      anchorResolver = window.__fusedAnnotateAnchorResolver;
+    }
 
     if (adapter) {
       initAdapter(); // adapter owns anchor visuals; element mode stays off.
