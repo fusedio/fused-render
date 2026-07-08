@@ -11,9 +11,11 @@ def _reset_cache():
 
 
 def test_sanitize_baseline():
-    assert _branch.sanitize("main") == "main"
-    assert _branch.sanitize("master") == "master"
+    assert _branch.sanitize("main") == ""
+    assert _branch.sanitize("master") == ""
     assert _branch.sanitize("") == ""
+    assert _branch.sanitize("HEAD") == ""
+    assert _branch.sanitize("head") == ""
 
 
 def test_sanitize_normalizes_and_truncates():
@@ -68,6 +70,26 @@ def test_resolve_all_absent(monkeypatch):
     monkeypatch.setattr(_branch, "_baked_ref", lambda: "")
     monkeypatch.setattr(_branch, "_git_ref", lambda: "")
     assert _branch._resolve_ref() == ""
+
+
+def test_resolve_git_main_is_baseline(monkeypatch):
+    monkeypatch.delenv("FUSED_RENDER_BRANCH", raising=False)
+    monkeypatch.setattr(_branch, "_baked_ref", lambda: "")
+    monkeypatch.setattr(_branch, "_git_ref", lambda: "main")
+    assert _branch._resolve_ref() == ""
+    _branch._CACHED_REF = None
+    assert _branch.branch_port() == 8765
+    assert _branch.branch_suffix() == ""
+
+
+def test_resolve_git_detached_head_is_baseline(monkeypatch):
+    monkeypatch.delenv("FUSED_RENDER_BRANCH", raising=False)
+    monkeypatch.setattr(_branch, "_baked_ref", lambda: "")
+    monkeypatch.setattr(_branch, "_git_ref", lambda: "HEAD")
+    assert _branch._resolve_ref() == ""
+    _branch._CACHED_REF = None
+    assert _branch.branch_port() == 8765
+    assert _branch.branch_suffix() == ""
 
 
 def test_branch_port_baseline():

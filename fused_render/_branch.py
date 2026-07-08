@@ -22,9 +22,9 @@ def sanitize(ref: str) -> str:
     """Lowercase, collapse non [a-z0-9] runs to single '-', trim, truncate."""
     if not ref:
         return ""
-    if ref in ("main", "master"):
-        return ref
     lowered = ref.lower()
+    if lowered in ("main", "master", "head"):
+        return ""
     collapsed = re.sub(r"[^a-z0-9]+", "-", lowered)
     trimmed = collapsed.strip("-")
     return trimmed[:_MAX_LEN].rstrip("-")
