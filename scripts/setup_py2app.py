@@ -136,6 +136,27 @@ OPTIONS = {
         # No LSUIElement (D34): regular app, Dock icon + menu bar item both.
         # Finder "Open with FusedRender" (SPEC DM-8):
         "CFBundleDocumentTypes": DOCUMENT_TYPES,
+        # macOS shows these strings in the TCC permission prompt when the app
+        # first reads a file under a protected folder (the app browses the
+        # whole filesystem by design, D2). Purpose strings don't change WHEN
+        # the prompt appears — the D72 in-process-reader split + Developer ID
+        # signing (D73) are what stop it from repeating — but a bare prompt
+        # with no reason reads as suspicious; these explain it.
+        "NSDesktopFolderUsageDescription": (
+            "FusedRender previews files you open from your Desktop."
+        ),
+        "NSDocumentsFolderUsageDescription": (
+            "FusedRender previews files you open from your Documents folder."
+        ),
+        "NSDownloadsFolderUsageDescription": (
+            "FusedRender previews files you open from your Downloads folder."
+        ),
+        "NSRemovableVolumesUsageDescription": (
+            "FusedRender previews files you open from removable volumes."
+        ),
+        "NSNetworkVolumesUsageDescription": (
+            "FusedRender previews files you open from network volumes."
+        ),
     },
 }
 

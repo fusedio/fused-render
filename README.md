@@ -47,8 +47,25 @@ bash scripts/build_dmg.sh
 ```
 
 Builds a standalone `FusedRender.app` via py2app and packages it as
-`dist/FusedRender-<version>.dmg`. The build is ad-hoc signed — testers
-right-click → Open on first launch.
+`dist/FusedRender-<version>.dmg`.
+
+**Signing is credential-driven** ([docs/signing.md](docs/signing.md)):
+
+- **No credentials (default):** ad-hoc signed — launches locally, testers
+  right-click → Open on first launch. Not distributable without Gatekeeper
+  warnings.
+- **Developer ID cert in your keychain:** auto-detected (or named via
+  `FUSED_RENDER_CODESIGN_IDENTITY`) and signed with the hardened runtime.
+  Distributable, and it also stops the repeated Downloads/Desktop/Documents
+  permission prompts (one stable Team ID lets macOS attribute the executor's
+  subprocess file access to the app).
+- **Signed + notarized + stapled:** additionally set
+  `FUSED_RENDER_NOTARY_PROFILE=<stored notarytool profile>`.
+
+```
+# distributable, signed + notarized:
+FUSED_RENDER_NOTARY_PROFILE=FUSED_RENDER_NOTARY bash scripts/build_dmg.sh
+```
 
 ## Run
 
