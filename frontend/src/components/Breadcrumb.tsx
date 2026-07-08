@@ -15,6 +15,7 @@ import {
 import { useUrlVersion, useBookmarksVersion, notifyBookmarksChanged } from "../lib/hooks";
 import { encodePaneSegment, splitShellSearch } from "../lib/layout-codec";
 import { panelUrl } from "../views/Panel";
+import { ShareIcon } from "./ShareIcon";
 
 // True when two query strings carry the same decoded `_layout` and the same
 // key/value multiset of remaining params, ignoring encoding and ordering
@@ -71,6 +72,32 @@ function useUpdateButton(urlVersion: number, bookmarksVersion: number): boolean 
 interface CrumbActionsProps {
   name: string;
   onSplit?: () => void;
+}
+
+// Browsers block file:// navigation from http pages, so revealing in the OS
+// file manager goes through the server (POST /api/fs/reveal). X-Fused forces
+// a CORS preflight so a foreign page can't fire this blind (D3 guard).
+function revealInFileManager(path: string): void {
+  fetch("/api/fs/reveal", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Fused": "1" },
+    body: JSON.stringify({ path }),
+  });
+}
+
+// Share glyph (arrow leaving a rounded box), sits at the end of the crumb
+// trail and reveals the current path in the OS file manager.
+function RevealButton({ fsPath }: { fsPath: string }) {
+  return (
+    <button
+      id="open-in-finder"
+      className="reveal-btn"
+      title="Open in Finder"
+      onClick={() => revealInFileManager(fsPath)}
+    >
+      <ShareIcon />
+    </button>
+  );
 }
 
 function CrumbActions({ name, onSplit }: CrumbActionsProps) {
@@ -189,6 +216,7 @@ export function Breadcrumb({ fsPath }: { fsPath: string }) {
           /
         </a>
         {pieces}
+        <RevealButton fsPath={fsPath} />
       </div>
       <CrumbActions name={basename(fsPath)} onSplit={() => enterPanel(fsPath)} />
     </>

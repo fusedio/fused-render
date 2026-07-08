@@ -357,6 +357,26 @@ body {
   padding: 2px 4px;
 }
 
+/* Share/export glyph at the end of the crumb trail (reveal in file manager). */
+.reveal-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 4px;
+  padding: 3px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.reveal-btn:hover {
+  background: var(--border);
+  color: var(--fg);
+}
+
 .crumb-actions {
   flex: 0 0 auto;
   display: flex;
@@ -916,6 +936,26 @@ body.embed .preview-browse-chip:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.panel-btn.open-plain {
+  margin-left: 3px;
+}
+
+.tab-open-plain {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  border-radius: 3px;
+  color: var(--fg-muted);
+}
+
+.tab-open-plain:hover {
+  color: var(--fg);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .tab-close {

@@ -17,6 +17,8 @@ import logging
 import mimetypes
 import os
 import stat as stat_mod
+import subprocess
+import sys
 import tempfile
 import time
 import traceback
@@ -534,6 +536,32 @@ def create_app(start_dir: str) -> FastAPI:
                     yield ": keepalive\n\n"
 
         return StreamingResponse(stream(), media_type="text/event-stream")
+
+    @app.post("/api/fs/reveal")
+    def api_fs_reveal(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+        # Open the path in the OS file manager (Finder / Explorer / xdg).
+        # Browsers block file:// navigation from http pages, so the breadcrumb's
+        # "Open in Finder" button goes through the server, which is local-only.
+        # A file is revealed selected inside its folder; a directory is opened.
+        guard = _require_fused(x_fused)
+        if guard is not None:
+            return guard
+
+        path = body.get("path")
+        if not path or not os.path.isabs(path):
+            return _error("'path' must be an absolute filesystem path")
+        if not os.path.exists(path):
+            return _error(f"no such path: {path}", status=404)
+
+        is_dir = os.path.isdir(path)
+        if sys.platform == "darwin":
+            cmd = ["open", path] if is_dir else ["open", "-R", path]
+        elif os.name == "nt":
+            cmd = ["explorer", path] if is_dir else ["explorer", "/select," + path]
+        else:
+            cmd = ["xdg-open", path if is_dir else os.path.dirname(path)]
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return JSONResponse({"ok": True})
 
     @app.post("/api/fs/write")
     def api_fs_write(body: dict = Body(...), x_fused: str | None = Header(default=None)):

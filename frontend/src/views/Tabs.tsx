@@ -31,6 +31,7 @@ import {
 } from "../lib/layout-codec";
 import type { Config } from "../lib/api";
 import type { Bookmark } from "../lib/bookmarks";
+import { ShareIcon } from "../components/ShareIcon";
 
 // Tab mode lives under the page's own prefix, like panel mode.
 const TAB_PATH = (IS_EMBED ? "/embed/" : "/view/") + "_tab";
@@ -254,6 +255,18 @@ export default function Tabs({ config }: { config: Config }) {
             onClick={() => activate(t.id)}
           >
             <span className="tab-label">{tabLabel(t)}</span>
+            <span
+              className="tab-open-plain"
+              title="Open in a new tab"
+              onClick={(e) => {
+                // Open this tab's live location as a plain (non-layout) view
+                // in a new browser tab; don't also activate the tab.
+                e.stopPropagation();
+                window.open(urlForFsPath(t.path, t.query), "_blank");
+              }}
+            >
+              <ShareIcon size={12} />
+            </span>
             <span
               className="tab-close"
               title="Close tab"
