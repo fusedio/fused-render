@@ -562,6 +562,29 @@ def revoke_deployment(page: str) -> dict:
     return record
 
 
+def revoke_mount(env_name: str, token: str) -> dict:
+    """`share revoke` a mount by token — the Preferences page's revoke, which
+    also covers mounts with no local pointer (deployed by the CLI, another
+    app, or another machine; the CLI's owner-binding still applies and its
+    refusal surfaces verbatim). Any local pointer recording this mount flips
+    to revoked so per-page state stays consistent."""
+    _run_share(env_name, ["revoke", token])
+    store = _load_store()
+    changed = False
+    for page, record in store.items():
+        if (
+            isinstance(record, dict)
+            and record.get("env") == env_name
+            and record.get("token") == token
+            and record.get("status") != "revoked"
+        ):
+            store[page] = {**record, "status": "revoked", "updated_at": _now_iso()}
+            changed = True
+    if changed:
+        storage.write_json(_store_path(), store)
+    return {"env": env_name, "token": token, "status": "revoked"}
+
+
 def deployment_status(page: str, reconcile: bool) -> dict:
     """The stored pointer; with reconcile=True its status is checked against
     `share list` (truth) so an out-of-band CLI revoke/recreate shows through.
@@ -731,9 +754,18 @@ def api_deploy_revoke(body: dict = Body(...), x_fused: str | None = Header(defau
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    # Two addressing modes: by page (the Deploy modal — the page's own
+    # pointer) or by env+token (the Preferences page's share list, which
+    # also covers mounts with no local pointer).
     page = body.get("page")
+    env_name, token = body.get("env"), body.get("token")
+    if isinstance(env_name, str) and env_name and isinstance(token, str) and token:
+        try:
+            return revoke_mount(env_name, token)
+        except DeployError as e:
+            return _error(str(e))
     if not page or not os.path.isabs(page):
-        return _error("'page' must be an absolute path to the .html page")
+        return _error("provide 'page' (absolute path) or 'env' + 'token'")
     try:
         return revoke_deployment(page)
     except DeployError as e:

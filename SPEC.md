@@ -722,3 +722,71 @@ the product gains network access.
   `X-Fused` guard (D36). CLI failures surface their last stderr line verbatim
   (click's `Error: ` prefix stripped) — the fused CLI's messages already name
   the fix (`fused cloud login`, `fused infra serve`, …).
+
+## 20. Preferences — Shell Settings Page (M12)
+
+Goal: one unobtrusive place for the shell's cross-cutting settings and
+housekeeping. Entry is a muted gear row pinned to the **sidebar's bottom-left**
+edge; it navigates to **`/view/_prefs`** — a shell-owned sentinel pathname like
+`_panel`/`_tab` (no `/embed` variant: settings chrome inside a pane makes no
+sense). Server state lives in `~/.fused-render/prefs.json` behind
+`shell/prefs.py` (the D75 shell-state pattern: storage helpers + an APIRouter;
+never imports server).
+
+### 20.1 Store & endpoints
+
+- **PF-1** `GET /api/prefs` → `{engine: {selected, effective, forced_by,
+  fused_available}, log: {path, dir}}`; `PUT /api/prefs {engine}` (X-Fused)
+  persists and returns the same shape. Unknown engine values → 400; the file
+  merges (future prefs are new keys, not new files).
+- **PF-2** The page is a thin client over existing backends everywhere else:
+  logs reveal via `POST /api/fs/reveal`, deployments via `GET
+  /api/deploy/config` + `GET /api/deploy/shares`, revocation via `POST
+  /api/deploy/revoke`, registry via `GET /api/templates/registry`.
+
+### 20.2 Execution engine switch
+
+- **PF-3** The persisted `engine` pref (`builtin` default — D70 stands, the
+  pref is the opt-in D69 anticipated; or `fused`) drives `/api/run` dispatch,
+  **read per request** so a switch applies to the next run with no restart
+  (the registries' CT-5 no-restart discipline). Selecting `fused` is
+  *effective* only while the fused local backend is importable
+  (`prefs.fused_engine_available`, probed per call — an install mid-session
+  shows through); otherwise execution degrades to builtin and the page says
+  so. The fused option is disabled with an install hint when unavailable.
+- **PF-4** `FUSED_RENDER_ENGINE` remains the **process-level override**: when
+  set it beats the pref entirely (`server._forced_engine` — validated at
+  startup, `=fused` still fails loudly when missing; unset returns None and
+  the pref rules). The page shows the switch locked with the variable's
+  value; a PUT still persists (applies once the override is removed).
+  `GET /api/config`'s `engine` reports the in-effect engine per request.
+
+### 20.3 Logs
+
+- **PF-5** The page names this process's log file (`logs.log_path`, from
+  `GET /api/prefs`) and "Open logs location" reveals it in the OS file
+  manager through the existing reveal endpoint — the web-UI twin of the
+  menu-bar app's "Open logs".
+
+### 20.4 Deployments
+
+- **PF-6** A per-env view of `fused share list` (the same joined
+  `/api/deploy/shares` data as the Deploy modal's list, same copy: rows with
+  a file name were deployed from this app) with a **Revoke** action per
+  non-revoked mount. Revocation is by **env + token** (`POST
+  /api/deploy/revoke {env, token}` → `deploy.revoke_mount`), so it also
+  covers mounts with no local pointer — the CLI's owner-binding still
+  applies and its refusal surfaces verbatim. Any local pointer recording the
+  revoked mount flips to revoked, keeping the page's Deploy button honest.
+
+### 20.5 Template registry view
+
+- **PF-7** `GET /api/templates/registry` returns the merged
+  extension→templates bindings from both registries (SPEC §16): one row per
+  pattern with its splice-expanded mode list (first = default), `disabled`
+  for `null` bindings, `source` (`builtin` / `user` / `user-override` — a
+  user key identical to a built-in key replaces its row), and per-entry
+  shape errors. **Read-only** — bindings are edited in the registry files;
+  the page names the user registry path. This is the table of bindings, not
+  a per-file resolver: distinct keys coexist and CT-3 specificity decides
+  per file. Read per request like every resolution (no restart).

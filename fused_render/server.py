@@ -29,35 +29,40 @@ from fastapi.staticfiles import StaticFiles
 
 from fused_render.deploy import router as deploy_router
 from fused_render.executor import run_python
+from fused_render.shell import prefs as shell_prefs
 from fused_render.shell.bookmarks import router as bookmarks_router
+from fused_render.shell.prefs import router as prefs_router
 from fused_render.shell.storage import home_dir
 
 logger = logging.getLogger(__name__)
 
 
-def _select_engine() -> str:
-    """Pick the /api/run engine for this process: "fused" or "builtin".
+def _forced_engine() -> str | None:
+    """The process-level engine override, or None when unset (D69/D70 + §20).
 
-    Availability-driven (D69), builtin-by-default (D70): unset/`builtin` never
-    touches the `fused` package even if it's importable; `auto` opts in to it
-    iff importable; `fused` demands it (a missing package is a startup error,
-    not a silent fallback). Logged either way — engine choice changes the code
-    contract, so it must never be silent.
+    FUSED_RENDER_ENGINE forces the /api/run engine for the whole process:
+    `builtin` never touches the `fused` package even if importable; `auto`
+    opts in to it iff importable; `fused` demands it (a missing package is a
+    startup error, not a silent fallback). **Unset returns None** — the
+    engine then follows the persisted preference (shell/prefs.py, default
+    builtin — D70 stands), re-read per request so the Preferences page's
+    switch applies without a restart. Logged either way — engine choice
+    changes the code contract, so it must never be silent.
     """
-    is_default = "FUSED_RENDER_ENGINE" not in os.environ
-    requested = os.environ.get("FUSED_RENDER_ENGINE", "builtin").strip().lower()
+    raw = os.environ.get("FUSED_RENDER_ENGINE")
+    if raw is None:
+        logger.info(
+            "execution engine: following the preference (~/.fused-render/prefs.json, "
+            "default builtin); FUSED_RENDER_ENGINE overrides it for this process"
+        )
+        return None
+    requested = raw.strip().lower()
     if requested not in ("auto", "fused", "builtin"):
         raise RuntimeError(
             f"FUSED_RENDER_ENGINE={requested!r} is not one of: auto, fused, builtin"
         )
     if requested == "builtin":
-        if is_default:
-            logger.info(
-                "execution engine: builtin (default; set FUSED_RENDER_ENGINE=auto or "
-                "=fused to opt in to the fused engine)"
-            )
-        else:
-            logger.info("execution engine: builtin (forced by FUSED_RENDER_ENGINE)")
+        logger.info("execution engine: builtin (forced by FUSED_RENDER_ENGINE)")
         return "builtin"
     try:
         from fused_render import engine as _engine
@@ -66,14 +71,14 @@ def _select_engine() -> str:
     except ImportError:
         ok = False
     if ok:
-        logger.info("execution engine: fused (local compute backend)")
+        logger.info("execution engine: fused (forced by FUSED_RENDER_ENGINE)")
         return "fused"
     if requested == "fused":
         raise RuntimeError(
             "FUSED_RENDER_ENGINE=fused but the `fused` package is not importable; "
             "install it (pip install 'fused-render[fused]') or unset the override"
         )
-    logger.info("execution engine: builtin (`fused` package not installed)")
+    logger.info("execution engine: builtin (FUSED_RENDER_ENGINE=auto, `fused` not installed)")
     return "builtin"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -358,7 +363,15 @@ def _templates_for(path: str, is_dir: bool):
 
 
 def create_app(start_dir: str) -> FastAPI:
-    engine_name = _select_engine()  # "fused" | "builtin" (D69/D70); raises on a bad override
+    # Engine (D69/D70 + SPEC §20): a set FUSED_RENDER_ENGINE forces the whole
+    # process (validated here — raises on a bad override); unset, each request
+    # follows the persisted preference so the Preferences page's switch
+    # applies without a restart.
+    forced_engine = _forced_engine()
+
+    def current_engine() -> str:
+        return forced_engine if forced_engine is not None else shell_prefs.effective_engine()
+
     app = FastAPI(title="fused-render")
 
     @app.exception_handler(Exception)
@@ -464,8 +477,9 @@ def create_app(start_dir: str) -> FastAPI:
         return FileResponse(shell_path)
 
     # Shell-specific state backends live in fused_render/shell/ (bookmarks,
-    # future user-config), kept out of this module's fs/render internals.
+    # prefs), kept out of this module's fs/render internals.
     app.include_router(bookmarks_router)
+    app.include_router(prefs_router)
     # Deploy (hosted publish through the fused CLI) — export + `fused share`
     # orchestration and the per-page deployment pointer store (deploy.py).
     app.include_router(deploy_router)
@@ -475,8 +489,55 @@ def create_app(start_dir: str) -> FastAPI:
         return {
             "start_dir": start_dir,
             "home": os.path.expanduser("~"),
-            # Which /api/run engine this process uses (D69): "fused" | "builtin".
-            "engine": engine_name,
+            # Which /api/run engine is in effect (D69/§20): "fused" | "builtin".
+            # Read per request — it can change under the Preferences switch.
+            "engine": current_engine(),
+        }
+
+    @app.get("/api/templates/registry")
+    def api_templates_registry():
+        # The merged extension→templates binding view for the Preferences page
+        # (SPEC §20): every key from both registries with its (splice-expanded)
+        # mode list. Read-only — bindings are edited in the registry files
+        # (SPEC §16); per-request reads keep it live like every resolution.
+        # A user key identical to a built-in key overrides it (one row, source
+        # "user-override"); distinct keys coexist and CT-3 specificity decides
+        # per file — this is the table of bindings, not a per-file resolver.
+        builtin_reg, builtin_err = _load_registry(BUILTIN_REGISTRY, "built-in registry.json")
+        user_reg, user_err = _load_registry(USER_REGISTRY, "registry.json")
+        builtin_reg = builtin_reg if isinstance(builtin_reg, dict) else {}
+        user_reg = user_reg if isinstance(user_reg, dict) else {}
+
+        def entry(key, value, source: str, builtin_names: list) -> dict:
+            names, disabled, err = _names_from_value(key, value, builtin_names)
+            return {
+                "pattern": str(key),
+                "templates": names if (names and not disabled) else [],
+                "disabled": disabled,
+                "source": source,
+                "error": err,
+            }
+
+        entries = []
+        for key, value in builtin_reg.items():
+            if key in user_reg:
+                continue  # the user's row replaces it below (override)
+            entries.append(entry(key, value, "builtin", []))
+        for key, value in user_reg.items():
+            builtin_names: list = []
+            if key in builtin_reg:
+                bnames, bdisabled, _berr = _names_from_value(key, builtin_reg[key], [])
+                if bnames and not bdisabled:
+                    builtin_names = bnames  # what a "..." splice expands to
+            source = "user-override" if key in builtin_reg else "user"
+            entries.append(entry(key, value, source, builtin_names))
+        # File keys first, then directory keys (trailing "/"), alpha within.
+        entries.sort(key=lambda e: (e["pattern"].endswith("/"), e["pattern"]))
+        return {
+            "entries": entries,
+            "builtin_registry": BUILTIN_REGISTRY,
+            "user_registry": USER_REGISTRY,
+            "error": builtin_err or user_err,
         }
 
     @app.get("/api/fs/stat")
@@ -775,10 +836,12 @@ def create_app(start_dir: str) -> FastAPI:
                 )
             resolved = os.path.normpath(os.path.join(os.path.dirname(html), py))
 
-        # Engine dispatch (D69): both paths return the same wire shape
+        # Engine dispatch (D69/§20): both paths return the same wire shape
         # ({ok, result, error:{type,message,traceback}, stdout} — the fused
         # engine adds stderr/duration_ms), so pages never see which ran.
-        if engine_name == "fused":
+        # Resolved per request: the Preferences switch applies to the next
+        # run, no restart (a set FUSED_RENDER_ENGINE pins it instead).
+        if current_engine() == "fused":
             from fused_render import engine as _engine
 
             result = await _engine.run_python(resolved, params)

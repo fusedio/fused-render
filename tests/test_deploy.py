@@ -571,6 +571,35 @@ def test_revoke_without_deployment_is_400(tmp_path, monkeypatch):
     assert resp.status_code == 400
 
 
+def test_revoke_by_token_covers_untracked_mounts(tmp_path, monkeypatch):
+    # The Preferences page revokes by env+token — including mounts with no
+    # local pointer (deployed by the CLI / another machine).
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario({"revoke": {"token": "zzz999", "status": "revoked"}})
+    resp = h.client.post(
+        "/api/deploy/revoke", json={"env": "cloud", "token": "zzz999"}, headers=FUSED
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"env": "cloud", "token": "zzz999", "status": "revoked"}
+    assert h.calls()[-1]["argv"][1:3] == ["revoke", "zzz999"]
+
+
+def test_revoke_by_token_flips_the_matching_pointer(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
+    )
+    h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+
+    h.set_scenario({"revoke": {"token": "abc123", "status": "revoked"}})
+    resp = h.client.post(
+        "/api/deploy/revoke", json={"env": "cloud", "token": "abc123"}, headers=FUSED
+    )
+    assert resp.status_code == 200, resp.text
+    # The page's pointer stays consistent: its Deploy button reads revoked now.
+    assert h.pointer()["status"] == "revoked"
+
+
 def test_shares_joins_mounts_to_local_pages(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
     h.set_scenario(

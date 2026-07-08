@@ -232,3 +232,59 @@ export function installFused(): Promise<void> {
 export function listShares(env: string): Promise<SharesResult> {
   return getJson<SharesResult>("/api/deploy/shares?env=" + encodeURIComponent(env));
 }
+
+// Revoke a mount by env+token (the Preferences page's share list — covers
+// mounts with no local pointer too; the CLI's owner-binding still applies).
+export function revokeMount(env: string, token: string): Promise<void> {
+  return postJson<unknown>("/api/deploy/revoke", { env, token }).then(() => undefined);
+}
+
+// -- Preferences (shell/prefs.py; SPEC §20) -----------------------------------
+
+export interface EnginePrefs {
+  selected: "builtin" | "fused";
+  effective: "builtin" | "fused";
+  // The raw FUSED_RENDER_ENGINE value when set — the process-level override
+  // that beats the pref (the page shows the switch locked).
+  forced_by: string | null;
+  fused_available: boolean;
+}
+
+export interface Prefs {
+  engine: EnginePrefs;
+  log: { path: string; dir: string };
+}
+
+export function getPrefs(): Promise<Prefs> {
+  return getJson<Prefs>("/api/prefs");
+}
+
+export function putEnginePref(engine: "builtin" | "fused"): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { engine });
+}
+
+// Reveal a path in the OS file manager (same POST the breadcrumb button uses).
+export function revealPath(fsPath: string): Promise<void> {
+  return postJson<unknown>("/api/fs/reveal", { path: fsPath }).then(() => undefined);
+}
+
+// -- Template registry view (server.py /api/templates/registry; SPEC §20) -----
+
+export interface RegistryEntry {
+  pattern: string;
+  templates: string[];
+  disabled: boolean; // a null binding: previews disabled for this pattern
+  source: "builtin" | "user" | "user-override";
+  error: string | null;
+}
+
+export interface RegistryResult {
+  entries: RegistryEntry[];
+  builtin_registry: string;
+  user_registry: string;
+  error: string | null;
+}
+
+export function getTemplateRegistry(): Promise<RegistryResult> {
+  return getJson<RegistryResult>("/api/templates/registry");
+}

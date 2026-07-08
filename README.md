@@ -151,6 +151,22 @@ hosted-page artifact today; the managed backend's inline-upload bundle
 classification is an upstream follow-up — until then its CLI error shows in the
 modal verbatim.
 
+## Preferences
+
+The gear at the sidebar's bottom-left opens **Preferences** (`/view/_prefs`):
+
+- **Execution engine** — switch `fused.runPython` between the built-in
+  executor (fresh subprocess per call) and the fused engine (PEP 723 inline
+  requirements in cached venvs). Persisted to `~/.fused-render/prefs.json`
+  and applied to the next run, no restart; a set `FUSED_RENDER_ENGINE`
+  pins the engine for the whole process and locks the switch.
+- **Logs** — this run's log file path, with an "Open logs location" action.
+- **Deployments** — every mount on a chosen hosted environment
+  (`fused share list`), with per-mount **Revoke**, including mounts not
+  created from this app.
+- **Template registry** — the merged extension → templates bindings (built-in
+  plus your `~/.fused-render/templates/registry.json` overrides), read-only.
+
 ## Logs
 
 The server writes an application log so that when something goes wrong — an
