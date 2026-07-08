@@ -108,11 +108,13 @@ body {
 }
 
 .bookmark-row {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 7px;
   padding: 6px 10px;
   border-radius: 8px;
+  cursor: pointer;
 }
 
 .bookmark-row:hover {
@@ -223,8 +225,15 @@ body {
   font-size: 13px;
 }
 
-.bookmark-name:hover {
-  color: var(--accent);
+/* Stretched-link pattern: the anchor's ::after covers the whole row so the
+   entire .bookmark-row hover affordance is also clickable (cmd-click,
+   middle-click included), not just the name text. Scoped to `a.bookmark-name`
+   so folder rows — which reuse .bookmark-name on a plain span and already
+   have their own row-level click handler — aren't affected. */
+a.bookmark-name::after {
+  content: "";
+  position: absolute;
+  inset: 0;
 }
 
 .bookmark-actions {
@@ -234,6 +243,8 @@ body {
   visibility: hidden;
   flex: 0 0 auto;
   gap: 2px;
+  position: relative;
+  z-index: 1;
 }
 
 .bookmark-row:hover .bookmark-actions {
@@ -428,34 +439,50 @@ body {
   background: var(--bg-alt);
 }
 
-#breadcrumb .crumbs {
+/* Shared with the panel path bar (.panel-crumbs/.panel-crumb*, Panel.tsx):
+   same monospace, tight slash-separated segment styling, muted with the last
+   segment emphasized. Only the hover affordance differs per surface — this
+   bar avoids the accent-yellow the panel pane hover uses (see
+   #breadcrumb .path-crumb:hover below); the panel's own hover rule further
+   down is untouched. */
+#breadcrumb .crumbs,
+.panel-crumbs {
   display: flex;
   align-items: center;
-  gap: 4px;
   min-width: 0;
   overflow-x: auto;
   white-space: nowrap;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
 }
 
-#breadcrumb a {
+.path-crumb,
+.panel-crumb {
   color: var(--fg-muted);
   text-decoration: none;
-  padding: 2px 4px;
-  border-radius: 4px;
+  cursor: pointer;
+  padding: 2px 1px;
+  border-radius: 3px;
 }
 
-#breadcrumb a:hover {
-  background: var(--border);
-  color: var(--fg);
-}
-
-#breadcrumb .sep {
-  color: var(--fg-muted);
-}
-
+.path-crumb.last,
+.panel-crumb.last,
 #breadcrumb .current {
+  color: var(--fg);
   font-weight: 600;
-  padding: 2px 4px;
+}
+
+.path-crumb-sep,
+.panel-crumb-sep {
+  color: var(--border);
+  margin: 0 1px;
+}
+
+/* Main breadcrumb hover only — subtle fg brighten + underline, no accent
+   yellow. */
+#breadcrumb .path-crumb:hover {
+  color: var(--fg);
+  text-decoration: underline;
 }
 
 /* Share/export glyph at the end of the crumb trail (reveal in file manager). */
@@ -498,6 +525,27 @@ body {
   cursor: pointer;
 }
 
+/* Icon-only split buttons: same chrome as .star-btn, tighter padding so the
+   14px glyph sits centred at the text buttons' height. The pair sits closer
+   together than the 8px crumb-actions gap, with matching extra room on both
+   sides; hover is a quiet light-grey lift, not the accent of text buttons. */
+.star-btn.split-dir {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 7px;
+  margin-left: 6px;
+}
+
+.star-btn.split-dir + .star-btn.split-dir {
+  margin-left: -5px;
+  margin-right: 6px;
+}
+
+.star-btn.split-dir:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+
 .star-btn:hover {
   color: var(--accent);
   border-color: var(--accent);
@@ -516,10 +564,181 @@ body {
   flex-direction: column;
 }
 
-/* Listing view */
+/* Listing view — a fixed search header above a scrolling table, so the search
+   box stays put as the table scrolls and the columns never jump between
+   listing and results. */
 .listing {
-  overflow: auto;
   flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.listing-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.listing-search {
+  flex: 0 0 auto;
+  position: relative;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.listing-search .listing-search-input {
+  width: 100%;
+  /* Reserves room for, right to left: fuzzy toggle (right:10), count chip /
+     spinner (right:64) — sized for the longest count text
+     ("showing 250 of 7734 matches"). Esc clears the query. */
+  padding-right: 170px;
+}
+
+/* Native WebKit cancel × collides with the absolutely-positioned count chip;
+   hidden (Esc clears the query instead). */
+.listing-search-input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* Match count pinned inside the input's right edge (no layout shift). Shifted
+   left of the fuzzy toggle (right:10). */
+.listing-search-count {
+  position: absolute;
+  right: 80px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--fg-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* Small spinner shown while the recursive walk is still in flight, so a
+   search on a huge folder doesn't look stalled while the input stays
+   fully interactive. */
+.listing-search-spinner {
+  position: absolute;
+  right: 80px;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  margin-top: -5.5px;
+  border: 1.5px solid var(--border);
+  border-top-color: var(--fg-muted);
+  border-radius: 50%;
+  pointer-events: none;
+  animation: listing-search-spin 0.6s linear infinite;
+}
+
+@keyframes listing-search-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Dims the results briefly while a background render (React's deferred
+   value) is catching up to the latest keystroke on a large search. */
+.listing-stale {
+  opacity: 0.6;
+  transition: opacity 0.1s ease-out;
+}
+
+/* Fuzzy-match toggle pill, shared chrome between the explorer search bar and
+   the sidebar bookmark search. Active state reuses the input's own focus
+   accent so "fuzzy on" reads with the same accent language as everything
+   else, rather than inventing a new on-state color. */
+.search-fuzzy-toggle {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.search-fuzzy-toggle:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.search-fuzzy-toggle.active {
+  color: var(--accent);
+  border-color: rgba(229, 255, 68, 0.45);
+  background: rgba(229, 255, 68, 0.08);
+}
+
+.search-fuzzy-toggle.active:hover {
+  background: rgba(229, 255, 68, 0.14);
+}
+
+.listing-search-fuzzy-toggle {
+  /* 16px container padding + 10px inset from the input's own right edge. */
+  right: 26px;
+}
+
+.bookmark-search-fuzzy-toggle {
+  /* 8px container padding + 8px inset from the input's own right edge. */
+  right: 16px;
+}
+
+/* Shared search-input chrome (explorer header + sidebar bookmarks). */
+.listing-search-input,
+.bookmark-search-input {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+.listing-search-input::placeholder,
+.bookmark-search-input::placeholder {
+  color: var(--fg-muted);
+}
+
+.listing-search-input:focus,
+.bookmark-search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Matched-substring highlight in search results (explorer + bookmarks). */
+.search-mark {
+  background: rgba(229, 255, 68, 0.22);
+  color: var(--fg);
+  border-radius: 2px;
+}
+
+/* Relative path shown in an explorer search row, in place of a bare name. */
+.search-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Sidebar bookmark search box: sits just under the "Bookmarks" heading,
+   aligned with the row padding. Relative so the fuzzy toggle can pin to its
+   right edge like the explorer search bar. */
+.bookmark-search {
+  position: relative;
+  padding: 0 8px 6px;
+}
+
+/* Reserve room for the fuzzy toggle pinned inside the input's right edge. */
+.bookmark-search .bookmark-search-input {
+  padding-right: 52px;
 }
 
 table.listing-table {
@@ -535,10 +754,14 @@ table.listing-table th {
   text-transform: uppercase;
   letter-spacing: 0.03em;
   padding: 8px 16px;
-  border-bottom: 1px solid var(--border);
   position: sticky;
   top: 0;
+  z-index: 1; /* stay above rows scrolling underneath */
   background: var(--bg);
+  /* border-collapse drops the sticky cell's own border as rows scroll under
+     it, leaving a 1px bleed gap — paint the divider as an inset shadow so it
+     rides with the header instead. */
+  box-shadow: inset 0 -1px 0 var(--border);
   cursor: pointer;
   user-select: none;
 }
@@ -557,7 +780,7 @@ table.listing-table .sort-arrow {
 }
 
 table.listing-table td {
-  padding: 7px 16px;
+  padding: 9px 16px;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
   overflow: hidden;
@@ -576,6 +799,7 @@ table.listing-table td.name {
   display: flex;
   align-items: center;
   gap: 8px;
+  font-size: 14px;
 }
 
 table.listing-table .icon {
@@ -802,8 +1026,23 @@ table.listing-table td.mtime {
   color: var(--fg-muted);
 }
 
+/* Error panel: dark maroon card + red border + mono red text, matching the
+   fused_render/static/runtime.js overlay reference. Canonical error style —
+   every error rendered in the shell (stat/preview failures, listing/search
+   failures, config-load failures) uses this class so the visual language
+   stays consistent. */
 .status-message.error {
-  color: var(--error);
+  background: rgba(30, 5, 5, 0.9);
+  border: 2px solid #c0392b;
+  border-radius: 10px;
+  padding: 14px 16px;
+  color: #ffdede;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: visible;
+  text-overflow: clip;
 }
 
 /* Embed mode (/embed/<path>): content only — all shell chrome hidden.
@@ -910,14 +1149,15 @@ body.embed .preview-browse-chip:hover {
   user-select: none;
 }
 
+/* Base layout/color rules for .panel-crumbs/.panel-crumb/.panel-crumb-sep/
+   .panel-crumb.last are shared with the main breadcrumb above (search
+   "Shared with the panel path bar"). Only what's genuinely panel-specific
+   lives here: pane-local flex sizing, a tighter font-size, hidden scrollbar,
+   and the accent-yellow hover (left as-is — the main breadcrumb gets its own
+   non-yellow hover instead of reusing this one). */
 .panel-crumbs {
   flex: 1 1 auto;
-  display: flex;
-  align-items: center;
-  overflow-x: auto;
   scrollbar-width: none;
-  white-space: nowrap;
-  font-family: ui-monospace, Menlo, Consolas, monospace;
   font-size: 11px;
 }
 
@@ -925,25 +1165,9 @@ body.embed .preview-browse-chip:hover {
   display: none;
 }
 
-.panel-crumb {
-  color: var(--fg-muted);
-  cursor: pointer;
-  padding: 2px 1px;
-  border-radius: 3px;
-}
-
 .panel-crumb:hover {
   color: var(--accent);
   text-decoration: underline;
-}
-
-.panel-crumb.last {
-  color: var(--fg);
-}
-
-.panel-crumb-sep {
-  color: var(--border);
-  margin: 0 1px;
 }
 
 .panel-btn {

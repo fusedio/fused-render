@@ -4,12 +4,15 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fused-render"
-version = "0.1.0"
+version = "0.1.4"
 description = "Local file explorer with Python-powered renderable HTML previews"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
+    # /api/fs/events is a WebSocket (D74); plain uvicorn has no WS protocol
+    # implementation, so the ws library is a hard dependency, not an extra.
+    "websockets>=12",
     "pyarrow>=14",
 ]
 

@@ -2,8 +2,8 @@
 // Same URL-is-state model as panel mode but one page visible at a time. The
 // tab list is a flat top-level `,` row of the shared `_layout` codec; the
 // active tab is deliberately NOT encoded (TM-6) so switching never dirties the
-// "Update bookmark" state. Params are tab-INDEPENDENT (TM-3, inverting
-// panel's merged pool): the tab shell marks its window `_fusedParamBoundary`
+// "Update bookmark" state. Params are tab-INDEPENDENT (TM-3, same contract as
+// panel mode since D72): the tab shell marks its window `_fusedParamBoundary`
 // so each tab's runtime targets its own /embed URL, and every tab's full
 // query is captured segment-local inside `_layout`.
 //
@@ -38,8 +38,8 @@ const TAB_PATH = (IS_EMBED ? "/embed/" : "/view/") + "_tab";
 
 // Compose a `/view/_tab` URL from a folder's child bookmarks (TM-8, sidebar
 // entry). Tab params are independent (TM-3/D47): each child's WHOLE saved
-// query stays segment-local — no hoisting, no merged pool, no collision
-// handling — so every tab reproduces its bookmark verbatim. Exported for
+// query stays segment-local — no hoisting, no collision handling — so every
+// tab reproduces its bookmark verbatim. Exported for
 // Sidebar.tsx (documented acyclic exception, mirrors breadcrumb -> Panel).
 export function composeFolderTabsUrl(children: Bookmark[]): string {
   const segments = children.map((b) => {
@@ -172,9 +172,17 @@ export default function Tabs({ config }: { config: Config }) {
   const [tabs, setTabs] = useState<LayoutLeaf[]>(() =>
     parseTabs(splitShellSearch(location.search).layout, config.start_dir)
   );
-  const [activeId, setActiveId] = useState<number>(() => tabs[0].id);
+  // `_layout` never encodes activation (TM-2 — URL shape untouched), so the
+  // active tab rides on the history entry's state object instead: pushHistory
+  // stamps `{fusedActiveTab: index}` and this remount (App re-keys Tabs on the
+  // popstate nav epoch) reads it back, making Back/Forward restore which tab
+  // was active. Fresh loads have no state → first tab, as before.
+  const [activeId, setActiveId] = useState<number>(() => {
+    const idx = (history.state as { fusedActiveTab?: unknown } | null)?.fusedActiveTab;
+    return typeof idx === "number" && tabs[idx] ? tabs[idx].id : tabs[0].id;
+  });
   // Lazy mount (TM-5): a tab's iframe exists only once it has been activated.
-  const [mountedIds, setMountedIds] = useState<number[]>(() => [tabs[0].id]);
+  const [mountedIds, setMountedIds] = useState<number[]>(() => [activeId]);
   // Leaf objects are mutated in place by the URL sync (path/query); this
   // counter re-renders the bar so labels track live locations.
   const [, bumpLabels] = useState(0);
@@ -194,6 +202,21 @@ export default function Tabs({ config }: { config: Config }) {
     if (location.pathname + location.search !== next) {
       history.replaceState(history.state, "", next);
     }
+  };
+
+  // Tab ops (add/switch/close) get a real history entry. Pushed even when the
+  // URL is unchanged (a switch moves no URL bits — activation lives only in
+  // the entry's state, see the activeId initializer): the entry carries
+  // `{fusedActiveTab: index}` so Back/Forward restore the active tab. Index,
+  // not id — leaf ids are per-mount and don't survive the popstate remount.
+  // Plain history.pushState (not navigate()) — no NAV_EVENT, so no remount
+  // now; main.tsx's wrapper still fires fused:urlchange for the chrome.
+  const pushHistory = (nextActiveId: number) => {
+    const { params } = splitShellSearch(location.search);
+    const codecStr = tabsRef.current.map((t) => encodePaneSegment(t.path, t.query)).join(",");
+    const next = buildSentinelUrl(TAB_PATH, codecStr, params);
+    const idx = tabsRef.current.findIndex((t) => t.id === nextActiveId);
+    history.pushState({ fusedActiveTab: idx === -1 ? 0 : idx }, "", next);
   };
 
   const onLocSync = () => {
@@ -216,9 +239,9 @@ export default function Tabs({ config }: { config: Config }) {
     const t = leaf(config.start_dir, "");
     setTabs((ts) => [...ts, t]);
     activate(t.id);
-    // syncUrl reads tabsRef — update it eagerly so the sync sees the new tab.
+    // pushHistory reads tabsRef — update it eagerly so the push sees the new tab.
     tabsRef.current = [...tabsRef.current, t];
-    syncUrl();
+    pushHistory(t.id);
   };
 
   const closeTab = (id: number) => {
@@ -237,12 +260,13 @@ export default function Tabs({ config }: { config: Config }) {
     tabsRef.current = next;
     setTabs(next);
     setMountedIds((ids) => ids.filter((x) => x !== id));
+    let nextActive = activeId;
     if (activeId === id) {
       // Activate a neighbor (prefer the one now at this slot, else the last).
-      const neighbor = next[Math.min(idx, next.length - 1)].id;
-      activate(neighbor);
+      nextActive = next[Math.min(idx, next.length - 1)].id;
+      activate(nextActive);
     }
-    syncUrl();
+    pushHistory(nextActive);
   };
 
   return (
@@ -252,7 +276,12 @@ export default function Tabs({ config }: { config: Config }) {
           <button
             key={t.id}
             className={"tab" + (t.id === activeId ? " active" : "")}
-            onClick={() => activate(t.id)}
+            onClick={() => {
+              // Re-clicking the active tab is a no-op — no history entry.
+              if (t.id === activeId) return;
+              activate(t.id);
+              pushHistory(t.id);
+            }}
           >
             <span className="tab-label">{tabLabel(t)}</span>
             <span

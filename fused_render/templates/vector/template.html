@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Vector preview</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js"></script>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: #e8eaed; background: #131417; font-size: 13px; }
+  #map { position: absolute; inset: 0; }
+  .panel { position: absolute; background: rgba(19,20,23,.92); border: 1px solid #2a2d33;
+    border-radius: 10px; padding: 10px 12px; backdrop-filter: blur(6px); z-index: 10; }
+  #topbar { top: 10px; left: 10px; right: 10px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  #topbar label { color: #9aa0a6; margin: 0 2px 0 6px; }
+  input[type=text], select { font: inherit; color: #e8eaed; background: #1b1d21;
+    border: 1px solid #2a2d33; border-radius: 6px; padding: 4px 8px; }
+  #path { flex: 1; min-width: 200px; }
+  button { font: inherit; color: #e8eaed; background: #2b5fd9; border: 1px solid #2b5fd9;
+    border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+  button:hover { background: #3a6ee8; }
+  button.ghost { background: transparent; border-color: #2a2d33; color: #9aa0a6; }
+  button.ghost:hover { color: #e8eaed; border-color: #4a4d55; }
+  button.accent { background: #1f7a4c; border-color: #1f7a4c; }
+  button.accent:hover { background: #269159; }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { position: absolute; left: 50%; top: 64px; transform: translateX(-50%);
+    background: rgba(19,20,23,.9); border: 1px solid #2a2d33; border-radius: 999px;
+    padding: 4px 14px; color: #9aa0a6; z-index: 20; display: none; max-width: 80%; }
+  #status.err { color: #ff7b72; display: block; }
+  #status a { color: #8ab4ff; }
+  #metaPanel { right: 10px; top: 58px; width: 360px; max-height: 62vh; overflow: auto; display: none; }
+  #metaPanel h2, #tablePanel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: #9aa0a6; margin: 0 0 6px; display: flex; justify-content: space-between; align-items: center; }
+  #metaPanel table, #tablePanel table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  #metaPanel td, #tablePanel td, #tablePanel th { padding: 3px 6px; border-bottom: 1px solid #23262c;
+    vertical-align: top; word-break: break-word; text-align: left; }
+  #metaPanel td:first-child { color: #9aa0a6; white-space: nowrap; }
+  #tablePanel { left: 10px; bottom: 26px; right: 370px; max-height: 32vh; overflow: auto; display: none; }
+  #tablePanel th { color: #9aa0a6; position: sticky; top: -10px; background: #17181c; }
+  #mapTip { position: fixed; pointer-events: none; z-index: 40; display: none;
+    background: rgba(12,13,15,.94); border: 1px solid #3a3d44; border-radius: 6px;
+    padding: 6px 9px; font-size: 11px; font-variant-numeric: tabular-nums;
+    max-width: 300px; color: #e8eaed; }
+  #mapTip .t { color: #8ab4ff; font-weight: 600; margin-bottom: 2px; }
+  #mapTip td { padding: 1px 5px 1px 0; vertical-align: top; }
+  #mapTip td:first-child { color: #9aa0a6; white-space: nowrap; }
+  .maplibregl-popup-content { background: rgba(19,20,23,.97); color: #e8eaed;
+    border: 1px solid #2a2d33; border-radius: 8px; font-size: 12px; max-height: 40vh;
+    overflow: auto; padding: 10px 12px; font-family: inherit; }
+  .maplibregl-popup-content table { border-collapse: collapse; }
+  .maplibregl-popup-content td { padding: 2px 8px 2px 0; border-bottom: 1px solid #23262c; }
+  .maplibregl-popup-content td:first-child { color: #9aa0a6; white-space: nowrap; }
+  .maplibregl-popup-close-button { color: #8ab4ff; font-size: 16px; }
+  .maplibregl-popup-anchor-bottom .maplibregl-popup-tip { border-top-color: #2a2d33; }
+  .maplibregl-popup-anchor-top .maplibregl-popup-tip { border-bottom-color: #2a2d33; }
+  #explorer { left: 10px; top: 58px; width: 420px; max-height: 65vh; display: none; z-index: 30; }
+  #crumbs { font-size: 12px; margin-bottom: 8px; color: #9aa0a6; }
+  #crumbs a { color: #8ab4ff; cursor: pointer; }
+  #explorerList { max-height: 48vh; overflow: auto; border: 1px solid #23262c; border-radius: 6px; }
+  .row { display: flex; align-items: center; gap: 8px; padding: 5px 10px; cursor: pointer;
+    font-size: 13px; border-bottom: 1px solid #1e2025; }
+  .row:hover { background: #23262c; }
+  .row .ic { width: 18px; text-align: center; }
+  .row .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .sz { color: #6b7178; font-size: 11px; }
+  input[type=range] { vertical-align: middle; width: 90px; }
+</style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div class="panel" id="topbar">
+    <button id="browse" class="ghost">📁</button>
+    <input type="text" id="path" placeholder="/absolute/path/to/file.shp · .geojson · .gpkg · .kml…" />
+    <button id="load">Load</button>
+    <span><label for="colorBy">color by</label><select id="colorBy"><option value="">— single color —</option></select></span>
+    <span><label for="opacity">opacity</label><input type="range" id="opacity" min="0" max="100" value="70" /></span>
+    <span><label for="basemap">basemap</label><input type="checkbox" id="basemap" checked /></span>
+    <button id="tableBtn" class="ghost">table</button>
+    <button id="metaBtn" class="ghost">info</button>
+    <button id="fitBtn" class="ghost">⤢ fit</button>
+    <button id="convertBtn" class="accent" title="Write a GeoParquet copy next to the source file (full file, all features)">⇢ GeoParquet</button>
+  </div>
+
+  <div id="status"></div>
+
+  <div class="panel" id="explorer">
+    <div id="crumbs"></div>
+    <div id="explorerList"></div>
+    <label style="display:block;margin-top:8px;color:#9aa0a6;font-size:12px">
+      <input type="checkbox" id="showAll" /> show all files</label>
+  </div>
+
+  <div class="panel" id="metaPanel"><h2>Layer info <a id="metaClose" style="cursor:pointer;color:#8ab4ff">×</a></h2><div id="metaBody"></div></div>
+  <div class="panel" id="tablePanel"><h2>Attributes (first rows) <a id="tableClose" style="cursor:pointer;color:#8ab4ff">×</a></h2><div id="tableBody"></div></div>
+  <div id="mapTip"></div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const els = ['path','load','colorBy','opacity','basemap','tableBtn','metaBtn','metaPanel','metaBody',
+  'metaClose','tablePanel','tableBody','tableClose','fitBtn','convertBtn','status','mapTip',
+  'browse','explorer','crumbs','explorerList','showAll']
+  .reduce((o, k) => (o[k] = $(k), o), {});
+
+const P = {
+  file: () => fused.params.get('file') || fused.params.get('_file') || '',
+  colorBy: () => fused.params.get('colorby') || '',
+  dir:  () => fused.params.get('dir') || (P.file() ? P.file().replace(/\/[^/]*$/, '') : '~'),
+  showAll: () => fused.params.get('showall') === '1',
+};
+const human = n => n > 1e9 ? (n/1e9).toFixed(2)+' GB' : n > 1e6 ? (n/1e6).toFixed(1)+' MB' : Math.round(n/1e3)+' KB';
+function status(msg, err){ els.status.innerHTML = msg || ''; els.status.style.display = msg ? 'block' : 'none'; els.status.className = err ? 'err' : ''; }
+
+const CAT_COLORS = ['#5c9dff','#ff6b6b','#51cf66','#ffd43b','#cc5de8','#20c997','#ff922b','#94d82d',
+                    '#f06595','#4dabf7','#e8590c','#40c057'];
+
+// ---------------- map ----------------
+const DARK = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
+const map = new maplibregl.Map({ container: 'map', style: DARK, center: [0, 20], zoom: 1.2,
+  attributionControl: {compact: true}, fadeDuration: 80 });
+map.addControl(new maplibregl.NavigationControl({showCompass: false}), 'bottom-left');
+map.addControl(new maplibregl.ScaleControl({unit: 'metric'}), 'bottom-right');
+async function styleReady(){
+  map.resize();
+  for (let i = 0; i < 200 && !map.isStyleLoaded(); i++)
+    await new Promise(r => setTimeout(r, 50));
+  map.resize();
+}
+
+let data = null;         // shp_reader payload
+let hoverId = null;
+
+// ---------------- styling ----------------
+function fillColorExpr(){
+  const col = P.colorBy();
+  if (!col || !data) return '#5c9dff';
+  const vals = [...new Set((data.geojson.features || [])
+    .map(f => f.properties[col]).filter(v => v !== null && v !== undefined))];
+  const numeric = vals.length && vals.every(v => typeof v === 'number');
+  if (numeric){
+    const lo = Math.min(...vals), hi = Math.max(...vals);
+    if (hi > lo) return ['interpolate', ['linear'], ['to-number', ['get', col], lo],
+      lo, '#440154', lo + (hi-lo)*0.25, '#3b528b', lo + (hi-lo)*0.5, '#21918c',
+      lo + (hi-lo)*0.75, '#5ec962', hi, '#fde725'];
+  }
+  const cats = vals.slice(0, 12);
+  const expr = ['match', ['to-string', ['get', col]]];
+  cats.forEach((c, i) => { expr.push(String(c), CAT_COLORS[i % CAT_COLORS.length]); });
+  expr.push('#6b7178');
+  return expr;
+}
+
+function addLayers(){
+  for (const id of ['shp-fill', 'shp-line', 'shp-circle'])
+    if (map.getLayer(id)) map.removeLayer(id);
+  if (map.getSource('shp')) map.removeSource('shp');
+  map.addSource('shp', {type: 'geojson', data: data.geojson});
+  const op = +els.opacity.value / 100;
+  const color = fillColorExpr();
+  const kinds = data.geometry_types.join(',');
+  if (/Polygon/.test(kinds)){
+    map.addLayer({id: 'shp-fill', type: 'fill', source: 'shp',
+      filter: ['any', ['==', ['geometry-type'], 'Polygon'], ['==', ['geometry-type'], 'MultiPolygon']],
+      paint: {'fill-color': color, 'fill-opacity':
+        ['case', ['boolean', ['feature-state', 'hover'], false], Math.min(1, op + .25), op]}});
+  }
+  map.addLayer({id: 'shp-line', type: 'line', source: 'shp',
+    paint: {'line-color': /Polygon/.test(kinds) ? '#dfe3e8' : color,
+            'line-opacity': /Polygon/.test(kinds) ? 0.35 : Math.min(1, op + .2),
+            'line-width': /Polygon/.test(kinds) ? 0.6 :
+              ['case', ['boolean', ['feature-state', 'hover'], false], 4, 2]}});
+  if (/Point/.test(kinds)){
+    map.addLayer({id: 'shp-circle', type: 'circle', source: 'shp',
+      filter: ['any', ['==', ['geometry-type'], 'Point'], ['==', ['geometry-type'], 'MultiPoint']],
+      paint: {'circle-color': color, 'circle-opacity': op,
+        'circle-radius': ['case', ['boolean', ['feature-state', 'hover'], false], 7, 4.5],
+        'circle-stroke-color': '#fff',
+        'circle-stroke-width': ['case', ['boolean', ['feature-state', 'hover'], false], 1.5, 0]}});
+  }
+}
+
+function fitToData(instant){
+  const b = data && data.bounds4326;
+  if (!b) return;
+  map.fitBounds([[b[0], b[1]], [b[2], b[3]]],
+    {padding: 60, duration: instant === false ? 400 : 0, maxZoom: 15});
+}
+
+// ---------------- hover / click ----------------
+function featHTML(props){
+  return '<table>' + Object.entries(props).map(([k, v]) =>
+    `<tr><td>${k}</td><td>${v ?? '—'}</td></tr>`).join('') + '</table>';
+}
+const TIP_MAX_ROWS = 6;
+map.on('mousemove', e => {
+  if (!map.getSource('shp')) return;
+  const feats = map.queryRenderedFeatures(e.point,
+    {layers: ['shp-fill', 'shp-line', 'shp-circle'].filter(l => map.getLayer(l))});
+  if (hoverId !== null){ map.setFeatureState({source: 'shp', id: hoverId}, {hover: false}); hoverId = null; }
+  map.getCanvas().style.cursor = feats.length ? 'pointer' : '';
+  if (!feats.length){ els.mapTip.style.display = 'none'; return; }
+  hoverId = feats[0].id;
+  map.setFeatureState({source: 'shp', id: hoverId}, {hover: true});
+  // compact tooltip at the cursor: color-by column first, then the first few
+  const props = feats[0].properties;
+  const keys = Object.keys(props);
+  const lead = P.colorBy() && keys.includes(P.colorBy()) ? [P.colorBy()] : [];
+  const rest = keys.filter(k => !lead.includes(k)).slice(0, TIP_MAX_ROWS - lead.length);
+  const more = keys.length - lead.length - rest.length;
+  els.mapTip.innerHTML = `<div class="t">Feature #${hoverId}</div><table>` +
+    [...lead, ...rest].map(k => `<tr><td>${k}</td><td>${props[k] ?? '—'}</td></tr>`).join('') +
+    '</table>' + (more > 0 ? `<div style="color:#6b7178">… ${more} more — click for all</div>` : '');
+  els.mapTip.style.display = 'block';
+  const pad = 14;
+  const x = Math.min(e.originalEvent.clientX + pad, window.innerWidth - 310);
+  const y = Math.min(e.originalEvent.clientY + pad, window.innerHeight - els.mapTip.offsetHeight - 10);
+  els.mapTip.style.left = x + 'px';
+  els.mapTip.style.top = y + 'px';
+});
+map.getContainer().addEventListener('mouseleave', () => els.mapTip.style.display = 'none');
+
+// click -> full attribute popup pinned to the feature
+let popup = null;
+map.on('click', e => {
+  if (!map.getSource('shp')) return;
+  const feats = map.queryRenderedFeatures(e.point,
+    {layers: ['shp-fill', 'shp-line', 'shp-circle'].filter(l => map.getLayer(l))});
+  if (popup){ popup.remove(); popup = null; }
+  if (!feats.length) return;
+  popup = new maplibregl.Popup({maxWidth: '340px'})
+    .setLngLat(e.lngLat)
+    .setHTML(`<div style="color:#8ab4ff;font-weight:600;margin-bottom:4px">Feature #${feats[0].id}</div>` +
+             featHTML(feats[0].properties))
+    .addTo(map);
+});
+
+// ---------------- panels ----------------
+function renderMeta(){
+  if (!data) return;
+  const rows = [
+    ['file', data.file.split('/').pop()],
+    ['size (all sidecars)', human(data.file_size)],
+    ['features', data.count.toLocaleString() + (data.truncated ? ` (showing first ${data.shown.toLocaleString()})` : '')],
+    ['geometry', data.geometry_types.join(', ')],
+    ['CRS', data.crs.epsg ? `EPSG:${data.crs.epsg} — ${data.crs.name}` : (data.crs.name || 'unknown')],
+    ['fields', data.schema.map(s => s.name).join(', ')],
+  ];
+  if (data.simplified_tolerance)
+    rows.push(['simplified', `tolerance ${data.simplified_tolerance.toPrecision(2)}° (preview only)`]);
+  if (data.native_bounds)
+    rows.push(['native bounds', data.native_bounds.map(v => +v.toFixed(2)).join(', ')]);
+  els.metaBody.innerHTML = '<table>' + rows.map(([k, v]) =>
+    `<tr><td>${k}</td><td>${v ?? '—'}</td></tr>`).join('') + '</table>' +
+    '<h2 style="margin-top:10px">Schema</h2><table>' +
+    data.schema.map(s => `<tr><td>${s.name}</td><td>${s.dtype}</td></tr>`).join('') + '</table>';
+}
+function renderTable(){
+  if (!data || !data.table.length){ els.tableBody.innerHTML = '<span style="color:#6b7178">no attributes</span>'; return; }
+  const cols = data.schema.map(s => s.name);
+  els.tableBody.innerHTML = '<table><tr>' + cols.map(c => `<th>${c}</th>`).join('') + '</tr>' +
+    data.table.map(r => '<tr>' + cols.map(c => `<td>${r[c] ?? '—'}</td>`).join('') + '</tr>').join('') + '</table>';
+}
+els.metaBtn.onclick = () => { els.metaPanel.style.display = els.metaPanel.style.display === 'block' ? 'none' : 'block'; };
+els.metaClose.onclick = () => els.metaPanel.style.display = 'none';
+els.tableBtn.onclick = () => { els.tablePanel.style.display = els.tablePanel.style.display === 'block' ? 'none' : 'block'; };
+els.tableClose.onclick = () => els.tablePanel.style.display = 'none';
+els.fitBtn.onclick = () => fitToData(false);
+
+// ---------------- convert to GeoParquet ----------------
+els.convertBtn.onclick = async () => {
+  if (!P.file()) return;
+  els.convertBtn.disabled = true;
+  status('Converting to GeoParquet…');
+  const r = await fused.runPython('./convert_parquet.py', {file: P.file()})
+    .catch(e => ({error: String(e.message || e)}));
+  els.convertBtn.disabled = false;
+  if (!r || r.error){ status('Convert failed: ' + ((r && r.error) || '?'), true); return; }
+  status(`✓ wrote <b>${r.path.split('/').pop()}</b> — ${r.rows.toLocaleString()} rows, ` +
+         `${human(r.size)} (from ${human(r.src_size)}) in ${r.seconds}s ` +
+         `<a id="revealLink" style="cursor:pointer">reveal</a>`);
+  document.getElementById('revealLink').onclick = () =>
+    fetch('/api/fs/reveal', {method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-Fused': '1'},
+      body: JSON.stringify({path: r.path})});
+  setTimeout(() => { if (!els.status.className) status(''); }, 15000);
+};
+
+// ---------------- controls ----------------
+function syncControls(){
+  els.path.value = P.file();
+  if (!data) return;
+  els.colorBy.innerHTML = '<option value="">— single color —</option>' +
+    data.schema.map(s => `<option value="${s.name}" ${s.name === P.colorBy() ? 'selected' : ''}>${s.name}</option>`).join('');
+}
+els.load.onclick = () => fused.params.set('file', els.path.value.trim());
+els.path.addEventListener('keydown', e => { if (e.key === 'Enter') els.load.click(); });
+els.colorBy.onchange = () => fused.params.set('colorby', els.colorBy.value);
+els.opacity.oninput = () => {
+  const op = +els.opacity.value / 100;
+  if (map.getLayer('shp-fill')) map.setPaintProperty('shp-fill', 'fill-opacity',
+    ['case', ['boolean', ['feature-state', 'hover'], false], Math.min(1, op + .25), op]);
+  if (map.getLayer('shp-circle')) map.setPaintProperty('shp-circle', 'circle-opacity', op);
+};
+els.basemap.onchange = () => {
+  const show = els.basemap.checked ? 'visible' : 'none';
+  for (const l of map.getStyle().layers)
+    if (!l.id.startsWith('shp-')) map.setLayoutProperty(l.id, 'visibility', show);
+};
+
+// ---------------- explorer ----------------
+els.browse.onclick = async () => {
+  const open = els.explorer.style.display === 'block';
+  els.explorer.style.display = open ? 'none' : 'block';
+  if (!open) refreshExplorer();
+};
+els.showAll.onchange = () => { fused.params.set('showall', els.showAll.checked ? '1' : ''); refreshExplorer(); };
+async function refreshExplorer(dir){
+  dir = dir || P.dir();
+  const r = await fused.runPython('./browse.py', { dir, exts: '.shp,.kml,.kmz,.gpx,.geojson,.gpkg,.fgb', show_all: P.showAll() ? 'true' : 'false' }).catch(() => null);
+  if (!r || r.error) return;
+  els.crumbs.innerHTML = r.crumbs.map(c =>
+    `<a data-p="${c.path}">${c.label || '/'}</a>`).join('<span style="color:#4b5058"> / </span>');
+  els.crumbs.querySelectorAll('a').forEach(a => a.onclick = () => refreshExplorer(a.dataset.p));
+  const entries = [...(r.dirs || []), ...(r.files || [])];
+  els.explorerList.innerHTML = entries.map(e =>
+    `<div class="row" data-p="${e.path}" data-d="${e.is_dir ? 1 : 0}">
+       <span class="ic">${e.is_dir ? '📁' : '🗂'}</span><span class="nm">${e.name}</span>
+       <span class="sz">${e.size ? human(e.size) : ''}</span></div>`).join('') || '<div class="row" style="color:#6b7178">empty</div>';
+  els.explorerList.querySelectorAll('.row[data-p]').forEach(row => row.onclick = () => {
+    if (row.dataset.d === '1') refreshExplorer(row.dataset.p);
+    else { fused.params.set('dir', row.dataset.p.replace(/\/[^/]*$/, '')); fused.params.set('file', row.dataset.p); els.explorer.style.display = 'none'; }
+  });
+}
+
+// ---------------- load ----------------
+let loadedFile = null;
+
+async function loadFile(){
+  const file = P.file();
+  if (!file){ status('no file — use Browse or enter a vector file path'); return; }
+  status('Reading vector file…');
+  await styleReady();
+  const r = await fused.runPython('./vector_reader.py', {file})
+    .catch(e => ({error: String(e.message || e)}));
+  if (!r || r.error){ status((r && r.error) || 'read failed', true); return; }
+  data = r;
+  syncControls();
+  addLayers();
+  fitToData();
+  renderMeta();
+  renderTable();
+  let note = '';
+  if (r.truncated) note = `showing first ${r.shown.toLocaleString()} of ${r.count.toLocaleString()} features (preview cap — GeoParquet conversion uses ALL features)`;
+  else if (r.simplified_tolerance) note = 'geometries simplified for preview';
+  status(note);
+  if (note) setTimeout(() => status(''), 8000);
+  loadedFile = file;
+}
+
+function onParamsChanged(){
+  if (P.file() !== loadedFile){ loadFile(); return; }
+  syncControls();
+  if (data && map.getSource('shp')){
+    const color = fillColorExpr();
+    if (map.getLayer('shp-fill')) map.setPaintProperty('shp-fill', 'fill-color', color);
+    if (map.getLayer('shp-circle')) map.setPaintProperty('shp-circle', 'circle-color', color);
+    if (map.getLayer('shp-line') && !/Polygon/.test(data.geometry_types.join(',')))
+      map.setPaintProperty('shp-line', 'line-color', color);
+  }
+}
+fused.params.onChange(onParamsChanged);
+
+loadFile();
+
+</script>
+</body>
+</html>

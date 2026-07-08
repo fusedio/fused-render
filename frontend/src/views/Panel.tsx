@@ -30,14 +30,16 @@ import {
 } from "../lib/layout-codec";
 import type { Config } from "../lib/api";
 import { ShareIcon } from "../components/ShareIcon";
+import { SplitRightIcon, SplitDownIcon } from "../components/SplitIcons";
 
 // Panel mode lives under the page's own prefix (`/view/_panel` or
 // `/embed/_panel`), so entering/refreshing/exiting stays in the active mode.
 const PANEL_PATH = (IS_EMBED ? "/embed/" : "/view/") + "_panel";
 
-// Build <prefix>/_panel?... : the encoded tree plus the merged (top-level)
-// param pool. Exported for the breadcrumb's Split button (same acyclic
-// exception as the vanilla breadcrumb.js -> views/panel.js import).
+// Build <prefix>/_panel?... : the encoded tree plus any top-level params
+// (hand-typed globals only, D72 — the shell never promotes params there).
+// Exported for the breadcrumb's Split button (same acyclic exception as the
+// vanilla breadcrumb.js -> views/panel.js import).
 export function panelUrl(codecStr: string, merged?: Iterable<[string, string]> | null): string {
   return buildSentinelUrl(PANEL_PATH, codecStr, merged);
 }
@@ -85,18 +87,8 @@ function findLeaf(node: LayoutNode, id: number): LayoutLeaf | null {
 }
 
 const ICONS = {
-  splitRight: (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-      <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" />
-      <path d="M8 2.5h5a1.5 1.5 0 0 1 1.5 1.5v8a1.5 1.5 0 0 1-1.5 1.5H8z" fill="currentColor" />
-    </svg>
-  ),
-  splitDown: (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-      <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" />
-      <path d="M1.5 8h13v4a1.5 1.5 0 0 1-1.5 1.5H3A1.5 1.5 0 0 1 1.5 12z" fill="currentColor" />
-    </svg>
-  ),
+  splitRight: <SplitRightIcon />,
+  splitDown: <SplitDownIcon />,
   max: (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
       <path
@@ -255,6 +247,19 @@ function Build({ node, ctx }: { node: LayoutNode; ctx: PaneCtx }) {
 }
 
 export default function Panel({ config }: { config: Config }) {
+  // Mark this window a param boundary BEFORE any iframe mounts (LM-3/D72,
+  // same contract as tab mode): a page rendered inside a pane targets its own
+  // embed URL, so params stay pane-local (captured segment-local in `_layout`
+  // by syncUrl). Cleared on unmount — this shell window survives SPA
+  // navigation to a normal view, and a stale flag would corrupt that view.
+  window._fusedParamBoundary = true;
+  useEffect(
+    () => () => {
+      delete window._fusedParamBoundary;
+    },
+    []
+  );
+
   // Build the pane tree from `_layout` on the shell URL once per mount (App
   // remounts Panel on every navigation). Missing/empty/unparseable `_layout`
   // falls back to a single pane of the start dir.
@@ -273,7 +278,8 @@ export default function Panel({ config }: { config: Config }) {
   }
   const [version, setVersion] = useState(0);
 
-  // Re-encode `_layout` on the shell URL, preserving the merged pool, and
+  // Re-encode `_layout` on the shell URL, passing hand-typed top-level params
+  // through untouched (D72 — no user params are promoted here), and
   // replaceState only when the value actually changed (LM-6 guard). This
   // fires the shell's own fused:urlchange (main.tsx wraps replaceState), so
   // the bookmark buttons react.
@@ -283,6 +289,20 @@ export default function Panel({ config }: { config: Config }) {
     const next = panelUrl(codecStr, params);
     if (location.pathname + location.search !== next) {
       history.replaceState(history.state, "", next);
+    }
+  };
+
+  // Structural ops (split/close) get a real history entry: pushState the
+  // re-encoded `_layout` at op time, so Back/Forward walk the arrangement
+  // history. Plain history.pushState (not navigate()) — no NAV_EVENT, so the
+  // grid doesn't remount now; on an actual popstate App's nav epoch remounts
+  // Panel, which re-parses the entry's `_layout`. The version-effect syncUrl
+  // that follows sees an unchanged URL and no-ops (LM-6 guard).
+  const pushUrl = () => {
+    const { params } = splitShellSearch(location.search);
+    const next = panelUrl(encodeNode(treeRef.current!), params);
+    if (location.pathname + location.search !== next) {
+      history.pushState(history.state, "", next);
     }
   };
 
@@ -301,6 +321,7 @@ export default function Panel({ config }: { config: Config }) {
       if (!parent) treeRef.current = splitNode;
       else parent.children[parent.children.indexOf(l)] = splitNode;
     }
+    pushUrl();
     setVersion((v) => v + 1);
   };
 
@@ -323,6 +344,16 @@ export default function Panel({ config }: { config: Config }) {
       if (!gp) treeRef.current = only;
       else gp.children[gp.children.indexOf(parent)] = only;
     }
+    // A layout of one pane is pointless chrome — when the collapse leaves a
+    // lone leaf at the root, exit panel mode to a plain view of it (same
+    // semantics as closing the last pane above). Only close() can get here;
+    // a hand-typed single-segment `_layout` still renders as a single pane.
+    const root = treeRef.current!;
+    if (root.type === "leaf") {
+      navigateUrl(urlForFsPath(root.path, root.query));
+      return;
+    }
+    pushUrl();
     setVersion((v) => v + 1);
   };
 
