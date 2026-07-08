@@ -9,9 +9,7 @@ import { navigate } from "../lib/router";
 import { listDir, walkDir } from "../lib/api";
 import type { FsEntry, WalkEntry, WalkResult } from "../lib/api";
 import { formatSize, formatMtime } from "../lib/format";
-import { fuzzyMatch, substringMatch, highlightSegments, isFuzzyEnabled, setFuzzyEnabled } from "../lib/fuzzy";
-import type { FuzzyResult } from "../lib/fuzzy";
-import { useSearchFuzzyVersion } from "../lib/hooks";
+import { fuzzyMatch, highlightSegments } from "../lib/fuzzy";
 
 const SORT_KEYS = { name: "Name", size: "Size", mtime: "Modified" };
 type SortKey = keyof typeof SORT_KEYS;
@@ -52,24 +50,22 @@ function sortEntries(entries: FsEntry[], sort: SortKey, order: SortOrder): FsEnt
   });
 }
 
-// Match a query against every walked entry's relative path, then rank: higher
-// fuzzy score first, then fewer path segments (shallower = closer to hand),
-// then alphabetical for a stable order.
+// Match a query against every walked entry's relative path, then rank: longest
+// consecutive matched run first (a contiguous substring hit always beats a
+// scattered subsequence one), then higher fuzzy score, then fewer path segments
+// (shallower = closer to hand), then alphabetical for a stable order.
 interface SearchHit {
   entry: WalkEntry;
   positions: number[];
 }
-function searchWalk(
-  query: string,
-  entries: WalkEntry[],
-  matcher: (query: string, text: string) => FuzzyResult | null
-): SearchHit[] {
-  const hits: { entry: WalkEntry; positions: number[]; score: number }[] = [];
+function searchWalk(query: string, entries: WalkEntry[]): SearchHit[] {
+  const hits: { entry: WalkEntry; positions: number[]; score: number; longestRun: number }[] = [];
   for (const entry of entries) {
-    const m = matcher(query, entry.rel);
-    if (m) hits.push({ entry, positions: m.positions, score: m.score });
+    const m = fuzzyMatch(query, entry.rel);
+    if (m) hits.push({ entry, positions: m.positions, score: m.score, longestRun: m.longestRun });
   }
   hits.sort((a, b) => {
+    if (b.longestRun !== a.longestRun) return b.longestRun - a.longestRun;
     if (b.score !== a.score) return b.score - a.score;
     const ad = a.entry.rel.split("/").length;
     const bd = b.entry.rel.split("/").length;
@@ -122,11 +118,6 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   // NOT URL-synced (unlike the normal-mode sort) — it resets on every query
   // change, so persisting it would fight that reset.
   const [searchSort, setSearchSort] = useState<{ sort: SortKey; order: SortOrder } | null>(null);
-  // Fuzzy on/off is a shared pref (lib/fuzzy.ts), not local state; this hook
-  // just forces a re-render when it changes so the toggle takes effect
-  // immediately, including when flipped from the sidebar's own toggle.
-  useSearchFuzzyVersion();
-  const fuzzyOn = isFuzzyEnabled();
 
   // The input echoes `query` (immediate) so keystrokes never wait on the
   // fuzzy-scoring/rendering work below. `deferredQuery` trails behind under
@@ -284,8 +275,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   // on React's low-priority schedule, not synchronously on every keystroke.
   const hits = useMemo(() => {
     if (!(searching && validWalk.status === "ok")) return [];
-    const matcher = fuzzyOn ? fuzzyMatch : substringMatch;
-    const ranked = searchWalk(q, validWalk.result.entries, matcher);
+    const ranked = searchWalk(q, validWalk.result.entries);
     if (!searchSort) return ranked; // relevance order
     const { sort, order } = searchSort;
     const flip = order === "desc" ? -1 : 1;
@@ -299,7 +289,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
       if (cmp === 0) cmp = byName(a, b);
       return cmp * flip;
     });
-  }, [searching, q, validWalk, searchSort, fuzzyOn]);
+  }, [searching, q, validWalk, searchSort]);
 
   // Rendering every match as a <tr> is the other half of the per-keystroke
   // jank on huge trees (thousands of rows synchronously mounted). Cap what
@@ -438,13 +428,6 @@ export default function Listing({ fsPath }: { fsPath: string }) {
             }
           }}
         />
-        <button
-          className={"search-fuzzy-toggle listing-search-fuzzy-toggle" + (fuzzyOn ? " active" : "")}
-          title="Fuzzy matching on/off"
-          onClick={() => setFuzzyEnabled(!fuzzyOn)}
-        >
-          fuzzy
-        </button>
         {searching && (validWalk.status === "idle" || validWalk.status === "loading") && (
           <span className="listing-search-spinner" aria-hidden="true" />
         )}
