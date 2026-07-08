@@ -228,7 +228,7 @@ const page = await fused.runPython("./reader.py",
 | `.md` | `markdown`, `code` | rendered markdown |
 | `.svg` | `image`, `code` | `<img>` via raw endpoint; svg source is text |
 | `.png .jpg .jpeg .gif .webp` | `image` | `<img>` via raw endpoint |
-| `.pdf` | `pdf` | browser-native embed |
+| `.pdf` | `pdf` | vendored pdf.js — one `<canvas>` per page (id `__fr_page_<n>`, 100-page cap), so pages are ordinary DOM: annotatable with iu/iv pixel anchors (AN-37), unlike the old `<embed>` plugin which swallowed every event |
 | `.mp4 .mov .m4v .webm .mp3 .wav .m4a .ogg .flac` | `media` | raw endpoint w/ Range |
 | `.py` | `code`, `api` | editable CodeMirror; `api` = swagger-style run form over the `main()` entry point (D63) |
 | `.js .ts .sh .yaml .yml .toml .css` | `code` | editable CodeMirror |

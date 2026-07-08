@@ -6,29 +6,38 @@
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
-  html, body { height: 100%; margin: 0; }
   body {
-    display: flex;
-    flex-direction: column;
+    margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
     color: #e8eaed;
     background: #131417;
   }
   #bar {
-    flex: 0 0 auto;
     padding: 8px 12px;
     border-bottom: 1px solid #2a2d33;
     background: #1b1d21;
-    font-size: 13px;
     color: #9aa0a6;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    position: sticky;
+    top: 0;
+    z-index: 1;
   }
-  embed, #status {
-    flex: 1 1 auto;
-    width: 100%;
-    border: none;
+  #pages {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    padding: 16px;
+  }
+  #pages canvas {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    background: #fff;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
   }
   #status {
     padding: 24px;
@@ -38,25 +47,75 @@
 </style>
 </head>
 <body>
-  <div id="bar"></div>
-  <div id="mount" style="flex:1 1 auto; display:flex;"></div>
-  <script>
+  <div id="bar" data-fa-passthrough></div>
+  <div id="pages"><div id="status">Loading…</div></div>
+  <script type="module">
+    // pdf.js renders each page to a real <canvas> (vendored bundle, no CDN —
+    // same self-containment rule as geotiff/netcdf/zarr). A canvas per page
+    // means the document is ordinary DOM: annotations anchor to a page by id
+    // (__fr_page_<n>) with iu/iv pixel refinement, which a browser <embed>
+    // plugin could never support (it swallows every event).
+    import * as pdfjs from "/template-assets/pdfjs.bundle.mjs";
+    pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs";
+
+    const MAX_PAGES = 100; // render cap — beyond this the bar says what's hidden
+    const PAGE_CSS_WIDTH = 900; // CSS px target; max-width:100% shrinks it on narrow panes
+
     const file = fused.params.get("_file");
     const bar = document.getElementById("bar");
-    const mount = document.getElementById("mount");
-    if (!file) {
-      bar.textContent = "PDF";
-      mount.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
-    } else {
-      bar.textContent = file.split("/").pop();
-      const src = fused.rawUrl(file);
-      const embed = document.createElement("embed");
-      embed.type = "application/pdf";
-      embed.src = src;
-      embed.style.flex = "1 1 auto";
-      embed.style.width = "100%";
-      mount.appendChild(embed);
+    const pagesEl = document.getElementById("pages");
+
+    function fail(message) {
+      pagesEl.innerHTML = `<div id="status" class="error"></div>`;
+      pagesEl.firstChild.textContent = message; // textContent — err.message is untrusted
     }
+
+    async function load() {
+      if (!file) {
+        bar.textContent = "PDF";
+        fail("No file selected (missing _file param).");
+        return;
+      }
+      const name = file.split("/").pop();
+      bar.textContent = name;
+      try {
+        const resp = await fetch(fused.rawUrl(file));
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.arrayBuffer();
+        const pdf = await pdfjs.getDocument({ data }).promise;
+        const shown = Math.min(pdf.numPages, MAX_PAGES);
+        bar.textContent =
+          pdf.numPages > MAX_PAGES
+            ? `${name} — showing ${shown} of ${pdf.numPages} pages`
+            : `${name} — ${pdf.numPages} ${pdf.numPages === 1 ? "page" : "pages"}`;
+        pagesEl.innerHTML = "";
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        for (let n = 1; n <= shown; n++) {
+          const page = await pdf.getPage(n);
+          const base = page.getViewport({ scale: 1 });
+          const cssWidth = Math.min(PAGE_CSS_WIDTH, base.width * 2);
+          const scale = cssWidth / base.width;
+          const vp = page.getViewport({ scale });
+          const canvas = document.createElement("canvas");
+          // Stable per-page id: annotation element anchors name the page, and
+          // iu/iv fractions of the canvas box pin the exact spot on it.
+          canvas.id = `__fr_page_${n}`;
+          canvas.width = Math.floor(vp.width * dpr);
+          canvas.height = Math.floor(vp.height * dpr);
+          canvas.style.width = vp.width + "px";
+          pagesEl.appendChild(canvas);
+          await page.render({
+            canvasContext: canvas.getContext("2d"),
+            viewport: vp,
+            transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined,
+          }).promise;
+        }
+      } catch (err) {
+        fail(`Failed to render PDF: ${String(err && err.message ? err.message : err)}`);
+      }
+    }
+
+    load();
   </script>
 </body>
 </html>

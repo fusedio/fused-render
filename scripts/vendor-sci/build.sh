@@ -24,3 +24,5 @@ build() {
 build geotiff-entry.mjs  geotiff.bundle.mjs
 build netcdfjs-entry.mjs netcdfjs.bundle.mjs
 build zarrita-entry.mjs  zarrita.bundle.mjs
+build pdfjs-entry.mjs        pdfjs.bundle.mjs
+build pdfjs-worker-entry.mjs pdfjs.worker.bundle.mjs
