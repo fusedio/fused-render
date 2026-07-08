@@ -4,7 +4,13 @@
 # Pipeline: pick/bootstrap a FRAMEWORK-build python (py2app needs one to
 # produce a real standalone bundle, see the note below) -> build a venv on it
 # -> pip install fused-render[bundled,app] + py2app + dmgbuild into that venv
-# -> generate the app icon -> run py2app -> ad-hoc codesign -> dmgbuild.
+# -> generate the app icon -> run py2app -> codesign -> dmgbuild -> notarize.
+#
+# Signing (step 5, D69) is credential-driven: with a Developer ID identity in
+# your keychain the bundle is signed with the hardened runtime (and optionally
+# notarized + stapled); with no identity it falls back to the old ad-hoc sign
+# so a plain `bash scripts/build_dmg.sh` still works for local testing. See
+# docs/signing.md for how to get an identity and store notary credentials.
 #
 # This replaces the earlier hand-rolled tarball-shim assembly (D29-D32): that
 # approach's bare bash-shim launch was the likely cause of flaky
@@ -236,27 +242,112 @@ echo "    $SMOKE_OUT"
 rm -rf "$SMOKE_DIR"
 
 # ---------------------------------------------------------------------------
-# 5. Ad-hoc codesign (D32/DM-4 carried forward). py2app signs ad-hoc on its
-#    own on Apple Silicon (unsigned binaries won't launch at all), but we
-#    re-sign explicitly here so the signature is deterministic and covers the
-#    whole bundle regardless of py2app version behavior. No Developer ID yet
-#    - testers right-click -> Open once. Real signing + notarization has a
-#    designated future home: Briefcase's "external app" packaging mode
-#    (wraps an already-built .app for signing/notarizing/DMG without
-#    reprocessing it through Briefcase's own app template, which breaks
-#    sys.executable - see D35). Not built here.
+# 5. Code signing (D69, realizes the D35 hook). Two modes:
+#
+#    - Developer ID (recommended for distribution): signs the whole bundle
+#      inside-out with the hardened runtime, a secure timestamp, and the
+#      entitlements the bundled Python + native libs need. This is the
+#      prerequisite for notarization (step 6b) AND the general form of the D68
+#      Downloads-prompt fix: with one stable Team ID signing the app stub and
+#      the nested `python` the executor spawns, macOS attributes that worker's
+#      protected-folder access to the app, so the permission prompt appears
+#      once for the app instead of once per subprocess (covers user code too,
+#      not just the in-process built-in readers).
+#    - Ad-hoc (default when no identity is configured): unchanged prior
+#      behavior. py2app already ad-hoc signs on Apple Silicon (unsigned
+#      binaries won't launch), but we re-sign deterministically over the whole
+#      bundle. Launches locally (right-click -> Open once); not distributable
+#      without Gatekeeper warnings.
+#
+#    Identity resolution is keychain-based (see docs/signing.md):
+#      FUSED_RENDER_CODESIGN_IDENTITY  explicit identity (a "Developer ID
+#                                      Application: NAME (TEAMID)" string or a
+#                                      cert SHA-1). If unset, auto-detect a
+#                                      single "Developer ID Application" cert
+#                                      from the keychain; several -> stop and
+#                                      ask; none -> ad-hoc fallback.
+#      FUSED_RENDER_CODESIGN_KEYCHAIN  optional keychain to search / sign from
+#                                      (a dedicated, unlocked keychain in CI).
+#                                      Path must not contain spaces.
 # ---------------------------------------------------------------------------
 
-echo "==> ad-hoc codesigning"
-codesign --force --deep -s - "$APP_DIR"
+KC_PATH="${FUSED_RENDER_CODESIGN_KEYCHAIN:-}"
+KC_OPT=""
+[[ -n "$KC_PATH" ]] && KC_OPT="--keychain $KC_PATH"
 
-# --- future hook: Developer ID signing + notarization ------------------------
-# codesign --force --deep --options runtime \
-#   -s "Developer ID Application: Your Name (TEAMID)" "$APP_DIR"
-# xcrun notarytool submit "$DMG_PATH" --keychain-profile "fused-render" --wait
-# xcrun stapler staple "$APP_DIR"
-# briefcase package --target external-app  # future signing path, see D35
-# ------------------------------------------------------------------------------
+SIGN_IDENTITY=""
+if [[ -n "${FUSED_RENDER_CODESIGN_IDENTITY:-}" ]]; then
+  SIGN_IDENTITY="$FUSED_RENDER_CODESIGN_IDENTITY"
+else
+  # `security find-identity` takes the keychain as a positional arg (empty
+  # expands to nothing = search the default list). grep|sed pulls the cert
+  # SHA-1 (unambiguous, unlike the display name) out of a line like:
+  #   1) A1B2..F "Developer ID Application: Jane Dev (TEAMID)"
+  IDENTITY_LINES="$(security find-identity -v -p codesigning $KC_PATH 2>/dev/null \
+    | grep 'Developer ID Application' || true)"
+  IDENTITY_COUNT="$(printf '%s' "$IDENTITY_LINES" | grep -c 'Developer ID Application' || true)"
+  if [[ "$IDENTITY_COUNT" -eq 1 ]]; then
+    SIGN_IDENTITY="$(printf '%s\n' "$IDENTITY_LINES" | sed -E 's/^ *[0-9]+\) +([0-9A-Fa-f]+) .*/\1/')"
+  elif [[ "$IDENTITY_COUNT" -gt 1 ]]; then
+    echo "FATAL: multiple 'Developer ID Application' identities in the keychain." >&2
+    echo "       Set FUSED_RENDER_CODESIGN_IDENTITY to pick one of:" >&2
+    printf '%s\n' "$IDENTITY_LINES" >&2
+    exit 1
+  fi
+fi
+
+if [[ -n "$SIGN_IDENTITY" ]]; then
+  echo "==> Developer ID signing (hardened runtime): $SIGN_IDENTITY"
+
+  # Entitlements the bundled interpreter + native stack need under the
+  # hardened runtime. Build artifact, not committed.
+  ENTITLEMENTS="$BUILD_DIR/entitlements.plist"
+  cat > "$ENTITLEMENTS" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- The bundled CPython loads third-party native libs (numpy, pyarrow,
+       duckdb, ...) not signed by our Team; without this, hardened-runtime
+       library validation refuses to load them. -->
+  <key>com.apple.security.cs.disable-library-validation</key><true/>
+  <!-- Python and some numeric/JIT libs allocate & execute code at runtime. -->
+  <key>com.apple.security.cs.allow-jit</key><true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+  <!-- app.py points the bundled interpreter/worker at its own runtime via
+       PYTHONHOME etc. -->
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key><true/>
+</dict>
+</plist>
+PLIST
+
+  # Inside-out: every nested Mach-O must carry a valid Developer ID signature +
+  # hardened runtime + timestamp before the enclosing .app, or notarization
+  # rejects the bundle. --deep is deliberately NOT used (Apple advises against
+  # it for distribution and it skips nested executables like the bundled
+  # `python`); we enumerate every Mach-O by magic bytes (same detection as the
+  # sanity check above) and sign each, then seal the .app last.
+  echo "==> signing nested Mach-O binaries"
+  while IFS= read -r macho; do
+    [[ -z "$macho" ]] && continue
+    codesign --force --options runtime --timestamp \
+      --entitlements "$ENTITLEMENTS" $KC_OPT -s "$SIGN_IDENTITY" "$macho"
+  done < <(
+    find "$APP_DIR" -type f -print0 \
+      | xargs -0 -I{} sh -c \
+        'head -c4 "{}" | xxd -p | grep -qE "^(cffaedfe|cafebabe|feedfacf|feedface|cefaedfe|bebafeca)$" && echo "{}"' \
+      || true
+  )
+  echo "==> sealing the app bundle"
+  codesign --force --options runtime --timestamp \
+    --entitlements "$ENTITLEMENTS" $KC_OPT -s "$SIGN_IDENTITY" "$APP_DIR"
+  codesign --verify --strict --verbose=2 "$APP_DIR"
+else
+  echo "==> no Developer ID identity configured -> ad-hoc codesigning (local use only)"
+  echo "    Set FUSED_RENDER_CODESIGN_IDENTITY, or add a Developer ID Application"
+  echo "    cert to your keychain, to produce a distributable build. See docs/signing.md."
+  codesign --force --deep -s - "$APP_DIR"
+fi
 
 # ---------------------------------------------------------------------------
 # 6. DMG via dmgbuild: app + Applications symlink, compressed UDZO
@@ -278,6 +369,39 @@ PYEOF
 
 rm -f "$DMG_PATH"
 "$BUILD_VENV/bin/dmgbuild" -s "$DMGBUILD_SETTINGS" -D app="$APP_DIR" "$APP_NAME" "$DMG_PATH"
+
+# ---------------------------------------------------------------------------
+# 6b. Notarize + staple (optional, D69). Runs only when a notarytool keychain
+#     profile is configured; requires a Developer ID signature (ad-hoc can't be
+#     notarized). Submits the finished DMG, waits for Apple's verdict, and
+#     staples the ticket so the DMG passes Gatekeeper on download with no
+#     network round-trip; the app it carries is notarized and launches without
+#     the right-click -> Open dance.
+#
+#     Store the profile once, then it lives in the keychain:
+#       xcrun notarytool store-credentials FUSED_RENDER_NOTARY \
+#         --apple-id you@example.com --team-id TEAMID --password <app-specific-pw>
+#     (or --key/--key-id/--issuer for an App Store Connect API key). Then:
+#       FUSED_RENDER_NOTARY_PROFILE=FUSED_RENDER_NOTARY bash scripts/build_dmg.sh
+#     See docs/signing.md.
+# ---------------------------------------------------------------------------
+
+if [[ -n "${FUSED_RENDER_NOTARY_PROFILE:-}" ]]; then
+  if [[ -z "$SIGN_IDENTITY" ]]; then
+    echo "FATAL: FUSED_RENDER_NOTARY_PROFILE is set but the app was signed ad-hoc." >&2
+    echo "       Notarization requires a Developer ID signature — configure" >&2
+    echo "       FUSED_RENDER_CODESIGN_IDENTITY (see docs/signing.md)." >&2
+    exit 1
+  fi
+  echo "==> notarizing $DMG_PATH (profile: $FUSED_RENDER_NOTARY_PROFILE)"
+  xcrun notarytool submit "$DMG_PATH" \
+    --keychain-profile "$FUSED_RENDER_NOTARY_PROFILE" --wait
+  echo "==> stapling notarization ticket"
+  xcrun stapler staple "$DMG_PATH"
+  xcrun stapler validate "$DMG_PATH"
+else
+  echo "==> skipping notarization (FUSED_RENDER_NOTARY_PROFILE unset)"
+fi
 
 # ---------------------------------------------------------------------------
 # 7. Hygiene: drop the built .app copies once they're sealed in the DMG.
