@@ -8,6 +8,7 @@
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
 import { useEffect, useState } from "react";
 import { IS_EMBED, fsPathFromLocation, urlForFsPath } from "./lib/router";
+import { useSessionRestore, useSessionTracking } from "./lib/session";
 import { statPath, type Config, type StatResult } from "./lib/api";
 import { useNavEpoch } from "./lib/hooks";
 import Sidebar from "./components/Sidebar";
@@ -47,6 +48,13 @@ function useStat(fsPath: string | null, epoch: number): StatState {
 // sentinel.
 function StatView({ fsPath, epoch }: { fsPath: string; epoch: number }) {
   const stat = useStat(fsPath, epoch);
+  const isDir = stat.status === "ok" ? stat.stat.is_dir : false;
+  // Per-file session restore (LSN-*): replay the file's last URL query on a
+  // bare open, and track qualifying param changes back into the sidecar.
+  // `ready` gates the preview so the iframe mounts with the restored params
+  // already on the shell URL (no param flash from defaults -> restored).
+  const ready = useSessionRestore(fsPath, isDir);
+  useSessionTracking(fsPath, isDir);
   let content = null;
   if (stat.status === "error") {
     content = (
@@ -63,12 +71,15 @@ function StatView({ fsPath, epoch }: { fsPath: string; epoch: number }) {
     // can't leak into fused.params.
     const s = stat.stat;
     const forceListing = new URLSearchParams(location.search).get("listing") === "1";
-    content =
-      s.is_dir && (forceListing || s.templates.length === 0) ? (
-        <Listing fsPath={fsPath} />
-      ) : (
-        <Preview fsPath={fsPath} stat={s} />
-      );
+    if (s.is_dir && (forceListing || s.templates.length === 0)) {
+      content = <Listing fsPath={fsPath} />;
+    } else if (!ready) {
+      // Brief; only for files opened with an empty query while the sidecar
+      // read resolves. Directories/bookmarks set `ready` synchronously.
+      content = <div className="status-message">Loading…</div>;
+    } else {
+      content = <Preview fsPath={fsPath} stat={s} />;
+    }
   }
   return (
     <>

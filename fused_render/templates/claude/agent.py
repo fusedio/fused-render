@@ -70,16 +70,22 @@ def _sidecar_path(file: str) -> str:
 
 
 def _load_sidecar(file: str) -> dict:
+    # Preserve every key we don't own (bookmarkHistory, lastSession, ...) so a
+    # claude turn round-trips them instead of clobbering them off disk. Only the
+    # claudeSessions key is normalised to a list. The remaining loss window is a
+    # true read-modify-write interleave between the two writers (both read the
+    # old file, both write) — acceptable under D3 (single local user, both
+    # writes human-paced).
     try:
         with open(_sidecar_path(file), encoding="utf-8") as fh:
             data = json.load(fh)
-        if isinstance(data, dict):
-            data.setdefault("claudeSessions", [])
-            if isinstance(data["claudeSessions"], list):
-                return data           # keeps bookmarkHistory + any other keys
     except (OSError, json.JSONDecodeError):
-        pass
-    return {"claudeSessions": []}
+        data = None
+    if not isinstance(data, dict):
+        data = {}
+    if not isinstance(data.get("claudeSessions"), list):
+        data["claudeSessions"] = []
+    return data
 
 
 def _save_sidecar(file: str, data: dict) -> None:

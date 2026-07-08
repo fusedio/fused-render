@@ -1,0 +1,76 @@
+// Per-file session restore (LSN-*, SPEC §18). A viewed file remembers its last
+// URL query in its <file>.json sidecar; opening it with a bare URL replays that
+// query, while opening it with params already present lets those params win.
+import { useEffect, useRef, useState } from "react";
+
+import { getSession, putSession } from "./api";
+import { IS_EMBED } from "./router";
+
+function stripQ(): string {
+  return location.search.replace(/^\?/, "");
+}
+
+// A "qualifying" query has at least one key other than _mode. _mode-only or an
+// empty query never creates or updates a lastSession (LSN-3).
+function hasQualifyingParam(search: string): boolean {
+  for (const k of new URLSearchParams(search).keys()) if (k !== "_mode") return true;
+  return false;
+}
+
+// Restore-on-open (LSN-4/5/9). Returns "ready" once the restore decision is
+// made so the caller can hold the preview until the URL is settled (no param
+// flash). Non-empty query wins; embed panes and directories opt out.
+export function useSessionRestore(fsPath: string, isDir: boolean): boolean {
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    setReady(false);
+    let alive = true;
+    if (IS_EMBED || isDir || stripQ() !== "") {
+      setReady(true);
+      return;
+    }
+    getSession(fsPath).then(
+      (r) => {
+        if (!alive) return;
+        const s = r.lastSession?.search;
+        if (s) history.replaceState(null, "", location.pathname + "?" + s);
+        setReady(true);
+      },
+      () => {
+        if (alive) setReady(true); // sidecar read failure -> render bare
+      },
+    );
+    return () => {
+      alive = false;
+    };
+    // fsPath + isDir identify the open; restore runs once per open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fsPath, isDir]);
+  return ready;
+}
+
+// Track-on-change (LSN-3/10). Debounced fire-and-forget PUT whenever the shell
+// query carries a qualifying param. Embed panes and directories opt out.
+export function useSessionTracking(fsPath: string, isDir: boolean): void {
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (IS_EMBED || isDir) return;
+    const maybeSave = () => {
+      const search = stripQ();
+      if (!hasQualifyingParam(search)) return; // _mode-only / empty: no upsert
+      window.clearTimeout(timer.current);
+      timer.current = window.setTimeout(() => {
+        void putSession(fsPath, search);
+      }, 400);
+    };
+    maybeSave(); // capture the as-restored/opened state
+    window.addEventListener("fused:urlchange", maybeSave);
+    window.addEventListener("popstate", maybeSave);
+    return () => {
+      window.removeEventListener("fused:urlchange", maybeSave);
+      window.removeEventListener("popstate", maybeSave);
+      window.clearTimeout(timer.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fsPath, isDir]);
+}

@@ -28,6 +28,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from fused_render.executor import run_python
+from fused_render.shell import storage
 from fused_render.shell.bookmarks import router as bookmarks_router
 from fused_render.shell.storage import home_dir
 
@@ -118,6 +119,52 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
     if x_fused != "1":
         return _error("missing or invalid X-Fused header", status=403)
     return None
+
+
+# Per-file sidecar <file>.json (shared with the claude chat template, which
+# owns "claudeSessions", and bookmarks, which own "bookmarkHistory" — see
+# templates/claude/agent.py and shell/bookmarks.py). Read/merge/write preserves
+# every other key so the writers never clobber each other (single local user,
+# last-write-wins on a true interleave — D3).
+def _sidecar_path(file: str) -> str:
+    return file + ".json"
+
+
+def _read_sidecar(file: str) -> dict:
+    # read_json returns None on missing/corrupt; a non-dict (a stray JSON list)
+    # is treated as empty so a merge can't crash.
+    data = storage.read_json(_sidecar_path(file))
+    return data if isinstance(data, dict) else {}
+
+
+def _session_get(path: str):
+    if not os.path.isfile(path):
+        return _error(f"no such file: {path}", status=404)
+    last = _read_sidecar(path).get("lastSession")
+    return {"lastSession": last if isinstance(last, dict) else None}
+
+
+def _session_put(body: dict, x_fused: str | None):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    path = body.get("path")
+    search = body.get("search")
+    if not path or not os.path.isabs(path):
+        return _error("'path' must be an absolute filesystem path")
+    if not os.path.isfile(path):
+        return _error(f"no such file: {path}", status=404)
+    if not isinstance(search, str):
+        return _error("'search' must be a string")
+    # Read-merge-write the whole dict so claudeSessions / bookmarkHistory
+    # survive alongside lastSession (see _read_sidecar comment).
+    data = _read_sidecar(path)
+    data["lastSession"] = {"search": search, "updated_at": time.time()}
+    try:
+        storage.write_json(_sidecar_path(path), data)
+    except OSError as e:
+        return _error(f"cannot write sidecar for {path}: {e}", status=400)
+    return {"ok": True}
 
 
 # User templates + their registry live under the shell home dir's templates/
@@ -465,6 +512,19 @@ def create_app(start_dir: str) -> FastAPI:
     # Shell-specific state backends live in fused_render/shell/ (bookmarks,
     # future user-config), kept out of this module's fs/render internals.
     app.include_router(bookmarks_router)
+
+    # Per-file session restore (LSN-*): a viewed file remembers its last URL
+    # query in the "lastSession" key of its <file>.json sidecar. GET is a read
+    # endpoint (no X-Fused guard); PUT mutates so it carries the D36 guard.
+    @app.get("/api/session")
+    def api_session_get(path: str):
+        return _session_get(path)
+
+    @app.put("/api/session")
+    def api_session_put(
+        body: dict = Body(...), x_fused: str | None = Header(default=None)
+    ):
+        return _session_put(body, x_fused)
 
     @app.get("/api/config")
     def api_config():

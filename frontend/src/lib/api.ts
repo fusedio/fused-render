@@ -135,3 +135,18 @@ export interface BookmarkHistoryEntry {
 export function recordBookmarkHistory(entry: BookmarkHistoryEntry): Promise<void> {
   return postJson<unknown>("/api/bookmarks/history", entry).then(() => undefined);
 }
+
+// Per-file session restore (LSN-*). `search` is the shell query without the
+// leading "?", stored verbatim in the target file's .html.json sidecar.
+export interface LastSession {
+  search: string;
+  updated_at: number;
+}
+
+export function getSession(fsPath: string): Promise<{ lastSession: LastSession | null }> {
+  return getJson("/api/session?path=" + encodeURIComponent(fsPath));
+}
+
+export function putSession(fsPath: string, search: string): Promise<void> {
+  return putJson<unknown>("/api/session", { path: fsPath, search }).then(() => undefined);
+}
