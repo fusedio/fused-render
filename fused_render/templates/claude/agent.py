@@ -73,11 +73,11 @@ def _load_sidecar(file: str) -> dict:
     try:
         with open(_sidecar_path(file), encoding="utf-8") as fh:
             data = json.load(fh)
-        if isinstance(data, dict) and isinstance(data.get("sessions"), list):
+        if isinstance(data, dict) and isinstance(data.get("claudeSessions"), list):
             return data
     except (OSError, json.JSONDecodeError):
         pass
-    return {"sessions": []}
+    return {"claudeSessions": []}
 
 
 def _save_sidecar(file: str, data: dict) -> None:
@@ -108,13 +108,13 @@ def _record_session(file: str, session_id: str, message: str,
     data = _load_sidecar(file)
     now = time.time()
     cwd = os.path.dirname(file)
-    for entry in data["sessions"]:
+    for entry in data["claudeSessions"]:
         if entry.get("id") in (session_id, resumed_from):
             entry["id"] = session_id
             entry["last_used"] = now
             entry["cwd"] = cwd
             return _save_sidecar(file, data)
-    data["sessions"].append({
+    data["claudeSessions"].append({
         "id": session_id,
         "preview": message.strip()[:80],
         "created_at": now,
@@ -148,7 +148,7 @@ def _migrate_session(file: str, session_id: str) -> None:
     dest = os.path.join(dest_dir, session_id + ".jsonl")
 
     data = _load_sidecar(file)
-    entry = next((e for e in data["sessions"] if e.get("id") == session_id), None)
+    entry = next((e for e in data["claudeSessions"] if e.get("id") == session_id), None)
 
     if not os.path.exists(dest):
         old_cwd = (entry or {}).get("cwd", "")
@@ -317,7 +317,7 @@ def _poll(run_id: str) -> dict:
 def _sessions(file: str) -> dict:
     """Sessions recorded in THIS file's sidecar, newest activity first."""
     file = os.path.abspath(file)
-    sessions = sorted(_load_sidecar(file)["sessions"],
+    sessions = sorted(_load_sidecar(file)["claudeSessions"],
                       key=lambda s: s.get("last_used", 0), reverse=True)
     return {"sessions": sessions}
 
