@@ -38,7 +38,10 @@
     background: rgba(19,20,23,.9); border: 1px solid #2a2d33; border-radius: 999px;
     padding: 4px 14px; color: #9aa0a6; z-index: 20; display: none; }
   #status.err { color: #ff7b72; display: block; }
-  #metaPanel { right: 10px; top: 58px; width: 430px; max-height: 72vh; overflow: auto; display: none; }
+  /* Cap height so the info panel stops above the histogram panel pinned
+     bottom-right (#histPanel: bottom 26px + ~215px tall) instead of spilling
+     over it. */
+  #metaPanel { right: 10px; top: 58px; width: 430px; max-height: calc(100vh - 58px - 260px); overflow: auto; display: none; }
   #metaPanel table { border-collapse: collapse; width: 100%; font-size: 12px; }
   #metaPanel td { padding: 3px 6px; border-bottom: 1px solid #23262c; vertical-align: top; word-break: break-all; }
   #metaPanel td:first-child { color: #9aa0a6; white-space: nowrap; }
