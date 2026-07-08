@@ -27,6 +27,7 @@ from fastapi import Body, FastAPI, Header, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from fused_render.deploy import router as deploy_router
 from fused_render.executor import run_python
 from fused_render.shell.bookmarks import router as bookmarks_router
 from fused_render.shell.storage import home_dir
@@ -465,6 +466,9 @@ def create_app(start_dir: str) -> FastAPI:
     # Shell-specific state backends live in fused_render/shell/ (bookmarks,
     # future user-config), kept out of this module's fs/render internals.
     app.include_router(bookmarks_router)
+    # Deploy (hosted publish through the fused CLI) — export + `fused share`
+    # orchestration and the per-page deployment pointer store (deploy.py).
+    app.include_router(deploy_router)
 
     @app.get("/api/config")
     def api_config():

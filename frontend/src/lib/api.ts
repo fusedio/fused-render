@@ -70,6 +70,18 @@ async function putJson<T>(url: string, body: unknown): Promise<T> {
   return data as T;
 }
 
+async function postJson<T>(url: string, body: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method: "POST",
+    // Same X-Fused D3 guard as putJson above.
+    headers: { "Content-Type": "application/json", "X-Fused": "1" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data as T;
+}
+
 export function getConfig(): Promise<Config> {
   return getJson<Config>("/api/config");
 }
@@ -107,4 +119,91 @@ export function getBookmarks(): Promise<BookmarksResult> {
 
 export function putBookmarks(bookmarks: unknown[]): Promise<void> {
   return putJson<unknown>("/api/bookmarks", bookmarks).then(() => undefined);
+}
+
+// -- Deploy (hosted publish through the fused CLI; fused_render/deploy.py) ----
+
+// Availability of the fused CLI in the server's environment, and whether the
+// server can pip-install it (the pinned [fused] extra) on request.
+export interface DeployCli {
+  found: boolean;
+  command: string | null;
+  installable: boolean;
+  reason: string | null;
+  install_hint: string;
+}
+
+// A hosted environment from the fused CLI's own store (~/.openfused/envs.json):
+// backend "fused" (managed) or "aws" (self-provisioned serving plane).
+export interface DeployEnv {
+  name: string;
+  backend: string;
+}
+
+export interface DeployConfig {
+  cli: DeployCli;
+  envs: DeployEnv[];
+  default_env: string | null;
+  envs_file: string;
+}
+
+// The thin per-page deployment pointer (~/.fused-render/deployments.json).
+// url is null when the backend never returned one (AWS prints token+path only).
+export interface Deployment {
+  page: string;
+  env: string;
+  backend: string;
+  token: string;
+  url: string | null;
+  status: "active" | "revoked";
+  entrypoints: string[];
+  updated_at: string;
+}
+
+export interface DeployStatusResult {
+  deployment: Deployment | null;
+  // false when the pointer was NOT checked against `share list` (reconcile not
+  // requested, or the deploy env was unreachable) — last-known state only.
+  reconciled: boolean;
+}
+
+// One mount from `fused share list` on an env, joined back to the local page
+// that deployed it (null for mounts this machine doesn't track).
+export interface ShareMount {
+  token: string;
+  status: string;
+  type: string | null;
+  url: string | null;
+  page: string | null;
+}
+
+export interface SharesResult {
+  env: string;
+  mounts: ShareMount[];
+}
+
+export function getDeployConfig(): Promise<DeployConfig> {
+  return getJson<DeployConfig>("/api/deploy/config");
+}
+
+export function getDeployStatus(fsPath: string, reconcile: boolean): Promise<DeployStatusResult> {
+  const url =
+    "/api/deploy/status?path=" + encodeURIComponent(fsPath) + (reconcile ? "&reconcile=1" : "");
+  return getJson<DeployStatusResult>(url);
+}
+
+export function deployPage(fsPath: string, env: string): Promise<Deployment> {
+  return postJson<Deployment>("/api/deploy", { page: fsPath, env });
+}
+
+export function revokeDeployment(fsPath: string): Promise<Deployment> {
+  return postJson<Deployment>("/api/deploy/revoke", { page: fsPath });
+}
+
+export function installFused(): Promise<void> {
+  return postJson<unknown>("/api/deploy/install", {}).then(() => undefined);
+}
+
+export function listShares(env: string): Promise<SharesResult> {
+  return getJson<SharesResult>("/api/deploy/shares?env=" + encodeURIComponent(env));
 }

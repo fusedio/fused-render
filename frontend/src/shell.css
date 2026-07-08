@@ -1357,3 +1357,309 @@ body.embed .preview-browse-chip:hover {
 #root {
   display: contents;
 }
+
+/* ---- Deploy button + modal (SPEC §19) ------------------------------------ */
+
+/* Header action for deployable pages: same chrome as its .preview-actions
+   siblings, plus a live dot when the page's deployment pointer reads active. */
+.preview-actions .deploy-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.deploy-live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #3fca6b;
+  flex: 0 0 auto;
+}
+
+.deploy-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 8vh 16px 16px;
+  z-index: 1000;
+}
+
+.deploy-dialog {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: min(600px, 100%);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.deploy-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.deploy-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deploy-close {
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px 6px;
+}
+
+.deploy-close:hover {
+  color: var(--fg);
+}
+
+.deploy-body {
+  padding: 14px 16px 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.deploy-body p {
+  margin: 0;
+}
+
+.deploy-body code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 12px;
+}
+
+.deploy-body button {
+  font: inherit;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+.deploy-body button:hover:not(:disabled) {
+  background: var(--bg-alt);
+  border-color: var(--accent);
+}
+
+.deploy-body button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.deploy-body .deploy-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #10131a;
+  font-weight: 600;
+}
+
+.deploy-body .deploy-primary:hover:not(:disabled) {
+  background: var(--accent);
+  filter: brightness(1.08);
+}
+
+.deploy-body .deploy-danger {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.deploy-body .deploy-danger:hover:not(:disabled) {
+  background: rgba(255, 107, 107, 0.12);
+}
+
+.deploy-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.deploy-muted {
+  color: var(--fg-muted);
+}
+
+.deploy-error {
+  color: var(--error);
+  border: 1px solid var(--error);
+  border-radius: 6px;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.deploy-note {
+  border-left: 2px solid var(--border);
+  padding-left: 10px;
+}
+
+/* Current-deployment card: status chip + URL row. */
+.deploy-current {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.deploy-current-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.share-status {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+}
+
+.share-status.active {
+  color: #3fca6b;
+  border-color: #3fca6b;
+}
+
+.share-status.revoked {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.deploy-url-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.deploy-url {
+  color: var(--accent);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+}
+
+.deploy-url:hover {
+  text-decoration: underline;
+}
+
+.deploy-copy {
+  flex: 0 0 auto;
+}
+
+.deploy-form-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.deploy-form-row label {
+  color: var(--fg-muted);
+}
+
+.deploy-form-row select {
+  font: inherit;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  max-width: 100%;
+}
+
+/* Share list: the env's mounts joined to local pages. */
+.deploy-shares-toggle {
+  background: none !important;
+  border: none !important;
+  color: var(--fg-muted);
+  padding: 0 !important;
+}
+
+.deploy-shares-toggle:hover {
+  color: var(--fg);
+}
+
+.deploy-shares-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.deploy-shares-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.deploy-shares-table td {
+  padding: 5px 8px;
+  border-top: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.deploy-shares-table tr.mine td {
+  background: rgba(229, 255, 68, 0.06);
+}
+
+.deploy-shares-table .share-page {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deploy-shares-table .share-token {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--fg-muted);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deploy-shares-table a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.deploy-shares-table a:hover {
+  text-decoration: underline;
+}
+
+.deploy-shares-refresh {
+  font-size: 12px;
+}

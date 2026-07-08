@@ -3,12 +3,13 @@
 //   2. else                      -> fallback metadata card
 // No file-type checks live in the shell — html arrives through stat.templates
 // like everything else, via the "_render" sentinel (SPEC PT-12).
-import { useState, type ReactNode } from "react";
-import { rawUrl } from "../lib/api";
-import type { StatResult, TemplateEntry } from "../lib/api";
+import { useEffect, useState, type ReactNode } from "react";
+import { getDeployStatus, rawUrl } from "../lib/api";
+import type { Deployment, StatResult, TemplateEntry } from "../lib/api";
 import { formatSize, formatMtime } from "../lib/format";
 import { navigateUrl } from "../lib/router";
 import ModeSwitcher, { templateModeIcon } from "../components/ModeSwitcher";
+import DeployModal from "../components/DeployModal";
 import { useUrlVersion } from "../lib/hooks";
 
 // Directory previews (a `.zarr` store maps to a directory template, D65) keep
@@ -131,6 +132,59 @@ function AnnotateToggle({ on, onToggle }: { on: boolean; onToggle: () => void })
   );
 }
 
+// --- Deploy button (SPEC §19) -----------------------------------------------
+// Header action for deployable pages: any file whose mode list carries the
+// "_render" sentinel (i.e. a renderable page — the exact set /api/export
+// accepts). Shows a live dot when the local deployment pointer reads active;
+// the pointer is a cheap local read (no CLI shell-out) — the modal is what
+// reconciles against `share list`. A user who rebinds .html away from
+// "_render" loses the button too, consistently with losing the rendered view.
+
+const DEPLOY_ICON = (
+  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 19V5" />
+    <path d="M5 12l7-7 7 7" />
+  </svg>
+);
+
+function DeployButton({ fsPath }: { fsPath: string }) {
+  const [open, setOpen] = useState(false);
+  const [deployment, setDeployment] = useState<Deployment | null>(null);
+
+  // Local pointer only (reconcile=false): opening a preview must never spawn
+  // the fused CLI. Errors are ignored — the button then just shows no dot.
+  useEffect(() => {
+    let alive = true;
+    getDeployStatus(fsPath, false)
+      .then((r) => {
+        if (alive) setDeployment(r.deployment);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [fsPath]);
+
+  const live = deployment?.status === "active";
+  return (
+    <>
+      <button
+        type="button"
+        className={"deploy-btn" + (live ? " live" : "")}
+        title={live ? "Deployed — open the Deploy dialog to manage" : "Deploy this page to a hosted URL"}
+        onClick={() => setOpen(true)}
+      >
+        {DEPLOY_ICON}
+        Deploy
+        {live && <span className="deploy-live-dot" />}
+      </button>
+      {open && (
+        <DeployModal fsPath={fsPath} onClose={() => setOpen(false)} onChange={setDeployment} />
+      )}
+    </>
+  );
+}
+
 function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: StatResult; templates: TemplateEntry[] }) {
   // Caller only renders this when `templates` (already sentinel-filtered by
   // Preview's dispatch, SPEC PT-12) is non-empty.
@@ -169,6 +223,13 @@ function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: St
           <button type="button" onClick={browseContents}>
             Browse contents
           </button>
+        )}
+        {/* Deployable = the mode list carries the "_render" sentinel (a
+            renderable page — what /api/export accepts). Directories never
+            deploy (no _render binding exists for one today; the guard keeps
+            that true even if a registry ever says otherwise). */}
+        {!stat.is_dir && templates.some((t) => t.mode === "_render") && (
+          <DeployButton fsPath={fsPath} />
         )}
         <ModeSwitcher
           entries={templates.map((t) => ({ mode: t.mode, icon: templateModeIcon(t) }))}

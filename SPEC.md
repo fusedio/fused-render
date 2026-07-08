@@ -558,3 +558,105 @@ nothing. Full detail: `docs/EXPORT.md`.
   `run-` when they'd collide with a reserved serve route (`data`, `health`, the
   `_`-prefixed control/shell/asset routes), and are suffixed `-2`, `-3`, … on
   duplicate stems — so the map is always valid and injective.
+
+## 19. Deploy — Hosted Publish through the fused CLI (M11)
+
+Goal: close the gap between §18's bundle and a working URL, from the shell. The
+local-only invariant (§1) is unchanged in kind: fused-render still binds
+127.0.0.1, hosts nothing, and mints no URLs — **deploying is an explicit user
+action that delegates to the separately-installed `fused` CLI** (`fused share`,
+the fused repo's one URL-minting operation — its spec/serve/share-links.md and
+spec/serve/fused-render.md; the same shell-out pattern the flow app uses for
+project deploys). The server orchestrates the child process; nothing else in
+the product gains network access.
+
+### 19.1 Surface
+
+- **DP-1** Any file preview whose mode list carries the `_render` sentinel (a
+  renderable page — exactly the set `/api/export` accepts) shows a **Deploy**
+  header action; a green dot marks a page whose stored deployment reads active
+  (a local pointer read — opening a preview never spawns the CLI). Directories
+  never show it. The action opens the Deploy modal.
+- **DP-2** The modal handles its states in order: the fused CLI missing → an
+  install panel; no hosted env configured → guidance (`fused env create` /
+  `fused cloud setup`, naming the envs file); else the form — env picker,
+  current-deployment card (status chip, URL with copy/open), Deploy/Redeploy,
+  Revoke, and the chosen env's share list (DP-13).
+
+### 19.2 The fused CLI seam
+
+- **DP-3** CLI resolution (`deploy.fused_command`): `FUSED_RENDER_FUSED_BIN`
+  (verbatim, whitespace-split — compound commands work, and it is the test
+  seam) → a `fused` console script in the server interpreter's own bin/ →
+  `fused` on PATH.
+- **DP-4** When the CLI is missing and installing is possible (Python ≥ 3.11,
+  package metadata available), `POST /api/deploy/install` pip-installs **the
+  requirement pinned by this package's own `[fused]` extra** into the server's
+  interpreter — pyproject.toml stays the single source of the pin, read via
+  `importlib.metadata.requires`. Otherwise the modal states why and shows the
+  manual `pip install "fused-render[fused]"` hint.
+
+### 19.3 Environments
+
+- **DP-5** Eligible deploy targets are the **hosted** environments in the fused
+  CLI's own store (`~/.openfused/envs.json`, `OPENFUSED_ENVS_FILE` override):
+  backends `fused` (managed) and `aws` (self-provisioned serving plane) —
+  never `local`, which has no serving plane. The store is read directly, so the
+  picker renders even before the CLI is installed.
+- **DP-6** Default pick: `OPENFUSED_ENV` when it names an eligible env, else
+  the first `fused`-backend env (preferring the store default when it is one),
+  else the store default, else the first eligible.
+- **DP-7** The chosen env is targeted by setting `OPENFUSED_ENV` on the child —
+  the CLI's own override channel; no config file is edited.
+
+### 19.4 Deploy semantics
+
+- **DP-8** Each deploy re-exports the page (§18) into a fresh temp directory
+  and hands that bundle to the CLI; the bundle is deleted afterwards. An export
+  error blocks the deploy (400, all problems at once — nothing is uploaded).
+- **DP-9** Deploys are **public share links** (`share create --public`, no
+  `--token`): an opaque, unguessable capability URL. Rationale: authed mounts
+  cannot serve a hosted page's browser asset GETs yet (fused repo,
+  spec/serve/fused-render.md § Limitations); gate pickers become an option when
+  that lands.
+- **DP-10** Redeploy keeps the URL. Same-env pointer + mount active per
+  `share list` → `share repoint <token>` (stable URL); revoked tombstone →
+  `share recreate --same-token` then repoint (a failed repoint best-effort
+  re-revokes, so a deliberately taken-down link never comes back silently live
+  with old content); token absent from the list entirely (e.g. after an
+  `infra teardown`) → fresh `create`. Deploying to a **different** env always
+  creates fresh there and repoints the pointer — the old env's mount stays
+  live, and the modal says so inline.
+- **DP-11** CLI output is parsed defensively (`token`/`id`/`url`/`status`
+  only): the managed backend returns the URL on create/repoint/recreate; an
+  AWS env prints token+path only, so `url` may stay null — the last-known URL
+  is kept, never regressed to null by a URL-less repoint.
+- **DP-15** Version dependency, surfaced not hidden: whether a *bundle* deploy
+  succeeds on a given backend is the installed fused CLI's contract, not ours —
+  the fused repo's spec/serve/fused-render.md publishes bundles via
+  `share create` on AWS envs and lists the managed backend's inline-upload
+  bundle classification as a follow-up. fused-render passes the CLI's own
+  error through verbatim rather than second-guessing the installed version.
+
+### 19.5 State & truth
+
+- **DP-12** A thin per-page pointer at `~/.fused-render/deployments.json`
+  (shell/storage; keyed by absolute page path — env, backend, token, url,
+  status, entrypoints, updated_at) lets the shell mark deployed files, re-show
+  the URL (`create` returns it exactly once; `share list` never carries one),
+  and redeploy to the same token. **`share list` on the env stays the
+  authority**: the modal reconciles status against it on open (`--all`, so an
+  AWS caller-identity change can't fake a revoke); an unreachable env returns
+  the last-known pointer with `reconciled: false` instead of failing the
+  dialog.
+- **DP-13** `GET /api/deploy/shares?env=…` is the "what's deployed on this
+  env" view: every mount from `share list --all`, joined back to the local
+  page that deployed it via the pointer store (`page: null` for mounts this
+  machine doesn't track), local pages first, live before revoked.
+- **DP-14** Endpoints (`fused_render/deploy.py`, an APIRouter like
+  shell/bookmarks): `GET /api/deploy/config`, `GET /api/deploy/status`,
+  `GET /api/deploy/shares`, `POST /api/deploy`, `POST /api/deploy/revoke`,
+  `POST /api/deploy/install`; the POSTs carry the `X-Fused` guard (D36). CLI
+  failures surface their last stderr line verbatim (click's `Error: ` prefix
+  stripped) — the fused CLI's messages already name the fix
+  (`fused cloud login`, `fused infra serve`, …).

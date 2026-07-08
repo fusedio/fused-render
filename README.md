@@ -113,6 +113,40 @@ other endpoint — see the module docstring in `server.py`). It collects the pag
 subset of the runtime API is supported (no `writeFile`, `stat`, or live-reload).
 See `docs/EXPORT.md` for the bundle format and rules.
 
+## Deploy to a hosted URL
+
+The shell automates the whole export → publish chain: any renderable page's
+preview header has a **Deploy** button (green dot = currently deployed) opening
+a modal that exports the page to a temporary bundle and publishes it through
+the separately-installed `fused` CLI (`fused share create <bundle> --public`) —
+fused-render itself still hosts nothing and mints no URLs.
+
+The modal handles the whole flow:
+
+- **The `fused` package.** Deploying needs the `fused` CLI, which may not be in
+  the venv running this server. If it's missing, the modal offers a one-click
+  install of the wheel pinned by this package's `[fused]` extra (Python 3.11+),
+  or names the manual command: `pip install "fused-render[fused]"`. An existing
+  install is found via `FUSED_RENDER_FUSED_BIN`, the server venv's `bin/`, or
+  `PATH`.
+- **Environment choice.** Deploy targets are the *hosted* environments from the
+  fused CLI's own store (`~/.openfused/envs.json`): a managed `fused` env (the
+  default) or an `aws` env whose serving plane `fused infra serve` provisioned.
+  `local` envs have no serving plane and are never offered.
+- **The URL.** Deploys mint a **public share link** — an opaque, unguessable
+  URL shown with copy/open actions. Redeploying the same page republishes to
+  the **same URL**; Revoke takes it down (deploying again restores the link).
+- **What's deployed.** A per-page pointer (`~/.fused-render/deployments.json`)
+  marks deployed files in the preview header, and the modal's share list
+  (`fused share list`) shows every mount on the chosen environment, joined back
+  to the local pages that deployed them.
+
+Whether a given backend accepts a *page bundle* is the installed `fused` CLI's
+contract (its `spec/serve/fused-render.md`): AWS serving planes build the
+hosted-page artifact today; the managed backend's inline-upload bundle
+classification is an upstream follow-up — until then its CLI error shows in the
+modal verbatim.
+
 ## Logs
 
 The server writes an application log so that when something goes wrong — an
