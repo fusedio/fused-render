@@ -176,9 +176,26 @@
     // convert once (same-origin parent): content/timestamps/status/view map
     // directly; anchorId/anchorPath carry over (selection anchors have no
     // native equivalent — they surface as detached, content preserved).
+    // The shell URL's `_layout=(…)` span (panel/tab mode) contains literal
+    // `&`, so it must be excised via a balanced-paren scan before the rest is
+    // handed to URLSearchParams — same rule as runtime.js splitSearch.
+    function withoutLayoutSpan(search) {
+      const s = (search || "").replace(/^\?/, "");
+      const m = /(^|&)_layout=\(/.exec(s);
+      if (!m) return s;
+      const start = m.index + m[1].length;
+      let i = start + "_layout=(".length;
+      let depth = 1;
+      while (i < s.length && depth > 0) {
+        if (s[i] === "(") depth++;
+        else if (s[i] === ")") depth--;
+        i++;
+      }
+      return (s.slice(0, m.index) + s.slice(i)).replace(/^&|&$/g, "");
+    }
     function legacyComments() {
       try {
-        const raw = new URLSearchParams(window.parent.location.search).get("_comments");
+        const raw = new URLSearchParams(withoutLayoutSpan(window.parent.location.search)).get("_comments");
         if (!raw) return null;
         const arr = JSON.parse(raw);
         if (!Array.isArray(arr)) return null;
