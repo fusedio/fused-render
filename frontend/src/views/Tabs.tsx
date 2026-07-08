@@ -2,8 +2,8 @@
 // Same URL-is-state model as panel mode but one page visible at a time. The
 // tab list is a flat top-level `,` row of the shared `_layout` codec; the
 // active tab is deliberately NOT encoded (TM-6) so switching never dirties the
-// "Update bookmark" state. Params are tab-INDEPENDENT (TM-3, inverting
-// panel's merged pool): the tab shell marks its window `_fusedParamBoundary`
+// "Update bookmark" state. Params are tab-INDEPENDENT (TM-3, same contract as
+// panel mode since D72): the tab shell marks its window `_fusedParamBoundary`
 // so each tab's runtime targets its own /embed URL, and every tab's full
 // query is captured segment-local inside `_layout`.
 //
@@ -38,8 +38,8 @@ const TAB_PATH = (IS_EMBED ? "/embed/" : "/view/") + "_tab";
 
 // Compose a `/view/_tab` URL from a folder's child bookmarks (TM-8, sidebar
 // entry). Tab params are independent (TM-3/D47): each child's WHOLE saved
-// query stays segment-local — no hoisting, no merged pool, no collision
-// handling — so every tab reproduces its bookmark verbatim. Exported for
+// query stays segment-local — no hoisting, no collision handling — so every
+// tab reproduces its bookmark verbatim. Exported for
 // Sidebar.tsx (documented acyclic exception, mirrors breadcrumb -> Panel).
 export function composeFolderTabsUrl(children: Bookmark[]): string {
   const segments = children.map((b) => {

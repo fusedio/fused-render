@@ -35,9 +35,10 @@ import { ShareIcon } from "../components/ShareIcon";
 // `/embed/_panel`), so entering/refreshing/exiting stays in the active mode.
 const PANEL_PATH = (IS_EMBED ? "/embed/" : "/view/") + "_panel";
 
-// Build <prefix>/_panel?... : the encoded tree plus the merged (top-level)
-// param pool. Exported for the breadcrumb's Split button (same acyclic
-// exception as the vanilla breadcrumb.js -> views/panel.js import).
+// Build <prefix>/_panel?... : the encoded tree plus any top-level params
+// (hand-typed globals only, D72 — the shell never promotes params there).
+// Exported for the breadcrumb's Split button (same acyclic exception as the
+// vanilla breadcrumb.js -> views/panel.js import).
 export function panelUrl(codecStr: string, merged?: Iterable<[string, string]> | null): string {
   return buildSentinelUrl(PANEL_PATH, codecStr, merged);
 }
@@ -255,6 +256,19 @@ function Build({ node, ctx }: { node: LayoutNode; ctx: PaneCtx }) {
 }
 
 export default function Panel({ config }: { config: Config }) {
+  // Mark this window a param boundary BEFORE any iframe mounts (LM-3/D72,
+  // same contract as tab mode): a page rendered inside a pane targets its own
+  // embed URL, so params stay pane-local (captured segment-local in `_layout`
+  // by syncUrl). Cleared on unmount — this shell window survives SPA
+  // navigation to a normal view, and a stale flag would corrupt that view.
+  window._fusedParamBoundary = true;
+  useEffect(
+    () => () => {
+      delete window._fusedParamBoundary;
+    },
+    []
+  );
+
   // Build the pane tree from `_layout` on the shell URL once per mount (App
   // remounts Panel on every navigation). Missing/empty/unparseable `_layout`
   // falls back to a single pane of the start dir.
@@ -273,7 +287,8 @@ export default function Panel({ config }: { config: Config }) {
   }
   const [version, setVersion] = useState(0);
 
-  // Re-encode `_layout` on the shell URL, preserving the merged pool, and
+  // Re-encode `_layout` on the shell URL, passing hand-typed top-level params
+  // through untouched (D72 — no user params are promoted here), and
   // replaceState only when the value actually changed (LM-6 guard). This
   // fires the shell's own fused:urlchange (main.tsx wraps replaceState), so
   // the bookmark buttons react.
