@@ -139,19 +139,43 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   const q = deferredQuery.trim();
   const searching = q !== "";
   const isStale = query.trim() !== q;
-  // Explicit dot-intent (deferred, so it lags typing the same way `q` does):
-  // a dot-leading query or a "/." mid-path segment asks to see hidden entries.
-  const hidden = queryWantsHidden(deferredQuery);
+
+  // Fetch intent: which walk dataset (hidden-inclusive or not) should be
+  // loaded. Derived from the IMMEDIATE `query`, not `deferredQuery` — the
+  // input updates `query` on every keystroke, so a dot-leading query has to
+  // start the right fetch on the first keystroke instead of waiting for
+  // `deferredQuery` to catch up. Under load that lag could otherwise leave
+  // `hidden === false` (walk fetched/kept non-hidden) even though the UI
+  // already shows a dot-leading query.
+  // An empty immediate query carries no fresh signal, so it keeps the last
+  // known intent (the current walk's own tag, or false if there's no walk
+  // yet) instead of snapping to false — that avoids invalidating a good
+  // cached/in-flight walk on a boundary render where the box is momentarily
+  // empty mid-edit (e.g. select-all + retype).
+  // Note: `hits` below still scores the *deferred* `q` against whatever walk
+  // is currently valid. Right after an intent flip there's a narrow window
+  // where a hidden-superset walk has loaded (matching the fresh
+  // `fetchHidden`) while `q` still lags on pre-flip text; it can then match
+  // an extra dotted entry it wouldn't show once `q` catches up. That's an
+  // acceptable "briefly extra rows" tradeoff — not the wrong dataset, which
+  // is what the deferred-only version risked.
+  const immediateTrimmed = query.trim();
+  const fetchHidden =
+    immediateTrimmed !== ""
+      ? queryWantsHidden(immediateTrimmed)
+      : walk.status !== "idle"
+        ? walk.forHidden
+        : false;
 
   // Synchronous validity check: a non-idle walk only counts if it was fetched
   // for the folder/refresh/hidden generation we're currently rendering. This
   // makes invalidation immediate on the render where `refresh` bumps (or
-  // `hidden` flips), instead of depending on the clearing effect below to run
-  // first (which left one render scoring search results against the stale
-  // tree, or against the wrong hidden/non-hidden dataset).
+  // `fetchHidden` flips), instead of depending on the clearing effect below
+  // to run first (which left one render scoring search results against the
+  // stale tree, or against the wrong hidden/non-hidden dataset).
   const validWalk: WalkState =
     walk.status === "idle" ||
-    (walk.forPath === fsPath && walk.forRefresh === refresh && walk.forHidden === hidden)
+    (walk.forPath === fsPath && walk.forRefresh === refresh && walk.forHidden === fetchHidden)
       ? walk
       : IDLE_WALK;
 
@@ -222,7 +246,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     let alive = true;
     const forPath = fsPath;
     const forRefresh = refresh;
-    const forHidden = hidden;
+    const forHidden = fetchHidden;
     walkDir(fsPath, { hidden: forHidden }).then(
       (result) => alive && setWalk({ status: "ok", result, forPath, forRefresh, forHidden }),
       (err: Error) => alive && setWalk({ status: "error", message: err.message, forPath, forRefresh, forHidden })
@@ -230,7 +254,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     return () => {
       alive = false;
     };
-  }, [validWalk.status, fsPath, refresh, hidden]);
+  }, [validWalk.status, fsPath, refresh, fetchHidden]);
 
   // A query restored from the URL needs the walk even without a focus event;
   // this also covers refetch-on-refresh while search is active, since a
@@ -242,9 +266,9 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   // instead: prefetchWalk (focus) and setQuery (typing) below.
   useEffect(() => {
     if (searching && validWalk.status === "idle") {
-      setWalk({ status: "loading", forPath: fsPath, forRefresh: refresh, forHidden: hidden });
+      setWalk({ status: "loading", forPath: fsPath, forRefresh: refresh, forHidden: fetchHidden });
     }
-  }, [searching, validWalk.status, fsPath, refresh, hidden]);
+  }, [searching, validWalk.status, fsPath, refresh, fetchHidden]);
 
   // Retry from "idle" (first focus) or "error" (a prior fetch failed) — treat
   // both as "no usable walk cached yet". Called from onFocus, a genuine user
@@ -262,11 +286,14 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     setSearchSort(null); // a new query drops back to relevance order
     // Editing the query is also a user gesture: if the last walk attempt
     // failed, give it another shot instead of leaving search dead forever.
-    // Tag with the hidden-intent of the value being typed now (not the stale
-    // `hidden` closure, which still reflects the not-yet-caught-up deferred
-    // query) so the retry doesn't fetch the wrong dataset.
+    // Tag with the immediate hidden-intent of the value being typed now — the
+    // same rule as `fetchHidden` above: a non-empty trimmed value wins, an
+    // empty one keeps whatever the failed walk was already tagged with — so
+    // the retry doesn't fetch the wrong dataset.
     if (validWalk.status === "error") {
-      setWalk({ status: "loading", forPath: fsPath, forRefresh: refresh, forHidden: queryWantsHidden(value) });
+      const trimmed = value.trim();
+      const forHidden = trimmed !== "" ? queryWantsHidden(trimmed) : validWalk.forHidden;
+      setWalk({ status: "loading", forPath: fsPath, forRefresh: refresh, forHidden });
     }
     const params = new URLSearchParams(location.search);
     if (value) params.set("q", value);
