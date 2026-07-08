@@ -575,8 +575,10 @@ the product gains network access.
 - **DP-1** Any file preview whose mode list carries the `_render` sentinel (a
   renderable page — exactly the set `/api/export` accepts) shows a **Deploy**
   header action; a green dot marks a page whose stored deployment reads active
-  (a local pointer read — opening a preview never spawns the CLI). Directories
-  never show it. The action opens the Deploy modal.
+  (a local pointer read — opening a preview never spawns the CLI; re-read on
+  tab focus/visibility regain, so an out-of-band revoke — e.g. the Preferences
+  page in another tab — shows through without a remount). Directories never
+  show it. The action opens the Deploy modal.
 - **DP-2** The modal handles its states in order: the fused CLI missing → an
   install panel; no hosted env configured → guidance (`fused env create` /
   `fused cloud setup`, naming the envs file); else the form — env picker,
@@ -702,7 +704,10 @@ the product gains network access.
   but the modal must not promise a same-URL restore for it — an absent mount
   redeploys as a fresh create with a new link (DP-10), and the stored URL is
   likewise never carried onto a *different* token (DP-11's fallback applies
-  only while the token is unchanged).
+  only while the token is unchanged). The action label's URL promises
+  ("same URL" / "restore URL") render only from a **verified** `live`
+  classification: when the reconcile never ran (unreachable env, `live`
+  null) the button reads a plain "Redeploy" that promises nothing.
 - **DP-13** `GET /api/deploy/shares?env=…` is the "what's deployed on this
   env" view: every mount from `share list --all` — the modal titles it "All
   deployments on <env>" and says so, since most rows are typically *other*

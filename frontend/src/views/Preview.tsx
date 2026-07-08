@@ -153,15 +153,30 @@ function DeployButton({ fsPath }: { fsPath: string }) {
 
   // Local pointer only (reconcile=false): opening a preview must never spawn
   // the fused CLI. Errors are ignored — the button then just shows no dot.
+  // The pointer can change without this view remounting — a revoke from the
+  // Preferences page in ANOTHER tab, or any out-of-band /api/deploy/revoke
+  // (same-tab navigation remounts the view via the nav epoch, so it needs no
+  // handling). Re-read on focus/visibility regain: a cheap local JSON read,
+  // the bookmarks-poll freshness posture (D77) without a timer.
   useEffect(() => {
     let alive = true;
-    getDeployStatus(fsPath, false)
-      .then((r) => {
-        if (alive) setDeployment(r.deployment);
-      })
-      .catch(() => {});
+    const refresh = () => {
+      getDeployStatus(fsPath, false)
+        .then((r) => {
+          if (alive) setDeployment(r.deployment);
+        })
+        .catch(() => {});
+    };
+    refresh();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       alive = false;
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [fsPath]);
 

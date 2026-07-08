@@ -306,21 +306,28 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     }
   };
 
-  // Deploy/Redeploy semantics for the button label: a redeploy to the same env
-  // repoints the SAME token, so the URL is stable; a revoked tombstone is
-  // revived at the same URL; anything else — including a mount that turned
-  // out ABSENT from `share list` (nothing left to revive; the server does a
-  // fresh create) — mints a fresh link, so it must read plain "Deploy".
+  // Deploy/Redeploy semantics for the button label. The URL promises are
+  // driven by `live` — the mount's VERIFIED `share list` classification —
+  // never by the stored pointer alone: an active mount repoints the SAME
+  // token (stable URL), a revoked tombstone is revived at the same URL, an
+  // ABSENT mount (nothing left to revive; the server does a fresh create)
+  // mints a fresh link, and when the check never ran (env unreachable at
+  // open, `live` null) the label is a plain "Redeploy" that promises
+  // nothing — the card's "unconfirmed" note explains why.
   const samePointerEnv = deployment !== null && deployment.env === selectedEnv;
   const mountAbsent = live === "absent";
   const deployLabel =
     busy === "deploy"
       ? "Deploying…"
-      : samePointerEnv && !mountAbsent && deployment!.status === "active"
-        ? "Redeploy (same URL)"
-        : samePointerEnv && !mountAbsent && deployment!.status === "revoked"
-          ? "Redeploy (restore URL)"
-          : "Deploy";
+      : !samePointerEnv
+        ? "Deploy"
+        : live === "active"
+          ? "Redeploy (same URL)"
+          : live === "revoked"
+            ? "Redeploy (restore URL)"
+            : mountAbsent
+              ? "Deploy"
+              : "Redeploy";
 
   const body = () => {
     if (loadError) {
