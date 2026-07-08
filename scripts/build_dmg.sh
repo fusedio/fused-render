@@ -208,8 +208,21 @@ test -d "$APP_DIR"
 
 echo "==> bundle sanity: Mach-O-as-.py check"
 APP_PYLIB="$APP_DIR/Contents/Resources/lib/python3.12"
-BAD_PY="$(find "$APP_PYLIB" -name '*.py' -size +1M -print0 | \
-  xargs -0 -I{} sh -c 'head -c4 "{}" | xxd -p | grep -qE "^(cffaedfe|cafebabe|feedfacf)$" && echo "{}"' || true)"
+# find -exec ... {} + (not `xargs -I{}`, which aborts with "command line
+# cannot be assembled, too long" over a large file set - see the signing loop
+# below) enumerates >1M .py files whose first 4 bytes are a Mach-O magic.
+BAD_PY=""
+while IFS= read -r -d '' f; do
+  BAD_PY+="$f"$'\n'
+done < <(
+  find "$APP_PYLIB" -name '*.py' -size +1M -exec sh -c '
+    for f do
+      case "$(head -c4 "$f" | xxd -p)" in
+        cffaedfe|cafebabe|feedfacf) printf "%s\0" "$f" ;;
+      esac
+    done
+  ' _ {} +
+)
 if [[ -n "$BAD_PY" ]]; then
   echo "FATAL: Mach-O binary shipped as .py (would shadow the real extension):" >&2
   echo "$BAD_PY" >&2
@@ -328,16 +341,33 @@ PLIST
   # `python`); we enumerate every Mach-O by magic bytes (same detection as the
   # sanity check above) and sign each, then seal the .app last.
   echo "==> signing nested Mach-O binaries"
-  while IFS= read -r macho; do
-    [[ -z "$macho" ]] && continue
+  # find -exec ... {} + emits NUL-delimited Mach-O paths, read back with
+  # `read -d ''`. NOT `find -print0 | xargs -0 -I{} sh -c ...`: BSD xargs -I{}
+  # aborts with "command line cannot be assembled, too long" over the ~375
+  # Mach-O files in this bundle and, because the old `|| true` swallowed the
+  # failure, the loop ran on an EMPTY list - shipping ad-hoc-signed nested
+  # dylibs that notarization then rejected ("not signed with a valid Developer
+  # ID certificate" / "does not include a secure timestamp").
+  signed_count=0
+  while IFS= read -r -d '' macho; do
     codesign --force --options runtime --timestamp \
       --entitlements "$ENTITLEMENTS" $KC_OPT -s "$SIGN_IDENTITY" "$macho"
+    signed_count=$((signed_count + 1))
   done < <(
-    find "$APP_DIR" -type f -print0 \
-      | xargs -0 -I{} sh -c \
-        'head -c4 "{}" | xxd -p | grep -qE "^(cffaedfe|cafebabe|feedfacf|feedface|cefaedfe|bebafeca)$" && echo "{}"' \
-      || true
+    find "$APP_DIR" -type f -exec sh -c '
+      for f do
+        case "$(head -c4 "$f" | xxd -p)" in
+          cffaedfe|cafebabe|feedfacf|feedface|cefaedfe|bebafeca) printf "%s\0" "$f" ;;
+        esac
+      done
+    ' _ {} +
   )
+  echo "    signed $signed_count nested binaries"
+  if [[ "$signed_count" -eq 0 ]]; then
+    echo "FATAL: found no nested Mach-O binaries to sign — detection is broken;" >&2
+    echo "       refusing to seal a bundle whose nested code is unsigned." >&2
+    exit 1
+  fi
   echo "==> sealing the app bundle"
   codesign --force --options runtime --timestamp \
     --entitlements "$ENTITLEMENTS" $KC_OPT -s "$SIGN_IDENTITY" "$APP_DIR"
