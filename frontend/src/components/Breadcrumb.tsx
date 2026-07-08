@@ -1,4 +1,4 @@
-// Crumb bar + "+ Bookmark" / "Update bookmark" / "Split" buttons.
+// Crumb bar + "+ Bookmark" / "Update bookmark" / split right/down buttons.
 // Rendered by every view: path crumbs for listing/preview, a static label for
 // the layout modes (LM-11 / TM-9 — ★/update still operate on currentUrl()).
 import React, { useEffect, useState } from "react";
@@ -16,6 +16,7 @@ import { useUrlVersion, useBookmarksVersion, notifyBookmarksChanged } from "../l
 import { encodePaneSegment, splitShellSearch } from "../lib/layout-codec";
 import { panelUrl } from "../views/Panel";
 import { ShareIcon } from "./ShareIcon";
+import { SplitRightIcon, SplitDownIcon } from "./SplitIcons";
 
 // True when two query strings carry the same decoded `_layout` and the same
 // key/value multiset of remaining params, ignoring encoding and ordering
@@ -67,11 +68,11 @@ function useUpdateButton(urlVersion: number, bookmarksVersion: number): boolean 
 }
 
 // Shared action block (present on every view). `name` is the default bookmark
-// name; `onSplit` present adds the panel-mode entry point (the layout modes
+// name; `onSplit` present adds the panel-mode entry points (the layout modes
 // themselves pass none).
 interface CrumbActionsProps {
   name: string;
-  onSplit?: () => void;
+  onSplit?: (dir: "row" | "col") => void;
 }
 
 // Browsers block file:// navigation from http pages, so revealing in the OS
@@ -132,9 +133,24 @@ function CrumbActions({ name, onSplit }: CrumbActionsProps) {
         </button>
       )}
       {onSplit && (
-        <button id="split-btn" className="star-btn" title="Open this view in panel mode" onClick={onSplit}>
-          Split
-        </button>
+        <>
+          <button
+            id="split-right-btn"
+            className="star-btn split-dir"
+            title="Open this view in panel mode, split right"
+            onClick={() => onSplit("row")}
+          >
+            <SplitRightIcon />
+          </button>
+          <button
+            id="split-down-btn"
+            className="star-btn split-dir"
+            title="Open this view in panel mode, split down"
+            onClick={() => onSplit("col")}
+          >
+            <SplitDownIcon />
+          </button>
+        </>
       )}
       <button
         id="bookmark-btn"
@@ -148,19 +164,20 @@ function CrumbActions({ name, onSplit }: CrumbActionsProps) {
   );
 }
 
-// Split entry (LM-10): two side-by-side panes, both showing the current view —
-// entering split mode with a single pane looked like nothing happened. The
-// current view's WHOLE query goes pane-local, inside each `_layout` segment
-// (LM-3/D72): nothing is promoted to the top-level pool — global params exist
-// only when the user hand-types them on the shell URL. Read via
-// splitShellSearch, not raw URLSearchParams (D51): a stray `_layout=(…)` span
-// carries literal `&` that would parse as junk keys; the codec read excludes
-// the span, so it is dropped — the strict-read semantics.
-function enterPanel(fsPath: string): void {
+// Split entry (LM-10): two panes side by side (`dir` "row", `,` in the codec)
+// or stacked ("col", `;`), both showing the current view — entering split mode
+// with a single pane looked like nothing happened. The current view's WHOLE
+// query goes pane-local, inside each `_layout` segment (LM-3/D72): nothing is
+// promoted to the top-level pool — global params exist only when the user
+// hand-types them on the shell URL. Read via splitShellSearch, not raw
+// URLSearchParams (D51): a stray `_layout=(…)` span carries literal `&` that
+// would parse as junk keys; the codec read excludes the span, so it is
+// dropped — the strict-read semantics.
+function enterPanel(fsPath: string, dir: "row" | "col"): void {
   const { params } = splitShellSearch(location.search);
   const paneQ = params.toString();
   const seg = encodePaneSegment(fsPath, paneQ ? "?" + paneQ : "");
-  navigateUrl(panelUrl(seg + "," + seg, null));
+  navigateUrl(panelUrl(seg + (dir === "row" ? "," : ";") + seg, null));
 }
 
 export function Breadcrumb({ fsPath }: { fsPath: string }) {
@@ -209,7 +226,7 @@ export function Breadcrumb({ fsPath }: { fsPath: string }) {
         {pieces}
         <RevealButton fsPath={fsPath} />
       </div>
-      <CrumbActions name={basename(fsPath)} onSplit={() => enterPanel(fsPath)} />
+      <CrumbActions name={basename(fsPath)} onSplit={(dir) => enterPanel(fsPath, dir)} />
     </>
   );
 }

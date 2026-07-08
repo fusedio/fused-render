@@ -30,6 +30,7 @@ import {
 } from "../lib/layout-codec";
 import type { Config } from "../lib/api";
 import { ShareIcon } from "../components/ShareIcon";
+import { SplitRightIcon, SplitDownIcon } from "../components/SplitIcons";
 
 // Panel mode lives under the page's own prefix (`/view/_panel` or
 // `/embed/_panel`), so entering/refreshing/exiting stays in the active mode.
@@ -86,18 +87,8 @@ function findLeaf(node: LayoutNode, id: number): LayoutLeaf | null {
 }
 
 const ICONS = {
-  splitRight: (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-      <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" />
-      <path d="M8 2.5h5a1.5 1.5 0 0 1 1.5 1.5v8a1.5 1.5 0 0 1-1.5 1.5H8z" fill="currentColor" />
-    </svg>
-  ),
-  splitDown: (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-      <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" />
-      <path d="M1.5 8h13v4a1.5 1.5 0 0 1-1.5 1.5H3A1.5 1.5 0 0 1 1.5 12z" fill="currentColor" />
-    </svg>
-  ),
+  splitRight: <SplitRightIcon />,
+  splitDown: <SplitDownIcon />,
   max: (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
       <path
@@ -337,6 +328,15 @@ export default function Panel({ config }: { config: Config }) {
       const gp = findParent(tree, parent);
       if (!gp) treeRef.current = only;
       else gp.children[gp.children.indexOf(parent)] = only;
+    }
+    // A layout of one pane is pointless chrome — when the collapse leaves a
+    // lone leaf at the root, exit panel mode to a plain view of it (same
+    // semantics as closing the last pane above). Only close() can get here;
+    // a hand-typed single-segment `_layout` still renders as a single pane.
+    const root = treeRef.current!;
+    if (root.type === "leaf") {
+      navigateUrl(urlForFsPath(root.path, root.query));
+      return;
     }
     setVersion((v) => v + 1);
   };
