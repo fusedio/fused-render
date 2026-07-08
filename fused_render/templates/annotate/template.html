@@ -192,6 +192,7 @@
     })();
 
     let activeView = null; // {mode, path} currently framed
+    let defaultViewMode = null; // views[0] — home for unstamped comments
 
     if (!file) {
       document.body.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
@@ -527,7 +528,9 @@
         const label = labels.get(c.id);
         // Anchors are per-view: only resolve/pin comments made on the view
         // that's currently framed; others are listed with their view's tag.
-        const ownView = !c.view || !activeView || c.view === activeView.mode;
+        // A missing stamp (hand-edited URL) belongs to the DEFAULT view — a
+        // wildcard would resolve against whatever happens to be framed.
+        const ownView = !activeView || (c.view || defaultViewMode || activeView.mode) === activeView.mode;
         const range = ownView && doc && isRangeAnchor(c) ? rangeFor(c, doc) : null;
         const el = ownView && doc && !isRangeAnchor(c) ? resolveAnchor(c, doc) : null;
         if (range) {
@@ -896,12 +899,43 @@
     // the current comments verbatim into a `claudeComments` param and flips
     // the BROWSER URL (window.top — the address bar, not this iframe) to
     // _mode=claude. `comments` stays untouched, so switching back to annotate
-    // shows the same review.
-    document.getElementById("toclaude").addEventListener("click", () => {
-      const u = new URL(window.top.location.href);
-      u.searchParams.set("_mode", "claude");
-      u.searchParams.set("claudeComments", JSON.stringify(load()));
-      window.top.location.href = u.pathname + u.search;
+    // shows the same review. The framed editor is flushed first (same contract
+    // as every other mode switch), and the `_layout=(…)` span — whose `&` is
+    // literal — is excised before URLSearchParams touches the query, then
+    // reattached last, byte-for-byte.
+    document.getElementById("toclaude").addEventListener("click", async () => {
+      const flush = window.__fusedFlushEdits;
+      try {
+        const res = await Promise.race([
+          flush(),
+          new Promise((r) => setTimeout(() => r({ ok: false }), 10000)),
+        ]);
+        if (res && res.ok === false) return; // unsaved buffer — don't discard
+      } catch (e) {
+        return;
+      }
+      const top = window.top.location;
+      const full = (top.search || "").replace(/^\?/, "");
+      const rest = withoutLayoutSpan(top.search);
+      // Recover the raw span (the part withoutLayoutSpan removed).
+      const m = /(^|&)_layout=\(/.exec(full);
+      let span = null;
+      if (m) {
+        const start = m.index + m[1].length;
+        let i = start + "_layout=(".length, depth = 1;
+        while (i < full.length && depth > 0) {
+          if (full[i] === "(") depth++;
+          else if (full[i] === ")") depth--;
+          i++;
+        }
+        span = full.slice(start, i);
+      }
+      const params = new URLSearchParams(rest);
+      params.set("_mode", "claude");
+      params.set("claudeComments", JSON.stringify(load()));
+      let search = params.toString();
+      if (span) search += (search ? "&" : "") + span;
+      window.top.location.href = top.pathname + (search ? "?" + search : "");
     });
 
     window.addEventListener("resize", () => render());
@@ -935,11 +969,20 @@
         document.body.innerHTML = `<div id="status" class="error">Cannot stat file.</div>`;
         return;
       }
-      const views = (stat.templates || []).filter((t) => t.mode !== OWN_NAME);
+      // Send to Claude only where the claude mode actually exists for this
+      // file type — elsewhere the click would just fall back to the default
+      // view and the review would appear to vanish. The chat view itself is
+      // not an annotation surface, so it's excluded from the picker too.
+      const all = stat.templates || [];
+      if (!all.some((t) => t.mode === "claude")) {
+        document.getElementById("sidefoot").style.display = "none";
+      }
+      const views = all.filter((t) => t.mode !== OWN_NAME && t.mode !== "claude");
       if (!views.length) {
         document.body.innerHTML = `<div id="status" class="error">No annotatable view for this file.</div>`;
         return;
       }
+      defaultViewMode = views[0].mode;
       const saved = fused.params.get("view");
       activeView = views.find((v) => v.mode === saved) || views[0];
       viewSel.innerHTML = views
