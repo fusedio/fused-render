@@ -584,6 +584,11 @@ function ago(ts) {
 }
 
 async function loadHistory(session_id) {
+  // Reuse the `sending` gate: a message sent during the await below would be
+  // appended first and the older history turns dumped after it, scrambling the
+  // transcript order. Blocking sends for the load keeps turns in order.
+  if (sending) return;
+  sending = true;
   log.innerHTML = "";  // replace the visible conversation, don't append to it
   try {
     const { turns } = await fused.runPython("./agent.py", { action: "history", file: FILE, session_id });
@@ -594,6 +599,8 @@ async function loadHistory(session_id) {
     log.scrollTop = log.scrollHeight;
   } catch (err) {
     console.warn("history restore failed:", err.message);
+  } finally {
+    sending = false;
   }
 }
 
