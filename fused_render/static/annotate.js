@@ -553,8 +553,14 @@
   // shared element id would pin the comment in both); legacy threads without
   // `mode` fall back to anchor-shape inference (sel ↔ editor).
   function isForeign(thread) {
-    if (thread.mode) return thread.mode !== currentMode;
     const isSel = !!(thread.selFrom && thread.selTo);
+    if (thread.mode) {
+      if (thread.mode !== currentMode) return true;
+      // Stamp matches, but the anchor SHAPE must also fit this surface — a
+      // hand-edited URL can pair a sel anchor with an element view's mode (or
+      // vice versa), which would otherwise pin at (0,0) / reveal nowhere.
+      return adapter ? !isSel : isSel;
+    }
     return adapter ? !isSel : isSel;
   }
 
