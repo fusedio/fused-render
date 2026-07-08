@@ -203,6 +203,10 @@
             // Free pins (document coords, no element anchor) carry over too.
             x: typeof t.x === "number" ? t.x : undefined,
             y: typeof t.y === "number" ? t.y : undefined,
+            // Pixel + timestamp refinements survive the import.
+            iu: typeof t.iu === "number" ? t.iu : undefined,
+            iv: typeof t.iv === "number" ? t.iv : undefined,
+            t: typeof t.t === "number" ? t.t : undefined,
             // Unstamped legacy threads infer their view from anchor shape
             // (selection ↔ editor, everything else ↔ preview) — leaving view
             // unset would resolve them against WHATEVER view is framed.
@@ -273,6 +277,8 @@
       return node === doc.body ? segs.join(">") : null;
     }
     function resolveAnchor(c, doc) {
+      // Code-line anchors resolve through the gutter (virtualized editor).
+      if (c.line != null && doc && isCmDoc(doc)) return cmResolve(doc, c.line);
       // Element-id anchors (legacy imports carry them) win over paths.
       if (c.anchorId && doc) {
         const el = doc.getElementById(c.anchorId);
@@ -294,11 +300,77 @@
       return node === doc.body ? null : node;
     }
 
+    // --- pixel surfaces (AN-24 lineage): a click on an image/video/canvas
+    // records iu/iv — fractions of the PAINTED content box — so the pin marks
+    // the exact spot, stable across resizes. object-fit contain/cover aware.
+    function intrinsic(el) {
+      if (!el || !el.tagName) return null;
+      if (el.tagName === "IMG" && el.naturalWidth > 0) return { w: el.naturalWidth, h: el.naturalHeight };
+      if (el.tagName === "VIDEO" && el.videoWidth > 0) return { w: el.videoWidth, h: el.videoHeight };
+      if (el.tagName === "CANVAS" && el.width > 0) return { w: el.width, h: el.height };
+      return null;
+    }
+    function contentBox(el) {
+      const r = el.getBoundingClientRect();
+      const nat = intrinsic(el);
+      if (!nat || !r.width || !r.height) return r;
+      const fit = (el.ownerDocument.defaultView.getComputedStyle(el).objectFit || "fill");
+      if (fit !== "contain" && fit !== "cover" && fit !== "scale-down") return r;
+      let s = fit === "cover" ? Math.max(r.width / nat.w, r.height / nat.h) : Math.min(r.width / nat.w, r.height / nat.h);
+      if (fit === "scale-down") s = Math.min(s, 1);
+      const w = nat.w * s, h = nat.h * s;
+      return { left: r.left + (r.width - w) / 2, top: r.top + (r.height - h) / 2, width: w, height: h };
+    }
+
+    // --- code view (CM6): structural paths are useless inside a virtualized
+    // editor (lines mount/unmount on scroll), so code anchors store the LINE
+    // NUMBER (read from the gutter) + the line's text as a quote. Resolution
+    // finds the visible .cm-line for that gutter number; a scrolled-away line
+    // simply has no pin until it scrolls back in (never "detached").
+    // Pair gutter numbers to .cm-line nodes by VERTICAL POSITION, not index —
+    // the lineNumbers gutter carries a measuring spacer whose text is also
+    // numeric, so index pairing drifts by one.
+    function cmVisibleLines(doc) {
+      const out = [];
+      const lines = [...doc.querySelectorAll(".cm-content .cm-line")];
+      const gutters = [...doc.querySelectorAll(".cm-lineNumbers .cm-gutterElement")];
+      for (const line of lines) {
+        const r = line.getBoundingClientRect();
+        const mid = r.top + r.height / 2;
+        const g = gutters.find((x) => {
+          const gr = x.getBoundingClientRect();
+          return gr.height > 0 && mid >= gr.top && mid <= gr.bottom && /^\d+$/.test(x.textContent.trim());
+        });
+        if (g) out.push({ line: parseInt(g.textContent, 10), el: line });
+      }
+      return out;
+    }
+    function cmLineAt(doc, clientY) {
+      for (const rec of cmVisibleLines(doc)) {
+        const r = rec.el.getBoundingClientRect();
+        if (clientY >= r.top && clientY <= r.bottom) return rec;
+      }
+      return null;
+    }
+    function cmResolve(doc, lineNo) {
+      for (const rec of cmVisibleLines(doc)) {
+        if (rec.line === lineNo) return rec.el;
+      }
+      return null;
+    }
+    const isCmDoc = (doc) => !!doc.querySelector(".cm-editor");
+
     // Stage coords of an element inside the iframe = iframe offset + element
     // viewport rect within the frame (rects already account for frame scroll).
-    function stagePoint(el) {
+    function stagePoint(el, c) {
       const fr = frame.getBoundingClientRect();
       const st = stage.getBoundingClientRect();
+      // Pixel-anchored (iu/iv): pin at the exact stored fraction of the
+      // painted content box instead of the element's top-right corner.
+      if (c && c.iu != null && c.iv != null && intrinsic(el)) {
+        const b = contentBox(el);
+        return { x: fr.left - st.left + b.left + c.iu * b.width, y: fr.top - st.top + b.top + c.iv * b.height };
+      }
       const r = el.getBoundingClientRect();
       return { x: fr.left - st.left + r.right, y: fr.top - st.top + r.top };
     }
@@ -336,7 +408,7 @@
           };
         }
         if (el || free) {
-          const p = el ? stagePoint(el) : free;
+          const p = el ? stagePoint(el, c) : free;
           const pin = document.createElement("div");
           pin.className = "pin" + (c.resolved ? " resolved" : "");
           pin.style.left = Math.min(stage.clientWidth - 14, Math.max(14, p.x)) + "px";
@@ -346,11 +418,16 @@
           pin.onclick = () => reveal(c);
           pinsEl.appendChild(pin);
         }
+        const chip = (t) => `<span style="color:#9aa0a6;border:1px solid #2a2d33;border-radius:4px;padding:0 5px">${t}</span>`;
         const tag = !ownView
-          ? `<span style="color:#9aa0a6;border:1px solid #2a2d33;border-radius:4px;padding:0 5px">${c.view === "_render" ? "preview" : c.view}</span>`
+          ? chip(c.view === "_render" ? "preview" : c.view)
           : el || free
-            ? ""
-            : "<span style='color:#ff6b6b'>detached</span>";
+            ? c.t != null
+              ? chip(Math.floor(c.t / 60) + ":" + String(Math.floor(c.t % 60)).padStart(2, "0"))
+              : ""
+            : c.line != null && doc && isCmDoc(doc)
+              ? chip("line " + c.line) // scrolled out of the virtualized viewport, not broken
+              : "<span style='color:#ff6b6b'>detached</span>";
         const card = document.createElement("div");
         card.className = "card" + (c.resolved ? " resolved" : "");
         card.innerHTML = `
@@ -379,7 +456,24 @@
     function reveal(c) {
       const doc = frame.contentDocument;
       const el = doc ? resolveAnchor(c, doc) : null;
+      // Video: land on the exact commented moment, paused.
+      if (el && el.tagName === "VIDEO" && c.t != null) {
+        el.pause();
+        el.currentTime = c.t;
+      }
       if (!el) {
+        // Off-screen code line: scroll the editor's scroller to it (line
+        // height estimated from any visible line) — the MutationObserver
+        // re-renders and the pin appears once the line mounts.
+        if (c.line != null && doc && isCmDoc(doc)) {
+          const scroller = doc.querySelector(".cm-scroller");
+          const anyLine = doc.querySelector(".cm-content .cm-line");
+          if (scroller && anyLine) {
+            const lh = anyLine.getBoundingClientRect().height || 18;
+            scroller.scrollTo({ top: Math.max(0, (c.line - 1) * lh - scroller.clientHeight / 2), behavior: "smooth" });
+          }
+          return;
+        }
         // Free pin: center its stored document coords in the framed view.
         if (doc && typeof c.y === "number" && frame.contentWindow) {
           frame.contentWindow.scrollTo({
@@ -457,6 +551,10 @@
             createdAt: Date.now(),
             anchorId: draftAnchor.anchorId,
             anchorPath: draftAnchor.anchorPath,
+            line: draftAnchor.line,
+            iu: draftAnchor.iu,
+            iv: draftAnchor.iv,
+            t: draftAnchor.t,
             view: activeView ? activeView.mode : undefined,
           });
           save(comments);
@@ -483,13 +581,51 @@
         hl.style.height = r.height + "px";
       });
       doc.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
         const el = elementOf(e.target);
         if (!el) return;
-        // Element ids are stabler anchors than structural paths — prefer them.
-        const anchor = el.id ? { anchorId: el.id } : { anchorPath: pathOf(el, doc) };
-        if (!anchor.anchorId && !anchor.anchorPath) return;
+        let anchor = null;
+        // Video: keep the native controls usable — clicks in the bottom
+        // control strip pass through untouched; frame clicks capture the
+        // pixel (iu/iv) AND the moment (t), pausing on the frame under
+        // discussion.
+        if (el.tagName === "VIDEO") {
+          const r = el.getBoundingClientRect();
+          if (e.clientY > r.bottom - 44) return; // control strip — don't swallow
+          e.preventDefault();
+          e.stopPropagation();
+          const b = contentBox(el);
+          anchor = el.id ? { anchorId: el.id } : { anchorPath: pathOf(el, doc) };
+          if (b.width > 0) {
+            anchor.iu = Math.round(Math.min(1, Math.max(0, (e.clientX - b.left) / b.width)) * 1000) / 1000;
+            anchor.iv = Math.round(Math.min(1, Math.max(0, (e.clientY - b.top) / b.height)) * 1000) / 1000;
+          }
+          if (isFinite(el.currentTime)) anchor.t = Math.round(el.currentTime * 10) / 10;
+          el.pause();
+        } else if (intrinsic(el)) {
+          // Image/canvas: exact pixel via content-box fractions.
+          e.preventDefault();
+          e.stopPropagation();
+          const b = contentBox(el);
+          anchor = el.id ? { anchorId: el.id } : { anchorPath: pathOf(el, doc) };
+          if (b.width > 0) {
+            anchor.iu = Math.round(Math.min(1, Math.max(0, (e.clientX - b.left) / b.width)) * 1000) / 1000;
+            anchor.iv = Math.round(Math.min(1, Math.max(0, (e.clientY - b.top) / b.height)) * 1000) / 1000;
+          }
+        } else if (isCmDoc(doc)) {
+          // Code editor: line-number anchor via the gutter (structural paths
+          // are meaningless in a virtualized viewport).
+          e.preventDefault();
+          e.stopPropagation();
+          const hit = cmLineAt(doc, e.clientY);
+          if (!hit) return;
+          anchor = { line: hit.line };
+        } else {
+          e.preventDefault();
+          e.stopPropagation();
+          // Element ids are stabler anchors than structural paths — prefer them.
+          anchor = el.id ? { anchorId: el.id } : { anchorPath: pathOf(el, doc) };
+        }
+        if (!anchor || (!anchor.anchorId && !anchor.anchorPath && anchor.line == null)) return;
         const fr = frame.getBoundingClientRect();
         const st = stage.getBoundingClientRect();
         openComposer(fr.left - st.left + e.clientX, fr.top - st.top + e.clientY, anchor);
