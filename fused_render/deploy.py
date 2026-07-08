@@ -742,16 +742,17 @@ def deployment_status(page: str, reconcile: bool) -> dict:
     return {"deployment": pointer, "reconciled": True, "live": live}
 
 
-def _serve_base_url(env_name: str) -> str | None:
-    """The env's serving-plane base URL, derived from any stored pointer.
+def _serve_base_url(env_name: str, store: dict) -> str | None:
+    """The env's serving-plane base URL, derived from any pointer in `store`.
 
     `share list` never returns URLs (either backend) — but every mount on one
     env is served under one base as ``<base>/<token>`` (the fused repo's
     spec/serve/share-links.md §6), so a single recorded absolute URL whose
     path ends in its own token yields the base for every other token on that
-    env. Best-effort: None when no such pointer exists yet.
+    env. Best-effort: None when no such pointer exists yet. Takes the
+    already-loaded `store` so callers don't re-read deployments.json.
     """
-    for record in _load_store().values():
+    for record in store.values():
         if not isinstance(record, dict) or record.get("env") != env_name:
             continue
         url, token = record.get("url"), record.get("token")
@@ -770,11 +771,12 @@ def list_shares(env_name: str) -> dict:
     pointer's recorded one, else derived from the env's base URL
     (_serve_base_url) when a recorded link reveals it."""
     mounts = _list_mounts(env_name)
+    store = _load_store()  # one read, shared with _serve_base_url below
     by_token: dict[str, dict] = {}
-    for page, record in _load_store().items():
+    for page, record in store.items():
         if isinstance(record, dict) and record.get("env") == env_name and record.get("token"):
             by_token[record["token"]] = {"page": page, "record": record}
-    base = _serve_base_url(env_name)
+    base = _serve_base_url(env_name, store)
 
     out = []
     for m in mounts:

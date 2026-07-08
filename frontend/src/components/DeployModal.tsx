@@ -306,16 +306,28 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fsPath]);
 
+  // Latest-ref pattern: `load` and `busy` are captured fresh every render, so
+  // the focus effect below (which subscribes once) always calls the current
+  // load with the current busy gate — never a stale closure from the render
+  // when the listener was attached.
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
+
   // Re-reconcile when the tab regains focus/visibility (unless an action is
   // running) so the open modal doesn't drift from truth — e.g. the same page
   // revoked out-of-band from the Preferences tab. Without this the header dot
   // (which re-reads on focus) and the open modal would contradict each other
   // (#5). A *background* refresh: it updates in place without flashing the
   // form to "Loading…" or replacing it with an error. loadSeq keeps a focus
-  // load from racing the mount load.
+  // load from racing the mount load. Subscribed once — freshness comes from
+  // the refs, not the dep array.
   useEffect(() => {
     const refresh = () => {
-      if (busy === null && document.visibilityState === "visible") void load(true);
+      if (busyRef.current === null && document.visibilityState === "visible") {
+        void loadRef.current(true);
+      }
     };
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", refresh);
@@ -323,8 +335,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refresh);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [busy, fsPath]);
+  }, []);
 
   // Escape closes. Allowed even mid-action (#12): the action continues
   // server-side and onChange still updates the header dot, so the user is
