@@ -250,10 +250,18 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   // Sequence-guarded: a superseded fetch (fsPath switch, or Retry racing a
   // slow first load) must not land its stale response over a newer one.
   const loadSeq = useRef(0);
-  const load = async () => {
+  // `background` = a focus/visibility re-reconcile of an already-loaded modal:
+  // it must update in place, never tear the form down. So it does NOT clear
+  // `config` (which would flash the whole form to "Loading…") and, on
+  // failure, leaves the current view intact instead of replacing it with an
+  // error. The initial mount load (background=false) still shows "Loading…"
+  // and surfaces a load error, since there is nothing to preserve yet.
+  const load = async (background = false) => {
     const seq = ++loadSeq.current;
-    setLoadError(null);
-    setConfig(null);
+    if (!background) {
+      setLoadError(null);
+      setConfig(null);
+    }
     try {
       const [cfg, status, prev] = await Promise.all([
         getDeployConfig(),
@@ -272,6 +280,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
         ),
       ]);
       if (seq !== loadSeq.current) return;
+      setLoadError(null);
       setConfig(cfg);
       setPreview(prev);
       applyDeployment(status.deployment);
@@ -288,7 +297,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
         return cfg.default_env;
       });
     } catch (e) {
-      if (seq !== loadSeq.current) return;
+      if (seq !== loadSeq.current || background) return; // keep the view on a background failure
       setLoadError((e as Error).message);
     }
   };
@@ -301,10 +310,12 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   // running) so the open modal doesn't drift from truth — e.g. the same page
   // revoked out-of-band from the Preferences tab. Without this the header dot
   // (which re-reads on focus) and the open modal would contradict each other
-  // (#5). loadSeq keeps a focus load from racing the mount load.
+  // (#5). A *background* refresh: it updates in place without flashing the
+  // form to "Loading…" or replacing it with an error. loadSeq keeps a focus
+  // load from racing the mount load.
   useEffect(() => {
     const refresh = () => {
-      if (busy === null && document.visibilityState === "visible") void load();
+      if (busy === null && document.visibilityState === "visible") void load(true);
     };
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", refresh);
@@ -411,7 +422,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       return (
         <>
           <div className="deploy-error">{loadError}</div>
-          <button type="button" onClick={load}>
+          <button type="button" onClick={() => load()}>
             Retry
           </button>
         </>
@@ -461,7 +472,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             <code>{config.setup_cli} env create</code> for a self-hosted AWS one). Environments
             are read from <code>{config.envs_file}</code>.
           </p>
-          <button type="button" onClick={load}>
+          <button type="button" onClick={() => load()}>
             Re-check
           </button>
         </div>

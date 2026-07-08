@@ -746,6 +746,9 @@ the product gains network access.
 - **DP-12b** The open modal re-reconciles on tab focus/visibility regain (like
   the header dot, DP-1), so a page revoked out-of-band — e.g. from the
   Preferences tab — updates the open dialog instead of contradicting the dot.
+  That focus refresh is a **background** load: it updates in place, never
+  clearing the form to "Loading…" or replacing it with an error on a failed
+  re-fetch (only the initial mount load does that). 
   It preselects the deployment's env only when that env is still configured
   (else falls back to the default and states the old env is gone), so a
   removed env never leaves Deploy silently disabled. The dialog is always
