@@ -480,6 +480,26 @@ by dropping a folder into `~/.fused-render/annotate/`. The `_annotate` render
 param, the header toggle (AN-2/AN-3), the injected `static/annotate.js`, and
 the code template's selection adapter are gone.
 
+**Containment invariant:** every line of annotation logic lives inside
+`templates/annotate/template.html` — no other view template carries
+annotation code, hooks, or references, and nothing is injected into the
+framed view (the template attaches its listeners and one highlight-tint
+`<style>` to its own nested same-origin iframe at runtime; that code ships in
+the annotate file). Paged views (table, xlsx, pdf) render **stable element
+ids** encoding an absolute address — `__fr_r<row>_c<col>`,
+`__fr_s<sheet>_r<row>_c<col>`, `__fr_page_<n>` — inert, deep-linkable markup
+useful independent of annotation. The annotate template owns an
+`ID_RESOLVERS` table keyed on those id shapes: a recognized anchor id that
+isn't in the mounted DOM is **off-page, not detached** — the sidebar card
+gets a navigable chip ("row 5" / "Alpha · row 3" / "page 3") and clicking it
+navigates the framed view there by writing the ordinary `offset`/`sheet`
+params the view already watches (the same shell-URL params its own pagination
+controls write). An earlier iteration had each paged view expose a
+`window.__fusedAnnotateAnchorResolver` hook instead; removed (D78) because it
+put annotation-aware code inside view templates. Accepted trade-off: annotate
+cannot ask a view whether a row is truly gone from the data, so a comment
+past the data's end keeps its "row N" chip instead of turning "detached".
+
 ## 18. Export — Portable Bundles for Hosted Serving (M10)
 
 Goal: pack a renderable page into a portable *bundle* that a **separate** hosting
