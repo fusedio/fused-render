@@ -278,6 +278,30 @@ def test_pinned_requirement_matches_pyproject_extra():
     assert extra_requirement == deploy_mod.PINNED_FUSED_REQUIREMENT
 
 
+def test_pointer_store_key_is_canonicalized(tmp_path, monkeypatch):
+    # The pointer store keys on the canonical absolute path (os.path.abspath), so two
+    # spellings of the same file resolve to one pointer — status/dot/redeploy never miss.
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    rec = {
+        "page": str(tmp_path / "d" / "p.html"),
+        "env": "e",
+        "backend": "aws",
+        "token": "t",
+        "url": None,
+        "status": "active",
+        "entrypoints": [],
+        "updated_at": "now",
+    }
+    # Write under a non-canonical spelling (a `..` segment) …
+    deploy_mod.set_deployment(str(tmp_path / "d" / "sub" / ".." / "p.html"), rec)
+    # … read back under a different (canonical) spelling of the same file.
+    assert deploy_mod.get_deployment(str(tmp_path / "d" / "p.html")) == rec
+    # The on-disk key is the canonical abspath, not the raw spelling.
+    store = json.loads((tmp_path / "home" / "deployments.json").read_text(encoding="utf-8"))
+    assert str(tmp_path / "d" / "p.html") in store
+    assert "sub" not in " ".join(store)
+
+
 def test_install_invokes_pip_with_the_pinned_requirement(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
     ran: list[list[str]] = []

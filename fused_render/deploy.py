@@ -494,13 +494,26 @@ def _update_store(mutate) -> None:
         storage.write_json(_store_path(), store)
 
 
+def _page_key(page: str) -> str:
+    """Canonical pointer-store key for a page path.
+
+    `os.path.abspath` (not realpath) — it collapses `.`/`..`/redundant separators
+    without resolving symlinks, matching what the exporter uses
+    (`os.path.dirname(os.path.abspath(page))`). Without this, two spellings of the
+    same file (`/a/b/../p.html` vs `/a/p.html`) would key different pointers, so
+    status, the deploy dot, and redeploy could miss an existing deployment.
+    """
+    return os.path.abspath(page)
+
+
 def get_deployment(page: str) -> dict | None:
-    record = _load_store().get(page)
+    record = _load_store().get(_page_key(page))
     return record if isinstance(record, dict) else None
 
 
 def set_deployment(page: str, record: dict) -> None:
-    _update_store(lambda store: store.__setitem__(page, record))
+    key = _page_key(page)
+    _update_store(lambda store: store.__setitem__(key, record))
 
 
 # -- deploy orchestration ------------------------------------------------------
@@ -570,6 +583,10 @@ def deploy_page(page: str, env_name: str) -> dict:
     recreate --same-token` then repoint (same URL comes back); token absent
     from `share list` entirely -> fresh create (nothing left to revive).
     """
+    # Canonicalize up front so the direct locked store.get below, the record's
+    # `page` field, and set_deployment all key on the same path as get_deployment
+    # / deployment_status (all via _page_key) — one file, one pointer.
+    page = os.path.abspath(page)
     backend = _backend_of(env_name)
     if backend is None:
         raise DeployError(
