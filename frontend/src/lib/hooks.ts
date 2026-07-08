@@ -14,7 +14,6 @@
 // layout modes and the update-bookmark flow, not just for these hooks.
 import { useEffect, useState } from "react";
 import { NAV_EVENT } from "./router";
-import { SEARCH_FUZZY_EVENT } from "./fuzzy";
 
 function useEventCounter(events: readonly string[]): number {
   const [n, setN] = useState(0);
@@ -49,10 +48,4 @@ export function notifyBookmarksChanged(): void {
 
 export function useBookmarksVersion(): number {
   return useEventCounter([BOOKMARKS_EVENT]);
-}
-
-// Fuzzy-on/off pref change signal (lib/fuzzy.ts setFuzzyEnabled). Both search
-// surfaces subscribe so toggling in one re-renders the other immediately.
-export function useSearchFuzzyVersion(): number {
-  return useEventCounter([SEARCH_FUZZY_EVENT]);
 }

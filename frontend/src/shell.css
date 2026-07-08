@@ -590,10 +590,10 @@ a.bookmark-name::after {
 
 .listing-search .listing-search-input {
   width: 100%;
-  /* Reserves room for, right to left: fuzzy toggle (right:10), count chip /
-     spinner (right:64) — sized for the longest count text
-     ("showing 250 of 7734 matches"). Esc clears the query. */
-  padding-right: 170px;
+  /* Reserves room for the count chip / spinner pinned inside the right edge —
+     sized for the longest count text ("showing 250 of 7734 matches"). Esc
+     clears the query. */
+  padding-right: 116px;
 }
 
 /* Native WebKit cancel × collides with the absolutely-positioned count chip;
@@ -603,11 +603,10 @@ a.bookmark-name::after {
   appearance: none;
 }
 
-/* Match count pinned inside the input's right edge (no layout shift). Shifted
-   left of the fuzzy toggle (right:10). */
+/* Match count pinned inside the input's right edge (no layout shift). */
 .listing-search-count {
   position: absolute;
-  right: 80px;
+  right: 26px;
   top: 50%;
   transform: translateY(-50%);
   color: var(--fg-muted);
@@ -621,7 +620,7 @@ a.bookmark-name::after {
    fully interactive. */
 .listing-search-spinner {
   position: absolute;
-  right: 80px;
+  right: 26px;
   top: 50%;
   width: 11px;
   height: 11px;
@@ -646,51 +645,6 @@ a.bookmark-name::after {
   transition: opacity 0.1s ease-out;
 }
 
-/* Fuzzy-match toggle pill, shared chrome between the explorer search bar and
-   the sidebar bookmark search. Active state reuses the input's own focus
-   accent so "fuzzy on" reads with the same accent language as everything
-   else, rather than inventing a new on-state color. */
-.search-fuzzy-toggle {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  font: inherit;
-  font-size: 10.5px;
-  font-weight: 600;
-  line-height: 1;
-  letter-spacing: 0.02em;
-  padding: 3px 7px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: none;
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-
-.search-fuzzy-toggle:hover {
-  background: rgba(255, 255, 255, 0.06);
-}
-
-.search-fuzzy-toggle.active {
-  color: var(--accent);
-  border-color: rgba(229, 255, 68, 0.45);
-  background: rgba(229, 255, 68, 0.08);
-}
-
-.search-fuzzy-toggle.active:hover {
-  background: rgba(229, 255, 68, 0.14);
-}
-
-.listing-search-fuzzy-toggle {
-  /* 16px container padding + 10px inset from the input's own right edge. */
-  right: 26px;
-}
-
-.bookmark-search-fuzzy-toggle {
-  /* 8px container padding + 8px inset from the input's own right edge. */
-  right: 16px;
-}
-
 /* Shared search-input chrome (explorer header + sidebar bookmarks). */
 .listing-search-input,
 .bookmark-search-input {
@@ -709,10 +663,12 @@ a.bookmark-name::after {
   color: var(--fg-muted);
 }
 
+/* Focus affordance: a muted border brighten, not the accent yellow — still
+   clearly perceivable against the resting --border, just not loud. */
 .listing-search-input:focus,
 .bookmark-search-input:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--fg-muted);
 }
 
 /* Matched-substring highlight in search results (explorer + bookmarks). */
@@ -729,16 +685,9 @@ a.bookmark-name::after {
 }
 
 /* Sidebar bookmark search box: sits just under the "Bookmarks" heading,
-   aligned with the row padding. Relative so the fuzzy toggle can pin to its
-   right edge like the explorer search bar. */
+   aligned with the row padding. */
 .bookmark-search {
-  position: relative;
   padding: 0 8px 6px;
-}
-
-/* Reserve room for the fuzzy toggle pinned inside the input's right edge. */
-.bookmark-search .bookmark-search-input {
-  padding-right: 52px;
 }
 
 table.listing-table {

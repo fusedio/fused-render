@@ -6,6 +6,7 @@
 export interface FuzzyResult {
   score: number;
   positions: number[]; // indices in `text` of the matched chars, ascending
+  longestRun: number; // length of the longest consecutive matched stretch
 }
 
 // Chars that open a new "segment" in a path/name; a match right after one of
@@ -27,60 +28,40 @@ function isSegmentStart(text: string, i: number): boolean {
 }
 
 export function fuzzyMatch(query: string, text: string): FuzzyResult | null {
-  if (query === "") return { score: 0, positions: [] };
+  if (query === "") return { score: 0, positions: [], longestRun: 0 };
   const q = query.toLowerCase();
   const t = text.toLowerCase();
+  const sub = t.indexOf(q);
+  if (sub !== -1) {
+    const positions: number[] = [];
+    let score = 0;
+    for (let ti = sub; ti < sub + q.length; ti++) {
+      positions.push(ti);
+      score += 1;
+      if (ti > sub) score += 3; // consecutive run
+      if (isSegmentStart(text, ti)) score += 5; // landed on a word boundary
+    }
+    return { score, positions, longestRun: q.length };
+  }
   const positions: number[] = [];
   let qi = 0;
   let score = 0;
   let prev = -2; // index of the previously matched char, for the consecutive test
+  let run = 0; // length of the current consecutive matched stretch
+  let longestRun = 0;
   for (let ti = 0; ti < t.length && qi < q.length; ti++) {
     if (t[ti] !== q[qi]) continue;
     positions.push(ti);
     score += 1;
+    run = ti === prev + 1 ? run + 1 : 1;
+    if (run > longestRun) longestRun = run;
     if (ti === prev + 1) score += 3; // consecutive run
     if (isSegmentStart(text, ti)) score += 5; // landed on a word boundary
     prev = ti;
     qi++;
   }
   if (qi < q.length) return null; // ran out of text before matching every char
-  return { score, positions };
-}
-
-// Plain case-insensitive substring matcher — the "fuzzy off" mode. Same
-// result shape as fuzzyMatch so callers can swap matchers without branching:
-// positions are the contiguous run covering the first occurrence of `query`
-// in `text`. Score favors an earlier match and a match landing on a segment
-// start, mirroring fuzzyMatch's weighting so the two scales feel consistent
-// (each mode only ever ranks its own results, so exact cross-mode parity
-// isn't required).
-export function substringMatch(query: string, text: string): FuzzyResult | null {
-  if (query === "") return { score: 0, positions: [] };
-  const q = query.toLowerCase();
-  const t = text.toLowerCase();
-  const index = t.indexOf(q);
-  if (index === -1) return null;
-  const positions: number[] = [];
-  for (let i = 0; i < q.length; i++) positions.push(index + i);
-  let score = q.length * 4; // consecutive run: 1 (char) + 3 (consecutive) per char, as in fuzzyMatch
-  if (isSegmentStart(text, index)) score += 5; // landed on a word boundary
-  score -= index; // earlier position scores higher
-  return { score, positions };
-}
-
-// Whether fuzzy (subsequence) matching is on; off falls back to
-// substringMatch. Persisted so the choice survives a reload; both the
-// explorer and sidebar searches read/write this single shared pref.
-const FUZZY_PREF_KEY = "fused.searchFuzzy";
-export const SEARCH_FUZZY_EVENT = "fused:searchFuzzy";
-
-export function isFuzzyEnabled(): boolean {
-  return localStorage.getItem(FUZZY_PREF_KEY) !== "false"; // default true
-}
-
-export function setFuzzyEnabled(value: boolean): void {
-  localStorage.setItem(FUZZY_PREF_KEY, String(value));
-  window.dispatchEvent(new Event(SEARCH_FUZZY_EVENT));
+  return { score, positions, longestRun };
 }
 
 export interface HighlightSegment {

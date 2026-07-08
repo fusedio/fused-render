@@ -22,9 +22,10 @@ import {
 } from "../lib/bookmarks";
 import IconPicker from "./IconPicker";
 import type { Bookmark, BookmarkFolder } from "../lib/bookmarks";
-import { useUrlVersion, useBookmarksVersion, useSearchFuzzyVersion, notifyBookmarksChanged } from "../lib/hooks";
+import { useUrlVersion, useBookmarksVersion, notifyBookmarksChanged } from "../lib/hooks";
 import type { Config } from "../lib/api";
-import { fuzzyMatch, substringMatch, highlightSegments, isFuzzyEnabled, setFuzzyEnabled } from "../lib/fuzzy";
+import { fuzzyMatch, highlightSegments } from "../lib/fuzzy";
+import type { FuzzyResult } from "../lib/fuzzy";
 
 // The fs path a bookmark targets, decoded from its /view/ url (same rule as
 // the hover card). Used for search matching and the tooltip.
@@ -261,8 +262,6 @@ export default function Sidebar({ config }: SidebarProps) {
   // of the store it renders).
   useUrlVersion();
   useBookmarksVersion();
-  useSearchFuzzyVersion();
-  const fuzzyOn = isFuzzyEnabled();
 
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [bmQuery, setBmQuery] = useState("");
@@ -286,28 +285,59 @@ export default function Sidebar({ config }: SidebarProps) {
   const topOrder = items.map((it) => it.id); // top-level display order
 
   // Bookmark search: a non-empty query flattens the tree to matching rows.
-  // Matches a bookmark on its name OR target path; a folder-name match pulls in
-  // all of that folder's children. Highlight positions come from the name match
-  // (a path-only or folder-name hit shows the name unhighlighted).
+  // Matches a bookmark fuzzily on its name (or its folder's name — a folder
+  // match pulls in all children), or on its target path as a contiguous
+  // case-insensitive substring (fuzzy on a long path matched nearly anything).
+  // Highlight positions come from the name match (a path-only or folder-name
+  // hit shows the name unhighlighted). Ranked like the explorer search within
+  // name matches: longest consecutive matched run first (a contiguous
+  // substring hit beats a scattered subsequence one), then higher fuzzy score,
+  // then alphabetical. Path-substring-only matches always rank below name
+  // matches, alphabetically.
   const bq = bmQuery.trim();
   const bmSearching = bq !== "";
   const matched: { b: Bookmark; namePositions: number[] }[] = [];
-  const matcher = fuzzyOn ? fuzzyMatch : substringMatch;
   if (bmSearching) {
+    const bqLower = bq.toLowerCase();
+    const pathHit = (url: string) => bookmarkFsPath(url).toLowerCase().includes(bqLower);
+    const ranked: { b: Bookmark; namePositions: number[]; nameHit: boolean; longestRun: number; score: number }[] = [];
+    // The strength of a match across all name fields that hit, for ranking. A
+    // folder name match contributes its own run/score to every child it pulls in.
+    const rank = (folderM: FuzzyResult | null, ...ms: (FuzzyResult | null)[]) => {
+      let longestRun = 0;
+      let score = -Infinity;
+      for (const m of [folderM, ...ms]) {
+        if (!m) continue;
+        if (m.longestRun > longestRun) longestRun = m.longestRun;
+        if (m.score > score) score = m.score;
+      }
+      return { longestRun, score };
+    };
     for (const it of items) {
       if (isFolder(it)) {
-        const folderHit = matcher(bq, it.name) !== null;
+        const folderM = fuzzyMatch(bq, it.name);
         for (const c of it.children) {
-          const nameM = matcher(bq, c.name);
-          const pathHit = matcher(bq, bookmarkFsPath(c.url)) !== null;
-          if (folderHit || nameM || pathHit) matched.push({ b: c, namePositions: nameM ? nameM.positions : [] });
+          const nameM = fuzzyMatch(bq, c.name);
+          if (folderM || nameM || pathHit(c.url)) {
+            const { longestRun, score } = rank(folderM, nameM);
+            ranked.push({ b: c, namePositions: nameM ? nameM.positions : [], nameHit: !!(folderM || nameM), longestRun, score });
+          }
         }
       } else {
-        const nameM = matcher(bq, it.name);
-        const pathHit = matcher(bq, bookmarkFsPath(it.url)) !== null;
-        if (nameM || pathHit) matched.push({ b: it, namePositions: nameM ? nameM.positions : [] });
+        const nameM = fuzzyMatch(bq, it.name);
+        if (nameM || pathHit(it.url)) {
+          const { longestRun, score } = rank(null, nameM);
+          ranked.push({ b: it, namePositions: nameM ? nameM.positions : [], nameHit: !!nameM, longestRun, score });
+        }
       }
     }
+    ranked.sort((a, b) => {
+      if (a.nameHit !== b.nameHit) return a.nameHit ? -1 : 1;
+      if (b.longestRun !== a.longestRun) return b.longestRun - a.longestRun;
+      if (b.score !== a.score) return b.score - a.score;
+      return a.b.name.localeCompare(b.b.name, undefined, { sensitivity: "base" });
+    });
+    for (const { b, namePositions } of ranked) matched.push({ b, namePositions });
   }
 
   // Rows in search results are not reorderable; a no-op drag keeps the shared
@@ -631,13 +661,6 @@ export default function Sidebar({ config }: SidebarProps) {
                   }
                 }}
               />
-              <button
-                className={"search-fuzzy-toggle bookmark-search-fuzzy-toggle" + (fuzzyOn ? " active" : "")}
-                title="Fuzzy matching on/off"
-                onClick={() => setFuzzyEnabled(!fuzzyOn)}
-              >
-                fuzzy
-              </button>
             </div>
             {bmSearching ? (
               matched.length ? (
