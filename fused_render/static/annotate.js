@@ -1664,7 +1664,9 @@
       if (isTextThread(thread)) {
         const range = resolveTextRange(thread);
         if (!range) {
-          detached.push(thread);
+          // Mirror isDetached: an off-page container (AN-38) is navigable,
+          // not detached — sidebar tag only, no tray.
+          if (!offpageInfo(thread)) detached.push(thread);
           continue;
         }
         textRanges.set(thread.id, range);
