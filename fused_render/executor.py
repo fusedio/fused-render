@@ -6,16 +6,20 @@ Two execution paths (D72):
   button) or a user-authored template's reader — runs in a **fresh isolated
   subprocess** per call (SPEC PY-6, D5): always-fresh code, no stale state, and
   a crash or `sys.exit` can't take down the server.
-- **First-party helpers we ship under `templates/`** — the table/csv/xlsx
-  readers and the `api` inspector — run **in-process**. They are trusted and,
-  crucially, none of them import or execute user code (the readers open a data
-  file; the inspector `ast`-parses a .py without importing it). Running them in
-  the server (= app) process means the Downloads/Desktop/Documents access they
-  perform is attributed to the app the user already granted, instead of to a
-  freshly-spawned interpreter that macOS TCC re-prompts for on *every* call.
-  That repeated prompting — one per preview/pagination/slider tick on a file
-  under a protected folder — was the bug this split fixes; it also drops the
-  per-call pandas/pyarrow re-import cost, since those stay warm in the server.
+- **An allowlist of first-party helpers** (`INPROCESS_HELPERS` — the table/csv/
+  xlsx readers and the `api` inspector) run **in-process**. They are trusted
+  and, crucially, none of them import or execute user code (the readers open a
+  data file; the inspector `ast`-parses a .py without importing it) and each is
+  fast and bounded. Running them in the server (= app) process means the
+  Downloads/Desktop/Documents access they perform is attributed to the app the
+  user already granted, instead of to a freshly-spawned interpreter that macOS
+  TCC re-prompts for on *every* call. That repeated prompting — one per
+  preview/pagination/slider tick on a file under a protected folder — was the
+  bug this split fixes; it also drops the per-call pandas/pyarrow re-import
+  cost, since those stay warm in the server. Other shipped helpers under
+  `templates/` (the claude/ chat agent, the geo tile servers/browsers, …) are
+  deliberately NOT allowlisted — they can be slow or long-running, so they take
+  the subprocess path and keep its timeout + isolation.
 """
 import importlib.util
 import json
@@ -30,9 +34,28 @@ from ._binding import bind_params
 logger = logging.getLogger(__name__)
 
 CHILD = os.path.join(os.path.dirname(__file__), "_child.py")
-# Realpath so a symlinked helper can't smuggle a user path past the check.
-BUILTIN_TEMPLATES_DIR = os.path.realpath(os.path.join(os.path.dirname(__file__), "templates"))
+_TEMPLATES_DIR = os.path.realpath(os.path.join(os.path.dirname(__file__), "templates"))
 DEFAULT_TIMEOUT = 30.0
+
+# Explicit allowlist of first-party helpers that run IN-PROCESS (D72): each is
+# fast, bounded, self-contained, and never imports or executes user code — the
+# data-page readers plus the api inspector (which only `ast`-parses). Realpaths,
+# so a symlink can't smuggle another path in. Everything else under templates/
+# (the claude/ chat agent, the geo/h3/las/vector/zarr browsers + tile servers,
+# converters, …) is NOT here and runs on the subprocess path, keeping its 30 s
+# timeout and process isolation — critical for the slow/long-running ones. This
+# is an allowlist, not a "path under templates/" check, precisely so that a new
+# shipped helper defaults to the safe subprocess path; add a reader here only
+# after confirming it is fast, bounded, and free of user-code execution.
+INPROCESS_HELPERS = frozenset(
+    os.path.realpath(os.path.join(_TEMPLATES_DIR, *parts))
+    for parts in (
+        ("table", "reader.py"),
+        ("csv", "reader.py"),
+        ("xlsx", "reader.py"),
+        ("api", "inspector.py"),
+    )
+)
 
 
 def _error(err_type: str, message: str, detail: str = "") -> dict:
@@ -44,17 +67,17 @@ def _error(err_type: str, message: str, detail: str = "") -> dict:
 
 
 def _is_builtin_helper(path: str) -> bool:
-    """True when `path` is one of the first-party helper scripts we ship under
-    templates/. Those are trusted and never import/exec user code, so they run
-    in-process (D72). A user template's reader lives under ~/.fused-render/, and
-    a user script runs from wherever it is — neither is under here, so both stay
-    subprocess-isolated.
+    """True only for the allowlisted in-process helpers (D72): the table/csv/xlsx
+    readers and the api inspector. Exact realpath membership — every other
+    script (user code, and other shipped helpers like the claude agent or the
+    geo tile servers/browsers) stays on the subprocess path with its timeout and
+    isolation.
     """
     try:
         real = os.path.realpath(path)
     except OSError:
         return False
-    return os.path.commonpath([real, BUILTIN_TEMPLATES_DIR]) == BUILTIN_TEMPLATES_DIR
+    return real in INPROCESS_HELPERS
 
 
 def _run_inprocess(path: str, params: dict) -> dict:
