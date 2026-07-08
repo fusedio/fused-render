@@ -585,24 +585,53 @@ the product gains network access.
 
 ### 19.2 The fused CLI seam
 
-- **DP-3** CLI resolution (`deploy.fused_command`): `FUSED_RENDER_FUSED_BIN`
-  (verbatim, whitespace-split — compound commands work, and it is the test
-  seam) → a `fused` console script in the server interpreter's own bin/ →
-  `fused` on PATH.
+- **DP-3** CLI resolution (`deploy.fused_cli`) has **exactly two sources —
+  one explicit, one autodetected — and nothing else**: (1)
+  `FUSED_RENDER_FUSED_BIN` (verbatim, whitespace-split — compound commands
+  work, and it is the test seam); (2) the `fused` package **importable in the
+  server's own interpreter**, run as `[sys.executable,
+  fused_render/_fused_cli.py]` — a shim that sets `argv[0] = "fused"` and
+  calls `fused._cli.main()`, behaviorally identical to the console script.
+  There is deliberately **no venv-bin scan, no PATH lookup, and no
+  well-known-location guessing**: a CLI the server didn't get from its own
+  interpreter runs only because the user explicitly configured it. (The old
+  venv-bin step is subsumed — a venv whose bin/ has the script always has the
+  package importable.)
+- **DP-3a** Child-env hygiene: an **external** CLI (the override) is spawned
+  with `PYTHONHOME`/`PYTHONPATH` scrubbed — inside the packaged app those are
+  bundle-scoped and would break any other Python (the las template's
+  external-spawn precedent); the in-interpreter shim keeps them (they are
+  what make `sys.executable` work in the bundle). `OPENFUSED_ENV` targeting
+  (DP-7) is unchanged for both.
 - **DP-4** When the CLI is missing and installing is possible (Python ≥ 3.11
   per the wheel's marker, and the interpreter has pip), `POST
   /api/deploy/install` pip-installs **the wheel pinned by
-  `deploy.PINNED_FUSED_REQUIREMENT`** into the server's interpreter. The
-  constant is the in-code source of the pin; pyproject.toml's `[fused]` extra
-  must reference the same wheel and a test pins the two together. Reading the
-  pin from installed dist-info metadata is rejected: metadata is absent on
-  source-tree runs and stripped app bundles, and goes stale on an editable
-  install that predates the extra — all of which disabled the button exactly
-  when it mattered, while the constant ships in the same file as the code
-  using it. When installing is impossible, the modal states why — old Python,
-  or a pip-less embedded interpreter (install fused with an outside Python
-  and point `FUSED_RENDER_FUSED_BIN` at it) — plus the manual
-  `pip install "fused-render[fused]"` hint.
+  `deploy.PINNED_FUSED_REQUIREMENT`** into the server's interpreter — which
+  makes the package importable there, i.e. lands in DP-3's autodetected
+  source (finder caches are invalidated after the install so the probe sees
+  it without a restart). The constant is the in-code source of the pin;
+  pyproject.toml's `[fused]` extra must reference the same wheel and a test
+  pins the two together. Reading the pin from installed dist-info metadata is
+  rejected: metadata is absent on source-tree runs and stripped app bundles,
+  and goes stale on an editable install that predates the extra — all of
+  which disabled the button exactly when it mattered, while the constant
+  ships in the same file as the code using it. When installing is impossible,
+  the modal states why — old Python, or a pip-less embedded interpreter
+  (point `FUSED_RENDER_FUSED_BIN` at a fused installed with another Python) —
+  plus the manual `pip install "fused-render[fused]"` hint.
+- **DP-16** The packaged macOS app **ships the CLI**: `build_dmg.sh` installs
+  the `[fused]` extra into the bundle (py2app force-copies `fused` + its
+  data-bearing deps — `setup_py2app.py`), so DP-3's autodetected source is
+  always present and the install panel never appears in the .app (its sealed,
+  notarized bundle could not be pip-installed into anyway). The build also
+  ships a terminal wrapper, `Contents/MacOS/fused` (bundled python + the
+  DP-3 shim), for the one-time interactive setup a modal can't do —
+  `fused cloud setup` / `cloud login` / `env create` — and smoke-tests real
+  CLI verbs through the shim before signing, so a py2app packaging gap fails
+  the build rather than the user's first deploy. `GET /api/deploy/config`
+  carries `setup_cli` — the wrapper's absolute path when frozen
+  (`sys.frozen == "macosx_app"`), else `"fused"` — and the modal's
+  no-envs guidance names it.
 
 ### 19.3 Environments
 

@@ -92,7 +92,7 @@ fi
 echo "==> using framework python: $FRAMEWORK_PYTHON (PYTHONFRAMEWORK=$FRAMEWORK_TAG)"
 
 # ---------------------------------------------------------------------------
-# 2. Build venv: fused-render[bundled,app] + py2app + dmgbuild
+# 2. Build venv: fused-render[bundled,app,fused] + py2app + dmgbuild
 # ---------------------------------------------------------------------------
 
 if [[ ! -x "$BUILD_VENV/bin/python" ]]; then
@@ -100,9 +100,12 @@ if [[ ! -x "$BUILD_VENV/bin/python" ]]; then
   "$FRAMEWORK_PYTHON" -m venv "$BUILD_VENV"
 fi
 
-echo "==> installing fused-render[bundled,app] + py2app + dmgbuild into the build venv"
+echo "==> installing fused-render[bundled,app,fused] + py2app + dmgbuild into the build venv"
 "$BUILD_VENV/bin/pip" install --quiet --upgrade pip
-"$BUILD_VENV/bin/pip" install --quiet "${REPO_ROOT}[bundled,app]" py2app dmgbuild
+# [fused] bakes the deploy CLI into the bundle (SPEC §19 DP-3): the .app has
+# no pip and no console scripts, so the Deploy surface runs the package
+# in-interpreter via fused_render/_fused_cli.py under the bundled python.
+"$BUILD_VENV/bin/pip" install --quiet "${REPO_ROOT}[bundled,app,fused]" py2app dmgbuild
 
 # ---------------------------------------------------------------------------
 # 3. App icon: a fresh, high-res render of the same four-pointed sparkle used
@@ -253,6 +256,48 @@ if ! echo "$SMOKE_OUT" | grep -q '"ok": true'; then
 fi
 echo "    $SMOKE_OUT"
 rm -rf "$SMOKE_DIR"
+
+# ---------------------------------------------------------------------------
+# 4c. Bundled fused CLI (SPEC §19 DP-3): the [fused] extra installed above
+#     ships in the bundle so Deploy works with zero setup. Two artifacts:
+#     - Contents/MacOS/fused: a terminal wrapper over the SAME baked-in CLI
+#       (bundled python + fused_render/_fused_cli.py shim), for the one-time
+#       setup steps a modal can't do (`fused cloud setup`, `fused cloud
+#       login`, `fused env create`). The Deploy modal's guidance names this
+#       path when running packaged (deploy._setup_cli_hint).
+#     - a smoke test invoking real CLI verbs through the shim, so a py2app
+#       packaging gap (an untraced dynamic import, a dropped data dir - see
+#       setup_py2app.py's fused block) fails the BUILD, not the user's first
+#       deploy. Runs before signing: the wrapper must exist before the seal.
+# ---------------------------------------------------------------------------
+
+echo "==> bundled fused CLI: terminal wrapper + smoke test"
+PYLIB_NAME="$(basename "$APP_PYLIB")"   # e.g. python3.12
+cat > "$APP_DIR/Contents/MacOS/fused" <<WRAPPER
+#!/bin/sh
+# fused CLI bundled with FusedRender.app - the same interpreter + fused
+# package the app's Deploy button uses (fused_render/_fused_cli.py, SPEC §19).
+# PYTHONHOME points the bundled python at its own runtime, exactly as the
+# app's own smoke tests / py2app launcher do.
+HERE="\$(cd "\$(dirname "\$0")" && pwd)"
+RES="\$HERE/../Resources"
+exec env PYTHONHOME="\$RES" "\$HERE/python" "\$RES/lib/${PYLIB_NAME}/fused_render/_fused_cli.py" "\$@"
+WRAPPER
+chmod +x "$APP_DIR/Contents/MacOS/fused"
+
+# --help imports the whole click command tree; `env list` (against an empty,
+# isolated store) exercises the environments stack (pydantic models et al).
+for probe in "--help" "share --help" "env list"; do
+  if ! PROBE_OUT="$(env OPENFUSED_ENVS_FILE="$BUILD_DIR/smoke-envs.json" \
+      "$APP_DIR/Contents/MacOS/fused" $probe 2>&1)"; then
+    echo "FATAL: bundled fused CLI failed on: fused $probe" >&2
+    echo "$PROBE_OUT" >&2
+    echo "(a py2app packaging gap? see setup_py2app.py's fused packages block)" >&2
+    exit 1
+  fi
+done
+echo "    fused --help / share --help / env list OK"
+
 
 # ---------------------------------------------------------------------------
 # 5. Code signing (D73, realizes the D35 hook). Two modes:

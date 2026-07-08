@@ -315,8 +315,8 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             provisioned serving plane.
           </p>
           <p className="deploy-muted">
-            Create one with <code>fused env create</code> (or <code>fused cloud setup</code> for
-            the managed backend); environments are read from{" "}
+            Create one in a terminal with <code>{config.setup_cli} cloud setup</code> (managed
+            backend) or <code>{config.setup_cli} env create</code>; environments are read from{" "}
             <code>{config.envs_file}</code>.
           </p>
           <button type="button" onClick={load}>

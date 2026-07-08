@@ -34,7 +34,10 @@ verb = sys.argv[2] if len(sys.argv) > 2 else ""
 bundle = next((a for a in sys.argv[3:] if os.path.isdir(a)), None)
 entry = {
     "argv": sys.argv[1:],
+    "argv0": sys.argv[0],
     "env": os.environ.get("OPENFUSED_ENV"),
+    "pythonhome": os.environ.get("PYTHONHOME"),
+    "pythonpath": os.environ.get("PYTHONPATH"),
     "bundle_files": sorted(os.listdir(bundle)) if bundle else None,
 }
 with open(os.environ["FUSED_STUB_LOG"], "a") as f:
@@ -44,6 +47,14 @@ if verb not in scenario:
     sys.exit(1)
 print(json.dumps(scenario[verb]))
 """
+
+# The same record/answer behavior as STUB, packaged as a fake `fused` package
+# whose `_cli.main()` the real fused_render/_fused_cli.py shim invokes — the
+# in-interpreter autodetection path (the packaged .app's shape: importable
+# package, no console script).
+FAKE_FUSED_CLI = "def main():\n" + "".join(
+    "    " + line + "\n" for line in STUB.splitlines()
+)
 
 ENVS = {
     "default": "prod",
@@ -133,7 +144,7 @@ def test_config_reports_missing_cli_as_installable(tmp_path, monkeypatch):
     # source runs and stale on pre-extra editable installs), so a missing CLI
     # on a pip-capable 3.11+ interpreter is always one-click installable.
     h = _harness(tmp_path, monkeypatch)
-    monkeypatch.setattr(deploy_mod, "fused_command", lambda: None)
+    monkeypatch.setattr(deploy_mod, "fused_cli", lambda: None)
     cli = h.client.get("/api/deploy/config").json()["cli"]
     assert cli["found"] is False
     assert cli["installable"] is True
@@ -145,11 +156,80 @@ def test_config_missing_cli_without_pip_names_the_workaround(tmp_path, monkeypat
     # An embedded/packaged interpreter (no pip) can't install into itself —
     # the reason must route the user to FUSED_RENDER_FUSED_BIN instead.
     h = _harness(tmp_path, monkeypatch)
-    monkeypatch.setattr(deploy_mod, "fused_command", lambda: None)
+    monkeypatch.setattr(deploy_mod, "fused_cli", lambda: None)
     monkeypatch.setattr(deploy_mod, "_pip_available", lambda: False)
     cli = h.client.get("/api/deploy/config").json()["cli"]
     assert cli["installable"] is False
     assert "FUSED_RENDER_FUSED_BIN" in cli["reason"]
+
+
+# -- CLI resolution: one explicit override, one autodetection, nothing else ----
+
+
+def test_no_override_and_not_importable_means_no_cli(tmp_path, monkeypatch):
+    # With the override unset and `fused` not importable in the server's
+    # interpreter, there is NO fallback — no venv-bin scan, no PATH lookup,
+    # no well-known locations. A CLI runs only because the user's own
+    # interpreter has the package or the user explicitly pointed at one.
+    _harness(tmp_path, monkeypatch)
+    monkeypatch.delenv("FUSED_RENDER_FUSED_BIN")
+    real_find_spec = deploy_mod.importlib.util.find_spec
+    monkeypatch.setattr(
+        "importlib.util.find_spec",
+        lambda name, *a, **k: None if name == "fused" else real_find_spec(name, *a, **k),
+    )
+    assert deploy_mod.fused_cli() is None
+
+
+def test_importable_fused_autodetects_via_shim_and_deploys(tmp_path, monkeypatch):
+    # The one autodetected source: a `fused` package importable in the
+    # server's interpreter runs through [sys.executable, _fused_cli.py] —
+    # the packaged .app's shape (baked-in package, no console script). The
+    # child inherits the interpreter env untouched (PYTHONPATH here is what
+    # lets it import the fake package — inside the .app the analog is the
+    # bundle's PYTHONHOME).
+    h = _harness(tmp_path, monkeypatch)
+    fake_root = tmp_path / "fakepkg"
+    (fake_root / "fused").mkdir(parents=True)
+    (fake_root / "fused" / "__init__.py").write_text("", encoding="utf-8")
+    (fake_root / "fused" / "_cli.py").write_text(FAKE_FUSED_CLI, encoding="utf-8")
+    monkeypatch.delenv("FUSED_RENDER_FUSED_BIN")
+    monkeypatch.syspath_prepend(str(fake_root))  # parent: find_spec sees it
+    monkeypatch.setenv("PYTHONPATH", str(fake_root))  # child: import sees it
+
+    cli = deploy_mod.fused_cli()
+    assert cli is not None and cli.external is False
+    assert cli.command[0] == sys.executable
+    assert cli.command[1].endswith("_fused_cli.py")
+
+    h.set_scenario(
+        {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
+    )
+    resp = h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["url"] == "https://serve.example/abc123"
+    (call,) = h.calls()
+    assert call["argv0"] == "fused"  # the shim renamed argv[0] for click
+    assert call["argv"][:2] == ["share", "create"]
+    assert call["bundle_files"] == ["code", "manifest.json", "page.html"]
+
+
+def test_external_override_scrubs_interpreter_env(tmp_path, monkeypatch):
+    # A FUSED_RENDER_FUSED_BIN CLI is an external interpreter: the packaged
+    # app's bundle-scoped PYTHONHOME/PYTHONPATH must not leak into it (they
+    # would break any other Python). The stub records what it saw.
+    h = _harness(tmp_path, monkeypatch)
+    monkeypatch.setenv("PYTHONHOME", "/bundle/Contents/Resources")
+    monkeypatch.setenv("PYTHONPATH", "/bundle/Contents/Resources/lib")
+    h.set_scenario(
+        {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
+    )
+    resp = h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    assert resp.status_code == 200, resp.text
+    (call,) = h.calls()
+    assert call["pythonhome"] is None
+    assert call["pythonpath"] is None
+    assert call["env"] == "cloud"  # OPENFUSED_ENV still targets the pick
 
 
 def test_pinned_requirement_matches_pyproject_extra():

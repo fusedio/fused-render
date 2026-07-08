@@ -9,11 +9,14 @@ child process, exactly the pattern the flow app uses for project deploys
 (flow repo, spec/app/deploy-project.md). What this module owns:
 
   * **The fused CLI seam.** Deploying needs the `fused` package, which may not
-    be installed in the venv running this server. `fused_command()` resolves
-    the CLI (FUSED_RENDER_FUSED_BIN override -> the server venv's own bin/ ->
-    PATH), and `POST /api/deploy/install` pip-installs the wheel pinned by
-    this package's own `[fused]` extra into the server's venv when it is
-    missing (Python 3.11+, matching the extra's marker).
+    be installed in the venv running this server. `fused_cli()` resolves it
+    from exactly two sources: an explicit FUSED_RENDER_FUSED_BIN override, or
+    — the ONE autodetected source — the `fused` package importable in this
+    interpreter, run via the `_fused_cli.py` shim under sys.executable (which
+    is what the packaged macOS app uses: its bundle bakes the package in and
+    has no console scripts). `POST /api/deploy/install` pip-installs the
+    wheel pinned by `PINNED_FUSED_REQUIREMENT` into the server's interpreter
+    when it is missing (Python 3.11+ with pip).
   * **Export to a temporary bundle.** Each deploy re-exports the page into a
     fresh temp directory (`export.export_page`) and hands that bundle to
     `share create`/`repoint`; the bundle is deleted afterwards — nothing to
@@ -45,6 +48,9 @@ X-Fused guard is duplicated locally like shell/bookmarks.py does.
 """
 from __future__ import annotations
 
+import dataclasses
+import importlib
+import importlib.util
 import json
 import os
 import shutil
@@ -101,28 +107,49 @@ def _now_iso() -> str:
 # -- the fused CLI seam -------------------------------------------------------
 
 
-def fused_command() -> list[str] | None:
-    """The command vector that runs the fused CLI, or None when not found.
+@dataclasses.dataclass(frozen=True)
+class FusedCli:
+    """The resolved fused CLI: the command vector, and whether it is an
+    EXTERNAL interpreter (a FUSED_RENDER_FUSED_BIN override) — external
+    children get PYTHONHOME/PYTHONPATH scrubbed so the packaged app's
+    bundle-scoped interpreter env can't poison them (see _child_env)."""
 
-    Resolution order:
+    command: list[str]
+    external: bool
+
+
+def fused_cli() -> FusedCli | None:
+    """Resolve the fused CLI, or None when there is none.
+
+    Exactly TWO sources — one explicit, one autodetected — and nothing else
+    (no venv-bin scan, no PATH lookup, no well-known-location guessing; a CLI
+    this server didn't get from its own interpreter runs only because the
+    user explicitly configured it):
+
       1. FUSED_RENDER_FUSED_BIN — trusted verbatim, split on whitespace so a
          compound command works (e.g. "uv run fused"). Mirrors the flow app's
-         OPENFUSED_BIN seam; it is also how tests substitute a stub CLI.
-      2. a `fused` console script in the same bin/ dir as this interpreter —
-         the venv running the server, where /api/deploy/install lands it.
-      3. `fused` on PATH.
+         OPENFUSED_BIN seam; also how tests substitute a stub CLI.
+      2. the `fused` package importable in THIS interpreter — run as
+         ``[sys.executable, _fused_cli.py]`` (the shim sets argv[0] and calls
+         fused._cli.main). Covers a venv server that pip-installed the
+         [fused] extra (including via POST /api/deploy/install) AND the
+         packaged macOS app, whose py2app bundle has no console scripts but
+         bakes the fused package in (build_dmg.sh) and whose sys.executable
+         is a real re-invokable interpreter (the executor's _child.py spawn
+         pattern).
     """
     override = os.environ.get("FUSED_RENDER_FUSED_BIN")
     if override:
         parts = override.split()
-        return parts if parts else None
-    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
-    for name in ("fused", "fused.exe"):
-        candidate = os.path.join(exe_dir, name)
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            return [candidate]
-    which = shutil.which("fused")
-    return [which] if which else None
+        return FusedCli(command=parts, external=True) if parts else None
+    try:
+        importable = importlib.util.find_spec("fused") is not None
+    except (ImportError, ValueError):
+        importable = False
+    if importable:
+        shim = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_fused_cli.py")
+        return FusedCli(command=[sys.executable, shim], external=False)
+    return None
 
 
 # The fused wheel the one-click install lands (POST /api/deploy/install) —
@@ -159,14 +186,15 @@ def cli_status() -> dict:
 
     `installable` means POST /api/deploy/install can be expected to work:
     this interpreter satisfies the pinned wheel's python_version >= 3.11
-    marker and has pip. When not installable, `reason` says why and
-    `install_hint` names the manual command.
+    marker and has pip (the install lands in THIS interpreter, which is the
+    one autodetected source — see fused_cli). When not installable, `reason`
+    says why and `install_hint` names the manual command.
     """
-    command = fused_command()
+    cli = fused_cli()
     python_ok = sys.version_info >= FUSED_MIN_PYTHON
     pip_ok = _pip_available()
     reason = None
-    if command is None:
+    if cli is None:
         if not python_ok:
             reason = (
                 f"the fused package needs Python 3.11+ (this server runs "
@@ -175,14 +203,14 @@ def cli_status() -> dict:
         elif not pip_ok:
             reason = (
                 "this server's Python has no pip module (an embedded or packaged "
-                "interpreter), so it can't install packages into itself; install the "
-                "fused CLI with a Python on your PATH and, if the server still can't "
-                "find it, point FUSED_RENDER_FUSED_BIN at the `fused` executable"
+                "interpreter), so it can't install packages into itself; point "
+                "FUSED_RENDER_FUSED_BIN at a `fused` executable installed with "
+                "another Python"
             )
     return {
-        "found": command is not None,
-        "command": " ".join(command) if command else None,
-        "installable": command is None and python_ok and pip_ok,
+        "found": cli is not None,
+        "command": " ".join(cli.command) if cli else None,
+        "installable": cli is None and python_ok and pip_ok,
         "reason": reason,
         "install_hint": 'pip install "fused-render[fused]"',
     }
@@ -221,10 +249,14 @@ def install_fused() -> dict:
     if proc.returncode != 0:
         tail = "\n".join((proc.stderr or proc.stdout or "").strip().splitlines()[-8:])
         raise DeployError(f"pip install failed:\n{tail}")
-    if fused_command() is None:
+    # The freshly-installed package must now be importable HERE — that is the
+    # one autodetected CLI source (fused_cli step 2). Import-system finder
+    # caches can lag a just-created site-packages dir; flush them first.
+    importlib.invalidate_caches()
+    if fused_cli() is None:
         raise DeployError(
-            "pip install succeeded but no `fused` executable was found afterwards; "
-            "check the server's PATH/venv"
+            "pip install succeeded but the fused package is still not importable in "
+            "the server's interpreter; check the install output / venv"
         )
     return {"ok": True, "requirement": requirement}
 
@@ -297,31 +329,49 @@ def _cli_error(stderr: str, fallback: str) -> str:
     return message.removeprefix("Error: ")
 
 
+def _child_env(cli: FusedCli, env_name: str) -> dict[str, str]:
+    """The child environment for a fused CLI run.
+
+    OPENFUSED_ENV targets the chosen env (the CLI's own override channel).
+    For an EXTERNAL cli (FUSED_RENDER_FUSED_BIN), interpreter-scoped vars are
+    scrubbed: inside the packaged macOS app the process carries PYTHONHOME/
+    PYTHONPATH pointing into the bundle, which would break any other Python's
+    interpreter (same scrub the las template does for its external spawns).
+    The in-interpreter shim keeps them — they are what make sys.executable
+    work in the bundle.
+    """
+    child = {**os.environ, "OPENFUSED_ENV": env_name}
+    if cli.external:
+        for var in ("PYTHONHOME", "PYTHONPATH"):
+            child.pop(var, None)
+    return child
+
+
 def _run_share(env_name: str, args: list[str], timeout: float = SHARE_TIMEOUT):
     """Run `fused share <args>` against `env_name` and parse its JSON stdout.
 
     Every `share` verb prints structured JSON (the CLI's _out); human notes go
-    to stderr. The env is targeted via OPENFUSED_ENV on the child — the CLI's
-    own override channel, no config file edited.
+    to stderr.
     """
-    command = fused_command()
-    if command is None:
+    cli = fused_cli()
+    if cli is None:
         raise DeployError(
-            "the fused CLI is not installed in the server's environment; install it "
-            "from the Deploy dialog or run: pip install \"fused-render[fused]\""
+            "the fused CLI is not available: the fused package is not importable in "
+            "the server's environment and no FUSED_RENDER_FUSED_BIN override is set; "
+            "install it from the Deploy dialog or run: pip install \"fused-render[fused]\""
         )
     try:
         proc = subprocess.run(
-            [*command, "share", *args],
+            [*cli.command, "share", *args],
             capture_output=True,
             text=True,
             timeout=timeout,
-            env={**os.environ, "OPENFUSED_ENV": env_name},
+            env=_child_env(cli, env_name),
         )
     except subprocess.TimeoutExpired:
         raise DeployError(f"`fused share {args[0]}` timed out after {int(timeout)}s") from None
     except OSError as e:
-        raise DeployError(f"could not run the fused CLI ({command[0]}): {e}") from None
+        raise DeployError(f"could not run the fused CLI ({cli.command[0]}): {e}") from None
     if proc.returncode != 0:
         raise DeployError(_cli_error(proc.stderr, f"fused share {args[0]} failed"))
     try:
@@ -555,9 +605,26 @@ def list_shares(env_name: str) -> dict:
 # -- routes --------------------------------------------------------------------
 
 
+def _setup_cli_hint() -> str:
+    """The command users type in a terminal for one-time CLI setup
+    (`fused env create`, `fused cloud setup`, `fused cloud login`).
+
+    Inside the packaged macOS app (py2app sets sys.frozen) there is no
+    user-facing `fused` on PATH — but the bundle ships a terminal wrapper
+    beside its interpreter (Contents/MacOS/fused, build_dmg.sh) that runs the
+    same baked-in CLI the Deploy button uses. Point guidance at it so a .app
+    user never needs a separate fused install.
+    """
+    if getattr(sys, "frozen", None) == "macosx_app":
+        wrapper = os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "fused")
+        if os.path.isfile(wrapper):
+            return wrapper
+    return "fused"
+
+
 @router.get("/api/deploy/config")
 def api_deploy_config():
-    return {"cli": cli_status(), **eligible_envs()}
+    return {"cli": cli_status(), "setup_cli": _setup_cli_hint(), **eligible_envs()}
 
 
 @router.get("/api/deploy/status")

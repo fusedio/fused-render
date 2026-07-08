@@ -123,12 +123,16 @@ fused-render itself still hosts nothing and mints no URLs.
 
 The modal handles the whole flow:
 
-- **The `fused` package.** Deploying needs the `fused` CLI, which may not be in
-  the venv running this server. If it's missing, the modal offers a one-click
-  install of the wheel pinned by this package's `[fused]` extra (Python 3.11+),
-  or names the manual command: `pip install "fused-render[fused]"`. An existing
-  install is found via `FUSED_RENDER_FUSED_BIN`, the server venv's `bin/`, or
-  `PATH`.
+- **The `fused` package.** Deploying needs the `fused` CLI. It is resolved from
+  exactly two places: an explicit `FUSED_RENDER_FUSED_BIN` override, or — the
+  one autodetected source — the `fused` package importable in the server's own
+  Python (run in-interpreter; no PATH scanning). If it's missing, the modal
+  offers a one-click install of the wheel pinned by this package's `[fused]`
+  extra into the server's environment (Python 3.11+ with pip), or names the
+  manual command: `pip install "fused-render[fused]"`. The packaged macOS app
+  ships the CLI built in — no setup — plus a terminal wrapper at
+  `FusedRender.app/Contents/MacOS/fused` for the one-time
+  `fused cloud setup` / `fused env create` steps.
 - **Environment choice.** Deploy targets are the *hosted* environments from the
   fused CLI's own store (`~/.openfused/envs.json`): a managed `fused` env (the
   default) or an `aws` env whose serving plane `fused infra serve` provisioned.

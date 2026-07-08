@@ -145,6 +145,10 @@ export interface DeployConfig {
   envs: DeployEnv[];
   default_env: string | null;
   envs_file: string;
+  // What to type in a terminal for one-time CLI setup (`… env create`,
+  // `… cloud setup`): plain "fused" normally; inside the packaged macOS app,
+  // the absolute path of the bundle's own CLI wrapper.
+  setup_cli: string;
 }
 
 // The thin per-page deployment pointer (~/.fused-render/deployments.json).
