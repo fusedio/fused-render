@@ -279,13 +279,17 @@ def _poll(run_id: str) -> dict:
                 error = str(result_text or "claude exited with an error")
 
     if not done and not _alive(run_dir):
+        # Dead without a `result` row = abnormal exit (crash, OOM, cancel),
+        # even if some text streamed first. Report it as an error regardless
+        # of partial text, so the UI doesn't render a truncated reply as a
+        # clean success and the sidecar-record guard below skips it.
         done = True
-        if not text_parts:
-            try:
-                error = open(os.path.join(run_dir, "err.log")).read().strip() \
-                    or "claude exited unexpectedly"
-            except FileNotFoundError:
-                error = "claude exited unexpectedly"
+        try:
+            tail = open(os.path.join(run_dir, "err.log")).read().strip()
+        except FileNotFoundError:
+            tail = ""
+        error = tail or ("claude exited before completing the reply"
+                         if text_parts else "claude exited unexpectedly")
 
     # First poll that sees the session id writes it to the sidecar (marker
     # file keeps the write one-shot across the remaining polls).
