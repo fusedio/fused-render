@@ -810,6 +810,10 @@
       padding: 10px 16px 4px; font-size: 11px; font-weight: 600;
       color: var(--fa-muted); border-top: 1px solid var(--fa-border);
     }
+    /* Collapsible "Other views" group header (AN-39). */
+    .__fa_side_sect_toggle { cursor: pointer; padding-bottom: 10px; user-select: none; }
+    .__fa_side_sect_toggle:hover { color: var(--fa-fg); }
+    .__fa_side_none { padding: 14px 16px; color: var(--fa-muted); font-size: 12px; }
     .__fa_card {
       padding: 12px 16px; border-bottom: 1px solid var(--fa-border);
       border-left: 3px solid transparent; cursor: pointer;
@@ -1481,6 +1485,7 @@
 
   let sidebarOpen = false; // ephemeral, per pane — deliberately NOT URL state (AN-28)
   let expandedCardId = null; // the one card showing the full thread (AN-29)
+  let foreignSectOpen = false; // "Other views" group starts collapsed (AN-39)
   let detachedIds = new Set(); // last-known detachment set, both modes (AN-30)
 
   // The sidebar is the annotate-mode home for comments: it AUTO-OPENS with the
@@ -1514,6 +1519,11 @@
     if (!sidebarOpen) return;
     const list = sideListEl();
     list.innerHTML = "";
+    // The sidebar leads with THIS view's comments; comments from the file's
+    // other views live in a collapsed "Other views" group at the bottom —
+    // present (nothing silently missing) but out of the working list (AN-39).
+    const local = comments.filter((t) => !isForeign(t));
+    const foreign = comments.filter((t) => isForeign(t));
     if (comments.length === 0) {
       const hint = adapter
         ? "Select some text in the editor to leave a comment."
@@ -1526,7 +1536,7 @@
         </div>`;
       return;
     }
-    const sorted = comments.slice().sort((a, b) => {
+    const sorted = local.slice().sort((a, b) => {
       const ra = a.status === "resolved" ? 1 : 0;
       const rb = b.status === "resolved" ? 1 : 0;
       if (ra !== rb) return ra - rb;
@@ -1544,6 +1554,28 @@
         list.appendChild(sect);
       }
       list.appendChild(t.id === expandedCardId ? expandedCard(t) : collapsedCard(t));
+    }
+    if (local.length === 0) {
+      const none = document.createElement("div");
+      none.className = "__fa_side_none";
+      none.textContent = "No comments on this view yet.";
+      list.appendChild(none);
+    }
+    if (foreign.length) {
+      const sect = document.createElement("div");
+      sect.className = "__fa_side_sect __fa_side_sect_toggle";
+      sect.textContent = (foreignSectOpen ? "▾" : "▸") + " Other views (" + foreign.length + ")";
+      sect.addEventListener("click", () => {
+        foreignSectOpen = !foreignSectOpen;
+        renderSidebar();
+      });
+      list.appendChild(sect);
+      if (foreignSectOpen) {
+        const fSorted = foreign.slice().sort((a, b) => b.createdAt - a.createdAt);
+        for (const t of fSorted) {
+          list.appendChild(t.id === expandedCardId ? expandedCard(t) : collapsedCard(t));
+        }
+      }
     }
   }
 
