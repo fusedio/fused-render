@@ -584,6 +584,32 @@ def test_revoke_by_token_covers_untracked_mounts(tmp_path, monkeypatch):
     assert h.calls()[-1]["argv"][1:3] == ["revoke", "zzz999"]
 
 
+def test_revoke_by_alternate_id_still_flips_the_pointer(tmp_path, monkeypatch):
+    # The managed backend addresses one mount by token OR id. Here the create
+    # output carried only the id (so the pointer recorded it), while the share
+    # list row shows the token — revoking by the token must still flip the
+    # pointer, or the preview dot stays green for a link that was just taken
+    # down.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"id": "id-777", "url": "https://serve.example/tok-777", "status": "active"}}
+    )
+    h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    assert h.pointer()["token"] == "id-777"
+
+    h.set_scenario(
+        {
+            "list": [{"token": "tok-777", "id": "id-777", "status": "active"}],
+            "revoke": {"token": "tok-777", "status": "revoked"},
+        }
+    )
+    resp = h.client.post(
+        "/api/deploy/revoke", json={"env": "cloud", "token": "tok-777"}, headers=FUSED
+    )
+    assert resp.status_code == 200, resp.text
+    assert h.pointer()["status"] == "revoked"
+
+
 def test_revoke_by_token_flips_the_matching_pointer(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
     h.set_scenario(

@@ -567,7 +567,26 @@ def revoke_mount(env_name: str, token: str) -> dict:
     also covers mounts with no local pointer (deployed by the CLI, another
     app, or another machine; the CLI's owner-binding still applies and its
     refusal surfaces verbatim). Any local pointer recording this mount flips
-    to revoked so per-page state stays consistent."""
+    to revoked so per-page state stays consistent.
+
+    One mount can be addressed by its token OR its id (the managed backend
+    carries both — _find_mount's dual matching): a pointer stored whichever
+    the create output carried, while the share-list row may show the other.
+    So the mount's aliases are collected from `share list` BEFORE the revoke
+    and the pointer flip matches any of them — a pointer must never stay
+    "active" (stale dot, wrong modal state) for a link that was just taken
+    down. Best-effort: an unreadable list degrades to the given token alone.
+    """
+    aliases = {token}
+    try:
+        mount = _find_mount(_list_mounts(env_name), token)
+    except DeployError:
+        mount = None
+    if mount is not None:
+        for key in ("token", "id"):
+            value = mount.get(key)
+            if isinstance(value, str) and value:
+                aliases.add(value)
     _run_share(env_name, ["revoke", token])
     store = _load_store()
     changed = False
@@ -575,7 +594,7 @@ def revoke_mount(env_name: str, token: str) -> dict:
         if (
             isinstance(record, dict)
             and record.get("env") == env_name
-            and record.get("token") == token
+            and record.get("token") in aliases
             and record.get("status") != "revoked"
         ):
             store[page] = {**record, "status": "revoked", "updated_at": _now_iso()}
