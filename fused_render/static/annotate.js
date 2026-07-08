@@ -163,7 +163,7 @@
     };
     // Origin view (AN-36): mode name the thread was created in. Optional —
     // pre-AN-36 threads lack it and fall back to anchor-shape inference.
-    if (typeof t.m === "string" && t.m) thread.m = t.m;
+    if (typeof t.mode === "string" && t.mode) thread.mode = t.mode;
     // Anchor forms are mutually exclusive with precedence handled at resolve
     // time (AN-6/AN-18: sel > anchorId > anchorPath > x/y); we simply carry
     // whichever fields are present.
@@ -202,7 +202,7 @@
   // the defaults back in).
   function compact(thread) {
     const o = { id: thread.id, content: thread.content, createdAt: thread.createdAt };
-    if (thread.m) o.m = thread.m; // origin view (AN-36)
+    if (thread.mode) o.mode = thread.mode; // origin view (AN-36)
     if (thread.replies.length) {
       o.replies = thread.replies.map((r) => ({ id: r.id, content: r.content, createdAt: r.createdAt }));
     }
@@ -519,9 +519,9 @@
   // them with their view's tag instead. Stamped threads compare mode names
   // exactly (two element-mode views must not cross-resolve — a coincidentally
   // shared element id would pin the comment in both); legacy threads without
-  // `m` fall back to anchor-shape inference (sel ↔ editor).
+  // `mode` fall back to anchor-shape inference (sel ↔ editor).
   function isForeign(thread) {
-    if (thread.m) return thread.m !== currentMode;
+    if (thread.mode) return thread.mode !== currentMode;
     const isSel = !!(thread.selFrom && thread.selTo);
     return adapter ? !isSel : isSel;
   }
@@ -529,7 +529,7 @@
   // Display name for the view a foreign thread belongs to (sidebar tag,
   // reveal toast). "_render" reads as "preview"; legacy threads infer.
   function foreignLabel(thread) {
-    if (thread.m) return thread.m === "_render" ? "preview" : thread.m;
+    if (thread.mode) return thread.mode === "_render" ? "preview" : thread.mode;
     return thread.selFrom && thread.selTo ? "code" : "preview";
   }
 
@@ -1087,7 +1087,7 @@
       Object.assign(
         // Stamped with the creating view's mode (AN-36) so other views treat
         // it as foreign instead of trying to resolve its anchor.
-        { id: uuid(), content, replies: [], status: "open", createdAt: now, updatedAt: now, m: currentMode },
+        { id: uuid(), content, replies: [], status: "open", createdAt: now, updatedAt: now, mode: currentMode },
         anchor
       )
     );
@@ -1495,7 +1495,7 @@
       <div class="__fa_card_top">
         <span class="__fa_carddot${thread.status === "resolved" ? " __fa_carddot_resolved" : ""}">${esc(pinGlyph(thread))}</span>
         <span class="__fa_time">${esc(relTime(thread.updatedAt || thread.createdAt))}</span>
-        ${tag ? `<span class="__fa_tag">${tag}</span>` : ""}
+        ${tag ? `<span class="__fa_tag">${esc(tag)}</span>` : ""}
         <span class="__fa_spacer"></span>
         ${replies ? `<span class="__fa_card_replies">${replies} ${replies === 1 ? "reply" : "replies"}</span>` : ""}
       </div>`;
