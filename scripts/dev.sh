@@ -17,6 +17,12 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FRONTEND="$REPO_ROOT/frontend"
 
+# Read core templates straight from the repo, skipping the stage-into-home copy
+# (~/.fused-render/.core-templates). Without this the server serves the last
+# version-staged snapshot, so template edits wouldn't show until a version bump
+# or a manual wipe. Respect an already-set value so the caller can override.
+export FUSED_RENDER_CORE_TEMPLATES="${FUSED_RENDER_CORE_TEMPLATES:-$REPO_ROOT/fused_render/templates}"
+
 # Python: active venv first, then the repo-local .venv, then PATH.
 if [[ -n "${VIRTUAL_ENV:-}" ]]; then
   PY="$VIRTUAL_ENV/bin/python"
