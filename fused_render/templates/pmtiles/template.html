@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>PMTiles preview</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/pmtiles@3.2.1/dist/pmtiles.js"></script>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: #e8eaed; background: #131417; font-size: 13px; }
+  #map { position: absolute; inset: 0; }
+  .panel { position: absolute; background: rgba(19,20,23,.92); border: 1px solid #2a2d33;
+    border-radius: 10px; padding: 10px 12px; backdrop-filter: blur(6px); z-index: 10; }
+  #topbar { top: 10px; left: 10px; right: 10px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  #topbar label { color: #9aa0a6; margin: 0 2px 0 6px; }
+  input[type=text], select { font: inherit; color: #e8eaed; background: #1b1d21;
+    border: 1px solid #2a2d33; border-radius: 6px; padding: 4px 8px; }
+  #path { flex: 1; min-width: 200px; }
+  button { font: inherit; color: #e8eaed; background: #2b5fd9; border: 1px solid #2b5fd9;
+    border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+  button:hover { background: #3a6ee8; }
+  button.ghost { background: transparent; border-color: #2a2d33; color: #9aa0a6; }
+  button.ghost:hover { color: #e8eaed; border-color: #4a4d55; }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { position: absolute; left: 50%; top: 64px; transform: translateX(-50%);
+    background: rgba(19,20,23,.9); border: 1px solid #2a2d33; border-radius: 999px;
+    padding: 4px 14px; color: #9aa0a6; z-index: 20; display: none; max-width: 80%; }
+  #status.err { color: #ff7b72; display: block; }
+  #metaPanel { right: 10px; top: 58px; width: 380px; max-height: 70vh; overflow: auto; display: none; }
+  #metaPanel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: #9aa0a6; margin: 10px 0 6px; display: flex; justify-content: space-between; }
+  #metaPanel h2:first-child { margin-top: 0; }
+  #metaPanel table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  #metaPanel td { padding: 3px 6px; border-bottom: 1px solid #23262c;
+    vertical-align: top; word-break: break-word; text-align: left; }
+  #metaPanel td:first-child { color: #9aa0a6; white-space: nowrap; }
+  #layerPanel { left: 10px; top: 58px; width: 250px; max-height: 60vh; overflow: auto; display: none; }
+  #layerPanel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: #9aa0a6; margin: 0 0 6px; }
+  #layerPanel label { display: flex; align-items: center; gap: 7px; padding: 3px 2px; cursor: pointer; }
+  #layerPanel .sw { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+  .maplibregl-popup-content { background: rgba(19,20,23,.97); color: #e8eaed;
+    border: 1px solid #2a2d33; border-radius: 8px; font-size: 12px; max-height: 40vh;
+    overflow: auto; padding: 10px 12px; font-family: inherit; }
+  .maplibregl-popup-content table { border-collapse: collapse; }
+  .maplibregl-popup-content td { padding: 2px 8px 2px 0; border-bottom: 1px solid #23262c; }
+  .maplibregl-popup-content td:first-child { color: #9aa0a6; white-space: nowrap; }
+  .maplibregl-popup-content .lyr { color: #8ab4ff; font-weight: 600; padding-top: 6px; }
+  .maplibregl-popup-close-button { color: #8ab4ff; font-size: 16px; }
+  #explorer { left: 10px; top: 58px; width: 420px; max-height: 65vh; display: none; z-index: 30; }
+  #crumbs { font-size: 12px; margin-bottom: 8px; color: #9aa0a6; }
+  #crumbs a { color: #8ab4ff; cursor: pointer; }
+  #explorerList { max-height: 48vh; overflow: auto; border: 1px solid #23262c; border-radius: 6px; }
+  .row { display: flex; align-items: center; gap: 8px; padding: 5px 10px; cursor: pointer;
+    font-size: 13px; border-bottom: 1px solid #1e2025; }
+  .row:hover { background: #23262c; }
+  .row .ic { width: 18px; text-align: center; }
+  .row .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .sz { color: #6b7178; font-size: 11px; }
+  input[type=range] { vertical-align: middle; width: 90px; }
+</style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div class="panel" id="topbar">
+    <button id="browse" class="ghost">📁</button>
+    <input type="text" id="path" placeholder="/absolute/path/to/file.pmtiles" />
+    <button id="load">Load</button>
+    <span><label for="opacity">opacity</label><input type="range" id="opacity" min="0" max="100" value="100" /></span>
+    <span><label for="basemap">basemap</label><input type="checkbox" id="basemap" checked /></span>
+    <button id="layersBtn" class="ghost">layers</button>
+    <button id="metaBtn" class="ghost">info</button>
+    <button id="fitBtn" class="ghost">⤢ fit</button>
+  </div>
+
+  <div id="status"></div>
+
+  <div class="panel" id="explorer">
+    <div id="crumbs"></div>
+    <div id="explorerList"></div>
+    <label style="display:block;margin-top:8px;color:#9aa0a6;font-size:12px">
+      <input type="checkbox" id="showAll" /> show all files</label>
+  </div>
+
+  <div class="panel" id="metaPanel"><div id="metaBody"></div></div>
+  <div class="panel" id="layerPanel"><h2>Tile layers</h2><div id="layerBody"></div></div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const els = ['path','load','opacity','basemap','layersBtn','metaBtn','metaPanel','metaBody',
+  'layerPanel','layerBody','fitBtn','status','browse','explorer','crumbs','explorerList','showAll']
+  .reduce((o, k) => (o[k] = $(k), o), {});
+
+const P = {
+  file: () => fused.params.get('file') || fused.params.get('_file') || '',
+  dir:  () => fused.params.get('dir') || (P.file() ? P.file().replace(/\/[^/]*$/, '') : '~'),
+  showAll: () => fused.params.get('showall') === '1',
+};
+const human = n => n > 1e9 ? (n/1e9).toFixed(2)+' GB' : n > 1e6 ? (n/1e6).toFixed(1)+' MB' : Math.round(n/1e3)+' KB';
+function status(msg, err){ els.status.innerHTML = msg || ''; els.status.style.display = msg ? 'block' : 'none'; els.status.className = err ? 'err' : ''; }
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+const CAT_COLORS = ['#5c9dff','#ff6b6b','#51cf66','#ffd43b','#cc5de8','#20c997','#ff922b','#94d82d',
+                    '#f06595','#4dabf7','#e8590c','#40c057'];
+const TILE_TYPES = {0: 'unknown', 1: 'MVT (vector)', 2: 'PNG', 3: 'JPEG', 4: 'WEBP', 5: 'AVIF'};
+const COMPRESSIONS = {0: 'unknown', 1: 'none', 2: 'gzip', 3: 'brotli', 4: 'zstd'};
+
+// The app serves local file bytes with HTTP Range support — the pmtiles JS
+// client reads the archive directly, no Python involved.
+const rawURL = f => location.origin + '/api/fs/raw?path=' + encodeURIComponent(f);
+
+const protocol = new pmtiles.Protocol();
+maplibregl.addProtocol('pmtiles', protocol.tile);
+
+// ---------------- map ----------------
+const DARK = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
+const map = new maplibregl.Map({ container: 'map', style: DARK, center: [0, 20], zoom: 1.2,
+  attributionControl: {compact: true}, fadeDuration: 80 });
+map.addControl(new maplibregl.NavigationControl({showCompass: false}), 'bottom-left');
+map.addControl(new maplibregl.ScaleControl({unit: 'metric'}), 'bottom-right');
+async function styleReady(){
+  map.resize();
+  for (let i = 0; i < 200 && !map.isStyleLoaded(); i++)
+    await new Promise(r => setTimeout(r, 50));
+  map.resize();
+}
+
+let archive = null, header = null, meta = null, loadedFile = null;
+let ourLayers = [];   // maplibre layer ids we added
+let bounds = null;    // [w, s, e, n]
+
+function clearLayers(){
+  for (const id of ourLayers) if (map.getLayer(id)) map.removeLayer(id);
+  ourLayers = [];
+  if (map.getSource('pm')) map.removeSource('pm');
+}
+
+function addVectorLayers(){
+  const vl = (meta && meta.vector_layers) || [];
+  map.addSource('pm', {type: 'vector', url: 'pmtiles://' + rawURL(loadedFile)});
+  vl.forEach((l, i) => {
+    const c = CAT_COLORS[i % CAT_COLORS.length];
+    map.addLayer({id: `pm-${l.id}-fill`, type: 'fill', source: 'pm', 'source-layer': l.id,
+      filter: ['==', ['geometry-type'], 'Polygon'],
+      paint: {'fill-color': c, 'fill-opacity': 0.25}});
+    map.addLayer({id: `pm-${l.id}-line`, type: 'line', source: 'pm', 'source-layer': l.id,
+      paint: {'line-color': c, 'line-width': 1, 'line-opacity': 0.9}});
+    map.addLayer({id: `pm-${l.id}-pt`, type: 'circle', source: 'pm', 'source-layer': l.id,
+      filter: ['==', ['geometry-type'], 'Point'],
+      paint: {'circle-color': c, 'circle-radius': 3, 'circle-opacity': 0.9,
+              'circle-stroke-color': '#0b0c0e', 'circle-stroke-width': 0.5}});
+    ourLayers.push(`pm-${l.id}-fill`, `pm-${l.id}-line`, `pm-${l.id}-pt`);
+  });
+}
+
+function addRasterLayer(){
+  map.addSource('pm', {type: 'raster', url: 'pmtiles://' + rawURL(loadedFile), tileSize: 256});
+  map.addLayer({id: 'pm-raster', type: 'raster', source: 'pm',
+    paint: {'raster-opacity': +els.opacity.value / 100, 'raster-resampling': 'nearest'}});
+  ourLayers.push('pm-raster');
+}
+
+function applyOpacity(){
+  const op = +els.opacity.value / 100;
+  for (const id of ourLayers){
+    if (!map.getLayer(id)) continue;
+    const t = map.getLayer(id).type;
+    if (t === 'raster') map.setPaintProperty(id, 'raster-opacity', op);
+    else if (t === 'fill') map.setPaintProperty(id, 'fill-opacity', 0.25 * op);
+    else if (t === 'line') map.setPaintProperty(id, 'line-opacity', 0.9 * op);
+    else if (t === 'circle') map.setPaintProperty(id, 'circle-opacity', 0.9 * op);
+  }
+}
+
+function fitToData(instant = true){
+  if (!bounds) return;
+  map.fitBounds([[bounds[0], bounds[1]], [bounds[2], bounds[3]]],
+    {padding: 60, duration: instant ? 0 : 400,
+     maxZoom: Math.max(header.minZoom, Math.min(header.maxZoom, 16))});
+}
+
+// ---------------- layer toggles ----------------
+function renderLayerPanel(){
+  const vl = (meta && meta.vector_layers) || [];
+  if (!vl.length){
+    els.layerBody.innerHTML = '<div style="color:#6b7178">raster archive — single layer</div>';
+    return;
+  }
+  els.layerBody.innerHTML = vl.map((l, i) =>
+    `<label><input type="checkbox" data-l="${esc(l.id)}" checked />
+      <span class="sw" style="background:${CAT_COLORS[i % CAT_COLORS.length]}"></span>
+      <span>${esc(l.id)}</span></label>`).join('');
+  els.layerBody.querySelectorAll('input[data-l]').forEach(cb => cb.onchange = () => {
+    const vis = cb.checked ? 'visible' : 'none';
+    for (const sfx of ['fill', 'line', 'pt']){
+      const id = `pm-${cb.dataset.l}-${sfx}`;
+      if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', vis);
+    }
+  });
+}
+
+// ---------------- metadata panel ----------------
+function renderMeta(fileSize){
+  const rows = (o) => Object.entries(o).map(([k, v]) =>
+    `<tr><td>${esc(k)}</td><td>${v}</td></tr>`).join('');
+  const h = header;
+  const sect = [];
+  sect.push(`<h2>Archive <a id="metaClose" style="cursor:pointer;color:#8ab4ff">×</a></h2><table>${rows({
+    file: esc(loadedFile.split('/').pop()),
+    size: fileSize ? human(fileSize) : '—',
+    'tile type': TILE_TYPES[h.tileType] ?? h.tileType,
+    'tile compression': COMPRESSIONS[h.tileCompression] ?? h.tileCompression,
+    'internal compression': COMPRESSIONS[h.internalCompression] ?? h.internalCompression,
+    'zoom range': `${h.minZoom} – ${h.maxZoom}`,
+    'tiles addressed': h.numAddressedTiles?.toLocaleString?.() ?? '—',
+    'tile entries': h.numTileEntries?.toLocaleString?.() ?? '—',
+    'tile contents': h.numTileContents?.toLocaleString?.() ?? '—',
+    clustered: h.clustered ? 'yes' : 'no',
+    bounds: bounds ? bounds.map(v => v.toFixed(4)).join(', ') : '—',
+    center: `${(h.centerLon).toFixed(4)}, ${(h.centerLat).toFixed(4)} @ z${h.centerZoom}`,
+  })}</table>`);
+  const m = meta || {};
+  const info = {};
+  for (const k of ['name', 'description', 'attribution', 'type', 'version', 'format', 'generator', 'generator_options', 'planetiler:version'])
+    if (m[k] !== undefined) info[k] = esc(String(m[k]));
+  if (Object.keys(info).length) sect.push(`<h2>Metadata</h2><table>${rows(info)}</table>`);
+  const vl = m.vector_layers || [];
+  if (vl.length){
+    sect.push(`<h2>Vector layers (${vl.length})</h2><table>` + vl.map(l =>
+      `<tr><td>${esc(l.id)}</td><td>z${l.minzoom ?? '?'}–${l.maxzoom ?? '?'} · ${
+        Object.keys(l.fields || {}).length} fields<br><span style="color:#6b7178">${
+        esc(Object.keys(l.fields || {}).slice(0, 12).join(', '))}</span></td></tr>`).join('') + '</table>');
+  }
+  els.metaBody.innerHTML = sect.join('');
+  $('metaClose').onclick = () => els.metaPanel.style.display = 'none';
+}
+
+// ---------------- click inspect ----------------
+map.on('click', e => {
+  if (!ourLayers.length || map.getLayer('pm-raster')) return;
+  const feats = map.queryRenderedFeatures(e.point, {layers: ourLayers.filter(id => map.getLayer(id))});
+  if (!feats.length) return;
+  const seen = new Set(); const parts = [];
+  for (const f of feats.slice(0, 8)){
+    const key = f.layer['source-layer'] + JSON.stringify(f.properties);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const props = Object.entries(f.properties || {}).slice(0, 20);
+    parts.push(`<tr><td class="lyr" colspan="2">${esc(f.layer['source-layer'])}</td></tr>` +
+      (props.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('') ||
+       '<tr><td colspan="2" style="color:#6b7178">no attributes</td></tr>'));
+  }
+  new maplibregl.Popup({maxWidth: '340px'}).setLngLat(e.lngLat)
+    .setHTML(`<table>${parts.join('')}</table>`).addTo(map);
+});
+map.on('mousemove', e => {
+  if (!ourLayers.length || map.getLayer('pm-raster')) return;
+  const feats = map.queryRenderedFeatures(e.point, {layers: ourLayers.filter(id => map.getLayer(id))});
+  map.getCanvas().style.cursor = feats.length ? 'pointer' : '';
+});
+
+// ---------------- load ----------------
+async function loadFile(){
+  const file = P.file();
+  if (!file){ status('no file — use Browse or enter a .pmtiles path'); return; }
+  status('Reading PMTiles header…');
+  await styleReady();
+  try {
+    const p = new pmtiles.PMTiles(rawURL(file));
+    protocol.add(p);
+    header = await p.getHeader();
+    meta = await p.getMetadata().catch(() => ({}));
+    archive = p;
+  } catch (e) {
+    status('could not read PMTiles: ' + esc(e.message || e), true);
+    return;
+  }
+  loadedFile = file;
+  bounds = [header.minLon, header.minLat, header.maxLon, header.maxLat];
+  clearLayers();
+  if (header.tileType === 1) addVectorLayers(); else addRasterLayer();
+  applyOpacity();
+  fitToData();
+  let fileSize = null;
+  try {
+    const st = await fetch('/api/fs/stat?path=' + encodeURIComponent(file)).then(r => r.json());
+    fileSize = st.size;
+  } catch {}
+  renderMeta(fileSize);
+  renderLayerPanel();
+  status('');
+}
+
+// ---------------- controls ----------------
+els.load.onclick = () => fused.params.set('file', els.path.value.trim());
+els.path.onkeydown = e => { if (e.key === 'Enter') els.load.onclick(); };
+els.opacity.oninput = applyOpacity;
+els.basemap.onchange = () => {
+  const show = els.basemap.checked ? 'visible' : 'none';
+  for (const l of map.getStyle().layers)
+    if (!l.id.startsWith('pm-')) map.setLayoutProperty(l.id, 'visibility', show);
+};
+els.metaBtn.onclick = () => els.metaPanel.style.display = els.metaPanel.style.display === 'block' ? 'none' : 'block';
+els.layersBtn.onclick = () => els.layerPanel.style.display = els.layerPanel.style.display === 'block' ? 'none' : 'block';
+els.fitBtn.onclick = () => fitToData(false);
+
+// ---------------- explorer ----------------
+els.browse.onclick = () => {
+  const open = els.explorer.style.display !== 'block';
+  els.explorer.style.display = open ? 'block' : 'none';
+  if (open) refreshExplorer(P.dir());
+};
+els.showAll.onchange = () => { fused.params.set('showall', els.showAll.checked ? '1' : '0'); refreshExplorer(P.dir()); };
+async function refreshExplorer(dir){
+  const r = await fused.runPython('./browse.py', { dir, exts: '.pmtiles', show_all: P.showAll() ? 'true' : 'false' }).catch(() => null);
+  if (!r || r.error) return;
+  els.crumbs.innerHTML = r.crumbs.map(c => `<a data-p="${c.path}">${c.label}</a>`).join(' / ');
+  els.crumbs.querySelectorAll('a').forEach(a => a.onclick = () => refreshExplorer(a.dataset.p));
+  const entries = [...r.dirs, ...r.files];
+  els.explorerList.innerHTML = entries.map(e =>
+    `<div class="row" data-p="${e.path}" data-d="${e.is_dir ? 1 : 0}">
+       <span class="ic">${e.is_dir ? '📁' : '🗺'}</span><span class="nm">${e.name}</span>
+       <span class="sz">${e.size ? human(e.size) : ''}</span></div>`).join('') || '<div class="row" style="color:#6b7178">empty</div>';
+  els.explorerList.querySelectorAll('.row[data-p]').forEach(row => row.onclick = () => {
+    if (row.dataset.d === '1') refreshExplorer(row.dataset.p);
+    else { fused.params.set('dir', row.dataset.p.replace(/\/[^/]*$/, '')); fused.params.set('file', row.dataset.p); els.explorer.style.display = 'none'; }
+  });
+}
+
+function onParamsChanged(){
+  els.path.value = P.file();
+  if (P.file() !== loadedFile) loadFile();
+}
+fused.params.onChange(onParamsChanged);
+els.path.value = P.file();
+
+loadFile();
+
+</script>
+</body>
+</html>
