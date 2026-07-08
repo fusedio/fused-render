@@ -146,6 +146,11 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   const [config, setConfig] = useState<DeployConfig | null>(null);
   const [deployment, setDeployment] = useState<Deployment | null>(null);
   const [reconciled, setReconciled] = useState(false);
+  // The mount's raw `share list` classification from the last reconcile —
+  // "absent" (e.g. after an infra teardown) redeploys as a FRESH create with
+  // a NEW link, unlike a revoked tombstone (same-URL revive), so the action
+  // label branches on it. null = not checked.
+  const [live, setLive] = useState<"active" | "revoked" | "absent" | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedEnv, setSelectedEnv] = useState<string | null>(null);
   const [busy, setBusy] = useState<"deploy" | "revoke" | "install" | null>(null);
@@ -158,7 +163,11 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
 
   // One load per open: config + the pointer reconciled against `share list`
   // (truth), so a CLI-side revoke shows through the moment the dialog opens.
+  // Sequence-guarded: a superseded fetch (fsPath switch, or Retry racing a
+  // slow first load) must not land its stale response over a newer one.
+  const loadSeq = useRef(0);
   const load = async () => {
+    const seq = ++loadSeq.current;
     setLoadError(null);
     setConfig(null);
     try {
@@ -166,13 +175,16 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
         getDeployConfig(),
         getDeployStatus(fsPath, true),
       ]);
+      if (seq !== loadSeq.current) return;
       setConfig(cfg);
       applyDeployment(status.deployment);
       setReconciled(status.reconciled);
+      setLive(status.live ?? null);
       setSelectedEnv(
         (prev) => prev ?? status.deployment?.env ?? cfg.default_env,
       );
     } catch (e) {
+      if (seq !== loadSeq.current) return;
       setLoadError((e as Error).message);
     }
   };
@@ -203,6 +215,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     try {
       applyDeployment(await deployPage(fsPath, env.name));
       setReconciled(true);
+      setLive("active");
     } catch (e) {
       setActionError((e as Error).message);
     } finally {
@@ -215,6 +228,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     setActionError(null);
     try {
       applyDeployment(await revokeDeployment(fsPath));
+      setLive("revoked");
     } catch (e) {
       setActionError((e as Error).message);
     } finally {
@@ -236,15 +250,18 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   };
 
   // Deploy/Redeploy semantics for the button label: a redeploy to the same env
-  // repoints the SAME token, so the URL is stable; a revoked pointer is
-  // revived at the same URL; anything else mints a fresh link.
+  // repoints the SAME token, so the URL is stable; a revoked tombstone is
+  // revived at the same URL; anything else — including a mount that turned
+  // out ABSENT from `share list` (nothing left to revive; the server does a
+  // fresh create) — mints a fresh link, so it must read plain "Deploy".
   const samePointerEnv = deployment !== null && deployment.env === selectedEnv;
+  const mountAbsent = live === "absent";
   const deployLabel =
     busy === "deploy"
       ? "Deploying…"
-      : samePointerEnv && deployment!.status === "active"
+      : samePointerEnv && !mountAbsent && deployment!.status === "active"
         ? "Redeploy (same URL)"
-        : samePointerEnv && deployment!.status === "revoked"
+        : samePointerEnv && !mountAbsent && deployment!.status === "revoked"
           ? "Redeploy (restore URL)"
           : "Deploy";
 
@@ -383,6 +400,12 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             that one instead (the old mount stays live until revoked from the CLI).
           </div>
         )}
+        {samePointerEnv && mountAbsent && (
+          <div className="deploy-note">
+            The recorded mount no longer exists on <b>{deployment!.env}</b> (e.g. after
+            an infra teardown) — deploying mints a fresh link with a <b>new URL</b>.
+          </div>
+        )}
         <div className="deploy-note deploy-muted">
           Deploys export the page and its <code>runPython</code>/<code>rawUrl</code> targets
           into a bundle and publish it as a <b>public share link</b> — an unguessable URL;
@@ -406,7 +429,15 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       <div className="deploy-dialog" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
         <div className="deploy-head">
           <h2>Deploy {basename(fsPath)}</h2>
-          <button type="button" className="deploy-close" title="Close" onClick={onClose}>
+          {/* Same guard as Escape/backdrop: an in-flight deploy/revoke/install
+              must not be dismissed with no in-flight indication left visible. */}
+          <button
+            type="button"
+            className="deploy-close"
+            title={busy !== null ? "An action is still running" : "Close"}
+            onClick={onClose}
+            disabled={busy !== null}
+          >
             ✕
           </button>
         </div>

@@ -395,10 +395,14 @@ def _record_from(raw: dict, *, page: str, env_name: str, backend: str,
         raise DeployError("the fused CLI did not return a mount token")
     # Only create/repoint/recreate ever return a URL, and only on the managed
     # backend (AWS prints token+path only) — keep the last-known URL rather
-    # than regressing a previously-shown link to null.
+    # than regressing a previously-shown link to null. But ONLY while the
+    # token is unchanged: a fresh create that minted a NEW token (absent mount
+    # on an AWS env) must not pair the old URL with it — copy/open would point
+    # at a link that no longer matches the live mount.
     url = raw.get("url")
     if not isinstance(url, str) or not url:
-        url = (fallback or {}).get("url")
+        same_token = (fallback or {}).get("token") == token
+        url = (fallback or {}).get("url") if same_token else None
     return {
         "page": page,
         "env": env_name,
@@ -485,21 +489,32 @@ def deployment_status(page: str, reconcile: bool) -> dict:
     """The stored pointer; with reconcile=True its status is checked against
     `share list` (truth) so an out-of-band CLI revoke/recreate shows through.
     An unreachable env returns the last-known pointer with reconciled=False
-    rather than failing the whole dialog."""
+    rather than failing the whole dialog.
+
+    A reconciled response also carries ``live``: the mount's raw `share list`
+    classification (active | revoked | absent). The persisted pointer status
+    stays binary — absent persists as "revoked" (the link IS down) — but the
+    distinction matters to the modal: a revoked tombstone redeploys to the
+    SAME URL (recreate --same-token), while an absent mount (e.g. after an
+    infra teardown) gets a fresh create and a NEW link, so the button must
+    not promise a restore it can't deliver. ``live`` is null when the check
+    didn't run.
+    """
     pointer = get_deployment(page)
     if pointer is None:
-        return {"deployment": None, "reconciled": True}
+        return {"deployment": None, "reconciled": True, "live": None}
     if not reconcile or not pointer.get("env") or not pointer.get("token"):
-        return {"deployment": pointer, "reconciled": False}
+        return {"deployment": pointer, "reconciled": False, "live": None}
     try:
         mounts = _list_mounts(pointer["env"])
     except DeployError:
-        return {"deployment": pointer, "reconciled": False}
-    live = "active" if _classify_mount(mounts, pointer.get("token", "")) == "active" else "revoked"
-    if live != pointer.get("status"):
-        pointer = {**pointer, "status": live, "updated_at": _now_iso()}
+        return {"deployment": pointer, "reconciled": False, "live": None}
+    live = _classify_mount(mounts, pointer.get("token", ""))
+    status = "active" if live == "active" else "revoked"
+    if status != pointer.get("status"):
+        pointer = {**pointer, "status": status, "updated_at": _now_iso()}
         set_deployment(page, pointer)
-    return {"deployment": pointer, "reconciled": True}
+    return {"deployment": pointer, "reconciled": True, "live": live}
 
 
 def list_shares(env_name: str) -> dict:

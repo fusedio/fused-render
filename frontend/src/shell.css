@@ -1663,3 +1663,8 @@ body.embed .preview-browse-chip:hover {
 .deploy-shares-refresh {
   font-size: 12px;
 }
+
+.deploy-close:disabled {
+  opacity: 0.4;
+  cursor: default;
+}

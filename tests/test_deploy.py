@@ -297,6 +297,25 @@ def test_redeploy_absent_mount_falls_back_to_fresh_create(tmp_path, monkeypatch)
     assert h.pointer()["url"] == "https://serve.example/new456"
 
 
+def test_fresh_create_with_new_token_never_keeps_the_old_url(tmp_path, monkeypatch):
+    # AWS-style create output carries no url. When the token CHANGED (absent
+    # mount -> fresh create), the old pointer's url must be dropped, not kept —
+    # copy/open would otherwise point at a link that no longer matches the
+    # live mount. (The keep-last-known fallback is for same-token repoints.)
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
+    )
+    h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+
+    h.set_scenario({"list": [], "create": {"token": "new456", "status": "active"}})
+    resp = h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["token"] == "new456"
+    assert resp.json()["url"] is None
+    assert h.pointer()["url"] is None
+
+
 def test_deploy_to_different_env_creates_fresh_and_repoints_pointer(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
     h.set_scenario(
@@ -373,7 +392,7 @@ def test_status_without_reconcile_never_shells_out(tmp_path, monkeypatch):
 def test_status_for_undeployed_page(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
     resp = h.client.get("/api/deploy/status", params={"path": str(h.page)})
-    assert resp.json() == {"deployment": None, "reconciled": True}
+    assert resp.json() == {"deployment": None, "reconciled": True, "live": None}
 
 
 def test_status_reconcile_flips_to_revoked(tmp_path, monkeypatch):
@@ -388,6 +407,25 @@ def test_status_reconcile_flips_to_revoked(tmp_path, monkeypatch):
     resp = h.client.get("/api/deploy/status", params={"path": str(h.page), "reconcile": "1"})
     assert resp.json()["deployment"]["status"] == "revoked"
     assert resp.json()["reconciled"] is True
+    assert resp.json()["live"] == "revoked"
+    assert h.pointer()["status"] == "revoked"
+
+
+def test_status_reconcile_reports_absent_mount_distinctly(tmp_path, monkeypatch):
+    # An absent mount (e.g. after an infra teardown) persists as "revoked" (the
+    # link IS down) but must be distinguishable from a revoked tombstone: a
+    # tombstone redeploys to the SAME URL, an absent mount gets a NEW one — the
+    # modal's "restore URL" promise branches on `live`.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
+    )
+    h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+
+    h.set_scenario({"list": []})
+    resp = h.client.get("/api/deploy/status", params={"path": str(h.page), "reconcile": "1"})
+    assert resp.json()["live"] == "absent"
+    assert resp.json()["deployment"]["status"] == "revoked"
     assert h.pointer()["status"] == "revoked"
 
 

@@ -656,7 +656,12 @@ the product gains network access.
   authority**: the modal reconciles status against it on open (`--all`, so an
   AWS caller-identity change can't fake a revoke); an unreachable env returns
   the last-known pointer with `reconciled: false` instead of failing the
-  dialog.
+  dialog. A reconciled response also carries `live` (`active | revoked |
+  absent`): absent persists as pointer-status `revoked` (the link *is* down)
+  but the modal must not promise a same-URL restore for it — an absent mount
+  redeploys as a fresh create with a new link (DP-10), and the stored URL is
+  likewise never carried onto a *different* token (DP-11's fallback applies
+  only while the token is unchanged).
 - **DP-13** `GET /api/deploy/shares?env=…` is the "what's deployed on this
   env" view: every mount from `share list --all`, joined back to the local
   page that deployed it via the pointer store (`page: null` for mounts this

@@ -165,6 +165,11 @@ export interface DeployStatusResult {
   // false when the pointer was NOT checked against `share list` (reconcile not
   // requested, or the deploy env was unreachable) — last-known state only.
   reconciled: boolean;
+  // The mount's raw `share list` classification when reconciled, else null.
+  // "absent" (gone from the list entirely, e.g. after an infra teardown) is
+  // persisted as status "revoked" but redeploys as a FRESH create with a new
+  // URL — the modal's action label branches on this.
+  live: "active" | "revoked" | "absent" | null;
 }
 
 // One mount from `fused share list` on an env, joined back to the local page
