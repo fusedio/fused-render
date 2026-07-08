@@ -577,6 +577,10 @@ the product gains network access.
   both conditions, because that is exactly the set `/api/export` accepts: a
   registry rebind can put `_render` on any type (D73), but the exporter is
   extension-gated, and the button must never open a modal that cannot deploy.
+  Additionally gated on the opt-in `deploy_enabled` pref (PF-8): Deploy is off
+  by default, so the button is hidden entirely until enabled from Preferences
+  → Deployments (re-read on focus/visibility, so a toggle shows through
+  without a remount).
   A green dot marks a page whose stored deployment reads active (a local
   pointer read — opening a preview never spawns the CLI; re-read on tab
   focus/visibility regain, so an out-of-band revoke — e.g. the Preferences
@@ -790,9 +794,15 @@ never imports server).
 ### 20.1 Store & endpoints
 
 - **PF-1** `GET /api/prefs` → `{engine: {selected, effective, forced_by,
-  fused_available}, log: {path, dir}}`; `PUT /api/prefs {engine}` (X-Fused)
-  persists and returns the same shape. Unknown engine values → 400; the file
-  merges (future prefs are new keys, not new files).
+  fused_available}, log: {path, dir}, deploy: {enabled}}`. `PUT /api/prefs`
+  (X-Fused) applies a **partial** update — any of `{engine}` and/or
+  `{deploy_enabled}` present, so each control PUTs only its own field — and
+  returns the same shape. An unknown engine value, a non-boolean
+  `deploy_enabled`, or a body naming no known preference → 400; the file merges
+  (future prefs are new keys, not new files).
+- **PF-1a** The page renders its sections in this order: **Template registry**,
+  **Logs**, **Execution engine**, **Deployments** (the spec subsection
+  numbering below is organizational, not the visual order).
 - **PF-2** The page is a thin client over existing backends everywhere else:
   logs reveal via `POST /api/fs/reveal`, deployments via `GET
   /api/deploy/config` + `GET /api/deploy/shares`, revocation via `POST
@@ -840,6 +850,15 @@ never imports server).
 
 ### 20.4 Deployments
 
+- **PF-8** The section leads with an **opt-in toggle** for the Deploy
+  affordance: the persisted `deploy_enabled` pref (default **off**), PUT via
+  `{deploy_enabled}`. Deploy publishes a page to a public hosted URL through
+  the fused CLI, so it is opt-in — the preview-header **Deploy** button (§19,
+  DP-1) and its modal stay hidden until this is turned on. The gate is a UI
+  affordance only, not a security control (the `/api/deploy*` endpoints keep
+  their X-Fused guard); the preview re-reads the pref on focus/visibility so a
+  toggle shows through without a reload. Any non-`true` stored value reads as
+  off.
 - **PF-6** A per-env view of `fused share list` (the same joined
   `/api/deploy/shares` data as the Deploy modal's list, same copy: rows with
   a file name were deployed from this app) with a **Revoke** action per

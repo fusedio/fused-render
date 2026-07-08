@@ -5,7 +5,9 @@ The Preferences page's backend (SPEC §20): a tiny persisted preference store
 read-only facts the page shows next to it (log location, engine
 availability/forcing).
 
-The one persisted preference today is the **execution engine** for /api/run:
+Two preferences are persisted: **deploy_enabled** (whether the preview-header
+Deploy affordance is shown — opt-in, default off; see ``deploy_enabled``) and
+the **execution engine** for /api/run:
 
   * ``"builtin"`` (default) — the built-in executor: fresh subprocess per
     call, the environment that launched the server (D70's builtin-by-default
@@ -63,6 +65,19 @@ def selected_engine() -> str:
     return value if value in VALID_ENGINES else "builtin"
 
 
+def deploy_enabled() -> bool:
+    """Whether the Deploy affordance is shown (default off — opt-in).
+
+    Deploy publishes a page to a public hosted URL through the fused CLI; it's
+    an opt-in surface, so the preview-header Deploy button stays hidden until
+    the user turns it on from the Preferences page. This gates only the UI
+    affordance — it is NOT a security control (the /api/deploy* endpoints keep
+    their own X-Fused guard); it just keeps the surface minimal for users who
+    don't deploy. Any non-`true` stored value (missing/legacy) reads as off.
+    """
+    return read_prefs().get("deploy_enabled") is True
+
+
 def fused_engine_available() -> bool:
     """Whether the fused local compute backend is importable right now.
 
@@ -117,14 +132,20 @@ def engine_state() -> dict:
     }
 
 
-@router.get("/api/prefs")
-def get_prefs():
+def _prefs_response() -> dict:
     return {
         "engine": engine_state(),
         # Where this process is logging (logs.py): the page's "open the logs
         # location" action reveals `path` via the existing /api/fs/reveal.
         "log": {"path": log_path(), "dir": log_dir()},
+        # Whether the preview-header Deploy affordance is shown (opt-in).
+        "deploy": {"enabled": deploy_enabled()},
     }
+
+
+@router.get("/api/prefs")
+def get_prefs():
+    return _prefs_response()
 
 
 @router.put("/api/prefs")
@@ -132,15 +153,32 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    engine = body.get("engine")
-    if engine not in VALID_ENGINES:
-        return JSONResponse(
-            {"error": f"'engine' must be one of: {', '.join(VALID_ENGINES)}"}, status_code=400
-        )
+    # Partial update: apply only the keys present, so the page can PUT one
+    # setting without echoing the others (the engine radio and the deploy
+    # toggle are independent controls).
     prefs = read_prefs()
-    prefs["engine"] = engine
+    changed = False
+    if "engine" in body:
+        engine = body.get("engine")
+        if engine not in VALID_ENGINES:
+            return JSONResponse(
+                {"error": f"'engine' must be one of: {', '.join(VALID_ENGINES)}"}, status_code=400
+            )
+        prefs["engine"] = engine
+        changed = True
+    if "deploy_enabled" in body:
+        value = body.get("deploy_enabled")
+        if not isinstance(value, bool):
+            return JSONResponse({"error": "'deploy_enabled' must be a boolean"}, status_code=400)
+        prefs["deploy_enabled"] = value
+        changed = True
+    if not changed:
+        return JSONResponse(
+            {"error": "no known preference in request (expected 'engine' and/or 'deploy_enabled')"},
+            status_code=400,
+        )
     storage.write_json(_path(), prefs)
-    # The new state, so the page re-renders from the response (the pref is
-    # persisted even while FUSED_RENDER_ENGINE forces — it applies once the
+    # The new state, so the page re-renders from the response (the engine pref
+    # is persisted even while FUSED_RENDER_ENGINE forces — it applies once the
     # override is removed; the response's forced_by says so).
-    return {"engine": engine_state(), "log": {"path": log_path(), "dir": log_dir()}}
+    return _prefs_response()

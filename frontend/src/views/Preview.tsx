@@ -4,7 +4,7 @@
 // No file-type checks live in the shell — html arrives through stat.templates
 // like everything else, via the "_render" sentinel (SPEC PT-12).
 import { useEffect, useState, type ReactNode } from "react";
-import { getDeployStatus, rawUrl } from "../lib/api";
+import { getDeployStatus, getPrefs, rawUrl } from "../lib/api";
 import type { Deployment, StatResult, TemplateEntry } from "../lib/api";
 import { formatSize, formatMtime } from "../lib/format";
 import { navigateUrl } from "../lib/router";
@@ -200,12 +200,44 @@ function DeployButton({ fsPath }: { fsPath: string }) {
   );
 }
 
+// Whether the Deploy affordance is enabled (Preferences → Deployments; SPEC
+// §20). Deploy is opt-in, so the button stays hidden until the pref reads on —
+// default false while loading means it never flashes on for a user who left it
+// off. Re-read on focus/visibility so toggling it in the Preferences tab shows
+// through without a reload (same cheap-local-read posture as the deploy dot).
+function useDeployEnabled(): boolean {
+  const [enabled, setEnabled] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const refresh = () => {
+      getPrefs()
+        .then((p) => {
+          if (alive) setEnabled(p.deploy.enabled);
+        })
+        .catch(() => {});
+    };
+    refresh();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      alive = false;
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
+  return enabled;
+}
+
 function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: StatResult; templates: TemplateEntry[] }) {
   // Caller only renders this when `templates` (already sentinel-filtered by
   // Preview's dispatch, SPEC PT-12) is non-empty.
   const [mode, setModeState] = useState<string>(() => activeTemplate(templates).mode);
   const entry = templates.find((t) => t.mode === mode) || templates[0];
   const [annotate, toggleAnnotate] = useAnnotate();
+  const deployEnabled = useDeployEnabled();
 
   const setMode = (next: string) => {
     if (next === mode) return;
@@ -245,8 +277,11 @@ function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: St
             type (D73), but /api/export and /api/deploy/preview accept only
             .html/.htm — the button must not open a modal that can't deploy.
             Directories never deploy (no _render binding exists for one today;
-            the guard keeps that true even if a registry ever says otherwise). */}
+            the guard keeps that true even if a registry ever says otherwise).
+            Gated on the opt-in Deploy pref (Preferences → Deployments): hidden
+            entirely unless the user has turned Deploy on. */}
         {!stat.is_dir &&
+          deployEnabled &&
           templates.some((t) => t.mode === "_render") &&
           /\.html?$/i.test(fsPath) && <DeployButton fsPath={fsPath} />}
         <ModeSwitcher

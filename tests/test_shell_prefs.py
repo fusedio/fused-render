@@ -60,6 +60,42 @@ def test_put_rejects_unknown_engine_and_missing_header(tmp_path, monkeypatch):
     assert not (home / "prefs.json").exists()
 
 
+def test_deploy_enabled_defaults_off_and_toggles(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    # Default off (opt-in), so the preview-header Deploy button stays hidden.
+    assert client.get("/api/prefs").json()["deploy"]["enabled"] is False
+    # Turn it on — persisted and reflected in the response and a fresh GET.
+    body = client.put("/api/prefs", json={"deploy_enabled": True}, headers=FUSED).json()
+    assert body["deploy"]["enabled"] is True
+    assert json.loads((home / "prefs.json").read_text(encoding="utf-8"))["deploy_enabled"] is True
+    assert client.get("/api/prefs").json()["deploy"]["enabled"] is True
+    # And back off.
+    assert client.put("/api/prefs", json={"deploy_enabled": False}, headers=FUSED).json()[
+        "deploy"
+    ]["enabled"] is False
+
+
+def test_deploy_enabled_toggle_is_independent_of_engine(tmp_path, monkeypatch):
+    # A partial PUT touching only deploy_enabled must not disturb the engine pref.
+    client, _ = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr(prefs_mod, "fused_engine_available", lambda: True)
+    client.put("/api/prefs", json={"engine": "fused"}, headers=FUSED)
+    body = client.put("/api/prefs", json={"deploy_enabled": True}, headers=FUSED).json()
+    assert body["engine"]["selected"] == "fused"
+    assert body["deploy"]["enabled"] is True
+
+
+def test_put_rejects_bad_deploy_enabled_and_empty_body(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    # Non-boolean deploy_enabled …
+    assert (
+        client.put("/api/prefs", json={"deploy_enabled": "yes"}, headers=FUSED).status_code == 400
+    )
+    # … and a PUT naming no known preference are both rejected without a write.
+    assert client.put("/api/prefs", json={"nope": 1}, headers=FUSED).status_code == 400
+    assert not (home / "prefs.json").exists()
+
+
 def test_env_var_reports_as_forcing(tmp_path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
     monkeypatch.setenv("FUSED_RENDER_ENGINE", "builtin")

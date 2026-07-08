@@ -1,18 +1,21 @@
 // Preferences page (SPEC §20) — the `/view/_prefs` sentinel route, entered
 // from the sidebar's bottom-left gear. Four sections, each a thin client
-// over an existing backend:
+// over an existing backend, in this order:
+//   Template registry— the merged extension→templates bindings (read-only)
 //   Logs             — where this process logs (GET /api/prefs) + reveal
 //   Execution engine — the persisted /api/run engine pref (PUT /api/prefs);
 //                      applies to the next run, no restart. Locked while
 //                      FUSED_RENDER_ENGINE forces the process.
-//   Deployments      — per-env `fused share list` with Revoke (deploy.py)
-//   Template registry— the merged extension→templates bindings (read-only)
+//   Deployments      — an opt-in toggle for the preview-header Deploy button
+//                      (PUT /api/prefs deploy_enabled), then per-env
+//                      `fused share list` with Revoke (deploy.py)
 import { useEffect, useRef, useState } from "react";
 import {
   getDeployConfig,
   getPrefs,
   getTemplateRegistry,
   listShares,
+  putDeployEnabled,
   putEnginePref,
   revealPath,
   revokeMount,
@@ -134,7 +137,40 @@ function EngineSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs)
   );
 }
 
-function DeploymentsSection() {
+function DeployToggle({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const enabled = prefs.deploy.enabled;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await putDeployEnabled(!enabled));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Show the Deploy button</b> on renderable pages. Deploy publishes a page to a
+          public hosted URL through the <code>fused</code> CLI; it's off by default and the
+          button (and its dialog) stay hidden until you turn it on here.
+        </span>
+      </label>
+      {error && <div className="deploy-error">{error}</div>}
+    </>
+  );
+}
+
+function DeploymentsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
   const [config, setConfig] = useState<DeployConfig | null>(null);
   const [env, setEnv] = useState<string | null>(null);
   const [mounts, setMounts] = useState<ShareMount[] | null>(null);
@@ -198,6 +234,7 @@ function DeploymentsSection() {
   return (
     <section className="prefs-section">
       <h2>Deployments</h2>
+      <DeployToggle prefs={prefs} onChange={onChange} />
       <p className="deploy-muted">
         Everything <code>fused share list</code> reports on the chosen environment — from any
         app or machine. Rows with a file name were deployed from this app. Revoking takes the
@@ -361,10 +398,10 @@ export default function Preferences() {
       {!prefs && !error && <div className="deploy-muted">Loading…</div>}
       {prefs && (
         <>
-          <EngineSection prefs={prefs} onChange={setPrefs} />
-          <LogsSection prefs={prefs} />
-          <DeploymentsSection />
           <RegistrySection />
+          <LogsSection prefs={prefs} />
+          <EngineSection prefs={prefs} onChange={setPrefs} />
+          <DeploymentsSection prefs={prefs} onChange={setPrefs} />
         </>
       )}
     </div>

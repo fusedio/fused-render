@@ -250,6 +250,8 @@ export interface EnginePrefs {
 export interface Prefs {
   engine: EnginePrefs;
   log: { path: string; dir: string };
+  // Whether the preview-header Deploy button is shown (opt-in, default off).
+  deploy: { enabled: boolean };
 }
 
 export function getPrefs(): Promise<Prefs> {
@@ -258,6 +260,10 @@ export function getPrefs(): Promise<Prefs> {
 
 export function putEnginePref(engine: "builtin" | "fused"): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { engine });
+}
+
+export function putDeployEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { deploy_enabled: enabled });
 }
 
 // Reveal a path in the OS file manager (same POST the breadcrumb button uses).
