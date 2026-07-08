@@ -1172,10 +1172,14 @@
     for (let at = before.indexOf(capped); at !== -1; at = before.indexOf(capped, at + 1)) qn++;
     const anchorFields = { anchorId: base.anchorId, anchorPath: base.anchorPath, quote: capped, qn };
     const rect = range.getBoundingClientRect();
+    closePopover(); // BEFORE staging the pending tint — closePopover clears it
     pendingTextRange = range.cloneRange();
     paintTextHighlights();
-    closePopover();
     openDraft(el, rect.right + window.scrollX, rect.bottom + window.scrollY, rect.right, rect.bottom, anchorFields);
+    // Collapse the native selection now that the pending highlight shows the
+    // range: a lingering selection would make onClickCapture's guard swallow
+    // every later click, so popovers could never be dismissed (AN-42).
+    sel.removeAllRanges();
     return true;
   }
 
@@ -1240,8 +1244,10 @@
     if (insideOverlay(e.target) || isPassthrough(e.target)) return;
     e.preventDefault();
     e.stopPropagation();
-    // A drag-selection's trailing click must not stomp the selection draft the
-    // mouseup handler just opened (AN-42).
+    // A drag-selection's trailing click must not stomp the selection draft
+    // being opened by the mouseup handler (AN-42). The click fires BEFORE that
+    // deferred open, while the selection is still live; maybeOpenSelectionDraft
+    // collapses it right after, so this guard never outlives the gesture.
     const sel = window.getSelection();
     if (sel && !sel.isCollapsed) return;
     // Click landing inside an existing text-range highlight opens its thread.
