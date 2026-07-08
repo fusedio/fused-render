@@ -759,6 +759,13 @@ never imports server).
   (`prefs.fused_engine_available`, probed per call — an install mid-session
   shows through); otherwise execution degrades to builtin and the page says
   so. The fused option is disabled with an install hint when unavailable.
+  **Both engines are local**: the fused engine instantiates the package's
+  `LocalPythonComputeBackend` directly (engine.py — host venvs under
+  `~/.openfused/venvs`), never resolving a named environment; `envs.json`,
+  the default env, and `OPENFUSED_ENV` play no part in page execution. Fused
+  *environments* are exclusively deploy targets (DP-5) — a separate axis,
+  and the page's copy states this so "Fused engine" is never read as "runs
+  on my Fused env".
 - **PF-4** `FUSED_RENDER_ENGINE` remains the **process-level override**: when
   set it beats the pref entirely (`server._forced_engine` — validated at
   startup, `=fused` still fails loudly when missing; unset returns None and
