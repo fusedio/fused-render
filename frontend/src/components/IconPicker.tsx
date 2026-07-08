@@ -186,11 +186,19 @@ export default function IconPicker({ anchor, onPick, onRemove, onClose }: IconPi
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
+    // The popover is position:fixed against a one-shot anchor rect; any
+    // scroll outside it would detach it from its glyph, so close instead.
+    const onScroll = (e: Event) => {
+      if (rootRef.current && rootRef.current.contains(e.target as Node)) return;
+      onClose();
+    };
     document.addEventListener("mousedown", onDocMouseDown);
     document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("scroll", onScroll, true);
     return () => {
       document.removeEventListener("mousedown", onDocMouseDown);
       document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("scroll", onScroll, true);
     };
   }, [onClose]);
 
