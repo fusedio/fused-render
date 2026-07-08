@@ -96,13 +96,19 @@ type ListingState =
   | { status: "ok"; entries: FsEntry[] }
   | { status: "error"; message: string };
 
-// Cached recursive walk. Reset to "idle" whenever the folder changes or the dir
-// watch fires; a focus/search then re-fetches it fresh.
+// Cached recursive walk. Non-idle states are tagged with the (fsPath, refresh)
+// they were fetched for; `validWalk` below compares that tag against the
+// current fsPath/refresh at render time so a stale walk (folder changed, dir
+// watch fired) is treated as idle synchronously — no waiting on an effect to
+// clear it, which would otherwise let one render score search results
+// against the previous tree.
 type WalkState =
   | { status: "idle" }
-  | { status: "loading" }
-  | { status: "ok"; result: WalkResult }
-  | { status: "error"; message: string };
+  | { status: "loading"; forPath: string; forRefresh: number }
+  | { status: "ok"; result: WalkResult; forPath: string; forRefresh: number }
+  | { status: "error"; message: string; forPath: string; forRefresh: number };
+
+const IDLE_WALK: WalkState = { status: "idle" };
 
 export default function Listing({ fsPath }: { fsPath: string }) {
   const [state, setState] = useState<ListingState>({ status: "loading" });
@@ -131,6 +137,14 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   const q = deferredQuery.trim();
   const searching = q !== "";
   const isStale = query.trim() !== q;
+
+  // Synchronous validity check: a non-idle walk only counts if it was fetched
+  // for the folder/refresh generation we're currently rendering. This makes
+  // invalidation immediate on the render where `refresh` bumps, instead of
+  // depending on the clearing effect below to run first (which left one
+  // render scoring search results against the stale tree).
+  const validWalk: WalkState =
+    walk.status === "idle" || (walk.forPath === fsPath && walk.forRefresh === refresh) ? walk : IDLE_WALK;
 
   useEffect(() => {
     let alive = true;
@@ -189,41 +203,56 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   }, [fsPath, refresh]);
 
   // Fetch when a walk is requested (focus or a URL-seeded query). Reading
-  // "loading" as the trigger keeps the fetch out of a state updater.
+  // "loading" as the trigger keeps the fetch out of a state updater. Gated on
+  // validWalk (not the raw status) so a loading state that goes stale
+  // mid-flight (fsPath/refresh changed again before it resolved) doesn't
+  // have its result tagged as current — the alive-cleanup still discards it,
+  // and the effect below will re-request against the new generation.
   useEffect(() => {
-    if (walk.status !== "loading") return;
+    if (validWalk.status !== "loading") return;
     let alive = true;
+    const forPath = fsPath;
+    const forRefresh = refresh;
     walkDir(fsPath).then(
-      (result) => alive && setWalk({ status: "ok", result }),
-      (err: Error) => alive && setWalk({ status: "error", message: err.message })
+      (result) => alive && setWalk({ status: "ok", result, forPath, forRefresh }),
+      (err: Error) => alive && setWalk({ status: "error", message: err.message, forPath, forRefresh })
     );
     return () => {
       alive = false;
     };
-  }, [walk.status, fsPath]);
+  }, [validWalk.status, fsPath, refresh]);
 
-  // A query restored from the URL needs the walk even without a focus event.
-  // Deliberately keyed off "idle" only (not "error") — this effect re-runs
-  // whenever walk.status changes, so retrying "error" here would loop forever
-  // (loading -> error -> retry -> loading -> error -> ...) with no user
-  // action in between. Error retries are wired to real user gestures instead:
-  // prefetchWalk (focus) and setQuery (typing) below.
+  // A query restored from the URL needs the walk even without a focus event;
+  // this also covers refetch-on-refresh while search is active, since a
+  // refresh bump makes validWalk go stale->"idle" synchronously, which this
+  // effect (keyed on validWalk.status) picks up immediately. Deliberately
+  // keyed off "idle" only (not "error") — retrying "error" here would loop
+  // forever (loading -> error -> retry -> loading -> error -> ...) with no
+  // user action in between. Error retries are wired to real user gestures
+  // instead: prefetchWalk (focus) and setQuery (typing) below.
   useEffect(() => {
-    if (searching) setWalk((prev) => (prev.status === "idle" ? { status: "loading" } : prev));
-  }, [searching, walk.status]);
+    if (searching && validWalk.status === "idle") {
+      setWalk({ status: "loading", forPath: fsPath, forRefresh: refresh });
+    }
+  }, [searching, validWalk.status, fsPath, refresh]);
 
   // Retry from "idle" (first focus) or "error" (a prior fetch failed) — treat
   // both as "no usable walk cached yet". Called from onFocus, a genuine user
   // gesture, so this can't spin in a loop the way an effect could.
-  const prefetchWalk = () =>
-    setWalk((prev) => (prev.status === "idle" || prev.status === "error" ? { status: "loading" } : prev));
+  const prefetchWalk = () => {
+    if (validWalk.status === "idle" || validWalk.status === "error") {
+      setWalk({ status: "loading", forPath: fsPath, forRefresh: refresh });
+    }
+  };
 
   const setQuery = (value: string) => {
     setQueryState(value);
     setSearchSort(null); // a new query drops back to relevance order
     // Editing the query is also a user gesture: if the last walk attempt
     // failed, give it another shot instead of leaving search dead forever.
-    setWalk((prev) => (prev.status === "error" ? { status: "loading" } : prev));
+    if (validWalk.status === "error") {
+      setWalk({ status: "loading", forPath: fsPath, forRefresh: refresh });
+    }
     const params = new URLSearchParams(location.search);
     if (value) params.set("q", value);
     else params.delete("q");
@@ -254,9 +283,9 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   // Keyed on `q`/`searching` (both deferred) so the 20k-entry fuzzy scan runs
   // on React's low-priority schedule, not synchronously on every keystroke.
   const hits = useMemo(() => {
-    if (!(searching && walk.status === "ok")) return [];
+    if (!(searching && validWalk.status === "ok")) return [];
     const matcher = fuzzyOn ? fuzzyMatch : substringMatch;
-    const ranked = searchWalk(q, walk.result.entries, matcher);
+    const ranked = searchWalk(q, validWalk.result.entries, matcher);
     if (!searchSort) return ranked; // relevance order
     const { sort, order } = searchSort;
     const flip = order === "desc" ? -1 : 1;
@@ -270,7 +299,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
       if (cmp === 0) cmp = byName(a, b);
       return cmp * flip;
     });
-  }, [searching, q, walk, searchSort, fuzzyOn]);
+  }, [searching, q, validWalk, searchSort, fuzzyOn]);
 
   // Rendering every match as a <tr> is the other half of the per-keystroke
   // jank on huge trees (thousands of rows synchronously mounted). Cap what
@@ -293,15 +322,15 @@ export default function Listing({ fsPath }: { fsPath: string }) {
 
   let body: React.ReactNode;
   if (searching) {
-    if (walk.status === "error") {
+    if (validWalk.status === "error") {
       body = (
         <tr>
           <td colSpan={3} className="status-message error">
-            Search failed: {walk.message}
+            Search failed: {validWalk.message}
           </td>
         </tr>
       );
-    } else if (walk.status === "ok") {
+    } else if (validWalk.status === "ok") {
       body = hits.length ? (
         visibleHits.map(({ entry, positions }) => {
           const childPath = base + "/" + entry.rel;
@@ -377,12 +406,12 @@ export default function Listing({ fsPath }: { fsPath: string }) {
 
   let searchCount: string | null = null;
   let searchCountTitle: string | undefined;
-  if (searching && walk.status === "ok" && hits.length > 0) {
+  if (searching && validWalk.status === "ok" && hits.length > 0) {
     // A truncated walk (20k-entry server cap) means `hits` undercounts the
     // real tree. Signal that without new UI: a "+" on the number plus a
     // tooltip on the existing chip, rather than separate "truncated" text
     // that would shift layout.
-    const truncated = walk.result.truncated;
+    const truncated = validWalk.result.truncated;
     const suffix = truncated ? "+" : "";
     searchCount =
       hits.length > MAX_RESULTS
@@ -416,7 +445,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
         >
           fuzzy
         </button>
-        {searching && (walk.status === "idle" || walk.status === "loading") && (
+        {searching && (validWalk.status === "idle" || validWalk.status === "loading") && (
           <span className="listing-search-spinner" aria-hidden="true" />
         )}
         {searchCount !== null && (
