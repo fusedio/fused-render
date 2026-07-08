@@ -7,17 +7,15 @@ import { useState, type ReactNode } from "react";
 import { rawUrl } from "../lib/api";
 import type { StatResult, TemplateEntry } from "../lib/api";
 import { formatSize, formatMtime } from "../lib/format";
-import { navigateUrl } from "../lib/router";
 import ModeSwitcher, { templateModeIcon } from "../components/ModeSwitcher";
 import { useUrlVersion } from "../lib/hooks";
+import Listing from "./Listing";
 
-// Directory previews (a `.zarr` store maps to a directory template, D65) keep
-// a way into the raw members: navigate to the same path with `?listing=1`,
-// which App's dispatch honors to force the plain listing view. The pathname
-// (which already carries the /view/ or /embed/ prefix) is preserved.
-function browseContents() {
-  navigateUrl(location.pathname + "?listing=1");
-}
+// Sentinel modes the shell knows how to render without a template folder
+// (mirrors the server's KNOWN_SENTINELS, SPEC PT-12/D78): `_render` (the file
+// itself in an iframe) and `_listing` (the shell's built-in directory listing,
+// no iframe). Any other path-null entry is an unknown sentinel, filtered out.
+const KNOWN_SENTINEL_MODES = new Set(["_render", "_listing"]);
 
 interface HeaderProps {
   fsPath: string;
@@ -137,6 +135,19 @@ function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: St
   const [mode, setModeState] = useState<string>(() => activeTemplate(templates).mode);
   const entry = templates.find((t) => t.mode === mode) || templates[0];
   const [annotate, toggleAnnotate] = useAnnotate();
+  // `_listing` sentinel (D78): the shell's built-in directory listing, mounted
+  // in place of the preview iframe — no iframe, no `_file`; annotate (which
+  // injects into the iframe) is not offered for it.
+  const isListing = entry.mode === "_listing";
+
+  // A plain directory (its only mode is `_listing`) renders the listing bare —
+  // no preview-header — exactly as it did before D78. Only when there is more
+  // than one mode does the header appear, carrying the switcher back to the
+  // template mode(s). (All hooks above run unconditionally; this early return
+  // is after them, so React's hook order is stable.)
+  if (isListing && templates.length === 1) {
+    return <Listing fsPath={fsPath} />;
+  }
 
   const setMode = (next: string) => {
     if (next === mode) return;
@@ -153,41 +164,47 @@ function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: St
   // Ordinary entries: target file rides on the iframe's own URL as _file —
   // the shell URL's pathname already names the file, so no duplication there.
   // Annotate ON appends `_annotate=1` to the SAME src (AN-4) — the server then
-  // injects the overlay script alongside the runtime.
-  const src =
-    (entry.mode === "_render"
-      ? `/render?path=${encodeURIComponent(fsPath)}`
-      : `/render?path=${encodeURIComponent(entry.path as string)}&_file=${encodeURIComponent(fsPath)}`) +
-    (annotate ? "&_annotate=1" : "");
+  // injects the overlay script alongside the runtime. `_listing` builds no src
+  // (it renders a shell component, not an iframe).
+  const src = isListing
+    ? null
+    : (entry.mode === "_render"
+        ? `/render?path=${encodeURIComponent(fsPath)}`
+        : `/render?path=${encodeURIComponent(entry.path as string)}&_file=${encodeURIComponent(fsPath)}`) +
+      (annotate ? "&_annotate=1" : "");
+
+  // Embed hides the whole preview-header, hence the switcher (shell.css). A
+  // directory whose mode list carries `_listing` alongside a real preview (a
+  // .zarr store, or a custom view + listing) surfaces a corner chip to toggle
+  // into/out of the member listing (D78 — replaces the old `?listing=1`
+  // "Browse contents"). Pointless when `_listing` is the sole/default-only
+  // mode, so shown only when there is another mode to toggle back to.
+  const toggleListing =
+    templates.length > 1 && templates.some((t) => t.mode === "_listing")
+      ? () => setMode(isListing ? templates[0].mode : "_listing")
+      : null;
 
   return (
     <>
       <Header fsPath={fsPath} stat={stat}>
-        {/* Directory template (e.g. a .zarr store): a "Browse contents" action
-            drops into the raw member listing (D65). */}
-        {stat.is_dir && (
-          <button type="button" onClick={browseContents}>
-            Browse contents
-          </button>
-        )}
         <ModeSwitcher
           entries={templates.map((t) => ({ mode: t.mode, icon: templateModeIcon(t) }))}
           active={entry.mode}
           onSelect={setMode}
         />
-        <AnnotateToggle on={annotate} onToggle={toggleAnnotate} />
+        {!isListing && <AnnotateToggle on={annotate} onToggle={toggleAnnotate} />}
       </Header>
       <div className="preview-body">
-        {/* key: switching mode or annotate replaces the iframe (fresh document
-            per switch). */}
-        <iframe key={mode + (annotate ? "+a" : "")} src={src} />
-        {/* Embed mode hides the whole preview-header (shell.css), so a directory
-            template also surfaces "Browse contents" as a corner chip pinned over
-            the iframe — CSS reveals it only in embed. File previews render no
-            chip, so embed chrome stays empty for them. */}
-        {stat.is_dir && (
-          <button type="button" className="preview-browse-chip" onClick={browseContents}>
-            Browse contents
+        {isListing ? (
+          <Listing fsPath={fsPath} />
+        ) : (
+          /* key: switching mode or annotate replaces the iframe (fresh document
+             per switch). */
+          <iframe key={mode + (annotate ? "+a" : "")} src={src as string} />
+        )}
+        {toggleListing && (
+          <button type="button" className="preview-browse-chip" onClick={toggleListing}>
+            {isListing ? "Back" : "Browse contents"}
           </button>
         )}
       </div>
@@ -227,10 +244,10 @@ interface PreviewProps {
 
 export default function Preview({ fsPath, stat }: PreviewProps) {
   // Defensive filter (SPEC PT-12): an entry with path===null whose mode isn't
-  // a recognized sentinel is dropped — only "_render" exists today. Filtering
-  // here keeps the non-empty dispatch check honest (an all-unknown list falls
-  // back instead of crashing TemplatePreview).
-  const templates = stat.templates.filter((t) => t.path !== null || t.mode === "_render");
+  // a recognized sentinel (`_render`, `_listing`) is dropped. Filtering here
+  // keeps the non-empty dispatch check honest (an all-unknown list falls back
+  // instead of crashing TemplatePreview).
+  const templates = stat.templates.filter((t) => t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode));
   if (templates.length > 0) return <TemplatePreview fsPath={fsPath} stat={stat} templates={templates} />;
   return <FallbackPreview fsPath={fsPath} stat={stat} />;
 }

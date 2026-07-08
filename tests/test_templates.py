@@ -69,14 +69,21 @@ def test_builtin_html_default_is_render_sentinel():
 
 
 def test_builtin_zarr_directory_key():
-    assert modes("/x/store.zarr", is_dir=True) == (["zarr"], None)
+    # zarr dir carries the map preview plus the raw member listing as a peer
+    # mode (D78 — replaces the old `?listing=1` escape hatch)
+    assert modes("/x/store.zarr", is_dir=True) == (["zarr", "_listing"], None)
     # a *file* named .zarr does not match the directory key
     assert modes("/x/store.zarr", is_dir=False) == ([], None)
 
 
-def test_unmapped_and_plain_dir_empty():
+def test_unmapped_file_empty_and_plain_dir_lists():
+    # an unmapped file extension resolves to nothing
     assert modes("/x/a.xyz") == ([], None)
-    assert modes("/x/somedir", is_dir=True) == ([], None)
+    # every directory resolves at least the universal `/` key's ["_listing"]
+    # (D78) — a plain folder, a dotted folder, and the filesystem root all list
+    assert modes("/x/somedir", is_dir=True) == (["_listing"], None)
+    assert modes("/x/my.data", is_dir=True) == (["_listing"], None)
+    assert modes("/", is_dir=True) == (["_listing"], None)
 
 
 # ------------------------------------------------------------------ matcher
@@ -123,6 +130,23 @@ def test_wildcard_matches_whole_nonempty_segment_only():
     assert server._key_segments(".", False) is None
 
 
+def test_universal_dir_key_segments():
+    # the bare "/" is the universal directory key (D78): zero segments, matches
+    # any directory, never a file
+    assert server._key_segments("/", True) == []
+    assert server._key_segments("/", False) is None
+
+
+def test_universal_dir_key_lowest_specificity():
+    reg = {"/": "any", ".zarr/": "zarr"}
+    # a dot-anchored directory key beats the universal key
+    assert server._match_registry(reg, "s.zarr", True)[1] == "zarr"
+    # a plain folder falls to the universal key
+    assert server._match_registry(reg, "plain", True)[1] == "any"
+    # files never match the universal (or any) directory key
+    assert server._match_registry(reg, "plain", False) is None
+
+
 # ------------------------------------------------------------ user registry
 
 def test_user_override_beats_builtin(user_dir):
@@ -156,6 +180,25 @@ def test_user_directory_binding(user_dir):
     user_dir.registry({".obt/": "bundle"})
     assert modes("/x/data.obt", is_dir=True) == (["bundle"], None)
     assert modes("/x/data.obt", is_dir=False) == ([], None)
+
+
+def test_user_universal_splice_adds_mode_to_all_dirs(user_dir):
+    # "..." expands to the built-in list for THAT directory, so the added mode
+    # rides on top of each dir's own default (D78)
+    user_dir.template("gallery")
+    user_dir.registry({"/": ["...", "gallery"]})
+    assert modes("/x/plain", is_dir=True) == (["_listing", "gallery"], None)
+    assert modes("/x/s.zarr", is_dir=True) == (["zarr", "_listing", "gallery"], None)
+
+
+def test_user_universal_replace_beats_builtin(user_dir):
+    # a user match at ANY specificity beats the built-in (CT-3), so a universal
+    # "/" replace clobbers even the built-in zarr preview — the documented
+    # "user can shoot themselves" posture; the splice form above is the safe one
+    user_dir.template("gallery")
+    user_dir.registry({"/": ["gallery"]})
+    assert modes("/x/plain", is_dir=True) == (["gallery"], None)
+    assert modes("/x/s.zarr", is_dir=True) == (["gallery"], None)
 
 
 def test_user_can_rebind_html(user_dir):
