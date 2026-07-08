@@ -46,7 +46,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   // Sort lives in the URL; mirror it in state so clicks re-render without a
   // navigation (vanilla re-ran renderListing after its replaceState).
   const [{ sort, order }, setSortState] = useState<{ sort: SortKey; order: SortOrder }>(currentSort);
-  const [refresh, setRefresh] = useState(0); // bumped by the SSE dir watch
+  const [refresh, setRefresh] = useState(0); // bumped by the dir watch socket
 
   useEffect(() => {
     let alive = true;
@@ -59,21 +59,42 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     };
   }, [fsPath, refresh]);
 
-  // SSE watch on the listed directory (LS-1). A directory's mtime changes on
-  // create/delete/rename of entries (not on child content changes — LS-2,
-  // accepted). Closed on unmount = navigating away (LS-3). On change,
+  // WebSocket watch on the listed directory (LS-1); WS not SSE per D74 (SSE
+  // pinned one of Chrome's 6 HTTP/1.1 sockets per view). A directory's mtime
+  // changes on create/delete/rename of entries (not on child content changes
+  // — LS-2, accepted). Closed on unmount = navigating away (LS-3). On change,
   // debounce 300 ms then re-fetch; sort params live in URL + state, so a
   // refetch preserves them.
   useEffect(() => {
-    const es = new EventSource("/api/fs/events?path=" + encodeURIComponent(fsPath));
+    let sock: WebSocket | null = null;
+    let retry: ReturnType<typeof setTimeout> | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    es.onmessage = () => {
-      if (timer !== null) clearTimeout(timer);
-      timer = setTimeout(() => setRefresh((n) => n + 1), 300);
+    let closed = false;
+    const connect = () => {
+      const proto = location.protocol === "https:" ? "wss://" : "ws://";
+      sock = new WebSocket(proto + location.host + "/api/fs/events?path=" + encodeURIComponent(fsPath));
+      sock.onmessage = (ev) => {
+        let data;
+        try {
+          data = JSON.parse(ev.data);
+        } catch {
+          return;
+        }
+        if (data.keepalive) return;
+        if (timer !== null) clearTimeout(timer);
+        timer = setTimeout(() => setRefresh((n) => n + 1), 300);
+      };
+      // WebSockets don't auto-reconnect the way EventSource did.
+      sock.onclose = () => {
+        if (!closed) retry = setTimeout(connect, 1000);
+      };
     };
+    connect();
     return () => {
+      closed = true;
+      if (retry !== null) clearTimeout(retry);
       if (timer !== null) clearTimeout(timer);
-      es.close();
+      sock?.close();
     };
   }, [fsPath]);
 

@@ -23,8 +23,8 @@ import tempfile
 import time
 import traceback
 
-from fastapi import Body, FastAPI, Header, Query
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi import Body, FastAPI, Header, Query, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from fused_render.executor import run_python
@@ -512,33 +512,52 @@ def create_app(start_dir: str) -> FastAPI:
         media_type, _ = mimetypes.guess_type(path)
         return FileResponse(path, media_type=media_type or "application/octet-stream")
 
-    @app.get("/api/fs/events")
-    async def api_fs_events(path: list[str] = Query(default=[])):
-        # SSE change feed (SPEC §13.2). Async def on purpose: a sync def would pin
-        # a threadpool thread per open view for the lifetime of the page. Polling
-        # stat every 200ms is dependency-free and cheap at local scale; upgrading
-        # to real FS events later is internal to this endpoint.
+    @app.websocket("/api/fs/events")
+    async def api_fs_events(ws: WebSocket):
+        # File-change feed (SPEC §13.2), WebSocket not SSE (D74): every rendered
+        # pane holds one of these open for the lifetime of the page, and SSE
+        # rides ordinary HTTP/1.1 — Chrome caps those at 6 per origin, so a
+        # 6-pane panel pinned every socket and all later fetches (/api/run!)
+        # queued browser-side forever. WebSockets live in a separate, much
+        # larger connection pool. Polling stat every 200ms is dependency-free
+        # and cheap at local scale; upgrading to real FS events later is
+        # internal to this endpoint. Messages are JSON: {path, mtime} on
+        # change, {keepalive: true} every 15 s (WF-3).
+        await ws.accept()
+        paths = ws.query_params.getlist("path")
+
         def mtime_of(p):
             try:
                 return os.stat(p).st_mtime
             except OSError:
                 return None
 
-        async def stream():
-            last = {p: mtime_of(p) for p in path}
+        async def poll():
+            last = {p: mtime_of(p) for p in paths}
             ticks = 0
             while True:
                 await asyncio.sleep(0.2)
-                for p in path:
+                for p in paths:
                     m = mtime_of(p)
                     if m != last[p]:
                         last[p] = m
-                        yield f"data: {json.dumps({'path': p, 'mtime': m})}\n\n"
+                        await ws.send_text(json.dumps({"path": p, "mtime": m}))
                 ticks += 1
-                if ticks % 75 == 0:  # 75 × 200ms = keepalive every 15 s (WF-3)
-                    yield ": keepalive\n\n"
+                if ticks % 75 == 0:
+                    await ws.send_text(json.dumps({"keepalive": True}))
 
-        return StreamingResponse(stream(), media_type="text/event-stream")
+        poller = asyncio.create_task(poll())
+        try:
+            # Drain the receive side purely to learn about disconnect; the
+            # poll loop alone would only notice on its next send.
+            while True:
+                msg = await ws.receive()
+                if msg["type"] == "websocket.disconnect":
+                    break
+        except WebSocketDisconnect:
+            pass
+        finally:
+            poller.cancel()
 
     @app.post("/api/fs/reveal")
     def api_fs_reveal(body: dict = Body(...), x_fused: str | None = Header(default=None)):

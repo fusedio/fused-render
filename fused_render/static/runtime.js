@@ -345,19 +345,40 @@
   function resubscribe() {
     resubscribeTimer = null;
     if (es) {
-      es.close();
-      es = null;
+      const old = es;
+      es = null; // null first so old.onclose knows the close was deliberate
+      old.close();
     }
     if (!autoReloadEnabled || watched.size === 0) return;
     const query = [...watched].map((p) => "path=" + encodeURIComponent(p)).join("&");
-    es = new EventSource("/api/fs/events?" + query);
-    es.onmessage = () => {
+    // WebSocket, not EventSource (D74): SSE holds an HTTP/1.1 socket per open
+    // pane and Chrome caps those at 6 per origin — a 6-pane panel starved
+    // every later fetch (runPython hung forever). WS has its own, much larger
+    // connection pool.
+    const proto = window.location.protocol === "https:" ? "wss://" : "ws://";
+    const sock = new WebSocket(proto + window.location.host + "/api/fs/events?" + query);
+    es = sock;
+    sock.onmessage = (ev) => {
+      let data;
+      try {
+        data = JSON.parse(ev.data);
+      } catch (e) {
+        return;
+      }
+      if (data.keepalive) return;
       // Any change (including deletion, mtime: null → LR-6) reloads after a
       // 300 ms debounce that coalesces bursts.
       clearTimeout(reloadTimer);
       reloadTimer = setTimeout(() => window.location.reload(), 300);
     };
-    // EventSource reconnects on error by default — leave it.
+    // Unlike EventSource, a WebSocket doesn't reconnect itself — retry unless
+    // this close was deliberate (es already points elsewhere / is null).
+    sock.onclose = () => {
+      if (es !== sock) return;
+      es = null;
+      clearTimeout(resubscribeTimer);
+      resubscribeTimer = setTimeout(resubscribe, 1000);
+    };
   }
 
   function watchPath(p) {
