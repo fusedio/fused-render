@@ -10,11 +10,14 @@ marketplace.json`, `.claude-plugin/plugin.json`, and the `:8765` port
 mentioned in the SKILL.md docs.
 
 Usage:
-    python scripts/branch_stamp.py [--ref REF] [--reset]
+    python scripts/branch_stamp.py --ref REF   # stamp for an explicit ref
+    FUSED_RENDER_BRANCH=REF python scripts/branch_stamp.py  # or via the env var
+    python scripts/branch_stamp.py --reset     # restore baseline names/port
 
-With no args, stamps using the currently-resolved branch ref (env var / git
-branch, see fused_render._branch). `--reset` (or `--ref ""`) restores the
-baseline names/port exactly.
+Isolation is opt-in (see fused_render._branch): the ref comes from --ref or
+the FUSED_RENDER_BRANCH env var — there is no git auto-detection. With
+neither set, the ref resolves to "" and this stamps the baseline (same as
+--reset). `--reset` (or `--ref ""`) restores the baseline names/port exactly.
 """
 import argparse
 import json
@@ -100,7 +103,7 @@ def _default_skill_files() -> list[Path]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--ref", default=None, help="branch ref to stamp (default: resolved via fused_render._branch)")
+    parser.add_argument("--ref", default=None, help="branch ref to stamp (default: FUSED_RENDER_BRANCH env var, else baseline)")
     parser.add_argument("--reset", action="store_true", help="restore baseline names/port (ref '')")
     args = parser.parse_args()
 
