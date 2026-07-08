@@ -190,6 +190,9 @@
       thread.iu = Math.min(1, Math.max(0, Number(t.iu) || 0));
       thread.iv = Math.min(1, Math.max(0, Number(t.iv) || 0));
     }
+    // Video timestamp (AN-37): playback position (seconds) at creation, riding
+    // alongside the element anchor like iu/iv — reveal seeks back to it.
+    if (t.t !== undefined) thread.t = Math.max(0, Number(t.t) || 0);
     if (t.x !== undefined && t.y !== undefined) {
       thread.x = Number(t.x) || 0;
       thread.y = Number(t.y) || 0;
@@ -224,6 +227,10 @@
     if ((o.anchorId || o.anchorPath) && thread.iu !== undefined && thread.iv !== undefined) {
       o.iu = Math.round(thread.iu * 1000) / 1000;
       o.iv = Math.round(thread.iv * 1000) / 1000;
+    }
+    // Video timestamp rides the element anchor the same way (AN-37).
+    if ((o.anchorId || o.anchorPath) && thread.t !== undefined) {
+      o.t = Math.round(thread.t * 10) / 10;
     }
     return o;
   }
@@ -483,14 +490,8 @@
         // iu/iv only once the intrinsic size is known: before decode,
         // imgContentBox falls back to the layout box, and fractions taken of
         // the wrong box would persist a wrong pixel into the URL (AN-24). An
-        // undecoded image gets a plain element anchor instead.
-        if (
-          el.tagName === "IMG" &&
-          el.naturalWidth > 0 &&
-          el.naturalHeight > 0 &&
-          clientX !== undefined &&
-          clientY !== undefined
-        ) {
+        // undecoded image/video gets a plain element anchor instead.
+        if (mediaIntrinsic(el) && clientX !== undefined && clientY !== undefined) {
           const b = imgContentBox(el);
           if (b.width > 0 && b.height > 0) {
             // Letterbox clicks clamp to the nearest content edge (AN-24).
@@ -498,6 +499,9 @@
             base.iv = Math.round(Math.min(1, Math.max(0, (clientY - b.top) / b.height)) * 1000) / 1000;
           }
         }
+        // A comment on a video also captures WHEN (AN-37) — the frame under
+        // discussion — so reveal can seek back to it.
+        if (el.tagName === "VIDEO") base.t = Math.round(el.currentTime * 10) / 10;
         return base;
       }
     }
@@ -889,15 +893,33 @@
     return { x: Math.max(12, Math.min(x, maxX)), y: Math.max(12, y) };
   }
 
-  // Displayed CONTENT box of an <img> in client coords, object-fit-aware
-  // (AN-24): with `contain`/`cover`/`scale-down` the painted image doesn't fill
-  // the element box, so pixel fractions must be taken of the painted area, not
-  // the layout rect — otherwise letterbox padding shifts the pin between
-  // renders at different sizes.
+  // Intrinsic pixel dimensions of a pixel-anchorable surface (AN-24/AN-37):
+  // decoded <img>, <video> with metadata, or a sized <canvas>. Null means "no
+  // pixel refinement" — the click falls back to a plain element anchor.
+  function mediaIntrinsic(el) {
+    if (!el || !el.tagName) return null;
+    if (el.tagName === "IMG" && el.naturalWidth > 0 && el.naturalHeight > 0) {
+      return { w: el.naturalWidth, h: el.naturalHeight };
+    }
+    if (el.tagName === "VIDEO" && el.videoWidth > 0 && el.videoHeight > 0) {
+      return { w: el.videoWidth, h: el.videoHeight };
+    }
+    if (el.tagName === "CANVAS" && el.width > 0 && el.height > 0) {
+      return { w: el.width, h: el.height };
+    }
+    return null;
+  }
+
+  // Displayed CONTENT box of an <img>/<video>/<canvas> in client coords,
+  // object-fit-aware (AN-24): with `contain`/`cover`/`scale-down` the painted
+  // content doesn't fill the element box, so pixel fractions must be taken of
+  // the painted area, not the layout rect — otherwise letterbox padding shifts
+  // the pin between renders at different sizes.
   function imgContentBox(img) {
     const r = img.getBoundingClientRect();
-    const natW = img.naturalWidth;
-    const natH = img.naturalHeight;
+    const dims = mediaIntrinsic(img);
+    const natW = dims ? dims.w : 0;
+    const natH = dims ? dims.h : 0;
     if (!natW || !natH || !r.width || !r.height) {
       return { left: r.left, top: r.top, width: r.width, height: r.height };
     }
@@ -939,7 +961,7 @@
   // thread with iu/iv pins at that fraction of the painted image (AN-25);
   // everything else keeps the top-right corner (AN-11).
   function pinPoint(thread, el) {
-    if (thread.iu !== undefined && thread.iv !== undefined && el.tagName === "IMG") {
+    if (thread.iu !== undefined && thread.iv !== undefined && mediaIntrinsic(el)) {
       const b = imgContentBox(el);
       return {
         x: b.left + thread.iu * b.width + window.scrollX,
@@ -1032,6 +1054,9 @@
   function openDraft(el, pageX, pageY, clientX, clientY, anchorFields) {
     const anchor = anchorFields || buildAnchor(el, pageX, pageY, clientX, clientY);
     hlEl().style.display = "none";
+    // Commenting on a playing video freezes the frame under discussion — the
+    // captured timestamp (AN-37) should stay on screen while the author types.
+    if (el && el.tagName === "VIDEO" && typeof el.pause === "function") el.pause();
 
     // Tether the composer to what it annotates: an anchor dot at the click
     // point, removed when the popover closes.
@@ -1480,6 +1505,12 @@
     }
   }
 
+  // "m:ss" label for a video-timestamp anchor (AN-37).
+  function fmtTime(sec) {
+    const s = Math.max(0, Math.round(sec));
+    return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+  }
+
   // Collapsed-card header row (the expanded card renders the shared thread
   // body instead — no header, so timestamps never duplicate).
   function cardTopHtml(thread) {
@@ -1495,6 +1526,7 @@
       <div class="__fa_card_top">
         <span class="__fa_carddot${thread.status === "resolved" ? " __fa_carddot_resolved" : ""}">${esc(pinGlyph(thread))}</span>
         <span class="__fa_time">${esc(relTime(thread.updatedAt || thread.createdAt))}</span>
+        ${thread.t !== undefined ? `<span class="__fa_tag">${esc(fmtTime(thread.t))}</span>` : ""}
         ${tag ? `<span class="__fa_tag">${esc(tag)}</span>` : ""}
         <span class="__fa_spacer"></span>
         ${replies ? `<span class="__fa_card_replies">${replies} ${replies === 1 ? "reply" : "replies"}</span>` : ""}
@@ -1563,7 +1595,13 @@
     const el = resolveElement(t);
     if (el) {
       el.scrollIntoView({ block: "center", behavior: "smooth" });
-      if (t.iu !== undefined && t.iv !== undefined && el.tagName === "IMG") {
+      // Video reveal seeks to the commented frame (AN-37) — paused, so the
+      // viewer lands on the exact moment under discussion.
+      if (el.tagName === "VIDEO" && t.t !== undefined) {
+        el.pause();
+        el.currentTime = t.t;
+      }
+      if (t.iu !== undefined && t.iv !== undefined && mediaIntrinsic(el)) {
         // Image pins: pulse the PIN itself instead of drawing an accent ring
         // — a lime outline vanishes on light/white imagery, the pin's own
         // scale change reads on any background.
