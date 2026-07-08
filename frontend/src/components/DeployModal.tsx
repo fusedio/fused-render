@@ -235,7 +235,18 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       const [cfg, status, prev] = await Promise.all([
         getDeployConfig(),
         getDeployStatus(fsPath, true),
-        getDeployPreview(fsPath),
+        // A preview failure (unexportable file type, file deleted since the
+        // header rendered, …) must not kill the whole dialog — degrade it to
+        // an export blocker: the form renders, the reason shows in the
+        // blocker list, and Deploy stays disabled.
+        getDeployPreview(fsPath).catch(
+          (e): DeployPreview => ({
+            page: basename(fsPath),
+            entrypoints: [],
+            assets: [],
+            errors: [(e as Error).message],
+          }),
+        ),
       ]);
       if (seq !== loadSeq.current) return;
       setConfig(cfg);

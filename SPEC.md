@@ -572,11 +572,14 @@ the product gains network access.
 
 ### 19.1 Surface
 
-- **DP-1** Any file preview whose mode list carries the `_render` sentinel (a
-  renderable page — exactly the set `/api/export` accepts) shows a **Deploy**
-  header action; a green dot marks a page whose stored deployment reads active
-  (a local pointer read — opening a preview never spawns the CLI; re-read on
-  tab focus/visibility regain, so an out-of-band revoke — e.g. the Preferences
+- **DP-1** Any file preview whose mode list carries the `_render` sentinel
+  **and** whose filename is `.html`/`.htm` shows a **Deploy** header action —
+  both conditions, because that is exactly the set `/api/export` accepts: a
+  registry rebind can put `_render` on any type (D73), but the exporter is
+  extension-gated, and the button must never open a modal that cannot deploy.
+  A green dot marks a page whose stored deployment reads active (a local
+  pointer read — opening a preview never spawns the CLI; re-read on tab
+  focus/visibility regain, so an out-of-band revoke — e.g. the Preferences
   page in another tab — shows through without a remount). Directories never
   show it. The action opens the Deploy modal.
 - **DP-2** The modal handles its states in order: the fused CLI missing → an
@@ -591,7 +594,10 @@ the product gains network access.
   the page plus each `runPython` target (and its served route name) and each
   `rawUrl`/`readFile` asset. Export blockers come back in the same response
   and **disable Deploy** with the full list — an unexportable page reads as
-  "fix these" up front, never as a failed deploy.
+  "fix these" up front, never as a failed deploy. A preview *fetch* failure
+  (unexportable type, file deleted since the header rendered) degrades to a
+  blocker entry the same way — the dialog still renders its form; it never
+  dead-ends on the preview call.
 - **DP-2b** Login guidance, before and after the click.
   `GET /api/deploy/config` carries `fused_logged_in` — presence of the fused
   CLI's own control-plane credentials file

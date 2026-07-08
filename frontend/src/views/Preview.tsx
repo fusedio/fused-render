@@ -239,13 +239,16 @@ function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: St
             Browse contents
           </button>
         )}
-        {/* Deployable = the mode list carries the "_render" sentinel (a
-            renderable page — what /api/export accepts). Directories never
-            deploy (no _render binding exists for one today; the guard keeps
-            that true even if a registry ever says otherwise). */}
-        {!stat.is_dir && templates.some((t) => t.mode === "_render") && (
-          <DeployButton fsPath={fsPath} />
-        )}
+        {/* Deployable = the mode list carries the "_render" sentinel AND the
+            file is .html/.htm — the exporter's actual contract. The extension
+            check matters because a registry rebind can put "_render" on any
+            type (D73), but /api/export and /api/deploy/preview accept only
+            .html/.htm — the button must not open a modal that can't deploy.
+            Directories never deploy (no _render binding exists for one today;
+            the guard keeps that true even if a registry ever says otherwise). */}
+        {!stat.is_dir &&
+          templates.some((t) => t.mode === "_render") &&
+          /\.html?$/i.test(fsPath) && <DeployButton fsPath={fsPath} />}
         <ModeSwitcher
           entries={templates.map((t) => ({ mode: t.mode, icon: templateModeIcon(t) }))}
           active={entry.mode}
