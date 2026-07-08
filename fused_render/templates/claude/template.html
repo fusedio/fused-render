@@ -25,7 +25,7 @@
     display: flex;
     flex-direction: column;
   }
-  body.home #banner, body.home #log, body.home #inputbox, body.home #hint { display: none; }
+  body.home #banner, body.home #log, body.home #attachments-chat, body.home #inputbox, body.home #hint { display: none; }
   body:not(.home) #home { display: none; }
 
   /* ── chat view ─────────────────────────────── */
@@ -113,14 +113,16 @@
   .sel-label { color: #5f6570; }
 
   /* ── attached comments (claudeComments param) ─────────────── */
-  /* Chips sit inside the home card, above the textarea: small, wrapped. */
-  #attachments {
+  /* Chips: small, horizontally wrapped. #attachments sits inside the home
+     card above the textarea; #attachments-chat sits above the chat input. */
+  #attachments, #attachments-chat {
     margin-bottom: 8px;
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
   }
-  #attachments:empty { display: none; }
+  #attachments-chat { flex-shrink: 0; }
+  #attachments:empty, #attachments-chat:empty { display: none; }
   .chip {
     border: 1px solid var(--border);
     background: var(--card);
@@ -301,6 +303,7 @@
     <span class="sub" id="banner-sub"></span>
   </div>
   <div id="log"></div>
+  <div id="attachments-chat"></div>
   <form id="inputbox">
     <span class="caret">&gt;</span>
     <input id="box" placeholder="Reply to Claude..." autocomplete="off" spellcheck="false"
@@ -417,7 +420,14 @@ function enterChat() {
 // (clear-on-inject — the composed string carries them, so a failed send still
 // took them). anchorId/anchorPath differ per comment, so the chip badge shows
 // only the view; the agent gets the raw JSON with every field intact.
-const attachmentsEl = document.getElementById("attachments");
+// Chips live in two places — the home card (fresh chat) and above the chat
+// input (resumed session, or after entering chat) — so the handoff is
+// reviewable in whichever view is showing. renderAttachments fills both; only
+// the visible one is on screen.
+const attachmentsEls = [
+  document.getElementById("attachments"),
+  document.getElementById("attachments-chat"),
+];
 
 function parseComments() {
   try {
@@ -433,33 +443,38 @@ function parseComments() {
 
 let attached = parseComments();
 
+function buildChip(c, i) {
+  const chip = document.createElement("div");
+  chip.className = "chip";
+  const body = document.createElement("div");
+  body.className = "chip-body";
+  const content = document.createElement("div");
+  content.className = "chip-content";
+  const text = c.content || "";
+  content.textContent = text.length > 200 ? text.slice(0, 200) + "…" : text;
+  body.appendChild(content);
+  const view = c.view === "_render" ? "preview" : c.view;
+  if (view) {
+    const badge = document.createElement("span");
+    badge.className = "chip-view";
+    badge.textContent = view;
+    body.appendChild(badge);
+  }
+  const x = document.createElement("button");
+  x.className = "chip-x";
+  x.type = "button";
+  x.setAttribute("aria-label", "Remove comment");
+  x.textContent = "✕";
+  x.onclick = () => { attached.splice(i, 1); renderAttachments(); };
+  chip.append(body, x);
+  return chip;
+}
+
 function renderAttachments() {
-  attachmentsEl.innerHTML = "";
-  attached.forEach((c, i) => {
-    const chip = document.createElement("div");
-    chip.className = "chip";
-    const body = document.createElement("div");
-    body.className = "chip-body";
-    const content = document.createElement("div");
-    content.className = "chip-content";
-    const text = c.content || "";
-    content.textContent = text.length > 200 ? text.slice(0, 200) + "…" : text;
-    body.appendChild(content);
-    const view = c.view === "_render" ? "preview" : c.view;
-    if (view) {
-      const badge = document.createElement("span");
-      badge.className = "chip-view";
-      badge.textContent = view;
-      body.appendChild(badge);
-    }
-    const x = document.createElement("button");
-    x.className = "chip-x";
-    x.type = "button";
-    x.setAttribute("aria-label", "Remove comment");
-    x.textContent = "✕";
-    x.onclick = () => { attached.splice(i, 1); renderAttachments(); };
-    chip.append(body, x);
-    attachmentsEl.appendChild(chip);
+  attachmentsEls.forEach((el) => {
+    if (!el) return;
+    el.innerHTML = "";
+    attached.forEach((c, i) => el.appendChild(buildChip(c, i)));
   });
 }
 
@@ -840,17 +855,11 @@ async function loadRecent() {
   // them off the shell URL before anything else can push a history entry that
   // still carries them (see clearTopClaudeComments).
   clearTopClaudeComments();
+  renderAttachments();  // chips show in whichever view boots (home or chat)
   const session_id = fused.params.get("session_id");
   if (session_id) {
-    // Resuming an existing chat: the comment handoff is a start-a-review
-    // action and doesn't belong to it. The chips live only on the home card,
-    // which enterChat() hides — keeping `attached` would silently fold the
-    // comments into the next reply with no chips shown and no way to remove
-    // them. Drop them so a resumed session ignores the handoff entirely.
-    attached = [];
-  }
-  renderAttachments();
-  if (session_id) {
+    // Resuming a chat with a comment handoff: enter chat, where the chips show
+    // above the input and fold into the session's next message.
     enterChat();
     await loadHistory(session_id);
   } else {
