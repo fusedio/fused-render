@@ -11,3 +11,4 @@ scripts/vendor-sci/node_modules/
 .claude/worktrees/
 frontend/node_modules/
 fused_render/static/shell-dist/
+fused_render/_baked_branch.py

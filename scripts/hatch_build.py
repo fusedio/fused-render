@@ -12,6 +12,7 @@ build/watch loop, and serve-from-source means the freshest local build wins.
 import os
 import shutil
 import subprocess
+import sys
 
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
@@ -22,6 +23,8 @@ class ShellBuildHook(BuildHookInterface):
     def initialize(self, version: str, build_data: dict) -> None:
         if version == "editable":
             return
+
+        self._bake_branch_ref(build_data)
 
         frontend = os.path.join(self.root, "frontend")
         dist_index = os.path.join(
@@ -48,3 +51,23 @@ class ShellBuildHook(BuildHookInterface):
             [npm, "install", "--no-audit", "--no-fund"], cwd=frontend, check=True
         )
         subprocess.run([npm, "run", "build"], cwd=frontend, check=True)
+
+    def _bake_branch_ref(self, build_data: dict) -> None:
+        """Write fused_render/_baked_branch.py with the resolved branch ref
+        so packaged (non-editable) builds carry a stable ref without git.
+        """
+        sys.path.insert(0, self.root)
+        try:
+            from fused_render import _branch
+
+            ref = _branch.branch_ref()
+        finally:
+            sys.path.remove(self.root)
+
+        baked_path = os.path.join(self.root, "fused_render", "_baked_branch.py")
+        with open(baked_path, "w") as f:
+            f.write(f'_BAKED_REF = "{ref}"\n')
+
+        build_data.setdefault("artifacts", []).append(
+            "fused_render/_baked_branch.py"
+        )
