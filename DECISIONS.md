@@ -29,7 +29,7 @@ A fully local file explorer: a Python server on `127.0.0.1` + a browser UI to br
 | D5 | Python execution | Fresh subprocess per call, 30 s timeout | Rejected warm pool (later upgrade, API-compatible) and in-process (crash risk) |
 | D6 | Return types | JSON-native only; DataFrame/bytes → clear error telling user to convert | Arrow/DataFrame encoding = follow-up for data-heavy templates |
 | D7 | Param values | Strings only. `set()` rejects non-strings. User JSON-encodes himself | Rejected auto-typing (footguns) and JSON escape hatch (unneeded now) |
-| D8 | Param↔URL sync | URL wins on load; `history.replaceState` always; no history entries from param changes | pushState opt-in possible later without API break |
+| D8 | Param↔URL sync | URL wins on load; first param write on a pristine history entry pushes one entry (flagged `fusedParamEntry` on `history.state`), every later write replaces — Back restores the as-loaded params, churn costs at most one entry per visit | Was "`replaceState` always, no entries". First-change-push chosen over settle-debounce (timers/heuristics) and per-param opt-in (config burden). Flag on `history.state` travels with the entry, so after Back to the pristine entry the next write correctly pushes again |
 | D9 | Py path resolution | Relative → against the HTML file's dir; absolute → anywhere on disk (consistent with D2) | |
 | D10 | Re-run on param change | Manual: author calls `runPython` inside `params.onChange` | Declarative binding = possible later layer |
 | D11 | Template registry | **Server-side** (single source of truth). `stat` response carries `template` field; shell obeys | Rejected shell-side JS registry (migration pain once user overrides exist) |
