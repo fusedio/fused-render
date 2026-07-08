@@ -7,16 +7,19 @@
  * Same-origin iframe model: this script talks to an ancestor window's URL
  * directly (no postMessage bridge — see DECISIONS.md D3/D4). The param target
  * is the TOPMOST same-origin ancestor (D46), stopping BELOW any ancestor
- * marked as a param boundary (`_fusedParamBoundary` — only tab mode sets one,
- * TM-3/D47): it climbs window.parent while the next ancestor is same-origin,
- * reachable, and not a boundary. In normal view/embed mode the direct parent is
- * already the top, so this is unchanged; inside layout mode every pane's
- * rendered page climbs past its embed shell to the layout shell, so params
- * read/write the shared layout URL (merging + cross-pane sync are then
- * structural). Inside tab mode the tab shell is a boundary, so the climb stops
- * at each tab's own embed shell — tab params stay tab-independent (a nested
- * panel still pools among its own panes, its climb halting at the panel shell
- * just below the boundary). When loaded as a top-level
+ * marked as a param boundary (`_fusedParamBoundary` — both layout shells set
+ * one, LM-3/TM-3/D72): it climbs window.parent while the next ancestor is
+ * same-origin, reachable, and not a boundary. In normal view/embed mode the
+ * direct parent is already the top, so this is unchanged; inside a layout mode
+ * (panel or tab) the shell is a boundary, so the climb stops at each pane's/
+ * tab's own embed shell — params stay pane-local, captured segment-local
+ * inside `_layout` by the shell's ordinary URL sync.
+ *
+ * Global params still exist but only by hand (D72): top-level params a user
+ * types on a layout shell URL are READABLE from every pane (get/getAll merge
+ * the same-origin ancestor chain above the boundary; nearer wins, pane-local
+ * wins over all), but set() never writes them — writes always land on the
+ * pane's own URL. When loaded as a top-level
  * page (target === window, e.g. visiting /render?path=... directly, or a
  * cross-origin ancestor) it falls back to reading/writing its own URL, treating
  * the `path` query key as reserved alongside any `_`-prefixed key.
@@ -46,6 +49,25 @@
 
   const target = findTarget();
   const standalone = target === window;
+
+  // Same-origin ancestors ABOVE the target, nearest first (non-empty only when
+  // a param boundary stopped the climb). Their top-level queries hold
+  // hand-typed global params (D72): read-only from here — set() never touches
+  // them. Computed per read: an ancestor's URL changes over time.
+  function ancestorWindows() {
+    const out = [];
+    let t = target;
+    try {
+      while (t.parent && t.parent !== t) {
+        void t.parent.location.href; // throws when cross-origin
+        t = t.parent;
+        out.push(t);
+      }
+    } catch (e) {
+      /* hit a cross-origin ancestor — chain ends */
+    }
+    return out;
+  }
 
   function isReserved(key) {
     if (key.startsWith("_")) return true;
@@ -124,17 +146,30 @@
       const outer = currentParams();
       return outer.has("_file") ? outer.get("_file") : undefined;
     }
-    const params = currentParams();
     if (isReserved(key)) return undefined;
-    return params.has(key) ? params.get(key) : undefined;
+    const params = currentParams();
+    if (params.has(key)) return params.get(key);
+    // Hand-typed global fallback (D72): nearest ancestor above the boundary
+    // that carries the key wins.
+    for (const win of ancestorWindows()) {
+      const p = new URLSearchParams(splitSearch(win.location.search).rest);
+      if (p.has(key)) return p.get(key);
+    }
+    return undefined;
   }
 
   function getAll() {
-    const params = currentParams();
     const result = {};
-    for (const [key, value] of params) {
-      if (isReserved(key)) continue;
-      result[key] = value;
+    // Farthest ancestor first, then nearer, then the target's own params —
+    // later writes overwrite, so pane-local wins over hand-typed globals (D72).
+    const chain = ancestorWindows().reverse();
+    chain.push(target);
+    for (const win of chain) {
+      const params = new URLSearchParams(splitSearch(win.location.search).rest);
+      for (const [key, value] of params) {
+        if (isReserved(key)) continue;
+        result[key] = value;
+      }
     }
     const file = get("_file");
     if (file !== undefined) result._file = file;
@@ -159,9 +194,25 @@
     let search = params.toString();
     if (layoutSpan) search += (search ? "&" : "") + layoutSpan;
     const newUrl = target.location.pathname + (search ? "?" + search : "");
-    target.history.replaceState(target.history.state, "", newUrl);
+    // First-change-push: the first param write on a pristine history entry
+    // pushes a new entry (preserving the as-loaded state for Back), every
+    // later write replaces on top of it — so param churn costs at most one
+    // entry per visit. "Pristine" is tracked via a flag on history.state, not
+    // a JS variable: the flag travels with the entry, so after Back to the
+    // pristine entry the next write correctly pushes again (truncating the
+    // old forward branch), and it survives reloads. Existing state (e.g. the
+    // tab shell's fusedActiveTab) is merged, not clobbered.
+    const prevState = target.history.state;
+    const unchanged =
+      newUrl === target.location.pathname + target.location.search;
+    if (unchanged || (prevState && prevState.fusedParamEntry)) {
+      target.history.replaceState(prevState, "", newUrl);
+    } else {
+      const nextState = Object.assign({}, prevState, { fusedParamEntry: true });
+      target.history.pushState(nextState, "", newUrl);
+    }
     // Notify via the event path only (no direct notify(), D46). When the shell
-    // wrapper exists it also fires fused:urlchange on replaceState — the
+    // wrapper exists it also fires fused:urlchange on the history write — the
     // snapshot diff in notifyIfChanged() makes the duplicate harmless; this
     // explicit dispatch covers standalone /render pages that have no wrapper.
     target.dispatchEvent(new Event("fused:urlchange"));
@@ -177,9 +228,26 @@
   lastSnapshot = JSON.stringify(getAll());
 
   // Single notification channel: any change to the target window's URL — our
-  // own set(), a sibling pane's set() (same target in layout mode), or the
-  // shell's own history writes — arrives as fused:urlchange (D46/LM-8).
-  target.addEventListener("fused:urlchange", notifyIfChanged);
+  // own set() or the shell's own history writes — arrives as fused:urlchange
+  // (D46/LM-8). Ancestor shells above a boundary are watched too, so an edit
+  // to a hand-typed global (D72) also notifies; the snapshot diff guard makes
+  // the layout shell's frequent `_layout` re-syncs no-ops here.
+  // Target and ancestor shells outlive this document (they survive pane
+  // reloads/navigation), so detach on pagehide — otherwise every reload
+  // stacks another stale notifyIfChanged on the shared shell windows.
+  const hookedWindows = [target, ...ancestorWindows()];
+  for (const win of hookedWindows) {
+    win.addEventListener("fused:urlchange", notifyIfChanged);
+  }
+  window.addEventListener("pagehide", () => {
+    for (const win of hookedWindows) {
+      try {
+        win.removeEventListener("fused:urlchange", notifyIfChanged);
+      } catch (e) {
+        /* window already gone */
+      }
+    }
+  });
 
   function runPython(pyPath, params) {
     const ownPath = new URLSearchParams(window.location.search).get("path");
@@ -275,21 +343,45 @@
   let reloadTimer = null;
 
   function resubscribe() {
+    // A reconnect timer may be pending (onclose below); a direct call must
+    // cancel it or the stale timer would close and reopen the fresh socket.
+    clearTimeout(resubscribeTimer);
     resubscribeTimer = null;
     if (es) {
-      es.close();
-      es = null;
+      const old = es;
+      es = null; // null first so old.onclose knows the close was deliberate
+      old.close();
     }
     if (!autoReloadEnabled || watched.size === 0) return;
     const query = [...watched].map((p) => "path=" + encodeURIComponent(p)).join("&");
-    es = new EventSource("/api/fs/events?" + query);
-    es.onmessage = () => {
+    // WebSocket, not EventSource (D74): SSE holds an HTTP/1.1 socket per open
+    // pane and Chrome caps those at 6 per origin — a 6-pane panel starved
+    // every later fetch (runPython hung forever). WS has its own, much larger
+    // connection pool.
+    const proto = window.location.protocol === "https:" ? "wss://" : "ws://";
+    const sock = new WebSocket(proto + window.location.host + "/api/fs/events?" + query);
+    es = sock;
+    sock.onmessage = (ev) => {
+      let data;
+      try {
+        data = JSON.parse(ev.data);
+      } catch (e) {
+        return;
+      }
+      if (data.keepalive) return;
       // Any change (including deletion, mtime: null → LR-6) reloads after a
       // 300 ms debounce that coalesces bursts.
       clearTimeout(reloadTimer);
       reloadTimer = setTimeout(() => window.location.reload(), 300);
     };
-    // EventSource reconnects on error by default — leave it.
+    // Unlike EventSource, a WebSocket doesn't reconnect itself — retry unless
+    // this close was deliberate (es already points elsewhere / is null).
+    sock.onclose = () => {
+      if (es !== sock) return;
+      es = null;
+      clearTimeout(resubscribeTimer);
+      resubscribeTimer = setTimeout(resubscribe, 1000);
+    };
   }
 
   function watchPath(p) {

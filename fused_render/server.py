@@ -17,12 +17,14 @@ import logging
 import mimetypes
 import os
 import stat as stat_mod
+import subprocess
+import sys
 import tempfile
 import time
 import traceback
 
-from fastapi import Body, FastAPI, Header, Query
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi import Body, FastAPI, Header, Query, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from fused_render.executor import run_python
@@ -75,71 +77,28 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
 TEMPLATES_DIR = os.path.join(HERE, "templates")
 
-# ext -> ordered list of template names, first = default (SPEC PT-7, D60).
-# A name is a folder name (fused_render/templates/<name>/), never a filename.
-TEMPLATES = {
-    ".parquet": ["table"],  # binary — code mode would be garbage
-    ".csv": ["csv", "code"],
-    ".tsv": ["csv", "code"],
-    ".xlsx": ["xlsx"],
-    ".json": ["tree", "code"],
-    ".geojson": ["tree", "code"],
-    ".md": ["markdown", "code"],
-    ".svg": ["image", "code"],
-    ".png": ["image"],
-    ".jpg": ["image"],
-    ".jpeg": ["image"],
-    ".gif": ["image"],
-    ".webp": ["image"],
-    ".pdf": ["pdf"],
-    # audio/video — one template branches on extension
-    ".mp4": ["media"],
-    ".mov": ["media"],
-    ".m4v": ["media"],
-    ".webm": ["media"],
-    ".mp3": ["media"],
-    ".wav": ["media"],
-    ".m4a": ["media"],
-    ".ogg": ["media"],
-    ".flac": ["media"],
-    # source code — CodeMirror, mode chosen by extension (note: .json routes to
-    # the JSON tree template above, not here)
-    # python — code default, with the swagger-style `api` run form (D63)
-    # available as a second mode.
-    ".py": ["code", "api"],
-    ".js": ["code"],
-    ".ts": ["code"],
-    ".sh": ["code"],
-    ".yaml": ["code"],
-    ".yml": ["code"],
-    ".toml": ["code"],
-    ".css": ["code"],
-    # plain text
-    ".txt": ["text", "code"],
-    ".log": ["text", "code"],
-    # scientific rasters / arrays — decoded in-browser by vendored ESM bundles
-    # (see scripts/vendor-sci); no reader.py involved. Binary formats, so no
-    # code mode.
-    ".tif": ["geotiff"],
-    ".tiff": ["geotiff"],
-    ".nc": ["netcdf"],
-    ".nc4": ["netcdf"],
-    ".cdf": ["netcdf"],
-    # hardcoded, registry-exempt (SPEC CT-4): users can't rebind .html/.htm
-    # or drop _render. _render is a shell sentinel (PT-12, D62) — no
-    # template folder behind it.
-    ".html": ["_render", "code"],
-    ".htm": ["_render", "code"],
-}
+# Built-in extension → mode-list bindings ship as data, not code (D73):
+# templates/registry.json, exactly the user-registry format (SPEC §16). Keys
+# are dot-anchored suffix patterns — ".csv", compound ".xyz.json", wildcard
+# ".*.json" (`*` = one whole dot-segment) — and a trailing "/" marks a
+# directory key (".zarr/": a zarr store is one logical dataset spread across
+# many chunk files, so it previews as a dataset rather than a listing).
+# Values are ordered lists of template names, first = default (SPEC PT-7,
+# D60). A name is a folder name (fused_render/templates/<name>/), never a
+# filename. Rationale per mapping lives in the SPEC PT-7 table.
+BUILTIN_REGISTRY = os.path.join(TEMPLATES_DIR, "registry.json")
 
-# Directory templates: a DIRECTORY whose basename carries one of these
-# extensions resolves through the same ordered-name model as files (e.g. a
-# `.zarr` store is one logical dataset spread across many chunk files, so it
-# previews as a dataset rather than as a folder listing). Same {ext: [names]}
-# shape as TEMPLATES; names resolve through `_resolve_name` identically.
-DIR_TEMPLATES = {
-    ".zarr": ["zarr"],
-}
+# Shell sentinel modes (SPEC PT-12): implemented by the shell, no template
+# folder behind them. The only `_`-prefixed names a registry mode list may
+# reference (D73); any other `_` name is invalid (CT-6).
+KNOWN_SENTINELS = {"_render"}
+
+# Recursive-walk cap (/api/fs/walk): stop collecting after this many entries so
+# a search over a huge tree stays bounded. Module-level so tests can shrink it.
+WALK_MAX_ENTRIES = 20000
+# Directories never descended into by the walk (nor emitted as entries): heavy,
+# machine-managed trees that only add noise to a file search.
+WALK_IGNORE_DIRS = {"node_modules", "__pycache__", "venv"}
 
 
 def _error(message: str, status: int = 400) -> JSONResponse:
@@ -187,8 +146,8 @@ def _resolve_name(name):
     if name.startswith("_"):
         return None, (
             f"invalid template name: {name!r} — the '_' prefix is reserved "
-            "for shell sentinel modes (SPEC PT-12) and cannot be used in "
-            "the registry"
+            "for shell sentinel modes (SPEC PT-12); the only referenceable "
+            "sentinel is '_render'"
         )
     user = os.path.join(USER_TEMPLATES_DIR, name, "template.html")
     if os.path.isfile(user):
@@ -205,22 +164,22 @@ def _icon_for(template_path: str):
     return icon if os.path.isfile(icon) else None
 
 
-def _resolve_mode_list(names, allow_sentinel=False):
+def _resolve_mode_list(names):
     """Resolve an ordered list of template names into `templates` stat
     entries (SPEC PT-8). Per-entry validation (SPEC CT-6): a name that can't
     resolve is dropped; `error` is the first dropped name's message.
 
-    `allow_sentinel` is set only when `names` is a built-in list (SPEC
-    PT-12): a `_`-prefixed name there is a shell sentinel and is emitted as
+    A known sentinel (SPEC PT-12, `KNOWN_SENTINELS`) is emitted as
     `{"mode": name, "path": None, "icon": None}` without touching the
-    filesystem. When False (registry-resolved names), a `_`-prefixed name
-    falls through to `_resolve_name`, which rejects it — the sentinel
-    namespace is shell-owned, not user-addressable (CT-4/CT-6).
+    filesystem — referenceable from the built-in and the user registry alike
+    (D73). Any other `_`-prefixed name falls through to `_resolve_name`,
+    which rejects it: the rest of the sentinel namespace stays shell-owned
+    (CT-6).
     """
     entries = []
     error = None
     for name in names:
-        if allow_sentinel and isinstance(name, str) and name.startswith("_"):
+        if name in KNOWN_SENTINELS:
             entries.append({"mode": name, "path": None, "icon": None})
             continue
         path, err = _resolve_name(name)
@@ -232,53 +191,98 @@ def _resolve_mode_list(names, allow_sentinel=False):
     return entries, error
 
 
-def _user_names_for(filename: str, builtin_names: list):
-    """Resolve the registry-configured template name list for filename
-    against ~/.fused-render/registry.json (SPEC §16, CT-10/CT-11).
-
-    Returns (names, disabled, error). names: ordered list[str] of (possibly
-    still-unresolved) template names, or None when no registry binding
-    applies at all. disabled: True when the matching value is `null` (SPEC
-    CT-2) — no template at all, no error. error: a parse/shape-level problem
-    (unreadable registry.json, non-dict, value not list/string/null, >1
-    "..." splice) — the caller falls back to the built-in list and surfaces
-    this as `template_error` so typos aren't silent. Read per call: a tiny
-    local file, and it makes registry edits apply on the next stat with no
-    restart and no cache to invalidate.
+def _load_registry(path: str, label: str):
+    """Read one registry file → (dict | None, error | None). Missing file is
+    a clean no-op (SPEC CT-5). Read per call: a tiny local file, and it makes
+    registry edits apply on the next stat with no restart and no cache to
+    invalidate — the built-in registry rides the same loader (D73), which
+    also gives editable installs live edits for free. `label` distinguishes
+    the two files in errors (both basenames are registry.json).
     """
     try:
-        with open(USER_REGISTRY, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             registry = json.load(f)
     except FileNotFoundError:
-        return None, False, None
+        return None, None
     except (OSError, ValueError) as e:
-        return None, False, f"cannot read registry.json: {e}"
+        return None, f"cannot read {label}: {e}"
     if not isinstance(registry, dict):
-        return None, False, "registry.json must be a JSON object"
+        return None, f"{label} must be a JSON object"
+    return registry, None
 
-    # Longest-suffix match, case-insensitive. Dotted keys are what make
-    # compound extensions (".tar.gz") expressible — the built-in table can't.
-    lower = filename.lower()
-    best = None
-    for key in registry:
-        k = str(key).lower()
-        if k.startswith(".") and len(k) > 1 and lower.endswith(k):
-            if best is None or len(k) > len(best[0]):
-                best = (k, registry[key])
+
+def _key_segments(key, is_dir: bool):
+    """Parse a registry key into its match segments, or None when the key
+    cannot apply to this stat. Keys are dot-anchored suffix patterns (SPEC
+    CT-3): ".csv", compound ".xyz.json", wildcard ".*.json" — `*` matches
+    exactly one whole dot-segment, partial wildcards (".geo*") are invalid. A
+    trailing "/" marks a directory key (".zarr/", D73); dir keys match only
+    directories, others only files. A key of the wrong shape (no leading dot,
+    empty segment) never matches — same silent-ignore the no-leading-dot rule
+    always had.
+    """
+    key = str(key).lower()
+    dir_key = key.endswith("/")
+    if dir_key != is_dir:
+        return None
+    if dir_key:
+        key = key[:-1]
+    if not key.startswith(".") or len(key) < 2:
+        return None
+    segs = key[1:].split(".")
+    for seg in segs:
+        if not seg or ("*" in seg and seg != "*"):
+            return None
+    return segs
+
+
+def _match_registry(registry: dict, basename: str, is_dir: bool):
+    """Best-matching (key, value) for basename against registry keys, or
+    None. Longest-suffix semantics generalized to patterns (SPEC CT-3, D73):
+    a key with more segments beats one with fewer; at equal length, comparing
+    from the rightmost segment, a literal beats a `*` (`.xyz.json` >
+    `.*.json` > `.json`). A match needs a non-empty stem before the matched
+    suffix, so a dotfile named exactly like a key (a file literally called
+    ".json") does not match. Case-insensitive throughout.
+    """
+    fsegs = basename.lower().split(".")
+    best = None  # (n_segments, literal-mask right-to-left, key, value)
+    for key, value in registry.items():
+        ksegs = _key_segments(key, is_dir)
+        if ksegs is None or len(fsegs) <= len(ksegs):
+            continue
+        if not ".".join(fsegs[: -len(ksegs)]):
+            continue
+        tail = fsegs[-len(ksegs):]
+        if any(not (k == f or (k == "*" and f)) for k, f in zip(ksegs, tail)):
+            continue
+        rank = (len(ksegs), tuple(s != "*" for s in reversed(ksegs)))
+        if best is None or rank > best[0]:
+            best = (rank, key, value)
     if best is None:
-        return None, False, None
+        return None
+    return best[1], best[2]
 
-    ext, value = best
+
+def _names_from_value(key, value, builtin_names: list):
+    """Interpret one matched registry value (SPEC CT-2/CT-10/CT-11).
+
+    Returns (names, disabled, error). names: ordered list[str] of (possibly
+    still-unresolved) template names, or None when the value is unusable.
+    disabled: True when the value is `null` (CT-2) — no template at all, no
+    error. error: a shape-level problem (value not list/string/null, >1 "..."
+    splice) — surfaced as `template_error` so typos aren't silent.
+    """
     if value is None:
         return None, True, None
     if isinstance(value, str):
-        # String = exactly today's meaning: a single-mode list (D50).
+        # String = exactly a single-mode list (D50).
         return [value], False, None
     if isinstance(value, list):
         # "..." splices the built-in list in place (CT-11); >1 is invalid.
         splice_count = sum(1 for entry in value if entry == "...")
         if splice_count > 1:
-            return None, False, f"{ext}: more than one '...' splice in template list"
+            return None, False, f"{key}: more than one '...' splice in template list"
         if splice_count == 0:
             return list(value), False, None
         explicit = {e for e in value if isinstance(e, str) and e != "..."}
@@ -291,51 +295,59 @@ def _user_names_for(filename: str, builtin_names: list):
             else:
                 names.append(entry)
         return names, False, None
-    return None, False, f"{ext}: registry value must be a list, string, or null"
+    return None, False, f"{key}: registry value must be a list, string, or null"
 
 
 def _templates_for(path: str, is_dir: bool):
     """Returns (templates: list[dict], template_error: str|None) — SPEC PT-8.
 
-    Precedence: user registry (longest suffix) > built-in table. .html/.htm
-    skip the registry entirely (SPEC §4/CT-4, D62) — renderable HTML is the
-    core semantic, so their mode list is hardcoded — but still resolve
-    through the ordinary built-in-list path like any other extension,
-    `allow_sentinel=True` so `_render` emits without touching the fs.
-
-    Directories resolve against `DIR_TEMPLATES` by the extension on their
-    basename (a `.zarr` store), through the same `_resolve_mode_list` path so
-    entries come out identically shaped. Directory templates are
-    PACKAGE-ONLY: the user registry (`_user_names_for`) is a per-file suffix
-    match — it walks a filename against dotted registry keys — and there is no
-    coherent way for such a file-suffix rule to bind a directory, so the
-    registry deliberately does not apply here (D65). A directory with no
-    DIR_TEMPLATES match returns empty, i.e. the plain listing view.
+    Both binding tables are registries in one format (D73): the built-in
+    templates/registry.json and the user ~/.fused-render/registry.json, both
+    resolved by `_match_registry` — dot-anchored suffix patterns with `*`
+    wildcard segments and trailing-"/" directory keys. Directories therefore
+    resolve exactly like files (a `.zarr` store matches the ".zarr/" key),
+    and the user registry binds them too (D73 revises D65). Precedence: any
+    user match > built-in match (CT-3). .html/.htm are ordinary keys (D73
+    revises CT-4): the user can rebind them; "..." keeps `_render` reachable.
+    A path with no match in either registry returns empty — unmapped file, or
+    the plain listing view for a directory.
     """
-    if is_dir:
-        ext = os.path.splitext(os.path.basename(os.path.normpath(path)))[1].lower()
-        return _resolve_mode_list(DIR_TEMPLATES.get(ext, []))
-    filename = os.path.basename(path)
-    ext = os.path.splitext(filename)[1].lower()
-    builtin_names = TEMPLATES.get(ext, [])
-    if ext in (".html", ".htm"):
-        return _resolve_mode_list(builtin_names, allow_sentinel=True)
+    basename = os.path.basename(os.path.normpath(path))
 
-    names, disabled, err = _user_names_for(filename, builtin_names)
+    builtin_names = []
+    builtin_reg, error = _load_registry(BUILTIN_REGISTRY, "built-in registry.json")
+    if builtin_reg is not None:
+        matched = _match_registry(builtin_reg, basename, is_dir)
+        if matched is not None:
+            # Splices are meaningless in the built-in registry (nothing to
+            # splice into) — "..." there expands to nothing, harmless.
+            names, disabled, err = _names_from_value(*matched, builtin_names=[])
+            error = error or err
+            if names and not disabled:
+                builtin_names = names
+
+    user_names, disabled = None, False
+    user_reg, user_err = _load_registry(USER_REGISTRY, "registry.json")
+    if user_reg is not None:
+        matched = _match_registry(user_reg, basename, is_dir)
+        if matched is not None:
+            user_names, disabled, err = _names_from_value(*matched, builtin_names)
+            user_err = user_err or err
+    error = error or user_err
+
     if disabled:
-        return [], None
-    if names is None:
-        # No registry binding, or a parse/shape-level problem — either way
-        # fall back to the plain built-in list (CT-6); `err` is None in the
-        # former case, set in the latter.
-        entries, _ = _resolve_mode_list(builtin_names, allow_sentinel=True)
-        return entries, err
+        return [], error
+    if user_names is None:
+        # No user binding, or a parse/shape-level problem — either way fall
+        # back to the built-in list (CT-6); `error` carries the problem.
+        entries, entry_err = _resolve_mode_list(builtin_names)
+        return entries, error or entry_err
 
-    entries, entry_err = _resolve_mode_list(names)
-    error = err or entry_err
+    entries, entry_err = _resolve_mode_list(user_names)
+    error = error or entry_err
     if not entries:
         # The user's value resolved to nothing at all -> built-in fallback.
-        entries, _ = _resolve_mode_list(builtin_names, allow_sentinel=True)
+        entries, _ = _resolve_mode_list(builtin_names)
     return entries, error
 
 
@@ -500,6 +512,48 @@ def create_app(start_dir: str) -> FastAPI:
         entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
         return {"path": path, "entries": entries}
 
+    @app.get("/api/fs/walk")
+    def api_fs_walk(path: str):
+        # Recursive listing of a directory subtree, for the explorer search
+        # (flat, ranked client-side). Prunes hidden entries (leading `.`) and
+        # WALK_IGNORE_DIRS from descent, skips hidden files, and never follows
+        # symlinks. Capped at WALK_MAX_ENTRIES; `rel` is posix-relative to
+        # `path`. Unreadable entries are skipped silently (matches /api/fs/list).
+        if not os.path.isdir(path):
+            return _error(f"not a directory: {path}", status=400)
+        entries = []
+        truncated = False
+        for root, dirs, files in os.walk(path, followlinks=False):
+            # Mutating dirs in place both drops them from descent and, since we
+            # emit from the (already pruned) list, keeps them out of the results.
+            dirs[:] = sorted(
+                d for d in dirs if not d.startswith(".") and d not in WALK_IGNORE_DIRS
+            )
+            batch = [(d, True) for d in dirs] + [
+                (f, False) for f in sorted(files) if not f.startswith(".")
+            ]
+            for name, is_dir in batch:
+                full = os.path.join(root, name)
+                try:
+                    st = os.stat(full)
+                except OSError:
+                    continue  # unreadable entries skipped silently
+                rel = os.path.relpath(full, path).replace(os.sep, "/")
+                entries.append(
+                    {
+                        "rel": rel,
+                        "is_dir": is_dir,
+                        "size": None if is_dir else st.st_size,
+                        "mtime": st.st_mtime,
+                    }
+                )
+                if len(entries) >= WALK_MAX_ENTRIES:
+                    truncated = True
+                    break
+            if truncated:
+                break
+        return {"path": path, "entries": entries, "truncated": truncated}
+
     @app.get("/api/fs/raw")
     def api_fs_raw(path: str):
         if not os.path.isfile(path):
@@ -507,33 +561,78 @@ def create_app(start_dir: str) -> FastAPI:
         media_type, _ = mimetypes.guess_type(path)
         return FileResponse(path, media_type=media_type or "application/octet-stream")
 
-    @app.get("/api/fs/events")
-    async def api_fs_events(path: list[str] = Query(default=[])):
-        # SSE change feed (SPEC §13.2). Async def on purpose: a sync def would pin
-        # a threadpool thread per open view for the lifetime of the page. Polling
-        # stat every 200ms is dependency-free and cheap at local scale; upgrading
-        # to real FS events later is internal to this endpoint.
+    @app.websocket("/api/fs/events")
+    async def api_fs_events(ws: WebSocket):
+        # File-change feed (SPEC §13.2), WebSocket not SSE (D74): every rendered
+        # pane holds one of these open for the lifetime of the page, and SSE
+        # rides ordinary HTTP/1.1 — Chrome caps those at 6 per origin, so a
+        # 6-pane panel pinned every socket and all later fetches (/api/run!)
+        # queued browser-side forever. WebSockets live in a separate, much
+        # larger connection pool. Polling stat every 200ms is dependency-free
+        # and cheap at local scale; upgrading to real FS events later is
+        # internal to this endpoint. Messages are JSON: {path, mtime} on
+        # change, {keepalive: true} every 15 s (WF-3).
+        await ws.accept()
+        paths = ws.query_params.getlist("path")
+
         def mtime_of(p):
             try:
                 return os.stat(p).st_mtime
             except OSError:
                 return None
 
-        async def stream():
-            last = {p: mtime_of(p) for p in path}
+        async def poll():
+            last = {p: mtime_of(p) for p in paths}
             ticks = 0
             while True:
                 await asyncio.sleep(0.2)
-                for p in path:
+                for p in paths:
                     m = mtime_of(p)
                     if m != last[p]:
                         last[p] = m
-                        yield f"data: {json.dumps({'path': p, 'mtime': m})}\n\n"
+                        await ws.send_text(json.dumps({"path": p, "mtime": m}))
                 ticks += 1
-                if ticks % 75 == 0:  # 75 × 200ms = keepalive every 15 s (WF-3)
-                    yield ": keepalive\n\n"
+                if ticks % 75 == 0:
+                    await ws.send_text(json.dumps({"keepalive": True}))
 
-        return StreamingResponse(stream(), media_type="text/event-stream")
+        poller = asyncio.create_task(poll())
+        try:
+            # Drain the receive side purely to learn about disconnect; the
+            # poll loop alone would only notice on its next send.
+            while True:
+                msg = await ws.receive()
+                if msg["type"] == "websocket.disconnect":
+                    break
+        except WebSocketDisconnect:
+            pass
+        finally:
+            poller.cancel()
+
+    @app.post("/api/fs/reveal")
+    def api_fs_reveal(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+        # Open the path in the OS file manager (Finder / Explorer / xdg).
+        # Browsers block file:// navigation from http pages, so the breadcrumb's
+        # "Open in Finder" button goes through the server, which is local-only.
+        # A file is revealed selected inside its folder; a directory is opened.
+        guard = _require_fused(x_fused)
+        if guard is not None:
+            return guard
+
+        path = body.get("path")
+        if not path or not os.path.isabs(path):
+            return _error("'path' must be an absolute filesystem path")
+        if not os.path.exists(path):
+            return _error(f"no such path: {path}", status=404)
+
+        is_dir = os.path.isdir(path)
+        if sys.platform == "darwin":
+            cmd = ["open", path] if is_dir else ["open", "-R", path]
+        elif os.name == "nt":
+            cmd = ["explorer", path] if is_dir else ["explorer", "/select," + path]
+        else:
+            cmd = ["xdg-open", path if is_dir else os.path.dirname(path)]
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return JSONResponse({"ok": True})
 
     @app.post("/api/fs/write")
     def api_fs_write(body: dict = Body(...), x_fused: str | None = Header(default=None)):

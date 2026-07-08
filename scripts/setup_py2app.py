@@ -44,13 +44,21 @@ if not ICONFILE or not os.path.isfile(ICONFILE):
 
 APP = [os.path.join(SCRIPT_DIR, "app_entry.py")]
 
-# Extensions the built-in template registry (server.py TEMPLATES) previews.
-# Kept in sync by hand — see ARCHITECTURE.md §7 for the source of truth.
+# Extensions the built-in template registry (server.py TEMPLATES) previews,
+# kept in sync by hand (see ARCHITECTURE.md §7), plus geo/sci extras with no
+# built-in key — users can bind those via the runtime template registry, and
+# extra Finder associations are harmless at Alternate rank.
 _PREVIEWABLE_EXTENSIONS = [
     "html", "htm", "csv", "tsv", "json", "geojson", "md", "txt", "log",
     "yaml", "yml", "toml", "py", "js", "ts", "sh", "css",
     "png", "jpg", "jpeg", "gif", "webp", "svg", "xlsx", "pdf",
     "mp4", "mov", "m4v", "webm", "mp3", "wav", "m4a", "ogg", "flac",
+    "tif", "tiff", "geotiff",  # GeoTIFF rasters (server.py "geotiff" template)
+    "nc", "nc4", "cdf",  # NetCDF (server.py "netcdf" template)
+    # geo/sci formats with no built-in template key — bindable via the
+    # runtime template registry:
+    "gpkg", "shp", "fgb", "kml", "kmz", "gpx", "las", "laz",
+    "pmtiles", "mbtiles", "zarr", "h5", "grib2", "jp2",
 ]
 
 DOCUMENT_TYPES = [

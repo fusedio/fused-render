@@ -15,7 +15,8 @@ export interface ModeSwitcherEntry<M extends string> {
 
 // Human-readable tooltip for a mode name: the "_render" sentinel reads as
 // "Rendered", ordinary mode names are capitalized ("code" → "Code").
-function modeTitle(mode: string): string {
+// Exported for PaneModeMenu (pane/tab chrome shares the naming).
+export function modeTitle(mode: string): string {
   if (mode === "_render") return "Rendered";
   return mode.charAt(0).toUpperCase() + mode.slice(1);
 }
