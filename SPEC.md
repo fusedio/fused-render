@@ -460,63 +460,25 @@ Goal: users replace or add preview templates using the **exact same mechanism** 
 - **CT-8** No new pipeline: stat carries the resolved user templates inside the ordinary `templates` list (PT-8); the preview iframe renders the selected mode via `/render` with `_file` exactly like a built-in (PT-2), and the switcher (PT-10) shows user modes indistinguishably from built-ins. M4 auto-reload (§13) covers template development for free — the rendered page watches its own html and every `runPython` file, so editing `template.html` or a reader live-reloads open previews. Registry edits apply on the next stat (navigate/refresh); open previews do not watch `registry.json`.
 - **CT-9** **Authoring skill:** a repo skill `skills/fused-render-custom-templates/` covers folder layout, registry format, and registration workflow only; it **delegates all html/py authoring guidance to `skills/fused-render-authoring/`** (no duplicated instruction — one source for the runtime API and template patterns).
 
-## 17. Annotation Mode — URL-Stored Comments (M9)
+## 17. Annotation — An Ordinary View Template (M9, superseded)
 
-Goal: comment on rendered output. An annotate overlay on any preview: hovering highlights DOM elements, clicking attaches a comment thread to that element (or a free pin for page-level notes). Comments are **pure state stored in the URL** — no server persistence, no agent involvement. Behavior mirrors the flow/fused canvas-comments UX, adapted from canvas nodes to DOM elements.
+Annotation shipped first as an app feature — an orthogonal `_annotate=1` overlay
+injected into every view (AN-1…AN-23, M9) — and was then **rebuilt as an
+ordinary view template**, the same pattern as `templates/claude/`:
+`templates/annotate/` is a self-contained template.html, bound in registry.json
+as a trailing mode on annotatable extensions, swappable/shadowable like any
+template (PT-6). It renders the file's normal view in a same-origin iframe (a
+`view` param picks WHICH mode is being annotated) and implements the whole
+experience itself — hover highlight, click-to-comment pins, sidebar,
+resolve/delete. Comments live in an ordinary `comments` template param (synced
+to the shell URL by the runtime — bookmarkable, shareable), stamped with the
+view they were made on so anchors never cross-resolve between views.
 
-### 17.1 Mode & entry
-
-- **AN-1** Annotate is an **orthogonal toggle**, not a `_mode` value — `_mode` belongs to template-mode selection (PT-9, M8). State = reserved **`_annotate=1`** shell param (absent = off); bookmarkable, key deleted when toggled off. Annotate therefore overlays **whichever template mode is active** (rendered html, code editor, parquet table, …).
-- **AN-2** The preview header gains a **comment-bubble toggle button** (inline SVG + tooltip) next to the mode switcher, same icon-button family. Shown for every templated preview — even single-mode files, where the mode switcher itself is hidden (PT-10 renders nothing for one entry); the fallback metadata view has none.
-- **AN-3** The Annotate icon carries a **count badge** (number of open comments) whenever `_comments` is non-empty — visible whether or not annotate is on.
-- **AN-4** With annotate on, the shell renders the active mode's **same iframe** plus `_annotate=1` on the iframe URL; the server injects the overlay script only then, and the overlay activates off the flag on its own window. The overlay lives entirely in the injected layer (same pattern as auto-reload §13.3), so view, embed, panel panes, tabs, and standalone `/render` pages all get identical behavior with zero per-surface wiring.
-
-### 17.2 Data model & storage
-
-- **AN-5** Comments live in the reserved **`_comments`** shell query param: a URL-encoded JSON array of thread objects (flow's schema minus agent fields — single-user, no author):
-
-```json
-[{
-  "id": "<uuid>",
-  "content": "root message",
-  "replies": [{ "id": "<uuid>", "content": "…", "createdAt": 0 }],
-  "status": "open",
-  "createdAt": 0, "updatedAt": 0, "resolvedAt": 0,
-  "anchorId": "chart-1",
-  "anchorPath": "div:nth-of-type(2)>p:nth-of-type(1)",
-  "x": 0, "y": 0
-}]
-```
-
-- **AN-6** **Anchor forms, mutually exclusive, precedence `anchorId` > `anchorPath` > `x`/`y`:** `anchorId` = the clicked element's `id` attribute (used when present); `anchorPath` = structural path of `tag:nth-of-type(n)` segments from `body` (id-less elements); `x`/`y` = document coordinates for a free/page-level pin (click on empty body area). The source file is **never mutated** — no id injection.
-- **AN-7** **Budget:** ~6 KB soft cap on the serialized param. On overflow, drop oldest **resolved** threads first; open threads are never dropped. If all remaining threads are open and the cap is still exceeded, the new write is rejected with a visible message in the overlay. (URL is the *only* store, so dropping = deleting — hence resolved-only.)
-- **AN-8** The `_` prefix makes `_comments` invisible to `fused.params` (PR-6) and **segment-local inside `_layout`** (LM-2) — per-pane comments in panel/tab mode work with zero codec changes.
-- **AN-9** The runtime writes `_comments` through its **internal** shell-URL replaceState channel (+ `fused:urlchange` dispatch). The public `fused.params.set` guard (PR-6) still rejects `_` keys from page code — user HTML cannot forge or clobber comments. **Target window = the direct parent shell** (the window whose preview iframe this is), NOT the runtime's LM-7 topmost-ancestor climb: `_comments` is pane-local shell state like `_mode` (LM-3), so in panel/tab mode it must land on the pane's own embed URL, where the panel's ordinary sync captures it segment-local into `_layout` (AN-8). In plain view/embed mode parent === top, so behavior is identical; standalone `/render` pages target themselves.
-
-### 17.3 Interaction
-
-- **AN-10** Entering annotate mode: crosshair cursor; hovering **outlines** the hovered element. Click an element → inline draft popover, auto-focused. Enter submits, Shift+Enter newlines, Escape cancels the draft. Click on empty body area → free pin at document coordinates.
-- **AN-11** Pins render at the anchor's top-right corner, positioned in document coordinates (they scroll with content). Glyph = reply count; ✓ when resolved.
-- **AN-12** Click a pin → **thread popover**: root + chronological replies with relative times, reply input (hidden when resolved), inline edit per message, Resolve/Reopen and Delete in the footer. Click-outside closes the popover. Escape closes popover first, then exits annotate mode.
-- **AN-13** Pins and overlay are visible **only in annotate mode** — Rendered stays clean. The badge (AN-3) is the only cross-mode signal.
-- **AN-14** **Detached anchors** (an `anchorPath` that no longer resolves, or a vanished `anchorId` after the file was edited): the pin docks into a small tray at the viewport corner listing the thread; it re-attaches automatically on a later render where the anchor resolves again. Comments are never silently lost.
-
-### 17.4 Module
-
-- **AN-15** New **`fused_render/static/annotate.js`**, injected alongside the runtime only when `_annotate=1` (normal pages pay zero cost). `views/preview.js`: icon toggle group + third mode plumbing. `shell.css`: icons, badge, outline/pin/popover styles. Server: the conditional injection line only.
-
-### 17.5 Selection anchors — code editor (AN-16…AN-23)
-
-Element anchoring makes no sense inside a text editor. On editor surfaces, annotate mode anchors comments to **text selections** instead (Cursor-style: click-drag a range, a draft pops up at the selection).
-
-- **AN-16** **Surfaces:** `code_template.html` (every extension it serves). Rendered markdown/text/other templates keep element anchors (§17.2); selection-anchoring for rendered HTML text is a follow-up. The mechanism is a generic adapter (AN-17), not editor-specific code in annotate.js.
-- **AN-17** **Adapter API:** when active, annotate.js exposes `window.__fusedAnnotate.registerAdapter(adapter)`. Registering disables the element-mode UI (hover highlight, pointer-sequence suppression, click-capture, element pins and anchor resolution) while keeping the core: data layer + URL channel + budget (AN-5/7/9), draft and thread popovers, tray, toast. Core hands the adapter `{ getComments(), onChange(cb), openDraftAt(clientX, clientY, anchorFields), openThread(id, clientX, clientY), setDetached(ids) }`; the adapter owns anchor rendering and resolution and calls back into the core for all UI/data operations.
-- **AN-18** **Anchor form (new, AN-6 extended):** `selFrom`/`selTo` = `{line, ch}` (1-based line, 0-based column) plus `quote` = the selected text, capped at 120 chars. Mutually exclusive with the other forms; precedence `sel > anchorId > anchorPath > x/y`.
-- **AN-19** **Interaction:** in annotate mode the editor is **read-only** (annotate is a review mode; keeps coordinates stable and sidesteps autosave interplay). Completing a non-empty selection (mouse release or keyboard) pops the draft near the selection end; Enter saves, Escape cancels; collapsing the selection cancels the pending draft.
-- **AN-20** **Rendering:** CM6 range decorations tint each comment's range (muted variant when resolved) — virtual scrolling handled natively by CM. Clicking inside a decorated range opens the thread popover at the click point.
-- **AN-21** **Re-resolution:** on load, if the doc slice at the stored range still matches `quote` → attached. Else search the doc for `quote` (first match) → re-anchor in memory (URL rewritten only on the next actual write). No match → detached tray (AN-14 behavior).
-- **AN-22** Edits made outside annotate mode may shift ranges; comments re-resolve by quote on the next annotate session. Accepted drift — the quote is the truth, the line/ch pair is a hint.
-- **AN-23** The vendored CM bundle (`scripts/vendor-codemirror/entry.js`) gains `Decoration`, `StateField`, `StateEffect`, `RangeSet` exports; rebuilt via `build.sh` (Node 22).
+Rationale: annotation is a review layer, not app chrome — as a template it
+needs no shell code, no server injection, and users can replace or extend it
+by dropping a folder into `~/.fused-render/annotate/`. The `_annotate` render
+param, the header toggle (AN-2/AN-3), the injected `static/annotate.js`, and
+the code template's selection adapter are gone.
 
 ## 18. Export — Portable Bundles for Hosted Serving (M10)
 
