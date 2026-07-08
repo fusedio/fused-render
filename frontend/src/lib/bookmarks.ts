@@ -8,6 +8,7 @@ export interface Bookmark {
   name: string;
   url: string;
   created_at: number;
+  icon?: string; // single emoji; absent -> default ★ glyph
   type?: undefined; // discriminant vs BookmarkFolder
 }
 
@@ -206,6 +207,25 @@ export function updateBookmarkUrl(id: string, url: string): void {
   }
   if (bookmark) {
     bookmark.url = url;
+    save(items);
+  }
+}
+
+// Set or clear (icon = null) a bookmark's emoji icon. Bookmarks only —
+// folders keep the themed folder glyph.
+export function setBookmarkIcon(id: string, icon: string | null): void {
+  const items = loadBookmarks();
+  let bookmark = items.find((it) => it.id === id && !isFolder(it)) as Bookmark | undefined;
+  if (!bookmark) {
+    for (const item of items) {
+      if (!isFolder(item)) continue;
+      bookmark = item.children.find((b) => b.id === id);
+      if (bookmark) break;
+    }
+  }
+  if (bookmark) {
+    if (icon === null) delete bookmark.icon;
+    else bookmark.icon = icon;
     save(items);
   }
 }
