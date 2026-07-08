@@ -42,6 +42,14 @@
   .__fa_sel_hover {
     background: color-mix(in srgb, #E5FF44 38%, transparent);
   }
+  /* Pending draft range: keeps the selection visibly marked while the comment
+     composer is open (focus moves to the textarea, so the native selection
+     highlight would otherwise vanish) — mirrors the code editor, where CM's
+     own selection layer persists. */
+  .__fa_sel_pending {
+    background: color-mix(in srgb, #E5FF44 30%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, #E5FF44 70%, transparent);
+  }
 </style>
 </head>
 <body>
@@ -118,8 +126,29 @@
     // Rebuild the <pre> with mark spans from current comment data. Boundary
     // segmentation handles overlapping ranges (a segment under several
     // comments carries the topmost id for click/hover).
+    // While the composer is open the draft's range stays visibly marked (the
+    // textarea steals focus, killing the native selection highlight).
+    let pendingRange = null;
+    let pendingWatch = null;
+    function setPendingRange(r) {
+      pendingRange = r;
+      clearInterval(pendingWatch);
+      if (r) {
+        // The core has no draft-close callback; a light poll clears the mark
+        // the moment the composer goes away (submit, cancel, Escape).
+        pendingWatch = setInterval(() => {
+          if (!annCore || !annCore.isDraftOpen()) {
+            setPendingRange(null);
+            rebuildDecorations();
+          }
+        }, 250);
+      }
+      return r;
+    }
+
     function rebuildDecorations() {
       if (!preEl || !annCore || rawText == null) return;
+      if (pendingRange && !annCore.isDraftOpen()) pendingRange = null;
       const ranges = [];
       const detached = [];
       for (const c of annCore.getComments()) {
@@ -132,17 +161,22 @@
         }
       }
       resolvedRanges = ranges;
+      const all = pendingRange
+        ? ranges.concat([{ from: pendingRange.from, to: pendingRange.to, id: "", pending: true }])
+        : ranges;
       const bounds = new Set([0, rawText.length]);
-      for (const r of ranges) { bounds.add(r.from); bounds.add(r.to); }
+      for (const r of all) { bounds.add(r.from); bounds.add(r.to); }
       const cuts = [...bounds].sort((a, b) => a - b);
       let html = "";
       for (let i = 0; i + 1 < cuts.length; i++) {
         const a = cuts[i], b = cuts[i + 1];
-        const covering = ranges.filter((r) => r.from <= a && b <= r.to);
+        const covering = all.filter((r) => r.from <= a && b <= r.to);
         const piece = escapeHtml(rawText.slice(a, b));
         if (covering.length) {
           const top = covering[covering.length - 1];
-          html += `<span class="${top.resolved ? "__fa_sel_resolved" : "__fa_sel"}" data-fa-id="${escapeHtml(top.id)}">${piece}</span>`;
+          const cls = top.pending ? "__fa_sel_pending" : top.resolved ? "__fa_sel_resolved" : "__fa_sel";
+          const idAttr = top.id ? ` data-fa-id="${escapeHtml(top.id)}"` : "";
+          html += `<span class="${cls}"${idAttr}>${piece}</span>`;
         } else {
           html += piece;
         }
@@ -175,6 +209,10 @@
       };
       const rect = range.getBoundingClientRect();
       annCore.openDraftAt(rect.right + 4, rect.bottom + 4, anchorFields);
+      // Keep the selection visibly marked while the composer is open — the
+      // textarea takes focus and the native highlight would vanish (AN-41).
+      setPendingRange({ from, to });
+      rebuildDecorations();
     }
 
     let hoveredFaId = null;

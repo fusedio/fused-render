@@ -1517,11 +1517,24 @@
     return out;
   }
 
-  // Document-coord position of a thread's timestamp marker: on the video's
-  // bottom edge at the t/duration fraction of the painted content box (AN-40).
+  // Document-coord position of a thread's timestamp marker. Preferred home is
+  // the surface's own seek track — an element marked data-fa-timeline (the
+  // media template's custom transport) — so markers read as part of the
+  // timeline, Frame.io-style. Without one, fall back to the video's bottom
+  // edge at the t/duration fraction of the painted content box (AN-40).
   function markPoint(thread, el) {
-    const b = imgContentBox(el);
     const f = Math.min(1, Math.max(0, thread.t / el.duration));
+    const track = document.querySelector("[data-fa-timeline]");
+    if (track) {
+      const tr = track.getBoundingClientRect();
+      if (tr.width > 0) {
+        return {
+          x: tr.left + f * tr.width + window.scrollX,
+          y: tr.top + tr.height / 2 + window.scrollY,
+        };
+      }
+    }
+    const b = imgContentBox(el);
     return {
       x: b.left + f * b.width + window.scrollX,
       y: b.top + b.height - 7 + window.scrollY,
@@ -1798,7 +1811,19 @@
     }
     const el = resolveElement(t);
     if (el) {
-      el.scrollIntoView({ block: "center", behavior: "smooth" });
+      // Pixel threads scroll to the PIN, not the element center: a PDF page
+      // canvas is taller than the viewport, so centering the ELEMENT can put
+      // the pin itself above the fold (AN-40).
+      if (t.iu !== undefined && t.iv !== undefined && mediaIntrinsic(el)) {
+        const p = pinPoint(t, el);
+        window.scrollTo({
+          top: Math.max(0, p.y - window.innerHeight / 2),
+          left: Math.max(0, p.x - window.innerWidth / 2),
+          behavior: "smooth",
+        });
+      } else {
+        el.scrollIntoView({ block: "center", behavior: "smooth" });
+      }
       // Video reveal seeks to the commented frame (AN-37) — paused, so the
       // viewer lands on the exact moment under discussion.
       if (el.tagName === "VIDEO" && t.t !== undefined) {
