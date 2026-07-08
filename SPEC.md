@@ -592,6 +592,20 @@ the product gains network access.
   `rawUrl`/`readFile` asset. Export blockers come back in the same response
   and **disable Deploy** with the full list — an unexportable page reads as
   "fix these" up front, never as a failed deploy.
+- **DP-2b** Login guidance, before and after the click.
+  `GET /api/deploy/config` carries `fused_logged_in` — presence of the fused
+  CLI's own control-plane credentials file
+  (`~/.openfused/fused-cloud-credentials.json`,
+  `OPENFUSED_FUSED_CLOUD_CREDENTIALS` honored). Presence-only by design: an
+  expired-but-refreshable token still works (the CLI refreshes silently), so
+  the CLI stays the authority at action time. With a managed `fused` env
+  selected and no credentials on disk, the modal warns **before** the click,
+  naming `<setup_cli> cloud login` (a one-time browser sign-in). After a
+  failed action, CLI errors that name `fused cloud login` are suffixed with
+  the packaged app's real wrapper path (`_cli_error` + `_setup_cli_hint`) —
+  plain `fused` doesn't resolve inside the .app, so the instruction must be
+  runnable as printed. The no-envs guidance states that `cloud setup` opens
+  a browser sign-in first.
 
 ### 19.2 The fused CLI seam
 
@@ -674,7 +688,11 @@ the product gains network access.
   `share list` → `share repoint <token>` (stable URL); revoked tombstone →
   `share recreate --same-token` then repoint (a failed repoint best-effort
   re-revokes, so a deliberately taken-down link never comes back silently live
-  with old content); token absent from the list entirely (e.g. after an
+  with old content — and when that compensating revoke lands, a pointer that
+  stale-ly read "active" is persisted as revoked, so the preview dot never
+  advertises the now-dead link; when compensation fails, the last-known
+  pointer state stands and the raised error says a manual revoke may be
+  needed); token absent from the list entirely (e.g. after an
   `infra teardown`) → fresh `create`. Deploying to a **different** env always
   creates fresh there and repoints the pointer — the old env's mount stays
   live, and the modal says so inline.
@@ -713,7 +731,9 @@ the product gains network access.
   deployments on <env>" and says so, since most rows are typically *other*
   apps'/machines' mounts — joined back to the local page that deployed it via
   the pointer store (`page: null`, rendered "not from this app"), local pages
-  first, live before revoked. `share list` returns no URLs on either backend;
+  first, live before revoked. An expanded list reloads after a Deploy/Revoke
+  performed in the same modal (never showing a status the user just changed),
+  as well as on env switch and manual Refresh. `share list` returns no URLs on either backend;
   each mount's URL is the pointer's recorded one, else **derived from the
   env's base URL**: every mount on one env serves as `<base>/<token>`
   (share-links.md §6), so any recorded absolute URL whose path ends in its

@@ -318,15 +318,42 @@ def _backend_of(env_name: str) -> str | None:
     return None
 
 
+def fused_cloud_logged_in() -> bool:
+    """Whether the fused CLI's control-plane credentials exist on disk.
+
+    Presence of the credentials file the CLI itself reads/writes
+    (`fused cloud login` → ~/.openfused/fused-cloud-credentials.json, same
+    env override). Presence-only, deliberately: an expired-but-refreshable
+    token still works (the CLI refreshes silently), and validating deeper
+    would duplicate the CLI's own logic — this signal exists so the modal can
+    warn BEFORE a deploy click when a managed env is targeted with no login
+    at all; the CLI stays the authority at action time.
+    """
+    path = os.environ.get("OPENFUSED_FUSED_CLOUD_CREDENTIALS") or os.path.expanduser(
+        "~/.openfused/fused-cloud-credentials.json"
+    )
+    return os.path.isfile(path)
+
+
 # -- `fused share …` execution -------------------------------------------------
 
 
 def _cli_error(stderr: str, fallback: str) -> str:
     """Last non-empty stderr line with click's `Error: ` prefix stripped — the
-    CLI's messages already name the fix, so they reach the modal verbatim."""
+    CLI's messages already name the fix, so they reach the modal verbatim.
+
+    One adjustment: login errors say `fused cloud login`, which doesn't
+    resolve inside the packaged app (no `fused` on PATH) — when the bundled
+    wrapper is the setup CLI, its real path is appended so the instruction is
+    runnable as printed.
+    """
     lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
     message = lines[-1] if lines else fallback
-    return message.removeprefix("Error: ")
+    message = message.removeprefix("Error: ")
+    setup_cli = _setup_cli_hint()
+    if setup_cli != "fused" and "fused cloud login" in message:
+        message += f" (in this app: {setup_cli} cloud login)"
+    return message
 
 
 def _child_env(cli: FusedCli, env_name: str) -> dict[str, str]:
@@ -532,10 +559,25 @@ def deploy_page(page: str, env_name: str) -> dict:
                     # The revive succeeded but the publish didn't: best-effort
                     # re-revoke so a deliberately taken-down link doesn't come
                     # back silently live with its OLD content.
+                    compensated = False
                     try:
                         _run_share(env_name, ["revoke", token])
+                        compensated = True
                     except DeployError:
                         pass
+                    # When the compensating revoke landed, the mount is DOWN —
+                    # persist that on a pointer that (stale-ly) read "active"
+                    # (an out-of-band revoke this branch just discovered via
+                    # share list), or the preview dot keeps advertising a dead
+                    # link. When it did NOT land, the mount is live with its
+                    # old content and the last-known pointer state stands —
+                    # the raised error tells the user a manual revoke may be
+                    # needed.
+                    if compensated and same_env.get("status") != "revoked":
+                        set_deployment(
+                            page,
+                            {**same_env, "status": "revoked", "updated_at": _now_iso()},
+                        )
                     raise
             else:  # absent — e.g. after an infra teardown; nothing to revive
                 raw = _run_share(env_name, ["create", bundle, "--public"])
@@ -721,7 +763,14 @@ def _setup_cli_hint() -> str:
 
 @router.get("/api/deploy/config")
 def api_deploy_config():
-    return {"cli": cli_status(), "setup_cli": _setup_cli_hint(), **eligible_envs()}
+    return {
+        "cli": cli_status(),
+        "setup_cli": _setup_cli_hint(),
+        # Managed-backend login signal (DP-2b): lets the modal warn BEFORE a
+        # doomed deploy click when a `fused` env is targeted with no login.
+        "fused_logged_in": fused_cloud_logged_in(),
+        **eligible_envs(),
+    }
 
 
 @router.get("/api/deploy/status")

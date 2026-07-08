@@ -94,7 +94,9 @@ function PreviewSection({ preview }: { preview: DeployPreview }) {
 // joined server-side to the local pages that deployed them, so this doubles
 // as the "which of my files is deployed" view. Loaded lazily: a share list
 // shells the CLI (and may hit the network), so it only runs when expanded.
-function SharesSection({ env, fsPath }: { env: string; fsPath: string }) {
+// `refreshKey` bumps on every successful Deploy/Revoke in this modal so an
+// open list reflects the action instead of waiting for a manual Refresh.
+function SharesSection({ env, fsPath, refreshKey }: { env: string; fsPath: string; refreshKey: number }) {
   const [open, setOpen] = useState(false);
   const [mounts, setMounts] = useState<ShareMount[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -114,7 +116,9 @@ function SharesSection({ env, fsPath }: { env: string; fsPath: string }) {
     }
   };
 
-  // Re-fetch when the section is open and the env changes.
+  // Re-fetch when the section is open and the env changes — or after a
+  // Deploy/Revoke in this modal (refreshKey), so the table never shows a
+  // status the user just changed.
   useEffect(() => {
     if (open) void load();
     else {
@@ -122,7 +126,7 @@ function SharesSection({ env, fsPath }: { env: string; fsPath: string }) {
       setError(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, env]);
+  }, [open, env, refreshKey]);
 
   return (
     <div className="deploy-shares">
@@ -210,6 +214,8 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   const [selectedEnv, setSelectedEnv] = useState<string | null>(null);
   const [busy, setBusy] = useState<"deploy" | "revoke" | "install" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  // Bumped on every successful deploy/revoke so an open shares list reloads.
+  const [actionSeq, setActionSeq] = useState(0);
 
   const applyDeployment = (d: Deployment | null) => {
     setDeployment(d);
@@ -273,6 +279,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       applyDeployment(await deployPage(fsPath, env.name));
       setReconciled(true);
       setLive("active");
+      setActionSeq((s) => s + 1);
     } catch (e) {
       setActionError((e as Error).message);
     } finally {
@@ -286,6 +293,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     try {
       applyDeployment(await revokeDeployment(fsPath));
       setLive("revoked");
+      setActionSeq((s) => s + 1);
     } catch (e) {
       setActionError((e as Error).message);
     } finally {
@@ -379,9 +387,10 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             provisioned serving plane.
           </p>
           <p className="deploy-muted">
-            Create one in a terminal with <code>{config.setup_cli} cloud setup</code> (managed
-            backend) or <code>{config.setup_cli} env create</code>; environments are read from{" "}
-            <code>{config.envs_file}</code>.
+            Create one in a terminal with <code>{config.setup_cli} cloud setup</code> — it opens
+            a browser sign-in to Fused first, then creates the managed environment (or use{" "}
+            <code>{config.setup_cli} env create</code> for a self-hosted AWS one). Environments
+            are read from <code>{config.envs_file}</code>.
           </p>
           <button type="button" onClick={load}>
             Re-check
@@ -477,12 +486,21 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             an infra teardown) — deploying mints a fresh link with a <b>new URL</b>.
           </div>
         )}
+        {env?.backend === "fused" && !config.fused_logged_in && (
+          <div className="deploy-note">
+            You don't appear to be signed in to Fused — deploying to <b>{env.name}</b> will
+            fail until you run <code>{config.setup_cli} cloud login</code> in a terminal (a
+            one-time browser sign-in).
+          </div>
+        )}
         <div className="deploy-note deploy-muted">
           Deploys publish as a <b>public share link</b> — an unguessable URL; anyone with
           the link can open it.
         </div>
         {actionError && <div className="deploy-error">{actionError}</div>}
-        {selectedEnv !== null && <SharesSection env={selectedEnv} fsPath={fsPath} />}
+        {selectedEnv !== null && (
+          <SharesSection env={selectedEnv} fsPath={fsPath} refreshKey={actionSeq} />
+        )}
       </>
     );
   };

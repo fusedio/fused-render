@@ -149,6 +149,11 @@ export interface DeployConfig {
   // `… cloud setup`): plain "fused" normally; inside the packaged macOS app,
   // the absolute path of the bundle's own CLI wrapper.
   setup_cli: string;
+  // Whether the fused CLI's control-plane credentials exist on disk (a
+  // `fused cloud login` has happened). Presence-only — the CLI stays the
+  // authority at action time; this powers the before-the-click warning when
+  // a managed env is targeted with no login at all.
+  fused_logged_in: boolean;
 }
 
 // The thin per-page deployment pointer (~/.fused-render/deployments.json).

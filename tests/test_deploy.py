@@ -76,6 +76,10 @@ class Harness:
         envs_file.write_text(json.dumps(ENVS), encoding="utf-8")
         monkeypatch.setenv("OPENFUSED_ENVS_FILE", str(envs_file))
 
+        # Isolate the login signal from any real ~/.openfused credentials.
+        self.creds = tmp_path / "fused-cloud-credentials.json"
+        monkeypatch.setenv("OPENFUSED_FUSED_CLOUD_CREDENTIALS", str(self.creds))
+
         stub = tmp_path / "fused_stub.py"
         stub.write_text(STUB, encoding="utf-8")
         monkeypatch.setenv("FUSED_RENDER_FUSED_BIN", f"{sys.executable} {stub}")
@@ -296,6 +300,27 @@ def test_install_invokes_pip_with_the_pinned_requirement(tmp_path, monkeypatch):
     assert cmd[4] == deploy_mod.PINNED_FUSED_REQUIREMENT
 
 
+def test_config_reports_fused_login_state(tmp_path, monkeypatch):
+    # Presence of the CLI's own credentials file = a `fused cloud login`
+    # happened; the modal warns before a doomed managed-env deploy otherwise.
+    h = _harness(tmp_path, monkeypatch)
+    assert h.client.get("/api/deploy/config").json()["fused_logged_in"] is False
+    h.creds.write_text("{}", encoding="utf-8")
+    assert h.client.get("/api/deploy/config").json()["fused_logged_in"] is True
+
+
+def test_cli_login_errors_name_the_bundled_wrapper(tmp_path, monkeypatch):
+    # The CLI's login errors say `fused cloud login`, which doesn't resolve
+    # inside the packaged app — the wrapper's real path is appended so the
+    # instruction is runnable as printed. Non-login errors stay untouched.
+    monkeypatch.setattr(deploy_mod, "_setup_cli_hint", lambda: "/App/Contents/Resources/bin/fused")
+    message = deploy_mod._cli_error(
+        "Error: Not logged in to Fused. Run `fused cloud login` first.\n", "fallback"
+    )
+    assert message.endswith("(in this app: /App/Contents/Resources/bin/fused cloud login)")
+    assert deploy_mod._cli_error("Error: no mount 'x'\n", "fallback") == "no mount 'x'"
+
+
 def test_config_with_no_envs_file(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
     monkeypatch.setenv("OPENFUSED_ENVS_FILE", str(tmp_path / "missing.json"))
@@ -380,6 +405,34 @@ def test_redeploy_revoked_tombstone_revives_same_token(tmp_path, monkeypatch):
     verbs = [c["argv"][1] for c in calls]
     assert verbs == ["create", "list", "recreate", "repoint"]
     assert calls[2]["argv"][2:4] == ["abc123", "--same-token"]
+
+
+def test_failed_revive_with_compensation_flips_a_stale_active_pointer(tmp_path, monkeypatch):
+    # Pointer reads "active" but the mount was revoked out-of-band; the
+    # redeploy discovers the tombstone, revives it (recreate ok), fails to
+    # publish (repoint missing from the scenario -> CLI error), and the
+    # compensating revoke lands. The pointer must then read "revoked" — not
+    # keep a green dot on a link that is verifiably down.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
+    )
+    h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    assert h.pointer()["status"] == "active"
+
+    h.set_scenario(
+        {
+            "list": [{"token": "abc123", "status": "revoked"}],
+            "recreate": {"token": "abc123", "status": "active"},
+            # no "repoint" -> that verb fails
+            "revoke": {"token": "abc123", "status": "revoked"},
+        }
+    )
+    resp = h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    assert resp.status_code == 400
+    verbs = [c["argv"][1] for c in h.calls()]
+    assert verbs == ["create", "list", "recreate", "repoint", "revoke"]
+    assert h.pointer()["status"] == "revoked"
 
 
 def test_redeploy_absent_mount_falls_back_to_fresh_create(tmp_path, monkeypatch):
