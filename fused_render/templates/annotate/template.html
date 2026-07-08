@@ -560,14 +560,19 @@
           } else {
             p = el ? stagePoint(el, c) : free;
           }
-          const pin = document.createElement("div");
-          pin.className = "pin" + (c.resolved ? " resolved" : "") + (c.id === activeId ? " active" : "");
-          pin.style.left = Math.min(stage.clientWidth - 14, Math.max(14, p.x)) + "px";
-          pin.style.top = Math.max(14, p.y) + "px";
-          pin.textContent = c.resolved ? "✓" : label;
-          pin.title = label + " — " + c.content;
-          pin.onclick = () => setActive(c.id);
-          pinsEl.appendChild(pin);
+          // Anchor scrolled out of the framed viewport: no pin this frame —
+          // clamping instead would pile stale pins along the stage edge. The
+          // card stays in the sidebar; scrolling back re-renders the pin.
+          if (p.y >= 0 && p.y <= stage.clientHeight && p.x >= 0) {
+            const pin = document.createElement("div");
+            pin.className = "pin" + (c.resolved ? " resolved" : "") + (c.id === activeId ? " active" : "");
+            pin.style.left = Math.min(stage.clientWidth - 14, Math.max(14, p.x)) + "px";
+            pin.style.top = Math.max(14, p.y) + "px";
+            pin.textContent = c.resolved ? "✓" : label;
+            pin.title = label + " — " + c.content;
+            pin.onclick = () => setActive(c.id);
+            pinsEl.appendChild(pin);
+          }
         }
         const resolvedHere = el || free || range;
         const chip = (t) => `<span style="color:#9aa0a6;border:1px solid #2a2d33;border-radius:4px;padding:0 5px">${t}</span>`;
@@ -676,6 +681,18 @@
         }
         return;
       }
+      // Pixel-anchored surface (image / video / PDF page canvas): center the
+      // PIN's spot, not the element — a page canvas is taller than the
+      // viewport, so element-centering can leave the commented spot offscreen.
+      if (c.iu != null && c.iv != null && intrinsic(el) && frame.contentWindow) {
+        const w = frame.contentWindow;
+        const b = contentBox(el);
+        w.scrollTo({
+          top: Math.max(0, w.scrollY + b.top + c.iv * b.height - frame.clientHeight / 2),
+          behavior: "smooth",
+        });
+        return;
+      }
       el.scrollIntoView({ block: "center", behavior: "smooth" });
       setTimeout(() => {
         const r = stageRect(el);
@@ -765,9 +782,12 @@
       // An event target can be a TEXT node (Safari, SVG oddities) — anchor
       // math needs its owning element.
       const elementOf = (t) => (t && t.nodeType === 1 ? t : t && t.parentElement);
+      // Interactive controls are passthrough (see the click handler): no hover
+      // ghost over them either, so the cursor doesn't promise a comment there.
+      const INTERACTIVE = "button, a[href], input, select, textarea, summary, [role=button]";
       doc.addEventListener("mousemove", (e) => {
         const el = elementOf(e.target);
-        if (!el || el === doc.body || el === doc.documentElement) { hl.style.display = "none"; return; }
+        if (!el || el === doc.body || el === doc.documentElement || el.closest(INTERACTIVE)) { hl.style.display = "none"; return; }
         const r = stageRect(el);
         hl.style.display = "block";
         hl.style.left = r.left + "px";
@@ -830,6 +850,11 @@
         if (s && !s.isCollapsed) { e.preventDefault(); e.stopPropagation(); return; }
         const el = elementOf(e.target);
         if (!el) return;
+        // Native interactive controls keep working (a table's pagination
+        // buttons, links, form fields): their clicks pass through untouched
+        // instead of drafting a comment — same rationale as the video control
+        // strip below.
+        if (el.closest(INTERACTIVE)) return;
         let anchor = null;
         // Video: keep the native controls usable — clicks in the bottom
         // control strip pass through untouched; frame clicks capture the
