@@ -54,13 +54,14 @@ async function commit(items: BookmarkItem[]): Promise<void> {
   cache = items;
 }
 
-// All cache access runs through one serial promise chain. hydrateBookmarks() is
-// enqueued first at boot and every mutation after it, so: (1) a mutation never
-// reads a half-hydrated cache — an early click before the initial GET returns
-// waits for the load instead of PUTting an empty tree over the file; (2) two
-// overlapping mutations can't both clone the same snapshot and clobber each
-// other — each runs after the previous one's commit. (Cross-tab staleness is a
-// separate, accepted trade-off: last-write-wins, no live sync — D75.)
+// All cache access runs through one serial promise chain — hydration, every
+// mutation, and the cross-tab refresh poll. So: (1) a mutation never reads a
+// half-hydrated cache — an early click before the initial GET returns waits for
+// the load instead of PUTting an empty tree over the file; (2) two overlapping
+// mutations can't both clone the same snapshot and clobber each other — each
+// runs after the previous one's commit; (3) the poll can't overwrite the cache
+// mid-mutation. Cross-tab convergence is eventual (≤ the poll interval), still
+// last-write-wins on simultaneous writes — D77.
 let tail: Promise<unknown> = Promise.resolve();
 let hydrated = false;
 
@@ -106,6 +107,26 @@ export function hydrateBookmarks(): Promise<void> {
       hydrated = true;
     } catch (e) {
       console.error("[fused] failed to load bookmarks:", e);
+    }
+  });
+}
+
+// Re-read the server tree to pick up another tab's writes (D77 poll). Enqueued
+// so it never overwrites an in-flight local mutation; resolves true only when
+// the tree actually changed, so the caller re-renders once every 30 s at most,
+// not on every tick. No import logic — plain GET (hydrate owns the one-time
+// import); a failed poll is logged and skipped.
+export function refreshBookmarks(): Promise<boolean> {
+  return enqueue(async () => {
+    try {
+      const { bookmarks } = await getBookmarks();
+      const next = bookmarks as BookmarkItem[];
+      if (JSON.stringify(next) === JSON.stringify(cache)) return false;
+      cache = next;
+      return true;
+    } catch (e) {
+      console.error("[fused] failed to refresh bookmarks:", e);
+      return false;
     }
   });
 }
