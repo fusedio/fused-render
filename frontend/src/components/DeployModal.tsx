@@ -289,9 +289,13 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       // Preselect the deployment's env (or the default) — but only if it is
       // actually in the picker; an env removed from envs.json since deploy
       // must fall back to a selectable one, or the <select> renders blank
-      // and Deploy is silently disabled with no matching option (#6).
+      // and Deploy is silently disabled with no matching option (#6). Keep the
+      // user's current pick across a background refresh, but only while it still
+      // exists in the refreshed list — an env deleted from envs.json while the
+      // modal stayed open (a focus/visibility or post-error reconcile can now
+      // observe this) must re-derive too, else the select points at a gone option.
       setSelectedEnv((prev2) => {
-        if (prev2 !== null) return prev2;
+        if (prev2 !== null && cfg.envs.some((e) => e.name === prev2)) return prev2;
         const preferred = status.deployment?.env ?? cfg.default_env;
         if (preferred && cfg.envs.some((e) => e.name === preferred)) return preferred;
         return cfg.default_env;
