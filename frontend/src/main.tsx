@@ -2,6 +2,8 @@
 import { createRoot } from "react-dom/client";
 import { IS_EMBED } from "./lib/router";
 import { getConfig } from "./lib/api";
+import { hydrateBookmarks } from "./lib/bookmarks";
+import { notifyBookmarksChanged } from "./lib/hooks";
 import App from "./App";
 import "./shell.css";
 
@@ -28,7 +30,13 @@ if (IS_EMBED) document.body.classList.add("embed");
 const root = createRoot(document.getElementById("root")!);
 
 getConfig().then(
-  (config) => root.render(<App config={config} />),
+  (config) => {
+    root.render(<App config={config} />);
+    // Load the bookmark cache from the server (async; renders empty first, then
+    // the sidebar/breadcrumb re-read once it resolves). Independent of config —
+    // fire after mount so a config failure still shows its error screen.
+    hydrateBookmarks().then(notifyBookmarksChanged);
+  },
   (err: Error) =>
     root.render(
       <div className="status-message error">Failed to load config: {String(err.message || err)}</div>
