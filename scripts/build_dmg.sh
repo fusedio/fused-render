@@ -100,6 +100,11 @@ echo "==> installing fused-render[bundled,app] + py2app + dmgbuild into the buil
 export FUSED_RENDER_BRANCH="$REF"
 "$BUILD_VENV/bin/pip" install --quiet --upgrade pip
 "$BUILD_VENV/bin/pip" install --quiet "${REPO_ROOT}[bundled,app]" py2app dmgbuild
+# Force a fresh rebuild+reinstall of fused-render itself every run so the branch
+# ref is re-baked to match $REF. The build venv is reused across builds, so pip
+# would otherwise treat an unchanged version as already-satisfied (or reuse a
+# cached wheel) and ship a stale _baked_branch.py from a previous ref.
+"$BUILD_VENV/bin/pip" install --quiet --force-reinstall --no-deps --no-cache-dir "${REPO_ROOT}"
 
 # ---------------------------------------------------------------------------
 # 3. App icon: a fresh, high-res render of the same four-pointed sparkle used
