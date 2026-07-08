@@ -181,15 +181,27 @@
         if (!raw) return null;
         const arr = JSON.parse(raw);
         if (!Array.isArray(arr)) return null;
-        return arr.map((t) => ({
-          id: typeof t.id === "string" ? t.id : crypto.randomUUID(),
-          content: typeof t.content === "string" ? t.content : "",
-          createdAt: Number(t.createdAt) || Date.now(),
-          resolved: t.status === "resolved" || undefined,
-          anchorPath: typeof t.anchorPath === "string" ? t.anchorPath : undefined,
-          anchorId: typeof t.anchorId === "string" ? t.anchorId : undefined,
-          view: typeof t.mode === "string" ? t.mode : undefined,
-        }));
+        return arr.map((t) => {
+          // The native schema has no reply threads — fold legacy replies into
+          // the content so nothing is silently dropped on the first save.
+          let content = typeof t.content === "string" ? t.content : "";
+          if (Array.isArray(t.replies)) {
+            for (const r of t.replies) {
+              if (r && typeof r.content === "string" && r.content) {
+                content += "\n↳ " + r.content;
+              }
+            }
+          }
+          return {
+            id: typeof t.id === "string" ? t.id : crypto.randomUUID(),
+            content,
+            createdAt: Number(t.createdAt) || Date.now(),
+            resolved: t.status === "resolved" || undefined,
+            anchorPath: typeof t.anchorPath === "string" ? t.anchorPath : undefined,
+            anchorId: typeof t.anchorId === "string" ? t.anchorId : undefined,
+            view: typeof t.mode === "string" ? t.mode : undefined,
+          };
+        });
       } catch (e) {
         return null;
       }
