@@ -71,7 +71,7 @@ def _sidecar_path(file: str) -> str:
 
 def _load_sidecar(file: str) -> dict:
     try:
-        with open(_sidecar_path(file)) as fh:
+        with open(_sidecar_path(file), encoding="utf-8") as fh:
             data = json.load(fh)
         if isinstance(data, dict) and isinstance(data.get("sessions"), list):
             return data
@@ -84,7 +84,7 @@ def _save_sidecar(file: str, data: dict) -> None:
     path = _sidecar_path(file)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as fh:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2)
         os.replace(tmp, path)
     except OSError:
@@ -200,24 +200,24 @@ def _start(file: str, message: str, session_id: str, model: str,
 
     # poll() records the session into the sidecar once claude reports its id;
     # it needs the file + first message, so stash them with the run.
-    with open(os.path.join(run_dir, "meta.json"), "w") as f:
+    with open(os.path.join(run_dir, "meta.json"), "w", encoding="utf-8") as f:
         json.dump({"file": file, "message": message,
                    "resumed_from": session_id}, f)
 
-    with open(os.path.join(run_dir, "out.jsonl"), "w") as out, \
-         open(os.path.join(run_dir, "err.log"), "w") as err:
+    with open(os.path.join(run_dir, "out.jsonl"), "w", encoding="utf-8") as out, \
+         open(os.path.join(run_dir, "err.log"), "w", encoding="utf-8") as err:
         proc = subprocess.Popen(cmd, stdout=out, stderr=err,
                                 cwd=os.path.dirname(file),
                                 stdin=subprocess.DEVNULL,
                                 start_new_session=True)
-    with open(os.path.join(run_dir, "pid"), "w") as f:
+    with open(os.path.join(run_dir, "pid"), "w", encoding="utf-8") as f:
         f.write(str(proc.pid))
     return {"run_id": run_id}
 
 
 def _alive(run_dir: str) -> bool:
     try:
-        pid = int(open(os.path.join(run_dir, "pid")).read())
+        pid = int(open(os.path.join(run_dir, "pid"), encoding="utf-8").read())
         os.kill(pid, 0)
         return True
     except (OSError, ValueError):
@@ -239,7 +239,8 @@ def _poll(run_id: str) -> dict:
     phase = "thinking"
 
     try:
-        lines = open(os.path.join(run_dir, "out.jsonl")).read().splitlines()
+        lines = open(os.path.join(run_dir, "out.jsonl"), encoding="utf-8",
+                     errors="replace").read().splitlines()
     except FileNotFoundError:
         lines = []
 
@@ -285,7 +286,8 @@ def _poll(run_id: str) -> dict:
         # clean success and the sidecar-record guard below skips it.
         done = True
         try:
-            tail = open(os.path.join(run_dir, "err.log")).read().strip()
+            tail = open(os.path.join(run_dir, "err.log"), encoding="utf-8",
+                        errors="replace").read().strip()
         except FileNotFoundError:
             tail = ""
         error = tail or ("claude exited before completing the reply"
@@ -296,11 +298,11 @@ def _poll(run_id: str) -> dict:
     marker = os.path.join(run_dir, "recorded")
     if new_session and not error and not os.path.exists(marker):
         try:
-            with open(os.path.join(run_dir, "meta.json")) as f:
+            with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as f:
                 meta = json.load(f)
             _record_session(meta["file"], new_session, meta["message"],
                             meta.get("resumed_from", ""))
-            open(marker, "w").close()
+            open(marker, "w", encoding="utf-8").close()
         except (OSError, json.JSONDecodeError, KeyError):
             pass  # sidecar bookkeeping must never break the chat itself
 
@@ -339,7 +341,7 @@ def _history(file: str, session_id: str) -> dict:
         return {"turns": []}
 
     turns = []
-    for line in open(path, errors="replace"):
+    for line in open(path, encoding="utf-8", errors="replace"):
         try:
             row = json.loads(line)
         except json.JSONDecodeError:
@@ -376,7 +378,7 @@ def _cancel(run_id: str) -> dict:
     if "/" in run_id or run_id.startswith(".") or not os.path.isdir(run_dir):
         return {"cancelled": run_id}
     try:
-        pid = int(open(os.path.join(run_dir, "pid")).read())
+        pid = int(open(os.path.join(run_dir, "pid"), encoding="utf-8").read())
         os.killpg(pid, signal.SIGTERM)  # start_new_session=True -> pid is pgid
     except (OSError, ValueError):
         pass
