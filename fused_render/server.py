@@ -27,6 +27,7 @@ from fastapi import Body, FastAPI, Header, Query
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from fused_render._branch import branch_ref
 from fused_render.executor import run_python
 
 logger = logging.getLogger(__name__)
@@ -161,7 +162,12 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
     return None
 
 
-USER_TEMPLATES_DIR = os.path.expanduser("~/.fused-render")
+_USER_TEMPLATES_BASE = os.path.expanduser("~/.fused-render")
+USER_TEMPLATES_DIR = (
+    _USER_TEMPLATES_BASE
+    if not branch_ref()
+    else os.path.join(_USER_TEMPLATES_BASE, branch_ref())
+)
 USER_REGISTRY = os.path.join(USER_TEMPLATES_DIR, "registry.json")
 
 
