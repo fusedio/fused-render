@@ -111,15 +111,23 @@ def _slugify(stem: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", stem.lower()).strip("-")
 
 
+_RESERVED_SLUGS = frozenset(_slugify(n) for n in _RESERVED_NAMES)
+
+
 def _route_name(rel_path: str, taken: set[str]) -> str:
     """A unique, valid, non-reserved route name derived from a ``.py`` path.
 
     Slugifies the filename stem; falls back to ``run`` when nothing survives, prefixes
     ``run-`` when the slug is reserved or host-internal (leading ``_``), and appends
     ``-2``, ``-3``, … on collision so two files with the same stem stay distinct.
+
+    Reserved names are matched by their *slugified* form (``_RESERVED_SLUGS``), not the
+    literal ``_RESERVED_NAMES`` strings — ``_slugify`` maps a leading ``_`` to a hyphen
+    and then strips it, so e.g. ``_shell.py`` slugifies to ``"shell"``, which would never
+    match the literal ``"_shell"``.
     """
     base = _slugify(os.path.splitext(os.path.basename(rel_path))[0]) or "run"
-    if base in _RESERVED_NAMES or base.startswith("-"):
+    if base in _RESERVED_SLUGS or base.startswith("-"):
         base = f"run-{base.lstrip('-')}"
     name = base
     n = 2

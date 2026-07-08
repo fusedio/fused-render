@@ -67,6 +67,17 @@ def test_reserved_route_name_is_prefixed(tmp_path):
     assert plan.entrypoints[0].name == "run-data"
 
 
+def test_host_internal_stem_is_prefixed(tmp_path):
+    # "_shell.py" slugifies to "shell" (leading "_" is stripped, not preserved),
+    # so the reserved check must match slugified reserved names, not the
+    # literal "_shell" string, or this host-internal route name leaks through.
+    html = "<script>fused.runPython('./_shell.py', {});</script>"
+    _write(tmp_path, "_shell.py", "def main():\n    return 1\n")
+    plan = plan_export(html, str(tmp_path))
+    assert not plan.errors
+    assert plan.entrypoints[0].name == "run-shell"
+
+
 def test_duplicate_stems_get_distinct_names(tmp_path):
     html = "<script>fused.runPython('./a/run.py',{}); fused.runPython('./b/run.py',{});</script>"
     _write(tmp_path, "a/run.py", "def main():\n    return 1\n")
