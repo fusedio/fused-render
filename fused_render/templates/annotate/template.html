@@ -422,7 +422,9 @@
         }
         fused.params.set("view", mode); // inside the lock — param write is part of the switch
       } catch (e) {
-        /* torn-down frame — nothing to flush */
+        // Flush rejected / frame torn down: the switch did NOT happen — the
+        // picker must not claim otherwise.
+        if (activeView) viewSel.value = activeView.mode;
       } finally {
         switchingView = false;
       }
