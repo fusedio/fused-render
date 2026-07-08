@@ -567,7 +567,7 @@ function ago(ts) {
 
 async function loadHistory(session_id) {
   try {
-    const { turns } = await fused.runPython("./agent.py", { action: "history", session_id });
+    const { turns } = await fused.runPython("./agent.py", { action: "history", file: FILE, session_id });
     for (const t of turns) {
       if (t.role === "user") addUser(t.text);
       else addAssistant("").lastChild.innerHTML = renderMd(t.text);

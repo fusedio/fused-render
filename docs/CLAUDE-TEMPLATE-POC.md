@@ -59,10 +59,29 @@ fused_render/templates/claude/
   writes the entry (atomic temp+`os.replace`; a `recorded` marker in the run
   dir keeps it one-shot). The landing page lists **only** these sessions —
   never the user's global `~/.claude` history.
-- **Resume chains:** Claude Code mints a *new* session id on every
-  `--resume`. `start` remembers `resumed_from`; the sidecar update replaces
-  the old id in place (keeping `created_at`/`preview`), so one conversation
-  stays one row instead of one row per turn.
+- **Resume chains:** plain `--resume` keeps the session id (verified
+  empirically 2026-07-08; earlier claude versions and `--fork-session` mint
+  a new one). `start` remembers `resumed_from`; the sidecar update replaces
+  the old id in place (keeping `created_at`/`preview`) either way, so one
+  conversation stays one row.
+- **Session portability (copy-on-resume):** claude stores transcripts under
+  `~/.claude/projects/<munged-cwd>/<id>.jsonl` (munging: non-alphanumeric →
+  `-`) and `--resume` only looks in the *current* cwd's project dir — moving
+  `sample.html` + `sample.html.json` to another folder would otherwise break
+  resume ("No conversation found"). Each sidecar entry therefore records its
+  `cwd`; on resume, if the transcript is missing from the new directory's
+  project dir, `_migrate_session` copies it over from the recorded old cwd
+  (never overwriting an existing destination — that's where new turns
+  append, so it is always the newer copy) and updates the entry's `cwd`.
+  Verified live: full conversation context survives the move. The munging
+  rule is claude-internal, not API — if it changes, the failure mode is just
+  claude's own "session not found". No glob fallback (owner call): the
+  sidecar's `cwd` is the single source for where a transcript lives.
+- **History is file-scoped too:** the `history` action requires `file` and
+  reads only `<munged(dirname(file))>/<id>.jsonl`. With *copied* files the
+  same session id exists in several project dirs with divergent content —
+  a glob could render some other copy's conversation while resume continues
+  this one's.
 - **Permissions:** spawned with `--permission-mode acceptEdits` so headless
   Claude can actually edit the file (non-interactive runs can't answer
   permission prompts; the default would stall/deny every Edit).
@@ -87,9 +106,15 @@ fused_render/templates/claude/
    concurrent chats on the same file can lose one entry (last writer wins on
    read-modify-write). Accepted for POC.
 5. **Session transcripts belong to Claude Code, not us.** The sidecar stores
-   only ids; history is rebuilt from `~/.claude/projects/*/<id>.jsonl`. If
-   the user deletes/cleans Claude Code data, the sidecar rows go stale
-   (resume fails with claude's error; history shows empty). No pruning yet.
+   ids + cwd; history is rebuilt from the file's own project dir. If the
+   user deletes/cleans Claude Code data, the sidecar rows go stale (resume
+   fails with claude's error; history shows empty). No pruning yet.
+   Copy-on-resume also leaves the *original* transcript behind: a second
+   copy of file+sidecar resumes from the state at copy time and diverges —
+   a silent fork, same session id in two project dirs (owner call: copy,
+   not move; fork semantics deemed reasonable for copied files).
+   Cross-*machine* transfer would need the transcript embedded in the
+   sidecar — out of scope.
 6. **Only text turns render.** Tool calls/diffs stream past invisibly (a
    "Working…" spinner phase is the only signal). Showing tool activity
    (edits made to the file!) inline is the obvious next feature.

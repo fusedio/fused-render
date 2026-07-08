@@ -19,12 +19,12 @@ Actions:
   main(action="poll", run_id=...)
       -> {"text": ..., "done": bool, "session_id": ..., "error": ..., "tokens": N, "phase": ...}
   main(action="sessions", file=...)   -> {"sessions": [...]}   (sidecar only)
-  main(action="history", session_id=...) -> {"turns": [...]}
+  main(action="history", file=..., session_id=...) -> {"turns": [...]}
   main(action="cancel", run_id=...)   -> {"cancelled": ...}
 """
-import glob
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -32,6 +32,7 @@ import tempfile
 import time
 
 RUNS = os.path.join(tempfile.gettempdir(), "fused_render_claude", "runs")
+PROJECTS = os.path.expanduser("~/.claude/projects")
 
 
 def _claude_bin() -> str:
@@ -98,24 +99,77 @@ def _record_session(file: str, session_id: str, message: str,
                     resumed_from: str) -> None:
     """Add/refresh a sidecar entry.
 
-    Claude Code mints a NEW session id on every --resume, so a resumed turn
-    must replace the old entry's id in place (keeping created_at/preview) —
-    otherwise every turn of one conversation shows up as a separate session.
+    Plain --resume keeps the session id, but --fork-session (and older
+    claude versions) mint a new one — a resumed turn therefore replaces the
+    old entry's id in place (keeping created_at/preview) so one conversation
+    stays one row. `cwd` tracks where the transcript lives so a moved file
+    can migrate it (see _migrate_session); refreshed every turn.
     """
     data = _load_sidecar(file)
     now = time.time()
+    cwd = os.path.dirname(file)
     for entry in data["sessions"]:
         if entry.get("id") in (session_id, resumed_from):
             entry["id"] = session_id
             entry["last_used"] = now
+            entry["cwd"] = cwd
             return _save_sidecar(file, data)
     data["sessions"].append({
         "id": session_id,
         "preview": message.strip()[:80],
         "created_at": now,
         "last_used": now,
+        "cwd": cwd,
     })
     _save_sidecar(file, data)
+
+
+# ---------------------------------------------------------- session transfer
+
+def _munge(path: str) -> str:
+    """A cwd's project-dir name under ~/.claude/projects: every
+    non-alphanumeric char becomes '-' (claude-code's own rule, verified
+    against real project dirs — '/', '.', '_' all map to '-')."""
+    return re.sub(r"[^A-Za-z0-9]", "-", os.path.abspath(path))
+
+
+def _migrate_session(file: str, session_id: str) -> None:
+    """Copy-on-resume: claude's --resume only finds transcripts under the
+    CURRENT cwd's project dir, so when the target file (plus sidecar) has
+    been moved, copy the transcript from the sidecar's recorded `cwd` into
+    the new directory's project dir. No-op when it is already there; never
+    overwrites an existing destination (the destination is where new turns
+    append — it is always the newer copy). Best-effort: any failure just
+    means claude reports the session as not found."""
+    if not session_id or "/" in session_id:
+        return
+    new_cwd = os.path.dirname(file)
+    dest_dir = os.path.join(PROJECTS, _munge(new_cwd))
+    dest = os.path.join(dest_dir, session_id + ".jsonl")
+
+    data = _load_sidecar(file)
+    entry = next((e for e in data["sessions"] if e.get("id") == session_id), None)
+
+    if not os.path.exists(dest):
+        old_cwd = (entry or {}).get("cwd", "")
+        if not old_cwd or os.path.abspath(old_cwd) == os.path.abspath(new_cwd):
+            return  # nowhere to copy from
+        src = os.path.join(PROJECTS, _munge(old_cwd), session_id + ".jsonl")
+        if not os.path.isfile(src):
+            return  # transcript gone; claude will surface the error
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+            shutil.copy2(src, dest)
+        except OSError:
+            return
+
+    # keep the sidecar's cwd truthful so later resumes skip straight through
+    if entry is not None and entry.get("cwd") != new_cwd:
+        entry["cwd"] = new_cwd
+        try:
+            _save_sidecar(file, data)
+        except OSError:
+            pass
 
 
 # ----------------------------------------------------------------- start/poll
@@ -125,6 +179,8 @@ def _start(file: str, message: str, session_id: str, model: str,
     file = os.path.abspath(file)
     if not os.path.isfile(file):
         return {"error": f"target file not found: {file}"}
+    if session_id:
+        _migrate_session(file, session_id)
 
     run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(3).hex()
     run_dir = os.path.join(RUNS, run_id)
@@ -260,17 +316,22 @@ def _sessions(file: str) -> dict:
     return {"sessions": sessions}
 
 
-def _history(session_id: str) -> dict:
-    """Rebuild the conversation from the Claude Code session transcript on disk."""
+def _history(file: str, session_id: str) -> dict:
+    """Rebuild the conversation from the Claude Code session transcript.
+
+    Resolved ONLY at the target file's own project dir — with copied files
+    the same session id exists in several project dirs with divergent
+    content, and a glob would render some other copy's conversation while
+    resume continues this one's."""
     if not session_id or "/" in session_id:
         return {"turns": []}
-    matches = glob.glob(os.path.expanduser(
-        f"~/.claude/projects/*/{session_id}.jsonl"))
-    if not matches:
+    path = os.path.join(PROJECTS, _munge(os.path.dirname(os.path.abspath(file))),
+                        session_id + ".jsonl")
+    if not os.path.isfile(path):
         return {"turns": []}
 
     turns = []
-    for line in open(matches[0], errors="replace"):
+    for line in open(path, errors="replace"):
         try:
             row = json.loads(line)
         except json.JSONDecodeError:
@@ -326,7 +387,9 @@ def main(action: str = "start", file: str = "", message: str = "",
             return {"error": "missing target file (no _file param?)"}
         return _sessions(file)
     if action == "history":
-        return _history(session_id)
+        if not file:
+            return {"error": "missing target file (no _file param?)"}
+        return _history(file, session_id)
     if action == "cancel":
         return _cancel(run_id)
     return {"error": f"unknown action: {action}"}
