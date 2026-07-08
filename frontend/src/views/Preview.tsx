@@ -46,8 +46,29 @@ function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: St
   const [mode, setModeState] = useState<string>(() => activeTemplate(templates).mode);
   const entry = templates.find((t) => t.mode === mode) || templates[0];
 
-  const setMode = (next: string) => {
+  const setMode = async (next: string) => {
     if (next === mode) return;
+    // Switching modes REMOUNTS the preview iframe (React key change) — an
+    // editor buffer with edits newer than the last autosave would be silently
+    // discarded. Same-origin, so ask the iframe to flush first (the code
+    // template exposes __fusedFlushEdits); refuse the switch when the buffer
+    // can't be made safe (save failure / unresolved conflict — the template's
+    // own banner explains). The 10s bound only catches a truly hung write so
+    // the switcher can't wedge forever; timing out aborts the switch, never
+    // the save.
+    const frame = document.querySelector<HTMLIFrameElement>(".preview-body iframe");
+    const flush = frame?.contentWindow && (frame.contentWindow as any).__fusedFlushEdits;
+    if (typeof flush === "function") {
+      try {
+        const res = await Promise.race([
+          flush(),
+          new Promise((r) => setTimeout(() => r({ ok: false }), 10000)),
+        ]);
+        if (res && (res as { ok: boolean }).ok === false) return;
+      } catch {
+        return;
+      }
+    }
     const params = new URLSearchParams(location.search);
     // Selecting the default mode DELETES _mode (clean URLs); any other mode sets it.
     if (next === templates[0].mode) params.delete("_mode");
