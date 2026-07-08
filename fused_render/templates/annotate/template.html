@@ -51,6 +51,11 @@
     box-shadow: 0 1px 4px rgba(0,0,0,0.4); user-select: none;
   }
   .pin.resolved { opacity: 0.55; }
+  .pin.active {
+    transform: translate(-50%, -50%) scale(1.35);
+    box-shadow: 0 0 0 3px rgba(229, 255, 68, 0.35), 0 1px 6px rgba(0,0,0,0.5);
+    z-index: 5;
+  }
   #hl {
     position: absolute; pointer-events: none; display: none;
     border: 1.5px solid #E5FF44;
@@ -101,6 +106,14 @@
   }
   .card button:hover { border-color: #E5FF44; }
   .card.resolved { opacity: 0.6; }
+  .card.active { background: #131417; border-left: 3px solid #E5FF44; padding-left: 13px; }
+  .card .lbl {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 18px; height: 18px; padding: 0 3px;
+    border-radius: 50% 50% 50% 2px;
+    background: #E5FF44; color: #10131a;
+    font-size: 11px; font-weight: 700;
+  }
   #empty { padding: 40px 20px; color: #9aa0a6; text-align: center; }
   #sidefoot {
     flex: 0 0 auto;
@@ -309,6 +322,70 @@
       }
       return node === doc.body ? segs.join(">") : null;
     }
+    // Container element of an anchor (id > structural path) — used both as
+    // the anchor itself and as the search scope for quote ranges.
+    function containerOf(c, doc) {
+      if (c.anchorId && doc) {
+        const el = doc.getElementById(c.anchorId);
+        if (el) return el;
+      }
+      return resolvePath(c.anchorPath, doc);
+    }
+
+    // Text-selection anchors (quote model, AN-42 lineage): the qn-th
+    // occurrence of the quote inside the container, as a live Range.
+    function textRangeFor(c, doc) {
+      const el = containerOf(c, doc);
+      if (!el || !c.quote) return null;
+      const walker = doc.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      const nodes = [];
+      let full = "";
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        nodes.push({ node: n, start: full.length });
+        full += n.nodeValue;
+      }
+      let idx = -1;
+      for (let occ = 0; occ <= (c.qn || 0); occ++) {
+        idx = full.indexOf(c.quote, idx + 1);
+        if (idx === -1) return null;
+      }
+      const end = idx + c.quote.length;
+      const locate = (off, isEnd) => {
+        for (let i = nodes.length - 1; i >= 0; i--) {
+          if (off > nodes[i].start || (!isEnd && off === nodes[i].start) || i === 0) {
+            return { node: nodes[i].node, off: Math.min(off - nodes[i].start, nodes[i].node.nodeValue.length) };
+          }
+        }
+        return null;
+      };
+      const a = locate(idx, false), b = locate(end, true);
+      if (!a || !b) return null;
+      const range = doc.createRange();
+      try { range.setStart(a.node, a.off); range.setEnd(b.node, b.off); } catch (e) { return null; }
+      return range;
+    }
+
+    // CM selection anchors: the visible slice of lines line..lineEnd.
+    function cmRangeFor(c, doc) {
+      const recs = cmVisibleLines(doc).filter((r) => r.line >= c.line && r.line <= (c.lineEnd || c.line));
+      if (!recs.length) return null;
+      const range = doc.createRange();
+      try {
+        range.setStartBefore(recs[0].el.firstChild || recs[0].el);
+        range.setEndAfter(recs[recs.length - 1].el.lastChild || recs[recs.length - 1].el);
+      } catch (e) { return null; }
+      return range;
+    }
+
+    // A comment's live Range, when it is range-shaped (text or CM selection).
+    function rangeFor(c, doc) {
+      if (!doc) return null;
+      if (c.line != null && c.quote) return isCmDoc(doc) ? cmRangeFor(c, doc) : null;
+      if (c.quote && c.line == null) return textRangeFor(c, doc);
+      return null;
+    }
+    const isRangeAnchor = (c) => !!c.quote;
+
     function resolveAnchor(c, doc) {
       // Code-line anchors resolve through the gutter (virtualized editor).
       if (c.line != null && doc && isCmDoc(doc)) return cmResolve(doc, c.line);
@@ -317,7 +394,9 @@
         const el = doc.getElementById(c.anchorId);
         if (el) return el;
       }
-      const path = c.anchorPath;
+      return resolvePath(c.anchorPath, doc);
+    }
+    function resolvePath(path, doc) {
       if (!path || !doc || !doc.body) return null;
       let node = doc.body;
       for (const seg of path.split(">")) {
@@ -415,46 +494,82 @@
     }
 
     // --- pins + sidebar ------------------------------------------------------
+    // Comment labels: A, B, C … by creation order — the pin and its sidebar
+    // card wear the same letter, so "which comment is which" reads instantly.
+    function labelFor(i) {
+      let s = "";
+      i = i + 1;
+      while (i > 0) { s = String.fromCharCode(65 + ((i - 1) % 26)) + s; i = Math.floor((i - 1) / 26); }
+      return s;
+    }
+    let activeId = null; // the comment lit up on both sides (pin ⇄ card)
+    function setActive(id) {
+      activeId = id;
+      render();
+      const card = list.querySelector(`[data-id="${id}"]`);
+      if (card) card.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+
     function render() {
       const doc = frame.contentDocument;
+      const frameWin = frame.contentWindow;
       const comments = load();
       pinsEl.innerHTML = "";
       list.innerHTML = "";
       if (!comments.length) {
-        list.innerHTML = `<div id="empty">No comments yet.<br>Click anything on the page.</div>`;
+        list.innerHTML = `<div id="empty">No comments yet.<br>Click or select anything on the page.</div>`;
       }
+      const selRanges = [];
+      const activeRanges = [];
+      const byCreation = comments.slice().sort((a, b) => a.createdAt - b.createdAt);
+      const labels = new Map(byCreation.map((c, i) => [c.id, labelFor(i)]));
       for (const c of comments) {
+        const label = labels.get(c.id);
         // Anchors are per-view: only resolve/pin comments made on the view
         // that's currently framed; others are listed with their view's tag.
         const ownView = !c.view || !activeView || c.view === activeView.mode;
-        const el = ownView && doc ? resolveAnchor(c, doc) : null;
+        const range = ownView && doc && isRangeAnchor(c) ? rangeFor(c, doc) : null;
+        const el = ownView && doc && !isRangeAnchor(c) ? resolveAnchor(c, doc) : null;
+        if (range) {
+          selRanges.push(range);
+          if (c.id === activeId) activeRanges.push(range);
+        }
         // Free pins (legacy imports): document coords inside the framed page
         // → stage coords via frame offset minus the frame's own scroll.
         let free = null;
-        if (!el && ownView && doc && typeof c.x === "number" && typeof c.y === "number") {
+        if (!el && !range && ownView && doc && typeof c.x === "number" && typeof c.y === "number") {
           const fr = frame.getBoundingClientRect();
           const st = stage.getBoundingClientRect();
-          const win = frame.contentWindow;
           free = {
-            x: fr.left - st.left + c.x - (win ? win.scrollX : 0),
-            y: fr.top - st.top + c.y - (win ? win.scrollY : 0),
+            x: fr.left - st.left + c.x - (frameWin ? frameWin.scrollX : 0),
+            y: fr.top - st.top + c.y - (frameWin ? frameWin.scrollY : 0),
           };
         }
-        if (el || free) {
-          const p = el ? stagePoint(el, c) : free;
+        if (el || free || range) {
+          let p;
+          if (range) {
+            const rects = range.getClientRects();
+            const last = rects.length ? rects[rects.length - 1] : range.getBoundingClientRect();
+            const fr = frame.getBoundingClientRect();
+            const st = stage.getBoundingClientRect();
+            p = { x: fr.left - st.left + last.right, y: fr.top - st.top + last.top + last.height / 2 };
+          } else {
+            p = el ? stagePoint(el, c) : free;
+          }
           const pin = document.createElement("div");
-          pin.className = "pin" + (c.resolved ? " resolved" : "");
+          pin.className = "pin" + (c.resolved ? " resolved" : "") + (c.id === activeId ? " active" : "");
           pin.style.left = Math.min(stage.clientWidth - 14, Math.max(14, p.x)) + "px";
           pin.style.top = Math.max(14, p.y) + "px";
-          pin.textContent = c.resolved ? "✓" : "";
-          pin.title = c.content;
-          pin.onclick = () => reveal(c);
+          pin.textContent = c.resolved ? "✓" : label;
+          pin.title = label + " — " + c.content;
+          pin.onclick = () => setActive(c.id);
           pinsEl.appendChild(pin);
         }
+        const resolvedHere = el || free || range;
         const chip = (t) => `<span style="color:#9aa0a6;border:1px solid #2a2d33;border-radius:4px;padding:0 5px">${t}</span>`;
         const tag = !ownView
           ? chip(c.view === "_render" ? "preview" : c.view)
-          : el || free
+          : resolvedHere
             ? c.t != null
               ? chip(Math.floor(c.t / 60) + ":" + String(Math.floor(c.t % 60)).padStart(2, "0"))
               : ""
@@ -462,9 +577,10 @@
               ? chip("line " + c.line) // scrolled out of the virtualized viewport, not broken
               : "<span style='color:#ff6b6b'>detached</span>";
         const card = document.createElement("div");
-        card.className = "card" + (c.resolved ? " resolved" : "");
+        card.className = "card" + (c.resolved ? " resolved" : "") + (c.id === activeId ? " active" : "");
+        card.setAttribute("data-id", c.id);
         card.innerHTML = `
-          <div class="when">${new Date(c.createdAt).toLocaleString()} ${tag}</div>
+          <div class="when"><span class="lbl">${label}</span> ${new Date(c.createdAt).toLocaleString()} ${tag}</div>
           <div class="body"></div>
           <div class="acts">
             <button data-a="resolve">${c.resolved ? "Reopen" : "Resolve"}</button>
@@ -473,8 +589,13 @@
         card.querySelector(".body").textContent = c.content;
         card.onclick = (e) => {
           if (e.target.closest("button")) return;
-          if (!ownView && c.view) switchView(c.view); // jump to its view
-          else reveal(c);
+          if (!ownView && c.view) {
+            switchView(c.view); // jump to its view
+          } else {
+            activeId = c.id; // light up the pin/range before scrolling to it
+            reveal(c);
+            render();
+          }
         };
         card.querySelector('[data-a="resolve"]').onclick = () => {
           c.resolved = !c.resolved; save(comments);
@@ -484,10 +605,45 @@
         };
         list.appendChild(card);
       }
+      paintHighlights(selRanges, activeRanges);
+    }
+
+    // Selection tints paint via the framed window's Custom Highlight API —
+    // zero DOM mutation of the viewed page. Styles are injected into the
+    // framed head once per load (see frame load handler).
+    function paintHighlights(selRanges, activeRanges) {
+      const w = frame.contentWindow;
+      if (!w || !w.Highlight || !w.CSS || !w.CSS.highlights) return;
+      const set = (name, ranges) => {
+        if (ranges.length) w.CSS.highlights.set(name, new w.Highlight(...ranges));
+        else w.CSS.highlights.delete(name);
+      };
+      set("fa_sel", selRanges);
+      set("fa_active", activeRanges);
     }
 
     function reveal(c) {
       const doc = frame.contentDocument;
+      // Range anchors (text/code selections): scroll the range into view —
+      // the active-highlight tint (painted by render) marks the exact span.
+      if (isRangeAnchor(c) && doc) {
+        const range = rangeFor(c, doc);
+        if (range) {
+          const host = range.startContainer.nodeType === 1 ? range.startContainer : range.startContainer.parentElement;
+          if (host) host.scrollIntoView({ block: "center", behavior: "smooth" });
+          return;
+        }
+        // CM selection whose lines are scrolled out: jump the scroller there.
+        if (c.line != null && isCmDoc(doc)) {
+          const scroller = doc.querySelector(".cm-scroller");
+          const anyLine = doc.querySelector(".cm-content .cm-line");
+          if (scroller && anyLine) {
+            const lh = anyLine.getBoundingClientRect().height || 18;
+            scroller.scrollTo({ top: Math.max(0, (c.line - 1) * lh - scroller.clientHeight / 2), behavior: "smooth" });
+          }
+        }
+        return;
+      }
       const el = doc ? resolveAnchor(c, doc) : null;
       // Video: land on the exact commented moment, paused.
       if (el && el.tagName === "VIDEO" && c.t != null) {
@@ -582,12 +738,7 @@
             id: crypto.randomUUID(),
             content,
             createdAt: Date.now(),
-            anchorId: draftAnchor.anchorId,
-            anchorPath: draftAnchor.anchorPath,
-            line: draftAnchor.line,
-            iu: draftAnchor.iu,
-            iv: draftAnchor.iv,
-            t: draftAnchor.t,
+            ...draftAnchor, // anchorId/anchorPath/line/lineEnd/quote/qn/iu/iv/t
             view: activeView ? activeView.mode : undefined,
           });
           save(comments);
@@ -600,6 +751,13 @@
     frame.addEventListener("load", () => {
       const doc = frame.contentDocument;
       if (!doc) return;
+      // Highlight-API tint styles for selection anchors, injected into the
+      // framed page (the API paints there, so the styles must live there).
+      const hlStyle = doc.createElement("style");
+      hlStyle.textContent =
+        "::highlight(fa_sel){background-color:rgba(229,255,68,0.28)}" +
+        "::highlight(fa_active){background-color:rgba(229,255,68,0.55);color:#10131a}";
+      (doc.head || doc.documentElement).appendChild(hlStyle);
       // An event target can be a TEXT node (Safari, SVG oddities) — anchor
       // math needs its owning element.
       const elementOf = (t) => (t && t.nodeType === 1 ? t : t && t.parentElement);
@@ -613,7 +771,59 @@
         hl.style.width = r.width + "px";
         hl.style.height = r.height + "px";
       });
+      // Drag-selecting TEXT is a first-class anchor (markdown prose, code
+      // ranges): the selection becomes a quote-anchored comment with a real
+      // highlight, instead of a whole-element pin.
+      doc.addEventListener("mouseup", () => {
+        setTimeout(() => {
+          const sel = doc.getSelection();
+          if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
+          const text = sel.toString();
+          if (!text.trim()) return;
+          const selRange = sel.getRangeAt(0);
+          let anchor = null;
+          if (isCmDoc(doc)) {
+            // Editor: line-span anchor (structural offsets are useless in a
+            // virtualized viewport; the gutter names the lines).
+            const rects = selRange.getClientRects();
+            if (!rects.length) return;
+            const start = cmLineAt(doc, rects[0].top + rects[0].height / 2);
+            const end = cmLineAt(doc, rects[rects.length - 1].top + rects[rects.length - 1].height / 2);
+            if (!start) return;
+            anchor = { line: start.line, lineEnd: end && end.line !== start.line ? end.line : undefined, quote: text.slice(0, 120) };
+          } else {
+            let cont = selRange.commonAncestorContainer;
+            if (cont.nodeType !== 1) cont = cont.parentElement;
+            if (!cont) return;
+            const base = cont.id ? { anchorId: cont.id } : { anchorPath: pathOf(cont, doc) };
+            if (!base.anchorId && !base.anchorPath) return;
+            // Occurrence index: how many times the quote appears before the
+            // selection inside the container.
+            const capped = text.slice(0, 120);
+            let qn = 0;
+            try {
+              const pre = doc.createRange();
+              pre.selectNodeContents(containerOf(base, doc) || cont);
+              pre.setEnd(selRange.startContainer, selRange.startOffset);
+              const before = pre.toString();
+              for (let at = before.indexOf(capped); at !== -1; at = before.indexOf(capped, at + 1)) qn++;
+            } catch (err) {}
+            anchor = { ...base, quote: capped, qn: qn || undefined };
+          }
+          const rects = selRange.getClientRects();
+          const last = rects.length ? rects[rects.length - 1] : selRange.getBoundingClientRect();
+          const fr = frame.getBoundingClientRect();
+          const st = stage.getBoundingClientRect();
+          sel.removeAllRanges(); // composer takes over; render paints the tint
+          openComposer(fr.left - st.left + last.right, fr.top - st.top + last.bottom, anchor);
+        }, 0);
+      });
+
       doc.addEventListener("click", (e) => {
+        // A drag-selection's trailing click must not also open an element
+        // draft — the mouseup handler above owns selection gestures.
+        const s = doc.getSelection();
+        if (s && !s.isCollapsed) { e.preventDefault(); e.stopPropagation(); return; }
         const el = elementOf(e.target);
         if (!el) return;
         let anchor = null;

@@ -246,6 +246,33 @@
     color: var(--dim);
     text-align: center;
   }
+
+  /* ── imported-comments notice (shown when arriving from annotate) ── */
+  .import-note {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid var(--orange);
+    border-radius: 6px;
+    padding: 6px 10px;
+    margin-bottom: 10px;
+    color: var(--fg);
+    font-size: 12px;
+  }
+  .import-note.show { display: flex; }
+  .import-note .star { color: var(--orange); flex-shrink: 0; }
+  .import-note .txt { flex: 1; }
+  .import-note .dismiss {
+    background: transparent;
+    border: 0;
+    color: var(--dim);
+    font: inherit;
+    font-size: 14px;
+    cursor: pointer;
+    padding: 0 2px;
+    line-height: 1;
+  }
+  .import-note .dismiss:hover { color: var(--fg); }
 </style>
 </head>
 <body class="home">
@@ -275,6 +302,11 @@
       <div class="home-title"><span class="star">✻</span><span id="home-file"></span><span class="beta">Beta</span></div>
       <div class="home-sub" id="home-path"></div>
       <div class="beta-note">Claude integration is experimental — expect rough edges and occasional bugs.</div>
+      <div id="import-note" class="import-note">
+        <span class="star">✻</span>
+        <span class="txt"></span>
+        <button type="button" class="dismiss" aria-label="Dismiss">✕</button>
+      </div>
       <form id="card">
         <textarea id="homebox" placeholder="Ask Claude about this file..." autofocus
                   spellcheck="false" data-gramm="false" data-gramm_editor="false" data-enable-grammarly="false"></textarea>
@@ -660,8 +692,68 @@ async function loadRecent() {
   }
 }
 
+// ── imported review comments (arriving from annotate's "Send to Claude") ──
+// annotate flips the shell URL to _mode=claude and stashes the review as a
+// `claudeComments` JSON array. Parse it defensively — a malformed param must
+// never break the chat — and prefill the input with a review prompt the user
+// can edit before sending. We never auto-send.
+function anchorInfo(c) {
+  // Human-readable hint for where the comment sits, most specific first.
+  if (typeof c.line === "number") return "line " + c.line;
+  if (c.anchorId) return "#" + c.anchorId;
+  if (c.anchorPath) return c.anchorPath;
+  if (typeof c.iu === "number" && typeof c.iv === "number")
+    return "pixel " + c.iu + "," + c.iv;
+  if (typeof c.t === "number") return "t=" + c.t;
+  return "";
+}
+
+function buildReviewPrompt(comments) {
+  const lines = ["Here are review comments left on this file:"];
+  comments.forEach((c, i) => {
+    const view = c.view ? "[" + c.view + "] " : "";
+    const content = String(c.content == null ? "" : c.content);
+    const info = anchorInfo(c);
+    const resolved = c.resolved ? " (resolved)" : "";
+    lines.push(
+      (i + 1) + ". " + view + '"' + content + '"' +
+      (info ? " (" + info + ")" : "") + resolved
+    );
+  });
+  lines.push("Please address them.");
+  return lines.join("\n");
+}
+
+function loadImportedComments() {
+  const raw = fused.params.get("claudeComments");
+  if (!raw) return;
+  let comments;
+  try {
+    comments = JSON.parse(raw);
+  } catch (e) {
+    console.warn("claude template: bad claudeComments param:", e.message);
+    return;
+  }
+  if (!Array.isArray(comments) || !comments.length) return;
+
+  const prompt = buildReviewPrompt(comments);
+  // Prefill both inputs so the text is there whichever view the user lands in.
+  homebox.value = prompt;
+  box.value = prompt;
+
+  const note = document.getElementById("import-note");
+  const n = comments.length;
+  note.querySelector(".txt").textContent =
+    n + " review comment" + (n === 1 ? "" : "s") + " imported from Annotate";
+  note.classList.add("show");
+  note.querySelector(".dismiss").addEventListener("click", () => {
+    note.classList.remove("show");
+  });
+}
+
 // ── boot: resume from URL, or show the landing page ──
 (async () => {
+  loadImportedComments();
   const session_id = fused.params.get("session_id");
   if (session_id) {
     enterChat();
