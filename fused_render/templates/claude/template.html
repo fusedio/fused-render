@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Claude</title>
+<style>
+  :root {
+    --bg: #131417;
+    --fg: #e8eaed;
+    --dim: #8b8f98;
+    --orange: #d97757;
+    --border: #2a2d33;
+    --card: #1b1d21;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "SF Mono", Menlo, Monaco, "Cascadia Mono", monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    background: var(--bg);
+    color: var(--fg);
+    margin: 0;
+    padding: 12px 16px;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  body.home #banner, body.home #log, body.home #inputbox, body.home #hint { display: none; }
+  body:not(.home) #home { display: none; }
+
+  /* ── chat view ─────────────────────────────── */
+  #banner {
+    border: 1px solid var(--orange);
+    border-radius: 6px;
+    padding: 8px 12px;
+    margin-bottom: 12px;
+    flex-shrink: 0;
+  }
+  #banner .star { color: var(--orange); }
+  #banner .title { font-weight: bold; }
+  #banner .sub { color: var(--dim); }
+  #log { flex: 1; overflow-y: auto; padding-bottom: 8px; }
+  #log::-webkit-scrollbar { width: 8px; }
+  #log::-webkit-scrollbar-thumb { background: #33363d; border-radius: 4px; }
+  .turn { margin: 0 0 14px; white-space: pre-wrap; word-break: break-word; }
+  .user { color: var(--dim); }
+  .user::before { content: "> "; }
+  .assistant { display: flex; }
+  .assistant .dot { color: #c8c6bd; flex-shrink: 0; margin-right: 6px; }
+  .working { color: var(--fg); }
+  .working .star { color: var(--orange); display: inline-block; }
+  .working .verb { color: var(--orange); font-style: italic; }
+  .working .meta { color: var(--dim); }
+  .error { color: #f14c4c; }
+  .error::before { content: "✗ "; }
+  #inputbox {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    display: flex;
+    align-items: flex-start;
+    flex-shrink: 0;
+  }
+  #inputbox:focus-within { border-color: #4a4e57; }
+  #inputbox .caret { color: var(--fg); margin-right: 8px; }
+  #box {
+    flex: 1;
+    background: transparent;
+    border: 0;
+    outline: none;
+    color: var(--fg);
+    font: inherit;
+    padding: 0;
+  }
+  #box::placeholder { color: #5f6570; }
+  #hint {
+    color: #5f6570;
+    margin-top: 4px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  #hint .right { display: flex; gap: 12px; align-items: center; }
+  select {
+    background: transparent;
+    border: 0;
+    color: var(--dim);
+    font: inherit;
+    cursor: pointer;
+    outline: none;
+    -webkit-appearance: none;
+    appearance: none;
+    padding: 0;
+  }
+  select:hover { color: var(--fg); }
+  select option { background: var(--bg); color: var(--fg); }
+  .sel-label { color: #5f6570; }
+
+  @keyframes spin { 0%{transform:rotate(0)} 100%{transform:rotate(360deg)} }
+  .working .star { animation: spin 1.6s linear infinite; }
+  @keyframes blink { 0%,49%{opacity:1} 50%,100%{opacity:0} }
+  .cursor { color: var(--fg); animation: blink 1s step-end infinite; }
+
+  /* markdown-ish styling, matching Claude Code's terminal rendering */
+  .assistant b, .assistant strong { color: #ffffff; font-weight: bold; }
+  .assistant em { font-style: italic; }
+  .assistant code {
+    background: #22252b;
+    color: #e8c07d;
+    border-radius: 3px;
+    padding: 0 4px;
+    font: inherit;
+  }
+  .assistant pre {
+    background: #101114;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin: 6px 0;
+    overflow-x: auto;
+    white-space: pre;
+  }
+  .assistant pre code { background: transparent; color: #ce9178; padding: 0; }
+  .assistant .h { color: #ffffff; font-weight: bold; }
+  .assistant .bullet { color: var(--orange); }
+  .assistant a { color: #5b9dff; }
+
+  /* ── home view (claude.ai-style landing, scoped to the file) ── */
+  #home {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding-top: 10vh;
+  }
+  #home .inner { width: 100%; max-width: 680px; padding: 0 12px; }
+  .home-title {
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 32px;
+    color: #e8e6dc;
+    text-align: center;
+    margin-bottom: 6px;
+  }
+  .home-title .star { color: var(--orange); margin-right: 14px; }
+  .home-sub {
+    color: var(--dim);
+    text-align: center;
+    margin-bottom: 26px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 12px 14px 10px;
+    box-shadow: 0 8px 30px rgba(0,0,0,.35);
+  }
+  #card:focus-within { border-color: #4a4e57; }
+  #homebox {
+    width: 100%;
+    background: transparent;
+    border: 0;
+    outline: none;
+    resize: none;
+    color: var(--fg);
+    font: inherit;
+    font-size: 15px;
+    min-height: 40px;
+  }
+  #homebox::placeholder { color: #8a877e; }
+  .card-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-top: 4px;
+    color: var(--dim);
+  }
+  .card-row .spacer { flex: 1; }
+  .card-row select { color: #b8b5ac; font-size: 13px; }
+  .card-row .go {
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--orange);
+    color: #1a1a1a;
+    border: 0;
+    border-radius: 50%;
+    padding: 0;
+    cursor: pointer;
+    transition: filter .12s, transform .12s;
+  }
+  .card-row .go:hover { filter: brightness(1.12); transform: translateY(-1px); }
+  .card-row .go:active { transform: translateY(0); }
+
+  #recent { margin-top: 24px; padding-bottom: 24px; }
+  #recent .head { color: var(--dim); margin-bottom: 2px; padding: 0 8px; }
+  .chat-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 4px 8px;
+    border-bottom: 1px solid #22252b;
+    border-radius: 5px;
+    cursor: pointer;
+  }
+  .chat-row:hover { background: #22252b; }
+  .chat-row .dot { color: var(--orange); flex-shrink: 0; }
+  .chat-row .row-title {
+    color: #e6e4dc;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+  }
+  .chat-row .row-sub { color: var(--dim); flex-shrink: 0; }
+
+  #nofile {
+    margin: auto;
+    color: var(--dim);
+    text-align: center;
+  }
+</style>
+</head>
+<body class="home">
+  <!-- chat view -->
+  <div id="banner">
+    <span class="star">✻</span> <span class="title">Claude Code</span><br>
+    <span class="sub" id="banner-sub"></span>
+  </div>
+  <div id="log"></div>
+  <form id="inputbox">
+    <span class="caret">&gt;</span>
+    <input id="box" placeholder="Reply to Claude..." autocomplete="off" spellcheck="false"
+           data-gramm="false" data-gramm_editor="false" data-enable-grammarly="false">
+  </form>
+  <div id="hint">
+    <span></span>
+    <span class="right">
+      <span><span class="sel-label">model: </span><select id="model" class="model-sel"></select></span>
+      <span><span class="sel-label">effort: </span><select id="effort" class="effort-sel"></select></span>
+      <span id="session"></span>
+    </span>
+  </div>
+
+  <!-- home view -->
+  <div id="home">
+    <div class="inner">
+      <div class="home-title"><span class="star">✻</span><span id="home-file"></span></div>
+      <div class="home-sub" id="home-path"></div>
+      <form id="card">
+        <textarea id="homebox" placeholder="Ask Claude about this file..." autofocus
+                  spellcheck="false" data-gramm="false" data-gramm_editor="false" data-enable-grammarly="false"></textarea>
+        <div class="card-row">
+          <span class="spacer"></span>
+          <select id="hmodel" class="model-sel"></select>
+          <select id="heffort" class="effort-sel"></select>
+          <button class="go" type="submit" aria-label="Send">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <path d="M8 13V3M8 3L3.5 7.5M8 3l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+        </div>
+      </form>
+      <div id="recent">
+        <div class="head">Sessions for this file</div>
+        <div id="recentlist"></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+const log = document.getElementById("log");
+const box = document.getElementById("box");
+const sessionEl = document.getElementById("session");
+const homebox = document.getElementById("homebox");
+
+// The target file arrives as the read-only _file param (template contract).
+// Every agent.py call that touches the sidecar gets it explicitly.
+const FILE = fused.params.get("_file") || "";
+const BASENAME = FILE.split("/").pop();
+
+if (!FILE) {
+  document.body.className = "";
+  document.body.innerHTML = '<div id="nofile">No file selected (missing _file param).</div>';
+  throw new Error("claude template: missing _file");
+}
+
+document.getElementById("banner-sub").textContent =
+  "  file: " + FILE;
+document.getElementById("home-file").textContent = BASENAME;
+document.getElementById("home-path").textContent = FILE;
+document.title = "Claude — " + BASENAME;
+
+const VERBS = ["Thinking", "Pondering", "Vibing", "Noodling", "Brewing", "Simmering", "Mulling", "Percolating"];
+
+// ── model/effort selectors (home + footer stay in sync via params) ──
+const MODELS = ["", "fable", "opus", "sonnet", "haiku"];
+const EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
+function fillSelect(el, values, label) {
+  for (const v of values) {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = v || label;
+    el.appendChild(o);
+  }
+}
+document.querySelectorAll(".model-sel").forEach((el) => fillSelect(el, MODELS, "default"));
+document.querySelectorAll(".effort-sel").forEach((el) => fillSelect(el, EFFORTS, "default"));
+// the home card shows friendlier default labels
+document.querySelector("#hmodel option[value='']").textContent = "model";
+document.querySelector("#heffort option[value='']").textContent = "effort";
+
+function syncSelects() {
+  document.querySelectorAll(".model-sel").forEach((el) => { el.value = fused.params.get("model") || ""; });
+  document.querySelectorAll(".effort-sel").forEach((el) => { el.value = fused.params.get("effort") || ""; });
+}
+document.querySelectorAll(".model-sel").forEach((el) =>
+  el.addEventListener("change", () => { fused.params.set("model", el.value); syncSelects(); }));
+document.querySelectorAll(".effort-sel").forEach((el) =>
+  el.addEventListener("change", () => { fused.params.set("effort", el.value); syncSelects(); }));
+syncSelects();
+
+function showSession() {
+  const id = fused.params.get("session_id");
+  sessionEl.textContent = id ? id.slice(0, 8) : "";
+}
+showSession();
+
+function enterChat() {
+  document.body.classList.remove("home");
+  box.focus();
+}
+
+// ── log rendering ──
+function addUser(text) {
+  const d = document.createElement("div");
+  d.className = "turn user";
+  d.textContent = text;
+  log.appendChild(d);
+  log.scrollTop = log.scrollHeight;
+}
+
+function addAssistant(text) {
+  const d = document.createElement("div");
+  d.className = "turn assistant";
+  const dot = document.createElement("span");
+  dot.className = "dot";
+  dot.textContent = "⏺";
+  const body = document.createElement("span");
+  body.textContent = text;
+  d.append(dot, body);
+  log.appendChild(d);
+  log.scrollTop = log.scrollHeight;
+  return d;
+}
+
+function addError(text) {
+  const d = document.createElement("div");
+  d.className = "turn error";
+  d.textContent = text;
+  log.appendChild(d);
+  log.scrollTop = log.scrollHeight;
+}
+
+function addWorking() {
+  const d = document.createElement("div");
+  d.className = "turn working";
+  const thinkVerb = VERBS[Math.floor(Math.random() * VERBS.length)];
+  const start = Date.now();
+  let stats = { tokens: 0, phase: "thinking" };
+  d.innerHTML = '<span class="star">✻</span> <span class="verb"></span><span class="meta"></span>';
+  const verbEl = d.querySelector(".verb");
+  const meta = d.querySelector(".meta");
+  const draw = () => {
+    const secs = Math.round((Date.now() - start) / 1000);
+    verbEl.textContent = (stats.phase === "composing" ? "Composing" :
+                          stats.phase === "tooling" ? "Working" : thinkVerb) + "…";
+    const effort = fused.params.get("effort") || "";
+    const parts = [secs + "s"];
+    if (stats.tokens) parts.push("↓ " + stats.tokens + " tokens");
+    if (stats.phase === "thinking" && effort) parts.push("thinking with " + effort + " effort");
+    meta.textContent = " (" + parts.join(" · ") + ")";
+  };
+  const timer = setInterval(draw, 1000);
+  draw();
+  log.appendChild(d);
+  log.scrollTop = log.scrollHeight;
+  return {
+    el: d,
+    setStats(tokens, phase) { stats = { tokens, phase }; draw(); },
+    stop: () => clearInterval(timer),
+  };
+}
+
+// ── minimal markdown → HTML, tolerant of unclosed markers mid-stream ──
+function renderMd(text) {
+  const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const inline = (s) => {
+    // pull inline code out first so its contents stay literal (no links/bold inside backticks)
+    const codes = [];
+    return esc(s)
+      .replace(/`([^`]+)`/g, (_, c) => "" + (codes.push(c) - 1) + "")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|\W)\*([^*\s][^*]*)\*/g, "$1<em>$2</em>")
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank">$1</a>')
+      .replace(/(^|[^"(\]])(https?:\/\/[^\s)<]+)/g, '$1<a href="$2" target="_blank">$2</a>')
+      .replace(/(\d+)/g, (_, i) => "<code>" + codes[i] + "</code>");
+  };
+
+  const out = [];
+  const parts = text.split(/```/);
+  for (let i = 0; i < parts.length; i++) {
+    if (i % 2 === 1) {  // inside a fence (possibly still open mid-stream)
+      const body = parts[i].replace(/^[\w+-]*\n?/, "");  // drop language tag
+      out.push("<pre><code>" + esc(body) + "</code></pre>");
+      continue;
+    }
+    const lines = parts[i].split("\n").map((line) => {
+      let m;
+      if ((m = line.match(/^(#{1,4})\s+(.*)$/)))
+        return '<span class="h">' + inline(m[2]) + "</span>";
+      if ((m = line.match(/^(\s*)[-*]\s+(.*)$/)))
+        return m[1] + '<span class="bullet">•</span> ' + inline(m[2]);
+      if ((m = line.match(/^(\s*)(\d+)\.\s+(.*)$/)))
+        return m[1] + '<span class="bullet">' + m[2] + ".</span> " + inline(m[3]);
+      return inline(line);
+    });
+    out.push(lines.join("\n"));
+  }
+  return out.join("");
+}
+
+// ── typewriter: polls fill `target`; a rAF loop drains it smoothly ──
+function makeTyper(bodyEl) {
+  let target = "";
+  let shown = 0;
+  let finished = false;
+  let raf = null;
+  const cur = document.createElement("span");
+  cur.className = "cursor";
+  cur.textContent = "▋";
+  bodyEl.after(cur);
+
+  function tick() {
+    raf = null;
+    const remaining = target.length - shown;
+    if (remaining > 0) {
+      const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+      const step = Math.max(1, Math.ceil(remaining / 36));  // drain in ~36 frames
+      shown = Math.min(target.length, shown + step);
+      bodyEl.innerHTML = renderMd(target.slice(0, shown));
+      if (atBottom) log.scrollTop = log.scrollHeight;
+    }
+    if (shown < target.length) raf = requestAnimationFrame(tick);
+    else if (finished) cur.remove();
+  }
+
+  return {
+    update(text) { target = text; if (!raf) raf = requestAnimationFrame(tick); },
+    finish(text) {
+      target = text;
+      finished = true;
+      if (!raf) raf = requestAnimationFrame(tick);
+      return new Promise((resolve) => {
+        (function wait() { raf ? requestAnimationFrame(wait) : resolve(); })();
+      });
+    },
+    abort() { if (raf) cancelAnimationFrame(raf); cur.remove(); },
+  };
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ── send one message: start detached claude, poll + stream ──
+async function sendMessage(message) {
+  addUser(message);
+  const w = addWorking();
+  let reply = null;
+  let typer = null;
+  try {
+    const { run_id, error } = await fused.runPython("./agent.py", {
+      action: "start",
+      file: FILE,
+      message,
+      session_id: fused.params.get("session_id") || "",
+      model: fused.params.get("model") || "",
+      effort: fused.params.get("effort") || "",
+    });
+    if (error) throw new Error(error);
+
+    while (true) {
+      const data = await fused.runPython("./agent.py", { action: "poll", run_id });
+      if (data.session_id) { fused.params.set("session_id", String(data.session_id)); showSession(); }
+      // usage arrives only at message end; estimate from streamed text meanwhile
+      const tokens = Math.max(data.tokens || 0, Math.round((data.text || "").length / 4));
+      w.setStats(tokens, data.phase || "thinking");
+      if (data.text) {
+        if (!reply) {
+          reply = addAssistant("");
+          log.insertBefore(reply, w.el);  // status line stays below the streaming reply
+          typer = makeTyper(reply.lastChild);
+        }
+        if (!data.done) typer.update(data.text);
+      }
+      if (data.done) {
+        w.stop(); w.el.remove();
+        if (data.error) {
+          if (typer) typer.abort();
+          if (reply) reply.remove();
+          addError(data.error);
+        } else if (typer) {
+          await typer.finish(data.text);
+        } else if (data.text) {
+          addAssistant("").lastChild.innerHTML = renderMd(data.text);
+        }
+        break;
+      }
+      await sleep(400);
+    }
+  } catch (err) {
+    addError(err.message);
+  } finally {
+    if (w.el.isConnected) { w.stop(); w.el.remove(); }
+  }
+  log.scrollTop = log.scrollHeight;
+  box.focus();
+}
+
+document.getElementById("inputbox").onsubmit = (e) => {
+  e.preventDefault();
+  const message = box.value.trim();
+  if (!message) return;
+  box.value = "";
+  sendMessage(message);
+};
+
+// ── home: big input + this file's sidecar sessions ──
+document.getElementById("card").onsubmit = (e) => {
+  e.preventDefault();
+  const message = homebox.value.trim();
+  if (!message) return;
+  homebox.value = "";
+  enterChat();
+  sendMessage(message);
+};
+homebox.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    document.getElementById("card").requestSubmit();
+  }
+});
+
+function ago(ts) {
+  const s = Math.max(0, Date.now() / 1000 - ts);
+  if (s < 60) return "now";
+  if (s < 3600) return Math.floor(s / 60) + "m ago";
+  if (s < 86400) return Math.floor(s / 3600) + "h ago";
+  if (s < 172800) return "yesterday";
+  return Math.floor(s / 86400) + "d ago";
+}
+
+async function loadHistory(session_id) {
+  try {
+    const { turns } = await fused.runPython("./agent.py", { action: "history", session_id });
+    for (const t of turns) {
+      if (t.role === "user") addUser(t.text);
+      else addAssistant("").lastChild.innerHTML = renderMd(t.text);
+    }
+    log.scrollTop = log.scrollHeight;
+  } catch (err) {
+    console.warn("history restore failed:", err.message);
+  }
+}
+
+function addChatRow(list, s) {
+  const row = document.createElement("div");
+  row.className = "chat-row";
+  row.setAttribute("role", "button");
+  row.tabIndex = 0;
+  row.innerHTML = '<span class="dot">⏺</span><span class="row-title"></span><span class="row-sub"></span>';
+  row.querySelector(".row-title").textContent = s.preview || s.id;
+  row.querySelector(".row-sub").textContent = ago(s.last_used || s.created_at || 0);
+  const open = async () => {
+    fused.params.set("session_id", s.id);
+    showSession();
+    enterChat();
+    await loadHistory(s.id);
+  };
+  row.onclick = open;
+  row.onkeydown = (e) => { if (e.key === "Enter") open(); };
+  list.appendChild(row);
+}
+
+async function loadRecent() {
+  const list = document.getElementById("recentlist");
+  try {
+    const { sessions, error } = await fused.runPython("./agent.py", { action: "sessions", file: FILE });
+    if (error) throw new Error(error);
+    if (!sessions.length) {
+      document.getElementById("recent").style.display = "none";
+      return;
+    }
+    for (const s of sessions) addChatRow(list, s);
+  } catch (err) {
+    console.warn("session list failed:", err.message);
+  }
+}
+
+// ── boot: resume from URL, or show the landing page ──
+(async () => {
+  const session_id = fused.params.get("session_id");
+  if (session_id) {
+    enterChat();
+    await loadHistory(session_id);
+  } else {
+    homebox.focus();
+    await loadRecent();
+  }
+})();
+</script>
+</body>
+</html>

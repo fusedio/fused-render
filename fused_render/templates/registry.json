@@ -37,7 +37,7 @@
   ".nc": ["netcdf"],
   ".nc4": ["netcdf"],
   ".cdf": ["netcdf"],
-  ".html": ["_render", "code"],
-  ".htm": ["_render", "code"],
+  ".html": ["_render", "code", "claude"],
+  ".htm": ["_render", "code", "claude"],
   ".zarr/": ["zarr"]
 }
