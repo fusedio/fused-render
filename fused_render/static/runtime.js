@@ -216,10 +216,22 @@
   // (D46/LM-8). Ancestor shells above a boundary are watched too, so an edit
   // to a hand-typed global (D72) also notifies; the snapshot diff guard makes
   // the layout shell's frequent `_layout` re-syncs no-ops here.
-  target.addEventListener("fused:urlchange", notifyIfChanged);
-  for (const win of ancestorWindows()) {
+  // Target and ancestor shells outlive this document (they survive pane
+  // reloads/navigation), so detach on pagehide — otherwise every reload
+  // stacks another stale notifyIfChanged on the shared shell windows.
+  const hookedWindows = [target, ...ancestorWindows()];
+  for (const win of hookedWindows) {
     win.addEventListener("fused:urlchange", notifyIfChanged);
   }
+  window.addEventListener("pagehide", () => {
+    for (const win of hookedWindows) {
+      try {
+        win.removeEventListener("fused:urlchange", notifyIfChanged);
+      } catch (e) {
+        /* window already gone */
+      }
+    }
+  });
 
   function runPython(pyPath, params) {
     const ownPath = new URLSearchParams(window.location.search).get("path");
