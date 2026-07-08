@@ -176,7 +176,12 @@ export default function IconPicker({ anchor, onPick, onRemove, onClose }: IconPi
   useEffect(() => {
     inputRef.current?.focus();
     const onDocMouseDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) onClose();
+      const target = e.target as HTMLElement;
+      if (rootRef.current && rootRef.current.contains(target)) return;
+      // Glyph clicks are the toggle — let the sidebar's click handler decide
+      // (closing here would make it reopen the picker immediately after).
+      if (target.closest(".bookmark-glyph:not(.folder-glyph)")) return;
+      onClose();
     };
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -200,7 +205,8 @@ export default function IconPicker({ anchor, onPick, onRemove, onClose }: IconPi
     }
     el.style.top = `${top}px`;
     el.style.left = `${Math.min(anchor.left, window.innerWidth - el.offsetWidth - 8)}px`;
-  }, [anchor]);
+    // query changes the popover height (filtered grid), so reposition on it too.
+  }, [anchor, query]);
 
   const q = query.trim().toLowerCase();
   const sections = CATEGORIES.map((cat) => ({
