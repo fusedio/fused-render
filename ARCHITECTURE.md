@@ -99,7 +99,7 @@ Same static shell for both; shell JS reads `location.pathname` to route. `/view/
   ]
 }
 ```
-`templates` is the server-side registry lookup by extension (lowercased): the ordered **mode list** (SPEC PT-7/PT-8), first entry = default. Each entry carries the template **name** (`mode`), the resolved abs `template.html` path, and the abs path of the `icon.svg` sitting next to the resolved `template.html` (user folder's icon when a user template resolved) or `null` when absent. `templates` is `[]` for a directory with no `DIR_TEMPLATES` match (SPEC PT-13/D65 — a `.zarr` directory carries `[{"mode": "zarr", …}]` and previews like a file), unmapped extensions, and `null` registry bindings. `.html`/`.htm` carry the **hardcoded** list `["_render", "code"]` (registry-exempt, SPEC CT-4); `_render` is a **sentinel mode** (SPEC PT-12) — `_`-prefixed, no template folder behind it — emitted without touching the filesystem:
+`templates` is the server-side registry lookup on the basename (SPEC PT-7/PT-8, CT-3): the ordered **mode list**, first entry = default. Each entry carries the template **name** (`mode`), the resolved abs `template.html` path, and the abs path of the `icon.svg` sitting next to the resolved `template.html` (user folder's icon when a user template resolved) or `null` when absent. `templates` is `[]` for a directory with no directory-key match (SPEC PT-13/D73 — a `.zarr` directory matches the `".zarr/"` key, carries `[{"mode": "zarr", …}]`, and previews like a file), unmapped extensions, and `null` registry bindings. `.html`/`.htm` default to `["_render", "code"]` via the built-in registry (user-rebindable since D73); `_render` is a **sentinel mode** (SPEC PT-12) — `_`-prefixed, no template folder behind it — emitted without touching the filesystem:
 
 ```json
 "templates": [
@@ -108,7 +108,7 @@ Same static shell for both; shell JS reads `location.pathname` to route. `/view/
 ]
 ```
 
-A `_`-prefixed name appearing in a registry list is invalid (dropped + `template_error`) — the sentinel namespace is shell-owned. The user registry (§7, SPEC §16) is consulted first; validation is **per entry** — an entry whose name can't resolve (unsafe name, `template.html` missing in both locations) is dropped from the list and a `"template_error": "<reason>"` field names the first problem (absent otherwise); if the user's value resolves to nothing at all, the built-in list for the extension is used. There is no singular `template` field — removed in M8, no compat alias (shell is same repo).
+A `_`-prefixed name appearing in a registry list is valid only for the known sentinels (`KNOWN_SENTINELS = {"_render"}`, D73); any other is invalid (dropped + `template_error`) — the rest of the sentinel namespace is shell-owned. The user registry (§7, SPEC §16) is consulted first; validation is **per entry** — an entry whose name can't resolve (unsafe name, `template.html` missing in both locations) is dropped from the list and a `"template_error": "<reason>"` field names the first problem (absent otherwise); if the user's value resolves to nothing at all, the built-in list for the extension is used. There is no singular `template` field — removed in M8, no compat alias (shell is same repo).
 
 ### `GET /api/fs/list?path=<abs dir>`
 ```json
@@ -231,39 +231,21 @@ Layout: `#app` becomes two-column flex — fixed sidebar (~220px, `--bg-alt`, ri
 
 ## 7. Template contract
 
-- Server-side registry (in `server.py`) — **ext → ordered list of template names, first = default** (M8). A name is a folder name, never a filename:
-```python
-TEMPLATES = {
-    ".parquet": ["table"],                # binary — code mode would be garbage
-    ".csv": ["csv", "code"], ".tsv": ["csv", "code"],
-    ".xlsx": ["xlsx"],
-    ".json": ["tree", "code"], ".geojson": ["tree", "code"],
-    ".md": ["markdown", "code"],
-    ".svg": ["image", "code"],
-    ".png": ["image"], ".jpg": ["image"], ".jpeg": ["image"], ".gif": ["image"], ".webp": ["image"],
-    ".pdf": ["pdf"],
-    ".mp4": ["media"], ".mov": ["media"], ".m4v": ["media"], ".webm": ["media"],
-    ".mp3": ["media"], ".wav": ["media"], ".m4a": ["media"], ".ogg": ["media"], ".flac": ["media"],
-    ".py": ["code", "api"],              # api = main() run form (D63)
-    ".js": ["code"], ".ts": ["code"], ".sh": ["code"],
-    ".yaml": ["code"], ".yml": ["code"], ".toml": ["code"], ".css": ["code"],
-    ".tif": ["geotiff"], ".tiff": ["geotiff"],            # in-browser decode, no reader.py (D64)
-    ".nc": ["netcdf"], ".nc4": ["netcdf"], ".cdf": ["netcdf"],
-    ".txt": ["text", "code"], ".log": ["text", "code"],
-    ".html": ["_render", "code"], ".htm": ["_render", "code"],  # hardcoded — registry-exempt (CT-4); _render = shell sentinel (PT-12)
-}
-
-# Directory templates (SPEC PT-13/D65): a DIRECTORY whose basename carries one
-# of these extensions resolves through the same name model as files (a `.zarr`
-# store is one dataset spread across many chunk files). Package-only — the user
-# registry is a per-file suffix match and doesn't apply to directories.
-DIR_TEMPLATES = {
-    ".zarr": ["zarr"],
+- Built-in bindings ship as data — **`fused_render/templates/registry.json`** (D73), exactly the user-registry format: **suffix-pattern key → ordered list of template names, first = default** (M8). A name is a folder name, never a filename:
+```json
+{
+  ".parquet": ["table"],
+  ".csv": ["csv", "code"], ".tsv": ["csv", "code"],
+  ".json": ["tree", "code"],
+  ".py": ["code", "api"],
+  ".html": ["_render", "code"], ".htm": ["_render", "code"],
+  ".zarr/": ["zarr"],
+  "…": ["etc"]
 }
 ```
-`_templates_for(path, is_dir)` branches on `is_dir`: a directory resolves `DIR_TEMPLATES` by the extension on `os.path.basename(os.path.normpath(path))` through the **same** `_resolve_mode_list` as files, so entries come out identically shaped.
-- **Name resolution — one rule everywhere (SPEC PT-6):** `<name>` → `~/.fused-render/<name>/template.html` if it exists, else `fused_render/templates/<name>/template.html`, else unresolvable. Applies identically to built-in table entries and registry entries; a user folder shadows a built-in of the same name. **Sentinel special case (SPEC PT-12):** a `_`-prefixed name never resolves through the filesystem — the resolver emits `{"mode": "_<name>", "path": null, "icon": null}` directly (only `_render` exists today, on the hardcoded `.html`/`.htm` list); in a *registry* list a `_`-prefixed name is invalid (dropped + `template_error` — sentinel namespace is shell-owned). `icon` = the `icon.svg` beside the resolved `template.html`, or `null`. `templates/vendor/` has no `template.html` so it can never resolve; the `/template-assets` mount is unchanged.
-- **User overrides (M7 + M8, SPEC §16):** the resolver consults `~/.fused-render/registry.json` before the dict above (after the `.html`/`.htm` exemption). Keys are dotted extensions matched **longest-suffix, case-insensitive** against the basename (so `.tar.gz` works and beats `.gz`); values are `list | string | null`: a **list** is the full ordered mode list (replace semantics; the `"..."` entry splices the built-in list in place — dedup against explicit names, more than one `"..."` invalidates the entry, splice with no built-ins expands to nothing); a **string** is a single-mode list of that name (unchanged D50 meaning); **`null`** = no template at all, shell fallback. Names must be a single safe path segment (no `/`, `\`, `.`, `..`) since they're joined into a path — correctness guard, not auth (D3). Validation is per entry: an unresolvable entry is dropped and `template_error` on the stat payload names the first problem; a user value resolving to nothing falls back to the built-in list. The registry is read on every resolution (no restart, no cache); missing dir/registry is a clean no-op. Constants `USER_TEMPLATES_DIR`/`USER_REGISTRY` in `server.py`; runtime untouched — the shell obeys `templates` (§3, §6), and M4 auto-reload already live-reloads previews when the user edits their template or readers (registry edits apply on next stat, open previews don't watch it).
+(Full mapping + per-row rationale: SPEC PT-7 table.) `_templates_for(path, is_dir)` matches `os.path.basename(os.path.normpath(path))` against both registries with **one matcher** (`_match_registry`, SPEC CT-3): keys are dot-anchored suffix patterns — compound (`.tar.gz`), `*` wildcard = exactly one whole non-empty segment, trailing `/` = **directory key** (a `.zarr` store matches `".zarr/"`; dir keys match only directories, file keys only files). Specificity: more segments > fewer, ties broken rightmost-first with literal > `*`; a match needs a non-empty stem. Both registries are read per resolution by one loader (`_load_registry`); a built-in parse failure surfaces as `template_error`, and a test pins the shipped file (parses, every name resolves).
+- **Name resolution — one rule everywhere (SPEC PT-6):** `<name>` → `~/.fused-render/<name>/template.html` if it exists, else `fused_render/templates/<name>/template.html`, else unresolvable. Applies identically to built-in and user registry entries; a user folder shadows a built-in of the same name. **Sentinel special case (SPEC PT-12):** a name in `KNOWN_SENTINELS` (`{"_render"}`) never resolves through the filesystem — the resolver emits `{"mode": "_<name>", "path": null, "icon": null}` directly, and it is referenceable from either registry's lists (D73); any other `_`-prefixed name is invalid (dropped + `template_error` — the rest of the sentinel namespace is shell-owned). `icon` = the `icon.svg` beside the resolved `template.html`, or `null`. `templates/vendor/` has no `template.html` so it can never resolve; the `/template-assets` mount is unchanged.
+- **User overrides (M7 + M8, SPEC §16):** the resolver consults `~/.fused-render/registry.json`, and any user match beats the built-in registry — including for `.html`/`.htm` (the old CT-4 exemption is dropped, D73) and for directory keys (D65's package-only restriction is dropped, D73). Keys follow the same CT-3 grammar above; values are `list | string | null`: a **list** is the full ordered mode list (replace semantics; the `"..."` entry splices the built-in list in place — dedup against explicit names, more than one `"..."` invalidates the entry, splice with no built-ins expands to nothing); a **string** is a single-mode list of that name (unchanged D50 meaning); **`null`** = no template at all, shell fallback (plain listing for a directory key). Names must be a single safe path segment (no `/`, `\`, `.`, `..`) since they're joined into a path — correctness guard, not auth (D3). Validation is per entry: an unresolvable entry is dropped and `template_error` on the stat payload names the first problem; a user value resolving to nothing falls back to the built-in list. Registries are read on every resolution (no restart, no cache); missing dir/registry is a clean no-op. Constants `BUILTIN_REGISTRY`/`USER_TEMPLATES_DIR`/`USER_REGISTRY` in `server.py`; runtime untouched — the shell obeys `templates` (§3, §6), and M4 auto-reload already live-reloads previews when the user edits their template or readers (registry edits apply on next stat, open previews don't watch it).
 - Template receives target file as read-only param `_file`. Templates are ordinary renderable HTML: same runtime, same powers. Templates reach the filesystem through the runtime IO helpers (`fused.rawUrl`/`stat`/`readFile`/`writeFile`), never by fetching `/api/fs/*` URLs directly — one code path, and the write guard/lock come for free. Helper files sit inside the folder as `reader.py` etc.; relative `runPython('./reader.py', …)` just works because the `html` path sent to `/api/run` is the template's real path. Each built-in folder also ships a **monochrome `icon.svg`** (single fill — `currentColor` or plain black, only alpha matters since the shell masks it; square viewBox, 24×24 suggested, legible at 16px).
 - Vendored JS libraries (marked, CodeMirror; and the sci decoders `geotiff.bundle.mjs`, `netcdfjs.bundle.mjs`, `zarrita.bundle.mjs`) live in `fused_render/templates/vendor/` and are served from a dedicated absolute mount `GET /template-assets/*` (a relative `<script src>`/`import` in a template would resolve against `/render`, not the templates dir). All committed local files — no CDN/network at runtime (D3). Regenerate the CodeMirror bundle via `scripts/vendor-codemirror/build.sh`, and the sci bundles via `scripts/vendor-sci/build.sh` (both Node 22; each emits a single self-contained ESM module).
 - The sciViz core shared by the `geotiff/`, `netcdf/`, and `zarr/` templates (colormap LUTs, stretch/stats/histogram, canvas draw, and the plain-DOM UI kit) is first-party, not vendored — it lives in `fused_render/templates/shared/sciviz.mjs` and is served from its own absolute mount `GET /template-shared/*` (kept separate from `/template-assets` so `vendor/` stays third-party-only; like `vendor/`, `shared/` has no `template.html` so it can never resolve as a template name).
