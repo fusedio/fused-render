@@ -39,6 +39,21 @@
   #banner .star { color: var(--orange); }
   #banner .title { font-weight: bold; }
   #banner .sub { color: var(--dim); }
+  .beta {
+    display: inline-block;
+    font-family: "SF Mono", Menlo, Monaco, "Cascadia Mono", monospace;
+    font-size: 10px;
+    font-weight: bold;
+    letter-spacing: .5px;
+    text-transform: uppercase;
+    color: var(--orange);
+    border: 1px solid var(--orange);
+    border-radius: 4px;
+    padding: 1px 5px;
+    vertical-align: middle;
+    margin-left: 8px;
+  }
+  #banner .beta { position: relative; top: -1px; }
   #log { flex: 1; overflow-y: auto; padding-bottom: 8px; }
   #log::-webkit-scrollbar { width: 8px; }
   #log::-webkit-scrollbar-thumb { background: #33363d; border-radius: 4px; }
@@ -152,6 +167,12 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .beta-note {
+    color: #7a6b52;
+    text-align: center;
+    font-size: 12px;
+    margin-bottom: 22px;
+  }
   #card {
     background: var(--card);
     border: 1px solid var(--border);
@@ -230,7 +251,7 @@
 <body class="home">
   <!-- chat view -->
   <div id="banner">
-    <span class="star">✻</span> <span class="title">Claude Code</span><br>
+    <span class="star">✻</span> <span class="title">Claude Code</span><span class="beta">Beta</span><br>
     <span class="sub" id="banner-sub"></span>
   </div>
   <div id="log"></div>
@@ -251,8 +272,9 @@
   <!-- home view -->
   <div id="home">
     <div class="inner">
-      <div class="home-title"><span class="star">✻</span><span id="home-file"></span></div>
+      <div class="home-title"><span class="star">✻</span><span id="home-file"></span><span class="beta">Beta</span></div>
       <div class="home-sub" id="home-path"></div>
+      <div class="beta-note">Claude integration is experimental — expect rough edges and occasional bugs.</div>
       <form id="card">
         <textarea id="homebox" placeholder="Ask Claude about this file..." autofocus
                   spellcheck="false" data-gramm="false" data-gramm_editor="false" data-enable-grammarly="false"></textarea>
