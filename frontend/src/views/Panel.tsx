@@ -31,6 +31,7 @@ import {
 import type { Config } from "../lib/api";
 import { ShareIcon } from "../components/ShareIcon";
 import { SplitRightIcon, SplitDownIcon } from "../components/SplitIcons";
+import PaneModeMenu from "../components/PaneModeMenu";
 
 // Panel mode lives under the page's own prefix (`/view/_panel` or
 // `/embed/_panel`), so entering/refreshing/exiting stays in the active mode.
@@ -211,6 +212,16 @@ function Pane({ node, ctx }: { node: LayoutLeaf; ctx: PaneCtx }) {
             <ShareIcon size={14} />
           </button>
         </div>
+        {/* Template-mode menu for the pane's live location. Mode switch is an
+            imperative src write (same as crumb clicks); onLoad then re-syncs
+            the leaf + `_layout` from the reloaded pane. */}
+        <PaneModeMenu
+          path={loc.path}
+          query={loc.query}
+          onNavigate={(q) => {
+            if (iframeRef.current) iframeRef.current.src = embedSrc(loc.path, q);
+          }}
+        />
         <button className="panel-btn split-right" title="Split right" onClick={() => ctx.split(node.id, "row")}>
           {ICONS.splitRight}
         </button>

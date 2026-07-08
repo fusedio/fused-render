@@ -1200,6 +1200,80 @@ body.embed .preview-browse-chip:hover {
   background: rgba(255, 255, 255, 0.08);
 }
 
+/* Pane/tab template-mode menu: the trigger shows the active mode's icon; the
+   dropdown lists icon + name per mode. Dropdown is position:fixed (inline
+   top/left from the trigger's rect) — .panel-pane clips overflow, and the tab
+   bar would too. */
+.pane-mode-menu {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.pane-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 4px 5px;
+  border-radius: 4px;
+}
+
+.pane-mode-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--fg);
+}
+
+/* Inside a tab button: match the tab-open-plain / tab-close chrome sizing. */
+.tab .pane-mode-btn {
+  width: 15px;
+  height: 15px;
+  padding: 0;
+}
+
+.tab .pane-mode-btn .mode-icon-mask,
+.tab .pane-mode-btn .mode-icon-placeholder,
+.tab .pane-mode-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+.pane-mode-dropdown {
+  position: fixed;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 120px;
+  padding: 4px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.pane-mode-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pane-mode-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--fg);
+}
+
+.pane-mode-item.active {
+  color: var(--fg);
+}
+
 .tab-add {
   flex: 0 0 auto;
   background: none;

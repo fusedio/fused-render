@@ -32,6 +32,7 @@ import {
 import type { Config } from "../lib/api";
 import type { Bookmark } from "../lib/bookmarks";
 import { ShareIcon } from "../components/ShareIcon";
+import PaneModeMenu from "../components/PaneModeMenu";
 
 // Tab mode lives under the page's own prefix, like panel mode.
 const TAB_PATH = (IS_EMBED ? "/embed/" : "/view/") + "_tab";
@@ -114,7 +115,19 @@ function tabLabel(t: LayoutLeaf): string {
 // One keep-alive tab iframe. src frozen at mount; visibility via display so
 // hidden tabs keep receiving fused:urlchange (the runtime listens on the top
 // window, D46) and stay param-synced while hidden.
-function TabFrame({ tab, active, onLocSync }: { tab: LayoutLeaf; active: boolean; onLocSync: () => void }) {
+function TabFrame({
+  tab,
+  active,
+  onLocSync,
+  onFrame,
+}: {
+  tab: LayoutLeaf;
+  active: boolean;
+  onLocSync: () => void;
+  // Registers the iframe with the tab bar's frame map so the bar's mode menu
+  // can write src imperatively (the iframe must never re-render).
+  onFrame: (el: HTMLIFrameElement | null) => void;
+}) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const hookRef = useRef<UrlChangeHook | null>(null);
   const srcRef = useRef<string | null>(null);
@@ -147,7 +160,10 @@ function TabFrame({ tab, active, onLocSync }: { tab: LayoutLeaf; active: boolean
 
   return (
     <iframe
-      ref={iframeRef}
+      ref={(el) => {
+        iframeRef.current = el;
+        onFrame(el);
+      }}
       src={srcRef.current}
       onLoad={onLoad}
       style={active ? undefined : { display: "none" }}
@@ -189,6 +205,10 @@ export default function Tabs({ config }: { config: Config }) {
 
   const tabsRef = useRef<LayoutLeaf[]>(tabs);
   tabsRef.current = tabs;
+
+  // Live iframe per tab id, registered by TabFrame — the bar's mode menu
+  // writes src on these imperatively (never through React).
+  const framesRef = useRef<Map<number, HTMLIFrameElement | null>>(new Map());
 
   // Tab list encodes as a flat comma row (TM-2). Re-encode `_layout`, passing
   // the remaining top-level params through (no user params live there in tab
@@ -284,6 +304,19 @@ export default function Tabs({ config }: { config: Config }) {
             }}
           >
             <span className="tab-label">{tabLabel(t)}</span>
+            {/* Template-mode menu, active tab only (its iframe is always
+                mounted). Mode switch writes the tab iframe's src imperatively;
+                the load re-syncs the leaf + `_layout` (onLocSync). */}
+            {t.id === activeId && (
+              <PaneModeMenu
+                path={t.path}
+                query={t.query}
+                onNavigate={(q) => {
+                  const f = framesRef.current.get(t.id);
+                  if (f) f.src = embedSrc(t.path, q);
+                }}
+              />
+            )}
             <span
               className="tab-open-plain"
               title="Open in a new tab"
@@ -318,7 +351,13 @@ export default function Tabs({ config }: { config: Config }) {
         {tabs
           .filter((t) => mountedIds.includes(t.id))
           .map((t) => (
-            <TabFrame key={t.id} tab={t} active={t.id === activeId} onLocSync={onLocSync} />
+            <TabFrame
+              key={t.id}
+              tab={t}
+              active={t.id === activeId}
+              onLocSync={onLocSync}
+              onFrame={(el) => framesRef.current.set(t.id, el)}
+            />
           ))}
       </div>
     </div>
