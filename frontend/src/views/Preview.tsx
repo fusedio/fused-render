@@ -61,6 +61,11 @@ function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: St
   };
 
   const doSetMode = async (next: string) => {
+    // The flush below is async: if the user navigates to ANOTHER file while
+    // it's in flight, writing `_mode` against the then-current location would
+    // stamp the switch onto the wrong file's URL. Capture where the switch
+    // started and abort if the location moved.
+    const startedAt = location.pathname;
     // Switching modes REMOUNTS the preview iframe (React key change) — an
     // editor buffer with edits newer than the last autosave would be silently
     // discarded. Same-origin, so ask the iframe to flush first (the code
@@ -82,6 +87,7 @@ function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: St
         return;
       }
     }
+    if (location.pathname !== startedAt) return; // navigated away mid-flush
     const params = new URLSearchParams(location.search);
     // Selecting the default mode DELETES _mode (clean URLs); any other mode sets it.
     if (next === templates[0].mode) params.delete("_mode");
