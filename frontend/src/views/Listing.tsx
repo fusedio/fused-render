@@ -33,6 +33,15 @@ function currentQuery(): string {
   return new URLSearchParams(location.search).get("q") || "";
 }
 
+// A dot-leading query segment is explicit intent to see hidden entries (the
+// walk otherwise always prunes dot-files/dot-dirs). Matches a query that
+// starts with "." (e.g. ".fused-render") or contains a "/." dot segment
+// mid-path (e.g. "sub/.fused-render").
+function queryWantsHidden(rawQuery: string): boolean {
+  const q = rawQuery.trim();
+  return q.startsWith(".") || q.includes("/.");
+}
+
 function sortEntries(entries: FsEntry[], sort: SortKey, order: SortOrder): FsEntry[] {
   const flip = order === "desc" ? -1 : 1;
   const byName = (a: FsEntry, b: FsEntry) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
@@ -92,17 +101,19 @@ type ListingState =
   | { status: "ok"; entries: FsEntry[] }
   | { status: "error"; message: string };
 
-// Cached recursive walk. Non-idle states are tagged with the (fsPath, refresh)
-// they were fetched for; `validWalk` below compares that tag against the
-// current fsPath/refresh at render time so a stale walk (folder changed, dir
-// watch fired) is treated as idle synchronously — no waiting on an effect to
-// clear it, which would otherwise let one render score search results
-// against the previous tree.
+// Cached recursive walk. Non-idle states are tagged with the (fsPath, refresh,
+// hidden) they were fetched for; `validWalk` below compares that tag against
+// the current fsPath/refresh/hidden at render time so a stale walk (folder
+// changed, dir watch fired, or the query flipped between dot/non-dot) is
+// treated as idle synchronously — no waiting on an effect to clear it, which
+// would otherwise let one render score search results against the previous
+// tree (or the wrong hidden/non-hidden dataset — a hidden and non-hidden walk
+// are different datasets over the same folder).
 type WalkState =
   | { status: "idle" }
-  | { status: "loading"; forPath: string; forRefresh: number }
-  | { status: "ok"; result: WalkResult; forPath: string; forRefresh: number }
-  | { status: "error"; message: string; forPath: string; forRefresh: number };
+  | { status: "loading"; forPath: string; forRefresh: number; forHidden: boolean }
+  | { status: "ok"; result: WalkResult; forPath: string; forRefresh: number; forHidden: boolean }
+  | { status: "error"; message: string; forPath: string; forRefresh: number; forHidden: boolean };
 
 const IDLE_WALK: WalkState = { status: "idle" };
 
@@ -128,14 +139,21 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   const q = deferredQuery.trim();
   const searching = q !== "";
   const isStale = query.trim() !== q;
+  // Explicit dot-intent (deferred, so it lags typing the same way `q` does):
+  // a dot-leading query or a "/." mid-path segment asks to see hidden entries.
+  const hidden = queryWantsHidden(deferredQuery);
 
   // Synchronous validity check: a non-idle walk only counts if it was fetched
-  // for the folder/refresh generation we're currently rendering. This makes
-  // invalidation immediate on the render where `refresh` bumps, instead of
-  // depending on the clearing effect below to run first (which left one
-  // render scoring search results against the stale tree).
+  // for the folder/refresh/hidden generation we're currently rendering. This
+  // makes invalidation immediate on the render where `refresh` bumps (or
+  // `hidden` flips), instead of depending on the clearing effect below to run
+  // first (which left one render scoring search results against the stale
+  // tree, or against the wrong hidden/non-hidden dataset).
   const validWalk: WalkState =
-    walk.status === "idle" || (walk.forPath === fsPath && walk.forRefresh === refresh) ? walk : IDLE_WALK;
+    walk.status === "idle" ||
+    (walk.forPath === fsPath && walk.forRefresh === refresh && walk.forHidden === hidden)
+      ? walk
+      : IDLE_WALK;
 
   useEffect(() => {
     let alive = true;
@@ -204,14 +222,15 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     let alive = true;
     const forPath = fsPath;
     const forRefresh = refresh;
-    walkDir(fsPath).then(
-      (result) => alive && setWalk({ status: "ok", result, forPath, forRefresh }),
-      (err: Error) => alive && setWalk({ status: "error", message: err.message, forPath, forRefresh })
+    const forHidden = hidden;
+    walkDir(fsPath, { hidden: forHidden }).then(
+      (result) => alive && setWalk({ status: "ok", result, forPath, forRefresh, forHidden }),
+      (err: Error) => alive && setWalk({ status: "error", message: err.message, forPath, forRefresh, forHidden })
     );
     return () => {
       alive = false;
     };
-  }, [validWalk.status, fsPath, refresh]);
+  }, [validWalk.status, fsPath, refresh, hidden]);
 
   // A query restored from the URL needs the walk even without a focus event;
   // this also covers refetch-on-refresh while search is active, since a
@@ -223,16 +242,18 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   // instead: prefetchWalk (focus) and setQuery (typing) below.
   useEffect(() => {
     if (searching && validWalk.status === "idle") {
-      setWalk({ status: "loading", forPath: fsPath, forRefresh: refresh });
+      setWalk({ status: "loading", forPath: fsPath, forRefresh: refresh, forHidden: hidden });
     }
-  }, [searching, validWalk.status, fsPath, refresh]);
+  }, [searching, validWalk.status, fsPath, refresh, hidden]);
 
   // Retry from "idle" (first focus) or "error" (a prior fetch failed) — treat
   // both as "no usable walk cached yet". Called from onFocus, a genuine user
-  // gesture, so this can't spin in a loop the way an effect could.
+  // gesture, so this can't spin in a loop the way an effect could. Always
+  // non-hidden: focus fires before the user has typed a dot-leading query, so
+  // there's no hidden intent yet to honor.
   const prefetchWalk = () => {
     if (validWalk.status === "idle" || validWalk.status === "error") {
-      setWalk({ status: "loading", forPath: fsPath, forRefresh: refresh });
+      setWalk({ status: "loading", forPath: fsPath, forRefresh: refresh, forHidden: false });
     }
   };
 
@@ -241,8 +262,11 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     setSearchSort(null); // a new query drops back to relevance order
     // Editing the query is also a user gesture: if the last walk attempt
     // failed, give it another shot instead of leaving search dead forever.
+    // Tag with the hidden-intent of the value being typed now (not the stale
+    // `hidden` closure, which still reflects the not-yet-caught-up deferred
+    // query) so the retry doesn't fetch the wrong dataset.
     if (validWalk.status === "error") {
-      setWalk({ status: "loading", forPath: fsPath, forRefresh: refresh });
+      setWalk({ status: "loading", forPath: fsPath, forRefresh: refresh, forHidden: queryWantsHidden(value) });
     }
     const params = new URLSearchParams(location.search);
     if (value) params.set("q", value);

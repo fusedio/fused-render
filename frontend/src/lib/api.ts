@@ -78,8 +78,10 @@ export function listDir(fsPath: string): Promise<ListResult> {
   return getJson<ListResult>("/api/fs/list?path=" + encodeURIComponent(fsPath));
 }
 
-export function walkDir(fsPath: string): Promise<WalkResult> {
-  return getJson<WalkResult>("/api/fs/walk?path=" + encodeURIComponent(fsPath));
+export function walkDir(fsPath: string, opts?: { hidden?: boolean }): Promise<WalkResult> {
+  let url = "/api/fs/walk?path=" + encodeURIComponent(fsPath);
+  if (opts?.hidden) url += "&hidden=1";
+  return getJson<WalkResult>(url);
 }
 
 export function statPath(fsPath: string): Promise<StatResult> {

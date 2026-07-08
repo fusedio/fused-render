@@ -63,3 +63,36 @@ def test_walk_truncation_flag(tmp_path, monkeypatch):
     data = _client(tmp_path).get("/api/fs/walk", params={"path": str(tmp_path)}).json()
     assert data["truncated"] is True
     assert len(data["entries"]) == 3
+
+
+def test_walk_hidden_returns_dot_entries_and_descends_dot_dirs(tmp_path):
+    _make_tree(tmp_path)
+    data = (
+        _client(tmp_path)
+        .get("/api/fs/walk", params={"path": str(tmp_path), "hidden": "1"})
+        .json()
+    )
+    rels = {e["rel"] for e in data["entries"]}
+    assert ".secret" in rels
+    assert ".hidden" in rels
+    assert ".hidden/nope.txt" in rels  # descended into the dot-dir
+    # non-hidden entries are still present alongside them
+    assert {"a.txt", "sub", "sub/b.txt", "sub/deep", "sub/deep/c.txt"} <= rels
+
+
+def test_walk_hidden_still_prunes_ignored_dirs(tmp_path):
+    _make_tree(tmp_path)
+    data = (
+        _client(tmp_path)
+        .get("/api/fs/walk", params={"path": str(tmp_path), "hidden": "1"})
+        .json()
+    )
+    rels = {e["rel"] for e in data["entries"]}
+    assert not any("node_modules" in r for r in rels)  # ignored dir never descended
+
+
+def test_walk_default_still_prunes_hidden(tmp_path):
+    _make_tree(tmp_path)
+    data = _client(tmp_path).get("/api/fs/walk", params={"path": str(tmp_path)}).json()
+    rels = {e["rel"] for e in data["entries"]}
+    assert not any(r.startswith(".") or "/." in r for r in rels)

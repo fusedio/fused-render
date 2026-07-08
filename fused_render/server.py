@@ -522,12 +522,18 @@ def create_app(start_dir: str) -> FastAPI:
         return {"path": path, "entries": entries}
 
     @app.get("/api/fs/walk")
-    def api_fs_walk(path: str):
+    def api_fs_walk(path: str, hidden: str = "0"):
         # Recursive listing of a directory subtree, for the explorer search
         # (flat, ranked client-side). Prunes hidden entries (leading `.`) and
         # WALK_IGNORE_DIRS from descent, skips hidden files, and never follows
         # symlinks. Capped at WALK_MAX_ENTRIES; `rel` is posix-relative to
         # `path`. Unreadable entries are skipped silently (matches /api/fs/list).
+        #
+        # `hidden=1` (explicit intent: the user typed a dot-leading query)
+        # includes dot-files and descends into dot-dirs. WALK_IGNORE_DIRS is
+        # always pruned regardless — those trees are noise, not "hidden data",
+        # and letting hidden=1 descend into node_modules would blow the cap.
+        include_hidden = hidden == "1"
         if not os.path.isdir(path):
             return _error(f"not a directory: {path}", status=400)
         entries = []
@@ -536,10 +542,12 @@ def create_app(start_dir: str) -> FastAPI:
             # Mutating dirs in place both drops them from descent and, since we
             # emit from the (already pruned) list, keeps them out of the results.
             dirs[:] = sorted(
-                d for d in dirs if not d.startswith(".") and d not in WALK_IGNORE_DIRS
+                d
+                for d in dirs
+                if (include_hidden or not d.startswith(".")) and d not in WALK_IGNORE_DIRS
             )
             batch = [(d, True) for d in dirs] + [
-                (f, False) for f in sorted(files) if not f.startswith(".")
+                (f, False) for f in sorted(files) if include_hidden or not f.startswith(".")
             ]
             for name, is_dir in batch:
                 full = os.path.join(root, name)
