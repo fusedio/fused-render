@@ -27,7 +27,7 @@ fused-render/
 │       │   └── hooks.ts        # useNavEpoch/useUrlVersion/useBookmarksVersion signals
 │       ├── components/
 │       │   ├── Sidebar.tsx     # Home, bookmark rows, folders, hover card, rename, DnD
-│       │   └── Breadcrumb.tsx  # crumb bar + Bookmark/Update/Split buttons
+│       │   └── Breadcrumb.tsx  # crumb bar + Bookmark/Update/split-icon buttons
 │       └── views/
 │           ├── Listing.tsx     # dir table + sortable columns + SSE dir watch
 │           ├── Preview.tsx     # two-way dispatch: templates non-empty → TemplatePreview, else fallback
