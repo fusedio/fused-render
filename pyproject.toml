@@ -14,6 +14,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Test/dev tooling. `pip install -e ".[dev]"` then `pytest`.
+dev = [
+    "pytest",
+]
 # Baked into the bundled CPython of the .app (SPEC DM-2): users of the packaged
 # app cannot pip install, so the interpreter ships with the popular data stack.
 # Dev installs: pip install -e ".[bundled]"
@@ -36,10 +40,23 @@ bundled = [
 app = [
     "rumps",
 ]
+# Optional execution engine (D69): when installed, /api/run runs code through
+# the fused local compute backend; absent, the built-in executor runs. Pinned
+# to the same wheel `openfused_server` serves hosted pages from, so local and
+# hosted execution stay on one build. The engine needs 3.11+; on 3.10 the
+# marker skips it and the built-in executor runs.
+fused = [
+    'fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.2.post5-py3-none-any.whl ; python_version >= "3.11"',
+]
 
 [project.scripts]
 fused-render = "fused_render.cli:main"
 fused-render-app = "fused_render.app:main"
+
+[tool.hatch.metadata]
+# The `fused` extra pins a direct wheel URL (not a PyPI dependency) — hatchling
+# refuses that unless explicitly allowed.
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["fused_render"]

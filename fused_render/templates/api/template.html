@@ -198,6 +198,26 @@
       }
 
       if (!info.function) {
+        if (info.static_result) {
+          // No main()/@fused.udf, but a static `result = ...` still runs
+          // under the fused engine (engine.py leaves it untouched) — offer
+          // Execute with no params rather than reporting "nothing to execute".
+          html += `<div class="card">
+            <div class="card-head">
+              <span class="badge">RUN</span>
+              <span class="fn-name">result = &hellip;</span>
+            </div>
+            <div class="card-body"><span style="color:#9aa0a6">Static script — assigns <code>result</code> directly, no parameters.</span></div>
+            <div id="runbar">
+              <button id="execute">Execute</button>
+              <span id="runmeta"></span>
+            </div>
+          </div>
+          <div id="responsewrap"></div>`;
+          page.innerHTML = html;
+          document.getElementById("execute").addEventListener("click", execute);
+          return;
+        }
         html += `<div id="status">No <code>main()</code> function in this file — nothing to execute. Define one to get a form here (see script contract, SPEC §5).</div>`;
         page.innerHTML = html;
         return;
@@ -333,7 +353,17 @@
         return;
       }
       try {
-        const info = await fused.runPython("./inspector.py", { file });
+        // Entrypoint resolution depends on the active engine (PY-12/PY-13):
+        // under the fused engine a @fused.udf-decorated function wins; the
+        // builtin executor only ever calls main(). Pass the engine so the
+        // form always describes the function that will actually run — a
+        // guessed default here could describe a different function than the
+        // one /api/run actually invokes, so a failed lookup is a hard error
+        // rather than a silent fallback.
+        const configRes = await fetch("/api/config");
+        if (!configRes.ok) throw new Error("could not determine execution engine (/api/config failed)");
+        const engine = (await configRes.json()).engine;
+        const info = await fused.runPython("./inspector.py", { file, engine });
         if (info.parse_error) {
           page.innerHTML = `<div id="status" class="error">Syntax error — ${escapeHtml(info.parse_error)}\n\nFix it in the code mode; this view reloads on save.</div>`;
           return;

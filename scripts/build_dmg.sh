@@ -6,7 +6,7 @@
 # -> pip install fused-render[bundled,app] + py2app + dmgbuild into that venv
 # -> generate the app icon -> run py2app -> codesign -> dmgbuild -> notarize.
 #
-# Signing (step 5, D69) is credential-driven: with a Developer ID identity in
+# Signing (step 5, D73) is credential-driven: with a Developer ID identity in
 # your keychain the bundle is signed with the hardened runtime (and optionally
 # notarized + stapled); with no identity it falls back to the old ad-hoc sign
 # so a plain `bash scripts/build_dmg.sh` still works for local testing. See
@@ -242,12 +242,12 @@ echo "    $SMOKE_OUT"
 rm -rf "$SMOKE_DIR"
 
 # ---------------------------------------------------------------------------
-# 5. Code signing (D69, realizes the D35 hook). Two modes:
+# 5. Code signing (D73, realizes the D35 hook). Two modes:
 #
 #    - Developer ID (recommended for distribution): signs the whole bundle
 #      inside-out with the hardened runtime, a secure timestamp, and the
 #      entitlements the bundled Python + native libs need. This is the
-#      prerequisite for notarization (step 6b) AND the general form of the D68
+#      prerequisite for notarization (step 6b) AND the general form of the D72
 #      Downloads-prompt fix: with one stable Team ID signing the app stub and
 #      the nested `python` the executor spawns, macOS attributes that worker's
 #      protected-folder access to the app, so the permission prompt appears
@@ -371,7 +371,7 @@ rm -f "$DMG_PATH"
 "$BUILD_VENV/bin/dmgbuild" -s "$DMGBUILD_SETTINGS" -D app="$APP_DIR" "$APP_NAME" "$DMG_PATH"
 
 # ---------------------------------------------------------------------------
-# 6b. Notarize + staple (optional, D69). Runs only when a notarytool keychain
+# 6b. Notarize + staple (optional, D73). Runs only when a notarytool keychain
 #     profile is configured; requires a Developer ID signature (ad-hoc can't be
 #     notarized). Submits the finished DMG, waits for Apple's verdict, and
 #     staples the ticket so the DMG passes Gatekeeper on download with no

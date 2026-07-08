@@ -2,7 +2,7 @@
 
 `main(**params)` is called from two places that must bind arguments
 identically: the isolated worker subprocess (`_child.py`, user code) and the
-in-process runner for first-party helpers (`executor.py`, D68). Keeping the
+in-process runner for first-party helpers (`executor.py`, D72). Keeping the
 coercion in one module means both paths agree on how string params from the URL
 map onto annotated signatures.
 """

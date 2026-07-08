@@ -150,7 +150,7 @@ def main(city: str = "oslo", limit: int = 100):
 
 ### 5.3 Execution environment
 
-- **PY-6** **DECIDED (v1):** **user** code executes in a **fresh subprocess per call** — always-fresh code, zero stale state, trivial timeout/kill; a crash or `sys.exit` cannot take down the server. Cost: interpreter + import time on every call. A warm worker pool is the designated v2 upgrade if interactivity demands it (API unchanged). **Exception (D68):** the first-party helpers shipped under `fused_render/templates/` (the `table`/`csv`/`xlsx` readers and the `api` inspector) run **in the server process**, not a subprocess — they are trusted and never import/exec user code, and running them in-process means the protected-folder file access they perform reuses the app's macOS TCC grant instead of re-prompting on every call. User code (the `api` Run button, user-authored template readers) is unaffected and stays subprocess-isolated.
+- **PY-6** **DECIDED (v1):** **user** code executes in a **fresh subprocess per call** — always-fresh code, zero stale state, trivial timeout/kill; a crash or `sys.exit` cannot take down the server. Cost: interpreter + import time on every call. A warm worker pool is the designated v2 upgrade if interactivity demands it (API unchanged). **Exception (D72):** the first-party helpers shipped under `fused_render/templates/` (the `table`/`csv`/`xlsx` readers and the `api` inspector) run **in the server process**, not a subprocess — they are trusted and never import/exec user code, and running them in-process means the protected-folder file access they perform reuses the app's macOS TCC grant instead of re-prompting on every call. User code (the `api` Run button, user-authored template readers) is unaffected and stays subprocess-isolated.
 - **PY-7** The worker's Python interpreter/venv is configurable; default is the environment the server was launched from. (User installs pandas etc. there.)
 - **PY-8** Working directory of execution = the Python file's directory, so relative data paths in user code behave intuitively.
 - **PY-9** Module reload: automatic — every call is a fresh process, so edits to the .py file take effect on the next call.
@@ -171,6 +171,12 @@ Deferred to later milestones (needed for data templates):
 ### 5.5 Caching — follow-up, not in v1
 
 - **PY-11** Optional per-call cache keyed by `(resolved py path, file mtime, params)`. Opt-in via config (per-directory or global). Keeps re-renders during param tweaking snappy.
+
+### 5.6 Optional fused engine (D69)
+
+- **PY-12** `/api/run` executes the built-in executor **by default**, regardless of whether the `fused` package is importable. `FUSED_RENDER_ENGINE=auto` opts in to running code through its local compute backend (`engine.py`) instead — fresh subprocess per call in a temp exec dir (PY-6 semantics preserved), PEP 723 `# /// script` inline requirements resolved into a cached venv (plus a default data-stack set mirroring the `bundled` extra), params delivered via `_params.json` — falling back to the built-in executor if `fused` isn't importable; `FUSED_RENDER_ENGINE=fused` requires it (startup error if missing); `=builtin` (or unset) always uses the built-in executor (D70). The active engine is reported in `GET /api/config` (`engine`) and logged at startup — the choice changes the code contract, so it is never silent.
+- **PY-13** **Code contract under the fused engine:** a function decorated with **`@fused.udf`** — any name, the last decorated one is the entrypoint — receiving params as **raw JSON values** (no annotation coercion; the calling JS owns types); or a plain script assigning **`result = ...`**. A bare **`main()`** remains supported as a compat bridge with PY-4 coercion and PY-8 cwd semantics, so pages and the built-in templates behave identically under either engine. A file with none of the three → the PY-1 structured error, extended to name the alternatives.
+- **PY-14** Both engines return **one wire shape** — `{ok, result, error: {type, message, traceback}, stdout}` (the fused engine adds `stderr`/`duration_ms`) — so `runtime.js` and templates never see which ran. Tracebacks under the fused engine point at the user's real file (the source is compiled as its own unit under its own filename); backend/wrapper plumbing frames are stripped.
 
 ---
 
@@ -292,7 +298,7 @@ Distribute as a DMG containing a menu-bar app; all UI stays in the browser.
 - **DM-1** **DECIDED (v2, D33):** the `.app` is built by **py2app** from a framework-build python (Homebrew `python@3.12`, bootstrapped by the build script). py2app ships a real re-invokable interpreter in-bundle (`Contents/MacOS/python`) — `sys.executable` subprocess executor works unchanged — and its compiled stub gives proper LaunchServices/AppKit process identity (the earlier hand-rolled bash-shim caused flaky NSStatusItem behavior under Finder launches).
 - **DM-2** **DECIDED:** user `runPython` code executes on the **bundled interpreter only**. The `[bundled]` extra ships preinstalled (numpy, pandas, requests, duckdb, polars, matplotlib, scipy, pillow, openpyxl, shapely, geopandas + core pyarrow). py2app note: these are force-copied via `packages` — the executor imports them only in child processes, so import tracing can't see them. Known gap: `mpl_toolkits` (3D axes) excluded (namespace-package vs py2app limitation).
 - **DM-3** **DECIDED (v2, D34):** regular app — **Dock icon AND menu bar ✦** (Open in browser / Copy URL / Quit). No LSUIElement. Dock right-click → Quit is the discoverable lifecycle path.
-- **DM-4** **DECIDED (v2, D69):** signing is credential-driven in `scripts/build_dmg.sh` — a **Developer ID** identity in the keychain (auto-detected or via `FUSED_RENDER_CODESIGN_IDENTITY`) triggers hardened-runtime, inside-out signing + optional notarization (`FUSED_RENDER_NOTARY_PROFILE`); with no identity it **ad-hoc signs** (local testing, unchanged). Developer-ID signing is also the general fix for the repeated Downloads/Desktop/Documents prompt (one Team ID unifies the app + its executor subprocess, complementing the D68 in-process reader split). Details: `docs/signing.md`. Supersedes the earlier "Briefcase external-app" plan (D35 — Briefcase's template breaks `sys.executable`).
+- **DM-4** **DECIDED (v2, D73):** signing is credential-driven in `scripts/build_dmg.sh` — a **Developer ID** identity in the keychain (auto-detected or via `FUSED_RENDER_CODESIGN_IDENTITY`) triggers hardened-runtime, inside-out signing + optional notarization (`FUSED_RENDER_NOTARY_PROFILE`); with no identity it **ad-hoc signs** (local testing, unchanged). Developer-ID signing is also the general fix for the repeated Downloads/Desktop/Documents prompt (one Team ID unifies the app + its executor subprocess, complementing the D72 in-process reader split). Details: `docs/signing.md`. Supersedes the earlier "Briefcase external-app" plan (D35 — Briefcase's template breaks `sys.executable`).
 - **DM-5** Launch flow: pidfile+portfile in `~/Library/Application Support/fused-render/`; liveness probe = GET `/` (file-backed, catches zombies); already running ⇒ open browser only; else start (8765, fall forward to 8775), write pidfile, open browser.
 - **DM-6** **DECIDED (v2, D35):** DMG built by **dmgbuild** (app + Applications symlink, UDZO) orchestrated by `scripts/build_dmg.sh`; ~270 MB compressed.
 - **DM-7** `fused_render/app.py`: menu-bar entry point (uvicorn on a daemon thread); py2app entry = `scripts/app_entry.py`; build spec = `scripts/setup_py2app.py`. CLI (`fused-render`) remains for dev.
@@ -509,3 +515,44 @@ Element anchoring makes no sense inside a text editor. On editor surfaces, annot
 - **AN-21** **Re-resolution:** on load, if the doc slice at the stored range still matches `quote` → attached. Else search the doc for `quote` (first match) → re-anchor in memory (URL rewritten only on the next actual write). No match → detached tray (AN-14 behavior).
 - **AN-22** Edits made outside annotate mode may shift ranges; comments re-resolve by quote on the next annotate session. Accepted drift — the quote is the truth, the line/ch pair is a hint.
 - **AN-23** The vendored CM bundle (`scripts/vendor-codemirror/entry.js`) gains `Decoration`, `StateField`, `StateEffect`, `RangeSet` exports; rebuilt via `build.sh` (Node 22).
+
+## 18. Export — Portable Bundles for Hosted Serving (M10)
+
+Goal: pack a renderable page into a portable *bundle* that a **separate** hosting
+layer (the `fused` wheel's `build_html_artifact`) can serve — without weakening the
+local-only invariant (§1). Export is a **local, offline call on the already-running
+server** (`POST /api/export {"page", "out"}`, both absolute paths): it uploads
+nothing and reaches no network — it writes the bundle to a local directory, the same
+as every other filesystem-touching endpoint. fused-render itself still hosts
+nothing. Full detail: `docs/EXPORT.md`.
+
+### 18.1 Bundle format
+
+- **EX-1** A bundle is a directory holding `page.html` (the page verbatim),
+  `manifest.json` (the hosting contract), `code/<name>.py` (one per `runPython`
+  target), and `assets/<key>` (one per `rawUrl`/`readFile` target).
+- **EX-2** `manifest.json` (`{"fused_render_bundle": 1, "page", "entrypoints",
+  "assets"}`) maps each `runPython` literal path to a served route name + bundled
+  file, and each `rawUrl`/`readFile` literal path to an asset key + bundled file. The
+  hosting layer wires the served page's runtime from this map — it never re-parses
+  the HTML.
+
+### 18.2 Portable subset
+
+- **EX-3** Only the transport-agnostic part of the injected `window.fused` API is
+  portable: `runPython` (→ a served route the page posts to), `rawUrl`/`readFile`
+  (→ read-only bundled assets), and `params` (pure client-side URL state, unchanged).
+  `writeFile`, `stat`, and SSE live-reload are **unsupported** — a hosted artifact is
+  immutable and has no filesystem behind it.
+
+### 18.3 Static resolution & fail-loud
+
+- **EX-4** Every `runPython`/`rawUrl`/`readFile` path must be a **string literal**
+  resolvable at build time. A computed path, an unsupported API call, an absolute or
+  `..`-escaping path, or a missing target is a **blocking error** — export writes
+  nothing and reports all problems at once, rather than shipping a page whose calls
+  404 when hosted.
+- **EX-5** Route names derive from the `.py` stem (`sine.py` → `sine`), are prefixed
+  `run-` when they'd collide with a reserved serve route (`data`, `health`, the
+  `_`-prefixed control/shell/asset routes), and are suffixed `-2`, `-3`, … on
+  duplicate stems — so the map is always valid and injective.

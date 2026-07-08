@@ -3,7 +3,7 @@
 `scripts/build_dmg.sh` signs `FusedRender.app` using a **Developer ID identity
 from your keychain**, and can **notarize + staple** the DMG. Both are optional:
 with no credentials the build ad-hoc signs (local testing only, unchanged from
-before). This is the D69 realization of the D35 "future signing hook".
+before). This is the D73 realization of the D35 "future signing hook".
 
 Why bother, beyond Gatekeeper: a Developer ID signature is also what stops the
 **repeated Downloads/Desktop/Documents permission prompts**. The executor runs
@@ -12,7 +12,7 @@ ad-hoc signed, macOS won't attribute that helper's file access to the app, so
 it re-prompts every call. One stable Team ID signing the whole bundle makes the
 subprocess part of the same app identity → the prompt appears **once**. (The
 built-in table/csv/xlsx readers already avoid this by running in-process — see
-DECISIONS D68 — but signing is what covers user scripts too.)
+DECISIONS D72 — but signing is what covers user scripts too.)
 
 ## TL;DR
 

@@ -1,6 +1,6 @@
 """Runs a Python file's main() and returns its JSON result.
 
-Two execution paths (D68):
+Two execution paths (D72):
 
 - **User code** — a script the user is running (the `api` template's Run
   button) or a user-authored template's reader — runs in a **fresh isolated
@@ -19,12 +19,15 @@ Two execution paths (D68):
 """
 import importlib.util
 import json
+import logging
 import os
 import subprocess
 import sys
 import traceback
 
 from ._binding import bind_params
+
+logger = logging.getLogger(__name__)
 
 CHILD = os.path.join(os.path.dirname(__file__), "_child.py")
 # Realpath so a symlinked helper can't smuggle a user path past the check.
@@ -43,7 +46,7 @@ def _error(err_type: str, message: str, detail: str = "") -> dict:
 def _is_builtin_helper(path: str) -> bool:
     """True when `path` is one of the first-party helper scripts we ship under
     templates/. Those are trusted and never import/exec user code, so they run
-    in-process (D68). A user template's reader lives under ~/.fused-render/, and
+    in-process (D72). A user template's reader lives under ~/.fused-render/, and
     a user script runs from wherever it is — neither is under here, so both stay
     subprocess-isolated.
     """
@@ -61,16 +64,18 @@ def _run_inprocess(path: str, params: dict) -> dict:
     tearing down the server thread. No timeout: these are bounded local-file
     reads / ast parses, not arbitrary user code.
 
-    Built-in helpers don't write to stdout; stdout is deliberately NOT captured
-    (redirecting sys.stdout is process-global and would race across the
-    threadpool that FastAPI dispatches these calls on).
+    Thread-safe under FastAPI's threadpool (RH-4): it mutates no process-global
+    state. The helper module is built with `module_from_spec` + `exec_module`
+    and is *never* inserted into `sys.modules`, so the fixed spec name is inert
+    and concurrent calls get independent module objects. `sys.path` is left
+    untouched — built-in helpers are self-contained (stdlib + the data stack,
+    never a sibling imported by name), so there is nothing to add, and mutating
+    the shared path would race concurrent imports. stdout is likewise NOT
+    captured: helpers don't print, and redirecting the process-global
+    `sys.stdout` would race concurrent calls.
     """
-    module_dir = os.path.dirname(path)
     spec = importlib.util.spec_from_file_location("__fused_builtin__", path)
     mod = importlib.util.module_from_spec(spec)
-    # Let a helper import a sibling by name without permanently mutating the
-    # server's import path (none do today; cheap insurance).
-    sys.path.insert(0, module_dir)
     try:
         spec.loader.exec_module(mod)
         fn = getattr(mod, "main", None)
@@ -97,19 +102,32 @@ def _run_inprocess(path: str, params: dict) -> dict:
             },
             "stdout": "",
         }
-    finally:
-        try:
-            sys.path.remove(module_dir)
-        except ValueError:
-            pass
 
 
 def run_python(path: str, params: dict, timeout: float = DEFAULT_TIMEOUT) -> dict:
+    result = _run_python(path, params, timeout)
+    if not result.get("ok"):
+        # A failed run is the common "something wrong with right-click open"
+        # symptom, and the browser only flashes it in an error overlay. Record
+        # it here — with the worker's traceback in `detail` — so the log file
+        # explains a failure the user has since clicked away from.
+        err = result.get("error") or {}
+        logger.warning(
+            "run failed for %s: %s: %s\n%s",
+            path,
+            err.get("type", "Error"),
+            err.get("message", ""),
+            err.get("traceback", ""),
+        )
+    return result
+
+
+def _run_python(path: str, params: dict, timeout: float) -> dict:
     if not os.path.isfile(path):
         return _error("FileNotFoundError", f"no such Python file: {path}")
 
     # First-party helper -> in-process so its protected-folder access reuses
-    # the app's TCC grant (D68). Everything else is user code -> subprocess.
+    # the app's TCC grant (D72). Everything else is user code -> subprocess.
     if _is_builtin_helper(path):
         return _run_inprocess(path, params or {})
 
@@ -124,6 +142,10 @@ def run_python(path: str, params: dict, timeout: float = DEFAULT_TIMEOUT) -> dic
         )
     except subprocess.TimeoutExpired:
         return _error("TimeoutError", f"execution exceeded {timeout:g}s and was killed")
+    except OSError as e:
+        # Couldn't even spawn the worker (bad interpreter path, out of fds, …).
+        # Return the normal wire shape rather than letting it 500 unlabeled.
+        return _error("ExecutorError", f"could not start worker process: {e}")
 
     lines = proc.stdout.strip().splitlines()
     if lines:

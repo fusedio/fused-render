@@ -131,8 +131,8 @@ OPTIONS = {
         # macOS shows these strings in the TCC permission prompt when the app
         # first reads a file under a protected folder (the app browses the
         # whole filesystem by design, D2). Purpose strings don't change WHEN
-        # the prompt appears — the D68 in-process-reader split + Developer ID
-        # signing (D69) are what stop it from repeating — but a bare prompt
+        # the prompt appears — the D72 in-process-reader split + Developer ID
+        # signing (D73) are what stop it from repeating — but a bare prompt
         # with no reason reads as suspicious; these explain it.
         "NSDesktopFolderUsageDescription": (
             "FusedRender previews files you open from your Desktop."
