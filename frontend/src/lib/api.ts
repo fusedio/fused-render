@@ -57,6 +57,19 @@ async function getJson<T>(url: string): Promise<T> {
   return data as T;
 }
 
+async function putJson<T>(url: string, body: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method: "PUT",
+    // X-Fused forces a CORS preflight so a foreign page can't write blind,
+    // same D3 guard as the reveal/write POSTs.
+    headers: { "Content-Type": "application/json", "X-Fused": "1" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data as T;
+}
+
 export function getConfig(): Promise<Config> {
   return getJson<Config>("/api/config");
 }
@@ -75,4 +88,21 @@ export function statPath(fsPath: string): Promise<StatResult> {
 
 export function rawUrl(fsPath: string): string {
   return "/api/fs/raw?path=" + encodeURIComponent(fsPath);
+}
+
+// Bookmark store (server-side, ~/.fused-render/bookmarks.json). The tree shape
+// is BookmarkItem[] (lib/bookmarks.ts); kept as unknown[] here so api.ts has no
+// dependency on the bookmark data layer. `exists` is false only until the file
+// is first written — the shell's one-time localStorage-import gate.
+export interface BookmarksResult {
+  exists: boolean;
+  bookmarks: unknown[];
+}
+
+export function getBookmarks(): Promise<BookmarksResult> {
+  return getJson<BookmarksResult>("/api/bookmarks");
+}
+
+export function putBookmarks(bookmarks: unknown[]): Promise<void> {
+  return putJson<unknown>("/api/bookmarks", bookmarks).then(() => undefined);
 }

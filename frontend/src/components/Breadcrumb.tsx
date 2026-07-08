@@ -107,15 +107,15 @@ function CrumbActions({ name, onSplit }: CrumbActionsProps) {
   const showUpdate = useUpdateButton(urlVersion, bookmarksVersion);
   const starred = allBookmarks().some((b) => b.url === currentUrl());
 
-  const onBookmark = () => {
-    addBookmark(name, currentUrl());
+  const onBookmark = async () => {
+    await addBookmark(name, currentUrl());
     notifyBookmarksChanged();
   };
-  const onUpdate = () => {
+  const onUpdate = async () => {
     const armed = getArmedBookmark();
     if (!armed) return;
     const url = currentUrl();
-    updateBookmarkUrl(armed.id, url);
+    await updateBookmarkUrl(armed.id, url);
     armBookmark(armed.id, url); // re-arm against the newly saved url
     notifyBookmarksChanged();
   };
