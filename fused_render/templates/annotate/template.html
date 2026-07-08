@@ -179,7 +179,9 @@
       }
     }
     function save(arr) {
-      fused.params.set("comments", arr.length ? JSON.stringify(arr) : undefined);
+      // Always a string — the runtime's set() rejects non-strings (there is
+      // no delete API), so an emptied list persists as "[]".
+      fused.params.set("comments", JSON.stringify(arr));
       render();
     }
 
@@ -363,6 +365,20 @@
       render();
     });
     window.addEventListener("resize", () => render());
+
+    // Remount-safety relay: the shell flushes __fusedFlushEdits on the TOP
+    // preview iframe before a mode switch — but in annotate mode the live
+    // editor (if the framed view is the code template) sits one iframe
+    // deeper. Delegate so leaving annotate can't discard unsaved edits.
+    window.__fusedFlushEdits = async () => {
+      try {
+        const inner = frame.contentWindow && frame.contentWindow.__fusedFlushEdits;
+        if (typeof inner === "function") return await inner();
+      } catch (e) {
+        /* cross-origin or torn-down frame — nothing to flush */
+      }
+      return { ok: true };
+    };
     fused.params.onChange(() => {
       // A view change reframes the stage; a comments change just re-renders.
       const v = fused.params.get("view") || "";
