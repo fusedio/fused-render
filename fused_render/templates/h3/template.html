@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>H3 hex preview</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/h3-js@4.1.0/dist/h3-js.umd.js"></script>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: #e8eaed; background: #131417; font-size: 13px; }
+  #map { position: absolute; inset: 0; }
+  .panel { position: absolute; background: rgba(19,20,23,.92); border: 1px solid #2a2d33;
+    border-radius: 10px; padding: 10px 12px; backdrop-filter: blur(6px); z-index: 10; }
+  #topbar { top: 10px; left: 10px; right: 10px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  #topbar label { color: #9aa0a6; margin: 0 2px 0 6px; }
+  input[type=text], select { font: inherit; color: #e8eaed; background: #1b1d21;
+    border: 1px solid #2a2d33; border-radius: 6px; padding: 4px 8px; }
+  #path { flex: 1; min-width: 200px; }
+  button { font: inherit; color: #e8eaed; background: #2b5fd9; border: 1px solid #2b5fd9;
+    border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+  button:hover { background: #3a6ee8; }
+  button.ghost { background: transparent; border-color: #2a2d33; color: #9aa0a6; }
+  button.ghost:hover { color: #e8eaed; border-color: #4a4d55; }
+  #status { position: absolute; left: 50%; top: 64px; transform: translateX(-50%);
+    background: rgba(19,20,23,.9); border: 1px solid #2a2d33; border-radius: 999px;
+    padding: 4px 14px; color: #9aa0a6; z-index: 20; display: none; max-width: 80%; }
+  #status.err { color: #ff7b72; display: block; }
+  #metaPanel { right: 10px; top: 58px; width: 340px; max-height: 66vh; overflow: auto; display: none; }
+  #metaPanel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: #9aa0a6; margin: 10px 0 6px; display: flex; justify-content: space-between; }
+  #metaPanel h2:first-child { margin-top: 0; }
+  #metaPanel table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  #metaPanel td { padding: 3px 6px; border-bottom: 1px solid #23262c;
+    vertical-align: top; word-break: break-word; text-align: left; }
+  #metaPanel td:first-child { color: #9aa0a6; white-space: nowrap; }
+  #histPanel { right: 10px; bottom: 26px; width: 340px; user-select: none; }
+  #histPanel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: #9aa0a6; margin: 0 0 6px; display: flex; justify-content: space-between; }
+  #histCanvas { width: 100%; height: 110px; display: block; cursor: crosshair; }
+  #histStats { font-size: 11px; color: #9aa0a6; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  #histActions { display: flex; gap: 6px; margin-top: 6px; align-items: center; }
+  #histActions button { font-size: 11px; padding: 2px 8px; }
+  #legend { position: absolute; z-index: 10; left: 10px; bottom: 12px; font-size: 11px; color: #9aa0a6; }
+  #legend .bar { display: inline-block; width: 90px; height: 10px; border-radius: 3px;
+    vertical-align: -1px; margin: 0 6px;
+    background: linear-gradient(90deg,#440154,#3b528b,#21918c,#5ec962,#fde725); }
+  #mapTip { position: fixed; pointer-events: none; z-index: 40; display: none;
+    background: rgba(12,13,15,.94); border: 1px solid #3a3d44; border-radius: 6px;
+    padding: 6px 9px; font-size: 11px; font-variant-numeric: tabular-nums;
+    max-width: 300px; color: #e8eaed; }
+  #mapTip .t { color: #8ab4ff; font-weight: 600; margin-bottom: 2px; }
+  #mapTip td { padding: 1px 5px 1px 0; vertical-align: top; }
+  #mapTip td:first-child { color: #9aa0a6; white-space: nowrap; }
+  #explorer { left: 10px; top: 58px; width: 420px; max-height: 65vh; display: none; z-index: 30; }
+  #crumbs { font-size: 12px; margin-bottom: 8px; color: #9aa0a6; }
+  #crumbs a { color: #8ab4ff; cursor: pointer; }
+  #explorerList { max-height: 48vh; overflow: auto; border: 1px solid #23262c; border-radius: 6px; }
+  .row { display: flex; align-items: center; gap: 8px; padding: 5px 10px; cursor: pointer;
+    font-size: 13px; border-bottom: 1px solid #1e2025; }
+  .row:hover { background: #23262c; }
+  .row .ic { width: 18px; text-align: center; }
+  .row .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .sz { color: #6b7178; font-size: 11px; }
+  input[type=range] { vertical-align: middle; width: 90px; }
+</style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div class="panel" id="topbar">
+    <button id="browse" class="ghost">📁</button>
+    <input type="text" id="path" placeholder="/absolute/path/to/h3_cells.parquet" />
+    <button id="load">Load</button>
+    <span><label for="h3Col">h3 col</label><select id="h3Col"></select></span>
+    <span><label for="colorBy">color by</label><select id="colorBy"></select></span>
+    <span><label for="opacity">opacity</label><input type="range" id="opacity" min="0" max="100" value="75" /></span>
+    <span><label for="basemap">basemap</label><input type="checkbox" id="basemap" checked /></span>
+    <button id="metaBtn" class="ghost">info</button>
+    <button id="fitBtn" class="ghost">⤢ fit</button>
+  </div>
+
+  <div id="status"></div>
+  <div id="legend"></div>
+
+  <div class="panel" id="explorer">
+    <div id="crumbs"></div>
+    <div id="explorerList"></div>
+    <label style="display:block;margin-top:8px;color:#9aa0a6;font-size:12px">
+      <input type="checkbox" id="showAll" /> show all files</label>
+  </div>
+
+  <div class="panel" id="metaPanel"><div id="metaBody"></div></div>
+  <div class="panel" id="histPanel" style="display:none">
+    <h2>Viewport histogram <span id="histMode" style="text-transform:none;letter-spacing:0"></span></h2>
+    <canvas id="histCanvas" width="640" height="220"></canvas>
+    <div id="histStats"></div>
+    <div id="histActions">
+      <label style="color:#9aa0a6;font-size:11px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="autoStretch" /> auto stretch</label>
+      <button id="stretchBtn" class="ghost" title="Use this viewport's 2–98th pct as the color stretch">stretch → viewport</button>
+      <button id="stretchReset" class="ghost">reset stretch</button>
+    </div>
+  </div>
+  <div id="mapTip"></div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const els = ['path','load','h3Col','colorBy','opacity','basemap','metaBtn','metaPanel','metaBody',
+  'fitBtn','status','legend','mapTip','browse','explorer','crumbs','explorerList','showAll',
+  'histPanel','histMode','histCanvas','histStats','autoStretch','stretchBtn','stretchReset']
+  .reduce((o, k) => (o[k] = $(k), o), {});
+
+const P = {
+  file:    () => fused.params.get('file') || fused.params.get('_file') || '',
+  h3Col:   () => fused.params.get('h3col') || '',
+  colorBy: () => fused.params.get('colorby') || '',
+  stretch: () => fused.params.get('stretch') || '',
+  autoStretch: () => (fused.params.get('autostretch') ?? '1') === '1',
+  dir:     () => fused.params.get('dir') || (P.file() ? P.file().replace(/\/[^/]*$/, '') : '~'),
+  showAll: () => fused.params.get('showall') === '1',
+};
+const human = n => n > 1e9 ? (n/1e9).toFixed(2)+' GB' : n > 1e6 ? (n/1e6).toFixed(1)+' MB' : Math.round(n/1e3)+' KB';
+function status(msg, err){ els.status.innerHTML = msg || ''; els.status.style.display = msg ? 'block' : 'none'; els.status.className = err ? 'err' : ''; }
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// ---------------- map ----------------
+const DARK = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
+const map = new maplibregl.Map({ container: 'map', style: DARK, center: [0, 20], zoom: 1.2,
+  attributionControl: {compact: true}, fadeDuration: 80 });
+map.addControl(new maplibregl.NavigationControl({showCompass: false}), 'bottom-left');
+map.addControl(new maplibregl.ScaleControl({unit: 'metric'}), 'bottom-right');
+async function styleReady(){
+  map.resize();
+  for (let i = 0; i < 200 && !map.isStyleLoaded(); i++)
+    await new Promise(r => setTimeout(r, 50));
+  map.resize();
+}
+
+let data = null;      // reader payload
+let gj = null;        // built geojson
+let bounds = null;
+let clip = null;      // [lo, hi] active color stretch
+let centers = null;   // [lng, lat] per cell (for viewport stats)
+let hoverId = null;
+
+// ---------------- geojson from cells (h3-js, client-side) ----------------
+function buildGeojson(){
+  const feats = [];
+  centers = [];
+  let minx = 180, miny = 90, maxx = -180, maxy = -90;
+  const cols = Object.keys(data.attrs);
+  for (let i = 0; i < data.cells.length; i++){
+    let ring;
+    try {
+      ring = h3.cellToBoundary(data.cells[i], true);  // [[lng,lat],...]
+      const [clat, clng] = h3.cellToLatLng(data.cells[i]);
+      centers[i] = [clng, clat];
+    }
+    catch { centers[i] = null; continue; }
+    // antimeridian: if the ring spans > 180°, shift negative lons +360
+    let lo = 999, hi = -999;
+    for (const [x] of ring){ if (x < lo) lo = x; if (x > hi) hi = x; }
+    if (hi - lo > 180) ring = ring.map(([x, y]) => [x < 0 ? x + 360 : x, y]);
+    const props = {__h3: data.cells[i]};
+    for (const c of cols) props[c] = data.attrs[c][i];
+    for (const [x, y] of ring){
+      if (x < minx) minx = x; if (x > maxx) maxx = x;
+      if (y < miny) miny = y; if (y > maxy) maxy = y;
+    }
+    ring.push(ring[0]);
+    feats.push({type: 'Feature', id: i, properties: props,
+                geometry: {type: 'Polygon', coordinates: [ring]}});
+  }
+  bounds = feats.length ? [minx, miny, maxx, maxy] : null;
+  return {type: 'FeatureCollection', features: feats};
+}
+
+// ---------------- coloring ----------------
+function numericCols(){
+  return Object.keys(data.attrs).filter(c =>
+    data.attrs[c].some(v => typeof v === 'number'));
+}
+function activeColorCol(){
+  const want = P.colorBy();
+  const nums = numericCols();
+  return nums.includes(want) ? want : (nums[0] || '');
+}
+function percentiles(vals){
+  const s = vals.filter(v => typeof v === 'number').sort((a, b) => a - b);
+  if (!s.length) return [0, 1];
+  const p = q => s[Math.min(s.length - 1, Math.floor(q * s.length))];
+  const lo = p(0.02), hi = p(0.98);
+  return hi > lo ? [lo, hi] : [s[0], s[s.length - 1] > s[0] ? s[s.length - 1] : s[0] + 1];
+}
+function fillColorExpr(){
+  const col = activeColorCol();
+  if (!col) { clip = null; return '#5c9dff'; }
+  const s = P.stretch().split(',').map(Number);
+  clip = (s.length === 2 && s.every(isFinite) && s[1] > s[0])
+    ? s : percentiles(data.attrs[col]);
+  const [lo, hi] = clip;
+  return ['interpolate', ['linear'],
+    ['max', lo, ['min', hi, ['to-number', ['get', col], lo]]],
+    lo, '#440154', lo + (hi-lo)*0.25, '#3b528b', lo + (hi-lo)*0.5, '#21918c',
+    lo + (hi-lo)*0.75, '#5ec962', hi, '#fde725'];
+}
+
+function addLayers(){
+  for (const id of ['hex-fill', 'hex-line']) if (map.getLayer(id)) map.removeLayer(id);
+  if (map.getSource('hex')) map.removeSource('hex');
+  map.addSource('hex', {type: 'geojson', data: gj});
+  const op = +els.opacity.value / 100;
+  map.addLayer({id: 'hex-fill', type: 'fill', source: 'hex',
+    paint: {'fill-color': fillColorExpr(), 'fill-opacity': op,
+            'fill-outline-color': 'rgba(0,0,0,0.25)'}});
+  map.addLayer({id: 'hex-line', type: 'line', source: 'hex',
+    paint: {'line-color': '#ffffff',
+            'line-opacity': ['case', ['boolean', ['feature-state', 'hover'], false], 0.9, 0],
+            'line-width': 1.5}});
+  renderLegend();
+}
+
+function renderLegend(){
+  const col = activeColorCol();
+  if (!col || !clip){ els.legend.innerHTML = ''; return; }
+  const f = v => Math.abs(v) >= 1000 ? v.toLocaleString(undefined, {maximumFractionDigits: 0})
+                                     : +v.toFixed(3);
+  els.legend.innerHTML = `${esc(col)}: ${f(clip[0])}<span class="bar"></span>${f(clip[1])}`;
+}
+
+// ---------------- viewport histogram (client-side: all values are in memory) ----------------
+let lastStats = null;
+let histSel = null;
+
+function viewportStats(){
+  const col = activeColorCol();
+  if (!col || !centers) return null;
+  const b = map.getBounds();
+  const w = b.getWest(), e = b.getEast(), s = b.getSouth(), n = b.getNorth();
+  const vals = [];
+  const arr = data.attrs[col];
+  for (let i = 0; i < centers.length; i++){
+    const c = centers[i];
+    if (!c || typeof arr[i] !== 'number') continue;
+    let [x, y] = c;
+    if (y < s || y > n) continue;
+    if (e - w >= 360){} // whole world
+    else {
+      // normalize into the viewport's longitude frame
+      while (x < w) x += 360;
+      if (x > e) continue;
+    }
+    vals.push(arr[i]);
+  }
+  if (!vals.length) return null;
+  vals.sort((a, b2) => a - b2);
+  const nv = vals.length;
+  const q = p => vals[Math.min(nv - 1, Math.floor(p * nv))];
+  const mean = vals.reduce((a, v) => a + v, 0) / nv;
+  const std = Math.sqrt(vals.reduce((a, v) => a + (v - mean) ** 2, 0) / nv);
+  const min = vals[0], max = vals[nv - 1];
+  const NB = 60, counts = new Array(NB).fill(0);
+  const span = max > min ? max - min : 1;
+  for (const v of vals) counts[Math.min(NB - 1, Math.floor((v - min) / span * NB))]++;
+  return {col, min, max, mean, median: q(0.5), std, n: nv,
+          p2: q(0.02), p98: q(0.98), counts, edges: [min, max]};
+}
+
+const fmtN = v => Math.abs(v) >= 1000 ? v.toLocaleString(undefined, {maximumFractionDigits: 0}) : +v.toFixed(3);
+
+function drawHist(){
+  const c = els.histCanvas, ctx = c.getContext('2d');
+  ctx.clearRect(0, 0, c.width, c.height);
+  const st = lastStats;
+  els.histMode.textContent = st ? st.col : '';
+  if (!st){ els.histStats.textContent = 'no cells in viewport'; return; }
+  const maxC = Math.max(...st.counts);
+  const n = st.counts.length, bw = c.width / n;
+  ctx.fillStyle = '#5c9dff';
+  for (let i = 0; i < n; i++){
+    const h = Math.pow(st.counts[i] / maxC, 0.5) * (c.height - 14);
+    ctx.fillRect(i * bw, c.height - h, Math.max(1, bw - 1), h);
+  }
+  if (clip){
+    const [e0, e1] = st.edges;
+    if (e1 > e0){
+      const x0 = (clip[0] - e0) / (e1 - e0) * c.width, x1 = (clip[1] - e0) / (e1 - e0) * c.width;
+      ctx.fillStyle = '#ffffff18'; ctx.fillRect(x0, 0, x1 - x0, c.height);
+      ctx.strokeStyle = '#ffcf70'; ctx.strokeRect(x0, 0, x1 - x0, c.height);
+    }
+  }
+  if (histSel){
+    ctx.fillStyle = '#ffffff26';
+    ctx.fillRect(Math.min(...histSel), 0, Math.abs(histSel[1] - histSel[0]), c.height);
+  }
+  els.histStats.textContent =
+    `viewport: min ${fmtN(st.min)}  max ${fmtN(st.max)}  mean ${fmtN(st.mean)}  median ${fmtN(st.median)}  σ ${fmtN(st.std)}  n ${st.n.toLocaleString()}`;
+}
+
+function refreshHist(){
+  if (!data || !activeColorCol()){ els.histPanel.style.display = 'none'; return; }
+  els.histPanel.style.display = 'block';
+  els.autoStretch.checked = P.autoStretch();
+  lastStats = viewportStats();
+  drawHist();
+  maybeAutoStretch();
+}
+
+function maybeAutoStretch(){
+  if (!P.autoStretch() || !lastStats) return;
+  const s = `${lastStats.p2},${lastStats.p98}`;
+  if (lastStats.p98 > lastStats.p2 && s !== P.stretch()) fused.params.set('stretch', s);
+}
+
+// drag on the histogram = set the color stretch to that value range
+let dragX = null;
+els.histCanvas.addEventListener('mousedown', e => {
+  dragX = e.offsetX * els.histCanvas.width / els.histCanvas.clientWidth;
+  histSel = [dragX, dragX];
+});
+window.addEventListener('mousemove', e => {
+  if (dragX === null) return;
+  const r = els.histCanvas.getBoundingClientRect();
+  const x = (e.clientX - r.left) * els.histCanvas.width / r.width;
+  histSel = [dragX, Math.max(0, Math.min(els.histCanvas.width, x))];
+  drawHist();
+});
+window.addEventListener('mouseup', () => {
+  if (dragX === null) return;
+  const st = lastStats;
+  const sel = histSel; dragX = null; histSel = null;
+  if (!st || !sel || Math.abs(sel[1] - sel[0]) < 4){ drawHist(); return; }
+  const c = els.histCanvas, [e0, e1] = st.edges;
+  const lo = e0 + Math.min(...sel) / c.width * (e1 - e0);
+  const hi = e0 + Math.max(...sel) / c.width * (e1 - e0);
+  fused.params.set('autostretch', '0');
+  fused.params.set('stretch', `${lo},${hi}`);
+});
+els.stretchBtn.onclick = () => {
+  if (!lastStats || lastStats.p98 <= lastStats.p2) return;
+  fused.params.set('stretch', `${lastStats.p2},${lastStats.p98}`);
+};
+els.stretchReset.onclick = () => { fused.params.set('autostretch', '0'); fused.params.set('stretch', ''); };
+els.autoStretch.onchange = () => {
+  fused.params.set('autostretch', els.autoStretch.checked ? '1' : '0');
+  if (els.autoStretch.checked) maybeAutoStretch();
+};
+let histT = null;
+map.on('moveend', () => { clearTimeout(histT); histT = setTimeout(refreshHist, 120); });
+
+function fitToData(instant = true){
+  if (!bounds) return;
+  map.fitBounds([[bounds[0], bounds[1]], [bounds[2], bounds[3]]],
+    {padding: 60, duration: instant ? 0 : 400, maxZoom: 14});
+}
+
+// ---------------- hover tooltip ----------------
+map.on('mousemove', e => {
+  if (!map.getLayer('hex-fill')) return;
+  const feats = map.queryRenderedFeatures(e.point, {layers: ['hex-fill']});
+  if (hoverId !== null){ map.setFeatureState({source: 'hex', id: hoverId}, {hover: false}); hoverId = null; }
+  if (!feats.length){ els.mapTip.style.display = 'none'; map.getCanvas().style.cursor = ''; return; }
+  const f = feats[0];
+  hoverId = f.id;
+  map.setFeatureState({source: 'hex', id: hoverId}, {hover: true});
+  map.getCanvas().style.cursor = 'pointer';
+  const col = activeColorCol();
+  const entries = Object.entries(f.properties).filter(([k]) => k !== '__h3');
+  entries.sort(([a], [b]) => (a === col ? -1 : b === col ? 1 : 0));
+  els.mapTip.innerHTML = `<div class="t">${esc(f.properties.__h3)}</div><table>` +
+    entries.slice(0, 8).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('') + '</table>';
+  els.mapTip.style.display = 'block';
+  const r = map.getContainer().getBoundingClientRect();
+  els.mapTip.style.left = Math.min(r.left + e.point.x + 14, innerWidth - 310) + 'px';
+  els.mapTip.style.top = (r.top + e.point.y + 14) + 'px';
+});
+map.on('mouseout', () => { els.mapTip.style.display = 'none'; });
+
+// ---------------- metadata panel ----------------
+function renderMeta(){
+  const rows = o => Object.entries(o).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${v}</td></tr>`).join('');
+  const res = data.cells.length ? h3.getResolution(data.cells[0]) : '—';
+  els.metaBody.innerHTML =
+    `<h2>File <a id="metaClose" style="cursor:pointer;color:#8ab4ff">×</a></h2><table>${rows({
+      file: esc(data.file.split('/').pop()),
+      size: human(data.file_size),
+      rows: data.count.toLocaleString() + (data.truncated ? ` (showing ${data.shown.toLocaleString()})` : ''),
+      'h3 column': esc(data.h3_col),
+      'h3 resolution': res,
+    })}</table>` +
+    `<h2>Columns</h2><table>` + data.schema.map(s =>
+      `<tr><td>${esc(s.name)}</td><td>${esc(s.dtype)}</td></tr>`).join('') + '</table>';
+  $('metaClose').onclick = () => els.metaPanel.style.display = 'none';
+}
+
+// ---------------- load ----------------
+let loadedKey = null;
+
+async function loadFile(){
+  const file = P.file();
+  if (!file){ status('no file — use Browse or enter a .parquet path'); return; }
+  const key = file + '|' + P.h3Col();
+  if (key === loadedKey) return;
+  status('Reading parquet…');
+  await styleReady();
+  const r = await fused.runPython('./h3_reader.py', {file, h3_col: P.h3Col()})
+    .catch(e => ({error: String(e.message || e)}));
+  if (!r || r.error){
+    if (r && r.no_h3 && r.columns){
+      els.h3Col.innerHTML = '<option value="">— pick H3 column —</option>' +
+        r.columns.map(c => `<option>${esc(c)}</option>`).join('');
+    }
+    status((r && r.error) || 'read failed', true);
+    return;
+  }
+  data = r;
+  loadedKey = key;
+  status(`Building ${r.shown.toLocaleString()} hexagons…`);
+  gj = buildGeojson();
+  syncControls();
+  addLayers();
+  fitToData();
+  renderMeta();
+  refreshHist();
+  status(r.truncated ? `showing first ${r.shown.toLocaleString()} of ${r.count.toLocaleString()} cells` : '');
+  if (r.truncated) setTimeout(() => status(''), 8000);
+}
+
+function syncControls(){
+  els.path.value = P.file();
+  els.h3Col.innerHTML = data.columns.map(c =>
+    `<option value="${esc(c)}"${c === data.h3_col ? ' selected' : ''}>${esc(c)}</option>`).join('');
+  const nums = numericCols();
+  els.colorBy.innerHTML = '<option value="">— single color —</option>' +
+    nums.map(c => `<option${c === activeColorCol() ? ' selected' : ''}>${esc(c)}</option>`).join('');
+  if (activeColorCol()) els.colorBy.value = activeColorCol();
+}
+
+// ---------------- controls ----------------
+els.load.onclick = () => fused.params.set('file', els.path.value.trim());
+els.path.onkeydown = e => { if (e.key === 'Enter') els.load.onclick(); };
+els.h3Col.onchange = () => fused.params.set('h3col', els.h3Col.value);
+els.colorBy.onchange = () => fused.params.set('colorby', els.colorBy.value);
+els.opacity.oninput = () => {
+  if (map.getLayer('hex-fill')) map.setPaintProperty('hex-fill', 'fill-opacity', +els.opacity.value / 100);
+};
+els.basemap.onchange = () => {
+  const show = els.basemap.checked ? 'visible' : 'none';
+  for (const l of map.getStyle().layers)
+    if (!l.id.startsWith('hex-')) map.setLayoutProperty(l.id, 'visibility', show);
+};
+els.metaBtn.onclick = () => els.metaPanel.style.display = els.metaPanel.style.display === 'block' ? 'none' : 'block';
+els.fitBtn.onclick = () => fitToData(false);
+
+function onParamsChanged(){
+  if (P.file() + '|' + P.h3Col() !== loadedKey){ loadFile(); return; }
+  if (data && map.getLayer('hex-fill')){
+    map.setPaintProperty('hex-fill', 'fill-color', fillColorExpr());
+    renderLegend();
+    syncControls();
+    if (lastStats && lastStats.col !== activeColorCol()) refreshHist();
+    else drawHist();
+  }
+}
+fused.params.onChange(onParamsChanged);
+
+// ---------------- explorer ----------------
+els.browse.onclick = () => {
+  const open = els.explorer.style.display !== 'block';
+  els.explorer.style.display = open ? 'block' : 'none';
+  if (open) refreshExplorer(P.dir());
+};
+els.showAll.onchange = () => { fused.params.set('showall', els.showAll.checked ? '1' : '0'); refreshExplorer(P.dir()); };
+async function refreshExplorer(dir){
+  const r = await fused.runPython('./browse.py', { dir, exts: '.parquet', show_all: P.showAll() ? 'true' : 'false' }).catch(() => null);
+  if (!r || r.error) return;
+  els.crumbs.innerHTML = r.crumbs.map(c => `<a data-p="${c.path}">${c.label}</a>`).join(' / ');
+  els.crumbs.querySelectorAll('a').forEach(a => a.onclick = () => refreshExplorer(a.dataset.p));
+  const entries = [...r.dirs, ...r.files];
+  els.explorerList.innerHTML = entries.map(e =>
+    `<div class="row" data-p="${e.path}" data-d="${e.is_dir ? 1 : 0}">
+       <span class="ic">${e.is_dir ? '📁' : '⬡'}</span><span class="nm">${e.name}</span>
+       <span class="sz">${e.size ? human(e.size) : ''}</span></div>`).join('') || '<div class="row" style="color:#6b7178">empty</div>';
+  els.explorerList.querySelectorAll('.row[data-p]').forEach(row => row.onclick = () => {
+    if (row.dataset.d === '1') refreshExplorer(row.dataset.p);
+    else { fused.params.set('dir', row.dataset.p.replace(/\/[^/]*$/, '')); fused.params.set('file', row.dataset.p); els.explorer.style.display = 'none'; }
+  });
+}
+
+loadFile();
+</script>
+</body>
+</html>

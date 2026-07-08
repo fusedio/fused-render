@@ -1,5 +1,5 @@
 {
-  ".parquet": ["table"],
+  ".parquet": ["table", "h3"],
   ".csv": ["csv", "code"],
   ".tsv": ["csv", "code"],
   ".xlsx": ["xlsx"],
