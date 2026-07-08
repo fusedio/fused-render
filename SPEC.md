@@ -732,6 +732,25 @@ the product gains network access.
   ("same URL" / "restore URL") render only from a **verified** `live`
   classification: when the reconcile never ran (unreachable env, `live`
   null) the button reads a plain "Redeploy" that promises nothing.
+- **DP-12a** Store integrity: the pointer file is rewritten whole on every
+  mutation, so two writers must not race and a corrupt file must not be
+  clobbered. Writes serialize through one process lock (`_update_store`) —
+  closing the lost-update window against the reconcile writer (a focus
+  refresh) — and load via `_load_store_for_write`, which raises rather than
+  overwrite a file that exists but doesn't parse (overwriting would drop every
+  other page's pointer, orphaning live mounts). `deploy_page` validates the
+  store before the CLI so a corrupt store fails fast instead of minting a
+  mount it then can't record. Reads (`get_deployment`, the status/dot) stay
+  lenient — a corrupt store shows as not-deployed rather than erroring a
+  preview.
+- **DP-12b** The open modal re-reconciles on tab focus/visibility regain (like
+  the header dot, DP-1), so a page revoked out-of-band — e.g. from the
+  Preferences tab — updates the open dialog instead of contradicting the dot.
+  It preselects the deployment's env only when that env is still configured
+  (else falls back to the default and states the old env is gone), so a
+  removed env never leaves Deploy silently disabled. The dialog is always
+  closeable — even mid-action (the action continues server-side and the dot
+  stays correct via `onChange`), so a slow CLI child can't trap the user.
 - **DP-13** `GET /api/deploy/shares?env=…` is the "what's deployed on this
   env" view: every mount from `share list --all` — the modal titles it "All
   deployments on <env>" and says so, since most rows are typically *other*
@@ -785,6 +804,13 @@ never imports server).
   (`prefs.fused_engine_available`, probed per call — an install mid-session
   shows through); otherwise execution degrades to builtin and the page says
   so. The fused option is disabled with an install hint when unavailable.
+  **One resolver, no divergence:** `prefs.effective_engine()` is the single
+  function both dispatch (`server.current_engine`) and the page's reported
+  "running" engine (`engine_state().effective`) go through, resolving the
+  override + pref + availability **live** on every call — so the page can
+  never claim a different engine than `/api/run` uses, even for a forced
+  `=auto` after a mid-session install (an earlier startup-frozen resolution
+  let those drift).
   **Both engines are local**: the fused engine instantiates the package's
   `LocalPythonComputeBackend` directly (engine.py — host venvs under
   `~/.openfused/venvs`), never resolving a named environment; `envs.json`,
@@ -793,11 +819,13 @@ never imports server).
   and the page's copy states this so "Fused engine" is never read as "runs
   on my Fused env".
 - **PF-4** `FUSED_RENDER_ENGINE` remains the **process-level override**: when
-  set it beats the pref entirely (`server._forced_engine` — validated at
-  startup, `=fused` still fails loudly when missing; unset returns None and
-  the pref rules). The page shows the switch locked with the variable's
-  value; a PUT still persists (applies once the override is removed).
-  `GET /api/config`'s `engine` reports the in-effect engine per request.
+  set it beats the pref entirely. `server._forced_engine()` runs **once at
+  startup** purely to validate (raises on a bad value; `=fused` still fails
+  loudly when missing) and log the choice — dispatch itself goes through the
+  live resolver (PF-3), so the override is re-read per request, not frozen.
+  The page shows the switch locked with the variable's value; a PUT still
+  persists (applies once the override is removed). `GET /api/config`'s
+  `engine` reports the in-effect engine per request.
 
 ### 20.3 Logs
 
@@ -824,7 +852,11 @@ never imports server).
   pattern with its splice-expanded mode list (first = default), `disabled`
   for `null` bindings, `source` (`builtin` / `user` / `user-override` — a
   user key identical to a built-in key replaces its row), and per-entry
-  shape errors. **Read-only** — bindings are edited in the registry files;
-  the page names the user registry path. This is the table of bindings, not
-  a per-file resolver: distinct keys coexist and CT-3 specificity decides
-  per file. Read per request like every resolution (no restart).
+  shape errors. Override detection is **case-insensitive**, matching how
+  resolution actually matches keys (`_key_segments` lowercases): a user
+  `.CSV` overrides a built-in `.csv` as one `user-override` row (and a `"..."`
+  splice expands against that built-in), never two mis-sourced rows.
+  **Read-only** — bindings are edited in the registry files; the page names
+  the user registry path. This is the table of bindings, not a per-file
+  resolver: distinct keys coexist and CT-3 specificity decides per file. Read
+  per request like every resolution (no restart).

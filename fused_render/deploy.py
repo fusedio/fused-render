@@ -57,6 +57,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Header
@@ -442,13 +443,55 @@ def _classify_mount(mounts: list[dict], token: str) -> str:
 # -- the per-page deployment pointer store ------------------------------------
 
 
+# The whole store is rewritten on every mutation (write_json of the full
+# dict). Starlette runs these sync endpoints in a threadpool, so two writers
+# — including a focus-triggered reconcile in deployment_status, a hidden
+# writer — can read-modify-write concurrently and lose one update. Serialize
+# every mutation through one process lock to close that window.
+_STORE_LOCK = threading.Lock()
+
+
 def _store_path() -> str:
     return os.path.join(storage.home_dir(), "deployments.json")
 
 
 def _load_store() -> dict:
+    """The store for READS — lenient: a missing or corrupt file reads as empty
+    (the page shows as not-deployed rather than erroring the whole preview)."""
     data = storage.read_json(_store_path())
     return data if isinstance(data, dict) else {}
+
+
+def _load_store_for_write() -> dict:
+    """The store for WRITES — refuses to silently overwrite a corrupt file.
+
+    Each write persists the whole dict, so building it from `{}` after a parse
+    failure would drop every OTHER page's pointer (orphaning still-live public
+    mounts the app could no longer revoke). A missing file is a clean first
+    write (`{}`); a file that exists but doesn't parse to a dict raises so the
+    caller aborts and the user can move it aside — data is never destroyed.
+    """
+    path = _store_path()
+    data = storage.read_json(path)
+    if isinstance(data, dict):
+        return data
+    if os.path.exists(path):
+        raise DeployError(
+            f"{path} is not valid JSON — refusing to overwrite it (that would drop "
+            "other pages' deployment records). Move the file aside and retry."
+        )
+    return {}
+
+
+def _update_store(mutate) -> None:
+    """Serialized, corruption-safe read-modify-write. `mutate(store)` edits the
+    dict in place under the lock; the strict load never clobbers a corrupt
+    file (see _load_store_for_write). The lock is held only across a local
+    file read+write, never across a CLI subprocess."""
+    with _STORE_LOCK:
+        store = _load_store_for_write()
+        mutate(store)
+        storage.write_json(_store_path(), store)
 
 
 def get_deployment(page: str) -> dict | None:
@@ -457,9 +500,7 @@ def get_deployment(page: str) -> dict | None:
 
 
 def set_deployment(page: str, record: dict) -> None:
-    store = _load_store()
-    store[page] = record
-    storage.write_json(_store_path(), store)
+    _update_store(lambda store: store.__setitem__(page, record))
 
 
 # -- deploy orchestration ------------------------------------------------------
@@ -536,12 +577,19 @@ def deploy_page(page: str, env_name: str) -> dict:
             "pick one from the Deploy dialog"
         )
 
+    # Validate the store BEFORE minting anything: a corrupt file read leniently
+    # would look like "not deployed", so a fresh `share create` would mint a
+    # mount and only the pointer write afterward would discover the corruption
+    # (orphaning the just-created mount). Fail fast instead — and read the
+    # pointer from this validated store.
+    store = _load_store_for_write()
+    pointer = store.get(page) if isinstance(store.get(page), dict) else None
+
     bundle = tempfile.mkdtemp(prefix="fused-render-deploy-")
     try:
         plan = export_page(page, bundle)
         entrypoints = [e.name for e in plan.entrypoints]
 
-        pointer = get_deployment(page)
         same_env = pointer if pointer and pointer.get("env") == env_name else None
         token = same_env.get("token") if same_env else None
 
@@ -630,19 +678,18 @@ def revoke_mount(env_name: str, token: str) -> dict:
             if isinstance(value, str) and value:
                 aliases.add(value)
     _run_share(env_name, ["revoke", token])
-    store = _load_store()
-    changed = False
-    for page, record in store.items():
-        if (
-            isinstance(record, dict)
-            and record.get("env") == env_name
-            and record.get("token") in aliases
-            and record.get("status") != "revoked"
-        ):
-            store[page] = {**record, "status": "revoked", "updated_at": _now_iso()}
-            changed = True
-    if changed:
-        storage.write_json(_store_path(), store)
+
+    def flip(store: dict) -> None:
+        for page, record in store.items():
+            if (
+                isinstance(record, dict)
+                and record.get("env") == env_name
+                and record.get("token") in aliases
+                and record.get("status") != "revoked"
+            ):
+                store[page] = {**record, "status": "revoked", "updated_at": _now_iso()}
+
+    _update_store(flip)
     return {"env": env_name, "token": token, "status": "revoked"}
 
 
@@ -805,7 +852,9 @@ def api_deploy(body: dict = Body(...), x_fused: str | None = Header(default=None
         return guard
     page = body.get("page")
     env_name = body.get("env")
-    if not page or not os.path.isabs(page):
+    # isinstance before os.path.isabs: a truthy non-string page (JSON number,
+    # array) makes isabs() raise TypeError -> 500; the check keeps it a 400.
+    if not isinstance(page, str) or not page or not os.path.isabs(page):
         return _error("'page' must be an absolute path to the .html page")
     if not env_name or not isinstance(env_name, str):
         return _error("'env' must name a hosted environment")
@@ -832,7 +881,7 @@ def api_deploy_revoke(body: dict = Body(...), x_fused: str | None = Header(defau
             return revoke_mount(env_name, token)
         except DeployError as e:
             return _error(str(e))
-    if not page or not os.path.isabs(page):
+    if not isinstance(page, str) or not page or not os.path.isabs(page):
         return _error("provide 'page' (absolute path) or 'env' + 'token'")
     try:
         return revoke_deployment(page)

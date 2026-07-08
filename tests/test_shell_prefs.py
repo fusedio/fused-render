@@ -71,6 +71,27 @@ def test_env_var_reports_as_forcing(tmp_path, monkeypatch):
     assert body["engine"]["effective"] == "builtin"
 
 
+def test_forced_auto_reports_match_dispatch_after_midsession_install(tmp_path, monkeypatch):
+    # FUSED_RENDER_ENGINE=auto with fused absent at startup. The engine must be
+    # resolved LIVE, so a mid-session install (which /api/deploy/install
+    # supports) flips BOTH the reported state and actual dispatch together —
+    # the page never claims a different running engine than /api/run uses.
+    # (Built here, not via _client, since _client clears FUSED_RENDER_ENGINE
+    # and create_app must see =auto at startup.)
+    available = {"v": False}
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("FUSED_RENDER_ENGINE", "auto")
+    monkeypatch.setattr(prefs_mod, "fused_engine_available", lambda: available["v"])
+    client = TestClient(create_app(start_dir=str(tmp_path)))  # validates =auto (no raise)
+
+    assert client.get("/api/config").json()["engine"] == "builtin"
+    assert client.get("/api/prefs").json()["engine"]["effective"] == "builtin"
+
+    available["v"] = True  # installed mid-session
+    assert client.get("/api/config").json()["engine"] == "fused"
+    assert client.get("/api/prefs").json()["engine"]["effective"] == "fused"
+
+
 # -- per-request engine dispatch (server /api/run + /api/config) -----------------
 
 
@@ -189,3 +210,26 @@ def test_registry_view_splice_expands_builtin_list(tmp_path, monkeypatch):
     body = client.get("/api/templates/registry").json()
     by_pattern = {e["pattern"]: e for e in body["entries"]}
     assert by_pattern[".html"]["templates"] == builtin_html + ["tree"]
+
+
+def test_registry_view_override_is_case_insensitive(tmp_path, monkeypatch):
+    # Resolution matches keys case-insensitively (_key_segments lowercases), so
+    # a user ".CSV" key OVERRIDES the built-in ".csv" — the view must show ONE
+    # row sourced user-override, not two rows (a case-sensitive `in` check
+    # would double-list the pattern and mis-source both).
+    client, _ = _client(tmp_path, monkeypatch)
+    udir = _point_user_registry_at(tmp_path, monkeypatch)
+    (udir / "registry.json").write_text(json.dumps({".CSV": ["code"]}), encoding="utf-8")
+    entries = client.get("/api/templates/registry").json()["entries"]
+    csv_rows = [e for e in entries if e["pattern"].lower() == ".csv"]
+    assert len(csv_rows) == 1
+    assert csv_rows[0]["pattern"] == ".CSV"
+    assert csv_rows[0]["source"] == "user-override"
+    assert csv_rows[0]["templates"] == ["code"]
+
+    # And a "..." splice against a case-differing builtin expands to the
+    # builtin's list (found case-insensitively), not to nothing.
+    (udir / "registry.json").write_text(json.dumps({".CSV": ["...", "code"]}), encoding="utf-8")
+    entries = client.get("/api/templates/registry").json()["entries"]
+    row = next(e for e in entries if e["pattern"] == ".CSV")
+    assert row["templates"][0] == "csv"  # the builtin .csv default, spliced in

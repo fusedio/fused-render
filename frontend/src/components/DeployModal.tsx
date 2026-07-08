@@ -102,17 +102,31 @@ function SharesSection({ env, fsPath, refreshKey }: { env: string; fsPath: strin
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // Sequence + alive guarded, same discipline as the modal's own load and
+  // DeploymentsSection: a share list shells the CLI (slow), and env-switch /
+  // refreshKey can fire a newer load before an older resolves — an older
+  // response landing last would show one env's mounts under another's header,
+  // and a resolve after the modal closes would setState on an unmounted tree.
+  const loadSeq = useRef(0);
+  const alive = useRef(true);
+  useEffect(() => () => {
+    alive.current = false;
+  }, []);
+
   const load = async () => {
+    const seq = ++loadSeq.current;
     setLoading(true);
     setError(null);
     try {
       const res = await listShares(env);
+      if (!alive.current || seq !== loadSeq.current) return;
       setMounts(res.mounts);
     } catch (e) {
+      if (!alive.current || seq !== loadSeq.current) return;
       setError((e as Error).message);
       setMounts(null);
     } finally {
-      setLoading(false);
+      if (alive.current && seq === loadSeq.current) setLoading(false);
     }
   };
 
@@ -217,8 +231,17 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   // Bumped on every successful deploy/revoke so an open shares list reloads.
   const [actionSeq, setActionSeq] = useState(0);
 
+  // The modal can be closed while an action is still running (#12): guard the
+  // modal's own post-action setState so a deploy/revoke/install that resolves
+  // after unmount doesn't setState on a dead tree. onChange still fires — it
+  // updates the parent header dot, which stays mounted.
+  const alive = useRef(true);
+  useEffect(() => () => {
+    alive.current = false;
+  }, []);
+
   const applyDeployment = (d: Deployment | null) => {
-    setDeployment(d);
+    if (alive.current) setDeployment(d);
     onChange(d);
   };
 
@@ -254,9 +277,16 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       applyDeployment(status.deployment);
       setReconciled(status.reconciled);
       setLive(status.live ?? null);
-      setSelectedEnv(
-        (prev2) => prev2 ?? status.deployment?.env ?? cfg.default_env,
-      );
+      // Preselect the deployment's env (or the default) — but only if it is
+      // actually in the picker; an env removed from envs.json since deploy
+      // must fall back to a selectable one, or the <select> renders blank
+      // and Deploy is silently disabled with no matching option (#6).
+      setSelectedEnv((prev2) => {
+        if (prev2 !== null) return prev2;
+        const preferred = status.deployment?.env ?? cfg.default_env;
+        if (preferred && cfg.envs.some((e) => e.name === preferred)) return preferred;
+        return cfg.default_env;
+      });
     } catch (e) {
       if (seq !== loadSeq.current) return;
       setLoadError((e as Error).message);
@@ -267,14 +297,34 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fsPath]);
 
-  // Escape closes (unless an action is running — don't orphan a deploy click).
+  // Re-reconcile when the tab regains focus/visibility (unless an action is
+  // running) so the open modal doesn't drift from truth — e.g. the same page
+  // revoked out-of-band from the Preferences tab. Without this the header dot
+  // (which re-reads on focus) and the open modal would contradict each other
+  // (#5). loadSeq keeps a focus load from racing the mount load.
+  useEffect(() => {
+    const refresh = () => {
+      if (busy === null && document.visibilityState === "visible") void load();
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busy, fsPath]);
+
+  // Escape closes. Allowed even mid-action (#12): the action continues
+  // server-side and onChange still updates the header dot, so the user is
+  // never trapped waiting on a slow/hung CLI child.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && busy === null) onClose();
+      if (e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [busy, onClose]);
+  }, [onClose]);
 
   const envs = config?.envs ?? [];
   const env = useMemo(
@@ -282,19 +332,24 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     [envs, selectedEnv],
   );
 
+  // Each handler applies its result (onChange always propagates to the header
+  // dot), then guards the modal's OWN setState on `alive` — the dialog may
+  // have been closed mid-action (#12).
   const onDeploy = async () => {
     if (!env) return;
     setBusy("deploy");
     setActionError(null);
     try {
-      applyDeployment(await deployPage(fsPath, env.name));
+      const record = await deployPage(fsPath, env.name);
+      applyDeployment(record);
+      if (!alive.current) return;
       setReconciled(true);
       setLive("active");
       setActionSeq((s) => s + 1);
     } catch (e) {
-      setActionError((e as Error).message);
+      if (alive.current) setActionError((e as Error).message);
     } finally {
-      setBusy(null);
+      if (alive.current) setBusy(null);
     }
   };
 
@@ -302,13 +357,15 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     setBusy("revoke");
     setActionError(null);
     try {
-      applyDeployment(await revokeDeployment(fsPath));
+      const record = await revokeDeployment(fsPath);
+      applyDeployment(record);
+      if (!alive.current) return;
       setLive("revoked");
       setActionSeq((s) => s + 1);
     } catch (e) {
-      setActionError((e as Error).message);
+      if (alive.current) setActionError((e as Error).message);
     } finally {
-      setBusy(null);
+      if (alive.current) setBusy(null);
     }
   };
 
@@ -317,11 +374,12 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     setActionError(null);
     try {
       await installFused();
+      if (!alive.current) return;
       await load(); // re-probe: the CLI should now be found
     } catch (e) {
-      setActionError((e as Error).message);
+      if (alive.current) setActionError((e as Error).message);
     } finally {
-      setBusy(null);
+      if (alive.current) setBusy(null);
     }
   };
 
@@ -484,11 +542,21 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             </button>
           )}
         </div>
-        {deployment && selectedEnv !== null && deployment.env !== selectedEnv && (
+        {deployment &&
+          selectedEnv !== null &&
+          deployment.env !== selectedEnv &&
+          envs.some((e) => e.name === deployment.env) && (
+            <div className="deploy-note">
+              This page is already deployed on <b>{deployment.env}</b> — deploying to{" "}
+              <b>{selectedEnv}</b> mints an independent new link and this dialog will track
+              that one instead (the old mount stays live until revoked from the CLI).
+            </div>
+          )}
+        {deployment && !envs.some((e) => e.name === deployment.env) && (
           <div className="deploy-note">
-            This page is already deployed on <b>{deployment.env}</b> — deploying to{" "}
-            <b>{selectedEnv}</b> mints an independent new link and this dialog will track
-            that one instead (the old mount stays live until revoked from the CLI).
+            This page was deployed to <b>{deployment.env}</b>, which is no longer a
+            configured environment. Deploying here starts a new mount on{" "}
+            <b>{selectedEnv}</b>; the old one is unmanaged from this dialog.
           </div>
         )}
         {samePointerEnv && mountAbsent && (
@@ -520,7 +588,9 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     <div
       className="deploy-overlay"
       onMouseDown={(e) => {
-        // Backdrop click closes; clicks inside the dialog don't bubble here
+        // Backdrop click closes. Guarded on `busy` so an accidental click-away
+        // doesn't abandon an in-flight action — the deliberate ✕/Escape still
+        // close mid-action (#12). Clicks inside the dialog don't bubble here
         // because of the stopPropagation below.
         if (busy === null && e.target === e.currentTarget) onClose();
       }}
@@ -528,14 +598,14 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       <div className="deploy-dialog" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
         <div className="deploy-head">
           <h2>Deploy {basename(fsPath)}</h2>
-          {/* Same guard as Escape/backdrop: an in-flight deploy/revoke/install
-              must not be dismissed with no in-flight indication left visible. */}
+          {/* Always closeable, even mid-action (#12): the action continues
+              server-side and onChange keeps the header dot correct, so a slow
+              or hung CLI child can never trap the user. */}
           <button
             type="button"
             className="deploy-close"
-            title={busy !== null ? "An action is still running" : "Close"}
+            title={busy !== null ? "Close (the action keeps running)" : "Close"}
             onClick={onClose}
-            disabled={busy !== null}
           >
             ✕
           </button>

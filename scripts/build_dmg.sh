@@ -286,10 +286,14 @@ cat > "$WRAPPER_PATH" <<WRAPPER
 # fused CLI bundled with FusedRender.app - the same interpreter + fused
 # package the app's Deploy button uses (fused_render/_fused_cli.py, SPEC §19).
 # PYTHONHOME points the bundled python at its own runtime, exactly as the
-# app's own smoke tests / py2app launcher do.
+# app's own smoke tests / py2app launcher do. PYTHONPATH is UNSET (env -u):
+# this is meant to be run from a user's shell, and a developer's inherited
+# PYTHONPATH would otherwise prepend onto the bundled interpreter's sys.path
+# and shadow bundled packages (a different numpy/pydantic/fused) - the same
+# hazard deploy.py scrubs when spawning an external interpreter.
 HERE="\$(cd "\$(dirname "\$0")" && pwd)"        # .../Contents/Resources/bin
 RES="\$(cd "\$HERE/.." && pwd)"                  # .../Contents/Resources
-exec env PYTHONHOME="\$RES" "\$RES/../MacOS/python" "\$RES/lib/${PYLIB_NAME}/fused_render/_fused_cli.py" "\$@"
+exec env -u PYTHONPATH PYTHONHOME="\$RES" "\$RES/../MacOS/python" "\$RES/lib/${PYLIB_NAME}/fused_render/_fused_cli.py" "\$@"
 WRAPPER
 chmod +x "$WRAPPER_PATH"
 

@@ -363,14 +363,17 @@ def _templates_for(path: str, is_dir: bool):
 
 
 def create_app(start_dir: str) -> FastAPI:
-    # Engine (D69/D70 + SPEC §20): a set FUSED_RENDER_ENGINE forces the whole
-    # process (validated here — raises on a bad override); unset, each request
-    # follows the persisted preference so the Preferences page's switch
-    # applies without a restart.
-    forced_engine = _forced_engine()
+    # Engine (D69/D70 + SPEC §20): validate any FUSED_RENDER_ENGINE override
+    # ONCE at startup — this raises on a bad value and fails loudly for
+    # `=fused` when the package is missing, and logs the choice. Dispatch
+    # itself goes through the single live resolver (`prefs.effective_engine`,
+    # which re-reads the override + pref + availability per request), so the
+    # Preferences switch and a mid-session install both apply with no restart
+    # and the page's "running" label never drifts from what actually runs.
+    _forced_engine()
 
     def current_engine() -> str:
-        return forced_engine if forced_engine is not None else shell_prefs.effective_engine()
+        return shell_prefs.effective_engine()
 
     app = FastAPI(title="fused-render")
 
@@ -518,18 +521,26 @@ def create_app(start_dir: str) -> FastAPI:
                 "error": err,
             }
 
+        # Override detection is CASE-INSENSITIVE, matching how resolution
+        # actually matches keys (_key_segments lowercases): a user ".CSV" key
+        # overrides a built-in ".csv" — a case-sensitive `in` check would
+        # instead double-list the pattern and mis-source both rows.
+        builtin_by_lower = {str(k).lower(): k for k in builtin_reg}
+        user_lower = {str(k).lower() for k in user_reg}
+
         entries = []
         for key, value in builtin_reg.items():
-            if key in user_reg:
+            if str(key).lower() in user_lower:
                 continue  # the user's row replaces it below (override)
             entries.append(entry(key, value, "builtin", []))
         for key, value in user_reg.items():
+            builtin_key = builtin_by_lower.get(str(key).lower())
             builtin_names: list = []
-            if key in builtin_reg:
-                bnames, bdisabled, _berr = _names_from_value(key, builtin_reg[key], [])
+            if builtin_key is not None:
+                bnames, bdisabled, _berr = _names_from_value(builtin_key, builtin_reg[builtin_key], [])
                 if bnames and not bdisabled:
                     builtin_names = bnames  # what a "..." splice expands to
-            source = "user-override" if key in builtin_reg else "user"
+            source = "user-override" if builtin_key is not None else "user"
             entries.append(entry(key, value, source, builtin_names))
         # File keys first, then directory keys (trailing "/"), alpha within.
         entries.sort(key=lambda e: (e["pattern"].endswith("/"), e["pattern"]))

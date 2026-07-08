@@ -530,6 +530,34 @@ def test_deploy_requires_fused_header(tmp_path, monkeypatch):
     assert resp.status_code == 403
 
 
+def test_deploy_rejects_non_string_page_with_400_not_500(tmp_path, monkeypatch):
+    # A truthy non-string page (JSON number/array) must not reach os.path.isabs
+    # (which raises TypeError -> 500); it stays a clean 400.
+    h = _harness(tmp_path, monkeypatch)
+    for bad in (123, ["/x.html"], {"p": 1}):
+        resp = h.client.post("/api/deploy", json={"page": bad, "env": "cloud"}, headers=FUSED)
+        assert resp.status_code == 400, (bad, resp.status_code)
+    assert h.calls() == []
+
+
+def test_deploy_refuses_to_overwrite_a_corrupt_store(tmp_path, monkeypatch):
+    # A corrupt deployments.json must NOT collapse to {} and get overwritten —
+    # that would drop every other page's pointer, orphaning live mounts. The
+    # deploy aborts with a clear error and the file is left untouched.
+    h = _harness(tmp_path, monkeypatch)
+    h.home.mkdir(parents=True, exist_ok=True)
+    store = h.home / "deployments.json"
+    store.write_text('{"other.html": {"env": "cloud", "token": "keep-me"', encoding="utf-8")  # truncated
+    h.set_scenario({"create": {"token": "abc123", "url": "https://x/abc123", "status": "active"}})
+
+    resp = h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    assert resp.status_code == 400
+    assert "not valid JSON" in resp.json()["error"]
+    # Untouched — the other page's record is not clobbered, and no CLI ran.
+    assert store.read_text(encoding="utf-8").startswith('{"other.html"')
+    assert h.calls() == []
+
+
 # -- status / revoke / shares ---------------------------------------------------
 
 

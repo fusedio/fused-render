@@ -77,34 +77,43 @@ def fused_engine_available() -> bool:
 
 
 def effective_engine() -> str:
-    """The engine an *unforced* /api/run would use right now: the selected
-    pref, degraded to builtin while the fused backend isn't importable."""
-    if selected_engine() == "fused" and fused_engine_available():
-        return "fused"
-    return "builtin"
+    """The engine /api/run uses **right now** — the single resolver both the
+    server's dispatch (`server.current_engine`) and the Preferences page
+    (`engine_state`) go through, so the "currently running" label can never
+    disagree with what actually executes a page.
+
+    `FUSED_RENDER_ENGINE` overrides the pref (validated at startup by
+    `server._forced_engine`, which fails loudly for `=fused` when the package
+    is missing); otherwise the persisted pref decides. Availability is
+    resolved **live** on every call — an `=auto` override, or a `fused` pref,
+    both reflect a mid-session install/removal without a server restart
+    (the earlier startup-frozen resolution let the page and dispatch drift
+    after an install).
+    """
+    forced = os.environ.get("FUSED_RENDER_ENGINE")
+    if forced is not None:
+        requested = forced.strip().lower()
+        if requested == "builtin":
+            return "builtin"
+        # auto / fused: fused iff importable now (=fused was startup-validated).
+        return "fused" if fused_engine_available() else "builtin"
+    return "fused" if (selected_engine() == "fused" and fused_engine_available()) else "builtin"
 
 
 def engine_state() -> dict:
     """The engine block of GET /api/prefs.
 
-    ``forced_by`` is the raw FUSED_RENDER_ENGINE value when set — the process
-    override that beats the pref (server.py validated it at startup; the
-    small auto/fused → effective mirror here is display-only and matches
-    server._forced_engine's resolution).
+    ``effective`` is `effective_engine()` — the SAME resolver the server's
+    /api/run dispatch uses, so the page never reports a different running
+    engine than the one executing pages. ``forced_by`` is the raw
+    FUSED_RENDER_ENGINE value when set (the process override that beats the
+    pref).
     """
-    forced_raw = os.environ.get("FUSED_RENDER_ENGINE")
-    available = fused_engine_available()
-    selected = selected_engine()
-    if forced_raw is not None:
-        requested = forced_raw.strip().lower()
-        effective = "fused" if (requested == "fused" or (requested == "auto" and available)) else "builtin"
-    else:
-        effective = "fused" if (selected == "fused" and available) else "builtin"
     return {
-        "selected": selected,
-        "effective": effective,
-        "forced_by": forced_raw,
-        "fused_available": available,
+        "selected": selected_engine(),
+        "effective": effective_engine(),
+        "forced_by": os.environ.get("FUSED_RENDER_ENGINE"),
+        "fused_available": fused_engine_available(),
     }
 
 
