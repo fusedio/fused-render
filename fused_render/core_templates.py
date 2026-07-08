@@ -86,8 +86,14 @@ def ensure_core_templates() -> str:
         try:
             os.replace(staging, core_dir)
         except OSError:
-            # Lost a swap race with another instance staging the same version;
-            # its copy is already in place. Discard ours.
-            shutil.rmtree(staging, ignore_errors=True)
+            if os.path.isdir(core_dir):
+                # Lost a swap race: another instance already put this version in
+                # place, so a complete tree is live. Discard ours.
+                shutil.rmtree(staging, ignore_errors=True)
+            else:
+                # Genuine swap failure with core_dir already wiped. Surface it
+                # rather than silently returning a path to nothing (crash on
+                # failure, by design); the staging copy is left for inspection.
+                raise
 
     return core_dir
