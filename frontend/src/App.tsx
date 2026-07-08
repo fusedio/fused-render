@@ -9,7 +9,8 @@
 import { useEffect, useState } from "react";
 import { IS_EMBED, fsPathFromLocation, urlForFsPath } from "./lib/router";
 import { statPath, type Config, type StatResult } from "./lib/api";
-import { useNavEpoch } from "./lib/hooks";
+import { useNavEpoch, useDocumentTitle } from "./lib/hooks";
+import { basename } from "./lib/format";
 import Sidebar from "./components/Sidebar";
 import { Breadcrumb, StaticBreadcrumb } from "./components/Breadcrumb";
 import Listing from "./views/Listing";
@@ -47,6 +48,7 @@ function useStat(fsPath: string | null, epoch: number): StatState {
 // sentinel.
 function StatView({ fsPath, epoch }: { fsPath: string; epoch: number }) {
   const stat = useStat(fsPath, epoch);
+  useDocumentTitle(fsPath === "/" ? null : basename(fsPath));
   let content = null;
   if (stat.status === "error") {
     content = (
@@ -91,8 +93,14 @@ export default function App({ config }: { config: Config }) {
   }
 
   const pathname = location.pathname;
+  const isPanel = pathname === "/view/_panel" || pathname === "/embed/_panel";
+  const isTabs = pathname === "/view/_tab" || pathname === "/embed/_tab";
+  const fsPath = isPanel || isTabs ? null : fsPathFromLocation();
+  // A resolved fsPath mounts StatView below, which owns the title itself.
+  useDocumentTitle(isPanel ? "Panel" : isTabs ? "Tabs" : fsPath ? undefined : null);
+
   let main;
-  if (pathname === "/view/_panel" || pathname === "/embed/_panel") {
+  if (isPanel) {
     main = (
       <>
         <div id="breadcrumb">
@@ -103,7 +111,7 @@ export default function App({ config }: { config: Config }) {
         </div>
       </>
     );
-  } else if (pathname === "/view/_tab" || pathname === "/embed/_tab") {
+  } else if (isTabs) {
     main = (
       <>
         <div id="breadcrumb">
@@ -114,20 +122,17 @@ export default function App({ config }: { config: Config }) {
         </div>
       </>
     );
+  } else if (!fsPath) {
+    main = (
+      <>
+        <div id="breadcrumb" />
+        <div id="content">
+          <div className="status-message error">Unrecognized URL: {pathname}</div>
+        </div>
+      </>
+    );
   } else {
-    const fsPath = fsPathFromLocation();
-    if (!fsPath) {
-      main = (
-        <>
-          <div id="breadcrumb" />
-          <div id="content">
-            <div className="status-message error">Unrecognized URL: {pathname}</div>
-          </div>
-        </>
-      );
-    } else {
-      main = <StatView key={epoch + ":" + fsPath} fsPath={fsPath} epoch={epoch} />;
-    }
+    main = <StatView key={epoch + ":" + fsPath} fsPath={fsPath} epoch={epoch} />;
   }
 
   return (
