@@ -169,11 +169,39 @@
     }
 
     // --- data ---------------------------------------------------------------
+    // Legacy import: the removed built-in stored comments in the RESERVED
+    // `_comments` shell param, which fused.params doesn't expose. If this
+    // page has no `comments` param but the shell URL carries `_comments`,
+    // convert once (same-origin parent): content/timestamps/status/view map
+    // directly; anchorId/anchorPath carry over (selection anchors have no
+    // native equivalent — they surface as detached, content preserved).
+    function legacyComments() {
+      try {
+        const raw = new URLSearchParams(window.parent.location.search).get("_comments");
+        if (!raw) return null;
+        const arr = JSON.parse(raw);
+        if (!Array.isArray(arr)) return null;
+        return arr.map((t) => ({
+          id: typeof t.id === "string" ? t.id : crypto.randomUUID(),
+          content: typeof t.content === "string" ? t.content : "",
+          createdAt: Number(t.createdAt) || Date.now(),
+          resolved: t.status === "resolved" || undefined,
+          anchorPath: typeof t.anchorPath === "string" ? t.anchorPath : undefined,
+          anchorId: typeof t.anchorId === "string" ? t.anchorId : undefined,
+          view: typeof t.mode === "string" ? t.mode : undefined,
+        }));
+      } catch (e) {
+        return null;
+      }
+    }
     function load() {
       try {
         const raw = fused.params.get("comments");
-        const arr = raw ? JSON.parse(raw) : [];
-        return Array.isArray(arr) ? arr : [];
+        if (raw) {
+          const arr = JSON.parse(raw);
+          return Array.isArray(arr) ? arr : [];
+        }
+        return legacyComments() || [];
       } catch (e) {
         return [];
       }
@@ -197,7 +225,13 @@
       }
       return node === doc.body ? segs.join(">") : null;
     }
-    function resolveAnchor(path, doc) {
+    function resolveAnchor(c, doc) {
+      // Element-id anchors (legacy imports carry them) win over paths.
+      if (c.anchorId && doc) {
+        const el = doc.getElementById(c.anchorId);
+        if (el) return el;
+      }
+      const path = c.anchorPath;
       if (!path || !doc || !doc.body) return null;
       let node = doc.body;
       for (const seg of path.split(">")) {
@@ -241,7 +275,7 @@
         // Anchors are per-view: only resolve/pin comments made on the view
         // that's currently framed; others are listed with their view's tag.
         const ownView = !c.view || !activeView || c.view === activeView.mode;
-        const el = ownView && doc ? resolveAnchor(c.anchorPath, doc) : null;
+        const el = ownView && doc ? resolveAnchor(c, doc) : null;
         if (el) {
           const p = stagePoint(el);
           const pin = document.createElement("div");
@@ -270,7 +304,7 @@
         card.querySelector(".body").textContent = c.content;
         card.onclick = (e) => {
           if (e.target.closest("button")) return;
-          if (!ownView && c.view) fused.params.set("view", c.view); // jump to its view
+          if (!ownView && c.view) switchView(c.view); // jump to its view
           else reveal(c);
         };
         card.querySelector('[data-a="resolve"]').onclick = () => {
@@ -285,7 +319,7 @@
 
     function reveal(c) {
       const doc = frame.contentDocument;
-      const el = doc ? resolveAnchor(c.anchorPath, doc) : null;
+      const el = doc ? resolveAnchor(c, doc) : null;
       if (!el) return;
       el.scrollIntoView({ block: "center", behavior: "smooth" });
       setTimeout(() => {
@@ -297,6 +331,33 @@
         hl.style.height = r.height + "px";
         setTimeout(() => (hl.style.display = "none"), 1200);
       }, 350);
+    }
+
+    // Switching the annotated view reloads this template — an editor framed
+    // inside with unsaved edits must be flushed FIRST (same contract as the
+    // shell's own mode switch); refuse the switch when it can't be made safe.
+    let switchingView = false;
+    async function switchView(mode) {
+      if (switchingView || (activeView && mode === activeView.mode)) return;
+      switchingView = true;
+      try {
+        const inner = frame.contentWindow && frame.contentWindow.__fusedFlushEdits;
+        if (typeof inner === "function") {
+          const res = await Promise.race([
+            inner(),
+            new Promise((r) => setTimeout(() => r({ ok: false }), 10000)),
+          ]);
+          if (res && res.ok === false) {
+            if (activeView) viewSel.value = activeView.mode; // snap the picker back
+            return;
+          }
+        }
+      } catch (e) {
+        /* torn-down frame — nothing to flush */
+      } finally {
+        switchingView = false;
+      }
+      fused.params.set("view", mode);
     }
 
     // --- create flow ---------------------------------------------------------
@@ -357,11 +418,22 @@
         openComposer(fr.left - st.left + e.clientX, fr.top - st.top + e.clientY, path);
       }, true);
       // Capture-phase scroll catches nested scrolling containers (a code
-      // editor's scroller, a table wrapper), not just the document.
-      doc.addEventListener("scroll", () => render(), { capture: true, passive: true });
+      // editor's scroller, a table wrapper), not just the document. Scroll
+      // and mutation storms coalesce to one render per frame — an editor
+      // mutates on every keystroke, and unthrottled full rebuilds jank.
+      let renderQueued = false;
+      const queueRender = () => {
+        if (renderQueued) return;
+        renderQueued = true;
+        requestAnimationFrame(() => {
+          renderQueued = false;
+          render();
+        });
+      };
+      doc.addEventListener("scroll", queueRender, { capture: true, passive: true });
       // Async views (tables, editors) build their DOM after load — re-resolve
       // anchors when the framed document mutates.
-      new MutationObserver(() => render()).observe(doc.body || doc.documentElement, { childList: true, subtree: true });
+      new MutationObserver(queueRender).observe(doc.body || doc.documentElement, { childList: true, subtree: true });
       render();
     });
     window.addEventListener("resize", () => render());
@@ -406,7 +478,7 @@
         .map((v) => `<option value="${v.mode}"${v.mode === activeView.mode ? " selected" : ""}>${v.mode === "_render" ? "preview" : v.mode}</option>`)
         .join("");
       viewSel.hidden = views.length <= 1;
-      viewSel.addEventListener("change", () => fused.params.set("view", viewSel.value));
+      viewSel.addEventListener("change", () => switchView(viewSel.value));
       frame.src =
         activeView.mode === "_render"
           ? "/render?path=" + encodeURIComponent(file)
