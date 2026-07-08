@@ -302,6 +302,10 @@ const VERBS = ["Thinking", "Pondering", "Vibing", "Noodling", "Brewing", "Simmer
 // ── model/effort selectors (home + footer stay in sync via params) ──
 const MODELS = ["", "fable", "opus", "sonnet", "haiku"];
 const EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
+// Baseline when no param is set. Selecting the "default" option (empty
+// string) falls back to these too — the initial experience is sonnet/medium.
+const DEFAULT_MODEL = "sonnet";
+const DEFAULT_EFFORT = "medium";
 function fillSelect(el, values, label) {
   for (const v of values) {
     const o = document.createElement("option");
@@ -317,8 +321,8 @@ document.querySelector("#hmodel option[value='']").textContent = "model";
 document.querySelector("#heffort option[value='']").textContent = "effort";
 
 function syncSelects() {
-  document.querySelectorAll(".model-sel").forEach((el) => { el.value = fused.params.get("model") || ""; });
-  document.querySelectorAll(".effort-sel").forEach((el) => { el.value = fused.params.get("effort") || ""; });
+  document.querySelectorAll(".model-sel").forEach((el) => { el.value = fused.params.get("model") || DEFAULT_MODEL; });
+  document.querySelectorAll(".effort-sel").forEach((el) => { el.value = fused.params.get("effort") || DEFAULT_EFFORT; });
 }
 document.querySelectorAll(".model-sel").forEach((el) =>
   el.addEventListener("change", () => { fused.params.set("model", el.value); syncSelects(); }));
@@ -381,7 +385,7 @@ function addWorking() {
     const secs = Math.round((Date.now() - start) / 1000);
     verbEl.textContent = (stats.phase === "composing" ? "Composing" :
                           stats.phase === "tooling" ? "Working" : thinkVerb) + "…";
-    const effort = fused.params.get("effort") || "";
+    const effort = fused.params.get("effort") || DEFAULT_EFFORT;
     const parts = [secs + "s"];
     if (stats.tokens) parts.push("↓ " + stats.tokens + " tokens");
     if (stats.phase === "thinking" && effort) parts.push("thinking with " + effort + " effort");
@@ -489,8 +493,8 @@ async function sendMessage(message) {
       file: FILE,
       message,
       session_id: fused.params.get("session_id") || "",
-      model: fused.params.get("model") || "",
-      effort: fused.params.get("effort") || "",
+      model: fused.params.get("model") || DEFAULT_MODEL,
+      effort: fused.params.get("effort") || DEFAULT_EFFORT,
     });
     if (error) throw new Error(error);
 
