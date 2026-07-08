@@ -114,6 +114,14 @@
     line-height: 1.5;
   }
   #response pre.traceback { color: #ff6b6b; }
+  #response .errloc {
+    padding: 10px 14px 0;
+    color: #ffb3b3;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  #response .errloc .errsrc { color: #9aa0a6; padding-left: 2ch; }
   details { border-top: 1px solid #2a2d33; }
   details summary {
     cursor: pointer;
@@ -292,7 +300,14 @@
       let html = `<div class="card" id="response">`;
       if (!data.ok) {
         const err = data.error || {};
+        // err.where headlines the failing line of the user's script (set by
+        // the executor); the full trimmed traceback stays below for context.
+        const where = err.where;
+        const locHtml = where && where.file
+          ? `<div class="errloc">${escapeHtml(where.file)}, line ${escapeHtml(where.line)}${where.func ? `, in ${escapeHtml(where.func)}` : ""}${where.source ? `<div class="errsrc">${escapeHtml(where.source)}</div>` : ""}</div>`
+          : "";
         html += `<div class="card-head"><span class="badge" style="background:#3a1d1d;color:#ff6b6b">ERROR</span></div>
+                 ${locHtml}
                  <pre class="traceback">${escapeHtml(err.traceback || err.message || "run failed")}</pre>`;
       } else {
         html += `<div class="card-head"><span class="badge">RESULT</span></div>

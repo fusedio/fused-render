@@ -50,7 +50,7 @@ Rules that matter (each has a reason):
 - **Relative paths in your code resolve next to the .py file** (the working directory is set there). `open("./data.csv")` next to your script just works.
 - **Each call is a fresh subprocess.** Edits to the .py apply on the next call — but so does full import cost (pandas ≈ 1 s per call). No state survives between calls; don't cache in globals.
 - **`print()` output goes to the browser console** (prefixed `[python]`) — use it freely for debugging; it cannot corrupt the result.
-- **Calls time out at 30 s** and errors return `{type, message, traceback}` to the page. The environment is whatever Python launched the server — assume stdlib plus whatever the user installed there.
+- **Calls time out at 30 s** and errors return `{type, message, traceback, where}` to the page — `traceback` starts at your code (runner internals are trimmed), and `where` pinpoints the failing line of your own script (`{file, line, func, source}`, or `null` for errors that never reached it, like a bad param). The environment is whatever Python launched the server — assume stdlib plus whatever the user installed there.
 
 ## The HTML side: `window.fused` API
 
@@ -58,7 +58,7 @@ The runtime is injected automatically when the explorer renders the page. Never 
 
 | Call | Behavior |
 |---|---|
-| `await fused.runPython(pyPath, params)` | Runs `main(**params)` of the file at `pyPath` — relative to **this html file's directory**, or absolute. Resolves with the return value; rejects with an `Error` carrying `.type`, `.message`, `.traceback`, `.stdout`. |
+| `await fused.runPython(pyPath, params)` | Runs `main(**params)` of the file at `pyPath` — relative to **this html file's directory**, or absolute. Resolves with the return value; rejects with an `Error` carrying `.type`, `.message`, `.traceback`, `.where` (failing user-script line `{file, line, func, source}`, or `null`), `.stdout`. |
 | `fused.params.get(k)` | Current value from the URL, as a **string** (or `undefined`). |
 | `fused.params.getAll()` | All non-reserved params as an object — plus `_file` (read-only) when the page was opened as a preview template, even though `_file` is otherwise a reserved key. |
 | `fused.params.set(k, v)` | Writes to the URL (replaceState — no history spam). **Throws unless `v` is a string** — do `String(n)` yourself. Then fires `onChange`. |
@@ -71,7 +71,7 @@ The runtime is injected automatically when the explorer renders the page. Never 
 
 Notes:
 - Params are **strings only, always**. Parse numbers yourself (`parseInt(fused.params.get("limit") || "50", 10)`), JSON-encode structure yourself if you need it.
-- Uncaught `runPython` rejections auto-show a red traceback overlay — good default for debugging; catch the rejection yourself when you want custom error UI.
+- Uncaught `runPython` rejections auto-show a red traceback overlay headlining the failing line of the .py file — good default for debugging; catch the rejection yourself when you want custom error UI.
 - Concurrent `runPython` calls are fine; responses can arrive out of order — guard with a request counter if a stale response could overwrite a fresh one.
 - **Reach the filesystem only through these helpers**, never by fetching the server's `/api/fs/*` endpoints yourself — the helpers are the stable contract and carry required headers (writes are rejected without them).
 - `readFile`/`rawUrl` split: text you'll process → `readFile`; anything the browser should load itself (images, media, PDFs, download links) → `rawUrl`.
