@@ -577,13 +577,26 @@ def deploy_page(page: str, env_name: str) -> dict:
             "pick one from the Deploy dialog"
         )
 
-    # Validate the store BEFORE minting anything: a corrupt file read leniently
-    # would look like "not deployed", so a fresh `share create` would mint a
-    # mount and only the pointer write afterward would discover the corruption
-    # (orphaning the just-created mount). Fail fast instead — and read the
-    # pointer from this validated store.
-    store = _load_store_for_write()
-    pointer = store.get(page) if isinstance(store.get(page), dict) else None
+    # Validate + snapshot the pointer under the lock BEFORE minting anything.
+    # Validate: a corrupt file read leniently would look like "not deployed",
+    # so a fresh `share create` would mint a mount and only the pointer write
+    # afterward would discover the corruption (orphaning it) — fail fast.
+    # The lock is released before the CLI runs (never held across a subprocess
+    # / 120s network op). The read is then unavoidably a point-in-time
+    # snapshot, but that is safe here:
+    #   - the create-vs-repoint-vs-recreate decision below is driven by the
+    #     LIVE `share list` classification (`_classify_mount`), NOT the stored
+    #     status, so a concurrent reconcile/revoke — the only other writers,
+    #     and both only flip `status` — cannot mis-drive it;
+    #   - nothing deletes or re-keys a pointer; only a *second concurrent
+    #     deploy of the SAME page* could change its token, and the modal
+    #     disables Deploy while busy (one modal per page), so that is a UI
+    #     invariant, not an API race we serialize here;
+    #   - the final persist (set_deployment) is itself a locked read-modify-
+    #     write touching only this page's key.
+    with _STORE_LOCK:
+        store = _load_store_for_write()
+        pointer = store.get(page) if isinstance(store.get(page), dict) else None
 
     bundle = tempfile.mkdtemp(prefix="fused-render-deploy-")
     try:
