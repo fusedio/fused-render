@@ -1517,6 +1517,33 @@
     return out;
   }
 
+  // The seek track that belongs to THIS video, or null. A data-fa-timeline
+  // element claims a video either explicitly (attribute value = CSS selector
+  // of its video) or by containment: the track's nearest ancestor that holds
+  // a <video> must hold this one — so a page with several players never draws
+  // one video's markers on another's track.
+  function timelineFor(el) {
+    for (const track of document.querySelectorAll("[data-fa-timeline]")) {
+      const ref = track.getAttribute("data-fa-timeline");
+      if (ref) {
+        try {
+          if (document.querySelector(ref) === el) return track;
+        } catch (e) {}
+        continue;
+      }
+      let node = track.parentElement;
+      while (node) {
+        const vid = node.querySelector("video");
+        if (vid) {
+          if (vid === el) return track;
+          break; // this track belongs to a different player
+        }
+        node = node.parentElement;
+      }
+    }
+    return null;
+  }
+
   // Document-coord position of a thread's timestamp marker. Preferred home is
   // the surface's own seek track — an element marked data-fa-timeline (the
   // media template's custom transport) — so markers read as part of the
@@ -1524,7 +1551,7 @@
   // edge at the t/duration fraction of the painted content box (AN-40).
   function markPoint(thread, el) {
     const f = Math.min(1, Math.max(0, thread.t / el.duration));
-    const track = document.querySelector("[data-fa-timeline]");
+    const track = timelineFor(el);
     if (track) {
       const tr = track.getBoundingClientRect();
       if (tr.width > 0) {
