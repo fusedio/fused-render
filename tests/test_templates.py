@@ -62,9 +62,10 @@ def test_builtin_registry_parses_and_all_names_resolve():
 def test_builtin_html_default_is_render_sentinel():
     entries, error = server._templates_for("/x/page.html", False)
     assert error is None
-    assert [e["mode"] for e in entries] == ["_render", "code"]
+    assert [e["mode"] for e in entries] == ["_render", "code", "claude"]
     assert entries[0]["path"] is None and entries[0]["icon"] is None
     assert entries[1]["path"].endswith("code/template.html")
+    assert entries[2]["path"].endswith("claude/template.html")
 
 
 def test_builtin_zarr_directory_key():
@@ -165,7 +166,7 @@ def test_user_can_rebind_html(user_dir):
 def test_user_html_splice_keeps_render_sentinel(user_dir):
     user_dir.registry({".html": ["code", "..."]})
     m, error = modes("/x/page.html")
-    assert m == ["code", "_render"] and error is None
+    assert m == ["code", "_render", "claude"] and error is None
 
 
 def test_user_zarr_dir_rebind_and_disable(user_dir):
