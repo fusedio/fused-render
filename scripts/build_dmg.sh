@@ -156,7 +156,7 @@ for i in range(4):
         y = (1 - t) ** 2 * tip[1] + 2 * (1 - t) * t * ctrl[1] + t**2 * nxt[1]
         poly.append((x, y))
 
-draw.polygon(poly, fill=(91, 157, 255, 255))  # --accent
+draw.polygon(poly, fill=(229, 255, 68, 255))  # Fused yellow #E5FF44
 
 sizes = [16, 32, 128, 256, 512]
 for size in sizes:
