@@ -3,7 +3,7 @@
 //   2. else                      -> fallback metadata card
 // No file-type checks live in the shell — html arrives through stat.templates
 // like everything else, via the "_render" sentinel (SPEC PT-12).
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { rawUrl } from "../lib/api";
 import type { StatResult, TemplateEntry } from "../lib/api";
 import { formatSize, formatMtime } from "../lib/format";
@@ -46,8 +46,21 @@ function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: St
   const [mode, setModeState] = useState<string>(() => activeTemplate(templates).mode);
   const entry = templates.find((t) => t.mode === mode) || templates[0];
 
+  // One switch at a time: the flush below is async, and a second click landing
+  // mid-flight could resolve in either order, desyncing iframe key / local
+  // state / shell `_mode`. Clicks during a pending switch are dropped.
+  const switching = useRef(false);
   const setMode = async (next: string) => {
-    if (next === mode) return;
+    if (next === mode || switching.current) return;
+    switching.current = true;
+    try {
+      await doSetMode(next);
+    } finally {
+      switching.current = false;
+    }
+  };
+
+  const doSetMode = async (next: string) => {
     // Switching modes REMOUNTS the preview iframe (React key change) — an
     // editor buffer with edits newer than the last autosave would be silently
     // discarded. Same-origin, so ask the iframe to flush first (the code
