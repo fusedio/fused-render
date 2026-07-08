@@ -292,6 +292,20 @@ export default function Panel({ config }: { config: Config }) {
     }
   };
 
+  // Structural ops (split/close) get a real history entry: pushState the
+  // re-encoded `_layout` at op time, so Back/Forward walk the arrangement
+  // history. Plain history.pushState (not navigate()) — no NAV_EVENT, so the
+  // grid doesn't remount now; on an actual popstate App's nav epoch remounts
+  // Panel, which re-parses the entry's `_layout`. The version-effect syncUrl
+  // that follows sees an unchanged URL and no-ops (LM-6 guard).
+  const pushUrl = () => {
+    const { params } = splitShellSearch(location.search);
+    const next = panelUrl(encodeNode(treeRef.current!), params);
+    if (location.pathname + location.search !== next) {
+      history.pushState(history.state, "", next);
+    }
+  };
+
   const split = (id: number, dir: "row" | "col") => {
     const tree = treeRef.current!;
     const l = findLeaf(tree, id);
@@ -307,6 +321,7 @@ export default function Panel({ config }: { config: Config }) {
       if (!parent) treeRef.current = splitNode;
       else parent.children[parent.children.indexOf(l)] = splitNode;
     }
+    pushUrl();
     setVersion((v) => v + 1);
   };
 
@@ -338,6 +353,7 @@ export default function Panel({ config }: { config: Config }) {
       navigateUrl(urlForFsPath(root.path, root.query));
       return;
     }
+    pushUrl();
     setVersion((v) => v + 1);
   };
 

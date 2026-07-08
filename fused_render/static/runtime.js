@@ -194,9 +194,25 @@
     let search = params.toString();
     if (layoutSpan) search += (search ? "&" : "") + layoutSpan;
     const newUrl = target.location.pathname + (search ? "?" + search : "");
-    target.history.replaceState(target.history.state, "", newUrl);
+    // First-change-push: the first param write on a pristine history entry
+    // pushes a new entry (preserving the as-loaded state for Back), every
+    // later write replaces on top of it — so param churn costs at most one
+    // entry per visit. "Pristine" is tracked via a flag on history.state, not
+    // a JS variable: the flag travels with the entry, so after Back to the
+    // pristine entry the next write correctly pushes again (truncating the
+    // old forward branch), and it survives reloads. Existing state (e.g. the
+    // tab shell's fusedActiveTab) is merged, not clobbered.
+    const prevState = target.history.state;
+    const unchanged =
+      newUrl === target.location.pathname + target.location.search;
+    if (unchanged || (prevState && prevState.fusedParamEntry)) {
+      target.history.replaceState(prevState, "", newUrl);
+    } else {
+      const nextState = Object.assign({}, prevState, { fusedParamEntry: true });
+      target.history.pushState(nextState, "", newUrl);
+    }
     // Notify via the event path only (no direct notify(), D46). When the shell
-    // wrapper exists it also fires fused:urlchange on replaceState — the
+    // wrapper exists it also fires fused:urlchange on the history write — the
     // snapshot diff in notifyIfChanged() makes the duplicate harmless; this
     // explicit dispatch covers standalone /render pages that have no wrapper.
     target.dispatchEvent(new Event("fused:urlchange"));
