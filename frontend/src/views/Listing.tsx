@@ -23,7 +23,10 @@ function sortEntries(entries: FsEntry[], sort: SortKey, order: SortOrder): FsEnt
   const flip = order === "desc" ? -1 : 1;
   const byName = (a: FsEntry, b: FsEntry) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
   return [...entries].sort((a, b) => {
-    if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1; // dirs always group first
+    const aDot = a.name.startsWith(".");
+    const bDot = b.name.startsWith(".");
+    if (aDot !== bDot) return aDot ? 1 : -1; // dot entries always group last
+    if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1; // dirs group first within each
     let cmp: number;
     if (sort === "size") cmp = (a.size ?? -1) - (b.size ?? -1);
     else if (sort === "mtime") cmp = (a.mtime ?? 0) - (b.mtime ?? 0);
