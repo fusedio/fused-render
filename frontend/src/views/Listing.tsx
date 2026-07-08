@@ -203,15 +203,27 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   }, [walk.status, fsPath]);
 
   // A query restored from the URL needs the walk even without a focus event.
+  // Deliberately keyed off "idle" only (not "error") — this effect re-runs
+  // whenever walk.status changes, so retrying "error" here would loop forever
+  // (loading -> error -> retry -> loading -> error -> ...) with no user
+  // action in between. Error retries are wired to real user gestures instead:
+  // prefetchWalk (focus) and setQuery (typing) below.
   useEffect(() => {
     if (searching) setWalk((prev) => (prev.status === "idle" ? { status: "loading" } : prev));
   }, [searching, walk.status]);
 
-  const prefetchWalk = () => setWalk((prev) => (prev.status === "idle" ? { status: "loading" } : prev));
+  // Retry from "idle" (first focus) or "error" (a prior fetch failed) — treat
+  // both as "no usable walk cached yet". Called from onFocus, a genuine user
+  // gesture, so this can't spin in a loop the way an effect could.
+  const prefetchWalk = () =>
+    setWalk((prev) => (prev.status === "idle" || prev.status === "error" ? { status: "loading" } : prev));
 
   const setQuery = (value: string) => {
     setQueryState(value);
     setSearchSort(null); // a new query drops back to relevance order
+    // Editing the query is also a user gesture: if the last walk attempt
+    // failed, give it another shot instead of leaving search dead forever.
+    setWalk((prev) => (prev.status === "error" ? { status: "loading" } : prev));
     const params = new URLSearchParams(location.search);
     if (value) params.set("q", value);
     else params.delete("q");
@@ -364,11 +376,19 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   // --- search match count (inline in the search row) ------------------------
 
   let searchCount: string | null = null;
+  let searchCountTitle: string | undefined;
   if (searching && walk.status === "ok" && hits.length > 0) {
+    // A truncated walk (20k-entry server cap) means `hits` undercounts the
+    // real tree. Signal that without new UI: a "+" on the number plus a
+    // tooltip on the existing chip, rather than separate "truncated" text
+    // that would shift layout.
+    const truncated = walk.result.truncated;
+    const suffix = truncated ? "+" : "";
     searchCount =
       hits.length > MAX_RESULTS
-        ? `showing ${MAX_RESULTS} of ${hits.length} matches`
-        : `${hits.length} match${hits.length === 1 ? "" : "es"}`;
+        ? `showing ${MAX_RESULTS} of ${hits.length}${suffix} matches`
+        : `${hits.length}${suffix} match${hits.length === 1 ? "" : "es"}`;
+    if (truncated) searchCountTitle = "Search covers the first 20,000 entries of this folder tree";
   }
 
   return (
@@ -399,7 +419,11 @@ export default function Listing({ fsPath }: { fsPath: string }) {
         {searching && (walk.status === "idle" || walk.status === "loading") && (
           <span className="listing-search-spinner" aria-hidden="true" />
         )}
-        {searchCount !== null && <span className="listing-search-count">{searchCount}</span>}
+        {searchCount !== null && (
+          <span className="listing-search-count" title={searchCountTitle}>
+            {searchCount}
+          </span>
+        )}
       </div>
       <div className={"listing-scroll" + (isStale ? " listing-stale" : "")}>
         <table className="listing-table">
