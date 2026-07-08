@@ -149,27 +149,18 @@ function CrumbActions({ name, onSplit }: CrumbActionsProps) {
 }
 
 // Split entry (LM-10): two side-by-side panes, both showing the current view —
-// entering split mode with a single pane looked like nothing happened. Each
-// pane carries the `_`-prefixed params and the shell-owned view state —
-// listing sort/order and the `listing` directory-override (PT-13/D65) —
-// pane-local (inside its `_layout` segment); every other param joins the
-// merged top-level pool shared by all panes (LM-3). Pane iframes only read
-// segment-local query, so shell state left in the merged pool would be
-// silently dropped. Read via splitShellSearch, not raw URLSearchParams (D51):
-// a stray `_layout=(…)` span carries literal `&` that would parse as junk
-// keys; the codec read excludes the span, so it is dropped — the strict-read
-// semantics.
+// entering split mode with a single pane looked like nothing happened. The
+// current view's WHOLE query goes pane-local, inside each `_layout` segment
+// (LM-3/D72): nothing is promoted to the top-level pool — global params exist
+// only when the user hand-types them on the shell URL. Read via
+// splitShellSearch, not raw URLSearchParams (D51): a stray `_layout=(…)` span
+// carries literal `&` that would parse as junk keys; the codec read excludes
+// the span, so it is dropped — the strict-read semantics.
 function enterPanel(fsPath: string): void {
   const { params } = splitShellSearch(location.search);
-  const paneLocal = new URLSearchParams();
-  const merged: [string, string][] = [];
-  for (const [k, v] of params) {
-    if (k.startsWith("_") || k === "sort" || k === "order" || k === "listing") paneLocal.set(k, v);
-    else merged.push([k, v]);
-  }
-  const paneQ = paneLocal.toString();
+  const paneQ = params.toString();
   const seg = encodePaneSegment(fsPath, paneQ ? "?" + paneQ : "");
-  navigateUrl(panelUrl(seg + "," + seg, merged));
+  navigateUrl(panelUrl(seg + "," + seg, null));
 }
 
 export function Breadcrumb({ fsPath }: { fsPath: string }) {

@@ -164,8 +164,9 @@ function urlSafeLayout(s: string): string {
   return s.replace(/%/g, "%25").replace(/#/g, "%23").replace(/ /g, "%20");
 }
 
-// Build <sentinel>?...&_layout=(...) : the merged (top-level) param pool first,
-// the parenthesized layout always last. `merged` is an iterable of [k, v]
+// Build <sentinel>?...&_layout=(...) : any top-level params first (hand-typed
+// globals only, D72 — the shells never promote params there), the
+// parenthesized layout always last. `merged` is an iterable of [k, v]
 // entries; `_layout` is dropped from it so callers can pass the full current
 // query (also discards any old-grammar unwrapped value, see splitShellSearch).
 export function buildSentinelUrl(
