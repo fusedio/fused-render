@@ -1791,7 +1791,8 @@
     if (isDetached(t)) return; // tagged "detached" in the card; nowhere to go
     // Off-page (AN-38): ask the surface to navigate (page flip / sheet
     // switch), then wait for the anchor to appear — the page rebuild is
-    // async — and finish with the normal scroll + flash.
+    // async — and finish with the SAME reveal a resolved anchor gets (pixel
+    // scroll, video seek, pulse), not just an element flash.
     if (!resolveElement(t) && t.anchorId && offpageInfo(t)) {
       Promise.resolve(anchorResolver.reveal(t.anchorId))
         .then(() => {
@@ -1799,8 +1800,7 @@
           (function waitFor() {
             const nowEl = document.getElementById(t.anchorId);
             if (nowEl) {
-              nowEl.scrollIntoView({ block: "center", behavior: "smooth" });
-              flashRect(nowEl);
+              revealResolved(t, nowEl);
             } else if (Date.now() < deadline) {
               requestAnimationFrame(waitFor);
             }
@@ -1811,41 +1811,47 @@
     }
     const el = resolveElement(t);
     if (el) {
-      // Pixel threads scroll to the PIN, not the element center: a PDF page
-      // canvas is taller than the viewport, so centering the ELEMENT can put
-      // the pin itself above the fold (AN-40).
-      if (t.iu !== undefined && t.iv !== undefined && mediaIntrinsic(el)) {
-        const p = pinPoint(t, el);
-        window.scrollTo({
-          top: Math.max(0, p.y - window.innerHeight / 2),
-          left: Math.max(0, p.x - window.innerWidth / 2),
-          behavior: "smooth",
-        });
-      } else {
-        el.scrollIntoView({ block: "center", behavior: "smooth" });
-      }
-      // Video reveal seeks to the commented frame (AN-37) — paused, so the
-      // viewer lands on the exact moment under discussion.
-      if (el.tagName === "VIDEO" && t.t !== undefined) {
-        el.pause();
-        el.currentTime = t.t;
-      }
-      if (t.iu !== undefined && t.iv !== undefined && mediaIntrinsic(el)) {
-        // Image pins: pulse the PIN itself instead of drawing an accent ring
-        // — a lime outline vanishes on light/white imagery, the pin's own
-        // scale change reads on any background.
-        if (!pulsePin(t.id)) {
-          const p = pinPoint(t, el);
-          flashPoint(p.x, p.y);
-        }
-      } else {
-        flashRect(el);
-      }
+      revealResolved(t, el);
     } else {
       // Free pin: center it vertically, flash at the stored point.
       const cp = clampPin(t.x || 0, t.y || 0);
       window.scrollTo({ top: Math.max(0, cp.y - window.innerHeight / 2), behavior: "smooth" });
       flashPoint(cp.x, cp.y);
+    }
+  }
+
+  // The reveal itself, given a live element — shared by the resolved and the
+  // off-page (post-navigation) paths so both get identical treatment.
+  function revealResolved(t, el) {
+    // Pixel threads scroll to the PIN, not the element center: a PDF page
+    // canvas is taller than the viewport, so centering the ELEMENT can put
+    // the pin itself above the fold (AN-40).
+    if (t.iu !== undefined && t.iv !== undefined && mediaIntrinsic(el)) {
+      const p = pinPoint(t, el);
+      window.scrollTo({
+        top: Math.max(0, p.y - window.innerHeight / 2),
+        left: Math.max(0, p.x - window.innerWidth / 2),
+        behavior: "smooth",
+      });
+    } else {
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+    // Video reveal seeks to the commented frame (AN-37) — paused, so the
+    // viewer lands on the exact moment under discussion.
+    if (el.tagName === "VIDEO" && t.t !== undefined) {
+      el.pause();
+      el.currentTime = t.t;
+    }
+    if (t.iu !== undefined && t.iv !== undefined && mediaIntrinsic(el)) {
+      // Image pins: pulse the PIN itself instead of drawing an accent ring
+      // — a lime outline vanishes on light/white imagery, the pin's own
+      // scale change reads on any background.
+      if (!pulsePin(t.id)) {
+        const p = pinPoint(t, el);
+        flashPoint(p.x, p.y);
+      }
+    } else {
+      flashRect(el);
     }
   }
 
@@ -1991,7 +1997,7 @@
     // A click on a pin opens a different thread (its own handler ran already);
     // don't double-close in that case — the pin handler called openThread which
     // closed+reopened. Detect by checking the target is a pin.
-    if (e.target.closest && e.target.closest(".__fa_pin, .__fa_trayitem")) return;
+    if (e.target.closest && e.target.closest(".__fa_pin, .__fa_trayitem, .__fa_mark")) return;
     closePopover();
   }
 
