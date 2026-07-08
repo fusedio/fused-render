@@ -6,11 +6,10 @@ paths. Endpoints are sync `def` so FastAPI dispatches them to its threadpool,
 giving free concurrency for blocking filesystem/subprocess work; /api/run is
 async (the fused engine is async; the built-in executor is offloaded).
 
-Execution engine (D69): when the `fused` package is installed, /api/run runs
-code through its local compute backend (`engine.py`); otherwise the built-in
-executor runs, unchanged. `FUSED_RENDER_ENGINE` overrides: `auto` (default),
-`fused` (require it — fail loudly at startup if missing), `builtin` (never
-use it).
+Execution engine (D69/D70): /api/run runs the built-in executor by **default**,
+whether or not the `fused` package is installed — set `FUSED_RENDER_ENGINE=auto`
+(use fused if importable, else fall back) or `=fused` (require it — fail loudly
+at startup if missing) to opt in to the local compute backend (`engine.py`).
 """
 import asyncio
 import json
@@ -34,18 +33,26 @@ logger = logging.getLogger(__name__)
 def _select_engine() -> str:
     """Pick the /api/run engine for this process: "fused" or "builtin".
 
-    Availability-driven (D69): `auto` uses fused iff importable; `fused`
-    demands it (a missing package is a startup error, not a silent fallback);
-    `builtin` skips it. Logged either way — engine choice changes the code
+    Availability-driven (D69), builtin-by-default (D70): unset/`builtin` never
+    touches the `fused` package even if it's importable; `auto` opts in to it
+    iff importable; `fused` demands it (a missing package is a startup error,
+    not a silent fallback). Logged either way — engine choice changes the code
     contract, so it must never be silent.
     """
-    requested = os.environ.get("FUSED_RENDER_ENGINE", "auto").strip().lower()
+    is_default = "FUSED_RENDER_ENGINE" not in os.environ
+    requested = os.environ.get("FUSED_RENDER_ENGINE", "builtin").strip().lower()
     if requested not in ("auto", "fused", "builtin"):
         raise RuntimeError(
             f"FUSED_RENDER_ENGINE={requested!r} is not one of: auto, fused, builtin"
         )
     if requested == "builtin":
-        logger.info("execution engine: builtin (forced by FUSED_RENDER_ENGINE)")
+        if is_default:
+            logger.info(
+                "execution engine: builtin (default; set FUSED_RENDER_ENGINE=auto or "
+                "=fused to opt in to the fused engine)"
+            )
+        else:
+            logger.info("execution engine: builtin (forced by FUSED_RENDER_ENGINE)")
         return "builtin"
     try:
         from fused_render import engine as _engine
@@ -333,7 +340,7 @@ def _templates_for(path: str, is_dir: bool):
 
 
 def create_app(start_dir: str) -> FastAPI:
-    engine_name = _select_engine()  # "fused" | "builtin" (D69); raises on a bad override
+    engine_name = _select_engine()  # "fused" | "builtin" (D69/D70); raises on a bad override
     app = FastAPI(title="fused-render")
 
     @app.exception_handler(Exception)

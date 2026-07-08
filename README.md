@@ -68,15 +68,16 @@ browsable from there.
 
 ### Execution engine
 
-Python files run in a fresh subprocess per call. When the **`fused` package is
-installed** (`pip install "fused-render[fused]"`), execution goes through
-fused's local compute backend instead of the built-in runner: PEP 723
-`# /// script` inline requirements resolve into cached venvs, and — in
-addition to the bare `main()` convention below — a file may expose a
-`@fused.udf`-decorated function (any name; params arrive as raw JSON types)
-or assign `result = ...` directly. Without the package, the built-in runner
-is used and nothing changes. Force a choice with `FUSED_RENDER_ENGINE=`
-`auto|fused|builtin`; the active engine shows in `GET /api/config`.
+Python files run in a fresh subprocess per call, through the built-in runner
+**by default** — whether or not the `fused` package is installed. Opt in to
+fused's local compute backend with `FUSED_RENDER_ENGINE=auto` (uses it iff
+`fused` is importable, else falls back to builtin) or `=fused` (require it —
+fails loudly at startup if missing); `pip install "fused-render[fused]"` first
+if it isn't already. Under the fused engine, PEP 723 `# /// script` inline
+requirements resolve into cached venvs, and — in addition to the bare `main()`
+convention below — a file may expose a `@fused.udf`-decorated function (any
+name; params arrive as raw JSON types) or assign `result = ...` directly. The
+active engine shows in `GET /api/config`.
 
 ## Export for hosted serving
 
