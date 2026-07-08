@@ -125,38 +125,46 @@ def fused_command() -> list[str] | None:
     return [which] if which else None
 
 
-def _pinned_fused_requirement() -> str | None:
-    """The requirement string this package's own `[fused]` extra pins.
+# The fused wheel the one-click install lands (POST /api/deploy/install) —
+# the single IN-CODE source of the pin. pyproject.toml's `[fused]` extra must
+# point at the SAME wheel; tests/test_deploy.py pins the two together. A code
+# constant, deliberately NOT importlib.metadata.requires("fused-render"):
+# dist-info metadata is absent on a source-tree run and on app bundles that
+# strip dist-info, and it goes STALE on an editable install that predates the
+# extra (metadata only refreshes on reinstall) — all of which disabled the
+# install button exactly when it mattered. The constant ships in the same
+# file as the code that uses it, so it is always as current as the server.
+PINNED_FUSED_REQUIREMENT = (
+    "fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.2.post5-py3-none-any.whl"
+)
+# The wheel's own environment marker (python_version >= "3.11"), enforced here
+# because pip is handed the marker-free requirement above.
+FUSED_MIN_PYTHON = (3, 11)
 
-    Read from installed metadata (importlib.metadata.requires) rather than
-    hardcoding the wheel URL here — pyproject.toml stays the single source of
-    the pin. Returns the requirement without its environment marker (pip gets
-    the plain spec), or None when the metadata is unavailable (e.g. running
-    from a source tree that was never pip-installed).
+
+def _pip_available() -> bool:
+    """Whether this interpreter can `python -m pip` at all.
+
+    False for embedded/packaged interpreters (e.g. the DMG app's bundled
+    CPython) — there the install button is pointless and the reason string
+    routes the user to FUSED_RENDER_FUSED_BIN / an outside install instead.
     """
-    import importlib.metadata
+    import importlib.util
 
-    try:
-        requires = importlib.metadata.requires("fused-render") or []
-    except importlib.metadata.PackageNotFoundError:
-        return None
-    for spec in requires:
-        if "extra" in spec and 'extra == "fused"' in spec:
-            return spec.split(";", 1)[0].strip()
-    return None
+    return importlib.util.find_spec("pip") is not None
 
 
 def cli_status() -> dict:
     """Availability of the fused CLI, plus whether/how it can be installed.
 
-    `installable` means POST /api/deploy/install can be expected to work: a
-    pinned requirement is known and this interpreter satisfies the extra's
-    python_version >= 3.11 marker. When not installable, `reason` says why and
+    `installable` means POST /api/deploy/install can be expected to work:
+    this interpreter satisfies the pinned wheel's python_version >= 3.11
+    marker and has pip. When not installable, `reason` says why and
     `install_hint` names the manual command.
     """
     command = fused_command()
-    requirement = _pinned_fused_requirement()
-    python_ok = sys.version_info >= (3, 11)
+    python_ok = sys.version_info >= FUSED_MIN_PYTHON
+    pip_ok = _pip_available()
     reason = None
     if command is None:
         if not python_ok:
@@ -164,15 +172,17 @@ def cli_status() -> dict:
                 f"the fused package needs Python 3.11+ (this server runs "
                 f"{sys.version_info.major}.{sys.version_info.minor})"
             )
-        elif requirement is None:
+        elif not pip_ok:
             reason = (
-                "fused-render's package metadata is unavailable, so the pinned fused "
-                "wheel can't be determined; install manually"
+                "this server's Python has no pip module (an embedded or packaged "
+                "interpreter), so it can't install packages into itself; install the "
+                "fused CLI with a Python on your PATH and, if the server still can't "
+                "find it, point FUSED_RENDER_FUSED_BIN at the `fused` executable"
             )
     return {
         "found": command is not None,
         "command": " ".join(command) if command else None,
-        "installable": command is None and python_ok and requirement is not None,
+        "installable": command is None and python_ok and pip_ok,
         "reason": reason,
         "install_hint": 'pip install "fused-render[fused]"',
     }
@@ -184,18 +194,19 @@ def install_fused() -> dict:
     Raises DeployError with pip's tail on failure. The console script lands in
     the venv's bin/, where fused_command() step 2 finds it — no restart needed.
     """
-    if sys.version_info < (3, 11):
+    if sys.version_info < FUSED_MIN_PYTHON:
         raise DeployError(
             "the fused package needs Python 3.11+; this server runs "
             f"{sys.version_info.major}.{sys.version_info.minor} — recreate the venv on a "
             "newer Python, then pip install \"fused-render[fused]\""
         )
-    requirement = _pinned_fused_requirement()
-    if requirement is None:
+    if not _pip_available():
         raise DeployError(
-            "cannot determine the pinned fused wheel from fused-render's package "
-            'metadata; install manually: pip install "fused-render[fused]"'
+            "this server's Python has no pip module, so it can't install packages into "
+            "itself; install the fused CLI with a Python on your PATH and point "
+            "FUSED_RENDER_FUSED_BIN at the `fused` executable if needed"
         )
+    requirement = PINNED_FUSED_REQUIREMENT
     try:
         proc = subprocess.run(
             [sys.executable, "-m", "pip", "install", requirement],

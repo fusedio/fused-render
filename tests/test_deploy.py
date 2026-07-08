@@ -128,12 +128,66 @@ def test_config_default_honors_ambient_openfused_env(tmp_path, monkeypatch):
     assert h.client.get("/api/deploy/config").json()["default_env"] == "prod"
 
 
-def test_config_reports_missing_cli(tmp_path, monkeypatch):
+def test_config_reports_missing_cli_as_installable(tmp_path, monkeypatch):
+    # The pin is a code constant (never package metadata, which is absent on
+    # source runs and stale on pre-extra editable installs), so a missing CLI
+    # on a pip-capable 3.11+ interpreter is always one-click installable.
     h = _harness(tmp_path, monkeypatch)
     monkeypatch.setattr(deploy_mod, "fused_command", lambda: None)
     cli = h.client.get("/api/deploy/config").json()["cli"]
     assert cli["found"] is False
+    assert cli["installable"] is True
+    assert cli["reason"] is None
     assert "fused-render[fused]" in cli["install_hint"]
+
+
+def test_config_missing_cli_without_pip_names_the_workaround(tmp_path, monkeypatch):
+    # An embedded/packaged interpreter (no pip) can't install into itself —
+    # the reason must route the user to FUSED_RENDER_FUSED_BIN instead.
+    h = _harness(tmp_path, monkeypatch)
+    monkeypatch.setattr(deploy_mod, "fused_command", lambda: None)
+    monkeypatch.setattr(deploy_mod, "_pip_available", lambda: False)
+    cli = h.client.get("/api/deploy/config").json()["cli"]
+    assert cli["installable"] is False
+    assert "FUSED_RENDER_FUSED_BIN" in cli["reason"]
+
+
+def test_pinned_requirement_matches_pyproject_extra():
+    # deploy.PINNED_FUSED_REQUIREMENT is the in-code source of the pin; the
+    # pyproject [fused] extra must reference the SAME wheel or a wheel install
+    # and the one-click install would land different builds.
+    import pathlib
+
+    import pytest
+
+    tomllib = pytest.importorskip("tomllib")
+    pyproject = pathlib.Path(__file__).parents[1] / "pyproject.toml"
+    data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    (extra_spec,) = data["project"]["optional-dependencies"]["fused"]
+    extra_requirement = extra_spec.split(";", 1)[0].strip()
+    assert extra_requirement == deploy_mod.PINNED_FUSED_REQUIREMENT
+
+
+def test_install_invokes_pip_with_the_pinned_requirement(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    ran: list[list[str]] = []
+
+    class _Proc:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        ran.append(cmd)
+        return _Proc()
+
+    monkeypatch.setattr(deploy_mod.subprocess, "run", fake_run)
+    resp = h.client.post("/api/deploy/install", headers=FUSED)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "requirement": deploy_mod.PINNED_FUSED_REQUIREMENT}
+    (cmd,) = ran
+    assert cmd[:4] == [sys.executable, "-m", "pip", "install"]
+    assert cmd[4] == deploy_mod.PINNED_FUSED_REQUIREMENT
 
 
 def test_config_with_no_envs_file(tmp_path, monkeypatch):

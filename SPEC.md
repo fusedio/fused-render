@@ -589,12 +589,20 @@ the product gains network access.
   (verbatim, whitespace-split — compound commands work, and it is the test
   seam) → a `fused` console script in the server interpreter's own bin/ →
   `fused` on PATH.
-- **DP-4** When the CLI is missing and installing is possible (Python ≥ 3.11,
-  package metadata available), `POST /api/deploy/install` pip-installs **the
-  requirement pinned by this package's own `[fused]` extra** into the server's
-  interpreter — pyproject.toml stays the single source of the pin, read via
-  `importlib.metadata.requires`. Otherwise the modal states why and shows the
-  manual `pip install "fused-render[fused]"` hint.
+- **DP-4** When the CLI is missing and installing is possible (Python ≥ 3.11
+  per the wheel's marker, and the interpreter has pip), `POST
+  /api/deploy/install` pip-installs **the wheel pinned by
+  `deploy.PINNED_FUSED_REQUIREMENT`** into the server's interpreter. The
+  constant is the in-code source of the pin; pyproject.toml's `[fused]` extra
+  must reference the same wheel and a test pins the two together. Reading the
+  pin from installed dist-info metadata is rejected: metadata is absent on
+  source-tree runs and stripped app bundles, and goes stale on an editable
+  install that predates the extra — all of which disabled the button exactly
+  when it mattered, while the constant ships in the same file as the code
+  using it. When installing is impossible, the modal states why — old Python,
+  or a pip-less embedded interpreter (install fused with an outside Python
+  and point `FUSED_RENDER_FUSED_BIN` at it) — plus the manual
+  `pip install "fused-render[fused]"` hint.
 
 ### 19.3 Environments
 
