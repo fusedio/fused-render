@@ -405,20 +405,53 @@
     }
     const isRangeAnchor = (c) => !!c.quote;
 
-    // Optional anchor-resolver convention: a paged framed view (table, PDF)
-    // may expose window.__fusedAnnotateAnchorResolver = { match(id) ->
-    // {label?} | null, reveal(id) } to classify element ids it owns but
-    // hasn't mounted (another table page, a canvas past the render cap) as
-    // navigable rather than detached. Same-origin, probed defensively — a
-    // view without one changes nothing.
-    function frameResolver() {
-      const w = frame.contentWindow;
-      return (w && w.__fusedAnnotateAnchorResolver) || null;
-    }
+    // Off-page anchor resolvers. Paged views (table, xlsx, capped PDF) render
+    // stable element ids that encode an absolute address (__fr_r<row>_c<col>,
+    // __fr_s<sheet>_r<row>_c<col>, __fr_page_<n>); when such an id isn't
+    // mounted right now it's merely on another page/sheet — navigable, not
+    // detached. ALL of that knowledge lives here, in the annotate template:
+    // the views themselves carry no annotation code, just the ids. reveal()
+    // writes the ordinary offset/sheet params — the same shell-URL params the
+    // paged view already watches, so it reloads itself onto the right page.
+    const PAGE_LIMIT = 100; // stock table/xlsx page size
+    const pageOf = (row) => String(Math.floor(row / PAGE_LIMIT) * PAGE_LIMIT);
+    const sheetName = (doc, idx) => {
+      const opts = doc ? doc.querySelectorAll("#sheet option") : null;
+      return opts && opts[idx] ? opts[idx].value : null;
+    };
+    const ID_RESOLVERS = [
+      { // PDF page canvas past the render cap: nameable but not navigable.
+        re: /^__fr_page_(\d+)$/,
+        label: (m) => "page " + m[1],
+        reveal: null,
+      },
+      { // xlsx cell: sheet index + absolute row.
+        re: /^__fr_s(\d+)_r(\d+)_c(\d+)$/,
+        label(m, doc) {
+          const row = "row " + (parseInt(m[2], 10) + 1).toLocaleString();
+          const name = sheetName(doc, parseInt(m[1], 10));
+          return name ? name + " · " + row : row;
+        },
+        reveal(m, doc) {
+          // Offset first, sheet second — mirrors the sheet selector's own
+          // ordering (each set fires onChange; the last decides the load).
+          fused.params.set("offset", pageOf(parseInt(m[2], 10)));
+          const name = sheetName(doc, parseInt(m[1], 10));
+          if (name) fused.params.set("sheet", name);
+        },
+      },
+      { // table cell: absolute row.
+        re: /^__fr_r(\d+)_c(\d+)$/,
+        label: (m) => "row " + (parseInt(m[1], 10) + 1).toLocaleString(),
+        reveal: (m) => fused.params.set("offset", pageOf(parseInt(m[1], 10))),
+      },
+    ];
     function resolverMatch(anchorId) {
-      const r = frameResolver();
-      if (!r || typeof r.match !== "function") return null;
-      try { return r.match(anchorId) || null; } catch (err) { return null; }
+      for (const r of ID_RESOLVERS) {
+        const m = r.re.exec(anchorId);
+        if (m) return { r, m };
+      }
+      return null;
     }
 
     function resolveAnchor(c, doc) {
@@ -610,9 +643,8 @@
         }
         const resolvedHere = el || free || range;
         const chip = (t) => `<span style="color:#9aa0a6;border:1px solid #2a2d33;border-radius:4px;padding:0 5px">${t}</span>`;
-        // Off-page, not broken: a paged view (table pagination, capped PDF)
-        // can vouch for an unresolved element id via its anchor resolver —
-        // the comment's row/page just isn't mounted right now.
+        // Off-page, not broken: a recognized paged-view id (see ID_RESOLVERS)
+        // whose row/page just isn't mounted right now.
         const off = !resolvedHere && ownView && c.anchorId ? resolverMatch(c.anchorId) : null;
         const tag = !ownView
           ? chip(c.view === "_render" ? "preview" : c.view)
@@ -623,7 +655,7 @@
             : c.line != null && doc && isCmDoc(doc)
               ? chip("line " + c.line) // scrolled out of the virtualized viewport, not broken
               : off
-                ? chip(off.label || "off-page")
+                ? chip(off.r.label(off.m, doc) || "off-page")
                 : "<span style='color:#ff6b6b'>detached</span>";
         const card = document.createElement("div");
         card.className = "card" + (c.resolved ? " resolved" : "") + (c.id === activeId ? " active" : "");
@@ -712,13 +744,13 @@
           }
           return;
         }
-        // Off-page element anchor (paged table / capped PDF): the framed
-        // view's resolver navigates to it — the MutationObserver re-renders
-        // the pin once the right page mounts.
-        if (c.anchorId && resolverMatch(c.anchorId)) {
-          const r = frameResolver();
-          if (r && typeof r.reveal === "function") {
-            try { r.reveal(c.anchorId); } catch (err) {}
+        // Off-page element anchor (paged table / capped PDF): navigate the
+        // framed view to it via its ordinary params — the MutationObserver
+        // re-renders the pin once the right page mounts.
+        if (c.anchorId) {
+          const off = resolverMatch(c.anchorId);
+          if (off) {
+            if (off.r.reveal) off.r.reveal(off.m, doc);
             return;
           }
         }

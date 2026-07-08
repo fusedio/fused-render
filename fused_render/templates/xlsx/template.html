@@ -134,16 +134,13 @@
       const cols = data.columns;
       const head = `<tr>${cols.map((c) => `<th>${escapeHtml(c)}</th>`).join("")}</tr>`;
       // Cell ids carry the sheet INDEX + ABSOLUTE data-row index, so an
-      // annotation anchored to a cell stays on that cell across pagination and
+      // stable, deep-linkable address for every cell survives pagination and
       // sheet switches. Index (not name) keeps the id unambiguous.
       const sIdx = Math.max(0, data.sheets.indexOf(data.sheet));
       const body = data.rows
         .map((row, i) => `<tr>${cols.map((c, j) => `<td id="__fr_s${sIdx}_r${offset + i}_c${j}" title="${escapeHtml(cell(row[c]))}">${escapeHtml(cell(row[c]))}</td>`).join("")}</tr>`)
         .join("");
       wrap.innerHTML = `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
-      sheetsCache = data.sheets;
-      activeSheetIdx = sIdx;
-      totalRowsBySheet[sIdx] = total;
     }
 
     let loadSeq = 0; // stale-response guard: two rapid param changes race their reloads
@@ -186,38 +183,6 @@
     });
     fused.params.onChange(load);
     load();
-
-    // Annotation anchor resolver (probed by the annotate view on this
-    // frame's window): an unresolved __fr_s<sheet>_r<row>_c<col>
-    // cell id is on another page or sheet — not detached. reveal() switches
-    // sheet and/or offset (param changes → reload) to bring the cell on screen.
-    let sheetsCache = [];
-    let activeSheetIdx = 0;
-    const totalRowsBySheet = {}; // honest counts per visited sheet
-    const CELL_ID = /^__fr_s(\d+)_r(\d+)_c(\d+)$/;
-    window.__fusedAnnotateAnchorResolver = {
-      match(id) {
-        const m = CELL_ID.exec(id);
-        if (!m) return null;
-        const s = parseInt(m[1], 10);
-        const row = parseInt(m[2], 10);
-        if (sheetsCache.length && s >= sheetsCache.length) return null; // sheet gone
-        const known = totalRowsBySheet[s];
-        if (known !== undefined && row >= known) return null; // row truly gone
-        const rowLabel = "row " + (row + 1).toLocaleString();
-        return { label: s === activeSheetIdx ? rowLabel : (sheetsCache[s] || "sheet " + (s + 1)) + " · " + rowLabel };
-      },
-      reveal(id) {
-        const m = CELL_ID.exec(id);
-        if (!m) return;
-        const s = parseInt(m[1], 10);
-        const row = parseInt(m[2], 10);
-        // Offset first, sheet second — mirrors the sheet selector's ordering
-        // (each set fires onChange; the last one decides the loaded state).
-        fused.params.set("offset", String(Math.floor(row / LIMIT) * LIMIT));
-        if (s !== activeSheetIdx && sheetsCache[s]) fused.params.set("sheet", sheetsCache[s]);
-      },
-    };
   </script>
 </body>
 </html>

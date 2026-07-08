@@ -52,9 +52,9 @@
   <script type="module">
     // pdf.js renders each page to a real <canvas> (vendored bundle, no CDN —
     // same self-containment rule as geotiff/netcdf/zarr). A canvas per page
-    // means the document is ordinary DOM: annotations anchor to a page by id
-    // (__fr_page_<n>) with iu/iv pixel refinement, which a browser <embed>
-    // plugin could never support (it swallows every event).
+    // means the document is ordinary DOM: every page has a stable, deep-
+    // linkable id (__fr_page_<n>) and events actually reach the page — a
+    // browser <embed> plugin swallows every event and exposes no DOM.
     import * as pdfjs from "/template-assets/pdfjs.bundle.mjs";
     pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs";
 
@@ -83,7 +83,6 @@
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.arrayBuffer();
         const pdf = await pdfjs.getDocument({ data }).promise;
-        numPages = pdf.numPages;
         const shown = Math.min(pdf.numPages, MAX_PAGES);
         bar.textContent =
           pdf.numPages > MAX_PAGES
@@ -98,8 +97,7 @@
           const scale = cssWidth / base.width;
           const vp = page.getViewport({ scale });
           const canvas = document.createElement("canvas");
-          // Stable per-page id: annotation element anchors name the page, and
-          // iu/iv fractions of the canvas box pin the exact spot on it.
+          // Stable per-page id: a deep-linkable address for each page.
           canvas.id = `__fr_page_${n}`;
           canvas.width = Math.floor(vp.width * dpr);
           canvas.height = Math.floor(vp.height * dpr);
@@ -117,26 +115,6 @@
     }
 
     load();
-
-    // Annotation anchor resolver (probed by the annotate view on this frame's
-    // window): labels page anchors in the comments sidebar ("page 3") and
-    // covers the render-cap edge — a comment on page 101+ of a capped
-    // document is recognized, not "detached".
-    let numPages = 0; // set after load; 0 = unknown, accept any page
-    const PAGE_ID = /^__fr_page_(\d+)$/;
-    window.__fusedAnnotateAnchorResolver = {
-      match(id) {
-        const m = PAGE_ID.exec(id);
-        if (!m) return null;
-        const n = parseInt(m[1], 10);
-        if (numPages && n > numPages) return null; // page truly gone
-        return { label: "page " + n };
-      },
-      reveal(id) {
-        const el = document.getElementById(id);
-        if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
-      },
-    };
   </script>
 </body>
 </html>
