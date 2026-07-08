@@ -172,6 +172,12 @@ Deferred to later milestones (needed for data templates):
 
 - **PY-11** Optional per-call cache keyed by `(resolved py path, file mtime, params)`. Opt-in via config (per-directory or global). Keeps re-renders during param tweaking snappy.
 
+### 5.6 Optional fused engine (D69)
+
+- **PY-12** `/api/run` executes the built-in executor **by default**, regardless of whether the `fused` package is importable. `FUSED_RENDER_ENGINE=auto` opts in to running code through its local compute backend (`engine.py`) instead — fresh subprocess per call in a temp exec dir (PY-6 semantics preserved), PEP 723 `# /// script` inline requirements resolved into a cached venv (plus a default data-stack set mirroring the `bundled` extra), params delivered via `_params.json` — falling back to the built-in executor if `fused` isn't importable; `FUSED_RENDER_ENGINE=fused` requires it (startup error if missing); `=builtin` (or unset) always uses the built-in executor (D70). The active engine is reported in `GET /api/config` (`engine`) and logged at startup — the choice changes the code contract, so it is never silent.
+- **PY-13** **Code contract under the fused engine:** a function decorated with **`@fused.udf`** — any name, the last decorated one is the entrypoint — receiving params as **raw JSON values** (no annotation coercion; the calling JS owns types); or a plain script assigning **`result = ...`**. A bare **`main()`** remains supported as a compat bridge with PY-4 coercion and PY-8 cwd semantics, so pages and the built-in templates behave identically under either engine. A file with none of the three → the PY-1 structured error, extended to name the alternatives.
+- **PY-14** Both engines return **one wire shape** — `{ok, result, error: {type, message, traceback}, stdout}` (the fused engine adds `stderr`/`duration_ms`) — so `runtime.js` and templates never see which ran. Tracebacks under the fused engine point at the user's real file (the source is compiled as its own unit under its own filename); backend/wrapper plumbing frames are stripped.
+
 ---
 
 ## 6. Params & URL Sync
@@ -509,3 +515,44 @@ Element anchoring makes no sense inside a text editor. On editor surfaces, annot
 - **AN-21** **Re-resolution:** on load, if the doc slice at the stored range still matches `quote` → attached. Else search the doc for `quote` (first match) → re-anchor in memory (URL rewritten only on the next actual write). No match → detached tray (AN-14 behavior).
 - **AN-22** Edits made outside annotate mode may shift ranges; comments re-resolve by quote on the next annotate session. Accepted drift — the quote is the truth, the line/ch pair is a hint.
 - **AN-23** The vendored CM bundle (`scripts/vendor-codemirror/entry.js`) gains `Decoration`, `StateField`, `StateEffect`, `RangeSet` exports; rebuilt via `build.sh` (Node 22).
+
+## 18. Export — Portable Bundles for Hosted Serving (M10)
+
+Goal: pack a renderable page into a portable *bundle* that a **separate** hosting
+layer (the `fused` wheel's `build_html_artifact`) can serve — without weakening the
+local-only invariant (§1). Export is a **local, offline call on the already-running
+server** (`POST /api/export {"page", "out"}`, both absolute paths): it uploads
+nothing and reaches no network — it writes the bundle to a local directory, the same
+as every other filesystem-touching endpoint. fused-render itself still hosts
+nothing. Full detail: `docs/EXPORT.md`.
+
+### 18.1 Bundle format
+
+- **EX-1** A bundle is a directory holding `page.html` (the page verbatim),
+  `manifest.json` (the hosting contract), `code/<name>.py` (one per `runPython`
+  target), and `assets/<key>` (one per `rawUrl`/`readFile` target).
+- **EX-2** `manifest.json` (`{"fused_render_bundle": 1, "page", "entrypoints",
+  "assets"}`) maps each `runPython` literal path to a served route name + bundled
+  file, and each `rawUrl`/`readFile` literal path to an asset key + bundled file. The
+  hosting layer wires the served page's runtime from this map — it never re-parses
+  the HTML.
+
+### 18.2 Portable subset
+
+- **EX-3** Only the transport-agnostic part of the injected `window.fused` API is
+  portable: `runPython` (→ a served route the page posts to), `rawUrl`/`readFile`
+  (→ read-only bundled assets), and `params` (pure client-side URL state, unchanged).
+  `writeFile`, `stat`, and SSE live-reload are **unsupported** — a hosted artifact is
+  immutable and has no filesystem behind it.
+
+### 18.3 Static resolution & fail-loud
+
+- **EX-4** Every `runPython`/`rawUrl`/`readFile` path must be a **string literal**
+  resolvable at build time. A computed path, an unsupported API call, an absolute or
+  `..`-escaping path, or a missing target is a **blocking error** — export writes
+  nothing and reports all problems at once, rather than shipping a page whose calls
+  404 when hosted.
+- **EX-5** Route names derive from the `.py` stem (`sine.py` → `sine`), are prefixed
+  `run-` when they'd collide with a reserved serve route (`data`, `health`, the
+  `_`-prefixed control/shell/asset routes), and are suffixed `-2`, `-3`, … on
+  duplicate stems — so the map is always valid and injective.

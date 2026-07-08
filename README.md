@@ -66,6 +66,36 @@ fused-render --start-dir ~/data --port 9000 --no-browser
 `--start-dir` only sets the initial location — the whole filesystem stays
 browsable from there.
 
+### Execution engine
+
+Python files run in a fresh subprocess per call, through the built-in runner
+**by default** — whether or not the `fused` package is installed. Opt in to
+fused's local compute backend with `FUSED_RENDER_ENGINE=auto` (uses it iff
+`fused` is importable, else falls back to builtin) or `=fused` (require it —
+fails loudly at startup if missing); `pip install "fused-render[fused]"` first
+if it isn't already. Under the fused engine, PEP 723 `# /// script` inline
+requirements resolve into cached venvs, and — in addition to the bare `main()`
+convention below — a file may expose a `@fused.udf`-decorated function (any
+name; params arrive as raw JSON types) or assign `result = ...` directly. The
+active engine shows in `GET /api/config`.
+
+## Export for hosted serving
+
+fused-render is local-only, but the running server can pack a page into a portable
+bundle that a hosting layer (the `fused` wheel) can serve:
+
+```
+curl -X POST http://127.0.0.1:8765/api/export \
+  -H 'Content-Type: application/json' -H 'X-Fused: 1' \
+  -d '{"page": "/abs/path/to/examples/sine.html", "out": "/abs/path/to/bundle"}'
+```
+
+Both `page` and `out` must be absolute filesystem paths (same convention as every
+other endpoint — see the module docstring in `server.py`). It collects the page's
+`runPython`/`rawUrl` dependencies into a self-contained bundle. Only the portable
+subset of the runtime API is supported (no `writeFile`, `stat`, or live-reload).
+See `docs/EXPORT.md` for the bundle format and rules.
+
 ## Logs
 
 The server writes an application log so that when something goes wrong — an
