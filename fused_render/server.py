@@ -29,6 +29,7 @@ from fastapi.staticfiles import StaticFiles
 
 from fused_render.executor import run_python
 from fused_render.shell.bookmarks import router as bookmarks_router
+from fused_render.shell.storage import home_dir
 
 logger = logging.getLogger(__name__)
 
@@ -119,14 +120,17 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
     return None
 
 
-USER_TEMPLATES_DIR = os.path.expanduser("~/.fused-render")
+# User templates + their registry live under the shell home dir's templates/
+# subdir (D76) — ~/.fused-render/templates/<name>/ and .../templates/registry.json
+# — one level below the home dir that also holds bookmarks.json (shell/storage).
+USER_TEMPLATES_DIR = os.path.join(home_dir(), "templates")
 USER_REGISTRY = os.path.join(USER_TEMPLATES_DIR, "registry.json")
 
 
 def _resolve_name(name):
     """Single template-name resolution rule, used identically for built-in
     table entries and registry entries (SPEC PT-6): `<name>` resolves to
-    `~/.fused-render/<name>/template.html` if present, else
+    `~/.fused-render/templates/<name>/template.html` if present, else
     `fused_render/templates/<name>/template.html`, else unusable. A user
     folder shadows a built-in of the same name — the deliberate override
     channel. Returns (abs template.html path | None, error | None).
@@ -156,7 +160,7 @@ def _resolve_name(name):
     builtin = os.path.join(TEMPLATES_DIR, name, "template.html")
     if os.path.isfile(builtin):
         return builtin, None
-    return None, f"no template.html for {name!r} (looked in ~/.fused-render/{name}/ and built-in templates/{name}/)"
+    return None, f"no template.html for {name!r} (looked in ~/.fused-render/templates/{name}/ and built-in templates/{name}/)"
 
 
 def _icon_for(template_path: str):
@@ -303,7 +307,7 @@ def _templates_for(path: str, is_dir: bool):
     """Returns (templates: list[dict], template_error: str|None) — SPEC PT-8.
 
     Both binding tables are registries in one format (D73): the built-in
-    templates/registry.json and the user ~/.fused-render/registry.json, both
+    templates/registry.json and the user ~/.fused-render/templates/registry.json, both
     resolved by `_match_registry` — dot-anchored suffix patterns with `*`
     wildcard segments and trailing-"/" directory keys. Directories therefore
     resolve exactly like files (a `.zarr` store matches the ".zarr/" key),

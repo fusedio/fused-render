@@ -4,10 +4,10 @@ Shared foundation for every shell state backend: one home dir, one pair of
 read/write helpers. Adding a resource = a new module that resolves a path
 under home_dir() and uses read_json/write_json.
 
-The dir doubles as the user-template override channel (server.py's
-USER_TEMPLATES_DIR points at the same path, D50/D73); the two concerns share
-the directory but nothing else, and are kept decoupled to avoid a
-server <-> shell import cycle.
+The dir also roots the user-template override channel under its templates/
+subdir (server.py's USER_TEMPLATES_DIR = home_dir()/templates, D76): the home
+holds bookmarks.json + templates/. server imports home_dir from here, never
+the reverse (no server <-> shell import cycle).
 """
 import json
 import os
