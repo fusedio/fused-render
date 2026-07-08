@@ -60,3 +60,39 @@ def test_no_entrypoint_at_all(tmp_path):
     info = inspector.main(path, engine="fused")
     assert info["function"] is None
     assert info["static_result"] is False
+
+
+def test_fused_engine_reports_pep723_dependencies(tmp_path):
+    src = (
+        "# /// script\n"
+        '# dependencies = ["pyarrow", "requests"]\n'
+        "# ///\n"
+        "def main():\n    return 1\n"
+    )
+    path = _write(tmp_path, src)
+    info = inspector.main(path, engine="fused")
+    assert info["dependencies"] == ["pyarrow", "requests"]
+
+
+def test_builtin_engine_never_reports_dependencies(tmp_path):
+    # The builtin executor never resolves PEP 723 deps — showing them would
+    # imply an install that never happens.
+    src = (
+        "# /// script\n"
+        '# dependencies = ["pyarrow"]\n'
+        "# ///\n"
+        "def main():\n    return 1\n"
+    )
+    path = _write(tmp_path, src)
+    info = inspector.main(path, engine="builtin")
+    assert info["dependencies"] == []
+
+
+def test_malformed_pep723_block_yields_no_dependencies(tmp_path):
+    # Informational display only — a malformed block must not crash the
+    # inspector, unlike engine.py's script_requirements() which raises.
+    src = "# /// script\n# dependencies = [oops\n# ///\ndef main():\n    return 1\n"
+    path = _write(tmp_path, src)
+    info = inspector.main(path, engine="fused")
+    assert info["dependencies"] == []
+    assert info["function"]["name"] == "main"

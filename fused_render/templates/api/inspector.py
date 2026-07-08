@@ -1,7 +1,8 @@
 """Inspector backing api/template.html. Statically parses a target .py via
 `ast` — never imports or executes it — and returns the shape the form UI
-needs: module docstring, PEP 723 dependencies, and the entrypoint function's
-signature (params, annotations, defaults, docstring). Stdlib only.
+needs: module docstring, PEP 723 dependencies (fused engine only — see
+`dependencies` below), and the entrypoint function's signature (params,
+annotations, defaults, docstring). Stdlib only.
 
 Entrypoint resolution mirrors the **active** execution engine (D69) — the
 template passes ``engine`` from ``/api/config`` so the form always describes
@@ -17,6 +18,38 @@ via ``static_result`` so the template can offer Execute instead of reporting
 "no main()".
 """
 import ast
+import re
+
+
+def _pep723_dependencies(source: str) -> list:
+    """Best-effort ``dependencies`` from a ``# /// script`` PEP 723 block
+    (mirrors engine.py's ``script_requirements``, standalone — this module
+    must stay import-independent of ``fused_render`` since it may run inside
+    the fused engine's own isolated per-script venv, not the server's).
+
+    Never raises: this is a read-only display, not something that should
+    break the whole inspector view over a malformed block or a pre-3.11
+    interpreter (``tomllib``) — either quietly yields ``[]``.
+    """
+    try:
+        import tomllib
+    except ImportError:
+        return []
+    match = re.search(r"(?m)^# /// script$\s(?P<content>(^#(| .*)$\s)+)^# ///$", source)
+    if match is None:
+        return []
+    content = "".join(
+        line[2:] if line.startswith("# ") else line[1:]
+        for line in match.group("content").splitlines(keepends=True)
+    )
+    try:
+        meta = tomllib.loads(content)
+    except tomllib.TOMLDecodeError:
+        return []
+    deps = meta.get("dependencies", [])
+    if not isinstance(deps, list) or not all(isinstance(d, str) for d in deps):
+        return []
+    return deps
 
 
 def _is_fused_udf_decorator(node) -> bool:
@@ -102,7 +135,10 @@ def main(file: str, engine: str = "builtin") -> dict:
     result = {
         "parse_error": None,
         "module_docstring": ast.get_docstring(tree),
-        "dependencies": [],
+        # Only the fused engine actually resolves PEP 723 deps into a venv
+        # (PY-12) — the builtin executor ignores them, so showing them there
+        # would imply an install that never happens.
+        "dependencies": _pep723_dependencies(source) if engine == "fused" else [],
         "function": None,
         "static_result": False,
     }
