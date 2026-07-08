@@ -31,6 +31,7 @@ bundled = [
     "scipy",
     "pillow",
     "openpyxl",
+    "xlrd",
     "shapely",
     "geopandas",
 ]

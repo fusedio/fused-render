@@ -223,7 +223,7 @@ const page = await fused.runPython("./reader.py",
 |---|---|---|
 | `.parquet` | `table` | paged table via pyarrow; binary — no `code` mode |
 | `.csv .tsv` | `csv`, `code` | paged table, delimiter sniffing |
-| `.xlsx` | `xlsx` | sheet select + paged table |
+| `.xlsx .xls` | `xlsx` | sheet select + paged table; `.xls` (legacy BIFF) read via xlrd, same reader shape |
 | `.json .geojson` | `tree`, `code` | collapsible tree |
 | `.md` | `markdown`, `code` | rendered markdown |
 | `.svg` | `image`, `code` | `<img>` via raw endpoint; svg source is text |

@@ -82,6 +82,7 @@ TEMPLATES = {
     ".csv": ["csv", "code"],
     ".tsv": ["csv", "code"],
     ".xlsx": ["xlsx"],
+    ".xls": ["xlsx"],  # legacy BIFF — same template, reader branches to xlrd
     ".json": ["tree", "code"],
     ".geojson": ["tree", "code"],
     ".md": ["markdown", "code"],
