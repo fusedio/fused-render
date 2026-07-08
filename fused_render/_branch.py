@@ -1,15 +1,20 @@
 """Branch-ref resolution for per-branch dev-server isolation.
 
-Resolution priority (cached at import time):
+Branch isolation is opt-in: it engages only when a ref is supplied explicitly.
+There is no automatic git-branch detection — being on a feature branch does
+nothing on its own; you set ``FUSED_RENDER_BRANCH`` (at build time to stamp a
+packaged artifact, or at runtime to isolate a source/editable run).
+
+Resolution priority (cached on first access within a process, not at import;
+see ``_CACHED_REF``. Changing the env var after any consumer has imported this
+module has no effect without an explicit reload):
 1. ``FUSED_RENDER_BRANCH`` env var, if set (even empty string -> baseline opt-out).
 2. Baked ref written at build time (``fused_render/_baked_branch.py``, gitignored).
-3. The current git branch, if running from a repo checkout.
-4. "" (baseline).
+3. "" (baseline).
 """
 import hashlib
 import os
 import re
-import subprocess
 import sys
 
 _MAX_LEN = 12
@@ -19,7 +24,12 @@ _PORT_OFFSET = 8776
 
 
 def sanitize(ref: str) -> str:
-    """Lowercase, collapse non [a-z0-9] runs to single '-', trim, truncate."""
+    """Lowercase, collapse non [a-z0-9] runs to single '-', trim, truncate.
+
+    Refs that name a default branch (``main``/``master``/``head``,
+    case-insensitive) resolve to the baseline (``""``, i.e. no isolation),
+    not a sanitized-and-kept ref.
+    """
     if not ref:
         return ""
     lowered = ref.lower()
@@ -39,38 +49,6 @@ def _baked_ref() -> str:
         return ""
 
 
-def _git_ref() -> str:
-    start = os.path.dirname(os.path.abspath(__file__))
-    repo_root = None
-    current = start
-    while True:
-        if os.path.isdir(os.path.join(current, ".git")):
-            repo_root = current
-            break
-        parent = os.path.dirname(current)
-        if parent == current:
-            break
-        current = parent
-
-    if repo_root is None:
-        return ""
-
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True,
-            text=True,
-            cwd=repo_root,
-            timeout=5,
-        )
-    except Exception:
-        return ""
-
-    if result.returncode != 0:
-        return ""
-    return result.stdout.strip()
-
-
 def _resolve_ref() -> str:
     if "FUSED_RENDER_BRANCH" in os.environ:
         return sanitize(os.environ["FUSED_RENDER_BRANCH"])
@@ -78,10 +56,6 @@ def _resolve_ref() -> str:
     baked = _baked_ref()
     if baked:
         return sanitize(baked)
-
-    git_ref = _git_ref()
-    if git_ref:
-        return sanitize(git_ref)
 
     return ""
 

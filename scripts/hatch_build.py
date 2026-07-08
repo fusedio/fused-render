@@ -53,8 +53,12 @@ class ShellBuildHook(BuildHookInterface):
         subprocess.run([npm, "run", "build"], cwd=frontend, check=True)
 
     def _bake_branch_ref(self, build_data: dict) -> None:
-        """Write fused_render/_baked_branch.py with the resolved branch ref
-        so packaged (non-editable) builds carry a stable ref without git.
+        """Bake the ref from ``FUSED_RENDER_BRANCH`` into the packaged build so
+        a non-editable artifact carries a stable ref without the env var.
+
+        Branch isolation is opt-in: with no ``FUSED_RENDER_BRANCH`` set the ref
+        is "" (baseline) and nothing is written — a baseline build ships no
+        ``_baked_branch.py`` and is byte-identical to today.
         """
         sys.path.insert(0, self.root)
         try:
@@ -63,6 +67,9 @@ class ShellBuildHook(BuildHookInterface):
             ref = _branch.branch_ref()
         finally:
             sys.path.remove(self.root)
+
+        if not ref:
+            return
 
         baked_path = os.path.join(self.root, "fused_render", "_baked_branch.py")
         with open(baked_path, "w") as f:

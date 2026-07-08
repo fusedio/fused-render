@@ -54,38 +54,28 @@ def test_resolve_env_empty_string_is_baseline(monkeypatch):
 def test_resolve_baked_used_when_env_unset(monkeypatch):
     monkeypatch.delenv("FUSED_RENDER_BRANCH", raising=False)
     monkeypatch.setattr(_branch, "_baked_ref", lambda: "baked-branch")
-    monkeypatch.setattr(_branch, "_git_ref", lambda: "should-not-be-used")
     assert _branch._resolve_ref() == "baked-branch"
-
-
-def test_resolve_git_used_when_env_and_baked_absent(monkeypatch):
-    monkeypatch.delenv("FUSED_RENDER_BRANCH", raising=False)
-    monkeypatch.setattr(_branch, "_baked_ref", lambda: "")
-    monkeypatch.setattr(_branch, "_git_ref", lambda: "some-branch")
-    assert _branch._resolve_ref() == "some-branch"
 
 
 def test_resolve_all_absent(monkeypatch):
     monkeypatch.delenv("FUSED_RENDER_BRANCH", raising=False)
     monkeypatch.setattr(_branch, "_baked_ref", lambda: "")
-    monkeypatch.setattr(_branch, "_git_ref", lambda: "")
     assert _branch._resolve_ref() == ""
 
 
-def test_resolve_git_main_is_baseline(monkeypatch):
+def test_resolve_no_git_detection(monkeypatch):
+    """Being on a feature branch does nothing on its own — with no env var
+    and no baked ref, resolution is baseline. Git is never consulted.
+    """
     monkeypatch.delenv("FUSED_RENDER_BRANCH", raising=False)
     monkeypatch.setattr(_branch, "_baked_ref", lambda: "")
-    monkeypatch.setattr(_branch, "_git_ref", lambda: "main")
     assert _branch._resolve_ref() == ""
-    _branch._CACHED_REF = None
-    assert _branch.branch_port() == 8765
-    assert _branch.branch_suffix() == ""
+    assert not hasattr(_branch, "_git_ref")
 
 
-def test_resolve_git_detached_head_is_baseline(monkeypatch):
+def test_resolve_baked_main_is_baseline(monkeypatch):
     monkeypatch.delenv("FUSED_RENDER_BRANCH", raising=False)
-    monkeypatch.setattr(_branch, "_baked_ref", lambda: "")
-    monkeypatch.setattr(_branch, "_git_ref", lambda: "HEAD")
+    monkeypatch.setattr(_branch, "_baked_ref", lambda: "main")
     assert _branch._resolve_ref() == ""
     _branch._CACHED_REF = None
     assert _branch.branch_port() == 8765
