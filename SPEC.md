@@ -460,20 +460,25 @@ Goal: users replace or add preview templates using the **exact same mechanism** 
 - **CT-8** No new pipeline: stat carries the resolved user templates inside the ordinary `templates` list (PT-8); the preview iframe renders the selected mode via `/render` with `_file` exactly like a built-in (PT-2), and the switcher (PT-10) shows user modes indistinguishably from built-ins. M4 auto-reload (§13) covers template development for free — the rendered page watches its own html and every `runPython` file, so editing `template.html` or a reader live-reloads open previews. Registry edits apply on the next stat (navigate/refresh); open previews do not watch `registry.json`.
 - **CT-9** **Authoring skill:** a repo skill `skills/fused-render-custom-templates/` covers folder layout, registry format, and registration workflow only; it **delegates all html/py authoring guidance to `skills/fused-render-authoring/`** (no duplicated instruction — one source for the runtime API and template patterns).
 
-## 17. Annotation — Relocated to a User-Space Template Pack (M9, superseded)
+## 17. Annotation — An Ordinary View Template (M9, superseded)
 
-Annotation shipped in the app as an orthogonal `_annotate=1` overlay (AN-1…AN-23,
-M9) and was then **removed from the product**: it now lives as a self-contained
-user template — a shareable zip installed into `~/.fused-render/annotate/` and
-bound as an ordinary registry mode (SPEC §16). The pack's wrapper template
-renders the file's normal view in an iframe and injects its own bundled overlay;
-comments still live in the reserved `_comments` shell URL param (same wire
-format the built-in used), so existing comment URLs keep working wherever the
-pack is installed. Rationale: annotation is a review layer, not a product
-surface — shipping it as a pack keeps the app lean and makes the capability
-shareable without a release. The `_annotate` render param, the header toggle
-(AN-2/AN-3), the injected `static/annotate.js`, and the code template's
-selection adapter are gone; `_comments` remains reserved for the pack.
+Annotation shipped first as an app feature — an orthogonal `_annotate=1` overlay
+injected into every view (AN-1…AN-23, M9) — and was then **rebuilt as an
+ordinary view template**, the same pattern as `templates/claude/`:
+`templates/annotate/` is a self-contained template.html, bound in registry.json
+as a trailing mode on annotatable extensions, swappable/shadowable like any
+template (PT-6). It renders the file's normal view in a same-origin iframe (a
+`view` param picks WHICH mode is being annotated) and implements the whole
+experience itself — hover highlight, click-to-comment pins, sidebar,
+resolve/delete. Comments live in an ordinary `comments` template param (synced
+to the shell URL by the runtime — bookmarkable, shareable), stamped with the
+view they were made on so anchors never cross-resolve between views.
+
+Rationale: annotation is a review layer, not app chrome — as a template it
+needs no shell code, no server injection, and users can replace or extend it
+by dropping a folder into `~/.fused-render/annotate/`. The `_annotate` render
+param, the header toggle (AN-2/AN-3), the injected `static/annotate.js`, and
+the code template's selection adapter are gone.
 
 ## 18. Export — Portable Bundles for Hosted Serving (M10)
 
