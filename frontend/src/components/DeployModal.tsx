@@ -369,7 +369,14 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       setLive("active");
       setActionSeq((s) => s + 1);
     } catch (e) {
-      if (alive.current) setActionError((e as Error).message);
+      // A deploy can fail AFTER the server mutated the pointer — the
+      // failed-revive compensation path (deploy.py) persists status active or
+      // revoked before raising. Show the error, then background-refresh so the
+      // card/dot reflect what the server actually left behind, not stale state.
+      if (alive.current) {
+        setActionError((e as Error).message);
+        void load(true);
+      }
     } finally {
       if (alive.current) setBusy(null);
     }
@@ -385,7 +392,12 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       setLive("revoked");
       setActionSeq((s) => s + 1);
     } catch (e) {
-      if (alive.current) setActionError((e as Error).message);
+      // Same as onDeploy: a revoke may have partially applied server-side, so
+      // pull the true post-action state instead of leaving the card stale.
+      if (alive.current) {
+        setActionError((e as Error).message);
+        void load(true);
+      }
     } finally {
       if (alive.current) setBusy(null);
     }
