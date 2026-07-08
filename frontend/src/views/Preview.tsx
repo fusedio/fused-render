@@ -137,17 +137,10 @@ function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: St
   const [annotate, toggleAnnotate] = useAnnotate();
   // `_listing` sentinel (D78): the shell's built-in directory listing, mounted
   // in place of the preview iframe — no iframe, no `_file`; annotate (which
-  // injects into the iframe) is not offered for it.
+  // injects into the iframe) is not offered for it. Every directory renders
+  // through this same header + body chrome (even a plain folder's single
+  // `_listing` mode), so the preview header is uniform across files and dirs.
   const isListing = entry.mode === "_listing";
-
-  // A plain directory (its only mode is `_listing`) renders the listing bare —
-  // no preview-header — exactly as it did before D78. Only when there is more
-  // than one mode does the header appear, carrying the switcher back to the
-  // template mode(s). (All hooks above run unconditionally; this early return
-  // is after them, so React's hook order is stable.)
-  if (isListing && templates.length === 1) {
-    return <Listing fsPath={fsPath} />;
-  }
 
   const setMode = (next: string) => {
     if (next === mode) return;
