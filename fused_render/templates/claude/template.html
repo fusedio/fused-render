@@ -840,8 +840,16 @@ async function loadRecent() {
   // them off the shell URL before anything else can push a history entry that
   // still carries them (see clearTopClaudeComments).
   clearTopClaudeComments();
-  renderAttachments();
   const session_id = fused.params.get("session_id");
+  if (session_id) {
+    // Resuming an existing chat: the comment handoff is a start-a-review
+    // action and doesn't belong to it. The chips live only on the home card,
+    // which enterChat() hides — keeping `attached` would silently fold the
+    // comments into the next reply with no chips shown and no way to remove
+    // them. Drop them so a resumed session ignores the handoff entirely.
+    attached = [];
+  }
+  renderAttachments();
   if (session_id) {
     enterChat();
     await loadHistory(session_id);
