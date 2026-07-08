@@ -200,6 +200,9 @@
             resolved: t.status === "resolved" || undefined,
             anchorPath: typeof t.anchorPath === "string" ? t.anchorPath : undefined,
             anchorId: typeof t.anchorId === "string" ? t.anchorId : undefined,
+            // Free pins (document coords, no element anchor) carry over too.
+            x: typeof t.x === "number" ? t.x : undefined,
+            y: typeof t.y === "number" ? t.y : undefined,
             // Unstamped legacy threads infer their view from anchor shape
             // (selection ↔ editor, everything else ↔ preview) — leaving view
             // unset would resolve them against WHATEVER view is framed.
@@ -232,16 +235,19 @@
     // are never dropped silently; if still over, keep the write (a long URL
     // beats lost data) and say so in the bar.
     const BUDGET = 6000;
+    // Measure what actually lands on the URL — the encoded form (quotes and
+    // braces percent-encode, roughly tripling), not the raw JSON.
+    const urlSize = (arr) => encodeURIComponent(JSON.stringify(arr)).length;
     function save(arr) {
       let dropped = 0;
-      while (JSON.stringify(arr).length > BUDGET) {
+      while (urlSize(arr) > BUDGET) {
         const resolved = arr.filter((c) => c.resolved);
         if (!resolved.length) break;
         const oldest = resolved.reduce((a, b) => (a.createdAt <= b.createdAt ? a : b));
         arr = arr.filter((c) => c.id !== oldest.id);
         dropped++;
       }
-      const over = JSON.stringify(arr).length > BUDGET;
+      const over = urlSize(arr) > BUDGET;
       const note = document.getElementById("budgetnote");
       note.textContent = dropped
         ? `${dropped} oldest resolved comment${dropped === 1 ? "" : "s"} removed — URL size limit`
@@ -317,8 +323,20 @@
         // that's currently framed; others are listed with their view's tag.
         const ownView = !c.view || !activeView || c.view === activeView.mode;
         const el = ownView && doc ? resolveAnchor(c, doc) : null;
-        if (el) {
-          const p = stagePoint(el);
+        // Free pins (legacy imports): document coords inside the framed page
+        // → stage coords via frame offset minus the frame's own scroll.
+        let free = null;
+        if (!el && ownView && doc && typeof c.x === "number" && typeof c.y === "number") {
+          const fr = frame.getBoundingClientRect();
+          const st = stage.getBoundingClientRect();
+          const win = frame.contentWindow;
+          free = {
+            x: fr.left - st.left + c.x - (win ? win.scrollX : 0),
+            y: fr.top - st.top + c.y - (win ? win.scrollY : 0),
+          };
+        }
+        if (el || free) {
+          const p = el ? stagePoint(el) : free;
           const pin = document.createElement("div");
           pin.className = "pin" + (c.resolved ? " resolved" : "");
           pin.style.left = Math.min(stage.clientWidth - 14, Math.max(14, p.x)) + "px";
@@ -330,7 +348,7 @@
         }
         const tag = !ownView
           ? `<span style="color:#9aa0a6;border:1px solid #2a2d33;border-radius:4px;padding:0 5px">${c.view === "_render" ? "preview" : c.view}</span>`
-          : el
+          : el || free
             ? ""
             : "<span style='color:#ff6b6b'>detached</span>";
         const card = document.createElement("div");
@@ -361,7 +379,16 @@
     function reveal(c) {
       const doc = frame.contentDocument;
       const el = doc ? resolveAnchor(c, doc) : null;
-      if (!el) return;
+      if (!el) {
+        // Free pin: center its stored document coords in the framed view.
+        if (doc && typeof c.y === "number" && frame.contentWindow) {
+          frame.contentWindow.scrollTo({
+            top: Math.max(0, c.y - frame.clientHeight / 2),
+            behavior: "smooth",
+          });
+        }
+        return;
+      }
       el.scrollIntoView({ block: "center", behavior: "smooth" });
       setTimeout(() => {
         const r = stageRect(el);
