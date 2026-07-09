@@ -16,11 +16,12 @@ import sys
 import threading
 import webbrowser
 
+from fused_render._branch import branch_port, branch_ref
 from fused_render.logs import setup_logging
 
 logger = logging.getLogger("fused_render")
 
-DEFAULT_PORT = 8765
+DEFAULT_PORT = branch_port()
 
 # Subcommand names; anything else as argv[1] falls through to the implicit `serve`
 # so the historical bare `fused-render --port 9000` invocation keeps working.
@@ -57,12 +58,13 @@ def _run_serve(args: argparse.Namespace) -> None:
     app = create_app(start_dir=start_dir)
 
     url = f"http://127.0.0.1:{args.port}/"
-    print(f"fused-render serving at {url}")
+    branch_note = f" (branch {branch_ref()})" if branch_ref() else ""
+    print(f"fused-render serving at {url}{branch_note}")
     print(f"start dir: {start_dir}")
     print(f"log file: {log_file}")
     # Explicit startup marker in the log (the boot line already timestamps it,
     # but this records the bind + start dir a session is running with).
-    logger.info("serving at %s (start dir %s)", url, start_dir)
+    logger.info("serving at %s%s (start dir %s)", url, branch_note, start_dir)
 
     if not args.no_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()

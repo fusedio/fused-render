@@ -134,6 +134,8 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
 # User templates + their registry live under the shell home dir's templates/
 # subdir (D76) — ~/.fused-render/templates/<name>/ and .../templates/registry.json
 # — one level below the home dir that also holds bookmarks.json (shell/storage).
+# home_dir() itself nests per branch ref (shell/storage), so branch isolation
+# comes for free here — no branch logic needed in server.
 USER_TEMPLATES_DIR = os.path.join(home_dir(), "templates")
 USER_REGISTRY = os.path.join(USER_TEMPLATES_DIR, "registry.json")
 
