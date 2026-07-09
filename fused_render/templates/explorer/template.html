@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>File explorer</title>
+<style>
+  /* Tokens mirror the app shell (shell.css) so the explorer reads as a native
+     folder view, same as the zip/tar browsers. */
+  :root {
+    color-scheme: dark;
+    --fg: #e8eaed;
+    --fg-muted: #9aa0a6;
+    --border: #2a2d33;
+    --bg: #131417;
+    --bg-alt: #1b1d21;
+    --sel: #2b3a52;
+    --accent: #E5FF44;
+    --error: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    color: var(--fg);
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Header: breadcrumb of the current folder path (mirrors .preview-header). */
+  .header {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .crumbs {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    overflow: hidden;
+    white-space: nowrap;
+    font-size: 14px;
+  }
+  .crumb { color: var(--fg-muted); cursor: pointer; text-overflow: ellipsis; overflow: hidden; }
+  .crumb:hover { color: var(--fg); }
+  .crumb.current { color: var(--fg); cursor: default; font-weight: 600; }
+  .crumb.crumb-icon { display: inline-flex; align-items: center; }
+  .crumb-sep { color: var(--fg-muted); opacity: 0.6; }
+
+  /* Split body: file list (majority) on the left, a compact preview pane on
+     the right (Finder list view). */
+  .split { flex: 1 1 auto; display: flex; min-height: 0; }
+  .list-pane {
+    flex: 1 1 auto;
+    min-width: 240px;
+    overflow: auto;
+  }
+  .divider {
+    flex: 0 0 5px;
+    cursor: col-resize;
+    background: transparent;
+    margin: 0 -2px;
+    z-index: 2;
+  }
+  .divider:hover, .divider.dragging { background: var(--border); }
+  .preview-pane {
+    flex: 0 0 400px;
+    min-width: 220px;
+    max-width: 65%;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-alt);
+    border-left: 1px solid var(--border);
+  }
+  #preview-frame { width: 100%; height: 100%; border: 0; display: block; background: var(--bg); }
+
+  table.listing-table { width: 100%; border-collapse: collapse; }
+  table.listing-table th {
+    text-align: left;
+    font-weight: 600;
+    color: var(--fg-muted);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    padding: 8px 16px;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--bg);
+    box-shadow: inset 0 -1px 0 var(--border);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+  table.listing-table th:hover { color: var(--fg); }
+  table.listing-table th.sorted { color: var(--accent); }
+  table.listing-table .sort-arrow { margin-left: 5px; font-size: 9px; }
+  table.listing-table td {
+    padding: 7px 16px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  table.listing-table tr.row { cursor: pointer; }
+  table.listing-table tr.row:hover { background: var(--bg-alt); }
+  table.listing-table tr.row.selected { background: var(--sel); }
+  table.listing-table tr.row.ignored td.name { opacity: 0.5; }
+  table.listing-table td.name { display: flex; align-items: center; gap: 8px; }
+  table.listing-table td.name .icon { flex: 0 0 auto; opacity: 0.85; }
+  table.listing-table td.name .label { overflow: hidden; text-overflow: ellipsis; }
+  table.listing-table td.mtime, table.listing-table td.size {
+    color: var(--fg-muted);
+    font-variant-numeric: tabular-nums;
+    width: 1%;
+  }
+  table.listing-table td.size { text-align: right; }
+
+  .status-message { padding: 24px 16px; color: var(--fg-muted); }
+  .status-message.error { color: var(--error); }
+
+  /* Placeholder / folder card shown in the preview pane. */
+  .pane-center { margin: auto; text-align: center; color: var(--fg-muted); padding: 32px; }
+  .pane-center .big-icon { font-size: 48px; line-height: 1; margin-bottom: 12px; }
+  .pane-center .title { color: var(--fg); font-size: 15px; margin-bottom: 4px; word-break: break-all; }
+  .pane-center .hint { font-size: 12.5px; }
+  .pane-center button {
+    margin-top: 14px;
+    font: inherit;
+    padding: 6px 14px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+    cursor: pointer;
+  }
+  .pane-center button:hover { background: var(--bg-alt); }
+</style>
+</head>
+<body>
+  <div class="header"><div class="crumbs" id="crumbs"></div></div>
+  <div class="split">
+    <div class="list-pane" id="list-pane"><div class="status-message">Loading…</div></div>
+    <div class="divider" id="divider"></div>
+    <div class="preview-pane" id="preview-pane"></div>
+  </div>
+
+  <script>
+    const FILE_ICON = "\u{1F4C4}"; // 📄
+    const DIR_ICON = "\u{1F4C1}";  // 📁
+
+    const crumbsEl = document.getElementById("crumbs");
+    const listPaneEl = document.getElementById("list-pane");
+    const previewPaneEl = document.getElementById("preview-pane");
+
+    let DIR = null;         // absolute path of the folder being shown
+    let ENTRIES = [];       // [{name, path, is_dir, size, mtime, ignored}]
+    let selectedPath = null;
+    let sortKey = "name";   // name | size | mtime
+    let sortOrder = "asc";
+
+    function escapeHtml(s) {
+      return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }
+    // formatSize/formatMtime mirror the shell's lib/format.ts so the columns
+    // read identically to the built-in directory listing.
+    function formatSize(bytes) {
+      if (bytes === null || bytes === undefined) return "";
+      if (bytes < 1024) return bytes + " B";
+      const units = ["KB", "MB", "GB", "TB"];
+      let v = bytes, u = -1;
+      do { v /= 1024; u++; } while (v >= 1024 && u < units.length - 1);
+      return v.toFixed(v < 10 ? 1 : 0) + " " + units[u];
+    }
+    function formatMtime(epochSeconds) {
+      if (!epochSeconds) return "";
+      return new Date(epochSeconds * 1000).toLocaleString();
+    }
+
+    // --- Navigating the shell itself (double-click open) ---------------------
+    // This template runs in an iframe whose ancestor (window.top) is the shell.
+    // "Opening" a child means navigating the shell to it — for a file, its
+    // default view; for a folder, back into this explorer (?_mode=explorer) so
+    // browsing stays in the explorer. Standalone (/render opened directly) has
+    // window.top === window, so it just navigates itself.
+    function shellPrefix() {
+      try {
+        return window.top.location.pathname.startsWith("/embed/") ? "/embed/" : "/view/";
+      } catch (e) {
+        return "/view/";
+      }
+    }
+    function urlForPath(absPath, search) {
+      const enc = absPath.replace(/^\/+/, "").split("/").filter(Boolean)
+        .map(encodeURIComponent).join("/");
+      return shellPrefix() + enc + (search || "");
+    }
+    function openInShell(absPath, isDir) {
+      window.top.location.href = urlForPath(absPath, isDir ? "?_mode=explorer" : "");
+    }
+
+    // --- Breadcrumb ----------------------------------------------------------
+    function renderCrumbs() {
+      crumbsEl.innerHTML = "";
+      const parts = DIR.split("/").filter(Boolean);
+      // Root marker + one crumb per path segment. Each crumb is an absolute
+      // path that navigates the shell (in explorer mode) to that ancestor.
+      const nodes = [{ label: DIR_ICON, path: "/", isIcon: true, title: "/" }];
+      let acc = "";
+      for (const seg of parts) {
+        acc += "/" + seg;
+        nodes.push({ label: seg, path: acc, title: acc });
+      }
+      nodes.forEach((n, idx) => {
+        if (idx > 0) {
+          const sep = document.createElement("span");
+          sep.className = "crumb-sep";
+          sep.textContent = "›"; // ›
+          crumbsEl.appendChild(sep);
+        }
+        const el = document.createElement("span");
+        const isLast = idx === nodes.length - 1;
+        el.className = "crumb" + (isLast ? " current" : "") + (n.isIcon ? " crumb-icon" : "");
+        el.textContent = n.label;
+        el.title = n.title;
+        if (!isLast) el.addEventListener("click", () => openInShell(n.path, true));
+        crumbsEl.appendChild(el);
+      });
+    }
+
+    // --- Preview pane --------------------------------------------------------
+    function showPlaceholder(html) {
+      previewPaneEl.innerHTML = `<div class="pane-center">${html}</div>`;
+    }
+
+    function previewFolder(entry) {
+      showPlaceholder(
+        `<div class="big-icon">${DIR_ICON}</div>` +
+        `<div class="title">${escapeHtml(entry.name)}</div>` +
+        `<div class="hint">Folder — double-click to open</div>` +
+        `<button type="button" id="open-folder-btn">Open folder</button>`
+      );
+      const btn = document.getElementById("open-folder-btn");
+      if (btn) btn.addEventListener("click", () => openInShell(entry.path, true));
+    }
+
+    // Reuse the app's own template pipeline: stat the clicked file to discover
+    // its default template, then embed the normal /render iframe. A file with
+    // no bound template falls back to a metadata card.
+    async function previewFile(entry) {
+      showPlaceholder(`<div class="hint">Loading preview…</div>`);
+      try {
+        const st = await fused.stat(entry.path);
+        if (selectedPath !== entry.path) return; // superseded by another click
+        const t = st.templates && st.templates[0];
+        if (!t) {
+          showPlaceholder(
+            `<div class="big-icon">${FILE_ICON}</div>` +
+            `<div class="title">${escapeHtml(entry.name)}</div>` +
+            `<div class="hint">No preview for this file type — ${escapeHtml(formatSize(entry.size))}.</div>` +
+            `<button type="button" id="open-file-btn">Open</button>`
+          );
+          const btn = document.getElementById("open-file-btn");
+          if (btn) btn.addEventListener("click", () => openInShell(entry.path, false));
+          return;
+        }
+        const src = t.mode === "_render"
+          ? `/render?path=${encodeURIComponent(entry.path)}`
+          : `/render?path=${encodeURIComponent(t.path)}&_file=${encodeURIComponent(entry.path)}`;
+        const frame = document.createElement("iframe");
+        frame.id = "preview-frame";
+        frame.src = src;
+        previewPaneEl.innerHTML = "";
+        previewPaneEl.appendChild(frame);
+      } catch (err) {
+        if (selectedPath !== entry.path) return;
+        showPlaceholder(`<div class="status-message error"><strong>` +
+          `${escapeHtml(err.type || "Error")}</strong>: ${escapeHtml(err.message || "")}</div>`);
+      }
+    }
+
+    function select(entry) {
+      selectedPath = entry ? entry.path : null;
+      // Persist selection so refresh/auto-reload restores the same preview.
+      try { if (entry) fused.params.set("sel", entry.path); } catch (e) {}
+      listPaneEl.querySelectorAll("tr.row").forEach((tr) => {
+        tr.classList.toggle("selected", tr.getAttribute("data-path") === selectedPath);
+      });
+      if (!entry) { showPlaceholder(`<div class="hint">Select a file to preview.</div>`); return; }
+      if (entry.is_dir) previewFolder(entry);
+      else previewFile(entry);
+    }
+
+    // --- Listing -------------------------------------------------------------
+    // Column order + sort rules mirror the shell's built-in listing
+    // (views/Listing.tsx sortEntries): dot-entries always group last, dirs
+    // group first within each, then the active key, with a name tiebreak.
+    const COLUMNS = [["name", "Name"], ["size", "Size"], ["mtime", "Modified"]];
+
+    function sortedEntries() {
+      const flip = sortOrder === "desc" ? -1 : 1;
+      const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+      return [...ENTRIES].sort((a, b) => {
+        const aDot = a.name.startsWith("."), bDot = b.name.startsWith(".");
+        if (aDot !== bDot) return aDot ? 1 : -1;              // dot entries last
+        if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;  // dirs first
+        let c;
+        if (sortKey === "size") c = (a.size ?? -1) - (b.size ?? -1);
+        else if (sortKey === "mtime") c = (a.mtime ?? 0) - (b.mtime ?? 0);
+        else c = byName(a, b);
+        if (c === 0) c = byName(a, b);
+        return c * flip;
+      });
+    }
+
+    function th(key, label) {
+      const sorted = sortKey === key;
+      const arrow = sorted ? (sortOrder === "asc" ? " ▲" : " ▼") : "";
+      return `<th data-key="${key}" class="${sorted ? "sorted" : ""}">${escapeHtml(label)}` +
+        `<span class="sort-arrow">${arrow}</span></th>`;
+    }
+
+    function renderList() {
+      const rows = sortedEntries();
+      const head = `<thead><tr>${COLUMNS.map(([k, l]) => th(k, l)).join("")}</tr></thead>`;
+      let body;
+      if (rows.length === 0) {
+        body = `<tr><td colspan="3" class="status-message">Empty directory</td></tr>`;
+      } else {
+        body = rows.map((r) => {
+          const size = r.is_dir ? "" : formatSize(r.size);
+          const sel = r.path === selectedPath ? " selected" : "";
+          const ign = r.ignored ? " ignored" : "";
+          return `<tr class="row${sel}${ign}" data-path="${escapeHtml(r.path)}" data-dir="${r.is_dir ? 1 : 0}">` +
+            `<td class="name"><span class="icon">${r.is_dir ? DIR_ICON : FILE_ICON}</span>` +
+            `<span class="label">${escapeHtml(r.name)}</span></td>` +
+            `<td class="size">${escapeHtml(size)}</td>` +
+            `<td class="mtime">${escapeHtml(formatMtime(r.mtime))}</td></tr>`;
+        }).join("");
+      }
+      listPaneEl.innerHTML = `<table class="listing-table">${head}<tbody>${body}</tbody></table>`;
+
+      listPaneEl.querySelectorAll("th[data-key]").forEach((el) => {
+        el.addEventListener("click", () => {
+          const key = el.getAttribute("data-key");
+          if (sortKey === key) sortOrder = sortOrder === "asc" ? "desc" : "asc";
+          else { sortKey = key; sortOrder = "asc"; }
+          renderList();
+        });
+      });
+      listPaneEl.querySelectorAll("tr.row").forEach((tr) => {
+        const path = tr.getAttribute("data-path");
+        const entry = ENTRIES.find((e) => e.path === path);
+        tr.addEventListener("click", () => select(entry));
+        tr.addEventListener("dblclick", () => openInShell(entry.path, entry.is_dir));
+      });
+    }
+
+    // Arrow-key navigation over the sorted list; Enter opens the selection.
+    function onKey(e) {
+      const rows = sortedEntries();
+      if (!rows.length) return;
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const idx = rows.findIndex((r) => r.path === selectedPath);
+        let next = e.key === "ArrowDown" ? idx + 1 : idx - 1;
+        if (idx === -1) next = 0;
+        next = Math.max(0, Math.min(rows.length - 1, next));
+        const entry = rows[next];
+        select(entry);
+        const tr = listPaneEl.querySelector(`tr.row[data-path="${CSS.escape(entry.path)}"]`);
+        if (tr) tr.scrollIntoView({ block: "nearest" });
+      } else if (e.key === "Enter" && selectedPath) {
+        const entry = rows.find((r) => r.path === selectedPath);
+        if (entry) openInShell(entry.path, entry.is_dir);
+      }
+    }
+
+    // --- Draggable divider ---------------------------------------------------
+    (function () {
+      const divider = document.getElementById("divider");
+      let dragging = false;
+      divider.addEventListener("mousedown", (e) => {
+        dragging = true;
+        divider.classList.add("dragging");
+        document.body.style.userSelect = "none";
+        e.preventDefault();
+      });
+      window.addEventListener("mousemove", (e) => {
+        if (!dragging) return;
+        const rect = previewPaneEl.parentElement.getBoundingClientRect();
+        // Preview is the right pane: its width tracks the distance from the
+        // cursor to the container's right edge.
+        const w = Math.max(220, Math.min(rect.width * 0.65, rect.right - e.clientX));
+        previewPaneEl.style.flexBasis = w + "px";
+      });
+      window.addEventListener("mouseup", () => {
+        if (!dragging) return;
+        dragging = false;
+        divider.classList.remove("dragging");
+        document.body.style.userSelect = "";
+      });
+    })();
+
+    // --- Load ----------------------------------------------------------------
+    // Reuse the shell's own directory endpoint (the same one the built-in
+    // listing uses via lib/api.listDir), so entries — dotfiles included, plus
+    // the gitignore `ignored` flag and raw size/mtime — match it exactly.
+    async function load() {
+      const dir = fused.params.get("_file");
+      if (!dir) {
+        listPaneEl.innerHTML = `<div class="status-message error">No folder selected (missing _file param).</div>`;
+        return;
+      }
+      try {
+        const res = await fetch("/api/fs/list?path=" + encodeURIComponent(dir));
+        const data = await res.json();
+        if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
+        DIR = data.path;
+        const base = data.path.replace(/\/+$/, "");
+        // Give each entry an absolute path (the endpoint returns bare names);
+        // everything downstream keys on `path`.
+        ENTRIES = (data.entries || []).map((e) => ({ ...e, path: base + "/" + e.name }));
+        renderCrumbs();
+        renderList();
+        // Restore a previously-selected child if it still exists.
+        const sel = fused.params.get("sel");
+        const entry = sel ? ENTRIES.find((e) => e.path === sel) : null;
+        select(entry || null);
+      } catch (err) {
+        listPaneEl.innerHTML = `<div class="status-message error"><strong>Error</strong>: ` +
+          `${escapeHtml(err.message || String(err))}</div>`;
+      }
+    }
+
+    document.addEventListener("keydown", onKey);
+    load();
+  </script>
+</body>
+</html>
