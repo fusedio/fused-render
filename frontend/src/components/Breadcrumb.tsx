@@ -85,6 +85,11 @@ function revealInFileManager(path: string): void {
   });
 }
 
+// The app is served on localhost, so the browser's OS is the server's OS: the
+// button's file-manager name follows the client platform.
+const IS_WINDOWS = navigator.userAgent.includes("Windows");
+const FILE_MANAGER = IS_WINDOWS ? "File Explorer" : "Finder";
+
 // Finder glyph (streamline-logos:mac-finder-logo, MIT-licensed line version).
 function FinderIcon() {
   return (
@@ -98,15 +103,30 @@ function FinderIcon() {
   );
 }
 
+// Windows Explorer folder glyph, used in place of the Finder logo on Windows.
+function ExplorerIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24">
+      <path
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M2.5 6.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-15a2 2 0 0 1-2-2z"
+      />
+    </svg>
+  );
+}
+
 function RevealButton({ fsPath }: { fsPath: string }) {
   return (
     <button
       id="open-in-finder"
       className="reveal-btn"
-      title="Open in Finder"
+      title={"Open in " + FILE_MANAGER}
       onClick={() => revealInFileManager(fsPath)}
     >
-      <FinderIcon />
+      {IS_WINDOWS ? <ExplorerIcon /> : <FinderIcon />}
     </button>
   );
 }
