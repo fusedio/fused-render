@@ -122,7 +122,9 @@ def _seed_examples(fdir: str) -> bool:
     """Copy the packaged seed set into fdir iff it is empty. Returns True when it
     copied, False when the dir already had content (never re-seed)."""
     try:
-        nonempty = any(os.scandir(fdir))
+        # Hidden metadata (.DS_Store etc.) is not user content: a dir holding
+        # only dot-entries still counts as empty and gets seeded.
+        nonempty = any(not entry.name.startswith(".") for entry in os.scandir(fdir))
     except FileNotFoundError:
         nonempty = False
     if nonempty:

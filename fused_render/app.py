@@ -116,11 +116,10 @@ def _remove_pidfile() -> None:
 
 
 def _start_server_thread(port: int) -> uvicorn.Server:
-    """Start uvicorn serving create_app(start_dir=home) on a daemon thread."""
+    """Start uvicorn serving create_app(start_dir=Fused dir) on a daemon thread."""
     # First-run onboarding (D81): create ~/Documents/Fused and seed it once.
-    ensure_fused_dir()
-    home = os.path.expanduser("~")
-    app = create_app(start_dir=home)
+    start_dir = ensure_fused_dir()
+    app = create_app(start_dir=start_dir)
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)

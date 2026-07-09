@@ -51,6 +51,23 @@ def test_non_empty_dir_is_left_untouched(tmp_path, monkeypatch):
     assert not (fdir / "how_it_works").exists()
 
 
+def test_dir_with_only_ds_store_still_seeds(tmp_path, monkeypatch):
+    # macOS drops .DS_Store into ~/Documents/Fused as soon as Finder looks at
+    # it; hidden metadata must not count as user content blocking the seed.
+    fdir, home = _setup(tmp_path, monkeypatch)
+    fdir.mkdir(parents=True)
+    (fdir / ".DS_Store").write_bytes(b"\x00")
+
+    ensure_fused_dir()
+
+    assert (fdir / "sine" / "sine.html").is_file()
+    assert (fdir / "how_it_works" / "explainer.html").is_file()
+    # The hidden file survives — seeding never deletes anything.
+    assert (fdir / ".DS_Store").read_bytes() == b"\x00"
+    # Bookmarks ride along with the fresh seed as usual.
+    assert (home / "bookmarks.json").is_file()
+
+
 def test_bookmarks_created_when_absent_with_view_urls(tmp_path, monkeypatch):
     fdir, home = _setup(tmp_path, monkeypatch)
     ensure_fused_dir()
