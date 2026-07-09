@@ -14,23 +14,27 @@ function stripQ(): string {
 // made so the caller can hold the preview until the URL is settled (no param
 // flash). Non-empty query wins; embed panes and directories opt out.
 export function useSessionRestore(fsPath: string, isDir: boolean): boolean {
-  const [ready, setReady] = useState(false);
+  // Opens that skip restore — an embed pane, a directory, or any URL that
+  // already carries a query (bookmark / hand-typed / refresh) — have no restore
+  // decision to await, so they are ready SYNCHRONOUSLY on every render (LSN-9:
+  // no "Loading…" flash before the preview, and it flips true the instant
+  // `isDir` resolves). Only a bare-query file open holds until the sidecar GET
+  // resolves, tracked by `restored`.
+  const skip = IS_EMBED || isDir || stripQ() !== "";
+  const [restored, setRestored] = useState(false);
   useEffect(() => {
-    setReady(false);
+    if (skip) return;
     let alive = true;
-    if (IS_EMBED || isDir || stripQ() !== "") {
-      setReady(true);
-      return;
-    }
+    setRestored(false);
     getSession(fsPath).then(
       (r) => {
         if (!alive) return;
         const s = r.lastSession?.search;
         if (s) history.replaceState(null, "", location.pathname + "?" + s);
-        setReady(true);
+        setRestored(true);
       },
       () => {
-        if (alive) setReady(true); // sidecar read failure -> render bare
+        if (alive) setRestored(true); // sidecar read failure -> render bare
       },
     );
     return () => {
@@ -39,7 +43,7 @@ export function useSessionRestore(fsPath: string, isDir: boolean): boolean {
     // fsPath + isDir identify the open; restore runs once per open.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fsPath, isDir]);
-  return ready;
+  return skip || restored;
 }
 
 // Track-on-change (LSN-3/10). Debounced fire-and-forget PUT of the current
