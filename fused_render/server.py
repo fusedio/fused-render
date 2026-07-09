@@ -123,6 +123,47 @@ def _error(message: str, status: int = 400) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status)
 
 
+def _git_ignored(cwd: str, rel_names: list[str]) -> set[str]:
+    """Return the subset of `rel_names` git would ignore, relative to `cwd`.
+
+    Shells out to `git check-ignore` — the authority on gitignore semantics
+    (nested .gitignore, .git/info/exclude, the global excludesfile, negation).
+    One batched call covers a whole listing. Returns an empty set when `cwd`
+    is not in a work tree, git is missing, or anything else goes wrong:
+    dimming is a display hint, never a hard dependency on git.
+
+    The `.git` directory (or the gitfile of a worktree/submodule) is folded in
+    too: git never reports it via check-ignore, but it is repository plumbing
+    the user rarely wants to browse, so we dim it exactly when we know git is
+    present and `cwd` is a work tree — i.e. only after a successful call.
+    """
+    if not rel_names:
+        return set()
+    try:
+        # --stdin -z: NUL-separated in and out, so names with newlines or
+        # non-UTF-8 bytes round-trip intact. check-ignore exits 0 when some
+        # path is ignored, 1 when none are (not an error), 128 on real
+        # failure incl. "not a git repository".
+        payload = b"".join(os.fsencode(n) + b"\0" for n in rel_names)
+        proc = subprocess.run(
+            ["git", "-C", cwd, "check-ignore", "--stdin", "-z"],
+            input=payload,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    if proc.returncode not in (0, 1):
+        return set()
+    ignored = {os.fsdecode(chunk) for chunk in proc.stdout.split(b"\0") if chunk}
+    # Return code 0/1 (not 128) proves this is a work tree with git available,
+    # so dim `.git` itself. Match the basename so both the top-level entry
+    # (".git", from /api/fs/list) and a nested one ("sub/.git", from walk) go.
+    ignored.update(n for n in rel_names if n == ".git" or n.endswith("/.git"))
+    return ignored
+
+
 def _require_fused(x_fused: str | None) -> JSONResponse | None:
     # Guard for the mutating/executing POSTs. Read endpoints are already safe
     # cross-origin because the browser blocks a foreign page from reading our
@@ -700,6 +741,9 @@ def create_app(start_dir: str) -> FastAPI:
                     "mtime": st.st_mtime,
                 }
             )
+        ignored = _git_ignored(path, [e["name"] for e in entries])
+        for e in entries:
+            e["ignored"] = e["name"] in ignored
         entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
         return {"path": path, "entries": entries}
 
@@ -751,6 +795,9 @@ def create_app(start_dir: str) -> FastAPI:
                     break
             if truncated:
                 break
+        ignored = _git_ignored(path, [e["rel"] for e in entries])
+        for e in entries:
+            e["ignored"] = e["rel"] in ignored
         return {"path": path, "entries": entries, "truncated": truncated}
 
     @app.get("/api/fs/raw")
