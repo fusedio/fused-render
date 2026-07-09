@@ -348,6 +348,7 @@ def main() -> None:
         # windowless launcher: an uncaught exception is invisible without this
         logger.exception("winopen failed")
         ctypes.windll.user32.MessageBoxW(0, f"fused-render: {exc}", "fused-render", 0x10)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
