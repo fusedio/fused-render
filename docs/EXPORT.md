@@ -13,6 +13,12 @@ curl -X POST http://127.0.0.1:8765/api/export \
   -d '{"page": "/abs/path/to/page.html", "out": "/abs/path/to/bundle"}'
 ```
 
+You rarely need to call this yourself: the shell's **Deploy** button (SPEC §19,
+`fused_render/deploy.py`) runs the same export into a temporary bundle and hands
+it straight to `fused share create --public` on a hosted environment, returning
+the minted URL. Manual export remains the path for driving the hosting layer
+yourself.
+
 `page` and `out` must both be absolute filesystem paths (same convention as
 every other endpoint). On success the response is
 `{"out", "entrypoints": [...], "assets": [...]}` — the same shape written into
