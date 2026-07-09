@@ -69,7 +69,13 @@ function presentSteps(): DriveStep[] {
   );
 }
 
+// The one live driver instance. runTour is a no-op while a tour is already on
+// screen, so the delayed auto-start can never stack on a manual "?" replay
+// (and vice versa).
+let active: ReturnType<typeof driver> | null = null;
+
 function runTour(steps: DriveStep[]): void {
+  if (active?.isActive()) return;
   const markSeen = () => {
     try {
       localStorage.setItem(SEEN_KEY, "1");
@@ -81,8 +87,12 @@ function runTour(steps: DriveStep[]): void {
     showProgress: true,
     allowClose: true,
     steps,
-    onDestroyed: markSeen,
+    onDestroyed: () => {
+      active = null;
+      markSeen();
+    },
   });
+  active = d;
   d.drive();
 }
 
