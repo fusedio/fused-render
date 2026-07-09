@@ -98,10 +98,21 @@ export default function App({ config }: { config: Config }) {
   const isPanel = pathname === "/view/_panel" || pathname === "/embed/_panel";
   const isTabs = pathname === "/view/_tab" || pathname === "/embed/_tab";
   const isPrefs = pathname === "/view/_prefs";
-  const fsPath = isPanel || isTabs || isPrefs ? null : fsPathFromLocation();
+  const isTemplates = pathname === "/view/_templates";
+  const fsPath = isPanel || isTabs || isPrefs || isTemplates ? null : fsPathFromLocation();
   // A resolved fsPath mounts StatView below, which owns the title itself.
   useDocumentTitle(
-    isPanel ? "Panel" : isTabs ? "Tabs" : isPrefs ? "Preferences" : fsPath ? undefined : null
+    isPanel
+      ? "Panel"
+      : isTabs
+        ? "Tabs"
+        : isPrefs
+          ? "Preferences"
+          : isTemplates
+            ? "Templates"
+            : fsPath
+              ? undefined
+              : null
   );
 
   let main;
@@ -141,7 +152,7 @@ export default function App({ config }: { config: Config }) {
         </div>
       </>
     );
-  } else if (pathname === "/view/_templates") {
+  } else if (isTemplates) {
     // Templates management (TEMPLATE_MGMT_SPEC §3): a sentinel pathname like
     // _prefs — not a file; entered from the sidebar footer. /view only.
     main = (
