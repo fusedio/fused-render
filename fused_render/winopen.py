@@ -64,16 +64,27 @@ def _fused_server(port: int) -> bool:
     return isinstance(cfg, dict) and bool(os.path.splitdrive(cfg.get("home", ""))[0])
 
 
+def _settle(port: int) -> bool:
+    """True when a native fused-render answers on port. A bound-but-silent
+    port is usually a peer opener's server still booting, so it gets the same
+    grace period _wait_until_ready gives our own spawn."""
+    if _fused_server(port):
+        return True
+    if not _port_in_use(port):
+        return False
+    return _wait_until_ready(port)
+
+
 def find_running_server() -> int | None:
     """Port of a live native instance, or None. The portfile is only a hint —
     a manual `fused-render serve` never writes one, so the default range is
     scanned too. Liveness via HTTP only; on Windows os.kill(pid, 0) calls
     TerminateProcess, so the pid is never probed."""
     filed = _read_int(PORTFILE)
-    candidates = [] if filed is None else [filed]
-    candidates += [p for p in range(DEFAULT_PORT, MAX_PORT + 1) if p != filed]
-    for port in candidates:
-        if _fused_server(port):
+    if filed is not None and _settle(filed):
+        return filed
+    for port in range(DEFAULT_PORT, MAX_PORT + 1):
+        if port != filed and _fused_server(port):
             return port
     return None
 
@@ -106,6 +117,14 @@ def _write_pidfile(pid: int, port: int) -> None:
         f.write(str(pid))
     with open(PORTFILE, "w", encoding="utf-8") as f:
         f.write(str(port))
+
+
+def _remove_pidfile() -> None:
+    for path in (PIDFILE, PORTFILE):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 def _start_server(port: int) -> subprocess.Popen:
@@ -296,29 +315,31 @@ def _open(path: str | None, requested_port: int | None) -> None:
         return
 
     if requested_port is not None:
-        port, alive = requested_port, _fused_server(requested_port)
+        port, alive = requested_port, _settle(requested_port)
+        if not alive and _port_in_use(port):
+            _fail(f"fused-render: port {port} is in use by another application.")
+            return
     else:
         port = find_running_server()
         alive = port is not None
         if port is None:
             port = pick_port()
-
-    if not alive:
-        # Re-probe before spawning: rapid double-clicks race here, and the
-        # loser's bind fails while this probe finds the winner.
-        alive = _fused_server(port)
-
-    if not alive and _port_in_use(port):
-        _fail(f"fused-render: port {port} is in use by another application.")
-        return
+            # Re-probe before spawning: rapid double-clicks race here, and the
+            # loser's bind fails while this probe finds the winner.
+            alive = _fused_server(port)
 
     if not alive:
         proc = _start_server(port)
         logger.info("starting server (pid %s, port %s)", proc.pid, port)
+        # Written before readiness so a racing peer waits on this port
+        # (_settle) instead of spawning a second server.
+        _write_pidfile(proc.pid, port)
         if not _wait_until_ready(port):
+            # Don't leave a half-booted server squatting the port.
+            proc.kill()
+            _remove_pidfile()
             _fail(f"fused-render: server did not start on port {port}.\nSee log: {SERVER_LOG}")
             return
-        _write_pidfile(proc.pid, port)
 
     url = _view_url(port, path)
     logger.info("opening %s", url)
