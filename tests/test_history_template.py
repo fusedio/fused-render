@@ -1,11 +1,10 @@
-"""Tests for the history view template bindings (SPEC §22, D85).
+"""Tests for the history view template bindings (SPEC §23, D86).
 
 The template itself is browser-side (template.html + icon.svg, no .py — HV-1),
 so what the server can guarantee is covered here: the registry bindings and
 their resolution through `_templates_for`, plus the shipped files' presence.
 Behavioral checks (per-key validation, navigation) are exercised in the app.
 """
-import json
 import os
 
 from fused_render import server
@@ -25,11 +24,9 @@ def test_sidecar_default_mode_is_history():
     assert entries[0]["icon"] is not None
 
 
-def test_html_target_gains_history_mode_last():
-    got, error = modes("/x/sine.html", False)
-    assert error is None
-    assert got[0] == "_render"  # render stays the default
-    assert got[-1] == "history"
+# .html gaining "history" as its last mode is covered by
+# test_templates.py::test_builtin_html_default_is_render_sentinel, which
+# already asserts the full resolved mode list for .html.
 
 
 def test_plain_json_unaffected():
