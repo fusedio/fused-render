@@ -2,81 +2,25 @@
 # (HKCU only, no admin). Undo with unregister_open_with.ps1.
 param(
     [int]$Port,
-    [string]$Launcher
+    [string]$Python
 )
 
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 
-# The gui-scripts entry point exe, not pythonw.exe: the Open With dialog names
-# entries after the command's executable, and pythonw.exe displays as "Python".
-if (-not $Launcher) {
-    $Launcher = Join-Path $RepoRoot ".venv\Scripts\fused-render-open.exe"
+if (-not $Python) {
+    $Python = Join-Path $RepoRoot ".venv\Scripts\python.exe"
 }
-if (-not (Test-Path -LiteralPath $Launcher)) {
-    Write-Error "launcher not found at: $Launcher`nPass -Launcher <path>, or install first (uv pip install -e .)."
+if (-not (Test-Path -LiteralPath $Python)) {
+    Write-Error "python not found at: $Python`nPass -Python <path>, or create the venv first."
     exit 1
 }
 
-$WinopenArgs = ""
+$WinopenArgs = @("-m", "fused_render.winopen", "--register")
 if ($Port) {
-    $WinopenArgs = " --port $Port"
-}
-$Command = '"' + $Launcher + '"' + $WinopenArgs + ' "%1"'
-
-$ProgId = "FusedRender.file"
-$ProgIdKey = "HKCU:\Software\Classes\$ProgId"
-New-Item -Path $ProgIdKey -Force | Out-Null
-Set-ItemProperty -Path $ProgIdKey -Name "(Default)" -Value "fused-render"
-New-ItemProperty -Path $ProgIdKey -Name "FriendlyTypeName" -Value "fused-render" -PropertyType String -Force | Out-Null
-
-$OpenCmdKey = "$ProgIdKey\shell\open\command"
-New-Item -Path $OpenCmdKey -Force | Out-Null
-Set-ItemProperty -Path $OpenCmdKey -Name "(Default)" -Value $Command
-
-# The Open With dialog resolves display names via Applications\<exe>
-# FriendlyAppName (the entry-point launcher exe has no version info).
-$AppKey = "HKCU:\Software\Classes\Applications\fused-render-open.exe"
-New-Item -Path $AppKey -Force | Out-Null
-Set-ItemProperty -Path $AppKey -Name "FriendlyAppName" -Value "fused-render"
-$AppCmdKey = "$AppKey\shell\open\command"
-New-Item -Path $AppCmdKey -Force | Out-Null
-Set-ItemProperty -Path $AppCmdKey -Name "(Default)" -Value $Command
-
-# Extensions come from fused_render/templates/registry.json, minus the zarr
-# directory marker and member-file names (not real extensions).
-$RegistryJsonPath = Join-Path $RepoRoot "fused_render\templates\registry.json"
-$RegistryData = Get-Content -LiteralPath $RegistryJsonPath -Raw | ConvertFrom-Json
-$NotExtensions = @(".zarr/", ".zgroup", ".zattrs", ".zmetadata")
-$Extensions = $RegistryData.PSObject.Properties.Name |
-    Where-Object { $NotExtensions -notcontains $_ } |
-    Sort-Object
-
-foreach ($ext in $Extensions) {
-    $OpenWithKey = "HKCU:\Software\Classes\$ext\OpenWithProgids"
-    New-Item -Path $OpenWithKey -Force | Out-Null
-    New-ItemProperty -Path $OpenWithKey -Name $ProgId -Value "" -PropertyType String -Force | Out-Null
+    $WinopenArgs += @("--port", "$Port")
 }
 
-# All-files context verb, via the .NET API: 5.1's New-Item has no -LiteralPath
-# and -Path would glob-expand the "*" against every key under Classes.
-$VerbKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("Software\Classes\*\shell\FusedRender")
-$VerbKey.SetValue("", "Open with fused-render")
-$VerbCmdKey = $VerbKey.CreateSubKey("command")
-$VerbCmdKey.SetValue("", $Command)
-$VerbCmdKey.Close()
-$VerbKey.Close()
-
-# Explorer caches associations; without this broadcast the new entry doesn't
-# appear in "Open with" until the next Explorer restart.
-Add-Type -Namespace Win32 -Name Shell -MemberDefinition '[DllImport("shell32.dll")] public static extern void SHChangeNotify(int wEventId, int uFlags, IntPtr dwItem1, IntPtr dwItem2);'
-[Win32.Shell]::SHChangeNotify(0x08000000, 0x1000, [IntPtr]::Zero, [IntPtr]::Zero)
-
-Write-Output "Registered fused-render:"
-Write-Output "  command: $Command"
-Write-Output "  extensions: $($Extensions -join ', ')"
-Write-Output "  context menu: right-click any file -> Show more options -> Open with fused-render"
-Write-Output ""
-Write-Output "Windows requires choosing fused-render once via a file's 'Open with' dialog"
-Write-Output "before it can become the default handler for that extension."
+& $Python $WinopenArgs
+exit $LASTEXITCODE
