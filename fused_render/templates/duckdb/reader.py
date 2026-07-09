@@ -16,7 +16,9 @@ every cell a string means editing round-trips exactly (a zip code "01234"
 can't silently become the integer 1234 on rewrite). Parquet/JSON keep their
 real types.
 
-Returns {columns, rows, ids, total_rows, editable}. `editable` is false for
+Returns {columns, types, rows, ids, total_rows, editable}. `types` maps each
+column to its DuckDB type name (BIGINT, VARCHAR, …) for the header label.
+`editable` is false for
 JSON — rewriting a flattened JSON grid would corrupt nested structure, so the
 JSON grid is view-only. `tables`/`table` are absent (single-relation files);
 the grid hides its relation selector when they're missing.
@@ -82,6 +84,10 @@ def main(file: str, offset: int = 0, limit: int = 100) -> dict:
     con = duckdb.connect(":memory:")
     try:
         total_rows = con.execute(f"SELECT COUNT(*) FROM {relation}").fetchone()[0]
+        # Column types (BIGINT, VARCHAR, DOUBLE, …) so the grid can label each
+        # header. DESCRIBE reports the relation's schema without scanning rows.
+        types = {r[0]: r[1] for r in
+                 con.execute(f"DESCRIBE SELECT * FROM {relation}").fetchall()}
         cur = con.execute(f"SELECT * FROM {relation} LIMIT ? OFFSET ?", [limit, offset])
         columns = [d[0] for d in cur.description] if cur.description else []
         rows = []
@@ -91,6 +97,7 @@ def main(file: str, offset: int = 0, limit: int = 100) -> dict:
         editable = ext in _EDITABLE_EXTS
         return {
             "columns": columns,
+            "types": types,
             "rows": rows,
             # Absolute file position of each returned row — the edit/delete key.
             "ids": list(range(offset, offset + len(rows))),

@@ -63,6 +63,17 @@ def test_parquet_shape(parquet_file):
     assert out["editable"] is True
 
 
+def test_types_reported(parquet_file):
+    out = reader.main(parquet_file)
+    # DuckDB infers real types from parquet; the grid labels headers with these.
+    assert out["types"] == {"id": "BIGINT", "name": "VARCHAR"}
+
+
+def test_csv_types_are_all_varchar(csv_file):
+    # CSV is read all_varchar, so every column reports VARCHAR.
+    assert set(reader.main(csv_file)["types"].values()) == {"VARCHAR"}
+
+
 def test_offset_ids_are_absolute_positions(parquet_file):
     out = reader.main(parquet_file, offset=100, limit=10)
     assert out["ids"] == list(range(100, 110))

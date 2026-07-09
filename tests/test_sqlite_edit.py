@@ -60,6 +60,11 @@ def test_view_is_not_editable(db):
     assert out["readonly_tooltip"]                  # non-empty explanation
 
 
+def test_reader_returns_declared_types(db):
+    # Declared SQLite affinities label the grid's column headers.
+    assert reader.main(db, table="people")["types"] == {"name": "TEXT", "age": "INTEGER"}
+
+
 def test_editable_table_has_no_readonly_message(db):
     out = reader.main(db, table="people")
     assert out["readonly_message"] == "" and out["readonly_tooltip"] == ""

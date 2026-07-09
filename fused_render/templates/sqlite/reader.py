@@ -74,6 +74,17 @@ def _editability(conn, active):
                 "identify rows by, so it can't be edited here.")
 
 
+def _column_types(conn, active):
+    """Map each column to its declared SQLite type (INTEGER, TEXT, …) for the
+    header label. Views and expression columns often have no declared type;
+    those come back as "" and the grid just omits the type there."""
+    try:
+        info = conn.execute(f"PRAGMA table_info({_quote_ident(active)})").fetchall()
+        return {row[1]: (row[2] or "") for row in info}
+    except sqlite3.OperationalError:
+        return {}
+
+
 def _jsonify(value):
     """Coerce a SQLite cell value into something json.dumps can encode."""
     if isinstance(value, (bytes, bytearray)):
@@ -94,6 +105,7 @@ def main(file: str, table: str = "", offset: int = 0, limit: int = 100) -> dict:
         active = table if table in tables else (tables[0] if tables else "")
 
         columns = []
+        types = {}
         rows = []
         ids = []
         total_rows = 0
@@ -102,6 +114,7 @@ def main(file: str, table: str = "", offset: int = 0, limit: int = 100) -> dict:
         readonly_tooltip = ""
         if active:
             qname = _quote_ident(active)
+            types = _column_types(conn, active)
             editable, readonly_message, readonly_tooltip = _editability(conn, active)
             total_rows = conn.execute(f"SELECT COUNT(*) FROM {qname}").fetchone()[0]
             # Editable tables carry rowid as the first column; views/WITHOUT
@@ -123,6 +136,7 @@ def main(file: str, table: str = "", offset: int = 0, limit: int = 100) -> dict:
             "tables": tables,
             "table": active,
             "columns": columns,
+            "types": types,
             "rows": rows,
             "ids": ids,
             "total_rows": total_rows,
