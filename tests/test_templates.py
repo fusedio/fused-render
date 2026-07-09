@@ -182,13 +182,26 @@ def test_user_directory_binding(user_dir):
     assert modes("/x/data.obt", is_dir=False) == ([], None)
 
 
-def test_user_universal_splice_adds_mode_to_all_dirs(user_dir):
-    # "..." expands to the built-in list for THAT directory, so the added mode
-    # rides on top of each dir's own default (D81)
+def test_user_universal_splice_token_is_dangling(user_dir):
+    # Splice removed (owner 2026-07-09): "..." resolves to no folder, so it is
+    # dropped from the rendered list (and flagged via error), never expanded to
+    # the built-in modes. Only the real template survives; a user "/" match
+    # still beats the built-in at any specificity.
     user_dir.template("gallery")
     user_dir.registry({"/": ["...", "gallery"]})
-    assert modes("/x/plain", is_dir=True) == (["_listing", "gallery"], None)
-    assert modes("/x/s.zarr", is_dir=True) == (["zarr", "_listing", "gallery"], None)
+    plain_modes, plain_err = modes("/x/plain", is_dir=True)
+    assert plain_modes == ["gallery"]
+    assert plain_err is not None  # names the dropped "..."
+    zarr_modes, _ = modes("/x/s.zarr", is_dir=True)
+    assert zarr_modes == ["gallery"]
+
+
+def test_user_empty_list_disables_dir(user_dir):
+    # An empty list disables previews for the type, identical to null — no
+    # modes and no built-in fallback.
+    user_dir.registry({"/": []})
+    assert modes("/x/plain", is_dir=True) == ([], None)
+    assert modes("/x/s.zarr", is_dir=True) == ([], None)
 
 
 def test_user_universal_replace_beats_builtin(user_dir):
@@ -206,10 +219,13 @@ def test_user_can_rebind_html(user_dir):
     assert modes("/x/page.html") == (["code"], None)
 
 
-def test_user_html_splice_keeps_render_sentinel(user_dir):
+def test_user_html_splice_token_dropped(user_dir):
+    # Splice removed: "..." is dangling, dropped from the rendered list (error
+    # names it) — it no longer re-adds the built-in _render/claude/annotate.
     user_dir.registry({".html": ["code", "..."]})
     m, error = modes("/x/page.html")
-    assert m == ["code", "_render", "claude", "annotate"] and error is None
+    assert m == ["code"]
+    assert "..." in error
 
 
 def test_user_zarr_dir_rebind_and_disable(user_dir):
@@ -231,11 +247,13 @@ def test_unresolvable_user_value_falls_back_to_builtin(user_dir):
     assert "no-such-template" in error
 
 
-def test_double_splice_invalid_falls_back(user_dir):
+def test_all_dangling_names_fall_back(user_dir):
+    # With splice gone, "..." is just an unresolved name; a value of all
+    # dangling names resolves to nothing -> built-in fallback, error names one.
     user_dir.registry({".csv": ["...", "..."]})
     m, error = modes("/x/a.csv")
     assert m == ["csv", "code", "annotate"]
-    assert "more than one" in error
+    assert "..." in error
 
 
 def test_bad_value_type_falls_back(user_dir):

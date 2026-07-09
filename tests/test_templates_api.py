@@ -161,19 +161,40 @@ def test_registry_broken_name_marked_not_exists(ctx):
 
 
 def test_registry_invalid_value_surfaces_error(ctx):
-    # A shape-level bad value (a list with more than one "..." splice) must NOT
-    # render as a silent empty row — its error surfaces on the entry.
+    # A shape-level bad value (not a list/string/null) must NOT render as a
+    # silent empty row — its error surfaces on the entry.
     ctx.make_template("brandcard")
-    ctx.registry({".csv": ["...", "..."], ".brand": ["brandcard"]})
+    ctx.registry({".csv": 5, ".brand": ["brandcard"]})
     by_key = {e["key"]: e for e in ctx.client.get("/api/templates/registry").json()["entries"]}
     bad = by_key[".csv"]
     assert bad["error"] is not None
-    assert "..." in bad["error"]
     assert bad["templates"] == []
     # error (value invalid) is semantically distinct from disabled (value null).
     assert bad["disabled"] is False
     # A well-formed binding carries error=null.
     assert by_key[".brand"]["error"] is None
+
+
+def test_registry_splice_token_is_dangling(ctx):
+    # Splice is removed: a "..." entry is an ordinary name that resolves to no
+    # folder — kept as a broken (exists:false) ref, not expanded, no error.
+    ctx.registry({".csv": ["...", "csv"]})
+    by_key = {e["key"]: e for e in ctx.client.get("/api/templates/registry").json()["entries"]}
+    row = by_key[".csv"]
+    assert row["error"] is None
+    names = {t["name"]: t for t in row["templates"]}
+    assert names["..."]["exists"] is False  # dangling, surfaced not dropped
+    assert names["csv"]["exists"] is True
+
+
+def test_registry_empty_list_disables_like_null(ctx):
+    # An empty list disables previews exactly like null (no builtin fallback).
+    ctx.registry({".csv": []})
+    by_key = {e["key"]: e for e in ctx.client.get("/api/templates/registry").json()["entries"]}
+    row = by_key[".csv"]
+    assert row["disabled"] is True
+    assert row["templates"] == []
+    assert row["error"] is None
 
 
 # ----------------------------------------------------------- put binding (2.3)
@@ -220,13 +241,31 @@ def test_put_new_directory_key(ctx):
     assert resp.json()["keyKind"] == "directory"
 
 
-def test_put_allows_sentinel_and_splice(ctx):
-    resp = ctx.client.put(
+def test_put_allows_sentinel_rejects_splice_token(ctx):
+    # Sentinels are still accepted...
+    ok = ctx.client.put(
+        "/api/templates/registry", json={"key": ".html", "value": ["code", "_render"]}, headers=FUSED
+    )
+    assert ok.status_code == 200
+    assert _names(ok.json()) == ["code", "_render"]
+    # ...but "..." is no longer special — it resolves to no folder, so PUT
+    # rejects it as an unknown name (the user must remove the dangling ref).
+    bad = ctx.client.put(
         "/api/templates/registry", json={"key": ".html", "value": ["code", "..."]}, headers=FUSED
     )
+    assert bad.status_code == 400
+    assert "..." in bad.json()["error"]
+
+
+def test_put_empty_list_disables(ctx):
+    resp = ctx.client.put(
+        "/api/templates/registry", json={"key": ".png", "value": []}, headers=FUSED
+    )
     assert resp.status_code == 200
-    # splice expands the builtin .html list after `code`
-    assert _names(resp.json())[0] == "code"
+    entry = resp.json()
+    assert entry["disabled"] is True
+    assert entry["templates"] == []
+    assert entry["userValue"] == []
 
 
 def test_put_invalid_key_rejected(ctx):

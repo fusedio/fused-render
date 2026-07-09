@@ -55,10 +55,11 @@ export function RowEditorModal({
   }, [onClose]);
 
   const known = new Set(inventory.templates.map((t) => t.name));
-  // Names that resolve to no template folder (and aren't the "..." splice or a
-  // "_" sentinel) — dangling registry pointers. We only surface them; the user
-  // decides whether to remove or keep (never auto-removed).
-  const brokenNames = chosen.filter((n) => n !== "..." && !n.startsWith("_") && !known.has(n));
+  // Names that resolve to no template folder (and aren't a "_" sentinel) —
+  // dangling registry pointers. The old "..." splice token is no longer
+  // special: it lands here like any other dangling name. We only surface them;
+  // the user decides whether to remove or keep (never auto-removed).
+  const brokenNames = chosen.filter((n) => !n.startsWith("_") && !known.has(n));
   const move = (from: number, to: number) => {
     if (to < 0 || to >= chosen.length || from === to) return;
     setChosen((prev) => {
@@ -191,20 +192,18 @@ export function RowEditorModal({
                 </span>
               )}
               {chosen.map((name, i) => {
-                // "..." is the splice token (expands to this type's core list);
-                // "_"-prefixed names are shell sentinels (_render/_listing).
-                // Both are valid registry values, not missing template folders.
-                const isSplice = name === "...";
+                // "_"-prefixed names are shell sentinels (_render/_listing) —
+                // valid without a template folder. Everything else that has no
+                // folder is broken (including the retired "..." token).
                 const isSentinel = name.startsWith("_");
-                const broken = !isSplice && !isSentinel && !known.has(name);
+                const broken = !isSentinel && !known.has(name);
                 return (
                   <span
                     key={name}
                     className={
                       "templates-chip" +
                       (i === 0 ? " default" : "") +
-                      (broken ? " broken" : "") +
-                      (isSplice ? " splice" : "")
+                      (broken ? " broken" : "")
                     }
                     draggable
                     onDragStart={() => (dragIndex.current = i)}
@@ -213,16 +212,10 @@ export function RowEditorModal({
                       if (dragIndex.current !== null) move(dragIndex.current, i);
                       dragIndex.current = null;
                     }}
-                    title={
-                      broken
-                        ? "no template folder resolves to this name"
-                        : isSplice
-                          ? "core defaults for this type, expanded in place"
-                          : undefined
-                    }
+                    title={broken ? "no template folder resolves to this name" : undefined}
                   >
                     {i === 0 && <span className="templates-chip-badge">default</span>}
-                    <span className="templates-chip-name">{isSplice ? "… core defaults" : name}</span>
+                    <span className="templates-chip-name">{name}</span>
                     <button
                       type="button"
                       className="templates-chip-x"

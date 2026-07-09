@@ -134,7 +134,7 @@ def _load_registries():
 
 
 def _builtin_names(builtin_key, builtin_reg) -> list:
-    """The builtin registry's (splice-expanded) name list for a key, or []."""
+    """The builtin registry's name list for a key, or []."""
     if builtin_key is None:
         return []
     names, disabled, _err = server._names_from_value(builtin_key, builtin_reg[builtin_key], [])
@@ -179,10 +179,10 @@ def _compute_entry(display_key, builtin_reg, user_reg, builtin_by_lower, user_by
         "disabled": disabled,
         # what a "reset to core" would give (names), or null if core has no key.
         "coreTemplates": (builtin_names if builtin_key is not None else None),
-        # Shape-level problem with the EFFECTIVE value (e.g. >1 "..." splice or
-        # a non-list/string/null value) surfaced from _names_from_value, so an
-        # invalid binding renders explained rather than as a silent empty row.
-        # `disabled` (value is null) stays semantically distinct from `error`
+        # Shape-level problem with the EFFECTIVE value (a non-list/string/null
+        # value) surfaced from _names_from_value, so an invalid binding renders
+        # explained rather than as a silent empty row. `disabled` (value is
+        # null or an empty list) stays semantically distinct from `error`
         # (value is invalid): a disabled row has error=null.
         "error": error,
     }
@@ -336,11 +336,12 @@ def api_templates_registry():
 
 def _validate_binding_names(value: list) -> list:
     """Return the list of names in `value` that don't resolve — a name is OK if
-    it is a known sentinel, the "..." splice token, or resolves to an existing
-    template folder (core or user)."""
+    it is a known sentinel or resolves to an existing template folder (core or
+    user). `"..."` is no longer special (splice removed): it resolves to no
+    folder and is reported here like any other dangling name."""
     unknown = []
     for name in value:
-        if name in server.KNOWN_SENTINELS or name == "...":
+        if name in server.KNOWN_SENTINELS:
             continue
         path, _err = server._resolve_name(name)
         if path is None:

@@ -229,7 +229,7 @@ def test_registry_view_shows_user_bindings_and_overrides(tmp_path, monkeypatch):
         json.dumps(
             {
                 ".html": ["code"],  # override: drop the rendered mode
-                ".xyz": ["tree", "..."],  # new binding; splice expands to nothing
+                ".xyz": ["tree"],  # new user-only binding
                 ".log": None,  # disabled: no preview at all
             }
         ),
@@ -259,20 +259,20 @@ def test_registry_view_shows_user_bindings_and_overrides(tmp_path, monkeypatch):
     assert sum(1 for e in body["entries"] if e["key"] == ".html") == 1
 
 
-def test_registry_view_splice_expands_builtin_list(tmp_path, monkeypatch):
+def test_registry_view_splice_token_is_dangling(tmp_path, monkeypatch):
+    # Splice removed: "..." is an ordinary name kept as broken (exists:false)
+    # in the row, not expanded to the built-in list.
     client, _ = _client(tmp_path, monkeypatch)
     udir = _point_user_registry_at(tmp_path, monkeypatch)
-    # Capture the shipped built-in list first, then splice onto it — the test
-    # holds whatever modes the built-in registry grows.
-    builtin_html = _names(
-        {e["key"]: e for e in client.get("/api/templates/registry").json()["entries"]}[".html"]
-    )
     (udir / "registry.json").write_text(
         json.dumps({".html": ["...", "tree"]}), encoding="utf-8"
     )
     body = client.get("/api/templates/registry").json()
     by_key = {e["key"]: e for e in body["entries"]}
-    assert _names(by_key[".html"]) == builtin_html + ["tree"]
+    tmpl = {t["name"]: t for t in by_key[".html"]["templates"]}
+    assert "..." in tmpl and tmpl["..."]["exists"] is False
+    assert _names(by_key[".html"]) == ["...", "tree"]  # verbatim, unexpanded
+    assert by_key[".html"]["error"] is None  # dangling name is not a shape error
 
 
 def test_registry_view_override_is_case_insensitive(tmp_path, monkeypatch):
@@ -290,10 +290,3 @@ def test_registry_view_override_is_case_insensitive(tmp_path, monkeypatch):
     assert csv_rows[0]["resolvedSource"] == "user"
     assert csv_rows[0]["overridesCore"] is True
     assert _names(csv_rows[0]) == ["code"]
-
-    # And a "..." splice against a case-differing builtin expands to the
-    # builtin's list (found case-insensitively), not to nothing.
-    (udir / "registry.json").write_text(json.dumps({".CSV": ["...", "code"]}), encoding="utf-8")
-    entries = client.get("/api/templates/registry").json()["entries"]
-    row = next(e for e in entries if e["key"] == ".CSV")
-    assert _names(row)[0] == "csv"  # the builtin .csv default, spliced in

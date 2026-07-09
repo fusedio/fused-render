@@ -407,10 +407,15 @@ def _names_from_value(key, value, builtin_names: list):
     """Interpret one matched registry value (SPEC CT-2/CT-10/CT-11).
 
     Returns (names, disabled, error). names: ordered list[str] of (possibly
-    still-unresolved) template names, or None when the value is unusable.
-    disabled: True when the value is `null` (CT-2) — no template at all, no
-    error. error: a shape-level problem (value not list/string/null, >1 "..."
-    splice) — surfaced as `template_error` so typos aren't silent.
+    still-unresolved) template names, or None when the value disables previews.
+    disabled: True for `null` **and for an empty list** (`[]`) — both mean "no
+    template at all for this type", no error, no built-in fallback. error: a
+    shape-level problem (value not list/string/null) — surfaced as
+    `template_error` so typos aren't silent.
+
+    There is no `"..."` splice: the token is treated as an ordinary name that
+    resolves to no folder (a dangling ref, surfaced broken), not a splice into
+    the built-in list. `builtin_names` is unused, kept for signature stability.
     """
     if value is None:
         return None, True, None
@@ -418,22 +423,12 @@ def _names_from_value(key, value, builtin_names: list):
         # String = exactly a single-mode list (D50).
         return [value], False, None
     if isinstance(value, list):
-        # "..." splices the built-in list in place (CT-11); >1 is invalid.
-        splice_count = sum(1 for entry in value if entry == "...")
-        if splice_count > 1:
-            return None, False, f"{key}: more than one '...' splice in template list"
-        if splice_count == 0:
-            return list(value), False, None
-        explicit = {e for e in value if isinstance(e, str) and e != "..."}
-        names = []
-        for entry in value:
-            if entry == "...":
-                for bname in builtin_names:
-                    if bname not in explicit and bname not in names:
-                        names.append(bname)
-            else:
-                names.append(entry)
-        return names, False, None
+        # Empty list disables previews, identical to `null` (owner 2026-07-09).
+        if not value:
+            return None, True, None
+        # Names pass through verbatim; any that resolve to no folder are kept
+        # and surfaced as broken (dangling refs), never spliced or expanded.
+        return list(value), False, None
     return None, False, f"{key}: registry value must be a list, string, or null"
 
 
@@ -447,9 +442,9 @@ def _templates_for(path: str, is_dir: bool):
     resolve exactly like files (a `.zarr` store matches the ".zarr/" key),
     and the user registry binds them too (D73 revises D65). Precedence: any
     user match > built-in match (CT-3). .html/.htm are ordinary keys (D73
-    revises CT-4): the user can rebind them; "..." keeps `_render` reachable.
-    A path with no match in either registry returns empty — unmapped file, or
-    the plain listing view for a directory.
+    revises CT-4): the user can rebind them, listing `_render` explicitly to
+    keep it reachable. A path with no match in either registry returns empty —
+    unmapped file, or the plain listing view for a directory.
     """
     basename = os.path.basename(os.path.normpath(path))
 
@@ -458,8 +453,6 @@ def _templates_for(path: str, is_dir: bool):
     if builtin_reg is not None:
         matched = _match_registry(builtin_reg, basename, is_dir)
         if matched is not None:
-            # Splices are meaningless in the built-in registry (nothing to
-            # splice into) — "..." there expands to nothing, harmless.
             names, disabled, err = _names_from_value(*matched, builtin_names=[])
             error = error or err
             if names and not disabled:
