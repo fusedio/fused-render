@@ -559,11 +559,20 @@
     for (const n of nodes) root.appendChild(n);
   }
 
+  // Absent sidecar (HTTP 404) is the normal "no history yet" state; any other
+  // read failure (permissions, server error) is a real error and must not
+  // masquerade as an empty history.
   let text = null;
   try {
     text = await fused.readFile(sidecarPath);
   } catch (e) {
-    text = null;
+    if (!/HTTP 404/.test(e && e.message || "")) {
+      fullPage([el(
+        '<div class="error-page">Could not read the sidecar — ' +
+        esc((e && e.message) || "unknown error") + "</div>"
+      )]);
+      return;
+    }
   }
 
   if (text === null || text === undefined) {
