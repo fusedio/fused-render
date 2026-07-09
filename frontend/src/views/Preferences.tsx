@@ -79,7 +79,8 @@ function EngineSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs)
       <p className="deploy-muted">
         How <code>fused.runPython</code> runs a page's Python. <b>Both engines run on this
         machine</b> — neither uses your configured Fused environments (those are only deploy
-        targets, chosen in a page's Deploy dialog). Changes apply to the next run — no restart.
+        targets, chosen in a page's Deploy dialog). Changes apply to the next run — no restart
+        needed.
       </p>
       <label className={"prefs-radio" + (locked ? " locked" : "")}>
         <input
@@ -112,8 +113,7 @@ function EngineSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs)
         <span>
           <b>Fused engine</b> — the fused package's local runner: PEP 723 inline requirements
           resolved into cached venvs (<code>~/.openfused/venvs</code>), plus{" "}
-          <code>@fused.udf</code> / <code>result</code> entrypoints. Local too — no cloud, no
-          environment.
+          <code>@fused.udf</code> / <code>result</code> entrypoints.
           {!engine.fused_available && (
             <span className="deploy-muted"> (unavailable — the fused package isn't installed)</span>
           )}
