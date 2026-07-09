@@ -21,9 +21,10 @@
 //     root node (no parent chain) — dropping non-mesh container nodes
 //  5. per-leaf part naming + a bbox-center pivot root node, matching
 //     compose.part's Empty (root at bbox center, child re-based under it)
-//  6. one GLB emitted per leaf via a fresh Document (attributes/material
-//     fields copied by value — see NOTES.md for what's intentionally not
-//     ported, e.g. textures)
+//  6. one GLB emitted per leaf via a fresh Document (attributes, material
+//     factors, and the core PBR texture maps — base color, metallic-
+//     roughness, normal, occlusion, emissive — copied by value; only KHR
+//     material extensions are still dropped, see NOTES.md)
 //
 // COORDINATE SPACES: compose.fit_to_height/compose.part operate on Blender's
 // Z-up scene; this file operates directly on the Y-up glTF bytes. The axis
@@ -110,30 +111,73 @@ function copyAccessor(destDoc, acc, buffer) {
     .setBuffer(buffer);
 }
 
-function copyMaterial(destDoc, mat, cache) {
+// Copy one Texture (embedded image bytes + mime) into destDoc, deduped by
+// source Texture so a map shared across slots/materials is embedded once.
+function copyTexture(destDoc, tex, texCache) {
+  if (!tex) return null;
+  if (texCache.has(tex)) return texCache.get(tex);
+  const img = tex.getImage();
+  if (!img) return null;
+  const t = destDoc.createTexture(tex.getName())
+    .setImage(img.slice())
+    .setMimeType(tex.getMimeType());
+  texCache.set(tex, t);
+  return t;
+}
+
+// Copy the TextureInfo sidecar (UV set + sampler wrap/filter) from a source
+// slot onto the freshly-attached dest slot. Filters can be unset (null) — pass
+// them through as-is so we don't invent a default the source didn't declare.
+function copyTextureInfo(srcInfo, destInfo) {
+  if (!srcInfo || !destInfo) return;
+  destInfo.setTexCoord(srcInfo.getTexCoord());
+  destInfo.setWrapS(srcInfo.getWrapS());
+  destInfo.setWrapT(srcInfo.getWrapT());
+  destInfo.setMagFilter(srcInfo.getMagFilter());
+  destInfo.setMinFilter(srcInfo.getMinFilter());
+}
+
+function copyMaterial(destDoc, mat, matCache, texCache) {
   if (!mat) return null;
-  if (cache.has(mat)) return cache.get(mat);
-  // shortcut: copies the common PBR scalar/factor fields used by the viewer's
-  // material-override tier (specs/viewer.md §2); textures are not ported —
-  // upgrade path: walk getBaseColorTexture()/etc. and copy image bytes + a
-  // fresh Texture/TextureInfo per map if a dropped asset ever needs one.
+  if (matCache.has(mat)) return matCache.get(mat);
+  // Copy the core metallic-roughness PBR surface: scalar/factor fields plus
+  // every standard texture map (base color, metallic-roughness, normal,
+  // occlusion, emissive) with their image bytes and TextureInfo. Without the
+  // maps a textured model — whose baseColorFactor is white and whose color
+  // lives entirely in the base-color texture — renders fully white after
+  // import. KHR material extensions (specular-glossiness, transmission, …)
+  // are still not ported; only core PBR is.
   const m = destDoc.createMaterial(mat.getName())
     .setBaseColorFactor(mat.getBaseColorFactor())
     .setMetallicFactor(mat.getMetallicFactor())
     .setRoughnessFactor(mat.getRoughnessFactor())
+    .setEmissiveFactor(mat.getEmissiveFactor())
     .setAlphaMode(mat.getAlphaMode())
+    .setAlphaCutoff(mat.getAlphaCutoff())
     .setDoubleSided(mat.getDoubleSided());
-  cache.set(mat, m);
+
+  const bc = copyTexture(destDoc, mat.getBaseColorTexture(), texCache);
+  if (bc) { m.setBaseColorTexture(bc); copyTextureInfo(mat.getBaseColorTextureInfo(), m.getBaseColorTextureInfo()); }
+  const mr = copyTexture(destDoc, mat.getMetallicRoughnessTexture(), texCache);
+  if (mr) { m.setMetallicRoughnessTexture(mr); copyTextureInfo(mat.getMetallicRoughnessTextureInfo(), m.getMetallicRoughnessTextureInfo()); }
+  const nt = copyTexture(destDoc, mat.getNormalTexture(), texCache);
+  if (nt) { m.setNormalTexture(nt).setNormalScale(mat.getNormalScale()); copyTextureInfo(mat.getNormalTextureInfo(), m.getNormalTextureInfo()); }
+  const oc = copyTexture(destDoc, mat.getOcclusionTexture(), texCache);
+  if (oc) { m.setOcclusionTexture(oc).setOcclusionStrength(mat.getOcclusionStrength()); copyTextureInfo(mat.getOcclusionTextureInfo(), m.getOcclusionTextureInfo()); }
+  const em = copyTexture(destDoc, mat.getEmissiveTexture(), texCache);
+  if (em) { m.setEmissiveTexture(em); copyTextureInfo(mat.getEmissiveTextureInfo(), m.getEmissiveTextureInfo()); }
+
+  matCache.set(mat, m);
   return m;
 }
 
-function copyPrimitive(destDoc, prim, matCache, buffer) {
+function copyPrimitive(destDoc, prim, matCache, texCache, buffer) {
   const dp = destDoc.createPrimitive().setMode(prim.getMode());
   for (const semantic of prim.listSemantics())
     dp.setAttribute(semantic, copyAccessor(destDoc, prim.getAttribute(semantic), buffer));
   const idx = prim.getIndices();
   if (idx) dp.setIndices(copyAccessor(destDoc, idx, buffer));
-  const mat = copyMaterial(destDoc, prim.getMaterial(), matCache);
+  const mat = copyMaterial(destDoc, prim.getMaterial(), matCache, texCache);
   if (mat) dp.setMaterial(mat);
   return dp;
 }
@@ -237,8 +281,9 @@ export async function importPart(glbBytes, dropName, existingPartNames = []) {
     const destDoc = new Document();
     const buffer = destDoc.createBuffer();
     const matCache = new Map();
+    const texCache = new Map();
     const mesh = destDoc.createMesh(`${partName}_geo`);
-    for (const prim of leaf.primitives) mesh.addPrimitive(copyPrimitive(destDoc, prim, matCache, buffer));
+    for (const prim of leaf.primitives) mesh.addPrimitive(copyPrimitive(destDoc, prim, matCache, texCache, buffer));
 
     const geoNode = destDoc.createNode(`${partName}_geo`).setMesh(mesh).setMatrix(childMatrix);
     const rootNode = destDoc.createNode(partName).addChild(geoNode)
