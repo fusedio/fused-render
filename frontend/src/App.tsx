@@ -16,6 +16,7 @@ import Listing from "./views/Listing";
 import Preview from "./views/Preview";
 import Panel from "./views/Panel";
 import Tabs from "./views/Tabs";
+import Preferences from "./views/Preferences";
 
 type StatState =
   | { status: "loading" }
@@ -57,7 +58,7 @@ function StatView({ fsPath, epoch }: { fsPath: string; epoch: number }) {
   } else if (stat.status === "ok") {
     // Dispatch (ARCHITECTURE §6): a target with templates previews — even a
     // directory. Every directory resolves at least the universal `/` key's
-    // `["_listing"]` (D78), so the built-in listing is now the `_listing`
+    // `["_listing"]` (D81), so the built-in listing is now the `_listing`
     // sentinel mode and flows through Preview like any other mode (Preview
     // renders the shell Listing component for it). A directory resolves to an
     // empty list only when a `null` binding disables it; the shell still lists
@@ -111,6 +112,20 @@ export default function App({ config }: { config: Config }) {
         </div>
         <div id="content">
           <Tabs key={epoch} config={config} />
+        </div>
+      </>
+    );
+  } else if (pathname === "/view/_prefs") {
+    // Preferences (SPEC §20): a sentinel pathname like _panel/_tab — not a
+    // file; entered from the sidebar's gear. /view only (no embed variant —
+    // settings chrome inside a pane makes no sense).
+    main = (
+      <>
+        <div id="breadcrumb">
+          <StaticBreadcrumb label="Preferences" />
+        </div>
+        <div id="content">
+          <Preferences key={epoch} />
         </div>
       </>
     );

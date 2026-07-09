@@ -3,16 +3,16 @@
 //   2. else                      -> fallback metadata card
 // No file-type checks live in the shell — html arrives through stat.templates
 // like everything else, via the "_render" sentinel (SPEC PT-12).
-import { useState, type ReactNode } from "react";
-import { rawUrl } from "../lib/api";
-import type { StatResult, TemplateEntry } from "../lib/api";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { getDeployStatus, getPrefs, rawUrl } from "../lib/api";
+import type { Deployment, StatResult, TemplateEntry } from "../lib/api";
 import { formatSize, formatMtime } from "../lib/format";
 import ModeSwitcher, { templateModeIcon } from "../components/ModeSwitcher";
-import { useUrlVersion } from "../lib/hooks";
+import DeployModal from "../components/DeployModal";
 import Listing from "./Listing";
 
 // Sentinel modes the shell knows how to render without a template folder
-// (mirrors the server's KNOWN_SENTINELS, SPEC PT-12/D78): `_render` (the file
+// (mirrors the server's KNOWN_SENTINELS, SPEC PT-12/D81): `_render` (the file
 // itself in an iframe) and `_listing` (the shell's built-in directory listing,
 // no iframe). Any other path-null entry is an unknown sentinel, filtered out.
 const KNOWN_SENTINEL_MODES = new Set(["_render", "_listing"]);
@@ -39,94 +39,103 @@ function activeTemplate(templates: TemplateEntry[]): TemplateEntry {
   return templates.find((t) => t.mode === requested) || templates[0];
 }
 
-// --- Annotate toggle (SPEC §17, AN-1..AN-4) ---------------------------------
-// Annotate is ORTHOGONAL to `_mode` (which belongs to template-mode selection,
-// PT-9): reserved `_annotate=1` shell param, bookmarkable, deleted when off.
-// It overlays whichever template mode is active — the active mode's iframe is
-// re-rendered with `_annotate=1` appended, which makes the server inject the
-// overlay script (AN-4).
+// --- Deploy button (SPEC §19) -----------------------------------------------
+// Header action for deployable pages: any file whose mode list carries the
+// "_render" sentinel (i.e. a renderable page — the exact set /api/export
+// accepts). Shows a live dot when the local deployment pointer reads active;
+// the pointer is a cheap local read (no CLI shell-out) — the modal is what
+// reconciles against `share list`. A user who rebinds .html away from
+// "_render" loses the button too, consistently with losing the rendered view.
 
-const ANNOTATE_ICON = (
+const DEPLOY_ICON = (
   <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    <path d="M12 19V5" />
+    <path d="M5 12l7-7 7 7" />
   </svg>
 );
 
-// Count of OPEN comments in the current shell URL's `_comments` param (AN-3).
-// `_comments` holds a JSON array of thread objects (AN-5); URLSearchParams
-// already percent-decodes, so the value parses directly. The badge counts
-// threads whose status is not "resolved" (default status is open).
-function openCommentCount(): number {
-  const raw = new URLSearchParams(location.search).get("_comments");
-  if (!raw) return 0;
-  try {
-    const arr = JSON.parse(raw);
-    if (!Array.isArray(arr)) return 0;
-    return arr.filter((t) => t && t.status !== "resolved").length;
-  } catch {
-    return 0;
-  }
-}
+function DeployButton({ fsPath }: { fsPath: string }) {
+  const [open, setOpen] = useState(false);
+  const [deployment, setDeployment] = useState<Deployment | null>(null);
 
-// URL-backed annotate state: the URL is the ONLY source of truth (no mirrored
-// useState) because the overlay itself can turn annotate off — Escape inside
-// the iframe deletes `_annotate` on this shell URL (AN-12) and fires
-// fused:urlchange, which useUrlVersion turns into a re-render here. Toggle
-// clicks write with the same replaceState discipline as setMode.
-function useAnnotate(): [boolean, () => void] {
-  useUrlVersion();
-  const on = new URLSearchParams(location.search).get("_annotate") === "1";
-  const toggle = async () => {
-    if (!on) {
-      // Entering annotate REMOUNTS the preview iframe (React key change) —
-      // an editor buffer with edits newer than the last autosave would be
-      // silently discarded. Same-origin, so ask the iframe to flush first
-      // (code template exposes __fusedFlushEdits); refuse the switch when the
-      // buffer can't be made safe (save failure / unresolved conflict — the
-      // template's own banner explains). The 10s bound only catches a truly
-      // hung write (localhost saves are near-instant) so the toggle can't
-      // wedge forever; timing out aborts the switch, never the save.
-      const frame = document.querySelector<HTMLIFrameElement>(".preview-body iframe");
-      const flush = frame?.contentWindow && (frame.contentWindow as any).__fusedFlushEdits;
-      if (typeof flush === "function") {
-        try {
-          const res = await Promise.race([
-            flush(),
-            new Promise((r) => setTimeout(() => r({ ok: false }), 10000)),
-          ]);
-          if (res && (res as { ok: boolean }).ok === false) return;
-        } catch {
-          return;
-        }
-      }
-    }
-    const params = new URLSearchParams(location.search);
-    if (!on) params.set("_annotate", "1");
-    else params.delete("_annotate");
-    const search = params.toString();
-    history.replaceState(null, "", location.pathname + (search ? "?" + search : ""));
-  };
-  return [on, toggle];
-}
+  // Local pointer only (reconcile=false): opening a preview must never spawn
+  // the fused CLI. Errors are ignored — the button then just shows no dot.
+  // The pointer can change without this view remounting — a revoke from the
+  // Preferences page in ANOTHER tab, or any out-of-band /api/deploy/revoke
+  // (same-tab navigation remounts the view via the nav epoch, so it needs no
+  // handling). Re-read on focus/visibility regain: a cheap local JSON read,
+  // the bookmarks-poll freshness posture (D77) without a timer.
+  useEffect(() => {
+    let alive = true;
+    const refresh = () => {
+      getDeployStatus(fsPath, false)
+        .then((r) => {
+          if (alive) setDeployment(r.deployment);
+        })
+        .catch(() => {});
+    };
+    refresh();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      alive = false;
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [fsPath]);
 
-// Comment-bubble toggle button in the icon-button family of ModeSwitcher (AN-2)
-// with the open-comment badge (AN-3). The badge recomputes on every URL change
-// — comments written inside the iframe surface via replaceState +
-// fused:urlchange (useUrlVersion).
-function AnnotateToggle({ on, onToggle }: { on: boolean; onToggle: () => void }) {
-  useUrlVersion();
-  const count = openCommentCount();
+  const live = deployment?.status === "active";
   return (
-    <button
-      type="button"
-      className={"mode-switcher-btn annotate-toggle" + (on ? " active" : "")}
-      title="Annotate"
-      onClick={onToggle}
-    >
-      {ANNOTATE_ICON}
-      {count > 0 && <span className="annotate-badge">{count}</span>}
-    </button>
+    <>
+      <button
+        type="button"
+        className={"deploy-btn" + (live ? " live" : "")}
+        title={live ? "Deployed — open the Deploy dialog to manage" : "Deploy this page to a hosted URL"}
+        onClick={() => setOpen(true)}
+      >
+        {DEPLOY_ICON}
+        Deploy
+        {live && <span className="deploy-live-dot" />}
+      </button>
+      {open && (
+        <DeployModal fsPath={fsPath} onClose={() => setOpen(false)} onChange={setDeployment} />
+      )}
+    </>
   );
+}
+
+// Whether the Deploy affordance is enabled (Preferences → Deployments; SPEC
+// §20). Deploy is opt-in, so the button stays hidden until the pref reads on —
+// default false while loading means it never flashes on for a user who left it
+// off. Re-read on focus/visibility so toggling it in the Preferences tab shows
+// through without a reload (same cheap-local-read posture as the deploy dot).
+function useDeployEnabled(): boolean {
+  const [enabled, setEnabled] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const refresh = () => {
+      getPrefs()
+        .then((p) => {
+          if (alive) setEnabled(p.deploy.enabled);
+        })
+        .catch(() => {});
+    };
+    refresh();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      alive = false;
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
+  return enabled;
 }
 
 function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: StatResult; templates: TemplateEntry[] }) {
@@ -134,16 +143,56 @@ function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: St
   // Preview's dispatch, SPEC PT-12) is non-empty.
   const [mode, setModeState] = useState<string>(() => activeTemplate(templates).mode);
   const entry = templates.find((t) => t.mode === mode) || templates[0];
-  const [annotate, toggleAnnotate] = useAnnotate();
-  // `_listing` sentinel (D78): the shell's built-in directory listing, mounted
-  // in place of the preview iframe — no iframe, no `_file`; annotate (which
-  // injects into the iframe) is not offered for it. Every directory renders
-  // through this same header + body chrome (even a plain folder's single
-  // `_listing` mode), so the preview header is uniform across files and dirs.
+  const deployEnabled = useDeployEnabled();
+  // `_listing` sentinel (D81): the shell's built-in directory listing, mounted
+  // in place of the preview iframe — no iframe, no `_file`. Every directory
+  // renders through this same header + body chrome (even a plain folder's
+  // single `_listing` mode), so the preview header is uniform across files and
+  // dirs.
   const isListing = entry.mode === "_listing";
 
-  const setMode = (next: string) => {
-    if (next === mode) return;
+  // One switch at a time: the flush below is async, and a second click landing
+  // mid-flight could resolve in either order, desyncing iframe key / local
+  // state / shell `_mode`. Clicks during a pending switch are dropped.
+  const switching = useRef(false);
+  const setMode = async (next: string) => {
+    if (next === mode || switching.current) return;
+    switching.current = true;
+    try {
+      await doSetMode(next);
+    } finally {
+      switching.current = false;
+    }
+  };
+
+  const doSetMode = async (next: string) => {
+    // The flush below is async: if the user navigates to ANOTHER file while
+    // it's in flight, writing `_mode` against the then-current location would
+    // stamp the switch onto the wrong file's URL. Capture where the switch
+    // started and abort if the location moved.
+    const startedAt = location.pathname;
+    // Switching modes REMOUNTS the preview iframe (React key change) — an
+    // editor buffer with edits newer than the last autosave would be silently
+    // discarded. Same-origin, so ask the iframe to flush first (the code
+    // template exposes __fusedFlushEdits); refuse the switch when the buffer
+    // can't be made safe (save failure / unresolved conflict — the template's
+    // own banner explains). The 10s bound only catches a truly hung write so
+    // the switcher can't wedge forever; timing out aborts the switch, never
+    // the save.
+    const frame = document.querySelector<HTMLIFrameElement>(".preview-body iframe");
+    const flush = frame?.contentWindow && (frame.contentWindow as any).__fusedFlushEdits;
+    if (typeof flush === "function") {
+      try {
+        const res = await Promise.race([
+          flush(),
+          new Promise((r) => setTimeout(() => r({ ok: false }), 10000)),
+        ]);
+        if (res && (res as { ok: boolean }).ok === false) return;
+      } catch {
+        return;
+      }
+    }
+    if (location.pathname !== startedAt) return; // navigated away mid-flush
     const params = new URLSearchParams(location.search);
     // Selecting the default mode DELETES _mode (clean URLs); any other mode sets it.
     if (next === templates[0].mode) params.delete("_mode");
@@ -156,20 +205,17 @@ function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: St
   // "_render" sentinel (PT-12): render the target file itself, no _file param.
   // Ordinary entries: target file rides on the iframe's own URL as _file —
   // the shell URL's pathname already names the file, so no duplication there.
-  // Annotate ON appends `_annotate=1` to the SAME src (AN-4) — the server then
-  // injects the overlay script alongside the runtime. `_listing` builds no src
-  // (it renders a shell component, not an iframe).
+  // `_listing` builds no src — it renders a shell component, not an iframe.
   const src = isListing
     ? null
-    : (entry.mode === "_render"
-        ? `/render?path=${encodeURIComponent(fsPath)}`
-        : `/render?path=${encodeURIComponent(entry.path as string)}&_file=${encodeURIComponent(fsPath)}`) +
-      (annotate ? "&_annotate=1" : "");
+    : entry.mode === "_render"
+      ? `/render?path=${encodeURIComponent(fsPath)}`
+      : `/render?path=${encodeURIComponent(entry.path as string)}&_file=${encodeURIComponent(fsPath)}`;
 
   // Embed hides the whole preview-header, hence the switcher (shell.css). A
   // directory whose mode list carries `_listing` alongside a real preview (a
   // .zarr store, or a custom view + listing) surfaces a corner chip to toggle
-  // into/out of the member listing (D78 — replaces the old `?listing=1`
+  // into/out of the member listing (D81 — replaces the old `?listing=1`
   // "Browse contents"). Pointless when `_listing` is the sole/default-only
   // mode, so shown only when there is another mode to toggle back to.
   const toggleListing =
@@ -180,20 +226,31 @@ function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: St
   return (
     <>
       <Header fsPath={fsPath} stat={stat}>
+        {/* Deployable = the mode list carries the "_render" sentinel AND the
+            file is .html/.htm — the exporter's actual contract. The extension
+            check matters because a registry rebind can put "_render" on any
+            type (D73), but /api/export and /api/deploy/preview accept only
+            .html/.htm — the button must not open a modal that can't deploy.
+            Directories never deploy (no _render binding exists for one today;
+            the guard keeps that true even if a registry ever says otherwise).
+            Gated on the opt-in Deploy pref (Preferences → Deployments): hidden
+            entirely unless the user has turned Deploy on. */}
+        {!stat.is_dir &&
+          deployEnabled &&
+          templates.some((t) => t.mode === "_render") &&
+          /\.html?$/i.test(fsPath) && <DeployButton fsPath={fsPath} />}
         <ModeSwitcher
           entries={templates.map((t) => ({ mode: t.mode, icon: templateModeIcon(t) }))}
           active={entry.mode}
           onSelect={setMode}
         />
-        {!isListing && <AnnotateToggle on={annotate} onToggle={toggleAnnotate} />}
       </Header>
       <div className="preview-body">
         {isListing ? (
           <Listing fsPath={fsPath} />
         ) : (
-          /* key: switching mode or annotate replaces the iframe (fresh document
-             per switch). */
-          <iframe key={mode + (annotate ? "+a" : "")} src={src as string} />
+          /* key: switching mode replaces the iframe (fresh document per switch). */
+          <iframe key={mode} src={src as string} />
         )}
         {toggleListing && (
           <button type="button" className="preview-browse-chip" onClick={toggleListing}>

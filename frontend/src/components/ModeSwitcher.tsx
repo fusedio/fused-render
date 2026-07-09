@@ -57,7 +57,7 @@ const RENDER_SENTINEL_ICON = (
   </svg>
 );
 
-// Shell-baked icon for the "_listing" sentinel (PT-12/D78) — the built-in
+// Shell-baked icon for the "_listing" sentinel (PT-12/D81) — the built-in
 // directory listing; sentinels have no template folder to ship icon.svg.
 const LISTING_SENTINEL_ICON = (
   <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
