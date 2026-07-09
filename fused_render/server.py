@@ -492,6 +492,14 @@ def create_app(start_dir: str) -> FastAPI:
     # Deploy (hosted publish through the fused CLI) — export + `fused share`
     # orchestration and the per-page deployment pointer store (deploy.py).
     app.include_router(deploy_router)
+    # Template management (templates_api.py) — the Templates view backend:
+    # inventory across sources, registry bindings edit, import/export. It owns
+    # GET /api/templates/registry (the extended §2.2 shape). Imported here
+    # (not at module top) because templates_api reads server helpers/dirs —
+    # a lazy include keeps the server<->templates_api import acyclic.
+    from fused_render.templates_api import router as templates_router
+
+    app.include_router(templates_router)
 
     @app.get("/api/config")
     def api_config():
@@ -505,59 +513,8 @@ def create_app(start_dir: str) -> FastAPI:
             "engine": current_engine(),
         }
 
-    @app.get("/api/templates/registry")
-    def api_templates_registry():
-        # The merged extension→templates binding view for the Preferences page
-        # (SPEC §20): every key from both registries with its (splice-expanded)
-        # mode list. Read-only — bindings are edited in the registry files
-        # (SPEC §16); per-request reads keep it live like every resolution.
-        # A user key identical to a built-in key overrides it (one row, source
-        # "user-override"); distinct keys coexist and CT-3 specificity decides
-        # per file — this is the table of bindings, not a per-file resolver.
-        builtin_reg, builtin_err = _load_registry(BUILTIN_REGISTRY, "built-in registry.json")
-        user_reg, user_err = _load_registry(USER_REGISTRY, "registry.json")
-        builtin_reg = builtin_reg if isinstance(builtin_reg, dict) else {}
-        user_reg = user_reg if isinstance(user_reg, dict) else {}
-
-        def entry(key, value, source: str, builtin_names: list) -> dict:
-            names, disabled, err = _names_from_value(key, value, builtin_names)
-            return {
-                "pattern": str(key),
-                "templates": names if (names and not disabled) else [],
-                "disabled": disabled,
-                "source": source,
-                "error": err,
-            }
-
-        # Override detection is CASE-INSENSITIVE, matching how resolution
-        # actually matches keys (_key_segments lowercases): a user ".CSV" key
-        # overrides a built-in ".csv" — a case-sensitive `in` check would
-        # instead double-list the pattern and mis-source both rows.
-        builtin_by_lower = {str(k).lower(): k for k in builtin_reg}
-        user_lower = {str(k).lower() for k in user_reg}
-
-        entries = []
-        for key, value in builtin_reg.items():
-            if str(key).lower() in user_lower:
-                continue  # the user's row replaces it below (override)
-            entries.append(entry(key, value, "builtin", []))
-        for key, value in user_reg.items():
-            builtin_key = builtin_by_lower.get(str(key).lower())
-            builtin_names: list = []
-            if builtin_key is not None:
-                bnames, bdisabled, _berr = _names_from_value(builtin_key, builtin_reg[builtin_key], [])
-                if bnames and not bdisabled:
-                    builtin_names = bnames  # what a "..." splice expands to
-            source = "user-override" if builtin_key is not None else "user"
-            entries.append(entry(key, value, source, builtin_names))
-        # File keys first, then directory keys (trailing "/"), alpha within.
-        entries.sort(key=lambda e: (e["pattern"].endswith("/"), e["pattern"]))
-        return {
-            "entries": entries,
-            "builtin_registry": BUILTIN_REGISTRY,
-            "user_registry": USER_REGISTRY,
-            "error": builtin_err or user_err,
-        }
+    # GET /api/templates/registry moved to templates_api.py (extended §2.2
+    # shape) and registered via templates_router above.
 
     @app.get("/api/fs/stat")
     def api_fs_stat(path: str):

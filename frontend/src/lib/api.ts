@@ -272,23 +272,159 @@ export function revealPath(fsPath: string): Promise<void> {
   return postJson<unknown>("/api/fs/reveal", { path: fsPath }).then(() => undefined);
 }
 
-// -- Template registry view (server.py /api/templates/registry; SPEC §20) -----
+// -- Template management (fused_render/templates_api.py; TEMPLATE_MGMT_SPEC) --
+//
+// Two template dirs, modelled as an ordered list of "sources" (core is
+// read-only/version-gated, user is editable). The registry maps a dot-key
+// (extension pattern) to an ordered list of template names, first = default.
+
+// A template dir. TODAY exactly two (core, user); modelled as a list so a
+// third (org/project) can be appended later with no UI rework.
+export interface TemplateSource {
+  id: string; // "core" | "user"
+  label: string;
+  editable: boolean;
+  precedence: number; // higher wins
+  dir: string; // absolute path of this source's templates directory
+}
+
+// The four registry key shapes (grammar in server.py _key_segments).
+export type KeyKind = "simple" | "compound" | "wildcard" | "directory";
+
+// -- Inventory (GET /api/templates/inventory) --------------------------------
+
+// One resolved template folder. If a user folder shadows a core folder of the
+// same name, ONE entry is emitted with source="user" and shadowsCore=true.
+export interface InventoryTemplate {
+  name: string;
+  source: string; // source id
+  editable: boolean;
+  hasIcon: boolean;
+  usedBy: string[]; // registry keys whose effective list contains this name
+  shadowsCore: boolean;
+  path: string; // absolute path of this template's folder on disk (core or user)
+}
+
+export interface TemplateInventory {
+  sources: TemplateSource[];
+  templates: InventoryTemplate[];
+}
+
+export function getTemplateInventory(): Promise<TemplateInventory> {
+  return getJson<TemplateInventory>("/api/templates/inventory");
+}
+
+// -- Registry (GET/PUT /api/templates/registry) ------------------------------
+
+// One name in an entry's effective ordered list, resolved to a folder. A name
+// the registry references but that no folder backs has exists:false (broken).
+export interface RegistryTemplateRef {
+  name: string;
+  source: string; // source id the folder comes from
+  exists: boolean;
+  hasIcon: boolean;
+}
 
 export interface RegistryEntry {
-  pattern: string;
-  templates: string[];
-  disabled: boolean; // a null binding: previews disabled for this pattern
-  source: "builtin" | "user" | "user-override";
-  error: string | null;
+  key: string;
+  keyKind: KeyKind;
+  templates: RegistryTemplateRef[]; // effective ordered list, first = default
+  resolvedSource: string; // which source supplied the effective value
+  overridesCore: boolean; // the user registry defines this key
+  disabled: boolean; // effective value is null (previews disabled)
+  coreTemplates: string[] | null; // builtin registry's names for this key, or null
+  userValue?: string[] | null; // raw user-registry value, present only if a user key exists
 }
 
 export interface RegistryResult {
+  sources: TemplateSource[];
   entries: RegistryEntry[];
-  builtin_registry: string;
-  user_registry: string;
-  error: string | null;
+  builtin_registry: string; // path (back-compat)
+  user_registry: string; // path (back-compat)
+  error?: string | null;
 }
 
 export function getTemplateRegistry(): Promise<RegistryResult> {
   return getJson<RegistryResult>("/api/templates/registry");
+}
+
+// Upsert one USER-registry key. value = ordered names, or null to disable.
+// Returns the recomputed entry.
+export function putRegistryBinding(key: string, value: string[] | null): Promise<RegistryEntry> {
+  return putJson<RegistryEntry>("/api/templates/registry", { key, value });
+}
+
+// Remove a user override (revert to core). Returns the recomputed entry, or a
+// tombstone when no such key exists at all any more.
+export interface RegistryRemoved {
+  key: string;
+  removed: true;
+}
+
+export function resetRegistryBinding(key: string): Promise<RegistryEntry | RegistryRemoved> {
+  return postJson<RegistryEntry | RegistryRemoved>("/api/templates/registry/reset", { key });
+}
+
+// -- Export / import ---------------------------------------------------------
+// Export works for ANY template (core or user); import always lands in the user
+// source. Zips are folders only (no registry.json).
+
+// GET url for the export zip (folders only, no registry.json). Downloaded via
+// an <a href download> click, not fetch — the browser streams the attachment.
+export function exportTemplatesUrl(names: string[]): string {
+  return "/api/templates/export?names=" + encodeURIComponent(names.join(","));
+}
+
+// One candidate template found in an uploaded zip (a top-level directory).
+export interface ImportItem {
+  name: string;
+  valid: boolean; // has template.html
+  hasTemplateHtml: boolean;
+  conflictsExisting: boolean; // a user folder of this name already exists
+  fileCount: number;
+}
+
+// Step 1 of import: staged, not yet committed.
+export interface ImportStageResult {
+  importId: string;
+  expiresInSec: number;
+  items: ImportItem[];
+  warnings: string[];
+}
+
+export type ImportResolution = "overwrite" | "skip" | "keep-both";
+
+// Step 2 result: what the commit did per item.
+export interface ImportCommitResult {
+  imported: string[];
+  skipped: string[];
+  overwritten: string[];
+  renamed: Record<string, string>;
+}
+
+// Stage an import zip (step 1). Multipart — the browser sets the multipart
+// boundary Content-Type, so we must NOT set it ourselves; the X-Fused header
+// still forces the write-guard preflight (same guard as mutateJson).
+export async function importTemplates(file: File): Promise<ImportStageResult> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch("/api/templates/import", {
+    method: "POST",
+    headers: { "X-Fused": "1" },
+    body: form,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data as ImportStageResult;
+}
+
+// Commit a staged import (step 2): resolve conflicts and move into place.
+export function commitImport(
+  importId: string,
+  resolutions: Record<string, ImportResolution>,
+): Promise<ImportCommitResult> {
+  return postJson<ImportCommitResult>(
+    "/api/templates/import/" + encodeURIComponent(importId) + "/commit",
+    { resolutions },
+  );
 }

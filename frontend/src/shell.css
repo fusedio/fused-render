@@ -1353,7 +1353,7 @@ body.embed .preview-browse-chip:hover {
   border: 1px solid var(--border);
   border-radius: 10px;
   width: min(600px, 100%);
-  max-height: 80vh;
+  max-height: 85vh;
   display: flex;
   flex-direction: column;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
@@ -1799,4 +1799,495 @@ body.embed .preview-browse-chip:hover {
 .registry-source.user-override {
   color: var(--accent);
   border-color: var(--accent);
+}
+
+/* ---- Templates management view (TEMPLATE_MGMT_SPEC §3) -------------------- */
+
+.templates-page {
+  max-width: 960px;
+}
+
+.templates-header h1 {
+  margin: 0 0 6px;
+  font-size: 20px;
+  font-weight: 650;
+}
+
+.templates-header p {
+  margin: 0;
+}
+
+.templates-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.templates-section-head h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* Filters row (Section A). */
+.templates-filters {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.templates-search {
+  font: inherit;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  flex: 1 1 200px;
+  min-width: 150px;
+}
+
+.templates-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Segmented control (filters, key-shape picker, import resolutions). */
+.templates-seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.templates-seg-btn {
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 10px;
+  background: var(--bg);
+  color: var(--fg-muted);
+  border: none;
+  border-right: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.templates-seg-btn:last-child {
+  border-right: none;
+}
+
+.templates-seg-btn:hover {
+  color: var(--fg);
+}
+
+.templates-seg-btn.active {
+  background: var(--accent);
+  color: #10131a;
+  font-weight: 600;
+}
+
+.templates-seg-btn.danger.active {
+  background: var(--error);
+  color: #10131a;
+}
+
+.templates-add-btn {
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.templates-add-btn:hover {
+  border-color: var(--accent);
+}
+
+/* Bindings table (Section A). */
+.templates-bindings-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.templates-bindings-table td {
+  padding: 7px 10px 7px 0;
+  border-top: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.templates-binding-row {
+  cursor: pointer;
+}
+
+.templates-binding-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.templates-bindings-table .registry-templates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+
+.templates-modified {
+  color: var(--accent);
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+/* Template chips (bindings table + row editor). */
+.templates-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  font-size: 12px;
+}
+
+.templates-chip.small {
+  padding: 2px 8px;
+}
+
+.templates-chip.default {
+  border-color: var(--accent);
+}
+
+.templates-chip.broken {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.templates-chip[draggable="true"] {
+  cursor: grab;
+}
+
+.templates-chip-badge {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+}
+
+.templates-chip-x {
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+  border: none;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 0 0 0 2px;
+}
+
+.templates-chip-x:hover {
+  color: var(--error);
+}
+
+.templates-pill {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.templates-pill.warn {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+/* Row editor modal internals. */
+.templates-editor,
+.templates-import {
+  width: min(640px, 100%);
+}
+
+/* The row editor hosts the "Add template" popover, which is absolutely
+   positioned. A scroll container (overflow != visible) would clip it, so the
+   editor's body must NOT clip — the form is short and the dialog's own 85vh
+   cap keeps it on screen. (The import wizard keeps the default scrolling body
+   for its potentially long manifest table.) */
+.templates-editor .deploy-body {
+  overflow: visible;
+}
+
+.templates-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.templates-field > label {
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.templates-key-fixed {
+  font-size: 13px;
+}
+
+.templates-keybuilder {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.templates-key-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 8px;
+  background: var(--bg);
+  align-self: flex-start;
+}
+
+.templates-key-input input {
+  font: inherit;
+  background: none;
+  color: var(--fg);
+  border: none;
+  padding: 6px 2px;
+  min-width: 120px;
+}
+
+.templates-key-input input:focus {
+  outline: none;
+}
+
+.templates-key-fix {
+  color: var(--fg-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.templates-key-preview {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.templates-key-error {
+  font-size: 12px;
+  color: var(--error);
+}
+
+.templates-chiplist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-height: 24px;
+}
+
+.templates-add-wrap {
+  position: relative;
+  align-self: flex-start;
+}
+
+.templates-reorder-hint {
+  font-size: 11px;
+}
+
+.templates-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+/* Add-template picker popover (row editor). */
+.templates-picker {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 1100;
+  width: 260px;
+  max-height: 240px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+}
+
+.templates-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.templates-picker-body {
+  flex: 1 1 auto;
+  min-height: 0; /* let the list scroll inside the bounded picker, not spill */
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.templates-picker-cat {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+  padding: 6px 6px 3px;
+}
+
+.templates-picker-cell {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.templates-picker-cell:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.templates-icon-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--accent);
+  flex: 0 0 auto;
+}
+
+/* Inventory panel (Section B). */
+.templates-inv-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.templates-inv-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.templates-inv-grouphead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  padding-top: 6px;
+}
+
+.templates-lock {
+  font-size: 11px;
+}
+
+.templates-inv-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.templates-inv-table td {
+  padding: 6px 10px 6px 0;
+  border-top: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.templates-inv-check {
+  width: 24px;
+}
+
+.templates-inv-name {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.templates-inv-usedby {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.templates-usedby-chip {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 11px;
+}
+
+.templates-inv-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  white-space: nowrap;
+}
+
+.templates-inv-actions button,
+.templates-inv-table button {
+  font-size: 12px;
+  padding: 3px 8px;
+}
+
+/* Import wizard. */
+.templates-import-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.templates-import-table td {
+  padding: 6px 10px 6px 0;
+  border-top: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.templates-import-name {
+  font-weight: 500;
+}
+
+.templates-import-invalid {
+  opacity: 0.6;
+}
+
+.templates-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+}
+
+.templates-result {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.templates-result-line {
+  word-break: break-word;
 }

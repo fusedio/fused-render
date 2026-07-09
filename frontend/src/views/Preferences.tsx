@@ -333,6 +333,11 @@ function RegistrySection() {
     };
   }, []);
 
+  // The new registry entry shape (TEMPLATE_MGMT_SPEC §2.2) reports the effective
+  // source as resolvedSource ("core"/"user") + overridesCore; map it back to the
+  // three labels this read-only section has always shown.
+  const sourceOf = (e: RegistryResult["entries"][number]) =>
+    e.resolvedSource === "core" ? "builtin" : e.overridesCore ? "user-override" : "user";
   const sourceLabel = (s: string) =>
     s === "builtin" ? "built-in" : s === "user-override" ? "user override" : "user";
 
@@ -340,36 +345,47 @@ function RegistrySection() {
     <section className="prefs-section">
       <h2>Template registry</h2>
       <p className="deploy-muted">
-        Which templates open each file pattern (first entry is the default mode). Read-only
-        here — add or override bindings in <code>{registry?.user_registry ?? "~/.fused-render/templates/registry.json"}</code>.
+        Which templates open each file pattern (first entry is the default mode). Edit bindings
+        in the Templates view — this is a read-only summary.
       </p>
       {error && <div className="deploy-error">{error}</div>}
       {registry?.error && <div className="deploy-error">{registry.error}</div>}
       {registry && (
         <table className="prefs-registry-table">
           <tbody>
-            {registry.entries.map((e) => (
-              <tr key={e.source + e.pattern} className={e.error ? "has-error" : undefined}>
-                <td className="registry-pattern">
-                  <code>{e.pattern}</code>
-                </td>
-                <td className="registry-templates">
-                  {e.disabled ? (
-                    <span className="deploy-muted">disabled (no preview)</span>
-                  ) : (
-                    e.templates.map((t, i) => (
-                      <code key={t + i} className={i === 0 ? "default-mode" : undefined} title={i === 0 ? "default mode" : undefined}>
-                        {t}
-                      </code>
-                    ))
-                  )}
-                  {e.error && <span className="registry-error"> {e.error}</span>}
-                </td>
-                <td>
-                  <span className={"registry-source " + e.source}>{sourceLabel(e.source)}</span>
-                </td>
-              </tr>
-            ))}
+            {registry.entries.map((e) => {
+              const src = sourceOf(e);
+              const broken = e.templates.some((t) => !t.exists);
+              return (
+                <tr key={e.key} className={broken ? "has-error" : undefined}>
+                  <td className="registry-pattern">
+                    <code>{e.key}</code>
+                  </td>
+                  <td className="registry-templates">
+                    {e.disabled ? (
+                      <span className="deploy-muted">disabled (no preview)</span>
+                    ) : (
+                      e.templates.map((t, i) => (
+                        <code
+                          key={t.name + i}
+                          className={
+                            (i === 0 ? "default-mode" : "") + (t.exists ? "" : " registry-error")
+                          }
+                          title={
+                            !t.exists ? "no template folder" : i === 0 ? "default mode" : undefined
+                          }
+                        >
+                          {t.name}
+                        </code>
+                      ))
+                    )}
+                  </td>
+                  <td>
+                    <span className={"registry-source " + src}>{sourceLabel(src)}</span>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}

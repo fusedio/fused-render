@@ -17,6 +17,7 @@ import Preview from "./views/Preview";
 import Panel from "./views/Panel";
 import Tabs from "./views/Tabs";
 import Preferences from "./views/Preferences";
+import Templates from "./views/Templates";
 
 type StatState =
   | { status: "loading" }
@@ -126,6 +127,19 @@ export default function App({ config }: { config: Config }) {
         </div>
         <div id="content">
           <Preferences key={epoch} />
+        </div>
+      </>
+    );
+  } else if (pathname === "/view/_templates") {
+    // Templates management (TEMPLATE_MGMT_SPEC §3): a sentinel pathname like
+    // _prefs — not a file; entered from the sidebar footer. /view only.
+    main = (
+      <>
+        <div id="breadcrumb">
+          <StaticBreadcrumb label="Templates" />
+        </div>
+        <div id="content">
+          <Templates key={epoch} />
         </div>
       </>
     );

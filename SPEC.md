@@ -864,3 +864,166 @@ never imports server).
   the user registry path. This is the table of bindings, not a per-file
   resolver: distinct keys coexist and CT-3 specificity decides per file. Read
   per request like every resolution (no restart).
+
+---
+
+## 21. Template Management — Sources, Bindings & Import/Export (M13)
+
+Goal: a dedicated view that turns the read-only registry glance of §20.5
+(PF-7) into a full editing surface for template bindings, plus the ability to
+see the whole template inventory across sources and move user templates
+between machines as zip files. Same underlying data as §16/§20.5 — this
+section adds the write path, the inventory/provenance view, and
+import/export; it does not change the resolution engine (PT-6/CT-3), the
+registry file format (CT-2/CT-10/CT-11), or PF-7's read-only endpoint
+contract, which Preferences keeps using unchanged.
+
+### 21.1 Sources model (extensibility)
+
+- **TV-1** **DECIDED (D81):** the builtin/user pair (§7, §16) is generalized
+  into an ordered list of **sources** — `Source { id, label, editable,
+  precedence }`. Today exactly two ship: `core` (`id:"core"`,
+  `editable:false`, `precedence:0`, the `TEMPLATES_DIR`/`BUILTIN_REGISTRY`
+  pair) and `user` (`id:"user"`, `editable:true`, `precedence:100`, the
+  `USER_TEMPLATES_DIR`/`USER_REGISTRY` pair, D76's paths). The list is
+  modeled so a third source (org/project) can be appended later with zero UI
+  rework — **not built now** (§21.4).
+- **TV-2** Effective binding for a registry key = the value from the
+  highest-precedence source that defines it — unchanged from PT-6/CT-3 (user
+  beats core); the sources list is a presentation/provenance layer over the
+  existing resolution rule, not a new one.
+
+### 21.2 API
+
+New endpoints live in `fused_render/templates_api.py` (a `templates_router`,
+mirroring `shell/bookmarks.py`/`shell/prefs.py`), included from `server.py`
+alongside the existing bookmarks/prefs/deploy routers. Mutating routes carry
+the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
+
+- **TV-3** `GET /api/templates/inventory` — the template pool across sources:
+  `{sources, templates:[{name, source, editable, hasIcon, usedBy,
+  shadowsCore}]}`, one entry per **resolved** folder (a user folder
+  shadowing a core folder of the same name emits one `source:"user",
+  shadowsCore:true` entry, not two). `usedBy` = registry keys whose effective
+  ordered list contains the name.
+- **TV-4** `GET /api/templates/registry` — **extended**, back-compat fields
+  kept (`builtin_registry`, `user_registry` paths) so PF-7's Preferences
+  section keeps working unchanged. Adds `sources` and, per entry, `keyKind`
+  (`simple|compound|wildcard|directory`), the effective `templates` list
+  resolved to `{name, source, exists, hasIcon}` (a name with no folder on
+  disk resolves `exists:false` and stays in the list — surfaced as broken,
+  not dropped), `resolvedSource`, `overridesCore` (true whenever the user
+  registry defines the key, regardless of value equality), `disabled`
+  (effective value is `null`), `coreTemplates` (what the builtin registry
+  alone gives, or `null`; drives reset-preview + the known-keys list), and
+  `userValue` (raw user-registry value, included only when a user key
+  exists). `entries` covers every builtin key plus every user-only key.
+- **TV-5** `PUT /api/templates/registry` **(D82)** — upserts **one** user
+  key: body `{key, value}` (`value` = ordered name array or `null`).
+  Validates the key against the CT-3 grammar and every name against the
+  resolved inventory (unknown names → 400 listing them), then does a
+  **read-modify-write of that key only** against `USER_REGISTRY` via the
+  existing atomic `read_json`/`write_json` helpers (creates the file/dir if
+  missing) — never a whole-file overwrite. Returns the recomputed entry
+  (same shape as one `entries[]` item from TV-4).
+- **TV-6** `POST /api/templates/registry/reset` **(D82)** — body `{key}`;
+  deletes that key from the user registry (no-op if absent), reverting the
+  effective value to the core one. Returns the recomputed entry, or
+  `{key, removed:true}` if no such key resolves anywhere anymore.
+- **TV-7** `GET /api/templates/export?names=a,b,c` **(D84)** — streams a zip
+  (`application/zip`, `Content-Disposition: attachment;
+  filename="fused-render-templates.zip"`) of the named **user** templates
+  only (400 on any name that is not an editable user template); each
+  template's folder contents land at its own top level in the zip. **No
+  `registry.json` in the zip** — folders only.
+- **TV-8** `POST /api/templates/import` **(D85)** — step 1 of 2, multipart
+  (`file` field, the `.zip`), stages without committing: unpacks to
+  `home_dir()/.import-staging/<importId>/` (`importId` = `secrets.token_hex`).
+  Hardening (rejects the whole upload before anything lands outside
+  staging): uncompressed total > 50 MB, entry count > 2000, or any single
+  entry > 25 MB (zip-bomb guard); any entry that is absolute, contains `..`,
+  normalizes outside the staging root, or is a symlink (zip-slip guard). A
+  candidate template = a top-level directory containing `template.html`
+  (`valid:true`). Returns `{importId, expiresInSec, items:[{name, valid,
+  hasTemplateHtml, conflictsExisting, fileCount}], warnings}` —
+  `conflictsExisting` flags a name already present under
+  `USER_TEMPLATES_DIR`. Stale staging dirs past the TTL are swept
+  opportunistically on every call.
+- **TV-9** `POST /api/templates/import/{importId}/commit` **(D85)** — step
+  2: body `{resolutions: {name: "overwrite"|"skip"|"keep-both"}}`
+  (unresolved items default to `skip`). Per valid item: `skip` drops it;
+  `overwrite` atomically replaces the existing folder; `keep-both` lands as
+  `<name>-2` (then `-3`…, never clobbering). Moves (not copies) from staging
+  into `USER_TEMPLATES_DIR`, then deletes the staging dir. Unknown/expired
+  `importId` → 404/410. Returns `{imported, skipped, overwritten, renamed}`.
+- **TV-10** Reveal and "open in explorer" add **no new endpoints**:
+  inventory's Reveal action reuses `POST /api/fs/reveal`; "open in explorer"
+  is a plain shell navigation to `USER_TEMPLATES_DIR/<name>`.
+
+### 21.3 Frontend — Templates view (`/view/_templates`)
+
+- **TV-11** **(D87)** New route **`/view/_templates`** — a shell-owned
+  sentinel dispatched in `App.tsx` the same way `/view/_prefs` is (§20):
+  view-only, no `/embed` variant (a template-management page inside an
+  embedded pane has no meaning). New component
+  `frontend/src/views/Templates.tsx`.
+- **TV-12** Sidebar footer gains a "Templates" button next to the
+  Preferences gear (`navigateUrl("/view/_templates")`), an inline SVG icon
+  in the same style as the gear.
+- **TV-13** `lib/api.ts` additions: `getTemplateInventory()` (TV-3),
+  `getTemplateRegistry()` (TV-4, extends the existing type, keeps old
+  fields), `putRegistryBinding(key, value)` (TV-5),
+  `resetRegistryBinding(key)` (TV-6), `exportTemplatesUrl(names)` (builds
+  the TV-7 GET url for an `<a download>` click), `importTemplates(file)`
+  (TV-8 — the app's first `FormData` multipart call; `X-Fused: 1` header
+  set, `Content-Type` left for the browser to fill in with the multipart
+  boundary), `commitImport(importId, resolutions)` (TV-9).
+- **TV-14** **Bindings table** (one row per registry key): extension/key,
+  ordered template chips (first badged "default"), a source chip
+  (Core/User), a "● Modified" marker when `overridesCore`, a "Disabled" pill
+  when `disabled`, broken-name chips (`exists:false`) in a warning style.
+  Filters: All / Modified only / by source; a search box over key and
+  template name. `+ Add extension` opens the row editor in create mode.
+- **TV-15** **Row editor modal (D86)** (DeployModal-style: backdrop +
+  dialog, Escape to close): in **create** mode, a key **pattern builder**
+  covering all four CT-3 shapes — simple `.ext`, compound `.a.b`, wildcard
+  `.*.json`, directory `.ext/` — via a segmented control with a
+  live-rendered key preview and client-side grammar validation (server
+  stays authoritative, TV-5); in **edit** mode the key is shown, not
+  editable. Template list: ordered chips, drag to reorder (first =
+  default), remove, "Add template" opens a picker sourced from `GET
+  /api/templates/inventory` grouped by source, disallowing duplicates.
+  Actions: **Save** (TV-5), **Disable for this type** (writes `null`,
+  inline confirm), **Reset to core** (TV-6, shown only when
+  `overridesCore`, previews the core default from `coreTemplates`),
+  **Cancel**.
+- **TV-16** **Inventory panel**: templates grouped by source. Core group is
+  locked (🔒) and view-only, showing `usedBy` chips per template. User group
+  rows show name, icon, `usedBy` chips, and actions: Export ⬇ (single),
+  Delete, Reveal in Finder (TV-10), Open in explorer (TV-10). Toolbar:
+  "Import zip ⬆" and "Export selected ⬇" (checkbox multi-select on user
+  rows drives `exportTemplatesUrl`).
+- **TV-17** **Import wizard modal**, three steps: (1) file chooser
+  (`accept=".zip"`) → `importTemplates(file)` (TV-8); (2) manifest — a
+  table of staged items with a per-conflicting-item resolution selector
+  (Overwrite / Skip / Keep both — Overwrite visually distinct, a short
+  inline caution suffices, no per-item confirm dialog), invalid items
+  greyed and auto-skipped with their reason shown, warnings listed; (3)
+  confirm → `commitImport` (TV-9) → a result summary
+  (imported/renamed/skipped) → closing re-fetches inventory + bindings.
+- **TV-18** Any mutation (put/reset/import commit) re-fetches inventory +
+  registry and re-renders — no stale state between the two sections.
+  Header copy states plainly that this view manages **bindings + inventory
+  only**: editing a template's own files happens in the file explorer
+  (D83).
+
+### 21.4 Non-goals (this feature)
+
+- Editing template file contents (`template.html`, `reader.py`, css, icons)
+  in this UI — use the file explorer + the existing `/api/fs/write` (D83).
+- A real third source (org/project) — TV-1 only models for it.
+- Registry bindings inside export zips, or merging/writing registry entries
+  from an import — exports are folders only (D84); imported templates are
+  inert (CT-7) until bound via the row editor.
+- Persisting a per-file "last selected mode" — unrelated, not part of this
+  feature.
