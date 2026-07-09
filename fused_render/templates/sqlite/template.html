@@ -47,9 +47,36 @@
   #bar button, #filterbar button { cursor: pointer; }
   #bar button:disabled, #filterbar button:disabled { opacity: 0.4; cursor: default; }
   #filterbar select:disabled, #filterbar input:disabled { opacity: 0.4; }
-  .icon-btn { width: 30px; padding: 0; font-size: 15px; line-height: 1; }
-  #save { border-color: #2f6f4f; }
+  /* Strip the native <select> chrome (WebKit otherwise ignores our radius &
+     padding and draws its own chevron) so selects match the styled inputs and
+     buttons: same 6px pill, same padding, one custom caret on the right. */
+  #bar select, #filterbar select {
+    appearance: none; -webkit-appearance: none;
+    padding: 0 28px 0 10px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cpath d='M4 6.5 8 10.5 12 6.5' fill='none' stroke='%239aa0a6' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 7px center; background-size: 14px;
+  }
+  /* Square icon buttons (paging arrows, discard, save). The #bar/#filterbar
+     scope outranks the base `#bar button { padding: 0 10px }` rule so the
+     glyph/SVG sits in a real 28px square with no leftover horizontal padding,
+     matching the round search button up top. */
+  #bar .icon-btn, #filterbar .icon-btn {
+    width: 28px; padding: 0; font-size: 15px; line-height: 1;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  #save { border-color: #2f6f4f; position: relative; }
   #save:not(:disabled) { background: #1e5138; color: #eafff2; }
+  /* Discard mirrors Save with a red accent — only lit while there's something
+     to throw away, dimmed grey when disabled. */
+  #discard { border-color: #6f2f2f; }
+  #discard:not(:disabled) { background: #511e1e; color: #ffeaea; }
+  /* Dirty-count badge on the Save icon; hidden while there's nothing staged. */
+  .save-count {
+    position: absolute; top: -6px; right: -6px; min-width: 15px; height: 15px;
+    padding: 0 3px; border-radius: 8px; background: #2f6f4f; color: #eafff2;
+    font-size: 10px; line-height: 15px; text-align: center;
+  }
+  .save-count[hidden] { display: none; }
   #tablewrap { flex: 1 1 auto; min-height: 0; overflow: auto; }
   #rowcount { color: #9aa0a6; }
   .ro-badge {
@@ -101,11 +128,12 @@
     flex: 0 0 auto; width: 28px; padding: 0;
     font-size: 15px; line-height: 1; text-align: center; color: #c8ccd0;
   }
-  /* Apply: a round accent button, only on the first row. */
+  /* Apply: an accent button, only on the first row. Same rounded square as
+     every other icon button so the chrome reads as one set. */
   #filterbar .fr-apply {
     flex: 0 0 auto; width: 28px; padding: 0; line-height: 0;
     display: inline-flex; align-items: center; justify-content: center;
-    border-radius: 50%; border-color: #2f6f4f; background: #1e5138; color: #eafff2;
+    border-color: #2f6f4f; background: #1e5138; color: #eafff2;
   }
   /* Action column to the right of the condition rows: Apply, then a clear
      icon that only appears while a sort or filter is active. */
@@ -113,7 +141,7 @@
   #filterbar .fr-clear {
     width: 28px; padding: 0; line-height: 0;
     display: inline-flex; align-items: center; justify-content: center;
-    border-radius: 50%; color: #c8ccd0;
+    color: #c8ccd0;
   }
   #filterbar .fr-clear[hidden] { display: none; }
   table { border-collapse: collapse; width: 100%; }
@@ -161,7 +189,7 @@
   .rowact { width: 1%; text-align: center; padding: 0 6px; }
   .del-btn {
     font: inherit; line-height: 1; padding: 2px 6px; border: 1px solid #2a2d33;
-    border-radius: 5px; background: #131417; color: #c9a; cursor: pointer;
+    border-radius: 6px; background: #131417; color: #c9a; cursor: pointer;
   }
   .del-btn:hover { border-color: #8a4; }
   /* Right-click menu on an editable cell (currently just "Set Null"). */
@@ -202,8 +230,8 @@
     </div>
     <div class="bar-group side right">
       <button id="add" hidden>+ Add row</button>
-      <button id="discard" hidden disabled>Discard</button>
-      <button id="save" hidden disabled>Save</button>
+      <button id="discard" class="icon-btn" hidden disabled title="Discard changes" aria-label="Discard changes"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4.5 3.5V6H7a4 4 0 1 1-3.6 5.7l-1.34.67A5.5 5.5 0 1 0 7 4.5h2.3L6.5 1.7 3.7 4.5z" fill="currentColor"/></svg></button>
+      <button id="save" class="icon-btn" hidden disabled title="Save changes" aria-label="Save changes"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M6.2 11.4 2.8 8l1.1-1.1 2.3 2.3 5.9-5.9L13.2 4.4z" fill="currentColor"/></svg><span class="save-count" hidden></span></button>
     </div>
   </div>
   <div id="ctxmenu" hidden>
@@ -536,7 +564,10 @@
       nextBtn.disabled = dirty || offset + LIMIT >= total;
       tableSel.disabled = dirty;
       saveBtn.disabled = discardBtn.disabled = !dirty;
-      saveBtn.textContent = dirty ? `Save (${dirtyCount()})` : "Save";
+      const saveCount = saveBtn.querySelector(".save-count");
+      saveCount.hidden = !dirty;
+      saveCount.textContent = String(dirtyCount());
+      saveBtn.title = dirty ? `Save (${dirtyCount()})` : "Save changes";
       // Sort/filter reshuffle the page, which would strand this page's staged
       // edits — so lock those controls (like paging) until Save or Discard.
       const showClear = !!(currentSort() || currentFilters().length);
@@ -668,7 +699,7 @@
           return out;
         });
       saveBtn.disabled = true;
-      saveBtn.textContent = "Saving…";
+      saveBtn.title = "Saving…";
       try {
         await fused.runPython("./writer.py", {
           file, table: state.table || "", edits, deletes, inserts,
