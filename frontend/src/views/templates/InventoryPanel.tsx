@@ -172,9 +172,20 @@ export function InventoryPanel({
       {deleting && (
         <DeleteConfirm
           t={deleting}
-          onExport={() => runExport([deleting.name])}
+          // Pass the THROWING export (not runExport, which swallows errors into
+          // panel state) so "Export & delete" only deletes when the recovery
+          // zip actually downloaded (TV-16/D92 export-first guarantee).
+          onExport={() => downloadTemplatesExport([deleting.name])}
           onClose={() => setDeleting(null)}
           onDeleted={() => {
+            // Drop the deleted name from the multi-select so "Export selected"
+            // never carries a name the server no longer has.
+            setSelected((prev) => {
+              if (!prev.has(deleting.name)) return prev;
+              const next = new Set(prev);
+              next.delete(deleting.name);
+              return next;
+            });
             setDeleting(null);
             onChanged();
           }}

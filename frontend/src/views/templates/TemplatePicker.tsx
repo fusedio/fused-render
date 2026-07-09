@@ -24,6 +24,11 @@ export function TemplatePicker({
       items: inventory.templates.filter((t) => t.source === s.id && !excludeSet.has(t.name)),
     }))
     .filter((g) => g.items.length > 0);
+  // Shell sentinels (PT-12) are valid registry names but back no template
+  // folder, so they aren't in the inventory — offer them explicitly so a
+  // removed `_render`/`_listing` can be added back from the UI.
+  const sentinels = ["_render", "_listing"].filter((n) => !excludeSet.has(n));
+  const empty = groups.length === 0 && sentinels.length === 0;
   return (
     <div className="templates-picker">
       <div className="templates-picker-head">
@@ -33,7 +38,7 @@ export function TemplatePicker({
         </button>
       </div>
       <div className="templates-picker-body">
-        {groups.length === 0 && <div className="deploy-muted">No more templates to add.</div>}
+        {empty && <div className="deploy-muted">No more templates to add.</div>}
         {groups.map((g) => (
           <div key={g.source.id} className="templates-picker-group">
             <div className="templates-picker-cat">{sourceLabel(registry, g.source.id)}</div>
@@ -50,6 +55,22 @@ export function TemplatePicker({
             ))}
           </div>
         ))}
+        {sentinels.length > 0 && (
+          <div className="templates-picker-group">
+            <div className="templates-picker-cat">Special modes</div>
+            {sentinels.map((name) => (
+              <button
+                key={name}
+                type="button"
+                className="templates-picker-cell"
+                onClick={() => onPick(name)}
+                title="Shell built-in mode (no template folder)"
+              >
+                <span>{name}</span>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
