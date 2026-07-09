@@ -23,6 +23,14 @@
     "code",
     "annotate"
   ],
+  ".jsonl": [
+    "code",
+    "annotate"
+  ],
+  ".ndjson": [
+    "code",
+    "annotate"
+  ],
   ".geojson": [
     "vector",
     "tree",
@@ -30,6 +38,11 @@
     "annotate"
   ],
   ".md": [
+    "markdown",
+    "code",
+    "annotate"
+  ],
+  ".markdown": [
     "markdown",
     "code",
     "annotate"
@@ -107,7 +120,55 @@
     "code",
     "annotate"
   ],
+  ".tsx": [
+    "code",
+    "annotate"
+  ],
+  ".jsx": [
+    "code",
+    "annotate"
+  ],
+  ".cjs": [
+    "code",
+    "annotate"
+  ],
+  ".mjs": [
+    "code",
+    "annotate"
+  ],
+  ".cts": [
+    "code",
+    "annotate"
+  ],
+  ".mts": [
+    "code",
+    "annotate"
+  ],
   ".sh": [
+    "code",
+    "annotate"
+  ],
+  ".zsh": [
+    "code",
+    "annotate"
+  ],
+  ".fish": [
+    "code",
+    "annotate"
+  ],
+  ".ps1": [
+    "code",
+    "annotate"
+  ],
+  ".csh": [
+    "code",
+    "annotate"
+  ],
+  ".zsh-theme": [
+    "code",
+    "annotate"
+  ],
+  ".vim": [
     "code",
     "annotate"
   ],
@@ -120,6 +181,26 @@
     "annotate"
   ],
   ".toml": [
+    "code",
+    "annotate"
+  ],
+  ".ini": [
+    "code",
+    "annotate"
+  ],
+  ".cfg": [
+    "code",
+    "annotate"
+  ],
+  ".conf": [
+    "code",
+    "annotate"
+  ],
+  ".tf": [
+    "code",
+    "annotate"
+  ],
+  ".hcl": [
     "code",
     "annotate"
   ],
@@ -214,5 +295,40 @@
   ],
   ".egg": [
     "zip"
+  ],
+  ".tar": [
+    "tar"
+  ],
+  ".tgz": [
+    "tar"
+  ],
+  ".tbz2": [
+    "tar"
+  ],
+  ".txz": [
+    "tar"
+  ],
+  ".gz": [
+    "tar"
+  ],
+  ".bz2": [
+    "tar"
+  ],
+  ".xz": [
+    "tar"
+  ],
+  ".sqlite": [
+    "sqlite"
+  ],
+  ".sqlite3": [
+    "sqlite"
+  ],
+  ".db": [
+    "sqlite"
+  ],
+  ".plist": [
+    "plist",
+    "code",
+    "annotate"
   ]
 }
