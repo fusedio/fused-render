@@ -20,6 +20,13 @@ function notifyNavigate(): void {
   window.dispatchEvent(new Event(NAV_EVENT));
 }
 
+// Windows fs paths are rooted at a drive letter ("C:/…"), not at "/" — the
+// shell's canonical form keeps forward slashes and adds a leading slash only
+// for POSIX paths.
+export function rootedFsPath(joined: string): string {
+  return /^[A-Za-z]:(\/|$)/.test(joined) ? joined : "/" + joined;
+}
+
 export function fsPathFromLocation(): string | null {
   const p = location.pathname;
   if (!p.startsWith(PREFIX)) return null;
@@ -29,11 +36,16 @@ export function fsPathFromLocation(): string | null {
     .filter((s) => s.length > 0)
     .map(decodeURIComponent)
     .join("/");
-  return "/" + decoded;
+  return rootedFsPath(decoded);
 }
 
 export function urlForFsPath(fsPath: string, search?: string): string {
-  const rest = fsPath.replace(/^\/+/, "");
+  // Windows callers (server stat/list results, bookmarks) may carry
+  // backslashes; the URL codec speaks forward slashes only. Normalize ONLY
+  // drive-letter paths — on POSIX a backslash is a legal filename character
+  // and must round-trip untouched.
+  const norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;
+  const rest = norm.replace(/^\/+/, "");
   const encoded = rest
     .split("/")
     .filter((s) => s.length > 0)

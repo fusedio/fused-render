@@ -195,9 +195,14 @@ export function Breadcrumb({ fsPath }: { fsPath: string }) {
       /
     </a>,
   ];
+  // A Windows path's first segment is the drive ("C:"); its crumb must target
+  // "C:/" (bare "C:" is cwd-relative to os.stat) and later segments append
+  // without re-rooting at "/".
+  const isDrive = /^[A-Za-z]:$/.test(parts[0] || "");
   let acc = "";
   parts.forEach((part, i) => {
-    acc += "/" + part;
+    if (i === 0 && isDrive) acc = part + "/";
+    else acc = acc + (acc.endsWith("/") ? "" : "/") + part;
     const target = acc;
     const isLast = i === parts.length - 1;
     // Separator only between segments (root already carries the leading
