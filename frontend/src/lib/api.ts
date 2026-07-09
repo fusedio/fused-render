@@ -2,6 +2,8 @@
 export interface Config {
   start_dir: string;
   home: string;
+  // The Fused workspace dir (~/Documents/Fused) — the sidebar's "Fused" entry.
+  fused_dir: string;
   version: string;
 }
 
