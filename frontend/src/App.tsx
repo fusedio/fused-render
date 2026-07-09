@@ -20,6 +20,7 @@ import Preview from "./views/Preview";
 import Panel from "./views/Panel";
 import Tabs from "./views/Tabs";
 import Preferences from "./views/Preferences";
+import Templates from "./views/Templates";
 
 type StatState =
   | { status: "loading" }
@@ -122,10 +123,21 @@ export default function App({ config }: { config: Config }) {
   const isPanel = pathname === "/view/_panel" || pathname === "/embed/_panel";
   const isTabs = pathname === "/view/_tab" || pathname === "/embed/_tab";
   const isPrefs = pathname === "/view/_prefs";
-  const fsPath = isPanel || isTabs || isPrefs ? null : fsPathFromLocation();
+  const isTemplates = pathname === "/view/_templates";
+  const fsPath = isPanel || isTabs || isPrefs || isTemplates ? null : fsPathFromLocation();
   // A resolved fsPath mounts StatView below, which owns the title itself.
   useDocumentTitle(
-    isPanel ? "Panel" : isTabs ? "Tabs" : isPrefs ? "Preferences" : fsPath ? undefined : null
+    isPanel
+      ? "Panel"
+      : isTabs
+        ? "Tabs"
+        : isPrefs
+          ? "Preferences"
+          : isTemplates
+            ? "Templates"
+            : fsPath
+              ? undefined
+              : null
   );
 
   let main;
@@ -162,6 +174,19 @@ export default function App({ config }: { config: Config }) {
         </div>
         <div id="content">
           <Preferences key={epoch} />
+        </div>
+      </>
+    );
+  } else if (isTemplates) {
+    // Templates management (TEMPLATE_MGMT_SPEC §3): a sentinel pathname like
+    // _prefs — not a file; entered from the sidebar footer. /view only.
+    main = (
+      <>
+        <div id="breadcrumb">
+          <StaticBreadcrumb label="Templates" />
+        </div>
+        <div id="content">
+          <Templates key={epoch} />
         </div>
       </>
     );

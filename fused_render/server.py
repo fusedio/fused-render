@@ -480,10 +480,15 @@ def _names_from_value(key, value, builtin_names: list):
     """Interpret one matched registry value (SPEC CT-2/CT-10/CT-11).
 
     Returns (names, disabled, error). names: ordered list[str] of (possibly
-    still-unresolved) template names, or None when the value is unusable.
-    disabled: True when the value is `null` (CT-2) — no template at all, no
-    error. error: a shape-level problem (value not list/string/null, >1 "..."
-    splice) — surfaced as `template_error` so typos aren't silent.
+    still-unresolved) template names, or None when the value disables previews.
+    disabled: True for `null` **and for an empty list** (`[]`) — both mean "no
+    template at all for this type", no error, no built-in fallback. error: a
+    shape-level problem (value not list/string/null) — surfaced as
+    `template_error` so typos aren't silent.
+
+    There is no `"..."` splice: the token is treated as an ordinary name that
+    resolves to no folder (a dangling ref, surfaced broken), not a splice into
+    the built-in list. `builtin_names` is unused, kept for signature stability.
     """
     if value is None:
         return None, True, None
@@ -491,22 +496,12 @@ def _names_from_value(key, value, builtin_names: list):
         # String = exactly a single-mode list (D50).
         return [value], False, None
     if isinstance(value, list):
-        # "..." splices the built-in list in place (CT-11); >1 is invalid.
-        splice_count = sum(1 for entry in value if entry == "...")
-        if splice_count > 1:
-            return None, False, f"{key}: more than one '...' splice in template list"
-        if splice_count == 0:
-            return list(value), False, None
-        explicit = {e for e in value if isinstance(e, str) and e != "..."}
-        names = []
-        for entry in value:
-            if entry == "...":
-                for bname in builtin_names:
-                    if bname not in explicit and bname not in names:
-                        names.append(bname)
-            else:
-                names.append(entry)
-        return names, False, None
+        # Empty list disables previews, identical to `null` (owner 2026-07-09).
+        if not value:
+            return None, True, None
+        # Names pass through verbatim; any that resolve to no folder are kept
+        # and surfaced as broken (dangling refs), never spliced or expanded.
+        return list(value), False, None
     return None, False, f"{key}: registry value must be a list, string, or null"
 
 
@@ -547,9 +542,9 @@ def _templates_for(path: str, is_dir: bool):
     resolve exactly like files (a `.zarr` store matches the ".zarr/" key),
     and the user registry binds them too (D73 revises D65). Precedence: any
     user match > built-in match (CT-3). .html/.htm are ordinary keys (D73
-    revises CT-4): the user can rebind them; "..." keeps `_render` reachable.
-    A path with no match in either registry returns empty — unmapped file, or
-    the plain listing view for a directory.
+    revises CT-4): the user can rebind them, listing `_render` explicitly to
+    keep it reachable. A path with no match in either registry returns empty —
+    unmapped file, or the plain listing view for a directory.
     """
     basename = os.path.basename(os.path.normpath(path))
 
@@ -558,8 +553,6 @@ def _templates_for(path: str, is_dir: bool):
     if builtin_reg is not None:
         matched = _match_registry(builtin_reg, basename, is_dir)
         if matched is not None:
-            # Splices are meaningless in the built-in registry (nothing to
-            # splice into) — "..." there expands to nothing, harmless.
             names, disabled, err = _names_from_value(*matched, builtin_names=[])
             error = error or err
             if names and not disabled:
@@ -728,6 +721,14 @@ def create_app(start_dir: str) -> FastAPI:
     # Deploy (hosted publish through the fused CLI) — export + `fused share`
     # orchestration and the per-page deployment pointer store (deploy.py).
     app.include_router(deploy_router)
+    # Template management (templates_api.py) — the Templates view backend:
+    # inventory across sources, registry bindings edit, import/export. It owns
+    # GET /api/templates/registry (the extended §2.2 shape). Imported here
+    # (not at module top) because templates_api reads server helpers/dirs —
+    # a lazy include keeps the server<->templates_api import acyclic.
+    from fused_render.templates_api import router as templates_router
+
+    app.include_router(templates_router)
 
     # Per-file session restore (LSN-*): a viewed file remembers its last URL
     # query in the "lastSession" key of its <file>.json sidecar. GET is a read
@@ -758,59 +759,8 @@ def create_app(start_dir: str) -> FastAPI:
             "engine": current_engine(),
         }
 
-    @app.get("/api/templates/registry")
-    def api_templates_registry():
-        # The merged extension→templates binding view for the Preferences page
-        # (SPEC §20): every key from both registries with its (splice-expanded)
-        # mode list. Read-only — bindings are edited in the registry files
-        # (SPEC §16); per-request reads keep it live like every resolution.
-        # A user key identical to a built-in key overrides it (one row, source
-        # "user-override"); distinct keys coexist and CT-3 specificity decides
-        # per file — this is the table of bindings, not a per-file resolver.
-        builtin_reg, builtin_err = _load_registry(BUILTIN_REGISTRY, "built-in registry.json")
-        user_reg, user_err = _load_registry(USER_REGISTRY, "registry.json")
-        builtin_reg = builtin_reg if isinstance(builtin_reg, dict) else {}
-        user_reg = user_reg if isinstance(user_reg, dict) else {}
-
-        def entry(key, value, source: str, builtin_names: list) -> dict:
-            names, disabled, err = _names_from_value(key, value, builtin_names)
-            return {
-                "pattern": str(key),
-                "templates": names if (names and not disabled) else [],
-                "disabled": disabled,
-                "source": source,
-                "error": err,
-            }
-
-        # Override detection is CASE-INSENSITIVE, matching how resolution
-        # actually matches keys (_key_segments lowercases): a user ".CSV" key
-        # overrides a built-in ".csv" — a case-sensitive `in` check would
-        # instead double-list the pattern and mis-source both rows.
-        builtin_by_lower = {str(k).lower(): k for k in builtin_reg}
-        user_lower = {str(k).lower() for k in user_reg}
-
-        entries = []
-        for key, value in builtin_reg.items():
-            if str(key).lower() in user_lower:
-                continue  # the user's row replaces it below (override)
-            entries.append(entry(key, value, "builtin", []))
-        for key, value in user_reg.items():
-            builtin_key = builtin_by_lower.get(str(key).lower())
-            builtin_names: list = []
-            if builtin_key is not None:
-                bnames, bdisabled, _berr = _names_from_value(builtin_key, builtin_reg[builtin_key], [])
-                if bnames and not bdisabled:
-                    builtin_names = bnames  # what a "..." splice expands to
-            source = "user-override" if builtin_key is not None else "user"
-            entries.append(entry(key, value, source, builtin_names))
-        # File keys first, then directory keys (trailing "/"), alpha within.
-        entries.sort(key=lambda e: (e["pattern"].endswith("/"), e["pattern"]))
-        return {
-            "entries": entries,
-            "builtin_registry": BUILTIN_REGISTRY,
-            "user_registry": USER_REGISTRY,
-            "error": builtin_err or user_err,
-        }
+    # GET /api/templates/registry moved to templates_api.py (extended §2.2
+    # shape) and registered via templates_router above.
 
     @app.get("/api/fs/stat")
     def api_fs_stat(path: str):

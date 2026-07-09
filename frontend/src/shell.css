@@ -1392,7 +1392,7 @@ body.embed .preview-browse-chip:hover {
   border: 1px solid var(--border);
   border-radius: 10px;
   width: min(600px, 100%);
-  max-height: 80vh;
+  max-height: 85vh;
   display: flex;
   flex-direction: column;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
@@ -1685,49 +1685,56 @@ body.embed .preview-browse-chip:hover {
 /* ---- Preferences page (SPEC §20) ------------------------------------------ */
 
 /* Bottom-left entry: pinned to the sidebar's bottom edge, muted until hover. */
+/* Footer: Templates, Preferences, and the tour trigger as three equal columns,
+   each a centered icon over a small muted label. Deliberately understated
+   (D80) — the label just disambiguates the icons. */
 .sidebar-footer {
   margin-top: auto;
   padding: 6px;
   border-top: 1px solid var(--border);
   flex: 0 0 auto;
   display: flex;
-  align-items: center;
+  align-items: stretch;
   gap: 4px;
 }
 
-.sidebar-footer .prefs-link {
-  flex: 1 1 auto;
+.sidebar-footer .prefs-link,
+.sidebar-footer .tour-link {
+  flex: 1 1 0;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 4px;
+  border-radius: 6px;
   background: none;
   border: none;
   font: inherit;
   color: var(--fg-muted);
   cursor: pointer;
-  text-align: left;
+}
+
+.sidebar-footer .prefs-link .icon,
+.sidebar-footer .tour-link .icon {
+  margin: 0;
+  display: flex;
+}
+
+.sidebar-footer .prefs-label {
+  font-size: 10.5px;
+  line-height: 1;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sidebar-footer .prefs-link:hover,
-.sidebar-footer .prefs-link.active {
-  color: var(--fg);
-}
-
-/* Tour replay: compact icon-only sibling to Preferences. */
-.sidebar-footer .tour-link {
-  flex: 0 0 auto;
-  width: auto;
-  background: none;
-  border: none;
-  font: inherit;
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-
-.sidebar-footer .tour-link .icon {
-  margin: 0;
-}
-
+.sidebar-footer .prefs-link.active,
 .sidebar-footer .tour-link:hover {
   color: var(--fg);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 /* driver.js popover — dark theme overrides scoped under .driver-popover. */
@@ -1931,4 +1938,788 @@ body.embed .preview-browse-chip:hover {
 .registry-source.user-override {
   color: var(--accent);
   border-color: var(--accent);
+}
+
+/* ---- Templates management view (TEMPLATE_MGMT_SPEC §3) -------------------- */
+
+.templates-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  max-width: 880px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 32px 24px;
+}
+
+.templates-header h1 {
+  margin: 0 0 6px;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.templates-subtitle {
+  margin: 0;
+  color: var(--fg-muted);
+}
+
+/* Tabs. */
+.templates-tabs {
+  display: flex;
+  gap: 4px;
+  margin-top: 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.templates-tab {
+  font: inherit;
+  font-size: 13px;
+  padding: 9px 4px;
+  margin-right: 20px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.templates-tab:hover {
+  color: var(--fg);
+}
+
+.templates-tab.active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+
+.templates-tabpanel {
+  padding-top: 18px;
+}
+
+/* Toolbar (both tabs). */
+.templates-toolbar {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.templates-toolbar-push {
+  margin-left: auto;
+}
+
+.templates-search {
+  font: inherit;
+  font-size: 13px;
+  height: 32px;
+  background: var(--bg-alt);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 10px;
+  flex: 1 1 200px;
+  min-width: 150px;
+}
+
+.templates-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.templates-toolbar select {
+  font: inherit;
+  font-size: 13px;
+  height: 32px;
+  background: var(--bg-alt);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 8px;
+}
+
+/* Segmented control (filters, key-shape picker, import resolutions):
+   a quiet container pill; the active segment is a subtly raised inner pill —
+   no accent borders. */
+.templates-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-alt);
+}
+
+.templates-seg-btn {
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  padding: 6px 11px;
+  background: none;
+  color: var(--fg-muted);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.templates-seg-btn:hover {
+  color: var(--fg);
+}
+
+.templates-seg-btn.active {
+  color: var(--fg);
+  background: rgba(255, 255, 255, 0.09);
+  font-weight: 600;
+}
+
+.templates-seg-btn.danger.active {
+  color: var(--error);
+}
+
+/* Buttons. */
+.templates-btn-secondary {
+  font: inherit;
+  font-size: 13px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-alt);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.templates-btn-secondary:hover:not(:disabled) {
+  border-color: var(--fg-muted);
+}
+
+.templates-btn-secondary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.templates-btn-primary {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  height: 32px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #111;
+  cursor: pointer;
+}
+
+.templates-btn-primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.templates-btn-primary:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.templates-danger-text {
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 4px;
+  margin-right: auto;
+  background: none;
+  border: none;
+  color: var(--error);
+  cursor: pointer;
+  opacity: 0.85;
+}
+
+.templates-danger-text:hover:not(:disabled) {
+  opacity: 1;
+  text-decoration: underline;
+}
+
+.templates-danger-text:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.templates-add-btn {
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-alt);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.templates-add-btn:hover {
+  border-color: var(--accent);
+}
+
+/* Shared table used for bindings + inventory + import manifest. */
+.templates-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.templates-table thead th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+  padding: 0 10px 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.templates-table td {
+  padding: 10px 10px 10px 0;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.templates-row {
+  cursor: default;
+}
+
+.templates-table tr.templates-row {
+  cursor: pointer;
+}
+
+.templates-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.templates-col-pattern {
+  white-space: nowrap;
+  width: 1%;
+}
+
+.templates-col-pattern .templates-dot {
+  margin-right: 7px;
+  vertical-align: middle;
+}
+
+.templates-col-templates .templates-chip {
+  margin: 2px 5px 2px 0;
+  vertical-align: middle;
+}
+
+.templates-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: 0 0 auto;
+}
+
+.templates-key-pill {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Template chips (bindings table + row editor). */
+.templates-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-alt);
+  font-size: 12px;
+}
+
+.templates-chip.small {
+  padding: 2px 8px;
+}
+
+.templates-chip.default {
+  border-color: rgba(229, 255, 68, 0.35);
+}
+
+.templates-chip.broken {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.templates-chip[draggable="true"] {
+  cursor: grab;
+}
+
+.templates-chip-badge {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+}
+
+.templates-chip-x {
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+  border: none;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 0 0 0 2px;
+}
+
+.templates-chip-x:hover {
+  color: var(--error);
+}
+
+.templates-pill {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.templates-pill.warn {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+/* Row editor modal internals. */
+.templates-editor,
+.templates-import {
+  width: min(640px, 100%);
+}
+
+.templates-editor .deploy-body,
+.templates-import .deploy-body {
+  gap: 16px;
+}
+
+/* The row editor hosts the "Add template" popover, which is absolutely
+   positioned. A scroll container (overflow != visible) would clip it, so the
+   editor's body must NOT clip — the form is short and the dialog's own 85vh
+   cap keeps it on screen. (The import wizard keeps the default scrolling body
+   for its potentially long manifest table.) */
+.templates-editor .deploy-body {
+  overflow: visible;
+}
+
+.templates-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.templates-field > label {
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.templates-key-fixed {
+  font-size: 13px;
+}
+
+.templates-keybuilder {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.templates-key-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 8px;
+  background: var(--bg-alt);
+  align-self: flex-start;
+}
+
+.templates-key-input input {
+  font: inherit;
+  background: none;
+  color: var(--fg);
+  border: none;
+  padding: 6px 2px;
+  min-width: 120px;
+}
+
+.templates-key-input input:focus {
+  outline: none;
+}
+
+.templates-key-fix {
+  color: var(--fg-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.templates-key-preview {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.templates-broken-note {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--error);
+  border-radius: 6px;
+  background: rgba(255, 107, 107, 0.08);
+  color: var(--error);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.templates-key-error {
+  font-size: 12px;
+  color: var(--error);
+}
+
+.templates-chiplist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-height: 24px;
+}
+
+.templates-add-wrap {
+  position: relative;
+  align-self: flex-start;
+}
+
+.templates-reorder-hint {
+  font-size: 11px;
+}
+
+.templates-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+/* Add-template picker popover (row editor). */
+.templates-picker {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 1100;
+  width: 260px;
+  max-height: 240px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+.templates-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.templates-picker-body {
+  flex: 1 1 auto;
+  min-height: 0; /* let the list scroll inside the bounded picker, not spill */
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.templates-picker-cat {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+  padding: 6px 6px 3px;
+}
+
+.templates-picker-cell {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.templates-picker-cell:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.templates-icon-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.7;
+  flex: 0 0 auto;
+}
+
+/* Library tab (inventory). */
+.templates-inv-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 20px;
+}
+
+.templates-inv-group:first-child {
+  margin-top: 0;
+}
+
+.templates-inv-grouphead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+  padding-bottom: 8px;
+}
+
+.templates-inv-count {
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.templates-lock {
+  font-size: 11px;
+}
+
+.templates-inv-check {
+  width: 24px;
+}
+
+.templates-inv-name {
+  white-space: nowrap;
+  width: 1%;
+}
+
+.templates-inv-name > * {
+  vertical-align: middle;
+}
+
+.templates-inv-name .templates-icon-dot {
+  margin-right: 7px;
+}
+
+.templates-inv-name .templates-pill {
+  margin-left: 8px;
+}
+
+.templates-inv-usedby .templates-usedby-chip {
+  display: inline-block;
+  margin: 2px 4px 2px 0;
+}
+
+.templates-usedby-chip {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.templates-inv-actions {
+  text-align: right;
+  white-space: nowrap;
+  width: 1%;
+}
+
+.templates-inv-actions .templates-ghost-btn {
+  margin-left: 6px;
+}
+
+/* Row-hover-only ghost action buttons. */
+.templates-ghost-btn {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.templates-inv-table tr:hover .templates-ghost-btn,
+.templates-ghost-btn:focus-visible {
+  opacity: 1;
+}
+
+.templates-ghost-btn.danger:hover {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.templates-ghost-btn:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+
+.templates-hint {
+  margin-top: 18px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* Import wizard. */
+.templates-import-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.templates-import-table td {
+  padding: 6px 10px 6px 0;
+  border-top: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.templates-import-name {
+  font-weight: 500;
+}
+
+.templates-import-invalid {
+  opacity: 0.6;
+}
+
+.templates-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+}
+
+.templates-result {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.templates-result-line {
+  word-break: break-word;
+}
+
+/* The generic .deploy-body button skin bleeds into templates controls inside
+   the modals (picker cells, chip ✕, segmented, footer buttons) — re-assert
+   their intended looks at higher specificity. */
+.deploy-body .templates-picker-cell {
+  border: none;
+  border-radius: 6px;
+  background: none;
+  padding: 6px 8px;
+  width: 100%;
+}
+
+.deploy-body .templates-picker-cell:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: transparent;
+}
+
+.deploy-body .templates-chip-x {
+  border: none;
+  background: none;
+  padding: 0 0 0 2px;
+  font-size: 10px;
+  color: var(--fg-muted);
+}
+
+.deploy-body .templates-chip-x:hover:not(:disabled) {
+  background: none;
+  border-color: transparent;
+  color: var(--error);
+}
+
+.deploy-body .templates-seg-btn {
+  padding: 6px 11px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--fg-muted);
+}
+
+.deploy-body .templates-seg-btn:hover:not(:disabled) {
+  background: none;
+  border-color: transparent;
+  color: var(--fg);
+}
+
+.deploy-body .templates-seg-btn.active,
+.deploy-body .templates-seg-btn.active:hover:not(:disabled) {
+  color: var(--fg);
+  background: rgba(255, 255, 255, 0.09);
+  border-color: transparent;
+  font-weight: 600;
+}
+
+.deploy-body .templates-seg-btn.danger.active {
+  color: var(--error);
+}
+
+.deploy-body .templates-danger-text {
+  border: none;
+  background: none;
+  padding: 6px 4px;
+  font-size: 12px;
+  color: var(--error);
+  margin-right: auto;
+}
+
+.deploy-body .templates-danger-text:hover:not(:disabled) {
+  background: none;
+  border-color: transparent;
+}
+
+.deploy-body .templates-btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #111;
+  font-weight: 600;
+}
+
+.deploy-body .templates-btn-primary:hover:not(:disabled) {
+  background: var(--accent);
+  filter: brightness(1.08);
+}
+
+.templates-inv-icon {
+  display: inline-flex;
+  margin-right: 8px;
+  color: var(--fg-muted);
+  vertical-align: middle;
+}
+
+.templates-row:hover .templates-inv-icon {
+  color: var(--fg);
 }
