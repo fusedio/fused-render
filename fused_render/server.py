@@ -128,6 +128,11 @@ def _git_ignored(cwd: str, rel_names: list[str]) -> set[str]:
     One batched call covers a whole listing. Returns an empty set when `cwd`
     is not in a work tree, git is missing, or anything else goes wrong:
     dimming is a display hint, never a hard dependency on git.
+
+    The `.git` directory (or the gitfile of a worktree/submodule) is folded in
+    too: git never reports it via check-ignore, but it is repository plumbing
+    the user rarely wants to browse, so we dim it exactly when we know git is
+    present and `cwd` is a work tree — i.e. only after a successful call.
     """
     if not rel_names:
         return set()
@@ -148,7 +153,12 @@ def _git_ignored(cwd: str, rel_names: list[str]) -> set[str]:
         return set()
     if proc.returncode not in (0, 1):
         return set()
-    return {os.fsdecode(chunk) for chunk in proc.stdout.split(b"\0") if chunk}
+    ignored = {os.fsdecode(chunk) for chunk in proc.stdout.split(b"\0") if chunk}
+    # Return code 0/1 (not 128) proves this is a work tree with git available,
+    # so dim `.git` itself. Match the basename so both the top-level entry
+    # (".git", from /api/fs/list) and a nested one ("sub/.git", from walk) go.
+    ignored.update(n for n in rel_names if n == ".git" or n.endswith("/.git"))
+    return ignored
 
 
 def _require_fused(x_fused: str | None) -> JSONResponse | None:

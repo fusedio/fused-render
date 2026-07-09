@@ -55,9 +55,20 @@ def test_walk_flags_gitignored_entries(tmp_path):
     assert by_rel["src/main.py"]["ignored"] is False
 
 
+def test_list_flags_dot_git_directory(tmp_path):
+    # git never reports `.git` via check-ignore, but inside a work tree we dim
+    # it anyway — it's repo plumbing, not user data.
+    _make_repo(tmp_path)
+    data = _client(tmp_path).get("/api/fs/list", params={"path": str(tmp_path)}).json()
+    by_name = {e["name"]: e for e in data["entries"]}
+    assert by_name[".git"]["ignored"] is True
+
+
 def test_list_outside_git_repo_flags_nothing(tmp_path):
     # No `git init` — check-ignore exits 128, we swallow it and flag nothing.
+    # A stray `.git`-named file here must NOT be dimmed: no work tree, no git.
     (tmp_path / "a.txt").write_text("a", encoding="utf-8")
     (tmp_path / "b.log").write_text("b", encoding="utf-8")
+    (tmp_path / ".git").write_text("not a repo", encoding="utf-8")
     data = _client(tmp_path).get("/api/fs/list", params={"path": str(tmp_path)}).json()
     assert all(e["ignored"] is False for e in data["entries"])
