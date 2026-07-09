@@ -85,6 +85,8 @@ function revealInFileManager(path: string): void {
   });
 }
 
+const FILE_MANAGER = navigator.userAgent.includes("Windows") ? "File Explorer" : "Finder";
+
 // Finder glyph (streamline-logos:mac-finder-logo, MIT-licensed line version).
 function FinderIcon() {
   return (
@@ -103,7 +105,7 @@ function RevealButton({ fsPath }: { fsPath: string }) {
     <button
       id="open-in-finder"
       className="reveal-btn"
-      title="Open in Finder"
+      title={"Open in " + FILE_MANAGER}
       onClick={() => revealInFileManager(fsPath)}
     >
       <FinderIcon />

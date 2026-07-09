@@ -988,7 +988,7 @@ def create_app(start_dir: str) -> FastAPI:
     def api_fs_reveal(body: dict = Body(...), x_fused: str | None = Header(default=None)):
         # Open the path in the OS file manager (Finder / Explorer / xdg).
         # Browsers block file:// navigation from http pages, so the breadcrumb's
-        # "Open in Finder" button goes through the server, which is local-only.
+        # reveal button goes through the server, which is local-only.
         # A file is revealed selected inside its folder; a directory is opened.
         guard = _require_fused(x_fused)
         if guard is not None:
@@ -1004,7 +1004,10 @@ def create_app(start_dir: str) -> FastAPI:
         if sys.platform == "darwin":
             cmd = ["open", path] if is_dir else ["open", "-R", path]
         elif os.name == "nt":
-            cmd = ["explorer", path] if is_dir else ["explorer", "/select," + path]
+            # Explorer needs native backslash paths — forward slashes make
+            # /select, silently open the default folder instead.
+            win_path = os.path.normpath(path)
+            cmd = ["explorer", win_path] if is_dir else f'explorer /select,"{win_path}"'
         else:
             cmd = ["xdg-open", path if is_dir else os.path.dirname(path)]
         subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
