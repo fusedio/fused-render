@@ -97,6 +97,17 @@ def test_unknown_filter_column_is_ignored(db):
     assert out["total_rows"] == 5
 
 
+def test_multiple_filters_are_anded(db):
+    # Two conditions on the same column form a range — the multi-filter builder
+    # relies on the reader ANDing every condition together.
+    out = reader.main(db, table="people", filters=[
+        {"column": "age", "op": ">=", "value": "1"},
+        {"column": "age", "op": "<=", "value": "3"},
+    ])
+    assert out["total_rows"] == 3
+    assert out["ids"] == [2, 3, 4]           # rowids of age 1,2,3
+
+
 # ------------------------------------------------------------------ writer
 
 def test_edit_delete_insert(db):
@@ -139,3 +150,13 @@ def test_null_value(db):
     val = sc.execute("SELECT name FROM people WHERE rowid = 1").fetchone()[0]
     sc.close()
     assert val is None
+
+
+def test_empty_string_is_distinct_from_null(db):
+    # A cleared cell ("") must stay an empty string, distinct from an explicit
+    # NULL — the grid offers both and the writer must not conflate them.
+    writer.main(db, table="people", edits=[{"row": 1, "column": "name", "value": ""}])
+    sc = sqlite3.connect(db)
+    val = sc.execute("SELECT name FROM people WHERE rowid = 1").fetchone()[0]
+    sc.close()
+    assert val == "" and val is not None

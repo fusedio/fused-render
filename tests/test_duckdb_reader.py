@@ -128,6 +128,17 @@ def test_unknown_filter_column_is_ignored(parquet_file):
     assert out["total_rows"] == 250
 
 
+def test_multiple_filters_are_anded(parquet_file):
+    # Two conditions on the same column form a range (the grid's multi-filter
+    # builder relies on the reader ANDing every condition together).
+    out = reader.main(parquet_file, filters=[
+        {"column": "id", "op": ">=", "value": "100"},
+        {"column": "id", "op": "<", "value": "103"},
+    ])
+    assert out["total_rows"] == 3
+    assert out["ids"] == [100, 101, 102]
+
+
 def test_csv_read_as_text(csv_file):
     out = reader.main(csv_file)
     # all_varchar: the leading zero survives (string, not int 0).
@@ -208,6 +219,17 @@ def test_null_value_writes_null(parquet_file):
     val = con.execute(f"SELECT name FROM read_parquet('{parquet_file}') WHERE id = 0").fetchone()[0]
     con.close()
     assert val is None
+
+
+def test_empty_string_is_distinct_from_null(parquet_file):
+    # An empty string round-trips as "" — it must NOT collapse to NULL. The grid
+    # keeps a cleared cell ("") and an explicit "Set Null" (NULL) distinct, and
+    # relies on the writer preserving that difference.
+    writer.main(parquet_file, edits=[{"row": 0, "column": "name", "value": ""}])
+    con = duckdb.connect(":memory:")
+    val = con.execute(f"SELECT name FROM read_parquet('{parquet_file}') WHERE id = 0").fetchone()[0]
+    con.close()
+    assert val == "" and val is not None
 
 
 def test_writer_rejects_readonly_format(tmp_path):
