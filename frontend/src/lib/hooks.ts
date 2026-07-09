@@ -49,3 +49,14 @@ export function notifyBookmarksChanged(): void {
 export function useBookmarksVersion(): number {
   return useEventCounter([BOOKMARKS_EVENT]);
 }
+
+// Tab title reflects whatever's on screen (a file/dir name, or a static
+// label like "Panel"), falling back to the bare app name at the root.
+// `undefined` means "not this view's title to set" (e.g. App skips it for
+// routes StatView owns) so effect ordering can't clobber a sibling's title.
+export function useDocumentTitle(label: string | null | undefined): void {
+  useEffect(() => {
+    if (label === undefined) return;
+    document.title = label ? `${label} – Fused Render` : "Fused Render";
+  }, [label]);
+}
