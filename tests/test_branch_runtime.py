@@ -41,9 +41,13 @@ def _restore_baseline(monkeypatch):
 
 def test_baseline_ref_empty(monkeypatch):
     server, app, cli = _reload_with_ref("")
+    import fused_render.shell.storage as storage
 
-    assert server.USER_TEMPLATES_DIR == os.path.expanduser("~/.fused-render")
-    assert server.USER_REGISTRY.endswith(".fused-render/registry.json")
+    # Baseline: shell home is un-nested; templates live under it (D76).
+    base = os.environ["FUSED_RENDER_HOME"]
+    assert storage.home_dir() == base
+    assert server.USER_TEMPLATES_DIR == os.path.join(base, "templates")
+    assert server.USER_REGISTRY == os.path.join(base, "templates", "registry.json")
     assert app.APP_SUPPORT_DIR == os.path.expanduser(
         "~/Library/Application Support/fused-render"
     )
@@ -54,8 +58,13 @@ def test_baseline_ref_empty(monkeypatch):
 
 def test_branch_ref_foo(monkeypatch):
     server, app, cli = _reload_with_ref("foo")
+    import fused_render.shell.storage as storage
 
-    assert server.USER_TEMPLATES_DIR == os.path.expanduser("~/.fused-render/foo")
+    # Ref "foo": the whole shell home nests under foo/ (templates, bookmarks,
+    # prefs all follow home_dir), and App Support + port shift too.
+    base = os.environ["FUSED_RENDER_HOME"]
+    assert storage.home_dir() == os.path.join(base, "foo")
+    assert server.USER_TEMPLATES_DIR == os.path.join(base, "foo", "templates")
     assert app.APP_SUPPORT_DIR.endswith("Application Support/fused-render/foo")
     assert app.DEFAULT_PORT == _branch.branch_port("foo")
     assert app.MAX_PORT == app.DEFAULT_PORT + 10

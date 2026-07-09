@@ -30,6 +30,8 @@ import {
 } from "../lib/layout-codec";
 import type { Config } from "../lib/api";
 import { ShareIcon } from "../components/ShareIcon";
+import { SplitRightIcon, SplitDownIcon } from "../components/SplitIcons";
+import PaneModeMenu from "../components/PaneModeMenu";
 
 // Panel mode lives under the page's own prefix (`/view/_panel` or
 // `/embed/_panel`), so entering/refreshing/exiting stays in the active mode.
@@ -86,18 +88,8 @@ function findLeaf(node: LayoutNode, id: number): LayoutLeaf | null {
 }
 
 const ICONS = {
-  splitRight: (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-      <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" />
-      <path d="M8 2.5h5a1.5 1.5 0 0 1 1.5 1.5v8a1.5 1.5 0 0 1-1.5 1.5H8z" fill="currentColor" />
-    </svg>
-  ),
-  splitDown: (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-      <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" />
-      <path d="M1.5 8h13v4a1.5 1.5 0 0 1-1.5 1.5H3A1.5 1.5 0 0 1 1.5 12z" fill="currentColor" />
-    </svg>
-  ),
+  splitRight: <SplitRightIcon />,
+  splitDown: <SplitDownIcon />,
   max: (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
       <path
@@ -220,6 +212,16 @@ function Pane({ node, ctx }: { node: LayoutLeaf; ctx: PaneCtx }) {
             <ShareIcon size={14} />
           </button>
         </div>
+        {/* Template-mode menu for the pane's live location. Mode switch is an
+            imperative src write (same as crumb clicks); onLoad then re-syncs
+            the leaf + `_layout` from the reloaded pane. */}
+        <PaneModeMenu
+          path={loc.path}
+          query={loc.query}
+          onNavigate={(q) => {
+            if (iframeRef.current) iframeRef.current.src = embedSrc(loc.path, q);
+          }}
+        />
         <button className="panel-btn split-right" title="Split right" onClick={() => ctx.split(node.id, "row")}>
           {ICONS.splitRight}
         </button>
@@ -301,6 +303,20 @@ export default function Panel({ config }: { config: Config }) {
     }
   };
 
+  // Structural ops (split/close) get a real history entry: pushState the
+  // re-encoded `_layout` at op time, so Back/Forward walk the arrangement
+  // history. Plain history.pushState (not navigate()) — no NAV_EVENT, so the
+  // grid doesn't remount now; on an actual popstate App's nav epoch remounts
+  // Panel, which re-parses the entry's `_layout`. The version-effect syncUrl
+  // that follows sees an unchanged URL and no-ops (LM-6 guard).
+  const pushUrl = () => {
+    const { params } = splitShellSearch(location.search);
+    const next = panelUrl(encodeNode(treeRef.current!), params);
+    if (location.pathname + location.search !== next) {
+      history.pushState(history.state, "", next);
+    }
+  };
+
   const split = (id: number, dir: "row" | "col") => {
     const tree = treeRef.current!;
     const l = findLeaf(tree, id);
@@ -316,6 +332,7 @@ export default function Panel({ config }: { config: Config }) {
       if (!parent) treeRef.current = splitNode;
       else parent.children[parent.children.indexOf(l)] = splitNode;
     }
+    pushUrl();
     setVersion((v) => v + 1);
   };
 
@@ -338,6 +355,16 @@ export default function Panel({ config }: { config: Config }) {
       if (!gp) treeRef.current = only;
       else gp.children[gp.children.indexOf(parent)] = only;
     }
+    // A layout of one pane is pointless chrome — when the collapse leaves a
+    // lone leaf at the root, exit panel mode to a plain view of it (same
+    // semantics as closing the last pane above). Only close() can get here;
+    // a hand-typed single-segment `_layout` still renders as a single pane.
+    const root = treeRef.current!;
+    if (root.type === "leaf") {
+      navigateUrl(urlForFsPath(root.path, root.query));
+      return;
+    }
+    pushUrl();
     setVersion((v) => v + 1);
   };
 

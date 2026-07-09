@@ -78,7 +78,7 @@ Left sidebar in the shell, always visible:
 - **SB-2** **Bookmarks section** below Home. A bookmark captures *whatever the right side currently shows* — directory listing or any preview — as the **exact current URL verbatim** (`/view/…?freq=2.4&_file=…`). Clicking a bookmark is a plain browser redirect (`location.href = url`); the sidebar never interprets bookmark contents, so bookmarks survive future param/dispatch changes.
 - **SB-3** Capture UI: a bookmark button in the shell header area, one click, no prompt. Default name = basename of the viewed path (file or dir name).
 - **SB-4** Bookmarks are renamable inline (edit affordance on hover → input → Enter/blur commits) and deletable. No confirm on delete (re-bookmarking is one click).
-- **SB-5** **DECIDED: persistence = browser localStorage** (key `fused.bookmarks`, JSON array `{id, name, url, created_at}`; `id = crypto.randomUUID()`). Zero server code. Known trade-off: bookmarks are per-browser-profile; migration to a server-side file later is a trivial export.
+- **SB-5** **DECIDED: persistence = server-side file** `~/.fused-render/bookmarks.json` (D75; superseded the original localStorage store). JSON array `{id, name, url, created_at}` (+ folders, D44); `id = crypto.randomUUID()`. Served by `GET /api/bookmarks` → `{exists, bookmarks}` and `PUT /api/bookmarks` (whole-tree, atomic, last-write-wins); server code lives in `fused_render/shell/`. Frontend reads a synchronous in-memory cache hydrated at boot; mutations await the PUT (no optimistic update); a 30 s poll re-reads the server so another tab's edits converge (D77, eventual ≤30 s, still last-write-wins). Legacy `localStorage["fused.bookmarks"]` is imported once (gated on the file not yet existing), then left dormant.
 - **SB-6** Duplicate URLs allowed; list ordered by creation time. *(drag reorder, active-bookmark highlight: polish, later)*
 
 ### Server FS API (shape, not final contract)
@@ -150,7 +150,7 @@ def main(city: str = "oslo", limit: int = 100):
 
 ### 5.3 Execution environment
 
-- **PY-6** **DECIDED (v1):** execution is a **fresh subprocess per call** — always-fresh code, zero stale state, trivial timeout/kill; a crash or `sys.exit` cannot take down the server. Cost: interpreter + import time on every call. A warm worker pool is the designated v2 upgrade if interactivity demands it (API unchanged).
+- **PY-6** **DECIDED (v1):** **user** code executes in a **fresh subprocess per call** — always-fresh code, zero stale state, trivial timeout/kill; a crash or `sys.exit` cannot take down the server. Cost: interpreter + import time on every call. A warm worker pool is the designated v2 upgrade if interactivity demands it (API unchanged). **Exception (D72):** an explicit allowlist of first-party helpers (`executor.INPROCESS_HELPERS` — the `table`/`csv`/`xlsx` readers and the `api` inspector) run **in the server process**, not a subprocess — they are trusted, fast, bounded, and never import/exec user code, and running them in-process means the protected-folder file access they perform reuses the app's macOS TCC grant instead of re-prompting on every call. Everything else stays subprocess-isolated: user code (the `api` Run button, user-authored template readers) **and every other shipped `templates/` helper** (e.g. the `claude/` chat agent, the geo tile servers/browsers), which can be slow/long-running and so must keep the subprocess timeout.
 - **PY-7** The worker's Python interpreter/venv is configurable; default is the environment the server was launched from. (User installs pandas etc. there.)
 - **PY-8** Working directory of execution = the Python file's directory, so relative data paths in user code behave intuitively.
 - **PY-9** Module reload: automatic — every call is a fresh process, so edits to the .py file take effect on the next call.
@@ -202,7 +202,7 @@ Built-in renderable-HTML files that ship **inside the application code**. They a
 
 - **PT-1** **DECIDED: the registry is server-side** — single source of truth. The extension → template mapping lives in the server; `GET /api/fs/stat` carries the resolved result and the shell simply obeys. *(Originally a single `template: <abs path>|null` field; since M8 the field is the `templates` array of PT-8 — clean break, no compat alias, shell is same repo.)*
 - **PT-2** When the user opens `data/trips.parquet`, the shell renders the returned template in the preview iframe and passes the target file as `_file=<path>` **on the iframe's own URL** (not the shell URL — its pathname already names the file, so no duplication like `/view/x.parquet?_file=/x.parquet`). Reserved `_` params are readable by the template, not settable by page code.
-- **PT-3** Every template — built-in or user — is a **self-contained folder** named after the template: `fused_render/templates/<name>/` (built-ins) or `~/.fused-render/<name>/` (user, §16), holding `template.html` (required), any sibling helper files (`reader.py`, css, assets), and optionally `icon.svg` (PT-11). Templates render from their real path, so plain **relative** `runPython` paths work unchanged — no virtual-path mechanism needed:
+- **PT-3** Every template — built-in or user — is a **self-contained folder** named after the template: `fused_render/templates/<name>/` (built-ins) or `~/.fused-render/templates/<name>/` (user, §16), holding `template.html` (required), any sibling helper files (`reader.py`, css, assets), and optionally `icon.svg` (PT-11). Templates render from their real path, so plain **relative** `runPython` paths work unchanged — no virtual-path mechanism needed:
 
 ```js
 const page = await fused.runPython("./reader.py",
@@ -211,13 +211,13 @@ const page = await fused.runPython("./reader.py",
 ```
 
 - **PT-4** Template UI state (current page, selected columns, sort) uses normal params → survives refresh, e.g. `?_file=…&offset=500&sort=fare`.
-- **PT-6** **One name-resolution rule everywhere:** a template name resolves to `~/.fused-render/<name>/template.html` if that exists, else `fused_render/templates/<name>/template.html`, else it is unusable (error). A user folder **shadows** a built-in of the same name — the deliberate override channel. The template **name is public stable API**: it is the registry reference, the `_mode` URL value, and the switcher tooltip label. (`fused_render/templates/vendor/` has no `template.html`, so it can never resolve as a template name — the `/template-assets` mount is unchanged.)
+- **PT-6** **One name-resolution rule everywhere:** a template name resolves to `~/.fused-render/templates/<name>/template.html` if that exists, else `fused_render/templates/<name>/template.html`, else it is unusable (error). A user folder **shadows** a built-in of the same name — the deliberate override channel. The template **name is public stable API**: it is the registry reference, the `_mode` URL value, and the switcher tooltip label. (`fused_render/templates/vendor/` has no `template.html`, so it can never resolve as a template name — the `/template-assets` mount is unchanged.)
 
 ### 7.2 Template set — modes per extension
 
 **Shell dispatch is exactly two-way: `templates` non-empty > fallback.** No file-type special-casing in the shell — image, text, and (via the `_render` sentinel, PT-12) HTML handling all arrive through the `templates` list like any other mode. Directories dispatch the same way (a `.zarr` store previews via its `templates`), with `?listing=1` as the one shell-owned escape hatch to the listing view (PT-13).
 
-- **PT-7** The built-in table maps each extension to an **ordered list of template names**. Each entry is a **mode**; the **first entry is the default**. Rule of thumb: `code` (the editable CodeMirror buffer) appears as a secondary mode only for text formats where raw text is meaningful — never for binary formats (a code view of `.parquet` is garbage).
+- **PT-7** The built-in bindings live in **`fused_render/templates/registry.json`** (D73) — data, not code, in **exactly the user-registry format** (§16): dot-anchored suffix-pattern keys (compound `.xyz.json`, wildcard `.*.json`, trailing-`/` directory keys — CT-3) mapping to an **ordered list of template names**. Each entry is a **mode**; the **first entry is the default**. One matcher and one value grammar serve both registries; the only asymmetries are precedence (user match wins, CT-3) and the `"..."` splice (CT-11), which is meaningless in the built-in registry (nothing to splice into — expands to nothing). Rule of thumb: `code` (the editable CodeMirror buffer) appears as a secondary mode only for text formats where raw text is meaningful — never for binary formats (a code view of `.parquet` is garbage).
 
 | Extension(s) | Modes (first = default) | Notes |
 |---|---|---|
@@ -235,17 +235,17 @@ const page = await fused.runPython("./reader.py",
 | `.txt .log` | `text`, `code` | `<pre>` |
 | `.tif .tiff` | `geotiff` | GeoTIFF/COG via vendored geotiff (in-browser decode, no reader.py); full metadata + dump, photometric routing (RGB/palette/YCbCr), band select + RGB stretch + colormaps, histogram, hover. Small files full-fetched; >32 MiB range-request `fromUrl` |
 | `.nc .nc4 .cdf` | `netcdf` | NetCDF-3 via vendored netcdfjs (HDF5/NetCDF-4 → graceful card); leading-dim sliders, colormaps + stretch, histogram, hover |
-| `.zarr` (directory) | `zarr` | Zarr v2/v3 store — a *directory*, routed via `DIR_TEMPLATES` (PT-13), not `TEMPLATES`; vendored zarrita (in-browser decode, members fetched per-key); group tree + array select, colormaps + stretch, histogram, hover |
-| `.html .htm` | `_render`, `code` | list **hardcoded server-side**, registry-exempt (CT-4); `_render` is a shell sentinel (PT-12) rendering the file itself live (§4) |
+| `.zarr/` (directory) | `zarr` | Zarr v2/v3 store — a *directory*, bound by the trailing-`/` directory key (PT-13); vendored zarrita (in-browser decode, members fetched per-key); group tree + array select, colormaps + stretch, histogram, hover |
+| `.html .htm` | `_render`, `code` | defaults shipped in the built-in registry like any other key — user-rebindable since D73 (CT-4 revised); `_render` is a shell sentinel (PT-12) rendering the file itself live (§4) |
 | unknown | shell fallback | metadata + raw/download link (built into shell, not a template) |
 
-- **PT-8** `GET /api/fs/stat` carries the resolved mode list as **`templates`**: an array of `{"mode": <name>, "path": <abs template.html>, "icon": <abs icon.svg|null>}`, in order, first = default. `templates: []` when nothing applies (a directory with no `DIR_TEMPLATES` match — PT-13, unmapped extension, `null` binding). The old singular `template` field is **removed**.
+- **PT-8** `GET /api/fs/stat` carries the resolved mode list as **`templates`**: an array of `{"mode": <name>, "path": <abs template.html>, "icon": <abs icon.svg|null>}`, in order, first = default. `templates: []` when nothing applies (a directory with no directory-key match — PT-13, unmapped extension, `null` binding). The old singular `template` field is **removed**.
 - **PT-9** **`_mode` param (shell URL):** non-default modes are selected via reserved param `_mode=<template name>` on the **shell URL** (bookmarkable, same URL-is-state pattern D40 established for the old HTML `_mode=render|source` toggle — that toggle itself is now the ordinary `["_render", "code"]` mode list, PT-12; old `_mode=source` bookmarks fall to the default, accepted break). Absent `_mode` = default = `templates[0]`; selecting the default **deletes** the param (clean URLs); an unknown/stale value falls back to the default with no error. Switching swaps the iframe src to the selected template's `/render?path=<template>&_file=<file>` with a fresh document per switch. Known accepted quirk: template params (e.g. `offset`) persist on the shell URL across mode switches; a param name used differently by two modes collides — documented, not prevented.
-- **PT-10** **Mode switcher (shell, preview header):** rendered only when `templates.length > 1`, right side of the preview header bar. **Icon-only buttons**, mode name via native `title` tooltip, active mode in accent color. When an entry's `icon` is `null`, the shell renders a placeholder: the first letter of the mode name in a small rounded box. The `.html` Rendered|Source pair is **not a special case**: it is the ordinary mode list `["_render", "code"]` (PT-12) riding this same switcher — `_render` gets a shell-baked eye icon (sentinels have no folder to ship `icon.svg`); `code` gets its real folder icon. `.html` stays registry-exempt (CT-4).
+- **PT-10** **Mode switcher (shell, preview header):** rendered only when `templates.length > 1`, right side of the preview header bar. **Icon-only buttons**, mode name via native `title` tooltip, active mode in accent color. When an entry's `icon` is `null`, the shell renders a placeholder: the first letter of the mode name in a small rounded box. The `.html` Rendered|Source pair is **not a special case**: it is the ordinary mode list `["_render", "code"]` (PT-12) riding this same switcher — `_render` gets a shell-baked eye icon (sentinels have no folder to ship `icon.svg`); `code` gets its real folder icon.
 - **PT-11** **Icons:** a template folder may ship `icon.svg` — **monochrome** (single fill; the shell tints it via CSS `mask-image` + `currentColor`, so only alpha matters), square viewBox (24×24 suggested), legible at 16px. `icon` in the stat entry is the abs path of the `icon.svg` sitting next to the *resolved* `template.html` (the user folder's icon when a user template resolved), or `null`. The shell loads it through the existing `/api/fs/raw` endpoint — no new routes. Every built-in folder ships one.
-- **PT-12** **Sentinel modes:** a mode name starting with `_` is a **shell sentinel** — no template folder backs it; the shell knows what it means. Server resolution special-cases sentinels: the stat entry is emitted as `{"mode": "_<name>", "path": null, "icon": null}` without touching the filesystem. The `_` prefix matches the reserved-param convention (`_mode`, `_file`). The sentinel namespace is **shell-owned, not user-addressable**: a `_`-prefixed name in a registry list is invalid (dropped + `template_error`, CT-6). Only one sentinel exists today: **`_render`** — "render the file itself" — the default mode of the hardcoded `.html`/`.htm` list `["_render", "code"]` (users cannot remove `_render`; renderable HTML stays the core semantic, §4). Shell handling: `_render` → iframe src `/render?path=<the file itself>` (no `_file`), shell-baked eye icon; unknown sentinel entries (path `null`, mode not recognized) are filtered out defensively. Non-sentinel entries in the same list (e.g. `code`) work exactly like any template mode. Future html modes are added to the server-side list and flow through the framework normally.
-- **PT-13** **Directory templates (D65):** a preview target may be a **directory** — a Zarr store is one logical dataset spread across many chunk files. A built-in **`DIR_TEMPLATES`** table maps a directory's basename extension to an ordered mode list, mirroring `TEMPLATES`'s shape and resolving through the **same** name-resolution (PT-6) so `stat.templates` entries come out identically shaped (PT-8). Dispatch keys on `templates`, not `is_dir`: a directory with a non-empty `templates` list **previews** (like a file) rather than listing — **unless** the shell-owned `?listing=1` query param is present, which forces the plain listing view (a directory with no `DIR_TEMPLATES` match lists as before). Directory previews render a **"Browse contents"** header action that navigates to `?listing=1`; because embed mode hides the whole preview header, the same action also rides as an unobtrusive corner chip pinned over the iframe, revealed only in embed. `listing` never reaches a template: it only takes effect on a directory, and when set the shell renders the listing (no template iframe is mounted). Directory templates are **package-only** — the user registry (§16) is a per-file *suffix* match with no coherent meaning for a directory, so it does not apply. Only `.zarr → ["zarr"]` today.
-- **PT-5** **User overrides:** DECIDED and specced as §16 (M7, extended by M8) — user template folders under `~/.fused-render/` bound to extensions by `~/.fused-render/registry.json`, replacing or extending the built-in mode list, using the exact same mechanism.
+- **PT-12** **Sentinel modes:** a mode name starting with `_` is a **shell sentinel** — no template folder backs it; the shell knows what it means. Server resolution special-cases sentinels: the stat entry is emitted as `{"mode": "_<name>", "path": null, "icon": null}` without touching the filesystem. The `_` prefix matches the reserved-param convention (`_mode`, `_file`). The sentinel namespace is **shell-owned**; since D73 the server keeps a **known-sentinel set** (`KNOWN_SENTINELS`) and a name in that set is referenceable from **any** registry list, built-in or user — any other `_`-prefixed name is invalid (dropped + `template_error`, CT-6). Only one sentinel exists today: **`_render`** — "render the file itself" — the default mode of the built-in `.html`/`.htm` list `["_render", "code"]`. Users **can** rebind `.html`/`.htm` (CT-4 revised, D73) — including dropping `_render` — and `"..."` or an explicit `"_render"` entry brings it back. Shell handling: `_render` → iframe src `/render?path=<the file itself>` (no `_file`), shell-baked eye icon; unknown sentinel entries (path `null`, mode not recognized) are filtered out defensively. Non-sentinel entries in the same list (e.g. `code`) work exactly like any template mode. Future html modes are added to the server-side list and flow through the framework normally.
+- **PT-13** **Directory templates (D65, revised by D73):** a preview target may be a **directory** — a Zarr store is one logical dataset spread across many chunk files. A registry key with a **trailing `/`** (`".zarr/"`) binds a *directory's* basename; keys without it bind only files — the two populations are disjoint (CT-3). Directory keys resolve through the same matcher, value grammar, and name-resolution (PT-6) as file keys, so `stat.templates` entries come out identically shaped (PT-8), and they work in **both** registries — the trailing-`/` convention gives the user registry the coherent directory semantics D65 originally said a per-file suffix match lacked, so the package-only restriction is dropped (D73). Dispatch keys on `templates`, not `is_dir`: a directory with a non-empty `templates` list **previews** (like a file) rather than listing — **unless** the shell-owned `?listing=1` query param is present, which forces the plain listing view (a directory with no directory-key match lists as before). Directory previews render a **"Browse contents"** header action that navigates to `?listing=1`; because embed mode hides the whole preview header, the same action also rides as an unobtrusive corner chip pinned over the iframe, revealed only in embed. `listing` never reaches a template: it only takes effect on a directory, and when set the shell renders the listing (no template iframe is mounted). Only `".zarr/" → ["zarr"]` ships today.
+- **PT-5** **User overrides:** DECIDED and specced as §16 (M7, extended by M8) — user template folders under `~/.fused-render/templates/` bound to extensions by `~/.fused-render/templates/registry.json`, replacing or extending the built-in mode list, using the exact same mechanism.
 
 ---
 
@@ -298,7 +298,7 @@ Distribute as a DMG containing a menu-bar app; all UI stays in the browser.
 - **DM-1** **DECIDED (v2, D33):** the `.app` is built by **py2app** from a framework-build python (Homebrew `python@3.12`, bootstrapped by the build script). py2app ships a real re-invokable interpreter in-bundle (`Contents/MacOS/python`) — `sys.executable` subprocess executor works unchanged — and its compiled stub gives proper LaunchServices/AppKit process identity (the earlier hand-rolled bash-shim caused flaky NSStatusItem behavior under Finder launches).
 - **DM-2** **DECIDED:** user `runPython` code executes on the **bundled interpreter only**. The `[bundled]` extra ships preinstalled (numpy, pandas, requests, duckdb, polars, matplotlib, scipy, pillow, openpyxl, shapely, geopandas + core pyarrow). py2app note: these are force-copied via `packages` — the executor imports them only in child processes, so import tracing can't see them. Known gap: `mpl_toolkits` (3D axes) excluded (namespace-package vs py2app limitation).
 - **DM-3** **DECIDED (v2, D34):** regular app — **Dock icon AND menu bar ✦** (Open in browser / Copy URL / Quit). No LSUIElement. Dock right-click → Quit is the discoverable lifecycle path.
-- **DM-4** **DECIDED:** ad-hoc signed for now; future signing/notarization path = **Briefcase external-app mode** (D35), hook noted in build script.
+- **DM-4** **DECIDED (v2, D73):** signing is credential-driven in `scripts/build_dmg.sh` — a **Developer ID** identity in the keychain (auto-detected or via `FUSED_RENDER_CODESIGN_IDENTITY`) triggers hardened-runtime, inside-out signing + optional notarization (`FUSED_RENDER_NOTARY_PROFILE`); with no identity it **ad-hoc signs** (local testing, unchanged). Developer-ID signing is also the general fix for the repeated Downloads/Desktop/Documents prompt (one Team ID unifies the app + its executor subprocess, complementing the D72 in-process reader split). Details: `docs/signing.md`. Supersedes the earlier "Briefcase external-app" plan (D35 — Briefcase's template breaks `sys.executable`).
 - **DM-5** Launch flow: pidfile+portfile in `~/Library/Application Support/fused-render/`; liveness probe = GET `/` (file-backed, catches zombies); already running ⇒ open browser only; else start (8765, fall forward to 8775), write pidfile, open browser.
 - **DM-6** **DECIDED (v2, D35):** DMG built by **dmgbuild** (app + Applications symlink, UDZO) orchestrated by `scripts/build_dmg.sh`; ~270 MB compressed.
 - **DM-7** `fused_render/app.py`: menu-bar entry point (uvicorn on a daemon thread); py2app entry = `scripts/app_entry.py`; build spec = `scripts/setup_py2app.py`. CLI (`fused-render`) remains for dev.
@@ -312,7 +312,7 @@ Distribute as a DMG containing a menu-bar app; all UI stays in the browser.
 - **M4 — Live editing:** autosave + SSE change feed + auto-reloading views (§13).
 - **M5 — Layout mode:** split-pane grid of embed views, layout + merged params in one bookmarkable URL (§14).
 - **M6 — Tab mode:** tabbed set of embed views on the §14 URL model; bookmark folders open as tab layouts (§15).
-- **M7 — Custom templates:** user template folders in `~/.fused-render/` + `registry.json` extension bindings, overriding built-ins (§16).
+- **M7 — Custom templates:** user template folders in `~/.fused-render/templates/` + `registry.json` extension bindings, overriding built-ins (§16).
 - **M8 — Template modes:** 1:n extension→template mapping — folder-per-template built-ins (renamed to public names), ordered mode lists (first = default), registry `list|string|null` grammar with the `"..."` splice, `_mode` shell param + icon-only mode switcher, stat `templates` array replacing `template`, html folded in as the hardcoded `["_render", "code"]` sentinel list (§7, §16 / PT-6..PT-12, CT-10..CT-11).
 - **M9 — Annotation mode:** annotate toggle over any preview mode, element/selection-anchored comment threads stored in the URL (§17).
 - **Follow-ups (unordered):** remaining preview templates (csv/json/markdown/media/pdf/syntax-highlighted code); warm worker pool; DataFrame/Arrow returns; security layer (token, origin checks, sandboxed bridge); exec console; search/sort/tree/keyboard nav; caching; editing.
@@ -333,10 +333,10 @@ Applies to the `code` template (`templates/code/`), the only editable surface (D
 
 ### 13.2 Change feed (server)
 
-- **WF-1** New endpoint `GET /api/fs/events?path=A&path=B&…` — an **SSE** stream (`text/event-stream`). Watched paths arrive as **repeated `path` query params** (paths may contain commas; repetition avoids a delimiter).
-- **WF-2** v1 implementation: async loop stats every watched path every **200 ms**; baseline mtimes captured at connect. When a path's mtime differs from the last seen value (or the file appears/disappears) emit one event: `data: {"path": "<abs path>", "mtime": <float|null>}` — `null` means deleted. No event replay: changes that happen while disconnected are missed by design (the client reloads on reconnect-relevant changes anyway).
-- **WF-3** A comment line (`: keepalive`) every 15 s keeps intermediaries and buffers honest. The endpoint must be `async def` (a sync def would pin a threadpool thread per open view for the lifetime of the page).
-- **WF-4** No filesystem-watcher dependency (watchdog/fsevents) in v1 — polling stat is cheap and dependency-free at local scale. A later upgrade to real FS events is internal to this endpoint; the client contract (SSE, same event shape) does not change.
+- **WF-1** Endpoint `/api/fs/events?path=A&path=B&…` — a **WebSocket** (D74; was SSE until the Chrome 6-connections-per-origin HTTP/1.1 cap starved every other fetch once ≥6 panes held streams open). Watched paths arrive as **repeated `path` query params** (paths may contain commas; repetition avoids a delimiter).
+- **WF-2** v1 implementation: async loop stats every watched path every **200 ms**; baseline mtimes captured at connect. When a path's mtime differs from the last seen value (or the file appears/disappears) send one JSON text message: `{"path": "<abs path>", "mtime": <float|null>}` — `null` means deleted. No event replay: changes that happen while disconnected are missed by design (the client reloads on reconnect-relevant changes anyway).
+- **WF-3** A `{"keepalive": true}` message every 15 s keeps intermediaries and buffers honest; clients ignore it.
+- **WF-4** No filesystem-watcher dependency (watchdog/fsevents) in v1 — polling stat is cheap and dependency-free at local scale. A later upgrade to real FS events is internal to this endpoint; the client contract (WebSocket, same message shape) does not change.
 - **WF-5** Read-only GET — no `X-Fused` guard, consistent with the other read endpoints (D36 covers only mutating/executing POSTs).
 
 ### 13.3 Auto-reload (runtime)
@@ -346,7 +346,7 @@ The reload logic lives **entirely in the injected runtime** — the shell needs 
 - **LR-1** Each rendered page watches the union of: **its own rendered file** (the `path` param of its `/render` URL), **`_file`** if present (templates watching their target), and **every Python file executed via `runPython` this page-life**.
 - **LR-2** `POST /api/run` response gains a `resolved_py` field — the absolute resolved path of the executed file — so the runtime learns dependency paths authoritatively instead of re-implementing the server's relative-path resolution. Recorded for failed runs too (a broken py that gets fixed must still trigger reload).
 - **LR-3** On any change event: debounce **300 ms** (coalesce bursts), then `location.reload()` on the iframe itself. Full reload is the honest re-execution — the runtime cannot replay what the page did with a python result. State survives because view state lives in URL params (D8/D20/D25).
-- **LR-4** When the watch set grows (a new py runs), the runtime closes and reopens its `EventSource` with the full set. Resubscribe is debounced so a page firing several `runPython` calls on load reconnects once.
+- **LR-4** When the watch set grows (a new py runs), the runtime closes and reopens its watch `WebSocket` with the full set. Resubscribe is debounced so a page firing several `runPython` calls on load reconnects once. Unlike `EventSource`, a WebSocket does not auto-reconnect — the runtime retries a dropped socket after 1 s.
 - **LR-5** Opt-out: `fused.autoReload(false)` disables watching/reloading for that page. The `code` template calls it — the editor must not reload out from under the cursor (its own autosave changes the mtime; external changes are the conflict lock's job). To make the opt-out race-free, the runtime starts watching on `DOMContentLoaded`, after inline page scripts have run.
 - **LR-6** Deletion (`mtime: null`) reloads too — the resulting 404/error view is the truthful state.
 - **LR-7** Reload works identically for standalone `/render?path=…` pages (runtime is the same code).
@@ -355,7 +355,7 @@ The reload logic lives **entirely in the injected runtime** — the shell needs 
 
 - **LS-1** The directory listing view watches the directory path via the same endpoint; on change it re-fetches `/api/fs/list` and re-renders, preserving sort params.
 - **LS-2** Known limitation, accepted: a directory's mtime changes on create/delete/rename of entries — not when a child file's content or size changes. Stale sizes in an open listing are fine.
-- **LS-3** The shell closes the listing's `EventSource` when navigating away (to a preview or another directory).
+- **LS-3** The shell closes the listing's watch `WebSocket` when navigating away (to a preview or another directory).
 
 ## 14. Layout Mode — Split Panes (M5)
 
@@ -374,7 +374,7 @@ Goal: view several files/directories side by side in a resizable grid of panes, 
 ### 14.2 Panes
 
 - **LM-4** A pane is an **`/embed/<path>` iframe** (D39): a full navigable chrome-free shell — panes can browse directories, open previews, use templates, all existing behavior for free.
-- **LM-5** Pane bar (top of each pane): clickable **path crumbs** (segment click navigates that pane), then buttons: **split right**, **split down** (new pane duplicates the current pane's location), **maximize** (transient — fills the layout area, not encoded in the URL), **close**. Closing collapses single-child splits; closing the **last** pane exits layout mode by navigating to plain `/view/<that pane's path>`.
+- **LM-5** Pane bar (top of each pane): clickable **path crumbs** (segment click navigates that pane), then buttons: **split right**, **split down** (new pane duplicates the current pane's location), **maximize** (transient — fills the layout area, not encoded in the URL), **close**. Closing collapses single-child splits; when a close leaves only **one** pane (including closing the last pane directly), the shell exits layout mode by navigating to plain `/view/<that pane's path>` — a one-pane layout is never left on screen.
 - **LM-6** Pane navigation syncs up: the layout view observes each pane's URL (iframe `load` + the pane window's `fused:urlchange`, LM-8) and re-encodes `_layout` on the shell URL via `history.replaceState` — refresh/bookmark always reproduce the current arrangement.
 
 ### 14.3 Params — target & sync (runtime change)
@@ -385,7 +385,7 @@ Goal: view several files/directories side by side in a resizable grid of panes, 
 
 ### 14.4 Entry & chrome
 
-- **LM-10** Entry: a **"Split" button** in the breadcrumb's crumb-actions (next to ★ Bookmark). Click → navigate to `<prefix>/_panel?_layout=(<seg>,<seg>)` (D51 grammar) where `<seg>` is the current fs path + its **whole** current query (D72 — nothing is promoted to the top level) — two side-by-side panes, both the current view with its params carried over (a single pane on entry looked like nothing happened).
+- **LM-10** Entry: **split-right and split-down icon buttons** in the breadcrumb's crumb-actions (next to ★ Bookmark, same glyphs as the pane bar's split buttons). Click → navigate to `<prefix>/_panel?_layout=(<seg>,<seg>)` (split right) or `(<seg>;<seg>)` (split down) (D51 grammar) where `<seg>` is the current fs path + its **whole** current query (D72 — nothing is promoted to the top level) — two panes side by side or stacked, both the current view with its params carried over (a single pane on entry looked like nothing happened).
 - **LM-11** In layout mode the sidebar stays visible (bookmarks reachable, ★ button works on the layout URL — bookmarking a layout needs zero bookmark-layer changes, D20). Breadcrumb shows a static "Panel" label. The armed-bookmark "Update bookmark" flow (D38) works unchanged: pane/param drift rewrites the shell URL via replaceState → `fused:urlchange` → `syncUpdateButton`.
 - **LM-12** Module: **`views/panel.js`** — tree codec, tree ops (split/close/collapse), pane DOM + bar, URL sync. Imports `router.js` only (one-way deps, ARCHITECTURE §6). `main.js` gains one sentinel branch; `shell.css` a `.layout-*` section; sidebar/bookmarks/api untouched.
 
@@ -403,7 +403,7 @@ Goal: the same URL-is-state model as §14, but as **tabs instead of a grid**: on
 ### 15.2 Tabs
 
 - **TM-5** A tab is an **`/embed/<path>` iframe**, mounted **lazily on first activation** and kept alive afterwards (`display:none` when inactive) — scroll/editor state survives switching, and hidden tabs keep receiving `fused:urlchange` (the runtime listens on the top window, LM-8), so param sync is live while hidden.
-- **TM-6** Tab bar (top of the layout area): one button per tab — label = basename of the tab's **current** path (sentinel paths label as `Panel` / `Tabs`) — plus a close `×` per tab and a trailing `+` that opens a new tab at the configured start dir. Click activates. The **active tab index is NOT encoded in the URL**: refresh/bookmark restores the first tab (avoids "Update bookmark" churn on every switch).
+- **TM-6** Tab bar (top of the layout area): one button per tab — label = basename of the tab's **current** path (sentinel paths label as `Panel` / `Tabs`) — plus a close `×` per tab and a trailing `+` that opens a new tab at the configured start dir. Click activates. The **active tab index is NOT encoded in the URL** (avoids "Update bookmark" churn on every switch): bookmarks and fresh loads open the first tab; refresh and Back/Forward restore the last active tab via `history.state` (`fusedActiveTab` — rides the entry, never the URL).
 - **TM-7** URL sync up, same machinery as LM-6: iframe `load` + tab-window `fused:urlchange` → read the tab's live location → re-encode `_layout` via guarded `replaceState`. Closing a tab removes its segment; closing the **last** tab exits to a plain view of its location (active prefix, like LM-5).
 
 ### 15.3 Entry — bookmark folders
@@ -421,19 +421,21 @@ Goal: users replace or add preview templates using the **exact same mechanism** 
 
 ### 16.1 Layout on disk
 
-- **CT-1** A user template is a **self-contained folder** `~/.fused-render/<name>/` holding `template.html` plus any sibling files it needs (reader `.py` files, css, assets) and optionally `icon.svg` (PT-11) — identical in shape to a built-in folder (PT-3). `<name>` carries **no** binding-by-convention semantics (CT-7), but it is the template's public name: it resolves by the single rule of PT-6, so a user folder named like a built-in **shadows** it. Relative `fused.runPython("./reader.py")` works unchanged because the template renders from its real path (PT-3).
-- **CT-2** Bindings live in **`~/.fused-render/registry.json`** — a flat JSON object mapping **dotted extension keys** to a template name, or to `null`:
+- **CT-1** A user template is a **self-contained folder** `~/.fused-render/templates/<name>/` holding `template.html` plus any sibling files it needs (reader `.py` files, css, assets) and optionally `icon.svg` (PT-11) — identical in shape to a built-in folder (PT-3). `<name>` carries **no** binding-by-convention semantics (CT-7), but it is the template's public name: it resolves by the single rule of PT-6, so a user folder named like a built-in **shadows** it. Relative `fused.runPython("./reader.py")` works unchanged because the template renders from its real path (PT-3).
+- **CT-2** Bindings live in **`~/.fused-render/templates/registry.json`** — a flat JSON object mapping **dotted extension keys** to a template name, or to `null`. Keys may be compound (`.tar.gz`), carry `*` wildcard segments (`.*.json`), or end with `/` to bind a **directory** basename (`.obt/`) — the full key grammar is CT-3, and it is the same grammar the built-in `templates/registry.json` uses (PT-7, D73):
 
 ```json
 {
   ".parquet": "geo",
   ".geojson": "geo",
   ".tar.gz": "archive",
+  ".*.json": "config-view",
+  ".obt/": "bundle",
   ".png": null
 }
 ```
 
-  A name binds the extension to a single-mode list of that template, resolved by the PT-6 rule. **`null` disables** templating for that extension entirely: the file gets no template at all and falls through to the shell's metadata/raw-download fallback (§7.2).
+  A name binds the extension to a single-mode list of that template, resolved by the PT-6 rule. **`null` disables** templating for that extension entirely: the file gets no template at all and falls through to the shell's metadata/raw-download fallback (§7.2) — on a directory key, to the plain listing view.
 - **CT-10** **Mode lists (M8):** a registry value may also be a **JSON list of template names** — the full ordered mode list for that extension, **replace semantics**, first = default (PT-7). The string form of CT-2 is exactly a single-mode list; existing registries keep working unchanged.
 - **CT-11** **`"..."` splice token:** inside a list value, the entry `"..."` expands, in place, to **the built-in mode list for that extension** — users add modes without knowing built-in names, and future built-in additions flow in automatically. `.` is forbidden in folder names (CT-6), so `"..."` can never collide with a real name. Rules: names already listed explicitly are skipped when the splice expands (`["code", "..."]` promotes `code` to default without duplication); more than one `"..."` in a list = invalid entry (built-in fallback + `template_error`, CT-6); a splice on an extension with no built-ins expands to nothing (harmless).
 
@@ -447,74 +449,56 @@ Goal: users replace or add preview templates using the **exact same mechanism** 
 
 ### 16.2 Resolution
 
-- **CT-3** Matching is **longest-suffix, case-insensitive**: the registry key must be a suffix of the lowercased filename beginning at a dot (`report.TAR.GZ` matches `.tar.gz` before `.gz`). Dotted keys are what make compound extensions expressible — the built-in table stays single-extension (`splitext`). Precedence: **registry (longest matching key) > built-in table**. Any extension may be bound, including ones no built-in handles.
-- **CT-4** `.html`/`.htm` stay exempt from the registry — renderable HTML is the product's core semantic (§4). Their mode list `["_render", "code"]` is **hardcoded server-side** (PT-12): users cannot rebind the extension or remove `_render`. Relatedly, `_`-prefixed names (the sentinel namespace, PT-12) are invalid anywhere in a registry list — dropped per CT-6 with `template_error`.
-- **CT-5** The registry is read **per stat/render resolution** (tiny local file — no restart, no cache invalidation problem). Missing `~/.fused-render/` or `registry.json` = clean no-op, built-in behavior; first run creates nothing.
+- **CT-3** **Key grammar and matching (revised by D73).** A key is a **dot-anchored suffix pattern**: one or more dot-led segments, optionally ending in `/` to bind directories. A segment is a literal (`json`, `tar`) or the wildcard `*`, which matches **exactly one whole non-empty segment** — partial wildcards (`.geo*`) are invalid, and a malformed key (no leading dot, empty segment) never matches (silently ignored, as keys without a leading dot always were). Matching is **case-insensitive** against the basename and requires a **non-empty stem** before the matched suffix (a file literally named `.json` does not match the `.json` key; `.hidden.json` does — its stem is `.hidden`). Directory keys match only directories, file keys only files. **Specificity:** more segments beats fewer; at equal length, comparing from the **rightmost** segment, a literal beats `*` — so for `data.xyz.json`: `.xyz.json` > `.*.json` > `.json`. **Both registries are matched by this same rule** (the old `splitext` single-extension built-in table is gone, D73); precedence stays **any user-registry match > built-in match** — a user `.json` binding beats a built-in `.xyz.json` one. Any extension may be bound, including ones no built-in handles.
+- **CT-4** *(revised by D73 — the exemption is dropped.)* `.html`/`.htm` are **ordinary registry keys**: their default list `["_render", "code"]` ships in the built-in registry (PT-7), and users may rebind or reorder them like any other extension — rendered-HTML-by-default stays the shipped behavior (§4), no longer an enforced one. `_render` (and any future name in `KNOWN_SENTINELS`, PT-12) is referenceable from registry lists; all other `_`-prefixed names remain invalid — dropped per CT-6 with `template_error`.
+- **CT-5** Registries are read **per stat/render resolution** (tiny local files — no restart, no cache invalidation problem); the built-in `templates/registry.json` rides the same loader (D73). Missing `~/.fused-render/templates/` or `registry.json` = clean no-op, built-in behavior; first run creates nothing.
 - **CT-6** **Validation and fallback — per entry:** a folder name must be a single safe path segment (no `/`, no `..`, no `.`, not empty) — it is joined into a filesystem path, so a malformed name must not stat arbitrary locations (correctness guard, not auth — §9 stands). Within a mode list, an entry whose name cannot resolve (unsafe name, `template.html` missing in both PT-6 locations) is **dropped** from the list, and the stat response carries a **`template_error`** string naming the first problem, so a typo is visible (via stat / server log) instead of silently ignored. If the user's value resolves to nothing at all (unparseable JSON, empty result, double splice per CT-11), fall back to the **built-in list** for that extension.
-- **CT-7** **No convention fallback:** a folder in `~/.fused-render/` without a registry entry is inert — a draft. Registration is only ever the registry line; deleting the line unregisters. One source of truth.
+- **CT-7** **No convention fallback:** a folder in `~/.fused-render/templates/` without a registry entry is inert — a draft. Registration is only ever the registry line; deleting the line unregisters. One source of truth.
 
 ### 16.3 Pipeline & dev loop
 
 - **CT-8** No new pipeline: stat carries the resolved user templates inside the ordinary `templates` list (PT-8); the preview iframe renders the selected mode via `/render` with `_file` exactly like a built-in (PT-2), and the switcher (PT-10) shows user modes indistinguishably from built-ins. M4 auto-reload (§13) covers template development for free — the rendered page watches its own html and every `runPython` file, so editing `template.html` or a reader live-reloads open previews. Registry edits apply on the next stat (navigate/refresh); open previews do not watch `registry.json`.
 - **CT-9** **Authoring skill:** a repo skill `skills/fused-render-custom-templates/` covers folder layout, registry format, and registration workflow only; it **delegates all html/py authoring guidance to `skills/fused-render-authoring/`** (no duplicated instruction — one source for the runtime API and template patterns).
 
-## 17. Annotation Mode — URL-Stored Comments (M9)
+## 17. Annotation — An Ordinary View Template (M9, superseded)
 
-Goal: comment on rendered output. An annotate overlay on any preview: hovering highlights DOM elements, clicking attaches a comment thread to that element (or a free pin for page-level notes). Comments are **pure state stored in the URL** — no server persistence, no agent involvement. Behavior mirrors the flow/fused canvas-comments UX, adapted from canvas nodes to DOM elements.
+Annotation shipped first as an app feature — an orthogonal `_annotate=1` overlay
+injected into every view (AN-1…AN-23, M9) — and was then **rebuilt as an
+ordinary view template**, the same pattern as `templates/claude/`:
+`templates/annotate/` is a self-contained template.html, bound in registry.json
+as a trailing mode on annotatable extensions, swappable/shadowable like any
+template (PT-6). It renders the file's normal view in a same-origin iframe (a
+`view` param picks WHICH mode is being annotated) and implements the whole
+experience itself — hover highlight, click-to-comment pins, sidebar,
+resolve/delete. Comments live in an ordinary `comments` template param (synced
+to the shell URL by the runtime — bookmarkable, shareable), stamped with the
+view they were made on so anchors never cross-resolve between views.
 
-### 17.1 Mode & entry
+Rationale: annotation is a review layer, not app chrome — as a template it
+needs no shell code, no server injection, and users can replace or extend it
+by dropping a folder into `~/.fused-render/annotate/`. The `_annotate` render
+param, the header toggle (AN-2/AN-3), the injected `static/annotate.js`, and
+the code template's selection adapter are gone.
 
-- **AN-1** Annotate is an **orthogonal toggle**, not a `_mode` value — `_mode` belongs to template-mode selection (PT-9, M8). State = reserved **`_annotate=1`** shell param (absent = off); bookmarkable, key deleted when toggled off. Annotate therefore overlays **whichever template mode is active** (rendered html, code editor, parquet table, …).
-- **AN-2** The preview header gains a **comment-bubble toggle button** (inline SVG + tooltip) next to the mode switcher, same icon-button family. Shown for every templated preview — even single-mode files, where the mode switcher itself is hidden (PT-10 renders nothing for one entry); the fallback metadata view has none.
-- **AN-3** The Annotate icon carries a **count badge** (number of open comments) whenever `_comments` is non-empty — visible whether or not annotate is on.
-- **AN-4** With annotate on, the shell renders the active mode's **same iframe** plus `_annotate=1` on the iframe URL; the server injects the overlay script only then, and the overlay activates off the flag on its own window. The overlay lives entirely in the injected layer (same pattern as auto-reload §13.3), so view, embed, panel panes, tabs, and standalone `/render` pages all get identical behavior with zero per-surface wiring.
-
-### 17.2 Data model & storage
-
-- **AN-5** Comments live in the reserved **`_comments`** shell query param: a URL-encoded JSON array of thread objects (flow's schema minus agent fields — single-user, no author):
-
-```json
-[{
-  "id": "<uuid>",
-  "content": "root message",
-  "replies": [{ "id": "<uuid>", "content": "…", "createdAt": 0 }],
-  "status": "open",
-  "createdAt": 0, "updatedAt": 0, "resolvedAt": 0,
-  "anchorId": "chart-1",
-  "anchorPath": "div:nth-of-type(2)>p:nth-of-type(1)",
-  "x": 0, "y": 0
-}]
-```
-
-- **AN-6** **Anchor forms, mutually exclusive, precedence `anchorId` > `anchorPath` > `x`/`y`:** `anchorId` = the clicked element's `id` attribute (used when present); `anchorPath` = structural path of `tag:nth-of-type(n)` segments from `body` (id-less elements); `x`/`y` = document coordinates for a free/page-level pin (click on empty body area). The source file is **never mutated** — no id injection.
-- **AN-7** **Budget:** ~6 KB soft cap on the serialized param. On overflow, drop oldest **resolved** threads first; open threads are never dropped. If all remaining threads are open and the cap is still exceeded, the new write is rejected with a visible message in the overlay. (URL is the *only* store, so dropping = deleting — hence resolved-only.)
-- **AN-8** The `_` prefix makes `_comments` invisible to `fused.params` (PR-6) and **segment-local inside `_layout`** (LM-2) — per-pane comments in panel/tab mode work with zero codec changes.
-- **AN-9** The runtime writes `_comments` through its **internal** shell-URL replaceState channel (+ `fused:urlchange` dispatch). The public `fused.params.set` guard (PR-6) still rejects `_` keys from page code — user HTML cannot forge or clobber comments. **Target window = the direct parent shell** (the window whose preview iframe this is), NOT the runtime's LM-7 topmost-ancestor climb: `_comments` is pane-local shell state like `_mode` (LM-3), so in panel/tab mode it must land on the pane's own embed URL, where the panel's ordinary sync captures it segment-local into `_layout` (AN-8). In plain view/embed mode parent === top, so behavior is identical; standalone `/render` pages target themselves.
-
-### 17.3 Interaction
-
-- **AN-10** Entering annotate mode: crosshair cursor; hovering **outlines** the hovered element. Click an element → inline draft popover, auto-focused. Enter submits, Shift+Enter newlines, Escape cancels the draft. Click on empty body area → free pin at document coordinates.
-- **AN-11** Pins render at the anchor's top-right corner, positioned in document coordinates (they scroll with content). Glyph = reply count; ✓ when resolved.
-- **AN-12** Click a pin → **thread popover**: root + chronological replies with relative times, reply input (hidden when resolved), inline edit per message, Resolve/Reopen and Delete in the footer. Click-outside closes the popover. Escape closes popover first, then exits annotate mode.
-- **AN-13** Pins and overlay are visible **only in annotate mode** — Rendered stays clean. The badge (AN-3) is the only cross-mode signal.
-- **AN-14** **Detached anchors** (an `anchorPath` that no longer resolves, or a vanished `anchorId` after the file was edited): the pin docks into a small tray at the viewport corner listing the thread; it re-attaches automatically on a later render where the anchor resolves again. Comments are never silently lost.
-
-### 17.4 Module
-
-- **AN-15** New **`fused_render/static/annotate.js`**, injected alongside the runtime only when `_annotate=1` (normal pages pay zero cost). `views/preview.js`: icon toggle group + third mode plumbing. `shell.css`: icons, badge, outline/pin/popover styles. Server: the conditional injection line only.
-
-### 17.5 Selection anchors — code editor (AN-16…AN-23)
-
-Element anchoring makes no sense inside a text editor. On editor surfaces, annotate mode anchors comments to **text selections** instead (Cursor-style: click-drag a range, a draft pops up at the selection).
-
-- **AN-16** **Surfaces:** `code_template.html` (every extension it serves). Rendered markdown/text/other templates keep element anchors (§17.2); selection-anchoring for rendered HTML text is a follow-up. The mechanism is a generic adapter (AN-17), not editor-specific code in annotate.js.
-- **AN-17** **Adapter API:** when active, annotate.js exposes `window.__fusedAnnotate.registerAdapter(adapter)`. Registering disables the element-mode UI (hover highlight, pointer-sequence suppression, click-capture, element pins and anchor resolution) while keeping the core: data layer + URL channel + budget (AN-5/7/9), draft and thread popovers, tray, toast. Core hands the adapter `{ getComments(), onChange(cb), openDraftAt(clientX, clientY, anchorFields), openThread(id, clientX, clientY), setDetached(ids) }`; the adapter owns anchor rendering and resolution and calls back into the core for all UI/data operations.
-- **AN-18** **Anchor form (new, AN-6 extended):** `selFrom`/`selTo` = `{line, ch}` (1-based line, 0-based column) plus `quote` = the selected text, capped at 120 chars. Mutually exclusive with the other forms; precedence `sel > anchorId > anchorPath > x/y`.
-- **AN-19** **Interaction:** in annotate mode the editor is **read-only** (annotate is a review mode; keeps coordinates stable and sidesteps autosave interplay). Completing a non-empty selection (mouse release or keyboard) pops the draft near the selection end; Enter saves, Escape cancels; collapsing the selection cancels the pending draft.
-- **AN-20** **Rendering:** CM6 range decorations tint each comment's range (muted variant when resolved) — virtual scrolling handled natively by CM. Clicking inside a decorated range opens the thread popover at the click point.
-- **AN-21** **Re-resolution:** on load, if the doc slice at the stored range still matches `quote` → attached. Else search the doc for `quote` (first match) → re-anchor in memory (URL rewritten only on the next actual write). No match → detached tray (AN-14 behavior).
-- **AN-22** Edits made outside annotate mode may shift ranges; comments re-resolve by quote on the next annotate session. Accepted drift — the quote is the truth, the line/ch pair is a hint.
-- **AN-23** The vendored CM bundle (`scripts/vendor-codemirror/entry.js`) gains `Decoration`, `StateField`, `StateEffect`, `RangeSet` exports; rebuilt via `build.sh` (Node 22).
+**Containment invariant:** every line of annotation logic lives inside
+`templates/annotate/template.html` — no other view template carries
+annotation code, hooks, or references, and nothing is injected into the
+framed view (the template attaches its listeners and one highlight-tint
+`<style>` to its own nested same-origin iframe at runtime; that code ships in
+the annotate file). Paged views (table, xlsx, pdf) render **stable element
+ids** encoding an absolute address — `__fr_r<row>_c<col>`,
+`__fr_s<sheet>_r<row>_c<col>`, `__fr_page_<n>` — inert, deep-linkable markup
+useful independent of annotation. The annotate template owns an
+`ID_RESOLVERS` table keyed on those id shapes: a recognized anchor id that
+isn't in the mounted DOM is **off-page, not detached** — the sidebar card
+gets a navigable chip ("row 5" / "Alpha · row 3" / "page 3") and clicking it
+navigates the framed view there by writing the ordinary `offset`/`sheet`
+params the view already watches (the same shell-URL params its own pagination
+controls write). An earlier iteration had each paged view expose a
+`window.__fusedAnnotateAnchorResolver` hook instead; removed (D78) because it
+put annotation-aware code inside view templates. Accepted trade-off: annotate
+cannot ask a view whether a row is truly gone from the data, so a comment
+past the data's end keeps its "row N" chip instead of turning "detached".
 
 ## 18. Export — Portable Bundles for Hosted Serving (M10)
 
@@ -556,3 +540,327 @@ nothing. Full detail: `docs/EXPORT.md`.
   `run-` when they'd collide with a reserved serve route (`data`, `health`, the
   `_`-prefixed control/shell/asset routes), and are suffixed `-2`, `-3`, … on
   duplicate stems — so the map is always valid and injective.
+
+## 19. Deploy — Hosted Publish through the fused CLI (M11)
+
+Goal: close the gap between §18's bundle and a working URL, from the shell. The
+local-only invariant (§1) is unchanged in kind: fused-render still binds
+127.0.0.1, hosts nothing, and mints no URLs — **deploying is an explicit user
+action that delegates to the separately-installed `fused` CLI** (`fused share`,
+the fused repo's one URL-minting operation — its spec/serve/share-links.md and
+spec/serve/fused-render.md; the same shell-out pattern the flow app uses for
+project deploys). The server orchestrates the child process; nothing else in
+the product gains network access.
+
+### 19.1 Surface
+
+- **DP-1** Any file preview whose mode list carries the `_render` sentinel
+  **and** whose filename is `.html`/`.htm` shows a **Deploy** header action —
+  both conditions, because that is exactly the set `/api/export` accepts: a
+  registry rebind can put `_render` on any type (D73), but the exporter is
+  extension-gated, and the button must never open a modal that cannot deploy.
+  Additionally gated on the opt-in `deploy_enabled` pref (PF-8): Deploy is off
+  by default, so the button is hidden entirely until enabled from Preferences
+  → Deployments (re-read on focus/visibility, so a toggle shows through
+  without a remount).
+  A green dot marks a page whose stored deployment reads active (a local
+  pointer read — opening a preview never spawns the CLI; re-read on tab
+  focus/visibility regain, so an out-of-band revoke — e.g. the Preferences
+  page in another tab — shows through without a remount). Directories never
+  show it. The action opens the Deploy modal.
+- **DP-2** The modal handles its states in order: the fused CLI missing → an
+  install panel; no hosted env configured → guidance (`fused env create` /
+  `fused cloud setup`, naming the envs file); else the form — env picker,
+  current-deployment card (status chip, URL with copy/open), a **"Will
+  publish" preview** (DP-2a), Deploy/Redeploy, and Revoke. The modal is scoped
+  to the current page; the **env-wide** deployment list (DP-13) lives on the
+  Preferences page's Deployments section (PF-6), not in the modal.
+- **DP-2a** Before the click, the modal shows exactly what a deploy would
+  publish (`GET /api/deploy/preview` → `preview_deploy`, the same pure
+  `plan_export` scan the real export runs, resolved fresh, no files written):
+  the page plus each `runPython` target (and its served route name) and each
+  `rawUrl`/`readFile` asset. Export blockers come back in the same response
+  and **disable Deploy** with the full list — an unexportable page reads as
+  "fix these" up front, never as a failed deploy. A preview *fetch* failure
+  (unexportable type, file deleted since the header rendered) degrades to a
+  blocker entry the same way — the dialog still renders its form; it never
+  dead-ends on the preview call.
+- **DP-2b** Login guidance, before and after the click.
+  `GET /api/deploy/config` carries `fused_logged_in` — presence of the fused
+  CLI's own control-plane credentials file
+  (`~/.openfused/fused-cloud-credentials.json`,
+  `OPENFUSED_FUSED_CLOUD_CREDENTIALS` honored). Presence-only by design: an
+  expired-but-refreshable token still works (the CLI refreshes silently), so
+  the CLI stays the authority at action time. With a managed `fused` env
+  selected and no credentials on disk, the modal warns **before** the click,
+  naming `<setup_cli> cloud login` (a one-time browser sign-in). After a
+  failed action, CLI errors that name `fused cloud login` are suffixed with
+  the packaged app's real wrapper path (`_cli_error` + `_setup_cli_hint`) —
+  plain `fused` doesn't resolve inside the .app, so the instruction must be
+  runnable as printed. The no-envs guidance states that `cloud setup` opens
+  a browser sign-in first.
+
+### 19.2 The fused CLI seam
+
+- **DP-3** CLI resolution (`deploy.fused_cli`) has **exactly two sources —
+  one explicit, one autodetected — and nothing else**: (1)
+  `FUSED_RENDER_FUSED_BIN` (verbatim, whitespace-split — compound commands
+  work, and it is the test seam); (2) the `fused` package **importable in the
+  server's own interpreter**, run as `[sys.executable,
+  fused_render/_fused_cli.py]` — a shim that sets `argv[0] = "fused"` and
+  calls `fused._cli.main()`, behaviorally identical to the console script.
+  There is deliberately **no venv-bin scan, no PATH lookup, and no
+  well-known-location guessing**: a CLI the server didn't get from its own
+  interpreter runs only because the user explicitly configured it. (The old
+  venv-bin step is subsumed — a venv whose bin/ has the script always has the
+  package importable.)
+- **DP-3a** Child-env hygiene: an **external** CLI (the override) is spawned
+  with `PYTHONHOME`/`PYTHONPATH` scrubbed — inside the packaged app those are
+  bundle-scoped and would break any other Python (the las template's
+  external-spawn precedent); the in-interpreter shim keeps them (they are
+  what make `sys.executable` work in the bundle). `OPENFUSED_ENV` targeting
+  (DP-7) is unchanged for both.
+- **DP-4** When the CLI is missing and installing is possible (Python ≥ 3.11
+  per the wheel's marker, and the interpreter has pip), `POST
+  /api/deploy/install` pip-installs **the wheel pinned by
+  `deploy.PINNED_FUSED_REQUIREMENT`** into the server's interpreter — which
+  makes the package importable there, i.e. lands in DP-3's autodetected
+  source (finder caches are invalidated after the install so the probe sees
+  it without a restart). The constant is the in-code source of the pin;
+  pyproject.toml's `[fused]` extra must reference the same wheel and a test
+  pins the two together. Reading the pin from installed dist-info metadata is
+  rejected: metadata is absent on source-tree runs and stripped app bundles,
+  and goes stale on an editable install that predates the extra — all of
+  which disabled the button exactly when it mattered, while the constant
+  ships in the same file as the code using it. When installing is impossible,
+  the modal states why — old Python, or a pip-less embedded interpreter
+  (point `FUSED_RENDER_FUSED_BIN` at a fused installed with another Python) —
+  plus the manual `pip install "fused-render[fused]"` hint.
+- **DP-16** The packaged macOS app **ships the CLI**: `build_dmg.sh` installs
+  the `[fused]` extra into the bundle (py2app force-copies `fused` + its
+  data-bearing deps — `setup_py2app.py`), so DP-3's autodetected source is
+  always present and the install panel never appears in the .app (its sealed,
+  notarized bundle could not be pip-installed into anyway). The build also
+  ships a terminal wrapper, `Contents/Resources/bin/fused` (bundled python +
+  the DP-3 shim), for the one-time interactive setup a modal can't do —
+  `fused cloud setup` / `cloud login` / `env create` — and smoke-tests real
+  CLI verbs through the shim before signing, so a py2app packaging gap fails
+  the build rather than the user's first deploy. The wrapper lives under
+  `Resources`, not `MacOS`: everything in a bundle's `MacOS/` is nested code
+  to codesign, and a shell script there cannot carry a code signature — the
+  bundle seal fails ("code object is not signed at all"); a script under
+  `Resources` is sealed by the resource rules instead. `GET /api/deploy/config`
+  carries `setup_cli` — the wrapper's absolute path when frozen
+  (`sys.frozen == "macosx_app"`), else `"fused"` — and the modal's
+  no-envs guidance names it.
+
+### 19.3 Environments
+
+- **DP-5** Eligible deploy targets are the **hosted** environments in the fused
+  CLI's own store (`~/.openfused/envs.json`, `OPENFUSED_ENVS_FILE` override):
+  backends `fused` (managed) and `aws` (self-provisioned serving plane) —
+  never `local`, which has no serving plane. The store is read directly, so the
+  picker renders even before the CLI is installed.
+- **DP-6** Default pick: `OPENFUSED_ENV` when it names an eligible env, else
+  the first `fused`-backend env (preferring the store default when it is one),
+  else the store default, else the first eligible.
+- **DP-7** The chosen env is targeted by setting `OPENFUSED_ENV` on the child —
+  the CLI's own override channel; no config file is edited.
+
+### 19.4 Deploy semantics
+
+- **DP-8** Each deploy re-exports the page (§18) into a fresh temp directory
+  and hands that bundle to the CLI; the bundle is deleted afterwards. An export
+  error blocks the deploy (400, all problems at once — nothing is uploaded).
+- **DP-9** Deploys are **public share links** (`share create --public`, no
+  `--token`): an opaque, unguessable capability URL. Rationale: authed mounts
+  cannot serve a hosted page's browser asset GETs yet (fused repo,
+  spec/serve/fused-render.md § Limitations); gate pickers become an option when
+  that lands.
+- **DP-10** Redeploy keeps the URL. Same-env pointer + mount active per
+  `share list` → `share repoint <token>` (stable URL); revoked tombstone →
+  `share recreate --same-token` then repoint (a failed repoint best-effort
+  re-revokes, so a deliberately taken-down link never comes back silently live
+  with old content; the pointer is then persisted to the TRUE resulting state
+  and the raised error names it — compensation succeeded → the link is down →
+  pointer `revoked`; compensation ALSO failed → the mount is live with its old
+  content → pointer `active` (so the dot matches reality) and the error names
+  the token for a manual `fused share revoke`); token absent from the list
+  entirely (e.g. after an
+  `infra teardown`) → fresh `create`. Deploying to a **different** env always
+  creates fresh there and repoints the pointer — the old env's mount stays
+  live, and the modal says so inline.
+- **DP-11** CLI output is parsed defensively (`token`/`id`/`url`/`status`
+  only): the managed backend returns the URL on create/repoint/recreate; an
+  AWS env prints token+path only, so `url` may stay null — the last-known URL
+  is kept, never regressed to null by a URL-less repoint.
+- **DP-15** Version dependency, surfaced not hidden: whether a *bundle* deploy
+  succeeds on a given backend is the installed fused CLI's contract, not ours —
+  the fused repo's spec/serve/fused-render.md publishes bundles via
+  `share create` on AWS envs and lists the managed backend's inline-upload
+  bundle classification as a follow-up. fused-render passes the CLI's own
+  error through verbatim rather than second-guessing the installed version.
+
+### 19.5 State & truth
+
+- **DP-12** A thin per-page pointer at `~/.fused-render/deployments.json`
+  (shell/storage; keyed by absolute page path — env, backend, token, url,
+  status, entrypoints, updated_at) lets the shell mark deployed files, re-show
+  the URL (`create` returns it exactly once; `share list` never carries one),
+  and redeploy to the same token. **`share list` on the env stays the
+  authority**: the modal reconciles status against it on open (`--all`, so an
+  AWS caller-identity change can't fake a revoke); an unreachable env returns
+  the last-known pointer with `reconciled: false` instead of failing the
+  dialog. A reconciled response also carries `live` (`active | revoked |
+  absent`): absent persists as pointer-status `revoked` (the link *is* down)
+  but the modal must not promise a same-URL restore for it — an absent mount
+  redeploys as a fresh create with a new link (DP-10), and the stored URL is
+  likewise never carried onto a *different* token (DP-11's fallback applies
+  only while the token is unchanged). The action label's URL promises
+  ("same URL" / "restore URL") render only from a **verified** `live`
+  classification: when the reconcile never ran (unreachable env, `live`
+  null) the button reads a plain "Redeploy" that promises nothing.
+- **DP-12a** Store integrity: the pointer file is rewritten whole on every
+  mutation, so two writers must not race and a corrupt file must not be
+  clobbered. Writes serialize through one process lock (`_update_store`) —
+  closing the lost-update window against the reconcile writer (a focus
+  refresh) — and load via `_load_store_for_write`, which raises rather than
+  overwrite a file that exists but doesn't parse (overwriting would drop every
+  other page's pointer, orphaning live mounts). `deploy_page` validates the
+  store before the CLI so a corrupt store fails fast instead of minting a
+  mount it then can't record. Reads (`get_deployment`, the status/dot) stay
+  lenient — a corrupt store shows as not-deployed rather than erroring a
+  preview.
+- **DP-12b** The open modal re-reconciles on tab focus/visibility regain (like
+  the header dot, DP-1), so a page revoked out-of-band — e.g. from the
+  Preferences tab — updates the open dialog instead of contradicting the dot.
+  That focus refresh is a **background** load: it updates in place, never
+  clearing the form to "Loading…" or replacing it with an error on a failed
+  re-fetch (only the initial mount load does that). 
+  It preselects the deployment's env only when that env is still configured
+  (else falls back to the default and states the old env is gone), so a
+  removed env never leaves Deploy silently disabled. The dialog is always
+  closeable — even mid-action (the action continues server-side and the dot
+  stays correct via `onChange`), so a slow CLI child can't trap the user.
+- **DP-13** `GET /api/deploy/shares?env=…` is the "what's deployed on this
+  env" view: every mount from `share list --all`, joined back to the local
+  page that deployed it via the pointer store (`page: null`, rendered "not
+  from this app"), local pages first, live before revoked. Its consumer is the
+  **Preferences page's Deployments section** (PF-6) — a single env-wide list
+  with Revoke — not the per-page Deploy modal. `share list` returns no URLs on
+  either backend; each mount's URL is the pointer's recorded one, else
+  **derived from the env's base URL**: every mount on one env serves as
+  `<base>/<token>` (share-links.md §6), so any recorded absolute URL whose path
+  ends in its own token reveals the base for all the rest (`_serve_base_url`).
+  With no recorded link to derive from (e.g. only AWS deploys so far), URLs
+  stay null and the cell says why on hover.
+- **DP-14** Endpoints (`fused_render/deploy.py`, an APIRouter like
+  shell/bookmarks): `GET /api/deploy/config`, `GET /api/deploy/status`,
+  `GET /api/deploy/preview`, `GET /api/deploy/shares`, `POST /api/deploy`,
+  `POST /api/deploy/revoke`, `POST /api/deploy/install`; the POSTs carry the
+  `X-Fused` guard (D36). CLI failures surface their last stderr line verbatim
+  (click's `Error: ` prefix stripped) — the fused CLI's messages already name
+  the fix (`fused cloud login`, `fused infra serve`, …).
+
+## 20. Preferences — Shell Settings Page (M12)
+
+Goal: one unobtrusive place for the shell's cross-cutting settings and
+housekeeping. Entry is a muted gear row pinned to the **sidebar's bottom-left**
+edge; it navigates to **`/view/_prefs`** — a shell-owned sentinel pathname like
+`_panel`/`_tab` (no `/embed` variant: settings chrome inside a pane makes no
+sense). Server state lives in `~/.fused-render/prefs.json` behind
+`shell/prefs.py` (the D75 shell-state pattern: storage helpers + an APIRouter;
+never imports server).
+
+### 20.1 Store & endpoints
+
+- **PF-1** `GET /api/prefs` → `{engine: {selected, effective, forced_by,
+  fused_available}, log: {path, dir}, deploy: {enabled}}`. `PUT /api/prefs`
+  (X-Fused) applies a **partial** update — any of `{engine}` and/or
+  `{deploy_enabled}` present, so each control PUTs only its own field — and
+  returns the same shape. An unknown engine value, a non-boolean
+  `deploy_enabled`, or a body naming no known preference → 400; the file merges
+  (future prefs are new keys, not new files).
+- **PF-1a** The page renders its sections in this order: **Template registry**,
+  **Logs**, **Execution engine**, **Deployments** (the spec subsection
+  numbering below is organizational, not the visual order).
+- **PF-2** The page is a thin client over existing backends everywhere else:
+  logs reveal via `POST /api/fs/reveal`, deployments via `GET
+  /api/deploy/config` + `GET /api/deploy/shares`, revocation via `POST
+  /api/deploy/revoke`, registry via `GET /api/templates/registry`.
+
+### 20.2 Execution engine switch
+
+- **PF-3** The persisted `engine` pref (`builtin` default — D70 stands, the
+  pref is the opt-in D69 anticipated; or `fused`) drives `/api/run` dispatch,
+  **read per request** so a switch applies to the next run with no restart
+  (the registries' CT-5 no-restart discipline). Selecting `fused` is
+  *effective* only while the fused local backend is importable
+  (`prefs.fused_engine_available`, probed per call — an install mid-session
+  shows through); otherwise execution degrades to builtin and the page says
+  so. The fused option is disabled with an install hint when unavailable.
+  **One resolver, no divergence:** `prefs.effective_engine()` is the single
+  function both dispatch (`server.current_engine`) and the page's reported
+  "running" engine (`engine_state().effective`) go through, resolving the
+  override + pref + availability **live** on every call — so the page can
+  never claim a different engine than `/api/run` uses, even for a forced
+  `=auto` after a mid-session install (an earlier startup-frozen resolution
+  let those drift).
+  **Both engines are local**: the fused engine instantiates the package's
+  `LocalPythonComputeBackend` directly (engine.py — host venvs under
+  `~/.openfused/venvs`), never resolving a named environment; `envs.json`,
+  the default env, and `OPENFUSED_ENV` play no part in page execution. Fused
+  *environments* are exclusively deploy targets (DP-5) — a separate axis,
+  and the page's copy states this so "Fused engine" is never read as "runs
+  on my Fused env".
+- **PF-4** `FUSED_RENDER_ENGINE` remains the **process-level override**: when
+  set it beats the pref entirely. `server._forced_engine()` runs **once at
+  startup** purely to validate (raises on a bad value; `=fused` still fails
+  loudly when missing) and log the choice — dispatch itself goes through the
+  live resolver (PF-3), so the override is re-read per request, not frozen.
+  The page shows the switch locked with the variable's value; a PUT still
+  persists (applies once the override is removed). `GET /api/config`'s
+  `engine` reports the in-effect engine per request.
+
+### 20.3 Logs
+
+- **PF-5** The page names this process's log file (`logs.log_path`, from
+  `GET /api/prefs`) and "Open logs location" reveals it in the OS file
+  manager through the existing reveal endpoint — the web-UI twin of the
+  menu-bar app's "Open logs".
+
+### 20.4 Deployments
+
+- **PF-8** The section leads with an **opt-in toggle** for the Deploy
+  affordance: the persisted `deploy_enabled` pref (default **off**), PUT via
+  `{deploy_enabled}`. Deploy publishes a page to a public hosted URL through
+  the fused CLI, so it is opt-in — the preview-header **Deploy** button (§19,
+  DP-1) and its modal stay hidden until this is turned on. The gate is a UI
+  affordance only, not a security control (the `/api/deploy*` endpoints keep
+  their X-Fused guard); the preview re-reads the pref on focus/visibility so a
+  toggle shows through without a reload. Any non-`true` stored value reads as
+  off.
+- **PF-6** A per-env view of `fused share list` (the same joined
+  `/api/deploy/shares` data as the Deploy modal's list, same copy: rows with
+  a file name were deployed from this app) with a **Revoke** action per
+  non-revoked mount. Revocation is by **env + token** (`POST
+  /api/deploy/revoke {env, token}` → `deploy.revoke_mount`), so it also
+  covers mounts with no local pointer — the CLI's owner-binding still
+  applies and its refusal surfaces verbatim. Any local pointer recording the
+  revoked mount flips to revoked, keeping the page's Deploy button honest.
+
+### 20.5 Template registry view
+
+- **PF-7** `GET /api/templates/registry` returns the merged
+  extension→templates bindings from both registries (SPEC §16): one row per
+  pattern with its splice-expanded mode list (first = default), `disabled`
+  for `null` bindings, `source` (`builtin` / `user` / `user-override` — a
+  user key identical to a built-in key replaces its row), and per-entry
+  shape errors. Override detection is **case-insensitive**, matching how
+  resolution actually matches keys (`_key_segments` lowercases): a user
+  `.CSV` overrides a built-in `.csv` as one `user-override` row (and a `"..."`
+  splice expands against that built-in), never two mis-sourced rows.
+  **Read-only** — bindings are edited in the registry files; the page names
+  the user registry path. This is the table of bindings, not a per-file
+  resolver: distinct keys coexist and CT-3 specificity decides per file. Read
+  per request like every resolution (no restart).

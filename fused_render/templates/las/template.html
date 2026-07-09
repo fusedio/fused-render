@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Point cloud preview</title>
+<script src="https://unpkg.com/deck.gl@9.1.3/dist.min.js"></script>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: #e8eaed; background: #0b0c0e; font-size: 13px; }
+  #deck { position: absolute; inset: 0; }
+  .panel { position: absolute; background: rgba(19,20,23,.92); border: 1px solid #2a2d33;
+    border-radius: 10px; padding: 10px 12px; backdrop-filter: blur(6px); z-index: 10; }
+  #topbar { top: 10px; left: 10px; right: 10px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  #topbar label { color: #9aa0a6; margin: 0 2px 0 6px; }
+  input[type=text], select { font: inherit; color: #e8eaed; background: #1b1d21;
+    border: 1px solid #2a2d33; border-radius: 6px; padding: 4px 8px; }
+  #path { flex: 1; min-width: 200px; }
+  button { font: inherit; color: #e8eaed; background: #2b5fd9; border: 1px solid #2b5fd9;
+    border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+  button:hover { background: #3a6ee8; }
+  button.ghost { background: transparent; border-color: #2a2d33; color: #9aa0a6; }
+  button.ghost:hover { color: #e8eaed; border-color: #4a4d55; }
+  #status { position: absolute; left: 50%; top: 64px; transform: translateX(-50%);
+    background: rgba(19,20,23,.9); border: 1px solid #2a2d33; border-radius: 999px;
+    padding: 4px 14px; color: #9aa0a6; z-index: 20; display: none; max-width: 80%; }
+  #status.err { color: #ff7b72; display: block; }
+  #metaPanel { right: 10px; top: 58px; width: 360px; max-height: 70vh; overflow: auto; display: none; }
+  #metaPanel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: #9aa0a6; margin: 10px 0 6px; display: flex; justify-content: space-between; }
+  #metaPanel h2:first-child { margin-top: 0; }
+  #metaPanel table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  #metaPanel td { padding: 3px 6px; border-bottom: 1px solid #23262c;
+    vertical-align: top; word-break: break-word; text-align: left; }
+  #metaPanel td:first-child { color: #9aa0a6; white-space: nowrap; }
+  #metaPanel .sw { width: 10px; height: 10px; border-radius: 3px; display: inline-block; margin-right: 6px; }
+  #legend { position: absolute; z-index: 10; left: 10px; bottom: 12px; font-size: 11px; color: #9aa0a6; max-width: 46vw; }
+  #legend .sw { width: 10px; height: 10px; border-radius: 3px; display: inline-block;
+    margin: 0 4px 0 10px; vertical-align: -1px; }
+  #explorer { left: 10px; top: 58px; width: 420px; max-height: 65vh; display: none; z-index: 30; }
+  #crumbs { font-size: 12px; margin-bottom: 8px; color: #9aa0a6; }
+  #crumbs a { color: #8ab4ff; cursor: pointer; }
+  #explorerList { max-height: 48vh; overflow: auto; border: 1px solid #23262c; border-radius: 6px; }
+  .row { display: flex; align-items: center; gap: 8px; padding: 5px 10px; cursor: pointer;
+    font-size: 13px; border-bottom: 1px solid #1e2025; }
+  .row:hover { background: #23262c; }
+  .row .ic { width: 18px; text-align: center; }
+  .row .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .sz { color: #6b7178; font-size: 11px; }
+  input[type=range] { vertical-align: middle; width: 90px; }
+</style>
+</head>
+<body>
+  <div id="deck"></div>
+
+  <div class="panel" id="topbar">
+    <button id="browse" class="ghost">📁</button>
+    <input type="text" id="path" placeholder="/absolute/path/to/file.las · .laz" />
+    <button id="load">Load</button>
+    <span><label for="colorMode">color by</label><select id="colorMode"></select></span>
+    <span><label for="ptSize">size</label><input type="range" id="ptSize" min="1" max="60" value="15" /></span>
+    <span><label for="maxPts">points</label><select id="maxPts">
+      <option value="100000">100 k</option>
+      <option value="400000" selected>400 k</option>
+      <option value="1500000">1.5 M</option>
+      <option value="4000000">4 M</option>
+    </select></span>
+    <button id="metaBtn" class="ghost">info</button>
+    <button id="fitBtn" class="ghost">⤢ fit</button>
+  </div>
+
+  <div id="status"></div>
+  <div id="legend"></div>
+
+  <div class="panel" id="explorer">
+    <div id="crumbs"></div>
+    <div id="explorerList"></div>
+    <label style="display:block;margin-top:8px;color:#9aa0a6;font-size:12px">
+      <input type="checkbox" id="showAll" /> show all files</label>
+  </div>
+
+  <div class="panel" id="metaPanel"><div id="metaBody"></div></div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const els = ['path','load','colorMode','ptSize','maxPts','metaBtn','metaPanel','metaBody',
+  'fitBtn','status','legend','browse','explorer','crumbs','explorerList','showAll']
+  .reduce((o, k) => (o[k] = $(k), o), {});
+
+const P = {
+  file: () => fused.params.get('file') || fused.params.get('_file') || '',
+  colorMode: () => fused.params.get('color') || '',
+  maxPts: () => fused.params.get('maxpts') || '400000',
+  dir:  () => fused.params.get('dir') || (P.file() ? P.file().replace(/\/[^/]*$/, '') : '~'),
+  showAll: () => fused.params.get('showall') === '1',
+};
+const human = n => n > 1e9 ? (n/1e9).toFixed(2)+' GB' : n > 1e6 ? (n/1e6).toFixed(1)+' MB' : Math.round(n/1e3)+' KB';
+function status(msg, err){ els.status.innerHTML = msg || ''; els.status.style.display = msg ? 'block' : 'none'; els.status.className = err ? 'err' : ''; }
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const b64buf = async b64 => (await fetch('data:application/octet-stream;base64,' + b64)).arrayBuffer();
+
+// viridis stops for elevation/intensity ramps
+const VIRIDIS = [[68,1,84],[59,82,139],[33,145,140],[94,201,98],[253,231,37]];
+function ramp(t){
+  t = Math.max(0, Math.min(1, t)) * (VIRIDIS.length - 1);
+  const i = Math.min(VIRIDIS.length - 2, Math.floor(t)), f = t - i;
+  const a = VIRIDIS[i], b = VIRIDIS[i + 1];
+  return [a[0] + (b[0]-a[0])*f, a[1] + (b[1]-a[1])*f, a[2] + (b[2]-a[2])*f];
+}
+const CLASS_COLORS = {0: [107,113,120], 1: [156,163,175], 2: [161,120,74], 3: [122,199,111],
+  4: [64,171,88], 5: [22,128,57], 6: [231,111,81], 7: [255,80,80], 9: [64,145,230],
+  10: [200,180,60], 11: [90,90,100], 13: [240,200,80], 14: [255,215,0], 15: [200,120,255],
+  17: [244,162,97], 18: [255,0,0], 19: [150,150,255], 20: [255,150,200]};
+
+// ---------------- deck ----------------
+let data = null;        // reader payload (+ decoded typed arrays)
+let deckgl = null;
+
+function initialViewState(){
+  const m = data.meta;
+  const spanX = m.maxs[0] - m.mins[0], spanY = m.maxs[1] - m.mins[1];
+  return {target: [0, 0, 0], rotationX: 45, rotationOrbit: 0,
+          zoom: Math.log2(900 / Math.max(spanX, spanY, 1))};
+}
+
+function colorArray(mode){
+  const n = data.n;
+  const out = new Uint8Array(n * 3);
+  if (mode === 'rgb' && data.rgbArr){ out.set(data.rgbArr); return out; }
+  if (mode === 'classification' && data.classArr){
+    for (let i = 0; i < n; i++){
+      const c = CLASS_COLORS[data.classArr[i]] || [200, 200, 200];
+      out[i*3] = c[0]; out[i*3+1] = c[1]; out[i*3+2] = c[2];
+    }
+    return out;
+  }
+  if (mode === 'intensity' && data.intenArr){
+    const [lo, hi] = data.intensity_range, s = 1 / Math.max(1, hi - lo);
+    for (let i = 0; i < n; i++){
+      const c = ramp((data.intenArr[i] - lo) * s);
+      out[i*3] = c[0]; out[i*3+1] = c[1]; out[i*3+2] = c[2];
+    }
+    return out;
+  }
+  // elevation (default)
+  const [zlo, zhi] = data.z_range, cz = data.center[2], s = 1 / Math.max(1e-9, zhi - zlo);
+  for (let i = 0; i < n; i++){
+    const c = ramp((data.posArr[i*3+2] + cz - zlo) * s);
+    out[i*3] = c[0]; out[i*3+1] = c[1]; out[i*3+2] = c[2];
+  }
+  return out;
+}
+
+function currentMode(){
+  const want = P.colorMode();
+  const avail = ['elevation'];
+  if (data && data.rgbArr) avail.push('rgb');
+  if (data && data.intenArr) avail.push('intensity');
+  if (data && data.classArr) avail.push('classification');
+  return avail.includes(want) ? want : (data && data.rgbArr ? 'rgb' : 'elevation');
+}
+
+function render(resetView){
+  if (!data) return;
+  const mode = currentMode();
+  const layer = new deck.PointCloudLayer({
+    id: 'pts',
+    data: {length: data.n, attributes: {
+      getPosition: {value: data.posArr, size: 3},
+      getColor: {value: colorArray(mode), size: 3},
+    }},
+    pointSize: +els.ptSize.value / 10,
+    sizeUnits: 'pixels',
+    material: false,
+    coordinateSystem: deck.COORDINATE_SYSTEM.CARTESIAN,
+  });
+  const props = {layers: [layer]};
+  if (resetView) props.initialViewState = initialViewState();
+  if (!deckgl){
+    deckgl = new deck.Deck({parent: $('deck'),
+      views: new deck.OrbitView({orbitAxis: 'Z'}),
+      controller: {inertia: 250},
+      initialViewState: initialViewState(),
+      layers: [layer]});
+  } else {
+    deckgl.setProps(props);
+  }
+  renderLegend(mode);
+}
+
+function renderLegend(mode){
+  if (mode === 'classification' && data.meta.class_hist){
+    els.legend.innerHTML = 'classes: ' + Object.entries(data.meta.class_hist)
+      .sort((a, b) => b[1] - a[1]).slice(0, 9).map(([k, v]) => {
+        const c = CLASS_COLORS[k] || [200,200,200];
+        return `<span class="sw" style="background:rgb(${c})"></span>${esc(data.class_names[k] || k)} (${(v/data.n*100).toFixed(0)}%)`;
+      }).join('');
+  } else if (mode === 'elevation'){
+    els.legend.innerHTML = `elevation ${data.z_range[0].toFixed(1)} – ${data.z_range[1].toFixed(1)}` +
+      '<span class="sw" style="background:linear-gradient(90deg,#440154,#21918c,#fde725);width:70px"></span>';
+  } else if (mode === 'intensity'){
+    els.legend.innerHTML = `intensity ${data.intensity_range[0]} – ${data.intensity_range[1]}` +
+      '<span class="sw" style="background:linear-gradient(90deg,#440154,#21918c,#fde725);width:70px"></span>';
+  } else els.legend.innerHTML = '';
+}
+
+// ---------------- metadata panel ----------------
+function renderMeta(){
+  const m = data.meta;
+  const rows = o => Object.entries(o).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${v}</td></tr>`).join('');
+  const sect = [];
+  sect.push(`<h2>File <a id="metaClose" style="cursor:pointer;color:#8ab4ff">×</a></h2><table>${rows({
+    file: esc(data.file.split('/').pop()),
+    size: human(data.file_size),
+    'LAS version': m.version + ' · point format ' + m.point_format,
+    points: m.point_count.toLocaleString() + ` (showing ${m.shown.toLocaleString()}, every ${m.step}${m.step > 1 ? 'th' : ''})`,
+    software: esc(m.generating_software || '—'),
+    created: esc(m.creation_date || '—'),
+    dims: esc(m.dims.join(', ')),
+  })}</table>`);
+  sect.push(`<h2>Extent</h2><table>${rows({
+    x: `${m.mins[0].toFixed(2)} – ${m.maxs[0].toFixed(2)}`,
+    y: `${m.mins[1].toFixed(2)} – ${m.maxs[1].toFixed(2)}`,
+    z: `${m.mins[2].toFixed(2)} – ${m.maxs[2].toFixed(2)}`,
+    scale: m.scales.join(', '),
+    offset: m.offsets.map(v => v.toFixed(2)).join(', '),
+    crs: esc(m.epsg ? 'EPSG:' + m.epsg : (m.crs_wkt ? m.crs_wkt.slice(0, 120) + '…' : 'not stored')),
+    'lon/lat': m.bounds4326 ? m.bounds4326.map(v => v.toFixed(5)).join(', ') : '—',
+  })}</table>`);
+  const hist = Object.entries(m.class_hist || {});
+  if (hist.length){
+    sect.push('<h2>Classification</h2><table>' + hist.sort((a, b) => b[1] - a[1]).map(([k, v]) => {
+      const c = CLASS_COLORS[k] || [200,200,200];
+      return `<tr><td><span class="sw" style="background:rgb(${c})"></span>${esc(data.class_names[k] || k)}</td>
+        <td>${v.toLocaleString()} (${(v/m.shown*100).toFixed(1)}%)</td></tr>`;
+    }).join('') + '</table>');
+  }
+  els.metaBody.innerHTML = sect.join('');
+  $('metaClose').onclick = () => els.metaPanel.style.display = 'none';
+}
+
+// ---------------- load ----------------
+let loadedKey = null;
+
+async function loadFile(){
+  const file = P.file();
+  if (!file){ status('no file — use Browse or enter a .las / .laz path'); return; }
+  const key = file + '|' + P.maxPts();
+  if (key === loadedKey) return;
+  status('Reading point cloud… (first read of a big .laz can take a few seconds)');
+  const r = await fused.runPython('./las_reader.py', {file, max_points: P.maxPts()})
+    .catch(e => ({error: String(e.message || e)}));
+  if (!r || r.error){ status((r && r.error) || 'read failed', true); return; }
+  status('Decoding…');
+  data = r;
+  data.posArr = new Float32Array(await b64buf(r.pos));
+  data.n = data.posArr.length / 3;
+  data.rgbArr = r.rgb ? new Uint8Array(await b64buf(r.rgb)) : null;
+  data.intenArr = r.intensity ? new Uint16Array(await b64buf(r.intensity)) : null;
+  data.classArr = r.classification ? new Uint8Array(await b64buf(r.classification)) : null;
+  loadedKey = key;
+  syncControls();
+  render(true);
+  renderMeta();
+  status('');
+}
+
+function syncControls(){
+  els.path.value = P.file();
+  els.maxPts.value = P.maxPts();
+  const modes = [['elevation', 'elevation']];
+  if (data && data.rgbArr) modes.push(['rgb', 'RGB']);
+  if (data && data.intenArr) modes.push(['intensity', 'intensity']);
+  if (data && data.classArr) modes.push(['classification', 'classification']);
+  els.colorMode.innerHTML = modes.map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
+  els.colorMode.value = currentMode();
+}
+
+// ---------------- controls ----------------
+els.load.onclick = () => fused.params.set('file', els.path.value.trim());
+els.path.onkeydown = e => { if (e.key === 'Enter') els.load.onclick(); };
+els.colorMode.onchange = () => fused.params.set('color', els.colorMode.value);
+els.maxPts.onchange = () => fused.params.set('maxpts', els.maxPts.value);
+els.ptSize.oninput = () => render(false);
+els.metaBtn.onclick = () => els.metaPanel.style.display = els.metaPanel.style.display === 'block' ? 'none' : 'block';
+els.fitBtn.onclick = () => { if (deckgl && data) deckgl.setProps({initialViewState: {...initialViewState(), transitionDuration: 300}}); };
+
+function onParamsChanged(){
+  if (!data){ loadFile(); return; }
+  if (P.file() + '|' + P.maxPts() !== loadedKey){ loadFile(); return; }
+  syncControls();
+  render(false);
+}
+fused.params.onChange(onParamsChanged);
+els.path.value = P.file();
+
+// ---------------- explorer ----------------
+els.browse.onclick = () => {
+  const open = els.explorer.style.display !== 'block';
+  els.explorer.style.display = open ? 'block' : 'none';
+  if (open) refreshExplorer(P.dir());
+};
+els.showAll.onchange = () => { fused.params.set('showall', els.showAll.checked ? '1' : '0'); refreshExplorer(P.dir()); };
+async function refreshExplorer(dir){
+  const r = await fused.runPython('./browse.py', { dir, exts: '.las,.laz', show_all: P.showAll() ? 'true' : 'false' }).catch(() => null);
+  if (!r || r.error) return;
+  els.crumbs.innerHTML = r.crumbs.map(c => `<a data-p="${c.path}">${c.label}</a>`).join(' / ');
+  els.crumbs.querySelectorAll('a').forEach(a => a.onclick = () => refreshExplorer(a.dataset.p));
+  const entries = [...r.dirs, ...r.files];
+  els.explorerList.innerHTML = entries.map(e =>
+    `<div class="row" data-p="${e.path}" data-d="${e.is_dir ? 1 : 0}">
+       <span class="ic">${e.is_dir ? '📁' : '⛰'}</span><span class="nm">${e.name}</span>
+       <span class="sz">${e.size ? human(e.size) : ''}</span></div>`).join('') || '<div class="row" style="color:#6b7178">empty</div>';
+  els.explorerList.querySelectorAll('.row[data-p]').forEach(row => row.onclick = () => {
+    if (row.dataset.d === '1') refreshExplorer(row.dataset.p);
+    else { fused.params.set('dir', row.dataset.p.replace(/\/[^/]*$/, '')); fused.params.set('file', row.dataset.p); els.explorer.style.display = 'none'; }
+  });
+}
+
+loadFile();
+
+</script>
+</body>
+</html>

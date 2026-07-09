@@ -32,6 +32,7 @@ import {
 import type { Config } from "../lib/api";
 import type { Bookmark } from "../lib/bookmarks";
 import { ShareIcon } from "../components/ShareIcon";
+import PaneModeMenu from "../components/PaneModeMenu";
 
 // Tab mode lives under the page's own prefix, like panel mode.
 const TAB_PATH = (IS_EMBED ? "/embed/" : "/view/") + "_tab";
@@ -114,7 +115,19 @@ function tabLabel(t: LayoutLeaf): string {
 // One keep-alive tab iframe. src frozen at mount; visibility via display so
 // hidden tabs keep receiving fused:urlchange (the runtime listens on the top
 // window, D46) and stay param-synced while hidden.
-function TabFrame({ tab, active, onLocSync }: { tab: LayoutLeaf; active: boolean; onLocSync: () => void }) {
+function TabFrame({
+  tab,
+  active,
+  onLocSync,
+  onFrame,
+}: {
+  tab: LayoutLeaf;
+  active: boolean;
+  onLocSync: () => void;
+  // Registers the iframe with the tab bar's frame map so the bar's mode menu
+  // can write src imperatively (the iframe must never re-render).
+  onFrame: (el: HTMLIFrameElement | null) => void;
+}) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const hookRef = useRef<UrlChangeHook | null>(null);
   const srcRef = useRef<string | null>(null);
@@ -147,7 +160,10 @@ function TabFrame({ tab, active, onLocSync }: { tab: LayoutLeaf; active: boolean
 
   return (
     <iframe
-      ref={iframeRef}
+      ref={(el) => {
+        iframeRef.current = el;
+        onFrame(el);
+      }}
       src={srcRef.current}
       onLoad={onLoad}
       style={active ? undefined : { display: "none" }}
@@ -172,15 +188,27 @@ export default function Tabs({ config }: { config: Config }) {
   const [tabs, setTabs] = useState<LayoutLeaf[]>(() =>
     parseTabs(splitShellSearch(location.search).layout, config.start_dir)
   );
-  const [activeId, setActiveId] = useState<number>(() => tabs[0].id);
+  // `_layout` never encodes activation (TM-2 — URL shape untouched), so the
+  // active tab rides on the history entry's state object instead: pushHistory
+  // stamps `{fusedActiveTab: index}` and this remount (App re-keys Tabs on the
+  // popstate nav epoch) reads it back, making Back/Forward restore which tab
+  // was active. Fresh loads have no state → first tab, as before.
+  const [activeId, setActiveId] = useState<number>(() => {
+    const idx = (history.state as { fusedActiveTab?: unknown } | null)?.fusedActiveTab;
+    return typeof idx === "number" && tabs[idx] ? tabs[idx].id : tabs[0].id;
+  });
   // Lazy mount (TM-5): a tab's iframe exists only once it has been activated.
-  const [mountedIds, setMountedIds] = useState<number[]>(() => [tabs[0].id]);
+  const [mountedIds, setMountedIds] = useState<number[]>(() => [activeId]);
   // Leaf objects are mutated in place by the URL sync (path/query); this
   // counter re-renders the bar so labels track live locations.
   const [, bumpLabels] = useState(0);
 
   const tabsRef = useRef<LayoutLeaf[]>(tabs);
   tabsRef.current = tabs;
+
+  // Live iframe per tab id, registered by TabFrame — the bar's mode menu
+  // writes src on these imperatively (never through React).
+  const framesRef = useRef<Map<number, HTMLIFrameElement | null>>(new Map());
 
   // Tab list encodes as a flat comma row (TM-2). Re-encode `_layout`, passing
   // the remaining top-level params through (no user params live there in tab
@@ -194,6 +222,21 @@ export default function Tabs({ config }: { config: Config }) {
     if (location.pathname + location.search !== next) {
       history.replaceState(history.state, "", next);
     }
+  };
+
+  // Tab ops (add/switch/close) get a real history entry. Pushed even when the
+  // URL is unchanged (a switch moves no URL bits — activation lives only in
+  // the entry's state, see the activeId initializer): the entry carries
+  // `{fusedActiveTab: index}` so Back/Forward restore the active tab. Index,
+  // not id — leaf ids are per-mount and don't survive the popstate remount.
+  // Plain history.pushState (not navigate()) — no NAV_EVENT, so no remount
+  // now; main.tsx's wrapper still fires fused:urlchange for the chrome.
+  const pushHistory = (nextActiveId: number) => {
+    const { params } = splitShellSearch(location.search);
+    const codecStr = tabsRef.current.map((t) => encodePaneSegment(t.path, t.query)).join(",");
+    const next = buildSentinelUrl(TAB_PATH, codecStr, params);
+    const idx = tabsRef.current.findIndex((t) => t.id === nextActiveId);
+    history.pushState({ fusedActiveTab: idx === -1 ? 0 : idx }, "", next);
   };
 
   const onLocSync = () => {
@@ -216,9 +259,9 @@ export default function Tabs({ config }: { config: Config }) {
     const t = leaf(config.start_dir, "");
     setTabs((ts) => [...ts, t]);
     activate(t.id);
-    // syncUrl reads tabsRef — update it eagerly so the sync sees the new tab.
+    // pushHistory reads tabsRef — update it eagerly so the push sees the new tab.
     tabsRef.current = [...tabsRef.current, t];
-    syncUrl();
+    pushHistory(t.id);
   };
 
   const closeTab = (id: number) => {
@@ -237,12 +280,13 @@ export default function Tabs({ config }: { config: Config }) {
     tabsRef.current = next;
     setTabs(next);
     setMountedIds((ids) => ids.filter((x) => x !== id));
+    let nextActive = activeId;
     if (activeId === id) {
       // Activate a neighbor (prefer the one now at this slot, else the last).
-      const neighbor = next[Math.min(idx, next.length - 1)].id;
-      activate(neighbor);
+      nextActive = next[Math.min(idx, next.length - 1)].id;
+      activate(nextActive);
     }
-    syncUrl();
+    pushHistory(nextActive);
   };
 
   return (
@@ -252,9 +296,27 @@ export default function Tabs({ config }: { config: Config }) {
           <button
             key={t.id}
             className={"tab" + (t.id === activeId ? " active" : "")}
-            onClick={() => activate(t.id)}
+            onClick={() => {
+              // Re-clicking the active tab is a no-op — no history entry.
+              if (t.id === activeId) return;
+              activate(t.id);
+              pushHistory(t.id);
+            }}
           >
             <span className="tab-label">{tabLabel(t)}</span>
+            {/* Template-mode menu, active tab only (its iframe is always
+                mounted). Mode switch writes the tab iframe's src imperatively;
+                the load re-syncs the leaf + `_layout` (onLocSync). */}
+            {t.id === activeId && (
+              <PaneModeMenu
+                path={t.path}
+                query={t.query}
+                onNavigate={(q) => {
+                  const f = framesRef.current.get(t.id);
+                  if (f) f.src = embedSrc(t.path, q);
+                }}
+              />
+            )}
             <span
               className="tab-open-plain"
               title="Open in a new tab"
@@ -289,7 +351,13 @@ export default function Tabs({ config }: { config: Config }) {
         {tabs
           .filter((t) => mountedIds.includes(t.id))
           .map((t) => (
-            <TabFrame key={t.id} tab={t} active={t.id === activeId} onLocSync={onLocSync} />
+            <TabFrame
+              key={t.id}
+              tab={t}
+              active={t.id === activeId}
+              onLocSync={onLocSync}
+              onFrame={(el) => framesRef.current.set(t.id, el)}
+            />
           ))}
       </div>
     </div>

@@ -22,14 +22,14 @@ fused-render/
 │       │   ├── router.ts       # fs-path <-> URL codec, navigate(); dispatches "fused:navigate"
 │       │   ├── api.ts          # fetch wrappers (config/list/stat/rawUrl)
 │       │   ├── format.ts       # formatSize/formatMtime/basename (pure)
-│       │   ├── bookmarks.ts    # localStorage store (pure data, no DOM)
+│       │   ├── bookmarks.ts    # bookmark store: sync in-memory cache + async PUT (pure data, no DOM)
 │       │   ├── layout-codec.ts # shared _layout codec + embed helpers (M5/M6)
 │       │   └── hooks.ts        # useNavEpoch/useUrlVersion/useBookmarksVersion signals
 │       ├── components/
 │       │   ├── Sidebar.tsx     # Home, bookmark rows, folders, hover card, rename, DnD
-│       │   └── Breadcrumb.tsx  # crumb bar + Bookmark/Update/Split buttons
+│       │   └── Breadcrumb.tsx  # crumb bar + Bookmark/Update/split-icon buttons
 │       └── views/
-│           ├── Listing.tsx     # dir table + sortable columns + SSE dir watch
+│           ├── Listing.tsx     # dir table + sortable columns + WS dir watch
 │           ├── Preview.tsx     # two-way dispatch: templates non-empty → TemplatePreview, else fallback
 │           ├── Panel.tsx       # split-pane grid (M5): tree ops + pane bars
 │           └── Tabs.tsx        # tab mode (M6): tab bar + lazy keep-alive iframes
@@ -37,8 +37,9 @@ fused-render/
 │   ├── __init__.py             # __version__
 │   ├── cli.py                  # arg parse → uvicorn.run + open browser
 │   ├── server.py               # FastAPI app factory, all endpoints
-│   ├── executor.py             # subprocess-per-call runner (EXISTS — keep)
-│   ├── _child.py               # worker-process entry (EXISTS — keep)
+│   ├── executor.py             # runner: in-process for first-party helpers, subprocess for user code (D72)
+│   ├── _child.py               # worker-process entry (subprocess path)
+│   ├── _binding.py             # param coercion shared by both execution paths
 │   ├── logs.py                 # rotating app log for 500 / right-click-open diagnostics (D68)
 │   ├── static/
 │   │   ├── shell-dist/         # Vite build of frontend/ (gitignored, D54; built by dev / packaging hook)
@@ -99,7 +100,7 @@ Same static shell for both; shell JS reads `location.pathname` to route. `/view/
   ]
 }
 ```
-`templates` is the server-side registry lookup by extension (lowercased): the ordered **mode list** (SPEC PT-7/PT-8), first entry = default. Each entry carries the template **name** (`mode`), the resolved abs `template.html` path, and the abs path of the `icon.svg` sitting next to the resolved `template.html` (user folder's icon when a user template resolved) or `null` when absent. `templates` is `[]` for a directory with no `DIR_TEMPLATES` match (SPEC PT-13/D65 — a `.zarr` directory carries `[{"mode": "zarr", …}]` and previews like a file), unmapped extensions, and `null` registry bindings. `.html`/`.htm` carry the **hardcoded** list `["_render", "code"]` (registry-exempt, SPEC CT-4); `_render` is a **sentinel mode** (SPEC PT-12) — `_`-prefixed, no template folder behind it — emitted without touching the filesystem:
+`templates` is the server-side registry lookup on the basename (SPEC PT-7/PT-8, CT-3): the ordered **mode list**, first entry = default. Each entry carries the template **name** (`mode`), the resolved abs `template.html` path, and the abs path of the `icon.svg` sitting next to the resolved `template.html` (user folder's icon when a user template resolved) or `null` when absent. `templates` is `[]` for a directory with no directory-key match (SPEC PT-13/D73 — a `.zarr` directory matches the `".zarr/"` key, carries `[{"mode": "zarr", …}]`, and previews like a file), unmapped extensions, and `null` registry bindings. `.html`/`.htm` default to `["_render", "code"]` via the built-in registry (user-rebindable since D73); `_render` is a **sentinel mode** (SPEC PT-12) — `_`-prefixed, no template folder behind it — emitted without touching the filesystem:
 
 ```json
 "templates": [
@@ -108,7 +109,7 @@ Same static shell for both; shell JS reads `location.pathname` to route. `/view/
 ]
 ```
 
-A `_`-prefixed name appearing in a registry list is invalid (dropped + `template_error`) — the sentinel namespace is shell-owned. The user registry (§7, SPEC §16) is consulted first; validation is **per entry** — an entry whose name can't resolve (unsafe name, `template.html` missing in both locations) is dropped from the list and a `"template_error": "<reason>"` field names the first problem (absent otherwise); if the user's value resolves to nothing at all, the built-in list for the extension is used. There is no singular `template` field — removed in M8, no compat alias (shell is same repo).
+A `_`-prefixed name appearing in a registry list is valid only for the known sentinels (`KNOWN_SENTINELS = {"_render"}`, D73); any other is invalid (dropped + `template_error`) — the rest of the sentinel namespace is shell-owned. The user registry (§7, SPEC §16) is consulted first; validation is **per entry** — an entry whose name can't resolve (unsafe name, `template.html` missing in both locations) is dropped from the list and a `"template_error": "<reason>"` field names the first problem (absent otherwise); if the user's value resolves to nothing at all, the built-in list for the extension is used. There is no singular `template` field — removed in M8, no compat alias (shell is same repo).
 
 ### `GET /api/fs/list?path=<abs dir>`
 ```json
@@ -154,10 +155,12 @@ StaticFiles mount for shell + runtime. Templates dir is NOT statically mounted �
 
 ## 4. Executor protocol (`executor.py` + `_child.py`) — ALREADY IMPLEMENTED
 
-- `run_python(path, params, timeout=30.0) -> dict`: spawns `[sys.executable, _child.py]`, writes `{"path", "params"}` JSON to stdin, `subprocess.run(timeout=…)`, parses **last stdout line** as result JSON. Timeout → `TimeoutError` error dict. Garbage/no output → `ExecutorError` with stderr tail.
-- `_child.py`: chdir to the .py's dir (relative data paths work), prepend dir to `sys.path`, import via `importlib.util.spec_from_file_location`, find callable `main`, bind params with annotation-based coercion (`"100"`→int, `"2.4"`→float, `"true"/"1"/"yes"/"on"`→bool), missing required arg / non-callable main → structured error. Extra params ignored unless `**kwargs`. Return value must be JSON-native, else clear TypeError suggesting `df.to_dict('records')`. User `print()` captured → returned as `stdout` field. Catches `BaseException` (incl. SystemExit).
+- `run_python(path, params, timeout=30.0) -> dict`: routes by target (D72). A `.py` on the **`INPROCESS_HELPERS` allowlist** (the table/csv/xlsx readers + api inspector — trusted, fast, never import/exec user code) runs **in-process** via `_run_inprocess`; anything else (user scripts, user template readers, and other shipped `templates/` helpers like the claude agent / geo tile servers) **spawns `[sys.executable, _child.py]`**, writes `{"path", "params"}` JSON to stdin, `subprocess.run(timeout=…)`, parses **last stdout line** as result JSON. Timeout → `TimeoutError` error dict. Garbage/no output → `ExecutorError` with stderr tail.
+- `_child.py` (subprocess path): chdir to the .py's dir (relative data paths work), prepend dir to `sys.path`, import via `importlib.util.spec_from_file_location`, find callable `main`, bind params (via `_binding.bind_params`) with annotation-based coercion (`"100"`→int, `"2.4"`→float, `"true"/"1"/"yes"/"on"`→bool), missing required arg / non-callable main → structured error. Extra params ignored unless `**kwargs`. Return value must be JSON-native, else clear TypeError suggesting `df.to_dict('records')`. User `print()` captured → returned as `stdout` field. Catches `BaseException` (incl. SystemExit).
+- `_run_inprocess` (in-process path): imports the helper, binds params with the same `_binding` coercion, calls `main`, JSON-checks the result, catches `BaseException` → error dict. No chdir (helpers take absolute paths), no stdout capture (helpers don't print; global `sys.stdout` redirect would race the threadpool), no timeout (bounded reads / `ast` parse). Shares the app's macOS TCC grant because it runs in the server (= app) process — that is the point (D72).
+- `_binding.py`: `coerce` / `bind_params` / `ParamError`, shared by both paths so param binding is identical.
 
-Fresh process per call = fresh code every call (PY-9); the env is whatever Python launched the server.
+Fresh process per call = fresh code every call for user code (PY-9); the env is whatever Python launched the server. First-party helpers run in-process (D72).
 
 ---
 
@@ -222,7 +225,7 @@ Layout: `#app` becomes two-column flex — fixed sidebar (~220px, `--bg-alt`, ri
 
 - **Home entry:** icon + "Home"; click → `navigate(config.home)`. `/api/config` response gains `"home": os.path.expanduser("~")`.
 - **Bookmark capture:** "+ Bookmark" button right-aligned in the breadcrumb bar (present on every view); shows accent "starred" state when the current URL is already bookmarked. On click: `{id: crypto.randomUUID(), name: basename(currentFsPath), url: location.pathname + location.search, created_at: Date.now()}` appended to store; sidebar re-renders.
-- **Store:** localStorage key `fused.bookmarks`, JSON array. Read/write helpers with try/catch (corrupt JSON → treat as empty, overwrite on next save).
+- **Store (D75):** server-side `~/.fused-render/bookmarks.json`, JSON array (tree). Backend in `fused_render/shell/` — `storage.py` (home dir via `home_dir()`/`FUSED_RENDER_HOME`, atomic `read_json`/`write_json`) + `bookmarks.py` (`APIRouter`: `GET /api/bookmarks` → `{exists, bookmarks}`; `PUT` whole-tree, atomic, last-write-wins, `X-Fused` guard). Frontend `bookmarks.ts` keeps an in-memory cache (`loadBookmarks()`/`allBookmarks()` sync off it), hydrated once at boot by `hydrateBookmarks()`; each mutation clones → `await`s the PUT → advances the cache (no optimism/rollback — cache never holds unpersisted state). One-time import: on `!exists` + non-empty legacy `localStorage["fused.bookmarks"]`, PUT it once (the first write flips `exists`, so it never re-imports); legacy key left dormant as a read fallback. A 30 s `setInterval` in `main.tsx` calls `refreshBookmarks()` (a `GET` through the same serial queue, re-rendering only on a real diff) so another tab's/window's edits converge (D77 — eventual ≤30 s, last-write-wins on simultaneous writes). Hydration, every mutation, and the poll all run through one `enqueue` chain, so no read/write ever interleaves (closes the hydration/mutation race Bugbot flagged). `shell/` is the seam for future shell-state backends, kept out of `server.py`'s fs/render internals (and acyclic — it never imports `server`).
 - **Bookmark row:** name ellipsized, rendered as a real `<a href="<url>">` (verbatim URL per D20; href kept for middle-click/copy-link). Plain click is intercepted: it **arms** the bookmark for update tracking and routes in-shell via `navigateUrl(url)` (pushState that preserves the query string, unlike `navigate()`). Hover shows a floating card beside the sidebar: decoded target path + saved params as a key/value grid ("no params" when none); card hides during rename/delete. Hover also reveals ✎ rename (inline `<input>`, Enter/blur commits, Escape cancels) and ✕ delete (no confirm). Active bookmark (url == current URL) is highlighted.
 - Order: creation time. Duplicates allowed.
 - **Bookmark updating (D38):** the armed bookmark `{id, url}` lives in sessionStorage `fused.armedBookmark` (survives refresh, not new tabs). `breadcrumb.js` renders a hidden "Update bookmark" button left of "+ Bookmark"; `syncUpdateButton()` shows it iff armed, same pathname, and `location.search` differs from the armed url's search. Clicking it overwrites the bookmark's url with the current one and re-arms against it. A pathname change disarms permanently; deleting the armed bookmark disarms. Param changes are observed by `main.js` wrapping `history.replaceState` (the iframe runtime writes params through the parent's replaceState, which fires no native event) to dispatch a `fused:urlchange` window event; sidebar delete also dispatches it instead of importing breadcrumb (one-way deps, D28).
@@ -231,39 +234,21 @@ Layout: `#app` becomes two-column flex — fixed sidebar (~220px, `--bg-alt`, ri
 
 ## 7. Template contract
 
-- Server-side registry (in `server.py`) — **ext → ordered list of template names, first = default** (M8). A name is a folder name, never a filename:
-```python
-TEMPLATES = {
-    ".parquet": ["table"],                # binary — code mode would be garbage
-    ".csv": ["csv", "code"], ".tsv": ["csv", "code"],
-    ".xlsx": ["xlsx"],
-    ".json": ["tree", "code"], ".geojson": ["tree", "code"],
-    ".md": ["markdown", "code"],
-    ".svg": ["image", "code"],
-    ".png": ["image"], ".jpg": ["image"], ".jpeg": ["image"], ".gif": ["image"], ".webp": ["image"],
-    ".pdf": ["pdf"],
-    ".mp4": ["media"], ".mov": ["media"], ".m4v": ["media"], ".webm": ["media"],
-    ".mp3": ["media"], ".wav": ["media"], ".m4a": ["media"], ".ogg": ["media"], ".flac": ["media"],
-    ".py": ["code", "api"],              # api = main() run form (D63)
-    ".js": ["code"], ".ts": ["code"], ".sh": ["code"],
-    ".yaml": ["code"], ".yml": ["code"], ".toml": ["code"], ".css": ["code"],
-    ".tif": ["geotiff"], ".tiff": ["geotiff"],            # in-browser decode, no reader.py (D64)
-    ".nc": ["netcdf"], ".nc4": ["netcdf"], ".cdf": ["netcdf"],
-    ".txt": ["text", "code"], ".log": ["text", "code"],
-    ".html": ["_render", "code"], ".htm": ["_render", "code"],  # hardcoded — registry-exempt (CT-4); _render = shell sentinel (PT-12)
-}
-
-# Directory templates (SPEC PT-13/D65): a DIRECTORY whose basename carries one
-# of these extensions resolves through the same name model as files (a `.zarr`
-# store is one dataset spread across many chunk files). Package-only — the user
-# registry is a per-file suffix match and doesn't apply to directories.
-DIR_TEMPLATES = {
-    ".zarr": ["zarr"],
+- Built-in bindings ship as data — **`fused_render/templates/registry.json`** (D73), exactly the user-registry format: **suffix-pattern key → ordered list of template names, first = default** (M8). A name is a folder name, never a filename:
+```json
+{
+  ".parquet": ["table"],
+  ".csv": ["csv", "code"], ".tsv": ["csv", "code"],
+  ".json": ["tree", "code"],
+  ".py": ["code", "api"],
+  ".html": ["_render", "code"], ".htm": ["_render", "code"],
+  ".zarr/": ["zarr"],
+  "…": ["etc"]
 }
 ```
-`_templates_for(path, is_dir)` branches on `is_dir`: a directory resolves `DIR_TEMPLATES` by the extension on `os.path.basename(os.path.normpath(path))` through the **same** `_resolve_mode_list` as files, so entries come out identically shaped.
-- **Name resolution — one rule everywhere (SPEC PT-6):** `<name>` → `~/.fused-render/<name>/template.html` if it exists, else `fused_render/templates/<name>/template.html`, else unresolvable. Applies identically to built-in table entries and registry entries; a user folder shadows a built-in of the same name. **Sentinel special case (SPEC PT-12):** a `_`-prefixed name never resolves through the filesystem — the resolver emits `{"mode": "_<name>", "path": null, "icon": null}` directly (only `_render` exists today, on the hardcoded `.html`/`.htm` list); in a *registry* list a `_`-prefixed name is invalid (dropped + `template_error` — sentinel namespace is shell-owned). `icon` = the `icon.svg` beside the resolved `template.html`, or `null`. `templates/vendor/` has no `template.html` so it can never resolve; the `/template-assets` mount is unchanged.
-- **User overrides (M7 + M8, SPEC §16):** the resolver consults `~/.fused-render/registry.json` before the dict above (after the `.html`/`.htm` exemption). Keys are dotted extensions matched **longest-suffix, case-insensitive** against the basename (so `.tar.gz` works and beats `.gz`); values are `list | string | null`: a **list** is the full ordered mode list (replace semantics; the `"..."` entry splices the built-in list in place — dedup against explicit names, more than one `"..."` invalidates the entry, splice with no built-ins expands to nothing); a **string** is a single-mode list of that name (unchanged D50 meaning); **`null`** = no template at all, shell fallback. Names must be a single safe path segment (no `/`, `\`, `.`, `..`) since they're joined into a path — correctness guard, not auth (D3). Validation is per entry: an unresolvable entry is dropped and `template_error` on the stat payload names the first problem; a user value resolving to nothing falls back to the built-in list. The registry is read on every resolution (no restart, no cache); missing dir/registry is a clean no-op. Constants `USER_TEMPLATES_DIR`/`USER_REGISTRY` in `server.py`; runtime untouched — the shell obeys `templates` (§3, §6), and M4 auto-reload already live-reloads previews when the user edits their template or readers (registry edits apply on next stat, open previews don't watch it).
+(Full mapping + per-row rationale: SPEC PT-7 table.) `_templates_for(path, is_dir)` matches `os.path.basename(os.path.normpath(path))` against both registries with **one matcher** (`_match_registry`, SPEC CT-3): keys are dot-anchored suffix patterns — compound (`.tar.gz`), `*` wildcard = exactly one whole non-empty segment, trailing `/` = **directory key** (a `.zarr` store matches `".zarr/"`; dir keys match only directories, file keys only files). Specificity: more segments > fewer, ties broken rightmost-first with literal > `*`; a match needs a non-empty stem. Both registries are read per resolution by one loader (`_load_registry`); a built-in parse failure surfaces as `template_error`, and a test pins the shipped file (parses, every name resolves).
+- **Name resolution — one rule everywhere (SPEC PT-6):** `<name>` → `~/.fused-render/templates/<name>/template.html` if it exists, else `fused_render/templates/<name>/template.html`, else unresolvable. Applies identically to built-in and user registry entries; a user folder shadows a built-in of the same name. **Sentinel special case (SPEC PT-12):** a name in `KNOWN_SENTINELS` (`{"_render"}`) never resolves through the filesystem — the resolver emits `{"mode": "_<name>", "path": null, "icon": null}` directly, and it is referenceable from either registry's lists (D73); any other `_`-prefixed name is invalid (dropped + `template_error` — the rest of the sentinel namespace is shell-owned). `icon` = the `icon.svg` beside the resolved `template.html`, or `null`. `templates/vendor/` has no `template.html` so it can never resolve; the `/template-assets` mount is unchanged.
+- **User overrides (M7 + M8, SPEC §16):** the resolver consults `~/.fused-render/templates/registry.json`, and any user match beats the built-in registry — including for `.html`/`.htm` (the old CT-4 exemption is dropped, D73) and for directory keys (D65's package-only restriction is dropped, D73). Keys follow the same CT-3 grammar above; values are `list | string | null`: a **list** is the full ordered mode list (replace semantics; the `"..."` entry splices the built-in list in place — dedup against explicit names, more than one `"..."` invalidates the entry, splice with no built-ins expands to nothing); a **string** is a single-mode list of that name (unchanged D50 meaning); **`null`** = no template at all, shell fallback (plain listing for a directory key). Names must be a single safe path segment (no `/`, `\`, `.`, `..`) since they're joined into a path — correctness guard, not auth (D3). Validation is per entry: an unresolvable entry is dropped and `template_error` on the stat payload names the first problem; a user value resolving to nothing falls back to the built-in list. Registries are read on every resolution (no restart, no cache); missing dir/registry is a clean no-op. Constants `BUILTIN_REGISTRY`/`USER_TEMPLATES_DIR`/`USER_REGISTRY` in `server.py`; runtime untouched — the shell obeys `templates` (§3, §6), and M4 auto-reload already live-reloads previews when the user edits their template or readers (registry edits apply on next stat, open previews don't watch it).
 - Template receives target file as read-only param `_file`. Templates are ordinary renderable HTML: same runtime, same powers. Templates reach the filesystem through the runtime IO helpers (`fused.rawUrl`/`stat`/`readFile`/`writeFile`), never by fetching `/api/fs/*` URLs directly — one code path, and the write guard/lock come for free. Helper files sit inside the folder as `reader.py` etc.; relative `runPython('./reader.py', …)` just works because the `html` path sent to `/api/run` is the template's real path. Each built-in folder also ships a **monochrome `icon.svg`** (single fill — `currentColor` or plain black, only alpha matters since the shell masks it; square viewBox, 24×24 suggested, legible at 16px).
 - Vendored JS libraries (marked, CodeMirror; and the sci decoders `geotiff.bundle.mjs`, `netcdfjs.bundle.mjs`, `zarrita.bundle.mjs`) live in `fused_render/templates/vendor/` and are served from a dedicated absolute mount `GET /template-assets/*` (a relative `<script src>`/`import` in a template would resolve against `/render`, not the templates dir). All committed local files — no CDN/network at runtime (D3). Regenerate the CodeMirror bundle via `scripts/vendor-codemirror/build.sh`, and the sci bundles via `scripts/vendor-sci/build.sh` (both Node 22; each emits a single self-contained ESM module).
 - The sciViz core shared by the `geotiff/`, `netcdf/`, and `zarr/` templates (colormap LUTs, stretch/stats/histogram, canvas draw, and the plain-DOM UI kit) is first-party, not vendored — it lives in `fused_render/templates/shared/sciviz.mjs` and is served from its own absolute mount `GET /template-shared/*` (kept separate from `/template-assets` so `vendor/` stays third-party-only; like `vendor/`, `shared/` has no `template.html` so it can never resolve as a template name).

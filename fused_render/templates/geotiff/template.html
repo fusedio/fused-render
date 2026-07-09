@@ -1,412 +1,641 @@
-<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>GeoTIFF preview</title>
-<!--
-  fused-render GeoTIFF / COG preview template — zero React, no build step.
-  Port of app/src/ui/components/sci/GeoTiffPreview.tsx (+ sciViz.ts, SciHistogram,
-  SciPreviewParts, useCanvasHover). geotiff is vendored (scripts/vendor-sci).
-
-  Input: the reserved `_file` param (absolute filesystem path). Small files are
-  fetched whole via the raw endpoint; files >32 MiB use geotiff.fromUrl, which
-  range-requests like a COG (Starlette FileResponse honors Range).
--->
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>GeoTIFF map preview</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js"></script>
 <style>
-  /* ===== dark theme — fused-render palette (matches the shell + sibling templates) ===== */
-  :root{
-    color-scheme: dark;
-    --background:#131417;
-    --foreground:#e8eaed;
-    --card:#1b1d21;
-    --muted:#2a2d33;
-    --muted-foreground:#9aa0a6;
-    --border:#2a2d33;
-    --input:#2a2d33;
-    --ring:#E5FF44;
-    --primary:#e8eaed;
-    --muted-30:rgba(42,45,51,0.35);
-  }
-  *{ box-sizing:border-box; }
-  html,body{ height:100%; margin:0; }
-  body{
-    background:var(--background); color:var(--foreground);
-    font:13px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-    overflow:hidden; -webkit-font-smoothing:antialiased;
-  }
-  .mono{ font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-  .app{ height:100vh; display:flex; flex-direction:column; }
-  /* top bar */
-  .topbar{ height:44px; flex:0 0 auto; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:0 16px; border-bottom:1px solid var(--border); }
-  .titlewrap{ display:flex; align-items:center; gap:10px; min-width:0; }
-  .badge{ font-size:11px; font-weight:600; letter-spacing:.02em; padding:2px 8px; border:1px solid var(--border); border-radius:999px; color:var(--muted-foreground); text-transform:uppercase; white-space:nowrap; }
-  .fname{ font-family:ui-monospace,monospace; font-size:12px; color:var(--foreground); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  /* surface */
-  .surface{ flex:1 1 auto; min-height:0; overflow:auto; position:relative; }
-  /* no-file / empty state card */
-  .card{ height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; padding:32px; text-align:center; }
-  .card .ico{ font-size:34px; opacity:.4; }
-  .card .t{ font-size:14px; color:var(--foreground); }
-  .card .s{ font-size:12px; color:var(--muted-foreground); max-width:26rem; }
-  /* preview layout */
-  .preview{ height:100%; display:flex; flex-direction:row; }
-  .mainpane{ display:flex; flex-direction:column; flex:1 1 auto; min-width:0; min-height:0; }
-  .canvas-area{ flex:1 1 auto; min-height:10rem; display:flex; align-items:center; justify-content:center; background:var(--muted-30); padding:16px; }
-  canvas.viz{ max-width:100%; max-height:100%; width:100%; height:100%; object-fit:contain; cursor:crosshair; }
-  .hover-readout{ flex:0 0 auto; height:24px; display:flex; align-items:center; overflow:hidden; white-space:nowrap; border-top:1px solid var(--border); padding:0 12px; font-family:ui-monospace,monospace; font-size:11px; color:var(--muted-foreground); }
-  .controls{ flex:0 0 auto; display:flex; flex-wrap:wrap; align-items:center; gap:6px 16px; border-top:1px solid var(--border); padding:6px 12px; }
-  .hist-wrap{ flex:0 0 auto; border-top:1px solid var(--border); padding:8px; }
-  .meta-pane{ flex:0 0 auto; overflow:auto; border-top:1px solid var(--border); padding:16px; display:flex; flex-direction:column; gap:12px; }
-  @media (min-width:900px){ .meta-pane{ width:288px; border-top:0; border-left:1px solid var(--border); } }
-  /* stacked mode: grow + scroll — a viewport-clamped height would squeeze .mainpane and its fixed children would paint over the meta pane */
-  @media (max-width:899px){ .preview{ flex-direction:column; height:auto; min-height:100%; } .canvas-area{ height:40vh; } }
-  /* control widgets */
-  label.field{ display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--muted-foreground); }
-  label.field select{ height:24px; border:1px solid var(--input); background:transparent; color:var(--foreground); border-radius:4px; padding:0 4px; font-family:ui-monospace,monospace; font-size:11px; }
-  label.field select option{ background:var(--card); }
-  /* histogram */
-  .collapsible{ border:1px solid var(--border); border-radius:6px; }
-  .collapsible>summary{ cursor:pointer; user-select:none; padding:6px 12px; font-size:12px; font-weight:500; color:var(--muted-foreground); list-style:none; }
-  .collapsible>summary::-webkit-details-marker{ display:none; }
-  .collapsible>summary:hover{ color:var(--foreground); }
-  .collapsible>.body{ border-top:1px solid var(--border); padding:8px 12px; }
-  .hist-toolbar{ display:flex; justify-content:flex-end; }
-  .log-btn{ border:1px solid var(--border); background:transparent; color:var(--muted-foreground); border-radius:4px; padding:0 6px; font-family:ui-monospace,monospace; font-size:10px; cursor:pointer; }
-  .log-btn[aria-pressed=true]{ border-color:color-mix(in oklab,var(--foreground) 40%,transparent); color:var(--foreground); }
-  canvas.hist{ width:100%; height:120px; border-radius:3px; background:var(--muted-30); image-rendering:pixelated; display:block; margin-top:4px; }
-  .hist-canvas-wrap{ position:relative; }
-  .hist-tip{ position:absolute; top:6px; z-index:5; pointer-events:none; background:var(--card); border:1px solid var(--border); border-radius:4px; padding:4px 6px; font-family:ui-monospace,monospace; font-size:10px; color:var(--foreground); white-space:nowrap; box-shadow:0 4px 12px rgba(0,0,0,.4); }
-  .hist-tip .rng{ color:var(--muted-foreground); margin-bottom:2px; }
-  .hist-tip .row{ display:flex; align-items:center; gap:5px; }
-  .hist-tip .sw{ width:8px; height:8px; border-radius:2px; flex:0 0 auto; }
-  .hist-axis{ display:flex; justify-content:space-between; font-family:ui-monospace,monospace; font-size:10px; color:var(--muted-foreground); margin-top:2px; }
-  .stat-line{ font-family:ui-monospace,monospace; font-size:10px; color:var(--muted-foreground); margin:2px 0 0; }
-  /* meta list */
-  dl.meta{ display:grid; grid-template-columns:auto 1fr; gap:4px 16px; font-size:12px; margin:0; }
-  dl.meta dt{ color:var(--muted-foreground); }
-  dl.meta dd{ margin:0; font-family:ui-monospace,monospace; color:var(--foreground); word-break:break-word; }
-  pre.json{ max-height:16rem; overflow:auto; white-space:pre-wrap; word-break:break-word; font-family:ui-monospace,monospace; font-size:11px; color:var(--foreground); margin:0; }
-  pre.json .j-key{ color:#7dd3fc; }
-  pre.json .j-str{ color:#86efac; }
-  pre.json .j-num{ color:#fbbf24; }
-  pre.json .j-bool,pre.json .j-null{ color:#c4b5fd; }
-  pre.json .j-punc{ color:var(--muted-foreground); }
-  /* status */
-  .status{ padding:16px; font-size:13px; color:var(--muted-foreground); }
-  .status.error{ color:#ff6b6b; }
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: #e8eaed; background: #131417; font-size: 13px; }
+  #map { position: absolute; inset: 0; }
+  .panel { position: absolute; background: rgba(19,20,23,.92); border: 1px solid #2a2d33;
+    border-radius: 10px; padding: 10px 12px; backdrop-filter: blur(6px); z-index: 10; }
+  #topbar { top: 10px; left: 10px; right: 10px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  #topbar label { color: #9aa0a6; margin: 0 2px 0 6px; }
+  input[type=text], select { font: inherit; color: #e8eaed; background: #1b1d21;
+    border: 1px solid #2a2d33; border-radius: 6px; padding: 4px 8px; }
+  #path { flex: 1; min-width: 200px; }
+  button { font: inherit; color: #e8eaed; background: #2b5fd9; border: 1px solid #2b5fd9;
+    border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+  button:hover { background: #3a6ee8; }
+  button.ghost { background: transparent; border-color: #2a2d33; color: #9aa0a6; }
+  button.ghost:hover { color: #e8eaed; border-color: #4a4d55; }
+  #histPanel { right: 10px; bottom: 26px; width: 340px; user-select: none; }
+  #histPanel h2, #metaPanel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: #9aa0a6; margin: 0 0 6px; display: flex; justify-content: space-between; align-items: center; }
+  #histCanvas { width: 100%; height: 110px; display: block; cursor: crosshair; }
+  #histStats { color: #9aa0a6; font-size: 11px; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  #histActions { display: flex; gap: 6px; margin-top: 6px; }
+  #histActions button { font-size: 11px; padding: 2px 8px; }
+  #readout { left: 56px; bottom: 26px; font-size: 12px; font-variant-numeric: tabular-nums;
+    color: #cdd0d4; max-width: 420px; }
+  #readout b { color: #8ab4ff; }
+  #status { position: absolute; left: 50%; top: 64px; transform: translateX(-50%);
+    background: rgba(19,20,23,.9); border: 1px solid #2a2d33; border-radius: 999px;
+    padding: 4px 14px; color: #9aa0a6; z-index: 20; display: none; }
+  #status.err { color: #ff7b72; display: block; }
+  /* Cap height so the info panel stops above the histogram panel pinned
+     bottom-right (#histPanel: bottom 26px + ~215px tall) instead of spilling
+     over it. */
+  #metaPanel { right: 10px; top: 58px; width: 430px; max-height: calc(100vh - 58px - 260px); overflow: auto; display: none; }
+  #metaPanel table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  #metaPanel td { padding: 3px 6px; border-bottom: 1px solid #23262c; vertical-align: top; word-break: break-all; }
+  #metaPanel td:first-child { color: #9aa0a6; white-space: nowrap; }
+  #metaPanel th { color: #9aa0a6; font-weight: 500; text-align: left; padding: 3px 6px; border-bottom: 1px solid #23262c; }
+  #explorer { left: 10px; top: 58px; width: 420px; max-height: 65vh; display: none; z-index: 30; }
+  #crumbs { font-size: 12px; margin-bottom: 8px; color: #9aa0a6; }
+  #crumbs a { color: #8ab4ff; cursor: pointer; }
+  #explorerList { max-height: 48vh; overflow: auto; border: 1px solid #23262c; border-radius: 6px; }
+  .row { display: flex; align-items: center; gap: 8px; padding: 5px 10px; cursor: pointer;
+    font-size: 13px; border-bottom: 1px solid #1e2025; }
+  .row:hover { background: #23262c; }
+  .row .ic { width: 18px; text-align: center; }
+  .row .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .sz { color: #6b7178; font-size: 11px; }
+  input[type=range] { vertical-align: middle; width: 90px; }
+  .maplibregl-ctrl-attrib { font-size: 10px; }
+  #imgFallback { position: absolute; inset: 0; display: none; overflow: auto;
+    background: #0c0d0f; z-index: 5; text-align: center; padding: 60px 20px 20px; }
+  #imgFallback img { max-width: 96%; image-rendering: pixelated; border: 1px solid #2a2d33; }
 </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="imgFallback"><img id="fallbackImg" /></div>
 
-<div class="app">
-  <header class="topbar">
-    <div class="titlewrap"><span class="badge">GeoTIFF</span><span class="fname" id="fname">no file</span></div>
-  </header>
-  <main class="surface" id="surface"></main>
-</div>
+  <div class="panel" id="topbar">
+    <button id="browse" class="ghost">📁</button>
+    <input type="text" id="path" placeholder="/absolute/path/to/file.tif" />
+    <button id="load">Load</button>
+    <span id="modeWrap"><label for="mode">view</label>
+      <select id="mode"><option value="auto">auto</option><option value="single">band</option><option value="rgb">RGB</option></select></span>
+    <span id="bandRow"><select id="band"></select></span>
+    <span id="rgbRow" style="display:none">
+      <label>R</label><select id="rSel"></select><label>G</label><select id="gSel"></select><label>B</label><select id="bSel"></select></span>
+    <span id="cmapRow"><label for="cmap">cmap</label>
+      <select id="cmap"><option>viridis</option><option>magma</option><option>turbo</option><option value="rdbu">RdBu</option><option value="grays">grays</option></select></span>
+    <span><label for="opacity">opacity</label><input type="range" id="opacity" min="0" max="100" value="100" /></span>
+    <span><label for="basemap">basemap</label><input type="checkbox" id="basemap" checked /></span>
+    <button id="metaBtn" class="ghost">info</button>
+    <button id="fitBtn" class="ghost">⤢ fit</button>
+  </div>
 
-<script type="module">
-import * as geotiff from "/template-assets/geotiff.bundle.mjs";
-import { clampByte, COLORMAPS, percentileStretch, minMaxStretch, computeStretch, fmtNum, bucket, drawHeatmap, el, statusEl, metaList, collapsible, jsonBlock, tinySelect, makeHistogram, attachHover } from "/template-shared/sciviz.mjs";
+  <div id="status"></div>
 
-/* ===========================================================================
- * GeoTIFF-only draw helpers — RGB compositing has no equivalent in netcdf/zarr
- * (both are single-band heatmaps), so these stay local rather than joining
- * the shared sciViz core in /template-shared/sciviz.mjs.
- * ======================================================================== */
-function drawRgb(canvas,r,g,b,alpha,width,height){
-  const ctx=canvas.getContext("2d"); if(!ctx) return;
-  canvas.width=width; canvas.height=height;
-  const img=ctx.createImageData(width,height); const out=img.data; const n=width*height;
-  for(let i=0;i<n;i++){ const o=i*4; out[o]=clampByte(r[i]); out[o+1]=clampByte(g[i]); out[o+2]=clampByte(b[i]); out[o+3]=alpha?clampByte(alpha[i]):255; }
-  ctx.putImageData(img,0,0);
+  <div class="panel" id="explorer">
+    <div id="crumbs"></div>
+    <div id="explorerList"></div>
+    <label style="display:block;margin-top:8px;color:#9aa0a6;font-size:12px">
+      <input type="checkbox" id="showAll" /> show all files</label>
+  </div>
+
+  <div class="panel" id="metaPanel"><h2>Raster info <a id="metaClose" style="cursor:pointer;color:#8ab4ff">×</a></h2><div id="metaBody"></div></div>
+
+  <div class="panel" id="readout">…</div>
+
+  <div class="panel" id="histPanel">
+    <h2>Viewport histogram <span id="histMode" style="text-transform:none;letter-spacing:0"></span></h2>
+    <canvas id="histCanvas" width="640" height="220"></canvas>
+    <div id="histStats"></div>
+    <div id="histActions">
+      <label style="color:#9aa0a6;font-size:11px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="autoStretch" /> auto stretch</label>
+      <button id="stretchBtn" class="ghost" title="Use this viewport's 2–98th pct as the color stretch">stretch → viewport</button>
+      <button id="stretchReset" class="ghost">reset stretch</button>
+      <button id="clipReset" class="ghost" style="display:none">clear clip</button>
+    </div>
+  </div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const els = ['path','load','mode','band','rgbRow','bandRow','rSel','gSel','bSel','cmap','cmapRow',
+  'opacity','basemap','metaBtn','metaPanel','metaBody','metaClose','fitBtn','status','readout',
+  'histCanvas','histStats','histMode','autoStretch','stretchBtn','stretchReset','clipReset','browse','explorer',
+  'crumbs','explorerList','showAll','imgFallback','fallbackImg']
+  .reduce((o, k) => (o[k] = $(k), o), {});
+
+const DEFAULT_FILE = "";
+const P = {
+  file:  () => fused.params.get('file') || fused.params.get('_file') || DEFAULT_FILE,
+  mode:  () => fused.params.get('mode') || 'auto',
+  band:  () => fused.params.get('band') || '1',
+  r:     () => fused.params.get('r') || '1',
+  g:     () => fused.params.get('g') || '2',
+  b:     () => fused.params.get('b') || '3',
+  cmap:  () => fused.params.get('cmap') || 'viridis',
+  stretch: () => fused.params.get('stretch') || '',
+  autoStretch: () => (fused.params.get('autostretch') ?? '1') === '1',
+  vlo:   () => fused.params.get('vlo') || '',
+  vhi:   () => fused.params.get('vhi') || '',
+  dir:   () => fused.params.get('dir') || P.file().replace(/\/[^/]*$/, '') || '~',
+  showAll:() => fused.params.get('showall') === '1',
+};
+const fmt = (x, d) => (x === null || x === undefined || !isFinite(x)) ? '—'
+  : Math.abs(x) >= 1000 ? Number(x).toLocaleString('en-US', {maximumFractionDigits: 0})
+  : Number(x).toFixed(d === undefined ? (Math.abs(x) >= 10 ? 1 : 3) : d);
+const human = n => n > 1e9 ? (n/1e9).toFixed(2)+' GB' : n > 1e6 ? (n/1e6).toFixed(1)+' MB' : Math.round(n/1e3)+' KB';
+function status(msg, err){ els.status.textContent = msg || ''; els.status.style.display = msg ? 'block' : 'none'; els.status.className = err ? 'err' : ''; }
+
+// ---------------- map ----------------
+const DARK = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
+const map = new maplibregl.Map({ container: 'map', style: DARK, center: [0, 20], zoom: 1.5,
+  attributionControl: {compact: true}, fadeDuration: 80 });
+map.addControl(new maplibregl.NavigationControl({showCompass: false}), 'bottom-left');
+map.addControl(new maplibregl.ScaleControl({unit: 'metric'}), 'bottom-right');
+// NOTE: don't gate on map.on('load') — in the fused-render shell the map can
+// initialize before the container has its final size and 'load' never fires
+// until a resize. Poll isStyleLoaded() and force a resize instead.
+async function styleReady(){
+  map.resize();
+  for (let i = 0; i < 200 && !map.isStyleLoaded(); i++)
+    await new Promise(r => setTimeout(r, 50));
+  map.resize();
 }
-function stretchToBytes(data,s){ const out=new Uint8ClampedArray(data.length); for(let i=0;i<data.length;i++) out[i]=bucket(data[i],s); return out; }
 
-/* ===========================================================================
- * Shell — top bar + fetch helpers. Input is the reserved `_file` param.
- * ======================================================================== */
-const surface=document.getElementById("surface");
-const fnameEl=document.getElementById("fname");
-function setFname(n){ fnameEl.textContent=n||"no file"; }
-function baseName(u){ try{ const p=new URL(u,location.href).pathname; return decodeURIComponent(p.replace(/\/+$/,"").split("/").pop()||u); }catch{ return u; } }
-function fetchHint(e,what){ return e instanceof TypeError ? new Error(`Failed to fetch ${what} — network failure or the raw endpoint returned no body.`) : e; }
-async function fetchBytes(url){ let res; try{ res=await fetch(url); }catch(e){ throw fetchHint(e,url); } if(!res.ok) throw new Error(`HTTP ${res.status} fetching ${url}`); return await res.arrayBuffer(); }
+// ---------------- daemon + state ----------------
+let daemon = null;       // {port}
+let meta = null;         // /meta payload for current file
+let tileMode = false;    // daemon tiles vs runPython image fallback
+let refineTimer = null, histAbort = null;
 
-/* ===========================================================================
- * GeoTIFF controller — ports GeoTiffPreview.tsx render + interaction logic.
- * ======================================================================== */
-const MAX_PREVIEW=1024;
-const COLORMAP_OPTIONS=[["viridis","viridis"],["magma","magma"],["gray","gray"]];
-const STRETCH_OPTIONS=[["p2-98","2–98%"],["minmax","min–max"]];
-function ctorDtype(a){
-  if(a instanceof Uint8Array||a instanceof Uint8ClampedArray) return "uint8";
-  if(a instanceof Int8Array) return "int8";
-  if(a instanceof Uint16Array) return "uint16";
-  if(a instanceof Int16Array) return "int16";
-  if(a instanceof Uint32Array) return "uint32";
-  if(a instanceof Int32Array) return "int32";
-  if(a instanceof Float32Array) return "float32";
-  if(a instanceof Float64Array) return "float64";
-  return "unknown";
+async function ensureDaemon(){
+  if (daemon && daemon.port) return daemon;
+  const r = await fused.runPython('./tile_server.py', {});
+  if (r && r.port) daemon = r;
+  return daemon;
 }
-function fmt(n){ return Number.isInteger(n)?String(n):n.toFixed(4); }
-const TIFF_COMPRESSION={1:"none",5:"LZW",6:"JPEG (old)",7:"JPEG",8:"deflate",32946:"deflate",32773:"packbits",34887:"LERC",50000:"zstd",50001:"webp"};
-function tiffUnit(geoKeys){ if(!geoKeys) return ""; if(geoKeys.ProjLinearUnitsGeoKey===9001) return "m"; if(geoKeys.ProjectedCSTypeGeoKey==null && geoKeys.GeographicTypeGeoKey!=null) return "°"; return ""; }
-function fmtPair(a,b,unit){ if(a==null||b==null) return null; return `${fmtNum(Math.abs(a))} × ${fmtNum(Math.abs(b))}${unit?` ${unit}`:""}`; }
-function nVals(n){ return `[${n} value${n===1?"":"s"}]`; }
-/* Drop the huge binary tag arrays; cap other typed/array tags at 64 entries so the JSON stays readable. */
-function sanitizeDir(dir){
-  const skip=new Set(["StripOffsets","StripByteCounts","TileOffsets","TileByteCounts","ColorMap"]);
-  const out={};
-  for(const [k,v] of Object.entries(dir||{})){
-    const isArr=ArrayBuffer.isView(v)||Array.isArray(v);
-    if(isArr && (skip.has(k) || v.length>64)) out[k]=nVals(v.length);
-    else if(isArr) out[k]=Array.from(v);
-    else out[k]=v;
+const dURL = p => `http://127.0.0.1:${daemon.port}${p}`;
+
+function renderQuery(){
+  const q = new URLSearchParams({ file: P.file(), mode: P.mode(), band: P.band(),
+    r: P.r(), g: P.g(), b: P.b(), cmap: P.cmap() });
+  if (P.stretch()) q.set('stretch', P.stretch());
+  if (P.vlo() !== '' && P.vhi() !== ''){ q.set('vlo', P.vlo()); q.set('vhi', P.vhi()); }
+  return q.toString();
+}
+
+// ---------------- raster layer (tile mode) ----------------
+function setRasterTiles(){
+  const url = dURL(`/tile/{z}/{x}/{y}.png?${renderQuery()}`);
+  const src = map.getSource('raster');
+  if (src){ src.setTiles([url]); return; }
+  const lb = meta.lonlat_bounds;
+  const res = (meta.merc_bbox[2] - meta.merc_bbox[0]) / meta.width;
+  const maxzoom = Math.min(24, Math.ceil(Math.log2(2 * Math.PI * 6378137 / (256 * res))) + 1);
+  map.addSource('raster', { type: 'raster', tiles: [url], tileSize: 256, minzoom: 0,
+    maxzoom, bounds: [lb.west, lb.south, lb.east, lb.north], volatile: false });
+  map.addLayer({ id: 'raster', type: 'raster', source: 'raster',
+    paint: { 'raster-opacity': +els.opacity.value / 100, 'raster-fade-duration': 80,
+             'raster-resampling': 'nearest' } });
+}
+
+function fitToRaster(instant){
+  const lb = meta && meta.lonlat_bounds;
+  if (!lb) return;
+  // duration 0 on initial load: an animated fit is discarded if the tab is
+  // hidden (rAF frozen), and instant is also simply faster to first view
+  map.fitBounds([[lb.west, lb.south], [lb.east, lb.north]],
+    {padding: 60, duration: instant === false ? 400 : 0, maxZoom: 18});
+}
+
+// ---------------- fallback (unsupported compression / no georef) ----------------
+async function loadFallback(){
+  status('Reading (fallback engine)…');
+  const r = await fused.runPython('./tiff_reader.py', { file: P.file(), mode: P.mode(),
+    band: P.band(), r: P.r(), g: P.g(), b: P.b(), cmap: P.cmap(), max_cells: '250000',
+    stretch: P.stretch(), vlo: P.vlo(), vhi: P.vhi() }).catch(e => ({error: String(e.message || e)}));
+  if (!r || r.error){ status((r && r.error) || 'read failed', true); return; }
+  meta = meta || r;
+  const png = 'data:image/png;base64,' + r.image.png;
+  if (r.georef && r.image.merc_bbox){
+    const [x0, y0, x1, y1] = r.image.merc_bbox;
+    const m2l = (x, y) => [x / 6378137 * 180 / Math.PI,
+      (2 * Math.atan(Math.exp(y / 6378137)) - Math.PI / 2) * 180 / Math.PI];
+    const co = [m2l(x0, y1), m2l(x1, y1), m2l(x1, y0), m2l(x0, y0)];
+    const src = map.getSource('rimg');
+    if (src){ src.updateImage({url: png, coordinates: co}); }
+    else {
+      map.addSource('rimg', {type: 'image', url: png, coordinates: co});
+      map.addLayer({id: 'rimg', type: 'raster', source: 'rimg',
+        paint: {'raster-opacity': +els.opacity.value / 100, 'raster-fade-duration': 80}});
+    }
+    if (r.lonlat_bounds){ meta.lonlat_bounds = meta.lonlat_bounds || r.lonlat_bounds; }
+    drawStaticHist(r);
+  } else {
+    // non-georeferenced: plain image view
+    els.imgFallback.style.display = 'block';
+    els.fallbackImg.src = png;
+    drawStaticHist(r);
   }
-  return out;
-}
-/* geotiff 3.x fileDirectory is a lazy ImageFileDirectory (Map-backed) — plain property reads return undefined. */
-function fdTag(fd, name){ if(!fd) return undefined; if(typeof fd.getValue!=="function") return fd[name]; try{ return fd.getValue(name); }catch{ return undefined; } } // sync: eager/actualized tags only; deferred → undefined
-const DEFERRED_ARRAY_TAGS={273:"StripOffsets",279:"StripByteCounts",320:"ColorMap",324:"TileOffsets",325:"TileByteCounts"};
-async function dumpFileDirectory(fd){
-  if(!fd || typeof fd.toObject!=="function") return sanitizeDir(fd); // plain-object fileDirectory (geotiff 2.x shape)
-  for(const tag of [...fd.deferredFields.keys()]){ try{ await fd.loadValue(tag); }catch{ /* skip unreadable */ } } // resolve small deferred tags (Software, DateTime, GDAL_METADATA, …) into real values
-  const out=sanitizeDir(fd.toObject()); // actualized tags under their proper TIFF names
-  for(const [tag,arr] of fd.deferredArrays) out[DEFERRED_ARRAY_TAGS[tag] ?? `Tag${tag}`]=nVals(arr.length); // huge offset/bytecount arrays stay unfetched
-  return out;
+  status('');
+  if (r.note) status(r.note);
 }
 
-// Input is the reserved `_file` param — an absolute filesystem path. Small files
-// are fetched whole; files over RANGE_THRESHOLD use geotiff.fromUrl over the raw
-// endpoint, which range-requests like a COG (Starlette FileResponse honors Range).
-const RANGE_THRESHOLD=32*1024*1024;
-function noFileCard(){
-  surface.replaceChildren(el("div",{class:"card"},
-    el("div",{class:"ico"},"🗺"),
-    el("div",{class:"t"},"No GeoTIFF selected"),
-    el("div",{class:"s"},"This template renders the file named by the _file parameter."),
-  ));
+// progressive refine of the fallback image to the current viewport
+function scheduleFallbackRefine(){
+  if (tileMode || !meta || !meta.lonlat_bounds) return;
+  clearTimeout(refineTimer);
+  refineTimer = setTimeout(async () => {
+    const lb = meta.lonlat_bounds, b = map.getBounds();
+    const fx0 = Math.max(0, (b.getWest() - lb.west) / (lb.east - lb.west));
+    const fx1 = Math.min(1, (b.getEast() - lb.west) / (lb.east - lb.west));
+    const fy0 = Math.max(0, (lb.north - b.getNorth()) / (lb.north - lb.south));
+    const fy1 = Math.min(1, (lb.north - b.getSouth()) / (lb.north - lb.south));
+    if (fx1 <= fx0 || fy1 <= fy0) return;
+    const win = (fx1 - fx0 > 0.98 && fy1 - fy0 > 0.98) ? '' : [fx0, fy0, fx1, fy1].map(v => v.toFixed(4)).join(',');
+    const r = await fused.runPython('./tiff_reader.py', { file: P.file(), mode: P.mode(),
+      band: P.band(), r: P.r(), g: P.g(), b: P.b(), cmap: P.cmap(), max_cells: '900000',
+      win, stretch: stretchStr() || '', vlo: P.vlo(), vhi: P.vhi() }).catch(() => null);
+    if (!r || r.error || !r.georef || !r.image.merc_bbox) return;
+    const [x0, y0, x1, y1] = r.image.merc_bbox;
+    const m2l = (x, y) => [x / 6378137 * 180 / Math.PI,
+      (2 * Math.atan(Math.exp(y / 6378137)) - Math.PI / 2) * 180 / Math.PI];
+    const co = [m2l(x0, y1), m2l(x1, y1), m2l(x1, y0), m2l(x0, y0)];
+    const png = 'data:image/png;base64,' + r.image.png;
+    const src = map.getSource('rimg2');
+    if (src) src.updateImage({url: png, coordinates: co});
+    else {
+      map.addSource('rimg2', {type: 'image', url: png, coordinates: co});
+      map.addLayer({id: 'rimg2', type: 'raster', source: 'rimg2',
+        paint: {'raster-opacity': +els.opacity.value / 100, 'raster-fade-duration': 80}});
+    }
+    drawStaticHist(r);
+  }, 300);
 }
-async function loadTarget(){
-  const file=fused.params.get("_file");
-  if(!file){ noFileCard(); return; }
-  setFname(baseName(file));
-  const rawUrl=fused.rawUrl(file);
-  renderGeoTiff(async()=>{
-    let size=null; try{ size=(await fused.stat(file)).size; }catch{ /* stat failed → just full-fetch */ }
-    if(size!=null && size>RANGE_THRESHOLD) return await geotiff.fromUrl(rawUrl); // COG range path
-    return geotiff.fromArrayBuffer(await fetchBytes(rawUrl));                     // full fetch
+
+// stretch used by fallback refines so colors stay stable while panning
+function stretchStr(){
+  if (P.stretch()) return P.stretch();
+  if (meta && meta.stretch) return meta.stretch.flat().join(',');
+  return '';
+}
+
+// ---------------- histogram ----------------
+const CH_COLORS = ['#ff6b6b', '#51cf66', '#5c9dff'];
+let lastHist = null;     // /hist payload
+let histSel = null;      // [px0, px1] during drag
+
+function viewportMercBbox(){
+  const b = map.getBounds();
+  const R = 6378137, l2m = (lon, lat) => [lon * Math.PI / 180 * R,
+    Math.log(Math.tan(Math.PI / 4 + Math.min(85, Math.max(-85, lat)) * Math.PI / 360)) * R];
+  const [w, s] = l2m(b.getWest(), b.getSouth()), [e, n] = l2m(b.getEast(), b.getNorth());
+  return [w, s, e, n];
+}
+
+async function refreshHist(){
+  if (!tileMode || !daemon) return;
+  const bbox = viewportMercBbox().join(',');
+  const q = new URLSearchParams({file: P.file(), mode: P.mode(), band: P.band(),
+    r: P.r(), g: P.g(), b: P.b(), bins: '60', bbox});
+  try {
+    if (histAbort) histAbort.abort();
+    histAbort = new AbortController();
+    const r = await fetch(dURL('/hist?' + q), {signal: histAbort.signal});
+    lastHist = await r.json();
+    drawHist();
+    maybeAutoStretch();
+  } catch (e) { /* aborted or daemon busy */ }
+}
+
+function drawHist(){
+  const c = els.histCanvas, ctx = c.getContext('2d');
+  ctx.clearRect(0, 0, c.width, c.height);
+  if (!lastHist || !lastHist.channels || !lastHist.channels.length) return;
+  const chans = lastHist.channels.filter(ch => ch.counts);
+  if (!chans.length){ els.histStats.textContent = 'no data in viewport'; return; }
+  const maxC = Math.max(...chans.map(ch => Math.max(...ch.counts)));
+  const single = chans.length === 1;
+  els.histMode.textContent = single ? `band ${P.band()}` : 'R / G / B';
+  chans.forEach((ch, ci) => {
+    const n = ch.counts.length, bw = c.width / n;
+    ctx.fillStyle = single ? '#5c9dff' : CH_COLORS[ci] + '88';
+    for (let i = 0; i < n; i++){
+      const h = Math.pow(ch.counts[i] / maxC, 0.5) * (c.height - 14);
+      ctx.fillRect(i * bw, c.height - h, Math.max(1, bw - 1), h);
+    }
   });
+  // clip selection overlay (single band)
+  if (single && P.vlo() !== '' && P.vhi() !== ''){
+    const ch = chans[0], e0 = ch.edges[0], e1 = ch.edges[ch.edges.length - 1];
+    const x0 = (P.vlo() - e0) / (e1 - e0) * c.width, x1 = (P.vhi() - e0) / (e1 - e0) * c.width;
+    ctx.fillStyle = '#ffffff22'; ctx.fillRect(x0, 0, x1 - x0, c.height);
+    ctx.strokeStyle = '#ffcf70'; ctx.strokeRect(x0, 0, x1 - x0, c.height);
+  }
+  if (histSel){
+    ctx.fillStyle = '#ffffff26';
+    ctx.fillRect(Math.min(...histSel), 0, Math.abs(histSel[1] - histSel[0]), c.height);
+  }
+  const s = chans[0];
+  els.histStats.textContent = single
+    ? `viewport: min ${fmt(s.min)}  max ${fmt(s.max)}  mean ${fmt(s.mean)}  median ${fmt(s.median)}  σ ${fmt(s.std)}  n ${s.count.toLocaleString()}`
+    : chans.map((ch, i) => `${'RGB'[i]} [${fmt(ch.min, 0)}–${fmt(ch.max, 0)}]`).join('   ') + `  ·  n ${s.count.toLocaleString()}`;
+  els.clipReset.style.display = (P.vlo() !== '') ? '' : 'none';
 }
 
-async function renderGeoTiff(getTiff){
-  surface.replaceChildren(statusEl("loading","Decoding GeoTIFF…"));
-  try{
-    const tiff=await getTiff();
-    const image=await tiff.getImage();
-    const width=image.getWidth(), height=image.getHeight(), bands=image.getSamplesPerPixel();
-    const scale=Math.min(1, MAX_PREVIEW/Math.max(width,height));
-    const outW=Math.max(1,Math.round(width*scale)), outH=Math.max(1,Math.round(height*scale));
-    const rasters=await image.readRasters({width:outW,height:outH,interleave:false});
-    const bandArrays=rasters;
-    const dtype=bandArrays.length>0?ctorDtype(bandArrays[0]):"unknown";
-    const geoKeys=image.getGeoKeys?.() ?? null;
-    const epsg=geoKeys?.ProjectedCSTypeGeoKey ?? geoKeys?.GeographicTypeGeoKey ?? undefined;
-    const nodata=image.getGDALNoData();
-    let bbox; try{ bbox=image.getBoundingBox(); }catch{ bbox=undefined; }
-
-    // Full-metadata extraction — getResolution/getOrigin throw when the tags are
-    // absent, so both are guarded with a tag-read fallback.
-    const fd=image.fileDirectory;
-    let resolution; try{ resolution=image.getResolution?.(); }catch{ resolution=undefined; }
-    if(!resolution) resolution=fdTag(fd,"ModelPixelScale");
-    let origin; try{ origin=image.getOrigin?.(); }catch{ origin=undefined; }
-    const tiePoint=origin?null:fdTag(fd,"ModelTiepoint");
-    if(!origin && tiePoint && tiePoint.length>=6) origin=[tiePoint[3], tiePoint[4]];
-    const unit=tiffUnit(geoKeys);
-    const pixelSize=resolution?fmtPair(resolution[0],resolution[1],unit):null;
-    const originStr=origin && origin.length>=2 && origin[0]!=null ? `${fmtNum(origin[0])}, ${fmtNum(origin[1])}` : null;
-    const crsName=geoKeys?.GTCitationGeoKey || geoKeys?.GeogCitationGeoKey || null;
-    const compressionTag=fdTag(fd,"Compression");
-    const compression=compressionTag!=null ? (TIFF_COMPRESSION[compressionTag] ?? `code ${compressionTag}`) : null;
-    const tileW=fdTag(fd,"TileWidth"), rowsPerStrip=fdTag(fd,"RowsPerStrip");
-    const tiling=tileW ? `${tileW}×${fdTag(fd,"TileLength")} tiles` : (rowsPerStrip ? `strips of ${rowsPerStrip}` : null);
-    const bps=fdTag(fd,"BitsPerSample");
-    const bitsPerSample=(Array.isArray(bps)||ArrayBuffer.isView(bps))
-      ? (Array.from(bps).every(x=>x===bps[0])?String(bps[0]):Array.from(bps).join(", "))
-      : (bps!=null?String(bps):null);
-    let overviews=0; try{ overviews=(await tiff.getImageCount())-1; }catch{ overviews=0; } // getImageCount is async on the tiff object (not the image)
-    const allMeta={ fileDirectory:await dumpFileDirectory(fd), geoKeys };
-
-    // PhotometricInterpretation (when present) drives routing: 2=RGB, 3=palette,
-    // 6=YCbCr→RGB, else single-band heatmap. Absent → legacy ≥3-band-composite heuristic.
-    const photometric=fdTag(fd,"PhotometricInterpretation");
-    let colorMap;
-    if(photometric===3){ // ColorMap is a deferred array in geotiff 3.x — must be loaded async
-      try{ colorMap = typeof fd?.loadValue==="function" ? await fd.loadValue("ColorMap") : fd?.ColorMap; }catch{ /* palette unavailable */ }
+function drawStaticHist(r){
+  // fallback mode: single-band hist from returned stats (whole image, not viewport)
+  if (!r || !r.stats){ els.histStats.textContent = ''; return; }
+  els.histMode.textContent = `band ${P.band()} (image)`;
+  els.histStats.textContent = `min ${fmt(r.stats.min)}  max ${fmt(r.stats.max)}  mean ${fmt(r.stats.mean)}  σ ${fmt(r.stats.std)}`;
+  if (r.vals){
+    const buf = Uint8Array.from(atob(r.vals), ch => ch.charCodeAt(0));
+    const v = new Float32Array(buf.buffer);
+    const lo = r.stats.min, hi = r.stats.max, bins = 60, counts = new Array(bins).fill(0);
+    if (hi > lo) for (let i = 0; i < v.length; i++){
+      const x = v[i]; if (!isFinite(x)) continue;
+      counts[Math.min(bins - 1, Math.floor((x - lo) / (hi - lo) * bins))]++;
     }
-    if(photometric===6 && bandArrays.length>=3){
-      // JPEG/YCbCr: readRasters returns RAW Y/Cb/Cr planes — convert like geotiff's own readRGB (fromYCbCr, BT.601).
-      const [yy,cb,cr]=bandArrays; const n=yy.length;
-      const r=new Uint8ClampedArray(n), g=new Uint8ClampedArray(n), b=new Uint8ClampedArray(n);
-      for(let i=0;i<n;i++){ const Y=yy[i], B=cb[i]-128, R=cr[i]-128; r[i]=Y+1.402*R; g[i]=Y-0.34414*B-0.71414*R; b[i]=Y+1.772*B; }
-      bandArrays[0]=r; bandArrays[1]=g; bandArrays[2]=b;
-    }
-    const rgbOk = bandArrays.length>=3 && (photometric===2 || photometric===6 || photometric==null); // 6: channels already converted above
-    let render;
-    if(photometric===3 && colorMap){
-      // Palette: map the index band → RGB via the embedded color table (categorical; no stretch/controls).
-      const idx=bandArrays[0], n=idx.length, e=colorMap.length/3; // ColorMap: [R…][G…][B…], 16-bit
-      const r=new Uint8Array(n), g=new Uint8Array(n), b=new Uint8Array(n);
-      for(let i=0;i<n;i++){ const c=idx[i]; r[i]=colorMap[c]>>8; g[i]=colorMap[e+c]>>8; b[i]=colorMap[2*e+c]>>8; }
-      render={mode:"rgb", palette:true, draw:{r,g,b,a:null}, nodata, w:outW, h:outH};
-    } else if(rgbOk){
-      // Keep the RAW bands — composite stretch and per-band heatmap are picked in mount.
-      render={mode:"rgb", palette:false, bands:[...bandArrays], nodata, w:outW, h:outH};
-    } else {
-      // single-band, or multiband non-RGB (photometric present but not RGB/palette) → band 1 heatmap
-      render={mode:"heatmap", data:bandArrays[0], w:outW, h:outH, nodata};
-    }
-    const meta={width,height,bands,dtype,epsg,crsName,bbox,nodata,pixelSize,origin:originStr,compression,tiling,bitsPerSample,overviews,allMeta};
-    mountGeoTiff(meta, render);
-  } catch(err){
-    surface.replaceChildren(statusEl("error", (err&&err.message)||String(err)||"Failed to read GeoTIFF."));
+    lastHist = {channels: [{counts, edges: Array.from({length: bins + 1}, (_, i) => lo + (hi - lo) * i / bins),
+      min: lo, max: hi, mean: r.stats.mean, std: r.stats.std, median: null, count: r.stats.count,
+      p2: r.stats.p2, p98: r.stats.p98}]};
+    drawHist();
   }
 }
 
-function mountGeoTiff(meta, render){
-  const palette = render.mode==="rgb" && render.palette;
-  const multiBand = render.mode==="rgb" && !palette; // real multi-band RGB → offers stretch + per-band controls
-  const allBands = multiBand ? render.bands : null;
-  const nBands = allBands ? allBands.length : 0;
-  const rgbUint8 = multiBand && (allBands[0] instanceof Uint8Array || allBands[0] instanceof Uint8ClampedArray);
-  // Defaults reproduce the pre-controls look: uint8 → raw pass-through, else 2–98% stretch.
-  let colormap="viridis", heatStretch="p2-98", rgbStretch=rgbUint8?"raw":"p2-98", bandSel="rgb";
-  const canvas=el("canvas",{class:"viz",style:{imageRendering:render.mode==="heatmap"?"pixelated":"auto"}});
-  const hover=el("div",{class:"hover-readout"},"—");
-  const hist=makeHistogram();
+// drag on histogram -> value clip (single band, tile mode re-renders instantly)
+let dragX = null;
+els.histCanvas.addEventListener('mousedown', e => { dragX = e.offsetX * els.histCanvas.width / els.histCanvas.clientWidth; histSel = [dragX, dragX]; });
+window.addEventListener('mousemove', e => {
+  if (dragX === null) return;
+  const r = els.histCanvas.getBoundingClientRect();
+  const x = (e.clientX - r.left) * els.histCanvas.width / r.width;
+  histSel = [dragX, Math.max(0, Math.min(els.histCanvas.width, x))];
+  drawHist();
+});
+window.addEventListener('mouseup', () => {
+  if (dragX === null) return;
+  const ch = lastHist && lastHist.channels && lastHist.channels[0];
+  const sel = histSel; dragX = null; histSel = null;
+  if (!ch || !ch.edges || !sel || Math.abs(sel[1] - sel[0]) < 4){ drawHist(); return; }
+  const c = els.histCanvas, e0 = ch.edges[0], e1 = ch.edges[ch.edges.length - 1];
+  const lo = e0 + Math.min(...sel) / c.width * (e1 - e0);
+  const hi = e0 + Math.max(...sel) / c.width * (e1 - e0);
+  fused.params.set('vlo', String(lo)); fused.params.set('vhi', String(hi));
+});
+els.clipReset.onclick = () => { fused.params.set('vlo', ''); fused.params.set('vhi', ''); };
 
-  // view(): what the canvas currently shows — the RGB composite, or one band as a heatmap.
-  function view(){ if(render.mode==="heatmap") return "heatmap"; if(palette) return "composite"; return bandSel==="rgb"?"composite":"heatmap"; }
-  function heatData(){ return render.mode==="heatmap" ? render.data : allBands[Number(bandSel)]; }
-  function chanBytes(arr){
-    if(rgbStretch==="raw") return arr;
-    const s=rgbStretch==="minmax"?minMaxStretch(arr,{nodata:render.nodata}):percentileStretch(arr,{nodata:render.nodata});
-    return stretchToBytes(arr,s);
-  }
-  function compositeDraw(){
-    if(palette) return render.draw;
-    const a=(rgbStretch==="raw"&&nBands>=4)?allBands[3]:null;
-    return { r:chanBytes(allBands[0]), g:chanBytes(allBands[1]), b:chanBytes(allBands[2]), a };
-  }
-  function paint(){
-    canvas.style.imageRendering = view()==="heatmap" ? "pixelated" : "auto";
-    if(view()==="heatmap"){
-      const d=heatData(); const s=computeStretch(d,heatStretch,{nodata:render.nodata});
-      drawHeatmap(canvas, d, render.w, render.h, s, {nodata:render.nodata, lut:COLORMAPS[colormap]});
-    } else {
-      const dr=compositeDraw();
-      drawRgb(canvas, dr.r, dr.g, dr.b, dr.a, render.w, render.h);
-    }
-  }
-  function histBands(){
-    if(view()==="heatmap") return [{data:heatData(), nodata:render.nodata}];
-    const src=palette?[render.draw.r,render.draw.g,render.draw.b]:allBands;
-    return [
-      {label:"R",data:src[0],nodata:render.nodata,color:"#f87171"},
-      {label:"G",data:src[1],nodata:render.nodata,color:"#4ade80"},
-      {label:"B",data:src[2],nodata:render.nodata,color:"#60a5fa"},
-    ];
-  }
+// stretch controls
+els.stretchBtn.onclick = () => {
+  const chans = lastHist && lastHist.channels;
+  if (!chans || !chans[0] || chans[0].p2 === undefined) return;
+  fused.params.set('stretch', chans.map(ch => `${ch.p2},${ch.p98}`).join(','));
+};
+els.stretchReset.onclick = () => { fused.params.set('autostretch', '0'); fused.params.set('stretch', ''); };
 
-  // controls — rebuilt on band switch: composite offers per-channel stretch,
-  // a single band reuses the heatmap builders (palette keeps no controls).
-  const controls=el("div",{class:"controls"});
-  const BAND_OPTIONS = multiBand ? [["rgb","RGB"], ...allBands.map((_,i)=>[String(i),`Band ${i+1}`])] : null;
-  const RGB_STRETCH_OPTIONS = rgbUint8 ? [["raw","raw"],["p2-98","2–98%"],["minmax","min–max"]] : [["p2-98","2–98%"],["minmax","min–max"]];
-  function rebuildControls(){
-    controls.replaceChildren();
-    if(palette) return;
-    if(multiBand) controls.append(tinySelect("band", bandSel, BAND_OPTIONS, (v)=>{ bandSel=v; rebuildControls(); paint(); hist.update(histBands(), colormap); updateMeta(); }));
-    if(view()==="heatmap"){
-      controls.append(
-        tinySelect("colormap", colormap, COLORMAP_OPTIONS, (v)=>{ colormap=v; paint(); hist.setColormap(colormap); updateMeta(); }),
-        tinySelect("stretch", heatStretch, STRETCH_OPTIONS, (v)=>{ heatStretch=v; paint(); updateMeta(); }),
-      );
-    } else if(multiBand){
-      controls.append(tinySelect("stretch", rgbStretch, RGB_STRETCH_OPTIONS, (v)=>{ rgbStretch=v; paint(); hist.update(histBands(), colormap); updateMeta(); }));
-    }
-  }
+// auto stretch: re-stretch colors to the current viewport after every pan/zoom
+function maybeAutoStretch(){
+  if (!P.autoStretch()) return;
+  const chans = lastHist && lastHist.channels;
+  if (!chans || !chans[0] || chans[0].p2 === undefined) return;
+  const s = chans.filter(ch => ch.p2 !== undefined).map(ch => `${ch.p2},${ch.p98}`).join(',');
+  if (s && s !== P.stretch()) fused.params.set('stretch', s);
+}
+els.autoStretch.onchange = () => {
+  fused.params.set('autostretch', els.autoStretch.checked ? '1' : '0');
+  if (els.autoStretch.checked) maybeAutoStretch();
+};
 
-  // hover readout
-  attachHover(canvas, ()=>({w:render.w,h:render.h}), (pixel)=>{
-    if(!pixel){ hover.textContent="—"; return; }
-    const i=pixel.y*render.w+pixel.x;
-    let value;
-    if(view()==="heatmap"){
-      const v=heatData()[i];
-      // Only "(nodata)" when a sentinel is declared AND the raw value equals it
-      // (NaN sentinel matched via Number.isNaN, since NaN !== NaN).
-      const isNodata = render.nodata!=null && (Number.isNaN(render.nodata)?Number.isNaN(v):v===render.nodata);
-      value=isNodata?`${fmtNum(v)} (nodata)`:fmtNum(v);
-    } else {
-      const s=palette?render.draw:null;
-      const rr=s?s.r:allBands[0], gg=s?s.g:allBands[1], bb=s?s.b:allBands[2];
-      value=`R ${fmtNum(Number(rr[i]))} · G ${fmtNum(Number(gg[i]))} · B ${fmtNum(Number(bb[i]))}`;
-    }
-    let geo="";
-    const bbox=meta.bbox;
-    if(bbox && bbox.length===4){
-      const gx=bbox[0]+((pixel.x+0.5)/render.w)*(bbox[2]-bbox[0]);
-      const gy=bbox[3]-((pixel.y+0.5)/render.h)*(bbox[3]-bbox[1]);
-      geo=` · ${fmtNum(gx)}, ${fmtNum(gy)}`;
-    }
-    hover.textContent=`x ${pixel.x}, y ${pixel.y} · ${value}${geo}`;
-  });
+// ---------------- hover readout ----------------
+let hoverT = 0;
+map.on('mousemove', async e => {
+  const now = performance.now();
+  if (!tileMode || !daemon || now - hoverT < 120) return;
+  hoverT = now;
+  const q = new URLSearchParams({file: P.file(), lon: e.lngLat.lng, lat: e.lngLat.lat});
+  try {
+    const r = await (await fetch(dURL('/value?' + q))).json();
+    const vs = r.values || [];
+    els.readout.innerHTML = vs.every(v => v === null)
+      ? `${e.lngLat.lng.toFixed(5)}, ${e.lngLat.lat.toFixed(5)} · <span style="color:#6b7178">no data</span>`
+      : `${e.lngLat.lng.toFixed(5)}, ${e.lngLat.lat.toFixed(5)} · ` +
+        vs.map((v, i) => `<b>b${i + 1}</b> ${v === null ? '—' : fmt(v)}`).join('  ');
+  } catch (err) {}
+});
 
-  // metadata panel
-  const metaPane=el("aside",{class:"meta-pane"});
-  function renderedLabel(){
-    if(palette) return "palette (color table)";
-    const st=(m)=> m==="raw"?"raw":(m==="minmax"?"min–max":"2–98%");
-    if(view()==="heatmap"){ const lbl=render.mode==="heatmap"?"band 1":`Band ${Number(bandSel)+1}`; return `${lbl} · ${colormap} (${st(heatStretch)})`; }
-    return `${nBands>=4?"RGBA":"RGB"} (${st(rgbStretch)})`;
-  }
-  function updateMeta(){
-    metaPane.replaceChildren(metaList([
-      ["Dimensions", `${meta.width} × ${meta.height}`],
-      ["Bands", String(meta.bands)],
-      ["Data type", meta.dtype],
-      ["Bits/sample", meta.bitsPerSample],
-      ["Pixel size", meta.pixelSize],
-      ["Origin", meta.origin],
-      ["EPSG", meta.epsg?String(meta.epsg):null],
-      ["CRS", meta.crsName],
-      ["No-data", meta.nodata!=null?fmt(meta.nodata):null],
-      ["Bounds", meta.bbox?meta.bbox.map(fmt).join(", "):null],
-      ["Compression", meta.compression],
-      ["Tiling", meta.tiling],
-      ["Overviews", meta.overviews>0?String(meta.overviews):null],
-      ["Render", renderedLabel()],
+// ---------------- metadata panel (gdalinfo-parity stack) ----------------
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
+function kvTable(rows){
+  return '<table>' + rows.filter(r => r).map(([k, v]) =>
+    `<tr><td>${k}</td><td>${v ?? '—'}</td></tr>`).join('') + '</table>';
+}
+function section(title, html){
+  return `<h2 style="margin-top:12px">${title}</h2>` + html;
+}
+function num(x, d){ return (x === null || x === undefined) ? '—' : Number(x).toLocaleString('en-US', {maximumFractionDigits: d ?? 7}); }
+
+function renderMeta(){
+  if (!meta) return;
+  const t = meta.tiff || {};
+  let h = kvTable([
+    ['driver', 'GTiff/GeoTIFF'],
+    ['file', (meta.file || P.file()).split('/').pop()],
+    ['size on disk', meta.file_size ? human(meta.file_size) : '—'],
+    ['raster size', `${meta.width} × ${meta.height} px, ${meta.count} band(s)`],
+    ['dtype', meta.dtype], ['nodata', meta.nodata ?? 'none'],
+    ['engine', tileMode ? 'tile daemon (pure)' : (meta.engine || 'fallback')],
+  ]);
+  if ((meta.files || []).length > 1)
+    h += kvTable([['sidecars', meta.files.slice(1).map(f => f.split('/').pop()).join(', ')]]);
+
+  // --- CRS
+  let crsRows = [
+    ['CRS', meta.crs && meta.crs.epsg ? `EPSG:${meta.crs.epsg} — ${meta.crs_name || ''}` : (meta.citation || 'unknown')],
+  ];
+  if (meta.crs_units) crsRows.push(['units', meta.crs_units]);
+  if (meta.area_or_point) crsRows.push(['AREA_OR_POINT', meta.area_or_point]);
+  h += section('Coordinate system', kvTable(crsRows) +
+    (meta.crs_wkt ? `<details style="margin-top:4px"><summary style="cursor:pointer;color:#8ab4ff">full WKT</summary><pre style="font-size:10px;white-space:pre-wrap;color:#9aa0a6;margin:4px 0">${esc(meta.crs_wkt)}</pre></details>` : ''));
+
+  // --- geotransform
+  if (meta.origin){
+    h += section('Geotransform', kvTable([
+      ['origin', `(${num(meta.origin[0])}, ${num(meta.origin[1])})`],
+      ['pixel size', `(${num(meta.pixel_size[0])}, ${num(meta.pixel_size[1])})`],
+      meta.rotation ? ['rotation', `(${num(meta.rotation[0])}, ${num(meta.rotation[1])})`] : null,
     ]));
-    if(meta.allMeta) metaPane.append(collapsible("All metadata", jsonBlock(meta.allMeta)));
   }
 
-  rebuildControls();
-  const mainpane=el("div",{class:"mainpane"},
-    el("div",{class:"canvas-area"}, canvas),
-    hover,
-    palette?null:controls,
-    el("div",{class:"hist-wrap"}, hist.element),
-  );
-  surface.replaceChildren(el("div",{class:"preview"}, mainpane, metaPane));
+  // --- corner coordinates
+  if (meta.corners){
+    h += section('Corner coordinates',
+      '<table><tr><th></th><th>native (x, y)</th><th>lon, lat</th></tr>' +
+      meta.corners.map(c =>
+        `<tr><td>${c.name}</td><td>${num(c.native[0], 3)}, ${num(c.native[1], 3)}</td>` +
+        `<td>${c.lonlat ? c.lonlat[0].toFixed(6) + ', ' + c.lonlat[1].toFixed(6) : '—'}</td></tr>`).join('') +
+      '</table>');
+  }
 
-  paint();
-  hist.update(histBands(), colormap);
-  updateMeta();
+  // --- bands
+  if (meta.band_info){
+    h += section('Bands',
+      '<table><tr><th>#</th><th>type</th><th>interp</th><th>min</th><th>max</th><th>block</th></tr>' +
+      meta.band_info.map(b =>
+        `<tr><td>${b.band}${b.description && !/^band /.test(b.description) ? ' <span style="color:#6b7178">' + esc(b.description) + '</span>' : ''}</td>` +
+        `<td>${b.dtype}</td><td>${b.colorinterp}</td>` +
+        `<td>${b.min !== null && b.min !== undefined ? fmt(b.min) : '—'}</td>` +
+        `<td>${b.max !== null && b.max !== undefined ? fmt(b.max) : '—'}</td>` +
+        `<td>${(b.block || []).join('×')}</td></tr>`).join('') + '</table>' +
+      (meta.band_info[0] && meta.band_info[0].stats_source ?
+        `<div style="color:#6b7178;font-size:11px;margin-top:3px">min/max from ${meta.band_info[0].stats_source}</div>` : ''));
+  }
+
+  // --- TIFF structure
+  h += section('TIFF structure', kvTable([
+    ['compression', t.compression], ['layout', t.layout],
+    ['photometric', t.photometric ?? '—'],
+    ['predictor', t.predictor ?? 'none'],
+    ['byte order', t.byte_order ?? '—'],
+    ['overviews', (t.overviews || []).map(o => o.join('×')).join(', ') || 'none'],
+  ]));
+
+  // --- extent
+  if (meta.lonlat_bounds){
+    const lb = meta.lonlat_bounds, nb = meta.bounds;
+    h += section('Extent', kvTable([
+      nb ? ['native', `${num(nb.left, 3)}, ${num(nb.bottom, 3)} → ${num(nb.right, 3)}, ${num(nb.top, 3)}`] : null,
+      ['lon/lat', `${lb.west.toFixed(5)}, ${lb.south.toFixed(5)} → ${lb.east.toFixed(5)}, ${lb.north.toFixed(5)}`],
+    ]));
+  }
+
+  // --- metadata items (GDAL XML + baseline TIFF tags)
+  const gm = Object.entries(meta.gdal_metadata || {});
+  const tags = Object.entries(meta.tags || {});
+  if (gm.length || tags.length){
+    h += section('Metadata', kvTable(
+      tags.map(([k, v]) => [k, esc(v)]).concat(gm.map(([k, v]) => [esc(k), esc(v)]))));
+  }
+  els.metaBody.innerHTML = h;
+}
+els.metaBtn.onclick = () => { els.metaPanel.style.display = els.metaPanel.style.display === 'block' ? 'none' : 'block'; };
+els.metaClose.onclick = () => els.metaPanel.style.display = 'none';
+els.fitBtn.onclick = () => fitToRaster(false);
+
+// ---------------- controls ----------------
+function bandOptions(sel){
+  let h = '';
+  const names = (meta && meta.descriptions) || [];
+  const n = (meta && meta.count) || 1;
+  for (let i = 1; i <= n; i++) h += `<option value="${i}" ${i === +sel ? 'selected' : ''}>${i}${names[i-1] && names[i-1] !== 'band ' + i ? ': ' + names[i-1] : ''}</option>`;
+  return h;
+}
+function syncControls(){
+  const isRgb = P.mode() === 'rgb' || (P.mode() === 'auto' && meta && meta.count >= 3);
+  els.mode.value = P.mode();
+  els.band.innerHTML = bandOptions(P.band());
+  els.rSel.innerHTML = bandOptions(P.r()); els.gSel.innerHTML = bandOptions(P.g()); els.bSel.innerHTML = bandOptions(P.b());
+  els.bandRow.style.display = isRgb ? 'none' : '';
+  els.rgbRow.style.display = isRgb ? '' : 'none';
+  els.cmapRow.style.display = isRgb ? 'none' : '';
+  els.cmap.value = P.cmap();
+  els.path.value = P.file();
+  if (els.autoStretch) els.autoStretch.checked = P.autoStretch();
+}
+els.load.onclick = () => fused.params.set('file', els.path.value.trim());
+els.path.addEventListener('keydown', e => { if (e.key === 'Enter') els.load.click(); });
+els.mode.onchange = () => fused.params.set('mode', els.mode.value);
+els.band.onchange = () => fused.params.set('band', els.band.value);
+els.rSel.onchange = () => fused.params.set('r', els.rSel.value);
+els.gSel.onchange = () => fused.params.set('g', els.gSel.value);
+els.bSel.onchange = () => fused.params.set('b', els.bSel.value);
+els.cmap.onchange = () => fused.params.set('cmap', els.cmap.value);
+els.opacity.oninput = () => {
+  for (const id of ['raster', 'rimg', 'rimg2'])
+    if (map.getLayer(id)) map.setPaintProperty(id, 'raster-opacity', +els.opacity.value / 100);
+};
+els.basemap.onchange = () => {
+  const show = els.basemap.checked ? 'visible' : 'none';
+  for (const l of map.getStyle().layers)
+    if (!['raster', 'rimg', 'rimg2'].includes(l.id)) map.setLayoutProperty(l.id, 'visibility', show);
+};
+
+// ---------------- explorer (browse) ----------------
+els.browse.onclick = async () => {
+  const open = els.explorer.style.display === 'block';
+  els.explorer.style.display = open ? 'none' : 'block';
+  if (!open) refreshExplorer();
+};
+els.showAll.onchange = () => { fused.params.set('showall', els.showAll.checked ? '1' : ''); refreshExplorer(); };
+async function refreshExplorer(dir){
+  dir = dir || P.dir();
+  const r = await fused.runPython('./browse.py', { dir, exts: '.tif,.tiff', show_all: P.showAll() ? 'true' : 'false' }).catch(() => null);
+  if (!r || r.error) return;
+  els.crumbs.innerHTML = r.crumbs.map(c =>
+    `<a data-p="${c.path}">${c.label || '/'}</a>`).join('<span style="color:#4b5058"> / </span>');
+  els.crumbs.querySelectorAll('a').forEach(a => a.onclick = () => refreshExplorer(a.dataset.p));
+  const entries = [...(r.dirs || []), ...(r.files || [])];
+  els.explorerList.innerHTML = entries.map(e =>
+    `<div class="row" data-p="${e.path}" data-d="${e.is_dir ? 1 : 0}">
+       <span class="ic">${e.is_dir ? '📁' : '🗺'}</span><span class="nm">${e.name}</span>
+       <span class="sz">${e.size ? human(e.size) : ''}</span></div>`).join('') || '<div class="row" style="color:#6b7178">empty</div>';
+  els.explorerList.querySelectorAll('.row[data-p]').forEach(row => row.onclick = () => {
+    if (row.dataset.d === '1') refreshExplorer(row.dataset.p);
+    else { fused.params.set('dir', row.dataset.p.replace(/\/[^/]*$/, '')); fused.params.set('file', row.dataset.p); els.explorer.style.display = 'none'; }
+  });
 }
 
-/* ===========================================================================
- * Boot
- * ======================================================================== */
-loadTarget();
+// ---------------- load orchestration ----------------
+let loadedFile = null, loadedQuery = null;
+
+async function loadFile(){
+  const file = P.file();
+  if (!file) { status('no file — use Browse', true); return; }
+  status('Opening…');
+  await styleReady();
+  const d = await ensureDaemon().catch(() => null);
+  meta = null; tileMode = false;
+  els.imgFallback.style.display = 'none';
+  for (const id of ['raster', 'rimg', 'rimg2']){
+    if (map.getLayer(id)) map.removeLayer(id);
+    if (map.getSource(id)) map.removeSource(id);
+  }
+  if (d && d.port){
+    try {
+      meta = await (await fetch(dURL('/meta?file=' + encodeURIComponent(file)))).json();
+      tileMode = !!meta.supported;
+    } catch (e) { meta = null; }
+  }
+  syncControls();
+  if (tileMode){
+    setRasterTiles();
+    fitToRaster();
+    status('');
+    refreshHist();
+  } else {
+    await loadFallback();
+    fitToRaster();
+  }
+  renderMeta();
+  loadedFile = file;
+  loadedQuery = renderQuery();
+}
+
+function onParamsChanged(){
+  const file = P.file();
+  if (file !== loadedFile){ loadFile(); return; }
+  syncControls();
+  const q = renderQuery();
+  if (q !== loadedQuery){
+    loadedQuery = q;
+    if (tileMode){ setRasterTiles(); refreshHist(); }
+    else { loadFallback(); }
+  }
+  drawHist();
+}
+fused.params.onChange(onParamsChanged);
+
+let histTimer = null;
+map.on('moveend', () => {
+  if (tileMode){ clearTimeout(histTimer); histTimer = setTimeout(refreshHist, 150); }
+  else scheduleFallbackRefine();
+});
+
+loadFile();
+
 </script>
+</body>
+</html>

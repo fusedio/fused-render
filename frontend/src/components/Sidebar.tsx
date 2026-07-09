@@ -18,10 +18,36 @@ import {
   armBookmark,
   disarmBookmark,
   getArmedBookmark,
+  setBookmarkIcon,
 } from "../lib/bookmarks";
+import IconPicker from "./IconPicker";
 import type { Bookmark, BookmarkFolder } from "../lib/bookmarks";
 import { useUrlVersion, useBookmarksVersion, notifyBookmarksChanged } from "../lib/hooks";
 import type { Config } from "../lib/api";
+import { fuzzyMatch, highlightSegments } from "../lib/fuzzy";
+import type { FuzzyResult } from "../lib/fuzzy";
+
+// The fs path a bookmark targets, decoded from its /view/ url (same rule as
+// the hover card). Used for search matching and the tooltip.
+function bookmarkFsPath(url: string): string {
+  const qIdx = url.indexOf("?");
+  const pathname = qIdx !== -1 ? url.slice(0, qIdx) : url;
+  return pathname.startsWith(VIEW_PREFIX)
+    ? "/" + pathname.slice(VIEW_PREFIX.length).split("/").map(decodeURIComponent).join("/")
+    : pathname;
+}
+
+function renderHighlight(text: string, positions: number[]) {
+  return highlightSegments(text, positions).map((seg, i) =>
+    seg.match ? (
+      <mark key={i} className="search-mark">
+        {seg.text}
+      </mark>
+    ) : (
+      <span key={i}>{seg.text}</span>
+    )
+  );
+}
 
 // Folder shape drawn inline so it inherits currentColor — an emoji folder
 // ignores the theme and looks heavy at this size.
@@ -35,16 +61,9 @@ const FOLDER_ICON = (
 // vanilla shell (raw URLSearchParams on the saved search — bookmark
 // tooltips predate the `_layout` grammar; parity over cleverness).
 function TooltipContent({ bookmark }: { bookmark: Bookmark }) {
-  let pathname = bookmark.url;
-  let search = "";
   const qIdx = bookmark.url.indexOf("?");
-  if (qIdx !== -1) {
-    pathname = bookmark.url.slice(0, qIdx);
-    search = bookmark.url.slice(qIdx);
-  }
-  const fsPath = pathname.startsWith(VIEW_PREFIX)
-    ? "/" + pathname.slice(VIEW_PREFIX.length).split("/").map(decodeURIComponent).join("/")
-    : pathname;
+  const search = qIdx !== -1 ? bookmark.url.slice(qIdx) : "";
+  const fsPath = bookmarkFsPath(bookmark.url);
 
   const params = [...new URLSearchParams(search)];
   return (
@@ -129,6 +148,7 @@ interface BookmarkRowProps {
   child?: boolean;
   parentId?: string;
   isRenaming: boolean;
+  namePositions?: number[]; // search-match highlight positions in b.name
   onNameClick: (e: React.MouseEvent<HTMLAnchorElement>) => void;
   onRename: (e: React.MouseEvent<HTMLButtonElement>) => void;
   onDelete: (e: React.MouseEvent<HTMLButtonElement>) => void;
@@ -136,12 +156,13 @@ interface BookmarkRowProps {
   onCancelRename: () => void;
   onMouseEnter: (e: React.MouseEvent<HTMLDivElement>) => void;
   onMouseLeave: () => void;
+  onGlyphClick: (e: React.MouseEvent<HTMLSpanElement>) => void;
   registerRef: (el: HTMLDivElement | null) => void;
   dragProps: DragProps;
 }
 
 // Template for a bookmark row (top-level or, with child=true, inside a folder).
-function BookmarkRow({ b, child, parentId, isRenaming, onNameClick, onRename, onDelete, onCommitRename, onCancelRename, onMouseEnter, onMouseLeave, registerRef, dragProps }: BookmarkRowProps) {
+function BookmarkRow({ b, child, parentId, isRenaming, namePositions, onNameClick, onRename, onDelete, onCommitRename, onCancelRename, onMouseEnter, onMouseLeave, onGlyphClick, registerRef, dragProps }: BookmarkRowProps) {
   return (
     <div
       className={"bookmark-row" + (child ? " child-row" : "") + (b.url === currentUrl() ? " active" : "")}
@@ -153,12 +174,18 @@ function BookmarkRow({ b, child, parentId, isRenaming, onNameClick, onRename, on
       onMouseLeave={onMouseLeave}
       {...dragProps}
     >
-      <span className="bookmark-glyph">★</span>
+      <span
+        className={"bookmark-glyph" + (b.icon ? " custom-icon" : "")}
+        title="Change icon"
+        onClick={onGlyphClick}
+      >
+        {b.icon ?? "★"}
+      </span>
       {isRenaming ? (
         <RenameInput initialName={b.name} onCommit={onCommitRename} onCancel={onCancelRename} />
       ) : (
         <a className="bookmark-name" href={b.url} draggable={false} onClick={onNameClick}>
-          {b.name}
+          {namePositions && namePositions.length ? renderHighlight(b.name, namePositions) : b.name}
         </a>
       )}
       <span className="bookmark-actions">
@@ -237,7 +264,12 @@ export default function Sidebar({ config }: SidebarProps) {
   useBookmarksVersion();
 
   const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [bmQuery, setBmQuery] = useState("");
   const [hover, setHover] = useState<HoverState | null>(null);
+  // Icon picker: which bookmark's glyph was clicked + where to anchor it.
+  const [iconPicker, setIconPicker] = useState<{ id: string; top: number; left: number } | null>(
+    null
+  );
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   // id -> row DOM node, for imperative drag-class toggling (mirrors the
   // vanilla module's querySelectorAll(".bookmark-row") sweep on dragend).
@@ -251,6 +283,72 @@ export default function Sidebar({ config }: SidebarProps) {
   const items = loadBookmarks(); // top-level items: bookmarks and folders
   const folderById = new Map<string, BookmarkFolder>(items.filter(isFolder).map((f) => [f.id, f]));
   const topOrder = items.map((it) => it.id); // top-level display order
+
+  // Bookmark search: a non-empty query flattens the tree to matching rows.
+  // Matches a bookmark fuzzily on its name (or its folder's name — a folder
+  // match pulls in all children), or on its target path as a contiguous
+  // case-insensitive substring (fuzzy on a long path matched nearly anything).
+  // Highlight positions come from the name match (a path-only or folder-name
+  // hit shows the name unhighlighted). Ranked like the explorer search within
+  // name matches: longest consecutive matched run first (a contiguous
+  // substring hit beats a scattered subsequence one), then higher fuzzy score,
+  // then alphabetical. Path-substring-only matches always rank below name
+  // matches, alphabetically.
+  const bq = bmQuery.trim();
+  const bmSearching = bq !== "";
+  const matched: { b: Bookmark; namePositions: number[] }[] = [];
+  if (bmSearching) {
+    const bqLower = bq.toLowerCase();
+    const pathHit = (url: string) => bookmarkFsPath(url).toLowerCase().includes(bqLower);
+    const ranked: { b: Bookmark; namePositions: number[]; nameHit: boolean; longestRun: number; score: number }[] = [];
+    // The strength of a match across all name fields that hit, for ranking. A
+    // folder name match contributes its own run/score to every child it pulls in.
+    const rank = (folderM: FuzzyResult | null, ...ms: (FuzzyResult | null)[]) => {
+      let longestRun = 0;
+      let score = -Infinity;
+      for (const m of [folderM, ...ms]) {
+        if (!m) continue;
+        if (m.longestRun > longestRun) longestRun = m.longestRun;
+        if (m.score > score) score = m.score;
+      }
+      return { longestRun, score };
+    };
+    for (const it of items) {
+      if (isFolder(it)) {
+        const folderM = fuzzyMatch(bq, it.name);
+        for (const c of it.children) {
+          const nameM = fuzzyMatch(bq, c.name);
+          if (folderM || nameM || pathHit(c.url)) {
+            const { longestRun, score } = rank(folderM, nameM);
+            ranked.push({ b: c, namePositions: nameM ? nameM.positions : [], nameHit: !!(folderM || nameM), longestRun, score });
+          }
+        }
+      } else {
+        const nameM = fuzzyMatch(bq, it.name);
+        if (nameM || pathHit(it.url)) {
+          const { longestRun, score } = rank(null, nameM);
+          ranked.push({ b: it, namePositions: nameM ? nameM.positions : [], nameHit: !!nameM, longestRun, score });
+        }
+      }
+    }
+    ranked.sort((a, b) => {
+      if (a.nameHit !== b.nameHit) return a.nameHit ? -1 : 1;
+      if (b.longestRun !== a.longestRun) return b.longestRun - a.longestRun;
+      if (b.score !== a.score) return b.score - a.score;
+      return a.b.name.localeCompare(b.b.name, undefined, { sensitivity: "base" });
+    });
+    for (const { b, namePositions } of ranked) matched.push({ b, namePositions });
+  }
+
+  // Rows in search results are not reorderable; a no-op drag keeps the shared
+  // BookmarkRow contract without letting a filtered view mutate the store order.
+  const noDrag: DragProps = {
+    onDragStart: (e) => e.preventDefault(),
+    onDragOver: () => {},
+    onDragLeave: () => {},
+    onDrop: () => {},
+    onDragEnd: () => {},
+  };
 
   // Position the tooltip after its content has rendered, same timing as the
   // vanilla code reading tooltipEl.offsetHeight right after setting innerHTML.
@@ -285,11 +383,11 @@ export default function Sidebar({ config }: SidebarProps) {
     navigateUrl(b.url);
   };
 
-  const onDeleteBookmark = (e: React.MouseEvent<HTMLButtonElement>, id: string) => {
+  const onDeleteBookmark = async (e: React.MouseEvent<HTMLButtonElement>, id: string) => {
     e.preventDefault();
     hideTooltip();
     const armed = getArmedBookmark();
-    deleteBookmark(id);
+    await deleteBookmark(id);
     if (armed && armed.id === id) {
       disarmBookmark();
       // No breadcrumb import (one-way dep rule); let main.jsx re-sync.
@@ -312,26 +410,43 @@ export default function Sidebar({ config }: SidebarProps) {
     setHover({ bookmark: b, rect: { top: rect.top, right: rect.right } });
   };
 
-  const commitRename = (id: string, value: string, fallbackName: string) => {
-    renameBookmark(id, value.trim() || fallbackName);
+  const onBookmarkGlyphClick = (e: React.MouseEvent<HTMLSpanElement>, id: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    hideTooltip();
+    const rect = e.currentTarget.getBoundingClientRect();
+    setIconPicker((cur) => (cur?.id === id ? null : { id, top: rect.top, left: rect.left }));
+  };
+
+  const onPickIcon = async (icon: string | null) => {
+    const target = iconPicker;
+    setIconPicker(null);
+    if (target) {
+      await setBookmarkIcon(target.id, icon);
+      notifyBookmarksChanged();
+    }
+  };
+
+  const commitRename = async (id: string, value: string, fallbackName: string) => {
     setRenamingId(null);
+    await renameBookmark(id, value.trim() || fallbackName);
     notifyBookmarksChanged();
   };
   const cancelRename = () => setRenamingId(null);
 
   // --- folder row handlers ----------------------------------------------------
 
-  const onFolderGlyphClick = (e: React.MouseEvent<HTMLSpanElement>, id: string) => {
+  const onFolderGlyphClick = async (e: React.MouseEvent<HTMLSpanElement>, id: string) => {
     e.preventDefault();
     e.stopPropagation(); // don't also trigger the row's open handler
-    toggleFolder(id);
+    await toggleFolder(id);
     notifyBookmarksChanged();
   };
 
   // Name or row click opens the folder as tabs, except over the glyph, the
   // action buttons, or the inline rename input. Opening arms nothing — a
   // folder is not a bookmark.
-  const onFolderRowClick = (e: React.MouseEvent<HTMLDivElement>, folder: BookmarkFolder) => {
+  const onFolderRowClick = async (e: React.MouseEvent<HTMLDivElement>, folder: BookmarkFolder) => {
     const target = e.target as HTMLElement;
     if (
       target.closest(".folder-glyph") ||
@@ -342,18 +457,18 @@ export default function Sidebar({ config }: SidebarProps) {
     }
     e.preventDefault();
     if (!folder || !folder.children.length) return;
-    if (folder.collapsed) toggleFolder(folder.id); // expand only — never re-collapse
+    if (folder.collapsed) await toggleFolder(folder.id); // expand only — never re-collapse
     // No notifyBookmarksChanged() here: navigateUrl re-renders the sidebar
     // via useUrlVersion (mirrors the vanilla route()-driven re-render).
     navigateUrl(composeFolderTabsUrl(folder.children));
   };
 
-  const onDeleteFolder = (e: React.MouseEvent<HTMLButtonElement>, id: string, folder: BookmarkFolder) => {
+  const onDeleteFolder = async (e: React.MouseEvent<HTMLButtonElement>, id: string, folder: BookmarkFolder) => {
     e.preventDefault();
     // Deleting a folder removes its children too; disarm if the armed
     // bookmark is one of them (mirrors the bookmark delete handler).
     const armed = getArmedBookmark();
-    deleteFolder(id);
+    await deleteFolder(id);
     if (armed && folder && folder.children.some((c) => c.id === armed.id)) {
       disarmBookmark();
       window.dispatchEvent(new Event("fused:urlchange"));
@@ -387,14 +502,14 @@ export default function Sidebar({ config }: SidebarProps) {
   };
 
   // Top-level reorder: move dragged to sit above/below the target row.
-  const moveTopLevel = (targetId: string, below: boolean) => {
+  const moveTopLevel = (targetId: string, below: boolean): Promise<void> => {
     let target = topOrder.indexOf(targetId) + (below ? 1 : 0);
     // Post-removal convention: a top-level dragged item earlier in the array
     // shifts every later index down by one. Items dragged out of a folder are
     // not in topOrder, so they need no adjustment.
     const from = topOrder.indexOf(draggedIdRef.current as string);
     if (from !== -1 && from < target) target -= 1;
-    moveItem(draggedIdRef.current as string, null, target);
+    return moveItem(draggedIdRef.current as string, null, target);
   };
 
   const clearDragClasses = () => {
@@ -439,7 +554,7 @@ export default function Sidebar({ config }: SidebarProps) {
     e.currentTarget.classList.remove("drag-above", "drag-below", "drag-into");
   };
 
-  const onRowDrop = (
+  const onRowDrop = async (
     e: React.DragEvent<HTMLDivElement>,
     id: string,
     rowIsFolder: boolean,
@@ -455,10 +570,11 @@ export default function Sidebar({ config }: SidebarProps) {
 
     if (zone === "into" && !rowIsFolder) {
       // Bookmark onto a top-level bookmark: make a folder of the two, then
-      // immediately rename it.
-      const folderId = createFolderWith(id, draggedId);
+      // immediately rename it. Reset drag state before the await so a stale
+      // ref can't leak into a follow-up drag.
       draggedIdRef.current = null;
       draggedIsFolderRef.current = false;
+      const folderId = await createFolderWith(id, draggedId);
       notifyBookmarksChanged();
       if (folderId) setRenamingId(folderId);
       return;
@@ -469,7 +585,7 @@ export default function Sidebar({ config }: SidebarProps) {
       const folder = folderById.get(id);
       const inThisFolder = folder && folder.children.some((c) => c.id === draggedId);
       const targetIndex = (folder ? folder.children.length : 0) - (inThisFolder ? 1 : 0);
-      moveItem(draggedId, id, targetIndex);
+      await moveItem(draggedId, id, targetIndex);
     } else if (rowIsChild) {
       // Reorder within the target's folder.
       const parentId = row.getAttribute("data-parent");
@@ -478,10 +594,10 @@ export default function Sidebar({ config }: SidebarProps) {
       let index = childOrder.indexOf(id) + (below ? 1 : 0);
       const from = childOrder.indexOf(draggedId);
       if (from !== -1 && from < index) index -= 1; // dragged in same folder, earlier
-      moveItem(draggedId, parentId, index);
+      await moveItem(draggedId, parentId, index);
     } else {
       // Top-level reorder (target is a top-level bookmark or a folder row).
-      moveTopLevel(id, below);
+      await moveTopLevel(id, below);
     }
 
     // Reset here, not just in dragend: the re-render triggered by
@@ -522,6 +638,7 @@ export default function Sidebar({ config }: SidebarProps) {
           </svg>
         </span>{" "}
         fused-render
+        <span className="brand-version">v{config.version}</span>
       </div>
       <div className="sidebar-section">
         <a href="#" id="home-link" className="sidebar-item" onClick={onHomeClick}>
@@ -533,8 +650,49 @@ export default function Sidebar({ config }: SidebarProps) {
         {items.length === 0 ? (
           <div className="sidebar-empty">No bookmarks yet</div>
         ) : (
-          items.map((it) => {
-            if (isFolder(it)) {
+          <>
+            <div className="bookmark-search">
+              <input
+                type="search"
+                className="bookmark-search-input"
+                placeholder="Search bookmarks…"
+                value={bmQuery}
+                onChange={(e) => setBmQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    setBmQuery("");
+                    e.currentTarget.blur();
+                  }
+                }}
+              />
+            </div>
+            {bmSearching ? (
+              matched.length ? (
+                matched.map(({ b, namePositions }) => (
+                  <BookmarkRow
+                    key={b.id}
+                    b={b}
+                    namePositions={namePositions}
+                    isRenaming={renamingId === b.id}
+                    registerRef={() => {}}
+                    onNameClick={(e) => onBookmarkNameClick(e, b)}
+                    onRename={(e) => onRenameBookmark(e, b.id)}
+                    onDelete={(e) => onDeleteBookmark(e, b.id)}
+                    onCommitRename={(value) => commitRename(b.id, value, b.name)}
+                    onCancelRename={cancelRename}
+                    onMouseEnter={(e) => onRowMouseEnter(e, b)}
+                    onMouseLeave={hideTooltip}
+                    onGlyphClick={(e) => onBookmarkGlyphClick(e, b.id)}
+                    dragProps={noDrag}
+                  />
+                ))
+              ) : (
+                <div className="sidebar-empty">No matches</div>
+              )
+            ) : (
+              items.map((it) => {
+                if (isFolder(it)) {
               const activeHint = it.collapsed && it.children.some((c) => c.url === currentUrl());
               return (
                 <React.Fragment key={it.id}>
@@ -571,6 +729,7 @@ export default function Sidebar({ config }: SidebarProps) {
                           onCancelRename={cancelRename}
                           onMouseEnter={(e) => onRowMouseEnter(e, c)}
                           onMouseLeave={hideTooltip}
+                          onGlyphClick={(e) => onBookmarkGlyphClick(e, c.id)}
                           dragProps={dragProps(c.id, false, true)}
                         />
                       ))}
@@ -592,15 +751,46 @@ export default function Sidebar({ config }: SidebarProps) {
                 onCancelRename={cancelRename}
                 onMouseEnter={(e) => onRowMouseEnter(e, it)}
                 onMouseLeave={hideTooltip}
+                onGlyphClick={(e) => onBookmarkGlyphClick(e, it.id)}
                 dragProps={dragProps(it.id, false, false)}
               />
-            );
-          })
+                );
+              })
+            )}
+          </>
         )}
+      </div>
+      {/* Preferences entry (SPEC §20) — pinned to the sidebar's bottom edge
+          (margin-top: auto), deliberately unobtrusive: a muted gear row that
+          navigates to the /view/_prefs sentinel. */}
+      <div className="sidebar-footer">
+        <button
+          type="button"
+          className={
+            "sidebar-item prefs-link" + (location.pathname === "/view/_prefs" ? " active" : "")
+          }
+          onClick={() => navigateUrl("/view/_prefs")}
+        >
+          <span className="icon">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+          </span>
+          Preferences
+        </button>
       </div>
       <div id="bookmark-tooltip" ref={tooltipRef} style={hover ? { display: "block" } : undefined}>
         {hover && <TooltipContent bookmark={hover.bookmark} />}
       </div>
+      {iconPicker && (
+        <IconPicker
+          anchor={iconPicker}
+          onPick={(icon) => onPickIcon(icon)}
+          onRemove={() => onPickIcon(null)}
+          onClose={() => setIconPicker(null)}
+        />
+      )}
     </nav>
   );
 }

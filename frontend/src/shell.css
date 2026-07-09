@@ -59,6 +59,13 @@ body {
   align-items: center;
 }
 
+/* Package version after the name — smaller and muted grey. */
+.sidebar-brand .brand-version {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--fg-muted);
+}
+
 .sidebar-section {
   padding: 8px;
 }
@@ -108,11 +115,13 @@ body {
 }
 
 .bookmark-row {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 7px;
   padding: 6px 10px;
   border-radius: 8px;
+  cursor: pointer;
 }
 
 .bookmark-row:hover {
@@ -131,6 +140,14 @@ body {
   flex: 0 0 auto;
   color: var(--fg-muted);
   font-size: 11px;
+  cursor: pointer;
+  width: 14px;
+  text-align: center;
+}
+
+/* Custom emoji icons render at natural color, slightly larger than the star. */
+.bookmark-glyph.custom-icon {
+  font-size: 12px;
 }
 
 .bookmark-row.active .bookmark-glyph {
@@ -215,8 +232,15 @@ body {
   font-size: 13px;
 }
 
-.bookmark-name:hover {
-  color: var(--accent);
+/* Stretched-link pattern: the anchor's ::after covers the whole row so the
+   entire .bookmark-row hover affordance is also clickable (cmd-click,
+   middle-click included), not just the name text. Scoped to `a.bookmark-name`
+   so folder rows — which reuse .bookmark-name on a plain span and already
+   have their own row-level click handler — aren't affected. */
+a.bookmark-name::after {
+  content: "";
+  position: absolute;
+  inset: 0;
 }
 
 .bookmark-actions {
@@ -226,6 +250,8 @@ body {
   visibility: hidden;
   flex: 0 0 auto;
   gap: 2px;
+  position: relative;
+  z-index: 1;
 }
 
 .bookmark-row:hover .bookmark-actions {
@@ -308,6 +334,99 @@ body {
   padding: 2px 6px;
 }
 
+/* Icon picker popover (Notion-style): search + Remove header, categorized
+   emoji grid. Fixed-position; the component keeps it on-screen. */
+.icon-picker {
+  position: fixed;
+  z-index: 1001;
+  width: 264px;
+  background: #202329;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  padding: 8px;
+}
+
+.icon-picker-head {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.icon-picker-search {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-size: 12px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+.icon-picker-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.icon-picker-remove {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 11.5px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 4px 8px;
+}
+
+.icon-picker-remove:hover {
+  color: var(--fg);
+  background: var(--bg);
+}
+
+.icon-picker-body {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.icon-picker-cat {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+  padding: 6px 4px 3px;
+}
+
+.icon-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+}
+
+.icon-picker-cell {
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  padding: 5px 0;
+  text-align: center;
+}
+
+.icon-picker-cell:hover {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.icon-picker-empty {
+  color: var(--fg-muted);
+  font-size: 12px;
+  padding: 10px 4px;
+}
+
 /* Main column */
 #main {
   flex: 1 1 auto;
@@ -327,34 +446,50 @@ body {
   background: var(--bg-alt);
 }
 
-#breadcrumb .crumbs {
+/* Shared with the panel path bar (.panel-crumbs/.panel-crumb*, Panel.tsx):
+   same monospace, tight slash-separated segment styling, muted with the last
+   segment emphasized. Only the hover affordance differs per surface — this
+   bar avoids the accent-yellow the panel pane hover uses (see
+   #breadcrumb .path-crumb:hover below); the panel's own hover rule further
+   down is untouched. */
+#breadcrumb .crumbs,
+.panel-crumbs {
   display: flex;
   align-items: center;
-  gap: 4px;
   min-width: 0;
   overflow-x: auto;
   white-space: nowrap;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
 }
 
-#breadcrumb a {
+.path-crumb,
+.panel-crumb {
   color: var(--fg-muted);
   text-decoration: none;
-  padding: 2px 4px;
-  border-radius: 4px;
+  cursor: pointer;
+  padding: 2px 1px;
+  border-radius: 3px;
 }
 
-#breadcrumb a:hover {
-  background: var(--border);
-  color: var(--fg);
-}
-
-#breadcrumb .sep {
-  color: var(--fg-muted);
-}
-
+.path-crumb.last,
+.panel-crumb.last,
 #breadcrumb .current {
+  color: var(--fg);
   font-weight: 600;
-  padding: 2px 4px;
+}
+
+.path-crumb-sep,
+.panel-crumb-sep {
+  color: var(--border);
+  margin: 0 1px;
+}
+
+/* Main breadcrumb hover only — subtle fg brighten + underline, no accent
+   yellow. */
+#breadcrumb .path-crumb:hover {
+  color: var(--fg);
+  text-decoration: underline;
 }
 
 /* Share/export glyph at the end of the crumb trail (reveal in file manager). */
@@ -397,6 +532,27 @@ body {
   cursor: pointer;
 }
 
+/* Icon-only split buttons: same chrome as .star-btn, tighter padding so the
+   14px glyph sits centred at the text buttons' height. The pair sits closer
+   together than the 8px crumb-actions gap, with matching extra room on both
+   sides; hover is a quiet light-grey lift, not the accent of text buttons. */
+.star-btn.split-dir {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 7px;
+  margin-left: 6px;
+}
+
+.star-btn.split-dir + .star-btn.split-dir {
+  margin-left: -5px;
+  margin-right: 6px;
+}
+
+.star-btn.split-dir:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+
 .star-btn:hover {
   color: var(--accent);
   border-color: var(--accent);
@@ -415,10 +571,130 @@ body {
   flex-direction: column;
 }
 
-/* Listing view */
+/* Listing view — a fixed search header above a scrolling table, so the search
+   box stays put as the table scrolls and the columns never jump between
+   listing and results. */
 .listing {
-  overflow: auto;
   flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.listing-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.listing-search {
+  flex: 0 0 auto;
+  position: relative;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.listing-search .listing-search-input {
+  width: 100%;
+  /* Reserves room for the count chip / spinner pinned inside the right edge —
+     sized for the longest count text ("showing 250 of 7734 matches"). Esc
+     clears the query. */
+  padding-right: 116px;
+}
+
+/* Native WebKit cancel × collides with the absolutely-positioned count chip;
+   hidden (Esc clears the query instead). */
+.listing-search-input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* Match count pinned inside the input's right edge (no layout shift). */
+.listing-search-count {
+  position: absolute;
+  right: 26px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--fg-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* Small spinner shown while the recursive walk is still in flight, so a
+   search on a huge folder doesn't look stalled while the input stays
+   fully interactive. */
+.listing-search-spinner {
+  position: absolute;
+  right: 26px;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  margin-top: -5.5px;
+  border: 1.5px solid var(--border);
+  border-top-color: var(--fg-muted);
+  border-radius: 50%;
+  pointer-events: none;
+  animation: listing-search-spin 0.6s linear infinite;
+}
+
+@keyframes listing-search-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Dims the results briefly while a background render (React's deferred
+   value) is catching up to the latest keystroke on a large search. */
+.listing-stale {
+  opacity: 0.6;
+  transition: opacity 0.1s ease-out;
+}
+
+/* Shared search-input chrome (explorer header + sidebar bookmarks). */
+.listing-search-input,
+.bookmark-search-input {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+.listing-search-input::placeholder,
+.bookmark-search-input::placeholder {
+  color: var(--fg-muted);
+}
+
+/* Focus affordance: a muted border brighten, not the accent yellow — still
+   clearly perceivable against the resting --border, just not loud. */
+.listing-search-input:focus,
+.bookmark-search-input:focus {
+  outline: none;
+  border-color: var(--fg-muted);
+}
+
+/* Matched-substring highlight in search results (explorer + bookmarks). */
+.search-mark {
+  background: rgba(229, 255, 68, 0.22);
+  color: var(--fg);
+  border-radius: 2px;
+}
+
+/* Relative path shown in an explorer search row, in place of a bare name. */
+.search-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Sidebar bookmark search box: sits just under the "Bookmarks" heading,
+   aligned with the row padding. */
+.bookmark-search {
+  padding: 0 8px 6px;
 }
 
 table.listing-table {
@@ -434,10 +710,14 @@ table.listing-table th {
   text-transform: uppercase;
   letter-spacing: 0.03em;
   padding: 8px 16px;
-  border-bottom: 1px solid var(--border);
   position: sticky;
   top: 0;
+  z-index: 1; /* stay above rows scrolling underneath */
   background: var(--bg);
+  /* border-collapse drops the sticky cell's own border as rows scroll under
+     it, leaving a 1px bleed gap — paint the divider as an inset shadow so it
+     rides with the header instead. */
+  box-shadow: inset 0 -1px 0 var(--border);
   cursor: pointer;
   user-select: none;
 }
@@ -456,7 +736,7 @@ table.listing-table .sort-arrow {
 }
 
 table.listing-table td {
-  padding: 7px 16px;
+  padding: 9px 16px;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
   overflow: hidden;
@@ -475,6 +755,7 @@ table.listing-table td.name {
   display: flex;
   align-items: center;
   gap: 8px;
+  font-size: 14px;
 }
 
 table.listing-table .icon {
@@ -579,32 +860,6 @@ table.listing-table td.mtime {
   border-color: var(--accent);
 }
 
-/* Annotate toggle (AN-2): same icon-button family as .mode-switcher-btn, but
-   position:relative for the badge, and separated from the mode switcher by a
-   hairline divider — it is an orthogonal on/off, not a fourth mode. */
-.preview-actions .annotate-toggle {
-  position: relative;
-  margin-left: 10px;
-}
-.preview-actions .annotate-toggle::before {
-  content: "";
-  position: absolute;
-  left: -10px;
-  top: 4px;
-  bottom: 4px;
-  width: 1px;
-  background: var(--border);
-}
-
-/* Solid accent fill is reserved for the single-select mode switcher; the
-   binary annotate toggle gets a tinted-outline on-state so "armed to comment"
-   and "active mode" never read as the same thing. */
-.preview-actions .mode-switcher-btn.annotate-toggle.active {
-  background: color-mix(in srgb, var(--accent) 18%, var(--bg));
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
 /* Template-mode icon: monochrome SVG tinted via mask-image + currentColor
    (mask-image url set inline per icon, PT-11). */
 .mode-icon-mask {
@@ -634,26 +889,6 @@ table.listing-table td.mtime {
   line-height: 1;
 }
 
-/* Open-comment count badge on the Annotate toggle (AN-3), visible whether or
-   not annotate is on. fg-token colors read on both the idle (--bg) and active
-   (--accent) button backgrounds; the bg-colored ring separates it from icon
-   strokes underneath. */
-.annotate-badge {
-  position: absolute;
-  top: -5px;
-  right: -5px;
-  min-width: 13px;
-  height: 13px;
-  padding: 0 3px;
-  border-radius: 7px;
-  background: var(--fg);
-  color: #10131a;
-  font-size: 9px;
-  line-height: 13px;
-  font-weight: 700;
-  text-align: center;
-  box-shadow: 0 0 0 1.5px var(--bg);
-}
 
 .preview-body {
   flex: 1 1 auto;
@@ -701,8 +936,23 @@ table.listing-table td.mtime {
   color: var(--fg-muted);
 }
 
+/* Error panel: dark maroon card + red border + mono red text, matching the
+   fused_render/static/runtime.js overlay reference. Canonical error style —
+   every error rendered in the shell (stat/preview failures, listing/search
+   failures, config-load failures) uses this class so the visual language
+   stays consistent. */
 .status-message.error {
-  color: var(--error);
+  background: rgba(30, 5, 5, 0.9);
+  border: 2px solid #c0392b;
+  border-radius: 10px;
+  padding: 14px 16px;
+  color: #ffdede;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: visible;
+  text-overflow: clip;
 }
 
 /* Embed mode (/embed/<path>): content only — all shell chrome hidden.
@@ -809,14 +1059,15 @@ body.embed .preview-browse-chip:hover {
   user-select: none;
 }
 
+/* Base layout/color rules for .panel-crumbs/.panel-crumb/.panel-crumb-sep/
+   .panel-crumb.last are shared with the main breadcrumb above (search
+   "Shared with the panel path bar"). Only what's genuinely panel-specific
+   lives here: pane-local flex sizing, a tighter font-size, hidden scrollbar,
+   and the accent-yellow hover (left as-is — the main breadcrumb gets its own
+   non-yellow hover instead of reusing this one). */
 .panel-crumbs {
   flex: 1 1 auto;
-  display: flex;
-  align-items: center;
-  overflow-x: auto;
   scrollbar-width: none;
-  white-space: nowrap;
-  font-family: ui-monospace, Menlo, Consolas, monospace;
   font-size: 11px;
 }
 
@@ -824,25 +1075,9 @@ body.embed .preview-browse-chip:hover {
   display: none;
 }
 
-.panel-crumb {
-  color: var(--fg-muted);
-  cursor: pointer;
-  padding: 2px 1px;
-  border-radius: 3px;
-}
-
 .panel-crumb:hover {
   color: var(--accent);
   text-decoration: underline;
-}
-
-.panel-crumb.last {
-  color: var(--fg);
-}
-
-.panel-crumb-sep {
-  color: var(--border);
-  margin: 0 1px;
 }
 
 .panel-btn {
@@ -976,6 +1211,80 @@ body.embed .preview-browse-chip:hover {
   background: rgba(255, 255, 255, 0.08);
 }
 
+/* Pane/tab template-mode menu: the trigger shows the active mode's icon; the
+   dropdown lists icon + name per mode. Dropdown is position:fixed (inline
+   top/left from the trigger's rect) — .panel-pane clips overflow, and the tab
+   bar would too. */
+.pane-mode-menu {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.pane-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 4px 5px;
+  border-radius: 4px;
+}
+
+.pane-mode-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--fg);
+}
+
+/* Inside a tab button: match the tab-open-plain / tab-close chrome sizing. */
+.tab .pane-mode-btn {
+  width: 15px;
+  height: 15px;
+  padding: 0;
+}
+
+.tab .pane-mode-btn .mode-icon-mask,
+.tab .pane-mode-btn .mode-icon-placeholder,
+.tab .pane-mode-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+.pane-mode-dropdown {
+  position: fixed;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 120px;
+  padding: 4px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.pane-mode-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pane-mode-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--fg);
+}
+
+.pane-mode-item.active {
+  color: var(--fg);
+}
+
 .tab-add {
   flex: 0 0 auto;
   background: none;
@@ -1008,4 +1317,486 @@ body.embed .preview-browse-chip:hover {
    above: #app stays the layout root exactly as in the vanilla shell. */
 #root {
   display: contents;
+}
+
+/* ---- Deploy button + modal (SPEC §19) ------------------------------------ */
+
+/* Header action for deployable pages: same chrome as its .preview-actions
+   siblings, plus a live dot when the page's deployment pointer reads active. */
+.preview-actions .deploy-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.deploy-live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #3fca6b;
+  flex: 0 0 auto;
+}
+
+.deploy-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 8vh 16px 16px;
+  z-index: 1000;
+}
+
+.deploy-dialog {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: min(600px, 100%);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.deploy-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.deploy-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deploy-close {
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px 6px;
+}
+
+.deploy-close:hover {
+  color: var(--fg);
+}
+
+.deploy-body {
+  padding: 14px 16px 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.deploy-body p {
+  margin: 0;
+}
+
+.deploy-body code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 12px;
+}
+
+.deploy-body button {
+  font: inherit;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+.deploy-body button:hover:not(:disabled) {
+  background: var(--bg-alt);
+  border-color: var(--accent);
+}
+
+.deploy-body button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.deploy-body .deploy-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #10131a;
+  font-weight: 600;
+}
+
+.deploy-body .deploy-primary:hover:not(:disabled) {
+  background: var(--accent);
+  filter: brightness(1.08);
+}
+
+.deploy-body .deploy-danger {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.deploy-body .deploy-danger:hover:not(:disabled) {
+  background: rgba(255, 107, 107, 0.12);
+}
+
+.deploy-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.deploy-muted {
+  color: var(--fg-muted);
+}
+
+.deploy-error {
+  color: var(--error);
+  border: 1px solid var(--error);
+  border-radius: 6px;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.deploy-note {
+  border-left: 2px solid var(--border);
+  padding-left: 10px;
+}
+
+/* Current-deployment card: status chip + URL row. */
+.deploy-current {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.deploy-current-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.share-status {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+}
+
+.share-status.active {
+  color: #3fca6b;
+  border-color: #3fca6b;
+}
+
+.share-status.revoked {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.deploy-url-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.deploy-url {
+  color: var(--accent);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+}
+
+.deploy-url:hover {
+  text-decoration: underline;
+}
+
+.deploy-copy {
+  flex: 0 0 auto;
+}
+
+.deploy-form-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.deploy-form-row label {
+  color: var(--fg-muted);
+}
+
+.deploy-form-row select {
+  font: inherit;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  max-width: 100%;
+}
+
+/* Env-wide share list (Preferences → Deployments): the env's mounts joined to
+   local pages. */
+.deploy-shares-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.deploy-shares-table td {
+  padding: 5px 8px;
+  border-top: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.deploy-shares-table .share-page {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deploy-shares-table .share-token {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--fg-muted);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deploy-shares-table a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.deploy-shares-table a:hover {
+  text-decoration: underline;
+}
+
+.deploy-close:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Busy/disabled primary keeps readable dark-on-accent contrast: the generic
+   button:disabled opacity darkened the accent under it into near-black-on-
+   black while "Deploying…" showed. Slight desaturation signals inactive
+   instead. */
+.deploy-body .deploy-primary:disabled {
+  opacity: 1;
+  background: var(--accent);
+  color: #10131a;
+  filter: saturate(0.45) brightness(0.85);
+}
+
+.deploy-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 7px;
+  vertical-align: -1px;
+  border: 2px solid rgba(16, 19, 26, 0.35);
+  border-top-color: #10131a;
+  border-radius: 50%;
+  animation: deploy-spin 0.8s linear infinite;
+}
+
+@keyframes deploy-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* "Will publish:" preview — the page + each bundled runPython/rawUrl target
+   as compact chips. */
+.deploy-preview {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* ---- Preferences page (SPEC §20) ------------------------------------------ */
+
+/* Bottom-left entry: pinned to the sidebar's bottom edge, muted until hover. */
+.sidebar-footer {
+  margin-top: auto;
+  padding: 6px;
+  border-top: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.sidebar-footer .prefs-link {
+  width: 100%;
+  background: none;
+  border: none;
+  font: inherit;
+  color: var(--fg-muted);
+  cursor: pointer;
+  text-align: left;
+}
+
+.sidebar-footer .prefs-link:hover,
+.sidebar-footer .prefs-link.active {
+  color: var(--fg);
+}
+
+.prefs-page {
+  padding: 18px 22px 32px;
+  max-width: 760px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  overflow-y: auto;
+  font-size: 13px;
+}
+
+.prefs-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.prefs-section h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.prefs-section p {
+  margin: 0;
+}
+
+.prefs-section code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.prefs-section button {
+  font: inherit;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+.prefs-section button:hover:not(:disabled) {
+  background: var(--bg-alt);
+  border-color: var(--accent);
+}
+
+.prefs-section button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.prefs-section .deploy-danger {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.prefs-section .deploy-danger:hover:not(:disabled) {
+  background: rgba(255, 107, 107, 0.12);
+}
+
+.prefs-section select {
+  font: inherit;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+}
+
+.prefs-radio {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  cursor: pointer;
+}
+
+.prefs-radio input {
+  margin-top: 3px;
+  accent-color: var(--accent);
+}
+
+.prefs-radio.locked {
+  cursor: default;
+  opacity: 0.65;
+}
+
+/* Registry table: pattern -> template chips (+ source badge). */
+.prefs-registry-table {
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.prefs-registry-table td {
+  padding: 5px 10px 5px 0;
+  border-top: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.prefs-registry-table .registry-templates code + code {
+  margin-left: 5px;
+}
+
+.prefs-registry-table .default-mode {
+  border-color: var(--accent);
+}
+
+.prefs-registry-table .registry-error {
+  color: var(--error);
+}
+
+.registry-source {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.registry-source.user,
+.registry-source.user-override {
+  color: var(--accent);
+  border-color: var(--accent);
 }

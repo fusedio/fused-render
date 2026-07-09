@@ -1,13 +1,26 @@
-// Bookmark store on localStorage. Pure data layer — no DOM, no React. UI
-// components subscribe via useBookmarksVersion (lib/hooks.ts) and call
+// Bookmark store, persisted server-side at ~/.fused-render/bookmarks.json via
+// GET/PUT /api/bookmarks (superseded localStorage; DECISIONS D21 -> D74). Pure
+// data layer — no DOM, no React.
+//
+// Reads are synchronous off an in-memory cache (React renders can't await);
+// hydrateBookmarks() fills it once at boot. Mutations are async: they apply to
+// a clone, `await` the whole-tree PUT, and only then advance the cache — so a
+// failed write never leaves the UI showing an unpersisted state (no optimism,
+// no rollback; a localhost PUT of this tiny tree is sub-millisecond). UI
+// components still subscribe via useBookmarksVersion (lib/hooks.ts) and call
 // notifyBookmarksChanged() after each mutation they trigger.
-const KEY = "fused.bookmarks";
+import { getBookmarks, putBookmarks } from "./api";
+
+// Legacy localStorage key — read once for the one-time server import, then left
+// dormant as a fallback (never written again).
+const LS_KEY = "fused.bookmarks";
 
 export interface Bookmark {
   id: string;
   name: string;
   url: string;
   created_at: number;
+  icon?: string; // single emoji; absent -> default ★ glyph
   type?: undefined; // discriminant vs BookmarkFolder
 }
 
@@ -21,23 +34,101 @@ export interface BookmarkFolder {
 
 export type BookmarkItem = Bookmark | BookmarkFolder;
 
+// In-memory mirror of the server file. Empty until hydrateBookmarks() resolves;
+// the cache only advances after a successful PUT, so it never holds unsaved
+// state. loadBookmarks() hands out this live array — callers must treat it as
+// read-only (mutators clone before changing).
+let cache: BookmarkItem[] = [];
+
 export function loadBookmarks(): BookmarkItem[] {
+  return cache;
+}
+
+const clone = (items: BookmarkItem[]): BookmarkItem[] =>
+  JSON.parse(JSON.stringify(items));
+
+// Persist a new tree, then advance the cache (order matters: on PUT failure the
+// cache is untouched and the mutation rejects, so the UI stays consistent).
+async function commit(items: BookmarkItem[]): Promise<void> {
+  await putBookmarks(items);
+  cache = items;
+}
+
+// All cache access runs through one serial promise chain — hydration, every
+// mutation, and the cross-tab refresh poll. So: (1) a mutation never reads a
+// half-hydrated cache — an early click before the initial GET returns waits for
+// the load instead of PUTting an empty tree over the file; (2) two overlapping
+// mutations can't both clone the same snapshot and clobber each other — each
+// runs after the previous one's commit; (3) the poll can't overwrite the cache
+// mid-mutation. Cross-tab convergence is eventual (≤ the poll interval), still
+// last-write-wins on simultaneous writes — D77.
+let tail: Promise<unknown> = Promise.resolve();
+let hydrated = false;
+
+function enqueue<T>(op: () => Promise<T>): Promise<T> {
+  const run = tail.then(op, op); // run regardless of a prior rejection
+  tail = run.catch(() => {}); // keep the chain alive after a failed op
+  return run;
+}
+
+// Old localStorage tree, or null if absent/empty/corrupt. Only a non-empty
+// array is worth importing.
+function readLegacy(): BookmarkItem[] | null {
   try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return [];
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return null;
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed) && parsed.length ? parsed : null;
   } catch {
-    return []; // corrupt JSON -> treat as empty; next save overwrites it
+    return null;
   }
 }
 
-function save(bookmarks: BookmarkItem[]): void {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(bookmarks));
-  } catch (e) {
-    console.error("[fused] failed to save bookmarks:", e);
-  }
+// Load the cache from the server once at boot (idempotent; enqueued so it wins
+// the race against any early mutation). If the file was never written (`exists`
+// false) and legacy localStorage has data, import it once (PUT it so `exists`
+// flips true and this never re-imports — even after the user later deletes
+// every bookmark). Failure leaves the cache empty and `hydrated` false; a later
+// mutation still tries to persist.
+export function hydrateBookmarks(): Promise<void> {
+  return enqueue(async () => {
+    if (hydrated) return;
+    try {
+      const { exists, bookmarks } = await getBookmarks();
+      if (!exists) {
+        const legacy = readLegacy();
+        if (legacy) {
+          await commit(legacy);
+          hydrated = true;
+          return;
+        }
+      }
+      cache = bookmarks as BookmarkItem[];
+      hydrated = true;
+    } catch (e) {
+      console.error("[fused] failed to load bookmarks:", e);
+    }
+  });
+}
+
+// Re-read the server tree to pick up another tab's writes (D77 poll). Enqueued
+// so it never overwrites an in-flight local mutation; resolves true only when
+// the tree actually changed, so the caller re-renders once every 30 s at most,
+// not on every tick. No import logic — plain GET (hydrate owns the one-time
+// import); a failed poll is logged and skipped.
+export function refreshBookmarks(): Promise<boolean> {
+  return enqueue(async () => {
+    try {
+      const { bookmarks } = await getBookmarks();
+      const next = bookmarks as BookmarkItem[];
+      if (JSON.stringify(next) === JSON.stringify(cache)) return false;
+      cache = next;
+      return true;
+    } catch (e) {
+      console.error("[fused] failed to refresh bookmarks:", e);
+      return false;
+    }
+  });
 }
 
 export function isFolder(item: BookmarkItem): item is BookmarkFolder {
@@ -48,7 +139,7 @@ export function isFolder(item: BookmarkItem): item is BookmarkFolder {
 // children, in display order.
 export function allBookmarks(): Bookmark[] {
   const out: Bookmark[] = [];
-  for (const item of loadBookmarks()) {
+  for (const item of cache) {
     if (isFolder(item)) out.push(...item.children);
     else out.push(item);
   }
@@ -64,150 +155,195 @@ function prune(items: BookmarkItem[]): BookmarkItem[] {
   return items;
 }
 
-export function addBookmark(name: string, url: string): void {
-  const bookmarks = loadBookmarks();
-  bookmarks.push({ id: crypto.randomUUID(), name, url, created_at: Date.now() });
-  save(bookmarks);
+// Every mutation goes through here: `transform` receives a fresh clone of the
+// current cache and returns the tree to persist, or null to abort with no write
+// (a no-op lookup). Serialized via enqueue so the clone-read and the commit are
+// one atomic step relative to other mutations and to hydration.
+function mutate(transform: (items: BookmarkItem[]) => BookmarkItem[] | null): Promise<void> {
+  return enqueue(async () => {
+    const next = transform(clone(cache));
+    if (next) await commit(next);
+  });
 }
 
-export function deleteBookmark(id: string): void {
-  const items = loadBookmarks();
-  const at = items.findIndex((it) => it.id === id);
-  if (at !== -1) {
-    items.splice(at, 1);
-  } else {
-    // Not top-level: search folder children.
-    for (const item of items) {
-      if (!isFolder(item)) continue;
-      const ci = item.children.findIndex((b) => b.id === id);
-      if (ci !== -1) {
-        item.children.splice(ci, 1);
-        break;
+export function addBookmark(name: string, url: string): Promise<void> {
+  return mutate((items) => {
+    items.push({ id: crypto.randomUUID(), name, url, created_at: Date.now() });
+    return items;
+  });
+}
+
+export function deleteBookmark(id: string): Promise<void> {
+  return mutate((items) => {
+    const at = items.findIndex((it) => it.id === id);
+    if (at !== -1) {
+      items.splice(at, 1);
+    } else {
+      // Not top-level: search folder children.
+      for (const item of items) {
+        if (!isFolder(item)) continue;
+        const ci = item.children.findIndex((b) => b.id === id);
+        if (ci !== -1) {
+          item.children.splice(ci, 1);
+          break;
+        }
       }
     }
-  }
-  save(prune(items));
+    return prune(items);
+  });
 }
 
 // Remove a folder (and its children) entirely.
-export function deleteFolder(id: string): void {
-  save(loadBookmarks().filter((it) => it.id !== id));
+export function deleteFolder(id: string): Promise<void> {
+  return mutate((items) => items.filter((it) => it.id !== id));
 }
 
 // Rename a bookmark or a folder. Top-level items are searched first, then
 // folder children.
-export function renameBookmark(id: string, name: string): void {
-  const items = loadBookmarks();
-  let target: BookmarkItem | undefined = items.find((it) => it.id === id);
-  if (!target) {
-    for (const item of items) {
-      if (!isFolder(item)) continue;
-      target = item.children.find((b) => b.id === id);
-      if (target) break;
+export function renameBookmark(id: string, name: string): Promise<void> {
+  return mutate((items) => {
+    let target: BookmarkItem | undefined = items.find((it) => it.id === id);
+    if (!target) {
+      for (const item of items) {
+        if (!isFolder(item)) continue;
+        target = item.children.find((b) => b.id === id);
+        if (target) break;
+      }
     }
-  }
-  if (target) target.name = name;
-  save(items);
+    if (!target) return null; // nothing to change -> no write
+    target.name = name;
+    return items;
+  });
 }
 
 // Move an item (bookmark or folder) to a new position. parentId null = top
 // level; otherwise the id of the destination folder. targetIndex is the index
 // in the destination array AFTER the moved item is removed; the caller is
 // responsible for that convention. Folders can only move to the top level.
-export function moveItem(id: string, parentId: string | null, targetIndex: number): void {
-  const items = loadBookmarks();
+export function moveItem(
+  id: string,
+  parentId: string | null,
+  targetIndex: number
+): Promise<void> {
+  return mutate((items) => {
+    // Locate the item first so a folder→folder move can abort before removal.
+    let moved: BookmarkItem | undefined = items.find((it) => it.id === id);
+    const isFolderItem = moved !== undefined && isFolder(moved);
+    if (isFolderItem && parentId !== null) return null;
 
-  // Locate the item first so a folder→folder move can abort before removal.
-  let moved: BookmarkItem | undefined = items.find((it) => it.id === id);
-  const isFolderItem = moved !== undefined && isFolder(moved);
-  if (isFolderItem && parentId !== null) return;
-
-  // Remove from top level or whichever folder holds it.
-  if (moved) {
-    items.splice(items.indexOf(moved), 1);
-  } else {
-    for (const item of items) {
-      if (!isFolder(item)) continue;
-      const ci = item.children.findIndex((b) => b.id === id);
-      if (ci !== -1) {
-        [moved] = item.children.splice(ci, 1);
-        break;
+    // Remove from top level or whichever folder holds it.
+    if (moved) {
+      items.splice(items.indexOf(moved), 1);
+    } else {
+      for (const item of items) {
+        if (!isFolder(item)) continue;
+        const ci = item.children.findIndex((b) => b.id === id);
+        if (ci !== -1) {
+          [moved] = item.children.splice(ci, 1);
+          break;
+        }
       }
     }
-  }
-  if (!moved) return;
+    if (!moved) return null;
 
-  if (parentId === null) {
-    items.splice(targetIndex, 0, moved);
-  } else {
-    const dest = items.find((it) => it.id === parentId && isFolder(it));
-    if (!dest || !isFolder(dest)) return; // destination gone; bail without saving so nothing is lost
-    dest.children.splice(targetIndex, 0, moved as Bookmark);
-  }
-  save(prune(items));
+    if (parentId === null) {
+      items.splice(targetIndex, 0, moved);
+    } else {
+      const dest = items.find((it) => it.id === parentId && isFolder(it));
+      if (!dest || !isFolder(dest)) return null; // destination gone; bail without saving so nothing is lost
+      dest.children.splice(targetIndex, 0, moved as Bookmark);
+    }
+    return prune(items);
+  });
 }
 
 // Replace top-level bookmark targetId with a new folder containing
 // [target, dragged], preserving the target's slot. Returns the folder id
 // (or null if either lookup fails). draggedId is removed from wherever it
 // lives (top level or another folder), then the folder is created.
-export function createFolderWith(targetId: string, draggedId: string): string | null {
-  const items = loadBookmarks();
-  const targetIdx = items.findIndex((it) => it.id === targetId && !isFolder(it));
-  if (targetIdx === -1) return null;
+export function createFolderWith(
+  targetId: string,
+  draggedId: string
+): Promise<string | null> {
+  return enqueue(async () => {
+    const items = clone(cache);
+    const targetIdx = items.findIndex((it) => it.id === targetId && !isFolder(it));
+    if (targetIdx === -1) return null;
 
-  // Remove dragged from top level or a folder's children.
-  let dragged = items.find((it) => it.id === draggedId && !isFolder(it)) as Bookmark | undefined;
-  if (dragged) {
-    items.splice(items.indexOf(dragged), 1);
-  } else {
-    for (const item of items) {
-      if (!isFolder(item)) continue;
-      const ci = item.children.findIndex((b) => b.id === draggedId);
-      if (ci !== -1) {
-        [dragged] = item.children.splice(ci, 1);
-        break;
+    // Remove dragged from top level or a folder's children.
+    let dragged = items.find((it) => it.id === draggedId && !isFolder(it)) as Bookmark | undefined;
+    if (dragged) {
+      items.splice(items.indexOf(dragged), 1);
+    } else {
+      for (const item of items) {
+        if (!isFolder(item)) continue;
+        const ci = item.children.findIndex((b) => b.id === draggedId);
+        if (ci !== -1) {
+          [dragged] = item.children.splice(ci, 1);
+          break;
+        }
       }
     }
-  }
-  if (!dragged) return null;
+    if (!dragged) return null;
 
-  // Target index may have shifted if dragged was an earlier top-level item.
-  const target = items.find((it) => it.id === targetId) as Bookmark;
-  const at = items.indexOf(target);
-  const folder: BookmarkFolder = {
-    id: crypto.randomUUID(),
-    type: "folder",
-    name: "New folder",
-    collapsed: false,
-    children: [target, dragged],
-  };
-  items.splice(at, 1, folder);
-  save(prune(items));
-  return folder.id;
+    // Target index may have shifted if dragged was an earlier top-level item.
+    const target = items.find((it) => it.id === targetId) as Bookmark;
+    const at = items.indexOf(target);
+    const folder: BookmarkFolder = {
+      id: crypto.randomUUID(),
+      type: "folder",
+      name: "New folder",
+      collapsed: false,
+      children: [target, dragged],
+    };
+    items.splice(at, 1, folder);
+    await commit(prune(items));
+    return folder.id;
+  });
 }
 
-export function toggleFolder(id: string): void {
-  const items = loadBookmarks();
-  const folder = items.find((it) => it.id === id && isFolder(it));
-  if (folder && isFolder(folder)) folder.collapsed = !folder.collapsed;
-  save(items);
+export function toggleFolder(id: string): Promise<void> {
+  return mutate((items) => {
+    const folder = items.find((it) => it.id === id && isFolder(it));
+    if (!folder || !isFolder(folder)) return null;
+    folder.collapsed = !folder.collapsed;
+    return items;
+  });
 }
 
-export function updateBookmarkUrl(id: string, url: string): void {
-  const items = loadBookmarks();
-  let bookmark = items.find((it) => it.id === id && !isFolder(it)) as Bookmark | undefined;
-  if (!bookmark) {
-    for (const item of items) {
-      if (!isFolder(item)) continue;
-      bookmark = item.children.find((b) => b.id === id);
-      if (bookmark) break;
+export function updateBookmarkUrl(id: string, url: string): Promise<void> {
+  return mutate((items) => {
+    let bookmark = items.find((it) => it.id === id && !isFolder(it)) as Bookmark | undefined;
+    if (!bookmark) {
+      for (const item of items) {
+        if (!isFolder(item)) continue;
+        bookmark = item.children.find((b) => b.id === id);
+        if (bookmark) break;
+      }
     }
-  }
-  if (bookmark) {
+    if (!bookmark) return null;
     bookmark.url = url;
-    save(items);
-  }
+    return items;
+  });
+}
+
+// Set or clear (icon = null) a bookmark's emoji icon. Bookmarks only —
+// folders keep the themed folder glyph.
+export function setBookmarkIcon(id: string, icon: string | null): Promise<void> {
+  return mutate((items) => {
+    let bookmark = items.find((it) => it.id === id && !isFolder(it)) as Bookmark | undefined;
+    if (!bookmark) {
+      for (const item of items) {
+        if (!isFolder(item)) continue;
+        bookmark = item.children.find((b) => b.id === id);
+        if (bookmark) break;
+      }
+    }
+    if (!bookmark) return null;
+    if (icon === null) delete bookmark.icon;
+    else bookmark.icon = icon;
+    return items;
+  });
 }
 
 // Armed-bookmark tracking on sessionStorage. Records the bookmark being

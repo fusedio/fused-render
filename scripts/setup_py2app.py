@@ -46,13 +46,21 @@ if not ICONFILE or not os.path.isfile(ICONFILE):
 
 APP = [os.path.join(SCRIPT_DIR, "app_entry.py")]
 
-# Extensions the built-in template registry (server.py TEMPLATES) previews.
-# Kept in sync by hand — see ARCHITECTURE.md §7 for the source of truth.
+# Extensions the built-in template registry (server.py TEMPLATES) previews,
+# kept in sync by hand (see ARCHITECTURE.md §7), plus geo/sci extras with no
+# built-in key — users can bind those via the runtime template registry, and
+# extra Finder associations are harmless at Alternate rank.
 _PREVIEWABLE_EXTENSIONS = [
     "html", "htm", "csv", "tsv", "json", "geojson", "md", "txt", "log",
     "yaml", "yml", "toml", "py", "js", "ts", "sh", "css",
     "png", "jpg", "jpeg", "gif", "webp", "svg", "xlsx", "pdf",
     "mp4", "mov", "m4v", "webm", "mp3", "wav", "m4a", "ogg", "flac",
+    "tif", "tiff", "geotiff",  # GeoTIFF rasters (server.py "geotiff" template)
+    "nc", "nc4", "cdf",  # NetCDF (server.py "netcdf" template)
+    # geo/sci formats with no built-in template key — bindable via the
+    # runtime template registry:
+    "gpkg", "shp", "fgb", "kml", "kmz", "gpx", "las", "laz",
+    "pmtiles", "mbtiles", "zarr", "h5", "grib2", "jp2",
 ]
 
 DOCUMENT_TYPES = [
@@ -113,12 +121,35 @@ OPTIONS = {
         # modulegraph's regular import tracing - only forcing the whole
         # package via `packages` breaks on its bootstrap lookup.
         "rumps", "objc", "AppKit", "Foundation", "Cocoa", "CoreFoundation",
+        # The deploy CLI (SPEC §19 DP-3): the [fused] extra build_dmg.sh
+        # installs, run in-bundle via fused_render/_fused_cli.py. `fused`
+        # itself is forced whole (pluggy entry-point plugins + pervasive
+        # in-function imports + non-.py package data), plus the deps that
+        # carry data dirs or dynamic loading a traced-module copy would
+        # drop: botocore's JSON service models (boto3), anthropic's
+        # tokenizer data, keyring's entry-point backends, cryptography's
+        # cffi bindings, pluggy's registry. The rest of fused's dep tree is
+        # pure-python with ordinary imports — modulegraph traces it. The
+        # gate for anything missed here is build_dmg.sh §4c's bundled-CLI
+        # smoke test (real verbs through the shim). `ty` is deliberately
+        # NOT shipped (a Rust binary console script py2app can't carry);
+        # fused's verify scanner detects its absence and skips with a
+        # warning finding.
+        "fused",
+        "boto3", "botocore", "s3transfer", "jmespath",
+        "cryptography", "keyring",
+        "anthropic", "mcp", "httpx", "httpcore",
+        "pluggy", "tomlkit", "jwt", "yaml", "loguru",
+        "aiohttp", "yarl", "multidict", "frozenlist",
+        "fsspec", "tabulate", "tqdm", "rtoml",
     ],
     # Single modules (incl. bare C extensions) that modulegraph can't be
     # trusted to find on its own — same runtime-import blindness as
     # `packages` above, but `includes` handles non-package modules correctly
     # (extension -> lib-dynload/*.so, never a bogus .py copy).
-    "includes": ["_duckdb"],
+    # _cffi_backend: cryptography's cffi backend, the same bare-top-level-
+    # C-extension shape as _duckdb.
+    "includes": ["_duckdb", "_cffi_backend"],
     "plist": {
         "CFBundleIdentifier": "io.fused.render" + (f".{branch_ref()}" if branch_ref() else ""),
         "CFBundleName": f"FusedRender{branch_suffix()}",
@@ -130,6 +161,27 @@ OPTIONS = {
         # No LSUIElement (D34): regular app, Dock icon + menu bar item both.
         # Finder "Open with FusedRender" (SPEC DM-8):
         "CFBundleDocumentTypes": DOCUMENT_TYPES,
+        # macOS shows these strings in the TCC permission prompt when the app
+        # first reads a file under a protected folder (the app browses the
+        # whole filesystem by design, D2). Purpose strings don't change WHEN
+        # the prompt appears — the D72 in-process-reader split + Developer ID
+        # signing (D73) are what stop it from repeating — but a bare prompt
+        # with no reason reads as suspicious; these explain it.
+        "NSDesktopFolderUsageDescription": (
+            "FusedRender previews files you open from your Desktop."
+        ),
+        "NSDocumentsFolderUsageDescription": (
+            "FusedRender previews files you open from your Documents folder."
+        ),
+        "NSDownloadsFolderUsageDescription": (
+            "FusedRender previews files you open from your Downloads folder."
+        ),
+        "NSRemovableVolumesUsageDescription": (
+            "FusedRender previews files you open from removable volumes."
+        ),
+        "NSNetworkVolumesUsageDescription": (
+            "FusedRender previews files you open from network volumes."
+        ),
     },
 }
 

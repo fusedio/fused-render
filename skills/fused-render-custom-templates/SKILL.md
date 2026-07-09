@@ -26,20 +26,22 @@ One folder per template, self-contained:
 └── wip-thing/             ← no registry entry → inert draft
 ```
 
-- **The folder name is the template's public name** — it's what a registry list references, the `_mode=<name>` URL value, and the switcher's tooltip label. One name-resolution rule everywhere: a name resolves to `~/.fused-render/<name>/template.html` if that exists, else the built-in `fused_render/templates/<name>/template.html`, else it's unusable. **Naming your folder after a built-in shadows it** — `table`, `csv`, `xlsx`, `tree`, `markdown`, `image`, `media`, `pdf`, `code`, `text`, `geotiff`, `netcdf` are the built-in names; reuse one deliberately to replace that built-in everywhere it's referenced, including inside a `"..."` splice (below).
+- **The folder name is the template's public name** — it's what a registry list references, the `_mode=<name>` URL value, and the switcher's tooltip label. One name-resolution rule everywhere: a name resolves to `~/.fused-render/<name>/template.html` if that exists, else the built-in `fused_render/templates/<name>/template.html`, else it's unusable. **Naming your folder after a built-in shadows it** — `table`, `csv`, `xlsx`, `tree`, `markdown`, `image`, `media`, `pdf`, `code`, `api`, `text`, `geotiff`, `netcdf`, `zarr` are the built-in names; reuse one deliberately to replace that built-in everywhere it's referenced, including inside a `"..."` splice (below).
 - `template.html` is the fixed entry-point filename.
 - Sibling files are referenced relatively, e.g. `fused.runPython("./reader.py", {...})` — the template renders from its real path, so relative resolution just works.
 - `icon.svg` is optional: a monochrome single-fill SVG (`currentColor` or plain black — the shell tints it via a CSS mask, so only alpha matters), square viewBox (24×24 suggested), simple enough to read at 16px. No icon → the switcher shows a first-letter placeholder for that mode instead.
 
 ## registry.json
 
-Flat JSON object. Keys are **dotted extensions**, values are a **list of names**, a single **name** (string), or **`null`**:
+Flat JSON object. Keys are **dotted extension patterns** (compound extensions, `*` wildcard segments, trailing `/` for directories — same grammar as the built-in `fused_render/templates/registry.json`), values are a **list of names**, a single **name** (string), or **`null`**:
 
 ```json
 {
   ".parquet": ["geo", "..."],
   ".geojson": "geo",
   ".tar.gz": "archive",
+  ".*.json": "config-view",
+  ".obt/": "bundle",
   ".png": null
 }
 ```
@@ -50,12 +52,13 @@ Rules:
 - **`"..."` splices in the built-in list, in place** — add modes without knowing (or hand-maintaining) the built-in names, and future built-in additions flow in automatically. `["code", "..."]` promotes `code` to the default and keeps everything the built-in table had, without duplicating it. Rules: names already listed explicitly are skipped when the splice expands (no duplicates); **at most one `"..."` per list** — a second one makes the whole entry invalid (falls back to the built-in list, `template_error` set); splicing an extension with no built-in list expands to nothing (harmless).
 - **String = shorthand for a single-mode list of that one name** — exactly `["geo"]`. This is the pre-modes registry shape; existing registries keep working unchanged.
 - **`null` disables templating** for that extension entirely: no template renders; the explorer shows its plain metadata/raw-download fallback.
-- **Dotted keys, longest suffix wins, case-insensitive.** `.tar.gz` beats `.gz` for `backup.tar.gz`. Compound extensions work only through the registry — always include the leading dot.
+- **Dotted keys, most-specific wins, case-insensitive.** A key is a dot-anchored suffix pattern of one or more segments. More segments beats fewer (`.tar.gz` beats `.gz` for `backup.tar.gz`); at equal length, comparing from the rightmost segment, a literal beats a wildcard (`.xyz.json` > `.*.json` > `.json` for `data.xyz.json`). Always include the leading dot. A match needs something before the suffix — a file literally named `.json` doesn't match the `.json` key (but `.hidden.json` does).
+- **`*` = exactly one whole segment.** `.*.json` matches `data.tiles.json` but not `data.json` (nothing for the `*`) and not partially (`.geo*.json` is invalid — a key like that never matches anything).
+- **Trailing `/` binds a directory.** `".obt/"` matches a *directory* named `data.obt` — the way built-in `.zarr` stores are bound (`".zarr/": ["zarr"]`). Directory keys never match files and vice versa. A `null` on a directory key gives the plain listing view.
 - **Many-to-one is normal** — several extension keys may reference the same template name.
-- **Any extension is allowed**, including ones fused-render has no built-in for.
-- **Names starting with `_` are reserved** — they're shell sentinels (modes the shell itself implements, like `_render`, the "render this HTML file" mode), not template folders. A `_`-prefixed name in a registry list is invalid: it's dropped and `template_error` is set, the rest of the list still works. Same reservation as `_mode`/`_file` params.
-- **`.html`/`.htm` cannot be bound** — renderable HTML is the product's core behavior. HTML has a hardcoded server-side mode list (`["_render", "code"]`: rendered page first, source editor second) that the registry cannot touch.
-- Registry (longest matching key) beats the built-in table; no registry entry (or no `registry.json` at all) means built-in behavior.
+- **Any extension is allowed**, including ones fused-render has no built-in for — and including `.html`/`.htm`: the rendered-page-first default (`["_render", "code"]`) is just the built-in registry entry, and you can rebind or reorder it (e.g. `[ "code", "..." ]` to make the source editor the default).
+- **Names starting with `_` are shell sentinels** — modes the shell itself implements, not template folders. The only one you may reference is **`_render`** ("render the HTML file itself"); any other `_`-prefixed name in a registry list is invalid: dropped, `template_error` set, rest of the list still works. Same reservation as `_mode`/`_file` params.
+- Registry (any matching key) beats the built-in table — even a plain user `.json` key beats a more specific built-in `.xyz.json` one; no registry entry (or no `registry.json` at all) means built-in behavior.
 - A folder without a registry entry does nothing — that's the draft state. Registering = adding the line; unregistering = deleting it. No restart needed: the registry is re-read on every file open, so the next navigation/refresh picks changes up.
 
 ## Workflow: create and register a template
