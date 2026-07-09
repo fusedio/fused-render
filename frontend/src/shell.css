@@ -1600,25 +1600,8 @@ body.embed .preview-browse-chip:hover {
   max-width: 100%;
 }
 
-/* Share list: the env's mounts joined to local pages. */
-.deploy-shares-toggle {
-  background: none !important;
-  border: none !important;
-  color: var(--fg-muted);
-  padding: 0 !important;
-}
-
-.deploy-shares-toggle:hover {
-  color: var(--fg);
-}
-
-.deploy-shares-body {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 8px;
-}
-
+/* Env-wide share list (Preferences → Deployments): the env's mounts joined to
+   local pages. */
 .deploy-shares-table {
   width: 100%;
   border-collapse: collapse;
@@ -1629,10 +1612,6 @@ body.embed .preview-browse-chip:hover {
   padding: 5px 8px;
   border-top: 1px solid var(--border);
   vertical-align: middle;
-}
-
-.deploy-shares-table tr.mine td {
-  background: rgba(229, 255, 68, 0.06);
 }
 
 .deploy-shares-table .share-page {
@@ -1658,10 +1637,6 @@ body.embed .preview-browse-chip:hover {
 
 .deploy-shares-table a:hover {
   text-decoration: underline;
-}
-
-.deploy-shares-refresh {
-  font-size: 12px;
 }
 
 .deploy-close:disabled {

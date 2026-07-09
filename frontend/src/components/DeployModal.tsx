@@ -9,8 +9,10 @@
 //      install the pinned [fused] extra, else the manual hint)
 //   3. no hosted envs — guidance to create one (`fused env create`)
 //   4. the form — env picker (default: the managed fused-backend env),
-//      current deployment card (URL + copy/open), Deploy/Redeploy, Revoke,
-//      and the env's share list joined to local pages.
+//      current deployment card (URL + copy/open), Deploy/Redeploy, Revoke.
+// The env-wide share list (every mount on an env, with revoke) lives on the
+// Preferences page's Deployments section, not here — this modal is scoped to
+// the current page.
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   deployPage,
@@ -18,10 +20,9 @@ import {
   getDeployPreview,
   getDeployStatus,
   installFused,
-  listShares,
   revokeDeployment,
 } from "../lib/api";
-import type { DeployConfig, DeployPreview, Deployment, ShareMount } from "../lib/api";
+import type { DeployConfig, DeployPreview, Deployment } from "../lib/api";
 import { basename } from "../lib/format";
 
 interface DeployModalProps {
@@ -96,130 +97,6 @@ function PreviewSection({ preview }: { preview: DeployPreview }) {
   );
 }
 
-// EVERY mount `fused share list` reports on the env — not just this page's —
-// joined server-side to the local pages that deployed them, so this doubles
-// as the "which of my files is deployed" view. Loaded lazily: a share list
-// shells the CLI (and may hit the network), so it only runs when expanded.
-// `refreshKey` bumps on every successful Deploy/Revoke in this modal so an
-// open list reflects the action instead of waiting for a manual Refresh.
-function SharesSection({ env, fsPath, refreshKey }: { env: string; fsPath: string; refreshKey: number }) {
-  const [open, setOpen] = useState(false);
-  const [mounts, setMounts] = useState<ShareMount[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  // Sequence + alive guarded, same discipline as the modal's own load and
-  // DeploymentsSection: a share list shells the CLI (slow), and env-switch /
-  // refreshKey can fire a newer load before an older resolves — an older
-  // response landing last would show one env's mounts under another's header,
-  // and a resolve after the modal closes would setState on an unmounted tree.
-  const loadSeq = useRef(0);
-  const alive = useRef(true);
-  useEffect(() => () => {
-    alive.current = false;
-  }, []);
-
-  const load = async () => {
-    const seq = ++loadSeq.current;
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await listShares(env);
-      if (!alive.current || seq !== loadSeq.current) return;
-      setMounts(res.mounts);
-    } catch (e) {
-      if (!alive.current || seq !== loadSeq.current) return;
-      setError((e as Error).message);
-      setMounts(null);
-    } finally {
-      if (alive.current && seq === loadSeq.current) setLoading(false);
-    }
-  };
-
-  // Re-fetch when the section is open and the env changes — or after a
-  // Deploy/Revoke in this modal (refreshKey), so the table never shows a
-  // status the user just changed.
-  useEffect(() => {
-    if (open) void load();
-    else {
-      setMounts(null);
-      setError(null);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, env, refreshKey]);
-
-  return (
-    <div className="deploy-shares">
-      <button
-        type="button"
-        className="deploy-shares-toggle"
-        title={"Everything `fused share list` reports on " + env + " — not just this page"}
-        onClick={() => setOpen(!open)}
-      >
-        {open ? "▾" : "▸"} All deployments on {env}
-      </button>
-      {open && (
-        <div className="deploy-shares-body">
-          <div className="deploy-muted">
-            Everything deployed to this environment (from <code>fused share list</code>), not
-            just this page. Rows with a file name were deployed from this app.
-          </div>
-          {loading && <div className="deploy-muted">Loading share list…</div>}
-          {error && <div className="deploy-error">{error}</div>}
-          {mounts && mounts.length === 0 && (
-            <div className="deploy-muted">Nothing is deployed on this environment.</div>
-          )}
-          {mounts && mounts.length > 0 && (
-            <table className="deploy-shares-table">
-              <tbody>
-                {mounts.map((m) => {
-                  const mine = m.page === fsPath;
-                  return (
-                    <tr key={m.token} className={mine ? "mine" : undefined}>
-                      <td className="share-page" title={m.page ?? "Deployed by the CLI, another app, or another machine"}>
-                        {m.page ? (
-                          basename(m.page) + (mine ? " (this page)" : "")
-                        ) : (
-                          <span className="deploy-muted">not from this app</span>
-                        )}
-                      </td>
-                      <td className="share-token" title={m.token}>
-                        {m.token}
-                      </td>
-                      <td>
-                        <span className={"share-status " + m.status}>{m.status}</span>
-                      </td>
-                      <td>
-                        {m.url ? (
-                          <a href={m.url} target="_blank" rel="noreferrer">
-                            Open ↗
-                          </a>
-                        ) : (
-                          <span
-                            className="deploy-muted"
-                            title="`fused share list` doesn't report URLs; a link shows once this app has recorded (or can derive) one for this environment"
-                          >
-                            —
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-          {mounts && (
-            <button type="button" className="deploy-shares-refresh" onClick={load} disabled={loading}>
-              Refresh
-            </button>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
 export default function DeployModal({ fsPath, onClose, onChange }: DeployModalProps) {
   const [config, setConfig] = useState<DeployConfig | null>(null);
   const [preview, setPreview] = useState<DeployPreview | null>(null);
@@ -234,8 +111,6 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   const [selectedEnv, setSelectedEnv] = useState<string | null>(null);
   const [busy, setBusy] = useState<"deploy" | "revoke" | "install" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  // Bumped on every successful deploy/revoke so an open shares list reloads.
-  const [actionSeq, setActionSeq] = useState(0);
 
   // The modal can be closed while an action is still running (#12): guard the
   // modal's own post-action setState so a deploy/revoke/install that resolves
@@ -377,7 +252,6 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       if (!alive.current) return;
       setReconciled(true);
       setLive("active");
-      setActionSeq((s) => s + 1);
     } catch (e) {
       // A deploy can fail AFTER the server mutated the pointer — the
       // failed-revive compensation path (deploy.py) persists status active or
@@ -400,7 +274,6 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       applyDeployment(record);
       if (!alive.current) return;
       setLive("revoked");
-      setActionSeq((s) => s + 1);
     } catch (e) {
       // Same as onDeploy: a revoke may have partially applied server-side, so
       // pull the true post-action state instead of leaving the card stale.
@@ -621,9 +494,6 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
           the link can open it.
         </div>
         {actionError && <div className="deploy-error">{actionError}</div>}
-        {selectedEnv !== null && (
-          <SharesSection env={selectedEnv} fsPath={fsPath} refreshKey={actionSeq} />
-        )}
       </>
     );
   };
