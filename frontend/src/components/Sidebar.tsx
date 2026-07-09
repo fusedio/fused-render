@@ -21,11 +21,13 @@ import {
   setBookmarkIcon,
 } from "../lib/bookmarks";
 import IconPicker from "./IconPicker";
+import { FolderIcon } from "./FileIcons";
 import type { Bookmark, BookmarkFolder } from "../lib/bookmarks";
 import { useUrlVersion, useBookmarksVersion, notifyBookmarksChanged } from "../lib/hooks";
 import type { Config } from "../lib/api";
 import { fuzzyMatch, highlightSegments } from "../lib/fuzzy";
 import type { FuzzyResult } from "../lib/fuzzy";
+import { startTour } from "../lib/tour";
 
 // The fs path a bookmark targets, decoded from its /view/ url (same rule as
 // the hover card). Used for search matching and the tooltip.
@@ -642,7 +644,7 @@ export default function Sidebar({ config }: SidebarProps) {
       </div>
       <div className="sidebar-section">
         <a href="#" id="fused-link" className="sidebar-item" onClick={onFusedClick}>
-          <span className="icon">📁</span> Fused
+          <span className="icon"><FolderIcon /></span> Fused
         </a>
       </div>
       <div className="sidebar-section sidebar-bookmarks">
@@ -795,6 +797,21 @@ export default function Sidebar({ config }: SidebarProps) {
             </svg>
           </span>
           Preferences
+        </button>
+        <button
+          type="button"
+          className="sidebar-item tour-link"
+          title="Show tour"
+          aria-label="Show tour"
+          onClick={() => startTour()}
+        >
+          <span className="icon">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="10" />
+              <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+          </span>
         </button>
       </div>
       <div id="bookmark-tooltip" ref={tooltipRef} style={hover ? { display: "block" } : undefined}>

@@ -776,8 +776,31 @@ table.listing-table td.name {
 
 table.listing-table .icon {
   flex: 0 0 auto;
-  opacity: 0.75;
+  opacity: 0.9;
 }
+
+/* Per-filetype icons (components/FileIcons.tsx): monochrome inline SVGs tinted
+   by a muted, desaturated per-category colour that sits calmly on the dark
+   shell — folder brightest, generic file dimmest, never the accent yellow. The
+   SVG is a block so it has no inline-baseline gap; the parent .icon span lives
+   in a flex row (td.name / .sidebar-item) that vertically centres it. */
+.file-icon {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+.file-icon--folder  { color: #9fb1d2; }
+.file-icon--code    { color: #7fb2a6; }
+.file-icon--data    { color: #a898cb; }
+.file-icon--json    { color: #c3a96b; }
+.file-icon--html    { color: #cd9d75; }
+.file-icon--image   { color: #cd93b6; }
+.file-icon--doc     { color: #9aa0a6; }
+.file-icon--media   { color: #d0939b; }
+.file-icon--geo     { color: #88bf95; }
+.file-icon--archive { color: #baa386; }
+.file-icon--db      { color: #82abbf; }
+.file-icon--file    { color: #868c93; }
 
 table.listing-table td.size,
 table.listing-table td.mtime {
@@ -1667,10 +1690,14 @@ body.embed .preview-browse-chip:hover {
   padding: 6px;
   border-top: 1px solid var(--border);
   flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .sidebar-footer .prefs-link {
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
   background: none;
   border: none;
   font: inherit;
@@ -1682,6 +1709,95 @@ body.embed .preview-browse-chip:hover {
 .sidebar-footer .prefs-link:hover,
 .sidebar-footer .prefs-link.active {
   color: var(--fg);
+}
+
+/* Tour replay: compact icon-only sibling to Preferences. */
+.sidebar-footer .tour-link {
+  flex: 0 0 auto;
+  width: auto;
+  background: none;
+  border: none;
+  font: inherit;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.sidebar-footer .tour-link .icon {
+  margin: 0;
+}
+
+.sidebar-footer .tour-link:hover {
+  color: var(--fg);
+}
+
+/* driver.js popover — dark theme overrides scoped under .driver-popover. */
+.driver-popover {
+  background: #1c1e24;
+  color: #e8e8e8;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+
+.driver-popover-title {
+  color: #e8e8e8;
+}
+
+.driver-popover-description {
+  color: #b4b6bd;
+}
+
+.driver-popover-progress-text {
+  color: #7c7f88;
+}
+
+/* Arrow triangle: driver.js colors it via one border side. Tint every side to
+   the popover bg so whichever side is shown matches the dark theme. */
+.driver-popover-arrow-side-left.driver-popover-arrow {
+  border-left-color: #1c1e24;
+}
+.driver-popover-arrow-side-right.driver-popover-arrow {
+  border-right-color: #1c1e24;
+}
+.driver-popover-arrow-side-top.driver-popover-arrow {
+  border-top-color: #1c1e24;
+}
+.driver-popover-arrow-side-bottom.driver-popover-arrow {
+  border-bottom-color: #1c1e24;
+}
+
+.driver-popover .driver-popover-close-btn {
+  color: #7c7f88;
+}
+
+.driver-popover .driver-popover-close-btn:hover {
+  color: #e8e8e8;
+}
+
+.driver-popover .driver-popover-navigation-btns button {
+  background: transparent;
+  color: #b4b6bd;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  text-shadow: none;
+}
+
+.driver-popover .driver-popover-navigation-btns button:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #e8e8e8;
+}
+
+/* Primary next / done button on the accent token, dark text. */
+.driver-popover .driver-popover-navigation-btns button.driver-popover-next-btn {
+  background: #e5ff44;
+  color: #131417;
+  border-color: #e5ff44;
+  font-weight: 600;
+}
+
+.driver-popover .driver-popover-navigation-btns button.driver-popover-next-btn:hover {
+  background: #d8f238;
+  color: #131417;
 }
 
 .prefs-page {
