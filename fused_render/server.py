@@ -12,6 +12,7 @@ whether or not the `fused` package is installed — set `FUSED_RENDER_ENGINE=aut
 at startup if missing) to opt in to the local compute backend (`engine.py`).
 """
 import asyncio
+import codecs
 import json
 import logging
 import mimetypes
@@ -437,6 +438,33 @@ def _names_from_value(key, value, builtin_names: list):
     return None, False, f"{key}: registry value must be a list, string, or null"
 
 
+_TEXT_SNIFF_BYTES = 8192
+
+
+def _looks_like_text(path: str) -> bool:
+    """Best-effort "is this a text file" sniff for the no-binding fallback.
+
+    Reads a small prefix: a NUL byte means binary; otherwise the prefix must
+    decode as UTF-8 (the encoding the text/code viewers assume). Decoding is
+    incremental with ``final=False`` so a multibyte char split by the read
+    boundary isn't mistaken for binary. Any read error (permission, gone, not a
+    regular file) -> False, so the caller keeps the metadata card. An empty
+    file counts as text (harmless to open in the viewer).
+    """
+    try:
+        with open(path, "rb") as f:
+            chunk = f.read(_TEXT_SNIFF_BYTES)
+    except OSError:
+        return False
+    if b"\x00" in chunk:
+        return False
+    try:
+        codecs.getincrementaldecoder("utf-8")().decode(chunk, final=False)
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
 def _templates_for(path: str, is_dir: bool):
     """Returns (templates: list[dict], template_error: str|None) — SPEC PT-8.
 
@@ -475,18 +503,32 @@ def _templates_for(path: str, is_dir: bool):
     error = error or user_err
 
     if disabled:
+        # The user explicitly bound this key to null (CT-2) — honor "no
+        # template" and never second-guess it with the text sniff below.
         return [], error
+
     if user_names is None:
         # No user binding, or a parse/shape-level problem — either way fall
         # back to the built-in list (CT-6); `error` carries the problem.
         entries, entry_err = _resolve_mode_list(builtin_names)
-        return entries, error or entry_err
+        error = error or entry_err
+    else:
+        entries, entry_err = _resolve_mode_list(user_names)
+        error = error or entry_err
+        if not entries:
+            # The user's value resolved to nothing at all -> built-in fallback.
+            entries, _ = _resolve_mode_list(builtin_names)
 
-    entries, entry_err = _resolve_mode_list(user_names)
-    error = error or entry_err
-    if not entries:
-        # The user's value resolved to nothing at all -> built-in fallback.
-        entries, _ = _resolve_mode_list(builtin_names)
+    if not entries and not is_dir and _looks_like_text(path):
+        # Nothing in either registry matched. Many config/dotfiles are plain
+        # text the suffix matcher structurally can't reach — its keys are
+        # dot-anchored *suffixes* needing a non-empty stem, so a whole-name
+        # dotfile (".gitignore", ".gitconfig", ".npmrc") never matches, and
+        # extensionless files ("Makefile", "LICENSE") have no suffix at all.
+        # Rather than the bare metadata card, sniff the bytes and, when they're
+        # text, offer the same viewers .txt gets. Binary keeps the metadata
+        # fallback (empty list).
+        entries, _ = _resolve_mode_list(["text", "code"])
     return entries, error
 
 
