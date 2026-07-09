@@ -68,6 +68,14 @@ def test_builtin_html_default_is_render_sentinel():
     assert entries[2]["path"].endswith("claude/template.html")
 
 
+def test_builtin_parquet_default_is_table():
+    # `history` (HV-2) is bound here too — not `.html`-only.
+    entries, error = server._templates_for("/x/data.parquet", False)
+    assert error is None
+    assert [e["mode"] for e in entries] == ["table", "h3", "claude", "annotate", "history"]
+    assert entries[0]["path"].endswith("table/template.html")
+
+
 def test_builtin_zarr_directory_key():
     # zarr dir carries the map preview plus the raw member listing as a peer
     # mode (D81 — replaces the old `?listing=1` escape hatch)

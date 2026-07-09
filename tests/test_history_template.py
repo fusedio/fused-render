@@ -16,21 +16,34 @@ def modes(path, is_dir=False):
 
 
 def test_sidecar_default_mode_is_history():
-    # `.html.json` (2 segments) beats `.json` (1) by specificity — CT-3.
+    # `.html.json` (2 segments) beats the wildcard `.*.json` (also 2, but a
+    # literal beats `*` at equal length — CT-3), which beats bare `.json` (1).
     entries, error = server._templates_for("/x/sine.html.json", False)
     assert error is None
-    assert [e["mode"] for e in entries] == ["history", "tree", "code", "annotate"]
+    assert [e["mode"] for e in entries] == ["history", "tree", "code"]
     assert entries[0]["path"].endswith("history/template.html")
     assert entries[0]["icon"] is not None
 
 
-# .html gaining "history" as its last mode is covered by
-# test_templates.py::test_builtin_html_default_is_render_sentinel, which
-# already asserts the full resolved mode list for .html.
+def test_sidecar_wildcard_matches_any_extension():
+    # `.*.json` (HV-2) is generic — any `<name>.<ext>.json` is a sidecar, not
+    # just `.html.json`. No `annotate`: annotating the sidecar log itself
+    # doesn't make sense (comments belong on the target file, HV-8).
+    entries, error = server._templates_for("/x/table.parquet.json", False)
+    assert error is None
+    assert [e["mode"] for e in entries] == ["history", "tree", "code"]
+
+
+# .html and .parquet gaining "history" as their last mode is covered by
+# test_templates.py::test_builtin_html_default_is_render_sentinel and
+# test_builtin_parquet_default_is_table, which already assert the full
+# resolved mode list for those keys.
 
 
 def test_plain_json_unaffected():
-    # A non-sidecar .json keeps its tree-first binding.
+    # A bare, non-compound .json (no sidecar target) keeps its tree-first
+    # binding — the wildcard `.*.json` needs a stem with its own extension
+    # (HV-3), so this doesn't match it.
     assert modes("/x/data.json", False) == (["tree", "code", "annotate"], None)
 
 

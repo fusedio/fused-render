@@ -1199,24 +1199,31 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   feature.
 ## 24. History View — Sidecar Inspector Template (D96)
 
-A `history` view template renders a file's `.html.json` sidecar (§21, SB-7, D82–D84)
+A `history` view template renders a file's `<ext>.json` sidecar (§21, SB-7, D82–D84)
 as a readable, sectioned history — every claude session, bookmark, last-session
 snapshot, and review comment the file has accumulated. Reachable from both ends:
 opening `sine.html` and switching to the `history` mode, or opening `sine.html.json`
-directly, where `history` is the default mode.
+(or `data.parquet.json`, or any other `<name>.<ext>.json` sidecar) directly, where
+`history` is the default mode.
 
 - **HV-1** An ordinary view template (`fused_render/templates/history/`) —
   `template.html` + `icon.svg` only, **no `.py`** (JSON is browser-parseable; same
   posture as `tree`). No shell/server code; navigation and validation live inside
   the template.
-- **HV-2** Registry bindings: compound key `".html.json": ["history", "tree",
-  "code", "annotate"]` (more specific than `.json`, which keeps its tree-first
-  list), and `"history"` appended to `".html"` (default stays `_render`).
-  `.html` targets only for now — other extensions later by adding keys.
-- **HV-3** Role resolution from `_file`: ends `.html.json` → the sidecar is the
-  file itself, target = the name minus `.json`; ends `.html` → sidecar =
-  `_file + ".json"`. Sidecar read via `fused.readFile`; absent sidecar → a
-  friendly "no history yet" empty state, never an error.
+- **HV-2** Registry bindings: wildcard key `".*.json": ["history", "tree",
+  "code"]` matches any compound `<ext>.json` sidecar (more specific than bare
+  `.json`, which keeps its own tree-first list unchanged) — **no `annotate`**:
+  annotating the sidecar log itself doesn't make sense, comments belong on the
+  target file (HV-8). `"history"` is also appended to the target-side keys
+  `".html"` and `".parquet"` (defaults stay `_render`/`table`). Only these two
+  target extensions for now — others later by adding keys.
+- **HV-3** Role resolution from `_file`: basename ends `.json` **and** its stem
+  (after stripping `.json`) still has its own extension → the sidecar is the
+  file itself, target = the name minus `.json` (matches the `.*.json` wildcard
+  — a bare `name.json` is never treated as a sidecar); otherwise `_file` is
+  the target and sidecar = `_file + ".json"`. Sidecar read via
+  `fused.readFile`; absent sidecar → a friendly "no history yet" empty state,
+  never an error.
 - **HV-4** Validation is **per-key** against an inline `const SCHEMA` in
   `template.html` (a hand-rolled subset validator: `type`, `required`,
   `properties`, `items` — no vendored library). A key that fails renders a
