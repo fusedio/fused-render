@@ -533,7 +533,11 @@
   // Role resolution (HV-3): the mode is reachable from both the target and
   // the sidecar itself.
   let sidecarPath, targetPath;
-  if (/\.html\.json$/i.test(file)) {
+  // A sidecar is any `<name>.<ext>.json` — stripping `.json` must leave a
+  // basename that still has its own extension (matches the registry's
+  // `.*.json` wildcard key).
+  const base = (file.split("/").pop() || "");
+  if (/\.json$/i.test(base) && base.slice(0, -".json".length).lastIndexOf(".") > 0) {
     sidecarPath = file;
     targetPath = file.slice(0, -".json".length);
   } else {
