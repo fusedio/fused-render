@@ -80,6 +80,54 @@ def test_offset_ids_are_absolute_positions(parquet_file):
     assert out["rows"][0]["id"] == 100
 
 
+# ------------------------------------------------------------- sort / filter
+
+def test_sort_desc_ids_track_physical_position(parquet_file):
+    # Sorting by name descending puts 'n99' first (largest string). Its id — and
+    # thus its physical file position — is 99, so ids[0] must be 99, not 0.
+    # This is what keeps edits correct while the grid is sorted.
+    out = reader.main(parquet_file, sort={"column": "name", "dir": "desc"})
+    assert out["rows"][0]["name"] == "n99"
+    assert out["ids"][0] == 99
+    assert out["rows"][0]["id"] == 99
+
+
+def test_filter_equals_returns_matching_row(parquet_file):
+    out = reader.main(parquet_file, filters=[{"column": "id", "op": "=", "value": "5"}])
+    assert out["total_rows"] == 1
+    assert out["ids"] == [5]
+    assert out["rows"][0] == {"id": 5, "name": "n5"}
+
+
+def test_filter_gte_narrows_count(parquet_file):
+    out = reader.main(parquet_file, filters=[{"column": "id", "op": ">=", "value": "200"}])
+    assert out["total_rows"] == 50
+    assert len(out["rows"]) == 50
+    assert min(r["id"] for r in out["rows"]) == 200
+
+
+def test_filter_contains_matches_substring(parquet_file):
+    # names containing "99" across range(250): n99 and n199.
+    out = reader.main(parquet_file, filters=[{"column": "name", "op": "contains", "value": "99"}])
+    assert out["total_rows"] == 2
+    assert {r["name"] for r in out["rows"]} == {"n99", "n199"}
+
+
+def test_filter_and_sort_stay_editable(parquet_file):
+    out = reader.main(parquet_file, filters=[{"column": "id", "op": ">=", "value": "200"}],
+                      sort={"column": "id", "dir": "desc"})
+    assert out["editable"] is True
+    assert out["rows"][0]["id"] == 249        # sorted desc within the filter
+    assert out["ids"][0] == 249               # physical position preserved
+
+
+def test_unknown_filter_column_is_ignored(parquet_file):
+    # A column that isn't in the schema must not build into the WHERE clause
+    # (no SQL error, no injection) — it's simply dropped.
+    out = reader.main(parquet_file, filters=[{"column": "nope", "op": "=", "value": "x"}])
+    assert out["total_rows"] == 250
+
+
 def test_csv_read_as_text(csv_file):
     out = reader.main(csv_file)
     # all_varchar: the leading zero survives (string, not int 0).

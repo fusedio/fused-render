@@ -24,6 +24,11 @@ MAX_LIMIT = 1000
 # named "rowid"; the grid reads row identity from `ids`, never from a column.
 _RID = "__fused_rowid__"
 
+# Filter operators the grid may request, grouped by how they build into SQL.
+_COMPARE_OPS = {"=", "!=", ">", "<", ">=", "<="}
+_NULL_OPS = {"is_null": "IS NULL", "not_null": "IS NOT NULL"}
+_LIKE_OPS = {"contains": "%{}%", "starts": "{}%"}
+
 
 def _connect_ro(file):
     """Open `file` read-only. Percent-encode the path so a name containing
@@ -85,6 +90,47 @@ def _column_types(conn, active):
         return {}
 
 
+def _like_escape(s):
+    r"""Escape a substring so LIKE treats it literally: %, _ and the \ escape
+    char itself are neutralised (paired with `ESCAPE '\'` on the clause)."""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _build_where(filters, columns):
+    """(sql, binds) for the WHERE clause. Only filters whose column is a real
+    column and whose op is allowed are used; an unknown column or op is dropped,
+    so a hostile/garbled filter can neither error the query nor inject SQL.
+    Values are always bound; SQLite applies the column's affinity to a bound
+    comparison, so "2" compares numerically against an INTEGER column."""
+    clauses, binds = [], []
+    for f in filters or []:
+        col, op = f.get("column"), f.get("op")
+        if col not in columns:
+            continue
+        q = _quote_ident(col)
+        if op in _NULL_OPS:
+            clauses.append(f"{q} {_NULL_OPS[op]}")
+        elif op in _COMPARE_OPS:
+            clauses.append(f"{q} {op} ?")
+            binds.append(f.get("value"))
+        elif op in _LIKE_OPS:
+            clauses.append(f"CAST({q} AS TEXT) LIKE ? ESCAPE '\\'")
+            binds.append(_LIKE_OPS[op].format(_like_escape(str(f.get("value") or ""))))
+    return (" WHERE " + " AND ".join(clauses)) if clauses else "", binds
+
+
+def _build_order(sort, columns):
+    """ORDER BY clause for a single {column, dir} sort, or "" when there's no
+    sort / the column is unknown / the direction isn't asc|desc."""
+    if not sort:
+        return ""
+    col = sort.get("column")
+    direction = str(sort.get("dir", "")).lower()
+    if col not in columns or direction not in ("asc", "desc"):
+        return ""
+    return f" ORDER BY {_quote_ident(col)} {direction.upper()}"
+
+
 def _jsonify(value):
     """Coerce a SQLite cell value into something json.dumps can encode."""
     if isinstance(value, (bytes, bytearray)):
@@ -92,7 +138,8 @@ def _jsonify(value):
     return value  # None / int / float / str are already JSON-safe
 
 
-def main(file: str, table: str = "", offset: int = 0, limit: int = 100) -> dict:
+def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
+         sort: "dict | None" = None, filters: "list | None" = None) -> dict:
     # Clamp so a hostile/negative limit can't turn LIMIT ? into an unbounded
     # fetch, and a negative offset can't error out mid-query.
     limit = max(1, min(int(limit), MAX_LIMIT))
@@ -115,12 +162,17 @@ def main(file: str, table: str = "", offset: int = 0, limit: int = 100) -> dict:
         if active:
             qname = _quote_ident(active)
             types = _column_types(conn, active)
+            where, wbinds = _build_where(filters, types)
+            order = _build_order(sort, types)
             editable, readonly_message, readonly_tooltip = _editability(conn, active)
-            total_rows = conn.execute(f"SELECT COUNT(*) FROM {qname}").fetchone()[0]
+            # total_rows is the filtered count, so the grid pages within the filter.
+            total_rows = conn.execute(
+                f"SELECT COUNT(*) FROM {qname}{where}", wbinds).fetchone()[0]
             # Editable tables carry rowid as the first column; views/WITHOUT
             # ROWID tables have no usable rowid, so ids stay empty (no editing).
             select = f'SELECT rowid AS {_RID}, * FROM {qname}' if editable else f"SELECT * FROM {qname}"
-            cur = conn.execute(f"{select} LIMIT ? OFFSET ?", (limit, offset))
+            cur = conn.execute(f"{select}{where}{order} LIMIT ? OFFSET ?",
+                               tuple(wbinds) + (limit, offset))
             desc = [d[0] for d in cur.description] if cur.description else []
             rid_first = editable and desc and desc[0] == _RID
             columns = desc[1:] if rid_first else desc

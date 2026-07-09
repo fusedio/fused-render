@@ -70,6 +70,33 @@ def test_editable_table_has_no_readonly_message(db):
     assert out["readonly_message"] == "" and out["readonly_tooltip"] == ""
 
 
+# ------------------------------------------------------------- sort / filter
+
+def test_sort_desc_keeps_rowids(db):
+    # Sorting by age desc puts p4 (age 4) first; its rowid is still 5, so edits
+    # key correctly while the grid is sorted.
+    out = reader.main(db, table="people", sort={"column": "age", "dir": "desc"})
+    assert out["rows"][0] == {"name": "p4", "age": 4}
+    assert out["ids"][0] == 5
+
+
+def test_filter_gte_narrows_count(db):
+    out = reader.main(db, table="people", filters=[{"column": "age", "op": ">=", "value": "2"}])
+    assert out["total_rows"] == 3
+    assert out["ids"] == [3, 4, 5]
+
+
+def test_filter_contains_matches_substring(db):
+    out = reader.main(db, table="people", filters=[{"column": "name", "op": "contains", "value": "3"}])
+    assert out["ids"] == [4]
+    assert out["rows"][0]["name"] == "p3"
+
+
+def test_unknown_filter_column_is_ignored(db):
+    out = reader.main(db, table="people", filters=[{"column": "nope", "op": "=", "value": "x"}])
+    assert out["total_rows"] == 5
+
+
 # ------------------------------------------------------------------ writer
 
 def test_edit_delete_insert(db):
