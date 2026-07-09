@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Property list preview</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    color: #e8eaed;
+    background: #131417;
+  }
+  #frame { width: 100%; height: 100%; border: 0; display: block; }
+  #status { padding: 24px; color: #9aa0a6; }
+  #status.error { color: #ff6b6b; }
+</style>
+</head>
+<body>
+  <div id="status">Loading…</div>
+  <script>
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    // A plist (binary or XML) has no native browser renderer, so the reader
+    // converts it to a temp JSON file; we then reuse the app's own JSON tree
+    // viewer by stat-ing that file and embedding its /render, exactly like the
+    // archive templates preview their inner files.
+    async function load() {
+      const statusEl = document.getElementById("status");
+      const file = fused.params.get("_file");
+      if (!file) {
+        statusEl.className = "error";
+        statusEl.textContent = "No file selected (missing _file param).";
+        return;
+      }
+      try {
+        const res = await fused.runPython("./reader.py", { file, action: "convert" });
+        const tmp = res.path;
+        const st = await fused.stat(tmp);
+        const t = st.templates && st.templates[0];
+        const src = !t || t.mode === "_render"
+          ? `/render?path=${encodeURIComponent(tmp)}`
+          : `/render?path=${encodeURIComponent(t.path)}&_file=${encodeURIComponent(tmp)}`;
+        const frame = document.createElement("iframe");
+        frame.id = "frame";
+        frame.src = src;
+        document.body.innerHTML = "";
+        document.body.appendChild(frame);
+      } catch (err) {
+        statusEl.className = "error";
+        statusEl.innerHTML = `<strong>${escapeHtml(err.type || "Error")}</strong>: ${escapeHtml(err.message || "")}`;
+      }
+    }
+
+    load();
+  </script>
+</body>
+</html>

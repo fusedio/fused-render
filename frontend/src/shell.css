@@ -756,8 +756,15 @@ table.listing-table tr.row {
   cursor: pointer;
 }
 
+/* Files matched by .gitignore inside a git repo: dimmed, but still clickable
+   and readable on hover (the row keeps full opacity while hovered). */
+table.listing-table tr.row.ignored {
+  opacity: 0.45;
+}
+
 table.listing-table tr.row:hover {
   background: var(--bg-alt);
+  opacity: 1;
 }
 
 table.listing-table td.name {
