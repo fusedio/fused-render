@@ -119,12 +119,35 @@ OPTIONS = {
         # modulegraph's regular import tracing - only forcing the whole
         # package via `packages` breaks on its bootstrap lookup.
         "rumps", "objc", "AppKit", "Foundation", "Cocoa", "CoreFoundation",
+        # The deploy CLI (SPEC §19 DP-3): the [fused] extra build_dmg.sh
+        # installs, run in-bundle via fused_render/_fused_cli.py. `fused`
+        # itself is forced whole (pluggy entry-point plugins + pervasive
+        # in-function imports + non-.py package data), plus the deps that
+        # carry data dirs or dynamic loading a traced-module copy would
+        # drop: botocore's JSON service models (boto3), anthropic's
+        # tokenizer data, keyring's entry-point backends, cryptography's
+        # cffi bindings, pluggy's registry. The rest of fused's dep tree is
+        # pure-python with ordinary imports — modulegraph traces it. The
+        # gate for anything missed here is build_dmg.sh §4c's bundled-CLI
+        # smoke test (real verbs through the shim). `ty` is deliberately
+        # NOT shipped (a Rust binary console script py2app can't carry);
+        # fused's verify scanner detects its absence and skips with a
+        # warning finding.
+        "fused",
+        "boto3", "botocore", "s3transfer", "jmespath",
+        "cryptography", "keyring",
+        "anthropic", "mcp", "httpx", "httpcore",
+        "pluggy", "tomlkit", "jwt", "yaml", "loguru",
+        "aiohttp", "yarl", "multidict", "frozenlist",
+        "fsspec", "tabulate", "tqdm", "rtoml",
     ],
     # Single modules (incl. bare C extensions) that modulegraph can't be
     # trusted to find on its own — same runtime-import blindness as
     # `packages` above, but `includes` handles non-package modules correctly
     # (extension -> lib-dynload/*.so, never a bogus .py copy).
-    "includes": ["_duckdb"],
+    # _cffi_backend: cryptography's cffi backend, the same bare-top-level-
+    # C-extension shape as _duckdb.
+    "includes": ["_duckdb", "_cffi_backend"],
     "plist": {
         "CFBundleIdentifier": "io.fused.render",
         "CFBundleName": "FusedRender",

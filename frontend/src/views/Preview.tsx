@@ -3,12 +3,13 @@
 //   2. else                      -> fallback metadata card
 // No file-type checks live in the shell — html arrives through stat.templates
 // like everything else, via the "_render" sentinel (SPEC PT-12).
-import { useState, type ReactNode } from "react";
-import { rawUrl } from "../lib/api";
-import type { StatResult, TemplateEntry } from "../lib/api";
+import { useEffect, useState, type ReactNode } from "react";
+import { getDeployStatus, getPrefs, rawUrl } from "../lib/api";
+import type { Deployment, StatResult, TemplateEntry } from "../lib/api";
 import { formatSize, formatMtime } from "../lib/format";
 import { navigateUrl } from "../lib/router";
 import ModeSwitcher, { templateModeIcon } from "../components/ModeSwitcher";
+import DeployModal from "../components/DeployModal";
 import { useUrlVersion } from "../lib/hooks";
 
 // Directory previews (a `.zarr` store maps to a directory template, D65) keep
@@ -131,12 +132,112 @@ function AnnotateToggle({ on, onToggle }: { on: boolean; onToggle: () => void })
   );
 }
 
+// --- Deploy button (SPEC §19) -----------------------------------------------
+// Header action for deployable pages: any file whose mode list carries the
+// "_render" sentinel (i.e. a renderable page — the exact set /api/export
+// accepts). Shows a live dot when the local deployment pointer reads active;
+// the pointer is a cheap local read (no CLI shell-out) — the modal is what
+// reconciles against `share list`. A user who rebinds .html away from
+// "_render" loses the button too, consistently with losing the rendered view.
+
+const DEPLOY_ICON = (
+  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 19V5" />
+    <path d="M5 12l7-7 7 7" />
+  </svg>
+);
+
+function DeployButton({ fsPath }: { fsPath: string }) {
+  const [open, setOpen] = useState(false);
+  const [deployment, setDeployment] = useState<Deployment | null>(null);
+
+  // Local pointer only (reconcile=false): opening a preview must never spawn
+  // the fused CLI. Errors are ignored — the button then just shows no dot.
+  // The pointer can change without this view remounting — a revoke from the
+  // Preferences page in ANOTHER tab, or any out-of-band /api/deploy/revoke
+  // (same-tab navigation remounts the view via the nav epoch, so it needs no
+  // handling). Re-read on focus/visibility regain: a cheap local JSON read,
+  // the bookmarks-poll freshness posture (D77) without a timer.
+  useEffect(() => {
+    let alive = true;
+    const refresh = () => {
+      getDeployStatus(fsPath, false)
+        .then((r) => {
+          if (alive) setDeployment(r.deployment);
+        })
+        .catch(() => {});
+    };
+    refresh();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      alive = false;
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [fsPath]);
+
+  const live = deployment?.status === "active";
+  return (
+    <>
+      <button
+        type="button"
+        className={"deploy-btn" + (live ? " live" : "")}
+        title={live ? "Deployed — open the Deploy dialog to manage" : "Deploy this page to a hosted URL"}
+        onClick={() => setOpen(true)}
+      >
+        {DEPLOY_ICON}
+        Deploy
+        {live && <span className="deploy-live-dot" />}
+      </button>
+      {open && (
+        <DeployModal fsPath={fsPath} onClose={() => setOpen(false)} onChange={setDeployment} />
+      )}
+    </>
+  );
+}
+
+// Whether the Deploy affordance is enabled (Preferences → Deployments; SPEC
+// §20). Deploy is opt-in, so the button stays hidden until the pref reads on —
+// default false while loading means it never flashes on for a user who left it
+// off. Re-read on focus/visibility so toggling it in the Preferences tab shows
+// through without a reload (same cheap-local-read posture as the deploy dot).
+function useDeployEnabled(): boolean {
+  const [enabled, setEnabled] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const refresh = () => {
+      getPrefs()
+        .then((p) => {
+          if (alive) setEnabled(p.deploy.enabled);
+        })
+        .catch(() => {});
+    };
+    refresh();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      alive = false;
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
+  return enabled;
+}
+
 function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: StatResult; templates: TemplateEntry[] }) {
   // Caller only renders this when `templates` (already sentinel-filtered by
   // Preview's dispatch, SPEC PT-12) is non-empty.
   const [mode, setModeState] = useState<string>(() => activeTemplate(templates).mode);
   const entry = templates.find((t) => t.mode === mode) || templates[0];
   const [annotate, toggleAnnotate] = useAnnotate();
+  const deployEnabled = useDeployEnabled();
 
   const setMode = (next: string) => {
     if (next === mode) return;
@@ -170,6 +271,19 @@ function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: St
             Browse contents
           </button>
         )}
+        {/* Deployable = the mode list carries the "_render" sentinel AND the
+            file is .html/.htm — the exporter's actual contract. The extension
+            check matters because a registry rebind can put "_render" on any
+            type (D73), but /api/export and /api/deploy/preview accept only
+            .html/.htm — the button must not open a modal that can't deploy.
+            Directories never deploy (no _render binding exists for one today;
+            the guard keeps that true even if a registry ever says otherwise).
+            Gated on the opt-in Deploy pref (Preferences → Deployments): hidden
+            entirely unless the user has turned Deploy on. */}
+        {!stat.is_dir &&
+          deployEnabled &&
+          templates.some((t) => t.mode === "_render") &&
+          /\.html?$/i.test(fsPath) && <DeployButton fsPath={fsPath} />}
         <ModeSwitcher
           entries={templates.map((t) => ({ mode: t.mode, icon: templateModeIcon(t) }))}
           active={entry.mode}
