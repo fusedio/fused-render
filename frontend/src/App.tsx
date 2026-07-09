@@ -12,6 +12,7 @@ import { useSessionRestore, useSessionTracking } from "./lib/session";
 import { statPath, type Config, type StatResult } from "./lib/api";
 import { useNavEpoch, useDocumentTitle } from "./lib/hooks";
 import { basename } from "./lib/format";
+import { maybeAutoStartTour } from "./lib/tour";
 import Sidebar from "./components/Sidebar";
 import { Breadcrumb, StaticBreadcrumb } from "./components/Breadcrumb";
 import Listing from "./views/Listing";
@@ -100,6 +101,15 @@ function StatView({ fsPath, epoch }: { fsPath: string; epoch: number }) {
 
 export default function App({ config }: { config: Config }) {
   const epoch = useNavEpoch();
+
+  // First-run onboarding tour: fire once after first paint so the listing and
+  // breadcrumb are mounted (maybeAutoStartTour no-ops in embed / if already
+  // seen). Empty deps — App mounts once for the page's lifetime.
+  useEffect(() => {
+    if (IS_EMBED) return;
+    const id = setTimeout(() => maybeAutoStartTour(), 600);
+    return () => clearTimeout(id);
+  }, []);
 
   // Root redirect, exactly like the vanilla route(): replaceState so "/"
   // never enters history. Render-time write is safe — it changes pathname,
