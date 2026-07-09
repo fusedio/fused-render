@@ -2047,17 +2047,18 @@ body.embed .preview-browse-chip:hover {
 }
 
 .templates-col-pattern {
-  display: flex;
-  align-items: center;
-  gap: 7px;
   white-space: nowrap;
+  width: 1%;
 }
 
-.templates-col-templates {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  align-items: center;
+.templates-col-pattern .templates-dot {
+  margin-right: 7px;
+  vertical-align: middle;
+}
+
+.templates-col-templates .templates-chip {
+  margin: 2px 5px 2px 0;
+  vertical-align: middle;
 }
 
 .templates-dot {
@@ -2095,7 +2096,7 @@ body.embed .preview-browse-chip:hover {
 }
 
 .templates-chip.default {
-  border-color: var(--accent);
+  border-color: rgba(229, 255, 68, 0.35);
 }
 
 .templates-chip.broken {
@@ -2312,10 +2313,11 @@ body.embed .preview-browse-chip:hover {
 
 .templates-icon-dot {
   display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
   background: var(--accent);
+  opacity: 0.7;
   flex: 0 0 auto;
 }
 
@@ -2358,16 +2360,25 @@ body.embed .preview-browse-chip:hover {
 }
 
 .templates-inv-name {
-  display: flex;
-  align-items: center;
-  gap: 7px;
   white-space: nowrap;
+  width: 1%;
 }
 
-.templates-inv-usedby {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
+.templates-inv-name > * {
+  vertical-align: middle;
+}
+
+.templates-inv-name .templates-icon-dot {
+  margin-right: 7px;
+}
+
+.templates-inv-name .templates-pill {
+  margin-left: 8px;
+}
+
+.templates-inv-usedby .templates-usedby-chip {
+  display: inline-block;
+  margin: 2px 4px 2px 0;
 }
 
 .templates-usedby-chip {
@@ -2380,10 +2391,13 @@ body.embed .preview-browse-chip:hover {
 }
 
 .templates-inv-actions {
-  display: flex;
-  gap: 6px;
-  justify-content: flex-end;
+  text-align: right;
   white-space: nowrap;
+  width: 1%;
+}
+
+.templates-inv-actions .templates-ghost-btn {
+  margin-left: 6px;
 }
 
 /* Row-hover-only ghost action buttons. */
@@ -2452,4 +2466,91 @@ body.embed .preview-browse-chip:hover {
 
 .templates-result-line {
   word-break: break-word;
+}
+
+/* The generic .deploy-body button skin bleeds into templates controls inside
+   the modals (picker cells, chip ✕, segmented, footer buttons) — re-assert
+   their intended looks at higher specificity. */
+.deploy-body .templates-picker-cell {
+  border: none;
+  border-radius: 6px;
+  background: none;
+  padding: 6px 8px;
+  width: 100%;
+}
+
+.deploy-body .templates-picker-cell:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: transparent;
+}
+
+.deploy-body .templates-chip-x {
+  border: none;
+  background: none;
+  padding: 0 0 0 2px;
+  font-size: 10px;
+  color: var(--fg-muted);
+}
+
+.deploy-body .templates-chip-x:hover:not(:disabled) {
+  background: none;
+  border-color: transparent;
+  color: var(--error);
+}
+
+.deploy-body .templates-seg-btn {
+  padding: 6px 11px;
+  border-radius: 0;
+  background: var(--bg-alt);
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-right: none;
+}
+
+.deploy-body .templates-seg-btn:last-child {
+  border-right: 1px solid var(--border);
+}
+
+.deploy-body .templates-seg-btn:hover:not(:disabled) {
+  background: var(--bg-alt);
+  border-color: var(--border);
+  color: var(--fg);
+}
+
+.deploy-body .templates-seg-btn.active,
+.deploy-body .templates-seg-btn.active:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+.deploy-body .templates-seg-btn.danger.active {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.deploy-body .templates-danger-text {
+  border: none;
+  background: none;
+  padding: 6px 4px;
+  font-size: 12px;
+  color: var(--error);
+  margin-right: auto;
+}
+
+.deploy-body .templates-danger-text:hover:not(:disabled) {
+  background: none;
+  border-color: transparent;
+}
+
+.deploy-body .templates-btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #111;
+  font-weight: 600;
+}
+
+.deploy-body .templates-btn-primary:hover:not(:disabled) {
+  background: var(--accent);
+  filter: brightness(1.08);
 }
