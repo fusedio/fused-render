@@ -24,11 +24,17 @@ export function RowEditorModal({
   const [keyValid, setKeyValid] = useState(false);
   const key = mode === "edit" && entry ? entry.key : builtKey;
 
-  // Effective ordered names. A disabled binding starts empty; adding names and
-  // saving re-enables it.
-  const [chosen, setChosen] = useState<string[]>(
-    mode === "edit" && entry && !entry.disabled ? entry.templates.map((t) => t.name) : [],
-  );
+  // Ordered names to edit. Seed from the RAW user value (which keeps a `"..."`
+  // splice token and any sentinels intact) so a plain save round-trips the
+  // override unchanged instead of collapsing the splice into the expanded core
+  // names. Fall back to the effective (expanded) names only when there is no
+  // user override yet — i.e. overriding a core-only key, where those names are
+  // a sensible starting point. A disabled binding starts empty.
+  const [chosen, setChosen] = useState<string[]>(() => {
+    if (mode !== "edit" || !entry || entry.disabled) return [];
+    if (Array.isArray(entry.userValue)) return entry.userValue;
+    return entry.templates.map((t) => t.name);
+  });
   const [pickerOpen, setPickerOpen] = useState(false);
   const [busy, setBusy] = useState<"save" | "disable" | "reset" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -181,14 +187,20 @@ export function RowEditorModal({
                 </span>
               )}
               {chosen.map((name, i) => {
-                const broken = !known.has(name);
+                // "..." is the splice token (expands to this type's core list);
+                // "_"-prefixed names are shell sentinels (_render/_listing).
+                // Both are valid registry values, not missing template folders.
+                const isSplice = name === "...";
+                const isSentinel = name.startsWith("_");
+                const broken = !isSplice && !isSentinel && !known.has(name);
                 return (
                   <span
                     key={name}
                     className={
                       "templates-chip" +
                       (i === 0 ? " default" : "") +
-                      (broken ? " broken" : "")
+                      (broken ? " broken" : "") +
+                      (isSplice ? " splice" : "")
                     }
                     draggable
                     onDragStart={() => (dragIndex.current = i)}
@@ -197,10 +209,16 @@ export function RowEditorModal({
                       if (dragIndex.current !== null) move(dragIndex.current, i);
                       dragIndex.current = null;
                     }}
-                    title={broken ? "no template folder resolves to this name" : undefined}
+                    title={
+                      broken
+                        ? "no template folder resolves to this name"
+                        : isSplice
+                          ? "core defaults for this type, expanded in place"
+                          : undefined
+                    }
                   >
                     {i === 0 && <span className="templates-chip-badge">default</span>}
-                    <span className="templates-chip-name">{name}</span>
+                    <span className="templates-chip-name">{isSplice ? "… core defaults" : name}</span>
                     <button
                       type="button"
                       className="templates-chip-x"

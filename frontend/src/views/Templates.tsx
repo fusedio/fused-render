@@ -40,6 +40,11 @@ export default function Templates() {
       setError(null);
     } catch (e) {
       if (seq !== loadSeq.current) return;
+      // Fail closed: a mutation (put/reset/disable/import) already applied
+      // server-side before this refetch ran, so keeping the prior tables would
+      // present pre-mutation state as current. Drop them and surface the error.
+      setInventory(null);
+      setRegistry(null);
       setError((e as Error).message);
     }
   };

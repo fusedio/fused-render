@@ -2112,6 +2112,11 @@ body.embed .preview-browse-chip:hover {
   border-color: rgba(229, 255, 68, 0.35);
 }
 
+.templates-chip.splice {
+  border-style: dashed;
+  color: var(--fg-muted);
+}
+
 .templates-chip.broken {
   border-color: var(--error);
   color: var(--error);
