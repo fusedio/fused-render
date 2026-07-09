@@ -17,6 +17,7 @@ import threading
 import webbrowser
 
 from fused_render.logs import setup_logging
+from fused_render.shell.seed import ensure_fused_dir, fused_dir
 
 logger = logging.getLogger("fused_render")
 
@@ -34,8 +35,8 @@ def _build_parser() -> argparse.ArgumentParser:
     serve = sub.add_parser("serve", help="run the local file explorer (default)")
     serve.add_argument(
         "--start-dir",
-        default=os.path.expanduser("~"),
-        help="initial directory shown in the browser (default: home). "
+        default=fused_dir(),
+        help="initial directory shown in the browser (default: ~/Documents/Fused). "
         "The whole filesystem remains browsable.",
     )
     serve.add_argument(
@@ -53,6 +54,9 @@ def _run_serve(args: argparse.Namespace) -> None:
     from fused_render.server import create_app
 
     log_file = setup_logging()
+    # First-run onboarding (D81): create ~/Documents/Fused and seed it once. Runs
+    # regardless of --start-dir — seeding is about the Fused dir, not the start dir.
+    ensure_fused_dir()
     start_dir = os.path.abspath(os.path.expanduser(args.start_dir))
     app = create_app(start_dir=start_dir)
 

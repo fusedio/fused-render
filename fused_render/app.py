@@ -23,6 +23,7 @@ import uvicorn
 
 from fused_render.logs import log_path, setup_logging
 from fused_render.server import create_app
+from fused_render.shell.seed import ensure_fused_dir
 
 logger = logging.getLogger("fused_render")
 
@@ -116,6 +117,8 @@ def _remove_pidfile() -> None:
 
 def _start_server_thread(port: int) -> uvicorn.Server:
     """Start uvicorn serving create_app(start_dir=home) on a daemon thread."""
+    # First-run onboarding (D81): create ~/Documents/Fused and seed it once.
+    ensure_fused_dir()
     home = os.path.expanduser("~")
     app = create_app(start_dir=home)
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")

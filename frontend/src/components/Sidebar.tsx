@@ -1,4 +1,4 @@
-// Sidebar UI: brand, Home entry, bookmark rows with hover card + inline rename.
+// Sidebar UI: brand, Fused-dir entry, bookmark rows with hover card + inline rename.
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { navigate, navigateUrl, currentUrl, VIEW_PREFIX } from "../lib/router";
 // Folder-as-tabs entry (TM-8): composeFolderTabsUrl builds the `/view/_tab` url
@@ -367,9 +367,9 @@ export default function Sidebar({ config }: SidebarProps) {
     else rowRefs.current.delete(id);
   };
 
-  const onHomeClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+  const onFusedClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
     e.preventDefault();
-    if (config && config.home) navigate(config.home);
+    if (config && config.fused_dir) navigate(config.fused_dir);
   };
 
   // --- bookmark row handlers -------------------------------------------------
@@ -641,8 +641,8 @@ export default function Sidebar({ config }: SidebarProps) {
         <span className="brand-version">v{config.version}</span>
       </div>
       <div className="sidebar-section">
-        <a href="#" id="home-link" className="sidebar-item" onClick={onHomeClick}>
-          <span className="icon">🏠</span> Home
+        <a href="#" id="fused-link" className="sidebar-item" onClick={onFusedClick}>
+          <span className="icon">📁</span> Fused
         </a>
       </div>
       <div className="sidebar-section sidebar-bookmarks">
