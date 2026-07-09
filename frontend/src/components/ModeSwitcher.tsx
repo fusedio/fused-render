@@ -8,6 +8,13 @@ import React from "react";
 import { rawUrl } from "../lib/api";
 import type { TemplateEntry } from "../lib/api";
 
+// Sentinel modes the shell renders without a template folder (SPEC PT-12/D81):
+// `_render` (the target file itself, in an iframe) and `_listing` (the shell's
+// built-in directory listing, no iframe). Any other `path: null` entry is an
+// unknown sentinel — filtered out by every view that dispatches on templates
+// (Preview, PaneModeMenu), so they share this one set to stay in lockstep.
+export const KNOWN_SENTINEL_MODES = new Set(["_render", "_listing"]);
+
 export interface ModeSwitcherEntry<M extends string> {
   mode: M;
   icon: React.ReactNode;
@@ -18,6 +25,7 @@ export interface ModeSwitcherEntry<M extends string> {
 // Exported for PaneModeMenu (pane/tab chrome shares the naming).
 export function modeTitle(mode: string): string {
   if (mode === "_render") return "Rendered";
+  if (mode === "_listing") return "Listing";
   return mode.charAt(0).toUpperCase() + mode.slice(1);
 }
 
@@ -56,13 +64,29 @@ const RENDER_SENTINEL_ICON = (
   </svg>
 );
 
-// Icon for a template-mode entry (PT-11): the "_render" sentinel gets a
-// shell-baked SVG; a resolved template with no icon.svg gets a placeholder
-// box with the mode's first letter; otherwise a monochrome SVG tinted via
-// CSS mask-image + currentColor (so active/inactive coloring is free).
+// Shell-baked icon for the "_listing" sentinel (PT-12/D81) — the built-in
+// directory listing; sentinels have no template folder to ship icon.svg.
+const LISTING_SENTINEL_ICON = (
+  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="8" y1="6" x2="21" y2="6" />
+    <line x1="8" y1="12" x2="21" y2="12" />
+    <line x1="8" y1="18" x2="21" y2="18" />
+    <line x1="3" y1="6" x2="3.01" y2="6" />
+    <line x1="3" y1="12" x2="3.01" y2="12" />
+    <line x1="3" y1="18" x2="3.01" y2="18" />
+  </svg>
+);
+
+// Icon for a template-mode entry (PT-11): a sentinel mode gets a shell-baked
+// SVG; a resolved template with no icon.svg gets a placeholder box with the
+// mode's first letter; otherwise a monochrome SVG tinted via CSS mask-image +
+// currentColor (so active/inactive coloring is free).
 export function templateModeIcon(entry: TemplateEntry): React.ReactNode {
   if (entry.mode === "_render") {
     return RENDER_SENTINEL_ICON;
+  }
+  if (entry.mode === "_listing") {
+    return LISTING_SENTINEL_ICON;
   }
   if (entry.icon === null) {
     return <span className="mode-icon-placeholder">{entry.mode.charAt(0).toUpperCase()}</span>;

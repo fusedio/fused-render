@@ -30,11 +30,14 @@ import sys
 import traceback
 
 from ._binding import bind_params
+from .core_templates import ensure_core_templates
 
 logger = logging.getLogger(__name__)
 
 CHILD = os.path.join(os.path.dirname(__file__), "_child.py")
-_TEMPLATES_DIR = os.path.realpath(os.path.join(os.path.dirname(__file__), "templates"))
+# Built-in helpers run from the staged core-templates copy, not the bundle, so
+# the allowlist realpaths must point there too (see core_templates).
+_TEMPLATES_DIR = os.path.realpath(ensure_core_templates())
 DEFAULT_TIMEOUT = 30.0
 
 # Explicit allowlist of first-party helpers that run IN-PROCESS (D72): each is

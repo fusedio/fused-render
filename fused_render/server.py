@@ -29,6 +29,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from fused_render import __version__
+from fused_render.core_templates import ensure_core_templates
 from fused_render.deploy import router as deploy_router
 from fused_render.executor import run_python
 from fused_render.shell import prefs as shell_prefs
@@ -86,7 +87,10 @@ def _forced_engine() -> str | None:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-TEMPLATES_DIR = os.path.join(HERE, "templates")
+# Core templates ship in the package but are staged into
+# ~/.fused-render/.core-templates on startup (reset-on-release); the server
+# reads every built-in template/registry/helper from that copy, not the bundle.
+TEMPLATES_DIR = ensure_core_templates()
 
 # Built-in extension → mode-list bindings ship as data, not code (D73):
 # templates/registry.json, exactly the user-registry format (SPEC §16). Keys
@@ -101,8 +105,10 @@ BUILTIN_REGISTRY = os.path.join(TEMPLATES_DIR, "registry.json")
 
 # Shell sentinel modes (SPEC PT-12): implemented by the shell, no template
 # folder behind them. The only `_`-prefixed names a registry mode list may
-# reference (D73); any other `_` name is invalid (CT-6).
-KNOWN_SENTINELS = {"_render"}
+# reference (D73); any other `_` name is invalid (CT-6). `_listing` is the
+# shell's built-in directory listing — the default of the universal `/`
+# directory key (D81).
+KNOWN_SENTINELS = {"_render", "_listing"}
 
 # Recursive-walk cap (/api/fs/walk): stop collecting after this many entries so
 # a search over a huge tree stays bounded. Module-level so tests can shrink it.
@@ -192,6 +198,8 @@ def _session_put(body: dict, x_fused: str | None):
 # User templates + their registry live under the shell home dir's templates/
 # subdir (D76) — ~/.fused-render/templates/<name>/ and .../templates/registry.json
 # — one level below the home dir that also holds bookmarks.json (shell/storage).
+# home_dir() itself nests per branch ref (shell/storage), so branch isolation
+# comes for free here — no branch logic needed in server.
 USER_TEMPLATES_DIR = os.path.join(home_dir(), "templates")
 USER_REGISTRY = os.path.join(USER_TEMPLATES_DIR, "registry.json")
 
@@ -199,8 +207,9 @@ USER_REGISTRY = os.path.join(USER_TEMPLATES_DIR, "registry.json")
 def _resolve_name(name):
     """Single template-name resolution rule, used identically for built-in
     table entries and registry entries (SPEC PT-6): `<name>` resolves to
-    `~/.fused-render/templates/<name>/template.html` if present, else
-    `fused_render/templates/<name>/template.html`, else unusable. A user
+    `~/.fused-render/templates/<name>/template.html` if present, else the staged
+    core template `<TEMPLATES_DIR>/<name>/template.html` (core_templates), else
+    unusable. A user
     folder shadows a built-in of the same name — the deliberate override
     channel. Returns (abs template.html path | None, error | None).
     """
@@ -229,7 +238,7 @@ def _resolve_name(name):
     builtin = os.path.join(TEMPLATES_DIR, name, "template.html")
     if os.path.isfile(builtin):
         return builtin, None
-    return None, f"no template.html for {name!r} (looked in ~/.fused-render/templates/{name}/ and built-in templates/{name}/)"
+    return None, f"no template.html for {name!r} (looked in ~/.fused-render/templates/{name}/ and core {TEMPLATES_DIR}/{name}/)"
 
 
 def _icon_for(template_path: str):
@@ -291,9 +300,11 @@ def _key_segments(key, is_dir: bool):
     CT-3): ".csv", compound ".xyz.json", wildcard ".*.json" — `*` matches
     exactly one whole dot-segment, partial wildcards (".geo*") are invalid. A
     trailing "/" marks a directory key (".zarr/", D73); dir keys match only
-    directories, others only files. A key of the wrong shape (no leading dot,
-    empty segment) never matches — same silent-ignore the no-leading-dot rule
-    always had.
+    directories, others only files. The bare "/" is the universal directory
+    key (D81): zero segments, matches any directory — returned as `[]`
+    (distinct from None), ranked lowest by `_match_registry`. A key of the
+    wrong shape (no leading dot, empty segment) never matches — same
+    silent-ignore the no-leading-dot rule always had.
     """
     key = str(key).lower()
     dir_key = key.endswith("/")
@@ -301,6 +312,8 @@ def _key_segments(key, is_dir: bool):
         return None
     if dir_key:
         key = key[:-1]
+        if key == "":
+            return []  # universal directory key ("/"): matches any directory
     if not key.startswith(".") or len(key) < 2:
         return None
     segs = key[1:].split(".")
@@ -315,22 +328,32 @@ def _match_registry(registry: dict, basename: str, is_dir: bool):
     None. Longest-suffix semantics generalized to patterns (SPEC CT-3, D73):
     a key with more segments beats one with fewer; at equal length, comparing
     from the rightmost segment, a literal beats a `*` (`.xyz.json` >
-    `.*.json` > `.json`). A match needs a non-empty stem before the matched
-    suffix, so a dotfile named exactly like a key (a file literally called
-    ".json") does not match. Case-insensitive throughout.
+    `.*.json` > `.json`). The universal `/` directory key (zero segments, D81)
+    ranks below every dot-anchored key (`.zarr/` > `/`) and its stem is the
+    whole basename. A match needs a non-empty stem before the matched suffix,
+    so a dotfile named exactly like a key (a file literally called ".json")
+    does not match. Case-insensitive throughout.
     """
     fsegs = basename.lower().split(".")
     best = None  # (n_segments, literal-mask right-to-left, key, value)
     for key, value in registry.items():
         ksegs = _key_segments(key, is_dir)
-        if ksegs is None or len(fsegs) <= len(ksegs):
+        if ksegs is None:
             continue
-        if not ".".join(fsegs[: -len(ksegs)]):
-            continue
-        tail = fsegs[-len(ksegs):]
-        if any(not (k == f or (k == "*" and f)) for k, f in zip(ksegs, tail)):
-            continue
-        rank = (len(ksegs), tuple(s != "*" for s in reversed(ksegs)))
+        n = len(ksegs)
+        if n == 0:
+            # Universal directory key: matches any directory (stem = whole
+            # basename, non-empty), lowest specificity so any real key wins.
+            rank = (0, ())
+        else:
+            if len(fsegs) <= n:
+                continue
+            if not ".".join(fsegs[:-n]):
+                continue
+            tail = fsegs[-n:]
+            if any(not (k == f or (k == "*" and f)) for k, f in zip(ksegs, tail)):
+                continue
+            rank = (n, tuple(s != "*" for s in reversed(ksegs)))
         if best is None or rank > best[0]:
             best = (rank, key, value)
     if best is None:

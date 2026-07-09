@@ -15,3 +15,4 @@ scripts/vendor-sci/node_modules/
 frontend/node_modules/
 fused_render/static/shell-dist/
 uv.lock
+fused_render/_baked_branch.py

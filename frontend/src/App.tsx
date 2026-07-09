@@ -65,18 +65,19 @@ function StatView({ fsPath, epoch }: { fsPath: string; epoch: number }) {
     );
   } else if (stat.status === "ok") {
     // Dispatch (ARCHITECTURE §6): a target with templates previews — even a
-    // directory (a `.zarr` store maps to a directory template, D65) — UNLESS
-    // the shell-owned `?listing=1` param forces the plain listing view.
-    // `listing` never reaches a template: it only takes effect on a directory,
-    // and when set it selects Listing (no template iframe is mounted), so it
-    // can't leak into fused.params.
+    // directory. Every directory resolves at least the universal `/` key's
+    // `["_listing"]` (D81), so the built-in listing is now the `_listing`
+    // sentinel mode and flows through Preview like any other mode (Preview
+    // renders the shell Listing component for it). A directory resolves to an
+    // empty list only when a `null` binding disables it; the shell still lists
+    // it then — a folder must always render something.
     const s = stat.stat;
-    const forceListing = new URLSearchParams(location.search).get("listing") === "1";
-    if (s.is_dir && (forceListing || s.templates.length === 0)) {
+    if (s.is_dir && s.templates.length === 0) {
       content = <Listing fsPath={fsPath} />;
     } else if (!ready) {
       // Brief; only for files opened with an empty query while the sidecar
-      // read resolves. Directories/bookmarks set `ready` synchronously.
+      // read resolves. Directories and param/bookmark opens are ready
+      // synchronously (useSessionRestore), so no flash on those paths.
       content = <div className="status-message">Loading…</div>;
     } else {
       content = <Preview fsPath={fsPath} stat={s} />;
