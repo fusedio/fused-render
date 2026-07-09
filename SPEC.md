@@ -67,7 +67,7 @@ The differentiating feature is the **renderable HTML** system: HTML files can ca
 - **FS-4** v1 shows all files including dotfiles. *(hide/toggle: follow-up)*
 - **FS-5** Selecting a file opens its preview (§5). Selecting a directory navigates into it.
 - **FS-6** The current directory/file is reflected in the URL path so browser back/forward and refresh work: `http://localhost:8765/view/<url-encoded-path>`.
-- **FS-7** *(follow-up)* Filename search/filter.
+- **FS-7** **DONE (M13):** in-folder filename search over a streamed recursive walk — see §21.
 - **FS-8** "Open raw" escape hatch for any file: streams bytes with correct MIME type (used for download and by templates for images/video/pdf).
 
 ### Sidebar & Bookmarks (M2 — next)
@@ -864,3 +864,92 @@ never imports server).
   the user registry path. This is the table of bindings, not a per-file
   resolver: distinct keys coexist and CT-3 specificity decides per file. Read
   per request like every resolution (no restart).
+
+## 21. Explorer Search — Streamed Recursive Walk (M13)
+
+Goal: an in-folder search (FS-7) whose first results paint in tens of
+milliseconds on any tree, whose coverage is never silently starved by one big
+subtree, and whose truncation is always visible. The searcher is the shell
+(client-side fuzzy scoring, fzf/VS Code Quick-Open model — the corpus is local
+and per-keystroke re-ranking must not pay a network round trip); the server's
+job is to deliver the corpus fast, shallow-first, and pruned of machine noise.
+
+### 21.1 Walk order & pruning (server)
+
+- **SR-1** `GET /api/fs/walk` traverses **breadth-first** (`_walk_bfs`): every
+  depth-N entry is emitted before any depth-N+1 entry; within one parent, dirs
+  first then files, each name-sorted. Any early stop (cap, disconnect)
+  therefore keeps complete shallow coverage. The old depth-first walk let one
+  big sibling eat the whole entry budget — a home dir looked like:
+
+  ```
+  depth-first + cap                      breadth-first + cap
+  ─────────────────                      ───────────────────
+  ├─ Desktop   ✓ dives to bottom,        ├─ level 1: ALL top dirs first ✓
+  │    eats 15,926 / 20,000 slots        ├─ level 2: all their children ✓
+  ├─ Movies    ✗ CAP DEAD — 0 children   ├─ level 3: …
+  └─ Music     ✗ 0 children              └─ cap cuts the DEEPEST level only
+  ```
+
+- **SR-2** `WALK_IGNORE_DIRS` (`node_modules`, `__pycache__`, `venv`, `.venv`,
+  `.git`) are never descended **nor emitted**, hidden mode or not — they are
+  machine-managed noise, not "hidden data" (a `.py` extension search must not
+  drown in `.git` object files). `.git` *files* (worktree/submodule pointers)
+  are ordinary files and do show.
+- **SR-3** macOS package directories (`WALK_LEAF_DIR_SUFFIXES`: `.app`,
+  `.framework`, `.bundle`, `.photoslibrary`, case-insensitive) are emitted as
+  a single dir entry but never descended — Finder semantics; one Electron
+  `.app` alone is thousands of internal files nobody searches.
+- **SR-4** Symlinks are emitted but never followed; unreadable dirs/entries
+  are skipped silently (matches `/api/fs/list`).
+- **SR-5** `WALK_MAX_ENTRIES` (200 000) is a **memory/latency safety valve,
+  not a coverage budget**: with BFS it only ever cuts the deepest levels of
+  pathological trees (mounted volumes, cache farms). The response carries
+  `truncated` so the UI can be honest about it (SR-10).
+
+### 21.2 Streaming wire format
+
+- **SR-6** `?stream=1` returns `application/x-ndjson`: zero or more
+  `{"entries": [...]}` batch lines (`WALK_BATCH_SIZE` = 500 per line), then
+  **exactly one** terminal `{"done": true, "truncated": bool, "total": n}`
+  line. Closing the connection cancels the walk server-side (the generator is
+  closed on disconnect). Without `stream=1` the original single-JSON shape
+  (`{path, entries, truncated}`) is unchanged — same entries, same BFS order.
+
+  ```
+  blocking (before)                      streamed (after)
+  ─────────────────                      ────────────────
+  type ▶ [  spinner ~1s  ] ▶ ALL         type ▶ ~10ms ▶ first results
+         nothing until whole walk               ▶ list fills in live
+         done + one giant JSON                  ▶ "N matches · M scanned…"
+  ```
+
+### 21.3 Shell search behavior
+
+- **SR-7** The listing's search (`?q=`, URL-synced like sort) fetches **one
+  hidden-inclusive dataset** (`hidden=1` always) and filters dot-entries at
+  display time: a dot-leading query segment (`.py`, `sub/.env`) shows them,
+  anything else hides them. One corpus means flipping intent mid-query never
+  refetches, and `.py` works as an extension search. The walk starts lazily
+  on first focus (warm-up) or a URL-seeded query, is cached until the dir
+  watch fires, and the in-flight stream is aborted on refresh/unmount.
+- **SR-8** Scoring is incremental and off the critical path: stream flushes
+  commit at most every 200 ms (`STREAM_FLUSH_MS`), each flush fuzzy-scores
+  **only the entries appended since the last one** and merges them into the
+  prior ranked list; a full re-scan happens only when the query or
+  hidden-intent changes (and then on React's deferred schedule). Rationale:
+  re-scoring the whole grown array per network chunk saturated the main
+  thread near the tail of a big walk — stuck stale-dim, queued clicks.
+- **SR-9** Results render in pages of 250 rows; a sentinel row +
+  IntersectionObserver reveals the next page as the user scrolls. The full
+  ranked list stays in memory for the count text; ranking = longest
+  consecutive run, then fuzzy score, then shallower path, then name.
+- **SR-10** Truncation is always visible: a live `N matches · M scanned…`
+  counter while streaming; a `+` suffix and tooltip on the final count when
+  the cap hit; and the zero-match message names the covered entry count
+  ("No matches in the first 200,000 entries — this folder tree is too large
+  to search fully") instead of a bare "No matches".
+- **SR-11** The query mirrors into the URL **debounced** (200 ms): Safari
+  rate-limits `history.replaceState` (~100 calls/30 s, then throws), so
+  per-keystroke sync is a crash, not a nicety. Input state stays immediate;
+  only the URL lags.
