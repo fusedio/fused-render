@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>3D model preview</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    color: #e8eaed;
+    background: #111418;
+    overflow: hidden;
+  }
+  #bar {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    padding: 8px 12px;
+    background: rgba(19, 21, 25, 0.72);
+    color: #9aa0a6;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    z-index: 2;
+    pointer-events: none;
+  }
+  canvas { display: block; width: 100%; height: 100%; }
+  #status {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    color: #9aa0a6;
+    z-index: 3;
+    text-align: center;
+    padding: 0 24px;
+  }
+  #status.error { color: #ff6b6b; }
+  #status.hidden { display: none; }
+  #edit {
+    position: absolute;
+    top: 8px; right: 10px;
+    z-index: 4;
+    padding: 5px 12px;
+    font: inherit;
+    font-size: 12px;
+    color: #e8eaed;
+    background: #2a2d33;
+    border: 1px solid #3a3f47;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  #edit:hover { background: #343841; }
+  #edit[disabled] { opacity: 0.5; cursor: default; }
+  #edit.hidden { display: none; }
+</style>
+</head>
+<body>
+  <div id="bar"></div>
+  <button id="edit" class="hidden" title="Create an editable model project from this file">Edit</button>
+  <canvas id="c"></canvas>
+  <div id="status">Loading…</div>
+  <script type="module">
+    // Read-only 3D viewer for a single .glb/.gltf, rendered with vendored
+    // Three.js (no CDN — same offline rule as pdf/geotiff/zarr). Scene defaults
+    // (background, lights, grid, camera) mirror the reference model-editor's
+    // viewer.html so a model reads the same here as in the editor.
+    import { THREE, OrbitControls, GLTFLoader } from "/template-assets/three.bundle.mjs";
+
+    const file = fused.params.get("_file") || "";
+    const bar = document.getElementById("bar");
+    const statusEl = document.getElementById("status");
+    const canvas = document.getElementById("c");
+    bar.textContent = file.split("/").pop() || "3D model";
+
+    function fail(message) {
+      statusEl.className = "error";
+      statusEl.textContent = message; // textContent — err.message is untrusted
+    }
+
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x111418);
+
+    const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 5000);
+    camera.position.set(5, 4, 6);
+
+    const controls = new OrbitControls(camera, canvas);
+    controls.enableDamping = true;
+
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x223344, 1.0));
+    const keyLight = new THREE.DirectionalLight(0xffffff, 2.0);
+    keyLight.position.set(5, 8, 5);
+    scene.add(keyLight);
+    const grid = new THREE.GridHelper(20, 20, 0x333a42, 0x22272d);
+    scene.add(grid);
+
+    function resize() {
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      if (canvas.width === w && canvas.height === h) return;
+      renderer.setSize(w, h, false);
+      camera.aspect = w / h || 1;
+      camera.updateProjectionMatrix();
+    }
+    window.addEventListener("resize", resize);
+
+    (function loop() {
+      requestAnimationFrame(loop);
+      resize();
+      controls.update();
+      renderer.render(scene, camera);
+    })();
+
+    // Point the camera at the model and pull back enough to frame its bounding
+    // sphere, and drop the grid to the model's feet.
+    function frame(root) {
+      const box = new THREE.Box3().setFromObject(root);
+      if (box.isEmpty()) return;
+      const size = box.getSize(new THREE.Vector3());
+      const center = box.getCenter(new THREE.Vector3());
+      const radius = Math.max(size.x, size.y, size.z, 1e-3) * 0.5;
+      const dist = radius / Math.sin((camera.fov * Math.PI) / 180 / 2) * 1.4;
+      controls.target.copy(center);
+      const dir = new THREE.Vector3(1, 0.7, 1).normalize();
+      camera.position.copy(center).addScaledVector(dir, dist);
+      camera.near = Math.max(dist / 1000, 1e-3);
+      camera.far = dist * 1000;
+      camera.updateProjectionMatrix();
+      controls.update();
+      grid.position.y = box.min.y;
+    }
+
+    // Resolve a .gltf's external resources (.bin buffers, texture images).
+    // Their URIs are relative to the .gltf file's own directory; Three's loader
+    // would resolve them against this /render page's URL, so we intercept every
+    // non-inline URL and rewrite it to fused.rawUrl(<sibling abs path>). .glb is
+    // self-contained (resources embedded) so the modifier is simply never hit.
+    const dir = file.slice(0, file.lastIndexOf("/") + 1);
+    function resolveSibling(base, rel) {
+      const parts = base.split("/");
+      parts.pop(); // drop the trailing "" after the final slash
+      for (const seg of decodeURIComponent(rel).split("/")) {
+        if (seg === "" || seg === ".") continue;
+        if (seg === "..") parts.pop();
+        else parts.push(seg);
+      }
+      return parts.join("/");
+    }
+    const manager = new THREE.LoadingManager();
+    manager.setURLModifier((url) => {
+      if (/^(data:|blob:|https?:)/i.test(url)) return url;
+      return fused.rawUrl(resolveSibling(dir, url));
+    });
+
+    // --- Edit bridge: turn this .glb into an editable model project ---
+    // fused-render has no workspace; an editable model is a self-contained
+    // sibling `<name>.glbproj/` directory (routed to the glbmodel editor, the
+    // same way a `.zarr/` dir routes to the zarr template). "Edit" scaffolds
+    // that dir next to this file, imports this .glb into it as parts (exploded
+    // client-side by the editor's own import_part.mjs), then opens the editor.
+    // Only .glb is supported — importPart takes binary glTF; a .gltf would need
+    // converting to .glb first.
+    const editBtn = document.getElementById("edit");
+    const tplDir = (() => {
+      const p = new URLSearchParams(location.search).get("path") || "";
+      return p.slice(0, p.lastIndexOf("/") + 1);
+    })();
+    // sibling glbmodel/ template dir (this file lives in glb/), reached by
+    // absolute path — /api/run and fused.rawUrl both accept absolute paths.
+    const glbmodelDir = tplDir.replace(/glb\/$/, "glbmodel/");
+    const opsPy = glbmodelDir + "project_ops.py";
+
+    function b64(bytes) {
+      let s = "";
+      for (let i = 0; i < bytes.length; i += 0x8000)
+        s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+      return btoa(s);
+    }
+
+    async function startEdit() {
+      editBtn.disabled = true;
+      const prev = editBtn.textContent;
+      editBtn.textContent = "Preparing…";
+      try {
+        const base = file.split("/").pop().replace(/\.glb$/i, "");
+        const dir = file.slice(0, file.lastIndexOf("/") + 1);
+        const proj = dir + base + ".glbproj";
+        // info scaffolds the dir and returns existing parts (idempotent).
+        const info = await fused.runPython(opsPy, { action: "info", model_dir: proj });
+        if (info.error) throw new Error(info.error);
+        if ((info.parts || []).length === 0) {
+          const { importPart } = await import(fused.rawUrl(glbmodelDir + "import_part.mjs"));
+          const bytes = new Uint8Array(await (await fetch(fused.rawUrl(file))).arrayBuffer());
+          const { parts } = await importPart(bytes, base, []);
+          for (const p of parts) {
+            const w = await fused.runPython(opsPy,
+              { action: "write_part", model_dir: proj, name: p.name, data_b64: b64(p.glbBytes) });
+            if (w.error) throw new Error(w.error);
+          }
+        }
+        const url = "/view/" + proj.replace(/^\/+/, "").split("/").map(encodeURIComponent).join("/");
+        (window.top || window).location.href = url;
+      } catch (err) {
+        editBtn.disabled = false;
+        editBtn.textContent = prev;
+        fail(`Couldn't create editable project: ${String(err && err.message ? err.message : err)}`);
+      }
+    }
+    if (/\.glb$/i.test(file)) {
+      editBtn.classList.remove("hidden");
+      editBtn.addEventListener("click", startEdit);
+    }
+
+    async function load() {
+      if (!file) return fail("No file selected (missing _file param).");
+      try {
+        const resp = await fetch(fused.rawUrl(file));
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const buf = await resp.arrayBuffer();
+        const loader = new GLTFLoader(manager);
+        // resourcePath "" so external URIs stay relative and hit the modifier.
+        loader.parse(buf, "", (gltf) => {
+          scene.add(gltf.scene);
+          frame(gltf.scene);
+          statusEl.className = "hidden";
+        }, (err) => fail(`Failed to load model: ${String(err && err.message ? err.message : err)}`));
+      } catch (err) {
+        fail(`Failed to load model: ${String(err && err.message ? err.message : err)}`);
+      }
+    }
+    load();
+  </script>
+</body>
+</html>

@@ -296,6 +296,17 @@
   ".laz": [
     "las"
   ],
+  ".glb": [
+    "glb"
+  ],
+  ".gltf": [
+    "glb",
+    "code"
+  ],
+  ".glbproj/": [
+    "glbmodel",
+    "_listing"
+  ],
   ".zip": [
     "zip"
   ],
