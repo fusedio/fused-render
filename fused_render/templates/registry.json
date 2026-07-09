@@ -3,7 +3,8 @@
     "table",
     "h3",
     "claude",
-    "annotate"
+    "annotate",
+    "history"
   ],
   ".csv": [
     "csv",
@@ -19,11 +20,10 @@
     "xlsx",
     "annotate"
   ],
-  ".html.json": [
+  ".*.json": [
     "history",
     "tree",
-    "code",
-    "annotate"
+    "code"
   ],
   ".json": [
     "tree",
