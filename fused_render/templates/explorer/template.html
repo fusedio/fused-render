@@ -51,8 +51,32 @@
   .list-pane {
     flex: 1 1 auto;
     min-width: 240px;
-    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
   }
+  /* In-folder search box (mirrors the built-in listing's .listing-search). */
+  .list-search {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .list-search input {
+    flex: 1 1 auto;
+    font: inherit;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+    outline: none;
+  }
+  .list-search input:focus { border-color: var(--fg-muted); }
+  .list-search .count { flex: 0 0 auto; color: var(--fg-muted); font-size: 12px; white-space: nowrap; }
+  .list-body { flex: 1 1 auto; overflow: auto; }
   .divider {
     flex: 0 0 5px;
     cursor: col-resize;
@@ -108,6 +132,8 @@
   table.listing-table td.name { display: flex; align-items: center; gap: 8px; }
   table.listing-table td.name .icon { flex: 0 0 auto; display: inline-flex; }
   table.listing-table td.name .label { overflow: hidden; text-overflow: ellipsis; }
+  table.listing-table td.name .search-path { overflow: hidden; text-overflow: ellipsis; }
+  mark.search-mark { background: rgba(229, 255, 68, 0.22); color: var(--fg); border-radius: 2px; }
   table.listing-table td.mtime, table.listing-table td.size {
     color: var(--fg-muted);
     font-variant-numeric: tabular-nums;
@@ -139,14 +165,22 @@
 </head>
 <body>
   <div class="split">
-    <div class="list-pane" id="list-pane"><div class="status-message">Loading…</div></div>
+    <div class="list-pane" id="list-pane">
+      <div class="list-search">
+        <input id="search" type="search" placeholder="Search this folder…" autocomplete="off" spellcheck="false" />
+        <span class="count" id="search-count"></span>
+      </div>
+      <div class="list-body" id="list-body"><div class="status-message">Loading…</div></div>
+    </div>
     <div class="divider" id="divider"></div>
     <div class="preview-pane" id="preview-pane"></div>
   </div>
 
   <script>
-    const listPaneEl = document.getElementById("list-pane");
+    const listBodyEl = document.getElementById("list-body");
     const previewPaneEl = document.getElementById("preview-pane");
+    const searchEl = document.getElementById("search");
+    const searchCountEl = document.getElementById("search-count");
 
     // Per-filetype icons ported from the shell's FileIcons.tsx so explorer rows
     // match the built-in listing exactly (glyph geometry + the CSS tints above,
@@ -201,10 +235,73 @@
         `stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${GLYPHS[variant]}</svg>`;
     }
 
+    // --- Fuzzy matcher (ported verbatim from the shell's lib/fuzzy.ts) -------
+    const SEPARATORS = new Set(["/", ".", "-", "_", " "]);
+    function isUpper(ch) { return ch >= "A" && ch <= "Z"; }
+    function isSegmentStart(text, i) {
+      if (i === 0) return true;
+      const prev = text[i - 1];
+      if (SEPARATORS.has(prev)) return true;
+      return isUpper(text[i]) && !isUpper(prev);
+    }
+    function fuzzyMatch(query, text) {
+      if (query === "") return { score: 0, positions: [], longestRun: 0 };
+      const q = query.toLowerCase(), t = text.toLowerCase();
+      const sub = t.indexOf(q);
+      if (sub !== -1) {
+        const positions = [];
+        let score = 0;
+        for (let ti = sub; ti < sub + q.length; ti++) {
+          positions.push(ti); score += 1;
+          if (ti > sub) score += 3;
+          if (isSegmentStart(text, ti)) score += 5;
+        }
+        return { score, positions, longestRun: q.length };
+      }
+      const positions = [];
+      let qi = 0, score = 0, prev = -2, run = 0, longestRun = 0;
+      for (let ti = 0; ti < t.length && qi < q.length; ti++) {
+        if (t[ti] !== q[qi]) continue;
+        positions.push(ti); score += 1;
+        run = ti === prev + 1 ? run + 1 : 1;
+        if (run > longestRun) longestRun = run;
+        if (ti === prev + 1) score += 3;
+        if (isSegmentStart(text, ti)) score += 5;
+        prev = ti; qi++;
+      }
+      if (qi < q.length) return null;
+      return { score, positions, longestRun };
+    }
+    function highlightSegments(text, positions) {
+      if (!positions.length) return text ? [{ text, match: false }] : [];
+      const marked = new Set(positions);
+      const segments = [];
+      let run = "", runMatch = marked.has(0);
+      for (let i = 0; i < text.length; i++) {
+        const m = marked.has(i);
+        if (m === runMatch) { run += text[i]; }
+        else { segments.push({ text: run, match: runMatch }); run = text[i]; runMatch = m; }
+      }
+      segments.push({ text: run, match: runMatch });
+      return segments;
+    }
+    function highlightHtml(text, positions) {
+      return highlightSegments(text, positions).map((s) =>
+        s.match ? `<mark class="search-mark">${escapeHtml(s.text)}</mark>` : escapeHtml(s.text)
+      ).join("");
+    }
+
     let ENTRIES = [];       // [{name, path, is_dir, size, mtime, ignored}]
     let selectedPath = null;
     let sortKey = "name";   // name | size | mtime
     let sortOrder = "asc";
+    let baseDir = null;     // absolute path of the folder (no trailing slash)
+    let currentRows = [];   // rows currently rendered (listing OR search hits)
+    // In-folder search (mirrors views/Listing.tsx): a query swaps the listing
+    // for a flat, fuzzy-ranked walk of the whole subtree.
+    let query = "";
+    let WALK = null;        // { dir, hidden, entries, truncated } cache
+    const MAX_RESULTS = 250;
 
     function escapeHtml(s) {
       return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
@@ -302,7 +399,7 @@
       selectedPath = entry ? entry.path : null;
       // Persist selection so refresh/auto-reload restores the same preview.
       try { if (entry) fused.params.set("sel", entry.path); } catch (e) {}
-      listPaneEl.querySelectorAll("tr.row").forEach((tr) => {
+      listBodyEl.querySelectorAll("tr.row").forEach((tr) => {
         tr.classList.toggle("selected", tr.getAttribute("data-path") === selectedPath);
       });
       if (!entry) { showPlaceholder(`<div class="hint">Select a file to preview.</div>`); return; }
@@ -339,27 +436,45 @@
         `<span class="sort-arrow">${arrow}</span></th>`;
     }
 
-    function renderList() {
-      const rows = sortedEntries();
-      const head = `<thead><tr>${COLUMNS.map(([k, l]) => th(k, l)).join("")}</tr></thead>`;
-      let body;
-      if (rows.length === 0) {
-        body = `<tr><td colspan="3" class="status-message">Empty directory</td></tr>`;
-      } else {
-        body = rows.map((r) => {
-          const size = r.is_dir ? "" : formatSize(r.size);
-          const sel = r.path === selectedPath ? " selected" : "";
-          const ign = r.ignored ? " ignored" : "";
-          return `<tr class="row${sel}${ign}" data-path="${escapeHtml(r.path)}" data-dir="${r.is_dir ? 1 : 0}">` +
-            `<td class="name"><span class="icon">${iconSvg(r.name, r.is_dir)}</span>` +
-            `<span class="label">${escapeHtml(r.name)}</span></td>` +
-            `<td class="size">${escapeHtml(size)}</td>` +
-            `<td class="mtime">${escapeHtml(formatMtime(r.mtime))}</td></tr>`;
-        }).join("");
-      }
-      listPaneEl.innerHTML = `<table class="listing-table">${head}<tbody>${body}</tbody></table>`;
+    // One <tr>; `label` is pre-built HTML for the name cell (plain name, or a
+    // highlighted relative path when searching).
+    function rowHtml(r, label) {
+      const size = r.is_dir ? "" : formatSize(r.size);
+      const sel = r.path === selectedPath ? " selected" : "";
+      const ign = r.ignored ? " ignored" : "";
+      return `<tr class="row${sel}${ign}" data-path="${escapeHtml(r.path)}" data-dir="${r.is_dir ? 1 : 0}">` +
+        `<td class="name"><span class="icon">${iconSvg(r.name, r.is_dir)}</span>${label}</td>` +
+        `<td class="size">${escapeHtml(size)}</td>` +
+        `<td class="mtime">${escapeHtml(formatMtime(r.mtime))}</td></tr>`;
+    }
 
-      listPaneEl.querySelectorAll("th[data-key]").forEach((el) => {
+    // Attach click/dblclick to every rendered row, resolving the row against
+    // `currentRows` (the listing entries OR the search hits).
+    function bindRows() {
+      listBodyEl.querySelectorAll("tr.row").forEach((tr) => {
+        const path = tr.getAttribute("data-path");
+        const r = currentRows.find((e) => e.path === path);
+        if (!r) return;
+        tr.addEventListener("click", () => select(r));
+        tr.addEventListener("dblclick", () => openInShell(r.path, r.is_dir));
+      });
+    }
+
+    // Route between the plain listing and the search results.
+    function render() {
+      if (query.trim()) renderSearch();
+      else { searchCountEl.textContent = ""; renderList(); }
+    }
+
+    function renderList() {
+      currentRows = sortedEntries();
+      const head = `<thead><tr>${COLUMNS.map(([k, l]) => th(k, l)).join("")}</tr></thead>`;
+      const body = currentRows.length === 0
+        ? `<tr><td colspan="3" class="status-message">Empty directory</td></tr>`
+        : currentRows.map((r) => rowHtml(r, `<span class="label">${escapeHtml(r.name)}</span>`)).join("");
+      listBodyEl.innerHTML = `<table class="listing-table">${head}<tbody>${body}</tbody></table>`;
+
+      listBodyEl.querySelectorAll("th[data-key]").forEach((el) => {
         el.addEventListener("click", () => {
           const key = el.getAttribute("data-key");
           if (sortKey === key) sortOrder = sortOrder === "asc" ? "desc" : "asc";
@@ -367,19 +482,90 @@
           renderList();
         });
       });
-      listPaneEl.querySelectorAll("tr.row").forEach((tr) => {
-        const path = tr.getAttribute("data-path");
-        const entry = ENTRIES.find((e) => e.path === path);
-        tr.addEventListener("click", () => select(entry));
-        tr.addEventListener("dblclick", () => openInShell(entry.path, entry.is_dir));
-      });
+      bindRows();
     }
 
-    // Arrow-key navigation over the sorted list; Enter opens the selection.
+    // A dot-leading query (".foo" or "sub/.foo") is explicit intent to include
+    // hidden entries — the walk otherwise prunes them (matches Listing.tsx).
+    function queryWantsHidden(q) {
+      const t = q.trim();
+      return t.startsWith(".") || t.includes("/.");
+    }
+
+    // Rank: longest consecutive matched run, then fuzzy score, then shallower
+    // path, then alphabetical (verbatim from Listing.tsx searchWalk).
+    function searchWalk(q, entries) {
+      const hits = [];
+      for (const entry of entries) {
+        const m = fuzzyMatch(q, entry.rel);
+        if (m) hits.push({ entry, positions: m.positions, score: m.score, longestRun: m.longestRun });
+      }
+      hits.sort((a, b) => {
+        if (b.longestRun !== a.longestRun) return b.longestRun - a.longestRun;
+        if (b.score !== a.score) return b.score - a.score;
+        const ad = a.entry.rel.split("/").length, bd = b.entry.rel.split("/").length;
+        if (ad !== bd) return ad - bd;
+        return a.entry.rel.localeCompare(b.entry.rel, undefined, { sensitivity: "base" });
+      });
+      return hits;
+    }
+
+    async function renderSearch() {
+      const q = query.trim();
+      const wantHidden = queryWantsHidden(q);
+      // (Re)fetch the recursive walk when the cache is missing or for the wrong
+      // folder / hidden generation.
+      if (!WALK || WALK.dir !== baseDir || WALK.hidden !== wantHidden) {
+        listBodyEl.innerHTML = `<div class="status-message">Searching…</div>`;
+        searchCountEl.textContent = "";
+        try {
+          const url = "/api/fs/walk?path=" + encodeURIComponent(baseDir) + (wantHidden ? "&hidden=1" : "");
+          const res = await fetch(url);
+          const data = await res.json();
+          if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
+          WALK = { dir: baseDir, hidden: wantHidden, entries: data.entries || [], truncated: !!data.truncated };
+        } catch (err) {
+          listBodyEl.innerHTML = `<div class="status-message error">Search failed: ${escapeHtml(err.message || String(err))}</div>`;
+          return;
+        }
+        if (query.trim() !== q) return; // query moved on while fetching
+      }
+
+      const ranked = searchWalk(q, WALK.entries);
+      currentRows = ranked.slice(0, MAX_RESULTS).map(({ entry, positions }) => ({
+        name: entry.rel.split("/").pop(),
+        rel: entry.rel,
+        path: baseDir + "/" + entry.rel,
+        is_dir: entry.is_dir,
+        size: entry.size,
+        mtime: entry.mtime,
+        ignored: entry.ignored,
+        positions,
+      }));
+
+      const head = `<thead><tr>${COLUMNS.map(([, l]) => `<th>${escapeHtml(l)}</th>`).join("")}</tr></thead>`;
+      const body = currentRows.length === 0
+        ? `<tr><td colspan="3" class="status-message">No matches</td></tr>`
+        : currentRows.map((r) =>
+            rowHtml(r, `<span class="search-path">${highlightHtml(r.rel, r.positions)}</span>`)).join("");
+      listBodyEl.innerHTML = `<table class="listing-table">${head}<tbody>${body}</tbody></table>`;
+      bindRows();
+
+      const total = ranked.length;
+      const suffix = WALK.truncated ? "+" : "";
+      searchCountEl.textContent = total === 0 ? ""
+        : total > MAX_RESULTS ? `${MAX_RESULTS} of ${total}${suffix}`
+        : `${total}${suffix} match${total === 1 ? "" : "es"}`;
+    }
+
+    // Arrow-key navigation over whatever is rendered (listing or search hits);
+    // Enter opens the selection. Arrows are ignored while typing in the search
+    // box so the caret still moves; Enter there opens the current selection.
     function onKey(e) {
-      const rows = sortedEntries();
+      const typing = document.activeElement === searchEl;
+      const rows = currentRows;
       if (!rows.length) return;
-      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      if (!typing && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
         e.preventDefault();
         const idx = rows.findIndex((r) => r.path === selectedPath);
         let next = e.key === "ArrowDown" ? idx + 1 : idx - 1;
@@ -387,13 +573,27 @@
         next = Math.max(0, Math.min(rows.length - 1, next));
         const entry = rows[next];
         select(entry);
-        const tr = listPaneEl.querySelector(`tr.row[data-path="${CSS.escape(entry.path)}"]`);
+        const tr = listBodyEl.querySelector(`tr.row[data-path="${CSS.escape(entry.path)}"]`);
         if (tr) tr.scrollIntoView({ block: "nearest" });
       } else if (e.key === "Enter" && selectedPath) {
         const entry = rows.find((r) => r.path === selectedPath);
         if (entry) openInShell(entry.path, entry.is_dir);
       }
     }
+
+    // --- Search box ----------------------------------------------------------
+    (function () {
+      let timer = null;
+      searchEl.addEventListener("input", () => {
+        query = searchEl.value;
+        // Debounce so the fuzzy scan/render doesn't run on every keystroke.
+        clearTimeout(timer);
+        timer = setTimeout(render, 120);
+      });
+      searchEl.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") { e.preventDefault(); searchEl.value = ""; query = ""; render(); searchEl.blur(); }
+      });
+    })();
 
     // --- Draggable divider ---------------------------------------------------
     (function () {
@@ -428,24 +628,25 @@
     async function load() {
       const dir = fused.params.get("_file");
       if (!dir) {
-        listPaneEl.innerHTML = `<div class="status-message error">No folder selected (missing _file param).</div>`;
+        listBodyEl.innerHTML = `<div class="status-message error">No folder selected (missing _file param).</div>`;
         return;
       }
       try {
         const res = await fetch("/api/fs/list?path=" + encodeURIComponent(dir));
         const data = await res.json();
         if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
-        const base = data.path.replace(/\/+$/, "");
+        baseDir = data.path.replace(/\/+$/, "");
+        WALK = null; // invalidate any cached walk for a previous folder
         // Give each entry an absolute path (the endpoint returns bare names);
         // everything downstream keys on `path`.
-        ENTRIES = (data.entries || []).map((e) => ({ ...e, path: base + "/" + e.name }));
-        renderList();
+        ENTRIES = (data.entries || []).map((e) => ({ ...e, path: baseDir + "/" + e.name }));
+        render();
         // Restore a previously-selected child if it still exists.
         const sel = fused.params.get("sel");
         const entry = sel ? ENTRIES.find((e) => e.path === sel) : null;
         select(entry || null);
       } catch (err) {
-        listPaneEl.innerHTML = `<div class="status-message error"><strong>Error</strong>: ` +
+        listBodyEl.innerHTML = `<div class="status-message error"><strong>Error</strong>: ` +
           `${escapeHtml(err.message || String(err))}</div>`;
       }
     }
