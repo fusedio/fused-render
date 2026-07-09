@@ -65,9 +65,8 @@ def _fused_server(port: int) -> bool:
 
 
 def _settle(port: int) -> bool:
-    """True when a native fused-render answers on port. A bound-but-silent
-    port is usually a peer opener's server still booting, so it gets the same
-    grace period _wait_until_ready gives our own spawn."""
+    """Like _fused_server, but a bound-yet-silent port — usually a peer
+    opener's server still booting — gets the spawn grace period."""
     if _fused_server(port):
         return True
     if not _port_in_use(port):
@@ -76,10 +75,9 @@ def _settle(port: int) -> bool:
 
 
 def find_running_server() -> int | None:
-    """Port of a live native instance, or None. The portfile is only a hint —
-    a manual `fused-render serve` never writes one, so the default range is
-    scanned too. Liveness via HTTP only; on Windows os.kill(pid, 0) calls
-    TerminateProcess, so the pid is never probed."""
+    """Port of a live native instance, or None. Probes by HTTP, never by pid
+    (os.kill(pid, 0) kills on Windows); a manual `fused-render serve` writes
+    no portfile, so the default range is scanned too."""
     filed = _read_int(PORTFILE)
     if filed is not None and _settle(filed):
         return filed
@@ -127,9 +125,9 @@ def _remove_pidfile() -> None:
             pass
 
 
-def _start_server(port: int) -> subprocess.Popen:
-    """Spawn the server detached; stdout/stderr go to server.out.log since a
-    windowless parent has None streams and cli.py prints at startup."""
+def _spawn(port: int) -> int:
+    """Start the server detached and wait for it. stdout/stderr go to
+    server.out.log — a windowless parent has None streams and cli.py prints."""
     os.makedirs(APP_SUPPORT_DIR, exist_ok=True)
     log_file = open(SERVER_LOG, "ab")
     proc = subprocess.Popen(
@@ -145,7 +143,32 @@ def _start_server(port: int) -> subprocess.Popen:
         ),
     )
     log_file.close()
-    return proc
+    logger.info("starting server (pid %s, port %s)", proc.pid, port)
+    # pidfile precedes readiness so racing peers _settle instead of double-spawning
+    _write_pidfile(proc.pid, port)
+    if _wait_until_ready(port):
+        return port
+    proc.kill()
+    _remove_pidfile()
+    raise RuntimeError(f"server did not start on port {port}; see log: {SERVER_LOG}")
+
+
+def _ensure_server(requested: int | None) -> int:
+    """Return the port of a ready native server, starting one when needed."""
+    if requested is not None:
+        if _settle(requested):
+            return requested
+        if _port_in_use(requested):
+            raise RuntimeError(f"port {requested} is in use by another application")
+        return _spawn(requested)
+
+    port = find_running_server()
+    if port is not None:
+        return port
+    port = pick_port()
+    if _fused_server(port):  # a racing double-click may have spawned here first
+        return port
+    return _spawn(port)
 
 
 def _view_url(port: int, path: str | None) -> str:
@@ -158,14 +181,8 @@ def _view_url(port: int, path: str | None) -> str:
     return f"http://127.0.0.1:{port}/view/" + "/".join(segments)
 
 
-def _fail(msg: str) -> None:
-    logger.error(msg)
-    ctypes.windll.user32.MessageBoxW(0, msg, "fused-render", 0x10)
-
-
 def _report(msg: str) -> None:
-    """fused-render-open.exe is a gui-scripts launcher (no console), so
-    sys.stdout is None there; fall back to a message box."""
+    # sys.stdout is None under the gui-scripts launcher; use a message box there.
     if sys.stdout is not None:
         print(msg)
     else:
@@ -175,8 +192,7 @@ def _report(msg: str) -> None:
 def extensions() -> list[str]:
     with open(_REGISTRY_JSON, encoding="utf-8") as f:
         registry = json.load(f)
-    # registry.json also keys directory sentinels ("/", ".zarr/"); real
-    # extensions start with "." and contain no "/".
+    # skip directory sentinels ("/", ".zarr/") and zarr member files
     return sorted(
         ext
         for ext in registry
@@ -189,8 +205,6 @@ def _progid(ext: str) -> str:
 
 
 def _type_name(ext: str) -> str:
-    # Explorer's Type column shows the default handler's type name; keep the
-    # format identifiable instead of one generic app name for every file.
     return f"{ext[1:].upper()} File (fused-render)"
 
 
@@ -199,7 +213,6 @@ def _build_command(port: int | None) -> str:
     if os.path.exists(launcher):
         parts = [f'"{launcher}"']
     else:
-        # editable/dev installs may not have the entry-point exe on PATH yet
         parts = [f'"{sys.executable}"', "-m", "fused_render.winopen"]
     if port is not None:
         parts += ["--port", str(port)]
@@ -223,8 +236,7 @@ def _delete_value(key_path: str, name: str) -> None:
 
 
 def _delete_tree(root, path: str) -> None:
-    """winreg has no recursive delete; walk subkeys depth-first before
-    deleting the key itself. Missing keys are not errors."""
+    # winreg has no recursive delete; walk subkeys depth-first
     import winreg
 
     try:
@@ -251,8 +263,7 @@ def _register(port: int | None) -> None:
     command = _build_command(port)
     ext_list = extensions()
 
-    # One ProgID per extension so Explorer's Type column keeps naming the
-    # format ("CSV File (fused-render)") rather than one shared app name.
+    # one ProgID per extension so Explorer's Type column keeps naming the format
     for ext in ext_list:
         progid_key = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{_progid(ext)}")
         winreg.SetValueEx(progid_key, "", 0, winreg.REG_SZ, _type_name(ext))
@@ -266,8 +277,7 @@ def _register(port: int | None) -> None:
         _delete_value(rf"Software\Classes\{ext}\OpenWithProgids", _LEGACY_PROGID)
     _delete_tree(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{_LEGACY_PROGID}")
 
-    # The Open With dialog resolves display names via Applications\<exe>
-    # FriendlyAppName (the entry-point launcher exe has no version info).
+    # the Open With dialog resolves display names via Applications\<exe> FriendlyAppName
     app_key = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, r"Software\Classes\Applications\fused-render-open.exe")
     winreg.SetValueEx(app_key, "FriendlyAppName", 0, winreg.REG_SZ, "fused-render")
     app_icon_key = winreg.CreateKeyEx(app_key, "DefaultIcon")
@@ -281,8 +291,7 @@ def _register(port: int | None) -> None:
     verb_cmd_key = winreg.CreateKeyEx(verb_key, "command")
     winreg.SetValueEx(verb_cmd_key, "", 0, winreg.REG_SZ, command)
 
-    # Explorer caches associations; without this the new entry doesn't show
-    # up in "Open with" until the next Explorer restart.
+    # Explorer caches associations; broadcast so the entry shows without a restart
     ctypes.windll.shell32.SHChangeNotify(0x08000000, 0x1000, None, None)
     _report(f"Registered fused-render:\n  command: {command}\n  extensions: {len(ext_list)}")
 
@@ -307,41 +316,11 @@ def _unregister() -> None:
 
 def _open(path: str | None, requested_port: int | None) -> None:
     os.makedirs(APP_SUPPORT_DIR, exist_ok=True)
-    setup_logging()  # first: everything after this can crash-report to the file
+    setup_logging()
     logger.info("winopen starting (pid %s, path=%r, port=%r)", os.getpid(), path, requested_port)
-
     if path and not os.path.exists(path):
-        _fail(f"fused-render: file not found:\n{path}")
-        return
-
-    if requested_port is not None:
-        port, alive = requested_port, _settle(requested_port)
-        if not alive and _port_in_use(port):
-            _fail(f"fused-render: port {port} is in use by another application.")
-            return
-    else:
-        port = find_running_server()
-        alive = port is not None
-        if port is None:
-            port = pick_port()
-            # Re-probe before spawning: rapid double-clicks race here, and the
-            # loser's bind fails while this probe finds the winner.
-            alive = _fused_server(port)
-
-    if not alive:
-        proc = _start_server(port)
-        logger.info("starting server (pid %s, port %s)", proc.pid, port)
-        # Written before readiness so a racing peer waits on this port
-        # (_settle) instead of spawning a second server.
-        _write_pidfile(proc.pid, port)
-        if not _wait_until_ready(port):
-            # Don't leave a half-booted server squatting the port.
-            proc.kill()
-            _remove_pidfile()
-            _fail(f"fused-render: server did not start on port {port}.\nSee log: {SERVER_LOG}")
-            return
-
-    url = _view_url(port, path)
+        raise RuntimeError(f"file not found: {path}")
+    url = _view_url(_ensure_server(requested_port), path)
     logger.info("opening %s", url)
     webbrowser.open(url)
 
@@ -366,9 +345,9 @@ def main() -> None:
         else:
             _open(args.path, args.port)
     except Exception as exc:
-        # Windowless launcher: an uncaught exception is invisible without this.
+        # windowless launcher: an uncaught exception is invisible without this
         logger.exception("winopen failed")
-        _fail(f"fused-render: {exc}")
+        ctypes.windll.user32.MessageBoxW(0, f"fused-render: {exc}", "fused-render", 0x10)
 
 
 if __name__ == "__main__":
