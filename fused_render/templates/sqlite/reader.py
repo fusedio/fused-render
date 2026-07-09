@@ -9,6 +9,12 @@ import os
 import sqlite3
 import urllib.request
 
+# Hard cap on rows per call. The template only ever asks for 100, but this
+# reader runs in-process (allowlisted as "bounded"), so an arbitrary /api/run
+# request must not be able to pull an unbounded page — SQLite treats a negative
+# LIMIT as "no cap", so we clamp rather than trust the caller.
+MAX_LIMIT = 1000
+
 
 def _connect_ro(file):
     """Open `file` read-only. Percent-encode the path so a name containing
@@ -41,6 +47,10 @@ def _jsonify(value):
 
 
 def main(file: str, table: str = "", offset: int = 0, limit: int = 100) -> dict:
+    # Clamp so a hostile/negative limit can't turn LIMIT ? into an unbounded
+    # fetch, and a negative offset can't error out mid-query.
+    limit = max(1, min(int(limit), MAX_LIMIT))
+    offset = max(0, int(offset))
     conn = _connect_ro(file)
     try:
         tables = _tables(conn)
