@@ -125,6 +125,24 @@ def test_nonexistent_path_no_op(tmp_path):
     assert resp == {"recorded": False}
 
 
+def test_windows_drive_letter_path(monkeypatch):
+    # A Windows bookmark url carries a drive-letter path (rootedFsPath keeps
+    # `C:/...` as-is). It must resolve to `C:/...`, NOT `/C:/...` — otherwise the
+    # extra leading slash misses on disk and history is silently skipped.
+    monkeypatch.setattr("os.path.exists", lambda p: True)
+    assert bookmarks._fs_path_from_url("/view/C:/Users/me/sample.html") == "C:/Users/me/sample.html"
+
+
+def test_windows_bare_drive_gets_trailing_slash(monkeypatch):
+    monkeypatch.setattr("os.path.exists", lambda p: True)
+    assert bookmarks._fs_path_from_url("/view/C:") == "C:/"
+
+
+def test_posix_path_gets_leading_slash(monkeypatch):
+    monkeypatch.setattr("os.path.exists", lambda p: True)
+    assert bookmarks._fs_path_from_url("/view/Users/me/x.html") == "/Users/me/x.html"
+
+
 def test_missing_fused_header_forbidden(tmp_path):
     f = tmp_path / "sample.html"
     f.write_text("<html></html>")

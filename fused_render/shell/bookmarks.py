@@ -93,7 +93,17 @@ def _fs_path_from_url(url: str) -> str | None:
     # nested deeper is NOT a sentinel and gets a sidecar like any other path.
     if not segments or (len(segments) == 1 and segments[0] in _SENTINELS):
         return None
-    fs_path = "/" + "/".join(segments)
+    joined = "/".join(segments)
+    # Mirror the frontend's rootedFsPath (lib/router.ts): a Windows drive-letter
+    # path (`C:/...`) is already absolute and keeps its form, a bare drive (`C:`)
+    # gets a trailing slash, and every POSIX path gets the leading `/`. Prepending
+    # `/` unconditionally would corrupt `C:/...` into `/C:/...` and miss on disk.
+    if len(joined) == 2 and joined[0].isalpha() and joined[1] == ":":
+        fs_path = joined + "/"
+    elif len(joined) >= 3 and joined[0].isalpha() and joined[1] == ":" and joined[2] == "/":
+        fs_path = joined
+    else:
+        fs_path = "/" + joined
     # Only a path that actually exists gets a sidecar (a file OR a directory
     # listing — both are bookmarkable). Missing paths / sentinels no-op.
     if not os.path.exists(fs_path):

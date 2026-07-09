@@ -10,7 +10,8 @@ import { useEffect, useState } from "react";
 import { IS_EMBED, fsPathFromLocation, urlForFsPath } from "./lib/router";
 import { useSessionRestore, useSessionTracking } from "./lib/session";
 import { statPath, type Config, type StatResult } from "./lib/api";
-import { useNavEpoch } from "./lib/hooks";
+import { useNavEpoch, useDocumentTitle } from "./lib/hooks";
+import { basename } from "./lib/format";
 import Sidebar from "./components/Sidebar";
 import { Breadcrumb, StaticBreadcrumb } from "./components/Breadcrumb";
 import Listing from "./views/Listing";
@@ -49,13 +50,17 @@ function useStat(fsPath: string | null, epoch: number): StatState {
 // sentinel.
 function StatView({ fsPath, epoch }: { fsPath: string; epoch: number }) {
   const stat = useStat(fsPath, epoch);
-  const isDir = stat.status === "ok" ? stat.stat.is_dir : false;
+  // null until the stat resolves — the session hooks opt out for anything that
+  // is not a confirmed file, so a directory never gets a restore/track before
+  // its kind is known.
+  const isDir = stat.status === "ok" ? stat.stat.is_dir : null;
   // Per-file session restore (LSN-*): replay the file's last URL query on a
   // bare open, and track qualifying param changes back into the sidecar.
   // `ready` gates the preview so the iframe mounts with the restored params
   // already on the shell URL (no param flash from defaults -> restored).
   const ready = useSessionRestore(fsPath, isDir);
   useSessionTracking(fsPath, isDir);
+  useDocumentTitle(fsPath === "/" ? null : basename(fsPath));
   let content = null;
   if (stat.status === "error") {
     content = (
@@ -104,8 +109,17 @@ export default function App({ config }: { config: Config }) {
   }
 
   const pathname = location.pathname;
+  const isPanel = pathname === "/view/_panel" || pathname === "/embed/_panel";
+  const isTabs = pathname === "/view/_tab" || pathname === "/embed/_tab";
+  const isPrefs = pathname === "/view/_prefs";
+  const fsPath = isPanel || isTabs || isPrefs ? null : fsPathFromLocation();
+  // A resolved fsPath mounts StatView below, which owns the title itself.
+  useDocumentTitle(
+    isPanel ? "Panel" : isTabs ? "Tabs" : isPrefs ? "Preferences" : fsPath ? undefined : null
+  );
+
   let main;
-  if (pathname === "/view/_panel" || pathname === "/embed/_panel") {
+  if (isPanel) {
     main = (
       <>
         <div id="breadcrumb">
@@ -116,7 +130,7 @@ export default function App({ config }: { config: Config }) {
         </div>
       </>
     );
-  } else if (pathname === "/view/_tab" || pathname === "/embed/_tab") {
+  } else if (isTabs) {
     main = (
       <>
         <div id="breadcrumb">
@@ -127,7 +141,7 @@ export default function App({ config }: { config: Config }) {
         </div>
       </>
     );
-  } else if (pathname === "/view/_prefs") {
+  } else if (isPrefs) {
     // Preferences (SPEC §20): a sentinel pathname like _panel/_tab — not a
     // file; entered from the sidebar's gear. /view only (no embed variant —
     // settings chrome inside a pane makes no sense).
@@ -141,20 +155,17 @@ export default function App({ config }: { config: Config }) {
         </div>
       </>
     );
+  } else if (!fsPath) {
+    main = (
+      <>
+        <div id="breadcrumb" />
+        <div id="content">
+          <div className="status-message error">Unrecognized URL: {pathname}</div>
+        </div>
+      </>
+    );
   } else {
-    const fsPath = fsPathFromLocation();
-    if (!fsPath) {
-      main = (
-        <>
-          <div id="breadcrumb" />
-          <div id="content">
-            <div className="status-message error">Unrecognized URL: {pathname}</div>
-          </div>
-        </>
-      );
-    } else {
-      main = <StatView key={epoch + ":" + fsPath} fsPath={fsPath} epoch={epoch} />;
-    }
+    main = <StatView key={epoch + ":" + fsPath} fsPath={fsPath} epoch={epoch} />;
   }
 
   return (
