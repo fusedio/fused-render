@@ -1,7 +1,6 @@
 // Preferences page (SPEC §20) — the `/view/_prefs` sentinel route, entered
-// from the sidebar's bottom-left gear. Four sections, each a thin client
+// from the sidebar's bottom-left gear. Three sections, each a thin client
 // over an existing backend, in this order:
-//   Template registry— the merged extension→templates bindings (read-only)
 //   Logs             — where this process logs (GET /api/prefs) + reveal
 //   Execution engine — the persisted /api/run engine pref (PUT /api/prefs);
 //                      applies to the next run, no restart. Locked while
@@ -9,11 +8,11 @@
 //   Deployments      — an opt-in toggle for the preview-header Deploy button
 //                      (PUT /api/prefs deploy_enabled), then per-env
 //                      `fused share list` with Revoke (deploy.py)
+// Template bindings live in the dedicated /view/_templates view.
 import { useEffect, useRef, useState } from "react";
 import {
   getDeployConfig,
   getPrefs,
-  getTemplateRegistry,
   listShares,
   putDeployEnabled,
   putEnginePref,
@@ -23,7 +22,6 @@ import {
 import type {
   DeployConfig,
   Prefs,
-  RegistryResult,
   ShareMount,
 } from "../lib/api";
 import { basename } from "../lib/format";
@@ -319,64 +317,6 @@ function DeploymentsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: P
   );
 }
 
-function RegistrySection() {
-  const [registry, setRegistry] = useState<RegistryResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    getTemplateRegistry()
-      .then((r) => alive && setRegistry(r))
-      .catch((e) => alive && setError((e as Error).message));
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  const sourceLabel = (s: string) =>
-    s === "builtin" ? "built-in" : s === "user-override" ? "user override" : "user";
-
-  return (
-    <section className="prefs-section">
-      <h2>Template registry</h2>
-      <p className="deploy-muted">
-        Which templates open each file pattern (first entry is the default mode). Read-only
-        here — add or override bindings in <code>{registry?.user_registry ?? "~/.fused-render/templates/registry.json"}</code>.
-      </p>
-      {error && <div className="deploy-error">{error}</div>}
-      {registry?.error && <div className="deploy-error">{registry.error}</div>}
-      {registry && (
-        <table className="prefs-registry-table">
-          <tbody>
-            {registry.entries.map((e) => (
-              <tr key={e.source + e.pattern} className={e.error ? "has-error" : undefined}>
-                <td className="registry-pattern">
-                  <code>{e.pattern}</code>
-                </td>
-                <td className="registry-templates">
-                  {e.disabled ? (
-                    <span className="deploy-muted">disabled (no preview)</span>
-                  ) : (
-                    e.templates.map((t, i) => (
-                      <code key={t + i} className={i === 0 ? "default-mode" : undefined} title={i === 0 ? "default mode" : undefined}>
-                        {t}
-                      </code>
-                    ))
-                  )}
-                  {e.error && <span className="registry-error"> {e.error}</span>}
-                </td>
-                <td>
-                  <span className={"registry-source " + e.source}>{sourceLabel(e.source)}</span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </section>
-  );
-}
-
 export default function Preferences() {
   const [prefs, setPrefs] = useState<Prefs | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -397,7 +337,6 @@ export default function Preferences() {
       {!prefs && !error && <div className="deploy-muted">Loading…</div>}
       {prefs && (
         <>
-          <RegistrySection />
           <LogsSection prefs={prefs} />
           <EngineSection prefs={prefs} onChange={setPrefs} />
           <DeploymentsSection prefs={prefs} onChange={setPrefs} />

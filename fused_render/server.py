@@ -15,6 +15,7 @@ import asyncio
 import codecs
 import json
 import logging
+from collections import deque
 import mimetypes
 import os
 import stat as stat_mod
@@ -26,7 +27,7 @@ import traceback
 from urllib.parse import parse_qsl
 
 from fastapi import Body, FastAPI, Header, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from fused_render import __version__
@@ -112,12 +113,83 @@ BUILTIN_REGISTRY = os.path.join(TEMPLATES_DIR, "registry.json")
 # directory key (D81).
 KNOWN_SENTINELS = {"_render", "_listing"}
 
-# Recursive-walk cap (/api/fs/walk): stop collecting after this many entries so
-# a search over a huge tree stays bounded. Module-level so tests can shrink it.
-WALK_MAX_ENTRIES = 20000
-# Directories never descended into by the walk (nor emitted as entries): heavy,
-# machine-managed trees that only add noise to a file search.
-WALK_IGNORE_DIRS = {"node_modules", "__pycache__", "venv"}
+# Recursive-walk cap (/api/fs/walk): stop collecting after this many entries.
+# With the streamed BFS walk this is a memory/latency safety valve, not a
+# coverage budget — shallow entries (the ones a search almost always wants)
+# are all emitted long before the cap can bite. Module-level so tests can
+# shrink it.
+WALK_MAX_ENTRIES = 200_000
+# Entries per NDJSON batch line in the streamed walk: big enough that framing
+# overhead is noise, small enough that the client gets its first scoreable
+# batch within a few filesystem reads.
+WALK_BATCH_SIZE = 500
+# Directories never descended into by the walk: heavy, machine-managed trees
+# that only add noise to a file search. Checked against the bare name, so it
+# also applies under hidden=1 (".git" is machine noise, not "hidden data").
+WALK_IGNORE_DIRS = {"node_modules", "__pycache__", "venv", ".venv", ".git"}
+# macOS package directories: emitted as a single (dir) entry but never
+# descended — their internals are implementation details (Finder hides them
+# too), and one Electron .app alone can be thousands of files.
+WALK_LEAF_DIR_SUFFIXES = (".app", ".framework", ".bundle", ".photoslibrary")
+
+
+def _walk_bfs(path, include_hidden):
+    """Level-order walk of `path` yielding /api/fs/walk entry dicts.
+
+    Breadth-first via a FIFO of pending directories: every entry at depth N is
+    yielded before any entry at depth N+1, so a caller that stops early (cap,
+    client disconnect) always has complete shallow coverage. Within one parent,
+    dirs come first, then files, each sorted by name (the old walk's per-level
+    order). Symlinks are yielded but never descended; classification and stat
+    follow the link (matching os.walk/os.stat), so a broken symlink is skipped
+    like any other unstatable entry. Unreadable directories are skipped
+    silently (matches /api/fs/list).
+    """
+    queue = deque([(path, "")])
+    while queue:
+        current, rel_base = queue.popleft()
+        try:
+            with os.scandir(current) as it:
+                children = list(it)
+        except OSError:
+            continue  # unreadable dir skipped silently
+        dirs = []
+        files = []
+        for child in children:
+            name = child.name
+            if not include_hidden and name.startswith("."):
+                continue
+            try:
+                is_dir = child.is_dir()
+            except OSError:
+                continue
+            if is_dir:
+                if name in WALK_IGNORE_DIRS:
+                    continue
+                dirs.append(child)
+            else:
+                files.append(child)
+        dirs.sort(key=lambda e: e.name)
+        files.sort(key=lambda e: e.name)
+        for child, is_dir in [(d, True) for d in dirs] + [(f, False) for f in files]:
+            try:
+                st = child.stat()
+            except OSError:
+                continue  # unreadable entries skipped silently
+            rel = rel_base + "/" + child.name if rel_base else child.name
+            yield {
+                "rel": rel,
+                "is_dir": is_dir,
+                "size": None if is_dir else st.st_size,
+                "mtime": st.st_mtime,
+            }
+            if is_dir:
+                try:
+                    is_link = child.is_symlink()
+                except OSError:
+                    is_link = True  # can't tell — safer not to descend
+                if not is_link and not child.name.lower().endswith(WALK_LEAF_DIR_SUFFIXES):
+                    queue.append((os.path.join(current, child.name), rel))
 
 
 def _error(message: str, status: int = 400) -> JSONResponse:
@@ -408,10 +480,15 @@ def _names_from_value(key, value, builtin_names: list):
     """Interpret one matched registry value (SPEC CT-2/CT-10/CT-11).
 
     Returns (names, disabled, error). names: ordered list[str] of (possibly
-    still-unresolved) template names, or None when the value is unusable.
-    disabled: True when the value is `null` (CT-2) — no template at all, no
-    error. error: a shape-level problem (value not list/string/null, >1 "..."
-    splice) — surfaced as `template_error` so typos aren't silent.
+    still-unresolved) template names, or None when the value disables previews.
+    disabled: True for `null` **and for an empty list** (`[]`) — both mean "no
+    template at all for this type", no error, no built-in fallback. error: a
+    shape-level problem (value not list/string/null) — surfaced as
+    `template_error` so typos aren't silent.
+
+    There is no `"..."` splice: the token is treated as an ordinary name that
+    resolves to no folder (a dangling ref, surfaced broken), not a splice into
+    the built-in list. `builtin_names` is unused, kept for signature stability.
     """
     if value is None:
         return None, True, None
@@ -419,22 +496,12 @@ def _names_from_value(key, value, builtin_names: list):
         # String = exactly a single-mode list (D50).
         return [value], False, None
     if isinstance(value, list):
-        # "..." splices the built-in list in place (CT-11); >1 is invalid.
-        splice_count = sum(1 for entry in value if entry == "...")
-        if splice_count > 1:
-            return None, False, f"{key}: more than one '...' splice in template list"
-        if splice_count == 0:
-            return list(value), False, None
-        explicit = {e for e in value if isinstance(e, str) and e != "..."}
-        names = []
-        for entry in value:
-            if entry == "...":
-                for bname in builtin_names:
-                    if bname not in explicit and bname not in names:
-                        names.append(bname)
-            else:
-                names.append(entry)
-        return names, False, None
+        # Empty list disables previews, identical to `null` (owner 2026-07-09).
+        if not value:
+            return None, True, None
+        # Names pass through verbatim; any that resolve to no folder are kept
+        # and surfaced as broken (dangling refs), never spliced or expanded.
+        return list(value), False, None
     return None, False, f"{key}: registry value must be a list, string, or null"
 
 
@@ -475,9 +542,9 @@ def _templates_for(path: str, is_dir: bool):
     resolve exactly like files (a `.zarr` store matches the ".zarr/" key),
     and the user registry binds them too (D73 revises D65). Precedence: any
     user match > built-in match (CT-3). .html/.htm are ordinary keys (D73
-    revises CT-4): the user can rebind them; "..." keeps `_render` reachable.
-    A path with no match in either registry returns empty — unmapped file, or
-    the plain listing view for a directory.
+    revises CT-4): the user can rebind them, listing `_render` explicitly to
+    keep it reachable. A path with no match in either registry returns empty —
+    unmapped file, or the plain listing view for a directory.
     """
     basename = os.path.basename(os.path.normpath(path))
 
@@ -486,8 +553,6 @@ def _templates_for(path: str, is_dir: bool):
     if builtin_reg is not None:
         matched = _match_registry(builtin_reg, basename, is_dir)
         if matched is not None:
-            # Splices are meaningless in the built-in registry (nothing to
-            # splice into) — "..." there expands to nothing, harmless.
             names, disabled, err = _names_from_value(*matched, builtin_names=[])
             error = error or err
             if names and not disabled:
@@ -656,6 +721,14 @@ def create_app(start_dir: str) -> FastAPI:
     # Deploy (hosted publish through the fused CLI) — export + `fused share`
     # orchestration and the per-page deployment pointer store (deploy.py).
     app.include_router(deploy_router)
+    # Template management (templates_api.py) — the Templates view backend:
+    # inventory across sources, registry bindings edit, import/export. It owns
+    # GET /api/templates/registry (the extended §2.2 shape). Imported here
+    # (not at module top) because templates_api reads server helpers/dirs —
+    # a lazy include keeps the server<->templates_api import acyclic.
+    from fused_render.templates_api import router as templates_router
+
+    app.include_router(templates_router)
 
     # Per-file session restore (LSN-*): a viewed file remembers its last URL
     # query in the "lastSession" key of its <file>.json sidecar. GET is a read
@@ -686,59 +759,8 @@ def create_app(start_dir: str) -> FastAPI:
             "engine": current_engine(),
         }
 
-    @app.get("/api/templates/registry")
-    def api_templates_registry():
-        # The merged extension→templates binding view for the Preferences page
-        # (SPEC §20): every key from both registries with its (splice-expanded)
-        # mode list. Read-only — bindings are edited in the registry files
-        # (SPEC §16); per-request reads keep it live like every resolution.
-        # A user key identical to a built-in key overrides it (one row, source
-        # "user-override"); distinct keys coexist and CT-3 specificity decides
-        # per file — this is the table of bindings, not a per-file resolver.
-        builtin_reg, builtin_err = _load_registry(BUILTIN_REGISTRY, "built-in registry.json")
-        user_reg, user_err = _load_registry(USER_REGISTRY, "registry.json")
-        builtin_reg = builtin_reg if isinstance(builtin_reg, dict) else {}
-        user_reg = user_reg if isinstance(user_reg, dict) else {}
-
-        def entry(key, value, source: str, builtin_names: list) -> dict:
-            names, disabled, err = _names_from_value(key, value, builtin_names)
-            return {
-                "pattern": str(key),
-                "templates": names if (names and not disabled) else [],
-                "disabled": disabled,
-                "source": source,
-                "error": err,
-            }
-
-        # Override detection is CASE-INSENSITIVE, matching how resolution
-        # actually matches keys (_key_segments lowercases): a user ".CSV" key
-        # overrides a built-in ".csv" — a case-sensitive `in` check would
-        # instead double-list the pattern and mis-source both rows.
-        builtin_by_lower = {str(k).lower(): k for k in builtin_reg}
-        user_lower = {str(k).lower() for k in user_reg}
-
-        entries = []
-        for key, value in builtin_reg.items():
-            if str(key).lower() in user_lower:
-                continue  # the user's row replaces it below (override)
-            entries.append(entry(key, value, "builtin", []))
-        for key, value in user_reg.items():
-            builtin_key = builtin_by_lower.get(str(key).lower())
-            builtin_names: list = []
-            if builtin_key is not None:
-                bnames, bdisabled, _berr = _names_from_value(builtin_key, builtin_reg[builtin_key], [])
-                if bnames and not bdisabled:
-                    builtin_names = bnames  # what a "..." splice expands to
-            source = "user-override" if builtin_key is not None else "user"
-            entries.append(entry(key, value, source, builtin_names))
-        # File keys first, then directory keys (trailing "/"), alpha within.
-        entries.sort(key=lambda e: (e["pattern"].endswith("/"), e["pattern"]))
-        return {
-            "entries": entries,
-            "builtin_registry": BUILTIN_REGISTRY,
-            "user_registry": USER_REGISTRY,
-            "error": builtin_err or user_err,
-        }
+    # GET /api/templates/registry moved to templates_api.py (extended §2.2
+    # shape) and registered via templates_router above.
 
     @app.get("/api/fs/stat")
     def api_fs_stat(path: str):
@@ -789,58 +811,74 @@ def create_app(start_dir: str) -> FastAPI:
         entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
         return {"path": path, "entries": entries}
 
+    def _annotate_ignored(root: str, batch: list[dict]) -> None:
+        # Gitignore dimming for walk entries (#75's list behavior, per batch in
+        # the streamed walk — one `git check-ignore --stdin` call per batch).
+        ignored = _git_ignored(root, [e["rel"] for e in batch])
+        for e in batch:
+            e["ignored"] = e["rel"] in ignored
+
     @app.get("/api/fs/walk")
-    def api_fs_walk(path: str, hidden: str = "0"):
+    def api_fs_walk(path: str, hidden: str = "0", stream: str = "0"):
         # Recursive listing of a directory subtree, for the explorer search
-        # (flat, ranked client-side). Prunes hidden entries (leading `.`) and
-        # WALK_IGNORE_DIRS from descent, skips hidden files, and never follows
-        # symlinks. Capped at WALK_MAX_ENTRIES; `rel` is posix-relative to
-        # `path`. Unreadable entries are skipped silently (matches /api/fs/list).
+        # (flat, ranked client-side). Walks BREADTH-FIRST so shallow entries —
+        # the ones a search almost always targets — are all emitted before any
+        # deep subtree can exhaust the WALK_MAX_ENTRIES cap (the old
+        # depth-first walk let one big sibling starve every later one). Prunes
+        # WALK_IGNORE_DIRS entirely, emits WALK_LEAF_DIR_SUFFIXES packages
+        # without descending, never follows symlinks, and skips unreadable
+        # entries silently (matches /api/fs/list). `rel` is posix-relative to
+        # `path`.
         #
         # `hidden=1` (explicit intent: the user typed a dot-leading query)
         # includes dot-files and descends into dot-dirs. WALK_IGNORE_DIRS is
         # always pruned regardless — those trees are noise, not "hidden data",
-        # and letting hidden=1 descend into node_modules would blow the cap.
+        # and letting hidden=1 descend into .git/node_modules would flood the
+        # results with machine-managed junk.
+        #
+        # `stream=1` returns NDJSON: zero or more `{"entries": [...]}` batch
+        # lines (WALK_BATCH_SIZE each) followed by exactly one terminal
+        # `{"done": true, "truncated": bool, "total": n}` line. The client
+        # scores batches as they arrive, so first results paint while the walk
+        # is still running. Closing the connection cancels the walk (Starlette
+        # closes the generator on disconnect). Without `stream=1` the response
+        # is the original single-JSON shape, unchanged for old clients.
         include_hidden = hidden == "1"
         if not os.path.isdir(path):
             return _error(f"not a directory: {path}", status=400)
-        entries = []
-        truncated = False
-        for root, dirs, files in os.walk(path, followlinks=False):
-            # Mutating dirs in place both drops them from descent and, since we
-            # emit from the (already pruned) list, keeps them out of the results.
-            dirs[:] = sorted(
-                d
-                for d in dirs
-                if (include_hidden or not d.startswith(".")) and d not in WALK_IGNORE_DIRS
-            )
-            batch = [(d, True) for d in dirs] + [
-                (f, False) for f in sorted(files) if include_hidden or not f.startswith(".")
-            ]
-            for name, is_dir in batch:
-                full = os.path.join(root, name)
-                try:
-                    st = os.stat(full)
-                except OSError:
-                    continue  # unreadable entries skipped silently
-                rel = os.path.relpath(full, path).replace(os.sep, "/")
-                entries.append(
-                    {
-                        "rel": rel,
-                        "is_dir": is_dir,
-                        "size": None if is_dir else st.st_size,
-                        "mtime": st.st_mtime,
-                    }
-                )
+        walker = _walk_bfs(path, include_hidden)
+
+        if stream != "1":
+            entries = []
+            truncated = False
+            for entry in walker:
+                entries.append(entry)
                 if len(entries) >= WALK_MAX_ENTRIES:
                     truncated = True
                     break
-            if truncated:
-                break
-        ignored = _git_ignored(path, [e["rel"] for e in entries])
-        for e in entries:
-            e["ignored"] = e["rel"] in ignored
-        return {"path": path, "entries": entries, "truncated": truncated}
+            _annotate_ignored(path, entries)
+            return {"path": path, "entries": entries, "truncated": truncated}
+
+        def ndjson():
+            batch = []
+            total = 0
+            truncated = False
+            for entry in walker:
+                batch.append(entry)
+                total += 1
+                if len(batch) >= WALK_BATCH_SIZE:
+                    _annotate_ignored(path, batch)
+                    yield json.dumps({"entries": batch}) + "\n"
+                    batch = []
+                if total >= WALK_MAX_ENTRIES:
+                    truncated = True
+                    break
+            if batch:
+                _annotate_ignored(path, batch)
+                yield json.dumps({"entries": batch}) + "\n"
+            yield json.dumps({"done": True, "truncated": truncated, "total": total}) + "\n"
+
+        return StreamingResponse(ndjson(), media_type="application/x-ndjson")
 
     @app.get("/api/fs/raw")
     def api_fs_raw(path: str):
@@ -900,7 +938,7 @@ def create_app(start_dir: str) -> FastAPI:
     def api_fs_reveal(body: dict = Body(...), x_fused: str | None = Header(default=None)):
         # Open the path in the OS file manager (Finder / Explorer / xdg).
         # Browsers block file:// navigation from http pages, so the breadcrumb's
-        # "Open in Finder" button goes through the server, which is local-only.
+        # reveal button goes through the server, which is local-only.
         # A file is revealed selected inside its folder; a directory is opened.
         guard = _require_fused(x_fused)
         if guard is not None:
@@ -916,7 +954,10 @@ def create_app(start_dir: str) -> FastAPI:
         if sys.platform == "darwin":
             cmd = ["open", path] if is_dir else ["open", "-R", path]
         elif os.name == "nt":
-            cmd = ["explorer", path] if is_dir else ["explorer", "/select," + path]
+            # Explorer needs native backslash paths — forward slashes make
+            # /select, silently open the default folder instead.
+            win_path = os.path.normpath(path)
+            cmd = ["explorer", win_path] if is_dir else f'explorer /select,"{win_path}"'
         else:
             cmd = ["xdg-open", path if is_dir else os.path.dirname(path)]
         subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

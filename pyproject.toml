@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fused-render"
-version = "0.1.9"
+version = "0.2.0"
 description = "Local file explorer with Python-powered renderable HTML previews"
 requires-python = ">=3.10"
 dependencies = [

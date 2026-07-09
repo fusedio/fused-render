@@ -4,7 +4,8 @@
     "table",
     "h3",
     "claude",
-    "annotate"
+    "annotate",
+    "history"
   ],
   ".csv": [
     "duckdb",
@@ -21,6 +22,11 @@
   ".xlsx": [
     "xlsx",
     "annotate"
+  ],
+  ".*.json": [
+    "history",
+    "tree",
+    "code"
   ],
   ".json": [
     "tree",
@@ -229,7 +235,8 @@
     "_render",
     "code",
     "claude",
-    "annotate"
+    "annotate",
+    "history"
   ],
   ".htm": [
     "_render",
@@ -253,7 +260,8 @@
     "netcdf"
   ],
   "/": [
-    "_listing"
+    "_listing",
+    "preview"
   ],
   ".zarr/": [
     "zarr",

@@ -62,10 +62,18 @@ def test_builtin_registry_parses_and_all_names_resolve():
 def test_builtin_html_default_is_render_sentinel():
     entries, error = server._templates_for("/x/page.html", False)
     assert error is None
-    assert [e["mode"] for e in entries] == ["_render", "code", "claude", "annotate"]
+    assert [e["mode"] for e in entries] == ["_render", "code", "claude", "annotate", "history"]
     assert entries[0]["path"] is None and entries[0]["icon"] is None
     assert entries[1]["path"].endswith("code/template.html")
     assert entries[2]["path"].endswith("claude/template.html")
+
+
+def test_builtin_parquet_default_is_duckdb():
+    # `history` (HV-2) is bound here too — not `.html`-only.
+    entries, error = server._templates_for("/x/data.parquet", False)
+    assert error is None
+    assert [e["mode"] for e in entries] == ["duckdb", "table", "h3", "claude", "annotate", "history"]
+    assert entries[0]["path"].endswith("duckdb/template.html")
 
 
 def test_builtin_zarr_directory_key():
@@ -80,11 +88,12 @@ def test_unmapped_file_empty_and_plain_dir_lists():
     # an unmapped, non-existent file resolves to nothing — it can't be sniffed
     # as text (no such path), so it stays on the metadata fallback
     assert modes("/x/a.xyz") == ([], None)
-    # every directory resolves at least the universal `/` key's ["_listing"]
-    # (D81) — a plain folder, a dotted folder, and the filesystem root all list
-    assert modes("/x/somedir", is_dir=True) == (["_listing"], None)
-    assert modes("/x/my.data", is_dir=True) == (["_listing"], None)
-    assert modes("/", is_dir=True) == (["_listing"], None)
+    # every directory resolves the universal `/` key (D81): the built-in
+    # listing (default) plus the switchable preview (folder browser) view — a
+    # plain folder, a dotted folder, and the filesystem root all list.
+    assert modes("/x/somedir", is_dir=True) == (["_listing", "preview"], None)
+    assert modes("/x/my.data", is_dir=True) == (["_listing", "preview"], None)
+    assert modes("/", is_dir=True) == (["_listing", "preview"], None)
 
 
 # --------------------------------------------- text sniff for unmapped files
@@ -220,13 +229,26 @@ def test_user_directory_binding(user_dir):
     assert modes("/x/data.obt", is_dir=False) == ([], None)
 
 
-def test_user_universal_splice_adds_mode_to_all_dirs(user_dir):
-    # "..." expands to the built-in list for THAT directory, so the added mode
-    # rides on top of each dir's own default (D81)
+def test_user_universal_splice_token_is_dangling(user_dir):
+    # Splice removed (owner 2026-07-09): "..." resolves to no folder, so it is
+    # dropped from the rendered list (and flagged via error), never expanded to
+    # the built-in modes. Only the real template survives; a user "/" match
+    # still beats the built-in at any specificity.
     user_dir.template("gallery")
     user_dir.registry({"/": ["...", "gallery"]})
-    assert modes("/x/plain", is_dir=True) == (["_listing", "gallery"], None)
-    assert modes("/x/s.zarr", is_dir=True) == (["zarr", "_listing", "gallery"], None)
+    plain_modes, plain_err = modes("/x/plain", is_dir=True)
+    assert plain_modes == ["gallery"]
+    assert plain_err is not None  # names the dropped "..."
+    zarr_modes, _ = modes("/x/s.zarr", is_dir=True)
+    assert zarr_modes == ["gallery"]
+
+
+def test_user_empty_list_disables_dir(user_dir):
+    # An empty list disables previews for the type, identical to null — no
+    # modes and no built-in fallback.
+    user_dir.registry({"/": []})
+    assert modes("/x/plain", is_dir=True) == ([], None)
+    assert modes("/x/s.zarr", is_dir=True) == ([], None)
 
 
 def test_user_universal_replace_beats_builtin(user_dir):
@@ -244,10 +266,13 @@ def test_user_can_rebind_html(user_dir):
     assert modes("/x/page.html") == (["code"], None)
 
 
-def test_user_html_splice_keeps_render_sentinel(user_dir):
+def test_user_html_splice_token_dropped(user_dir):
+    # Splice removed: "..." is dangling, dropped from the rendered list (error
+    # names it) — it no longer re-adds the built-in _render/claude/annotate.
     user_dir.registry({".html": ["code", "..."]})
     m, error = modes("/x/page.html")
-    assert m == ["code", "_render", "claude", "annotate"] and error is None
+    assert m == ["code"]
+    assert "..." in error
 
 
 def test_user_zarr_dir_rebind_and_disable(user_dir):
@@ -269,11 +294,13 @@ def test_unresolvable_user_value_falls_back_to_builtin(user_dir):
     assert "no-such-template" in error
 
 
-def test_double_splice_invalid_falls_back(user_dir):
+def test_all_dangling_names_fall_back(user_dir):
+    # With splice gone, "..." is just an unresolved name; a value of all
+    # dangling names resolves to nothing -> built-in fallback, error names one.
     user_dir.registry({".csv": ["...", "..."]})
     m, error = modes("/x/a.csv")
     assert m == ["duckdb", "csv", "code", "annotate"]
-    assert "more than one" in error
+    assert "..." in error
 
 
 def test_bad_value_type_falls_back(user_dir):

@@ -93,6 +93,70 @@ export function walkDir(fsPath: string, opts?: { hidden?: boolean }): Promise<Wa
   return getJson<WalkResult>(url);
 }
 
+// Terminal record of a streamed walk (the server's final NDJSON line).
+export interface WalkStreamEnd {
+  truncated: boolean;
+  total: number;
+}
+
+// Streaming walk: GET /api/fs/walk?stream=1 returns NDJSON — `{"entries":
+// [...]}` batch lines then one `{"done": true, truncated, total}` line.
+// `onBatch` fires once per network chunk (all complete lines in it, merged)
+// with the new entries and the running total, so the caller can score/render
+// progressively while the server is still walking. Resolves with the terminal
+// record; rejects on HTTP errors, malformed/absent terminal line, or abort
+// (an AbortError, which also cancels the server-side walk — Starlette closes
+// the generator when the client goes away).
+export async function walkDirStream(
+  fsPath: string,
+  opts: {
+    hidden?: boolean;
+    signal?: AbortSignal;
+    onBatch: (entries: WalkEntry[], total: number) => void;
+  }
+): Promise<WalkStreamEnd> {
+  let url = "/api/fs/walk?stream=1&path=" + encodeURIComponent(fsPath);
+  if (opts.hidden) url += "&hidden=1";
+  const res = await fetch(url, { signal: opts.signal });
+  if (!res.ok) {
+    // Error responses are plain JSON (the _error shape), not NDJSON.
+    const data = await res.json().catch(() => null);
+    throw new Error((data && data.error) || `HTTP ${res.status}`);
+  }
+  if (!res.body) throw new Error("streaming not supported by this browser");
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let total = 0;
+  let end: WalkStreamEnd | null = null;
+  const consume = (raw: string) => {
+    const chunkEntries: WalkEntry[] = [];
+    for (const line of raw.split("\n")) {
+      if (!line.trim()) continue;
+      const msg = JSON.parse(line);
+      if (msg.done) end = { truncated: !!msg.truncated, total: msg.total ?? total };
+      else if (Array.isArray(msg.entries)) chunkEntries.push(...msg.entries);
+    }
+    if (chunkEntries.length) {
+      total += chunkEntries.length;
+      opts.onBatch(chunkEntries, total);
+    }
+  };
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const cut = buffer.lastIndexOf("\n");
+    if (cut === -1) continue; // no complete line yet
+    consume(buffer.slice(0, cut + 1));
+    buffer = buffer.slice(cut + 1);
+  }
+  buffer += decoder.decode(); // flush any trailing bytes
+  if (buffer.trim()) consume(buffer);
+  if (!end) throw new Error("walk stream ended without a terminal record");
+  return end;
+}
+
 export function statPath(fsPath: string): Promise<StatResult> {
   return getJson<StatResult>("/api/fs/stat?path=" + encodeURIComponent(fsPath));
 }
@@ -305,23 +369,198 @@ export function revealPath(fsPath: string): Promise<void> {
   return postJson<unknown>("/api/fs/reveal", { path: fsPath }).then(() => undefined);
 }
 
-// -- Template registry view (server.py /api/templates/registry; SPEC §20) -----
+// -- Template management (fused_render/templates_api.py; TEMPLATE_MGMT_SPEC) --
+//
+// Two template dirs, modelled as an ordered list of "sources" (core is
+// read-only/version-gated, user is editable). The registry maps a dot-key
+// (extension pattern) to an ordered list of template names, first = default.
+
+// A template dir. TODAY exactly two (core, user); modelled as a list so a
+// third (org/project) can be appended later with no UI rework.
+export interface TemplateSource {
+  id: string; // "core" | "user"
+  label: string;
+  editable: boolean;
+  precedence: number; // higher wins
+  dir: string; // absolute path of this source's templates directory
+}
+
+// The four registry key shapes (grammar in server.py _key_segments).
+export type KeyKind = "simple" | "compound" | "wildcard" | "directory";
+
+// -- Inventory (GET /api/templates/inventory) --------------------------------
+
+// One resolved template folder. If a user folder shadows a core folder of the
+// same name, ONE entry is emitted with source="user" and shadowsCore=true.
+export interface InventoryTemplate {
+  name: string;
+  source: string; // source id
+  editable: boolean;
+  hasIcon: boolean;
+  usedBy: string[]; // registry keys whose effective list contains this name
+  shadowsCore: boolean;
+  path: string; // absolute path of this template's folder on disk (core or user)
+}
+
+export interface TemplateInventory {
+  sources: TemplateSource[];
+  templates: InventoryTemplate[];
+}
+
+export function getTemplateInventory(): Promise<TemplateInventory> {
+  return getJson<TemplateInventory>("/api/templates/inventory");
+}
+
+// -- Registry (GET/PUT /api/templates/registry) ------------------------------
+
+// One name in an entry's effective ordered list, resolved to a folder. A name
+// the registry references but that no folder backs has exists:false (broken).
+export interface RegistryTemplateRef {
+  name: string;
+  source: string; // source id the folder comes from
+  exists: boolean;
+  hasIcon: boolean;
+}
 
 export interface RegistryEntry {
-  pattern: string;
-  templates: string[];
-  disabled: boolean; // a null binding: previews disabled for this pattern
-  source: "builtin" | "user" | "user-override";
-  error: string | null;
+  key: string;
+  keyKind: KeyKind;
+  templates: RegistryTemplateRef[]; // effective ordered list, first = default
+  resolvedSource: string; // which source supplied the effective value
+  overridesCore: boolean; // the user registry defines this key
+  disabled: boolean; // effective value is null (previews disabled)
+  coreTemplates: string[] | null; // builtin registry's names for this key, or null
+  userValue?: string[] | null; // raw user-registry value, present only if a user key exists
+  error?: string | null; // set when this key's registry value is invalid (fails to resolve)
 }
 
 export interface RegistryResult {
+  sources: TemplateSource[];
   entries: RegistryEntry[];
-  builtin_registry: string;
-  user_registry: string;
-  error: string | null;
+  builtin_registry: string; // path (back-compat)
+  user_registry: string; // path (back-compat)
+  error?: string | null;
 }
 
 export function getTemplateRegistry(): Promise<RegistryResult> {
   return getJson<RegistryResult>("/api/templates/registry");
+}
+
+// Upsert one USER-registry key. value = ordered names, or null to disable.
+// Returns the recomputed entry.
+export function putRegistryBinding(key: string, value: string[] | null): Promise<RegistryEntry> {
+  return putJson<RegistryEntry>("/api/templates/registry", { key, value });
+}
+
+// Remove a user override (revert to core). Returns the recomputed entry, or a
+// tombstone when no such key exists at all any more.
+export interface RegistryRemoved {
+  key: string;
+  removed: true;
+}
+
+export function resetRegistryBinding(key: string): Promise<RegistryEntry | RegistryRemoved> {
+  return postJson<RegistryEntry | RegistryRemoved>("/api/templates/registry/reset", { key });
+}
+
+// -- Export / import ---------------------------------------------------------
+// Export works for ANY template (core or user); import always lands in the user
+// source. Zips are folders only (no registry.json).
+
+// GET url for the export zip (folders only, no registry.json). Names go out as
+// repeated `names=` params (not comma-joined) so a folder name containing a
+// comma round-trips intact.
+export function exportTemplatesUrl(names: string[]): string {
+  const qs = names.map((n) => "names=" + encodeURIComponent(n)).join("&");
+  return "/api/templates/export?" + qs;
+}
+
+// Download the export zip via fetch + blob rather than a bare <a download>, so a
+// non-2xx JSON error (unknown name, missing names) is surfaced to the caller
+// instead of being silently saved as a corrupt `.zip`. Throws on failure.
+export async function downloadTemplatesExport(names: string[]): Promise<void> {
+  const res = await fetch(exportTemplatesUrl(names));
+  if (!res.ok) {
+    let message = `export failed (${res.status})`;
+    try {
+      const body = await res.json();
+      if (body && typeof body.error === "string") message = body.error;
+    } catch {
+      /* non-JSON error body — keep the status-based message */
+    }
+    throw new Error(message);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "fused-render-templates.zip";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    // Give the click a tick to start the download before releasing the blob.
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
+}
+
+// Delete one USER template folder (core templates are read-only, 404 here).
+// Registry bindings are left untouched — they resolve broken until rebound.
+export function deleteTemplate(name: string): Promise<{ deleted: string }> {
+  return postJson<{ deleted: string }>("/api/templates/delete", { name });
+}
+
+// One candidate template found in an uploaded zip (a top-level directory).
+export interface ImportItem {
+  name: string;
+  valid: boolean; // has template.html
+  hasTemplateHtml: boolean;
+  conflictsExisting: boolean; // a user folder of this name already exists
+  fileCount: number;
+}
+
+// Step 1 of import: staged, not yet committed.
+export interface ImportStageResult {
+  importId: string;
+  expiresInSec: number;
+  items: ImportItem[];
+  warnings: string[];
+}
+
+export type ImportResolution = "overwrite" | "skip" | "keep-both";
+
+// Step 2 result: what the commit did per item.
+export interface ImportCommitResult {
+  imported: string[];
+  skipped: string[];
+  overwritten: string[];
+  renamed: Record<string, string>;
+}
+
+// Stage an import zip (step 1). Multipart — the browser sets the multipart
+// boundary Content-Type, so we must NOT set it ourselves; the X-Fused header
+// still forces the write-guard preflight (same guard as mutateJson).
+export async function importTemplates(file: File): Promise<ImportStageResult> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch("/api/templates/import", {
+    method: "POST",
+    headers: { "X-Fused": "1" },
+    body: form,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data as ImportStageResult;
+}
+
+// Commit a staged import (step 2): resolve conflicts and move into place.
+export function commitImport(
+  importId: string,
+  resolutions: Record<string, ImportResolution>,
+): Promise<ImportCommitResult> {
+  return postJson<ImportCommitResult>(
+    "/api/templates/import/" + encodeURIComponent(importId) + "/commit",
+    { resolutions },
+  );
 }

@@ -67,7 +67,7 @@ The differentiating feature is the **renderable HTML** system: HTML files can ca
 - **FS-4** v1 shows all files including dotfiles. *(hide/toggle: follow-up)*
 - **FS-5** Selecting a file opens its preview (§5). Selecting a directory navigates into it.
 - **FS-6** The current directory/file is reflected in the URL path so browser back/forward and refresh work: `http://localhost:8765/view/<url-encoded-path>`.
-- **FS-7** *(follow-up)* Filename search/filter.
+- **FS-7** **DONE (M14):** in-folder filename search over a streamed recursive walk — see §22.
 - **FS-8** "Open raw" escape hatch for any file: streams bytes with correct MIME type (used for download and by templates for images/video/pdf).
 
 ### Sidebar & Bookmarks (M2 — next)
@@ -218,7 +218,7 @@ const page = await fused.runPython("./reader.py",
 
 **Shell dispatch is exactly two-way: `templates` non-empty > fallback.** No file-type special-casing in the shell — image, text, and (via the `_render` sentinel, PT-12) HTML handling all arrive through the `templates` list like any other mode. Directories dispatch the same way: every directory resolves through the registry too, so the built-in listing is itself a mode — the `_listing` sentinel (PT-12), default of the universal `/` directory key (D81). A `.zarr` store previews via its `templates` (`["zarr", "_listing"]`) with the listing as a peer mode reachable through `_mode` (PT-13).
 
-- **PT-7** The built-in bindings live in **`fused_render/templates/registry.json`** (D73) — data, not code, in **exactly the user-registry format** (§16): dot-anchored suffix-pattern keys (compound `.xyz.json`, wildcard `.*.json`, trailing-`/` directory keys — CT-3) mapping to an **ordered list of template names**. Each entry is a **mode**; the **first entry is the default**. One matcher and one value grammar serve both registries; the only asymmetries are precedence (user match wins, CT-3) and the `"..."` splice (CT-11), which is meaningless in the built-in registry (nothing to splice into — expands to nothing). Rule of thumb: `code` (the editable CodeMirror buffer) appears as a secondary mode only for text formats where raw text is meaningful — never for binary formats (a code view of `.parquet` is garbage).
+- **PT-7** The built-in bindings live in **`fused_render/templates/registry.json`** (D73) — data, not code, in **exactly the user-registry format** (§16): dot-anchored suffix-pattern keys (compound `.xyz.json`, wildcard `.*.json`, trailing-`/` directory keys — CT-3) mapping to an **ordered list of template names**. Each entry is a **mode**; the **first entry is the default**. One matcher and one value grammar serve both registries; the only asymmetry is precedence (user match wins, CT-3). Rule of thumb: `code` (the editable CodeMirror buffer) appears as a secondary mode only for text formats where raw text is meaningful — never for binary formats (a code view of `.parquet` is garbage).
 
 | Extension(s) | Modes (first = default) | Notes |
 |---|---|---|
@@ -249,8 +249,8 @@ const page = await fused.runPython("./reader.py",
   - **`_render`** — "render the file itself" — the default mode of the built-in `.html`/`.htm` list `["_render", "code"]`. Shell handling: iframe src `/render?path=<the file itself>` (no `_file`), shell-baked eye icon.
   - **`_listing`** — "the shell's built-in directory listing" (sortable columns + in-folder search, FS-1/§13.4) — the default of the universal `/` directory key (PT-13, D81), and a peer mode of `.zarr/`'s `["zarr", "_listing"]`. It backs no folder and takes no `_file`: when it is the active mode the shell **mounts its Listing component in place of the preview iframe** (no iframe at all). Shell-baked list icon.
 
-  Users **can** rebind any registry key — including `.html`/`.htm` (CT-4 revised, D73) and the directory keys (D81) — dropping a sentinel, then `"..."` or an explicit entry brings it back. Unknown sentinel entries (path `null`, mode not in the set) are filtered out defensively. Non-sentinel entries in the same list (e.g. `code`, `zarr`) work exactly like any template mode. Future modes are added to the server-side registry and flow through the framework normally.
-- **PT-13** **Directory views (D65, revised by D73 and D81):** a preview target may be a **directory**. Directories resolve through the **same registry** as files (PT-7, CT-3): a key with a **trailing `/`** binds a directory's basename, and the **universal `/` key** (zero segments, CT-3) matches *every* directory at lowest specificity. The built-in registry ships `"/": ["_listing"]` and `".zarr/": ["zarr", "_listing"]` — so **every** directory carries a non-empty `templates` list (≥ `["_listing"]`), and dispatch is uniform: a directory previews its default mode exactly like a file. The built-in **listing is itself a mode** — the `_listing` sentinel (PT-12) — so it rides the ordinary mode switcher (PT-10) and `_mode` selection (PT-9): a plain folder's single-mode `["_listing"]` shows the listing with no switcher; a `.zarr` store shows the zarr map by default with `_listing` as a switchable peer (`_mode=_listing`). This replaces D65's one-way `?listing=1` "Browse contents" escape hatch, which is **removed** (D81) — the only way to the listing is now the `_listing` mode. In **embed** (the preview header, hence the switcher, is hidden), a corner chip toggles the `_listing` mode (writing/deleting `_mode`) so an embedded directory preview can still reach its members. Annotate (§17) is not offered for `_listing` (no iframe to overlay). A directory resolves to an **empty** list only when a `null` binding disables it (CT-2); the shell then falls back to the built-in listing regardless (a folder must always render something). Users bind directory views like any other key — `"/": ["...", "gallery"]` adds a gallery mode to every folder; dropping `_listing` from a list forgoes the file listing for those directories (owner call, same "user can shoot themselves" posture as D73's `.html` rebind). Accepted break: old `?listing=1` bookmarks ignore the dropped param — a plain folder still lists (its default), a `.zarr` bookmark now opens the zarr map instead of members.
+  Users **can** rebind any registry key — including `.html`/`.htm` (CT-4 revised, D73) and the directory keys (D81) — dropping a sentinel, then listing it explicitly brings it back. Unknown sentinel entries (path `null`, mode not in the set) are filtered out defensively. Non-sentinel entries in the same list (e.g. `code`, `zarr`) work exactly like any template mode. Future modes are added to the server-side registry and flow through the framework normally.
+- **PT-13** **Directory views (D65, revised by D73 and D81):** a preview target may be a **directory**. Directories resolve through the **same registry** as files (PT-7, CT-3): a key with a **trailing `/`** binds a directory's basename, and the **universal `/` key** (zero segments, CT-3) matches *every* directory at lowest specificity. The built-in registry ships `"/": ["_listing"]` and `".zarr/": ["zarr", "_listing"]` — so **every** directory carries a non-empty `templates` list (≥ `["_listing"]`), and dispatch is uniform: a directory previews its default mode exactly like a file. The built-in **listing is itself a mode** — the `_listing` sentinel (PT-12) — so it rides the ordinary mode switcher (PT-10) and `_mode` selection (PT-9): a plain folder's single-mode `["_listing"]` shows the listing with no switcher; a `.zarr` store shows the zarr map by default with `_listing` as a switchable peer (`_mode=_listing`). This replaces D65's one-way `?listing=1` "Browse contents" escape hatch, which is **removed** (D81) — the only way to the listing is now the `_listing` mode. In **embed** (the preview header, hence the switcher, is hidden), a corner chip toggles the `_listing` mode (writing/deleting `_mode`) so an embedded directory preview can still reach its members. Annotate (§17) is not offered for `_listing` (no iframe to overlay). A directory resolves to an **empty** list only when a `null` binding disables it (CT-2); the shell then falls back to the built-in listing regardless (a folder must always render something). Users bind directory views like any other key — `"/": ["_listing", "gallery"]` lists the built-in listing plus a gallery mode for every folder (built-in names are listed explicitly — there is no splice, D94); dropping `_listing` from a list forgoes the file listing for those directories (owner call, same "user can shoot themselves" posture as D73's `.html` rebind). Accepted break: old `?listing=1` bookmarks ignore the dropped param — a plain folder still lists (its default), a `.zarr` bookmark now opens the zarr map instead of members.
 - **PT-5** **User overrides:** DECIDED and specced as §16 (M7, extended by M8) — user template folders under `~/.fused-render/templates/` bound to extensions by `~/.fused-render/templates/registry.json`, replacing or extending the built-in mode list, using the exact same mechanism.
 
 ---
@@ -319,9 +319,10 @@ Distribute as a DMG containing a menu-bar app; all UI stays in the browser.
 - **M5 — Layout mode:** split-pane grid of embed views, layout + merged params in one bookmarkable URL (§14).
 - **M6 — Tab mode:** tabbed set of embed views on the §14 URL model; bookmark folders open as tab layouts (§15).
 - **M7 — Custom templates:** user template folders in `~/.fused-render/templates/` + `registry.json` extension bindings, overriding built-ins (§16).
-- **M8 — Template modes:** 1:n extension→template mapping — folder-per-template built-ins (renamed to public names), ordered mode lists (first = default), registry `list|string|null` grammar with the `"..."` splice, `_mode` shell param + icon-only mode switcher, stat `templates` array replacing `template`, html folded in as the hardcoded `["_render", "code"]` sentinel list (§7, §16 / PT-6..PT-12, CT-10..CT-11).
+- **M8 — Template modes:** 1:n extension→template mapping — folder-per-template built-ins (renamed to public names), ordered mode lists (first = default), registry `list|string|null` grammar (the `"..."` splice shipped here was later removed, D94), `_mode` shell param + icon-only mode switcher, stat `templates` array replacing `template`, html folded in as the hardcoded `["_render", "code"]` sentinel list (§7, §16 / PT-6..PT-12, CT-10..CT-11).
 - **M9 — Annotation mode:** annotate toggle over any preview mode, element/selection-anchored comment threads stored in the URL (§17).
 - **M13 — Directory views:** directories resolve through the registry like files — the built-in listing becomes the `_listing` sentinel (PT-12), the universal `/` directory key (CT-3) makes it every folder's default mode, custom directory-view templates ride the same mode list + switcher, and `?listing=1` is removed in favor of `_mode=_listing` (§7, §16 / PT-12/PT-13, CT-3 / D81).
+- **M14 — Explorer search:** the in-folder search's recursive walk goes breadth-first and streams NDJSON batches; client-side incremental fuzzy scoring, scroll-paged results, honest truncation, machine-noise pruning (§22 / SR-1..SR-11 / D85).
 - **Follow-ups (unordered):** remaining preview templates (csv/json/markdown/media/pdf/syntax-highlighted code); warm worker pool; DataFrame/Arrow returns; security layer (token, origin checks, sandboxed bridge); exec console; search/sort/tree/keyboard nav; caching; editing.
 
 ## 13. Live Editing — Autosave & Auto-Reload (M4)
@@ -442,16 +443,16 @@ Goal: users replace or add preview templates using the **exact same mechanism** 
 }
 ```
 
-  A name binds the extension to a single-mode list of that template, resolved by the PT-6 rule. **`null` disables** templating for that extension entirely: the file gets no template at all and falls through to the shell's metadata/raw-download fallback (§7.2) — on a directory key, to the plain listing view.
+  A name binds the extension to a single-mode list of that template, resolved by the PT-6 rule. **`null` (or an empty list `[]`) disables** templating for that extension entirely: the file gets no template at all and falls through to the shell's metadata/raw-download fallback (§7.2) — on a directory key, to the plain listing view. `[]` and `null` are exactly equivalent (D94).
 - **CT-10** **Mode lists (M8):** a registry value may also be a **JSON list of template names** — the full ordered mode list for that extension, **replace semantics**, first = default (PT-7). The string form of CT-2 is exactly a single-mode list; existing registries keep working unchanged.
-- **CT-11** **`"..."` splice token:** inside a list value, the entry `"..."` expands, in place, to **the built-in mode list for that extension** — users add modes without knowing built-in names, and future built-in additions flow in automatically. `.` is forbidden in folder names (CT-6), so `"..."` can never collide with a real name. Rules: names already listed explicitly are skipped when the splice expands (`["code", "..."]` promotes `code` to default without duplication); more than one `"..."` in a list = invalid entry (built-in fallback + `template_error`, CT-6); a splice on an extension with no built-ins expands to nothing (harmless).
+- **CT-11** **`"..."` splice — REMOVED (D94, owner 2026-07-09).** The list-splice grammar is gone: a `"..."` entry is no longer expanded to the built-in list. `.` is still forbidden in folder names (CT-6), so `"..."` resolves to no template folder and is treated as an ordinary **dangling name** — dropped from the rendered list with a `template_error` (CT-6), and surfaced as a broken (`exists:false`) ref in the registry view so the user is prompted to remove it (nothing is auto-removed). To include the built-in modes, list them explicitly.
 
 ```json
 {
-  ".parquet": ["geo-view", "..."],
+  ".parquet": ["geo-view", "geo"],
   ".md": "my-markdown",
   ".csv": null,
-  "/": ["...", "gallery"]
+  ".log": []
 }
 ```
 
@@ -460,7 +461,7 @@ Goal: users replace or add preview templates using the **exact same mechanism** 
 - **CT-3** **Key grammar and matching (revised by D73).** A key is a **dot-anchored suffix pattern**: one or more dot-led segments, optionally ending in `/` to bind directories — plus one special zero-segment key, the bare `/` (the **universal directory key**, D81), which matches *any* directory. A segment is a literal (`json`, `tar`) or the wildcard `*`, which matches **exactly one whole non-empty segment** — partial wildcards (`.geo*`) are invalid, and a malformed key (no leading dot, empty segment) never matches (silently ignored, as keys without a leading dot always were). Matching is **case-insensitive** against the basename and requires a **non-empty stem** before the matched suffix (a file literally named `.json` does not match the `.json` key; `.hidden.json` does — its stem is `.hidden`). Directory keys match only directories, file keys only files. **Specificity:** more segments beats fewer; at equal length, comparing from the **rightmost** segment, a literal beats `*` — so for `data.xyz.json`: `.xyz.json` > `.*.json` > `.json`. The universal `/` key has zero segments, so it ranks **below every** dot-anchored directory key (`.zarr/` > `/`); its stem is the whole basename (D81). **Both registries are matched by this same rule** (the old `splitext` single-extension built-in table is gone, D73); precedence stays **any user-registry match > built-in match** — a user `.json` binding beats a built-in `.xyz.json` one. Any extension may be bound, including ones no built-in handles.
 - **CT-4** *(revised by D73 — the exemption is dropped.)* `.html`/`.htm` are **ordinary registry keys**: their default list `["_render", "code"]` ships in the built-in registry (PT-7), and users may rebind or reorder them like any other extension — rendered-HTML-by-default stays the shipped behavior (§4), no longer an enforced one. `_render` (and any future name in `KNOWN_SENTINELS`, PT-12) is referenceable from registry lists; all other `_`-prefixed names remain invalid — dropped per CT-6 with `template_error`.
 - **CT-5** Registries are read **per stat/render resolution** (tiny local files — no restart, no cache invalidation problem); the built-in `templates/registry.json` rides the same loader (D73). Missing `~/.fused-render/templates/` or `registry.json` = clean no-op, built-in behavior; first run creates nothing.
-- **CT-6** **Validation and fallback — per entry:** a folder name must be a single safe path segment (no `/`, no `..`, no `.`, not empty) — it is joined into a filesystem path, so a malformed name must not stat arbitrary locations (correctness guard, not auth — §9 stands). Within a mode list, an entry whose name cannot resolve (unsafe name, `template.html` missing in both PT-6 locations) is **dropped** from the list, and the stat response carries a **`template_error`** string naming the first problem, so a typo is visible (via stat / server log) instead of silently ignored. If the user's value resolves to nothing at all (unparseable JSON, empty result, double splice per CT-11), fall back to the **built-in list** for that extension.
+- **CT-6** **Validation and fallback — per entry:** a folder name must be a single safe path segment (no `/`, no `..`, no `.`, not empty) — it is joined into a filesystem path, so a malformed name must not stat arbitrary locations (correctness guard, not auth — §9 stands). Within a mode list, an entry whose name cannot resolve (unsafe name, `template.html` missing in both PT-6 locations) is **dropped** from the list, and the stat response carries a **`template_error`** string naming the first problem, so a typo is visible (via stat / server log) instead of silently ignored. If the user's value resolves to nothing at all (unparseable JSON, every listed name dangling), fall back to the **built-in list** for that extension. An explicitly **empty** list `[]` is not this case — it disables (CT-2/D94), no fallback.
 - **CT-7** **No convention fallback:** a folder in `~/.fused-render/templates/` without a registry entry is inert — a draft. Registration is only ever the registry line; deleting the line unregisters. One source of truth.
 
 ### 16.3 Pipeline & dev loop
@@ -861,17 +862,25 @@ never imports server).
 
 - **PF-7** `GET /api/templates/registry` returns the merged
   extension→templates bindings from both registries (SPEC §16): one row per
-  pattern with its splice-expanded mode list (first = default), `disabled`
+  pattern with its resolved mode list (first = default), `disabled`
   for `null` bindings, `source` (`builtin` / `user` / `user-override` — a
   user key identical to a built-in key replaces its row), and per-entry
   shape errors. Override detection is **case-insensitive**, matching how
   resolution actually matches keys (`_key_segments` lowercases): a user
-  `.CSV` overrides a built-in `.csv` as one `user-override` row (and a `"..."`
-  splice expands against that built-in), never two mis-sourced rows.
-  **Read-only** — bindings are edited in the registry files; the page names
-  the user registry path. This is the table of bindings, not a per-file
-  resolver: distinct keys coexist and CT-3 specificity decides per file. Read
-  per request like every resolution (no restart).
+  `.CSV` overrides a built-in `.csv` as one `user-override` row, never two
+  mis-sourced rows.
+  This is the table of bindings, not a per-file resolver: distinct keys
+  coexist and CT-3 specificity decides per file. Read per request like every
+  resolution (no restart).
+
+  **Superseded (2026-07-09, owner call):** the read-only registry section was
+  removed from the Preferences page when the full Template Management view
+  shipped (§22, `/view/_templates`) — a single home for bindings rather than a
+  glance in one place and an editor in another. The **`GET /api/templates/registry`
+  endpoint stays** (unchanged contract, TV-4); it is now consumed by the
+  Templates view instead of Preferences.
+
+---
 
 ## 21. Session Restore — Per-File Last Params (D84)
 
@@ -909,3 +918,334 @@ last shell query in the same `.html.json` sidecar the `claude` chat template
 - **LSN-11** Dropping params back to empty/`_mode`-only leaves the stored
   `lastSession` untouched — a later bare open re-applies it. Accepted quirk,
   not a bug.
+
+## 22. Explorer Search — Streamed Recursive Walk (M14)
+
+Goal: an in-folder search (FS-7) whose first results paint in tens of
+milliseconds on any tree, whose coverage is never silently starved by one big
+subtree, and whose truncation is always visible. The searcher is the shell
+(client-side fuzzy scoring, fzf/VS Code Quick-Open model — the corpus is local
+and per-keystroke re-ranking must not pay a network round trip); the server's
+job is to deliver the corpus fast, shallow-first, and pruned of machine noise.
+
+### 21.1 Walk order & pruning (server)
+
+- **SR-1** `GET /api/fs/walk` traverses **breadth-first** (`_walk_bfs`): every
+  depth-N entry is emitted before any depth-N+1 entry; within one parent, dirs
+  first then files, each name-sorted. Any early stop (cap, disconnect)
+  therefore keeps complete shallow coverage. The old depth-first walk let one
+  big sibling eat the whole entry budget — a home dir looked like:
+
+  ```
+  depth-first + cap                      breadth-first + cap
+  ─────────────────                      ───────────────────
+  ├─ Desktop   ✓ dives to bottom,        ├─ level 1: ALL top dirs first ✓
+  │    eats 15,926 / 20,000 slots        ├─ level 2: all their children ✓
+  ├─ Movies    ✗ CAP DEAD — 0 children   ├─ level 3: …
+  └─ Music     ✗ 0 children              └─ cap cuts the DEEPEST level only
+  ```
+
+- **SR-2** `WALK_IGNORE_DIRS` (`node_modules`, `__pycache__`, `venv`, `.venv`,
+  `.git`) are never descended **nor emitted**, hidden mode or not — they are
+  machine-managed noise, not "hidden data" (a `.py` extension search must not
+  drown in `.git` object files). `.git` *files* (worktree/submodule pointers)
+  are ordinary files and do show.
+- **SR-3** macOS package directories (`WALK_LEAF_DIR_SUFFIXES`: `.app`,
+  `.framework`, `.bundle`, `.photoslibrary`, case-insensitive) are emitted as
+  a single dir entry but never descended — Finder semantics; one Electron
+  `.app` alone is thousands of internal files nobody searches.
+- **SR-4** Symlinks are emitted but never followed; unreadable dirs/entries
+  are skipped silently (matches `/api/fs/list`).
+- **SR-5** `WALK_MAX_ENTRIES` (200 000) is a **memory/latency safety valve,
+  not a coverage budget**: with BFS it only ever cuts the deepest levels of
+  pathological trees (mounted volumes, cache farms). The response carries
+  `truncated` so the UI can be honest about it (SR-10).
+
+### 21.2 Streaming wire format
+
+- **SR-6** `?stream=1` returns `application/x-ndjson`: zero or more
+  `{"entries": [...]}` batch lines (`WALK_BATCH_SIZE` = 500 per line), then
+  **exactly one** terminal `{"done": true, "truncated": bool, "total": n}`
+  line. Closing the connection cancels the walk server-side (the generator is
+  closed on disconnect). Without `stream=1` the original single-JSON shape
+  (`{path, entries, truncated}`) is unchanged — same entries, same BFS order.
+
+  ```
+  blocking (before)                      streamed (after)
+  ─────────────────                      ────────────────
+  type ▶ [  spinner ~1s  ] ▶ ALL         type ▶ ~10ms ▶ first results
+         nothing until whole walk               ▶ list fills in live
+         done + one giant JSON                  ▶ "N matches · M scanned…"
+  ```
+
+### 21.3 Shell search behavior
+
+- **SR-7** The listing's search (`?q=`, URL-synced like sort) fetches **one
+  hidden-inclusive dataset** (`hidden=1` always) and filters dot-entries at
+  display time: a dot-leading query segment (`.py`, `sub/.env`) shows them,
+  anything else hides them. One corpus means flipping intent mid-query never
+  refetches, and `.py` works as an extension search. The walk starts lazily
+  on first focus (warm-up) or a URL-seeded query, is cached until the dir
+  watch fires, and the in-flight stream is aborted on refresh/unmount.
+- **SR-8** Scoring is incremental and off the critical path: stream flushes
+  commit at most every 200 ms (`STREAM_FLUSH_MS`), each flush fuzzy-scores
+  **only the entries appended since the last one** and merges them into the
+  prior ranked list; a full re-scan happens only when the query or
+  hidden-intent changes (and then on React's deferred schedule). Rationale:
+  re-scoring the whole grown array per network chunk saturated the main
+  thread near the tail of a big walk — stuck stale-dim, queued clicks.
+- **SR-9** Results render in pages of 250 rows; a sentinel row +
+  IntersectionObserver reveals the next page as the user scrolls. The full
+  ranked list stays in memory for the count text; ranking = longest
+  consecutive run, then fuzzy score, then shallower path, then name.
+- **SR-10** Truncation is always visible: a live `N matches · M scanned…`
+  counter while streaming; a `+` suffix and tooltip on the final count when
+  the cap hit; and the zero-match message names the covered entry count
+  ("No matches in the first 200,000 entries — this folder tree is too large
+  to search fully") instead of a bare "No matches".
+- **SR-11** The query mirrors into the URL **debounced** (200 ms): Safari
+  rate-limits `history.replaceState` (~100 calls/30 s, then throws), so
+  per-keystroke sync is a crash, not a nicety. Input state stays immediate;
+  only the URL lags.
+
+---
+
+## 23. Template Management — Sources, Bindings & Import/Export (M15)
+
+Goal: a dedicated view that turns the read-only registry glance of §20.5
+(PF-7) into a full editing surface for template bindings, plus the ability to
+see the whole template inventory across sources and move user templates
+between machines as zip files. Same underlying data as §16/§20.5 — this
+section adds the write path, the inventory/provenance view, and
+import/export; it does not change the resolution engine (PT-6/CT-3), the
+registry file format (CT-2/CT-10/CT-11), or PF-7's read-only endpoint
+contract (TV-4). The read-only glance itself is retired from Preferences once
+this view ships (§20.5); the endpoint it used is now consumed here instead.
+
+### 23.1 Sources model (extensibility)
+
+- **TV-1** **DECIDED (D86):** the builtin/user pair (§7, §16) is generalized
+  into an ordered list of **sources** — `Source { id, label, editable,
+  precedence }`. Today exactly two ship: `core` (`id:"core"`,
+  `editable:false`, `precedence:0`, the `TEMPLATES_DIR`/`BUILTIN_REGISTRY`
+  pair) and `user` (`id:"user"`, `editable:true`, `precedence:100`, the
+  `USER_TEMPLATES_DIR`/`USER_REGISTRY` pair, D76's paths). The list is
+  modeled so a third source (org/project) can be appended later with zero UI
+  rework — **not built now** (§23.4).
+- **TV-2** Effective binding for a registry key = the value from the
+  highest-precedence source that defines it — unchanged from PT-6/CT-3 (user
+  beats core); the sources list is a presentation/provenance layer over the
+  existing resolution rule, not a new one.
+
+### 23.2 API
+
+New endpoints live in `fused_render/templates_api.py` (a `templates_router`,
+mirroring `shell/bookmarks.py`/`shell/prefs.py`), included from `server.py`
+alongside the existing bookmarks/prefs/deploy routers. Mutating routes carry
+the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
+
+- **TV-3** `GET /api/templates/inventory` — the template pool across sources:
+  `{sources, templates:[{name, source, editable, hasIcon, usedBy,
+  shadowsCore}]}`, one entry per **resolved** folder (a user folder
+  shadowing a core folder of the same name emits one `source:"user",
+  shadowsCore:true` entry, not two). `usedBy` = registry keys whose effective
+  ordered list contains the name.
+- **TV-4** `GET /api/templates/registry` — **extended**, back-compat fields
+  kept (`builtin_registry`, `user_registry` paths) so PF-7's Preferences
+  section keeps working unchanged. Adds `sources` and, per entry, `keyKind`
+  (`simple|compound|wildcard|directory`), the effective `templates` list
+  resolved to `{name, source, exists, hasIcon}` (a name with no folder on
+  disk resolves `exists:false` and stays in the list — surfaced as broken,
+  not dropped), `resolvedSource`, `overridesCore` (true whenever the user
+  registry defines the key, regardless of value equality), `disabled`
+  (effective value is `null`), `coreTemplates` (what the builtin registry
+  alone gives, or `null`; drives reset-preview + the known-keys list), and
+  `userValue` (raw user-registry value, included only when a user key
+  exists). `entries` covers every builtin key plus every user-only key.
+- **TV-5** `PUT /api/templates/registry` **(D87)** — upserts **one** user
+  key: body `{key, value}` (`value` = ordered name array, `null`, or `[]`).
+  Validates the key against the CT-3 grammar; names need only be **non-empty
+  strings** — an unknown name is **not** rejected, it saves as a **dangling
+  ref** (surfaced broken in the UI, dropped at render) so a user can bind a
+  not-yet-created template without being blocked (D95). Only structurally
+  invalid entries (non-string / empty) → 400. Then a **read-modify-write of
+  that key only** against `USER_REGISTRY` via the existing atomic
+  `read_json`/`write_json` helpers (creates the file/dir if missing) — never a
+  whole-file overwrite. Returns the recomputed entry (same shape as one
+  `entries[]` item from TV-4).
+- **TV-6** `POST /api/templates/registry/reset` **(D87)** — body `{key}`;
+  deletes that key from the user registry (no-op if absent), reverting the
+  effective value to the core one. Returns the recomputed entry, or
+  `{key, removed:true}` if no such key resolves anywhere anymore.
+- **TV-7** `GET /api/templates/export?names=a&names=b` **(D89)** — streams a
+  zip (`application/zip`, `Content-Disposition: attachment;
+  filename="fused-render-templates.zip"`) of the named templates — **core or
+  user** (a user folder shadows a core folder of the same name; 400 on a name
+  that resolves to neither). Names travel as **repeated `names=` params** (not
+  comma-joined) so a folder name containing a comma round-trips. Each
+  template's folder contents land at its own top level in the zip. **No
+  `registry.json` in the zip** — folders only.
+- **TV-8** `POST /api/templates/import` **(D90)** — step 1 of 2, multipart
+  (`file` field, the `.zip`), stages without committing: unpacks to
+  `home_dir()/.import-staging/<importId>/` (`importId` = `secrets.token_hex`).
+  Hardening (rejects the whole upload before anything lands outside
+  staging): uncompressed total > 50 MB, entry count > 2000, or any single
+  entry > 25 MB (zip-bomb guard); any entry that is absolute, contains `..`,
+  normalizes outside the staging root, or is a symlink (zip-slip guard). A
+  candidate template = a top-level directory containing `template.html`
+  (`valid:true`). Returns `{importId, expiresInSec, items:[{name, valid,
+  hasTemplateHtml, conflictsExisting, fileCount}], warnings}` —
+  `conflictsExisting` flags a name already present under
+  `USER_TEMPLATES_DIR`. Stale staging dirs past the TTL are swept
+  opportunistically on every call.
+- **TV-9** `POST /api/templates/import/{importId}/commit` **(D90)** — step
+  2: body `{resolutions: {name: "overwrite"|"skip"|"keep-both"}}`
+  (unresolved items default to `skip`). Per valid item: `skip` drops it;
+  `overwrite` atomically replaces the existing folder; `keep-both` lands as
+  `<name>-2` (then `-3`…, never clobbering). Moves (not copies) from staging
+  into `USER_TEMPLATES_DIR`, then deletes the staging dir. Unknown/expired
+  `importId` → 404/410. Returns `{imported, skipped, overwritten, renamed}`.
+- **TV-10** Reveal and "open in explorer" add **no new endpoints**:
+  inventory's Reveal action reuses `POST /api/fs/reveal`; "open in explorer"
+  is a plain shell navigation to `USER_TEMPLATES_DIR/<name>`.
+- **TV-19** `POST /api/templates/delete` **(D93)** — body `{name}`, `X-Fused`
+  guarded; deletes **one user template folder** under `USER_TEMPLATES_DIR`.
+  **Core templates are read-only and never deletable** — a core-only name
+  resolves to no user folder and 404s (the core folder is untouched); unsafe
+  names (path separators, `.`/`..`) → 400; symlinks are rejected. Registry
+  bindings are **not** rewritten — a binding that referenced the name resolves
+  broken (`exists:false`) until rebound, matching export/import being
+  folder-only. Returns `{deleted: name}`.
+
+### 23.3 Frontend — Templates view (`/view/_templates`)
+
+- **TV-11** **(D92)** New route **`/view/_templates`** — a shell-owned
+  sentinel dispatched in `App.tsx` the same way `/view/_prefs` is (§20):
+  view-only, no `/embed` variant (a template-management page inside an
+  embedded pane has no meaning). New component
+  `frontend/src/views/Templates.tsx`. The active tab (bindings / library)
+  lives in the URL as **`?tab=library`** (bindings = default, clean URL);
+  switching tabs is a `pushState`, so browser back/forward moves between
+  tabs (D94). The page is keyed by the nav epoch, so it re-derives the tab
+  from the URL on each navigation — no separate tab state.
+- **TV-12** Sidebar footer gains a "Templates" button next to the
+  Preferences gear (`navigateUrl("/view/_templates")`), an inline SVG icon
+  in the same style as the gear.
+- **TV-13** `lib/api.ts` additions: `getTemplateInventory()` (TV-3),
+  `getTemplateRegistry()` (TV-4, extends the existing type, keeps old
+  fields), `putRegistryBinding(key, value)` (TV-5),
+  `resetRegistryBinding(key)` (TV-6), `exportTemplatesUrl(names)` (builds
+  the TV-7 GET url for an `<a download>` click), `importTemplates(file)`
+  (TV-8 — the app's first `FormData` multipart call; `X-Fused: 1` header
+  set, `Content-Type` left for the browser to fill in with the multipart
+  boundary), `commitImport(importId, resolutions)` (TV-9).
+- **TV-14** **Bindings table** (one row per registry key): extension/key,
+  ordered template chips (first badged "default"), a source chip
+  (Core/User), a "● Modified" marker when `overridesCore`, a "Disabled" pill
+  when `disabled`, broken-name chips (`exists:false`) in a warning style.
+  Filters: All / Modified only / by source; a search box over key and
+  template name. `+ Add extension` opens the row editor in create mode.
+- **TV-15** **Row editor modal (D91)** (DeployModal-style: backdrop +
+  dialog, Escape to close): in **create** mode, a key **pattern builder**
+  covering all four CT-3 shapes — simple `.ext`, compound `.a.b`, wildcard
+  `.*.json`, directory `.ext/` — via a segmented control with a
+  live-rendered key preview and client-side grammar validation (server
+  stays authoritative, TV-5); in **edit** mode the key is shown, not
+  editable. Template list: ordered chips, drag to reorder (first =
+  default), remove, "Add template" opens a picker sourced from `GET
+  /api/templates/inventory` grouped by source, disallowing duplicates.
+  Actions: **Save** (TV-5), **Disable for this type** (writes `null`,
+  inline confirm), **Reset to core** (TV-6, shown only when
+  `overridesCore`, previews the core default from `coreTemplates`),
+  **Cancel**.
+- **TV-16** **Inventory panel**: templates grouped by source, each group
+  with its own search + source/used filters. A source's **editability** (the
+  🔒 on core) governs only whether its *bindings/templates can be changed* —
+  it does not gate read actions. Every row (core **and** user) renders its
+  `icon.svg`, name, `usedBy` chips, a select checkbox, and per-row actions —
+  Export (single), Reveal in Finder (TV-10), Open in explorer (TV-10) — since
+  **core templates are exportable/inspectable too** (owner call: portable
+  folders regardless of source). Toolbar: "Import zip" and "Export selected"
+  — checkbox multi-select spans any rows (core or user) and drives the export
+  download (`downloadTemplatesExport`, which surfaces server errors rather
+  than saving a 400 body as a zip). **User** rows also get a **Delete** action
+  (never core — the source is read-only); it opens a confirm modal offering
+  "Export & delete" (downloads a recovery zip first via `downloadTemplatesExport`,
+  then deletes only if that resolves), "Delete without export", or Cancel,
+  calling `deleteTemplate` (TV-19) and refreshing on success.
+- **TV-17** **Import wizard modal**, three steps: (1) file chooser
+  (`accept=".zip"`) → `importTemplates(file)` (TV-8); (2) manifest — a
+  table of staged items with a per-conflicting-item resolution selector
+  (Overwrite / Skip / Keep both — Overwrite visually distinct, a short
+  inline caution suffices, no per-item confirm dialog), invalid items
+  greyed and auto-skipped with their reason shown, warnings listed; (3)
+  confirm → `commitImport` (TV-9) → a result summary
+  (imported/renamed/skipped) → closing re-fetches inventory + bindings.
+- **TV-18** Any mutation (put/reset/import commit) re-fetches inventory +
+  registry and re-renders — no stale state between the two sections.
+  Header copy states plainly that this view manages **bindings + inventory
+  only**: editing a template's own files happens in the file explorer
+  (D88).
+
+### 23.4 Non-goals (this feature)
+
+- Editing template file contents (`template.html`, `reader.py`, css, icons)
+  in this UI — use the file explorer + the existing `/api/fs/write` (D88).
+- A real third source (org/project) — TV-1 only models for it.
+- Registry bindings inside export zips, or merging/writing registry entries
+  from an import — exports are folders only (D89); imported templates are
+  inert (CT-7) until bound via the row editor.
+- Persisting a per-file "last selected mode" — unrelated, not part of this
+  feature.
+## 24. History View — Sidecar Inspector Template (D96)
+
+A `history` view template renders a file's `<ext>.json` sidecar (§21, SB-7, D82–D84)
+as a readable, sectioned history — every claude session, bookmark, last-session
+snapshot, and review comment the file has accumulated. Reachable from both ends:
+opening `sine.html` and switching to the `history` mode, or opening `sine.html.json`
+(or `data.parquet.json`, or any other `<name>.<ext>.json` sidecar) directly, where
+`history` is the default mode.
+
+- **HV-1** An ordinary view template (`fused_render/templates/history/`) —
+  `template.html` + `icon.svg` only, **no `.py`** (JSON is browser-parseable; same
+  posture as `tree`). No shell/server code; navigation and validation live inside
+  the template.
+- **HV-2** Registry bindings: wildcard key `".*.json": ["history", "tree",
+  "code"]` matches any compound `<ext>.json` sidecar (more specific than bare
+  `.json`, which keeps its own tree-first list unchanged) — **no `annotate`**:
+  annotating the sidecar log itself doesn't make sense, comments belong on the
+  target file (HV-8). `"history"` is also appended to the target-side keys
+  `".html"` and `".parquet"` (defaults stay `_render`/`table`). Only these two
+  target extensions for now — others later by adding keys.
+- **HV-3** Role resolution from `_file`: basename ends `.json` **and** its stem
+  (after stripping `.json`) still has its own extension → the sidecar is the
+  file itself, target = the name minus `.json` (matches the `.*.json` wildcard
+  — a bare `name.json` is never treated as a sidecar); otherwise `_file` is
+  the target and sidecar = `_file + ".json"`. Sidecar read via
+  `fused.readFile`; absent sidecar → a friendly "no history yet" empty state,
+  never an error.
+- **HV-4** Validation is **per-key** against an inline `const SCHEMA` in
+  `template.html` (a hand-rolled subset validator: `type`, `required`,
+  `properties`, `items` — no vendored library). A key that fails renders a
+  warning card **in that section only** (first error + collapsed raw JSON of
+  that key); the other sections render normally. Only a whole-file parse
+  failure (or non-object root) blocks the full view, showing the raw text.
+- **HV-5** Unknown top-level keys are NOT corruption — the sidecar is a shared
+  store and future writers may add keys. They render as one collapsed
+  "Other keys" raw section.
+- **HV-6** Entry schemas require only the fields the view renders; extra fields
+  on entries are allowed (writers grow their records additively). Timestamp
+  units are mixed by design (D83/D84 code comments): bookmark `created_at` and
+  comment `createdAt` are **ms** epoch; `recorded_at`/`updated_at` and claude's
+  `created_at`/`last_used` are **seconds**. The formatter picks the unit per
+  field, never heuristically.
+- **HV-7** Interactivity — plain shell navigation via `window.top.location`
+  with the `/view/` codec (router.ts shape), the claude-template precedent:
+  a claude session opens the target with `_mode=claude&session_id=<id>` (the
+  resume contract); a bookmark-history entry and the `lastSession` card open
+  the target with their stored `search` verbatim.
+- **HV-8** Comments are a **read-only** section (content, created/updated time,
+  resolved badge, annotated view). No navigation: annotate's live store is the
+  URL `comments` param, and the sidecar log is write-only — the view does not
+  synthesize comment URLs (owner call 2026-07-09).
+- **HV-9** The view never writes the sidecar.
