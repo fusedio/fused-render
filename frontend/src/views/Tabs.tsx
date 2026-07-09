@@ -13,7 +13,7 @@
 // appends (new tab) or removes (close); src is frozen at mount and never
 // written again by React.
 import { useEffect, useRef, useState } from "react";
-import { navigateUrl, urlForFsPath, IS_EMBED, VIEW_PREFIX } from "../lib/router";
+import { navigateUrl, rootedFsPath, urlForFsPath, IS_EMBED, VIEW_PREFIX } from "../lib/router";
 import { basename } from "../lib/format";
 import {
   leaf,
@@ -69,13 +69,14 @@ export function composeFolderTabsUrl(children: Bookmark[]): string {
     // Sentinel pathnames (/view/_panel, /view/_tab) decode to segment paths
     // "/_panel" / "/_tab" — round-trips through embedSrc/readEmbedLoc (TM-4).
     const fsPath = pathname.startsWith(VIEW_PREFIX)
-      ? "/" +
-        pathname
-          .slice(VIEW_PREFIX.length)
-          .split("/")
-          .filter((s) => s.length > 0)
-          .map(decodeURIComponent)
-          .join("/")
+      ? rootedFsPath(
+          pathname
+            .slice(VIEW_PREFIX.length)
+            .split("/")
+            .filter((s) => s.length > 0)
+            .map(decodeURIComponent)
+            .join("/"),
+        )
       : pathname;
     return encodePaneSegment(fsPath, search);
   });
