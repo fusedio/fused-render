@@ -326,6 +326,12 @@
       // Always a string — the runtime's set() rejects non-strings (there is
       // no delete API), so an emptied list persists as "[]".
       fused.params.set("comments", JSON.stringify(arr));
+      // Mirror the review into the target file's `<file>.json` sidecar as a
+      // write-only history log (upsert-by-id, never deletes) — the same sidecar
+      // the claude chat (agent.py) and bookmark history use. The URL stays the
+      // sole live store; this is pure history, so it is fire-and-forget: a
+      // failed record must never block or throw into the review UI.
+      fused.runPython("./annotate.py", { action: "record", comments: arr, file }).catch(() => {});
       render();
     }
 

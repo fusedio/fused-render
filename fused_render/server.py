@@ -23,6 +23,7 @@ import sys
 import tempfile
 import time
 import traceback
+from urllib.parse import parse_qsl
 
 from fastapi import Body, FastAPI, Header, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -33,8 +34,10 @@ from fused_render.core_templates import ensure_core_templates
 from fused_render.deploy import router as deploy_router
 from fused_render.executor import run_python
 from fused_render.shell import prefs as shell_prefs
+from fused_render.shell import storage
 from fused_render.shell.bookmarks import router as bookmarks_router
 from fused_render.shell.prefs import router as prefs_router
+from fused_render.shell.seed import fused_dir
 from fused_render.shell.storage import home_dir
 
 logger = logging.getLogger(__name__)
@@ -104,8 +107,10 @@ BUILTIN_REGISTRY = os.path.join(TEMPLATES_DIR, "registry.json")
 
 # Shell sentinel modes (SPEC PT-12): implemented by the shell, no template
 # folder behind them. The only `_`-prefixed names a registry mode list may
-# reference (D73); any other `_` name is invalid (CT-6).
-KNOWN_SENTINELS = {"_render"}
+# reference (D73); any other `_` name is invalid (CT-6). `_listing` is the
+# shell's built-in directory listing — the default of the universal `/`
+# directory key (D81).
+KNOWN_SENTINELS = {"_render", "_listing"}
 
 # Recursive-walk cap (/api/fs/walk): stop collecting after this many entries so
 # a search over a huge tree stays bounded. Module-level so tests can shrink it.
@@ -119,6 +124,47 @@ def _error(message: str, status: int = 400) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status)
 
 
+def _git_ignored(cwd: str, rel_names: list[str]) -> set[str]:
+    """Return the subset of `rel_names` git would ignore, relative to `cwd`.
+
+    Shells out to `git check-ignore` — the authority on gitignore semantics
+    (nested .gitignore, .git/info/exclude, the global excludesfile, negation).
+    One batched call covers a whole listing. Returns an empty set when `cwd`
+    is not in a work tree, git is missing, or anything else goes wrong:
+    dimming is a display hint, never a hard dependency on git.
+
+    The `.git` directory (or the gitfile of a worktree/submodule) is folded in
+    too: git never reports it via check-ignore, but it is repository plumbing
+    the user rarely wants to browse, so we dim it exactly when we know git is
+    present and `cwd` is a work tree — i.e. only after a successful call.
+    """
+    if not rel_names:
+        return set()
+    try:
+        # --stdin -z: NUL-separated in and out, so names with newlines or
+        # non-UTF-8 bytes round-trip intact. check-ignore exits 0 when some
+        # path is ignored, 1 when none are (not an error), 128 on real
+        # failure incl. "not a git repository".
+        payload = b"".join(os.fsencode(n) + b"\0" for n in rel_names)
+        proc = subprocess.run(
+            ["git", "-C", cwd, "check-ignore", "--stdin", "-z"],
+            input=payload,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    if proc.returncode not in (0, 1):
+        return set()
+    ignored = {os.fsdecode(chunk) for chunk in proc.stdout.split(b"\0") if chunk}
+    # Return code 0/1 (not 128) proves this is a work tree with git available,
+    # so dim `.git` itself. Match the basename so both the top-level entry
+    # (".git", from /api/fs/list) and a nested one ("sub/.git", from walk) go.
+    ignored.update(n for n in rel_names if n == ".git" or n.endswith("/.git"))
+    return ignored
+
+
 def _require_fused(x_fused: str | None) -> JSONResponse | None:
     # Guard for the mutating/executing POSTs. Read endpoints are already safe
     # cross-origin because the browser blocks a foreign page from reading our
@@ -130,6 +176,66 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
     if x_fused != "1":
         return _error("missing or invalid X-Fused header", status=403)
     return None
+
+
+# Per-file sidecar <file>.json (shared with the claude chat template, which
+# owns "claudeSessions", and bookmarks, which own "bookmarkHistory" — see
+# templates/claude/agent.py and shell/bookmarks.py). Read/merge/write preserves
+# every other key so the writers never clobber each other (single local user,
+# last-write-wins on a true interleave — D3).
+def _sidecar_path(file: str) -> str:
+    return file + ".json"
+
+
+def _read_sidecar(file: str) -> dict:
+    # read_json returns None on missing/corrupt; a non-dict (a stray JSON list)
+    # is treated as empty so a merge can't crash.
+    data = storage.read_json(_sidecar_path(file))
+    return data if isinstance(data, dict) else {}
+
+
+def _has_non_mode_param(search: str) -> bool:
+    # A "qualifying" query has at least one key other than _mode (mirrors the
+    # frontend hasQualifyingParam). keep_blank_values so "?city=" still counts.
+    return any(k != "_mode" for k, _ in parse_qsl(search, keep_blank_values=True))
+
+
+def _session_get(path: str):
+    if not os.path.isfile(path):
+        return _error(f"no such file: {path}", status=404)
+    last = _read_sidecar(path).get("lastSession")
+    return {"lastSession": last if isinstance(last, dict) else None}
+
+
+def _session_put(body: dict, x_fused: str | None):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    path = body.get("path")
+    search = body.get("search")
+    if not path or not os.path.isabs(path):
+        return _error("'path' must be an absolute filesystem path")
+    if not os.path.isfile(path):
+        return _error(f"no such file: {path}", status=404)
+    if not isinstance(search, str):
+        return _error("'search' must be a string")
+    # Read-merge-write the whole dict so claudeSessions / bookmarkHistory
+    # survive alongside lastSession (see _read_sidecar comment).
+    data = _read_sidecar(path)
+    # LSN-3 gate (authoritative, server-side): a _mode-only or empty query must
+    # not START a session, but once one exists we DO record _mode-only updates
+    # so the file's last _mode is remembered. Save when the query carries a
+    # non-_mode param, OR (query is non-empty AND a lastSession already exists).
+    # Empty query never clobbers an existing session down to "".
+    has_session = isinstance(data.get("lastSession"), dict)
+    if not (_has_non_mode_param(search) or (search != "" and has_session)):
+        return {"ok": True, "skipped": True}
+    data["lastSession"] = {"search": search, "updated_at": time.time()}
+    try:
+        storage.write_json(_sidecar_path(path), data)
+    except OSError as e:
+        return _error(f"cannot write sidecar for {path}: {e}", status=400)
+    return {"ok": True}
 
 
 # User templates + their registry live under the shell home dir's templates/
@@ -237,9 +343,11 @@ def _key_segments(key, is_dir: bool):
     CT-3): ".csv", compound ".xyz.json", wildcard ".*.json" — `*` matches
     exactly one whole dot-segment, partial wildcards (".geo*") are invalid. A
     trailing "/" marks a directory key (".zarr/", D73); dir keys match only
-    directories, others only files. A key of the wrong shape (no leading dot,
-    empty segment) never matches — same silent-ignore the no-leading-dot rule
-    always had.
+    directories, others only files. The bare "/" is the universal directory
+    key (D81): zero segments, matches any directory — returned as `[]`
+    (distinct from None), ranked lowest by `_match_registry`. A key of the
+    wrong shape (no leading dot, empty segment) never matches — same
+    silent-ignore the no-leading-dot rule always had.
     """
     key = str(key).lower()
     dir_key = key.endswith("/")
@@ -247,6 +355,8 @@ def _key_segments(key, is_dir: bool):
         return None
     if dir_key:
         key = key[:-1]
+        if key == "":
+            return []  # universal directory key ("/"): matches any directory
     if not key.startswith(".") or len(key) < 2:
         return None
     segs = key[1:].split(".")
@@ -261,22 +371,32 @@ def _match_registry(registry: dict, basename: str, is_dir: bool):
     None. Longest-suffix semantics generalized to patterns (SPEC CT-3, D73):
     a key with more segments beats one with fewer; at equal length, comparing
     from the rightmost segment, a literal beats a `*` (`.xyz.json` >
-    `.*.json` > `.json`). A match needs a non-empty stem before the matched
-    suffix, so a dotfile named exactly like a key (a file literally called
-    ".json") does not match. Case-insensitive throughout.
+    `.*.json` > `.json`). The universal `/` directory key (zero segments, D81)
+    ranks below every dot-anchored key (`.zarr/` > `/`) and its stem is the
+    whole basename. A match needs a non-empty stem before the matched suffix,
+    so a dotfile named exactly like a key (a file literally called ".json")
+    does not match. Case-insensitive throughout.
     """
     fsegs = basename.lower().split(".")
     best = None  # (n_segments, literal-mask right-to-left, key, value)
     for key, value in registry.items():
         ksegs = _key_segments(key, is_dir)
-        if ksegs is None or len(fsegs) <= len(ksegs):
+        if ksegs is None:
             continue
-        if not ".".join(fsegs[: -len(ksegs)]):
-            continue
-        tail = fsegs[-len(ksegs):]
-        if any(not (k == f or (k == "*" and f)) for k, f in zip(ksegs, tail)):
-            continue
-        rank = (len(ksegs), tuple(s != "*" for s in reversed(ksegs)))
+        n = len(ksegs)
+        if n == 0:
+            # Universal directory key: matches any directory (stem = whole
+            # basename, non-empty), lowest specificity so any real key wins.
+            rank = (0, ())
+        else:
+            if len(fsegs) <= n:
+                continue
+            if not ".".join(fsegs[:-n]):
+                continue
+            tail = fsegs[-n:]
+            if any(not (k == f or (k == "*" and f)) for k, f in zip(ksegs, tail)):
+                continue
+            rank = (n, tuple(s != "*" for s in reversed(ksegs)))
         if best is None or rank > best[0]:
             best = (rank, key, value)
     if best is None:
@@ -537,11 +657,28 @@ def create_app(start_dir: str) -> FastAPI:
     # orchestration and the per-page deployment pointer store (deploy.py).
     app.include_router(deploy_router)
 
+    # Per-file session restore (LSN-*): a viewed file remembers its last URL
+    # query in the "lastSession" key of its <file>.json sidecar. GET is a read
+    # endpoint (no X-Fused guard); PUT mutates so it carries the D36 guard.
+    @app.get("/api/session")
+    def api_session_get(path: str):
+        return _session_get(path)
+
+    @app.put("/api/session")
+    def api_session_put(
+        body: dict = Body(...), x_fused: str | None = Header(default=None)
+    ):
+        return _session_put(body, x_fused)
+
     @app.get("/api/config")
     def api_config():
         return {
             "start_dir": start_dir,
             "home": os.path.expanduser("~"),
+            # The Fused workspace dir (~/Documents/Fused, D81) — the sidebar's
+            # "Fused" entry navigates here. Path only; the dir is created + seeded
+            # at the process entry points (cli/app), not on this read.
+            "fused_dir": fused_dir(),
             # The fused-render package version, surfaced in the sidebar brand.
             "version": __version__,
             # Which /api/run engine is in effect (D69/§20): "fused" | "builtin".
@@ -646,6 +783,9 @@ def create_app(start_dir: str) -> FastAPI:
                     "mtime": st.st_mtime,
                 }
             )
+        ignored = _git_ignored(path, [e["name"] for e in entries])
+        for e in entries:
+            e["ignored"] = e["name"] in ignored
         entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
         return {"path": path, "entries": entries}
 
@@ -697,6 +837,9 @@ def create_app(start_dir: str) -> FastAPI:
                     break
             if truncated:
                 break
+        ignored = _git_ignored(path, [e["rel"] for e in entries])
+        for e in entries:
+            e["ignored"] = e["rel"] in ignored
         return {"path": path, "entries": entries, "truncated": truncated}
 
     @app.get("/api/fs/raw")

@@ -10,7 +10,7 @@
 // INSIDE the tab's <button>, and nested buttons are invalid HTML.
 import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { statPath, type TemplateEntry } from "../lib/api";
-import { templateModeIcon, modeTitle } from "./ModeSwitcher";
+import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "./ModeSwitcher";
 
 // Split a pane query at its raw `_layout=(...)` span (kept byte-identical —
 // it may contain literal `&`), so the head is plain params URLSearchParams
@@ -44,8 +44,10 @@ export default function PaneModeMenu({ path, query, onNavigate }: PaneModeMenuPr
     setPos(null);
     statPath(path)
       .then((s) => {
-        // Same defensive sentinel filter as Preview's dispatch (PT-12).
-        if (!stale) setTemplates(s.templates.filter((t) => t.path !== null || t.mode === "_render"));
+        // Same defensive sentinel filter as Preview's dispatch (PT-12): keep
+        // resolved templates and the known sentinels (`_render`, `_listing`),
+        // so a directory pane's menu offers the listing beside zarr/custom views.
+        if (!stale) setTemplates(s.templates.filter((t) => t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode)));
       })
       .catch(() => {});
     return () => {
