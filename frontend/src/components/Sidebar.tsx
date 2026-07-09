@@ -638,6 +638,7 @@ export default function Sidebar({ config }: SidebarProps) {
           </svg>
         </span>{" "}
         fused-render
+        <span className="brand-version">v{config.version}</span>
       </div>
       <div className="sidebar-section">
         <a href="#" id="home-link" className="sidebar-item" onClick={onHomeClick}>
