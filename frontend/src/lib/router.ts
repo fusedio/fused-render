@@ -22,9 +22,12 @@ function notifyNavigate(): void {
 
 // Windows fs paths are rooted at a drive letter ("C:/…"), not at "/" — the
 // shell's canonical form keeps forward slashes and adds a leading slash only
-// for POSIX paths.
+// for POSIX paths. A bare drive ("C:", how a drive root decodes from a URL,
+// whose segment split drops the trailing slash) canonicalizes to "C:/" —
+// bare "C:" is cwd-relative for os.stat on Windows.
 export function rootedFsPath(joined: string): string {
-  return /^[A-Za-z]:(\/|$)/.test(joined) ? joined : "/" + joined;
+  if (/^[A-Za-z]:$/.test(joined)) return joined + "/";
+  return /^[A-Za-z]:\//.test(joined) ? joined : "/" + joined;
 }
 
 export function fsPathFromLocation(): string | null {
