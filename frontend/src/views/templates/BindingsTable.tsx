@@ -16,17 +16,21 @@ export function BindingsTable({
   const [query, setQuery] = useState("");
 
   const q = query.trim().toLowerCase();
-  const rows = registry.entries.filter((e) => {
-    if (filter === "modified" && !e.overridesCore) return false;
-    if (sourceFilter !== "all" && e.resolvedSource !== sourceFilter) return false;
-    if (q) {
-      const hit =
-        e.key.toLowerCase().includes(q) ||
-        e.templates.some((t) => t.name.toLowerCase().includes(q));
-      if (!hit) return false;
-    }
-    return true;
-  });
+  const rows = registry.entries
+    .filter((e) => {
+      if (filter === "modified" && !e.overridesCore) return false;
+      if (sourceFilter !== "all" && e.resolvedSource !== sourceFilter) return false;
+      if (q) {
+        const hit =
+          e.key.toLowerCase().includes(q) ||
+          e.templates.some((t) => t.name.toLowerCase().includes(q));
+        if (!hit) return false;
+      }
+      return true;
+    })
+    // User-overridden bindings first, then core; key order preserved within
+    // each group (stable sort).
+    .sort((a, b) => Number(b.overridesCore) - Number(a.overridesCore));
 
   return (
     <section className="templates-tabpanel">
