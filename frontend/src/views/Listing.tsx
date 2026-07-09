@@ -10,6 +10,7 @@ import { listDir, walkDir } from "../lib/api";
 import type { FsEntry, WalkEntry, WalkResult } from "../lib/api";
 import { formatSize, formatMtime } from "../lib/format";
 import { fuzzyMatch, highlightSegments } from "../lib/fuzzy";
+import { iconForEntry } from "../components/FileIcons";
 
 const SORT_KEYS = { name: "Name", size: "Size", mtime: "Modified" };
 type SortKey = keyof typeof SORT_KEYS;
@@ -356,8 +357,6 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   );
 
   const base = fsPath.replace(/\/$/, "");
-  const fileIcon = "\u{1F4C4}";
-  const dirIcon = "\u{1F4C1}";
 
   // --- table body -----------------------------------------------------------
 
@@ -382,7 +381,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
               onClick={() => navigate(childPath)}
             >
               <td className="name">
-                <span className="icon">{entry.is_dir ? dirIcon : fileIcon}</span>
+                <span className="icon">{iconForEntry(entry.rel.split("/").pop() ?? entry.rel, entry.is_dir)}</span>
                 <span className="search-path">{renderHighlight(entry.rel, positions)}</span>
               </td>
               <td className="size">{entry.is_dir ? "" : formatSize(entry.size)}</td>
@@ -432,7 +431,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
           onClick={() => navigate(childPath)}
         >
           <td className="name">
-            <span className="icon">{entry.is_dir ? dirIcon : fileIcon}</span>
+            <span className="icon">{iconForEntry(entry.name, entry.is_dir)}</span>
             {entry.name}
           </td>
           <td className="size">{entry.is_dir ? "" : formatSize(entry.size)}</td>
