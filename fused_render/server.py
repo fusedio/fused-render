@@ -916,11 +916,8 @@ def create_app(start_dir: str) -> FastAPI:
         if sys.platform == "darwin":
             cmd = ["open", path] if is_dir else ["open", "-R", path]
         elif os.name == "nt":
-            # Explorer needs native backslash paths — the shell hands us forward
-            # slashes ("C:/…"), and with those /select, silently falls back to
-            # the default folder. /select, must also sit flush against a quoted
-            # path, so this arm builds the command line itself rather than let
-            # subprocess's list quoting split "/select," off from the path.
+            # Explorer needs native backslash paths — with forward slashes
+            # /select, silently opens the default folder instead.
             win_path = os.path.normpath(path)
             cmd = f'explorer "{win_path}"' if is_dir else f'explorer /select,"{win_path}"'
         else:
