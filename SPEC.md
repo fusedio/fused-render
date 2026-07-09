@@ -80,6 +80,7 @@ Left sidebar in the shell, always visible:
 - **SB-4** Bookmarks are renamable inline (edit affordance on hover → input → Enter/blur commits) and deletable. No confirm on delete (re-bookmarking is one click).
 - **SB-5** **DECIDED: persistence = server-side file** `~/.fused-render/bookmarks.json` (D75; superseded the original localStorage store). JSON array `{id, name, url, created_at}` (+ folders, D44); `id = crypto.randomUUID()`. Served by `GET /api/bookmarks` → `{exists, bookmarks}` and `PUT /api/bookmarks` (whole-tree, atomic, last-write-wins); server code lives in `fused_render/shell/`. Frontend reads a synchronous in-memory cache hydrated at boot; mutations await the PUT (no optimistic update); a 30 s poll re-reads the server so another tab's edits converge (D77, eventual ≤30 s, still last-write-wins). Legacy `localStorage["fused.bookmarks"]` is imported once (gated on the file not yet existing), then left dormant.
 - **SB-6** Duplicate URLs allowed; list ordered by creation time. *(drag reorder, active-bookmark highlight: polish, later)*
+- **SB-7** **DECIDED: bookmark create/update is mirrored into the target file's `.html.json` sidecar** (D83) as `bookmarkHistory` — the same per-file sidecar the `claude` chat template owns via `claudeSessions` (§7). `POST /api/bookmarks/history` upserts an entry by bookmark `id`; the frontend calls it fire-and-forget right after `addBookmark`/`updateBookmarkUrl` commit. A bookmark targeting a layout/tab sentinel or a path no longer on disk records nothing. **Delete never touches the sidecar** — history is permanent, independent of the bookmark's current lifetime.
 
 ### Server FS API (shape, not final contract)
 
@@ -873,14 +874,53 @@ never imports server).
 
   **Superseded (2026-07-09, owner call):** the read-only registry section was
   removed from the Preferences page when the full Template Management view
-  shipped (§21, `/view/_templates`) — a single home for bindings rather than a
+  shipped (§22, `/view/_templates`) — a single home for bindings rather than a
   glance in one place and an editor in another. The **`GET /api/templates/registry`
   endpoint stays** (unchanged contract, TV-4); it is now consumed by the
   Templates view instead of Preferences.
 
 ---
 
-## 21. Template Management — Sources, Bindings & Import/Export (M14)
+## 21. Session Restore — Per-File Last Params (D84)
+
+Goal: opening a file the way most opens happen — a listing click, a Finder/DMG
+double-click, the root redirect — should not lose whatever params you last had
+on it. A **file** (never a directory, never an embed-mode pane) remembers its
+last shell query in the same `.html.json` sidecar the `claude` chat template
+(§7) and bookmark history (SB-7) already use.
+
+- **LSN-1** A viewed file's last URL params are stored as `lastSession` in its
+  `<file>.json` sidecar, sibling to the claude template's `claudeSessions` key
+  and SB-7's `bookmarkHistory`.
+- **LSN-2** `lastSession = {search, updated_at}` — `search` is the shell query
+  string verbatim, no leading `?` (same literal-URL posture as bookmarks, SB-2).
+- **LSN-3** Tracking upserts when the shell query has a param **other than
+  `_mode`**, or when a `lastSession` already exists for the file (so once a
+  session is going, a later `_mode`-only change is remembered too); a query that
+  is empty, or `_mode`-only with no prior session, never starts one.
+- **LSN-4** Opening a file with an **empty** shell query restores `lastSession`
+  (if present) via `history.replaceState` before the preview mounts.
+- **LSN-5** Opening a file with a **non-empty** query (bookmark, hand-typed,
+  refresh) — those params win, no restore — and, if qualifying (LSN-3), become
+  the new `lastSession`.
+- **LSN-6** Directories and embed-mode panes (panel/tab, D72) neither track
+  nor restore — layout mode already owns pane params.
+- **LSN-7** Persistence is `GET`/`PUT /api/session` (`fused_render/server.py`);
+  `PUT` carries the `X-Fused` guard (D36), `GET` is unguarded (read-only).
+- **LSN-8** Sidecar writes read-merge-write the whole dict, so `claudeSessions`,
+  `bookmarkHistory`, and `lastSession` never clobber one another (last-write-wins
+  on a true simultaneous write — D3).
+- **LSN-9** The preview is held (a brief loading state) until the restore
+  decision resolves — no flash of default params before the restored ones apply.
+- **LSN-10** Tracking writes are debounced (400 ms) and fire-and-forget; a
+  sidecar read/write failure never blocks the view — it just renders bare.
+- **LSN-11** Dropping params back to empty/`_mode`-only leaves the stored
+  `lastSession` untouched — a later bare open re-applies it. Accepted quirk,
+  not a bug.
+
+---
+
+## 22. Template Management — Sources, Bindings & Import/Export (M14)
 
 Goal: a dedicated view that turns the read-only registry glance of §20.5
 (PF-7) into a full editing surface for template bindings, plus the ability to
@@ -892,22 +932,22 @@ registry file format (CT-2/CT-10/CT-11), or PF-7's read-only endpoint
 contract (TV-4). The read-only glance itself is retired from Preferences once
 this view ships (§20.5); the endpoint it used is now consumed here instead.
 
-### 21.1 Sources model (extensibility)
+### 22.1 Sources model (extensibility)
 
-- **TV-1** **DECIDED (D82):** the builtin/user pair (§7, §16) is generalized
+- **TV-1** **DECIDED (D85):** the builtin/user pair (§7, §16) is generalized
   into an ordered list of **sources** — `Source { id, label, editable,
   precedence }`. Today exactly two ship: `core` (`id:"core"`,
   `editable:false`, `precedence:0`, the `TEMPLATES_DIR`/`BUILTIN_REGISTRY`
   pair) and `user` (`id:"user"`, `editable:true`, `precedence:100`, the
   `USER_TEMPLATES_DIR`/`USER_REGISTRY` pair, D76's paths). The list is
   modeled so a third source (org/project) can be appended later with zero UI
-  rework — **not built now** (§21.4).
+  rework — **not built now** (§22.4).
 - **TV-2** Effective binding for a registry key = the value from the
   highest-precedence source that defines it — unchanged from PT-6/CT-3 (user
   beats core); the sources list is a presentation/provenance layer over the
   existing resolution rule, not a new one.
 
-### 21.2 API
+### 22.2 API
 
 New endpoints live in `fused_render/templates_api.py` (a `templates_router`,
 mirroring `shell/bookmarks.py`/`shell/prefs.py`), included from `server.py`
@@ -932,7 +972,7 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   alone gives, or `null`; drives reset-preview + the known-keys list), and
   `userValue` (raw user-registry value, included only when a user key
   exists). `entries` covers every builtin key plus every user-only key.
-- **TV-5** `PUT /api/templates/registry` **(D83)** — upserts **one** user
+- **TV-5** `PUT /api/templates/registry` **(D86)** — upserts **one** user
   key: body `{key, value}` (`value` = ordered name array or `null`).
   Validates the key against the CT-3 grammar and every name against the
   resolved inventory (unknown names → 400 listing them), then does a
@@ -940,11 +980,11 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   existing atomic `read_json`/`write_json` helpers (creates the file/dir if
   missing) — never a whole-file overwrite. Returns the recomputed entry
   (same shape as one `entries[]` item from TV-4).
-- **TV-6** `POST /api/templates/registry/reset` **(D83)** — body `{key}`;
+- **TV-6** `POST /api/templates/registry/reset` **(D86)** — body `{key}`;
   deletes that key from the user registry (no-op if absent), reverting the
   effective value to the core one. Returns the recomputed entry, or
   `{key, removed:true}` if no such key resolves anywhere anymore.
-- **TV-7** `GET /api/templates/export?names=a&names=b` **(D85)** — streams a
+- **TV-7** `GET /api/templates/export?names=a&names=b` **(D88)** — streams a
   zip (`application/zip`, `Content-Disposition: attachment;
   filename="fused-render-templates.zip"`) of the named templates — **core or
   user** (a user folder shadows a core folder of the same name; 400 on a name
@@ -952,7 +992,7 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   comma-joined) so a folder name containing a comma round-trips. Each
   template's folder contents land at its own top level in the zip. **No
   `registry.json` in the zip** — folders only.
-- **TV-8** `POST /api/templates/import` **(D86)** — step 1 of 2, multipart
+- **TV-8** `POST /api/templates/import` **(D89)** — step 1 of 2, multipart
   (`file` field, the `.zip`), stages without committing: unpacks to
   `home_dir()/.import-staging/<importId>/` (`importId` = `secrets.token_hex`).
   Hardening (rejects the whole upload before anything lands outside
@@ -965,7 +1005,7 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   `conflictsExisting` flags a name already present under
   `USER_TEMPLATES_DIR`. Stale staging dirs past the TTL are swept
   opportunistically on every call.
-- **TV-9** `POST /api/templates/import/{importId}/commit` **(D86)** — step
+- **TV-9** `POST /api/templates/import/{importId}/commit` **(D89)** — step
   2: body `{resolutions: {name: "overwrite"|"skip"|"keep-both"}}`
   (unresolved items default to `skip`). Per valid item: `skip` drops it;
   `overwrite` atomically replaces the existing folder; `keep-both` lands as
@@ -976,9 +1016,9 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   inventory's Reveal action reuses `POST /api/fs/reveal`; "open in explorer"
   is a plain shell navigation to `USER_TEMPLATES_DIR/<name>`.
 
-### 21.3 Frontend — Templates view (`/view/_templates`)
+### 22.3 Frontend — Templates view (`/view/_templates`)
 
-- **TV-11** **(D88)** New route **`/view/_templates`** — a shell-owned
+- **TV-11** **(D91)** New route **`/view/_templates`** — a shell-owned
   sentinel dispatched in `App.tsx` the same way `/view/_prefs` is (§20):
   view-only, no `/embed` variant (a template-management page inside an
   embedded pane has no meaning). New component
@@ -1000,7 +1040,7 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   when `disabled`, broken-name chips (`exists:false`) in a warning style.
   Filters: All / Modified only / by source; a search box over key and
   template name. `+ Add extension` opens the row editor in create mode.
-- **TV-15** **Row editor modal (D87)** (DeployModal-style: backdrop +
+- **TV-15** **Row editor modal (D90)** (DeployModal-style: backdrop +
   dialog, Escape to close): in **create** mode, a key **pattern builder**
   covering all four CT-3 shapes — simple `.ext`, compound `.a.b`, wildcard
   `.*.json`, directory `.ext/` — via a segmented control with a
@@ -1037,15 +1077,15 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   registry and re-renders — no stale state between the two sections.
   Header copy states plainly that this view manages **bindings + inventory
   only**: editing a template's own files happens in the file explorer
-  (D84).
+  (D87).
 
-### 21.4 Non-goals (this feature)
+### 22.4 Non-goals (this feature)
 
 - Editing template file contents (`template.html`, `reader.py`, css, icons)
-  in this UI — use the file explorer + the existing `/api/fs/write` (D84).
+  in this UI — use the file explorer + the existing `/api/fs/write` (D87).
 - A real third source (org/project) — TV-1 only models for it.
 - Registry bindings inside export zips, or merging/writing registry entries
-  from an import — exports are folders only (D85); imported templates are
+  from an import — exports are folders only (D88); imported templates are
   inert (CT-7) until bound via the row editor.
 - Persisting a per-file "last selected mode" — unrelated, not part of this
   feature.

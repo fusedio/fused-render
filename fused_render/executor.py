@@ -56,6 +56,7 @@ INPROCESS_HELPERS = frozenset(
         ("table", "reader.py"),
         ("csv", "reader.py"),
         ("xlsx", "reader.py"),
+        ("sqlite", "reader.py"),
         ("api", "inspector.py"),
     )
 )

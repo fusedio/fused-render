@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Archive preview</title>
+<style>
+  /* Tokens mirror the app shell (shell.css) so the archive browser reads as a
+     native folder view. */
+  :root {
+    color-scheme: dark;
+    --fg: #e8eaed;
+    --fg-muted: #9aa0a6;
+    --border: #2a2d33;
+    --bg: #131417;
+    --bg-alt: #1b1d21;
+    --accent: #E5FF44;
+    --error: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    color: var(--fg);
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Header: breadcrumb on the left, actions on the right (mirrors .preview-header). */
+  .header {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .crumbs {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    overflow: hidden;
+    white-space: nowrap;
+    font-size: 14px;
+  }
+  .crumb {
+    color: var(--fg-muted);
+    cursor: pointer;
+    text-overflow: ellipsis;
+    overflow: hidden;
+  }
+  .crumb:hover { color: var(--fg); }
+  .crumb.current { color: var(--fg); cursor: default; font-weight: 600; }
+  .crumb.crumb-icon { display: inline-flex; align-items: center; }
+  .crumb-sep { color: var(--fg-muted); opacity: 0.6; }
+  .actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+  .actions button {
+    font: inherit;
+    padding: 5px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .actions button:hover:not(:disabled) { background: var(--bg-alt); }
+  .actions button:disabled { opacity: 0.5; cursor: default; }
+
+  /* Toast line for extract results / errors. */
+  #notice {
+    flex: 0 0 auto;
+    display: none;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-alt);
+    color: var(--fg-muted);
+    font-size: 12.5px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #notice.error { color: var(--error); }
+  #notice code { color: var(--fg); }
+
+  /* Body swaps between the listing table and the embedded preview. */
+  #body { flex: 1 1 auto; min-height: 0; overflow: auto; }
+  #preview-frame { width: 100%; height: 100%; border: 0; display: block; }
+
+  table.listing-table { width: 100%; border-collapse: collapse; }
+  table.listing-table th {
+    text-align: left;
+    font-weight: 600;
+    color: var(--fg-muted);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    padding: 8px 16px;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--bg);
+    box-shadow: inset 0 -1px 0 var(--border);
+    cursor: pointer;
+    user-select: none;
+  }
+  table.listing-table th:hover { color: var(--fg); }
+  table.listing-table th.sorted { color: var(--accent); }
+  table.listing-table .sort-arrow { margin-left: 5px; font-size: 9px; }
+  table.listing-table td {
+    padding: 9px 16px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  table.listing-table tr.row { cursor: pointer; }
+  table.listing-table tr.row:hover { background: var(--bg-alt); }
+  table.listing-table td.name { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+  table.listing-table .icon { flex: 0 0 auto; opacity: 0.75; }
+  table.listing-table td.size, table.listing-table td.mtime {
+    color: var(--fg-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .status-message { padding: 24px 16px; color: var(--fg-muted); }
+  .status-message.error { color: var(--error); }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div class="crumbs" id="crumbs"></div>
+    <div class="actions" id="actions"></div>
+  </div>
+  <div id="notice"></div>
+  <div id="body"><div class="status-message">Loading…</div></div>
+
+  <script>
+    const FILE_ICON = "\u{1F4C4}";  // 📄
+    const DIR_ICON = "\u{1F4C1}";   // 📁
+    // Matches templates/tar/icon.svg — used as the breadcrumb root marker.
+    const ZIP_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">' +
+      '<path fill-rule="evenodd" d="M2,7L12,3L22,7V9H2Z M4,10H20V21H4Z M9,13H15V15H9Z"/></svg>';
+
+    const crumbsEl = document.getElementById("crumbs");
+    const actionsEl = document.getElementById("actions");
+    const bodyEl = document.getElementById("body");
+    const noticeEl = document.getElementById("notice");
+
+    let ENTRIES = [];         // flat list from the reader
+    let cwd = [];             // current dir within the archive, as path segments
+    let selected = null;      // full entry path currently previewed, or null
+    let sortKey = "name";     // name | size | mtime
+    let sortOrder = "asc";
+
+    function escapeHtml(s) {
+      return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }
+    function fmtBytes(n) {
+      if (n === null || n === undefined) return "";
+      if (n < 1024) return n + " B";
+      const units = ["KB", "MB", "GB", "TB"];
+      let v = n / 1024, i = 0;
+      while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+      return (v < 10 ? v.toFixed(1) : Math.round(v)) + " " + units[i];
+    }
+
+    function notify(msg, isError) {
+      noticeEl.innerHTML = msg;
+      noticeEl.className = isError ? "error" : "";
+      noticeEl.style.display = "block";
+    }
+    function clearNotice() { noticeEl.style.display = "none"; }
+
+    // Immediate children of `cwd`: subdirectory names + files at this level.
+    // Directories are synthesized from paths even when the zip has no explicit
+    // dir member.
+    function childrenOf(prefixParts) {
+      const prefix = prefixParts.length ? prefixParts.join("/") + "/" : "";
+      const dirs = new Map();   // name -> aggregate {size, mtime}
+      const files = [];
+      for (const e of ENTRIES) {
+        // ZIP names should use "/", but some tools emit "\". Normalize for tree
+        // building/navigation, but keep the ORIGINAL path as the identity we
+        // hand back to reader.py — getinfo() needs the exact stored name.
+        const norm = e.path.replace(/\\/g, "/");
+        if (!norm.startsWith(prefix)) continue;
+        const relParts = norm.slice(prefix.length).split("/").filter(Boolean);
+        if (relParts.length === 0) continue;
+        const isDirEntry = e.is_dir || norm.endsWith("/");
+        if (relParts.length === 1 && !isDirEntry) {
+          files.push({ name: relParts[0], path: e.path, size: e.size, modified: e.modified });
+        } else {
+          const name = relParts[0];
+          if (!dirs.has(name)) dirs.set(name, { name, path: prefix + name, is_dir: true });
+        }
+      }
+      return { dirs: [...dirs.values()], files };
+    }
+
+    function parseTs(s) { const t = Date.parse(s); return Number.isFinite(t) ? t : 0; }
+
+    function sortRows(dirs, files) {
+      const flip = sortOrder === "desc" ? -1 : 1;
+      const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+      const cmp = (a, b) => {
+        let c;
+        if (sortKey === "size") c = (a.size ?? -1) - (b.size ?? -1);
+        else if (sortKey === "mtime") c = parseTs(a.modified) - parseTs(b.modified);
+        else c = byName(a, b);
+        if (c === 0) c = byName(a, b);
+        return c * flip;
+      };
+      // Directories always group first (as in the app listing), but within
+      // their group they honor the active sort/order just like files — a
+      // synthesized dir has no size/mtime, so those keys fall to the name
+      // tiebreak (which itself respects `flip`), matching the shell.
+      return [...dirs.sort(cmp), ...files.sort(cmp)];
+    }
+
+    function renderCrumbs() {
+      // The app's native preview header already shows the archive's filename, so
+      // the root crumb here is a folder icon (a back-to-root click target)
+      // rather than the name repeated — avoids two stacked title bars.
+      const parts = [{ icon: ZIP_ICON, depth: 0, title: "Archive root" }];
+      cwd.forEach((seg, i) => parts.push({ label: seg, depth: i + 1, title: seg }));
+      if (selected) {
+        const n = selected.split("/").pop();
+        parts.push({ label: n, depth: -1, title: n });
+      }
+      crumbsEl.innerHTML = "";
+      parts.forEach((p, idx) => {
+        if (idx > 0) {
+          const sep = document.createElement("span");
+          sep.className = "crumb-sep";
+          sep.textContent = "›"; // ›
+          crumbsEl.appendChild(sep);
+        }
+        const el = document.createElement("span");
+        const isLast = idx === parts.length - 1;
+        el.className = "crumb" + (isLast ? " current" : "") + (p.icon ? " crumb-icon" : "");
+        if (p.icon) el.innerHTML = p.icon;
+        else el.textContent = p.label;
+        el.title = p.title;
+        if (!isLast) {
+          el.addEventListener("click", () => {
+            selected = null;
+            cwd = p.depth === 0 ? [] : cwd.slice(0, p.depth);
+            render();
+          });
+        }
+        crumbsEl.appendChild(el);
+      });
+    }
+
+    function renderActions() {
+      actionsEl.innerHTML = "";
+      if (selected) {
+        const btn = document.createElement("button");
+        btn.textContent = "Extract this file";
+        btn.addEventListener("click", () => extract("extract", selected));
+        actionsEl.appendChild(btn);
+      }
+      const all = document.createElement("button");
+      all.textContent = "Extract all";
+      all.addEventListener("click", () => extract("extract_all"));
+      actionsEl.appendChild(all);
+    }
+
+    function th(label, key) {
+      const sorted = sortKey === key;
+      const arrow = sorted ? (sortOrder === "asc" ? " ▲" : " ▼") : "";
+      return `<th data-key="${key}" class="${sorted ? "sorted" : ""}">${label}` +
+        `<span class="sort-arrow">${arrow}</span></th>`;
+    }
+
+    function renderListing() {
+      const { dirs, files } = childrenOf(cwd);
+      const rows = sortRows(dirs, files);
+      const head = `<thead><tr>${th("Name", "name")}${th("Size", "size")}${th("Modified", "mtime")}</tr></thead>`;
+      let bodyRows;
+      if (rows.length === 0) {
+        bodyRows = `<tr><td colspan="3" class="status-message">This folder is empty.</td></tr>`;
+      } else {
+        bodyRows = rows.map((r) => {
+          const icon = r.is_dir ? DIR_ICON : FILE_ICON;
+          const size = r.is_dir ? "" : escapeHtml(fmtBytes(r.size));
+          const mtime = escapeHtml(r.modified || "");
+          return `<tr class="row" data-path="${escapeHtml(r.path)}" data-dir="${r.is_dir ? 1 : 0}">` +
+            `<td class="name"><span class="icon">${icon}</span>${escapeHtml(r.name)}</td>` +
+            `<td class="size">${size}</td><td class="mtime">${mtime}</td></tr>`;
+        }).join("");
+      }
+      bodyEl.innerHTML = `<table class="listing-table">${head}<tbody>${bodyRows}</tbody></table>`;
+
+      bodyEl.querySelectorAll("th[data-key]").forEach((el) => {
+        el.addEventListener("click", () => {
+          const key = el.getAttribute("data-key");
+          if (sortKey === key) sortOrder = sortOrder === "asc" ? "desc" : "asc";
+          else { sortKey = key; sortOrder = "asc"; }
+          render();
+        });
+      });
+      bodyEl.querySelectorAll("tr.row").forEach((el) => {
+        el.addEventListener("click", () => {
+          const path = el.getAttribute("data-path");
+          if (el.getAttribute("data-dir") === "1") {
+            cwd = path.replace(/\/$/, "").split("/").filter(Boolean);
+            selected = null;
+            render();
+          } else {
+            openPreview(path);
+          }
+        });
+      });
+    }
+
+    // Reuse the app's own template pipeline: extract the clicked member to a
+    // temp file, stat it to discover its template, then embed the normal
+    // /render iframe. A member with no bound template falls back to the
+    // renderer's own metadata card.
+    async function openPreview(entry) {
+      selected = entry;
+      clearNotice();
+      renderCrumbs();
+      renderActions();
+      bodyEl.innerHTML = `<div class="status-message">Loading preview…</div>`;
+      const file = fused.params.get("_file");
+      try {
+        const res = await fused.runPython("./reader.py", { file, action: "preview", entry });
+        if (selected !== entry) return; // superseded by another click
+        if (res.is_dir) { bodyEl.innerHTML = `<div class="status-message">That entry is a folder.</div>`; return; }
+        const tmp = res.path;
+        const st = await fused.stat(tmp);
+        if (selected !== entry) return;
+        const t = st.templates && st.templates[0];
+        let src;
+        if (!t) {
+          bodyEl.innerHTML = `<div class="status-message">No preview available for this file type — ` +
+            `${escapeHtml(fmtBytes(res.size))}. Use “Extract this file” to save it.</div>`;
+          return;
+        }
+        src = t.mode === "_render"
+          ? `/render?path=${encodeURIComponent(tmp)}`
+          : `/render?path=${encodeURIComponent(t.path)}&_file=${encodeURIComponent(tmp)}`;
+        const frame = document.createElement("iframe");
+        frame.id = "preview-frame";
+        frame.src = src;
+        bodyEl.innerHTML = "";
+        bodyEl.appendChild(frame);
+      } catch (err) {
+        if (selected !== entry) return;
+        bodyEl.innerHTML = `<div class="status-message error"><strong>` +
+          `${escapeHtml(err.type || "Error")}</strong>: ${escapeHtml(err.message || "")}</div>`;
+      }
+    }
+
+    async function extract(action, entry) {
+      clearNotice();
+      const file = fused.params.get("_file");
+      const label = action === "extract_all" ? "Extract all" : "Extract this file";
+      notify(`${label}…`, false);
+      try {
+        const res = await fused.runPython("./reader.py", { file, action, entry: entry || "" });
+        const what = action === "extract_all"
+          ? `${res.count} file${res.count === 1 ? "" : "s"}`
+          : (res.path ? "1 file" : "folder");
+        notify(`Extracted ${what} to <code>${escapeHtml(res.dest)}</code>`, false);
+      } catch (err) {
+        notify(`<strong>${escapeHtml(err.type || "Error")}</strong>: ${escapeHtml(err.message || "")}`, true);
+      }
+    }
+
+    function render() {
+      renderCrumbs();
+      renderActions();
+      if (selected) return; // preview view manages #body itself
+      renderListing();
+    }
+
+    async function load() {
+      const file = fused.params.get("_file");
+      if (!file) {
+        bodyEl.innerHTML = `<div class="status-message error">No file selected (missing _file param).</div>`;
+        return;
+      }
+      try {
+        const data = await fused.runPython("./reader.py", { file, action: "list" });
+        ENTRIES = data.entries || [];
+        render();
+      } catch (err) {
+        bodyEl.innerHTML = `<div class="status-message error"><strong>` +
+          `${escapeHtml(err.type || "Error")}</strong>: ${escapeHtml(err.message || "")}</div>`;
+      }
+    }
+
+    load();
+  </script>
+</body>
+</html>
