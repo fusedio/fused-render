@@ -540,3 +540,327 @@ nothing. Full detail: `docs/EXPORT.md`.
   `run-` when they'd collide with a reserved serve route (`data`, `health`, the
   `_`-prefixed control/shell/asset routes), and are suffixed `-2`, `-3`, … on
   duplicate stems — so the map is always valid and injective.
+
+## 19. Deploy — Hosted Publish through the fused CLI (M11)
+
+Goal: close the gap between §18's bundle and a working URL, from the shell. The
+local-only invariant (§1) is unchanged in kind: fused-render still binds
+127.0.0.1, hosts nothing, and mints no URLs — **deploying is an explicit user
+action that delegates to the separately-installed `fused` CLI** (`fused share`,
+the fused repo's one URL-minting operation — its spec/serve/share-links.md and
+spec/serve/fused-render.md; the same shell-out pattern the flow app uses for
+project deploys). The server orchestrates the child process; nothing else in
+the product gains network access.
+
+### 19.1 Surface
+
+- **DP-1** Any file preview whose mode list carries the `_render` sentinel
+  **and** whose filename is `.html`/`.htm` shows a **Deploy** header action —
+  both conditions, because that is exactly the set `/api/export` accepts: a
+  registry rebind can put `_render` on any type (D73), but the exporter is
+  extension-gated, and the button must never open a modal that cannot deploy.
+  Additionally gated on the opt-in `deploy_enabled` pref (PF-8): Deploy is off
+  by default, so the button is hidden entirely until enabled from Preferences
+  → Deployments (re-read on focus/visibility, so a toggle shows through
+  without a remount).
+  A green dot marks a page whose stored deployment reads active (a local
+  pointer read — opening a preview never spawns the CLI; re-read on tab
+  focus/visibility regain, so an out-of-band revoke — e.g. the Preferences
+  page in another tab — shows through without a remount). Directories never
+  show it. The action opens the Deploy modal.
+- **DP-2** The modal handles its states in order: the fused CLI missing → an
+  install panel; no hosted env configured → guidance (`fused env create` /
+  `fused cloud setup`, naming the envs file); else the form — env picker,
+  current-deployment card (status chip, URL with copy/open), a **"Will
+  publish" preview** (DP-2a), Deploy/Redeploy, and Revoke. The modal is scoped
+  to the current page; the **env-wide** deployment list (DP-13) lives on the
+  Preferences page's Deployments section (PF-6), not in the modal.
+- **DP-2a** Before the click, the modal shows exactly what a deploy would
+  publish (`GET /api/deploy/preview` → `preview_deploy`, the same pure
+  `plan_export` scan the real export runs, resolved fresh, no files written):
+  the page plus each `runPython` target (and its served route name) and each
+  `rawUrl`/`readFile` asset. Export blockers come back in the same response
+  and **disable Deploy** with the full list — an unexportable page reads as
+  "fix these" up front, never as a failed deploy. A preview *fetch* failure
+  (unexportable type, file deleted since the header rendered) degrades to a
+  blocker entry the same way — the dialog still renders its form; it never
+  dead-ends on the preview call.
+- **DP-2b** Login guidance, before and after the click.
+  `GET /api/deploy/config` carries `fused_logged_in` — presence of the fused
+  CLI's own control-plane credentials file
+  (`~/.openfused/fused-cloud-credentials.json`,
+  `OPENFUSED_FUSED_CLOUD_CREDENTIALS` honored). Presence-only by design: an
+  expired-but-refreshable token still works (the CLI refreshes silently), so
+  the CLI stays the authority at action time. With a managed `fused` env
+  selected and no credentials on disk, the modal warns **before** the click,
+  naming `<setup_cli> cloud login` (a one-time browser sign-in). After a
+  failed action, CLI errors that name `fused cloud login` are suffixed with
+  the packaged app's real wrapper path (`_cli_error` + `_setup_cli_hint`) —
+  plain `fused` doesn't resolve inside the .app, so the instruction must be
+  runnable as printed. The no-envs guidance states that `cloud setup` opens
+  a browser sign-in first.
+
+### 19.2 The fused CLI seam
+
+- **DP-3** CLI resolution (`deploy.fused_cli`) has **exactly two sources —
+  one explicit, one autodetected — and nothing else**: (1)
+  `FUSED_RENDER_FUSED_BIN` (verbatim, whitespace-split — compound commands
+  work, and it is the test seam); (2) the `fused` package **importable in the
+  server's own interpreter**, run as `[sys.executable,
+  fused_render/_fused_cli.py]` — a shim that sets `argv[0] = "fused"` and
+  calls `fused._cli.main()`, behaviorally identical to the console script.
+  There is deliberately **no venv-bin scan, no PATH lookup, and no
+  well-known-location guessing**: a CLI the server didn't get from its own
+  interpreter runs only because the user explicitly configured it. (The old
+  venv-bin step is subsumed — a venv whose bin/ has the script always has the
+  package importable.)
+- **DP-3a** Child-env hygiene: an **external** CLI (the override) is spawned
+  with `PYTHONHOME`/`PYTHONPATH` scrubbed — inside the packaged app those are
+  bundle-scoped and would break any other Python (the las template's
+  external-spawn precedent); the in-interpreter shim keeps them (they are
+  what make `sys.executable` work in the bundle). `OPENFUSED_ENV` targeting
+  (DP-7) is unchanged for both.
+- **DP-4** When the CLI is missing and installing is possible (Python ≥ 3.11
+  per the wheel's marker, and the interpreter has pip), `POST
+  /api/deploy/install` pip-installs **the wheel pinned by
+  `deploy.PINNED_FUSED_REQUIREMENT`** into the server's interpreter — which
+  makes the package importable there, i.e. lands in DP-3's autodetected
+  source (finder caches are invalidated after the install so the probe sees
+  it without a restart). The constant is the in-code source of the pin;
+  pyproject.toml's `[fused]` extra must reference the same wheel and a test
+  pins the two together. Reading the pin from installed dist-info metadata is
+  rejected: metadata is absent on source-tree runs and stripped app bundles,
+  and goes stale on an editable install that predates the extra — all of
+  which disabled the button exactly when it mattered, while the constant
+  ships in the same file as the code using it. When installing is impossible,
+  the modal states why — old Python, or a pip-less embedded interpreter
+  (point `FUSED_RENDER_FUSED_BIN` at a fused installed with another Python) —
+  plus the manual `pip install "fused-render[fused]"` hint.
+- **DP-16** The packaged macOS app **ships the CLI**: `build_dmg.sh` installs
+  the `[fused]` extra into the bundle (py2app force-copies `fused` + its
+  data-bearing deps — `setup_py2app.py`), so DP-3's autodetected source is
+  always present and the install panel never appears in the .app (its sealed,
+  notarized bundle could not be pip-installed into anyway). The build also
+  ships a terminal wrapper, `Contents/Resources/bin/fused` (bundled python +
+  the DP-3 shim), for the one-time interactive setup a modal can't do —
+  `fused cloud setup` / `cloud login` / `env create` — and smoke-tests real
+  CLI verbs through the shim before signing, so a py2app packaging gap fails
+  the build rather than the user's first deploy. The wrapper lives under
+  `Resources`, not `MacOS`: everything in a bundle's `MacOS/` is nested code
+  to codesign, and a shell script there cannot carry a code signature — the
+  bundle seal fails ("code object is not signed at all"); a script under
+  `Resources` is sealed by the resource rules instead. `GET /api/deploy/config`
+  carries `setup_cli` — the wrapper's absolute path when frozen
+  (`sys.frozen == "macosx_app"`), else `"fused"` — and the modal's
+  no-envs guidance names it.
+
+### 19.3 Environments
+
+- **DP-5** Eligible deploy targets are the **hosted** environments in the fused
+  CLI's own store (`~/.openfused/envs.json`, `OPENFUSED_ENVS_FILE` override):
+  backends `fused` (managed) and `aws` (self-provisioned serving plane) —
+  never `local`, which has no serving plane. The store is read directly, so the
+  picker renders even before the CLI is installed.
+- **DP-6** Default pick: `OPENFUSED_ENV` when it names an eligible env, else
+  the first `fused`-backend env (preferring the store default when it is one),
+  else the store default, else the first eligible.
+- **DP-7** The chosen env is targeted by setting `OPENFUSED_ENV` on the child —
+  the CLI's own override channel; no config file is edited.
+
+### 19.4 Deploy semantics
+
+- **DP-8** Each deploy re-exports the page (§18) into a fresh temp directory
+  and hands that bundle to the CLI; the bundle is deleted afterwards. An export
+  error blocks the deploy (400, all problems at once — nothing is uploaded).
+- **DP-9** Deploys are **public share links** (`share create --public`, no
+  `--token`): an opaque, unguessable capability URL. Rationale: authed mounts
+  cannot serve a hosted page's browser asset GETs yet (fused repo,
+  spec/serve/fused-render.md § Limitations); gate pickers become an option when
+  that lands.
+- **DP-10** Redeploy keeps the URL. Same-env pointer + mount active per
+  `share list` → `share repoint <token>` (stable URL); revoked tombstone →
+  `share recreate --same-token` then repoint (a failed repoint best-effort
+  re-revokes, so a deliberately taken-down link never comes back silently live
+  with old content; the pointer is then persisted to the TRUE resulting state
+  and the raised error names it — compensation succeeded → the link is down →
+  pointer `revoked`; compensation ALSO failed → the mount is live with its old
+  content → pointer `active` (so the dot matches reality) and the error names
+  the token for a manual `fused share revoke`); token absent from the list
+  entirely (e.g. after an
+  `infra teardown`) → fresh `create`. Deploying to a **different** env always
+  creates fresh there and repoints the pointer — the old env's mount stays
+  live, and the modal says so inline.
+- **DP-11** CLI output is parsed defensively (`token`/`id`/`url`/`status`
+  only): the managed backend returns the URL on create/repoint/recreate; an
+  AWS env prints token+path only, so `url` may stay null — the last-known URL
+  is kept, never regressed to null by a URL-less repoint.
+- **DP-15** Version dependency, surfaced not hidden: whether a *bundle* deploy
+  succeeds on a given backend is the installed fused CLI's contract, not ours —
+  the fused repo's spec/serve/fused-render.md publishes bundles via
+  `share create` on AWS envs and lists the managed backend's inline-upload
+  bundle classification as a follow-up. fused-render passes the CLI's own
+  error through verbatim rather than second-guessing the installed version.
+
+### 19.5 State & truth
+
+- **DP-12** A thin per-page pointer at `~/.fused-render/deployments.json`
+  (shell/storage; keyed by absolute page path — env, backend, token, url,
+  status, entrypoints, updated_at) lets the shell mark deployed files, re-show
+  the URL (`create` returns it exactly once; `share list` never carries one),
+  and redeploy to the same token. **`share list` on the env stays the
+  authority**: the modal reconciles status against it on open (`--all`, so an
+  AWS caller-identity change can't fake a revoke); an unreachable env returns
+  the last-known pointer with `reconciled: false` instead of failing the
+  dialog. A reconciled response also carries `live` (`active | revoked |
+  absent`): absent persists as pointer-status `revoked` (the link *is* down)
+  but the modal must not promise a same-URL restore for it — an absent mount
+  redeploys as a fresh create with a new link (DP-10), and the stored URL is
+  likewise never carried onto a *different* token (DP-11's fallback applies
+  only while the token is unchanged). The action label's URL promises
+  ("same URL" / "restore URL") render only from a **verified** `live`
+  classification: when the reconcile never ran (unreachable env, `live`
+  null) the button reads a plain "Redeploy" that promises nothing.
+- **DP-12a** Store integrity: the pointer file is rewritten whole on every
+  mutation, so two writers must not race and a corrupt file must not be
+  clobbered. Writes serialize through one process lock (`_update_store`) —
+  closing the lost-update window against the reconcile writer (a focus
+  refresh) — and load via `_load_store_for_write`, which raises rather than
+  overwrite a file that exists but doesn't parse (overwriting would drop every
+  other page's pointer, orphaning live mounts). `deploy_page` validates the
+  store before the CLI so a corrupt store fails fast instead of minting a
+  mount it then can't record. Reads (`get_deployment`, the status/dot) stay
+  lenient — a corrupt store shows as not-deployed rather than erroring a
+  preview.
+- **DP-12b** The open modal re-reconciles on tab focus/visibility regain (like
+  the header dot, DP-1), so a page revoked out-of-band — e.g. from the
+  Preferences tab — updates the open dialog instead of contradicting the dot.
+  That focus refresh is a **background** load: it updates in place, never
+  clearing the form to "Loading…" or replacing it with an error on a failed
+  re-fetch (only the initial mount load does that). 
+  It preselects the deployment's env only when that env is still configured
+  (else falls back to the default and states the old env is gone), so a
+  removed env never leaves Deploy silently disabled. The dialog is always
+  closeable — even mid-action (the action continues server-side and the dot
+  stays correct via `onChange`), so a slow CLI child can't trap the user.
+- **DP-13** `GET /api/deploy/shares?env=…` is the "what's deployed on this
+  env" view: every mount from `share list --all`, joined back to the local
+  page that deployed it via the pointer store (`page: null`, rendered "not
+  from this app"), local pages first, live before revoked. Its consumer is the
+  **Preferences page's Deployments section** (PF-6) — a single env-wide list
+  with Revoke — not the per-page Deploy modal. `share list` returns no URLs on
+  either backend; each mount's URL is the pointer's recorded one, else
+  **derived from the env's base URL**: every mount on one env serves as
+  `<base>/<token>` (share-links.md §6), so any recorded absolute URL whose path
+  ends in its own token reveals the base for all the rest (`_serve_base_url`).
+  With no recorded link to derive from (e.g. only AWS deploys so far), URLs
+  stay null and the cell says why on hover.
+- **DP-14** Endpoints (`fused_render/deploy.py`, an APIRouter like
+  shell/bookmarks): `GET /api/deploy/config`, `GET /api/deploy/status`,
+  `GET /api/deploy/preview`, `GET /api/deploy/shares`, `POST /api/deploy`,
+  `POST /api/deploy/revoke`, `POST /api/deploy/install`; the POSTs carry the
+  `X-Fused` guard (D36). CLI failures surface their last stderr line verbatim
+  (click's `Error: ` prefix stripped) — the fused CLI's messages already name
+  the fix (`fused cloud login`, `fused infra serve`, …).
+
+## 20. Preferences — Shell Settings Page (M12)
+
+Goal: one unobtrusive place for the shell's cross-cutting settings and
+housekeeping. Entry is a muted gear row pinned to the **sidebar's bottom-left**
+edge; it navigates to **`/view/_prefs`** — a shell-owned sentinel pathname like
+`_panel`/`_tab` (no `/embed` variant: settings chrome inside a pane makes no
+sense). Server state lives in `~/.fused-render/prefs.json` behind
+`shell/prefs.py` (the D75 shell-state pattern: storage helpers + an APIRouter;
+never imports server).
+
+### 20.1 Store & endpoints
+
+- **PF-1** `GET /api/prefs` → `{engine: {selected, effective, forced_by,
+  fused_available}, log: {path, dir}, deploy: {enabled}}`. `PUT /api/prefs`
+  (X-Fused) applies a **partial** update — any of `{engine}` and/or
+  `{deploy_enabled}` present, so each control PUTs only its own field — and
+  returns the same shape. An unknown engine value, a non-boolean
+  `deploy_enabled`, or a body naming no known preference → 400; the file merges
+  (future prefs are new keys, not new files).
+- **PF-1a** The page renders its sections in this order: **Template registry**,
+  **Logs**, **Execution engine**, **Deployments** (the spec subsection
+  numbering below is organizational, not the visual order).
+- **PF-2** The page is a thin client over existing backends everywhere else:
+  logs reveal via `POST /api/fs/reveal`, deployments via `GET
+  /api/deploy/config` + `GET /api/deploy/shares`, revocation via `POST
+  /api/deploy/revoke`, registry via `GET /api/templates/registry`.
+
+### 20.2 Execution engine switch
+
+- **PF-3** The persisted `engine` pref (`builtin` default — D70 stands, the
+  pref is the opt-in D69 anticipated; or `fused`) drives `/api/run` dispatch,
+  **read per request** so a switch applies to the next run with no restart
+  (the registries' CT-5 no-restart discipline). Selecting `fused` is
+  *effective* only while the fused local backend is importable
+  (`prefs.fused_engine_available`, probed per call — an install mid-session
+  shows through); otherwise execution degrades to builtin and the page says
+  so. The fused option is disabled with an install hint when unavailable.
+  **One resolver, no divergence:** `prefs.effective_engine()` is the single
+  function both dispatch (`server.current_engine`) and the page's reported
+  "running" engine (`engine_state().effective`) go through, resolving the
+  override + pref + availability **live** on every call — so the page can
+  never claim a different engine than `/api/run` uses, even for a forced
+  `=auto` after a mid-session install (an earlier startup-frozen resolution
+  let those drift).
+  **Both engines are local**: the fused engine instantiates the package's
+  `LocalPythonComputeBackend` directly (engine.py — host venvs under
+  `~/.openfused/venvs`), never resolving a named environment; `envs.json`,
+  the default env, and `OPENFUSED_ENV` play no part in page execution. Fused
+  *environments* are exclusively deploy targets (DP-5) — a separate axis,
+  and the page's copy states this so "Fused engine" is never read as "runs
+  on my Fused env".
+- **PF-4** `FUSED_RENDER_ENGINE` remains the **process-level override**: when
+  set it beats the pref entirely. `server._forced_engine()` runs **once at
+  startup** purely to validate (raises on a bad value; `=fused` still fails
+  loudly when missing) and log the choice — dispatch itself goes through the
+  live resolver (PF-3), so the override is re-read per request, not frozen.
+  The page shows the switch locked with the variable's value; a PUT still
+  persists (applies once the override is removed). `GET /api/config`'s
+  `engine` reports the in-effect engine per request.
+
+### 20.3 Logs
+
+- **PF-5** The page names this process's log file (`logs.log_path`, from
+  `GET /api/prefs`) and "Open logs location" reveals it in the OS file
+  manager through the existing reveal endpoint — the web-UI twin of the
+  menu-bar app's "Open logs".
+
+### 20.4 Deployments
+
+- **PF-8** The section leads with an **opt-in toggle** for the Deploy
+  affordance: the persisted `deploy_enabled` pref (default **off**), PUT via
+  `{deploy_enabled}`. Deploy publishes a page to a public hosted URL through
+  the fused CLI, so it is opt-in — the preview-header **Deploy** button (§19,
+  DP-1) and its modal stay hidden until this is turned on. The gate is a UI
+  affordance only, not a security control (the `/api/deploy*` endpoints keep
+  their X-Fused guard); the preview re-reads the pref on focus/visibility so a
+  toggle shows through without a reload. Any non-`true` stored value reads as
+  off.
+- **PF-6** A per-env view of `fused share list` (the same joined
+  `/api/deploy/shares` data as the Deploy modal's list, same copy: rows with
+  a file name were deployed from this app) with a **Revoke** action per
+  non-revoked mount. Revocation is by **env + token** (`POST
+  /api/deploy/revoke {env, token}` → `deploy.revoke_mount`), so it also
+  covers mounts with no local pointer — the CLI's owner-binding still
+  applies and its refusal surfaces verbatim. Any local pointer recording the
+  revoked mount flips to revoked, keeping the page's Deploy button honest.
+
+### 20.5 Template registry view
+
+- **PF-7** `GET /api/templates/registry` returns the merged
+  extension→templates bindings from both registries (SPEC §16): one row per
+  pattern with its splice-expanded mode list (first = default), `disabled`
+  for `null` bindings, `source` (`builtin` / `user` / `user-override` — a
+  user key identical to a built-in key replaces its row), and per-entry
+  shape errors. Override detection is **case-insensitive**, matching how
+  resolution actually matches keys (`_key_segments` lowercases): a user
+  `.CSV` overrides a built-in `.csv` as one `user-override` row (and a `"..."`
+  splice expands against that built-in), never two mis-sourced rows.
+  **Read-only** — bindings are edited in the registry files; the page names
+  the user registry path. This is the table of bindings, not a per-file
+  resolver: distinct keys coexist and CT-3 specificity decides per file. Read
+  per request like every resolution (no restart).

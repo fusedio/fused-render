@@ -2,6 +2,9 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+# pip-managed project (pip install -e ".[dev]"); a uv.lock is only ever a
+# stray artifact of running uv here, never committed.
+uv.lock
 build/
 dist/
 *.egg-info/
