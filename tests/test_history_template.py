@@ -36,7 +36,7 @@ def test_sidecar_wildcard_matches_any_extension():
 
 # .html and .parquet gaining "history" as their last mode is covered by
 # test_templates.py::test_builtin_html_default_is_render_sentinel and
-# test_builtin_parquet_default_is_table, which already assert the full
+# test_builtin_parquet_default_is_duckdb, which already assert the full
 # resolved mode list for those keys.
 
 
@@ -44,7 +44,7 @@ def test_plain_json_unaffected():
     # A bare, non-compound .json (no sidecar target) keeps its tree-first
     # binding — the wildcard `.*.json` needs a stem with its own extension
     # (HV-3), so this doesn't match it.
-    assert modes("/x/data.json", False) == (["tree", "code", "annotate"], None)
+    assert modes("/x/data.json", False) == (["tree", "code", "duckdb", "annotate"], None)
 
 
 def test_template_ships_html_and_icon_only():

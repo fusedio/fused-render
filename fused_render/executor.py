@@ -6,8 +6,8 @@ Two execution paths (D72):
   button) or a user-authored template's reader — runs in a **fresh isolated
   subprocess** per call (SPEC PY-6, D5): always-fresh code, no stale state, and
   a crash or `sys.exit` can't take down the server.
-- **An allowlist of first-party helpers** (`INPROCESS_HELPERS` — the table/csv/
-  xlsx readers and the `api` inspector) run **in-process**. They are trusted
+- **An allowlist of first-party helpers** (`INPROCESS_HELPERS` — the duckdb/
+  table/csv/xlsx/sqlite readers and the `api` inspector) run **in-process**. They are trusted
   and, crucially, none of them import or execute user code (the readers open a
   data file; the inspector `ast`-parses a .py without importing it) and each is
   fast and bounded. Running them in the server (= app) process means the
@@ -41,22 +41,34 @@ _TEMPLATES_DIR = os.path.realpath(ensure_core_templates())
 DEFAULT_TIMEOUT = 30.0
 
 # Explicit allowlist of first-party helpers that run IN-PROCESS (D72): each is
-# fast, bounded, self-contained, and never imports or executes user code — the
-# data-page readers plus the api inspector (which only `ast`-parses). Realpaths,
-# so a symlink can't smuggle another path in. Everything else under templates/
-# (the claude/ chat agent, the geo/h3/las/vector/zarr browsers + tile servers,
-# converters, …) is NOT here and runs on the subprocess path, keeping its 30 s
-# timeout and process isolation — critical for the slow/long-running ones. This
-# is an allowlist, not a "path under templates/" check, precisely so that a new
-# shipped helper defaults to the safe subprocess path; add a reader here only
-# after confirming it is fast, bounded, and free of user-code execution.
+# bounded, self-contained, and never imports or executes user code — the
+# data-page readers, the two grid writers, plus the api inspector (which only
+# `ast`-parses). Realpaths, so a symlink can't smuggle another path in.
+# Everything else under templates/ (the claude/ chat agent, the geo/h3/las/
+# vector/zarr browsers + tile servers, converters, …) is NOT here and runs on
+# the subprocess path, keeping its 30 s timeout and process isolation — critical
+# for the slow/long-running ones. This is an allowlist, not a "path under
+# templates/" check, precisely so that a new shipped helper defaults to the safe
+# subprocess path; add a helper here only after confirming it is bounded and
+# free of user-code execution.
+#
+# The duckdb/sqlite *writers* DO mutate — they rewrite the file/table being
+# viewed. That's why they're in-process too: like the readers, the writes land
+# under the protected folder (Downloads/Desktop/Documents) the user already
+# granted the app, so a save doesn't trigger a fresh per-call macOS TCC prompt
+# the way a spawned interpreter would. They stay first-party and touch only the
+# single file passed in; a batch is applied atomically (temp+os.replace for
+# flat files, one transaction for SQLite) so a failure leaves the file intact.
 INPROCESS_HELPERS = frozenset(
     os.path.realpath(os.path.join(_TEMPLATES_DIR, *parts))
     for parts in (
+        ("duckdb", "reader.py"),
+        ("duckdb", "writer.py"),
         ("table", "reader.py"),
         ("csv", "reader.py"),
         ("xlsx", "reader.py"),
         ("sqlite", "reader.py"),
+        ("sqlite", "writer.py"),
         ("api", "inspector.py"),
     )
 )
@@ -71,8 +83,8 @@ def _error(err_type: str, message: str, detail: str = "") -> dict:
 
 
 def _is_builtin_helper(path: str) -> bool:
-    """True only for the allowlisted in-process helpers (D72): the table/csv/xlsx
-    readers and the api inspector. Exact realpath membership — every other
+    """True only for the allowlisted in-process helpers (D72): the duckdb/table/
+    csv/xlsx/sqlite readers and the api inspector. Exact realpath membership — every other
     script (user code, and other shipped helpers like the claude agent or the
     geo tile servers/browsers) stays on the subprocess path with its timeout and
     isolation.
