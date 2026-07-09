@@ -139,6 +139,21 @@ def test_unknown_column_rejected_and_rolls_back(db):
     assert _all(db) == before                        # whole batch rolled back
 
 
+def test_writing_a_without_rowid_table_is_rejected(db):
+    # The reader marks WITHOUT ROWID tables read-only (no rowid to key edits
+    # by); the writer must enforce the same gate — even an INSERT batch that
+    # never touches rowid may not sneak past it.
+    sc = sqlite3.connect(db)
+    sc.execute("CREATE TABLE kv(k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID")
+    sc.commit()
+    sc.close()
+    with pytest.raises(ValueError):
+        writer.main(db, table="kv", inserts=[{"k": "a", "v": "1"}])
+    sc = sqlite3.connect(db)
+    assert sc.execute("SELECT COUNT(*) FROM kv").fetchone()[0] == 0
+    sc.close()
+
+
 def test_writing_a_view_is_rejected(db):
     with pytest.raises(ValueError):
         writer.main(db, table="adults", edits=[{"row": 1, "column": "age", "value": "5"}])

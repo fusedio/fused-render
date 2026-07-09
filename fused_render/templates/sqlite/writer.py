@@ -68,6 +68,12 @@ def main(file: str, table: str = "", edits: "list | None" = None,
         if not valid or not obj or obj[0] != "table":
             raise ValueError(f"{table!r} is not an editable table")
         qtable = _quote_ident(table)
+        # Same gate as the reader: a WITHOUT ROWID table has no rowid to key
+        # edits by, so no part of a batch (not even inserts) may touch it.
+        try:
+            conn.execute(f"SELECT rowid FROM {qtable} LIMIT 1").fetchone()
+        except sqlite3.OperationalError:
+            raise ValueError(f"{table!r} is not an editable table (no rowid)")
 
         # One transaction: sqlite3 opens one implicitly before the first DML and
         # commits below; any exception falls through to rollback.
