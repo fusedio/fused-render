@@ -108,13 +108,25 @@ function rankCompare(a: SearchHit, b: SearchHit): number {
 // rankCompare after merging). `showHidden=false` skips dot-entries before
 // scoring (see queryWantsHidden). The `from` offset is what makes streaming
 // cheap: each flush scores only the entries that arrived since the last one.
+//
+// On top of the fuzzy score, the entry NAME (last path segment) gets intent
+// bonuses: an exact name match outranks everything ("Downloads" must beat
+// "DownloadStage", whose extra camel-hump bonus otherwise wins), and a name
+// starting with the query beats an interior hit. Char-level heuristics can't
+// express "this IS the thing you typed", so it's layered here, not in fuzzy.ts.
 function scoreEntries(query: string, entries: WalkEntry[], from: number, showHidden: boolean): SearchHit[] {
+  const q = query.toLowerCase();
   const hits: SearchHit[] = [];
   for (let i = from; i < entries.length; i++) {
     const entry = entries[i];
     if (!showHidden && isHiddenRel(entry.rel)) continue;
     const m = fuzzyMatch(query, entry.rel);
-    if (m) hits.push({ entry, positions: m.positions, score: m.score, longestRun: m.longestRun });
+    if (!m) continue;
+    let score = m.score;
+    const name = entry.rel.slice(entry.rel.lastIndexOf("/") + 1).toLowerCase();
+    if (name === q) score += 100;
+    else if (name.startsWith(q)) score += 25;
+    hits.push({ entry, positions: m.positions, score, longestRun: m.longestRun });
   }
   return hits;
 }
@@ -138,19 +150,21 @@ type ListingState =
 
 // Streamed walk state. `entries` is one append-only array shared across the
 // streaming updates (each batch pushes into it); every update still creates a
-// NEW state object, so React re-renders and memos keyed on `walk` recompute
+// NEW state object, so React re-renders and memos keyed on the walk recompute
 // against the grown array. `count` is the running total (doubles as the
 // version stamp that makes successive streaming states distinguishable).
-// There is no per-generation tagging here: the component remounts per folder
-// (keyed on fsPath in App), and the fetch effect below aborts + restarts on a
-// refresh bump, so a stale stream can never write into the current state —
-// at worst one frame renders results from the pre-refresh tree, which is the
-// same folder a moment earlier.
+// Non-idle states are tagged with the `refresh` generation they were fetched
+// for; `validWalk` in the component treats a stale tag as idle, so a dir-watch
+// bump invalidates the cache synchronously WITHOUT itself triggering a
+// re-fetch (fetching is driven by `walkReq` — see below). The component
+// remounts per folder (keyed on fsPath in App), so no path tagging is needed.
 type WalkState =
   | { status: "idle" }
-  | { status: "streaming"; entries: WalkEntry[]; count: number }
-  | { status: "ok"; entries: WalkEntry[]; truncated: boolean; total: number }
-  | { status: "error"; message: string };
+  | { status: "streaming"; entries: WalkEntry[]; count: number; forRefresh: number }
+  | { status: "ok"; entries: WalkEntry[]; truncated: boolean; total: number; forRefresh: number }
+  | { status: "error"; message: string; forRefresh: number };
+
+const IDLE_WALK: WalkState = { status: "idle" };
 
 export default function Listing({ fsPath }: { fsPath: string }) {
   const [state, setState] = useState<ListingState>({ status: "loading" });
@@ -159,11 +173,15 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   const [{ sort, order }, setSortState] = useState<{ sort: SortKey; order: SortOrder }>(currentSort);
   const [refresh, setRefresh] = useState(0); // bumped by the dir watch socket
   const [query, setQueryState] = useState<string>(currentQuery);
-  const [walk, setWalk] = useState<WalkState>({ status: "idle" });
-  // Whether the walk should exist at all: flips true on first focus or first
-  // typed/URL-seeded query, and stays true — the stream effect below keys on
-  // it (plus refresh) to fetch. Never reset: navigation remounts the view.
-  const [walkWanted, setWalkWanted] = useState<boolean>(() => currentQuery().trim() !== "");
+  const [walk, setWalk] = useState<WalkState>(IDLE_WALK);
+  // Which refresh generation of the walk has been REQUESTED (null = none).
+  // The fetch effect keys on this, not on `refresh` itself: a dir-watch bump
+  // only invalidates the cache (via the forRefresh tag) and a new fetch
+  // happens only while search is active (auto-request effect) or on the next
+  // gesture — an idle listing must not re-walk the tree on every watch event.
+  const [walkReq, setWalkReq] = useState<number | null>(() =>
+    currentQuery().trim() !== "" ? 0 : null
+  );
   // Bumped to re-run the stream effect after an error, from a real user
   // gesture only (focus / typing) — an effect-driven retry would loop forever.
   const [retryNonce, setRetryNonce] = useState(0);
@@ -235,14 +253,35 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     };
   }, [fsPath]);
 
-  // The streamed walk. One effect owns the whole fetch lifecycle: it starts
-  // when the walk is first wanted, re-runs when the dir watch bumps `refresh`
-  // (fresh tree) or a gesture bumps `retryNonce` after an error, and ABORTS
-  // the in-flight stream on cleanup — which also cancels the server-side
-  // walk (the generator is closed on disconnect). Batches push into one
-  // append-only array; see WalkState above.
+  // Synchronous cache validity: a non-idle walk fetched for a previous
+  // refresh generation reads as idle, immediately on the render where
+  // `refresh` bumps — no effect ordering to wait on, and no render ever
+  // scores search results against the pre-refresh tree.
+  const validWalk: WalkState =
+    walk.status === "idle" || walk.forRefresh === refresh ? walk : IDLE_WALK;
+
+  // Active search must always have a walk for the CURRENT tree. Covers a
+  // URL-seeded query on mount racing ahead of focus, typing after an
+  // invalidation, and the dir watch bumping `refresh` mid-search (the stale
+  // tag makes validWalk idle, this re-requests). Keyed on validWalk being
+  // IDLE so an errored walk never auto-retries (that would loop:
+  // request -> error -> request -> ...); error retries hang off real
+  // gestures (focus / typing) below. The immediate `query` (not deferred)
+  // drives this — the fetch should start on the first keystroke.
   useEffect(() => {
-    if (!walkWanted) return;
+    if (query.trim() !== "" && validWalk.status === "idle" && walkReq !== refresh) {
+      setWalkReq(refresh);
+    }
+  }, [query, validWalk.status, walkReq, refresh]);
+
+  // The streamed validWalk. One effect owns the whole fetch lifecycle: it runs
+  // when a walk generation is requested (walkReq) or a gesture bumps
+  // `retryNonce` after an error, and ABORTS the in-flight stream on cleanup
+  // — which also cancels the server-side walk (the generator is closed on
+  // disconnect). Batches push into one append-only array; see WalkState.
+  useEffect(() => {
+    if (walkReq === null) return;
+    const forRefresh = walkReq;
     const ctrl = new AbortController();
     let alive = true;
     const entries: WalkEntry[] = [];
@@ -261,9 +300,9 @@ export default function Listing({ fsPath }: { fsPath: string }) {
       for (const e of pending) entries.push(e); // no spread: a big chunk would blow the arg limit
       pending = [];
       lastFlush = Date.now();
-      setWalk({ status: "streaming", entries, count: entries.length });
+      setWalk({ status: "streaming", entries, count: entries.length, forRefresh });
     };
-    setWalk({ status: "streaming", entries, count: 0 });
+    setWalk({ status: "streaming", entries, count: 0, forRefresh });
     walkDirStream(fsPath, {
       hidden: true,
       signal: ctrl.signal,
@@ -279,12 +318,12 @@ export default function Listing({ fsPath }: { fsPath: string }) {
         if (!alive) return;
         if (flushTimer !== null) clearTimeout(flushTimer);
         for (const e of pending) entries.push(e);
-        setWalk({ status: "ok", entries, truncated: end.truncated, total: end.total });
+        setWalk({ status: "ok", entries, truncated: end.truncated, total: end.total, forRefresh });
       },
       (err: Error) => {
         if (!alive || err.name === "AbortError") return;
         if (flushTimer !== null) clearTimeout(flushTimer);
-        setWalk({ status: "error", message: err.message });
+        setWalk({ status: "error", message: err.message, forRefresh });
       }
     );
     return () => {
@@ -292,13 +331,16 @@ export default function Listing({ fsPath }: { fsPath: string }) {
       if (flushTimer !== null) clearTimeout(flushTimer);
       ctrl.abort();
     };
-  }, [fsPath, refresh, walkWanted, retryNonce]);
+  }, [fsPath, walkReq, retryNonce]);
 
   // First focus starts the walk warming in the background; focus (like
   // typing below) is also the retry gesture when a previous stream failed.
   const prefetchWalk = () => {
-    setWalkWanted(true);
-    if (walk.status === "error") setRetryNonce((n) => n + 1);
+    if (validWalk.status === "idle") setWalkReq(refresh);
+    else if (validWalk.status === "error") {
+      setWalkReq(refresh);
+      setRetryNonce((n) => n + 1);
+    }
   };
 
   // Debounced URL mirror for the query (see URL_SYNC_MS). Pending sync is
@@ -315,10 +357,14 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     setQueryState(value);
     setSearchSort(null); // a new query drops back to relevance order
     setVisibleCount(PAGE_SIZE);
-    if (value.trim() !== "") setWalkWanted(true);
     // Editing the query is also a user gesture: if the last walk attempt
     // failed, give it another shot instead of leaving search dead forever.
-    if (walk.status === "error") setRetryNonce((n) => n + 1);
+    // (An idle walk needs no handling here — the auto-request effect fires
+    // as soon as the non-empty query state lands.)
+    if (validWalk.status === "error") {
+      setWalkReq(refresh);
+      setRetryNonce((n) => n + 1);
+    }
     if (urlTimer.current !== null) clearTimeout(urlTimer.current);
     urlTimer.current = setTimeout(() => {
       const params = new URLSearchParams(location.search);
@@ -349,7 +395,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     );
   };
 
-  // Incremental-scoring cache for the streamed walk. As long as the query,
+  // Incremental-scoring cache for the streamed validWalk. As long as the query,
   // hidden-intent and entries array are unchanged, only entries appended
   // since `scored` get fuzzy-matched, then merged into the previous ranked
   // list — so a stream flush near the tail of a 200k walk costs one small
@@ -372,17 +418,17 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   // extends the ranked list with just the newly arrived entries (see
   // scoreCache above).
   const hits = useMemo(() => {
-    if (!searching || (walk.status !== "ok" && walk.status !== "streaming")) return [];
+    if (!searching || (validWalk.status !== "ok" && validWalk.status !== "streaming")) return [];
     const showHidden = queryWantsHidden(q);
     const cache = scoreCache.current;
     let ranked: SearchHit[];
-    if (cache.entries === walk.entries && cache.q === q && cache.showHidden === showHidden) {
-      const fresh = scoreEntries(q, walk.entries, cache.scored, showHidden);
+    if (cache.entries === validWalk.entries && cache.q === q && cache.showHidden === showHidden) {
+      const fresh = scoreEntries(q, validWalk.entries, cache.scored, showHidden);
       ranked = fresh.length ? cache.ranked.concat(fresh).sort(rankCompare) : cache.ranked;
     } else {
-      ranked = scoreEntries(q, walk.entries, 0, showHidden).sort(rankCompare);
+      ranked = scoreEntries(q, validWalk.entries, 0, showHidden).sort(rankCompare);
     }
-    scoreCache.current = { q, showHidden, entries: walk.entries, scored: walk.entries.length, ranked };
+    scoreCache.current = { q, showHidden, entries: validWalk.entries, scored: validWalk.entries.length, ranked };
     if (!searchSort) return ranked; // relevance order
     const { sort, order } = searchSort;
     const flip = order === "desc" ? -1 : 1;
@@ -396,7 +442,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
       if (cmp === 0) cmp = byName(a, b);
       return cmp * flip;
     });
-  }, [searching, q, walk, searchSort]);
+  }, [searching, q, validWalk, searchSort]);
 
   const visibleHits = useMemo(() => hits.slice(0, visibleCount), [hits, visibleCount]);
 
@@ -434,15 +480,15 @@ export default function Listing({ fsPath }: { fsPath: string }) {
 
   let body: React.ReactNode;
   if (searching) {
-    if (walk.status === "error") {
+    if (validWalk.status === "error") {
       body = (
         <tr>
           <td colSpan={3} className="status-message error">
-            Search failed: {walk.message}
+            Search failed: {validWalk.message}
           </td>
         </tr>
       );
-    } else if (walk.status === "ok" || walk.status === "streaming") {
+    } else if (validWalk.status === "ok" || validWalk.status === "streaming") {
       if (hits.length) {
         body = (
           <>
@@ -474,10 +520,10 @@ export default function Listing({ fsPath }: { fsPath: string }) {
         // the old UI showed a bare "No matches" even when the file existed
         // in a region the capped walk never reached.
         const message =
-          walk.status === "streaming"
-            ? `No matches yet — still searching (${walk.count.toLocaleString()} entries scanned)`
-            : walk.truncated
-            ? `No matches in the first ${walk.total.toLocaleString()} entries — this folder tree is too large to search fully`
+          validWalk.status === "streaming"
+            ? `No matches yet — still searching (${validWalk.count.toLocaleString()} entries scanned)`
+            : validWalk.truncated
+            ? `No matches in the first ${validWalk.total.toLocaleString()} entries — this folder tree is too large to search fully`
             : "No matches";
         body = (
           <tr>
@@ -541,17 +587,17 @@ export default function Listing({ fsPath }: { fsPath: string }) {
 
   let searchCount: string | null = null;
   let searchCountTitle: string | undefined;
-  if (searching && walk.status === "streaming") {
+  if (searching && validWalk.status === "streaming") {
     // Live progress while the walk streams: match count so far + how much of
     // the tree has been scanned. Updates in place, no layout shift.
-    searchCount = `${hits.length.toLocaleString()} match${hits.length === 1 ? "" : "es"} · ${walk.count.toLocaleString()} scanned…`;
-  } else if (searching && walk.status === "ok" && hits.length > 0) {
+    searchCount = `${hits.length.toLocaleString()} match${hits.length === 1 ? "" : "es"} · ${validWalk.count.toLocaleString()} scanned…`;
+  } else if (searching && validWalk.status === "ok" && hits.length > 0) {
     // A truncated walk (server safety cap) means `hits` undercounts the real
     // tree. Signal that without new UI: a "+" on the number plus a tooltip.
-    const suffix = walk.truncated ? "+" : "";
+    const suffix = validWalk.truncated ? "+" : "";
     searchCount = `${hits.length.toLocaleString()}${suffix} match${hits.length === 1 ? "" : "es"}`;
-    if (walk.truncated)
-      searchCountTitle = `Search covers the first ${walk.total.toLocaleString()} entries of this folder tree`;
+    if (validWalk.truncated)
+      searchCountTitle = `Search covers the first ${validWalk.total.toLocaleString()} entries of this folder tree`;
   }
 
   return (
@@ -572,7 +618,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
             }
           }}
         />
-        {searching && (walk.status === "idle" || walk.status === "streaming") && (
+        {searching && (validWalk.status === "idle" || validWalk.status === "streaming") && (
           <span className="listing-search-spinner" aria-hidden="true" />
         )}
         {searchCount !== null && (
