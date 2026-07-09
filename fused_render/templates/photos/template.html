@@ -1,0 +1,924 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Photos</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  :root {
+    color-scheme: dark;
+    --bg: #0f1013;
+    --panel: #16171b;
+    --surface: #1e2025;
+    --surface2: #292c33;
+    --line: #000;
+    --text: #e6e7ea;
+    --muted: #9aa0a6;
+    --accent: #e8710a;
+    --gap: 4px;
+  }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 14px;
+    overflow: hidden;
+  }
+  #app { display: flex; height: 100vh; }
+
+  /* sidebar */
+  #sidebar {
+    flex: 0 0 260px;
+    width: 260px;
+    background: var(--panel);
+    border-right: 1px solid var(--line);
+    display: flex; flex-direction: column;
+    transition: margin-left .18s ease;
+    overflow: hidden;
+  }
+  #app.collapsed #sidebar { margin-left: -261px; }
+  .sb-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 16px 10px; font-size: 18px; font-weight: 600;
+  }
+  .sb-head .logo { color: var(--accent); font-size: 20px; }
+  #addFolder {
+    margin: 4px 12px 12px;
+    display: flex; align-items: center; gap: 8px; justify-content: center;
+    background: var(--surface); border: 1px solid var(--line); color: var(--text);
+    border-radius: 999px; padding: 9px 14px; cursor: pointer; font: inherit; font-weight: 500;
+  }
+  #addFolder:hover { background: var(--surface2); }
+  #tree { flex: 1 1 auto; overflow-y: auto; padding: 4px 6px 16px; }
+
+  .node .row {
+    display: flex; align-items: center; gap: 4px;
+    padding: 6px 6px; border-radius: 8px; cursor: pointer; color: var(--text);
+    white-space: nowrap;
+  }
+  .node .row:hover { background: var(--surface); }
+  .node .row.active { background: var(--surface2); }
+  .node .row.active .nm { color: var(--accent); }
+  .caret {
+    flex: 0 0 16px; width: 16px; text-align: center; color: var(--muted);
+    transition: transform .12s; font-size: 10px; user-select: none;
+  }
+  .caret.open { transform: rotate(90deg); }
+  .caret.leaf { visibility: hidden; }
+  .node .ico { flex: 0 0 auto; }
+  .node .nm { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
+  .node .rm { flex: 0 0 auto; color: var(--muted); opacity: 0; padding: 0 4px; }
+  .node .row:hover .rm { opacity: 1; }
+  .node .rm:hover { color: #ff6b6b; }
+  .children { margin-left: 14px; border-left: 1px solid #ffffff10; padding-left: 2px; }
+
+  /* main */
+  #main { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
+  header {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 12px;
+    padding: 12px 18px; border-bottom: 1px solid var(--line);
+  }
+  .iconbtn {
+    background: transparent; border: none; color: var(--text);
+    cursor: pointer; font-size: 18px; padding: 6px 8px; border-radius: 8px; line-height: 1;
+  }
+  .iconbtn:hover { background: var(--surface); }
+  #crumbs { flex: 1 1 auto; display: flex; align-items: center; gap: 4px; overflow: hidden; font-size: 15px; }
+  #crumbs .seg { color: var(--muted); cursor: pointer; white-space: nowrap; }
+  #crumbs .seg:last-child { color: var(--text); font-weight: 500; }
+  #crumbs .seg:hover { color: var(--text); }
+  #crumbs .sep { color: #4a4d55; }
+  .count { color: var(--muted); font-size: 13px; white-space: nowrap; }
+  button.tool, select.tool {
+    background: var(--surface); border: 1px solid var(--line); color: var(--text);
+    border-radius: 999px; padding: 7px 14px; font: inherit; cursor: pointer; white-space: nowrap;
+  }
+  button.tool:hover, select.tool:hover { background: var(--surface2); }
+  .search {
+    display: flex; align-items: center; gap: 6px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 999px;
+    padding: 6px 12px; color: var(--muted);
+  }
+  .search input { background: transparent; border: none; outline: none; color: var(--text); font: inherit; width: 150px; }
+  #filterBar {
+    display: none; gap: 16px; align-items: center;
+    padding: 10px 18px; border-bottom: 1px solid var(--line); color: var(--muted);
+  }
+  #filterBar.open { display: flex; }
+  #filterBar input[type="date"] {
+    background: var(--surface); border: 1px solid var(--line); color: var(--text);
+    border-radius: 8px; padding: 5px 8px; font: inherit; margin-left: 6px;
+  }
+
+  #banner {
+    margin: 10px 18px 0; background: #3a2a12; border: 1px solid #5a4118;
+    color: #f0c98a; border-radius: 10px; padding: 8px 12px; font-size: 13px;
+    display: none; align-items: center; justify-content: space-between; gap: 12px;
+  }
+  #banner code { background: #00000055; padding: 1px 6px; border-radius: 4px; }
+  #banner .x { cursor: pointer; color: var(--muted); }
+
+  #scroll { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; }
+  #grid { padding: 8px 16px 40px; }
+  .dategroup {
+    color: var(--text); font-size: 15px; font-weight: 600;
+    padding: 20px 2px 10px; position: sticky; top: 0;
+    background: linear-gradient(var(--bg) 70%, transparent); z-index: 1;
+  }
+  .row { display: flex; gap: var(--gap); margin-bottom: var(--gap); }
+  .tile {
+    position: relative; overflow: hidden; border-radius: 4px;
+    background: var(--surface); cursor: pointer; flex: 0 0 auto;
+  }
+  .tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .tile:hover img { filter: brightness(1.05); }
+  .tile.loading::after {
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(100deg, #1b1c20 30%, #262830 50%, #1b1c20 70%);
+    background-size: 200% 100%; animation: shimmer 1.2s infinite;
+  }
+  @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+  .tile.sel { outline: 3px solid var(--accent); outline-offset: -3px; }
+  .tile .badge {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 4px;
+    color: var(--muted); font-size: 12px; text-align: center; padding: 6px;
+  }
+  .tile .badge .ext {
+    font-weight: 600; color: var(--text); background: #00000066;
+    border-radius: 4px; padding: 2px 8px; text-transform: uppercase;
+  }
+
+  #empty {
+    flex: 1 1 auto; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 16px;
+    color: var(--muted); padding: 24px; text-align: center;
+  }
+  #empty h1 { font-weight: 600; color: var(--text); margin: 0; font-size: 26px; }
+  #empty .big { font-size: 46px; }
+  #msg { padding: 40px; color: #ff8a8a; white-space: pre-wrap; }
+  #moreBtn {
+    display: none; margin: 8px auto 24px; background: var(--surface);
+    border: 1px solid var(--line); color: var(--text);
+    padding: 8px 18px; border-radius: 999px; cursor: pointer;
+  }
+
+  /* lightbox (Picasa-style medium popup) */
+  #lb { position: fixed; inset: 0; z-index: 60; background: #000000c4; display: none; align-items: center; justify-content: center; padding: 3vh 3vw; }
+  #lb.open { display: flex; }
+  #lbCard {
+    position: relative; display: flex; flex-direction: column;
+    width: min(1120px, 90vw); height: min(880px, 92vh);
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 14px; overflow: hidden; box-shadow: 0 24px 80px #000a;
+  }
+  #lbTop { flex: 0 0 auto; display: flex; align-items: center; gap: 12px; padding: 10px 14px; }
+  #lbTop .name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #lbTop .counter { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 13px; }
+  #lbTop button { background: transparent; border: none; color: var(--text); border-radius: 8px; padding: 6px 10px; cursor: pointer; font: inherit; }
+  #lbTop button:hover { background: #ffffff1a; }
+  #lbTop button.on { color: var(--accent); }
+  #lbStage { flex: 1 1 auto; position: relative; display: flex; align-items: center; justify-content: center; overflow: hidden; min-height: 0; background: #0c0d10; }
+  #lbImg { max-width: 100%; max-height: 100%; transform-origin: center center; will-change: transform; }
+  #lbStage.zoomed { cursor: grab; }
+  #lbStage.grabbing { cursor: grabbing; }
+  #lbStage.zoomable { cursor: zoom-in; }
+  .nav { position: absolute; top: 0; bottom: 0; width: 16%; display: flex; align-items: center; cursor: pointer; opacity: 0; transition: opacity .15s; color: #fff; font-size: 34px; user-select: none; z-index: 3; }
+  .nav:hover { opacity: .9; }
+  #navPrev { left: 0; justify-content: flex-start; padding-left: 14px; }
+  #navNext { right: 0; justify-content: flex-end; padding-right: 14px; }
+  #lbSpin { position: absolute; color: var(--muted); font-size: 13px; z-index: 4; }
+  #lbCaption {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 10px 16px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--line);
+    min-height: 40px;
+  }
+  #lbCaption .loc { color: var(--text); cursor: pointer; text-decoration: none; }
+  #lbCaption .loc:hover { color: var(--accent); }
+  #lbCaption .zoomhint { margin-left: auto; color: #6b7075; }
+  #info { position: absolute; top: 0; right: 0; bottom: 0; width: min(320px, 80%); background: #101216ee; border-left: 1px solid var(--line); padding: 18px; overflow-y: auto; transform: translateX(100%); transition: transform .18s; z-index: 5; }
+  #info.open { transform: none; }
+  #info h3 { margin: 0 0 12px; font-size: 15px; }
+  #info .kv { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid #ffffff0d; font-size: 13px; }
+  #info .kv .k { color: var(--muted); }
+  #info .kv .v { text-align: right; word-break: break-all; }
+
+  /* picker modal */
+  #picker { position: fixed; inset: 0; z-index: 70; background: #000000aa; display: none; align-items: center; justify-content: center; }
+  #picker.open { display: flex; }
+  .pk-box { width: min(560px, 92vw); max-height: 80vh; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; display: flex; flex-direction: column; overflow: hidden; }
+  .pk-head { padding: 16px 18px 10px; font-size: 17px; font-weight: 600; }
+  .pk-path { display: flex; gap: 8px; padding: 0 18px 10px; }
+  .pk-path input { flex: 1 1 auto; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; color: var(--text); padding: 8px 12px; font: inherit; outline: none; }
+  .pk-path input:focus { border-color: var(--accent); }
+  .pk-crumbs { padding: 0 18px 8px; display: flex; flex-wrap: wrap; gap: 3px; font-size: 13px; color: var(--muted); }
+  .pk-crumbs .seg { cursor: pointer; }
+  .pk-crumbs .seg:hover { color: var(--text); }
+  .pk-list { flex: 1 1 auto; overflow-y: auto; padding: 4px 10px; min-height: 160px; }
+  .pk-item { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border-radius: 8px; cursor: pointer; }
+  .pk-item:hover { background: var(--surface); }
+  .pk-item .badge2 { margin-left: auto; color: var(--muted); font-size: 12px; }
+  .pk-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 12px 18px; border-top: 1px solid var(--line); }
+  .pk-foot button { border-radius: 999px; padding: 9px 18px; font: inherit; cursor: pointer; border: 1px solid var(--line); }
+  .pk-cancel { background: transparent; color: var(--text); }
+  .pk-add { background: var(--accent); color: #1a0d00; border-color: var(--accent); font-weight: 600; }
+</style>
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div class="sb-head"><span class="logo">◆</span> Photos</div>
+      <button id="addFolder">＋ Add folder</button>
+      <div id="tree"></div>
+    </aside>
+
+    <div id="main">
+      <header>
+        <button class="iconbtn" id="hamburger" title="Toggle sidebar">☰</button>
+        <div id="crumbs"></div>
+        <span class="count" id="count"></span>
+        <div class="search"><span>🔍</span><input id="search" spellcheck="false" placeholder="Search by name" /></div>
+        <select id="sortSel" class="tool" title="Sort (s)">
+          <option value="new">Newest</option>
+          <option value="old">Oldest</option>
+          <option value="az">Name A–Z</option>
+          <option value="za">Name Z–A</option>
+          <option value="big">Largest</option>
+          <option value="small">Smallest</option>
+        </select>
+        <button class="iconbtn" id="filterBtn" title="Filter by date">⛃</button>
+      </header>
+      <div id="filterBar">
+        <label>From <input type="date" id="fromDate" /></label>
+        <label>To <input type="date" id="toDate" /></label>
+        <button class="tool" id="clearFilter">Clear</button>
+      </div>
+      <div id="banner"><span id="bannerText"></span><span class="x" id="bannerX">✕</span></div>
+
+      <div id="empty">
+        <div class="big">🖼️</div>
+        <h1>Your photos, from disk</h1>
+        <div>Add a folder to start browsing.</div>
+        <button id="addFolder2">＋ Add folder</button>
+      </div>
+      <div id="msg" style="display:none"></div>
+      <div id="scroll" style="display:none"><div id="grid"></div><button id="moreBtn">Load more</button></div>
+    </div>
+  </div>
+
+  <div id="lb">
+    <div id="lbCard">
+      <div id="lbTop">
+        <span class="name" id="lbName"></span>
+        <span class="counter" id="lbCounter"></span>
+        <button id="lbZoomOut" title="Zoom out (-)">－</button>
+        <button id="lbZoomIn" title="Zoom in (+)">＋</button>
+        <button id="lbInfo" title="Info (i)">ⓘ</button>
+        <button id="lbClose" title="Close (Esc)">✕</button>
+      </div>
+      <div id="lbStage">
+        <div class="nav" id="navPrev">‹</div>
+        <img id="lbImg" alt="" draggable="false" />
+        <div class="nav" id="navNext">›</div>
+        <div id="lbSpin" style="display:none">Loading…</div>
+      </div>
+      <div id="lbCaption"></div>
+      <div id="info"><h3>Details</h3><div id="infoBody"></div></div>
+    </div>
+  </div>
+
+  <div id="picker">
+    <div class="pk-box">
+      <div class="pk-head">Choose a folder</div>
+      <div class="pk-path"><input id="pkInput" spellcheck="false" placeholder="Paste a path and press Enter" /></div>
+      <div class="pk-crumbs" id="pkCrumbs"></div>
+      <div class="pk-list" id="pkList"></div>
+      <div class="pk-foot">
+        <button class="pk-cancel" id="pkCancel">Cancel</button>
+        <button class="pk-add" id="pkAdd">Add this folder</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+const PY = "./reader.py";
+const q = (id) => document.getElementById(id);
+const P = fused.params;
+const getP = (k, d) => P.get(k) || d;
+const LS = {
+  get: (k, d) => { try { return JSON.parse(localStorage.getItem("photos." + k)) ?? d; } catch { return d; } },
+  set: (k, v) => { try { localStorage.setItem("photos." + k, JSON.stringify(v)); } catch {} },
+};
+function fmtBytes(n) {
+  if (n < 1024) return n + " B";
+  const u = ["KB", "MB", "GB"]; let i = -1;
+  do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+  return n.toFixed(1) + " " + u[i];
+}
+const baseName = (p) => { p = p.replace(/\/+$/, ""); return p.slice(p.lastIndexOf("/") + 1) || p; };
+const NATIVE_EXT = new Set(["jpg", "jpeg", "png", "gif", "webp", "avif", "bmp"]);
+const isNativePhoto = (p) => NATIVE_EXT.has((p.split(".").pop() || "").toLowerCase());
+
+let APP = null;
+let items = [], currentDir = "", total = 0;
+let ratios = new Map(), thumbUrl = new Map(), thumbState = new Map(), tileEls = new Map();
+let gridCursor = -1, bannerDismissed = false, ready = false;
+
+// ---- boot ----------------------------------------------------------------
+async function boot() {
+  APP = await fused.runPython(PY, { action: "check_setup" });
+  if (!LS.get("roots", []).length && APP.home) {
+    LS.set("roots", [{ name: baseName(APP.home), path: APP.home }]);
+  }
+  q("app").classList.toggle("collapsed", LS.get("sb", "1") === "0");
+  const file = P.get("_file");
+  if (file) {
+    const norm = file.replace(/\\/g, "/");
+    P.set("path", norm.slice(0, norm.lastIndexOf("/")));
+    P.set("photo", norm.slice(norm.lastIndexOf("/") + 1));
+  }
+  renderTree();
+  ready = true;
+  render();
+}
+
+// ---- sidebar tree --------------------------------------------------------
+const expanded = new Set();        // paths currently expanded
+const childCache = new Map();      // path -> [{name,path}]
+
+async function renderTree() {
+  const tree = q("tree");
+  tree.innerHTML = "";
+  for (const root of LS.get("roots", [])) {
+    tree.appendChild(await makeNode(root.name, root.path, true));
+  }
+}
+
+async function makeNode(name, path, isRoot) {
+  const node = document.createElement("div");
+  node.className = "node";
+  const row = document.createElement("div");
+  row.className = "row";
+  row.dataset.path = path;
+  if (currentDir && path.replace(/\/+$/, "") === currentDir.replace(/\/+$/, "")) row.classList.add("active");
+
+  const caret = document.createElement("span");
+  caret.className = "caret" + (expanded.has(path) ? " open" : "");
+  caret.textContent = "▶";
+  const ico = document.createElement("span");
+  ico.className = "ico";
+  ico.textContent = isRoot ? "🗂️" : "📁";
+  const nm = document.createElement("span");
+  nm.className = "nm"; nm.textContent = name;
+  row.append(caret, ico, nm);
+  if (isRoot) {
+    const rm = document.createElement("span");
+    rm.className = "rm"; rm.textContent = "✕"; rm.title = "Remove";
+    rm.onclick = (e) => { e.stopPropagation(); removeRoot(path); };
+    row.append(rm);
+  }
+  node.append(row);
+
+  const kids = document.createElement("div");
+  kids.className = "children";
+  kids.style.display = expanded.has(path) ? "block" : "none";
+  node.append(kids);
+  if (expanded.has(path)) await fillChildren(kids, path);
+
+  caret.onclick = async (e) => {
+    e.stopPropagation();
+    if (expanded.has(path)) { expanded.delete(path); caret.classList.remove("open"); kids.style.display = "none"; }
+    else { expanded.add(path); caret.classList.add("open"); kids.style.display = "block"; await fillChildren(kids, path); }
+  };
+  row.onclick = () => { P.set("photo", ""); P.set("path", path); };
+  return node;
+}
+
+async function fillChildren(kids, path) {
+  if (kids.dataset.loaded) return;
+  kids.dataset.loaded = "1";
+  let dirs = childCache.get(path);
+  if (!dirs) {
+    try { dirs = (await fused.runPython(PY, { action: "folders", path })).dirs; }
+    catch { dirs = []; }
+    childCache.set(path, dirs);
+  }
+  if (!dirs.length) { const e = document.createElement("div"); e.className = "row"; e.style.color = "var(--muted)"; e.style.paddingLeft = "22px"; e.textContent = "no subfolders"; kids.append(e); return; }
+  for (const d of dirs) kids.appendChild(await makeNode(d.name, d.path, false));
+}
+
+function highlightTree() {
+  for (const r of q("tree").querySelectorAll(".row")) {
+    r.classList.toggle("active", r.dataset.path && currentDir &&
+      r.dataset.path.replace(/\/+$/, "") === currentDir.replace(/\/+$/, ""));
+  }
+}
+function removeRoot(path) {
+  LS.set("roots", LS.get("roots", []).filter((r) => r.path !== path));
+  renderTree();
+}
+function addRoot(path) {
+  const roots = LS.get("roots", []);
+  if (!roots.some((r) => r.path.replace(/\/+$/, "") === path.replace(/\/+$/, ""))) {
+    roots.push({ name: baseName(path), path });
+    LS.set("roots", roots);
+  }
+}
+
+// ---- folder picker -------------------------------------------------------
+let pkPath = "";
+function openPicker() { pkPath = currentDir || APP.home || ""; q("picker").classList.add("open"); loadPicker(pkPath); }
+function closePicker() { q("picker").classList.remove("open"); }
+async function loadPicker(path) {
+  pkPath = path;
+  q("pkInput").value = path;
+  const list = q("pkList");
+  list.innerHTML = "Loading…";
+  let res;
+  try { res = await fused.runPython(PY, { action: "folders", path }); }
+  catch (e) { list.innerHTML = ""; const d = document.createElement("div"); d.className = "pk-item"; d.textContent = "Cannot open: " + (e.message || path); list.append(d); return; }
+  pkPath = res.path || "";
+  renderPkCrumbs();
+  list.innerHTML = "";
+  if (res.parent !== undefined && res.parent) {
+    const up = pkItem("⬆", "..", () => loadPicker(res.parent));
+    list.append(up);
+  }
+  for (const d of res.dirs) {
+    const it = pkItem("📁", d.name, () => loadPicker(d.path));
+    list.append(it);
+  }
+  q("pkAdd").style.display = pkPath ? "" : "none";
+}
+function pkItem(icon, name, onclick) {
+  const it = document.createElement("div");
+  it.className = "pk-item";
+  const i = document.createElement("span"); i.textContent = icon;
+  const n = document.createElement("span"); n.textContent = name;
+  it.append(i, n); it.onclick = onclick;
+  return it;
+}
+function renderPkCrumbs() {
+  const c = q("pkCrumbs"); c.innerHTML = "";
+  if (!pkPath) { c.textContent = "This PC"; return; }
+  const parts = pkPath.replace(/\/+$/, "").split("/");
+  let acc = "";
+  const rootSeg = document.createElement("span"); rootSeg.className = "seg"; rootSeg.textContent = "This PC";
+  rootSeg.onclick = () => loadPicker(""); c.append(rootSeg);
+  parts.forEach((p, idx) => {
+    if (!p) { acc = "/"; return; }
+    acc = idx === 0 ? p + "/" : acc.replace(/\/$/, "") + "/" + p;
+    const sep = document.createElement("span"); sep.textContent = " › "; sep.style.color = "#4a4d55"; c.append(sep);
+    const seg = document.createElement("span"); seg.className = "seg"; seg.textContent = p || "/";
+    const target = acc;
+    seg.onclick = () => loadPicker(target); c.append(seg);
+  });
+}
+
+// ---- thumb queue ---------------------------------------------------------
+let tqueue = [], tinflight = 0;
+const trequested = new Set();
+let observer = null;
+function enqueueThumb(path) { if (trequested.has(path)) return; trequested.add(path); tqueue.push(path); flushThumbs(); }
+function flushThumbs() {
+  while (tinflight < 4 && tqueue.length) {
+    const batch = tqueue.splice(0, 24);
+    tinflight++;
+    fused.runPython(PY, { action: "thumbs", paths: JSON.stringify(batch) })
+      .then((res) => {
+        for (const r of res.results) {
+          if (r.ok) { ratios.set(r.path, r.w && r.h ? r.w / r.h : 1); thumbUrl.set(r.path, fused.rawUrl(r.cache)); thumbState.set(r.path, "ok"); }
+          else { thumbState.set(r.path, "error"); if (r.error === "no-decoder") maybeBanner(); }
+          paintTile(r.path);
+        }
+        scheduleLayout();
+      })
+      .catch(() => {})
+      .finally(() => { tinflight--; flushThumbs(); });
+  }
+}
+
+// ---- grid ----------------------------------------------------------------
+function maybeBanner() {
+  if (bannerDismissed || (APP && APP.deps && APP.deps.pillow_heif)) return;
+  q("bannerText").innerHTML = 'HEIC/HEIF files need <code>pillow-heif</code> in the server environment to preview.';
+  q("banner").style.display = "flex";
+}
+function showEmpty() { q("empty").style.display = "flex"; q("scroll").style.display = "none"; q("msg").style.display = "none"; q("count").textContent = ""; renderCrumbs(""); closeLightbox(); highlightTree(); }
+function showMsg(t) { q("empty").style.display = "none"; q("scroll").style.display = "none"; q("msg").style.display = "block"; q("msg").textContent = t; }
+
+async function loadDir(path, opts, append) {
+  const offset = append ? items.length : 0;
+  const res = await fused.runPython(PY, {
+    action: "list_dir", path, sort: opts.sort, offset: String(offset), limit: "200",
+    q: opts.q, date_from: opts.from, date_to: opts.to,
+  });
+  currentDir = res.dir; total = res.total;
+  items = append ? items.concat(res.items) : res.items;
+  return res;
+}
+
+function queryOpts() {
+  return { sort: getP("sort", "new"), q: getP("q", ""), from: getP("from", ""), to: getP("to", "") };
+}
+
+async function render() {
+  if (!ready) return;
+  const path = P.get("path"), photo = P.get("photo");
+  syncControls();
+  if (!path) { showEmpty(); return; }
+
+  const opts = queryOpts();
+  const sig = [normDir(path), opts.sort, opts.q, opts.from, opts.to].join("|");
+  if (currentDir === "" || normDir(path) !== currentDir || render._sig !== sig) {
+    resetGridState(); render._sig = sig;
+    let res;
+    try { res = await loadDir(path, opts, false); }
+    catch (e) { showMsg((e.message || "Cannot open folder") + "\n" + path); return; }
+    q("empty").style.display = "none"; q("msg").style.display = "none"; q("scroll").style.display = "block";
+    renderCrumbs(currentDir);
+    const filtered = opts.q || opts.from || opts.to;
+    q("count").textContent = total + (total === 1 ? " item" : " items") + (filtered ? " (filtered)" : "");
+    highlightTree();
+    buildTiles(); layout();
+    if (!APP.deps.pillow_heif && items.some((i) => i.ext === ".heic" || i.ext === ".heif")) maybeBanner();
+  }
+  if (photo) openLightbox(photo); else closeLightbox();
+}
+
+function syncControls() {
+  const opts = queryOpts();
+  if (document.activeElement !== q("search")) q("search").value = opts.q;
+  q("sortSel").value = opts.sort;
+  q("fromDate").value = opts.from;
+  q("toDate").value = opts.to;
+  q("filterBar").classList.toggle("open", !!(opts.from || opts.to) || filterOpen);
+}
+function normDir(p) { return p.replace(/\\/g, "/").replace(/\/+$/, ""); }
+
+function resetGridState() {
+  items = []; currentDir = ""; total = 0;
+  ratios.clear(); thumbUrl.clear(); thumbState.clear(); tileEls.clear();
+  tqueue = []; trequested.clear(); tinflight = 0; gridCursor = -1; loadingMore = false;
+  if (observer) observer.disconnect();
+  observer = new IntersectionObserver(onIntersect, { root: q("scroll"), rootMargin: "700px 0px" });
+  q("grid").innerHTML = "";
+}
+function onIntersect(entries) {
+  for (const e of entries) {
+    if (!e.isIntersecting) continue;
+    if (e.target === q("moreBtn")) { loadMore(); continue; }
+    const p = e.target.dataset.path;
+    if (thumbState.get(p) === "pending") enqueueThumb(p);
+  }
+}
+let loadingMore = false;
+async function loadMore() {
+  if (loadingMore || items.length >= total) return;
+  loadingMore = true;
+  try { await loadDir(P.get("path"), queryOpts(), true); buildTiles(); layout(); }
+  catch {} finally { loadingMore = false; }
+}
+
+function renderCrumbs(dir) {
+  const c = q("crumbs"); c.innerHTML = "";
+  if (!dir) return;
+  const parts = dir.split("/");
+  let acc = "";
+  parts.forEach((p, idx) => {
+    if (!p) return;
+    acc = idx === 0 ? p + "/" : acc.replace(/\/$/, "") + "/" + p;
+    if (idx > 0) { const s = document.createElement("span"); s.className = "sep"; s.textContent = "›"; c.append(s); }
+    const seg = document.createElement("span"); seg.className = "seg"; seg.textContent = p;
+    const t = acc; seg.onclick = () => { P.set("photo", ""); P.set("path", t); };
+    c.append(seg);
+  });
+}
+
+function buildTiles() {
+  for (const it of items) {
+    if (tileEls.has(it.path)) continue;
+    const tile = document.createElement("div");
+    tile.className = "tile loading"; tile.dataset.path = it.path; tile.title = it.name;
+    tile.onclick = () => P.set("photo", it.name);
+    tileEls.set(it.path, tile);
+    thumbState.set(it.path, thumbState.get(it.path) || "pending");
+    observer.observe(tile);
+  }
+  const more = items.length < total;
+  q("moreBtn").style.display = more ? "block" : "none";
+  q("moreBtn").textContent = "Loading " + items.length + " of " + total + "…";
+  if (more) observer.observe(q("moreBtn")); else observer.unobserve(q("moreBtn"));
+}
+function paintTile(path) {
+  const tile = tileEls.get(path); if (!tile) return;
+  const st = thumbState.get(path);
+  if (st === "ok") {
+    tile.classList.remove("loading");
+    if (!tile.querySelector("img")) { const img = document.createElement("img"); img.src = thumbUrl.get(path); img.alt = ""; tile.appendChild(img); }
+  } else if (st === "error") {
+    tile.classList.remove("loading");
+    const ext = (path.split(".").pop() || "").toLowerCase();
+    tile.innerHTML = '<div class="badge"><span class="ext">' + ext + '</span><span>can’t preview</span></div>';
+  }
+}
+
+function dayLabel(mtime) {
+  const d = new Date(mtime * 1000), now = new Date();
+  const dd = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const diff = Math.round((t0 - dd) / 86400000);
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Yesterday";
+  const opts = d.getFullYear() === now.getFullYear()
+    ? { weekday: "short", month: "short", day: "numeric" }
+    : { year: "numeric", month: "short", day: "numeric" };
+  return d.toLocaleDateString(undefined, opts);
+}
+function groupItems() {
+  if (getP("sort", "date") !== "date") return [{ label: "", items }];
+  const groups = []; let cur = null;
+  for (const it of items) {
+    const label = dayLabel(it.mtime);
+    if (!cur || cur.label !== label) { cur = { label, items: [] }; groups.push(cur); }
+    cur.items.push(it);
+  }
+  return groups;
+}
+
+let layoutRAF = 0;
+function scheduleLayout() { if (layoutRAF) return; layoutRAF = requestAnimationFrame(() => { layoutRAF = 0; layout(); }); }
+function layout() {
+  const grid = q("grid"), gap = 4;
+  const W = q("scroll").clientWidth - 32;
+  if (W <= 0 || !items.length) return;
+  const target = W < 560 ? 130 : 200;
+  grid.innerHTML = "";
+  for (const g of groupItems()) {
+    if (g.label) { const h = document.createElement("div"); h.className = "dategroup"; h.textContent = g.label; grid.append(h); }
+    layoutRows(g.items, grid, W, gap, target);
+  }
+  highlightCursor();
+}
+function layoutRows(list, grid, W, gap, target) {
+  let row = [], rowRatio = 0;
+  const flush = (stretch) => {
+    if (!row.length) return;
+    const rowEl = document.createElement("div"); rowEl.className = "row";
+    let h = target;
+    if (stretch) h = (W - gap * (row.length - 1)) / rowRatio;
+    for (const it of row) {
+      const r = ratios.get(it.path) || 1, tile = tileEls.get(it.path);
+      tile.style.width = Math.round(r * h) + "px"; tile.style.height = Math.round(h) + "px";
+      rowEl.appendChild(tile);
+    }
+    grid.appendChild(rowEl); row = []; rowRatio = 0;
+  };
+  for (const it of list) {
+    row.push(it); rowRatio += ratios.get(it.path) || 1;
+    if (rowRatio * target + gap * (row.length - 1) >= W) flush(true);
+  }
+  flush(false);
+}
+
+q("moreBtn").onclick = loadMore;
+
+// ---- lightbox (zoom + pan) -----------------------------------------------
+let lbReq = 0;
+let lbCurrentPath = "";
+let zoom = 1, tx = 0, ty = 0, fullLoaded = false, dragging = false, dragSX = 0, dragSY = 0;
+const currentIndex = () => items.findIndex((i) => i.name === P.get("photo"));
+
+function applyInfo() {
+  const open = P.get("info") === "1";
+  q("info").classList.toggle("open", open);
+  q("lbInfo").classList.toggle("on", open);
+}
+
+function applyTransform(animate) {
+  const img = q("lbImg");
+  img.style.transition = animate ? "transform .18s ease" : "none";
+  img.style.transform = `translate(${tx}px, ${ty}px) scale(${zoom})`;
+  const stage = q("lbStage");
+  stage.classList.toggle("zoomed", zoom > 1);
+  stage.classList.toggle("zoomable", zoom === 1);
+}
+function resetZoom() { zoom = 1; tx = 0; ty = 0; applyTransform(false); }
+function setZoom(z, cx, cy, animate) {
+  const nz = Math.max(1, Math.min(6, z));
+  if (cx != null) { tx = cx - (nz / zoom) * (cx - tx); ty = cy - (nz / zoom) * (cy - ty); }
+  zoom = nz;
+  if (zoom === 1) { tx = 0; ty = 0; }
+  applyTransform(animate);
+  if (zoom > 1) loadFull();
+}
+
+async function openLightbox(photo) {
+  const photoPath = currentDir + "/" + photo;
+  const samePhoto = q("lb").classList.contains("open") && lbCurrentPath === photoPath;
+  q("lb").classList.add("open");
+  const idx = currentIndex();
+  q("lbName").textContent = photo;
+  q("lbCounter").textContent = idx >= 0 ? (idx + 1) + " / " + total : "";
+  applyInfo();
+  if (samePhoto) return;
+  lbCurrentPath = photoPath;
+  resetZoom(); fullLoaded = false;
+  const myReq = ++lbReq;
+  q("lbSpin").style.display = "block"; q("lbSpin").textContent = "Loading…";
+  q("lbCaption").innerHTML = "";
+  if (isNativePhoto(photo)) {
+    fullLoaded = true;
+    q("lbImg").src = fused.rawUrl(photoPath);
+    loadMeta(photoPath);
+    preloadNeighbors(idx);
+    return;
+  }
+  let out;
+  try { out = await fused.runPython(PY, { action: "display", path: photoPath, size: "fit" }); }
+  catch (e) { if (myReq === lbReq) q("lbSpin").textContent = "Cannot display: " + (e.message || ""); return; }
+  if (myReq !== lbReq) return;
+  q("lbImg").src = fused.rawUrl(out.cache);
+  loadMeta(photoPath);
+  preloadNeighbors(idx);
+}
+
+async function loadFull() {
+  if (fullLoaded) return;
+  fullLoaded = true;
+  const photoPath = currentDir + "/" + P.get("photo");
+  const myReq = lbReq;
+  try {
+    const out = await fused.runPython(PY, { action: "display", path: photoPath, size: "full" });
+    if (myReq !== lbReq) return;
+    q("lbImg").src = fused.rawUrl(out.cache);
+  } catch {}
+}
+
+function preloadNeighbors(idx) {
+  for (const j of [idx - 1, idx + 1]) {
+    const it = items[j]; if (!it) continue;
+    if (it.kind === "native") { new Image().src = fused.rawUrl(it.path); continue; }
+    fused.runPython(PY, { action: "display", path: it.path, size: "fit" })
+      .then((o) => { new Image().src = fused.rawUrl(o.cache); })
+      .catch(() => {});
+  }
+}
+
+const LABELS = { DateTimeOriginal: "Taken", Make: "Make", Model: "Model", LensModel: "Lens", FNumber: "Aperture", ExposureTime: "Exposure", ISOSpeedRatings: "ISO", FocalLength: "Focal length", GPSLatitude: "Latitude", GPSLongitude: "Longitude" };
+async function loadMeta(photoPath) {
+  const myReq = lbReq;
+  let e; try { e = await fused.runPython(PY, { action: "exif", path: photoPath }); } catch { return; }
+  if (myReq !== lbReq) return;
+  renderCaption(e);
+  renderInfo(e);
+}
+function renderCaption(e) {
+  const cap = q("lbCaption"); cap.innerHTML = "";
+  const bits = [];
+  const taken = e.exif.DateTimeOriginal;
+  const when = taken ? taken.replace(/^(\d{4}):(\d{2}):(\d{2})/, "$1-$2-$3") : new Date(e.file.mtime * 1000).toLocaleString();
+  bits.push(document.createTextNode("🗓 " + when));
+  const cam = [e.exif.Make, e.exif.Model].filter(Boolean).join(" ");
+  if (cam) bits.push(document.createTextNode("📷 " + cam));
+  const dims = e.image ? e.image.w + "×" + e.image.h : "";
+  if (dims) bits.push(document.createTextNode("🖼 " + dims + " · " + fmtBytes(e.file.size)));
+  const lat = e.exif.GPSLatitude, lon = e.exif.GPSLongitude;
+  if (lat && lon) {
+    const a = document.createElement("a");
+    a.className = "loc"; a.textContent = "📍 " + (+lat).toFixed(5) + ", " + (+lon).toFixed(5);
+    a.href = "https://www.openstreetmap.org/?mlat=" + lat + "&mlon=" + lon + "#map=15/" + lat + "/" + lon;
+    a.target = "_blank"; a.rel = "noopener"; a.title = "Open location in map";
+    bits.push(a);
+  }
+  bits.forEach((b, i) => { if (i) { const s = document.createElement("span"); s.textContent = "·"; s.style.color = "#4a4d55"; cap.append(s); } cap.append(b); });
+  const hint = document.createElement("span"); hint.className = "zoomhint"; hint.textContent = "scroll or double-click to zoom";
+  cap.append(hint);
+}
+function renderInfo(e) {
+  const rows = [], kv = (k, v) => rows.push('<div class="kv"><span class="k">' + k + '</span><span class="v">' + v + '</span></div>');
+  kv("Name", e.file.name); kv("Size", fmtBytes(e.file.size));
+  if (e.image) kv("Dimensions", e.image.w + " × " + e.image.h);
+  if (e.image && e.image.format) kv("Format", e.image.format);
+  kv("Modified", new Date(e.file.mtime * 1000).toLocaleString());
+  for (const key in LABELS) if (e.exif[key]) kv(LABELS[key], e.exif[key]);
+  q("infoBody").innerHTML = rows.join("");
+}
+function closeLightbox() { q("lb").classList.remove("open"); q("lbImg").src = ""; lbCurrentPath = ""; resetZoom(); }
+function navTo(delta) { const idx = currentIndex(); if (idx < 0) return; const j = idx + delta; if (j < 0 || j >= items.length) return; P.set("photo", items[j].name); }
+
+// ---- grid keyboard cursor ------------------------------------------------
+function rowStride() { const first = q("grid").querySelector(".row"); return first ? Math.max(1, first.children.length) : 1; }
+function moveCursor(delta) { if (!items.length) return; gridCursor = Math.max(0, Math.min(items.length - 1, gridCursor < 0 ? 0 : gridCursor + delta)); highlightCursor(true); }
+function highlightCursor(scroll) {
+  for (const el of tileEls.values()) el.classList.remove("sel");
+  if (gridCursor < 0 || !items[gridCursor]) return;
+  const el = tileEls.get(items[gridCursor].path);
+  if (el) { el.classList.add("sel"); if (scroll) el.scrollIntoView({ block: "nearest" }); }
+}
+
+// ---- keyboard ------------------------------------------------------------
+document.addEventListener("keydown", (ev) => {
+  const t = ev.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) { if (ev.key === "Escape") t.blur(); return; }
+  if (q("picker").classList.contains("open")) { if (ev.key === "Escape") closePicker(); return; }
+  if (q("lb").classList.contains("open")) {
+    switch (ev.key) {
+      case "ArrowRight": navTo(1); break;
+      case "ArrowLeft": navTo(-1); break;
+      case "Home": if (items[0]) P.set("photo", items[0].name); break;
+      case "End": if (items.length) P.set("photo", items[items.length - 1].name); break;
+      case "Escape": if (P.get("info") === "1") P.set("info", ""); else P.set("photo", ""); break;
+      case "+": case "=": setZoom(zoom * 1.4, 0, 0, true); break;
+      case "-": case "_": setZoom(zoom / 1.4, 0, 0, true); break;
+      case "z": case " ": ev.preventDefault(); setZoom(zoom > 1 ? 1 : 2.5, 0, 0, true); break;
+      case "i": P.set("info", P.get("info") === "1" ? "" : "1"); break;
+    }
+  } else if (P.get("path")) {
+    switch (ev.key) {
+      case "ArrowRight": moveCursor(1); break;
+      case "ArrowLeft": moveCursor(-1); break;
+      case "ArrowDown": moveCursor(rowStride()); break;
+      case "ArrowUp": moveCursor(-rowStride()); break;
+      case "Enter": if (gridCursor >= 0 && items[gridCursor]) P.set("photo", items[gridCursor].name); break;
+      case "/": ev.preventDefault(); q("search").focus(); break;
+    }
+  }
+});
+
+// ---- wiring --------------------------------------------------------------
+let filterOpen = false;
+let searchTimer = 0;
+q("hamburger").onclick = () => { const c = q("app").classList.toggle("collapsed"); LS.set("sb", c ? "0" : "1"); };
+q("sortSel").onchange = () => P.set("sort", q("sortSel").value);
+q("search").addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => P.set("q", q("search").value.trim()), 280);
+});
+q("filterBtn").onclick = () => { filterOpen = !filterOpen; q("filterBar").classList.toggle("open", filterOpen || !!(P.get("from") || P.get("to"))); };
+q("fromDate").onchange = () => P.set("from", q("fromDate").value);
+q("toDate").onchange = () => P.set("to", q("toDate").value);
+q("clearFilter").onclick = () => { P.set("from", ""); P.set("to", ""); filterOpen = false; q("filterBar").classList.remove("open"); };
+q("bannerX").onclick = () => { bannerDismissed = true; q("banner").style.display = "none"; };
+q("addFolder").onclick = openPicker;
+q("addFolder2").onclick = openPicker;
+const normInput = (v) => v.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+q("pkCancel").onclick = closePicker;
+q("pkAdd").onclick = async () => {
+  const target = normInput(q("pkInput").value) || pkPath;
+  if (!target) return;
+  try { await fused.runPython(PY, { action: "folders", path: target }); }
+  catch (e) { q("pkList").innerHTML = '<div class="pk-item">Not a folder: ' + target + "</div>"; return; }
+  addRoot(target); renderTree(); closePicker(); P.set("photo", ""); P.set("path", target);
+};
+q("pkInput").addEventListener("keydown", (e) => { if (e.key === "Enter") loadPicker(normInput(q("pkInput").value)); });
+q("picker").addEventListener("click", (e) => { if (e.target === q("picker")) closePicker(); });
+
+q("lbClose").onclick = () => P.set("photo", "");
+q("lbInfo").onclick = () => P.set("info", P.get("info") === "1" ? "" : "1");
+q("lbCard").addEventListener("mousedown", (e) => {
+  if (P.get("info") !== "1") return;
+  if (q("info").contains(e.target) || q("lbInfo").contains(e.target)) return;
+  P.set("info", "");
+});
+q("lbZoomIn").onclick = () => setZoom(zoom * 1.4, 0, 0, true);
+q("lbZoomOut").onclick = () => setZoom(zoom / 1.4, 0, 0, true);
+q("navPrev").onclick = (e) => { e.stopPropagation(); navTo(-1); };
+q("navNext").onclick = (e) => { e.stopPropagation(); navTo(1); };
+q("lb").addEventListener("click", (e) => { if (e.target === q("lb")) P.set("photo", ""); });
+
+// zoom + pan on the stage
+const stage = q("lbStage");
+stage.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const r = stage.getBoundingClientRect();
+  const cx = e.clientX - r.left - r.width / 2, cy = e.clientY - r.top - r.height / 2;
+  setZoom(zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15), cx, cy, false);
+}, { passive: false });
+q("lbImg").onload = () => { q("lbSpin").style.display = "none"; };
+q("lbImg").onerror = () => { if (q("lbImg").src) q("lbSpin").textContent = "Cannot display"; };
+q("lbImg").addEventListener("dblclick", (e) => {
+  const r = stage.getBoundingClientRect();
+  const cx = e.clientX - r.left - r.width / 2, cy = e.clientY - r.top - r.height / 2;
+  setZoom(zoom > 1 ? 1 : 2.5, cx, cy, true);
+});
+stage.addEventListener("mousedown", (e) => {
+  if (zoom <= 1 || e.button !== 0) return;
+  dragging = true; dragSX = e.clientX - tx; dragSY = e.clientY - ty;
+  stage.classList.add("grabbing"); e.preventDefault();
+});
+window.addEventListener("mousemove", (e) => {
+  if (!dragging) return;
+  tx = e.clientX - dragSX; ty = e.clientY - dragSY; applyTransform(false);
+});
+window.addEventListener("mouseup", () => { dragging = false; stage.classList.remove("grabbing"); });
+
+let resizeRAF = 0;
+window.addEventListener("resize", () => { if (resizeRAF) return; resizeRAF = requestAnimationFrame(() => { resizeRAF = 0; layout(); }); });
+
+P.onChange(render);
+boot();
+</script>
+</body>
+</html>

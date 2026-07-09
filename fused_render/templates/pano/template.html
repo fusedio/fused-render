@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Pano preview</title>
+<style>
+  :root {
+    --bg: #fafafa; --panel: #ffffff; --panel2: #f4f4f5; --edge: #e4e4e7;
+    --text: #18181b; --dim: #71717a; --accent: #18181b; --accent2: #3f3f46;
+    --ok: #16a34a; --warn: #d97706; --bad: #dc2626;
+    --shadow-sm: 0 1px 2px rgba(0,0,0,.05);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg); color: var(--text); overflow: hidden;
+    font: 13px/1.45 "InterVar", Inter, ui-sans-serif, system-ui, -apple-system,
+      "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  #app { display: flex; flex-direction: column; height: 100vh; }
+
+  /* ---------- top bar ---------- */
+  #topbar {
+    display: flex; align-items: center; gap: 8px; padding: 7px 12px;
+    background: var(--panel); border-bottom: 1px solid var(--edge); flex: none;
+  }
+  #topbar .logo { font-weight: 700; letter-spacing: 2px; font-size: 13px;
+    color: var(--accent2); margin-right: 6px; white-space: nowrap; }
+  .btn {
+    background: var(--panel); color: var(--text); border: 1px solid var(--edge);
+    border-radius: 6px; padding: 5px 11px; cursor: pointer; font: inherit;
+    white-space: nowrap; box-shadow: var(--shadow-sm); font-weight: 500;
+  }
+  .btn:hover { background: var(--panel2); border-color: #d4d4d8; }
+  #topbar .spacer { flex: 1; }
+  #topbar .fname { font-size: 12px; color: var(--dim); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; max-width: 34vw; }
+
+  /* ---------- dropdown menu ---------- */
+  .dd { position: relative; }
+  .dd .menu {
+    position: absolute; top: calc(100% + 6px); left: 0; z-index: 60;
+    background: var(--panel); border: 1px solid var(--edge);
+    border-radius: 9px; box-shadow: 0 8px 28px rgba(0,0,0,.13); padding: 5px;
+    min-width: 200px;
+  }
+  .dd .menu button {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 20px; width: 100%; border: 0; background: none; text-align: left;
+    padding: 6px 10px; border-radius: 6px; font: inherit; color: var(--text);
+    cursor: pointer; white-space: nowrap;
+  }
+  .dd .menu button:hover { background: var(--panel2); }
+  .dd .menu .hint { color: var(--dim); font-size: 11px;
+    font-family: ui-monospace, monospace; }
+  .dd .menu .chk { display: inline-block; width: 15px; color: var(--accent); }
+  .caret { opacity: .6; font-size: 10px; margin-left: 2px; }
+  #procLabel { font-weight: 600; }
+  .dd .menu[hidden] { display: none !important; }
+
+  /* ---------- viewer ---------- */
+  #main { flex: 1; min-width: 0; display: flex; flex-direction: column;
+    position: relative; }
+  #stage { flex: 1; min-height: 0; position: relative; background:
+    radial-gradient(ellipse at center, #fafafa 0%, #ececee 100%); }
+  #pano360 { position: absolute; inset: 0; display: none; }
+  #imgwrap { position: absolute; inset: 0; display: none; overflow: auto;
+    text-align: center; }
+  #imgwrap .inner { display: flex; align-items: center; justify-content: center;
+    min-height: 100%; padding: 18px; }
+  #imgview { max-width: 100%; max-height: calc(100vh - 92px);
+    box-shadow: 0 6px 28px rgba(0,0,0,.14); border-radius: 6px;
+    border: 1px solid var(--edge);
+    user-select: none; -webkit-user-drag: none; }
+  #imgview.grabbable { cursor: grab; }
+  #imgview.grabbing { cursor: grabbing; }
+  #facegrid { display: none; position: absolute; inset: 0; overflow: auto;
+    padding: 18px; }
+  #facegrid .grid { display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 12px; max-width: 1100px; margin: 0 auto; }
+  #facegrid figure { background: var(--panel); border: 1px solid var(--edge);
+    border-radius: 8px; overflow: hidden; box-shadow: var(--shadow-sm); }
+  #facegrid img { width: 100%; display: block; }
+  #facegrid figcaption { display: flex; justify-content: space-between;
+    padding: 5px 9px; font-size: 11px; color: var(--dim); }
+  #facegrid a { color: var(--text); text-decoration: underline; }
+  #empty { position: absolute; inset: 0; display: none; align-items: center;
+    justify-content: center; color: var(--dim); flex-direction: column; gap: 10px;
+    text-align: center; padding: 0 20px; }
+  #spin {
+    position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+    background: rgba(255,255,255,.95); border: 1px solid var(--edge);
+    padding: 5px 14px; border-radius: 20px; color: var(--text);
+    display: none; z-index: 30; font-size: 12px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.08);
+  }
+  #warnband {
+    position: absolute; top: 12px; left: 12px; z-index: 25; display: none;
+    background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c;
+    padding: 5px 12px; border-radius: 8px; font-size: 12px; max-width: 60%;
+  }
+
+  /* ---------- controls panel ---------- */
+  #ctrl {
+    position: absolute; right: 14px; top: 14px; z-index: 20; width: 230px;
+    background: rgba(255,255,255,.92); border: 1px solid var(--edge);
+    border-radius: 10px; padding: 12px; display: none; backdrop-filter: blur(4px);
+    box-shadow: 0 4px 18px rgba(0,0,0,.08);
+  }
+  #ctrl h4 { font-size: 11px; text-transform: uppercase; letter-spacing: 1px;
+    color: var(--dim); margin-bottom: 8px; }
+  .row { margin-bottom: 9px; }
+  .row label { display: flex; justify-content: space-between; font-size: 11px;
+    color: var(--dim); margin-bottom: 3px; }
+  .row label output { color: var(--text); font-family: ui-monospace, monospace; }
+  .row input[type=range] { width: 100%; accent-color: var(--accent); }
+  .row select {
+    width: 100%; background: var(--panel); color: var(--text);
+    border: 1px solid var(--edge); border-radius: 5px; padding: 3px 6px; font: inherit;
+  }
+  #ctrl .hint { font-size: 10.5px; color: var(--dim); margin-top: 4px; }
+
+  /* ---------- status bar ---------- */
+  #status {
+    flex: none; display: flex; gap: 16px; align-items: center;
+    background: var(--panel); border-top: 1px solid var(--edge);
+    padding: 5px 12px; font-size: 11.5px; color: var(--dim);
+    font-family: ui-monospace, monospace; white-space: nowrap; overflow: hidden;
+  }
+  #status .ok { color: var(--ok); }
+
+  /* ---------- overlays ---------- */
+  #toasts { position: fixed; bottom: 40px; right: 16px; z-index: 100;
+    display: flex; flex-direction: column; gap: 8px; }
+  .toast { background: var(--panel); border: 1px solid var(--edge);
+    border-left: 3px solid var(--accent); padding: 8px 14px; border-radius: 8px;
+    max-width: 380px; font-size: 12px; box-shadow: 0 4px 20px rgba(0,0,0,.12); }
+  .toast.err { border-left-color: var(--bad); }
+  #help {
+    position: fixed; inset: 0; z-index: 90; background: rgba(0,0,0,.35);
+    display: none; align-items: center; justify-content: center;
+  }
+  #help .box { background: var(--panel); border: 1px solid var(--edge);
+    border-radius: 12px; padding: 22px 26px; width: 400px;
+    box-shadow: 0 10px 40px rgba(0,0,0,.18); }
+  #help h2 { font-size: 15px; margin-bottom: 12px; color: var(--text); }
+  #help table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  #help td { padding: 4px 0; color: var(--dim); }
+  #help td:first-child { width: 130px; }
+  #help kbd { background: var(--panel2); border: 1px solid var(--edge);
+    border-radius: 4px; padding: 1px 7px; font-family: ui-monospace, monospace;
+    color: var(--text); font-size: 11px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="topbar">
+    <span class="logo">◐ PANO</span>
+    <div class="dd">
+      <button class="btn" id="btnProc" title="Projection / processing mode">Processing: <b id="procLabel"></b> <span class="caret">▾</span></button>
+      <div class="menu" id="procMenu" hidden></div>
+    </div>
+    <span class="spacer"></span>
+    <span class="fname" id="fname"></span>
+    <button class="btn" id="btnDl" title="Download current view (d)">⬇ Save view</button>
+    <button class="btn" id="btnHelp" title="Keyboard shortcuts (?)">?</button>
+  </div>
+
+  <div id="main">
+    <div id="stage">
+      <div id="pano360"></div>
+      <div id="imgwrap"><div class="inner"><img id="imgview" draggable="false"></div></div>
+      <div id="facegrid"><div class="grid"></div></div>
+      <div id="empty"><div style="font-size:40px">◐</div><div id="emptyMsg">No file selected</div></div>
+      <div id="spin">converting…</div>
+      <div id="warnband"></div>
+      <div id="ctrl"></div>
+    </div>
+    <div id="status"><span id="st-asset"></span><span id="st-view"></span><span id="st-msg"></span></div>
+  </div>
+</div>
+
+<div id="toasts"></div>
+<div id="help"><div class="box">
+  <h2>Keyboard shortcuts</h2>
+  <table>
+    <tr><td><kbd>1</kbd> … <kbd>8</kbd></td><td>switch projection view</td></tr>
+    <tr><td><kbd>d</kbd></td><td>download current view</td></tr>
+    <tr><td><kbd>?</kbd></td><td>toggle this help</td></tr>
+    <tr><td colspan="2" style="padding-top:10px">Perspective / fisheye: drag the image to look around, scroll to zoom FOV.</td></tr>
+  </table>
+</div></div>
+
+<script>
+(async function boot() {
+  const file = fused.params.get("_file") || "";
+  const empty = document.getElementById("empty");
+  const emptyMsg = document.getElementById("emptyMsg");
+  if (!file) {
+    empty.style.display = "flex";
+    return;
+  }
+
+  // Sibling static assets (pannellum, the vendored font) live next to this
+  // template file, but the page itself is served at /render?path=<html> — a
+  // plain relative <script src> would resolve against that route, not this
+  // directory. Resolve our own directory the same way runPython does, and
+  // load them through the raw-bytes endpoint instead.
+  const ownPath = new URLSearchParams(location.search).get("path") || "";
+  const BASE_DIR = ownPath.slice(0, ownPath.lastIndexOf("/") + 1);
+  const vendorUrl = (name) => fused.rawUrl(BASE_DIR + name);
+  const py = (params) => fused.runPython("./pano.py", { file, ...params });
+
+  const fontCss = document.createElement("style");
+  fontCss.textContent = `@font-face{font-family:"InterVar";` +
+    `src:url("${vendorUrl("inter-var.woff2")}") format("woff2");` +
+    `font-weight:100 900;font-style:normal;font-display:swap;}`;
+  document.head.appendChild(fontCss);
+
+  await Promise.all([
+    new Promise((ok, bad) => { const l = document.createElement("link");
+      l.rel = "stylesheet"; l.href = vendorUrl("pannellum.css");
+      l.onload = ok; l.onerror = () => bad(new Error("pannellum.css failed"));
+      document.head.appendChild(l); }),
+    new Promise((ok, bad) => { const s = document.createElement("script");
+      s.src = vendorUrl("pannellum.js");
+      s.onload = ok; s.onerror = () => bad(new Error("pannellum.js failed"));
+      document.head.appendChild(s); }),
+  ]);
+
+  // ------------------------------------------------------------- constants
+  const MODES = [
+    { id: "view360",      label: "360° View" },
+    { id: "original",     label: "Original" },
+    { id: "cube_dice",    label: "Cube Cross" },
+    { id: "cube_horizon", label: "Cube Strip" },
+    { id: "cube_faces",   label: "Cube Faces" },
+    { id: "perspective",  label: "Perspective" },
+    { id: "little_planet",label: "Little Planet" },
+    { id: "fisheye180",   label: "Fisheye 180°" },
+  ];
+  const KIND_LABEL = { equirect: "equirect", equirect_180: "180°",
+    cube_dice: "cube cross", cube_horizon: "cube strip", flat: "not pano" };
+  const DEFAULTS = { fov: "90", yaw: "0", pitch: "0", roll: "0", zoom: "1",
+    psize: "1280x720", csize: "1024", face: "0" };
+
+  // ------------------------------------------------------------- state
+  let meta = null;
+  let viewer = null;           // pannellum instance
+  let viewerKey = "";          // panorama url the viewer was built for
+  let renderSeq = 0;           // stale-response guard
+  let lastView = null;         // {path,w,h,ms,cached} of current converted view
+
+  const $ = (id) => document.getElementById(id);
+  const els = {
+    pano: $("pano360"), imgwrap: $("imgwrap"), img: $("imgview"),
+    faces: $("facegrid"), empty, spin: $("spin"), warn: $("warnband"),
+    ctrl: $("ctrl"), stAsset: $("st-asset"), stView: $("st-view"),
+    stMsg: $("st-msg"),
+  };
+
+  const P = {
+    get: (k) => fused.params.get(k) ?? DEFAULTS[k],
+    set: (k, v) => { v = String(v);
+      if (fused.params.get(k) !== v) fused.params.set(k, v); },
+    num: (k) => parseFloat(fused.params.get(k) ?? DEFAULTS[k]),
+  };
+  const mode = () => {
+    const m = fused.params.get("mode");
+    return MODES.some((x) => x.id === m) ? m : "view360";
+  };
+
+  function toast(msg, err) {
+    const t = document.createElement("div");
+    t.className = "toast" + (err ? " err" : "");
+    t.textContent = msg;
+    $("toasts").appendChild(t);
+    setTimeout(() => t.remove(), err ? 7000 : 3500);
+  }
+
+  // ------------------------------------------------------------- menus
+  function closeMenus() {
+    document.querySelectorAll(".dd .menu").forEach((m) => { m.hidden = true; });
+  }
+  function toggleMenu(el) {
+    const wasHidden = el.hidden;
+    closeMenus();
+    el.hidden = !wasHidden;
+    return !el.hidden;
+  }
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest(".dd")) closeMenus();
+  });
+
+  // Processing dropdown: label shows the active mode, menu lists them all
+  function renderModes() {
+    $("procLabel").textContent = MODES.find((x) => x.id === mode()).label;
+    const menu = $("procMenu");
+    menu.innerHTML = "";
+    MODES.forEach((m, i) => {
+      const b = document.createElement("button");
+      b.innerHTML = `<span><span class="chk">${m.id === mode() ? "✓" : ""}</span>` +
+        `${m.label}</span><span class="hint">${i + 1}</span>`;
+      b.addEventListener("click", () => { closeMenus(); setMode(m.id); });
+      menu.appendChild(b);
+    });
+  }
+  function setMode(m) {
+    if (m === mode()) return;
+    P.set("mode", m);
+  }
+
+  // ------------------------------------------------------------- controls
+  function slider(key, label, min, max, step, fmt) {
+    const v = P.get(key);
+    return `<div class="row"><label>${label}<output id="o-${key}">` +
+      `${fmt ? fmt(v) : v}</output></label>` +
+      `<input type="range" data-p="${key}" min="${min}" max="${max}" ` +
+      `step="${step}" value="${v}"></div>`;
+  }
+  function sizeSelect(key, label, options) {
+    const v = P.get(key);
+    return `<div class="row"><label>${label}</label><select data-p="${key}">` +
+      options.map((o) => `<option value="${o[0]}"${String(o[0]) === v ? " selected" : ""}>${o[1]}</option>`).join("") +
+      `</select></div>`;
+  }
+  function renderControls() {
+    const m = mode();
+    let html = "";
+    if (m === "perspective") {
+      html = `<h4>Perspective (e2p)</h4>` +
+        slider("fov", "FOV °", 20, 175, 1) +
+        slider("yaw", "Yaw °", -180, 180, 1) +
+        slider("pitch", "Pitch °", -90, 90, 1) +
+        slider("roll", "Roll °", -180, 180, 1) +
+        sizeSelect("psize", "Output size", [["1024x576", "1024 × 576"],
+          ["1280x720", "1280 × 720"], ["1920x1080", "1920 × 1080"],
+          ["1080x1080", "1080 × 1080"]]) +
+        `<div class="hint">drag image to look · scroll to zoom</div>`;
+    } else if (m === "little_planet") {
+      html = `<h4>Little planet</h4>` +
+        slider("zoom", "Zoom", 0.2, 3, 0.05) +
+        slider("roll", "Rotate °", -180, 180, 1) +
+        sizeSelect("csize", "Output size", [["512", "512 px"], ["1024", "1024 px"], ["2048", "2048 px"]]);
+    } else if (m === "fisheye180") {
+      html = `<h4>Fisheye 180°</h4>` +
+        slider("yaw", "Yaw °", -180, 180, 1) +
+        slider("pitch", "Pitch °", -90, 90, 1) +
+        sizeSelect("csize", "Output size", [["512", "512 px"], ["1024", "1024 px"], ["2048", "2048 px"]]) +
+        `<div class="hint">drag image to look around</div>`;
+    } else if (m === "cube_dice" || m === "cube_horizon" || m === "cube_faces") {
+      html = `<h4>${m === "cube_faces" ? "Cube faces (e2c)" : "Cubemap (e2c)"}</h4>` +
+        sizeSelect("face", "Face size", [["0", "auto (source/4)"], ["256", "256 px"],
+          ["512", "512 px"], ["1024", "1024 px"]]);
+    }
+    els.ctrl.style.display = html ? "block" : "none";
+    els.ctrl.innerHTML = html;
+    els.ctrl.querySelectorAll("[data-p]").forEach((el) => {
+      el.addEventListener("input", () => {
+        P.set(el.dataset.p, el.value);
+        const o = $("o-" + el.dataset.p);
+        if (o) o.textContent = el.value;
+      });
+    });
+  }
+
+  // ------------------------------------------------------------- viewer
+  function show(which) {
+    els.pano.style.display = which === "pano" ? "block" : "none";
+    els.imgwrap.style.display = which === "img" ? "block" : "none";
+    els.faces.style.display = which === "faces" ? "block" : "none";
+    els.empty.style.display = which === "empty" ? "flex" : "none";
+  }
+  function busy(on, msg) {
+    els.spin.style.display = on ? "block" : "none";
+    if (msg) els.spin.textContent = msg;
+  }
+  function setViewStatus(text, extra) {
+    els.stView.textContent = text || "";
+    els.stMsg.innerHTML = extra || "";
+  }
+
+  function destroyViewer() {
+    if (viewer) { try { viewer.destroy(); } catch (e) {} viewer = null; viewerKey = ""; }
+  }
+
+  async function draw360(m) {
+    show("pano");
+    // pano.py hands back absolute cache paths, so these go straight through
+    // fused.rawUrl (no BASE_DIR join, unlike the vendored static assets above)
+    let panoUrl = fused.rawUrl(m.display_path);
+    if (m.kind === "cube_dice" || m.kind === "cube_horizon") {
+      // cube layouts must be reprojected to equirect for the sphere viewer
+      busy(true, "reprojecting cube → equirect…");
+      try {
+        const r = await py({ action: "convert", mode: "equirect" });
+        panoUrl = fused.rawUrl(r.path);
+      } catch (err) { busy(false); toast(err.message, true); return; }
+      busy(false);
+    }
+    if (viewerKey === panoUrl) return;
+    destroyViewer();
+    viewerKey = panoUrl;
+    viewer = pannellum.viewer("pano360", {
+      type: "equirectangular",
+      panorama: panoUrl,
+      autoLoad: true, showControls: true, compass: false,
+      hfov: 100, friction: 0.12, backgroundColor: [0.94, 0.94, 0.95],
+      haov: m.kind === "equirect_180" ? 180 : 360,
+      minYaw: m.kind === "equirect_180" ? -90 : -180,
+      maxYaw: m.kind === "equirect_180" ? 90 : 180,
+    });
+    setViewStatus(`360° sphere · WebGL`, "");
+    lastView = { path: m.display_path };
+  }
+
+  let renderTimer = null;
+  function scheduleRender() {
+    clearTimeout(renderTimer);
+    renderTimer = setTimeout(renderConverted, 230);
+  }
+
+  async function renderConverted() {
+    if (!meta) return;
+    const m = mode();
+    const seq = ++renderSeq;
+    const [pw, ph] = P.get("psize").split("x").map(Number);
+    const req = { action: "convert", mode: m,
+      fov: P.get("fov"), yaw: P.get("yaw"), pitch: P.get("pitch"),
+      roll: P.get("roll"), zoom: P.get("zoom"), face_w: P.get("face") };
+    if (m === "perspective") { req.out_w = String(pw); req.out_h = String(ph); }
+    else { req.out_w = P.get("csize"); }
+    busy(true, "converting…");
+    try {
+      const r = await py(req);
+      if (seq !== renderSeq) return;         // a newer request superseded us
+      busy(false);
+      if (m === "cube_faces") {
+        show("faces");
+        const grid = els.faces.querySelector(".grid");
+        const order = { F: "Front", R: "Right", B: "Back", L: "Left", U: "Up", D: "Down" };
+        grid.innerHTML = r.faces.map((f) =>
+          `<figure><img src="${fused.rawUrl(f.path)}">` +
+          `<figcaption><span>${order[f.face] || f.face} (${f.face})</span>` +
+          `<a href="${fused.rawUrl(f.path)}" download="${meta.name}_${f.face}.jpg">download</a>` +
+          `</figcaption></figure>`).join("");
+        lastView = null;
+      } else {
+        show("img");
+        els.img.src = fused.rawUrl(r.path);
+        lastView = r;
+      }
+      setViewStatus(`${MODES.find(x => x.id === m).label} · ${r.w}×${r.h}`,
+        r.cached ? `<span class="ok">cached</span>` : `${r.ms} ms`);
+    } catch (err) {
+      if (seq !== renderSeq) return;
+      busy(false); toast(`convert failed: ${err.message}`, true);
+    }
+  }
+
+  function draw() {
+    renderModes(); renderControls();
+    if (!meta) { destroyViewer(); show("empty"); emptyMsg.textContent = "No file selected";
+      els.warn.style.display = "none"; els.stAsset.textContent = ""; setViewStatus("", ""); return; }
+    els.stAsset.textContent =
+      `${meta.name} · ${meta.width}×${meta.height} · ${meta.format} · ${KIND_LABEL[meta.kind] || meta.kind}`;
+    els.warn.style.display = meta.valid ? "none" : "block";
+    els.warn.textContent = meta.valid ? "" :
+      `⚠ not validated as panoramic — ${meta.reasons[meta.reasons.length - 1]}`;
+
+    const m = mode();
+    if (m === "view360") {
+      els.img.classList.remove("grabbable");
+      draw360(meta);
+    } else if (m === "original") {
+      destroyViewer(); show("img");
+      els.img.classList.remove("grabbable");
+      els.img.src = fused.rawUrl(meta.display_path);
+      lastView = { path: meta.display_path };
+      setViewStatus(`original pixels · ${meta.display_w}×${meta.display_h}` +
+        (meta.display_w !== meta.width ? " (display copy, downscaled)" : ""), "");
+    } else {
+      destroyViewer();
+      els.img.classList.toggle("grabbable",
+        m === "perspective" || m === "fisheye180");
+      scheduleRender();
+    }
+  }
+
+  // ------------------------------------------------------------- download
+  $("btnDl").addEventListener("click", downloadView);
+  function downloadView() {
+    if (!meta || !lastView || !lastView.path) { toast("nothing to download"); return; }
+    const link = document.createElement("a");
+    link.href = fused.rawUrl(lastView.path);
+    link.download = `${meta.name.replace(/\.[^.]+$/, "")}_${mode()}.jpg`;
+    link.click();
+  }
+
+  // ------------------------------------------------------------- drag look
+  (function dragLook() {
+    let drag = null;
+    els.img.addEventListener("pointerdown", (e) => {
+      const m = mode();
+      if (m !== "perspective" && m !== "fisheye180") return;
+      drag = { x: e.clientX, y: e.clientY, yaw: P.num("yaw"), pitch: P.num("pitch") };
+      els.img.classList.add("grabbing");
+      els.img.setPointerCapture(e.pointerId);
+    });
+    els.img.addEventListener("pointermove", (e) => {
+      if (!drag) return;
+      const fov = P.num("fov");
+      const scale = (mode() === "fisheye180" ? 120 : fov) / els.img.clientWidth;
+      let yaw = drag.yaw - (e.clientX - drag.x) * scale;
+      let pitch = drag.pitch + (e.clientY - drag.y) * scale;
+      yaw = ((yaw + 180) % 360 + 360) % 360 - 180;
+      pitch = Math.max(-90, Math.min(90, pitch));
+      P.set("yaw", Math.round(yaw));
+      P.set("pitch", Math.round(pitch));
+    });
+    const end = () => { drag = null; els.img.classList.remove("grabbing"); };
+    els.img.addEventListener("pointerup", end);
+    els.img.addEventListener("pointercancel", end);
+    els.img.addEventListener("wheel", (e) => {
+      if (mode() !== "perspective") return;
+      e.preventDefault();
+      const fov = Math.max(20, Math.min(175, P.num("fov") + (e.deltaY > 0 ? 5 : -5)));
+      P.set("fov", Math.round(fov));
+    }, { passive: false });
+  })();
+
+  // ------------------------------------------------------------- keyboard
+  document.addEventListener("keydown", (e) => {
+    const tag = (e.target.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "textarea" || tag === "select") return;
+    if (e.key === "?" ) { const h = $("help");
+      h.style.display = h.style.display === "flex" ? "none" : "flex"; return; }
+    if (e.key === "Escape") { $("help").style.display = "none"; closeMenus(); return; }
+    if (e.key === "d") { downloadView(); return; }
+    const n = parseInt(e.key, 10);
+    if (n >= 1 && n <= MODES.length) setMode(MODES[n - 1].id);
+  });
+  $("btnProc").addEventListener("click", () => toggleMenu($("procMenu")));
+  $("btnHelp").addEventListener("click", () =>
+    $("help").style.display = "flex");
+  $("help").addEventListener("click", (e) => {
+    if (e.target === $("help")) $("help").style.display = "none";
+  });
+
+  // ------------------------------------------------------------- boot
+  $("fname").textContent = file.split("/").pop();
+  fused.params.onChange(draw);
+  try {
+    busy(true, "loading image…");
+    const r = await py({ action: "open" });
+    meta = r.asset;
+    busy(false);
+    draw();
+  } catch (err) {
+    busy(false);
+    toast(`failed to load image: ${err.message}`, true);
+    draw();
+  }
+})();
+</script>
+</body>
+</html>

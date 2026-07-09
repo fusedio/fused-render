@@ -1,0 +1,965 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LaTeX</title>
+<style>
+  /* ---- Light Airtable-flavored design system (matches the source app) ---- */
+  :root {
+    --blue: #166ee1; --blue-2: #2d7ff9; --blue-soft: #e8f0fe; --blue-ink: #0f5bc4;
+    --canvas: #f7f8fa; --chrome: #ffffff; --hair: #e0e3e8; --hair-2: #eceef1;
+    --ink: #1d2025; --ink-2: #4c5560; --ink-3: #8a929e;
+    --danger: #d64b4b; --danger-soft: #fdecec; --ok: #1a9c67; --ok-soft: #e7f6ee; --amber: #d98218;
+    --radius: 6px; --radius-lg: 10px;
+    --shadow-1: 0 1px 2px rgba(15,23,42,.06), 0 1px 3px rgba(15,23,42,.08);
+    --shadow-2: 0 6px 24px rgba(15,23,42,.16);
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: var(--font); color: var(--ink); background: var(--canvas);
+    font-size: 13px; height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  button { font: inherit; cursor: pointer; }
+  .hidden { display: none !important; }
+
+  /* ---- top bar ---- */
+  #topbar {
+    display: flex; align-items: center; gap: 10px; padding: 7px 12px; flex: 0 0 auto;
+    background: var(--chrome); border-bottom: 1px solid var(--hair); z-index: 20;
+  }
+  .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; letter-spacing: .2px; }
+  .brand .mark { width: 22px; height: 22px; border-radius: 5px; background: var(--blue);
+    color: #fff; display: grid; place-items: center; font-size: 11px; font-weight: 800; font-family: var(--mono); }
+  .docname { font-weight: 600; font-size: 13.5px; color: var(--ink-2); max-width: 34vw;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .spacer { flex: 1 1 auto; }
+
+  .btn { display: inline-flex; align-items: center; gap: 6px; background: var(--chrome); color: var(--ink);
+    border: 1px solid var(--hair); border-radius: var(--radius); padding: 6px 11px; font-weight: 500; }
+  .btn:hover { background: var(--hair-2); }
+  .btn.primary { background: var(--blue); color: #fff; border-color: var(--blue); font-weight: 600; }
+  .btn.primary:hover { background: var(--blue-ink); }
+  .btn.ghost { border-color: transparent; background: transparent; }
+  .btn.ghost:hover { background: var(--hair-2); }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .btn svg { width: 15px; height: 15px; }
+
+  /* view/edit segmented toggle */
+  .seg { display: inline-flex; background: var(--hair-2); border-radius: var(--radius); padding: 2px; gap: 2px; }
+  .seg button { border: none; background: transparent; color: var(--ink-2); border-radius: 4px;
+    padding: 5px 12px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
+  .seg button.on { background: #fff; color: var(--blue); box-shadow: var(--shadow-1); }
+  .seg button svg { width: 15px; height: 15px; }
+
+  /* compile status pill */
+  #status { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600;
+    color: var(--ink-3); font-variant-numeric: tabular-nums; padding: 4px 4px; }
+  #status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); }
+  #status.ok .dot { background: var(--ok); } #status.ok { color: var(--ok); }
+  #status.err .dot { background: var(--danger); } #status.err { color: var(--danger); }
+  #status.busy .dot { background: var(--amber); animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+  /* ---- dropdown menu (download/export) ---- */
+  .menu-wrap { position: relative; }
+  .menu { position: absolute; top: calc(100% + 4px); right: 0; background: #fff; border: 1px solid var(--hair);
+    border-radius: var(--radius); box-shadow: var(--shadow-2); padding: 5px; min-width: 200px; z-index: 40; }
+  .menu button { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; border: none;
+    background: none; color: var(--ink); padding: 7px 10px; border-radius: 5px; font-size: 13px; }
+  .menu button:hover { background: var(--hair-2); }
+  .menu button svg { width: 15px; height: 15px; flex: 0 0 auto; }
+  .menu .sub { color: var(--ink-3); font-size: 11px; padding: 6px 10px 3px; text-transform: uppercase; letter-spacing: .5px; }
+
+  /* ---- workspace ---- */
+  #main { flex: 1 1 auto; min-height: 0; display: flex; }
+
+  /* left sidebar: files + outline */
+  #side { flex: 0 0 232px; overflow-y: auto; background: var(--chrome); border-right: 1px solid var(--hair);
+    padding: 12px 8px; display: flex; flex-direction: column; gap: 14px; }
+  #side h4 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .7px; color: var(--ink-3);
+    padding: 0 6px; display: flex; align-items: center; gap: 6px; }
+  #side h4 .add { margin-left: auto; border: none; background: none; color: var(--ink-3); font-size: 15px; line-height: 1; cursor: pointer; padding: 0 4px; border-radius: 4px; }
+  #side h4 .add:hover { background: var(--hair-2); color: var(--blue); }
+  .tree-item, .toc-item { display: flex; align-items: center; gap: 7px; width: 100%; text-align: left; border: none; background: none;
+    color: var(--ink-2); padding: 4px 6px; border-radius: 5px; font-size: 12.5px; line-height: 1.35; cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tree-item:hover, .toc-item:hover { background: var(--hair-2); color: var(--ink); }
+  .tree-item.on { background: var(--blue-soft); color: var(--blue-ink); font-weight: 600; }
+  .tree-item .fx { font-size: 9px; font-weight: 800; font-family: var(--mono); color: var(--ink-3);
+    border: 1px solid var(--hair); border-radius: 3px; padding: 1px 3px; flex: 0 0 auto; }
+  .tree-item.main .fx { color: var(--blue); border-color: var(--blue); }
+  .toc-item.lvl1 { font-weight: 600; }
+  .toc-item.lvl2 { padding-left: 18px; }
+  .toc-item.lvl3 { padding-left: 30px; color: var(--ink-3); }
+  .toc-item.lvl0 { font-weight: 700; }
+  .toc-item.on { background: var(--blue-soft); color: var(--blue-ink); }
+  .toc-item.on::before { content: ""; width: 3px; align-self: stretch; background: var(--blue); border-radius: 2px; margin: 1px 2px 1px -2px; }
+  .side-empty { color: var(--ink-3); padding: 4px 6px; font-size: 12px; }
+
+  /* center: editor + pdf split */
+  #work { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+  #panes { flex: 1 1 auto; min-height: 0; display: flex; }
+  #editPane { flex: 1 1 50%; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--hair); background: #fff; }
+  #gutterbar { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border-bottom: 1px solid var(--hair-2);
+    background: var(--chrome); flex: 0 0 auto; }
+  #gutterbar .fname { font-family: var(--mono); font-size: 12px; color: var(--ink-2); font-weight: 600; }
+  #gutterbar .dirty { color: var(--amber); font-size: 16px; line-height: 0; }
+  #editor { flex: 1 1 auto; min-height: 0; overflow: hidden; }
+  .cm-editor { height: 100%; font-size: 13.5px; }
+  .cm-editor .cm-scroller { font-family: var(--mono); line-height: 1.55; }
+  .cm-editor.cm-focused { outline: none; }
+
+  #splitter { flex: 0 0 6px; cursor: col-resize; background: transparent; position: relative; }
+  #splitter:hover, #splitter.drag { background: var(--blue-soft); }
+  #splitter::after { content: ""; position: absolute; inset: 0 2px; border-left: 1px solid var(--hair); }
+
+  #pdfPane { flex: 1 1 50%; min-width: 0; display: flex; flex-direction: column; background: #eceef1; }
+  #pdfbar { display: flex; align-items: center; gap: 6px; padding: 5px 10px; border-bottom: 1px solid var(--hair);
+    background: var(--chrome); flex: 0 0 auto; }
+  #pdfbar .zoom { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--ink-2); min-width: 40px; text-align: center; }
+  .iconbtn { border: 1px solid var(--hair); background: #fff; border-radius: 5px; width: 28px; height: 26px;
+    display: inline-flex; align-items: center; justify-content: center; color: var(--ink-2); }
+  .iconbtn:hover { background: var(--hair-2); }
+  #pdfscroll { flex: 1 1 auto; overflow: auto; padding: 20px; }
+  #pdfpages { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+  .pdf-page { position: relative; background: #fff; box-shadow: var(--shadow-1); }
+  .pdf-page canvas { display: block; }
+  .sync-flash { position: absolute; left: 0; right: 0; height: 22px; background: rgba(45,127,249,.28);
+    border-left: 3px solid var(--blue); pointer-events: none; opacity: 0; transition: opacity .2s; }
+  .sync-flash.on { opacity: 1; }
+  body.mode-view #editPane, body.mode-view #splitter { display: none; }
+  body.mode-view #pdfPane { flex: 1 1 100%; }
+  body.mode-view #pdfscroll { padding: 28px; }
+
+  /* tectonic-missing install prompt (shown in place of the PDF) */
+  .install-box { margin: auto; max-width: 360px; text-align: center; color: var(--ink-2); padding: 24px; }
+  .install-box .t { font-weight: 600; color: var(--ink); margin-bottom: 6px; }
+  .install-box .d { font-size: 12.5px; margin-bottom: 14px; }
+  .install-box .bar { height: 6px; border-radius: 4px; background: var(--hair-2); overflow: hidden; margin: 12px 0; }
+  .install-box .bar > div { height: 100%; background: var(--blue); width: 0%; transition: width .2s; }
+  .install-box .err { color: var(--danger); font-size: 12px; margin-top: 10px; word-break: break-word; }
+
+  /* bottom log/errors drawer */
+  #drawer { flex: 0 0 auto; border-top: 1px solid var(--hair); background: var(--chrome); max-height: 40%; display: flex; flex-direction: column; }
+  #drawer.collapsed .drawer-body { display: none; }
+  .drawer-head { display: flex; align-items: center; gap: 10px; padding: 5px 12px; cursor: pointer; user-select: none; }
+  .drawer-head .dt { font-weight: 600; font-size: 12px; }
+  .drawer-head .cnt { font-size: 11px; padding: 1px 7px; border-radius: 10px; background: var(--hair-2); color: var(--ink-2); font-weight: 600; }
+  .drawer-head .cnt.err { background: var(--danger-soft); color: var(--danger); }
+  .drawer-head .caret { margin-left: auto; color: var(--ink-3); transition: transform .15s; }
+  #drawer.collapsed .caret { transform: rotate(-90deg); }
+  .drawer-body { overflow-y: auto; padding: 4px 0 8px; }
+  .diag { display: flex; gap: 9px; padding: 6px 12px; font-size: 12.5px; cursor: pointer; border-left: 3px solid transparent; }
+  .diag:hover { background: var(--hair-2); }
+  .diag.error { border-left-color: var(--danger); }
+  .diag.warning { border-left-color: var(--amber); }
+  .diag .sev { font-weight: 700; font-size: 10px; text-transform: uppercase; letter-spacing: .4px; flex: 0 0 auto; width: 54px; }
+  .diag.error .sev { color: var(--danger); } .diag.warning .sev { color: var(--amber); }
+  .diag .loc { color: var(--blue-ink); font-family: var(--mono); font-size: 11px; flex: 0 0 auto; }
+  .diag .msg { color: var(--ink); }
+  .clean-note { color: var(--ok); font-size: 12.5px; padding: 8px 12px; display: flex; align-items: center; gap: 6px; }
+
+  /* ---- modal ---- */
+  .modal-bg { position: fixed; inset: 0; background: rgba(15,23,42,.35); display: grid; place-items: center; z-index: 100; }
+  .modal { background: #fff; border-radius: var(--radius-lg); box-shadow: var(--shadow-2); padding: 20px; width: 380px; }
+  .modal h3 { margin: 0 0 14px; font-size: 16px; }
+  .modal .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+  .modal.wide { width: 560px; max-width: 92vw; }
+
+  /* ---- file browser ---- */
+  .fb-crumbs { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; font-size: 12px;
+    background: var(--hair-2); border-radius: var(--radius); padding: 5px 8px; margin-bottom: 10px; }
+  .fb-crumbs .cr { border: none; background: none; color: var(--blue-ink); cursor: pointer; padding: 2px 4px; border-radius: 4px; font: inherit; }
+  .fb-crumbs .cr:hover { background: #fff; }
+  .fb-crumbs .sep { color: var(--ink-3); }
+  .fb-tools { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .fb-tools input { flex: 1 1 auto; padding: 8px 10px; border: 1px solid var(--hair); border-radius: var(--radius); font: inherit; }
+  .fb-filter { display: inline-flex; background: var(--hair-2); border-radius: var(--radius); padding: 2px; }
+  .fb-filter button { border: none; background: none; color: var(--ink-2); font-weight: 600; padding: 5px 10px; border-radius: 4px; font-size: 12px; cursor: pointer; }
+  .fb-filter button.on { background: #fff; color: var(--blue); box-shadow: var(--shadow-1); }
+  .fb-list { height: 300px; overflow-y: auto; border: 1px solid var(--hair); border-radius: var(--radius); padding: 4px; }
+  .fb-row { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; border: none; background: none;
+    color: var(--ink); padding: 6px 8px; border-radius: 5px; font-size: 13px; cursor: pointer; }
+  .fb-row:hover, .fb-row.sel { background: var(--blue-soft); }
+  .fb-row .ico { width: 17px; flex: 0 0 auto; display: inline-flex; color: var(--ink-3); }
+  .fb-row .ico svg { width: 16px; height: 16px; }
+  .fb-row.dir .ico { color: var(--blue); }
+  .fb-row .nm { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fb-row .rel { color: var(--ink-3); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fb-row .sz { color: var(--ink-3); font-size: 11px; flex: 0 0 auto; }
+  .fb-row.dir .nm { font-weight: 600; }
+  .fb-empty { color: var(--ink-3); font-size: 12.5px; padding: 20px; text-align: center; }
+  .fb-foot { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+  .fb-foot .hint { color: var(--ink-3); font-size: 11.5px; flex: 1 1 auto; }
+
+  #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--ink); color: #fff;
+    padding: 9px 16px; border-radius: 8px; font-size: 13px; box-shadow: var(--shadow-2); z-index: 200; display: none; }
+  #boot, #empty { position: fixed; inset: 0; display: grid; place-items: center; color: var(--ink-3); font-size: 14px; background: var(--canvas); z-index: 300; }
+</style>
+</head>
+<body class="mode-edit">
+<div id="boot">Loading LaTeX…</div>
+<div id="empty" class="hidden">No file selected (missing _file param).</div>
+
+<!-- ============ top bar ============ -->
+<div id="topbar" class="hidden">
+  <div class="brand"><span class="mark">TeX</span></div>
+  <span class="docname" id="docName"></span>
+  <div class="spacer"></div>
+  <div id="status"><span class="dot"></span><span class="txt">idle</span></div>
+  <div class="seg" id="modeSeg">
+    <button data-mode="edit" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg> Edit</button>
+    <button data-mode="view"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg> View</button>
+  </div>
+  <button class="btn primary" id="compileBtn" title="Recompile (⌘/Ctrl+Enter)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+    Recompile
+  </button>
+  <div class="menu-wrap">
+    <button class="btn ghost" id="menuBtn" aria-label="Download & export">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>
+    </button>
+    <div class="menu hidden" id="menu">
+      <div class="sub">Download</div>
+      <button data-act="dl-pdf"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg> PDF</button>
+      <div class="sub">Export via pandoc</div>
+      <button data-act="export-docx">Word (.docx)</button>
+      <button data-act="export-html">HTML</button>
+      <button data-act="export-md">Markdown</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ workspace ============ -->
+<div id="main" class="hidden">
+  <div id="side">
+    <div>
+      <h4>Files <button class="add" id="addFileBtn" title="Open or create a file">＋</button></h4>
+      <div id="tree"></div>
+    </div>
+    <div>
+      <h4>Outline</h4>
+      <div id="toc"><div class="side-empty">Compile to build the outline.</div></div>
+    </div>
+  </div>
+
+  <div id="work">
+    <div id="panes">
+      <div id="editPane">
+        <div id="gutterbar">
+          <span class="fname" id="curFile">main.tex</span>
+          <span class="dirty hidden" id="dirtyDot" title="Unsaved changes">●</span>
+          <div class="spacer" style="flex:1"></div>
+          <span class="muted" id="cursorPos" style="font-size:11px"></span>
+        </div>
+        <div id="editor"></div>
+      </div>
+      <div id="splitter"></div>
+      <div id="pdfPane">
+        <div id="pdfbar">
+          <button class="iconbtn" id="zoomOut">−</button>
+          <span class="zoom" id="zoomLbl">100%</span>
+          <button class="iconbtn" id="zoomIn">+</button>
+          <div class="spacer" style="flex:1"></div>
+          <span class="muted" id="pdfInfo" style="font-size:11px"></span>
+        </div>
+        <div id="pdfscroll"><div id="pdfpages"></div></div>
+      </div>
+    </div>
+    <div id="drawer" class="collapsed">
+      <div class="drawer-head" id="drawerHead">
+        <span class="dt">Problems</span>
+        <span class="cnt" id="diagCnt">0</span>
+        <span class="caret">▾</span>
+      </div>
+      <div class="drawer-body" id="drawerBody"></div>
+    </div>
+  </div>
+</div>
+
+<div id="modalHost"></div>
+<div id="toast"></div>
+
+<script type="module">
+import * as pdfjs from "/template-assets/pdfjs.bundle.mjs";
+pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs";
+
+(async () => {
+  const FILE = fused.params.get("_file") || "";
+  if (!FILE) {
+    document.getElementById("boot").remove();
+    document.getElementById("empty").classList.remove("hidden");
+    throw new Error("latex template: missing _file");
+  }
+
+  // ---- vendored CodeMirror loading (relative <script src> 404s inside the
+  // render iframe — resolve against this template's own directory instead).
+  const HTML_PATH = new URLSearchParams(location.search).get("path") || "";
+  const BASE_DIR = HTML_PATH.slice(0, HTML_PATH.lastIndexOf("/") + 1);
+  const assetUrl = (rel) => fused.rawUrl(BASE_DIR + rel);
+
+  let CM;
+  try {
+    CM = await import(assetUrl("vendor/codemirror.esm.js"));
+  } catch (err) {
+    document.getElementById("boot").textContent = "Failed to load the editor: " + err.message;
+    throw err;
+  }
+
+  // ---- shorthands
+  const $ = (id) => document.getElementById(id);
+  const py = (params) => fused.runPython("./engine.py", params);
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+  const fmtSize = (n) => n < 1024 ? n+" B" : n < 1048576 ? (n/1024).toFixed(0)+" KB" : (n/1048576).toFixed(1)+" MB";
+  const baseName = (p) => p.slice(p.lastIndexOf("/") + 1);
+  let toastTimer;
+  const toast = (m, ms=2600) => { const t=$("toast"); t.textContent=m; t.style.display="block"; clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.style.display="none", ms); };
+  const debounce = (fn, ms) => { let h; return (...a) => { clearTimeout(h); h=setTimeout(()=>fn(...a), ms); }; };
+
+  // Inline SVG icons — some emoji render as tofu boxes in WSLg/Chrome, so the UI
+  // uses these everywhere an icon is needed.
+  const svg = (d, o={}) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${o.w||2}" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+  const ICON = {
+    folder: svg('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'),
+    file: svg('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>'),
+    up: svg('<path d="M12 19V5"/><path d="m5 12 7-7 7 7"/>'),
+  };
+
+  // ---- state
+  const S = {
+    root: FILE.slice(0, FILE.lastIndexOf("/")),  // the .tex file's own directory — also the compile cwd
+    mainAbs: FILE,          // the entrypoint this template was opened for (fixed for its lifetime)
+    fileAbs: "",            // currently open buffer (abs) — may be an \input child
+    mtime: 0,               // optimistic-lock mtime of the open buffer
+    tree: [], outline: null, bib: [],
+    pdf: null, scale: 1.0, lastPdf: "",
+    compiling: false, pendingCompile: false,
+    dirty: false, view: null,
+  };
+  const SIDECAR = S.mainAbs + ".json";
+
+  // =========================================================== sidecar (D3: read-modify-write, best-effort)
+  async function loadSidecarOpen() {
+    try {
+      const data = JSON.parse(await fused.readFile(SIDECAR));
+      return (data && data.latex && typeof data.latex.open === "string") ? data.latex.open : "";
+    } catch (e) { return ""; }
+  }
+  async function saveSidecarOpen(rel) {
+    let data = {};
+    try { data = JSON.parse(await fused.readFile(SIDECAR)); } catch (e) { /* absent or unreadable — start fresh */ }
+    if (typeof data !== "object" || data === null || Array.isArray(data)) data = {};
+    data.latex = Object.assign({}, data.latex, { open: rel });
+    try { await fused.writeFile(SIDECAR, JSON.stringify(data, null, 2)); }
+    catch (e) { /* best-effort — losing this preference must not break editing */ }
+  }
+
+  // =========================================================== CodeMirror
+  const stexHL = CM.HighlightStyle.define([
+    { tag: CM.tags.keyword, color: "#8250df" },              // \commands
+    { tag: CM.tags.tagName, color: "#8250df" },
+    { tag: CM.tags.controlKeyword, color: "#cf222e" },
+    { tag: CM.tags.bracket, color: "#a1670f" },
+    { tag: CM.tags.comment, color: "#8a929e", fontStyle: "italic" },
+    { tag: CM.tags.string, color: "#0a7d33" },
+    { tag: CM.tags.literal, color: "#0a3069" },
+    { tag: CM.tags.atom, color: "#0550ae" },
+    { tag: CM.tags.number, color: "#0550ae" },
+  ]);
+  const lightTheme = CM.EditorView.theme({
+    "&": { color: "#1d2025", backgroundColor: "#ffffff" },
+    ".cm-content": { caretColor: "#166ee1" },
+    ".cm-gutters": { backgroundColor: "#fafbfc", color: "#b0b6bf", border: "none" },
+    ".cm-activeLine": { backgroundColor: "#f4f8ff" },
+    ".cm-activeLineGutter": { backgroundColor: "#eaf1fe", color: "#166ee1" },
+    ".cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection": { backgroundColor: "#cfe2ff !important" },
+    ".cm-matchingBracket": { backgroundColor: "#d7e9ff", outline: "1px solid #9dc4ff" },
+    ".cm-tooltip": { border: "1px solid #e0e3e8", background: "#fff", boxShadow: "0 6px 24px rgba(15,23,42,.16)", borderRadius: "6px" },
+    ".cm-tooltip-autocomplete ul li[aria-selected]": { background: "#e8f0fe", color: "#0f5bc4" },
+  }, { dark: false });
+
+  // Autocomplete fed by the live outline/bib index.
+  const ENVS = ["equation","align","itemize","enumerate","figure","table","tabular","matrix","pmatrix","bmatrix",
+    "cases","gather","multline","proof","theorem","lemma","definition","proposition","corollary","abstract",
+    "center","quote","verbatim","lstlisting","tikzpicture","frame","description","split"];
+  function latexCompletions(ctx) {
+    const before = ctx.state.sliceDoc(Math.max(0, ctx.pos - 80), ctx.pos);
+    let m;
+    if ((m = /\\(?:cite|citep|citet|parencite|textcite|autocite)\*?(?:\[[^\]]*\])*\{([^}]*)$/.exec(before))) {
+      const from = ctx.pos - m[1].length;
+      return { from, options: S.bib.map(b => ({
+        label: b.key, type: "variable",
+        detail: (b.year ? b.year + " · " : "") + (b.author || "").split(" and ")[0],
+        info: b.title })) };
+    }
+    if ((m = /\\(?:ref|eqref|autoref|cref|Cref|pageref)\{([^}]*)$/.exec(before))) {
+      const from = ctx.pos - m[1].length;
+      return { from, options: (S.outline?.labels || []).map(l => ({
+        label: l.name, type: "constant", detail: l.file + ":" + l.line })) };
+    }
+    if ((m = /\\begin\{([^}]*)$/.exec(before))) {
+      const from = ctx.pos - m[1].length;
+      return { from, options: ENVS.map(e => CM.snippetCompletion(
+        `${e}}\n\t\${}\n\\end{${e}}`, { label: e, type: "keyword" })) };
+    }
+    if ((m = /\\([A-Za-z]*)$/.exec(before))) {
+      const from = ctx.pos - m[1].length;
+      const cmds = ["section","subsection","subsubsection","chapter","paragraph","textbf","textit","texttt","emph",
+        "label","ref","eqref","cite","footnote","item","begin","end","frac","sqrt","sum","int","alpha","beta","gamma",
+        "includegraphics","caption","usepackage","documentclass","maketitle","tableofcontents","newcommand","hyperref"];
+      return { from, validFor: /^[A-Za-z]*$/, options: cmds.map(c => ({ label: c, type: "function", apply: c })) };
+    }
+    return null;
+  }
+
+  const editParent = $("editor");
+  function makeEditor(doc) {
+    if (S.view) { S.view.destroy(); S.view = null; }
+    const state = CM.EditorState.create({
+      doc,
+      extensions: [
+        CM.lineNumbers(), CM.highlightActiveLine(), CM.highlightActiveLineGutter(),
+        CM.history(), CM.drawSelection(), CM.dropCursor(),
+        CM.bracketMatching(), CM.closeBrackets(), CM.codeFolding(), CM.foldGutter(),
+        CM.highlightSelectionMatches(),
+        CM.StreamLanguage.define(CM.stex),
+        CM.syntaxHighlighting(stexHL),
+        CM.autocompletion({ override: [latexCompletions] }),
+        CM.keymap.of([
+          { key: "Mod-s", preventDefault: true, run: () => { saveNow(); return true; } },
+          { key: "Mod-Enter", preventDefault: true, run: () => { compile(); return true; } },
+          ...CM.closeBracketsKeymap, ...CM.defaultKeymap, ...CM.historyKeymap,
+          ...CM.searchKeymap, ...CM.completionKeymap, ...CM.foldKeymap, CM.indentWithTab,
+        ]),
+        lightTheme, CM.syntaxHighlighting(stexHL),
+        CM.EditorView.updateListener.of((u) => {
+          if (u.docChanged) onEdit();
+          if (u.selectionSet || u.docChanged) { updateCursor(); scheduleSync(); }
+        }),
+      ],
+    });
+    S.view = new CM.EditorView({ state, parent: editParent });
+  }
+  function updateCursor() {
+    if (!S.view) return;
+    const pos = S.view.state.selection.main.head;
+    const line = S.view.state.doc.lineAt(pos);
+    $("cursorPos").textContent = `Ln ${line.number}, Col ${pos - line.from + 1}`;
+  }
+
+  // =========================================================== edit / save
+  const scheduleSave = debounce(() => saveNow(), 1200);
+  const scheduleCompileAfterSave = debounce(() => compile(), 1600);
+  function onEdit() {
+    S.dirty = true; $("dirtyDot").classList.remove("hidden");
+    scheduleSave(); scheduleCompileAfterSave();
+  }
+  async function saveNow() {
+    if (!S.view || !S.fileAbs || !S.dirty) return;
+    const text = S.view.state.doc.toString();
+    try {
+      const st = await fused.writeFile(S.fileAbs, text, S.mtime ? { expectedMtime: S.mtime } : undefined);
+      S.mtime = st.mtime; S.dirty = false; $("dirtyDot").classList.add("hidden");
+    } catch (err) {
+      if (err.type === "conflict") {
+        // The file changed on disk (an AI/agent or git edit) — reload it.
+        toast("File changed on disk — reloaded external edits."); await openFile(S.fileAbs);
+      } else { toast("Save failed: " + err.message); }
+    }
+  }
+
+  // =========================================================== compile
+  function setStatus(kind, txt) {
+    const el = $("status"); el.className = kind; el.querySelector(".txt").textContent = txt;
+  }
+  function setDrawerCollapsed(collapsed) {
+    $("drawer").classList.toggle("collapsed", collapsed);
+    fused.params.set("drawer", collapsed ? "collapsed" : "open");
+  }
+  async function compile() {
+    if (S.compiling) { S.pendingCompile = true; return; }   // coalesce: one in flight
+    S.compiling = true; setStatus("busy", "compiling…");
+    try {
+      if (S.dirty) await saveNow();
+      const r = await py({ action: "compile", path: S.mainAbs });
+      if (r.missing_tectonic) { setStatus("err", "no compiler"); renderMissingTectonic(); return; }
+      if (r.error) { setStatus("err", "error"); renderDiags([{ severity:"error", message:r.error, line:0, file:"" }], ""); return; }
+      renderDiags(r.errors || [], r.log_tail || "");
+      const hardErrors = (r.errors || []).filter(e => e.severity === "error");
+      if (r.ok && r.pdf) {
+        setStatus("ok", `✓ ${r.seconds}s`);
+        await renderPdf(r.pdf);
+        S.lastPdf = r.pdf;
+        refreshIndex();                    // outline + bib may have changed
+      } else {
+        setStatus("err", `${hardErrors.length || "?"} error${hardErrors.length===1?"":"s"}`);
+        if (!S.lastPdf) $("pdfpages").innerHTML = '<div class="side-empty" style="padding:40px">No PDF yet — fix the errors below.</div>';
+      }
+    } catch (err) {
+      setStatus("err", "error"); toast("Compile failed: " + err.message);
+    } finally {
+      S.compiling = false;
+      if (S.pendingCompile) { S.pendingCompile = false; compile(); }   // run the coalesced request
+    }
+  }
+
+  // ---- Tectonic missing: an inline install prompt, in place of the PDF pane.
+  let installPolling = false;
+  function renderMissingTectonic() {
+    $("pdfpages").innerHTML = `
+      <div class="install-box">
+        <div class="t">Tectonic isn't installed</div>
+        <div class="d">The LaTeX engine that compiles your document to PDF wasn't found on
+          PATH or in <code>~/.fused-render/bin</code>.</div>
+        <button class="btn primary" id="installBtn">Install Tectonic (~30 MB)</button>
+        <div class="bar hidden" id="installBar"><div></div></div>
+        <div class="d hidden" id="installDetail"></div>
+        <div class="err hidden" id="installErr"></div>
+      </div>`;
+    $("installBtn").addEventListener("click", startInstall);
+  }
+  async function startInstall() {
+    $("installBtn").classList.add("hidden");
+    $("installBar").classList.remove("hidden");
+    $("installDetail").classList.remove("hidden");
+    await py({ action: "tectonic_install" });
+    if (installPolling) return;
+    installPolling = true;
+    pollInstall();
+  }
+  async function pollInstall() {
+    try {
+      const st = await py({ action: "tectonic_status" });
+      const p = st.progress;
+      if (p) {
+        $("installBar").querySelector("div").style.width = p.pct + "%";
+        $("installDetail").textContent = p.detail || p.stage;
+      }
+      if (st.available) { installPolling = false; toast("Tectonic installed."); compile(); return; }
+      if (p && p.done && p.error) {
+        installPolling = false;
+        $("installErr").textContent = p.error;
+        $("installErr").classList.remove("hidden");
+        $("installBtn").classList.remove("hidden");
+        return;
+      }
+    } catch (e) { /* transient — keep polling */ }
+    setTimeout(pollInstall, 800);
+  }
+
+  // =========================================================== PDF render (pdf.js)
+  async function renderPdf(pdfPath) {
+    const scroll = $("pdfscroll"); const prevTop = scroll.scrollTop; const prevH = scroll.scrollHeight || 1;
+    try {
+      const buf = await (await fetch(fused.rawUrl(pdfPath) + "&t=" + Date.now())).arrayBuffer();
+      if (S.pdf) { try { S.pdf.destroy(); } catch (e) {} }
+      S.pdf = await pdfjs.getDocument({ data: buf.slice(0) }).promise;
+    } catch (err) { $("pdfpages").innerHTML = '<div class="side-empty" style="padding:40px">Failed to load PDF.</div>'; return; }
+    const pages = $("pdfpages"); pages.innerHTML = "";
+    const dpr = window.devicePixelRatio || 1;
+    for (let i = 1; i <= S.pdf.numPages; i++) {
+      const page = await S.pdf.getPage(i);
+      const vp = page.getViewport({ scale: S.scale });
+      const wrap = document.createElement("div");
+      wrap.className = "pdf-page"; wrap.style.width = vp.width + "px"; wrap.style.height = vp.height + "px";
+      wrap.dataset.page = i;
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.floor(vp.width * dpr); canvas.height = Math.floor(vp.height * dpr);
+      canvas.style.width = vp.width + "px"; canvas.style.height = vp.height + "px";
+      const flash = document.createElement("div"); flash.className = "sync-flash";
+      wrap.appendChild(canvas); wrap.appendChild(flash); pages.appendChild(wrap);
+      const ctx = canvas.getContext("2d"); ctx.scale(dpr, dpr);
+      await page.render({ canvasContext: ctx, viewport: vp }).promise;
+    }
+    $("pdfInfo").textContent = `${S.pdf.numPages} page${S.pdf.numPages===1?"":"s"}`;
+    // preserve scroll position proportionally across recompiles
+    scroll.scrollTop = prevTop * (scroll.scrollHeight / prevH);
+  }
+  function setZoom(scale) {
+    S.scale = Math.max(0.4, Math.min(3, scale));
+    $("zoomLbl").textContent = Math.round(S.scale * 100) + "%";
+    fused.params.set("zoom", String(Math.round(S.scale * 100)));
+    if (S.lastPdf) renderPdf(S.lastPdf);
+  }
+
+  // =========================================================== SyncTeX forward
+  // Scroll the PDF preview to where `line` of `targetAbs` typesets, and flash a
+  // highlight. Works in BOTH modes (the PDF is visible in View and Edit). The
+  // compiled entrypoint is always S.mainAbs (its .synctex.gz); `target` is the
+  // file the line lives in (an \input child, or the same file).
+  async function pdfScrollToSource(targetAbs, line) {
+    if (!S.pdf || !line) return false;
+    try {
+      const r = await py({ action: "synctex", path: S.mainAbs, target: targetAbs, line: String(line) });
+      if (!r.page) return false;
+      const wrap = $("pdfpages").querySelector(`.pdf-page[data-page="${r.page}"]`);
+      if (!wrap) return false;
+      const scroll = $("pdfscroll");
+      const y = wrap.offsetTop + r.vfrac * wrap.offsetHeight - scroll.clientHeight * 0.32;
+      scroll.scrollTo({ top: Math.max(0, y), behavior: "smooth" });
+      const flash = wrap.querySelector(".sync-flash");
+      flash.style.top = (r.vfrac * wrap.offsetHeight - 11) + "px";
+      flash.classList.add("on"); setTimeout(() => flash.classList.remove("on"), 1000);
+      return true;
+    } catch (e) { return false; }
+  }
+  const scheduleSync = debounce(() => syncForward(), 400);
+  function syncForward() {   // cursor-driven; only while editing
+    if (!S.view || !S.fileAbs || document.body.classList.contains("mode-view")) return;
+    const pos = S.view.state.selection.main.head;
+    pdfScrollToSource(S.fileAbs, S.view.state.doc.lineAt(pos).number);
+  }
+
+  // =========================================================== index (outline+bib)
+  const refreshIndex = debounce(async () => {
+    try {
+      const [o, b] = await Promise.all([
+        py({ action: "outline", path: S.mainAbs }),
+        py({ action: "bib", path: S.mainAbs }),
+      ]);
+      S.outline = o.error ? { sections: [], labels: [] } : o;
+      S.bib = (b.entries) || [];
+      renderOutline();
+    } catch (e) {}
+  }, 250);
+
+  function renderOutline() {
+    const el = $("toc");
+    const secs = S.outline?.sections || [];
+    if (!secs.length) { el.innerHTML = '<div class="side-empty">No sections yet.</div>'; return; }
+    el.innerHTML = "";
+    secs.forEach((s) => {
+      const b = document.createElement("button");
+      b.className = "toc-item lvl" + Math.min(3, s.level);
+      b.textContent = s.title || "(untitled)";
+      b.title = `${s.kind} · ${s.file}:${s.line}`;
+      b.addEventListener("click", () => goToSection(s, b));
+      el.appendChild(b);
+    });
+  }
+
+  // Outline click: highlight it, scroll the PDF there (both modes), and — in
+  // Edit mode — move the editor cursor to the source line too.
+  async function goToSection(s, el) {
+    $("toc").querySelectorAll(".toc-item").forEach(x => x.classList.remove("on"));
+    if (el) el.classList.add("on");
+    const fileAbs = S.tree.find(f => f.rel === s.file || baseName(f.path) === s.file)?.path || S.mainAbs;
+    if (!document.body.classList.contains("mode-view")) jumpToLine(s.file, s.line);
+    await pdfScrollToSource(fileAbs, s.line);
+  }
+
+  // =========================================================== file tree + open
+  function renderTree() {
+    const el = $("tree");
+    if (!S.tree.length) { el.innerHTML = '<div class="side-empty">No files.</div>'; return; }
+    el.innerHTML = "";
+    S.tree.forEach((f) => {
+      const b = document.createElement("button");
+      const isMain = f.path === S.mainAbs;
+      b.className = "tree-item" + (f.path === S.fileAbs ? " on" : "") + (isMain ? " main" : "");
+      b.innerHTML = `<span class="fx">${esc((f.ext || "").replace(".", "").toUpperCase() || "?")}</span><span>${esc(f.rel)}</span>`;
+      b.title = f.rel + (isMain ? "  (main)" : "");
+      if (f.editable) b.addEventListener("click", () => openFile(f.path));
+      else b.addEventListener("click", () => toast("Binary file — not editable here."));
+      el.appendChild(b);
+    });
+  }
+
+  async function openFile(abs) {
+    try {
+      const st = await fused.stat(abs);
+      const text = await fused.readFile(abs);
+      S.fileAbs = abs; S.mtime = st.mtime; S.dirty = false; $("dirtyDot").classList.add("hidden");
+      $("curFile").textContent = baseName(abs);
+      makeEditor(text); updateCursor();
+      renderTree();
+      const rel = abs === S.mainAbs ? "" : abs.startsWith(S.root + "/") ? abs.slice(S.root.length + 1) : abs;
+      fused.params.set("open", rel);
+      saveSidecarOpen(rel);
+    } catch (err) { toast("Open failed: " + err.message); }
+  }
+
+  function jumpToLine(fileRel, line) {
+    const target = S.tree.find(f => f.rel === fileRel || baseName(f.path) === fileRel);
+    const go = () => {
+      if (!S.view) return;
+      const ln = Math.min(line, S.view.state.doc.lines);
+      const info = S.view.state.doc.line(ln);
+      S.view.dispatch({ selection: { anchor: info.from }, scrollIntoView: true });
+      S.view.focus();
+    };
+    if (target && target.path !== S.fileAbs) openFile(target.path).then(go);
+    else go();
+  }
+
+  // =========================================================== modals
+  function modal(html) {
+    const host = $("modalHost");
+    host.innerHTML = `<div class="modal-bg"><div class="modal">${html}</div></div>`;
+    host.querySelector(".modal-bg").addEventListener("click", (e) => { if (e.target.classList.contains("modal-bg")) host.innerHTML = ""; });
+    return host;
+  }
+  const closeModal = () => { $("modalHost").innerHTML = ""; };
+
+  // A real file browser (server-side, so it sees the whole machine incl. WSL
+  // /mnt/c). Browse + search under the document's own directory by default,
+  // or type a name + Enter to create a sibling file (e.g. an \input chapter).
+  function openFileBrowser() {
+    const host = modal(`<div class="modal wide">
+      <h3>Open or create a file</h3>
+      <div class="fb-crumbs" id="fbCrumbs"></div>
+      <div class="fb-tools">
+        <input id="fbSearch" placeholder="Type to search here (recursively), or a new name + Enter to create" autocomplete="off">
+        <div class="fb-filter"><button id="fbTex" class="on">TeX</button><button id="fbAll">All</button></div>
+      </div>
+      <div class="fb-list" id="fbList"></div>
+      <div class="fb-foot">
+        <span class="hint" id="fbHint"></span>
+        <button class="btn ghost" id="fbCancel">Cancel</button>
+      </div></div>`);
+    // strip the extra wrapping .modal so our own .modal.wide is the panel
+    host.querySelector(".modal-bg").firstElementChild.replaceWith(host.querySelector(".modal.wide"));
+
+    const st = { dir: S.root, texOnly: true, rows: [], sel: -1, searching: false };
+    const listEl = host.querySelector("#fbList");
+    const search = host.querySelector("#fbSearch");
+    const hint = host.querySelector("#fbHint");
+
+    const setSel = (i) => {
+      st.sel = Math.max(-1, Math.min(st.rows.length - 1, i));
+      [...listEl.children].forEach((el, k) => el.classList.toggle("sel", k === st.sel));
+      if (st.sel >= 0) listEl.children[st.sel]?.scrollIntoView({ block: "nearest" });
+    };
+    const crumbs = (dir) => {
+      const parts = dir.split("/").filter(Boolean);
+      const c = host.querySelector("#fbCrumbs");
+      let acc = "";
+      c.innerHTML = `<button class="cr" data-d="/">/</button>` +
+        parts.map((p) => { acc += "/" + p; return `<span class="sep">›</span><button class="cr" data-d="${esc(acc)}">${esc(p)}</button>`; }).join("");
+      c.querySelectorAll(".cr").forEach((b) => b.addEventListener("click", () => go(b.dataset.d)));
+    };
+    const rowHtml = (r) => {
+      const isUp = r.name === "..";
+      if (r.is_dir) return `<div class="fb-row dir" data-i="${r._i}"><span class="ico">${isUp ? ICON.up : ICON.folder}</span><span class="nm">${esc(r.name)}</span><span class="sz">›</span></div>`;
+      const rel = r.rel ? `<span class="rel">${esc(r.rel.replace(/[^/]+$/, ""))}</span>` : "";
+      return `<div class="fb-row file" data-i="${r._i}"><span class="ico">${ICON.file}</span><span class="nm">${esc(r.name)}</span>${rel}<span class="sz">${r.size!=null?fmtSize(r.size):""}</span></div>`;
+    };
+    const paint = () => {
+      st.rows.forEach((r, i) => (r._i = i));
+      listEl.innerHTML = st.rows.length ? st.rows.map(rowHtml).join("")
+        : `<div class="fb-empty">${st.searching ? "No matches." : "Empty folder."}</div>`;
+      listEl.querySelectorAll(".fb-row").forEach((el) => {
+        const r = st.rows[+el.dataset.i];
+        el.addEventListener("click", () => r.is_dir ? go(r.path) : openPick(r.path));
+        el.addEventListener("mouseenter", () => setSel(+el.dataset.i));
+      });
+      setSel(st.rows.length ? 0 : -1);
+    };
+    async function go(dir) {
+      search.value = ""; st.searching = false;
+      const r = await py({ action: "browse", path: dir, target: st.texOnly ? "tex" : "" });
+      if (r.error) { toast(r.error); return; }
+      st.dir = r.dir; st.parent = r.parent;
+      st.rows = [{ name: "..", path: r.parent, is_dir: true }, ...r.entries];
+      crumbs(r.dir); paint();
+      hint.textContent = `${r.entries.length} item${r.entries.length===1?"":"s"} in this folder`;
+    }
+    // Search is async (a Python subprocess); guard against stale responses with
+    // a sequence number, and expose a flushable timer so Enter can wait for the
+    // results that match what's currently typed (else Enter races the search).
+    let searchTimer = null, searchSeq = 0;
+    async function doSearch() {
+      searchTimer = null;
+      const q = search.value.trim();
+      const seq = ++searchSeq;
+      if (!q) { await go(st.dir); return; }
+      if (/[\/]/.test(q)) { st.rows = []; paint(); hint.textContent = "Press Enter to open or create this path."; return; }
+      st.searching = true;
+      const r = await py({ action: "find", path: st.dir, name: q, target: st.texOnly ? "tex" : "" });
+      if (seq !== searchSeq) return;   // a newer keystroke superseded this one
+      st.rows = (r.results || []).map((x) => ({ ...x, is_dir: false, size: null }));
+      paint();
+      hint.textContent = `${r.results.length}${r.truncated ? "+" : ""} match${r.results.length===1?"":"es"} under ${baseName(st.dir)||"/"} · Enter opens the highlighted file, or creates what you typed`;
+    }
+    const scheduleSearch = () => { clearTimeout(searchTimer); searchTimer = setTimeout(doSearch, 220); };
+
+    async function openPick(abs) {
+      closeModal();
+      if (!S.tree.some(f => f.path === abs)) {
+        const tr = await py({ action: "tree", path: S.mainAbs }); S.tree = tr.tree; renderTree();
+      }
+      await openFile(abs);
+    }
+    async function createAndOpen(rawName) {
+      let target = rawName.trim();
+      if (!target) return;
+      // absolute vs relative-to-current-dir
+      let abs = target.startsWith("/") ? target : (st.dir.replace(/\/$/, "") + "/" + target);
+      // auto-append .tex when the basename has no extension
+      const base = abs.slice(abs.lastIndexOf("/") + 1);
+      if (!base.includes(".")) abs += ".tex";
+      const seed = /\.bib$/i.test(abs) ? "" : "% " + abs.slice(abs.lastIndexOf("/") + 1) + "\n";
+      try {
+        const stt = await fused.stat(abs).catch(() => null);
+        if (!stt) await fused.writeFile(abs, seed);   // create only if absent
+      } catch (e) { toast("Create failed: " + e.message); return; }
+      openPick(abs);
+    }
+
+    // Enter: flush any pending search first (so rows match what's typed), then
+    // open the highlighted result, or create/open the typed name.
+    async function onEnter() {
+      if (searchTimer) { clearTimeout(searchTimer); await doSearch(); }
+      const val = search.value.trim();
+      if (st.searching && st.sel >= 0 && st.rows[st.sel]) {
+        const r = st.rows[st.sel];                    // a live search match is highlighted
+        r.is_dir ? go(r.path) : openPick(r.path);
+      } else if (!st.searching && st.sel >= 0 && st.rows[st.sel] && !val) {
+        const r = st.rows[st.sel];                    // browsing, no text typed → open highlighted
+        r.is_dir ? go(r.path) : openPick(r.path);
+      } else if (val) {
+        createAndOpen(val);                           // no match → create (auto .tex)
+      }
+    }
+    search.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown") { e.preventDefault(); setSel(st.sel + 1); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); setSel(st.sel - 1); }
+      else if (e.key === "Enter") { e.preventDefault(); onEnter(); }
+      else if (e.key === "Escape") { closeModal(); }
+    });
+    search.addEventListener("input", scheduleSearch);
+    const setFilter = (tex) => {
+      st.texOnly = tex;
+      host.querySelector("#fbTex").classList.toggle("on", tex);
+      host.querySelector("#fbAll").classList.toggle("on", !tex);
+      search.value ? doSearch() : go(st.dir);
+    };
+    host.querySelector("#fbTex").addEventListener("click", () => setFilter(true));
+    host.querySelector("#fbAll").addEventListener("click", () => setFilter(false));
+    host.querySelector("#fbCancel").addEventListener("click", closeModal);
+    go(st.dir);
+    setTimeout(() => search.focus(), 30);
+  }
+
+  // =========================================================== diagnostics drawer
+  function renderDiags(errors, logTail) {
+    const hard = errors.filter(e => e.severity === "error");
+    const cnt = $("diagCnt"); cnt.textContent = errors.length;
+    cnt.className = "cnt" + (hard.length ? " err" : "");
+    const body = $("drawerBody");
+    if (!errors.length) {
+      body.innerHTML = '<div class="clean-note">✓ No problems — compiled cleanly.</div>';
+      setDrawerCollapsed(true); return;
+    }
+    if (hard.length) setDrawerCollapsed(false);
+    body.innerHTML = errors.map((e, i) =>
+      `<div class="diag ${esc(e.severity)}" data-i="${i}">
+         <span class="sev">${esc(e.severity)}</span>
+         ${e.line ? `<span class="loc">${esc(e.file||"main")}:${e.line}</span>` : ""}
+         <span class="msg">${esc(e.message)}</span>
+       </div>`).join("");
+    body.querySelectorAll(".diag").forEach(d => d.addEventListener("click", () => {
+      const e = errors[+d.dataset.i]; if (e.line) jumpToLine(e.file || baseName(S.mainAbs), e.line);
+    }));
+  }
+
+  // =========================================================== export / download
+  async function doDownloadPdf() {
+    if (!S.lastPdf) { toast("Compile first."); return; }
+    const a = document.createElement("a"); a.href = fused.rawUrl(S.lastPdf);
+    a.download = baseName(S.mainAbs).replace(/\.[^.]+$/, "") + ".pdf";
+    document.body.appendChild(a); a.click(); a.remove();
+  }
+  async function doExport(fmt) {
+    toast("Exporting to " + fmt + "…", 5000);
+    const r = await py({ action: "export", path: S.mainAbs, target: fmt });
+    if (r.error) { toast("Export failed: " + r.error, 5000); return; }
+    const a = document.createElement("a"); a.href = fused.rawUrl(r.path); a.download = r.name;
+    document.body.appendChild(a); a.click(); a.remove();
+    toast("Downloaded " + r.name);
+  }
+
+  // =========================================================== wiring
+  function setMode(mode) {
+    document.body.classList.toggle("mode-view", mode === "view");
+    document.body.classList.toggle("mode-edit", mode === "edit");
+    $("modeSeg").querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.mode === mode));
+    fused.params.set("mode", mode);
+    if (mode === "edit" && S.view) setTimeout(() => S.view.requestMeasure(), 50);
+    if (S.lastPdf) setTimeout(() => renderPdf(S.lastPdf), 60);   // reflow at new width
+  }
+  $("modeSeg").querySelectorAll("button").forEach(b => b.addEventListener("click", () => setMode(b.dataset.mode)));
+  $("compileBtn").addEventListener("click", () => compile());
+  $("zoomIn").addEventListener("click", () => setZoom(S.scale + 0.15));
+  $("zoomOut").addEventListener("click", () => setZoom(S.scale - 0.15));
+  $("addFileBtn").addEventListener("click", openFileBrowser);
+  $("drawerHead").addEventListener("click", () => setDrawerCollapsed(!$("drawer").classList.contains("collapsed")));
+
+  // download / export menu
+  $("menuBtn").addEventListener("click", (e) => { e.stopPropagation(); $("menu").classList.toggle("hidden"); });
+  document.addEventListener("click", () => { $("menu").classList.add("hidden"); });
+  $("menu").addEventListener("click", (e) => {
+    const act = e.target.closest("button")?.dataset.act; if (!act) return;
+    $("menu").classList.add("hidden");
+    if (act === "dl-pdf") doDownloadPdf();
+    else if (act === "export-docx") doExport("docx");
+    else if (act === "export-html") doExport("html");
+    else if (act === "export-md") doExport("md");
+  });
+
+  // splitter drag
+  (() => {
+    const sp = $("splitter"), ep = $("editPane"), pp = $("pdfPane"); let dragging = false;
+    sp.addEventListener("mousedown", (e) => { dragging = true; sp.classList.add("drag"); e.preventDefault(); });
+    window.addEventListener("mousemove", (e) => {
+      if (!dragging) return;
+      const box = $("panes").getBoundingClientRect();
+      const frac = Math.max(0.2, Math.min(0.8, (e.clientX - box.left) / box.width));
+      ep.style.flex = `1 1 ${frac * 100}%`; pp.style.flex = `1 1 ${(1 - frac) * 100}%`;
+    });
+    window.addEventListener("mouseup", () => {
+      if (!dragging) return;
+      dragging = false; sp.classList.remove("drag");
+      const frac = parseFloat(ep.style.flex.split(" ")[2]) || 50;
+      fused.params.set("split", String(Math.round(frac)));
+      if (S.lastPdf) renderPdf(S.lastPdf);
+    });
+  })();
+
+  // =========================================================== boot
+  $("boot").remove();
+  $("topbar").classList.remove("hidden"); $("main").classList.remove("hidden");
+  document.title = baseName(FILE) + " — LaTeX";
+  $("docName").textContent = baseName(FILE);
+
+  const tr = await py({ action: "tree", path: S.mainAbs });
+  S.tree = tr.tree;
+
+  const qMode = fused.params.get("mode") || "edit";
+  const qZoom = parseInt(fused.params.get("zoom") || "100", 10);
+  const qSplit = parseFloat(fused.params.get("split") || "50");
+  const qDrawer = fused.params.get("drawer");
+  setMode(qMode);
+  S.scale = Math.max(0.4, Math.min(3, qZoom / 100));
+  $("zoomLbl").textContent = Math.round(S.scale * 100) + "%";
+  $("editPane").style.flex = `1 1 ${qSplit}%`; $("pdfPane").style.flex = `1 1 ${100 - qSplit}%`;
+  if (qDrawer) $("drawer").classList.toggle("collapsed", qDrawer === "collapsed");
+
+  // Resume where the user left off: an explicit `open` param wins (bookmark/
+  // refresh), else the sidecar's last-open sub-file (survives a fresh tab),
+  // else the entrypoint itself.
+  let openRel = fused.params.get("open");
+  if (openRel === undefined) openRel = await loadSidecarOpen();
+  const openAbs = openRel ? (openRel.startsWith("/") ? openRel : S.root + "/" + openRel) : S.mainAbs;
+  await openFile((await fused.stat(openAbs).catch(() => null)) ? openAbs : S.mainAbs);
+  renderTree();
+  compile();
+})();
+</script>
+</body>
+</html>

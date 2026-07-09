@@ -1,0 +1,2310 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Excel editor</title>
+<style>
+  :root {
+    --bg: #131417; --panel: #1b1d21; --panel2: #17181c; --head: #1e2025;
+    --border: #2a2d33; --border2: #33363d; --grid: #26292f;
+    --text: #e8eaed; --text2: #cdd0d4; --muted: #9aa0a6; --faint: #6b7178;
+    --accent: #2b5fd9; --accent-h: #3a6ee8; --on-accent: #fff;
+    --btn: #24262b; --hover: #2d3036; --input: #14161a; --code: #101215;
+    --sel: #1c2b4a; --anchor: #4d82f0; --edit-bg: #0f1a30; --edit-text: #fff;
+    --err: #ff7b72; --ok: #7ee787; --warn: #ffcf70;
+    --th-hl: #2a3550; --th-hl-text: #cfe0ff; --tb-on: #1a3a75; --tb-on-text: #8ab4ff;
+    --shadow: rgba(0,0,0,.5); --scrim: rgba(0,0,0,.55);
+    color-scheme: dark;
+  }
+  body[data-theme=light] {
+    --bg: #f1f3f6; --panel: #ffffff; --panel2: #fdfdfe; --head: #f1f3f5;
+    --border: #d7dbe0; --border2: #c9ced4; --grid: #e2e5e9;
+    --text: #1f2328; --text2: #3c4043; --muted: #5f6b76; --faint: #949aa2;
+    --accent: #1a73e8; --accent-h: #3b82ee; --on-accent: #fff;
+    --btn: #eef0f3; --hover: #e3e7eb; --input: #ffffff; --code: #f6f8fa;
+    --sel: #e0ebfd; --anchor: #1a73e8; --edit-bg: #ffffff; --edit-text: #1f2328;
+    --err: #c5221f; --ok: #188038; --warn: #b06000;
+    --th-hl: #d3e3fd; --th-hl-text: #174ea6; --tb-on: #d3e3fd; --tb-on-text: #174ea6;
+    --shadow: rgba(60,64,67,.35); --scrim: rgba(32,33,36,.4);
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; display: flex; flex-direction: column;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--text); background: var(--bg); font-size: 13px; overflow: hidden;
+  }
+  /* ---- top bar ---- */
+  #topbar { display: flex; align-items: center; gap: 10px; padding: 8px 14px 2px; }
+  #topbar h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  #fileName { color: var(--text); font-size: 13px; padding: 1px 6px; border-radius: 4px; }
+  #savedState { color: var(--muted); font-size: 11px; }
+  #savedState.dirty { color: var(--warn); }
+  #status { margin-left: auto; font-size: 12px; color: var(--muted); }
+  #status.err { color: var(--err); } #status.ok { color: var(--ok); }
+  #themeBtn { flex: none; }
+  /* ---- menus ---- */
+  #menubar { display: flex; padding: 2px 8px; user-select: none; }
+  .menu { position: relative; padding: 4px 10px; border-radius: 5px; cursor: default; font-size: 13px; }
+  .menu:hover, .menu.open { background: var(--btn); }
+  .dropdown {
+    display: none; position: absolute; left: 0; top: 100%; z-index: 50; min-width: 230px;
+    background: var(--panel); border: 1px solid var(--border2); border-radius: 8px; padding: 5px;
+    box-shadow: 0 8px 24px var(--shadow);
+  }
+  .menu.open .dropdown { display: block; }
+  .mi { padding: 6px 12px; border-radius: 5px; white-space: nowrap; display: flex; }
+  .mi:hover { background: var(--accent); color: var(--on-accent); }
+  .mi .kbd { margin-left: auto; color: var(--faint); font-size: 11px; padding-left: 24px; }
+  .mi:hover .kbd { color: var(--on-accent); opacity: .8; }
+  .msep { border-top: 1px solid var(--border); margin: 5px 8px; }
+  /* ---- toolbar ---- */
+  #toolbar {
+    display: flex; align-items: center; gap: 2px; margin: 2px 8px 6px; padding: 4px 8px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 24px; flex-wrap: wrap;
+  }
+  .tb {
+    min-width: 30px; height: 28px; padding: 2px 7px; border: none; background: none; color: var(--text2);
+    border-radius: 6px; cursor: pointer; font-size: 13px; font-family: inherit;
+    display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+  }
+  .tb:hover { background: var(--hover); }
+  .tb.on { background: var(--tb-on); color: var(--tb-on-text); }
+  .tb svg { display: block; }
+  .tb .swatch { display: block; width: 14px; height: 3px; border-radius: 1.5px; }
+  .tb b, .tb i, .tb u { font-size: 13px; line-height: 1; }
+  .tsep { width: 1px; height: 18px; background: var(--border); margin: 0 5px; }
+  #fmtSel {
+    font: inherit; font-size: 12px; color: var(--text2); background: var(--panel);
+    border: 1px solid var(--border); border-radius: 6px; padding: 4px; height: 28px;
+  }
+  .colorwrap { position: relative; display: inline-flex; align-items: center; }
+  .colorwrap input[type=color] {
+    position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%;
+  }
+  /* ---- formula bar ---- */
+  #fxbar { display: flex; align-items: center; gap: 0; margin: 0 8px 6px; }
+  #nameBox {
+    width: 90px; font: inherit; font-size: 12px; text-align: center; color: var(--text);
+    background: var(--panel); border: 1px solid var(--border); border-radius: 6px 0 0 6px; padding: 5px 6px;
+  }
+  #fxLabel { padding: 5px 10px; color: var(--muted); font-style: italic; font-family: Georgia, serif;
+    border: 1px solid var(--border); border-left: none; background: var(--panel); }
+  #fxInput {
+    flex: 1; font: 12px ui-monospace, Menlo, Consolas, monospace; color: var(--text);
+    background: var(--panel); border: 1px solid var(--border); border-left: none;
+    border-radius: 0 6px 6px 0; padding: 5px 10px;
+  }
+  /* ---- grid ---- */
+  #gridWrap { flex: 1; overflow: auto; margin: 0 8px; border: 1px solid var(--border);
+    border-radius: 8px 8px 0 0; background: var(--panel2); outline: none; position: relative; }
+  table { border-collapse: separate; border-spacing: 0; font-size: 12px;
+    font-variant-numeric: tabular-nums; user-select: none; table-layout: fixed; }
+  td, th { border-right: 1px solid var(--grid); border-bottom: 1px solid var(--grid); padding: 0; }
+  th {
+    background: var(--head); color: var(--muted); font-weight: 500; font-size: 11px; text-align: center;
+    position: sticky; top: 0; z-index: 3; height: 22px; cursor: pointer;
+    white-space: nowrap; padding: 0 6px; overflow: hidden; text-overflow: ellipsis;
+  }
+  th .colname { color: var(--faint); font-weight: 400; margin-left: 5px; font-size: 10px; }
+  th .sortmark { color: var(--anchor); margin-left: 3px; font-size: 9px; }
+  th.corner, th.rowhead { left: 0; }
+  th.corner { z-index: 6; }
+  th.rowhead { position: sticky; z-index: 2; top: auto; cursor: pointer; }
+  th.hl { background: var(--th-hl); color: var(--th-hl-text); }
+  .colResize {
+    position: absolute; top: 0; right: -3px; width: 7px; height: 100%;
+    cursor: col-resize; z-index: 7;
+  }
+  .colResize:hover, .colResize.on { background: var(--anchor); opacity: .55; }
+  tr.filterRow th { top: 23px; z-index: 3; cursor: default; padding: 0; height: 26px; }
+  tr.filterRow input {
+    width: 100%; font: 11px inherit; color: var(--text); background: var(--input);
+    border: none; border-top: 1px solid var(--grid); padding: 3px 6px; outline: none;
+  }
+  td.cell {
+    height: 24px; padding: 2px 6px; background: var(--panel2);
+    white-space: pre; overflow: hidden; text-overflow: ellipsis; cursor: cell; position: relative;
+  }
+  td.frz, th.frzHead { border-bottom: 2px solid var(--border2); }
+  td.cell.num { text-align: right; }
+  td.cell.err { color: var(--err); }
+  td.cell.edited { box-shadow: inset 0 0 0 1px var(--warn); }
+  td.cell.sel { background: var(--sel); }
+  td.cell.anchor { outline: 2px solid var(--anchor); outline-offset: -2px; background: var(--panel2); }
+  td.cell.sel.anchor { background: var(--sel); }
+  td.cell input {
+    position: absolute; inset: 0; border: 2px solid var(--anchor); background: var(--edit-bg); color: var(--edit-text);
+    font: 12px ui-monospace, Menlo, Consolas, monospace; padding: 1px 4px; outline: none; z-index: 4;
+  }
+  #moreBar { display: flex; align-items: center; gap: 12px; padding: 10px; color: var(--faint); font-size: 12px; }
+  .fillhandle {
+    /* td.cell clips overflow, so the handle must sit fully inside the cell */
+    position: absolute; right: 0; bottom: 0; width: 8px; height: 8px; z-index: 6;
+    background: var(--anchor); border: 1.5px solid var(--panel2); border-radius: 1px; cursor: crosshair;
+  }
+  td.cell.fillPrev { outline: 1.5px dashed var(--anchor); outline-offset: -2px; }
+  /* ---- formula autocomplete ---- */
+  #acMenu {
+    position: fixed; z-index: 200; min-width: 260px; max-width: 420px; display: none;
+    background: var(--panel); border: 1px solid var(--border2); border-radius: 8px; padding: 4px;
+    box-shadow: 0 8px 24px var(--shadow); font-size: 12px;
+  }
+  #acMenu .aci { padding: 5px 10px; border-radius: 5px; display: flex; gap: 8px; align-items: baseline; cursor: pointer; }
+  #acMenu .aci.on { background: var(--accent); color: var(--on-accent); }
+  #acMenu .aci b { font-family: ui-monospace, Menlo, Consolas, monospace; font-weight: 600; }
+  #acMenu .aci span { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #acMenu .aci.on span { color: var(--on-accent); opacity: .85; }
+  /* ---- context menu ---- */
+  #ctxMenu {
+    position: fixed; z-index: 200; min-width: 210px; display: none;
+    background: var(--panel); border: 1px solid var(--border2); border-radius: 8px; padding: 5px;
+    box-shadow: 0 8px 24px var(--shadow); font-size: 13px;
+  }
+  #ctxMenu .mi { cursor: default; }
+  /* ---- sheet bar ---- */
+  #sheetbar {
+    display: flex; align-items: center; gap: 4px; padding: 5px 10px; background: var(--panel);
+    border: 1px solid var(--border); border-top: none; border-radius: 0 0 8px 8px; margin: 0 8px 8px;
+    user-select: none;
+  }
+  #addSheet { width: 26px; height: 24px; border-radius: 50%; border: none; background: var(--btn);
+    color: var(--text2); font-size: 15px; cursor: pointer; }
+  #addSheet:hover { background: var(--hover); }
+  .stab {
+    padding: 3px 14px; border-radius: 6px; cursor: pointer; color: var(--muted); font-size: 12px;
+    display: flex; align-items: center; gap: 6px; border: 1px solid transparent;
+  }
+  .stab.active { background: var(--btn); color: var(--text); border-color: var(--border2); font-weight: 600; }
+  .stab input {
+    font: inherit; font-size: 12px; width: 90px; color: var(--text); background: var(--input);
+    border: 1px solid var(--anchor); border-radius: 4px; padding: 1px 6px; outline: none;
+  }
+  .stab .x { color: var(--faint); font-size: 11px; padding: 0 2px; border-radius: 3px; }
+  .stab .x:hover { color: var(--err); background: var(--panel2); }
+  #modeChip { margin-left: 10px; color: var(--faint); font-size: 11px; }
+  #modeChip b { color: var(--muted); font-weight: 600; }
+  #selStats { margin-left: auto; color: var(--muted); font-size: 11px; }
+  /* ---- modal ---- */
+  #overlay {
+    display: none; position: fixed; inset: 0; z-index: 100; background: var(--scrim);
+    align-items: center; justify-content: center;
+  }
+  #overlay.open { display: flex; }
+  #modal {
+    width: min(860px, 92vw); max-height: 88vh; display: flex; flex-direction: column;
+    background: var(--panel); border: 1px solid var(--border2); border-radius: 12px; padding: 16px;
+    box-shadow: 0 12px 40px var(--shadow);
+  }
+  #modal.small { width: min(480px, 92vw); }
+  #modal h2 { margin: 0 0 10px; font-size: 14px; }
+  #modalBody { overflow: auto; }
+  .srow { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+  .srow select, .srow input[type=text], .dlgRow input[type=text] {
+    font: inherit; font-size: 12px; color: var(--text); background: var(--input);
+    border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px;
+  }
+  .dlgMsg { color: var(--muted); font-size: 12px; margin-bottom: 10px; line-height: 1.5; }
+  .dlgRow { display: flex; gap: 8px; margin-top: 4px; }
+  .dlgRow input[type=text] { flex: 1; }
+  /* ---- file browser ---- */
+  #crumbs { margin-bottom: 8px; font-size: 12px; color: var(--muted); word-break: break-all; }
+  #crumbs a { color: var(--anchor); cursor: pointer; }
+  #crumbs a:hover { text-decoration: underline; }
+  .flist { max-height: 52vh; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+  .fitem { display: flex; gap: 8px; padding: 6px 12px; cursor: pointer; align-items: center; font-size: 12px; }
+  .fitem:hover { background: var(--hover); }
+  .fitem .ic { color: var(--faint); width: 16px; text-align: center; }
+  .fitem .sz { margin-left: auto; color: var(--faint); font-size: 11px; }
+  /* ---- script editor / misc ---- */
+  #scriptCode {
+    width: 100%; height: 260px; resize: vertical; font: 12px ui-monospace, Menlo, Consolas, monospace;
+    color: var(--text); background: var(--code); border: 1px solid var(--border); border-radius: 8px; padding: 10px;
+  }
+  #scriptOut {
+    margin: 8px 0 0; padding: 8px 10px; max-height: 140px; overflow: auto; white-space: pre-wrap;
+    font: 11px ui-monospace, Menlo, Consolas, monospace; color: var(--muted);
+    background: var(--code); border: 1px solid var(--border); border-radius: 8px;
+  }
+  #scriptOut.err { color: var(--err); }
+  .help { font-size: 11px; color: var(--faint); margin-top: 6px; line-height: 1.5; }
+  .help code { color: var(--muted); }
+  button.action {
+    font: inherit; font-size: 12px; color: var(--text); background: var(--btn);
+    border: 1px solid var(--border); border-radius: 6px; padding: 5px 12px; cursor: pointer;
+  }
+  button.action:hover { background: var(--hover); }
+  button.action.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  button.action.primary:hover { background: var(--accent-h); }
+  #emptyState { padding: 60px; text-align: center; color: var(--faint); font-size: 13px; }
+</style>
+</head>
+<body>
+  <div id="topbar">
+    <span id="fileName">Excel editor</span>
+    <span id="savedState"></span><span id="status"></span>
+    <button class="tb" id="themeBtn" title="Toggle light / dark theme">◐ Light</button>
+  </div>
+
+  <div id="menubar">
+    <div class="menu" data-menu>File<div class="dropdown">
+      <div class="mi" data-act="save">Save<span class="kbd">Ctrl+S</span></div>
+      <div class="mi" data-act="saveAs">Save as…</div>
+      <div class="msep"></div>
+      <div class="mi" data-act="dlCsv">Download as CSV (current sheet)</div>
+      <div class="mi" data-act="dlXlsx">Download as Excel (.xlsx)</div>
+      <div class="mi" data-act="dlParquet">Download as Parquet (current sheet)</div>
+      <div class="mi" data-act="dlPdf">Download as PDF (current sheet)</div>
+    </div></div>
+    <div class="menu" data-menu>Edit<div class="dropdown">
+      <div class="mi" data-act="undo">Undo<span class="kbd">Ctrl+Z</span></div>
+      <div class="mi" data-act="redo">Redo<span class="kbd">Ctrl+Y</span></div>
+      <div class="msep"></div>
+      <div class="mi" data-act="clearSel">Clear selected cells<span class="kbd">Del</span></div>
+      <div class="mi" data-act="delRows">Delete selected row(s)</div>
+      <div class="mi" data-act="delCols">Delete selected column(s)</div>
+    </div></div>
+    <div class="menu" data-menu>Insert<div class="dropdown">
+      <div class="mi" data-act="rowAbove">Row above</div>
+      <div class="mi" data-act="rowBelow">Row below</div>
+      <div class="mi" data-act="colLeft">Column left</div>
+      <div class="mi" data-act="colRight">Column right</div>
+      <div class="msep"></div>
+      <div class="mi" data-act="addSheet">New sheet</div>
+    </div></div>
+    <div class="menu" data-menu>Data<div class="dropdown">
+      <div class="mi" data-act="sortAsc">Sort sheet A → Z (by selected column)</div>
+      <div class="mi" data-act="sortDesc">Sort sheet Z → A (by selected column)</div>
+      <div class="mi" data-act="sortOff">Clear sort (original order)</div>
+      <div class="msep"></div>
+      <div class="mi" data-act="toggleFilter">Toggle filters</div>
+      <div class="mi" data-act="loadAll">Load more rows (large sheets)</div>
+    </div></div>
+    <div class="menu" data-menu>View<div class="dropdown">
+      <div class="mi" data-act="freeze1">Freeze row 1</div>
+      <div class="mi" data-act="freezeSel">Freeze up to selected row</div>
+      <div class="mi" data-act="unfreeze">Unfreeze rows</div>
+    </div></div>
+    <div class="menu" data-menu>Format<div class="dropdown">
+      <div class="mi" data-act="fmtAuto">Number: Automatic</div>
+      <div class="mi" data-act="fmtNumber">Number: 1,234.56</div>
+      <div class="mi" data-act="fmtPercent">Number: Percent 12.34%</div>
+      <div class="mi" data-act="fmtCurrency">Number: Currency $1,234.56</div>
+      <div class="msep"></div>
+      <div class="mi" data-act="clearFmt">Clear formatting</div>
+    </div></div>
+    <div class="menu" data-menu>Extensions<div class="dropdown">
+      <div class="mi" data-act="scripts">Script editor…</div>
+    </div></div>
+  </div>
+
+  <div id="toolbar">
+    <button class="tb" data-act="undo" title="Undo (Ctrl+Z)">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 3.5 4 7l3.5 3.5"/><path d="M4 7h5.2a3.65 3.65 0 0 1 0 7.3H7"/></svg>
+    </button>
+    <button class="tb" data-act="redo" title="Redo (Ctrl+Y)">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 3.5 12 7l-3.5 3.5"/><path d="M12 7H6.8a3.65 3.65 0 0 0 0 7.3H9"/></svg>
+    </button>
+    <div class="tsep"></div>
+    <select id="fmtSel" title="Number format">
+      <option value="">123 Auto</option><option value="number">1,234.56</option>
+      <option value="percent">12.3%</option><option value="currency">$ 1,234.56</option>
+    </select>
+    <div class="tsep"></div>
+    <button class="tb" id="tbB" data-act="bold" title="Bold (Ctrl+B)"><b>B</b></button>
+    <button class="tb" id="tbI" data-act="italic" title="Italic (Ctrl+I)"><i>I</i></button>
+    <button class="tb" id="tbU" data-act="underline" title="Underline (Ctrl+U)"><u>U</u></button>
+    <div class="tsep"></div>
+    <span class="colorwrap">
+      <button class="tb" title="Text color"><span style="font-size:12px;line-height:1;font-weight:600">A</span><span class="swatch" id="swText" style="background:#e06666"></span></button>
+      <input type="color" id="textColor" value="#e06666">
+    </span>
+    <span class="colorwrap">
+      <button class="tb" title="Fill color">
+        <svg width="15" height="12" viewBox="0 0 16 13" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M6.3 1.2l5.2 5.2a1 1 0 0 1 0 1.4L8.6 10.7a2.4 2.4 0 0 1-3.4 0L3 8.5a2.4 2.4 0 0 1 0-3.4z"/><path d="M13.3 8.6c.6.9 1 1.6 1 2.1a1 1 0 0 1-2 0c0-.5.4-1.2 1-2.1z" fill="currentColor" stroke="none"/></svg>
+        <span class="swatch" id="swFill" style="background:#3d4a2b"></span>
+      </button>
+      <input type="color" id="fillColor" value="#3d4a2b">
+    </span>
+    <div class="tsep"></div>
+    <button class="tb" data-act="alignLeft" title="Align left">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 4.5h10M3 8h6M3 11.5h10"/></svg>
+    </button>
+    <button class="tb" data-act="alignCenter" title="Align center">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 4.5h10M5 8h6M3 11.5h10"/></svg>
+    </button>
+    <button class="tb" data-act="alignRight" title="Align right">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 4.5h10M7 8h6M3 11.5h10"/></svg>
+    </button>
+    <div class="tsep"></div>
+    <button class="tb" id="tbFilter" data-act="toggleFilter" title="Toggle filters">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M2.5 3.5h11L9.2 8.4v3.3l-2.4 1.5V8.4z"/></svg>
+    </button>
+  </div>
+
+  <div id="fxbar">
+    <input id="nameBox" title="Cell reference — type e.g. C10 to jump" />
+    <span id="fxLabel">fx</span>
+    <input id="fxInput" placeholder="Type a value or a formula, e.g. =SUM(B2:B10) * (1 + TAN(PI()/8))" />
+  </div>
+
+  <div id="gridWrap" tabindex="0"></div>
+
+  <div id="sheetbar">
+    <button id="addSheet" title="Add sheet">+</button>
+    <span id="tabs" style="display:flex;gap:4px;flex-wrap:wrap"></span>
+    <span id="modeChip"></span>
+    <span id="selStats"></span>
+  </div>
+
+  <div id="overlay"><div id="modal">
+    <h2 id="modalTitle"></h2><div id="modalBody"></div>
+  </div></div>
+
+<script>
+"use strict";
+const PY = "./reader.py";
+const $ = (id) => document.getElementById(id);
+const RENDER_CAP = 1000, MIN_ROWS = 100, MIN_COLS = 26, MAX_UNDO = 60, LOAD_BATCH = 2000;
+
+// ================= state =================
+let book = null;          // { sheets: [...] }  — small: {rows, styles}; big: {loaded, edits, ...}
+let cur = 0;
+let mtime = null;
+let dirty = false;
+let sel = { ar: 0, ac: 0, r1: 0, c1: 0, r2: 0, c2: 0 };
+let editing = null;
+let undoStack = [], redoStack = [];
+let renderLimit = RENDER_CAP;
+let tds = new Map();
+let values = [];          // computed matrix (small sheets)
+let valuesStale = true;
+let loadSeq = 0;
+
+const S = () => book.sheets[cur];
+const isBig = () => book && S().big;
+const fmtInt = (n) => Number(n).toLocaleString("en-US");
+
+function raw(r, c) {
+  const sh = S();
+  if (sh.big) {
+    const row = sh.loaded[r];
+    if (!row) return "";
+    const ed = sh.edits.get(row[0] + ":" + c);
+    if (ed !== undefined) return ed;
+    const v = row[c + 1];
+    return v === null || v === undefined ? "" : String(v);
+  }
+  const row = sh.rows[r];
+  const v = row ? row[c] : "";
+  return v === null || v === undefined ? "" : String(v);
+}
+
+function colName(i) {
+  let s = "";
+  for (i = i + 1; i > 0; i = Math.floor((i - 1) / 26)) s = String.fromCharCode(65 + ((i - 1) % 26)) + s;
+  return s;
+}
+function refName(r, c) { return colName(c) + (r + 1); }
+function parseRef(s) {
+  const m = /^\$?([A-Za-z]{1,3})\$?([0-9]+)$/.exec(s.trim());
+  if (!m) return null;
+  let c = 0;
+  for (const ch of m[1].toUpperCase()) c = c * 26 + (ch.charCodeAt(0) - 64);
+  return { r: parseInt(m[2], 10) - 1, c: c - 1 };
+}
+
+function setStatus(msg, cls) { const el = $("status"); el.textContent = msg || ""; el.className = cls || ""; }
+function markDirty(d = true) {
+  dirty = d;
+  $("savedState").textContent = book ? (d ? "● Unsaved changes" : "All changes saved") : "";
+  $("savedState").className = d ? "dirty" : "";
+}
+function currentFile() { return fused.params.get("_file") || ""; }
+
+// ================= formula engine (small sheets) =================
+function FErr(code) { const e = new Error(code); e.isFErr = true; e.code = code; return e; }
+function num(v) {
+  if (v === "" || v === null || v === undefined) return 0;
+  if (typeof v === "number") return v;
+  if (typeof v === "boolean") return v ? 1 : 0;
+  const n = parseFloat(v);
+  if (isNaN(n) || !/^\s*[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?\s*%?\s*$/.test(String(v))) throw FErr("#VALUE!");
+  return n;
+}
+function truthy(v) { if (typeof v === "string") throw FErr("#VALUE!"); return !!v; }
+const NUM_RE = /^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/;
+function literal(s) {
+  if (s === "") return "";
+  const t = s.trim();
+  if (NUM_RE.test(t)) return parseFloat(t);
+  if (/^(true|false)$/i.test(t)) return t.toLowerCase() === "true";
+  return s;
+}
+
+function tokenize(src) {
+  const toks = []; let i = 0;
+  while (i < src.length) {
+    const ch = src[i];
+    if (ch === " " || ch === "\t") { i++; continue; }
+    if (/[0-9.]/.test(ch)) {
+      const m = /^\d*\.?\d+([eE][+-]?\d+)?/.exec(src.slice(i));
+      toks.push({ t: "num", v: parseFloat(m[0]) }); i += m[0].length; continue;
+    }
+    if (ch === '"') {
+      let j = i + 1, out = "";
+      while (j < src.length) {
+        if (src[j] === '"' && src[j + 1] === '"') { out += '"'; j += 2; }
+        else if (src[j] === '"') break;
+        else out += src[j++];
+      }
+      toks.push({ t: "str", v: out }); i = j + 1; continue;
+    }
+    if (/[A-Za-z_$]/.test(ch)) {
+      const m = /^[$A-Za-z_][$A-Za-z0-9_.]*/.exec(src.slice(i));
+      toks.push({ t: "word", v: m[0] }); i += m[0].length; continue;
+    }
+    const two = src.slice(i, i + 2);
+    if (["<=", ">=", "<>"].includes(two)) { toks.push({ t: "op", v: two }); i += 2; continue; }
+    if ("+-*/^&%=<>(),:".includes(ch)) { toks.push({ t: "op", v: ch }); i++; continue; }
+    throw FErr("#ERROR!");
+  }
+  return toks;
+}
+
+const SCALAR = {}, AGG = {}, CONST = { TRUE: true, FALSE: false };
+for (const k of Object.getOwnPropertyNames(Math)) {
+  const v = Math[k], K = k.toUpperCase();
+  if (typeof v === "function") SCALAR[K] = (...a) => v(...a.map(num));
+  else { CONST[K] = v; SCALAR[K] = () => v; }
+}
+Object.assign(SCALAR, {
+  CEILING: SCALAR.CEIL, POWER: SCALAR.POW, LN: (x) => Math.log(num(x)),
+  LOG: (x, b) => Math.log(num(x)) / Math.log(b === undefined ? 10 : num(b)),
+  LOG10: (x) => Math.log10(num(x)),
+  ROUND: (x, n) => { const p = Math.pow(10, n === undefined ? 0 : num(n)); return Math.round(num(x) * p) / p; },
+  ROUNDUP: (x, n) => { const p = Math.pow(10, n === undefined ? 0 : num(n)); return Math.ceil(num(x) * p) / p; },
+  ROUNDDOWN: (x, n) => { const p = Math.pow(10, n === undefined ? 0 : num(n)); return Math.floor(num(x) * p) / p; },
+  INT: (x) => Math.floor(num(x)),
+  MOD: (x, y) => { const d = num(y); if (d === 0) throw FErr("#DIV/0!"); return ((num(x) % d) + d) % d; },
+  PI: () => Math.PI, RANDBETWEEN: (a, b) => Math.floor(Math.random() * (num(b) - num(a) + 1)) + num(a),
+  NOT: (x) => !truthy(x),
+  LEN: (s) => String(s ?? "").length, UPPER: (s) => String(s ?? "").toUpperCase(),
+  LOWER: (s) => String(s ?? "").toLowerCase(), TRIM: (s) => String(s ?? "").trim(),
+  LEFT: (s, n) => String(s ?? "").slice(0, n === undefined ? 1 : num(n)),
+  RIGHT: (s, n) => String(s ?? "").slice(-(n === undefined ? 1 : num(n))),
+  MID: (s, a, n) => String(s ?? "").substr(num(a) - 1, num(n)),
+  VALUE: (s) => num(s), TEXT: (v) => String(v),
+  TODAY: () => new Date().toISOString().slice(0, 10),
+  NOW: () => new Date().toISOString().slice(0, 19).replace("T", " "),
+});
+const numsOf = (list) => list.filter((v) => typeof v === "number");
+Object.assign(AGG, {
+  SUM: (l) => numsOf(l).reduce((a, b) => a + b, 0),
+  PRODUCT: (l) => numsOf(l).reduce((a, b) => a * b, 1),
+  COUNT: (l) => numsOf(l).length,
+  COUNTA: (l) => l.filter((v) => v !== "" && v !== null && v !== undefined).length,
+  MIN: (l) => { const n = numsOf(l); return n.length ? Math.min(...n) : 0; },
+  MAX: (l) => { const n = numsOf(l); return n.length ? Math.max(...n) : 0; },
+  AVERAGE: (l) => { const n = numsOf(l); if (!n.length) throw FErr("#DIV/0!"); return n.reduce((a, b) => a + b, 0) / n.length; },
+  MEDIAN: (l) => {
+    const n = numsOf(l).sort((a, b) => a - b);
+    if (!n.length) throw FErr("#DIV/0!");
+    const m = n.length >> 1; return n.length % 2 ? n[m] : (n[m - 1] + n[m]) / 2;
+  },
+  STDEV: (l) => {
+    const n = numsOf(l); if (n.length < 2) throw FErr("#DIV/0!");
+    const mu = n.reduce((a, b) => a + b, 0) / n.length;
+    return Math.sqrt(n.reduce((a, b) => a + (b - mu) ** 2, 0) / (n.length - 1));
+  },
+});
+AGG.AVG = AGG.AVERAGE;
+
+// ---- function catalog for autocomplete ----
+const FN_DOCS = {
+  SUM: ["values…", "Sum of numbers in cells/ranges"], AVERAGE: ["values…", "Arithmetic mean"],
+  AVG: ["values…", "Alias of AVERAGE"], COUNT: ["values…", "Count numeric values"],
+  COUNTA: ["values…", "Count non-empty values"], MIN: ["values…", "Smallest number"],
+  MAX: ["values…", "Largest number"], MEDIAN: ["values…", "Middle value"],
+  STDEV: ["values…", "Sample standard deviation"], PRODUCT: ["values…", "Multiply numbers"],
+  IF: ["cond, then, else", "Conditional value"], AND: ["a, b, …", "TRUE if all are true"],
+  OR: ["a, b, …", "TRUE if any is true"], NOT: ["x", "Logical negation"],
+  IFERROR: ["value, fallback", "Fallback when value errors"],
+  COUNTIF: ["range, crit", 'Count matching, e.g. ">5" or "goa"'],
+  SUMIF: ["range, crit, [sum]", "Sum where criteria matches"],
+  CONCAT: ["a, b, …", "Join values into text"], CONCATENATE: ["a, b, …", "Join values into text"],
+  ROUND: ["x, [digits]", "Round to digits"], ROUNDUP: ["x, [digits]", "Round away from zero"],
+  ROUNDDOWN: ["x, [digits]", "Round toward zero"], INT: ["x", "Round down to integer"],
+  MOD: ["x, y", "Remainder of x/y"], ABS: ["x", "Absolute value"], SQRT: ["x", "Square root"],
+  POWER: ["x, y", "x raised to y"], POW: ["x, y", "x raised to y"], EXP: ["x", "e^x"],
+  LN: ["x", "Natural log"], LOG: ["x, [base=10]", "Logarithm"], LOG10: ["x", "Base-10 log"],
+  PI: ["", "π = 3.14159…"], E: ["", "Euler's number"],
+  SIN: ["rad", "Sine"], COS: ["rad", "Cosine"], TAN: ["rad", "Tangent"],
+  ASIN: ["x", "Arc sine"], ACOS: ["x", "Arc cosine"], ATAN: ["x", "Arc tangent"],
+  ATAN2: ["y, x", "Angle of point"], SINH: ["x", "Hyperbolic sine"], COSH: ["x", "Hyperbolic cosine"],
+  TANH: ["x", "Hyperbolic tangent"], HYPOT: ["a, b, …", "√(a²+b²+…)"], CBRT: ["x", "Cube root"],
+  SIGN: ["x", "-1, 0 or 1"], TRUNC: ["x", "Drop decimal part"],
+  FLOOR: ["x", "Round down"], CEIL: ["x", "Round up"], CEILING: ["x", "Round up"],
+  RANDOM: ["", "Random 0–1"], RAND: ["", "Random 0–1"], RANDBETWEEN: ["lo, hi", "Random integer in range"],
+  LEN: ["text", "Length of text"], UPPER: ["text", "UPPERCASE"], LOWER: ["text", "lowercase"],
+  TRIM: ["text", "Strip surrounding spaces"], LEFT: ["text, [n]", "First n characters"],
+  RIGHT: ["text, [n]", "Last n characters"], MID: ["text, start, n", "Substring (1-based)"],
+  VALUE: ["text", "Text → number"], TEXT: ["value", "Value → text"],
+  TODAY: ["", "Current date"], NOW: ["", "Current date & time"],
+};
+const FN_LIST = (() => {
+  const names = new Set([...Object.keys(AGG), ...Object.keys(SCALAR),
+    "IF", "AND", "OR", "IFERROR", "COUNTIF", "SUMIF", "CONCAT", "CONCATENATE"]);
+  return [...names].sort().map((name) => {
+    const d = FN_DOCS[name];
+    return { name, sig: d ? d[0] : "x", doc: d ? d[1] : "JavaScript Math." + name.toLowerCase() };
+  });
+})();
+
+// ---- formula autocomplete (in-cell editor + formula bar) ----
+const AC = { open: false, items: [], idx: 0, target: null, word: "" };
+function acEl() {
+  let el = $("acMenu");
+  if (!el) { el = document.createElement("div"); el.id = "acMenu"; document.body.appendChild(el); }
+  return el;
+}
+function acClose() { AC.open = false; acEl().style.display = "none"; }
+function acRender() {
+  const el = acEl();
+  el.innerHTML = AC.items.map((f, i) =>
+    `<div class="aci${i === AC.idx ? " on" : ""}" data-i="${i}"><b>${f.name}(${f.sig})</b><span>${f.doc}</span></div>`
+  ).join("");
+  el.querySelectorAll(".aci").forEach((d) => {
+    d.addEventListener("mousedown", (e) => { e.preventDefault(); AC.idx = +d.dataset.i; acAccept(); });
+  });
+  el.style.display = "block";
+}
+function acPosition(input) {
+  const r = input.getBoundingClientRect();
+  const el = acEl();
+  el.style.left = Math.min(r.left, window.innerWidth - 320) + "px";
+  el.style.top = Math.min(r.bottom + 3, window.innerHeight - 40) + "px";
+}
+function acUpdate(input) {
+  const v = input.value, caret = input.selectionStart ?? v.length;
+  if (!v.startsWith("=")) { acClose(); return; }
+  const m = /[A-Za-z_][A-Za-z0-9_.]*$/.exec(v.slice(0, caret));
+  if (!m) { acClose(); return; }
+  const prefix = m[0].toUpperCase();
+  const items = FN_LIST.filter((f) => f.name.startsWith(prefix)).slice(0, 9);
+  if (!items.length || (items.length === 1 && items[0].name === prefix && v[caret] === "(")) { acClose(); return; }
+  AC.items = items; AC.idx = 0; AC.target = input; AC.word = m[0]; AC.open = true;
+  acRender(); acPosition(input);
+}
+function acAccept() {
+  const f = AC.items[AC.idx], input = AC.target;
+  if (!f || !input) { acClose(); return; }
+  const caret = input.selectionStart ?? input.value.length;
+  const before = input.value.slice(0, caret - AC.word.length);
+  const after = input.value.slice(caret);
+  input.value = before + f.name + "(" + after;
+  const pos = (before + f.name + "(").length;
+  input.setSelectionRange(pos, pos);
+  $("fxInput").value = input.value;   // keep the formula bar mirrored
+  acClose();
+  input.focus();
+}
+function acKey(e) {   // returns true if the key was consumed by the dropdown
+  if (!AC.open) return false;
+  if (e.key === "ArrowDown") { AC.idx = (AC.idx + 1) % AC.items.length; acRender(); }
+  else if (e.key === "ArrowUp") { AC.idx = (AC.idx - 1 + AC.items.length) % AC.items.length; acRender(); }
+  else if (e.key === "Tab" || e.key === "Enter") { acAccept(); }
+  else if (e.key === "Escape") { acClose(); }
+  else return false;
+  e.preventDefault(); e.stopPropagation();
+  return true;
+}
+
+function criteriaFn(crit) {
+  const s = String(crit);
+  const m = /^(<>|<=|>=|=|<|>)(.*)$/.exec(s);
+  const cmpv = (v, t) => {
+    const nv = typeof v === "number" ? v : parseFloat(v), nt = parseFloat(t);
+    if (!isNaN(nv) && !isNaN(nt)) return nv - nt;
+    const a = String(v).toLowerCase(), b = String(t).toLowerCase();
+    return a < b ? -1 : a > b ? 1 : 0;
+  };
+  if (!m) {
+    const q = s.toLowerCase();
+    return (v) => String(v).toLowerCase().includes(q);
+  }
+  const [, op, t] = m;
+  return (v) => {
+    const d = cmpv(v, t);
+    return op === "=" ? d === 0 : op === "<>" ? d !== 0 : op === "<" ? d < 0
+      : op === ">" ? d > 0 : op === "<=" ? d <= 0 : d >= 0;
+  };
+}
+
+function compile(src) {
+  const toks = tokenize(src); let pos = 0;
+  const peek = () => toks[pos];
+  const eat = (v) => { const t = toks[pos]; if (!t || t.v !== v) throw FErr("#ERROR!"); pos++; return t; };
+  const isOp = (...vs) => peek() && peek().t === "op" && vs.includes(peek().v);
+
+  function rangeVals(ctx, a, b) {
+    const out = [];
+    for (let r = Math.min(a.r, b.r); r <= Math.max(a.r, b.r); r++)
+      for (let c = Math.min(a.c, b.c); c <= Math.max(a.c, b.c); c++) out.push(ctx.val(r, c));
+    return out;
+  }
+  const flat = (ctx, argThunks) => argThunks.flatMap((t) => { const v = t(ctx); return v && v.isRange ? v.vals() : [v]; });
+  const scalar = (v) => { if (v && v.isRange) { const l = v.vals(); if (l.length !== 1) throw FErr("#VALUE!"); return l[0]; } return v; };
+
+  function atom() {
+    const t = peek();
+    if (!t) throw FErr("#ERROR!");
+    if (t.t === "num") { pos++; return () => t.v; }
+    if (t.t === "str") { pos++; return () => t.v; }
+    if (t.t === "op" && t.v === "(") { pos++; const e = expr(); eat(")"); return e; }
+    if (t.t === "word") {
+      pos++;
+      const name = t.v.toUpperCase();
+      if (isOp("(")) {
+        pos++;
+        const args = [];
+        if (!isOp(")")) { args.push(expr()); while (isOp(",")) { pos++; args.push(expr()); } }
+        eat(")");
+        return fnThunk(name, args);
+      }
+      const ref = parseRef(t.v);
+      if (ref) {
+        if (isOp(":")) {
+          pos++;
+          const t2 = peek();
+          if (!t2 || t2.t !== "word") throw FErr("#ERROR!");
+          const ref2 = parseRef(t2.v); if (!ref2) throw FErr("#REF!");
+          pos++;
+          return (ctx) => ({ isRange: true, vals: () => rangeVals(ctx, ref, ref2) });
+        }
+        return (ctx) => ctx.val(ref.r, ref.c);
+      }
+      if (name in CONST) return () => CONST[name];
+      throw FErr("#NAME?");
+    }
+    throw FErr("#ERROR!");
+  }
+  function fnThunk(name, args) {
+    return (ctx) => {
+      const E = (t) => t(ctx);
+      if (name === "IF") {
+        if (args.length < 2) throw FErr("#ERROR!");
+        return truthy(scalar(E(args[0]))) ? scalar(E(args[1])) : (args[2] ? scalar(E(args[2])) : false);
+      }
+      if (name === "AND") { for (const a of args) if (!truthy(scalar(E(a)))) return false; return true; }
+      if (name === "OR") { for (const a of args) if (truthy(scalar(E(a)))) return true; return false; }
+      if (name === "IFERROR") {
+        try { return scalar(E(args[0])); } catch (e) { return args[1] ? scalar(E(args[1])) : ""; }
+      }
+      if (name === "COUNTIF" || name === "SUMIF") {
+        const rng = E(args[0]); if (!rng || !rng.isRange) throw FErr("#VALUE!");
+        const test = criteriaFn(scalar(E(args[1])));
+        const vals = rng.vals();
+        if (name === "COUNTIF") return vals.filter((v) => v !== "" && test(v)).length;
+        const sumRng = args[2] ? E(args[2]) : rng;
+        const sums = sumRng.isRange ? sumRng.vals() : [sumRng];
+        let s = 0;
+        vals.forEach((v, i) => { if (v !== "" && test(v) && typeof sums[i] === "number") s += sums[i]; });
+        return s;
+      }
+      if (name === "CONCAT" || name === "CONCATENATE") return flat(ctx, args).map((v) => v ?? "").join("");
+      if (name in AGG) return AGG[name](flat(ctx, args));
+      if (name in SCALAR) return SCALAR[name](...args.map((a) => scalar(E(a))));
+      throw FErr("#NAME?");
+    };
+  }
+  function unary() {
+    if (isOp("-")) { pos++; const e = unary(); return (ctx) => -num(e(ctx)); }
+    if (isOp("+")) { pos++; return unary(); }
+    let e = atom();
+    while (isOp("%")) { pos++; const b = e; e = (ctx) => num(b(ctx)) / 100; }
+    return e;
+  }
+  function power() {
+    const b = unary();
+    if (isOp("^")) { pos++; const ex = power(); return (ctx) => Math.pow(num(b(ctx)), num(ex(ctx))); }
+    return b;
+  }
+  function mul() {
+    let L = power();
+    while (isOp("*", "/")) {
+      const op = toks[pos++].v, R = power(), l = L;
+      L = (ctx) => {
+        const a = num(l(ctx)), b = num(R(ctx));
+        if (op === "/") { if (b === 0) throw FErr("#DIV/0!"); return a / b; }
+        return a * b;
+      };
+    }
+    return L;
+  }
+  function add() {
+    let L = mul();
+    while (isOp("+", "-")) {
+      const op = toks[pos++].v, R = mul(), l = L;
+      L = (ctx) => (op === "+" ? num(l(ctx)) + num(R(ctx)) : num(l(ctx)) - num(R(ctx)));
+    }
+    return L;
+  }
+  function concat() {
+    let L = add();
+    while (isOp("&")) {
+      pos++; const R = add(), l = L;
+      L = (ctx) => String(l(ctx) ?? "") + String(R(ctx) ?? "");
+    }
+    return L;
+  }
+  function expr() {
+    let L = concat();
+    while (isOp("=", "<>", "<", ">", "<=", ">=")) {
+      const op = toks[pos++].v, R = concat(), l = L;
+      L = (ctx) => {
+        let a = l(ctx), b = R(ctx);
+        if (typeof a === "string") a = a.toLowerCase();
+        if (typeof b === "string") b = b.toLowerCase();
+        const d = a === b ? 0 : a < b ? -1 : 1;
+        return op === "=" ? d === 0 : op === "<>" ? d !== 0 : op === "<" ? d < 0
+          : op === ">" ? d > 0 : op === "<=" ? d <= 0 : d >= 0;
+      };
+    }
+    return L;
+  }
+  const root = expr();
+  if (pos !== toks.length) throw FErr("#ERROR!");
+  return root;
+}
+
+const EMPTY_CELL = { v: "" };
+function computeAll(sheet) {
+  const rows = sheet.rows, cache = new Map(), busy = new Set();
+  const ctx = {
+    val(r, c) {
+      const row = rows[r];
+      const s = row ? String(row[c] ?? "") : "";
+      if (!s.startsWith("=")) return literal(s);
+      const key = r + "," + c;
+      if (cache.has(key)) { const e = cache.get(key); if (e.err) throw FErr(e.err); return e.v; }
+      if (busy.has(key)) throw FErr("#CYCLE!");
+      busy.add(key);
+      let entry;
+      try { entry = { v: compile(s.slice(1))(ctx) }; }
+      catch (e) { entry = { err: e.isFErr ? e.code : "#ERROR!" }; }
+      busy.delete(key);
+      cache.set(key, entry);
+      if (entry.err) throw FErr(entry.err);
+      return entry.v;
+    },
+  };
+  return rows.map((row, r) => row.map((cell, c) => {
+    const s = cell === null || cell === undefined ? "" : String(cell);
+    if (s === "") return EMPTY_CELL;
+    if (!s.startsWith("=")) return { v: literal(s) };
+    try { return { v: ctx.val(r, c) }; } catch (e) { return { err: e.isFErr ? e.code : "#ERROR!" }; }
+  }));
+}
+function ensureValues() {
+  if (!isBig() && valuesStale) { values = computeAll(S()); valuesStale = false; }
+}
+function invalidateValues() { valuesStale = true; }
+
+function display(cellv, st) {
+  if (cellv.err) return cellv.err;
+  const v = cellv.v;
+  if (v === "" || v === null || v === undefined) return "";
+  if (typeof v === "boolean") return v ? "TRUE" : "FALSE";
+  if (typeof v === "number") {
+    const fmt = st && st.fmt;
+    if (fmt === "percent") return (Math.round(v * 10000) / 100).toLocaleString("en-US") + "%";
+    if (fmt === "currency") return "$" + v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    if (fmt === "number") return v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return String(Math.round(v * 1e10) / 1e10);
+  }
+  return String(v);
+}
+
+// ================= grid model helpers =================
+function ensureRect(sheet, minR = MIN_ROWS, minC = MIN_COLS) {
+  const nCols = Math.max(minC, ...sheet.rows.map((r) => r.length), 1);
+  sheet.rows = sheet.rows.map((r) => {
+    const row = r.map((v) => (v === null || v === undefined ? "" : String(v)));
+    while (row.length < nCols) row.push("");
+    return row;
+  });
+  while (sheet.rows.length < minR) sheet.rows.push(new Array(nCols).fill(""));
+  sheet.styles = sheet.styles || [];
+  while (sheet.styles.length < sheet.rows.length) sheet.styles.push([]);
+  sheet.styles = sheet.styles.slice(0, sheet.rows.length).map((sr) => {
+    const row = (sr || []).slice(0, nCols);
+    while (row.length < nCols) row.push(null);
+    return row;
+  });
+}
+function nRows() { const sh = S(); return sh.big ? sh.loaded.length : sh.rows.length; }
+function nCols() { const sh = S(); return sh.big ? sh.ncols : (sh.rows[0] ? sh.rows[0].length : 0); }
+function trimGrid(rows) {
+  let lastR = -1, lastC = -1;
+  rows.forEach((row, r) => row.forEach((v, c) => {
+    if (v !== "" && v !== null && v !== undefined) { lastR = Math.max(lastR, r); lastC = Math.max(lastC, c); }
+  }));
+  return rows.slice(0, lastR + 1).map((r) => r.slice(0, lastC + 1));
+}
+function serializeSheets() {
+  return book.sheets.map((sh) => {
+    const view = { colw: sh.colw || {}, freeze: sh.freeze || 0 };
+    if (sh.big) return { name: sh.name, big: true, edits: Object.fromEntries(sh.edits), ...view };
+    let lastR = 0, lastC = 0;
+    sh.rows.forEach((row, r) => row.forEach((v, c) => {
+      const st = sh.styles[r] && sh.styles[r][c];
+      if ((v !== "" && v != null) || st) { lastR = Math.max(lastR, r + 1); lastC = Math.max(lastC, c + 1); }
+    }));
+    return {
+      name: sh.name,
+      rows: sh.rows.slice(0, Math.max(1, lastR)).map((r) => r.slice(0, Math.max(1, lastC))),
+      styles: sh.styles.slice(0, Math.max(1, lastR)).map((r) => r.slice(0, Math.max(1, lastC))),
+      ...view,
+    };
+  });
+}
+
+// ================= undo =================
+function snapshot() {
+  const sh = S();
+  if (sh.big) return JSON.stringify({ i: cur, big: true, edits: [...sh.edits] });
+  return JSON.stringify({ i: cur, rows: sh.rows, styles: sh.styles });
+}
+function pushUndo() {
+  undoStack.push(snapshot());
+  if (undoStack.length > MAX_UNDO) undoStack.shift();
+  redoStack = [];
+}
+function restore(snap) {
+  const d = JSON.parse(snap);
+  cur = Math.min(d.i, book.sheets.length - 1);
+  const sh = book.sheets[cur];
+  if (d.big && sh.big) sh.edits = new Map(d.edits);
+  else if (!d.big && !sh.big) { sh.rows = d.rows; sh.styles = d.styles; invalidateValues(); }
+  markDirty(); renderGrid();
+}
+function undo() {
+  if (!undoStack.length) return;
+  redoStack.push(snapshot());
+  restore(undoStack.pop());
+}
+function redo() {
+  if (!redoStack.length) return;
+  undoStack.push(snapshot());
+  restore(redoStack.pop());
+}
+
+// ================= small-sheet filtering =================
+function activeFilters(sh) {
+  const out = [];
+  (sh.filterQ || []).forEach((q, c) => { if (q && q.trim()) out.push({ c, q: q.trim() }); });
+  return out;
+}
+function visibleRowIdx() {
+  const sh = S();
+  const all = [...Array(nRows()).keys()];
+  if (sh.big || !sh.filterOn) return all;
+  const filters = activeFilters(sh);
+  if (!filters.length) return all;
+  const compiled = filters.map((f) => ({ c: f.c, test: criteriaFn(f.q) }));
+  return all.filter((r) => {
+    if (r === 0) return true;   // header row stays visible
+    return compiled.every(({ c, test }) => {
+      const cv = values[r] && values[r][c];
+      if (!cv) return test("");
+      const d = cv._d !== undefined ? cv._d : (cv._d = display(cv, null));
+      return test(d);
+    });
+  });
+}
+
+// ================= rendering =================
+function cellClassAndStyle(td, r, c) {
+  const sh = S();
+  let text, cls = "cell", css = "";
+  if (sh.big) {
+    text = raw(r, c);
+    if (NUM_RE.test(text.trim()) && text !== "") cls += " num";
+    const row = sh.loaded[r];
+    if (row && sh.edits.has(row[0] + ":" + c)) cls += " edited";
+  } else {
+    const st = sh.styles[r] && sh.styles[r][c];
+    const cv = values[r] && values[r][c] ? values[r][c] : EMPTY_CELL;
+    text = display(cv, st);
+    if (cv.err) cls += " err";
+    else if (typeof cv.v === "number" && !(st && st.align)) cls += " num";
+    if (st) {
+      if (st.b) css += "font-weight:700;";
+      if (st.i) css += "font-style:italic;";
+      if (st.u) css += "text-decoration:underline;";
+      if (st.color) css += `color:${st.color};`;
+      if (st.bg) css += `background:${st.bg};`;
+      if (st.align) css += `text-align:${st.align};`;
+    }
+  }
+  td.textContent = text;
+  td.className = cls;
+  if (css) td.setAttribute("style", css); else td.removeAttribute("style");
+  if (td.dataset.frz !== undefined) {   // frozen rows survive repaints
+    td.classList.add("frz");
+    td.style.position = "sticky";
+    td.style.top = td.dataset.frz + "px";
+    td.style.zIndex = 1;
+  }
+}
+
+function frozenTop(dIdx) {   // sticky offset: letters row (23px) + filter row (27px) + rows above
+  return 23 + (S().filterOn ? 27 : 0) + dIdx * 25;
+}
+function makeRowTr(r, cols, dIdx) {
+  const sh = S();
+  const tr = document.createElement("tr");
+  const frozen = dIdx !== undefined && dIdx < (sh.freeze || 0);
+  const rh = document.createElement("th"); rh.className = "rowhead";
+  rh.textContent = sh.big ? fmtInt((sh.loaded[r] ? sh.loaded[r][0] : r) + 1) : String(r + 1);
+  rh.onclick = () => setSel(r, 0, r, cols - 1);
+  if (frozen) {
+    rh.classList.add("frzHead");
+    rh.style.top = frozenTop(dIdx) + "px";
+    rh.style.zIndex = 4;
+  }
+  tr.appendChild(rh);
+  for (let c = 0; c < cols; c++) {
+    const td = document.createElement("td");
+    td.dataset.r = r; td.dataset.c = c;
+    if (frozen) td.dataset.frz = frozenTop(dIdx);
+    cellClassAndStyle(td, r, c);
+    tds.set(r + "," + c, td);
+    tr.appendChild(td);
+  }
+  return tr;
+}
+
+function renderGrid() {
+  const wrap = $("gridWrap");
+  if (!book) return;
+  const sh = S();
+  if (!sh.big) { ensureRect(sh); ensureValues(); }
+  tds = new Map();
+  const cols = nCols();
+
+  const vis = sh.big
+    ? [...Array(sh.loaded.length).keys()]
+    : visibleRowIdx().slice(0, renderLimit === Infinity ? undefined : renderLimit);
+  const totalVis = sh.big ? sh.loaded.length : visibleRowIdx().length;
+
+  const table = document.createElement("table");
+  const colgroup = document.createElement("colgroup");
+  const headCol = document.createElement("col");
+  headCol.style.width = "52px";
+  colgroup.appendChild(headCol);
+  sh.colw = sh.colw || {};
+  for (let c = 0; c < cols; c++) {
+    const col = document.createElement("col");
+    col.style.width = (sh.colw[c] || 90) + "px";
+    col.dataset.col = c;
+    colgroup.appendChild(col);
+  }
+  table.appendChild(colgroup);
+  // table-layout:fixed needs an explicit table width, or the browser
+  // redistributes the container width and ignores the col widths
+  const syncTableWidth = () => {
+    let total = 0;
+    for (const col of colgroup.children) total += parseFloat(col.style.width) || 90;
+    table.style.width = total + "px";
+  };
+  syncTableWidth();
+  table._syncWidth = syncTableWidth;
+  const thead = document.createElement("thead");
+  const hr = document.createElement("tr");
+  const corner = document.createElement("th"); corner.className = "corner";
+  corner.onclick = () => setSel(0, 0, nRows() - 1, cols - 1);
+  hr.appendChild(corner);
+  for (let c = 0; c < cols; c++) {
+    const th = document.createElement("th");
+    th.dataset.col = c;
+    let label = colName(c);
+    if (sh.big && sh.header && sh.header[c]) label += `<span class="colname">${escHtml(String(sh.header[c]))}</span>`;
+    if (sh.big && sh.sort && sh.sort.c === c) label += `<span class="sortmark">${sh.sort.dir === "asc" ? "▲" : "▼"}</span>`;
+    th.innerHTML = label;
+    th.title = sh.big ? "Click to sort (whole dataset)" : "Click to select column";
+    th.onclick = () => {
+      if (sh.big) {
+        sh.sort = !sh.sort || sh.sort.c !== c ? { c, dir: "asc" }
+          : sh.sort.dir === "asc" ? { c, dir: "desc" } : null;
+        fetchRows(true);
+      } else setSel(0, c, nRows() - 1, c);
+    };
+    const grip = document.createElement("div");
+    grip.className = "colResize";
+    grip.title = "Drag to resize · double-click to auto-fit";
+    grip.addEventListener("mousedown", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const colEl = colgroup.querySelector(`col[data-col="${c}"]`);
+      colResizing = { c, colEl, table, startX: e.clientX,
+                      startW: parseFloat(colEl.style.width) || 90, grip };
+      grip.classList.add("on");
+    });
+    grip.addEventListener("click", (e) => e.stopPropagation());
+    grip.addEventListener("dblclick", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      let maxLen = 4;
+      for (const [key, td] of tds) {
+        if (key.endsWith("," + c)) maxLen = Math.max(maxLen, td.textContent.length);
+      }
+      const w = Math.max(48, Math.min(420, Math.round(maxLen * 7.2 + 16)));
+      colgroup.querySelector(`col[data-col="${c}"]`).style.width = w + "px";
+      syncTableWidth();
+      sh.colw[c] = w;
+      if (!sh.big) markDirty();
+    });
+    th.appendChild(grip);
+    hr.appendChild(th);
+  }
+  thead.appendChild(hr);
+  if (sh.filterOn) {
+    const fr = document.createElement("tr"); fr.className = "filterRow";
+    fr.appendChild(document.createElement("th"));
+    for (let c = 0; c < cols; c++) {
+      const th = document.createElement("th");
+      const inp = document.createElement("input");
+      inp.placeholder = "filter…"; inp.value = (sh.filterQ && sh.filterQ[c]) || "";
+      inp.addEventListener("input", () => {
+        sh.filterQ = sh.filterQ || [];
+        sh.filterQ[c] = inp.value;
+        clearTimeout(inp._t);
+        inp._t = setTimeout(() => { if (sh.big) fetchRows(true); else renderGrid(); }, sh.big ? 350 : 200);
+      });
+      inp.addEventListener("mousedown", (e) => e.stopPropagation());
+      inp.addEventListener("keydown", (e) => e.stopPropagation());
+      th.appendChild(inp); fr.appendChild(th);
+    }
+    thead.appendChild(fr);
+  }
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  vis.forEach((r, dIdx) => tbody.appendChild(makeRowTr(r, cols, dIdx)));
+  table.appendChild(tbody);
+  wrap.innerHTML = "";
+  wrap.appendChild(table);
+  wrap._tbody = tbody;
+
+  if (sh.big) {
+    const bar = document.createElement("div"); bar.id = "moreBar";
+    wrap.appendChild(bar);
+    updateMoreBar();
+  } else if (totalVis > vis.length) {
+    const b = document.createElement("button");
+    b.className = "action"; b.style.margin = "10px";
+    b.textContent = `Show all ${fmtInt(totalVis)} rows (rendering ${fmtInt(vis.length)})`;
+    b.onclick = () => { renderLimit = Infinity; renderGrid(); };
+    wrap.appendChild(b);
+  }
+  updateChip();
+  paintSel();
+}
+
+function appendRows(from) {
+  const sh = S();
+  const wrap = $("gridWrap");
+  if (!wrap._tbody) { renderGrid(); return; }
+  const cols = nCols();
+  for (let r = from; r < sh.loaded.length; r++) wrap._tbody.appendChild(makeRowTr(r, cols, r));
+  updateMoreBar();
+  updateChip();
+}
+
+function updateMoreBar() {
+  const sh = S(), bar = document.querySelector("#moreBar");
+  if (!bar || !sh.big) return;
+  if (!bar._btn) {   // build once, update in place — rebuilding mid-click loses the press
+    bar._btn = document.createElement("button");
+    bar._btn.className = "action";
+    bar._btn.onclick = () => fetchRows(false);
+    bar._hint = document.createElement("span");
+    bar.append(bar._btn, bar._hint);
+  }
+  const more = sh.loaded.length < sh.matched;
+  bar._btn.style.display = more ? "" : "none";
+  bar._btn.disabled = !!sh.fetching;
+  bar._btn.textContent = `Show more (${fmtInt(sh.loaded.length)} of ${fmtInt(sh.matched)} loaded)`;
+  bar._hint.textContent = sh.fetching ? "Loading…"
+    : more ? "…or just keep scrolling"
+    : `All ${fmtInt(sh.matched)} matching rows loaded.`;
+}
+
+function updateChip() {
+  const el = $("modeChip");
+  if (!book) { el.textContent = ""; return; }
+  const sh = S();
+  if (!sh.big) { el.textContent = ""; $("fmtSel").disabled = false; return; }
+  const filtered = sh.matched !== sh.nrows ? `<b>${fmtInt(sh.matched)}</b> match of ` : "";
+  el.innerHTML = `${filtered}<b>${fmtInt(sh.nrows)}</b> rows × ${sh.ncols} · DuckDB · ${fmtInt(sh.loaded.length)} loaded`;
+  $("fmtSel").disabled = true;
+}
+
+function paint() {
+  if (!isBig()) ensureValues();
+  for (const [key, td] of tds) {
+    const [r, c] = key.split(",").map(Number);
+    cellClassAndStyle(td, r, c);
+  }
+  paintSel();
+}
+
+function paintSel() {
+  if (!book) return;
+  const { r1, c1, r2, c2, ar, ac } = normSel();
+  document.querySelectorAll("td.sel, td.anchor").forEach((td) => td.classList.remove("sel", "anchor"));
+  document.querySelectorAll("th.hl").forEach((th) => th.classList.remove("hl"));
+  document.querySelectorAll(".fillhandle").forEach((h) => h.remove());
+  for (const [key, td] of tds) {
+    const [r, c] = key.split(",").map(Number);
+    if (r >= r1 && r <= r2 && c >= c1 && c <= c2) td.classList.add("sel");
+    if (r === ar && c === ac) td.classList.add("anchor");
+  }
+  const cornerTd = tdAt(r2, c2);
+  if (cornerTd && !editing) {
+    const h = document.createElement("div");
+    h.className = "fillhandle";
+    h.title = "Drag to fill — sequences extend (1,2,3 → 4,5…), formulas shift";
+    cornerTd.appendChild(h);
+  }
+  document.querySelectorAll(`th[data-col]`).forEach((th) => {
+    const c = +th.dataset.col; if (c >= c1 && c <= c2) th.classList.add("hl");
+  });
+  $("nameBox").value = r1 === r2 && c1 === c2 ? refName(ar, ac) : `${refName(r1, c1)}:${refName(r2, c2)}`;
+  if (!editing) $("fxInput").value = raw(ar, ac);
+  const sh = S();
+  const st = (!sh.big && sh.styles[ar] && sh.styles[ar][ac]) || {};
+  $("tbB").classList.toggle("on", !!st.b);
+  $("tbI").classList.toggle("on", !!st.i);
+  $("tbU").classList.toggle("on", !!st.u);
+  $("fmtSel").value = st.fmt || "";
+  $("tbFilter").classList.toggle("on", !!sh.filterOn);
+  // selection stats
+  const nums = [];
+  for (let r = r1; r <= r2 && r - r1 < 100000; r++) for (let c = c1; c <= c2; c++) {
+    if (sh.big) {
+      const t = raw(r, c);
+      if (t !== "" && NUM_RE.test(t.trim())) nums.push(parseFloat(t));
+    } else {
+      const cv = values[r] && values[r][c];
+      if (cv && typeof cv.v === "number") nums.push(cv.v);
+    }
+  }
+  $("selStats").textContent = nums.length >= 2
+    ? `Sum: ${Math.round(nums.reduce((a, b) => a + b, 0) * 100) / 100} · Avg: ${Math.round(nums.reduce((a, b) => a + b, 0) / nums.length * 100) / 100} · Count: ${nums.length}`
+    : "";
+}
+
+function normSel() {
+  return {
+    ar: sel.ar, ac: sel.ac,
+    r1: Math.min(sel.r1, sel.r2), r2: Math.max(sel.r1, sel.r2),
+    c1: Math.min(sel.c1, sel.c2), c2: Math.max(sel.c1, sel.c2),
+  };
+}
+function setSel(r1, c1, r2 = r1, c2 = c1, ar = r1, ac = c1) {
+  commitEdit();
+  sel = { ar, ac, r1, c1, r2, c2 };
+  paintSel();
+  const td = tds.get(ar + "," + ac);
+  if (td) td.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+function renderTabs() {
+  const box = $("tabs"); box.innerHTML = "";
+  book.sheets.forEach((sh, i) => {
+    const t = document.createElement("span");
+    t.className = "stab" + (i === cur ? " active" : "");
+    const label = document.createElement("span"); label.textContent = sh.name;
+    t.appendChild(label);
+    if (i === cur && book.sheets.length > 1) {
+      const x = document.createElement("span"); x.className = "x"; x.textContent = "✕"; x.title = "Delete sheet";
+      x.onclick = (e) => { e.stopPropagation(); act("delSheet"); };
+      t.appendChild(x);
+    }
+    t.onclick = () => { if (i !== cur) switchSheet(i); };
+    t.ondblclick = () => {          // rename inline, no popup
+      const inp = document.createElement("input");
+      inp.value = sh.name;
+      label.style.display = "none";
+      t.insertBefore(inp, label);
+      inp.focus(); inp.select();
+      let done = false;
+      const finish = (commit) => {
+        if (done) return; done = true;
+        const nm = inp.value.trim();
+        if (commit && nm && nm !== sh.name && !book.sheets.some((s2, j) => j !== i && s2.name === nm)) {
+          sh.name = nm; markDirty();
+          if (i === cur) fused.params.set("sheet", sh.name);
+        }
+        renderTabs();
+      };
+      inp.addEventListener("keydown", (e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") finish(true);
+        else if (e.key === "Escape") finish(false);
+      });
+      inp.addEventListener("blur", () => finish(true));
+      inp.addEventListener("mousedown", (e) => e.stopPropagation());
+    };
+    box.appendChild(t);
+  });
+}
+function switchSheet(i) {
+  commitEdit();
+  cur = i; renderLimit = RENDER_CAP; invalidateValues();
+  sel = { ar: 0, ac: 0, r1: 0, c1: 0, r2: 0, c2: 0 };
+  fused.params.set("sheet", book.sheets[i].name);
+  renderTabs(); renderGrid();
+}
+
+// ================= big-sheet row fetching =================
+async function fetchRows(reset) {
+  const sh = S();
+  if (!sh.big) return;
+  if (sh.fetching) { sh._pendingReset = sh._pendingReset || reset; return; }
+  sh.fetching = true;
+  sh._seq = (sh._seq || 0) + 1;
+  const seq = sh._seq;
+  updateMoreBar();
+  try {
+    const res = await fused.runPython(PY, {
+      action: "rows", file: currentFile(), sheet: sh.name,
+      offset: String(reset ? 0 : sh.loaded.length), limit: String(LOAD_BATCH),
+      sort: sh.sort ? JSON.stringify(sh.sort) : "",
+      filters: JSON.stringify(activeFilters(sh)),
+    });
+    if (seq !== sh._seq || S() !== sh) return;
+    sh.matched = res.matched;
+    if (reset) { sh.loaded = res.rows; renderGrid(); }
+    else { const from = sh.loaded.length; sh.loaded.push(...res.rows); appendRows(from); }
+  } catch (err) {
+    setStatus(`${err.type || "error"}: ${err.message}`, "err");
+  } finally {
+    sh.fetching = false;
+    updateMoreBar();
+    if (sh._pendingReset) { sh._pendingReset = false; fetchRows(true); }
+  }
+}
+
+$("gridWrap").addEventListener("scroll", () => {
+  if (!book || !isBig()) return;
+  const w = $("gridWrap");
+  if (w.scrollTop + w.clientHeight > w.scrollHeight - 500) {
+    const sh = S();
+    if (!sh.fetching && sh.loaded.length < sh.matched) fetchRows(false);
+  }
+});
+
+// ================= editing =================
+function tdAt(r, c) { return tds.get(r + "," + c); }
+function startEdit(initial) {
+  if (!book || editing) return;
+  const { ar, ac } = sel;
+  const td = tdAt(ar, ac); if (!td) return;
+  const input = document.createElement("input");
+  input.value = initial !== undefined ? initial : raw(ar, ac);
+  editing = { r: ar, c: ac, input, orig: raw(ar, ac) };
+  td.textContent = ""; td.appendChild(input);
+  input.focus(); input.setSelectionRange(input.value.length, input.value.length);
+  input.addEventListener("input", () => { $("fxInput").value = input.value; acUpdate(input); });
+  input.addEventListener("keydown", (e) => {
+    if (acKey(e)) return;   // dropdown consumes arrows/Tab/Enter/Esc while open
+    if (e.key === "Enter") { e.preventDefault(); commitEdit(); move(1, 0); }
+    else if (e.key === "Tab") { e.preventDefault(); commitEdit(); move(0, e.shiftKey ? -1 : 1); }
+    else if (e.key === "Escape") { cancelEdit(); }
+    e.stopPropagation();
+  });
+  $("fxInput").value = input.value;
+  acUpdate(input);
+}
+function setCell(r, c, v) {
+  const sh = S();
+  if (sh.big) {
+    const row = sh.loaded[r];
+    if (!row) return false;
+    sh.edits.set(row[0] + ":" + c, v);
+    return true;
+  }
+  ensureRect(sh, r + 1, c + 1);
+  sh.rows[r][c] = v;
+  invalidateValues();
+  return true;
+}
+function commitEdit() {
+  if (!editing) return;
+  acClose();
+  const { r, c, input, orig } = editing;
+  editing = null;
+  if (input.value !== orig) {
+    pushUndo();
+    setCell(r, c, input.value);
+    markDirty();
+  }
+  paint();
+  $("gridWrap").focus();
+}
+function cancelEdit() {
+  if (!editing) return;
+  acClose();
+  editing = null;
+  paint();
+  $("gridWrap").focus();
+}
+function move(dr, dc, extend = false) {
+  const R = Math.max(0, Math.min(nRows() - 1, (extend ? sel.r2 : sel.ar) + dr));
+  const C = Math.max(0, Math.min(nCols() - 1, (extend ? sel.c2 : sel.ac) + dc));
+  if (extend) { sel.r2 = R; sel.c2 = C; paintSel(); }
+  else setSel(R, C);
+  const td = tdAt(R, C);
+  if (td) td.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+// ================= drag-fill (fill handle) =================
+function adjustFormula(src, dr, dc) {
+  // shift A1-style refs not anchored with $ ; skip function names like LOG10(
+  return "=" + src.slice(1).replace(/(\$?)([A-Za-z]{1,3})(\$?)([0-9]+)/g, (m, ca, col, ra, row, off, str) => {
+    const prev = str[off - 1], next = str[off + m.length];
+    if (prev && /[A-Za-z0-9_.$]/.test(prev)) return m;
+    if (next === "(") return m;
+    let ci = 0;
+    for (const ch of col.toUpperCase()) ci = ci * 26 + (ch.charCodeAt(0) - 64);
+    ci--;
+    let ri = parseInt(row, 10) - 1;
+    if (!ca) ci += dc;
+    if (!ra) ri += dr;
+    if (ci < 0 || ri < 0) return "#REF!";
+    return (ca ? "$" : "") + colName(ci) + (ra ? "$" : "") + (ri + 1);
+  });
+}
+function seriesInfo(vals) {
+  const n = vals.length;
+  const nums = vals.map((v) => (v !== "" && NUM_RE.test(v.trim()) ? parseFloat(v) : null));
+  if (n > 1 && nums.every((v) => v !== null)) {
+    const d = nums[1] - nums[0];
+    if (nums.every((v, i) => i === 0 || Math.abs(nums[i] - nums[i - 1] - d) < 1e-9))
+      return { type: "arith", start: nums[0], step: d };
+  }
+  const m = vals.map((v) => /^(.*?)(\d+)$/.exec(v));
+  if (m.every(Boolean) && m.every((x) => x[1] === m[0][1]) && m[0][1] !== "" && !m[0][1].startsWith("=")) {
+    const ints = m.map((x) => parseInt(x[2], 10));
+    const d = n === 1 ? 1 : ints[1] - ints[0];
+    if (ints.every((v, i) => i === 0 || ints[i] - ints[i - 1] === d))
+      return { type: "textnum", prefix: m[0][1], start: ints[0], step: d, pad: m[0][2].length };
+  }
+  return { type: "cycle" };   // repeat the block; formulas shift relatively
+}
+function fillValue(vals, info, k, axis) {
+  const n = vals.length;
+  if (info.type === "arith") { const v = info.start + info.step * k; return String(Math.round(v * 1e10) / 1e10); }
+  if (info.type === "textnum") {
+    const v = info.start + info.step * k;
+    return v < 0 ? vals[((k % n) + n) % n] : info.prefix + String(v).padStart(info.pad, "0");
+  }
+  const idx = ((k % n) + n) % n;
+  const src = vals[idx];
+  if (src.startsWith("=")) return adjustFormula(src, axis === "v" ? k - idx : 0, axis === "h" ? k - idx : 0);
+  return src;
+}
+function performFill(base, tgt) {
+  pushUndo();
+  if (tgt.axis === "v") {
+    for (let c = base.c1; c <= base.c2; c++) {
+      const vals = [];
+      for (let r = base.r1; r <= base.r2; r++) vals.push(raw(r, c));
+      const info = seriesInfo(vals);
+      for (let r = tgt.r1; r <= tgt.r2; r++) setCell(r, c, fillValue(vals, info, r - base.r1, "v"));
+    }
+  } else {
+    for (let r = base.r1; r <= base.r2; r++) {
+      const vals = [];
+      for (let c = base.c1; c <= base.c2; c++) vals.push(raw(r, c));
+      const info = seriesInfo(vals);
+      for (let c = tgt.c1; c <= tgt.c2; c++) setCell(r, c, fillValue(vals, info, c - base.c1, "h"));
+    }
+  }
+  markDirty();
+  sel = { ar: sel.ar, ac: sel.ac,
+          r1: Math.min(base.r1, tgt.r1), c1: Math.min(base.c1, tgt.c1),
+          r2: Math.max(base.r2, tgt.r2), c2: Math.max(base.c2, tgt.c2) };
+  paint();
+}
+let fillDrag = null;   // { base, tgt|null }
+let colResizing = null; // { c, colEl, startX, startW, grip }
+function fillPreview(r, c) {
+  const b = fillDrag.base;
+  const rowOut = r > b.r2 ? r - b.r2 : r < b.r1 ? r - b.r1 : 0;
+  const colOut = c > b.c2 ? c - b.c2 : c < b.c1 ? c - b.c1 : 0;
+  document.querySelectorAll("td.fillPrev").forEach((td) => td.classList.remove("fillPrev"));
+  if (!rowOut && !colOut) { fillDrag.tgt = null; return; }
+  let tgt;
+  if (Math.abs(rowOut) >= Math.abs(colOut)) {
+    tgt = rowOut > 0 ? { axis: "v", r1: b.r2 + 1, r2: r, c1: b.c1, c2: b.c2 }
+                     : { axis: "v", r1: r, r2: b.r1 - 1, c1: b.c1, c2: b.c2 };
+  } else {
+    tgt = colOut > 0 ? { axis: "h", c1: b.c2 + 1, c2: c, r1: b.r1, r2: b.r2 }
+                     : { axis: "h", c1: c, c2: b.c1 - 1, r1: b.r1, r2: b.r2 };
+  }
+  fillDrag.tgt = tgt;
+  for (let rr = tgt.r1; rr <= tgt.r2; rr++) for (let cc = tgt.c1; cc <= tgt.c2; cc++) {
+    const td = tdAt(rr, cc);
+    if (td) td.classList.add("fillPrev");
+  }
+}
+
+// ================= mutations =================
+function bigGuard(what) {
+  if (isBig()) { setStatus(`${what} isn't available on large (DuckDB-mode) sheets.`, "err"); return true; }
+  return false;
+}
+function applyStyle(key, value) {
+  if (bigGuard("Formatting")) return;
+  pushUndo();
+  const { r1, c1, r2, c2 } = normSel();
+  const sh = S();
+  const anchorHas = sh.styles[sel.ar] && sh.styles[sel.ar][sel.ac] && sh.styles[sel.ar][sel.ac][key];
+  for (let r = r1; r <= r2; r++) for (let c = c1; c <= c2; c++) {
+    const st = { ...(sh.styles[r][c] || {}) };
+    let v = value;
+    if (value === "toggle") v = anchorHas ? undefined : 1;
+    if (v === undefined || v === "" || v === null) delete st[key]; else st[key] = v;
+    sh.styles[r][c] = Object.keys(st).length ? st : null;
+  }
+  markDirty(); paint();
+}
+function insertRow(at) {
+  if (bigGuard("Inserting rows")) return;
+  pushUndo();
+  S().rows.splice(at, 0, new Array(nCols()).fill(""));
+  S().styles.splice(at, 0, new Array(nCols()).fill(null));
+  invalidateValues(); markDirty(); renderGrid();
+}
+function insertCol(at) {
+  if (bigGuard("Inserting columns")) return;
+  pushUndo();
+  S().rows.forEach((r) => r.splice(at, 0, ""));
+  S().styles.forEach((r) => r.splice(at, 0, null));
+  invalidateValues(); markDirty(); renderGrid();
+}
+function sortSheet(dir) {
+  const sh = S();
+  if (sh.big) {
+    sh.sort = dir === "off" ? null : { c: sel.ac, dir };
+    fetchRows(true);
+    return;
+  }
+  if (dir === "off") { setStatus("Clear sort applies to large sheets (small sheets sort in place).", ""); return; }
+  pushUndo();
+  ensureValues();
+  const col = sel.ac;
+  const header = { row: sh.rows[0], st: sh.styles[0] };
+  const body = sh.rows.slice(1).map((row, i) => ({ row, st: sh.styles[i + 1], v: values[i + 1] && values[i + 1][col] }));
+  body.sort((a, b) => {
+    const av = a.v && !a.v.err ? a.v.v : "", bv = b.v && !b.v.err ? b.v.v : "";
+    const ae = av === "" || av === null, be = bv === "" || bv === null;
+    if (ae && be) return 0; if (ae) return 1; if (be) return -1;
+    let d;
+    if (typeof av === "number" && typeof bv === "number") d = av - bv;
+    else {
+      const as = String(av).toLowerCase(), bs = String(bv).toLowerCase();
+      d = as < bs ? -1 : as > bs ? 1 : 0;
+    }
+    return dir === "asc" ? d : -d;
+  });
+  sh.rows = [header.row, ...body.map((b) => b.row)];
+  sh.styles = [header.st, ...body.map((b) => b.st)];
+  invalidateValues(); markDirty(); renderGrid();
+  setStatus(`Sorted by column ${colName(col)} (row 1 kept as header — formulas are not re-pointed)`, "");
+}
+
+// ================= server calls =================
+function normalizeLoaded(res) {
+  book = { sheets: res.sheets.map((sh) => {
+    if (sh.big) {
+      return { name: sh.name, big: true, kind: sh.kind, nrows: sh.nrows, ncols: sh.ncols,
+               header: sh.header, loaded: sh.rows, matched: sh.matched ?? sh.nrows,
+               sort: null, filterOn: false, filterQ: [], edits: new Map(), fetching: false,
+               colw: {}, freeze: 0 };
+    }
+    const out = { name: sh.name, big: false, kind: sh.kind || "xlsx",
+                  rows: sh.rows, styles: sh.styles || [], filterOn: false, filterQ: [],
+                  colw: sh.colw || {}, freeze: sh.freeze || 0 };
+    ensureRect(out);
+    return out;
+  }) };
+}
+
+async function load() {
+  const file = currentFile();
+  document.title = file ? file.split("/").pop() + " — Excel editor" : "Excel editor";
+  $("fileName").textContent = file ? file.split("/").pop() : "Excel editor";
+  $("fileName").title = file || "";
+  if (!file) {
+    book = null; markDirty(false);
+    $("gridWrap").innerHTML = `<div id="emptyState">No workbook selected.<br><br>
+      Open an .xlsx file from the explorer to edit it here.</div>`;
+    $("tabs").innerHTML = "";
+    updateChip();
+    return;
+  }
+  const seq = ++loadSeq;
+  setStatus("Loading…");
+  try {
+    const res = await fused.runPython(PY, { action: "load", file });
+    if (seq !== loadSeq) return;
+    normalizeLoaded(res);
+    mtime = res.mtime;
+    undoStack = []; redoStack = []; renderLimit = RENDER_CAP; invalidateValues();
+    const want = fused.params.get("sheet");
+    cur = Math.max(0, book.sheets.findIndex((s2) => s2.name === want));
+    sel = { ar: 0, ac: 0, r1: 0, c1: 0, r2: 0, c2: 0 };
+    markDirty(false);
+    renderTabs(); renderGrid();
+    setStatus("");
+  } catch (err) {
+    if (seq !== loadSeq) return;
+    setStatus(`${err.type || "error"}: ${err.message}`, "err");
+  }
+}
+
+async function save(force) {
+  const file = currentFile();
+  if (!file || !book) return;
+  commitEdit();
+  setStatus("Saving…");
+  try {
+    const res = await fused.runPython(PY, {
+      action: "save", file,
+      data: JSON.stringify(serializeSheets()),
+      expected_mtime: force ? "" : String(mtime ?? ""),
+    });
+    if (res.conflict) {
+      const ok = await dialog({
+        title: "File changed on disk",
+        message: "The workbook was modified outside this editor since you loaded it. Overwrite with your version?",
+        okText: "Overwrite", input: false,
+      });
+      if (ok) return save(true);
+      setStatus("Not saved — file changed on disk.", "err");
+      return;
+    }
+    mtime = res.mtime;
+    // fold big-sheet edits into the loaded window, then clear the overlays
+    for (const sh of book.sheets) {
+      if (!sh.big || !sh.edits.size) continue;
+      const ridIdx = new Map(sh.loaded.map((row, i) => [row[0], i]));
+      for (const [key, v] of sh.edits) {
+        const [rid, c] = key.split(":").map(Number);
+        const i = ridIdx.get(rid);
+        if (i !== undefined) sh.loaded[i][c + 1] = v;
+      }
+      sh.edits.clear();
+    }
+    markDirty(false);
+    paint();
+    setStatus(`Saved · ${new Date().toLocaleTimeString()}`, "ok");
+  } catch (err) {
+    setStatus(`${err.type || "error"}: ${err.message}`, "err");
+  }
+}
+
+async function download(kind) {
+  if (!book) return;
+  commitEdit();
+  const sh = S();
+  const base = (currentFile().split("/").pop() || "sheet").replace(/\.(xlsx|xlsm|csv|parquet)$/i, "");
+  let data;
+  if (sh.big) {
+    data = { big: true, file: currentFile(), sheet: sh.name,
+             edits: Object.fromEntries(sh.edits), title: base + " — " + sh.name };
+  } else if (kind === "xlsx") {
+    data = { sheets: serializeSheets().filter((s2) => !s2.big) };
+  } else {
+    ensureValues();
+    const grid = trimGrid(sh.rows.map((row, r) => row.map((_, c) => {
+      const cv = values[r] && values[r][c] ? values[r][c] : EMPTY_CELL;
+      const st = sh.styles[r] && sh.styles[r][c];
+      if (kind === "csv" || kind === "parquet") return cv.err ? cv.err : (cv.v ?? "");
+      return display(cv, st);
+    })));
+    data = { rows: grid.length ? grid : [[""]], title: base + " — " + sh.name, header: true };
+  }
+  setStatus("Exporting…");
+  try {
+    const res = await fused.runPython(PY, {
+      action: "export", kind, name: base + (kind === "xlsx" && !sh.big ? "" : "-" + sh.name), data: JSON.stringify(data),
+    });
+    const a = document.createElement("a");
+    a.href = fused.rawUrl(res.file); a.download = res.name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setStatus(`Exported ${res.name}`, "ok");
+  } catch (err) {
+    setStatus(`${err.type || "error"}: ${err.message}`, "err");
+  }
+}
+
+// ================= scripting =================
+const DEFAULT_JS = `// JS script — runs instantly in the browser. 0-indexed.
+// sheet.get(r,c) / sheet.set(r,c,v) / sheet.rows (raw 2D) / sheet.values() (computed 2D)
+// book.sheet("Name") -> same API for another sheet; book.add("Name"); book.names()
+const vals = sheet.values();
+let n = 0;
+for (let r = 1; r < vals.length; r++) {
+  if (typeof vals[r][1] === "number") { sheet.set(r, 1, vals[r][1] * 2); n++; }
+}
+log("doubled", n, "numbers in column B of", sheet.name);`;
+const DEFAULT_PY = `# Python script — runs via ./reader.py in a fresh process.
+# \`sheets\` is a list of {"name": str, "rows": [[...]]}; mutate it and the grid updates.
+sh = sheets[0]
+for r, row in enumerate(sh["rows"][:5]):
+    print(r, row[:4])
+# example: add a TOTALS row -> sh["rows"].append(["TOTAL", "=SUM(B2:B10)"])`;
+
+function sheetApi(sh) {
+  if (sh.big) throw new Error(`sheet "${sh.name}" is in large (DuckDB) mode — scripts can't edit it yet`);
+  return {
+    get name() { return sh.name; },
+    rows: sh.rows,
+    get nrows() { return sh.rows.length; },
+    get ncols() { return sh.rows[0] ? sh.rows[0].length : 0; },
+    get(r, c) { return sh.rows[r] ? (sh.rows[r][c] ?? "") : ""; },
+    set(r, c, v) {
+      while (sh.rows.length <= r) sh.rows.push([]);
+      sh.rows[r][c] = String(v);
+    },
+    values() { return computeAll(sh).map((row) => row.map((x) => (x.err ? x.err : x.v))); },
+  };
+}
+function runJs(code, out) {
+  pushUndo();
+  const logs = [];
+  const log = (...a) => logs.push(a.map((x) => (typeof x === "object" ? JSON.stringify(x) : String(x))).join(" "));
+  const bookApi = {
+    sheet(nm) { const sh = book.sheets.find((s2) => s2.name === nm); if (!sh) throw new Error("no sheet " + nm); return sheetApi(sh); },
+    names() { return book.sheets.map((s2) => s2.name); },
+    add(nm) {
+      if (book.sheets.some((s2) => s2.name === nm)) throw new Error("sheet exists: " + nm);
+      const sh = { name: nm, big: false, kind: "xlsx", rows: [[""]], styles: [[null]], filterOn: false, filterQ: [] };
+      ensureRect(sh); book.sheets.push(sh); return sheetApi(sh);
+    },
+  };
+  try {
+    new Function("sheet", "book", "log", '"use strict";\n' + code)(sheetApi(S()), bookApi, log);
+    book.sheets.forEach((sh) => { if (!sh.big) ensureRect(sh); });
+    invalidateValues(); markDirty(); renderTabs(); renderGrid();
+    out.className = "";
+    out.textContent = (logs.length ? logs.join("\n") + "\n" : "") + "✓ done";
+  } catch (e) {
+    out.className = "err"; out.textContent = String(e.stack || e);
+  }
+}
+async function runPy(code, out) {
+  out.className = ""; out.textContent = "Running…";
+  const smalls = book.sheets.filter((sh) => !sh.big);
+  if (!smalls.length) {
+    out.className = "err";
+    out.textContent = "All sheets are in large (DuckDB) mode — Python scripts currently work on regular sheets only.";
+    return;
+  }
+  try {
+    const payload = { sheets: smalls.map((sh) => ({ name: sh.name, rows: trimGrid(sh.rows) })) };
+    const res = await fused.runPython(PY, { action: "run_script", script: code, data: JSON.stringify(payload) });
+    pushUndo();
+    const byName = new Map(book.sheets.map((sh) => [sh.name, sh]));
+    const bigs = book.sheets.filter((sh) => sh.big);
+    const updated = res.sheets.map((ns) => {
+      const old = byName.get(ns.name);
+      const sh = { name: ns.name, big: false, kind: old ? old.kind : "xlsx",
+                   rows: ns.rows.map((r) => r.map((v) => (v == null ? "" : String(v)))),
+                   styles: old && !old.big ? old.styles : [], filterOn: false, filterQ: [] };
+      ensureRect(sh); return sh;
+    });
+    book.sheets = [...bigs, ...updated];
+    cur = Math.min(cur, book.sheets.length - 1);
+    invalidateValues(); markDirty(); renderTabs(); renderGrid();
+    out.textContent = (res.output ? res.output : "") + "✓ done";
+  } catch (e) {
+    out.className = "err"; out.textContent = `${e.type || "error"}: ${e.message}\n${e.traceback || ""}`;
+  }
+}
+
+// Scripts live in the shared `<file>.json` sidecar under the "excel" key, so
+// other templates' keys in the same sidecar round-trip untouched.
+function sidecarPath() { return currentFile() + ".json"; }
+async function loadSidecar() {
+  try {
+    const data = JSON.parse(await fused.readFile(sidecarPath()));
+    return data && typeof data === "object" ? data : {};
+  } catch { return {}; }
+}
+async function loadScripts() {
+  const data = await loadSidecar();
+  return (data.excel && data.excel.scripts) || [];
+}
+async function saveScripts(scripts) {
+  const data = await loadSidecar();
+  data.excel = { ...(data.excel || {}), scripts };
+  await fused.writeFile(sidecarPath(), JSON.stringify(data, null, 2));
+}
+
+async function openScriptEditor() {
+  if (!book) return;
+  const scripts = await loadScripts();
+  openModal("Script editor", `
+    <div class="srow">
+      <select id="scriptSel"></select>
+      <input type="text" id="scriptName" placeholder="script name" value="my script" />
+      <select id="scriptLang"><option value="js">JavaScript (instant)</option><option value="python">Python (subprocess)</option></select>
+      <button class="action primary" id="runScript">▶ Run</button>
+      <button class="action" id="saveScript">Save script</button>
+      <button class="action" id="delScript">Delete</button>
+      <button class="action" id="closeModal2" style="margin-left:auto">Close</button>
+    </div>
+    <textarea id="scriptCode" spellcheck="false"></textarea>
+    <pre id="scriptOut">Output appears here. Scripts are saved in the workbook's sidecar, ${sidecarPath().split("/").pop()}</pre>
+    <div class="help"><b>JS API</b>: <code>sheet.get(r,c)</code> · <code>sheet.set(r,c,v)</code> · <code>sheet.rows</code> raw 2D ·
+      <code>sheet.values()</code> computed 2D · <code>book.sheet(name)</code> · <code>book.add(name)</code> · <code>log(...)</code> — 0-indexed.<br>
+      <b>Python</b>: mutate <code>sheets</code> (list of <code>{"name", "rows"}</code>); anything you <code>print()</code> shows here.
+      Large DuckDB-mode sheets are excluded from scripts for now.</div>
+  `);
+  const selEl = $("scriptSel"), nameEl = $("scriptName"), langEl = $("scriptLang"), codeEl = $("scriptCode"), out = $("scriptOut");
+  function fillSel(active) {
+    selEl.innerHTML = '<option value="-1">— new script —</option>' +
+      scripts.map((s2, i) => `<option value="${i}">${s2.name.replace(/</g, "&lt;")} (${s2.lang})</option>`).join("");
+    selEl.value = String(active ?? -1);
+  }
+  function showScript() {
+    const i = +selEl.value;
+    if (i >= 0) { nameEl.value = scripts[i].name; langEl.value = scripts[i].lang; codeEl.value = scripts[i].code; }
+    else codeEl.value = langEl.value === "js" ? DEFAULT_JS : DEFAULT_PY;
+  }
+  fillSel(scripts.length ? 0 : -1); showScript();
+  selEl.onchange = showScript;
+  langEl.onchange = () => { if (+selEl.value === -1) showScript(); };
+  $("runScript").onclick = () => (langEl.value === "js" ? runJs(codeEl.value, out) : runPy(codeEl.value, out));
+  $("saveScript").onclick = async () => {
+    const entry = { name: nameEl.value.trim() || "unnamed", lang: langEl.value, code: codeEl.value };
+    const i = scripts.findIndex((s2) => s2.name === entry.name);
+    if (i >= 0) scripts[i] = entry; else scripts.push(entry);
+    await saveScripts(scripts);
+    fillSel(i >= 0 ? i : scripts.length - 1);
+    out.className = ""; out.textContent = `Saved "${entry.name}"`;
+  };
+  $("delScript").onclick = async () => {
+    const i = +selEl.value; if (i < 0) return;
+    scripts.splice(i, 1); await saveScripts(scripts); fillSel(-1); showScript();
+  };
+  $("closeModal2").onclick = closeModal;
+}
+
+// ================= modal & dialogs =================
+let onModalClose = null;
+function openModal(title, html, small) {
+  $("modalTitle").textContent = title;
+  $("modalBody").innerHTML = html;
+  $("modal").classList.toggle("small", !!small);
+  $("overlay").classList.add("open");
+}
+function closeModal() {
+  $("overlay").classList.remove("open");
+  const cb = onModalClose; onModalClose = null;
+  if (cb) cb();
+  $("gridWrap").focus();
+}
+$("overlay").addEventListener("mousedown", (e) => { if (e.target === $("overlay")) closeModal(); });
+
+// In-app replacements for prompt()/confirm() — no browser popups.
+function dialog({ title, message = "", label = "", value = "", okText = "OK", input = true }) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (v) => { if (settled) return; settled = true; onModalClose = null; closeModal(); resolve(v); };
+    openModal(title, `
+      ${message ? `<div class="dlgMsg">${message}</div>` : ""}
+      <div class="dlgRow">
+        ${input ? `<input type="text" id="dlgInput" />` : ""}
+        <button class="action primary" id="dlgOk">${okText}</button>
+        <button class="action" id="dlgCancel">Cancel</button>
+      </div>`, true);
+    onModalClose = () => { if (!settled) { settled = true; resolve(null); } };
+    const inp = $("dlgInput");
+    $("dlgOk").onclick = () => done(input ? inp.value : true);
+    $("dlgCancel").onclick = () => done(null);
+    if (inp) {
+      inp.value = value; inp.placeholder = label;
+      inp.focus(); inp.select();
+      inp.addEventListener("keydown", (e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") done(inp.value);
+        else if (e.key === "Escape") done(null);
+      });
+    }
+  });
+}
+
+// ---- folder browser helpers (used by Save as…) ----
+const escHtml = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+function startDir() {
+  const cf = currentFile().replace(/\\/g, "/");
+  return cf ? cf.replace(/\/[^/]*$/, "") || "/" : "~";
+}
+function crumbHtml(path) {
+  const parts = path.split("/").filter(Boolean);
+  const winRoot = /^[A-Za-z]:$/.test(parts[0] || "");   // "C:" drive paths take no leading "/"
+  const crumbs = winRoot ? [] : ['<a data-p="/">/</a>'];
+  parts.forEach((p, i) => {
+    const acc = (winRoot ? "" : "/") + parts.slice(0, i + 1).join("/") + (winRoot && !i ? "/" : "");
+    crumbs.push(`<a data-p="${escHtml(acc)}">${escHtml(p)}</a>`);
+  });
+  return crumbs.join(" <span style='color:var(--faint)'>/</span> ");
+}
+// ---- save as (File ▸ Save as…) ----
+async function saveAsDialog() {
+  if (!book) return;
+  const cf = currentFile().replace(/\\/g, "/");
+  const ext = ((cf.match(/\.(xlsx|xlsm|csv|parquet)$/i) || [".xlsx"])[0]).toLowerCase();
+  const base = (cf.split("/").pop() || "workbook").replace(/\.(xlsx|xlsm|csv|parquet)$/i, "");
+  openModal("Save workbook as", `<div id="crumbs"></div><div class="flist" id="flist">Loading…</div>
+    <div class="dlgRow" style="align-items:center;margin-top:10px">
+      <input type="text" id="saveAsName" /><span style="color:var(--faint);font-size:12px">${ext}</span>
+      <button class="action primary" id="saveAsOk">Save</button>
+    </div>
+    <div class="help">Click a folder to enter it, then name the file and Save.</div>`);
+  $("saveAsName").value = base;
+  let dir = startDir();
+  async function show(path) {
+    $("flist").textContent = "Loading…";
+    try {
+      const res = await fused.runPython(PY, { action: "listdir", file: path });
+      if (res.error) { $("flist").textContent = res.error; return; }
+      dir = res.path;
+      $("crumbs").innerHTML = crumbHtml(res.path);
+      $("crumbs").querySelectorAll("a").forEach((a) => (a.onclick = () => show(a.dataset.p)));
+      const box = $("flist"); box.innerHTML = "";
+      const join = (n) => dir.replace(/\/$/, "") + "/" + n;
+      const add = (ic, name, cb) => {
+        const d = document.createElement("div"); d.className = "fitem";
+        d.innerHTML = `<span class="ic">${ic}</span><span>${escHtml(name)}</span>`;
+        d.onclick = cb; box.appendChild(d);
+      };
+      if (res.parent && res.parent !== res.path) add("↰", "..", () => show(res.parent));
+      res.dirs.forEach((n) => add("▸", n, () => show(join(n))));
+      res.files.forEach((f) => add("▤", f.name, () => { $("saveAsName").value = f.name.replace(/\.(xlsx|xlsm|csv|parquet)$/i, ""); }));
+      if (!res.dirs.length && !res.files.length) box.innerHTML = '<div class="fitem" style="color:var(--faint)">— empty folder —</div>';
+    } catch (e) { $("flist").textContent = e.message; }
+  }
+  $("saveAsOk").onclick = async () => {
+    const nm = $("saveAsName").value.trim();
+    if (!nm) return;
+    commitEdit();
+    closeModal();
+    setStatus("Saving…");
+    try {
+      const res = await fused.runPython(PY, {
+        action: "save_as", file: currentFile(), directory: dir, name: nm,
+        data: JSON.stringify(serializeSheets()),
+      });
+      setStatus(`Saved a copy to ${res.file}`, "ok");
+    } catch (err) {
+      setStatus(`${err.type || "error"}: ${err.message}`, "err");
+    }
+  };
+  show(dir);
+}
+
+// ================= actions =================
+async function act(name) {
+  const acts = {
+    save: () => save(false),
+    saveAs: saveAsDialog,
+    undo, redo,
+    dlCsv: () => download("csv"), dlXlsx: () => download("xlsx"),
+    dlPdf: () => download("pdf"), dlParquet: () => download("parquet"),
+    bold: () => applyStyle("b", "toggle"), italic: () => applyStyle("i", "toggle"), underline: () => applyStyle("u", "toggle"),
+    alignLeft: () => applyStyle("align", "left"), alignCenter: () => applyStyle("align", "center"), alignRight: () => applyStyle("align", "right"),
+    fmtAuto: () => applyStyle("fmt", ""), fmtNumber: () => applyStyle("fmt", "number"),
+    fmtPercent: () => applyStyle("fmt", "percent"), fmtCurrency: () => applyStyle("fmt", "currency"),
+    clearFmt: () => {
+      if (bigGuard("Formatting")) return;
+      pushUndo(); const { r1, c1, r2, c2 } = normSel();
+      for (let r = r1; r <= r2; r++) for (let c = c1; c <= c2; c++) S().styles[r][c] = null;
+      markDirty(); paint();
+    },
+    clearSel: () => {
+      pushUndo(); const { r1, c1, r2, c2 } = normSel();
+      for (let r = r1; r <= r2; r++) for (let c = c1; c <= c2; c++) setCell(r, c, "");
+      markDirty(); paint();
+    },
+    rowAbove: () => insertRow(normSel().r1), rowBelow: () => insertRow(normSel().r2 + 1),
+    colLeft: () => insertCol(normSel().c1), colRight: () => insertCol(normSel().c2 + 1),
+    delRows: () => {
+      if (bigGuard("Deleting rows")) return;
+      const { r1, r2 } = normSel();
+      if (nRows() - (r2 - r1 + 1) < 1) return;
+      pushUndo(); S().rows.splice(r1, r2 - r1 + 1); S().styles.splice(r1, r2 - r1 + 1);
+      invalidateValues();
+      const nr = Math.min(r1, nRows() - 1);
+      sel = { ar: nr, ac: sel.ac, r1: nr, c1: sel.ac, r2: nr, c2: sel.ac };
+      markDirty(); renderGrid();
+    },
+    delCols: () => {
+      if (bigGuard("Deleting columns")) return;
+      const { c1, c2 } = normSel();
+      if (nCols() - (c2 - c1 + 1) < 1) return;
+      pushUndo();
+      S().rows.forEach((r) => r.splice(c1, c2 - c1 + 1));
+      S().styles.forEach((r) => r.splice(c1, c2 - c1 + 1));
+      invalidateValues();
+      const nc = Math.min(c1, nCols() - 1);
+      sel = { ar: sel.ar, ac: nc, r1: sel.ar, c1: nc, r2: sel.ar, c2: nc };
+      markDirty(); renderGrid();
+    },
+    sortAsc: () => sortSheet("asc"), sortDesc: () => sortSheet("desc"), sortOff: () => sortSheet("off"),
+    freeze1: () => { S().freeze = 1; if (!isBig()) markDirty(); renderGrid(); },
+    freezeSel: () => {
+      S().freeze = Math.min(normSel().r2 + 1, 10);
+      if (!isBig()) markDirty(); renderGrid();
+    },
+    unfreeze: () => { S().freeze = 0; if (!isBig()) markDirty(); renderGrid(); },
+    toggleFilter: () => { const sh = S(); sh.filterOn = !sh.filterOn; renderLimit = RENDER_CAP; renderGrid(); if (sh.big && !sh.filterOn && activeFilters(sh).length) { sh.filterQ = []; fetchRows(true); } },
+    loadAll: () => { if (isBig()) fetchRows(false); },
+    addSheet: () => {
+      if (book.sheets.some((s2) => s2.kind === "csv" || s2.kind === "parquet")) {
+        setStatus("CSV/Parquet files are single-sheet — save as .xlsx to add sheets.", "err"); return;
+      }
+      let n = book.sheets.length + 1, nm;
+      do { nm = "Sheet" + n++; } while (book.sheets.some((s2) => s2.name === nm));
+      const sh = { name: nm, big: false, kind: "xlsx", rows: [[""]], styles: [[null]], filterOn: false, filterQ: [] };
+      ensureRect(sh); book.sheets.push(sh); markDirty(); switchSheet(book.sheets.length - 1);
+    },
+    delSheet: async () => {
+      if (book.sheets.length <= 1) return;
+      const ok = await dialog({
+        title: `Delete sheet “${S().name}”?`,
+        message: "Its cells are removed from the workbook on the next save.",
+        okText: "Delete", input: false,
+      });
+      if (!ok) return;
+      book.sheets.splice(cur, 1);
+      markDirty(); switchSheet(Math.max(0, cur - 1));
+    },
+    scripts: openScriptEditor,
+  };
+  if (book) {
+    if (!["save", "undo", "redo"].includes(name)) commitEdit();
+    await acts[name]?.();
+  }
+}
+window.act = act;
+
+// ================= wiring =================
+function applyTheme(t) {
+  document.body.dataset.theme = t;
+  $("themeBtn").textContent = t === "light" ? "◑ Dark" : "◐ Light";
+  try { localStorage.setItem("excel-theme", t); } catch {}
+}
+applyTheme((() => { try { return localStorage.getItem("excel-theme") || "dark"; } catch { return "dark"; } })());
+$("themeBtn").addEventListener("click", () =>
+  applyTheme(document.body.dataset.theme === "light" ? "dark" : "light"));
+
+document.querySelectorAll(".menu").forEach((m) => {
+  m.addEventListener("mousedown", (e) => {
+    if (e.target.closest(".mi")) return;
+    const was = m.classList.contains("open");
+    document.querySelectorAll(".menu.open").forEach((x) => x.classList.remove("open"));
+    if (!was) m.classList.add("open");
+    e.preventDefault();
+  });
+  m.addEventListener("mouseenter", () => {
+    if (document.querySelector(".menu.open") && !m.classList.contains("open")) {
+      document.querySelectorAll(".menu.open").forEach((x) => x.classList.remove("open"));
+      m.classList.add("open");
+    }
+  });
+});
+document.addEventListener("mousedown", (e) => {
+  if (!e.target.closest(".menu")) document.querySelectorAll(".menu.open").forEach((x) => x.classList.remove("open"));
+});
+document.addEventListener("click", (e) => {
+  const mi = e.target.closest(".mi");
+  if (mi) { document.querySelectorAll(".menu.open").forEach((x) => x.classList.remove("open")); act(mi.dataset.act); }
+  const tb = e.target.closest(".tb[data-act]");
+  if (tb) act(tb.dataset.act);
+});
+$("fmtSel").addEventListener("change", () => { applyStyle("fmt", $("fmtSel").value); $("gridWrap").focus(); });
+$("textColor").addEventListener("change", () => { $("swText").style.background = $("textColor").value; applyStyle("color", $("textColor").value); });
+$("fillColor").addEventListener("change", () => { $("swFill").style.background = $("fillColor").value; applyStyle("bg", $("fillColor").value); });
+$("addSheet").addEventListener("click", () => act("addSheet"));
+
+// grid mouse
+let dragging = false;
+$("gridWrap").addEventListener("mousedown", (e) => {
+  if (e.target.classList && e.target.classList.contains("fillhandle")) {
+    commitEdit();
+    fillDrag = { base: normSel(), tgt: null };
+    e.preventDefault();
+    return;
+  }
+  const td = e.target.closest("td.cell");
+  if (!td) return;
+  if (e.button === 2) return;   // right-click handled by contextmenu
+  const r = +td.dataset.r, c = +td.dataset.c;
+  if (editing && editing.r === r && editing.c === c) return;
+  commitEdit();
+  if (e.shiftKey) { sel.r2 = r; sel.c2 = c; paintSel(); }
+  else { setSel(r, c); dragging = true; }
+  e.preventDefault();
+  $("gridWrap").focus();
+});
+$("gridWrap").addEventListener("mousemove", (e) => {
+  const td = e.target.closest("td.cell");
+  if (fillDrag) { if (td) fillPreview(+td.dataset.r, +td.dataset.c); return; }
+  if (!dragging) return;
+  if (td) { sel.r2 = +td.dataset.r; sel.c2 = +td.dataset.c; paintSel(); }
+});
+document.addEventListener("mousemove", (e) => {
+  if (!colResizing) return;
+  const w = Math.max(40, Math.round(colResizing.startW + e.clientX - colResizing.startX));
+  colResizing.colEl.style.width = w + "px";
+  colResizing.table._syncWidth();
+});
+document.addEventListener("mouseup", () => {
+  if (colResizing) {
+    const { c, colEl, grip } = colResizing;
+    grip.classList.remove("on");
+    S().colw = S().colw || {};
+    S().colw[c] = parseFloat(colEl.style.width) || 90;
+    if (!isBig()) markDirty();   // widths persist into the xlsx on save
+    colResizing = null;
+  }
+  dragging = false;
+  if (fillDrag) {
+    const { base, tgt } = fillDrag;
+    fillDrag = null;
+    document.querySelectorAll("td.fillPrev").forEach((td) => td.classList.remove("fillPrev"));
+    if (tgt) performFill(base, tgt);
+  }
+});
+$("gridWrap").addEventListener("dblclick", (e) => {
+  const td = e.target.closest("td.cell");
+  if (td) { setSel(+td.dataset.r, +td.dataset.c); startEdit(); }
+});
+
+// Ctrl+Arrow: jump to the edge of the data region (gsheet-style)
+function jumpEdge(dr, dc, extend) {
+  let r = extend ? sel.r2 : sel.ar, c = extend ? sel.c2 : sel.ac;
+  const R = nRows() - 1, C = nCols() - 1;
+  const inB = (rr, cc) => rr >= 0 && rr <= R && cc >= 0 && cc <= C;
+  const has = (rr, cc) => raw(rr, cc) !== "";
+  let nr = r + dr, nc = c + dc;
+  if (!inB(nr, nc)) return;
+  if (has(r, c) && has(nr, nc)) {
+    while (inB(nr + dr, nc + dc) && has(nr + dr, nc + dc)) { nr += dr; nc += dc; }
+  } else {
+    while (inB(nr, nc) && !has(nr, nc)) { nr += dr; nc += dc; }
+    nr = Math.max(0, Math.min(R, nr)); nc = Math.max(0, Math.min(C, nc));
+  }
+  if (extend) { sel.r2 = nr; sel.c2 = nc; paintSel(); }
+  else setSel(nr, nc);
+}
+// Ctrl+D / Ctrl+R: fill down/right from the selection's first row/column
+function fillShortcut(axis) {
+  const { r1, c1, r2, c2 } = normSel();
+  if (axis === "v" ? r2 === r1 : c2 === c1) return;
+  const base = axis === "v" ? { r1, r2: r1, c1, c2 } : { r1, r2, c1, c2: c1 };
+  const tgt = axis === "v" ? { axis, r1: r1 + 1, r2, c1, c2 } : { axis, c1: c1 + 1, c2, r1, r2 };
+  performFill(base, tgt);
+  markDirty();
+}
+
+// grid keyboard
+$("gridWrap").addEventListener("keydown", (e) => {
+  if (!book || editing) return;
+  const k = e.key;
+  if (e.ctrlKey || e.metaKey) {
+    if (k === "z") { e.preventDefault(); undo(); }
+    else if (k === "y") { e.preventDefault(); redo(); }
+    else if (k === "b") { e.preventDefault(); act("bold"); }
+    else if (k === "i") { e.preventDefault(); act("italic"); }
+    else if (k === "u") { e.preventDefault(); act("underline"); }
+    else if (k === "a") { e.preventDefault(); setSel(0, 0, nRows() - 1, nCols() - 1); }
+    else if (k === "d") { e.preventDefault(); fillShortcut("v"); }
+    else if (k === "r") { e.preventDefault(); fillShortcut("h"); }
+    else if (k === "ArrowDown") { e.preventDefault(); jumpEdge(1, 0, e.shiftKey); }
+    else if (k === "ArrowUp") { e.preventDefault(); jumpEdge(-1, 0, e.shiftKey); }
+    else if (k === "ArrowLeft") { e.preventDefault(); jumpEdge(0, -1, e.shiftKey); }
+    else if (k === "ArrowRight") { e.preventDefault(); jumpEdge(0, 1, e.shiftKey); }
+    return;
+  }
+  if (k === "ArrowDown") { e.preventDefault(); move(1, 0, e.shiftKey); }
+  else if (k === "ArrowUp") { e.preventDefault(); move(-1, 0, e.shiftKey); }
+  else if (k === "ArrowLeft") { e.preventDefault(); move(0, -1, e.shiftKey); }
+  else if (k === "ArrowRight") { e.preventDefault(); move(0, 1, e.shiftKey); }
+  else if (k === "Enter") { e.preventDefault(); startEdit(); }
+  else if (k === "F2") { e.preventDefault(); startEdit(); }
+  else if (k === "Tab") { e.preventDefault(); move(0, e.shiftKey ? -1 : 1); }
+  else if (k === "Delete" || k === "Backspace") { e.preventDefault(); act("clearSel"); }
+  else if (k.length === 1) { e.preventDefault(); startEdit(k); }  // preventDefault or the key types twice
+});
+
+// copy / paste (raw values incl. formulas, TSV — pastes into Excel/GSheets)
+function selTSV() {
+  const { r1, c1, r2, c2 } = normSel();
+  const out = [];
+  for (let r = r1; r <= r2; r++) {
+    const row = [];
+    for (let c = c1; c <= c2; c++) row.push(raw(r, c));
+    out.push(row.join("\t"));
+  }
+  return out.join("\n");
+}
+function clearSelCells() {
+  pushUndo();
+  const { r1, c1, r2, c2 } = normSel();
+  for (let r = r1; r <= r2; r++) for (let c = c1; c <= c2; c++) setCell(r, c, "");
+  markDirty(); paint();
+}
+function pasteText(text) {
+  pushUndo();
+  const lines = text.replace(/\r/g, "").split("\n");
+  if (lines[lines.length - 1] === "") lines.pop();
+  const { r1, c1 } = normSel();
+  let skipped = 0;
+  lines.forEach((line, dr) => line.split("\t").forEach((v, dc) => {
+    if (isBig() && (r1 + dr >= nRows() || c1 + dc >= nCols())) { skipped++; return; }
+    setCell(r1 + dr, c1 + dc, v);
+  }));
+  sel = { ar: r1, ac: c1, r1, c1, r2: Math.min(r1 + lines.length - 1, nRows() - 1), c2: Math.min(c1 + (lines[0] ? lines[0].split("\t").length - 1 : 0), nCols() - 1) };
+  markDirty(); renderGrid();
+  if (skipped) setStatus(`${skipped} pasted cell(s) fell outside the loaded window and were skipped.`, "err");
+}
+document.addEventListener("copy", (e) => {
+  if (!book || editing || e.target.closest("input, textarea")) return;
+  e.clipboardData.setData("text/plain", selTSV());
+  e.preventDefault();
+});
+document.addEventListener("cut", (e) => {
+  if (!book || editing || e.target.closest("input, textarea")) return;
+  e.clipboardData.setData("text/plain", selTSV());
+  e.preventDefault();
+  clearSelCells();
+});
+document.addEventListener("paste", (e) => {
+  if (!book || editing || e.target.closest("input, textarea")) return;
+  const text = e.clipboardData.getData("text/plain");
+  if (!text) return;
+  e.preventDefault();
+  pasteText(text);
+});
+
+// ---- right-click context menu ----
+function closeCtx() { const m = $("ctxMenu"); if (m) m.style.display = "none"; }
+function openCtx(x, y) {
+  let m = $("ctxMenu");
+  if (!m) { m = document.createElement("div"); m.id = "ctxMenu"; document.body.appendChild(m); }
+  const big = isBig();
+  const { r1, r2, c1, c2 } = normSel();
+  const nr = r2 - r1 + 1, nc = c2 - c1 + 1;
+  const items = [
+    { label: "Cut", kbd: "Ctrl+X", fn: async () => { await navigator.clipboard.writeText(selTSV()); clearSelCells(); } },
+    { label: "Copy", kbd: "Ctrl+C", fn: () => navigator.clipboard.writeText(selTSV()) },
+    { label: "Paste", kbd: "Ctrl+V", fn: async () => {
+        try { pasteText(await navigator.clipboard.readText()); }
+        catch { setStatus("Browser blocked menu paste — press Ctrl+V instead.", "err"); }
+      } },
+    null,
+    !big && { label: "Insert 1 row above", fn: () => act("rowAbove") },
+    !big && { label: "Insert 1 row below", fn: () => act("rowBelow") },
+    !big && { label: "Insert 1 column left", fn: () => act("colLeft") },
+    !big && { label: "Insert 1 column right", fn: () => act("colRight") },
+    !big && null,
+    !big && { label: nr > 1 ? `Delete rows ${r1 + 1}–${r2 + 1}` : `Delete row ${r1 + 1}`, fn: () => act("delRows") },
+    !big && { label: nc > 1 ? `Delete columns ${colName(c1)}–${colName(c2)}` : `Delete column ${colName(c1)}`, fn: () => act("delCols") },
+    { label: "Clear cells", kbd: "Del", fn: () => act("clearSel") },
+    null,
+    { label: `Sort sheet A → Z by ${colName(sel.ac)}`, fn: () => act("sortAsc") },
+    { label: `Sort sheet Z → A by ${colName(sel.ac)}`, fn: () => act("sortDesc") },
+  ].filter((x2) => x2 !== false);
+  m.innerHTML = items.map((it) =>
+    it === null ? '<div class="msep"></div>'
+      : `<div class="mi" data-ci>${it.label}${it.kbd ? `<span class="kbd">${it.kbd}</span>` : ""}</div>`
+  ).join("");
+  const fns = items.filter((it) => it);
+  m.querySelectorAll("[data-ci]").forEach((el, i) => {
+    el.addEventListener("click", () => { closeCtx(); fns[i].fn(); });
+  });
+  m.style.display = "block";
+  const rect = m.getBoundingClientRect();
+  m.style.left = Math.min(x, window.innerWidth - rect.width - 8) + "px";
+  m.style.top = Math.min(y, window.innerHeight - rect.height - 8) + "px";
+}
+$("gridWrap").addEventListener("contextmenu", (e) => {
+  const td = e.target.closest("td.cell");
+  if (!td || !book) return;
+  e.preventDefault();
+  commitEdit();
+  const r = +td.dataset.r, c = +td.dataset.c;
+  const { r1, c1, r2, c2 } = normSel();
+  if (r < r1 || r > r2 || c < c1 || c > c2) setSel(r, c);
+  openCtx(e.clientX, e.clientY);
+});
+document.addEventListener("mousedown", (e) => { if (!e.target.closest("#ctxMenu")) closeCtx(); });
+
+// name box + formula bar
+$("nameBox").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  const ref = parseRef($("nameBox").value);
+  if (ref && book) {
+    if (isBig()) {
+      if (ref.r >= nRows()) { setStatus(`Row ${fmtInt(ref.r + 1)} isn't loaded yet — use “Show more” first.`, "err"); return; }
+      setSel(ref.r, Math.min(ref.c, nCols() - 1));
+    } else {
+      ensureRect(S(), ref.r + 1, ref.c + 1);
+      if (ref.r >= renderLimit) renderLimit = Infinity;
+      invalidateValues(); renderGrid(); setSel(ref.r, ref.c);
+    }
+  }
+  $("gridWrap").focus();
+});
+$("fxInput").addEventListener("input", () => acUpdate($("fxInput")));
+$("fxInput").addEventListener("keydown", (e) => {
+  if (acKey(e)) return;
+  if (e.key === "Enter") {
+    e.preventDefault();
+    if (!book) return;
+    if (editing) { editing.input.value = $("fxInput").value; commitEdit(); }
+    else {
+      const v = $("fxInput").value;
+      if (v !== raw(sel.ar, sel.ac)) { pushUndo(); setCell(sel.ar, sel.ac, v); markDirty(); paint(); }
+    }
+    $("gridWrap").focus();
+  } else if (e.key === "Escape") { acClose(); paintSel(); $("gridWrap").focus(); }
+});
+$("fxInput").addEventListener("blur", () => setTimeout(acClose, 150));
+
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); if (dirty) save(false); }
+  if (e.key === "Escape" && $("overlay").classList.contains("open")) closeModal();
+});
+window.addEventListener("beforeunload", (e) => { if (dirty) e.preventDefault(); });
+
+let lastFile = null;
+fused.params.onChange((p) => {
+  const f = p._file || "";
+  if (f !== lastFile) { lastFile = f; load(); }
+});
+lastFile = currentFile();
+load();
+</script>
+</body>
+</html>

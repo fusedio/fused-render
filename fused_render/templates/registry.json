@@ -2,12 +2,14 @@
   ".parquet": [
     "table",
     "h3",
+    "map",
     "claude",
     "annotate",
     "history"
   ],
   ".csv": [
     "csv",
+    "map",
     "code",
     "annotate"
   ],
@@ -18,7 +20,16 @@
   ],
   ".xlsx": [
     "xlsx",
+    "excel",
     "annotate"
+  ],
+  ".xlsm": [
+    "xlsx",
+    "excel",
+    "annotate"
+  ],
+  ".pptx": [
+    "slides"
   ],
   ".*.json": [
     "history",
@@ -34,12 +45,16 @@
     "code",
     "annotate"
   ],
+  ".doc.json": [
+    "docs"
+  ],
   ".ndjson": [
     "code",
     "annotate"
   ],
   ".geojson": [
     "vector",
+    "map",
     "tree",
     "code",
     "annotate"
@@ -54,30 +69,69 @@
     "code",
     "annotate"
   ],
+  ".tex": [
+    "latex",
+    "code",
+    "annotate"
+  ],
+  ".ltx": [
+    "latex",
+    "code",
+    "annotate"
+  ],
+  ".latex": [
+    "latex",
+    "code",
+    "annotate"
+  ],
   ".svg": [
     "image",
     "code",
     "annotate"
   ],
   ".png": [
+    "photos",
     "image",
+    "pano",
     "annotate"
   ],
   ".jpg": [
+    "photos",
     "image",
+    "pano",
     "annotate"
   ],
   ".jpeg": [
+    "photos",
     "image",
+    "pano",
     "annotate"
   ],
   ".gif": [
+    "photos",
     "image",
     "annotate"
   ],
   ".webp": [
+    "photos",
     "image",
+    "pano",
     "annotate"
+  ],
+  ".bmp": [
+    "photos"
+  ],
+  ".avif": [
+    "photos"
+  ],
+  ".heic": [
+    "photos"
+  ],
+  ".heif": [
+    "photos"
+  ],
+  ".dng": [
+    "photos"
   ],
   ".pdf": [
     "pdf",
@@ -239,10 +293,14 @@
     "annotate"
   ],
   ".tif": [
-    "geotiff"
+    "geotiff",
+    "pano",
+    "map"
   ],
   ".tiff": [
-    "geotiff"
+    "geotiff",
+    "pano",
+    "map"
   ],
   ".nc": [
     "netcdf"
@@ -270,10 +328,12 @@
     "zarr"
   ],
   ".shp": [
-    "vector"
+    "vector",
+    "map"
   ],
   ".kml": [
-    "vector"
+    "vector",
+    "map"
   ],
   ".kmz": [
     "vector"
@@ -282,19 +342,43 @@
     "vector"
   ],
   ".gpkg": [
-    "vector"
+    "vector",
+    "map"
   ],
   ".fgb": [
-    "vector"
+    "vector",
+    "map"
   ],
   ".pmtiles": [
-    "pmtiles"
+    "pmtiles",
+    "map"
   ],
   ".las": [
     "las"
   ],
   ".laz": [
     "las"
+  ],
+  ".usd": [
+    "usd"
+  ],
+  ".usda": [
+    "usd"
+  ],
+  ".usdc": [
+    "usd"
+  ],
+  ".usdz": [
+    "usd"
+  ],
+  ".ply": [
+    "usd"
+  ],
+  ".splat": [
+    "usd"
+  ],
+  ".ksplat": [
+    "usd"
   ],
   ".zip": [
     "zip"
