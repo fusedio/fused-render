@@ -65,10 +65,14 @@ def _extract_one(zf, info, dest_root):
     """Write one member under dest_root, preserving its in-archive relative path.
     Returns the written file's absolute path, or None for a directory member.
     Refuses any member whose resolved path would escape dest_root."""
-    target = os.path.join(dest_root, info.filename)
+    # ZIP names should use "/", but some tools emit "\"; normalize and split so
+    # such members nest into real subdirectories (and so a leading "/" or empty
+    # segment can't smuggle a path). getinfo/open still use the original info.
+    rel = info.filename.replace("\\", "/")
+    target = os.path.join(dest_root, *[p for p in rel.split("/") if p])
     if not _within(dest_root, target):
         raise ValueError(f"unsafe path in archive (path traversal): {info.filename!r}")
-    if info.is_dir():
+    if info.is_dir() or rel.endswith("/"):
         os.makedirs(target, exist_ok=True)
         return None
     os.makedirs(os.path.dirname(target) or dest_root, exist_ok=True)

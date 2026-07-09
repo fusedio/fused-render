@@ -182,10 +182,14 @@
       const dirs = new Map();   // name -> aggregate {size, mtime}
       const files = [];
       for (const e of ENTRIES) {
-        if (!e.path.startsWith(prefix)) continue;
-        const relParts = e.path.slice(prefix.length).split("/").filter(Boolean);
+        // ZIP names should use "/", but some tools emit "\". Normalize for tree
+        // building/navigation, but keep the ORIGINAL path as the identity we
+        // hand back to reader.py — getinfo() needs the exact stored name.
+        const norm = e.path.replace(/\\/g, "/");
+        if (!norm.startsWith(prefix)) continue;
+        const relParts = norm.slice(prefix.length).split("/").filter(Boolean);
         if (relParts.length === 0) continue;
-        const isDirEntry = e.is_dir || e.path.endsWith("/");
+        const isDirEntry = e.is_dir || norm.endsWith("/");
         if (relParts.length === 1 && !isDirEntry) {
           files.push({ name: relParts[0], path: e.path, size: e.size, modified: e.modified });
         } else {
@@ -209,8 +213,11 @@
         if (c === 0) c = byName(a, b);
         return c * flip;
       };
-      // Directories always group first (as in the app listing), files below.
-      return [...dirs.sort(byName), ...files.sort(cmp)];
+      // Directories always group first (as in the app listing), but within
+      // their group they honor the active sort/order just like files — a
+      // synthesized dir has no size/mtime, so those keys fall to the name
+      // tiebreak (which itself respects `flip`), matching the shell.
+      return [...dirs.sort(cmp), ...files.sort(cmp)];
     }
 
     function renderCrumbs() {
