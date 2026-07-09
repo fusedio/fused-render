@@ -9,7 +9,8 @@
 import { useEffect, useState } from "react";
 import { IS_EMBED, fsPathFromLocation, urlForFsPath } from "./lib/router";
 import { statPath, type Config, type StatResult } from "./lib/api";
-import { useNavEpoch } from "./lib/hooks";
+import { useNavEpoch, useDocumentTitle } from "./lib/hooks";
+import { basename } from "./lib/format";
 import Sidebar from "./components/Sidebar";
 import { Breadcrumb, StaticBreadcrumb } from "./components/Breadcrumb";
 import Listing from "./views/Listing";
@@ -48,6 +49,7 @@ function useStat(fsPath: string | null, epoch: number): StatState {
 // sentinel.
 function StatView({ fsPath, epoch }: { fsPath: string; epoch: number }) {
   const stat = useStat(fsPath, epoch);
+  useDocumentTitle(fsPath === "/" ? null : basename(fsPath));
   let content = null;
   if (stat.status === "error") {
     content = (
@@ -57,15 +59,15 @@ function StatView({ fsPath, epoch }: { fsPath: string; epoch: number }) {
     );
   } else if (stat.status === "ok") {
     // Dispatch (ARCHITECTURE §6): a target with templates previews — even a
-    // directory (a `.zarr` store maps to a directory template, D65) — UNLESS
-    // the shell-owned `?listing=1` param forces the plain listing view.
-    // `listing` never reaches a template: it only takes effect on a directory,
-    // and when set it selects Listing (no template iframe is mounted), so it
-    // can't leak into fused.params.
+    // directory. Every directory resolves at least the universal `/` key's
+    // `["_listing"]` (D81), so the built-in listing is now the `_listing`
+    // sentinel mode and flows through Preview like any other mode (Preview
+    // renders the shell Listing component for it). A directory resolves to an
+    // empty list only when a `null` binding disables it; the shell still lists
+    // it then — a folder must always render something.
     const s = stat.stat;
-    const forceListing = new URLSearchParams(location.search).get("listing") === "1";
     content =
-      s.is_dir && (forceListing || s.templates.length === 0) ? (
+      s.is_dir && s.templates.length === 0 ? (
         <Listing fsPath={fsPath} />
       ) : (
         <Preview fsPath={fsPath} stat={s} />
@@ -92,8 +94,17 @@ export default function App({ config }: { config: Config }) {
   }
 
   const pathname = location.pathname;
+  const isPanel = pathname === "/view/_panel" || pathname === "/embed/_panel";
+  const isTabs = pathname === "/view/_tab" || pathname === "/embed/_tab";
+  const isPrefs = pathname === "/view/_prefs";
+  const fsPath = isPanel || isTabs || isPrefs ? null : fsPathFromLocation();
+  // A resolved fsPath mounts StatView below, which owns the title itself.
+  useDocumentTitle(
+    isPanel ? "Panel" : isTabs ? "Tabs" : isPrefs ? "Preferences" : fsPath ? undefined : null
+  );
+
   let main;
-  if (pathname === "/view/_panel" || pathname === "/embed/_panel") {
+  if (isPanel) {
     main = (
       <>
         <div id="breadcrumb">
@@ -104,7 +115,7 @@ export default function App({ config }: { config: Config }) {
         </div>
       </>
     );
-  } else if (pathname === "/view/_tab" || pathname === "/embed/_tab") {
+  } else if (isTabs) {
     main = (
       <>
         <div id="breadcrumb">
@@ -115,7 +126,7 @@ export default function App({ config }: { config: Config }) {
         </div>
       </>
     );
-  } else if (pathname === "/view/_prefs") {
+  } else if (isPrefs) {
     // Preferences (SPEC §20): a sentinel pathname like _panel/_tab — not a
     // file; entered from the sidebar's gear. /view only (no embed variant —
     // settings chrome inside a pane makes no sense).
@@ -129,20 +140,17 @@ export default function App({ config }: { config: Config }) {
         </div>
       </>
     );
+  } else if (!fsPath) {
+    main = (
+      <>
+        <div id="breadcrumb" />
+        <div id="content">
+          <div className="status-message error">Unrecognized URL: {pathname}</div>
+        </div>
+      </>
+    );
   } else {
-    const fsPath = fsPathFromLocation();
-    if (!fsPath) {
-      main = (
-        <>
-          <div id="breadcrumb" />
-          <div id="content">
-            <div className="status-message error">Unrecognized URL: {pathname}</div>
-          </div>
-        </>
-      );
-    } else {
-      main = <StatView key={epoch + ":" + fsPath} fsPath={fsPath} epoch={epoch} />;
-    }
+    main = <StatView key={epoch + ":" + fsPath} fsPath={fsPath} epoch={epoch} />;
   }
 
   return (
