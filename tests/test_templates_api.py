@@ -160,6 +160,22 @@ def test_registry_broken_name_marked_not_exists(ctx):
     assert templates[1]["name"] == "csv" and templates[1]["exists"] is True
 
 
+def test_registry_invalid_value_surfaces_error(ctx):
+    # A shape-level bad value (a list with more than one "..." splice) must NOT
+    # render as a silent empty row — its error surfaces on the entry.
+    ctx.make_template("brandcard")
+    ctx.registry({".csv": ["...", "..."], ".brand": ["brandcard"]})
+    by_key = {e["key"]: e for e in ctx.client.get("/api/templates/registry").json()["entries"]}
+    bad = by_key[".csv"]
+    assert bad["error"] is not None
+    assert "..." in bad["error"]
+    assert bad["templates"] == []
+    # error (value invalid) is semantically distinct from disabled (value null).
+    assert bad["disabled"] is False
+    # A well-formed binding carries error=null.
+    assert by_key[".brand"]["error"] is None
+
+
 # ----------------------------------------------------------- put binding (2.3)
 
 
@@ -407,6 +423,23 @@ def test_import_total_size_guard(ctx, monkeypatch):
     resp = _post_import(ctx, zb)
     assert resp.status_code == 400
     assert "uncompressed size too large" in resp.json()["error"]
+
+
+def test_import_rejects_zip_bomb_on_actual_bytes(ctx):
+    # ~30 MB of zeros compresses to a few KB but expands past the 25 MB
+    # per-entry cap. The cap is enforced on the bytes actually decompressed
+    # DURING extraction (bounded/chunked), not on trusted file_size metadata.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("bomb/big.bin", b"\x00" * (30 * 1024 * 1024))
+    resp = _post_import(ctx, buf.getvalue())
+    assert resp.status_code == 400
+    assert "too large" in resp.json()["error"]
+    # Aborted mid-extraction and cleaned up: no leftover staging dir, and
+    # nothing committed into the user templates dir.
+    staging = ctx.home / ".import-staging"
+    assert not staging.exists() or not any(staging.iterdir())
+    assert not (ctx.udir / "bomb").exists()
 
 
 def test_import_requires_fused_header(ctx):

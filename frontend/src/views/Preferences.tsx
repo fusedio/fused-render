@@ -1,7 +1,6 @@
 // Preferences page (SPEC §20) — the `/view/_prefs` sentinel route, entered
-// from the sidebar's bottom-left gear. Four sections, each a thin client
+// from the sidebar's bottom-left gear. Three sections, each a thin client
 // over an existing backend, in this order:
-//   Template registry— the merged extension→templates bindings (read-only)
 //   Logs             — where this process logs (GET /api/prefs) + reveal
 //   Execution engine — the persisted /api/run engine pref (PUT /api/prefs);
 //                      applies to the next run, no restart. Locked while
@@ -9,11 +8,11 @@
 //   Deployments      — an opt-in toggle for the preview-header Deploy button
 //                      (PUT /api/prefs deploy_enabled), then per-env
 //                      `fused share list` with Revoke (deploy.py)
+// Template bindings live in the dedicated /view/_templates view.
 import { useEffect, useRef, useState } from "react";
 import {
   getDeployConfig,
   getPrefs,
-  getTemplateRegistry,
   listShares,
   putDeployEnabled,
   putEnginePref,
@@ -23,7 +22,6 @@ import {
 import type {
   DeployConfig,
   Prefs,
-  RegistryResult,
   ShareMount,
 } from "../lib/api";
 import { basename } from "../lib/format";
@@ -319,80 +317,6 @@ function DeploymentsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: P
   );
 }
 
-function RegistrySection() {
-  const [registry, setRegistry] = useState<RegistryResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    getTemplateRegistry()
-      .then((r) => alive && setRegistry(r))
-      .catch((e) => alive && setError((e as Error).message));
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  // The new registry entry shape (TEMPLATE_MGMT_SPEC §2.2) reports the effective
-  // source as resolvedSource ("core"/"user") + overridesCore; map it back to the
-  // three labels this read-only section has always shown.
-  const sourceOf = (e: RegistryResult["entries"][number]) =>
-    e.resolvedSource === "core" ? "builtin" : e.overridesCore ? "user-override" : "user";
-  const sourceLabel = (s: string) =>
-    s === "builtin" ? "built-in" : s === "user-override" ? "user override" : "user";
-
-  return (
-    <section className="prefs-section">
-      <h2>Template registry</h2>
-      <p className="deploy-muted">
-        Which templates open each file pattern (first entry is the default mode). Edit bindings
-        in the Templates view — this is a read-only summary.
-      </p>
-      {error && <div className="deploy-error">{error}</div>}
-      {registry?.error && <div className="deploy-error">{registry.error}</div>}
-      {registry && (
-        <table className="prefs-registry-table">
-          <tbody>
-            {registry.entries.map((e) => {
-              const src = sourceOf(e);
-              const broken = e.templates.some((t) => !t.exists);
-              return (
-                <tr key={e.key} className={broken ? "has-error" : undefined}>
-                  <td className="registry-pattern">
-                    <code>{e.key}</code>
-                  </td>
-                  <td className="registry-templates">
-                    {e.disabled ? (
-                      <span className="deploy-muted">disabled (no preview)</span>
-                    ) : (
-                      e.templates.map((t, i) => (
-                        <code
-                          key={t.name + i}
-                          className={
-                            (i === 0 ? "default-mode" : "") + (t.exists ? "" : " registry-error")
-                          }
-                          title={
-                            !t.exists ? "no template folder" : i === 0 ? "default mode" : undefined
-                          }
-                        >
-                          {t.name}
-                        </code>
-                      ))
-                    )}
-                  </td>
-                  <td>
-                    <span className={"registry-source " + src}>{sourceLabel(src)}</span>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      )}
-    </section>
-  );
-}
-
 export default function Preferences() {
   const [prefs, setPrefs] = useState<Prefs | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -413,7 +337,6 @@ export default function Preferences() {
       {!prefs && !error && <div className="deploy-muted">Loading…</div>}
       {prefs && (
         <>
-          <RegistrySection />
           <LogsSection prefs={prefs} />
           <EngineSection prefs={prefs} onChange={setPrefs} />
           <DeploymentsSection prefs={prefs} onChange={setPrefs} />

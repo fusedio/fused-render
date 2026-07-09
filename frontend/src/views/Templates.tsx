@@ -851,6 +851,11 @@ function BindingsTable({
                       </span>
                     ))
                   )}
+                  {e.error && (
+                    <div className="templates-key-error" title={e.error}>
+                      ⚠ {e.error}
+                    </div>
+                  )}
                 </td>
                 <td>
                   <span className={"registry-source " + (e.overridesCore ? "user" : "")}>

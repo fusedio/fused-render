@@ -153,14 +153,14 @@ def _compute_entry(display_key, builtin_reg, user_reg, builtin_by_lower, user_by
 
     if user_key is not None:
         raw_user_value = user_reg[user_key]
-        names, disabled, _err = server._names_from_value(user_key, raw_user_value, builtin_names)
+        names, disabled, error = server._names_from_value(user_key, raw_user_value, builtin_names)
         effective = [] if disabled else (names or [])
         resolved_source = "user"
         overrides_core = True
     else:
         # No user override -> the builtin decides. Builtin values are lists in
         # practice, but honour a null (disabled) shape generally.
-        b_names, b_disabled, _err = (
+        b_names, b_disabled, error = (
             server._names_from_value(builtin_key, builtin_reg[builtin_key], [])
             if builtin_key is not None
             else ([], False, None)
@@ -179,6 +179,12 @@ def _compute_entry(display_key, builtin_reg, user_reg, builtin_by_lower, user_by
         "disabled": disabled,
         # what a "reset to core" would give (names), or null if core has no key.
         "coreTemplates": (builtin_names if builtin_key is not None else None),
+        # Shape-level problem with the EFFECTIVE value (e.g. >1 "..." splice or
+        # a non-list/string/null value) surfaced from _names_from_value, so an
+        # invalid binding renders explained rather than as a silent empty row.
+        # `disabled` (value is null) stays semantically distinct from `error`
+        # (value is invalid): a disabled row has error=null.
+        "error": error,
     }
     # userValue: the RAW user-registry value for this key (array | null),
     # included only when a user key exists (SPEC §2.2: undefined-as-omitted).
@@ -489,7 +495,14 @@ IMPORT_TTL_SEC = 900  # staged imports expire after 15 minutes (SPEC §2.6/2.7)
 MAX_TOTAL_UNCOMPRESSED = 50 * 1024 * 1024  # 50 MB across the whole zip
 MAX_ENTRY_UNCOMPRESSED = 25 * 1024 * 1024  # 25 MB per single entry
 MAX_ENTRIES = 2000  # zip-bomb entry-count guard
+_COPY_CHUNK = 64 * 1024  # bounded read size during extraction (zip-bomb guard)
 _IMPORT_ID_RE = re.compile(r"^[0-9a-f]{8,}$")  # secrets.token_hex output shape
+
+
+class _ImportTooLarge(Exception):
+    """Raised mid-extraction when a zip entry's ACTUAL decompressed bytes breach
+    a size cap. The declared ``file_size`` metadata is untrustworthy (a crafted
+    zip can understate it), so the caps are enforced on bytes actually written."""
 
 
 def _staging_root() -> str:
@@ -559,18 +572,10 @@ async def api_import_templates(
     infos = zf.infolist()
     if len(infos) > MAX_ENTRIES:
         return _error(f"zip has too many entries ({len(infos)} > {MAX_ENTRIES})")
-    total = 0
-    for info in infos:
-        if info.file_size > MAX_ENTRY_UNCOMPRESSED:
-            return _error(
-                f"entry {info.filename!r} is too large "
-                f"({info.file_size} bytes > {MAX_ENTRY_UNCOMPRESSED})"
-            )
-        total += info.file_size
-    if total > MAX_TOTAL_UNCOMPRESSED:
-        return _error(
-            f"zip uncompressed size too large ({total} bytes > {MAX_TOTAL_UNCOMPRESSED})"
-        )
+    # NOTE: the per-entry (25 MB) and total (50 MB) size caps are NOT enforced
+    # from each entry's declared `file_size` here — that metadata is attacker
+    # controlled and a crafted zip can understate it. The caps are enforced
+    # below on the bytes ACTUALLY decompressed during extraction.
 
     import_id = secrets.token_hex(16)
     staging_dir = os.path.join(_staging_root(), import_id)
@@ -583,6 +588,7 @@ async def api_import_templates(
             return _error(f"rejected zip: {reason}")
 
     os.makedirs(staging_dir, exist_ok=True)
+    total_written = 0
     try:
         for info in infos:
             normalized = info.filename.replace("\\", "/")
@@ -591,9 +597,33 @@ async def api_import_templates(
                 os.makedirs(target, exist_ok=True)
                 continue
             os.makedirs(os.path.dirname(target), exist_ok=True)
+            # Bounded, chunked copy: enforce the caps on the bytes ACTUALLY
+            # decompressed (per-entry, then cumulative-total), so a crafted zip
+            # that understates file_size cannot expand past the caps. On the
+            # first breach we abort and clean up the whole staging dir.
+            entry_written = 0
             with zf.open(info) as src, open(target, "wb") as dst:
-                shutil.copyfileobj(src, dst)
-    except OSError as e:
+                while True:
+                    chunk = src.read(_COPY_CHUNK)
+                    if not chunk:
+                        break
+                    entry_written += len(chunk)
+                    total_written += len(chunk)
+                    if entry_written > MAX_ENTRY_UNCOMPRESSED:
+                        raise _ImportTooLarge(
+                            f"entry {info.filename!r} is too large "
+                            f"(> {MAX_ENTRY_UNCOMPRESSED} bytes uncompressed)"
+                        )
+                    if total_written > MAX_TOTAL_UNCOMPRESSED:
+                        raise _ImportTooLarge(
+                            f"zip uncompressed size too large "
+                            f"(> {MAX_TOTAL_UNCOMPRESSED} bytes)"
+                        )
+                    dst.write(chunk)
+    except _ImportTooLarge as e:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        return _error(str(e))
+    except (OSError, zipfile.BadZipFile) as e:
         shutil.rmtree(staging_dir, ignore_errors=True)
         return _error(f"could not unpack the zip: {e}")
 

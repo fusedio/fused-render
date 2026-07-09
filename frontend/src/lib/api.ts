@@ -334,6 +334,7 @@ export interface RegistryEntry {
   disabled: boolean; // effective value is null (previews disabled)
   coreTemplates: string[] | null; // builtin registry's names for this key, or null
   userValue?: string[] | null; // raw user-registry value, present only if a user key exists
+  error?: string | null; // set when this key's registry value is invalid (fails to resolve)
 }
 
 export interface RegistryResult {
