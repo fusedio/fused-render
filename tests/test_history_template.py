@@ -1,4 +1,4 @@
-"""Tests for the history view template bindings (SPEC §23, D86).
+"""Tests for the history view template bindings (SPEC §24, D96).
 
 The template itself is browser-side (template.html + icon.svg, no .py — HV-1),
 so what the server can guarantee is covered here: the registry bindings and

@@ -1197,7 +1197,7 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   inert (CT-7) until bound via the row editor.
 - Persisting a per-file "last selected mode" — unrelated, not part of this
   feature.
-## 24. History View — Sidecar Inspector Template (D90)
+## 24. History View — Sidecar Inspector Template (D96)
 
 A `history` view template renders a file's `.html.json` sidecar (§21, SB-7, D82–D84)
 as a readable, sectioned history — every claude session, bookmark, last-session
