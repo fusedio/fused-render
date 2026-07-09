@@ -17,6 +17,7 @@ import Listing from "./views/Listing";
 import Preview from "./views/Preview";
 import Panel from "./views/Panel";
 import Tabs from "./views/Tabs";
+import Preferences from "./views/Preferences";
 
 type StatState =
   | { status: "loading" }
@@ -95,9 +96,12 @@ export default function App({ config }: { config: Config }) {
   const pathname = location.pathname;
   const isPanel = pathname === "/view/_panel" || pathname === "/embed/_panel";
   const isTabs = pathname === "/view/_tab" || pathname === "/embed/_tab";
-  const fsPath = isPanel || isTabs ? null : fsPathFromLocation();
+  const isPrefs = pathname === "/view/_prefs";
+  const fsPath = isPanel || isTabs || isPrefs ? null : fsPathFromLocation();
   // A resolved fsPath mounts StatView below, which owns the title itself.
-  useDocumentTitle(isPanel ? "Panel" : isTabs ? "Tabs" : fsPath ? undefined : null);
+  useDocumentTitle(
+    isPanel ? "Panel" : isTabs ? "Tabs" : isPrefs ? "Preferences" : fsPath ? undefined : null
+  );
 
   let main;
   if (isPanel) {
@@ -119,6 +123,20 @@ export default function App({ config }: { config: Config }) {
         </div>
         <div id="content">
           <Tabs key={epoch} config={config} />
+        </div>
+      </>
+    );
+  } else if (isPrefs) {
+    // Preferences (SPEC §20): a sentinel pathname like _panel/_tab — not a
+    // file; entered from the sidebar's gear. /view only (no embed variant —
+    // settings chrome inside a pane makes no sense).
+    main = (
+      <>
+        <div id="breadcrumb">
+          <StaticBreadcrumb label="Preferences" />
+        </div>
+        <div id="content">
+          <Preferences key={epoch} />
         </div>
       </>
     );

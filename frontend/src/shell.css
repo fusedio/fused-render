@@ -1357,3 +1357,485 @@ body.embed .preview-browse-chip:hover {
 #root {
   display: contents;
 }
+
+/* ---- Deploy button + modal (SPEC §19) ------------------------------------ */
+
+/* Header action for deployable pages: same chrome as its .preview-actions
+   siblings, plus a live dot when the page's deployment pointer reads active. */
+.preview-actions .deploy-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.deploy-live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #3fca6b;
+  flex: 0 0 auto;
+}
+
+.deploy-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 8vh 16px 16px;
+  z-index: 1000;
+}
+
+.deploy-dialog {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: min(600px, 100%);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.deploy-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.deploy-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deploy-close {
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px 6px;
+}
+
+.deploy-close:hover {
+  color: var(--fg);
+}
+
+.deploy-body {
+  padding: 14px 16px 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.deploy-body p {
+  margin: 0;
+}
+
+.deploy-body code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 12px;
+}
+
+.deploy-body button {
+  font: inherit;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+.deploy-body button:hover:not(:disabled) {
+  background: var(--bg-alt);
+  border-color: var(--accent);
+}
+
+.deploy-body button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.deploy-body .deploy-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #10131a;
+  font-weight: 600;
+}
+
+.deploy-body .deploy-primary:hover:not(:disabled) {
+  background: var(--accent);
+  filter: brightness(1.08);
+}
+
+.deploy-body .deploy-danger {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.deploy-body .deploy-danger:hover:not(:disabled) {
+  background: rgba(255, 107, 107, 0.12);
+}
+
+.deploy-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.deploy-muted {
+  color: var(--fg-muted);
+}
+
+.deploy-error {
+  color: var(--error);
+  border: 1px solid var(--error);
+  border-radius: 6px;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.deploy-note {
+  border-left: 2px solid var(--border);
+  padding-left: 10px;
+}
+
+/* Current-deployment card: status chip + URL row. */
+.deploy-current {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.deploy-current-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.share-status {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+}
+
+.share-status.active {
+  color: #3fca6b;
+  border-color: #3fca6b;
+}
+
+.share-status.revoked {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.deploy-url-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.deploy-url {
+  color: var(--accent);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+}
+
+.deploy-url:hover {
+  text-decoration: underline;
+}
+
+.deploy-copy {
+  flex: 0 0 auto;
+}
+
+.deploy-form-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.deploy-form-row label {
+  color: var(--fg-muted);
+}
+
+.deploy-form-row select {
+  font: inherit;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  max-width: 100%;
+}
+
+/* Env-wide share list (Preferences → Deployments): the env's mounts joined to
+   local pages. */
+.deploy-shares-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.deploy-shares-table td {
+  padding: 5px 8px;
+  border-top: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.deploy-shares-table .share-page {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deploy-shares-table .share-token {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--fg-muted);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deploy-shares-table a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.deploy-shares-table a:hover {
+  text-decoration: underline;
+}
+
+.deploy-close:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Busy/disabled primary keeps readable dark-on-accent contrast: the generic
+   button:disabled opacity darkened the accent under it into near-black-on-
+   black while "Deploying…" showed. Slight desaturation signals inactive
+   instead. */
+.deploy-body .deploy-primary:disabled {
+  opacity: 1;
+  background: var(--accent);
+  color: #10131a;
+  filter: saturate(0.45) brightness(0.85);
+}
+
+.deploy-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 7px;
+  vertical-align: -1px;
+  border: 2px solid rgba(16, 19, 26, 0.35);
+  border-top-color: #10131a;
+  border-radius: 50%;
+  animation: deploy-spin 0.8s linear infinite;
+}
+
+@keyframes deploy-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* "Will publish:" preview — the page + each bundled runPython/rawUrl target
+   as compact chips. */
+.deploy-preview {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* ---- Preferences page (SPEC §20) ------------------------------------------ */
+
+/* Bottom-left entry: pinned to the sidebar's bottom edge, muted until hover. */
+.sidebar-footer {
+  margin-top: auto;
+  padding: 6px;
+  border-top: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.sidebar-footer .prefs-link {
+  width: 100%;
+  background: none;
+  border: none;
+  font: inherit;
+  color: var(--fg-muted);
+  cursor: pointer;
+  text-align: left;
+}
+
+.sidebar-footer .prefs-link:hover,
+.sidebar-footer .prefs-link.active {
+  color: var(--fg);
+}
+
+.prefs-page {
+  padding: 18px 22px 32px;
+  max-width: 760px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  overflow-y: auto;
+  font-size: 13px;
+}
+
+.prefs-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.prefs-section h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.prefs-section p {
+  margin: 0;
+}
+
+.prefs-section code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.prefs-section button {
+  font: inherit;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+.prefs-section button:hover:not(:disabled) {
+  background: var(--bg-alt);
+  border-color: var(--accent);
+}
+
+.prefs-section button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.prefs-section .deploy-danger {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.prefs-section .deploy-danger:hover:not(:disabled) {
+  background: rgba(255, 107, 107, 0.12);
+}
+
+.prefs-section select {
+  font: inherit;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+}
+
+.prefs-radio {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  cursor: pointer;
+}
+
+.prefs-radio input {
+  margin-top: 3px;
+  accent-color: var(--accent);
+}
+
+.prefs-radio.locked {
+  cursor: default;
+  opacity: 0.65;
+}
+
+/* Registry table: pattern -> template chips (+ source badge). */
+.prefs-registry-table {
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.prefs-registry-table td {
+  padding: 5px 10px 5px 0;
+  border-top: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.prefs-registry-table .registry-templates code + code {
+  margin-left: 5px;
+}
+
+.prefs-registry-table .default-mode {
+  border-color: var(--accent);
+}
+
+.prefs-registry-table .registry-error {
+  color: var(--error);
+}
+
+.registry-source {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.registry-source.user,
+.registry-source.user-override {
+  color: var(--accent);
+  border-color: var(--accent);
+}
