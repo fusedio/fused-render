@@ -254,7 +254,8 @@
     "netcdf"
   ],
   "/": [
-    "_listing"
+    "_listing",
+    "preview"
   ],
   ".zarr/": [
     "zarr",
