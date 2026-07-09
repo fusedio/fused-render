@@ -2,6 +2,7 @@
   ".parquet": [
     "table",
     "h3",
+    "claude",
     "annotate"
   ],
   ".csv": [
