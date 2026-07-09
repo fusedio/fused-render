@@ -164,8 +164,12 @@
   ".cdf": [
     "netcdf"
   ],
+  "/": [
+    "_listing"
+  ],
   ".zarr/": [
-    "zarr"
+    "zarr",
+    "_listing"
   ],
   ".zgroup": [
     "zarr"
