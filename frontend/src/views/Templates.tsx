@@ -16,6 +16,7 @@ import { BindingsTable } from "./templates/BindingsTable";
 import { ImportWizard } from "./templates/ImportWizard";
 import { InventoryPanel } from "./templates/InventoryPanel";
 import { RowEditorModal } from "./templates/RowEditorModal";
+import { navigateUrl } from "../lib/router";
 
 type PageTab = "bindings" | "library";
 
@@ -27,8 +28,22 @@ export default function Templates() {
     null,
   );
   const [importing, setImporting] = useState(false);
-  const [tab, setTab] = useState<PageTab>("bindings");
   const loadSeq = useRef(0);
+
+  // The active tab lives in the URL (`?tab=library`) so browser back/forward
+  // moves between tabs. The page is keyed by the nav epoch in App.tsx, so a
+  // pushState here remounts this view and it re-derives the tab from the URL —
+  // no local tab state to keep in sync. Bindings is the default (clean URL).
+  const tab: PageTab = new URLSearchParams(location.search).get("tab") === "library" ? "library" : "bindings";
+  const setTab = (next: PageTab) => {
+    const params = new URLSearchParams(location.search);
+    if (next === "bindings") params.delete("tab");
+    else params.set("tab", next);
+    const search = params.toString();
+    // navigateUrl (not raw pushState) so the nav epoch bumps and App remounts
+    // this view to re-derive the tab; back/forward already works via popstate.
+    navigateUrl(location.pathname + (search ? "?" + search : ""));
+  };
 
   const load = async () => {
     const seq = ++loadSeq.current;
@@ -89,7 +104,7 @@ export default function Templates() {
         />
       )}
       {inventory && registry && tab === "library" && (
-        <InventoryPanel inventory={inventory} onImport={() => setImporting(true)} />
+        <InventoryPanel inventory={inventory} onImport={() => setImporting(true)} onChanged={load} />
       )}
 
       {editor && inventory && registry && (

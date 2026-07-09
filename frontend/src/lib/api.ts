@@ -441,6 +441,12 @@ export async function downloadTemplatesExport(names: string[]): Promise<void> {
   }
 }
 
+// Delete one USER template folder (core templates are read-only, 404 here).
+// Registry bindings are left untouched — they resolve broken until rebound.
+export function deleteTemplate(name: string): Promise<{ deleted: string }> {
+  return postJson<{ deleted: string }>("/api/templates/delete", { name });
+}
+
 // One candidate template found in an uploaded zip (a top-level directory).
 export interface ImportItem {
   name: string;

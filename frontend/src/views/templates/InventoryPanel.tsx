@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { downloadTemplatesExport, rawUrl, revealPath } from "../../lib/api";
+import { useEffect, useRef, useState } from "react";
+import { deleteTemplate, downloadTemplatesExport, rawUrl, revealPath } from "../../lib/api";
 import type { InventoryTemplate, TemplateInventory } from "../../lib/api";
 import { navigate } from "../../lib/router";
 
@@ -8,15 +8,18 @@ type UseFilter = "all" | "used" | "unused";
 export function InventoryPanel({
   inventory,
   onImport,
+  onChanged,
 }: {
   inventory: TemplateInventory;
   onImport: () => void;
+  onChanged: () => void;
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [sourceFilter, setSourceFilter] = useState<string>("all");
   const [useFilter, setUseFilter] = useState<UseFilter>("all");
+  const [deleting, setDeleting] = useState<InventoryTemplate | null>(null);
 
   const toggle = (name: string) =>
     setSelected((prev) => {
@@ -152,6 +155,7 @@ export function InventoryPanel({
                     onExport={() => runExport([t.name])}
                     onReveal={() => reveal(t.path)}
                     onOpen={() => open(t.path)}
+                    onDelete={g.source.editable ? () => setDeleting(t) : undefined}
                   />
                 ))}
               </tbody>
@@ -162,10 +166,136 @@ export function InventoryPanel({
       {/* Deleting a template folder has no API in the frozen contract — do it
           from the file explorer (Open in explorer / Reveal in Finder). */}
       <p className="templates-hint">
-        Edit or delete a template's files from the file explorer — this view manages the pool and
-        its bindings, not template internals.
+        Edit a template's files from the file explorer — this view manages the pool and its
+        bindings, not template internals.
       </p>
+      {deleting && (
+        <DeleteConfirm
+          t={deleting}
+          onExport={() => runExport([deleting.name])}
+          onClose={() => setDeleting(null)}
+          onDeleted={() => {
+            setDeleting(null);
+            onChanged();
+          }}
+        />
+      )}
     </section>
+  );
+}
+
+// Confirm modal for deleting a user template. Offers a "download an export
+// first" path (TV-16 / SPEC §2.8) so the folder can be recovered later — the
+// delete only proceeds after the export download resolves. Core templates
+// never reach here (no Delete action rendered for a read-only source).
+function DeleteConfirm({
+  t,
+  onExport,
+  onClose,
+  onDeleted,
+}: {
+  t: InventoryTemplate;
+  onExport: () => Promise<void>;
+  onClose: () => void;
+  onDeleted: () => void;
+}) {
+  const [busy, setBusy] = useState<"export" | "delete" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const alive = useRef(true);
+  useEffect(
+    () => () => {
+      alive.current = false;
+    },
+    [],
+  );
+
+  const del = async () => {
+    await deleteTemplate(t.name);
+    onDeleted();
+  };
+
+  const exportThenDelete = async () => {
+    setBusy("export");
+    setError(null);
+    try {
+      await onExport(); // must succeed before we destroy the folder
+      await del();
+    } catch (e) {
+      if (alive.current) {
+        setError((e as Error).message);
+        setBusy(null);
+      }
+    }
+  };
+
+  const deleteOnly = async () => {
+    setBusy("delete");
+    setError(null);
+    try {
+      await del();
+    } catch (e) {
+      if (alive.current) {
+        setError((e as Error).message);
+        setBusy(null);
+      }
+    }
+  };
+
+  return (
+    <div
+      className="deploy-overlay"
+      onMouseDown={(e) => {
+        if (busy === null && e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div
+        className="deploy-dialog templates-delete"
+        role="dialog"
+        aria-modal="true"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className="deploy-head">
+          <h2>Delete “{t.name}”?</h2>
+          <button type="button" className="deploy-close" onClick={onClose} disabled={busy !== null}>
+            ✕
+          </button>
+        </div>
+        <div className="deploy-body">
+          <p className="deploy-muted">
+            This removes the user template folder for <code>{t.name}</code>. Bindings that use it
+            keep the name and show as broken until you rebind or remove them. Download an export
+            first if you might want it back.
+          </p>
+          {error && <div className="deploy-error">{error}</div>}
+          <div className="templates-actions">
+            <button
+              type="button"
+              className="templates-danger-text"
+              onClick={deleteOnly}
+              disabled={busy !== null}
+            >
+              {busy === "delete" ? "Deleting…" : "Delete without export"}
+            </button>
+            <button
+              type="button"
+              className="templates-btn-secondary"
+              onClick={onClose}
+              disabled={busy !== null}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="templates-btn-primary"
+              onClick={exportThenDelete}
+              disabled={busy !== null}
+            >
+              {busy === "export" ? "Exporting…" : "Export & delete"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -192,6 +322,7 @@ function InventoryRow({
   onExport,
   onReveal,
   onOpen,
+  onDelete,
 }: {
   t: InventoryTemplate;
   checked: boolean;
@@ -199,6 +330,7 @@ function InventoryRow({
   onExport: () => void;
   onReveal: () => void;
   onOpen: () => void;
+  onDelete?: () => void; // only for editable (user) sources; core is undeletable
 }) {
   return (
     <tr className="templates-row">
@@ -235,6 +367,16 @@ function InventoryRow({
         <button type="button" className="templates-ghost-btn" onClick={onOpen} title="Open the folder in the file explorer">
           Open
         </button>
+        {onDelete && (
+          <button
+            type="button"
+            className="templates-ghost-btn danger"
+            onClick={onDelete}
+            title="Delete this user template"
+          >
+            Delete
+          </button>
+        )}
       </td>
     </tr>
   );

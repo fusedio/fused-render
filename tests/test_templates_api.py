@@ -345,6 +345,51 @@ def test_export_handles_comma_in_template_name(ctx):
         assert set(zf.namelist()) == {"a,b/template.html"}
 
 
+def test_delete_user_template(ctx):
+    ctx.make_template("mine")
+    assert (ctx.udir / "mine").is_dir()
+    resp = ctx.client.post("/api/templates/delete", json={"name": "mine"}, headers=FUSED)
+    assert resp.status_code == 200
+    assert resp.json() == {"deleted": "mine"}
+    assert not (ctx.udir / "mine").exists()
+
+
+def test_delete_core_template_refused(ctx):
+    # 'code' is a CORE template (no user folder). Delete only touches
+    # USER_TEMPLATES_DIR, so this 404s and the core folder is untouched.
+    resp = ctx.client.post("/api/templates/delete", json={"name": "code"}, headers=FUSED)
+    assert resp.status_code == 404
+    # core 'code' still exports fine afterwards
+    assert ctx.client.get("/api/templates/export", params={"names": ["code"]}).status_code == 200
+
+
+def test_delete_user_shadow_leaves_core(ctx):
+    # A user 'code' shadows the core one; deleting removes only the user folder.
+    ctx.make_template("code", extra={"marker.txt": "USER"})
+    resp = ctx.client.post("/api/templates/delete", json={"name": "code"}, headers=FUSED)
+    assert resp.status_code == 200
+    assert not (ctx.udir / "code").exists()
+    # core 'code' is still there (export now resolves to core)
+    assert ctx.client.get("/api/templates/export", params={"names": ["code"]}).status_code == 200
+
+
+def test_delete_unknown_name(ctx):
+    resp = ctx.client.post("/api/templates/delete", json={"name": "nope"}, headers=FUSED)
+    assert resp.status_code == 404
+
+
+def test_delete_rejects_traversal_name(ctx):
+    resp = ctx.client.post("/api/templates/delete", json={"name": "../secrets"}, headers=FUSED)
+    assert resp.status_code == 400
+
+
+def test_delete_requires_fused_header(ctx):
+    ctx.make_template("mine")
+    resp = ctx.client.post("/api/templates/delete", json={"name": "mine"})
+    assert resp.status_code == 403
+    assert (ctx.udir / "mine").is_dir()  # untouched
+
+
 def test_export_allows_core_template(ctx):
     # 'code' is a core template — core templates are exportable too (SPEC
     # §2.5 update): resolve via core dir since there's no user shadow.

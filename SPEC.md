@@ -1015,6 +1015,14 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
 - **TV-10** Reveal and "open in explorer" add **no new endpoints**:
   inventory's Reveal action reuses `POST /api/fs/reveal`; "open in explorer"
   is a plain shell navigation to `USER_TEMPLATES_DIR/<name>`.
+- **TV-19** `POST /api/templates/delete` **(D92)** — body `{name}`, `X-Fused`
+  guarded; deletes **one user template folder** under `USER_TEMPLATES_DIR`.
+  **Core templates are read-only and never deletable** — a core-only name
+  resolves to no user folder and 404s (the core folder is untouched); unsafe
+  names (path separators, `.`/`..`) → 400; symlinks are rejected. Registry
+  bindings are **not** rewritten — a binding that referenced the name resolves
+  broken (`exists:false`) until rebound, matching export/import being
+  folder-only. Returns `{deleted: name}`.
 
 ### 22.3 Frontend — Templates view (`/view/_templates`)
 
@@ -1022,7 +1030,11 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   sentinel dispatched in `App.tsx` the same way `/view/_prefs` is (§20):
   view-only, no `/embed` variant (a template-management page inside an
   embedded pane has no meaning). New component
-  `frontend/src/views/Templates.tsx`.
+  `frontend/src/views/Templates.tsx`. The active tab (bindings / library)
+  lives in the URL as **`?tab=library`** (bindings = default, clean URL);
+  switching tabs is a `pushState`, so browser back/forward moves between
+  tabs (D93). The page is keyed by the nav epoch, so it re-derives the tab
+  from the URL on each navigation — no separate tab state.
 - **TV-12** Sidebar footer gains a "Templates" button next to the
   Preferences gear (`navigateUrl("/view/_templates")`), an inline SVG icon
   in the same style as the gear.
@@ -1063,8 +1075,11 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   folders regardless of source). Toolbar: "Import zip" and "Export selected"
   — checkbox multi-select spans any rows (core or user) and drives the export
   download (`downloadTemplatesExport`, which surfaces server errors rather
-  than saving a 400 body as a zip). Deleting a template folder has no
-  endpoint (deferred) — it is done from the file explorer.
+  than saving a 400 body as a zip). **User** rows also get a **Delete** action
+  (never core — the source is read-only); it opens a confirm modal offering
+  "Export & delete" (downloads a recovery zip first via `downloadTemplatesExport`,
+  then deletes only if that resolves), "Delete without export", or Cancel,
+  calling `deleteTemplate` (TV-19) and refreshing on success.
 - **TV-17** **Import wizard modal**, three steps: (1) file chooser
   (`accept=".zip"`) → `importTemplates(file)` (TV-8); (2) manifest — a
   table of staged items with a per-conflicting-item resolution selector

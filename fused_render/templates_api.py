@@ -490,6 +490,36 @@ def api_export_templates(names: list[str] = Query(default=[])):
     )
 
 
+# -- routes: delete -----------------------------------------------------------
+
+
+@router.post("/api/templates/delete")
+def api_delete_template(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    # SPEC §2.8: delete ONE user template folder. Only USER_TEMPLATES_DIR is
+    # touched — **core templates are read-only and never deletable**. Registry
+    # bindings that referenced the name are left as-is (they resolve broken
+    # until rebound), matching export/import being folder-only.
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    name = body.get("name")
+    if not isinstance(name, str) or not name:
+        return _error("'name' must be a non-empty string")
+    if "/" in name or "\\" in name or name in (".", ".."):
+        return _error("invalid template name")
+
+    folder = os.path.join(server.USER_TEMPLATES_DIR, name)
+    # Reject symlinks (never follow one out of the user dir) and anything that
+    # is not a real user directory — a core-only template resolves here to a
+    # path that does not exist under USER_TEMPLATES_DIR, so it 404s.
+    if os.path.islink(folder) or not os.path.isdir(folder):
+        return _error(f"no user template named {name!r} to delete", status=404)
+
+    shutil.rmtree(folder)
+    return {"deleted": name}
+
+
 # -- routes: import (stage -> commit) -----------------------------------------
 
 IMPORT_TTL_SEC = 900  # staged imports expire after 15 minutes (SPEC §2.6/2.7)
