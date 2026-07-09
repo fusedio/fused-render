@@ -7,15 +7,9 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { getDeployStatus, getPrefs, rawUrl } from "../lib/api";
 import type { Deployment, StatResult, TemplateEntry } from "../lib/api";
 import { formatSize, formatMtime } from "../lib/format";
-import ModeSwitcher, { templateModeIcon } from "../components/ModeSwitcher";
+import ModeSwitcher, { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "../components/ModeSwitcher";
 import DeployModal from "../components/DeployModal";
 import Listing from "./Listing";
-
-// Sentinel modes the shell knows how to render without a template folder
-// (mirrors the server's KNOWN_SENTINELS, SPEC PT-12/D81): `_render` (the file
-// itself in an iframe) and `_listing` (the shell's built-in directory listing,
-// no iframe). Any other path-null entry is an unknown sentinel, filtered out.
-const KNOWN_SENTINEL_MODES = new Set(["_render", "_listing"]);
 
 interface HeaderProps {
   fsPath: string;
@@ -213,14 +207,18 @@ function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: St
       : `/render?path=${encodeURIComponent(entry.path as string)}&_file=${encodeURIComponent(fsPath)}`;
 
   // Embed hides the whole preview-header, hence the switcher (shell.css). A
-  // directory whose mode list carries `_listing` alongside a real preview (a
+  // directory whose mode list carries `_listing` alongside another mode (a
   // .zarr store, or a custom view + listing) surfaces a corner chip to toggle
-  // into/out of the member listing (D81 — replaces the old `?listing=1`
-  // "Browse contents"). Pointless when `_listing` is the sole/default-only
-  // mode, so shown only when there is another mode to toggle back to.
+  // between the listing and that other view (D81 — replaces the old
+  // `?listing=1` "Browse contents"). The listing's counterpart is the default
+  // mode, UNLESS the default IS the listing (`["_listing", "gallery"]`) — then
+  // the first non-listing mode, so an embed whose default is the listing still
+  // has a path to the secondary view. Shown only when a non-listing mode exists.
+  const otherEntry = templates.find((t) => t.mode !== "_listing");
+  const counterpart = templates[0].mode !== "_listing" ? templates[0].mode : otherEntry?.mode;
   const toggleListing =
-    templates.length > 1 && templates.some((t) => t.mode === "_listing")
-      ? () => setMode(isListing ? templates[0].mode : "_listing")
+    otherEntry && templates.some((t) => t.mode === "_listing")
+      ? () => setMode(isListing ? (counterpart as string) : "_listing")
       : null;
 
   return (
@@ -254,7 +252,11 @@ function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: St
         )}
         {toggleListing && (
           <button type="button" className="preview-browse-chip" onClick={toggleListing}>
-            {isListing ? "Back" : "Browse contents"}
+            {!isListing
+              ? "Browse contents"
+              : counterpart === templates[0].mode
+                ? "Back"
+                : modeTitle(counterpart as string)}
           </button>
         )}
       </div>

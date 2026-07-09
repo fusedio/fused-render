@@ -8,6 +8,13 @@ import React from "react";
 import { rawUrl } from "../lib/api";
 import type { TemplateEntry } from "../lib/api";
 
+// Sentinel modes the shell renders without a template folder (SPEC PT-12/D81):
+// `_render` (the target file itself, in an iframe) and `_listing` (the shell's
+// built-in directory listing, no iframe). Any other `path: null` entry is an
+// unknown sentinel — filtered out by every view that dispatches on templates
+// (Preview, PaneModeMenu), so they share this one set to stay in lockstep.
+export const KNOWN_SENTINEL_MODES = new Set(["_render", "_listing"]);
+
 export interface ModeSwitcherEntry<M extends string> {
   mode: M;
   icon: React.ReactNode;
