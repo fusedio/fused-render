@@ -40,8 +40,12 @@ _EXPLAINER_HTML = os.path.join("how_it_works", "explainer.html")
 
 def fused_dir() -> str:
     """The user's Fused workspace: ~/Documents/Fused. FUSED_RENDER_DIR overrides
-    it (tests set it so they never touch the real dir). Path only — no I/O."""
-    return os.environ.get("FUSED_RENDER_DIR") or os.path.expanduser("~/Documents/Fused")
+    it (tests set it so they never touch the real dir). Path only — no I/O.
+    Normalized (expanduser + abspath) so a tilde or relative override yields the
+    same path everywhere: seeding, bookmark URLs, and /api/config's fused_dir."""
+    return os.path.abspath(
+        os.path.expanduser(os.environ.get("FUSED_RENDER_DIR") or "~/Documents/Fused")
+    )
 
 
 def _view_url(abs_path: str) -> str:
