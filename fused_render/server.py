@@ -14,6 +14,7 @@ at startup if missing) to opt in to the local compute backend (`engine.py`).
 import asyncio
 import json
 import logging
+from collections import deque
 import mimetypes
 import os
 import stat as stat_mod
@@ -24,7 +25,7 @@ import time
 import traceback
 
 from fastapi import Body, FastAPI, Header, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from fused_render import __version__
@@ -106,12 +107,83 @@ BUILTIN_REGISTRY = os.path.join(TEMPLATES_DIR, "registry.json")
 # reference (D73); any other `_` name is invalid (CT-6).
 KNOWN_SENTINELS = {"_render"}
 
-# Recursive-walk cap (/api/fs/walk): stop collecting after this many entries so
-# a search over a huge tree stays bounded. Module-level so tests can shrink it.
-WALK_MAX_ENTRIES = 20000
-# Directories never descended into by the walk (nor emitted as entries): heavy,
-# machine-managed trees that only add noise to a file search.
-WALK_IGNORE_DIRS = {"node_modules", "__pycache__", "venv"}
+# Recursive-walk cap (/api/fs/walk): stop collecting after this many entries.
+# With the streamed BFS walk this is a memory/latency safety valve, not a
+# coverage budget — shallow entries (the ones a search almost always wants)
+# are all emitted long before the cap can bite. Module-level so tests can
+# shrink it.
+WALK_MAX_ENTRIES = 200_000
+# Entries per NDJSON batch line in the streamed walk: big enough that framing
+# overhead is noise, small enough that the client gets its first scoreable
+# batch within a few filesystem reads.
+WALK_BATCH_SIZE = 500
+# Directories never descended into by the walk: heavy, machine-managed trees
+# that only add noise to a file search. Checked against the bare name, so it
+# also applies under hidden=1 (".git" is machine noise, not "hidden data").
+WALK_IGNORE_DIRS = {"node_modules", "__pycache__", "venv", ".venv", ".git"}
+# macOS package directories: emitted as a single (dir) entry but never
+# descended — their internals are implementation details (Finder hides them
+# too), and one Electron .app alone can be thousands of files.
+WALK_LEAF_DIR_SUFFIXES = (".app", ".framework", ".bundle", ".photoslibrary")
+
+
+def _walk_bfs(path, include_hidden):
+    """Level-order walk of `path` yielding /api/fs/walk entry dicts.
+
+    Breadth-first via a FIFO of pending directories: every entry at depth N is
+    yielded before any entry at depth N+1, so a caller that stops early (cap,
+    client disconnect) always has complete shallow coverage. Within one parent,
+    dirs come first, then files, each sorted by name (the old walk's per-level
+    order). Symlinks are yielded but never descended; classification and stat
+    follow the link (matching os.walk/os.stat), so a broken symlink is skipped
+    like any other unstatable entry. Unreadable directories are skipped
+    silently (matches /api/fs/list).
+    """
+    queue = deque([(path, "")])
+    while queue:
+        current, rel_base = queue.popleft()
+        try:
+            with os.scandir(current) as it:
+                children = list(it)
+        except OSError:
+            continue  # unreadable dir skipped silently
+        dirs = []
+        files = []
+        for child in children:
+            name = child.name
+            if not include_hidden and name.startswith("."):
+                continue
+            try:
+                is_dir = child.is_dir()
+            except OSError:
+                continue
+            if is_dir:
+                if name in WALK_IGNORE_DIRS:
+                    continue
+                dirs.append(child)
+            else:
+                files.append(child)
+        dirs.sort(key=lambda e: e.name)
+        files.sort(key=lambda e: e.name)
+        for child, is_dir in [(d, True) for d in dirs] + [(f, False) for f in files]:
+            try:
+                st = child.stat()
+            except OSError:
+                continue  # unreadable entries skipped silently
+            rel = rel_base + "/" + child.name if rel_base else child.name
+            yield {
+                "rel": rel,
+                "is_dir": is_dir,
+                "size": None if is_dir else st.st_size,
+                "mtime": st.st_mtime,
+            }
+            if is_dir:
+                try:
+                    is_link = child.is_symlink()
+                except OSError:
+                    is_link = True  # can't tell — safer not to descend
+                if not is_link and not child.name.lower().endswith(WALK_LEAF_DIR_SUFFIXES):
+                    queue.append((os.path.join(current, child.name), rel))
 
 
 def _error(message: str, status: int = 400) -> JSONResponse:
@@ -608,54 +680,63 @@ def create_app(start_dir: str) -> FastAPI:
         return {"path": path, "entries": entries}
 
     @app.get("/api/fs/walk")
-    def api_fs_walk(path: str, hidden: str = "0"):
+    def api_fs_walk(path: str, hidden: str = "0", stream: str = "0"):
         # Recursive listing of a directory subtree, for the explorer search
-        # (flat, ranked client-side). Prunes hidden entries (leading `.`) and
-        # WALK_IGNORE_DIRS from descent, skips hidden files, and never follows
-        # symlinks. Capped at WALK_MAX_ENTRIES; `rel` is posix-relative to
-        # `path`. Unreadable entries are skipped silently (matches /api/fs/list).
+        # (flat, ranked client-side). Walks BREADTH-FIRST so shallow entries —
+        # the ones a search almost always targets — are all emitted before any
+        # deep subtree can exhaust the WALK_MAX_ENTRIES cap (the old
+        # depth-first walk let one big sibling starve every later one). Prunes
+        # WALK_IGNORE_DIRS entirely, emits WALK_LEAF_DIR_SUFFIXES packages
+        # without descending, never follows symlinks, and skips unreadable
+        # entries silently (matches /api/fs/list). `rel` is posix-relative to
+        # `path`.
         #
         # `hidden=1` (explicit intent: the user typed a dot-leading query)
         # includes dot-files and descends into dot-dirs. WALK_IGNORE_DIRS is
         # always pruned regardless — those trees are noise, not "hidden data",
-        # and letting hidden=1 descend into node_modules would blow the cap.
+        # and letting hidden=1 descend into .git/node_modules would flood the
+        # results with machine-managed junk.
+        #
+        # `stream=1` returns NDJSON: zero or more `{"entries": [...]}` batch
+        # lines (WALK_BATCH_SIZE each) followed by exactly one terminal
+        # `{"done": true, "truncated": bool, "total": n}` line. The client
+        # scores batches as they arrive, so first results paint while the walk
+        # is still running. Closing the connection cancels the walk (Starlette
+        # closes the generator on disconnect). Without `stream=1` the response
+        # is the original single-JSON shape, unchanged for old clients.
         include_hidden = hidden == "1"
         if not os.path.isdir(path):
             return _error(f"not a directory: {path}", status=400)
-        entries = []
-        truncated = False
-        for root, dirs, files in os.walk(path, followlinks=False):
-            # Mutating dirs in place both drops them from descent and, since we
-            # emit from the (already pruned) list, keeps them out of the results.
-            dirs[:] = sorted(
-                d
-                for d in dirs
-                if (include_hidden or not d.startswith(".")) and d not in WALK_IGNORE_DIRS
-            )
-            batch = [(d, True) for d in dirs] + [
-                (f, False) for f in sorted(files) if include_hidden or not f.startswith(".")
-            ]
-            for name, is_dir in batch:
-                full = os.path.join(root, name)
-                try:
-                    st = os.stat(full)
-                except OSError:
-                    continue  # unreadable entries skipped silently
-                rel = os.path.relpath(full, path).replace(os.sep, "/")
-                entries.append(
-                    {
-                        "rel": rel,
-                        "is_dir": is_dir,
-                        "size": None if is_dir else st.st_size,
-                        "mtime": st.st_mtime,
-                    }
-                )
+        walker = _walk_bfs(path, include_hidden)
+
+        if stream != "1":
+            entries = []
+            truncated = False
+            for entry in walker:
+                entries.append(entry)
                 if len(entries) >= WALK_MAX_ENTRIES:
                     truncated = True
                     break
-            if truncated:
-                break
-        return {"path": path, "entries": entries, "truncated": truncated}
+            return {"path": path, "entries": entries, "truncated": truncated}
+
+        def ndjson():
+            batch = []
+            total = 0
+            truncated = False
+            for entry in walker:
+                batch.append(entry)
+                total += 1
+                if len(batch) >= WALK_BATCH_SIZE:
+                    yield json.dumps({"entries": batch}) + "\n"
+                    batch = []
+                if total >= WALK_MAX_ENTRIES:
+                    truncated = True
+                    break
+            if batch:
+                yield json.dumps({"entries": batch}) + "\n"
+            yield json.dumps({"done": True, "truncated": truncated, "total": total}) + "\n"
+
+        return StreamingResponse(ndjson(), media_type="application/x-ndjson")
 
     @app.get("/api/fs/raw")
     def api_fs_raw(path: str):
