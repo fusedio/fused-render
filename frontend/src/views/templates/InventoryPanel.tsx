@@ -66,6 +66,9 @@ export function InventoryPanel({
   };
 
   const groups = inventory.sources
+    .slice()
+    // User (higher precedence) group first, core after.
+    .sort((a, b) => b.precedence - a.precedence)
     .map((s) => ({ source: s, items: inventory.templates.filter((t) => t.source === s.id && matches(t)) }))
     .filter((g) => g.items.length > 0);
 
