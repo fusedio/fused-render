@@ -1197,3 +1197,48 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   inert (CT-7) until bound via the row editor.
 - Persisting a per-file "last selected mode" — unrelated, not part of this
   feature.
+## 24. History View — Sidecar Inspector Template (D90)
+
+A `history` view template renders a file's `.html.json` sidecar (§21, SB-7, D82–D84)
+as a readable, sectioned history — every claude session, bookmark, last-session
+snapshot, and review comment the file has accumulated. Reachable from both ends:
+opening `sine.html` and switching to the `history` mode, or opening `sine.html.json`
+directly, where `history` is the default mode.
+
+- **HV-1** An ordinary view template (`fused_render/templates/history/`) —
+  `template.html` + `icon.svg` only, **no `.py`** (JSON is browser-parseable; same
+  posture as `tree`). No shell/server code; navigation and validation live inside
+  the template.
+- **HV-2** Registry bindings: compound key `".html.json": ["history", "tree",
+  "code", "annotate"]` (more specific than `.json`, which keeps its tree-first
+  list), and `"history"` appended to `".html"` (default stays `_render`).
+  `.html` targets only for now — other extensions later by adding keys.
+- **HV-3** Role resolution from `_file`: ends `.html.json` → the sidecar is the
+  file itself, target = the name minus `.json`; ends `.html` → sidecar =
+  `_file + ".json"`. Sidecar read via `fused.readFile`; absent sidecar → a
+  friendly "no history yet" empty state, never an error.
+- **HV-4** Validation is **per-key** against an inline `const SCHEMA` in
+  `template.html` (a hand-rolled subset validator: `type`, `required`,
+  `properties`, `items` — no vendored library). A key that fails renders a
+  warning card **in that section only** (first error + collapsed raw JSON of
+  that key); the other sections render normally. Only a whole-file parse
+  failure (or non-object root) blocks the full view, showing the raw text.
+- **HV-5** Unknown top-level keys are NOT corruption — the sidecar is a shared
+  store and future writers may add keys. They render as one collapsed
+  "Other keys" raw section.
+- **HV-6** Entry schemas require only the fields the view renders; extra fields
+  on entries are allowed (writers grow their records additively). Timestamp
+  units are mixed by design (D83/D84 code comments): bookmark `created_at` and
+  comment `createdAt` are **ms** epoch; `recorded_at`/`updated_at` and claude's
+  `created_at`/`last_used` are **seconds**. The formatter picks the unit per
+  field, never heuristically.
+- **HV-7** Interactivity — plain shell navigation via `window.top.location`
+  with the `/view/` codec (router.ts shape), the claude-template precedent:
+  a claude session opens the target with `_mode=claude&session_id=<id>` (the
+  resume contract); a bookmark-history entry and the `lastSession` card open
+  the target with their stored `search` verbatim.
+- **HV-8** Comments are a **read-only** section (content, created/updated time,
+  resolved badge, annotated view). No navigation: annotate's live store is the
+  URL `comments` param, and the sidecar log is write-only — the view does not
+  synthesize comment URLs (owner call 2026-07-09).
+- **HV-9** The view never writes the sidecar.
