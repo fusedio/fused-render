@@ -10,6 +10,7 @@ export interface FsEntry {
   is_dir: boolean;
   size: number | null;
   mtime: number | null;
+  ignored?: boolean; // matched by .gitignore inside a git repo (dimmed in the UI)
 }
 
 export interface ListResult {
@@ -24,6 +25,7 @@ export interface WalkEntry {
   is_dir: boolean;
   size: number | null;
   mtime: number | null;
+  ignored?: boolean; // matched by .gitignore inside a git repo (dimmed in the UI)
 }
 
 export interface WalkResult {

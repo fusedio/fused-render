@@ -376,7 +376,11 @@ export default function Listing({ fsPath }: { fsPath: string }) {
         visibleHits.map(({ entry, positions }) => {
           const childPath = base + "/" + entry.rel;
           return (
-            <tr key={entry.rel} className="row" onClick={() => navigate(childPath)}>
+            <tr
+              key={entry.rel}
+              className={entry.ignored ? "row ignored" : "row"}
+              onClick={() => navigate(childPath)}
+            >
               <td className="name">
                 <span className="icon">{entry.is_dir ? dirIcon : fileIcon}</span>
                 <span className="search-path">{renderHighlight(entry.rel, positions)}</span>
@@ -422,7 +426,11 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     const rows = sortedEntries.map((entry) => {
       const childPath = base + "/" + entry.name;
       return (
-        <tr key={entry.name} className="row" onClick={() => navigate(childPath)}>
+        <tr
+          key={entry.name}
+          className={entry.ignored ? "row ignored" : "row"}
+          onClick={() => navigate(childPath)}
+        >
           <td className="name">
             <span className="icon">{entry.is_dir ? dirIcon : fileIcon}</span>
             {entry.name}
