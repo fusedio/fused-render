@@ -1685,6 +1685,9 @@ body.embed .preview-browse-chip:hover {
 /* ---- Preferences page (SPEC §20) ------------------------------------------ */
 
 /* Bottom-left entry: pinned to the sidebar's bottom edge, muted until hover. */
+/* Icon-only footer: Templates, Preferences, and the tour trigger sit as three
+   compact square icon buttons (labels via title/aria-label) — the sidebar is
+   too narrow for two full text labels plus a third control without cramming. */
 .sidebar-footer {
   margin-top: auto;
   padding: 6px;
@@ -1695,39 +1698,33 @@ body.embed .preview-browse-chip:hover {
   gap: 4px;
 }
 
-.sidebar-footer .prefs-link {
-  flex: 1 1 auto;
-  min-width: 0;
+.sidebar-footer .prefs-link,
+.sidebar-footer .tour-link {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  padding: 7px;
+  border-radius: 6px;
   background: none;
   border: none;
   font: inherit;
   color: var(--fg-muted);
   cursor: pointer;
-  text-align: left;
+}
+
+.sidebar-footer .prefs-link .icon,
+.sidebar-footer .tour-link .icon {
+  margin: 0;
+  display: flex;
 }
 
 .sidebar-footer .prefs-link:hover,
-.sidebar-footer .prefs-link.active {
-  color: var(--fg);
-}
-
-/* Tour replay: compact icon-only sibling to Preferences. */
-.sidebar-footer .tour-link {
-  flex: 0 0 auto;
-  width: auto;
-  background: none;
-  border: none;
-  font: inherit;
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-
-.sidebar-footer .tour-link .icon {
-  margin: 0;
-}
-
+.sidebar-footer .prefs-link.active,
 .sidebar-footer .tour-link:hover {
   color: var(--fg);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 /* driver.js popover — dark theme overrides scoped under .driver-popover. */
