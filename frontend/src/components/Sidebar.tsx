@@ -1,6 +1,6 @@
 // Sidebar UI: brand, Home entry, bookmark rows with hover card + inline rename.
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { navigate, navigateUrl, currentUrl, VIEW_PREFIX } from "../lib/router";
+import { navigate, navigateUrl, currentUrl, rootedFsPath, VIEW_PREFIX } from "../lib/router";
 // Folder-as-tabs entry (TM-8): composeFolderTabsUrl builds the `/view/_tab` url
 // from a folder's children. This sidebar -> views/Tabs.jsx import is the
 // documented acyclic exception (Tabs.jsx never imports back), mirroring
@@ -33,7 +33,7 @@ function bookmarkFsPath(url: string): string {
   const qIdx = url.indexOf("?");
   const pathname = qIdx !== -1 ? url.slice(0, qIdx) : url;
   return pathname.startsWith(VIEW_PREFIX)
-    ? "/" + pathname.slice(VIEW_PREFIX.length).split("/").map(decodeURIComponent).join("/")
+    ? rootedFsPath(pathname.slice(VIEW_PREFIX.length).split("/").map(decodeURIComponent).join("/"))
     : pathname;
 }
 

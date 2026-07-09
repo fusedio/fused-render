@@ -12,8 +12,34 @@ build/watch loop, and serve-from-source means the freshest local build wins.
 import os
 import shutil
 import subprocess
+import sys
 
-from hatchling.builders.hooks.plugin.interface import BuildHookInterface
+try:
+    from hatchling.builders.hooks.plugin.interface import BuildHookInterface
+except ModuleNotFoundError:  # hatchling only exists in a build env; allow the
+    BuildHookInterface = object  # pure helpers below to be imported in tests
+
+
+def _write_baked_ref(root: str, ref: str, build_data: dict) -> None:
+    """Bake the ref into fused_render/_baked_branch.py, or remove it for a
+    baseline build.
+
+    Opt-in isolation: with a ref set, write it so the packaged artifact carries
+    it without the env var, and register it as a build artifact (it's
+    gitignored). With no ref (baseline), delete any stale baked file left by an
+    earlier branch build — otherwise `_baked_ref()` would keep loading that old
+    ref whenever FUSED_RENDER_BRANCH is unset, defeating the baseline.
+    """
+    baked_path = os.path.join(root, "fused_render", "_baked_branch.py")
+    if not ref:
+        if os.path.exists(baked_path):
+            os.remove(baked_path)
+        return
+    with open(baked_path, "w") as f:
+        f.write(f'_BAKED_REF = "{ref}"\n')
+    build_data.setdefault("artifacts", []).append(
+        "fused_render/_baked_branch.py"
+    )
 
 
 class ShellBuildHook(BuildHookInterface):
@@ -22,6 +48,8 @@ class ShellBuildHook(BuildHookInterface):
     def initialize(self, version: str, build_data: dict) -> None:
         if version == "editable":
             return
+
+        self._bake_branch_ref(build_data)
 
         frontend = os.path.join(self.root, "frontend")
         dist_index = os.path.join(
@@ -48,3 +76,18 @@ class ShellBuildHook(BuildHookInterface):
             [npm, "install", "--no-audit", "--no-fund"], cwd=frontend, check=True
         )
         subprocess.run([npm, "run", "build"], cwd=frontend, check=True)
+
+    def _bake_branch_ref(self, build_data: dict) -> None:
+        """Resolve the ref from ``FUSED_RENDER_BRANCH`` and bake it into the
+        packaged build (or clear it for a baseline build); see
+        ``_write_baked_ref``.
+        """
+        sys.path.insert(0, self.root)
+        try:
+            from fused_render import _branch
+
+            ref = _branch.branch_ref()
+        finally:
+            sys.path.remove(self.root)
+
+        _write_baked_ref(self.root, ref, build_data)

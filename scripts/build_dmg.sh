@@ -27,7 +27,9 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_NAME="FusedRender"
+REF="$(PYTHONPATH="$REPO_ROOT" python3 -m fused_render._branch ref)"
+SUFFIX="$(PYTHONPATH="$REPO_ROOT" python3 -m fused_render._branch suffix)"
+APP_NAME="FusedRender${SUFFIX}"
 
 VERSION="$(python3 -c "
 import re
@@ -101,11 +103,17 @@ if [[ ! -x "$BUILD_VENV/bin/python" ]]; then
 fi
 
 echo "==> installing fused-render[bundled,app,fused] + py2app + dmgbuild into the build venv"
+export FUSED_RENDER_BRANCH="$REF"
 "$BUILD_VENV/bin/pip" install --quiet --upgrade pip
 # [fused] bakes the deploy CLI into the bundle (SPEC §19 DP-3): the .app has
 # no pip and no console scripts, so the Deploy surface runs the package
 # in-interpreter via fused_render/_fused_cli.py under the bundled python.
 "$BUILD_VENV/bin/pip" install --quiet "${REPO_ROOT}[bundled,app,fused]" py2app dmgbuild
+# Force a fresh rebuild+reinstall of fused-render itself every run so the branch
+# ref is re-baked to match $REF. The build venv is reused across builds, so pip
+# would otherwise treat an unchanged version as already-satisfied (or reuse a
+# cached wheel) and ship a stale _baked_branch.py from a previous ref.
+"$BUILD_VENV/bin/pip" install --quiet --force-reinstall --no-deps --no-cache-dir "${REPO_ROOT}"
 
 # ---------------------------------------------------------------------------
 # 3. App icon: a fresh, high-res render of the same four-pointed sparkle used

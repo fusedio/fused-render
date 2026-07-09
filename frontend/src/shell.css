@@ -42,6 +42,13 @@ body {
   overflow-y: auto;
 }
 
+/* Phones: give the whole width to the rendered view */
+@media (max-width: 700px) {
+  #sidebar {
+    display: none;
+  }
+}
+
 .sidebar-brand {
   display: flex;
   align-items: center;
@@ -143,6 +150,8 @@ body {
   cursor: pointer;
   width: 14px;
   text-align: center;
+  position: relative;
+  z-index: 1;
 }
 
 /* Custom emoji icons render at natural color, slightly larger than the star. */

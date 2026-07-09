@@ -103,8 +103,10 @@ BUILTIN_REGISTRY = os.path.join(TEMPLATES_DIR, "registry.json")
 
 # Shell sentinel modes (SPEC PT-12): implemented by the shell, no template
 # folder behind them. The only `_`-prefixed names a registry mode list may
-# reference (D73); any other `_` name is invalid (CT-6).
-KNOWN_SENTINELS = {"_render"}
+# reference (D73); any other `_` name is invalid (CT-6). `_listing` is the
+# shell's built-in directory listing — the default of the universal `/`
+# directory key (D81).
+KNOWN_SENTINELS = {"_render", "_listing"}
 
 # Recursive-walk cap (/api/fs/walk): stop collecting after this many entries so
 # a search over a huge tree stays bounded. Module-level so tests can shrink it.
@@ -134,6 +136,8 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
 # User templates + their registry live under the shell home dir's templates/
 # subdir (D76) — ~/.fused-render/templates/<name>/ and .../templates/registry.json
 # — one level below the home dir that also holds bookmarks.json (shell/storage).
+# home_dir() itself nests per branch ref (shell/storage), so branch isolation
+# comes for free here — no branch logic needed in server.
 USER_TEMPLATES_DIR = os.path.join(home_dir(), "templates")
 USER_REGISTRY = os.path.join(USER_TEMPLATES_DIR, "registry.json")
 
@@ -234,9 +238,11 @@ def _key_segments(key, is_dir: bool):
     CT-3): ".csv", compound ".xyz.json", wildcard ".*.json" — `*` matches
     exactly one whole dot-segment, partial wildcards (".geo*") are invalid. A
     trailing "/" marks a directory key (".zarr/", D73); dir keys match only
-    directories, others only files. A key of the wrong shape (no leading dot,
-    empty segment) never matches — same silent-ignore the no-leading-dot rule
-    always had.
+    directories, others only files. The bare "/" is the universal directory
+    key (D81): zero segments, matches any directory — returned as `[]`
+    (distinct from None), ranked lowest by `_match_registry`. A key of the
+    wrong shape (no leading dot, empty segment) never matches — same
+    silent-ignore the no-leading-dot rule always had.
     """
     key = str(key).lower()
     dir_key = key.endswith("/")
@@ -244,6 +250,8 @@ def _key_segments(key, is_dir: bool):
         return None
     if dir_key:
         key = key[:-1]
+        if key == "":
+            return []  # universal directory key ("/"): matches any directory
     if not key.startswith(".") or len(key) < 2:
         return None
     segs = key[1:].split(".")
@@ -258,22 +266,32 @@ def _match_registry(registry: dict, basename: str, is_dir: bool):
     None. Longest-suffix semantics generalized to patterns (SPEC CT-3, D73):
     a key with more segments beats one with fewer; at equal length, comparing
     from the rightmost segment, a literal beats a `*` (`.xyz.json` >
-    `.*.json` > `.json`). A match needs a non-empty stem before the matched
-    suffix, so a dotfile named exactly like a key (a file literally called
-    ".json") does not match. Case-insensitive throughout.
+    `.*.json` > `.json`). The universal `/` directory key (zero segments, D81)
+    ranks below every dot-anchored key (`.zarr/` > `/`) and its stem is the
+    whole basename. A match needs a non-empty stem before the matched suffix,
+    so a dotfile named exactly like a key (a file literally called ".json")
+    does not match. Case-insensitive throughout.
     """
     fsegs = basename.lower().split(".")
     best = None  # (n_segments, literal-mask right-to-left, key, value)
     for key, value in registry.items():
         ksegs = _key_segments(key, is_dir)
-        if ksegs is None or len(fsegs) <= len(ksegs):
+        if ksegs is None:
             continue
-        if not ".".join(fsegs[: -len(ksegs)]):
-            continue
-        tail = fsegs[-len(ksegs):]
-        if any(not (k == f or (k == "*" and f)) for k, f in zip(ksegs, tail)):
-            continue
-        rank = (len(ksegs), tuple(s != "*" for s in reversed(ksegs)))
+        n = len(ksegs)
+        if n == 0:
+            # Universal directory key: matches any directory (stem = whole
+            # basename, non-empty), lowest specificity so any real key wins.
+            rank = (0, ())
+        else:
+            if len(fsegs) <= n:
+                continue
+            if not ".".join(fsegs[:-n]):
+                continue
+            tail = fsegs[-n:]
+            if any(not (k == f or (k == "*" and f)) for k, f in zip(ksegs, tail)):
+                continue
+            rank = (n, tuple(s != "*" for s in reversed(ksegs)))
         if best is None or rank > best[0]:
             best = (rank, key, value)
     if best is None:

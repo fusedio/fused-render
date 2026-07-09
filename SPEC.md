@@ -215,7 +215,7 @@ const page = await fused.runPython("./reader.py",
 
 ### 7.2 Template set — modes per extension
 
-**Shell dispatch is exactly two-way: `templates` non-empty > fallback.** No file-type special-casing in the shell — image, text, and (via the `_render` sentinel, PT-12) HTML handling all arrive through the `templates` list like any other mode. Directories dispatch the same way (a `.zarr` store previews via its `templates`), with `?listing=1` as the one shell-owned escape hatch to the listing view (PT-13).
+**Shell dispatch is exactly two-way: `templates` non-empty > fallback.** No file-type special-casing in the shell — image, text, and (via the `_render` sentinel, PT-12) HTML handling all arrive through the `templates` list like any other mode. Directories dispatch the same way: every directory resolves through the registry too, so the built-in listing is itself a mode — the `_listing` sentinel (PT-12), default of the universal `/` directory key (D81). A `.zarr` store previews via its `templates` (`["zarr", "_listing"]`) with the listing as a peer mode reachable through `_mode` (PT-13).
 
 - **PT-7** The built-in bindings live in **`fused_render/templates/registry.json`** (D73) — data, not code, in **exactly the user-registry format** (§16): dot-anchored suffix-pattern keys (compound `.xyz.json`, wildcard `.*.json`, trailing-`/` directory keys — CT-3) mapping to an **ordered list of template names**. Each entry is a **mode**; the **first entry is the default**. One matcher and one value grammar serve both registries; the only asymmetries are precedence (user match wins, CT-3) and the `"..."` splice (CT-11), which is meaningless in the built-in registry (nothing to splice into — expands to nothing). Rule of thumb: `code` (the editable CodeMirror buffer) appears as a secondary mode only for text formats where raw text is meaningful — never for binary formats (a code view of `.parquet` is garbage).
 
@@ -235,16 +235,21 @@ const page = await fused.runPython("./reader.py",
 | `.txt .log` | `text`, `code` | `<pre>` |
 | `.tif .tiff` | `geotiff` | GeoTIFF/COG via vendored geotiff (in-browser decode, no reader.py); full metadata + dump, photometric routing (RGB/palette/YCbCr), band select + RGB stretch + colormaps, histogram, hover. Small files full-fetched; >32 MiB range-request `fromUrl` |
 | `.nc .nc4 .cdf` | `netcdf` | NetCDF-3 via vendored netcdfjs (HDF5/NetCDF-4 → graceful card); leading-dim sliders, colormaps + stretch, histogram, hover |
-| `.zarr/` (directory) | `zarr` | Zarr v2/v3 store — a *directory*, bound by the trailing-`/` directory key (PT-13); vendored zarrita (in-browser decode, members fetched per-key); group tree + array select, colormaps + stretch, histogram, hover |
+| `.zarr/` (directory) | `zarr`, `_listing` | Zarr v2/v3 store — a *directory*, bound by the trailing-`/` directory key (PT-13); vendored zarrita (in-browser decode, members fetched per-key); group tree + array select, colormaps + stretch, histogram, hover. `_listing` (PT-12) rides as the secondary mode — the raw member listing, replacing the old "Browse contents" escape hatch (D81) |
+| `/` (any directory) | `_listing` | The **universal directory key** (CT-3) — the built-in default for *every* folder. `_listing` is a sentinel (PT-12), not a template folder: the shell's built-in directory listing (sortable columns, in-folder search, FS-1). Zero segments, so any dot-anchored directory key (`.zarr/`) beats it (D81) |
 | `.html .htm` | `_render`, `code` | defaults shipped in the built-in registry like any other key — user-rebindable since D73 (CT-4 revised); `_render` is a shell sentinel (PT-12) rendering the file itself live (§4) |
 | unknown | shell fallback | metadata + raw/download link (built into shell, not a template) |
 
-- **PT-8** `GET /api/fs/stat` carries the resolved mode list as **`templates`**: an array of `{"mode": <name>, "path": <abs template.html>, "icon": <abs icon.svg|null>}`, in order, first = default. `templates: []` when nothing applies (a directory with no directory-key match — PT-13, unmapped extension, `null` binding). The old singular `template` field is **removed**.
-- **PT-9** **`_mode` param (shell URL):** non-default modes are selected via reserved param `_mode=<template name>` on the **shell URL** (bookmarkable, same URL-is-state pattern D40 established for the old HTML `_mode=render|source` toggle — that toggle itself is now the ordinary `["_render", "code"]` mode list, PT-12; old `_mode=source` bookmarks fall to the default, accepted break). Absent `_mode` = default = `templates[0]`; selecting the default **deletes** the param (clean URLs); an unknown/stale value falls back to the default with no error. Switching swaps the iframe src to the selected template's `/render?path=<template>&_file=<file>` with a fresh document per switch. Known accepted quirk: template params (e.g. `offset`) persist on the shell URL across mode switches; a param name used differently by two modes collides — documented, not prevented.
-- **PT-10** **Mode switcher (shell, preview header):** rendered only when `templates.length > 1`, right side of the preview header bar. **Icon-only buttons**, mode name via native `title` tooltip, active mode in accent color. When an entry's `icon` is `null`, the shell renders a placeholder: the first letter of the mode name in a small rounded box. The `.html` Rendered|Source pair is **not a special case**: it is the ordinary mode list `["_render", "code"]` (PT-12) riding this same switcher — `_render` gets a shell-baked eye icon (sentinels have no folder to ship `icon.svg`); `code` gets its real folder icon.
-- **PT-11** **Icons:** a template folder may ship `icon.svg` — **monochrome** (single fill; the shell tints it via CSS `mask-image` + `currentColor`, so only alpha matters), square viewBox (24×24 suggested), legible at 16px. `icon` in the stat entry is the abs path of the `icon.svg` sitting next to the *resolved* `template.html` (the user folder's icon when a user template resolved), or `null`. The shell loads it through the existing `/api/fs/raw` endpoint — no new routes. Every built-in folder ships one.
-- **PT-12** **Sentinel modes:** a mode name starting with `_` is a **shell sentinel** — no template folder backs it; the shell knows what it means. Server resolution special-cases sentinels: the stat entry is emitted as `{"mode": "_<name>", "path": null, "icon": null}` without touching the filesystem. The `_` prefix matches the reserved-param convention (`_mode`, `_file`). The sentinel namespace is **shell-owned**; since D73 the server keeps a **known-sentinel set** (`KNOWN_SENTINELS`) and a name in that set is referenceable from **any** registry list, built-in or user — any other `_`-prefixed name is invalid (dropped + `template_error`, CT-6). Only one sentinel exists today: **`_render`** — "render the file itself" — the default mode of the built-in `.html`/`.htm` list `["_render", "code"]`. Users **can** rebind `.html`/`.htm` (CT-4 revised, D73) — including dropping `_render` — and `"..."` or an explicit `"_render"` entry brings it back. Shell handling: `_render` → iframe src `/render?path=<the file itself>` (no `_file`), shell-baked eye icon; unknown sentinel entries (path `null`, mode not recognized) are filtered out defensively. Non-sentinel entries in the same list (e.g. `code`) work exactly like any template mode. Future html modes are added to the server-side list and flow through the framework normally.
-- **PT-13** **Directory templates (D65, revised by D73):** a preview target may be a **directory** — a Zarr store is one logical dataset spread across many chunk files. A registry key with a **trailing `/`** (`".zarr/"`) binds a *directory's* basename; keys without it bind only files — the two populations are disjoint (CT-3). Directory keys resolve through the same matcher, value grammar, and name-resolution (PT-6) as file keys, so `stat.templates` entries come out identically shaped (PT-8), and they work in **both** registries — the trailing-`/` convention gives the user registry the coherent directory semantics D65 originally said a per-file suffix match lacked, so the package-only restriction is dropped (D73). Dispatch keys on `templates`, not `is_dir`: a directory with a non-empty `templates` list **previews** (like a file) rather than listing — **unless** the shell-owned `?listing=1` query param is present, which forces the plain listing view (a directory with no directory-key match lists as before). Directory previews render a **"Browse contents"** header action that navigates to `?listing=1`; because embed mode hides the whole preview header, the same action also rides as an unobtrusive corner chip pinned over the iframe, revealed only in embed. `listing` never reaches a template: it only takes effect on a directory, and when set the shell renders the listing (no template iframe is mounted). Only `".zarr/" → ["zarr"]` ships today.
+- **PT-8** `GET /api/fs/stat` carries the resolved mode list as **`templates`**: an array of `{"mode": <name>, "path": <abs template.html>, "icon": <abs icon.svg|null>}`, in order, first = default. `templates: []` when nothing applies — an unmapped file extension or a `null` binding. A **directory** always resolves at least the universal `/` key's `["_listing"]` (PT-13, D81), so it is empty only when a `null` binding disables it, whereupon the shell falls back to the built-in listing anyway (a folder must always render something). The old singular `template` field is **removed**.
+- **PT-9** **`_mode` param (shell URL):** non-default modes are selected via reserved param `_mode=<template name>` on the **shell URL** (bookmarkable, same URL-is-state pattern D40 established for the old HTML `_mode=render|source` toggle — that toggle itself is now the ordinary `["_render", "code"]` mode list, PT-12; old `_mode=source` bookmarks fall to the default, accepted break). Absent `_mode` = default = `templates[0]`; selecting the default **deletes** the param (clean URLs); an unknown/stale value falls back to the default with no error. Switching swaps the iframe src to the selected template's `/render?path=<template>&_file=<file>` with a fresh document per switch. A sentinel mode may render a **shell view instead of an iframe**: `_listing` (PT-12) mounts the shell's built-in listing component (no iframe, no `_file`) in place of the preview body, selected by `_mode=_listing` like any other mode (D81). Known accepted quirk: template params (e.g. `offset`) persist on the shell URL across mode switches; a param name used differently by two modes collides — documented, not prevented.
+- **PT-10** **Mode switcher (shell, preview header):** rendered only when `templates.length > 1`, right side of the preview header bar. **Icon-only buttons**, mode name via native `title` tooltip, active mode in accent color. When an entry's `icon` is `null`, the shell renders a placeholder: the first letter of the mode name in a small rounded box. The `.html` Rendered|Source pair is **not a special case**: it is the ordinary mode list `["_render", "code"]` (PT-12) riding this same switcher — `_render` gets a shell-baked eye icon (sentinels have no folder to ship `icon.svg`); `code` gets its real folder icon. The `_listing` sentinel likewise gets a shell-baked list icon (D81).
+- **PT-11** **Icons:** a template folder may ship `icon.svg` — **monochrome** (single fill; the shell tints it via CSS `mask-image` + `currentColor`, so only alpha matters), square viewBox (24×24 suggested), legible at 16px. `icon` in the stat entry is the abs path of the `icon.svg` sitting next to the *resolved* `template.html` (the user folder's icon when a user template resolved), or `null`. The shell loads it through the existing `/api/fs/raw` endpoint — no new routes. Every built-in folder ships one. Sentinel modes (`_render`, `_listing`) have no folder, so the shell bakes their icons in (PT-12).
+- **PT-12** **Sentinel modes:** a mode name starting with `_` is a **shell sentinel** — no template folder backs it; the shell knows what it means. Server resolution special-cases sentinels: the stat entry is emitted as `{"mode": "_<name>", "path": null, "icon": null}` without touching the filesystem. The `_` prefix matches the reserved-param convention (`_mode`, `_file`). The sentinel namespace is **shell-owned**; since D73 the server keeps a **known-sentinel set** (`KNOWN_SENTINELS = {"_render", "_listing"}`, D81) and a name in that set is referenceable from **any** registry list, built-in or user — any other `_`-prefixed name is invalid (dropped + `template_error`, CT-6). Two sentinels exist:
+  - **`_render`** — "render the file itself" — the default mode of the built-in `.html`/`.htm` list `["_render", "code"]`. Shell handling: iframe src `/render?path=<the file itself>` (no `_file`), shell-baked eye icon.
+  - **`_listing`** — "the shell's built-in directory listing" (sortable columns + in-folder search, FS-1/§13.4) — the default of the universal `/` directory key (PT-13, D81), and a peer mode of `.zarr/`'s `["zarr", "_listing"]`. It backs no folder and takes no `_file`: when it is the active mode the shell **mounts its Listing component in place of the preview iframe** (no iframe at all). Shell-baked list icon.
+
+  Users **can** rebind any registry key — including `.html`/`.htm` (CT-4 revised, D73) and the directory keys (D81) — dropping a sentinel, then `"..."` or an explicit entry brings it back. Unknown sentinel entries (path `null`, mode not in the set) are filtered out defensively. Non-sentinel entries in the same list (e.g. `code`, `zarr`) work exactly like any template mode. Future modes are added to the server-side registry and flow through the framework normally.
+- **PT-13** **Directory views (D65, revised by D73 and D81):** a preview target may be a **directory**. Directories resolve through the **same registry** as files (PT-7, CT-3): a key with a **trailing `/`** binds a directory's basename, and the **universal `/` key** (zero segments, CT-3) matches *every* directory at lowest specificity. The built-in registry ships `"/": ["_listing"]` and `".zarr/": ["zarr", "_listing"]` — so **every** directory carries a non-empty `templates` list (≥ `["_listing"]`), and dispatch is uniform: a directory previews its default mode exactly like a file. The built-in **listing is itself a mode** — the `_listing` sentinel (PT-12) — so it rides the ordinary mode switcher (PT-10) and `_mode` selection (PT-9): a plain folder's single-mode `["_listing"]` shows the listing with no switcher; a `.zarr` store shows the zarr map by default with `_listing` as a switchable peer (`_mode=_listing`). This replaces D65's one-way `?listing=1` "Browse contents" escape hatch, which is **removed** (D81) — the only way to the listing is now the `_listing` mode. In **embed** (the preview header, hence the switcher, is hidden), a corner chip toggles the `_listing` mode (writing/deleting `_mode`) so an embedded directory preview can still reach its members. Annotate (§17) is not offered for `_listing` (no iframe to overlay). A directory resolves to an **empty** list only when a `null` binding disables it (CT-2); the shell then falls back to the built-in listing regardless (a folder must always render something). Users bind directory views like any other key — `"/": ["...", "gallery"]` adds a gallery mode to every folder; dropping `_listing` from a list forgoes the file listing for those directories (owner call, same "user can shoot themselves" posture as D73's `.html` rebind). Accepted break: old `?listing=1` bookmarks ignore the dropped param — a plain folder still lists (its default), a `.zarr` bookmark now opens the zarr map instead of members.
 - **PT-5** **User overrides:** DECIDED and specced as §16 (M7, extended by M8) — user template folders under `~/.fused-render/templates/` bound to extensions by `~/.fused-render/templates/registry.json`, replacing or extending the built-in mode list, using the exact same mechanism.
 
 ---
@@ -315,6 +320,7 @@ Distribute as a DMG containing a menu-bar app; all UI stays in the browser.
 - **M7 — Custom templates:** user template folders in `~/.fused-render/templates/` + `registry.json` extension bindings, overriding built-ins (§16).
 - **M8 — Template modes:** 1:n extension→template mapping — folder-per-template built-ins (renamed to public names), ordered mode lists (first = default), registry `list|string|null` grammar with the `"..."` splice, `_mode` shell param + icon-only mode switcher, stat `templates` array replacing `template`, html folded in as the hardcoded `["_render", "code"]` sentinel list (§7, §16 / PT-6..PT-12, CT-10..CT-11).
 - **M9 — Annotation mode:** annotate toggle over any preview mode, element/selection-anchored comment threads stored in the URL (§17).
+- **M13 — Directory views:** directories resolve through the registry like files — the built-in listing becomes the `_listing` sentinel (PT-12), the universal `/` directory key (CT-3) makes it every folder's default mode, custom directory-view templates ride the same mode list + switcher, and `?listing=1` is removed in favor of `_mode=_listing` (§7, §16 / PT-12/PT-13, CT-3 / D81).
 - **Follow-ups (unordered):** remaining preview templates (csv/json/markdown/media/pdf/syntax-highlighted code); warm worker pool; DataFrame/Arrow returns; security layer (token, origin checks, sandboxed bridge); exec console; search/sort/tree/keyboard nav; caching; editing.
 
 ## 13. Live Editing — Autosave & Auto-Reload (M4)
@@ -422,7 +428,7 @@ Goal: users replace or add preview templates using the **exact same mechanism** 
 ### 16.1 Layout on disk
 
 - **CT-1** A user template is a **self-contained folder** `~/.fused-render/templates/<name>/` holding `template.html` plus any sibling files it needs (reader `.py` files, css, assets) and optionally `icon.svg` (PT-11) — identical in shape to a built-in folder (PT-3). `<name>` carries **no** binding-by-convention semantics (CT-7), but it is the template's public name: it resolves by the single rule of PT-6, so a user folder named like a built-in **shadows** it. Relative `fused.runPython("./reader.py")` works unchanged because the template renders from its real path (PT-3).
-- **CT-2** Bindings live in **`~/.fused-render/templates/registry.json`** — a flat JSON object mapping **dotted extension keys** to a template name, or to `null`. Keys may be compound (`.tar.gz`), carry `*` wildcard segments (`.*.json`), or end with `/` to bind a **directory** basename (`.obt/`) — the full key grammar is CT-3, and it is the same grammar the built-in `templates/registry.json` uses (PT-7, D73):
+- **CT-2** Bindings live in **`~/.fused-render/templates/registry.json`** — a flat JSON object mapping **dotted extension keys** to a template name, or to `null`. Keys may be compound (`.tar.gz`), carry `*` wildcard segments (`.*.json`), or end with `/` to bind a **directory** basename (`.obt/`), and the bare `/` key binds **any** directory (the universal key, D81) — the full key grammar is CT-3, and it is the same grammar the built-in `templates/registry.json` uses (PT-7, D73):
 
 ```json
 {
@@ -443,13 +449,14 @@ Goal: users replace or add preview templates using the **exact same mechanism** 
 {
   ".parquet": ["geo-view", "..."],
   ".md": "my-markdown",
-  ".csv": null
+  ".csv": null,
+  "/": ["...", "gallery"]
 }
 ```
 
 ### 16.2 Resolution
 
-- **CT-3** **Key grammar and matching (revised by D73).** A key is a **dot-anchored suffix pattern**: one or more dot-led segments, optionally ending in `/` to bind directories. A segment is a literal (`json`, `tar`) or the wildcard `*`, which matches **exactly one whole non-empty segment** — partial wildcards (`.geo*`) are invalid, and a malformed key (no leading dot, empty segment) never matches (silently ignored, as keys without a leading dot always were). Matching is **case-insensitive** against the basename and requires a **non-empty stem** before the matched suffix (a file literally named `.json` does not match the `.json` key; `.hidden.json` does — its stem is `.hidden`). Directory keys match only directories, file keys only files. **Specificity:** more segments beats fewer; at equal length, comparing from the **rightmost** segment, a literal beats `*` — so for `data.xyz.json`: `.xyz.json` > `.*.json` > `.json`. **Both registries are matched by this same rule** (the old `splitext` single-extension built-in table is gone, D73); precedence stays **any user-registry match > built-in match** — a user `.json` binding beats a built-in `.xyz.json` one. Any extension may be bound, including ones no built-in handles.
+- **CT-3** **Key grammar and matching (revised by D73).** A key is a **dot-anchored suffix pattern**: one or more dot-led segments, optionally ending in `/` to bind directories — plus one special zero-segment key, the bare `/` (the **universal directory key**, D81), which matches *any* directory. A segment is a literal (`json`, `tar`) or the wildcard `*`, which matches **exactly one whole non-empty segment** — partial wildcards (`.geo*`) are invalid, and a malformed key (no leading dot, empty segment) never matches (silently ignored, as keys without a leading dot always were). Matching is **case-insensitive** against the basename and requires a **non-empty stem** before the matched suffix (a file literally named `.json` does not match the `.json` key; `.hidden.json` does — its stem is `.hidden`). Directory keys match only directories, file keys only files. **Specificity:** more segments beats fewer; at equal length, comparing from the **rightmost** segment, a literal beats `*` — so for `data.xyz.json`: `.xyz.json` > `.*.json` > `.json`. The universal `/` key has zero segments, so it ranks **below every** dot-anchored directory key (`.zarr/` > `/`); its stem is the whole basename (D81). **Both registries are matched by this same rule** (the old `splitext` single-extension built-in table is gone, D73); precedence stays **any user-registry match > built-in match** — a user `.json` binding beats a built-in `.xyz.json` one. Any extension may be bound, including ones no built-in handles.
 - **CT-4** *(revised by D73 — the exemption is dropped.)* `.html`/`.htm` are **ordinary registry keys**: their default list `["_render", "code"]` ships in the built-in registry (PT-7), and users may rebind or reorder them like any other extension — rendered-HTML-by-default stays the shipped behavior (§4), no longer an enforced one. `_render` (and any future name in `KNOWN_SENTINELS`, PT-12) is referenceable from registry lists; all other `_`-prefixed names remain invalid — dropped per CT-6 with `template_error`.
 - **CT-5** Registries are read **per stat/render resolution** (tiny local files — no restart, no cache invalidation problem); the built-in `templates/registry.json` rides the same loader (D73). Missing `~/.fused-render/templates/` or `registry.json` = clean no-op, built-in behavior; first run creates nothing.
 - **CT-6** **Validation and fallback — per entry:** a folder name must be a single safe path segment (no `/`, no `..`, no `.`, not empty) — it is joined into a filesystem path, so a malformed name must not stat arbitrary locations (correctness guard, not auth — §9 stands). Within a mode list, an entry whose name cannot resolve (unsafe name, `template.html` missing in both PT-6 locations) is **dropped** from the list, and the stat response carries a **`template_error`** string naming the first problem, so a typo is visible (via stat / server log) instead of silently ignored. If the user's value resolves to nothing at all (unparseable JSON, empty result, double splice per CT-11), fall back to the **built-in list** for that extension.
@@ -867,7 +874,7 @@ never imports server).
 
 ---
 
-## 21. Template Management — Sources, Bindings & Import/Export (M13)
+## 21. Template Management — Sources, Bindings & Import/Export (M14)
 
 Goal: a dedicated view that turns the read-only registry glance of §20.5
 (PF-7) into a full editing surface for template bindings, plus the ability to
@@ -880,7 +887,7 @@ contract, which Preferences keeps using unchanged.
 
 ### 21.1 Sources model (extensibility)
 
-- **TV-1** **DECIDED (D81):** the builtin/user pair (§7, §16) is generalized
+- **TV-1** **DECIDED (D82):** the builtin/user pair (§7, §16) is generalized
   into an ordered list of **sources** — `Source { id, label, editable,
   precedence }`. Today exactly two ship: `core` (`id:"core"`,
   `editable:false`, `precedence:0`, the `TEMPLATES_DIR`/`BUILTIN_REGISTRY`
@@ -918,7 +925,7 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   alone gives, or `null`; drives reset-preview + the known-keys list), and
   `userValue` (raw user-registry value, included only when a user key
   exists). `entries` covers every builtin key plus every user-only key.
-- **TV-5** `PUT /api/templates/registry` **(D82)** — upserts **one** user
+- **TV-5** `PUT /api/templates/registry` **(D83)** — upserts **one** user
   key: body `{key, value}` (`value` = ordered name array or `null`).
   Validates the key against the CT-3 grammar and every name against the
   resolved inventory (unknown names → 400 listing them), then does a
@@ -926,17 +933,17 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   existing atomic `read_json`/`write_json` helpers (creates the file/dir if
   missing) — never a whole-file overwrite. Returns the recomputed entry
   (same shape as one `entries[]` item from TV-4).
-- **TV-6** `POST /api/templates/registry/reset` **(D82)** — body `{key}`;
+- **TV-6** `POST /api/templates/registry/reset` **(D83)** — body `{key}`;
   deletes that key from the user registry (no-op if absent), reverting the
   effective value to the core one. Returns the recomputed entry, or
   `{key, removed:true}` if no such key resolves anywhere anymore.
-- **TV-7** `GET /api/templates/export?names=a,b,c` **(D84)** — streams a zip
+- **TV-7** `GET /api/templates/export?names=a,b,c` **(D85)** — streams a zip
   (`application/zip`, `Content-Disposition: attachment;
   filename="fused-render-templates.zip"`) of the named **user** templates
   only (400 on any name that is not an editable user template); each
   template's folder contents land at its own top level in the zip. **No
   `registry.json` in the zip** — folders only.
-- **TV-8** `POST /api/templates/import` **(D85)** — step 1 of 2, multipart
+- **TV-8** `POST /api/templates/import` **(D86)** — step 1 of 2, multipart
   (`file` field, the `.zip`), stages without committing: unpacks to
   `home_dir()/.import-staging/<importId>/` (`importId` = `secrets.token_hex`).
   Hardening (rejects the whole upload before anything lands outside
@@ -949,7 +956,7 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   `conflictsExisting` flags a name already present under
   `USER_TEMPLATES_DIR`. Stale staging dirs past the TTL are swept
   opportunistically on every call.
-- **TV-9** `POST /api/templates/import/{importId}/commit` **(D85)** — step
+- **TV-9** `POST /api/templates/import/{importId}/commit` **(D86)** — step
   2: body `{resolutions: {name: "overwrite"|"skip"|"keep-both"}}`
   (unresolved items default to `skip`). Per valid item: `skip` drops it;
   `overwrite` atomically replaces the existing folder; `keep-both` lands as
@@ -962,7 +969,7 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
 
 ### 21.3 Frontend — Templates view (`/view/_templates`)
 
-- **TV-11** **(D87)** New route **`/view/_templates`** — a shell-owned
+- **TV-11** **(D88)** New route **`/view/_templates`** — a shell-owned
   sentinel dispatched in `App.tsx` the same way `/view/_prefs` is (§20):
   view-only, no `/embed` variant (a template-management page inside an
   embedded pane has no meaning). New component
@@ -984,7 +991,7 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   when `disabled`, broken-name chips (`exists:false`) in a warning style.
   Filters: All / Modified only / by source; a search box over key and
   template name. `+ Add extension` opens the row editor in create mode.
-- **TV-15** **Row editor modal (D86)** (DeployModal-style: backdrop +
+- **TV-15** **Row editor modal (D87)** (DeployModal-style: backdrop +
   dialog, Escape to close): in **create** mode, a key **pattern builder**
   covering all four CT-3 shapes — simple `.ext`, compound `.a.b`, wildcard
   `.*.json`, directory `.ext/` — via a segmented control with a
@@ -1015,15 +1022,15 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   registry and re-renders — no stale state between the two sections.
   Header copy states plainly that this view manages **bindings + inventory
   only**: editing a template's own files happens in the file explorer
-  (D83).
+  (D84).
 
 ### 21.4 Non-goals (this feature)
 
 - Editing template file contents (`template.html`, `reader.py`, css, icons)
-  in this UI — use the file explorer + the existing `/api/fs/write` (D83).
+  in this UI — use the file explorer + the existing `/api/fs/write` (D84).
 - A real third source (org/project) — TV-1 only models for it.
 - Registry bindings inside export zips, or merging/writing registry entries
-  from an import — exports are folders only (D84); imported templates are
+  from an import — exports are folders only (D85); imported templates are
   inert (CT-7) until bound via the row editor.
 - Persisting a per-file "last selected mode" — unrelated, not part of this
   feature.
