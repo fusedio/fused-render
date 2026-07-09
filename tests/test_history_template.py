@@ -50,8 +50,9 @@ def test_template_holds_inline_schema_for_all_owned_keys():
         assert key in text, key
 
 
-def test_registry_keys_well_formed():
-    with open(server.BUILTIN_REGISTRY, encoding="utf-8") as f:
-        registry = json.load(f)
-    assert registry[".html.json"] == ["history", "tree", "code", "annotate"]
-    assert registry[".html"][-1] == "history"
+# A raw-JSON check of registry[".html.json"]/[".html"] would only restate
+# what test_sidecar_default_mode_is_history (above) and
+# test_templates.py::test_builtin_html_default_is_render_sentinel already
+# prove through the real resolution path (_templates_for reads
+# BUILTIN_REGISTRY directly, no intermediate transform) — so it isn't kept
+# as a separate test.
