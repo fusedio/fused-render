@@ -42,6 +42,13 @@ body {
   overflow-y: auto;
 }
 
+/* Phones: give the whole width to the rendered view */
+@media (max-width: 700px) {
+  #sidebar {
+    display: none;
+  }
+}
+
 .sidebar-brand {
   display: flex;
   align-items: center;
