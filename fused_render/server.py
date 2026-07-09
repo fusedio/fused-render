@@ -916,11 +916,8 @@ def create_app(start_dir: str) -> FastAPI:
         if sys.platform == "darwin":
             cmd = ["open", path] if is_dir else ["open", "-R", path]
         elif os.name == "nt":
-            # Explorer needs native backslash paths — with forward slashes
-            # /select, silently opens the default folder instead. The file case
-            # keeps /select, flush against a quoted path; the directory case
-            # goes through the list form, whose quoting survives a drive root
-            # like "C:\\" (a trailing backslash would escape a closing quote).
+            # Explorer needs native backslash paths — forward slashes make
+            # /select, silently open the default folder instead.
             win_path = os.path.normpath(path)
             cmd = ["explorer", win_path] if is_dir else f'explorer /select,"{win_path}"'
         else:
