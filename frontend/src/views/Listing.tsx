@@ -31,6 +31,12 @@ const PAGE_SIZE = 250;
 // sync trips that on fast typing. State stays immediate — only the URL lags.
 const URL_SYNC_MS = 200;
 
+// Minimum gap between streaming state flushes. Network chunks can arrive many
+// times per second on localhost; committing (and re-scoring) on every one
+// saturates the main thread and starves interaction. The first batch still
+// flushes immediately (lastFlush starts at 0), so first paint isn't delayed.
+const STREAM_FLUSH_MS = 200;
+
 function currentSort(): { sort: SortKey; order: SortOrder } {
   const q = new URLSearchParams(location.search);
   const key = q.get("sort");
@@ -77,31 +83,40 @@ function sortEntries(entries: FsEntry[], sort: SortKey, order: SortOrder): FsEnt
   });
 }
 
-// Match a query against every walked entry's relative path, then rank: longest
-// consecutive matched run first (a contiguous substring hit always beats a
-// scattered subsequence one), then higher fuzzy score, then fewer path segments
-// (shallower = closer to hand), then alphabetical for a stable order.
-// `showHidden=false` skips dot-entries before scoring (see queryWantsHidden).
+// Ranking: longest consecutive matched run first (a contiguous substring hit
+// always beats a scattered subsequence one), then higher fuzzy score, then
+// fewer path segments (shallower = closer to hand), then alphabetical for a
+// stable order. Hits keep their score fields so partial result sets can be
+// merged and re-sorted incrementally as the walk streams in.
 interface SearchHit {
   entry: WalkEntry;
   positions: number[];
+  score: number;
+  longestRun: number;
 }
-function searchWalk(query: string, entries: WalkEntry[], showHidden: boolean): SearchHit[] {
-  const hits: { entry: WalkEntry; positions: number[]; score: number; longestRun: number }[] = [];
-  for (const entry of entries) {
+
+function rankCompare(a: SearchHit, b: SearchHit): number {
+  if (b.longestRun !== a.longestRun) return b.longestRun - a.longestRun;
+  if (b.score !== a.score) return b.score - a.score;
+  const ad = a.entry.rel.split("/").length;
+  const bd = b.entry.rel.split("/").length;
+  if (ad !== bd) return ad - bd;
+  return a.entry.rel.localeCompare(b.entry.rel, undefined, { sensitivity: "base" });
+}
+
+// Score `entries[from..]` against the query (unsorted — callers sort with
+// rankCompare after merging). `showHidden=false` skips dot-entries before
+// scoring (see queryWantsHidden). The `from` offset is what makes streaming
+// cheap: each flush scores only the entries that arrived since the last one.
+function scoreEntries(query: string, entries: WalkEntry[], from: number, showHidden: boolean): SearchHit[] {
+  const hits: SearchHit[] = [];
+  for (let i = from; i < entries.length; i++) {
+    const entry = entries[i];
     if (!showHidden && isHiddenRel(entry.rel)) continue;
     const m = fuzzyMatch(query, entry.rel);
     if (m) hits.push({ entry, positions: m.positions, score: m.score, longestRun: m.longestRun });
   }
-  hits.sort((a, b) => {
-    if (b.longestRun !== a.longestRun) return b.longestRun - a.longestRun;
-    if (b.score !== a.score) return b.score - a.score;
-    const ad = a.entry.rel.split("/").length;
-    const bd = b.entry.rel.split("/").length;
-    if (ad !== bd) return ad - bd;
-    return a.entry.rel.localeCompare(b.entry.rel, undefined, { sensitivity: "base" });
-  });
-  return hits.map(({ entry, positions }) => ({ entry, positions }));
+  return hits;
 }
 
 function renderHighlight(text: string, positions: number[]) {
@@ -231,24 +246,50 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     const ctrl = new AbortController();
     let alive = true;
     const entries: WalkEntry[] = [];
+    // Flush throttle (STREAM_FLUSH_MS): entries accumulate in `pending`
+    // between commits so the scoring/render work runs a few times a second,
+    // not once per network chunk. A trailing timer guarantees the last
+    // partial interval still commits.
+    let pending: WalkEntry[] = [];
+    let lastFlush = 0;
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    const flush = () => {
+      if (flushTimer !== null) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      for (const e of pending) entries.push(e); // no spread: a big chunk would blow the arg limit
+      pending = [];
+      lastFlush = Date.now();
+      setWalk({ status: "streaming", entries, count: entries.length });
+    };
     setWalk({ status: "streaming", entries, count: 0 });
     walkDirStream(fsPath, {
       hidden: true,
       signal: ctrl.signal,
-      onBatch: (batch, total) => {
+      onBatch: (batch) => {
         if (!alive) return;
-        for (const e of batch) entries.push(e); // no spread: a big chunk would blow the arg limit
-        setWalk({ status: "streaming", entries, count: total });
+        for (const e of batch) pending.push(e);
+        const wait = STREAM_FLUSH_MS - (Date.now() - lastFlush);
+        if (wait <= 0) flush();
+        else if (flushTimer === null) flushTimer = setTimeout(() => alive && flush(), wait);
       },
     }).then(
-      (end) => alive && setWalk({ status: "ok", entries, truncated: end.truncated, total: end.total }),
+      (end) => {
+        if (!alive) return;
+        if (flushTimer !== null) clearTimeout(flushTimer);
+        for (const e of pending) entries.push(e);
+        setWalk({ status: "ok", entries, truncated: end.truncated, total: end.total });
+      },
       (err: Error) => {
         if (!alive || err.name === "AbortError") return;
+        if (flushTimer !== null) clearTimeout(flushTimer);
         setWalk({ status: "error", message: err.message });
       }
     );
     return () => {
       alive = false;
+      if (flushTimer !== null) clearTimeout(flushTimer);
       ctrl.abort();
     };
   }, [fsPath, refresh, walkWanted, retryNonce]);
@@ -308,16 +349,40 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     );
   };
 
-  // Keyed on `q`/`searching` (both deferred) so the full fuzzy scan runs on
+  // Incremental-scoring cache for the streamed walk. As long as the query,
+  // hidden-intent and entries array are unchanged, only entries appended
+  // since `scored` get fuzzy-matched, then merged into the previous ranked
+  // list — so a stream flush near the tail of a 200k walk costs one small
+  // scan + a sort of the hits, not a full re-scan of everything (which is
+  // exactly what saturated the main thread and made the UI unresponsive
+  // while the walk loaded). Any change to query/hidden/array falls back to a
+  // full scan. A ref (not state): it's a pure memo accelerator, and the
+  // update below is idempotent, so double-invoked renders are harmless.
+  const scoreCache = useRef<{
+    q: string;
+    showHidden: boolean;
+    entries: WalkEntry[] | null;
+    scored: number; // how many of `entries` have been scored already
+    ranked: SearchHit[];
+  }>({ q: "", showHidden: false, entries: null, scored: 0, ranked: [] });
+
+  // Keyed on `q`/`searching` (both deferred) so full fuzzy scans run on
   // React's low-priority schedule, not synchronously on every keystroke.
-  // While the walk streams, each batch produces a new `walk` state and this
-  // rescores the grown array — the ranked list visibly fills in. Rescoring
-  // from scratch per batch is deliberate: batches arrive per network chunk
-  // (not per 500 entries), and one linear fuzzy pass is far cheaper than the
-  // bookkeeping of an incremental merge.
+  // While the walk streams, each flush produces a new `walk` state and this
+  // extends the ranked list with just the newly arrived entries (see
+  // scoreCache above).
   const hits = useMemo(() => {
     if (!searching || (walk.status !== "ok" && walk.status !== "streaming")) return [];
-    const ranked = searchWalk(q, walk.entries, queryWantsHidden(q));
+    const showHidden = queryWantsHidden(q);
+    const cache = scoreCache.current;
+    let ranked: SearchHit[];
+    if (cache.entries === walk.entries && cache.q === q && cache.showHidden === showHidden) {
+      const fresh = scoreEntries(q, walk.entries, cache.scored, showHidden);
+      ranked = fresh.length ? cache.ranked.concat(fresh).sort(rankCompare) : cache.ranked;
+    } else {
+      ranked = scoreEntries(q, walk.entries, 0, showHidden).sort(rankCompare);
+    }
+    scoreCache.current = { q, showHidden, entries: walk.entries, scored: walk.entries.length, ranked };
     if (!searchSort) return ranked; // relevance order
     const { sort, order } = searchSort;
     const flip = order === "desc" ? -1 : 1;
