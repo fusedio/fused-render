@@ -1804,49 +1804,75 @@ body.embed .preview-browse-chip:hover {
 /* ---- Templates management view (TEMPLATE_MGMT_SPEC §3) -------------------- */
 
 .templates-page {
-  max-width: 960px;
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 32px 24px;
 }
 
 .templates-header h1 {
   margin: 0 0 6px;
   font-size: 20px;
-  font-weight: 650;
-}
-
-.templates-header p {
-  margin: 0;
-}
-
-.templates-section-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--border);
-}
-
-.templates-section-head h2 {
-  margin: 0;
-  font-size: 14px;
   font-weight: 600;
 }
 
-/* Filters row (Section A). */
-.templates-filters {
+.templates-subtitle {
+  margin: 0;
+  color: var(--fg-muted);
+}
+
+/* Tabs. */
+.templates-tabs {
+  display: flex;
+  gap: 4px;
+  margin-top: 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.templates-tab {
+  font: inherit;
+  font-size: 13px;
+  padding: 9px 4px;
+  margin-right: 20px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.templates-tab:hover {
+  color: var(--fg);
+}
+
+.templates-tab.active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+
+.templates-tabpanel {
+  padding-top: 18px;
+}
+
+/* Toolbar (both tabs). */
+.templates-toolbar {
   display: flex;
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.templates-toolbar-push {
+  margin-left: auto;
 }
 
 .templates-search {
   font: inherit;
-  background: var(--bg);
+  background: var(--bg-alt);
   color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 5px 8px;
+  padding: 6px 10px;
   flex: 1 1 200px;
   min-width: 150px;
 }
@@ -1856,10 +1882,19 @@ body.embed .preview-browse-chip:hover {
   border-color: var(--accent);
 }
 
+.templates-toolbar select {
+  font: inherit;
+  font-size: 13px;
+  background: var(--bg-alt);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
 /* Segmented control (filters, key-shape picker, import resolutions). */
 .templates-seg {
   display: inline-flex;
-  border: 1px solid var(--border);
   border-radius: 6px;
   overflow: hidden;
 }
@@ -1867,16 +1902,16 @@ body.embed .preview-browse-chip:hover {
 .templates-seg-btn {
   font: inherit;
   font-size: 12px;
-  padding: 5px 10px;
-  background: var(--bg);
+  padding: 6px 11px;
+  background: var(--bg-alt);
   color: var(--fg-muted);
-  border: none;
-  border-right: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-right: none;
   cursor: pointer;
 }
 
 .templates-seg-btn:last-child {
-  border-right: none;
+  border-right: 1px solid var(--border);
 }
 
 .templates-seg-btn:hover {
@@ -1884,14 +1919,80 @@ body.embed .preview-browse-chip:hover {
 }
 
 .templates-seg-btn.active {
-  background: var(--accent);
-  color: #10131a;
+  color: var(--fg);
+  border-color: var(--accent);
   font-weight: 600;
+  position: relative;
+  z-index: 1;
 }
 
 .templates-seg-btn.danger.active {
-  background: var(--error);
-  color: #10131a;
+  color: var(--error);
+  border-color: var(--error);
+}
+
+/* Buttons. */
+.templates-btn-secondary {
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-alt);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.templates-btn-secondary:hover:not(:disabled) {
+  border-color: var(--fg-muted);
+}
+
+.templates-btn-secondary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.templates-btn-primary {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 14px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #111;
+  cursor: pointer;
+}
+
+.templates-btn-primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.templates-btn-primary:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.templates-danger-text {
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 4px;
+  margin-right: auto;
+  background: none;
+  border: none;
+  color: var(--error);
+  cursor: pointer;
+  opacity: 0.85;
+}
+
+.templates-danger-text:hover:not(:disabled) {
+  opacity: 1;
+  text-decoration: underline;
+}
+
+.templates-danger-text:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .templates-add-btn {
@@ -1900,7 +2001,7 @@ body.embed .preview-browse-chip:hover {
   padding: 5px 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--bg);
+  background: var(--bg-alt);
   color: var(--fg);
   cursor: pointer;
 }
@@ -1909,38 +2010,72 @@ body.embed .preview-browse-chip:hover {
   border-color: var(--accent);
 }
 
-/* Bindings table (Section A). */
-.templates-bindings-table {
+/* Shared table used for bindings + inventory + import manifest. */
+.templates-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 13px;
 }
 
-.templates-bindings-table td {
-  padding: 7px 10px 7px 0;
-  border-top: 1px solid var(--border);
+.templates-table thead th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+  padding: 0 10px 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.templates-table td {
+  padding: 10px 10px 10px 0;
+  border-bottom: 1px solid var(--border);
   vertical-align: middle;
 }
 
-.templates-binding-row {
+.templates-row {
+  cursor: default;
+}
+
+.templates-table tr.templates-row {
   cursor: pointer;
 }
 
-.templates-binding-row:hover {
+.templates-row:hover {
   background: rgba(255, 255, 255, 0.03);
 }
 
-.templates-bindings-table .registry-templates {
+.templates-col-pattern {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.templates-col-templates {
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
   align-items: center;
 }
 
-.templates-modified {
-  color: var(--accent);
-  white-space: nowrap;
-  font-size: 11px;
+.templates-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: 0 0 auto;
+}
+
+.templates-key-pill {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 /* Template chips (bindings table + row editor). */
@@ -1948,10 +2083,10 @@ body.embed .preview-browse-chip:hover {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 3px 8px;
+  padding: 3px 9px;
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: var(--bg);
+  background: var(--bg-alt);
   font-size: 12px;
 }
 
@@ -2015,6 +2150,11 @@ body.embed .preview-browse-chip:hover {
   width: min(640px, 100%);
 }
 
+.templates-editor .deploy-body,
+.templates-import .deploy-body {
+  gap: 16px;
+}
+
 /* The row editor hosts the "Add template" popover, which is absolutely
    positioned. A scroll container (overflow != visible) would clip it, so the
    editor's body must NOT clip — the form is short and the dialog's own 85vh
@@ -2033,6 +2173,7 @@ body.embed .preview-browse-chip:hover {
 .templates-field > label {
   color: var(--fg-muted);
   font-size: 12px;
+  font-weight: 500;
 }
 
 .templates-key-fixed {
@@ -2052,7 +2193,7 @@ body.embed .preview-browse-chip:hover {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0 8px;
-  background: var(--bg);
+  background: var(--bg-alt);
   align-self: flex-start;
 }
 
@@ -2106,6 +2247,7 @@ body.embed .preview-browse-chip:hover {
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+  justify-content: flex-end;
 }
 
 /* Add-template picker popover (row editor). */
@@ -2121,7 +2263,7 @@ body.embed .preview-browse-chip:hover {
   background: var(--bg-alt);
   border: 1px solid var(--border);
   border-radius: 8px;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
 }
 
 .templates-picker-head {
@@ -2135,6 +2277,7 @@ body.embed .preview-browse-chip:hover {
 .templates-picker-body {
   flex: 1 1 auto;
   min-height: 0; /* let the list scroll inside the bounded picker, not spill */
+  max-height: 240px;
   overflow-y: auto;
   padding: 6px;
 }
@@ -2176,43 +2319,38 @@ body.embed .preview-browse-chip:hover {
   flex: 0 0 auto;
 }
 
-/* Inventory panel (Section B). */
-.templates-inv-toolbar {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
+/* Library tab (inventory). */
 .templates-inv-group {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  margin-top: 20px;
+}
+
+.templates-inv-group:first-child {
+  margin-top: 0;
 }
 
 .templates-inv-grouphead {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
+  gap: 8px;
+  font-size: 11px;
   font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
   color: var(--fg-muted);
-  padding-top: 6px;
+  padding-bottom: 8px;
+}
+
+.templates-inv-count {
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .templates-lock {
   font-size: 11px;
-}
-
-.templates-inv-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-}
-
-.templates-inv-table td {
-  padding: 6px 10px 6px 0;
-  border-top: 1px solid var(--border);
-  vertical-align: middle;
 }
 
 .templates-inv-check {
@@ -2238,6 +2376,7 @@ body.embed .preview-browse-chip:hover {
   border-radius: 4px;
   padding: 1px 5px;
   font-size: 11px;
+  color: var(--fg-muted);
 }
 
 .templates-inv-actions {
@@ -2247,10 +2386,33 @@ body.embed .preview-browse-chip:hover {
   white-space: nowrap;
 }
 
-.templates-inv-actions button,
-.templates-inv-table button {
+/* Row-hover-only ghost action buttons. */
+.templates-ghost-btn {
+  font: inherit;
   font-size: 12px;
   padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.templates-inv-table tr:hover .templates-ghost-btn,
+.templates-ghost-btn:focus-visible {
+  opacity: 1;
+}
+
+.templates-ghost-btn:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+
+.templates-hint {
+  margin-top: 18px;
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
 /* Import wizard. */

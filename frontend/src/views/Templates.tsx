@@ -423,22 +423,7 @@ function RowEditorModal({
           <div className="templates-actions">
             <button
               type="button"
-              className="deploy-primary"
-              onClick={doSave}
-              disabled={!canSave}
-              title={
-                chosen.length === 0
-                  ? "Add at least one template"
-                  : mode === "create" && !keyValid
-                    ? "Enter a valid key first"
-                    : undefined
-              }
-            >
-              {busy === "save" ? "Saving…" : "Save"}
-            </button>
-            <button
-              type="button"
-              className="deploy-danger"
+              className="templates-danger-text"
               onClick={doDisable}
               disabled={busy !== null || (mode === "create" && !keyValid)}
               title="Write a null binding — previews are disabled for this type"
@@ -452,6 +437,7 @@ function RowEditorModal({
             {mode === "edit" && entry?.overridesCore && (
               <button
                 type="button"
+                className="templates-btn-secondary"
                 onClick={doReset}
                 disabled={busy !== null}
                 title={
@@ -463,8 +449,23 @@ function RowEditorModal({
                 {busy === "reset" ? "Resetting…" : "Reset to core"}
               </button>
             )}
-            <button type="button" onClick={onClose} disabled={busy !== null}>
+            <button type="button" className="templates-btn-secondary" onClick={onClose} disabled={busy !== null}>
               Cancel
+            </button>
+            <button
+              type="button"
+              className="templates-btn-primary"
+              onClick={doSave}
+              disabled={!canSave}
+              title={
+                chosen.length === 0
+                  ? "Add at least one template"
+                  : mode === "create" && !keyValid
+                    ? "Enter a valid key first"
+                    : undefined
+              }
+            >
+              {busy === "save" ? "Saving…" : "Save"}
             </button>
           </div>
           {mode === "edit" && entry?.overridesCore && coreDefault && (
@@ -632,16 +633,16 @@ function ImportWizard({
               )}
               {error && <div className="deploy-error">{error}</div>}
               <div className="templates-actions">
+                <button type="button" className="templates-btn-secondary" onClick={onClose} disabled={busy}>
+                  Cancel
+                </button>
                 <button
                   type="button"
-                  className="deploy-primary"
+                  className="templates-btn-primary"
                   onClick={doCommit}
                   disabled={busy || validCount === 0}
                 >
                   {busy ? "Importing…" : "Import"}
-                </button>
-                <button type="button" onClick={onClose} disabled={busy}>
-                  Cancel
                 </button>
               </div>
             </>
@@ -659,7 +660,7 @@ function ImportWizard({
                 <ResultLine label="Skipped" names={result.skipped} />
               </div>
               <div className="templates-actions">
-                <button type="button" className="deploy-primary" onClick={onClose}>
+                <button type="button" className="templates-btn-primary" onClick={onClose}>
                   Done
                 </button>
               </div>
@@ -776,14 +777,15 @@ function BindingsTable({
   });
 
   return (
-    <section className="prefs-section">
-      <div className="templates-section-head">
-        <h2>Bindings</h2>
-        <button type="button" className="templates-add-btn" onClick={onAdd}>
-          + Add extension
-        </button>
-      </div>
-      <div className="templates-filters">
+    <section className="templates-tabpanel">
+      <div className="templates-toolbar">
+        <input
+          type="text"
+          className="templates-search"
+          placeholder="Search by key or template…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
         <div className="templates-seg">
           <button
             type="button"
@@ -797,7 +799,7 @@ function BindingsTable({
             className={"templates-seg-btn" + (filter === "modified" ? " active" : "")}
             onClick={() => setFilter("modified")}
           >
-            Modified only
+            Modified
           </button>
         </div>
         <select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)}>
@@ -808,25 +810,29 @@ function BindingsTable({
             </option>
           ))}
         </select>
-        <input
-          type="text"
-          className="templates-search"
-          placeholder="Filter by key or template…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
+        <button type="button" className="templates-btn-primary templates-toolbar-push" onClick={onAdd}>
+          + Add extension
+        </button>
       </div>
       {rows.length === 0 ? (
         <div className="deploy-muted">No bindings match.</div>
       ) : (
-        <table className="templates-bindings-table">
+        <table className="templates-table">
+          <thead>
+            <tr>
+              <th>Pattern</th>
+              <th>Templates</th>
+              <th>Source</th>
+            </tr>
+          </thead>
           <tbody>
             {rows.map((e) => (
-              <tr key={e.key} onClick={() => onEdit(e)} className="templates-binding-row">
-                <td className="registry-pattern">
-                  <code>{e.key}</code>
+              <tr key={e.key} onClick={() => onEdit(e)} className="templates-row">
+                <td className="templates-col-pattern">
+                  {e.overridesCore && <span className="templates-dot" title="User override" />}
+                  <code className="templates-key-pill">{e.key}</code>
                 </td>
-                <td className="registry-templates">
+                <td className="templates-col-templates">
                   {e.disabled ? (
                     <span className="templates-pill">Disabled</span>
                   ) : (
@@ -861,20 +867,6 @@ function BindingsTable({
                   <span className={"registry-source " + (e.overridesCore ? "user" : "")}>
                     {sourceLabel(registry, e.resolvedSource)}
                   </span>
-                </td>
-                <td className="templates-modified">
-                  {e.overridesCore && <span title="User override">● Modified</span>}
-                </td>
-                <td>
-                  <button
-                    type="button"
-                    onClick={(ev) => {
-                      ev.stopPropagation();
-                      onEdit(e);
-                    }}
-                  >
-                    Edit
-                  </button>
                 </td>
               </tr>
             ))}
@@ -924,27 +916,24 @@ function InventoryPanel({
   const selectedNames = Array.from(selected);
 
   return (
-    <section className="prefs-section">
-      <div className="templates-section-head">
-        <h2>Inventory</h2>
-        <div className="templates-inv-toolbar">
-          <button type="button" onClick={onImport}>
-            Import zip ⬆
-          </button>
-          <button
-            type="button"
-            className="deploy-primary"
-            disabled={selectedNames.length === 0}
-            onClick={() => triggerDownload(exportTemplatesUrl(selectedNames))}
-            title={
-              selectedNames.length === 0
-                ? "Select one or more templates to export"
-                : "Export the selected templates as a zip"
-            }
-          >
-            Export selected ⬇{selectedNames.length > 0 ? ` (${selectedNames.length})` : ""}
-          </button>
-        </div>
+    <section className="templates-tabpanel">
+      <div className="templates-toolbar">
+        <button type="button" className="templates-btn-secondary" onClick={onImport}>
+          Import zip
+        </button>
+        <button
+          type="button"
+          className="templates-btn-primary templates-toolbar-push"
+          disabled={selectedNames.length === 0}
+          onClick={() => triggerDownload(exportTemplatesUrl(selectedNames))}
+          title={
+            selectedNames.length === 0
+              ? "Select one or more templates to export"
+              : "Export the selected templates as a zip"
+          }
+        >
+          Export selected{selectedNames.length > 0 ? ` (${selectedNames.length})` : ""}
+        </button>
       </div>
       {error && <div className="deploy-error">{error}</div>}
       {inventory.sources.map((s) => {
@@ -954,9 +943,10 @@ function InventoryPanel({
           <div key={s.id} className="templates-inv-group">
             <div className="templates-inv-grouphead">
               {s.label}
+              <span className="templates-inv-count">{items.length}</span>
               {!s.editable && <span className="templates-lock" title="Read-only source">🔒</span>}
             </div>
-            <table className="templates-inv-table">
+            <table className="templates-table templates-inv-table">
               <tbody>
                 {items.map((t) => (
                   <InventoryRow
@@ -976,7 +966,7 @@ function InventoryPanel({
       })}
       {/* Deleting a template folder has no API in the frozen contract — do it
           from the file explorer (Open in explorer / Reveal in Finder). */}
-      <p className="deploy-muted">
+      <p className="templates-hint">
         Edit or delete a template's files from the file explorer — this view manages the pool and
         its bindings, not template internals.
       </p>
@@ -1000,7 +990,7 @@ function InventoryRow({
   onOpen: () => void;
 }) {
   return (
-    <tr>
+    <tr className="templates-row">
       <td className="templates-inv-check">
         <input type="checkbox" checked={checked} onChange={onToggle} aria-label={"Select " + t.name} />
       </td>
@@ -1025,13 +1015,13 @@ function InventoryRow({
         )}
       </td>
       <td className="templates-inv-actions">
-        <button type="button" onClick={onExport} title="Export this template as a zip">
-          Export ⬇
+        <button type="button" className="templates-ghost-btn" onClick={onExport} title="Export this template as a zip">
+          Export
         </button>
-        <button type="button" onClick={onReveal} title="Reveal in Finder">
+        <button type="button" className="templates-ghost-btn" onClick={onReveal} title="Reveal in Finder">
           Reveal
         </button>
-        <button type="button" onClick={onOpen} title="Open the folder in the file explorer">
+        <button type="button" className="templates-ghost-btn" onClick={onOpen} title="Open the folder in the file explorer">
           Open
         </button>
       </td>
@@ -1041,6 +1031,8 @@ function InventoryRow({
 
 // -- page --------------------------------------------------------------------
 
+type PageTab = "bindings" | "library";
+
 export default function Templates() {
   const [inventory, setInventory] = useState<TemplateInventory | null>(null);
   const [registry, setRegistry] = useState<RegistryResult | null>(null);
@@ -1049,6 +1041,7 @@ export default function Templates() {
     null,
   );
   const [importing, setImporting] = useState(false);
+  const [tab, setTab] = useState<PageTab>("bindings");
   const loadSeq = useRef(0);
 
   const load = async () => {
@@ -1071,25 +1064,41 @@ export default function Templates() {
   }, []);
 
   return (
-    <div className="prefs-page templates-page">
+    <div className="templates-page">
       <div className="templates-header">
         <h1>Templates</h1>
-        <p className="deploy-muted">
-          Manage which templates render each file type, browse the template pool across sources,
-          and import or export user templates. Edit a template's files in the file explorer.
+        <p className="templates-subtitle">
+          Manage which templates render each file type, browse the template pool, and import or
+          export user templates.
         </p>
+      </div>
+      <div className="templates-tabs">
+        <button
+          type="button"
+          className={"templates-tab" + (tab === "bindings" ? " active" : "")}
+          onClick={() => setTab("bindings")}
+        >
+          File bindings
+        </button>
+        <button
+          type="button"
+          className={"templates-tab" + (tab === "library" ? " active" : "")}
+          onClick={() => setTab("library")}
+        >
+          Library
+        </button>
       </div>
       {error && <div className="deploy-error">{error}</div>}
       {!error && (!inventory || !registry) && <div className="deploy-muted">Loading…</div>}
-      {inventory && registry && (
-        <>
-          <BindingsTable
-            registry={registry}
-            onEdit={(entry) => setEditor({ mode: "edit", entry })}
-            onAdd={() => setEditor({ mode: "create", entry: null })}
-          />
-          <InventoryPanel inventory={inventory} onImport={() => setImporting(true)} />
-        </>
+      {inventory && registry && tab === "bindings" && (
+        <BindingsTable
+          registry={registry}
+          onEdit={(entry) => setEditor({ mode: "edit", entry })}
+          onAdd={() => setEditor({ mode: "create", entry: null })}
+        />
+      )}
+      {inventory && registry && tab === "library" && (
+        <InventoryPanel inventory={inventory} onImport={() => setImporting(true)} />
       )}
 
       {editor && inventory && registry && (
