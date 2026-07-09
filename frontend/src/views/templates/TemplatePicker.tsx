@@ -16,6 +16,9 @@ export function TemplatePicker({
 }) {
   const excludeSet = new Set(exclude);
   const groups = inventory.sources
+    .slice()
+    // User (higher precedence) group first, core after — matches the Library tab.
+    .sort((a, b) => b.precedence - a.precedence)
     .map((s) => ({
       source: s,
       items: inventory.templates.filter((t) => t.source === s.id && !excludeSet.has(t.name)),
