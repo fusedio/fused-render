@@ -25,7 +25,7 @@ from fused_render.logs import setup_logging
 
 logger = logging.getLogger("fused_render")
 
-_PROGID = "FusedRender.file"
+_LEGACY_PROGID = "FusedRender.file"  # single-ProgID scheme; cleaned up on (re)register
 _ICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "fused-render.ico")
 _REGISTRY_JSON = os.path.join(os.path.dirname(__file__), "templates", "registry.json")
 _NOT_EXTENSIONS = {".zgroup", ".zattrs", ".zmetadata"}  # zarr member files, not extensions
@@ -51,21 +51,31 @@ def _read_int(path: str) -> int | None:
         return None
 
 
-def _probe(port: int) -> bool:
+def _fused_server(port: int) -> bool:
+    """True when a native fused-render answers on port: /api/config parses and
+    its home has a drive letter (a WSL server mirrored onto localhost has none)."""
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1) as resp:
-            return resp.status == 200
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/config", timeout=1) as resp:
+            if resp.status != 200:
+                return False
+            cfg = json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, OSError, ValueError):
         return False
+    return isinstance(cfg, dict) and bool(os.path.splitdrive(cfg.get("home", ""))[0])
 
 
 def find_running_server() -> int | None:
-    """Port of a live instance, or None — HTTP probe only; on Windows
-    os.kill(pid, 0) calls TerminateProcess, so the pid is never probed."""
-    port = _read_int(PORTFILE)
-    if port is None or not _probe(port):
-        return None
-    return port
+    """Port of a live native instance, or None. The portfile is only a hint —
+    a manual `fused-render serve` never writes one, so the default range is
+    scanned too. Liveness via HTTP only; on Windows os.kill(pid, 0) calls
+    TerminateProcess, so the pid is never probed."""
+    filed = _read_int(PORTFILE)
+    candidates = [] if filed is None else [filed]
+    candidates += [p for p in range(DEFAULT_PORT, MAX_PORT + 1) if p != filed]
+    for port in candidates:
+        if _fused_server(port):
+            return port
+    return None
 
 
 def _port_in_use(port: int) -> bool:
@@ -84,12 +94,8 @@ def pick_port(start: int = DEFAULT_PORT, end: int = MAX_PORT) -> int:
 def _wait_until_ready(port: int, timeout: float = 15.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/config", timeout=1) as resp:
-                if resp.status == 200:
-                    return True
-        except (urllib.error.URLError, OSError):
-            pass
+        if _fused_server(port):
+            return True
         time.sleep(0.2)
     return False
 
@@ -159,6 +165,16 @@ def extensions() -> list[str]:
     )
 
 
+def _progid(ext: str) -> str:
+    return f"FusedRender{ext}"
+
+
+def _type_name(ext: str) -> str:
+    # Explorer's Type column shows the default handler's type name; keep the
+    # format identifiable instead of one generic app name for every file.
+    return f"{ext[1:].upper()} File (fused-render)"
+
+
 def _build_command(port: int | None) -> str:
     launcher = os.path.join(sysconfig.get_path("scripts"), "fused-render-open.exe")
     if os.path.exists(launcher):
@@ -170,6 +186,21 @@ def _build_command(port: int | None) -> str:
         parts += ["--port", str(port)]
     parts.append('"%1"')
     return " ".join(parts)
+
+
+def _delete_value(key_path: str, name: str) -> None:
+    import winreg
+
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
+    except FileNotFoundError:
+        return
+    try:
+        winreg.DeleteValue(key, name)
+    except FileNotFoundError:
+        pass
+    finally:
+        key.Close()
 
 
 def _delete_tree(root, path: str) -> None:
@@ -201,13 +232,20 @@ def _register(port: int | None) -> None:
     command = _build_command(port)
     ext_list = extensions()
 
-    progid_key = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{_PROGID}")
-    winreg.SetValueEx(progid_key, "", 0, winreg.REG_SZ, "fused-render")
-    winreg.SetValueEx(progid_key, "FriendlyTypeName", 0, winreg.REG_SZ, "fused-render")
-    icon_key = winreg.CreateKeyEx(progid_key, "DefaultIcon")
-    winreg.SetValueEx(icon_key, "", 0, winreg.REG_SZ, f'"{_ICON_PATH}",0')
-    open_cmd_key = winreg.CreateKeyEx(progid_key, r"shell\open\command")
-    winreg.SetValueEx(open_cmd_key, "", 0, winreg.REG_SZ, command)
+    # One ProgID per extension so Explorer's Type column keeps naming the
+    # format ("CSV File (fused-render)") rather than one shared app name.
+    for ext in ext_list:
+        progid_key = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{_progid(ext)}")
+        winreg.SetValueEx(progid_key, "", 0, winreg.REG_SZ, _type_name(ext))
+        winreg.SetValueEx(progid_key, "FriendlyTypeName", 0, winreg.REG_SZ, _type_name(ext))
+        icon_key = winreg.CreateKeyEx(progid_key, "DefaultIcon")
+        winreg.SetValueEx(icon_key, "", 0, winreg.REG_SZ, f'"{_ICON_PATH}",0')
+        open_cmd_key = winreg.CreateKeyEx(progid_key, r"shell\open\command")
+        winreg.SetValueEx(open_cmd_key, "", 0, winreg.REG_SZ, command)
+        openwith_key = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{ext}\OpenWithProgids")
+        winreg.SetValueEx(openwith_key, _progid(ext), 0, winreg.REG_SZ, "")
+        _delete_value(rf"Software\Classes\{ext}\OpenWithProgids", _LEGACY_PROGID)
+    _delete_tree(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{_LEGACY_PROGID}")
 
     # The Open With dialog resolves display names via Applications\<exe>
     # FriendlyAppName (the entry-point launcher exe has no version info).
@@ -217,10 +255,6 @@ def _register(port: int | None) -> None:
     winreg.SetValueEx(app_icon_key, "", 0, winreg.REG_SZ, f'"{_ICON_PATH}",0')
     app_cmd_key = winreg.CreateKeyEx(app_key, r"shell\open\command")
     winreg.SetValueEx(app_cmd_key, "", 0, winreg.REG_SZ, command)
-
-    for ext in ext_list:
-        openwith_key = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{ext}\OpenWithProgids")
-        winreg.SetValueEx(openwith_key, _PROGID, 0, winreg.REG_SZ, "")
 
     verb_key = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, r"Software\Classes\*\shell\FusedRender")
     winreg.SetValueEx(verb_key, "", 0, winreg.REG_SZ, "Open with fused-render")
@@ -239,26 +273,56 @@ def _unregister() -> None:
         raise SystemExit("fused-render: --unregister is Windows-only.")
     import winreg
 
-    _delete_tree(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{_PROGID}")
+    _delete_tree(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{_LEGACY_PROGID}")
     _delete_tree(winreg.HKEY_CURRENT_USER, r"Software\Classes\Applications\fused-render-open.exe")
     _delete_tree(winreg.HKEY_CURRENT_USER, r"Software\Classes\*\shell\FusedRender")
 
     for ext in extensions():
-        try:
-            openwith_key = winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER, rf"Software\Classes\{ext}\OpenWithProgids", 0, winreg.KEY_ALL_ACCESS
-            )
-        except FileNotFoundError:
-            continue
-        try:
-            winreg.DeleteValue(openwith_key, _PROGID)
-        except FileNotFoundError:
-            pass
-        finally:
-            openwith_key.Close()
+        _delete_tree(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{_progid(ext)}")
+        _delete_value(rf"Software\Classes\{ext}\OpenWithProgids", _progid(ext))
+        _delete_value(rf"Software\Classes\{ext}\OpenWithProgids", _LEGACY_PROGID)
 
     ctypes.windll.shell32.SHChangeNotify(0x08000000, 0x1000, None, None)
     _report("Unregistered fused-render.")
+
+
+def _open(path: str | None, requested_port: int | None) -> None:
+    os.makedirs(APP_SUPPORT_DIR, exist_ok=True)
+    setup_logging()  # first: everything after this can crash-report to the file
+    logger.info("winopen starting (pid %s, path=%r, port=%r)", os.getpid(), path, requested_port)
+
+    if path and not os.path.exists(path):
+        _fail(f"fused-render: file not found:\n{path}")
+        return
+
+    if requested_port is not None:
+        port, alive = requested_port, _fused_server(requested_port)
+    else:
+        port = find_running_server()
+        alive = port is not None
+        if port is None:
+            port = pick_port()
+
+    if not alive:
+        # Re-probe before spawning: rapid double-clicks race here, and the
+        # loser's bind fails while this probe finds the winner.
+        alive = _fused_server(port)
+
+    if not alive and _port_in_use(port):
+        _fail(f"fused-render: port {port} is in use by another application.")
+        return
+
+    if not alive:
+        proc = _start_server(port)
+        logger.info("starting server (pid %s, port %s)", proc.pid, port)
+        if not _wait_until_ready(port):
+            _fail(f"fused-render: server did not start on port {port}.\nSee log: {SERVER_LOG}")
+            return
+        _write_pidfile(proc.pid, port)
+
+    url = _view_url(port, path)
+    logger.info("opening %s", url)
+    webbrowser.open(url)
 
 
 def main() -> None:
@@ -273,45 +337,17 @@ def main() -> None:
     parser.add_argument("path", nargs="?", default=None, help="file to open in /view (default: home)")
     args = parser.parse_args()
 
-    if args.register:
-        _register(args.port)
-        return
-    if args.unregister:
-        _unregister()
-        return
-
-    os.makedirs(APP_SUPPORT_DIR, exist_ok=True)
-    setup_logging()  # first: everything after this can crash-report to the file
-    logger.info("winopen starting (pid %s, path=%r, port=%r)", os.getpid(), args.path, args.port)
-
-    if args.path and not os.path.exists(args.path):
-        _fail(f"fused-render: file not found:\n{args.path}")
-        return
-
-    if args.port is not None:
-        port, alive = args.port, _probe(args.port)
-    else:
-        port = find_running_server()
-        alive = port is not None
-        if port is None:
-            port = pick_port()
-
-    if not alive:
-        # Re-probe before spawning: rapid double-clicks race here, and the
-        # loser's bind fails while this probe finds the winner.
-        alive = _probe(port)
-
-    if not alive:
-        proc = _start_server(port)
-        logger.info("starting server (pid %s, port %s)", proc.pid, port)
-        if not _wait_until_ready(port):
-            _fail(f"fused-render: server did not start on port {port}.\nSee log: {SERVER_LOG}")
-            return
-        _write_pidfile(proc.pid, port)
-
-    url = _view_url(port, args.path)
-    logger.info("opening %s", url)
-    webbrowser.open(url)
+    try:
+        if args.register:
+            _register(args.port)
+        elif args.unregister:
+            _unregister()
+        else:
+            _open(args.path, args.port)
+    except Exception as exc:
+        # Windowless launcher: an uncaught exception is invisible without this.
+        logger.exception("winopen failed")
+        _fail(f"fused-render: {exc}")
 
 
 if __name__ == "__main__":
