@@ -1,16 +1,19 @@
 {
   ".parquet": [
+    "duckdb",
     "table",
     "h3",
     "claude",
     "annotate"
   ],
   ".csv": [
+    "duckdb",
     "csv",
     "code",
     "annotate"
   ],
   ".tsv": [
+    "duckdb",
     "csv",
     "code",
     "annotate"
@@ -22,14 +25,17 @@
   ".json": [
     "tree",
     "code",
+    "duckdb",
     "annotate"
   ],
   ".jsonl": [
     "code",
+    "duckdb",
     "annotate"
   ],
   ".ndjson": [
     "code",
+    "duckdb",
     "annotate"
   ],
   ".geojson": [

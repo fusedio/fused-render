@@ -14,6 +14,10 @@ dependencies = [
     # implementation, so the ws library is a hard dependency, not an extra.
     "websockets>=12",
     "pyarrow>=14",
+    # The duckdb template reads AND edits every tabular file format (parquet,
+    # csv/tsv, json) through one engine, so it's a core dependency, not an
+    # optional extra — a plain `pip install fused-render` ships the viewer.
+    "duckdb>=1.1",
 ]
 
 [project.optional-dependencies]
@@ -28,7 +32,6 @@ bundled = [
     "numpy",
     "pandas",
     "requests",
-    "duckdb",
     "polars",
     "matplotlib",
     "scipy",
