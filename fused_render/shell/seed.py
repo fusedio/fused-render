@@ -122,9 +122,43 @@ def _examples_present(fdir: str) -> bool:
     )
 
 
+def _remove(path: str) -> None:
+    """Best-effort delete of a file or directory tree; silent on absence."""
+    if os.path.isdir(path) and not os.path.islink(path):
+        shutil.rmtree(path, ignore_errors=True)
+    else:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def _clear_partials(fdir: str) -> None:
+    """Remove any ".<name>.partial" leftovers from a previously interrupted seed.
+    These are the temp targets a crash can strand mid-copy; they are hidden so
+    they never counted as user content, but they must be cleared before a retry
+    so the atomic os.rename below lands on a clean name."""
+    try:
+        entries = list(os.scandir(fdir))
+    except FileNotFoundError:
+        return
+    for entry in entries:
+        if entry.name.endswith(".partial"):
+            _remove(entry.path)
+
+
 def _seed_examples(fdir: str) -> bool:
     """Copy the packaged seed set into fdir iff it is empty. Returns True when it
-    copied, False when the dir already had content (never re-seed)."""
+    copied, False when the dir already had content (never re-seed).
+
+    Each example is materialized atomically: fully copied under a hidden
+    ".<name>.partial" sibling inside fdir, then os.rename'd into place. A crash
+    mid-copy therefore leaves only a hidden ".*.partial" (cleaned on the next
+    run), never a half-written example dir that would make fdir look non-empty
+    and wedge seeding off forever."""
+    # Clear stale partials FIRST, before the emptiness check, so an interrupted
+    # prior run can be retried instead of being skipped as "already seeded".
+    _clear_partials(fdir)
     try:
         # Hidden metadata (.DS_Store etc.) is not user content: a dir holding
         # only dot-entries still counts as empty and gets seeded.
@@ -133,8 +167,15 @@ def _seed_examples(fdir: str) -> bool:
         nonempty = False
     if nonempty:
         return False
-    # dirs_exist_ok: fdir was just makedirs'd (empty), so it exists.
-    shutil.copytree(PACKAGE_SEED_DIR, fdir, dirs_exist_ok=True)
+    for entry in os.scandir(PACKAGE_SEED_DIR):
+        dest = os.path.join(fdir, entry.name)
+        partial = os.path.join(fdir, "." + entry.name + ".partial")
+        _remove(partial)  # defensive: no residue from this same run
+        if entry.is_dir():
+            shutil.copytree(entry.path, partial)
+        else:
+            shutil.copy2(entry.path, partial)
+        os.rename(partial, dest)
     return True
 
 

@@ -198,6 +198,27 @@ def test_bookmarks_not_seeded_without_examples(tmp_path, monkeypatch):
     assert not (home / "bookmarks.json").exists()
 
 
+def test_partial_seed_leftover_is_cleaned_and_reseeded(tmp_path, monkeypatch):
+    # An interrupted first run can strand a hidden ".<name>.partial" temp dir and
+    # leave the real examples missing. The next start must clear the leftover and
+    # complete seeding (the partial must not wedge seeding off forever).
+    fdir, home = _setup(tmp_path, monkeypatch)
+    fdir.mkdir(parents=True)
+    partial = fdir / ".sine.partial"
+    partial.mkdir()
+    (partial / "sine.html").write_text("half-copied", encoding="utf-8")
+
+    ensure_fused_dir()
+
+    # Leftover gone; both examples fully seeded; nothing else at the root.
+    assert not partial.exists()
+    assert (fdir / "sine" / "sine.html").is_file()
+    assert (fdir / "how_it_works" / "explainer.html").is_file()
+    assert sorted(p.name for p in fdir.iterdir()) == ["how_it_works", "sine"]
+    # Bookmarks ride along with the completed seed.
+    assert (home / "bookmarks.json").is_file()
+
+
 def test_idempotent_second_run_is_noop(tmp_path, monkeypatch):
     fdir, home = _setup(tmp_path, monkeypatch)
     ensure_fused_dir()
