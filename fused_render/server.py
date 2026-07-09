@@ -27,6 +27,7 @@ from fastapi import Body, FastAPI, Header, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from fused_render import __version__
 from fused_render.deploy import router as deploy_router
 from fused_render.executor import run_python
 from fused_render.shell import prefs as shell_prefs
@@ -492,6 +493,8 @@ def create_app(start_dir: str) -> FastAPI:
         return {
             "start_dir": start_dir,
             "home": os.path.expanduser("~"),
+            # The fused-render package version, surfaced in the sidebar brand.
+            "version": __version__,
             # Which /api/run engine is in effect (D69/§20): "fused" | "builtin".
             # Read per request — it can change under the Preferences switch.
             "engine": current_engine(),
