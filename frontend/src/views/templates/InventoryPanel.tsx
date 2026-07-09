@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { exportTemplatesUrl, revealPath } from "../../lib/api";
+import { exportTemplatesUrl, rawUrl, revealPath } from "../../lib/api";
 import type { InventoryTemplate, TemplateInventory } from "../../lib/api";
 import { navigate } from "../../lib/router";
 import { triggerDownload } from "./helpers";
@@ -159,6 +159,22 @@ export function InventoryPanel({
   );
 }
 
+// The template's icon.svg rendered via the same mask-image + currentColor
+// idiom as ModeSwitcher (monochrome, theme-tinted). Templates without an
+// icon get the first-letter placeholder box.
+function TemplateIcon({ t }: { t: InventoryTemplate }) {
+  if (!t.hasIcon) {
+    return <span className="templates-inv-icon mode-icon-placeholder">{t.name.charAt(0).toUpperCase()}</span>;
+  }
+  const mask = `url("${rawUrl(t.path + "/icon.svg")}")`;
+  return (
+    <span
+      className="templates-inv-icon mode-icon-mask"
+      style={{ WebkitMaskImage: mask, maskImage: mask }}
+    />
+  );
+}
+
 function InventoryRow({
   t,
   checked,
@@ -180,7 +196,7 @@ function InventoryRow({
         <input type="checkbox" checked={checked} onChange={onToggle} aria-label={"Select " + t.name} />
       </td>
       <td className="templates-inv-name">
-        {t.hasIcon && <span className="templates-icon-dot" title="has icon.svg" />}
+        <TemplateIcon t={t} />
         <span>{t.name}</span>
         {t.shadowsCore && (
           <span className="templates-pill" title="A user folder shadows a core folder of the same name">

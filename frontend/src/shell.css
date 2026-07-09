@@ -2553,3 +2553,14 @@ body.embed .preview-browse-chip:hover {
   background: var(--accent);
   filter: brightness(1.08);
 }
+
+.templates-inv-icon {
+  display: inline-flex;
+  margin-right: 8px;
+  color: var(--fg-muted);
+  vertical-align: middle;
+}
+
+.templates-row:hover .templates-inv-icon {
+  color: var(--fg);
+}
