@@ -161,8 +161,7 @@ function DeployToggle({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) 
         <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
         <span>
           <b>Show the Deploy button</b> on renderable pages. Deploy publishes a page to a
-          public hosted URL through the <code>fused</code> CLI; it's off by default and the
-          button (and its dialog) stay hidden until you turn it on here.
+          public hosted URL through the <code>fused</code> CLI.
         </span>
       </label>
       {error && <div className="deploy-error">{error}</div>}
