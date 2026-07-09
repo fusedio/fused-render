@@ -31,7 +31,8 @@ except ImportError:  # headless / plain-python testing
     def _udf(f):
         return f
 
-_MAX_IMPORT = 25 * 2 ** 20  # decoded bytes; base64 rides one 30s runPython
+_MAX_IMPORT = 64 * 2 ** 20  # decoded bytes; base64 rides one 30s runPython
+# (a plain decode + disk write stays well inside that; matches sculpt_bake _MAX_GLB)
 
 
 def _check_proj(model_dir: str) -> str | None:

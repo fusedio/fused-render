@@ -35,7 +35,7 @@
 
 import { Document, WebIO, VertexLayout } from '/template-assets/gltf-transform.bundle.mjs';
 
-const MAX_IMPORT = 25 * 2 ** 20; // decoded bytes cap (project_ops.py _MAX_IMPORT)
+const MAX_IMPORT = 64 * 2 ** 20; // decoded bytes cap (project_ops.py _MAX_IMPORT)
 const HEIGHT = 1.5;
 const FLOOR = 0.0;
 
