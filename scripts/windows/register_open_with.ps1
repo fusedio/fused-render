@@ -1,7 +1,5 @@
-# Registers fused-render in Explorer's "Open with" list and right-click menu.
-# HKCU\Software\Classes only - no admin, per-user. Run unregister_open_with.ps1
-# to undo. Windows still requires picking the app once via "Open with" before
-# it can become a default for an extension - this script cannot skip that step.
+# Registers fused-render in Explorer's "Open with" list and right-click menu
+# (HKCU only, no admin). Undo with unregister_open_with.ps1.
 param(
     [int]$Port,
     [string]$Launcher
@@ -27,7 +25,6 @@ if ($Port) {
 }
 $Command = '"' + $Launcher + '"' + $WinopenArgs + ' "%1"'
 
-# --- ProgID ------------------------------------------------------------------
 $ProgId = "FusedRender.file"
 $ProgIdKey = "HKCU:\Software\Classes\$ProgId"
 New-Item -Path $ProgIdKey -Force | Out-Null
@@ -38,9 +35,8 @@ $OpenCmdKey = "$ProgIdKey\shell\open\command"
 New-Item -Path $OpenCmdKey -Force | Out-Null
 Set-ItemProperty -Path $OpenCmdKey -Name "(Default)" -Value $Command
 
-# --- Application identity: the Open With dialog resolves an entry's display
-# name via Applications\<exe> FriendlyAppName (else the exe's version info,
-# which for an entry-point launcher is blank). -------------------------------
+# The Open With dialog resolves display names via Applications\<exe>
+# FriendlyAppName (the entry-point launcher exe has no version info).
 $AppKey = "HKCU:\Software\Classes\Applications\fused-render-open.exe"
 New-Item -Path $AppKey -Force | Out-Null
 Set-ItemProperty -Path $AppKey -Name "FriendlyAppName" -Value "fused-render"
@@ -48,9 +44,8 @@ $AppCmdKey = "$AppKey\shell\open\command"
 New-Item -Path $AppCmdKey -Force | Out-Null
 Set-ItemProperty -Path $AppCmdKey -Name "(Default)" -Value $Command
 
-# --- Extensions, derived from the built-in registry (fused_render/templates/
-# registry.json): every key there except the zarr directory marker and its
-# member-file names, which aren't real extensions Explorer can match on. -----
+# Extensions come from fused_render/templates/registry.json, minus the zarr
+# directory marker and member-file names (not real extensions).
 $RegistryJsonPath = Join-Path $RepoRoot "fused_render\templates\registry.json"
 $RegistryData = Get-Content -LiteralPath $RegistryJsonPath -Raw | ConvertFrom-Json
 $NotExtensions = @(".zarr/", ".zgroup", ".zattrs", ".zmetadata")
@@ -64,9 +59,8 @@ foreach ($ext in $Extensions) {
     New-ItemProperty -Path $OpenWithKey -Name $ProgId -Value "" -PropertyType String -Force | Out-Null
 }
 
-# --- All-files context-menu verb (Explorer "Show more options" on Win11) ----
-# Via the .NET API, not New-Item: 5.1's New-Item has no -LiteralPath, and its
-# -Path would glob-expand the "*" against every existing key under Classes.
+# All-files context verb, via the .NET API: 5.1's New-Item has no -LiteralPath
+# and -Path would glob-expand the "*" against every key under Classes.
 $VerbKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("Software\Classes\*\shell\FusedRender")
 $VerbKey.SetValue("", "Open with fused-render")
 $VerbCmdKey = $VerbKey.CreateSubKey("command")

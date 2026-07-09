@@ -1,17 +1,8 @@
-"""Windows Explorer "Open with" entry point (SPEC: Windows opener).
+"""Windows Explorer "Open with" entry point.
 
-Invoked as `fused-render-open [--port N] [FILE]` (the gui-scripts entry point;
-`pythonw.exe -m fused_render.winopen` is equivalent) by the right-click
-"Open with fused-render" verb / OpenWithProgids registration that
-scripts/windows/register_open_with.ps1 writes into HKCU. Finds an
-already-running server (portfile + HTTP probe, mirroring find_running_server()
-in app.py) or starts one detached, waits for it to become ready, then opens
-the browser at the file's /view URL (or at / with no FILE). Runs windowless
-under pythonw.exe, so failures surface via a message box, not a terminal.
-
-Kept stdlib-only and light at import time: this module never imports uvicorn/
-fastapi/the server directly, it only spawns `python -m fused_render.cli serve`
-as a subprocess.
+Invoked as `fused-render-open [--port N] [FILE]` (registered into HKCU by
+scripts/windows/register_open_with.ps1): reuses a live server or starts one
+detached, then opens the browser at FILE's /view URL (or / with no FILE).
 """
 import argparse
 import ctypes
@@ -61,14 +52,8 @@ def _probe(port: int) -> bool:
 
 
 def find_running_server() -> int | None:
-    """Return the port of an already-live fused-render instance, or None.
-
-    Liveness is decided by the HTTP probe alone, not the pidfile: on Windows
-    os.kill(pid, 0) doesn't check liveness, it calls TerminateProcess (there is
-    no signal-0 no-op like on POSIX), so using it here would kill a live
-    server instead of checking it. The pidfile is still written on start, for
-    humans/debugging, but never read back for this decision.
-    """
+    """Port of a live instance, or None — HTTP probe only; on Windows
+    os.kill(pid, 0) calls TerminateProcess, so the pid is never probed."""
     port = _read_int(PORTFILE)
     if port is None or not _probe(port):
         return None
@@ -110,13 +95,8 @@ def _write_pidfile(pid: int, port: int) -> None:
 
 
 def _start_server(port: int) -> subprocess.Popen:
-    """Spawn `python -m fused_render.cli serve` detached from this process.
-
-    sys.executable under pythonw.exe IS pythonw.exe (fine here, don't swap to
-    python.exe): its own stdout/stderr are None, but cli.py print()s at
-    startup, so the child needs a real stream — redirect both to
-    server.out.log rather than inherit them.
-    """
+    """Spawn the server detached; stdout/stderr go to server.out.log since a
+    windowless parent has None streams and cli.py prints at startup."""
     os.makedirs(APP_SUPPORT_DIR, exist_ok=True)
     log_file = open(SERVER_LOG, "ab")
     proc = subprocess.Popen(
@@ -136,13 +116,8 @@ def _start_server(port: int) -> subprocess.Popen:
 
 
 def _view_url(port: int, path: str | None) -> str:
-    """Build the URL frontend/src/lib/router.ts's codec decodes back to `path`.
-
-    Mirrors urlForFsPath(): backslashes become forward slashes for a
-    drive-letter path, then each "/"-segment is percent-encoded on its own
-    (so "C:" -> "C%3A") and rejoined with a literal "/" — matching
-    encodeURIComponent segment-by-segment, not a whole-path quote.
-    """
+    """Build the /view URL the frontend codec (router.ts urlForFsPath) decodes:
+    forward slashes, each segment percent-encoded on its own ("C:" -> "C%3A")."""
     if not path:
         return f"http://127.0.0.1:{port}/"
     fs_path = os.path.abspath(path).replace("\\", "/")
@@ -181,9 +156,8 @@ def main() -> None:
             port = pick_port()
 
     if not alive:
-        # Re-probe once right before spawning: two rapid double-clicks race
-        # here, and the loser's bind fails while this probe finds the winner.
-        # No lock, that's an acceptable outcome.
+        # Re-probe before spawning: rapid double-clicks race here, and the
+        # loser's bind fails while this probe finds the winner.
         alive = _probe(port)
 
     if not alive:

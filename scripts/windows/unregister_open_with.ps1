@@ -1,7 +1,5 @@
-# Reverses register_open_with.ps1: removes the ProgID, the all-files context
-# verb, and only the FusedRender.file value from each extension's
-# OpenWithProgids (leaves the rest of that key, and any other default
-# handler, untouched).
+# Reverses register_open_with.ps1: removes the ProgID, all-files verb, the
+# Applications key, and only the FusedRender.file OpenWithProgids values.
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
