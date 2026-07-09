@@ -2,6 +2,7 @@
 export interface Config {
   start_dir: string;
   home: string;
+  version: string;
 }
 
 export interface FsEntry {
