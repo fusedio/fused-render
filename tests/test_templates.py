@@ -75,8 +75,47 @@ def test_builtin_zarr_directory_key():
 
 
 def test_unmapped_and_plain_dir_empty():
+    # Non-existent (unreadable) paths can't be sniffed -> stay on the metadata
+    # fallback; a directory never gets the text fallback.
     assert modes("/x/a.xyz") == ([], None)
     assert modes("/x/somedir", is_dir=True) == ([], None)
+
+
+# --------------------------------------------- text sniff for unmapped files
+
+def test_unmapped_text_file_falls_back_to_text_viewers(tmp_path):
+    # Whole-name dotfiles and extensionless files can't match any suffix key,
+    # but they're plain text -> the sniff offers the same viewers .txt gets.
+    for name, body in [
+        (".gitignore", "node_modules\n*.log\n"),
+        (".gitconfig", "[user]\n  name = x\n"),
+        ("Makefile", "all:\n\tgcc\n"),
+        ("LICENSE", "MIT License\n"),
+    ]:
+        p = tmp_path / name
+        p.write_text(body)
+        assert modes(str(p)) == (["text", "code"], None), name
+
+
+def test_unmapped_empty_file_is_text(tmp_path):
+    p = tmp_path / ".npmrc"
+    p.write_text("")
+    assert modes(str(p)) == (["text", "code"], None)
+
+
+def test_unmapped_binary_file_stays_metadata(tmp_path):
+    p = tmp_path / "blob.bin"
+    p.write_bytes(b"\x89PNG\r\n\x00\x01\x02\x00garbage")
+    assert modes(str(p)) == ([], None)
+
+
+def test_mapped_file_never_hits_text_sniff(tmp_path):
+    # A file with a real binding resolves via the registry, not the fallback,
+    # even though its bytes are text.
+    p = tmp_path / "s.py"
+    p.write_text("x = 1\n")
+    got, err = modes(str(p))
+    assert err is None and got[0] == "code" and "text" not in got
 
 
 # ------------------------------------------------------------------ matcher
