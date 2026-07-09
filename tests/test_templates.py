@@ -62,7 +62,7 @@ def test_builtin_registry_parses_and_all_names_resolve():
 def test_builtin_html_default_is_render_sentinel():
     entries, error = server._templates_for("/x/page.html", False)
     assert error is None
-    assert [e["mode"] for e in entries] == ["_render", "code", "claude", "annotate"]
+    assert [e["mode"] for e in entries] == ["_render", "code", "claude", "annotate", "history"]
     assert entries[0]["path"] is None and entries[0]["icon"] is None
     assert entries[1]["path"].endswith("code/template.html")
     assert entries[2]["path"].endswith("claude/template.html")

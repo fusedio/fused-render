@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>History</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    color: #e8eaed;
+    background: #131417;
+  }
+  #root { max-width: 760px; margin: 0 auto; padding: 32px 20px 64px; }
+
+  /* ---- header ---- */
+  .head { margin-bottom: 32px; }
+  .head .eyebrow {
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #9aa0a6;
+  }
+  .head h1 {
+    margin: 4px 0 2px;
+    font-size: 18px;
+    font-weight: 600;
+    color: #e8eaed;
+    word-break: break-all;
+  }
+  .head .sub { color: #9aa0a6; font-size: 12px; word-break: break-all; }
+
+  /* ---- sections ---- */
+  section { margin-bottom: 24px; }
+  .sec-head {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid #2a2d33;
+    margin-bottom: 8px;
+  }
+  .sec-head h2 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: #e8eaed;
+  }
+  .sec-head .count {
+    color: #9aa0a6;
+    font-size: 12px;
+  }
+  .sec-head .hint { margin-left: auto; color: #868d94; font-size: 11px; }
+
+  .empty { color: #868d94; padding: 6px 2px; }
+
+  /* ---- rows ---- */
+  .row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 8px;
+    margin: 0 -8px;
+    border-radius: 6px;
+    cursor: default;
+  }
+  .row.link { cursor: pointer; transition: background-color 120ms cubic-bezier(0.2, 0, 0, 1); }
+  .row.link:hover { background: #1b1d21; }
+  .row.link:hover .go { opacity: 1; transform: translateX(0); }
+  .row.link:focus-visible {
+    outline: 2px solid #E5FF44;
+    outline-offset: -2px;
+    background: #1b1d21;
+  }
+  .row.link:focus-visible .go { opacity: 1; transform: translateX(0); }
+  .row .icon {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    margin-top: 3px;
+    color: #9aa0a6;
+  }
+  .row .body { min-width: 0; flex: 1; }
+  .row .title {
+    color: #e8eaed;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .row .meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: #9aa0a6;
+    font-size: 12px;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  .row .meta > * { flex: none; }
+  .row .meta .sep { color: #4b5057; }
+  .row .go {
+    flex: none;
+    align-self: center;
+    color: #E5FF44;
+    opacity: 0;
+    transform: translateX(-4px);
+    transition: opacity 120ms cubic-bezier(0.2, 0, 0, 1), transform 120ms cubic-bezier(0.2, 0, 0, 1);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .row .go { transition: none; transform: none; }
+    .row.link { transition: none; }
+  }
+  .badge {
+    display: inline-block;
+    font-size: 11px;
+    line-height: 1;
+    padding: 3px 6px;
+    border-radius: 4px;
+    border: 1px solid #2a2d33;
+    color: #9aa0a6;
+  }
+  .badge.resolved { color: #98c379; border-color: #3a4a35; }
+  .comment-content { white-space: pre-wrap; word-break: break-word; color: #e8eaed; }
+
+  /* ---- warnings ---- */
+  .warn {
+    border: 1px solid #5c4a1f;
+    border-left: 3px solid #d4a72c;
+    background: #1b1913;
+    border-radius: 6px;
+    padding: 10px 12px;
+    color: #e8d8ac;
+  }
+  .warn .msg { margin-bottom: 6px; }
+  .warn details summary { cursor: pointer; color: #9aa0a6; font-size: 12px; }
+  pre.raw {
+    margin: 8px 0 0;
+    padding: 10px;
+    background: #131417;
+    border: 1px solid #2a2d33;
+    border-radius: 6px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: #c8ccd2;
+    font-size: 12px;
+    max-height: 320px;
+    overflow: auto;
+  }
+  .error-page {
+    border: 1px solid #5c2a2a;
+    border-left: 3px solid #ff6b6b;
+    background: #1b1315;
+    border-radius: 6px;
+    padding: 12px 14px;
+    color: #f0c4c4;
+  }
+
+  #status { padding: 16px 0; color: #9aa0a6; max-width: 560px; }
+  #status .big { font-size: 15px; color: #e8eaed; margin-bottom: 6px; }
+  .warn .msg { display: flex; align-items: baseline; gap: 8px; }
+  .warn .msg .icon { flex: none; color: #d4a72c; align-self: center; }
+  .row .icon.muted { color: #6f757d; }
+</style>
+</head>
+<body>
+  <div id="root"><div id="status">Loading…</div></div>
+
+<script>
+(async function () {
+  "use strict";
+
+  // ======================================================================
+  // The sidecar `<file>.json` is a SHARED store (SPEC §21/§22): the claude
+  // template owns `claudeSessions`, the bookmark mirror `bookmarkHistory`,
+  // session restore `lastSession`, annotate `comments`. This view is a
+  // READ-ONLY inspector over it — it never writes the file (HV-9), and all
+  // logic stays in this template (HV-1).
+  // ======================================================================
+
+  // ---- schema (HV-4/HV-6): per-top-level-key, subset validator below.
+  // Required = only what the view renders; extra fields on entries are fine
+  // (writers grow their records additively — additive must not read as
+  // corruption). `ts` marks the epoch unit: bookmark created_at / comment
+  // createdAt are ms (JS Date.now); everything else seconds (time.time()).
+  const SCHEMA = {
+    claudeSessions: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["id"],
+        properties: {
+          id: { type: "string" },
+          preview: { type: "string" },
+          created_at: { type: "number" },
+          last_used: { type: "number" },
+          cwd: { type: "string" },
+        },
+      },
+    },
+    bookmarkHistory: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["id", "search"],
+        properties: {
+          id: { type: "string" },
+          search: { type: "string" },
+          name: { type: "string" },
+          icon: { type: "string" },
+          created_at: { type: "number" },
+          recorded_at: { type: "number" },
+          updated_at: { type: "number" },
+        },
+      },
+    },
+    lastSession: {
+      type: "object",
+      required: ["search"],
+      properties: {
+        search: { type: "string" },
+        updated_at: { type: "number" },
+      },
+    },
+    comments: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["id"],
+        properties: {
+          id: { type: "string" },
+          content: { type: "string" },
+          createdAt: { type: "number" },
+          resolved: { type: "boolean" },
+          view: { type: "string" },
+          anchorPath: { type: "string" },
+          recorded_at: { type: "number" },
+          updated_at: { type: "number" },
+        },
+      },
+    },
+  };
+
+  // Subset JSON-Schema validator: `type` (object/array/string/number/boolean),
+  // `required`, `properties`, `items`. Returns the FIRST error as a human
+  // path + message, or null when valid.
+  function validate(value, schema, path) {
+    path = path || "";
+    const at = path || "value";
+    if (schema.type) {
+      const t = Array.isArray(value) ? "array" : value === null ? "null" : typeof value;
+      if (t !== schema.type) return at + ": expected " + schema.type + ", got " + t;
+    }
+    if (schema.type === "object") {
+      for (const k of schema.required || []) {
+        if (!(k in value)) return at + ": missing required field \"" + k + "\"";
+      }
+      for (const k of Object.keys(schema.properties || {})) {
+        if (k in value && value[k] !== undefined) {
+          const err = validate(value[k], schema.properties[k], path ? path + "." + k : k);
+          if (err) return err;
+        }
+      }
+    }
+    if (schema.type === "array" && schema.items) {
+      for (let i = 0; i < value.length; i++) {
+        const err = validate(value[i], schema.items, path + "[" + i + "]");
+        if (err) return err;
+      }
+    }
+    return null;
+  }
+
+  // ---- tiny html helpers -------------------------------------------------
+  function esc(s) {
+    return String(s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+  function el(html) {
+    const t = document.createElement("template");
+    t.innerHTML = html.trim();
+    return t.content.firstChild;
+  }
+
+  // Relative time. `unit` is per-field (HV-6): "s" or "ms" — never guessed.
+  function relTime(v, unit) {
+    if (typeof v !== "number" || !isFinite(v)) return "";
+    const ms = unit === "ms" ? v : v * 1000;
+    const d = Date.now() - ms;
+    if (d < 0) return "just now";
+    const m = Math.floor(d / 60000);
+    if (m < 1) return "just now";
+    if (m < 60) return m + "m ago";
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + "h ago";
+    const days = Math.floor(h / 24);
+    if (days < 30) return days + "d ago";
+    return new Date(ms).toLocaleDateString();
+  }
+  function absTime(v, unit) {
+    if (typeof v !== "number" || !isFinite(v)) return "";
+    return new Date(unit === "ms" ? v : v * 1000).toLocaleString();
+  }
+
+  // ---- shell navigation (HV-7) -------------------------------------------
+  // Mirrors frontend/src/lib/router.ts urlForFsPath + navigate: /view/ with
+  // each path segment encoded, then pushState + "fused:navigate" on the top
+  // window so the shell re-routes without a full reload. Falls back to a
+  // plain location set if the top window is unreachable.
+  function urlForFsPath(fsPath, search) {
+    const norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;
+    const rest = norm.replace(/^\/+/, "");
+    const encoded = rest.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+    return "/view/" + encoded + (search ? "?" + search : "");
+  }
+  function navigateShell(fsPath, search) {
+    const url = urlForFsPath(fsPath, search);
+    try {
+      const top = window.top;
+      void top.location.href; // throws when cross-origin
+      top.history.pushState(null, "", url);
+      top.dispatchEvent(new Event("fused:navigate"));
+      return;
+    } catch (e) { /* fall through */ }
+    try { window.top.location.href = url; } catch (e) { location.href = url; }
+  }
+
+  // ---- section rendering ---------------------------------------------------
+  const ICONS = {
+    claude: '<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M12 3a7 7 0 0 0-7 7v5.6L3.6 18A1 1 0 0 0 4.4 19.6H12a7 7 0 0 0 0-14zm-3 8.2a1.2 1.2 0 1 1 0-2.4 1.2 1.2 0 0 1 0 2.4zm3.6 0a1.2 1.2 0 1 1 0-2.4 1.2 1.2 0 0 1 0 2.4zm3.6 0a1.2 1.2 0 1 1 0-2.4 1.2 1.2 0 0 1 0 2.4z"/></svg>',
+    bookmark: '<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z"/></svg>',
+    session: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg>',
+    comment: '<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M4 4h16a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H9l-5 4V5a1 1 0 0 1 1-1z"/></svg>',
+    chevron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M9 6l6 6-6 6"/></svg>',
+    warn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" width="14" height="14"><path d="M12 3L2.5 20h19L12 3z"/><path d="M12 10v4"/><path d="M12 17.2v.1"/></svg>',
+  };
+
+  function sectionShell(title, countText, hint) {
+    const sec = el(
+      '<section><div class="sec-head"><h2>' + esc(title) + "</h2>" +
+      (countText ? '<span class="count">' + esc(countText) + "</span>" : "") +
+      (hint ? '<span class="hint">' + esc(hint) + "</span>" : "") +
+      "</div><div class=\"sec-body\"></div></section>"
+    );
+    return { sec, body: sec.querySelector(".sec-body") };
+  }
+
+  function warnCard(keyName, err, rawValue) {
+    return el(
+      '<div class="warn"><div class="msg"><span class="icon">' + ICONS.warn +
+      "</span><span><b>" + esc(keyName) +
+      "</b> is corrupted — " + esc(err) + "</span></div>" +
+      '<details><summary>Show raw data</summary><pre class="raw">' +
+      esc(JSON.stringify(rawValue, null, 2)) + "</pre></details></div>"
+    );
+  }
+
+  function emptyLine(text) {
+    return el('<div class="empty">' + esc(text) + "</div>");
+  }
+
+  function linkRow(icon, titleHtml, metaHtml, onClick, titleAttr) {
+    const row = el(
+      '<div class="row link" role="button" tabindex="0"' +
+      (titleAttr ? ' title="' + esc(titleAttr) + '"' : "") + ">" +
+      '<span class="icon">' + icon + "</span>" +
+      '<span class="body"><div class="title">' + titleHtml + "</div>" +
+      '<div class="meta">' + metaHtml + "</div></span>" +
+      '<span class="go">' + ICONS.chevron + "</span></div>"
+    );
+    row.addEventListener("click", onClick);
+    row.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick(); }
+    });
+    return row;
+  }
+
+  // ---- boot ----------------------------------------------------------------
+  const root = document.getElementById("root");
+  const file = fused.params.get("_file") || "";
+
+  // Role resolution (HV-3): the mode is reachable from both the target and
+  // the sidecar itself.
+  let sidecarPath, targetPath;
+  if (/\.html\.json$/i.test(file)) {
+    sidecarPath = file;
+    targetPath = file.slice(0, -".json".length);
+  } else {
+    targetPath = file;
+    sidecarPath = file + ".json";
+  }
+  const targetName = targetPath.split("/").pop() || targetPath;
+
+  function header() {
+    return el(
+      '<div class="head"><div class="eyebrow">History</div>' +
+      "<h1>" + esc(targetName) + "</h1>" +
+      '<div class="sub">' + esc(sidecarPath) + "</div></div>"
+    );
+  }
+
+  function fullPage(nodes) {
+    root.innerHTML = "";
+    root.appendChild(header());
+    for (const n of nodes) root.appendChild(n);
+  }
+
+  let text = null;
+  try {
+    text = await fused.readFile(sidecarPath);
+  } catch (e) {
+    text = null;
+  }
+
+  if (text === null || text === undefined) {
+    fullPage([el(
+      '<div id="status"><div class="big">No history yet</div>' +
+      "Nothing has been recorded for <b>" + esc(targetName) + "</b> — " +
+      "claude sessions, bookmarks and review comments will appear here.</div>"
+    )]);
+    return;
+  }
+
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (e) {
+    fullPage([el(
+      '<div class="error-page">The sidecar is not valid JSON — ' +
+      esc(e.message) + '.<pre class="raw">' + esc(text.slice(0, 20000)) + "</pre></div>"
+    )]);
+    return;
+  }
+  if (data === null || typeof data !== "object" || Array.isArray(data)) {
+    fullPage([el(
+      '<div class="error-page">Expected a JSON object at the top level, got ' +
+      esc(Array.isArray(data) ? "array" : data === null ? "null" : typeof data) +
+      '.<pre class="raw">' + esc(text.slice(0, 20000)) + "</pre></div>"
+    )]);
+    return;
+  }
+
+  // Validate each known key independently (HV-4): one corrupt key warns only
+  // its own section.
+  const checked = {};
+  for (const key of Object.keys(SCHEMA)) {
+    if (!(key in data)) { checked[key] = { state: "absent" }; continue; }
+    const err = validate(data[key], SCHEMA[key], key);
+    checked[key] = err
+      ? { state: "invalid", error: err, raw: data[key] }
+      : { state: "ok", value: data[key] };
+  }
+
+  const nodes = [];
+
+  // ---- claude sessions ----
+  {
+    const c = checked.claudeSessions;
+    const list = c.state === "ok" ? c.value.slice() : [];
+    list.sort((a, b) => (b.last_used || 0) - (a.last_used || 0));
+    const { sec, body } = sectionShell(
+      "Claude sessions",
+      c.state === "ok" && list.length ? String(list.length) : "",
+      c.state === "ok" && list.length ? "click to resume" : ""
+    );
+    if (c.state === "invalid") body.appendChild(warnCard("claudeSessions", c.error, c.raw));
+    else if (!list.length) body.appendChild(emptyLine("No claude sessions recorded."));
+    else for (const s of list) {
+      body.appendChild(linkRow(
+        ICONS.claude,
+        esc(s.preview || s.id),
+        esc(relTime(s.last_used, "s") || "") +
+          (s.created_at ? '<span class="sep">·</span>started ' + esc(relTime(s.created_at, "s")) : "") +
+          (s.cwd ? '<span class="sep">·</span>' + esc(s.cwd) : ""),
+        () => navigateShell(targetPath, "_mode=claude&session_id=" + encodeURIComponent(s.id)),
+        absTime(s.last_used, "s")
+      ));
+    }
+    nodes.push(sec);
+  }
+
+  // ---- bookmark history ----
+  {
+    const c = checked.bookmarkHistory;
+    const list = c.state === "ok" ? c.value.slice() : [];
+    list.sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
+    const { sec, body } = sectionShell(
+      "Bookmarks",
+      c.state === "ok" && list.length ? String(list.length) : "",
+      c.state === "ok" && list.length ? "click to open" : ""
+    );
+    if (c.state === "invalid") body.appendChild(warnCard("bookmarkHistory", c.error, c.raw));
+    else if (!list.length) body.appendChild(emptyLine("No bookmarks recorded."));
+    else for (const b of list) {
+      const label = b.name || targetName;
+      body.appendChild(linkRow(
+        ICONS.bookmark,
+        (b.icon ? esc(b.icon) + " " : "") + esc(label),
+        (b.search ? esc("?" + b.search) + '<span class="sep">·</span>' : "") +
+          esc(relTime(b.updated_at, "s")),
+        () => navigateShell(targetPath, b.search || ""),
+        absTime(b.updated_at, "s")
+      ));
+    }
+    nodes.push(sec);
+  }
+
+  // ---- last session ----
+  {
+    const c = checked.lastSession;
+    const { sec, body } = sectionShell("Last session", "", c.state === "ok" ? "click to restore" : "");
+    if (c.state === "invalid") body.appendChild(warnCard("lastSession", c.error, c.raw));
+    else if (c.state === "absent") body.appendChild(emptyLine("No session params recorded."));
+    else {
+      const ls = c.value;
+      body.appendChild(linkRow(
+        ICONS.session,
+        esc(ls.search ? "?" + ls.search : "(no params)"),
+        "updated " + esc(relTime(ls.updated_at, "s")),
+        () => navigateShell(targetPath, ls.search || ""),
+        absTime(ls.updated_at, "s")
+      ));
+    }
+    nodes.push(sec);
+  }
+
+  // ---- comments (read-only log, HV-8) ----
+  {
+    const c = checked.comments;
+    const list = c.state === "ok" ? c.value.slice() : [];
+    list.sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
+    const { sec, body } = sectionShell(
+      "Comments",
+      c.state === "ok" && list.length ? String(list.length) : "",
+      c.state === "ok" && list.length ? "log — read-only" : ""
+    );
+    if (c.state === "invalid") body.appendChild(warnCard("comments", c.error, c.raw));
+    else if (!list.length) body.appendChild(emptyLine("No review comments recorded."));
+    else for (const cm of list) {
+      const badges =
+        (cm.resolved ? '<span class="badge resolved">resolved</span> ' : "") +
+        (cm.view ? '<span class="badge">' + esc(cm.view) + "</span> " : "");
+      const row = el(
+        '<div class="row"' +
+        (cm.createdAt ? ' title="' + esc(absTime(cm.createdAt, "ms")) + '"' : "") + ">" +
+        '<span class="icon muted">' + ICONS.comment + "</span>" +
+        '<span class="body"><div class="comment-content">' + esc(cm.content || "(no text)") +
+        '</div><div class="meta">' + badges +
+        esc(relTime(cm.createdAt, "ms") || relTime(cm.recorded_at, "s")) +
+        "</div></span></div>"
+      );
+      body.appendChild(row);
+    }
+    nodes.push(sec);
+  }
+
+  // ---- unknown keys (HV-5: not corruption) ----
+  {
+    const known = new Set(Object.keys(SCHEMA));
+    const other = {};
+    for (const k of Object.keys(data)) if (!known.has(k)) other[k] = data[k];
+    if (Object.keys(other).length) {
+      const { sec, body } = sectionShell("Other keys", String(Object.keys(other).length), "");
+      body.appendChild(el(
+        '<details><summary class="empty">Raw data from other writers</summary>' +
+        '<pre class="raw">' + esc(JSON.stringify(other, null, 2)) + "</pre></details>"
+      ));
+      nodes.push(sec);
+    }
+  }
+
+  fullPage(nodes);
+})();
+</script>
+</body>
+</html>

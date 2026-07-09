@@ -19,6 +19,12 @@
     "xlsx",
     "annotate"
   ],
+  ".html.json": [
+    "history",
+    "tree",
+    "code",
+    "annotate"
+  ],
   ".json": [
     "tree",
     "code",
@@ -223,7 +229,8 @@
     "_render",
     "code",
     "claude",
-    "annotate"
+    "annotate",
+    "history"
   ],
   ".htm": [
     "_render",
