@@ -319,7 +319,8 @@ def test_export_zip_contains_folders_only(ctx):
     ctx.make_template("alpha", icon=True, extra={"reader.py": "x=1"})
     ctx.make_template("beta")
     ctx.registry({".a": ["alpha"]})  # registry.json must NOT be in the zip
-    resp = ctx.client.get("/api/templates/export", params={"names": "alpha,beta"})
+    # Repeated `names=` params, not a comma-joined string.
+    resp = ctx.client.get("/api/templates/export", params={"names": ["alpha", "beta"]})
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "application/zip"
     assert "fused-render-templates.zip" in resp.headers["content-disposition"]
@@ -332,6 +333,16 @@ def test_export_zip_contains_folders_only(ctx):
         "beta/template.html",
     }
     assert not any("registry.json" in n for n in names)
+
+
+def test_export_handles_comma_in_template_name(ctx):
+    # A folder name containing a comma round-trips because names travel as
+    # repeated params, not a comma-joined string.
+    ctx.make_template("a,b")
+    resp = ctx.client.get("/api/templates/export", params={"names": ["a,b"]})
+    assert resp.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+        assert set(zf.namelist()) == {"a,b/template.html"}
 
 
 def test_export_allows_core_template(ctx):
@@ -534,6 +545,65 @@ def test_commit_overwrite_replaces_existing(ctx):
     # The old file is gone; the new content is present.
     assert not (ctx.udir / "brandcard" / "old.txt").exists()
     assert (ctx.udir / "brandcard" / "template.html").read_text() == "<html>NEW</html>"
+
+
+def test_commit_rolls_back_on_midway_failure(ctx, monkeypatch):
+    # If a later os.rename fails, earlier applied moves are undone — the commit
+    # is all-or-nothing over USER_TEMPLATES_DIR, staging is cleaned, and the
+    # handler returns 500 rather than leaving a half-applied import.
+    iid = _stage(ctx, {"aaa/template.html": "<html>", "bbb/template.html": "<html>"})
+    real_rename = os.rename
+
+    def flaky_rename(src, dst):
+        if str(dst).endswith(os.sep + "bbb"):
+            raise OSError("simulated failure landing second template")
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(templates_api.os, "rename", flaky_rename)
+    resp = ctx.client.post(
+        f"/api/templates/import/{iid}/commit",
+        json={"resolutions": {"aaa": "overwrite", "bbb": "overwrite"}},
+        headers=FUSED,
+    )
+    assert resp.status_code == 500
+    assert "import failed" in resp.json()["error"]
+    # 'aaa' landed first but was rolled back; 'bbb' never landed.
+    assert not (ctx.udir / "aaa").exists()
+    assert not (ctx.udir / "bbb").exists()
+    # Staging swept despite the failure.
+    assert not (ctx.home / ".import-staging" / iid).exists()
+
+
+def test_commit_overwrite_restores_original_on_failure(ctx, monkeypatch):
+    # An overwrite that fails after displacing the original restores it, so a
+    # failed commit never destroys an existing template.
+    ctx.make_template("keep", extra={"marker.txt": "ORIGINAL"})
+    iid = _stage(
+        ctx,
+        {"aaa/template.html": "<html>", "keep/template.html": "<html>NEW</html>"},
+    )
+    real_rename = os.rename
+
+    def flaky_rename(src, dst):
+        # Fail the staged->target move for 'keep' (after its original is backed
+        # up), forcing a restore.
+        if str(dst).endswith(os.sep + "keep") and os.path.basename(os.path.dirname(src)) == iid:
+            raise OSError("simulated failure landing overwrite")
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(templates_api.os, "rename", flaky_rename)
+    resp = ctx.client.post(
+        f"/api/templates/import/{iid}/commit",
+        json={"resolutions": {"aaa": "overwrite", "keep": "overwrite"}},
+        headers=FUSED,
+    )
+    assert resp.status_code == 500
+    # Original 'keep' is intact; nothing partially imported.
+    assert (ctx.udir / "keep" / "marker.txt").read_text() == "ORIGINAL"
+    assert not (ctx.udir / "aaa").exists()
+    # No orphaned .bak folder left behind.
+    assert not any(p.name.startswith("keep.bak.") for p in ctx.udir.iterdir())
+    assert not (ctx.home / ".import-staging" / iid).exists()
 
 
 def test_commit_default_and_explicit_skip(ctx):

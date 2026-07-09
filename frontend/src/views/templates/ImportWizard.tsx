@@ -68,10 +68,13 @@ export function ImportWizard({
         payload[it.name] = it.conflictsExisting ? resolutions[it.name] ?? "skip" : "overwrite";
       }
       const res = await commitImport(staged.importId, payload);
+      // The import already landed server-side — refresh the parent even if this
+      // wizard unmounted mid-commit. The result/done screen is modal-local, so
+      // it stays alive-guarded.
+      onImported();
       if (!alive.current) return;
       setResult(res);
       setStep("done");
-      onImported();
     } catch (e) {
       if (alive.current) setError((e as Error).message);
     } finally {

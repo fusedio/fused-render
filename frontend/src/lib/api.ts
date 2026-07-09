@@ -370,10 +370,42 @@ export function resetRegistryBinding(key: string): Promise<RegistryEntry | Regis
 // Export works for ANY template (core or user); import always lands in the user
 // source. Zips are folders only (no registry.json).
 
-// GET url for the export zip (folders only, no registry.json). Downloaded via
-// an <a href download> click, not fetch — the browser streams the attachment.
+// GET url for the export zip (folders only, no registry.json). Names go out as
+// repeated `names=` params (not comma-joined) so a folder name containing a
+// comma round-trips intact.
 export function exportTemplatesUrl(names: string[]): string {
-  return "/api/templates/export?names=" + encodeURIComponent(names.join(","));
+  const qs = names.map((n) => "names=" + encodeURIComponent(n)).join("&");
+  return "/api/templates/export?" + qs;
+}
+
+// Download the export zip via fetch + blob rather than a bare <a download>, so a
+// non-2xx JSON error (unknown name, missing names) is surfaced to the caller
+// instead of being silently saved as a corrupt `.zip`. Throws on failure.
+export async function downloadTemplatesExport(names: string[]): Promise<void> {
+  const res = await fetch(exportTemplatesUrl(names));
+  if (!res.ok) {
+    let message = `export failed (${res.status})`;
+    try {
+      const body = await res.json();
+      if (body && typeof body.error === "string") message = body.error;
+    } catch {
+      /* non-JSON error body — keep the status-based message */
+    }
+    throw new Error(message);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "fused-render-templates.zip";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    // Give the click a tick to start the download before releasing the blob.
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
 }
 
 // One candidate template found in an uploaded zip (a top-level directory).

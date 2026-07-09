@@ -867,10 +867,16 @@ never imports server).
   resolution actually matches keys (`_key_segments` lowercases): a user
   `.CSV` overrides a built-in `.csv` as one `user-override` row (and a `"..."`
   splice expands against that built-in), never two mis-sourced rows.
-  **Read-only** — bindings are edited in the registry files; the page names
-  the user registry path. This is the table of bindings, not a per-file
-  resolver: distinct keys coexist and CT-3 specificity decides per file. Read
-  per request like every resolution (no restart).
+  This is the table of bindings, not a per-file resolver: distinct keys
+  coexist and CT-3 specificity decides per file. Read per request like every
+  resolution (no restart).
+
+  **Superseded (2026-07-09, owner call):** the read-only registry section was
+  removed from the Preferences page when the full Template Management view
+  shipped (§21, `/view/_templates`) — a single home for bindings rather than a
+  glance in one place and an editor in another. The **`GET /api/templates/registry`
+  endpoint stays** (unchanged contract, TV-4); it is now consumed by the
+  Templates view instead of Preferences.
 
 ---
 
@@ -883,7 +889,8 @@ between machines as zip files. Same underlying data as §16/§20.5 — this
 section adds the write path, the inventory/provenance view, and
 import/export; it does not change the resolution engine (PT-6/CT-3), the
 registry file format (CT-2/CT-10/CT-11), or PF-7's read-only endpoint
-contract, which Preferences keeps using unchanged.
+contract (TV-4). The read-only glance itself is retired from Preferences once
+this view ships (§20.5); the endpoint it used is now consumed here instead.
 
 ### 21.1 Sources model (extensibility)
 
@@ -937,10 +944,12 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   deletes that key from the user registry (no-op if absent), reverting the
   effective value to the core one. Returns the recomputed entry, or
   `{key, removed:true}` if no such key resolves anywhere anymore.
-- **TV-7** `GET /api/templates/export?names=a,b,c` **(D85)** — streams a zip
-  (`application/zip`, `Content-Disposition: attachment;
-  filename="fused-render-templates.zip"`) of the named **user** templates
-  only (400 on any name that is not an editable user template); each
+- **TV-7** `GET /api/templates/export?names=a&names=b` **(D85)** — streams a
+  zip (`application/zip`, `Content-Disposition: attachment;
+  filename="fused-render-templates.zip"`) of the named templates — **core or
+  user** (a user folder shadows a core folder of the same name; 400 on a name
+  that resolves to neither). Names travel as **repeated `names=` params** (not
+  comma-joined) so a folder name containing a comma round-trips. Each
   template's folder contents land at its own top level in the zip. **No
   `registry.json` in the zip** — folders only.
 - **TV-8** `POST /api/templates/import` **(D86)** — step 1 of 2, multipart
@@ -1004,12 +1013,18 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   inline confirm), **Reset to core** (TV-6, shown only when
   `overridesCore`, previews the core default from `coreTemplates`),
   **Cancel**.
-- **TV-16** **Inventory panel**: templates grouped by source. Core group is
-  locked (🔒) and view-only, showing `usedBy` chips per template. User group
-  rows show name, icon, `usedBy` chips, and actions: Export ⬇ (single),
-  Delete, Reveal in Finder (TV-10), Open in explorer (TV-10). Toolbar:
-  "Import zip ⬆" and "Export selected ⬇" (checkbox multi-select on user
-  rows drives `exportTemplatesUrl`).
+- **TV-16** **Inventory panel**: templates grouped by source, each group
+  with its own search + source/used filters. A source's **editability** (the
+  🔒 on core) governs only whether its *bindings/templates can be changed* —
+  it does not gate read actions. Every row (core **and** user) renders its
+  `icon.svg`, name, `usedBy` chips, a select checkbox, and per-row actions —
+  Export (single), Reveal in Finder (TV-10), Open in explorer (TV-10) — since
+  **core templates are exportable/inspectable too** (owner call: portable
+  folders regardless of source). Toolbar: "Import zip" and "Export selected"
+  — checkbox multi-select spans any rows (core or user) and drives the export
+  download (`downloadTemplatesExport`, which surfaces server errors rather
+  than saving a 400 body as a zip). Deleting a template folder has no
+  endpoint (deferred) — it is done from the file explorer.
 - **TV-17** **Import wizard modal**, three steps: (1) file chooser
   (`accept=".zip"`) → `importTemplates(file)` (TV-8); (2) manifest — a
   table of staged items with a per-conflicting-item resolution selector

@@ -32,7 +32,7 @@ import stat as stat_mod
 import time
 import zipfile
 
-from fastapi import APIRouter, Body, File, Header, UploadFile
+from fastapi import APIRouter, Body, File, Header, Query, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from fused_render import server
@@ -451,14 +451,15 @@ def _resolve_export_folder(name: str) -> str | None:
 
 
 @router.get("/api/templates/export")
-def api_export_templates(names: str = ""):
+def api_export_templates(names: list[str] = Query(default=[])):
     # SPEC §2.5: stream a zip of the named templates — core OR user, resolved
     # with user-shadow-wins (folders only, no registry.json). A GET so the
-    # browser can trigger it via <a href download>.
-    requested = [n for n in (names.split(",") if names else []) if n.strip()]
-    requested = [n.strip() for n in requested]
+    # browser can trigger it. Names arrive as repeated `?names=a&names=b` params
+    # (not comma-joined) so a template folder whose name contains a comma still
+    # round-trips.
+    requested = [n.strip() for n in names if n and n.strip()]
     if not requested:
-        return _error("provide 'names' — a comma-separated list of template names")
+        return _error("provide 'names' — one or more template names")
     folders = {n: _resolve_export_folder(n) for n in requested}
     bad = [n for n, f in folders.items() if f is None]
     if bad:
@@ -697,43 +698,72 @@ def api_commit_import(
     os.makedirs(server.USER_TEMPLATES_DIR, exist_ok=True)
 
     imported, skipped, overwritten, renamed = [], [], [], {}
-    for name in sorted(os.listdir(staging_dir)):
-        staged = os.path.join(staging_dir, name)
-        if not os.path.isdir(staged):
-            continue  # top-level files were only ever warnings
-        if not os.path.isfile(os.path.join(staged, "template.html")):
-            continue  # invalid item -> dropped
-        resolution = resolutions.get(name, "skip")
-        if resolution not in ("overwrite", "skip", "keep-both"):
-            resolution = "skip"
-        if resolution == "skip":
-            skipped.append(name)
-            continue
+    # Make the commit all-or-nothing over USER_TEMPLATES_DIR: track every applied
+    # move (and every displaced original) so that if a later os.rename raises we
+    # can undo the earlier ones instead of returning 500 with a half-applied
+    # import and inconsistent staging (single local user, D3).
+    applied: list[tuple[str, str]] = []  # (final_dest, staged_source) to reverse
+    backups: list[tuple[str, str]] = []  # (backup_path, original_target) to restore
+    try:
+        for name in sorted(os.listdir(staging_dir)):
+            staged = os.path.join(staging_dir, name)
+            if not os.path.isdir(staged):
+                continue  # top-level files were only ever warnings
+            if not os.path.isfile(os.path.join(staged, "template.html")):
+                continue  # invalid item -> dropped
+            resolution = resolutions.get(name, "skip")
+            if resolution not in ("overwrite", "skip", "keep-both"):
+                resolution = "skip"
+            if resolution == "skip":
+                skipped.append(name)
+                continue
 
-        if resolution == "overwrite":
-            target = os.path.join(server.USER_TEMPLATES_DIR, name)
-            if os.path.exists(target):
-                # Swap via a sibling backup so the live folder is missing only
-                # for the duration of two renames (single local user, D3).
-                backup = target + f".bak.{secrets.token_hex(4)}"
-                os.rename(target, backup)
-                try:
+            if resolution == "overwrite":
+                target = os.path.join(server.USER_TEMPLATES_DIR, name)
+                if os.path.exists(target):
+                    # Displace the original to a sibling backup first; keep the
+                    # backup until the whole commit succeeds so it can be
+                    # restored on a later failure.
+                    backup = target + f".bak.{secrets.token_hex(4)}"
+                    os.rename(target, backup)
+                    backups.append((backup, target))
                     os.rename(staged, target)
-                except OSError:
-                    os.rename(backup, target)  # restore on failure
-                    raise
-                shutil.rmtree(backup, ignore_errors=True)
-                overwritten.append(name)
-            else:
-                os.rename(staged, target)
-            imported.append(name)
-        else:  # keep-both
-            final = _unique_name(name)
-            os.rename(staged, os.path.join(server.USER_TEMPLATES_DIR, final))
-            if final != name:
-                renamed[name] = final
-            imported.append(final)
+                    applied.append((target, staged))
+                    overwritten.append(name)
+                else:
+                    os.rename(staged, target)
+                    applied.append((target, staged))
+                imported.append(name)
+            else:  # keep-both
+                final = _unique_name(name)
+                dest = os.path.join(server.USER_TEMPLATES_DIR, final)
+                os.rename(staged, dest)
+                applied.append((dest, staged))
+                if final != name:
+                    renamed[name] = final
+                imported.append(final)
+    except OSError as exc:
+        # Undo in reverse: move committed folders back to staging, then restore
+        # any displaced originals. Staging is dropped either way.
+        for dest, src in reversed(applied):
+            try:
+                os.rename(dest, src)
+            except OSError:
+                pass
+        for backup, target in reversed(backups):
+            try:
+                if not os.path.exists(target):
+                    os.rename(backup, target)
+                else:
+                    shutil.rmtree(backup, ignore_errors=True)
+            except OSError:
+                pass
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        return _error(f"import failed while applying changes: {exc}", status=500)
 
+    # All moves succeeded — drop the retained backups and the staging dir.
+    for backup, _ in backups:
+        shutil.rmtree(backup, ignore_errors=True)
     shutil.rmtree(staging_dir, ignore_errors=True)
     return {
         "imported": imported,

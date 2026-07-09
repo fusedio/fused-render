@@ -68,7 +68,10 @@ export function RowEditorModal({
     setError(null);
     try {
       await putRegistryBinding(key, chosen);
-      if (!alive.current) return;
+      // onSaved/onClose act on the still-mounted parent page — call them even
+      // if this modal already unmounted (Escape/✕ closed it mid-request), so a
+      // succeeded server write is always reflected. Only modal-local setState
+      // in the catch stays alive-guarded.
       onSaved();
       onClose();
     } catch (e) {
@@ -90,7 +93,10 @@ export function RowEditorModal({
     setError(null);
     try {
       await putRegistryBinding(key, null);
-      if (!alive.current) return;
+      // onSaved/onClose act on the still-mounted parent page — call them even
+      // if this modal already unmounted (Escape/✕ closed it mid-request), so a
+      // succeeded server write is always reflected. Only modal-local setState
+      // in the catch stays alive-guarded.
       onSaved();
       onClose();
     } catch (e) {
@@ -108,7 +114,10 @@ export function RowEditorModal({
     setError(null);
     try {
       await resetRegistryBinding(entry.key);
-      if (!alive.current) return;
+      // onSaved/onClose act on the still-mounted parent page — call them even
+      // if this modal already unmounted (Escape/✕ closed it mid-request), so a
+      // succeeded server write is always reflected. Only modal-local setState
+      // in the catch stays alive-guarded.
       onSaved();
       onClose();
     } catch (e) {

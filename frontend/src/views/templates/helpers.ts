@@ -1,16 +1,5 @@
 import type { KeyKind, RegistryResult } from "../../lib/api";
 
-// Download via a synthetic <a download> click — the export endpoint streams the
-// zip as an attachment, so no fetch/blob dance is needed.
-export function triggerDownload(url: string): void {
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-}
-
 export const sourceLabel = (registry: RegistryResult, id: string): string =>
   registry.sources.find((s) => s.id === id)?.label ?? id;
 

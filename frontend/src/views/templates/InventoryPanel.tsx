@@ -1,8 +1,7 @@
 import { useState } from "react";
-import { exportTemplatesUrl, rawUrl, revealPath } from "../../lib/api";
+import { downloadTemplatesExport, rawUrl, revealPath } from "../../lib/api";
 import type { InventoryTemplate, TemplateInventory } from "../../lib/api";
 import { navigate } from "../../lib/router";
-import { triggerDownload } from "./helpers";
 
 type UseFilter = "all" | "used" | "unused";
 
@@ -41,6 +40,14 @@ export function InventoryPanel({
   };
   const open = (path: string) => {
     navigate(path);
+  };
+  const runExport = async (names: string[]) => {
+    setError(null);
+    try {
+      await downloadTemplatesExport(names);
+    } catch (e) {
+      setError((e as Error).message);
+    }
   };
 
   const selectedNames = Array.from(selected);
@@ -110,7 +117,7 @@ export function InventoryPanel({
           type="button"
           className="templates-btn-primary templates-toolbar-push"
           disabled={selectedNames.length === 0}
-          onClick={() => triggerDownload(exportTemplatesUrl(selectedNames))}
+          onClick={() => runExport(selectedNames)}
           title={
             selectedNames.length === 0
               ? "Select one or more templates to export"
@@ -139,7 +146,7 @@ export function InventoryPanel({
                     t={t}
                     checked={selected.has(t.name)}
                     onToggle={() => toggle(t.name)}
-                    onExport={() => triggerDownload(exportTemplatesUrl([t.name]))}
+                    onExport={() => runExport([t.name])}
                     onReveal={() => reveal(t.path)}
                     onOpen={() => open(t.path)}
                   />
