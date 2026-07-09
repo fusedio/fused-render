@@ -28,31 +28,25 @@
     flex-direction: column;
   }
 
-  /* Header: breadcrumb of the current folder path (mirrors .preview-header). */
-  .header {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 10px 16px;
-    border-bottom: 1px solid var(--border);
-  }
-  .crumbs {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    overflow: hidden;
-    white-space: nowrap;
-    font-size: 14px;
-  }
-  .crumb { color: var(--fg-muted); cursor: pointer; text-overflow: ellipsis; overflow: hidden; }
-  .crumb:hover { color: var(--fg); }
-  .crumb.current { color: var(--fg); cursor: default; font-weight: 600; }
-  .crumb.crumb-icon { display: inline-flex; align-items: center; }
-  .crumb-sep { color: var(--fg-muted); opacity: 0.6; }
+  /* Per-filetype icons — same glyphs + tints as the shell's FileIcons.tsx /
+     shell.css, so rows read identically to the built-in listing. */
+  .file-icon { display: block; width: 16px; height: 16px; }
+  .file-icon--folder  { color: #9fb1d2; }
+  .file-icon--code    { color: #7fb2a6; }
+  .file-icon--data    { color: #a898cb; }
+  .file-icon--json    { color: #c3a96b; }
+  .file-icon--html    { color: #cd9d75; }
+  .file-icon--image   { color: #cd93b6; }
+  .file-icon--doc     { color: #9aa0a6; }
+  .file-icon--media   { color: #d0939b; }
+  .file-icon--geo     { color: #88bf95; }
+  .file-icon--archive { color: #baa386; }
+  .file-icon--db      { color: #82abbf; }
+  .file-icon--file    { color: #868c93; }
 
   /* Split body: file list (majority) on the left, a compact preview pane on
-     the right (Finder list view). */
+     the right (Finder list view). The shell shows the folder path in its own
+     top bar, so this template has no breadcrumb of its own. */
   .split { flex: 1 1 auto; display: flex; min-height: 0; }
   .list-pane {
     flex: 1 1 auto;
@@ -112,7 +106,7 @@
   table.listing-table tr.row.selected { background: var(--sel); }
   table.listing-table tr.row.ignored td.name { opacity: 0.5; }
   table.listing-table td.name { display: flex; align-items: center; gap: 8px; }
-  table.listing-table td.name .icon { flex: 0 0 auto; opacity: 0.85; }
+  table.listing-table td.name .icon { flex: 0 0 auto; display: inline-flex; }
   table.listing-table td.name .label { overflow: hidden; text-overflow: ellipsis; }
   table.listing-table td.mtime, table.listing-table td.size {
     color: var(--fg-muted);
@@ -126,7 +120,8 @@
 
   /* Placeholder / folder card shown in the preview pane. */
   .pane-center { margin: auto; text-align: center; color: var(--fg-muted); padding: 32px; }
-  .pane-center .big-icon { font-size: 48px; line-height: 1; margin-bottom: 12px; }
+  .pane-center .big-icon { display: inline-flex; margin-bottom: 12px; }
+  .pane-center .big-icon .file-icon { width: 48px; height: 48px; stroke-width: 1.5; }
   .pane-center .title { color: var(--fg); font-size: 15px; margin-bottom: 4px; word-break: break-all; }
   .pane-center .hint { font-size: 12.5px; }
   .pane-center button {
@@ -143,7 +138,6 @@
 </style>
 </head>
 <body>
-  <div class="header"><div class="crumbs" id="crumbs"></div></div>
   <div class="split">
     <div class="list-pane" id="list-pane"><div class="status-message">Loading…</div></div>
     <div class="divider" id="divider"></div>
@@ -151,14 +145,62 @@
   </div>
 
   <script>
-    const FILE_ICON = "\u{1F4C4}"; // 📄
-    const DIR_ICON = "\u{1F4C1}";  // 📁
-
-    const crumbsEl = document.getElementById("crumbs");
     const listPaneEl = document.getElementById("list-pane");
     const previewPaneEl = document.getElementById("preview-pane");
 
-    let DIR = null;         // absolute path of the folder being shown
+    // Per-filetype icons ported from the shell's FileIcons.tsx so explorer rows
+    // match the built-in listing exactly (glyph geometry + the CSS tints above,
+    // grouped from registry.json so an icon agrees with the file's viewer).
+    const GLYPHS = {
+      folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+      code: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="m10 12.5-2 2.5 2 2.5"/><path d="m14 12.5 2 2.5-2 2.5"/>',
+      data: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M12 3v18"/>',
+      json: '<path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1"/><path d="M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1"/>',
+      html: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
+      image: '<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>',
+      doc: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M16 13H8"/><path d="M16 17H8"/><path d="M10 9H8"/>',
+      media: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M3 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 3v18"/><path d="M17 7.5h4"/><path d="M17 16.5h4"/>',
+      geo: '<path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/>',
+      archive: '<rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>',
+      db: '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/>',
+      file: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>',
+    };
+    const EXT_VARIANT = {
+      py: "code", js: "code", ts: "code", tsx: "code", jsx: "code",
+      cjs: "code", mjs: "code", cts: "code", mts: "code",
+      sh: "code", zsh: "code", fish: "code", ps1: "code", csh: "code",
+      "zsh-theme": "code", vim: "code",
+      yaml: "code", yml: "code", toml: "code", ini: "code", cfg: "code",
+      conf: "code", tf: "code", hcl: "code", css: "code", plist: "code",
+      parquet: "data", csv: "data", tsv: "data", xlsx: "data",
+      nc: "data", nc4: "data", cdf: "data",
+      zgroup: "data", zattrs: "data", zmetadata: "data",
+      json: "json", jsonl: "json", ndjson: "json",
+      html: "html", htm: "html",
+      png: "image", jpg: "image", jpeg: "image", gif: "image", webp: "image", svg: "image",
+      pdf: "doc", md: "doc", markdown: "doc", txt: "doc", log: "doc",
+      mp4: "media", mov: "media", m4v: "media", webm: "media",
+      mp3: "media", wav: "media", m4a: "media", ogg: "media", flac: "media",
+      geojson: "geo", shp: "geo", kml: "geo", kmz: "geo", gpx: "geo",
+      gpkg: "geo", fgb: "geo", pmtiles: "geo", tif: "geo", tiff: "geo",
+      las: "geo", laz: "geo",
+      zip: "archive", jar: "archive", whl: "archive", egg: "archive",
+      tar: "archive", tgz: "archive", tbz2: "archive", txz: "archive",
+      gz: "archive", bz2: "archive", xz: "archive",
+      sqlite: "db", sqlite3: "db", db: "db",
+    };
+    function extOf(name) {
+      const dot = name.lastIndexOf(".");
+      return dot <= 0 ? "" : name.slice(dot + 1).toLowerCase();
+    }
+    // Inline SVG for a listing entry; directories always get the folder glyph.
+    function iconSvg(name, isDir) {
+      const variant = isDir ? "folder" : (EXT_VARIANT[extOf(name)] || "file");
+      return `<svg class="file-icon file-icon--${variant}" width="16" height="16" ` +
+        `viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ` +
+        `stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${GLYPHS[variant]}</svg>`;
+    }
+
     let ENTRIES = [];       // [{name, path, is_dir, size, mtime, ignored}]
     let selectedPath = null;
     let sortKey = "name";   // name | size | mtime
@@ -205,35 +247,6 @@
       window.top.location.href = urlForPath(absPath, isDir ? "?_mode=explorer" : "");
     }
 
-    // --- Breadcrumb ----------------------------------------------------------
-    function renderCrumbs() {
-      crumbsEl.innerHTML = "";
-      const parts = DIR.split("/").filter(Boolean);
-      // Root marker + one crumb per path segment. Each crumb is an absolute
-      // path that navigates the shell (in explorer mode) to that ancestor.
-      const nodes = [{ label: DIR_ICON, path: "/", isIcon: true, title: "/" }];
-      let acc = "";
-      for (const seg of parts) {
-        acc += "/" + seg;
-        nodes.push({ label: seg, path: acc, title: acc });
-      }
-      nodes.forEach((n, idx) => {
-        if (idx > 0) {
-          const sep = document.createElement("span");
-          sep.className = "crumb-sep";
-          sep.textContent = "›"; // ›
-          crumbsEl.appendChild(sep);
-        }
-        const el = document.createElement("span");
-        const isLast = idx === nodes.length - 1;
-        el.className = "crumb" + (isLast ? " current" : "") + (n.isIcon ? " crumb-icon" : "");
-        el.textContent = n.label;
-        el.title = n.title;
-        if (!isLast) el.addEventListener("click", () => openInShell(n.path, true));
-        crumbsEl.appendChild(el);
-      });
-    }
-
     // --- Preview pane --------------------------------------------------------
     function showPlaceholder(html) {
       previewPaneEl.innerHTML = `<div class="pane-center">${html}</div>`;
@@ -241,7 +254,7 @@
 
     function previewFolder(entry) {
       showPlaceholder(
-        `<div class="big-icon">${DIR_ICON}</div>` +
+        `<div class="big-icon">${iconSvg(entry.name, true)}</div>` +
         `<div class="title">${escapeHtml(entry.name)}</div>` +
         `<div class="hint">Folder — double-click to open</div>` +
         `<button type="button" id="open-folder-btn">Open folder</button>`
@@ -261,7 +274,7 @@
         const t = st.templates && st.templates[0];
         if (!t) {
           showPlaceholder(
-            `<div class="big-icon">${FILE_ICON}</div>` +
+            `<div class="big-icon">${iconSvg(entry.name, false)}</div>` +
             `<div class="title">${escapeHtml(entry.name)}</div>` +
             `<div class="hint">No preview for this file type — ${escapeHtml(formatSize(entry.size))}.</div>` +
             `<button type="button" id="open-file-btn">Open</button>`
@@ -338,7 +351,7 @@
           const sel = r.path === selectedPath ? " selected" : "";
           const ign = r.ignored ? " ignored" : "";
           return `<tr class="row${sel}${ign}" data-path="${escapeHtml(r.path)}" data-dir="${r.is_dir ? 1 : 0}">` +
-            `<td class="name"><span class="icon">${r.is_dir ? DIR_ICON : FILE_ICON}</span>` +
+            `<td class="name"><span class="icon">${iconSvg(r.name, r.is_dir)}</span>` +
             `<span class="label">${escapeHtml(r.name)}</span></td>` +
             `<td class="size">${escapeHtml(size)}</td>` +
             `<td class="mtime">${escapeHtml(formatMtime(r.mtime))}</td></tr>`;
@@ -422,12 +435,10 @@
         const res = await fetch("/api/fs/list?path=" + encodeURIComponent(dir));
         const data = await res.json();
         if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
-        DIR = data.path;
         const base = data.path.replace(/\/+$/, "");
         // Give each entry an absolute path (the endpoint returns bare names);
         // everything downstream keys on `path`.
         ENTRIES = (data.entries || []).map((e) => ({ ...e, path: base + "/" + e.name }));
-        renderCrumbs();
         renderList();
         // Restore a previously-selected child if it still exists.
         const sel = fused.params.get("sel");
