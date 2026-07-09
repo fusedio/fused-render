@@ -9,7 +9,7 @@
 // no rollback; a localhost PUT of this tiny tree is sub-millisecond). UI
 // components still subscribe via useBookmarksVersion (lib/hooks.ts) and call
 // notifyBookmarksChanged() after each mutation they trigger.
-import { getBookmarks, putBookmarks } from "./api";
+import { getBookmarks, putBookmarks, recordBookmarkHistory } from "./api";
 
 // Legacy localStorage key — read once for the one-time server import, then left
 // dormant as a fallback (never written again).
@@ -230,11 +230,16 @@ function mutate(transform: (items: BookmarkItem[]) => BookmarkItem[] | null): Pr
   });
 }
 
-export function addBookmark(name: string, url: string): Promise<void> {
-  return mutate((items) => {
-    items.push({ id: crypto.randomUUID(), name, url, created_at: Date.now() });
+export async function addBookmark(name: string, url: string): Promise<void> {
+  const item: Bookmark = { id: crypto.randomUUID(), name, url, created_at: Date.now() };
+  await mutate((items) => {
+    items.push(item);
     return items;
   });
+  // Fire-and-forget after the bookmark write commits, so sidecar I/O never
+  // blocks or fails the bookmark itself.
+  recordBookmarkHistory({ id: item.id, name, url, created_at: item.created_at })
+    .catch((e) => console.error("[fused] failed to record bookmark history:", e));
 }
 
 export function deleteBookmark(id: string): Promise<void> {
@@ -375,8 +380,10 @@ export function toggleFolder(id: string): Promise<void> {
   });
 }
 
-export function updateBookmarkUrl(id: string, url: string): Promise<void> {
-  return mutate((items) => {
+export async function updateBookmarkUrl(id: string, url: string): Promise<void> {
+  let name: string | undefined;
+  let found = false;
+  await mutate((items) => {
     let bookmark = items.find((it) => it.id === id && !isFolder(it)) as Bookmark | undefined;
     if (!bookmark) {
       for (const item of items) {
@@ -387,8 +394,14 @@ export function updateBookmarkUrl(id: string, url: string): Promise<void> {
     }
     if (!bookmark) return null;
     bookmark.url = url;
+    name = bookmark.name;
+    found = true;
     return items;
   });
+  if (!found) return;
+  // Record the new url for that id (server upserts, refreshing updated_at).
+  recordBookmarkHistory({ id, url, name })
+    .catch((e) => console.error("[fused] failed to record bookmark history:", e));
 }
 
 // Set or clear (icon = null) a bookmark's emoji icon. Bookmarks only —

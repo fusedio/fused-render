@@ -116,6 +116,35 @@ export function putBookmarks(bookmarks: unknown[]): Promise<void> {
   return putJson<unknown>("/api/bookmarks", bookmarks).then(() => undefined);
 }
 
+export interface BookmarkHistoryEntry {
+  id: string;
+  url: string;
+  name?: string;
+  created_at?: number;
+  icon?: string;
+}
+
+// Best-effort: append/refresh this bookmark in its target file's .html.json
+// sidecar (bookmarkHistory). Server no-ops for sentinel/dir-gone/non-file urls.
+export function recordBookmarkHistory(entry: BookmarkHistoryEntry): Promise<void> {
+  return postJson<unknown>("/api/bookmarks/history", entry).then(() => undefined);
+}
+
+// Per-file session restore (LSN-*). `search` is the shell query without the
+// leading "?", stored verbatim in the target file's .html.json sidecar.
+export interface LastSession {
+  search: string;
+  updated_at: number;
+}
+
+export function getSession(fsPath: string): Promise<{ lastSession: LastSession | null }> {
+  return getJson("/api/session?path=" + encodeURIComponent(fsPath));
+}
+
+export function putSession(fsPath: string, search: string): Promise<void> {
+  return putJson<unknown>("/api/session", { path: fsPath, search }).then(() => undefined);
+}
+
 // -- Deploy (hosted publish through the fused CLI; fused_render/deploy.py) ----
 
 // Availability of the fused CLI in the server's environment, and whether the

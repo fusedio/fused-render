@@ -49,7 +49,7 @@ fused_render/templates/claude/
 
   ```json
   {
-    "sessions": [
+    "claudeSessions": [
       {"id": "<uuid>", "preview": "first user message…", "created_at": 1751…, "last_used": 1751…}
     ]
   }

@@ -8,6 +8,7 @@
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
 import { useEffect, useState } from "react";
 import { IS_EMBED, fsPathFromLocation, urlForFsPath } from "./lib/router";
+import { useSessionRestore, useSessionTracking } from "./lib/session";
 import { statPath, type Config, type StatResult } from "./lib/api";
 import { useNavEpoch, useDocumentTitle } from "./lib/hooks";
 import { basename } from "./lib/format";
@@ -49,6 +50,16 @@ function useStat(fsPath: string | null, epoch: number): StatState {
 // sentinel.
 function StatView({ fsPath, epoch }: { fsPath: string; epoch: number }) {
   const stat = useStat(fsPath, epoch);
+  // null until the stat resolves — the session hooks opt out for anything that
+  // is not a confirmed file, so a directory never gets a restore/track before
+  // its kind is known.
+  const isDir = stat.status === "ok" ? stat.stat.is_dir : null;
+  // Per-file session restore (LSN-*): replay the file's last URL query on a
+  // bare open, and track qualifying param changes back into the sidecar.
+  // `ready` gates the preview so the iframe mounts with the restored params
+  // already on the shell URL (no param flash from defaults -> restored).
+  const ready = useSessionRestore(fsPath, isDir);
+  useSessionTracking(fsPath, isDir);
   useDocumentTitle(fsPath === "/" ? null : basename(fsPath));
   let content = null;
   if (stat.status === "error") {
@@ -66,12 +77,16 @@ function StatView({ fsPath, epoch }: { fsPath: string; epoch: number }) {
     // empty list only when a `null` binding disables it; the shell still lists
     // it then — a folder must always render something.
     const s = stat.stat;
-    content =
-      s.is_dir && s.templates.length === 0 ? (
-        <Listing fsPath={fsPath} />
-      ) : (
-        <Preview fsPath={fsPath} stat={s} />
-      );
+    if (s.is_dir && s.templates.length === 0) {
+      content = <Listing fsPath={fsPath} />;
+    } else if (!ready) {
+      // Brief; only for files opened with an empty query while the sidecar
+      // read resolves. Directories and param/bookmark opens are ready
+      // synchronously (useSessionRestore), so no flash on those paths.
+      content = <div className="status-message">Loading…</div>;
+    } else {
+      content = <Preview fsPath={fsPath} stat={s} />;
+    }
   }
   return (
     <>

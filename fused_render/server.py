@@ -22,6 +22,7 @@ import sys
 import tempfile
 import time
 import traceback
+from urllib.parse import parse_qsl
 
 from fastapi import Body, FastAPI, Header, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -32,6 +33,7 @@ from fused_render.core_templates import ensure_core_templates
 from fused_render.deploy import router as deploy_router
 from fused_render.executor import run_python
 from fused_render.shell import prefs as shell_prefs
+from fused_render.shell import storage
 from fused_render.shell.bookmarks import router as bookmarks_router
 from fused_render.shell.prefs import router as prefs_router
 from fused_render.shell.seed import fused_dir
@@ -132,6 +134,66 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
     if x_fused != "1":
         return _error("missing or invalid X-Fused header", status=403)
     return None
+
+
+# Per-file sidecar <file>.json (shared with the claude chat template, which
+# owns "claudeSessions", and bookmarks, which own "bookmarkHistory" — see
+# templates/claude/agent.py and shell/bookmarks.py). Read/merge/write preserves
+# every other key so the writers never clobber each other (single local user,
+# last-write-wins on a true interleave — D3).
+def _sidecar_path(file: str) -> str:
+    return file + ".json"
+
+
+def _read_sidecar(file: str) -> dict:
+    # read_json returns None on missing/corrupt; a non-dict (a stray JSON list)
+    # is treated as empty so a merge can't crash.
+    data = storage.read_json(_sidecar_path(file))
+    return data if isinstance(data, dict) else {}
+
+
+def _has_non_mode_param(search: str) -> bool:
+    # A "qualifying" query has at least one key other than _mode (mirrors the
+    # frontend hasQualifyingParam). keep_blank_values so "?city=" still counts.
+    return any(k != "_mode" for k, _ in parse_qsl(search, keep_blank_values=True))
+
+
+def _session_get(path: str):
+    if not os.path.isfile(path):
+        return _error(f"no such file: {path}", status=404)
+    last = _read_sidecar(path).get("lastSession")
+    return {"lastSession": last if isinstance(last, dict) else None}
+
+
+def _session_put(body: dict, x_fused: str | None):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    path = body.get("path")
+    search = body.get("search")
+    if not path or not os.path.isabs(path):
+        return _error("'path' must be an absolute filesystem path")
+    if not os.path.isfile(path):
+        return _error(f"no such file: {path}", status=404)
+    if not isinstance(search, str):
+        return _error("'search' must be a string")
+    # Read-merge-write the whole dict so claudeSessions / bookmarkHistory
+    # survive alongside lastSession (see _read_sidecar comment).
+    data = _read_sidecar(path)
+    # LSN-3 gate (authoritative, server-side): a _mode-only or empty query must
+    # not START a session, but once one exists we DO record _mode-only updates
+    # so the file's last _mode is remembered. Save when the query carries a
+    # non-_mode param, OR (query is non-empty AND a lastSession already exists).
+    # Empty query never clobbers an existing session down to "".
+    has_session = isinstance(data.get("lastSession"), dict)
+    if not (_has_non_mode_param(search) or (search != "" and has_session)):
+        return {"ok": True, "skipped": True}
+    data["lastSession"] = {"search": search, "updated_at": time.time()}
+    try:
+        storage.write_json(_sidecar_path(path), data)
+    except OSError as e:
+        return _error(f"cannot write sidecar for {path}: {e}", status=400)
+    return {"ok": True}
 
 
 # User templates + their registry live under the shell home dir's templates/
@@ -511,6 +573,19 @@ def create_app(start_dir: str) -> FastAPI:
     # Deploy (hosted publish through the fused CLI) — export + `fused share`
     # orchestration and the per-page deployment pointer store (deploy.py).
     app.include_router(deploy_router)
+
+    # Per-file session restore (LSN-*): a viewed file remembers its last URL
+    # query in the "lastSession" key of its <file>.json sidecar. GET is a read
+    # endpoint (no X-Fused guard); PUT mutates so it carries the D36 guard.
+    @app.get("/api/session")
+    def api_session_get(path: str):
+        return _session_get(path)
+
+    @app.put("/api/session")
+    def api_session_put(
+        body: dict = Body(...), x_fused: str | None = Header(default=None)
+    ):
+        return _session_put(body, x_fused)
 
     @app.get("/api/config")
     def api_config():

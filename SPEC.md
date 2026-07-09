@@ -80,6 +80,7 @@ Left sidebar in the shell, always visible:
 - **SB-4** Bookmarks are renamable inline (edit affordance on hover → input → Enter/blur commits) and deletable. No confirm on delete (re-bookmarking is one click).
 - **SB-5** **DECIDED: persistence = server-side file** `~/.fused-render/bookmarks.json` (D75; superseded the original localStorage store). JSON array `{id, name, url, created_at}` (+ folders, D44); `id = crypto.randomUUID()`. Served by `GET /api/bookmarks` → `{exists, bookmarks}` and `PUT /api/bookmarks` (whole-tree, atomic, last-write-wins); server code lives in `fused_render/shell/`. Frontend reads a synchronous in-memory cache hydrated at boot; mutations await the PUT (no optimistic update); a 30 s poll re-reads the server so another tab's edits converge (D77, eventual ≤30 s, still last-write-wins). Legacy `localStorage["fused.bookmarks"]` is imported once (gated on the file not yet existing), then left dormant.
 - **SB-6** Duplicate URLs allowed; list ordered by creation time. *(drag reorder, active-bookmark highlight: polish, later)*
+- **SB-7** **DECIDED: bookmark create/update is mirrored into the target file's `.html.json` sidecar** (D83) as `bookmarkHistory` — the same per-file sidecar the `claude` chat template owns via `claudeSessions` (§7). `POST /api/bookmarks/history` upserts an entry by bookmark `id`; the frontend calls it fire-and-forget right after `addBookmark`/`updateBookmarkUrl` commit. A bookmark targeting a layout/tab sentinel or a path no longer on disk records nothing. **Delete never touches the sidecar** — history is permanent, independent of the bookmark's current lifetime.
 
 ### Server FS API (shape, not final contract)
 
@@ -871,3 +872,40 @@ never imports server).
   the user registry path. This is the table of bindings, not a per-file
   resolver: distinct keys coexist and CT-3 specificity decides per file. Read
   per request like every resolution (no restart).
+
+## 21. Session Restore — Per-File Last Params (D84)
+
+Goal: opening a file the way most opens happen — a listing click, a Finder/DMG
+double-click, the root redirect — should not lose whatever params you last had
+on it. A **file** (never a directory, never an embed-mode pane) remembers its
+last shell query in the same `.html.json` sidecar the `claude` chat template
+(§7) and bookmark history (SB-7) already use.
+
+- **LSN-1** A viewed file's last URL params are stored as `lastSession` in its
+  `<file>.json` sidecar, sibling to the claude template's `claudeSessions` key
+  and SB-7's `bookmarkHistory`.
+- **LSN-2** `lastSession = {search, updated_at}` — `search` is the shell query
+  string verbatim, no leading `?` (same literal-URL posture as bookmarks, SB-2).
+- **LSN-3** Tracking upserts when the shell query has a param **other than
+  `_mode`**, or when a `lastSession` already exists for the file (so once a
+  session is going, a later `_mode`-only change is remembered too); a query that
+  is empty, or `_mode`-only with no prior session, never starts one.
+- **LSN-4** Opening a file with an **empty** shell query restores `lastSession`
+  (if present) via `history.replaceState` before the preview mounts.
+- **LSN-5** Opening a file with a **non-empty** query (bookmark, hand-typed,
+  refresh) — those params win, no restore — and, if qualifying (LSN-3), become
+  the new `lastSession`.
+- **LSN-6** Directories and embed-mode panes (panel/tab, D72) neither track
+  nor restore — layout mode already owns pane params.
+- **LSN-7** Persistence is `GET`/`PUT /api/session` (`fused_render/server.py`);
+  `PUT` carries the `X-Fused` guard (D36), `GET` is unguarded (read-only).
+- **LSN-8** Sidecar writes read-merge-write the whole dict, so `claudeSessions`,
+  `bookmarkHistory`, and `lastSession` never clobber one another (last-write-wins
+  on a true simultaneous write — D3).
+- **LSN-9** The preview is held (a brief loading state) until the restore
+  decision resolves — no flash of default params before the restored ones apply.
+- **LSN-10** Tracking writes are debounced (400 ms) and fire-and-forget; a
+  sidecar read/write failure never blocks the view — it just renders bare.
+- **LSN-11** Dropping params back to empty/`_mode`-only leaves the stored
+  `lastSession` untouched — a later bare open re-applies it. Accepted quirk,
+  not a bug.
