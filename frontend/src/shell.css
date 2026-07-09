@@ -1856,7 +1856,7 @@ body.embed .preview-browse-chip:hover {
 /* Toolbar (both tabs). */
 .templates-toolbar {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   gap: 10px;
   flex-wrap: wrap;
   margin-bottom: 14px;
@@ -1868,11 +1868,13 @@ body.embed .preview-browse-chip:hover {
 
 .templates-search {
   font: inherit;
+  font-size: 13px;
+  height: 32px;
   background: var(--bg-alt);
   color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 6px 10px;
+  padding: 0 10px;
   flex: 1 1 200px;
   min-width: 150px;
 }
@@ -1885,33 +1887,36 @@ body.embed .preview-browse-chip:hover {
 .templates-toolbar select {
   font: inherit;
   font-size: 13px;
+  height: 32px;
   background: var(--bg-alt);
   color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 6px 8px;
+  padding: 0 8px;
 }
 
-/* Segmented control (filters, key-shape picker, import resolutions). */
+/* Segmented control (filters, key-shape picker, import resolutions):
+   a quiet container pill; the active segment is a subtly raised inner pill —
+   no accent borders. */
 .templates-seg {
   display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
   border-radius: 6px;
-  overflow: hidden;
+  background: var(--bg-alt);
 }
 
 .templates-seg-btn {
   font: inherit;
   font-size: 12px;
+  line-height: 1;
   padding: 6px 11px;
-  background: var(--bg-alt);
+  background: none;
   color: var(--fg-muted);
-  border: 1px solid var(--border);
-  border-right: none;
+  border: none;
+  border-radius: 4px;
   cursor: pointer;
-}
-
-.templates-seg-btn:last-child {
-  border-right: 1px solid var(--border);
 }
 
 .templates-seg-btn:hover {
@@ -1920,22 +1925,20 @@ body.embed .preview-browse-chip:hover {
 
 .templates-seg-btn.active {
   color: var(--fg);
-  border-color: var(--accent);
+  background: rgba(255, 255, 255, 0.09);
   font-weight: 600;
-  position: relative;
-  z-index: 1;
 }
 
 .templates-seg-btn.danger.active {
   color: var(--error);
-  border-color: var(--error);
 }
 
 /* Buttons. */
 .templates-btn-secondary {
   font: inherit;
   font-size: 13px;
-  padding: 6px 12px;
+  height: 32px;
+  padding: 0 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg-alt);
@@ -1956,7 +1959,8 @@ body.embed .preview-browse-chip:hover {
   font: inherit;
   font-size: 13px;
   font-weight: 600;
-  padding: 6px 14px;
+  height: 32px;
+  padding: 0 14px;
   border: none;
   border-radius: 6px;
   background: var(--accent);
@@ -2500,33 +2504,28 @@ body.embed .preview-browse-chip:hover {
 
 .deploy-body .templates-seg-btn {
   padding: 6px 11px;
-  border-radius: 0;
-  background: var(--bg-alt);
+  border: none;
+  border-radius: 4px;
+  background: none;
   color: var(--fg-muted);
-  border: 1px solid var(--border);
-  border-right: none;
-}
-
-.deploy-body .templates-seg-btn:last-child {
-  border-right: 1px solid var(--border);
 }
 
 .deploy-body .templates-seg-btn:hover:not(:disabled) {
-  background: var(--bg-alt);
-  border-color: var(--border);
+  background: none;
+  border-color: transparent;
   color: var(--fg);
 }
 
 .deploy-body .templates-seg-btn.active,
 .deploy-body .templates-seg-btn.active:hover:not(:disabled) {
   color: var(--fg);
-  border-color: var(--accent);
+  background: rgba(255, 255, 255, 0.09);
+  border-color: transparent;
   font-weight: 600;
 }
 
 .deploy-body .templates-seg-btn.danger.active {
   color: var(--error);
-  border-color: var(--error);
 }
 
 .deploy-body .templates-danger-text {
