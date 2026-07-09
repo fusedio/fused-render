@@ -203,12 +203,15 @@
     margin: 0 0 2px -8px;
     border-radius: 8px;
   }
-  /* node dot on the spine */
+  /* node dot on the spine: 10px box (7px dot + 1.5px ring), centered on the
+     spine's 7.5px axis. The .ev sits 26px right of the .day edge (34px pad,
+     -8px margin), so left = 7.5 - 5 - 26 = -23.5px; top centers the dot ring
+     on the single 19.5px title line inside 9px padding. */
   .ev::before {
     content: "";
     position: absolute;
-    left: calc(-34px + var(--spine-x) - 3px + 8px);
-    top: 16px;
+    left: -23.5px;
+    top: 13.5px;
     width: 7px;
     height: 7px;
     border-radius: 50%;
@@ -233,15 +236,16 @@
   }
   .ev.link:hover .go, .ev.link:focus-visible .go { opacity: 1; transform: translateX(0); }
 
-  .ev .icon { flex: none; width: 16px; height: 16px; margin-top: 2px; color: var(--ink-3); }
-  .ev .body { min-width: 0; flex: 1; }
-  .ev .kind {
-    font-size: 11px;
-    font-weight: 700;
+  .ev .icon {
+    flex: none;
+    width: 16px;
+    height: 19.5px;
+    display: grid;
+    place-items: center;
     color: var(--ink-3);
-    letter-spacing: 0.02em;
   }
-  .ev.link:hover .kind { color: var(--accent-dim); }
+  .ev .icon .star { font-size: 12px; line-height: 1; }
+  .ev .body { min-width: 0; flex: 1; }
   .ev .title {
     color: var(--ink);
     overflow: hidden;
@@ -249,55 +253,44 @@
     white-space: nowrap;
   }
   .ev .title .q { color: var(--accent-dim); }
-  .ev .meta {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    color: var(--ink-2);
-    font-size: 12px;
-    overflow: hidden;
-    white-space: nowrap;
+  .ev .title.wrap {
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    word-break: break-word;
   }
-  .ev .meta > * { flex: none; }
-  .ev .meta > :last-child { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  .ev .meta .sep { color: #4b5057; }
-  .ev .when {
+  .ev.resolved .title { color: var(--ink-2); }
+  /* fixed right column: the time sits in every row at the same x; on hover
+     of a clickable row the chevron takes its exact slot (no layout shift). */
+  .ev .right {
     flex: none;
-    align-self: flex-start;
-    margin-top: 2px;
+    position: relative;
+    width: 64px;
+    height: 19.5px;
+  }
+  .ev .when {
+    position: absolute;
+    inset: 0;
+    text-align: right;
     color: var(--ink-3);
     font-size: 12px;
+    line-height: 19.5px;
     font-variant-numeric: tabular-nums;
+    transition: opacity 150ms cubic-bezier(0.2, 0, 0, 1);
   }
   .ev .go {
-    flex: none;
-    align-self: center;
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
     color: var(--accent);
     opacity: 0;
     transform: translateX(-4px);
     transition: opacity 150ms cubic-bezier(0.2, 0, 0, 1), transform 150ms cubic-bezier(0.2, 0, 0, 1);
   }
-  .comment-quote {
-    margin-top: 2px;
-    padding: 8px 10px;
-    background: var(--surface);
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    color: var(--ink);
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-  .ev.link .comment-quote { background: var(--surface-2); }
-  .badge {
-    display: inline-block;
-    font-size: 11px;
-    line-height: 1;
-    padding: 3px 6px;
-    border-radius: 4px;
-    border: 1px solid var(--line);
-    color: var(--ink-2);
-  }
-  .badge.resolved { color: #98c379; border-color: #3a4a35; }
+  .ev.link:hover .when, .ev.link:focus-visible .when { opacity: 0; }
 
   /* entrance: rise once, staggered per event. Keyframe animation (not a
      class-gated transition) so the default is never a blank page. */
@@ -511,10 +504,13 @@
     try { window.top.location.href = url; } catch (e) { location.href = url; }
   }
 
+  // Type icons match what the user already knows: the claude/annotate MODE
+  // icons (templates/<name>/icon.svg) and the shell's ★ bookmark glyph —
+  // never a third vocabulary for the same concepts.
   const ICONS = {
-    claude: '<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M12 3a7 7 0 0 0-7 7v5.6L3.6 18A1 1 0 0 0 4.4 19.6H12a7 7 0 0 0 0-14zm-3 8.2a1.2 1.2 0 1 1 0-2.4 1.2 1.2 0 0 1 0 2.4zm3.6 0a1.2 1.2 0 1 1 0-2.4 1.2 1.2 0 0 1 0 2.4zm3.6 0a1.2 1.2 0 1 1 0-2.4 1.2 1.2 0 0 1 0 2.4z"/></svg>',
-    bookmark: '<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z"/></svg>',
-    comment: '<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M4 4h16a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H9l-5 4V5a1 1 0 0 1 1-1z"/></svg>',
+    claude: '<svg viewBox="0 0 512 512" fill="currentColor" width="14" height="14"><path d="M100.4 340.5l100.7-56.5 1.7-4.9-1.7-2.7-4.9 0-16.8-1-57.5-1.6-49.9-2.1-48.3-2.6-12.2-2.6-11.4-15 1.2-7.5 10.2-6.9 14.7 1.3c18.9 1.3 45.9 3.1 81 5.6l35.2 2.1 52.2 5.4 8.3 0 1.2-3.4-2.8-2.1-2.2-2.1-50.3-34.1-54.4-36-28.5-20.7-15.4-10.5-7.8-9.8-3.4-21.5 14-15.4 18.8 1.3 4.8 1.3 19 14.7 40.7 31.5 53.1 39.1 7.8 6.5 3.1-2.2.4-1.6-3.5-5.8-28.9-52.2-30.8-53.1-13.7-22-3.6-13.2c-1.3-5.4-2.2-10-2.2-15.5l15.9-21.6 8.8-2.8 21.2 2.8 8.9 7.8 13.2 30.2 21.4 47.5 33.2 64.6 9.7 19.2 5.2 17.8 1.9 5.4 3.4 0 0-3.1 2.7-36.4 5-44.7 4.9-57.5 1.7-16.2 8-19.4 15.9-10.5 12.4 5.9 10.2 14.7-1.4 9.5-6.1 39.5-11.9 61.9-7.8 41.5 4.5 0 5.2-5.2 21-27.8 35.2-44.1 15.5-17.5 18.1-19.3 11.6-9.2 22 0 16.2 24.1-7.3 24.9-22.7 28.7-18.8 24.4-27 36.3-16.8 29 1.6 2.3 4-.4 60.9-13 32.9-5.9 39.3-6.7 17.8 8.3 1.9 8.4-7 17.2-42 10.4-49.2 9.8-73.3 17.3-.9.7 1 1.3 33 3.1 14.1.8 34.6 0 64.4 4.8 16.8 11.1 10.1 13.6-1.7 10.4-25.9 13.2c-15.5-3.7-54.4-12.9-116.6-27.7l-28-7-3.9 0 0 2.3 23.3 22.8 42.7 38.6 53.5 49.8 2.7 12.3-6.9 9.7-7.3-1-47-35.4-18.1-15.9-41.1-34.6-2.7 0 0 3.6 9.5 13.9 50 75.2 2.6 23-3.6 7.5-13 4.5-14.2-2.6-29.3-41.1-30.2-46.3-24.4-41.5-3 1.7-14.4 154.8-6.7 7.9-15.5 5.9-13-9.8-6.9-15.9 6.9-31.5 8.3-41.1 6.7-32.7 6.1-40.6 3.6-13.5-.2-.9-3 .4-30.6 42-46.5 62.9-36.8 39.4-8.8 3.5-15.3-7.9 1.4-14.1 8.5-12.6 50.9-64.8 30.7-40.2 19.8-23.2-.1-3.4-1.2 0-135.3 87.8-24.1 3.1-10.4-9.7 1.3-15.9 4.9-5.2 40.7-28-.1.1 0 .1z"/></svg>',
+    bookmark: '<span class="star">★</span>',
+    comment: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="15" height="15"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="13" y2="12"/></svg>',
     chevron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M9 6l6 6-6 6"/></svg>',
     play: '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M8 5v14l11-7-11-7z"/></svg>',
     clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2"/></svg>',
@@ -631,15 +627,20 @@
   };
 
   // ---- event row builders -------------------------------------------------
-  function baseRow(ev, clickable, titleAttr) {
+  // One-line rows: the icon says what it is (same glyphs as the mode
+  // switcher / sidebar), the title says which one, the fixed right column
+  // says when — every richer detail lives in the hover tooltip.
+  function baseRow(ev, clickable, titleAttr, extraClass) {
+    const cls = "ev" + (extraClass ? " " + extraClass : "") + (clickable ? " link" : "");
     const row = el(
-      '<div class="ev' + (clickable ? " link\" role=\"button\" tabindex=\"0" : "") + '"' +
+      '<div class="' + cls + '"' +
+      (clickable ? ' role="button" tabindex="0"' : "") +
       (titleAttr ? ' title="' + esc(titleAttr) + '"' : "") + ">" +
       '<span class="icon">' + KIND[ev.type].icon + "</span>" +
       '<span class="body"></span>' +
-      '<span class="when">' + esc(clock(ev.ms, "ms")) + "</span>" +
+      '<span class="right"><span class="when">' + esc(clock(ev.ms, "ms")) + "</span>" +
       (clickable ? '<span class="go">' + ICONS.chevron + "</span>" : "") +
-      "</div>"
+      "</span></div>"
     );
     return { row, body: row.querySelector(".body") };
   }
@@ -654,23 +655,20 @@
   function renderEvent(ev) {
     if (ev.type === "session") {
       const s = ev.data;
-      const { row, body } = baseRow(ev, true, absTime(s.last_used, "s"));
-      body.innerHTML =
-        '<div class="kind">Claude session · click to resume</div>' +
-        '<div class="title">' + esc(s.preview || s.id) + "</div>" +
-        '<div class="meta">' +
-        (s.created_at ? "<span>started " + esc(relTime(s.created_at, "s")) + "</span>" : "") +
-        (s.cwd ? '<span class="sep">·</span><span>' + esc(s.cwd) + "</span>" : "") +
-        "</div>";
+      const tip = "Claude session — click to resume\n" +
+        (s.created_at ? "started " + relTime(s.created_at, "s") + " · " : "") +
+        absTime(s.last_used, "s");
+      const { row, body } = baseRow(ev, true, tip);
+      body.innerHTML = '<div class="title">' + esc(s.preview || s.id) + "</div>";
       wireClick(row, () =>
         navigateShell(targetPath, "_mode=claude&session_id=" + encodeURIComponent(s.id)));
       return row;
     }
     if (ev.type === "bookmark") {
       const b = ev.data;
-      const { row, body } = baseRow(ev, true, absTime(b.updated_at, "s"));
+      const { row, body } = baseRow(ev, true,
+        "Bookmark — click to open\n" + absTime(b.updated_at, "s"));
       body.innerHTML =
-        '<div class="kind">Bookmark · click to open</div>' +
         '<div class="title">' + (b.icon ? esc(b.icon) + " " : "") +
         esc(b.name || targetName) +
         (b.search ? ' <span class="q">?' + esc(b.search) + "</span>" : "") +
@@ -678,15 +676,13 @@
       wireClick(row, () => navigateShell(targetPath, b.search || ""));
       return row;
     }
-    // comment — read-only log (HV-8)
+    // comment — read-only log (HV-8); resolved reads as settled (dimmed).
     const c = ev.data;
-    const { row, body } = baseRow(ev, false, absTime(c.createdAt, "ms") || absTime(c.recorded_at, "s"));
-    body.innerHTML =
-      '<div class="kind">Comment' +
-      (c.resolved ? ' <span class="badge resolved">resolved</span>' : "") +
-      (c.view ? ' <span class="badge">' + esc(c.view) + "</span>" : "") +
-      "</div>" +
-      '<div class="comment-quote">' + esc(c.content || "(no text)") + "</div>";
+    const tip = "Comment" + (c.resolved ? " — resolved" : "") +
+      (c.view ? " · on " + c.view : "") + "\n" +
+      (absTime(c.createdAt, "ms") || absTime(c.recorded_at, "s"));
+    const { row, body } = baseRow(ev, false, tip, c.resolved ? "resolved" : "");
+    body.innerHTML = '<div class="title wrap">' + esc(c.content || "(no text)") + "</div>";
     return row;
   }
 
@@ -703,26 +699,31 @@
     ));
   }
 
-  // filter chips — toggle a type in/out of the timeline
-  const hidden = new Set();
+  // filter chips — single-select: "All" or exactly one event type
+  let activeFilter = "all";
   const counts = { session: 0, bookmark: 0, comment: 0 };
   for (const ev of events) counts[ev.type]++;
-  let chipsEl = null;
   if (events.length) {
-    chipsEl = el('<div class="chips" role="group" aria-label="Filter event types"></div>');
+    const chipsEl = el('<div class="chips" role="group" aria-label="Filter event types"></div>');
+    const defs = [["all", "All", events.length]];
     for (const t of ["session", "bookmark", "comment"]) {
-      if (!counts[t]) continue;
+      if (counts[t]) defs.push([t, KIND[t].label + (counts[t] > 1 ? "s" : ""), counts[t]]);
+    }
+    const chips = new Map();
+    for (const [key, label, n] of defs) {
       const chip = el(
-        '<button class="chip" aria-pressed="true" type="button">' +
-        '<span class="dot"></span>' + esc(KIND[t].label) +
-        (counts[t] > 1 ? "s" : "") +
-        ' <span class="n">' + counts[t] + "</span></button>"
+        '<button class="chip" type="button" aria-pressed="' +
+        (key === activeFilter ? "true" : "false") + '">' +
+        '<span class="dot"></span>' + esc(label) +
+        ' <span class="n">' + n + "</span></button>"
       );
       chip.addEventListener("click", () => {
-        if (hidden.has(t)) hidden.delete(t); else hidden.add(t);
-        chip.setAttribute("aria-pressed", hidden.has(t) ? "false" : "true");
+        if (activeFilter === key) return;
+        activeFilter = key;
+        for (const [k, c] of chips) c.setAttribute("aria-pressed", k === key ? "true" : "false");
         renderTimeline();
       });
+      chips.set(key, chip);
       chipsEl.appendChild(chip);
     }
     nodes.push(chipsEl);
@@ -771,13 +772,13 @@
   const timelineHost = el('<div class="timeline"></div>');
   function renderTimeline() {
     timelineHost.innerHTML = "";
-    const visible = events.filter((ev) => !hidden.has(ev.type));
+    const visible = activeFilter === "all"
+      ? events
+      : events.filter((ev) => ev.type === activeFilter);
     if (!visible.length) {
       timelineHost.appendChild(el(
-        '<div class="all-hidden">' +
-        (events.length ? "Everything is filtered out." :
-          "No events recorded yet — claude sessions, bookmarks and review comments will land here.") +
-        "</div>"
+        '<div class="all-hidden">No events recorded yet — claude sessions, ' +
+        "bookmarks and review comments will land here.</div>"
       ));
       return;
     }
