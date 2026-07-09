@@ -255,7 +255,7 @@
   ],
   "/": [
     "_listing",
-    "explorer"
+    "preview"
   ],
   ".zarr/": [
     "zarr",

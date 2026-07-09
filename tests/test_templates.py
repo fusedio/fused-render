@@ -89,11 +89,11 @@ def test_unmapped_file_empty_and_plain_dir_lists():
     # as text (no such path), so it stays on the metadata fallback
     assert modes("/x/a.xyz") == ([], None)
     # every directory resolves the universal `/` key (D81): the built-in
-    # listing (default) plus the switchable file-explorer view — a plain
-    # folder, a dotted folder, and the filesystem root all list.
-    assert modes("/x/somedir", is_dir=True) == (["_listing", "explorer"], None)
-    assert modes("/x/my.data", is_dir=True) == (["_listing", "explorer"], None)
-    assert modes("/", is_dir=True) == (["_listing", "explorer"], None)
+    # listing (default) plus the switchable preview (folder browser) view — a
+    # plain folder, a dotted folder, and the filesystem root all list.
+    assert modes("/x/somedir", is_dir=True) == (["_listing", "preview"], None)
+    assert modes("/x/my.data", is_dir=True) == (["_listing", "preview"], None)
+    assert modes("/", is_dir=True) == (["_listing", "preview"], None)
 
 
 # --------------------------------------------- text sniff for unmapped files
