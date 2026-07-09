@@ -334,21 +334,6 @@ def api_templates_registry():
     return _registry_payload()
 
 
-def _validate_binding_names(value: list) -> list:
-    """Return the list of names in `value` that don't resolve — a name is OK if
-    it is a known sentinel or resolves to an existing template folder (core or
-    user). `"..."` is no longer special (splice removed): it resolves to no
-    folder and is reported here like any other dangling name."""
-    unknown = []
-    for name in value:
-        if name in server.KNOWN_SENTINELS:
-            continue
-        path, _err = server._resolve_name(name)
-        if path is None:
-            unknown.append(name)
-    return unknown
-
-
 @router.put("/api/templates/registry")
 def api_put_registry(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     # SPEC §2.3: upsert ONE user key. Read-modify-write the USER registry only.
@@ -370,13 +355,14 @@ def api_put_registry(body: dict = Body(...), x_fused: str | None = Header(defaul
     if value is not None and not isinstance(value, list):
         return _error("'value' must be an array of template names or null (to disable)")
     if isinstance(value, list):
-        unknown = _validate_binding_names(value)
-        if unknown:
-            return _error(
-                "unknown template name(s): "
-                + ", ".join(repr(n) for n in unknown)
-                + " — each name must be an existing template folder (core or user)"
-            )
+        # Names need only be non-empty strings — a name that resolves to no
+        # folder is allowed and saved as a dangling ref (surfaced broken in the
+        # UI, dropped at render), so a user can keep an in-progress or
+        # not-yet-created template bound. Only structurally invalid entries are
+        # rejected here.
+        bad = [n for n in value if not isinstance(n, str) or not n.strip()]
+        if bad:
+            return _error("each template name must be a non-empty string")
 
     # Load the user registry for writing; refuse to clobber a corrupt file (a
     # whole-file rewrite would otherwise drop every other binding).

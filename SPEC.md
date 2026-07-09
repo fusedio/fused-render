@@ -973,13 +973,16 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   `userValue` (raw user-registry value, included only when a user key
   exists). `entries` covers every builtin key plus every user-only key.
 - **TV-5** `PUT /api/templates/registry` **(D86)** — upserts **one** user
-  key: body `{key, value}` (`value` = ordered name array or `null`).
-  Validates the key against the CT-3 grammar and every name against the
-  resolved inventory (unknown names → 400 listing them), then does a
-  **read-modify-write of that key only** against `USER_REGISTRY` via the
-  existing atomic `read_json`/`write_json` helpers (creates the file/dir if
-  missing) — never a whole-file overwrite. Returns the recomputed entry
-  (same shape as one `entries[]` item from TV-4).
+  key: body `{key, value}` (`value` = ordered name array, `null`, or `[]`).
+  Validates the key against the CT-3 grammar; names need only be **non-empty
+  strings** — an unknown name is **not** rejected, it saves as a **dangling
+  ref** (surfaced broken in the UI, dropped at render) so a user can bind a
+  not-yet-created template without being blocked (D94). Only structurally
+  invalid entries (non-string / empty) → 400. Then a **read-modify-write of
+  that key only** against `USER_REGISTRY` via the existing atomic
+  `read_json`/`write_json` helpers (creates the file/dir if missing) — never a
+  whole-file overwrite. Returns the recomputed entry (same shape as one
+  `entries[]` item from TV-4).
 - **TV-6** `POST /api/templates/registry/reset` **(D86)** — body `{key}`;
   deletes that key from the user registry (no-op if absent), reverting the
   effective value to the core one. Returns the recomputed entry, or

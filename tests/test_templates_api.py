@@ -241,20 +241,24 @@ def test_put_new_directory_key(ctx):
     assert resp.json()["keyKind"] == "directory"
 
 
-def test_put_allows_sentinel_rejects_splice_token(ctx):
-    # Sentinels are still accepted...
+def test_put_allows_sentinel_and_dangling_names(ctx):
+    # Sentinels are accepted...
     ok = ctx.client.put(
         "/api/templates/registry", json={"key": ".html", "value": ["code", "_render"]}, headers=FUSED
     )
     assert ok.status_code == 200
     assert _names(ok.json()) == ["code", "_render"]
-    # ...but "..." is no longer special — it resolves to no folder, so PUT
-    # rejects it as an unknown name (the user must remove the dangling ref).
-    bad = ctx.client.put(
+    # ...and so is a dangling name (incl. the retired "..." token): PUT saves it
+    # rather than blocking the whole binding — the UI surfaces it broken so the
+    # user can fix it in their own time (they are not forced to remove it now).
+    saved = ctx.client.put(
         "/api/templates/registry", json={"key": ".html", "value": ["code", "..."]}, headers=FUSED
     )
-    assert bad.status_code == 400
-    assert "..." in bad.json()["error"]
+    assert saved.status_code == 200
+    tmpl = {t["name"]: t for t in saved.json()["templates"]}
+    assert tmpl["code"]["exists"] is True
+    assert tmpl["..."]["exists"] is False  # saved, surfaced broken
+    assert ctx.read_registry()[".html"] == ["code", "..."]
 
 
 def test_put_empty_list_disables(ctx):
@@ -276,15 +280,24 @@ def test_put_invalid_key_rejected(ctx):
     assert "invalid registry key" in resp.json()["error"]
 
 
-def test_put_unknown_name_rejected(ctx):
+def test_put_unknown_names_saved_as_dangling(ctx):
+    # Unknown names are no longer rejected — they save and surface broken, so a
+    # user can bind a template they haven't created yet without being blocked.
     resp = ctx.client.put(
         "/api/templates/registry", json={"key": ".csv", "value": ["nope", "also-nope"]}, headers=FUSED
     )
+    assert resp.status_code == 200
+    assert all(t["exists"] is False for t in resp.json()["templates"])
+    assert ctx.read_registry()[".csv"] == ["nope", "also-nope"]
+
+
+def test_put_rejects_non_string_entries(ctx):
+    # Structurally invalid entries (not non-empty strings) are still rejected.
+    resp = ctx.client.put(
+        "/api/templates/registry", json={"key": ".csv", "value": ["csv", 5]}, headers=FUSED
+    )
     assert resp.status_code == 400
-    err = resp.json()["error"]
-    assert "unknown template name" in err and "nope" in err
-    # Nothing was written on rejection.
-    assert not (ctx.udir / "registry.json").exists()
+    assert "non-empty string" in resp.json()["error"]
 
 
 def test_put_bad_value_type_rejected(ctx):
