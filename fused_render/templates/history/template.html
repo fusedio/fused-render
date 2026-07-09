@@ -4,143 +4,142 @@
 <meta charset="utf-8" />
 <title>History</title>
 <style>
-  :root { color-scheme: dark; }
+  :root {
+    color-scheme: dark;
+    --bg: #131417;
+    --surface: #1b1d21;
+    --surface-2: #22252b;
+    --line: #2a2d33;
+    --ink: #e8eaed;
+    --ink-2: #9aa0a6;
+    --ink-3: #868d94;
+    --accent: #E5FF44;
+    --accent-dim: #b8cc36;
+    --spine-x: 7px;
+  }
   * { box-sizing: border-box; }
   body {
     margin: 0;
     font-family: ui-monospace, Menlo, Consolas, monospace;
     font-size: 13px;
     line-height: 1.5;
-    color: #e8eaed;
-    background: #131417;
+    color: var(--ink);
+    background: var(--bg);
+    /* faint dot grid — terminal graph paper, fades out below the header */
+    background-image: radial-gradient(circle, #1e2126 1px, transparent 1px);
+    background-size: 28px 28px;
   }
-  #root { max-width: 760px; margin: 0 auto; padding: 32px 20px 64px; }
+  #root { max-width: 720px; margin: 0 auto; padding: 40px 24px 80px; }
 
-  /* ---- header ---- */
-  .head { margin-bottom: 32px; }
-  .head .eyebrow {
-    font-size: 11px;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: #9aa0a6;
-  }
+  /* ================= header ================= */
+  .head { margin-bottom: 12px; }
   .head h1 {
-    margin: 4px 0 2px;
-    font-size: 18px;
-    font-weight: 600;
-    color: #e8eaed;
+    margin: 0;
+    font-size: 32px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+    word-break: break-all;
+    text-wrap: balance;
+  }
+  .head h1 .ext { color: var(--ink-3); font-weight: 400; }
+  .head .sub {
+    margin-top: 6px;
+    color: var(--ink-3);
+    font-size: 12px;
     word-break: break-all;
   }
-  .head .sub { color: #9aa0a6; font-size: 12px; word-break: break-all; }
-
-  /* ---- sections ---- */
-  section { margin-bottom: 24px; }
-  .sec-head {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    padding-bottom: 6px;
-    border-bottom: 1px solid #2a2d33;
-    margin-bottom: 8px;
-  }
-  .sec-head h2 {
-    margin: 0;
+  .pulse-line {
+    /* one-line vitals under the name: total events + span */
+    margin: 20px 0 0;
+    color: var(--ink-2);
     font-size: 13px;
-    font-weight: 600;
-    color: #e8eaed;
   }
-  .sec-head .count {
-    color: #9aa0a6;
+  .pulse-line b { color: var(--ink); font-weight: 700; }
+
+  /* ================= filter chips ================= */
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 0; }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 6px 12px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--ink-2);
+    font: inherit;
     font-size: 12px;
+    cursor: pointer;
+    transition: border-color 150ms cubic-bezier(0.2, 0, 0, 1),
+                color 150ms cubic-bezier(0.2, 0, 0, 1),
+                background-color 150ms cubic-bezier(0.2, 0, 0, 1);
   }
-  .sec-head .hint { margin-left: auto; color: #868d94; font-size: 11px; }
+  .chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); transition: background-color 150ms; }
+  .chip[aria-pressed="true"] { color: var(--ink); border-color: #3a3e46; background: var(--surface); }
+  .chip[aria-pressed="true"] .dot { background: var(--accent); }
+  .chip:hover { border-color: #454a53; }
+  .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .chip .n { color: var(--ink-3); }
+  .chip[aria-pressed="true"] .n { color: var(--ink-2); }
 
-  .empty { color: #868d94; padding: 6px 2px; }
-
-  /* ---- rows ---- */
-  .row {
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-    padding: 8px;
-    margin: 0 -8px;
-    border-radius: 6px;
-    cursor: default;
-  }
-  .row.link { cursor: pointer; transition: background-color 120ms cubic-bezier(0.2, 0, 0, 1); }
-  .row.link:hover { background: #1b1d21; }
-  .row.link:hover .go { opacity: 1; transform: translateX(0); }
-  .row.link:focus-visible {
-    outline: 2px solid #E5FF44;
-    outline-offset: -2px;
-    background: #1b1d21;
-  }
-  .row.link:focus-visible .go { opacity: 1; transform: translateX(0); }
-  .row .icon {
-    flex: none;
-    width: 16px;
-    height: 16px;
-    margin-top: 3px;
-    color: #9aa0a6;
-  }
-  .row .body { min-width: 0; flex: 1; }
-  .row .title {
-    color: #e8eaed;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .row .meta {
+  /* ================= continue banner (lastSession) ================= */
+  .continue {
     display: flex;
     align-items: center;
-    gap: 6px;
-    color: #9aa0a6;
-    font-size: 12px;
-    overflow: hidden;
-    white-space: nowrap;
+    gap: 12px;
+    width: 100%;
+    margin: 28px 0 0;
+    padding: 14px 16px;
+    border: 1px solid #3d421c;
+    border-radius: 10px;
+    background: linear-gradient(180deg, #1c1e12, #17190f);
+    color: var(--ink);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 150ms cubic-bezier(0.2, 0, 0, 1),
+                background-color 150ms cubic-bezier(0.2, 0, 0, 1);
   }
-  .row .meta > * { flex: none; }
-  .row .meta .sep { color: #4b5057; }
-  .row .go {
+  .continue:hover, .continue:focus-visible { border-color: #5a6229; }
+  .continue:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .continue .play {
     flex: none;
-    align-self: center;
-    color: #E5FF44;
-    opacity: 0;
-    transform: translateX(-4px);
-    transition: opacity 120ms cubic-bezier(0.2, 0, 0, 1), transform 120ms cubic-bezier(0.2, 0, 0, 1);
+    width: 34px; height: 34px;
+    display: grid; place-items: center;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #131417;
+    transition: transform 200ms cubic-bezier(0.2, 0, 0, 1);
   }
-  @media (prefers-reduced-motion: reduce) {
-    .row .go { transition: none; transform: none; }
-    .row.link { transition: none; }
+  .continue:hover .play { transform: scale(1.08); }
+  .continue .c-body { min-width: 0; flex: 1; }
+  .continue .c-title { font-weight: 700; }
+  .continue .c-meta {
+    color: var(--ink-2); font-size: 12px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .badge {
-    display: inline-block;
-    font-size: 11px;
-    line-height: 1;
-    padding: 3px 6px;
-    border-radius: 4px;
-    border: 1px solid #2a2d33;
-    color: #9aa0a6;
-  }
-  .badge.resolved { color: #98c379; border-color: #3a4a35; }
-  .comment-content { white-space: pre-wrap; word-break: break-word; color: #e8eaed; }
+  .continue .c-meta .q { color: var(--accent-dim); }
+  .continue .go { flex: none; color: var(--accent); opacity: 0.7; transition: transform 200ms cubic-bezier(0.2, 0, 0, 1), opacity 200ms; }
+  .continue:hover .go { transform: translateX(3px); opacity: 1; }
 
-  /* ---- warnings ---- */
+  /* ================= warnings ================= */
+  .warns { margin: 24px 0 0; display: grid; gap: 10px; }
   .warn {
     border: 1px solid #5c4a1f;
-    border-left: 3px solid #d4a72c;
+    border-radius: 10px;
     background: #1b1913;
-    border-radius: 6px;
-    padding: 10px 12px;
+    padding: 12px 14px;
     color: #e8d8ac;
   }
-  .warn .msg { margin-bottom: 6px; }
-  .warn details summary { cursor: pointer; color: #9aa0a6; font-size: 12px; }
+  .warn .msg { display: flex; align-items: baseline; gap: 8px; }
+  .warn .msg .icon { flex: none; color: #d4a72c; align-self: center; }
+  .warn details summary { cursor: pointer; color: var(--ink-2); font-size: 12px; margin-top: 4px; }
   pre.raw {
     margin: 8px 0 0;
     padding: 10px;
-    background: #131417;
-    border: 1px solid #2a2d33;
+    background: var(--bg);
+    border: 1px solid var(--line);
     border-radius: 6px;
     white-space: pre-wrap;
     word-break: break-word;
@@ -150,19 +149,178 @@
     overflow: auto;
   }
   .error-page {
+    margin-top: 24px;
     border: 1px solid #5c2a2a;
-    border-left: 3px solid #ff6b6b;
+    border-radius: 10px;
     background: #1b1315;
-    border-radius: 6px;
-    padding: 12px 14px;
+    padding: 14px 16px;
     color: #f0c4c4;
   }
 
-  #status { padding: 16px 0; color: #9aa0a6; max-width: 560px; }
-  #status .big { font-size: 15px; color: #e8eaed; margin-bottom: 6px; }
-  .warn .msg { display: flex; align-items: baseline; gap: 8px; }
-  .warn .msg .icon { flex: none; color: #d4a72c; align-self: center; }
-  .row .icon.muted { color: #6f757d; }
+  /* ================= timeline ================= */
+  .timeline { margin-top: 36px; position: relative; }
+  .day {
+    position: relative;
+    padding-left: 34px;
+  }
+  /* the spine: one continuous line per day group, threading the dots */
+  .day::before {
+    content: "";
+    position: absolute;
+    left: var(--spine-x);
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--line);
+  }
+  .day:last-child::before { bottom: 12px; }
+  .day-label {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    display: inline-block;
+    margin: 0 0 4px -34px;
+    padding: 4px 10px 4px 0;
+    background: var(--bg);
+    color: var(--ink-3);
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .day-label .tick {
+    display: inline-grid;
+    place-items: center;
+    width: 15px;
+    margin-right: 12px;
+    color: var(--accent);
+  }
+
+  .ev {
+    position: relative;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 9px 10px 9px 12px;
+    margin: 0 0 2px -8px;
+    border-radius: 8px;
+  }
+  /* node dot on the spine */
+  .ev::before {
+    content: "";
+    position: absolute;
+    left: calc(-34px + var(--spine-x) - 3px + 8px);
+    top: 16px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--bg);
+    border: 1.5px solid #4b5057;
+    transition: border-color 150ms cubic-bezier(0.2, 0, 0, 1),
+                background-color 150ms cubic-bezier(0.2, 0, 0, 1),
+                box-shadow 150ms cubic-bezier(0.2, 0, 0, 1);
+  }
+  .ev.link { cursor: pointer; transition: background-color 150ms cubic-bezier(0.2, 0, 0, 1); }
+  .ev.link:hover { background: var(--surface); }
+  .ev.link:hover::before,
+  .ev.link:focus-visible::before {
+    border-color: var(--accent);
+    background: var(--accent);
+    box-shadow: 0 0 10px 1px rgba(229, 255, 68, 0.35);
+  }
+  .ev.link:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+    background: var(--surface);
+  }
+  .ev.link:hover .go, .ev.link:focus-visible .go { opacity: 1; transform: translateX(0); }
+
+  .ev .icon { flex: none; width: 16px; height: 16px; margin-top: 2px; color: var(--ink-3); }
+  .ev .body { min-width: 0; flex: 1; }
+  .ev .kind {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--ink-3);
+    letter-spacing: 0.02em;
+  }
+  .ev.link:hover .kind { color: var(--accent-dim); }
+  .ev .title {
+    color: var(--ink);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ev .title .q { color: var(--accent-dim); }
+  .ev .meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--ink-2);
+    font-size: 12px;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  .ev .meta > * { flex: none; }
+  .ev .meta > :last-child { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .ev .meta .sep { color: #4b5057; }
+  .ev .when {
+    flex: none;
+    align-self: flex-start;
+    margin-top: 2px;
+    color: var(--ink-3);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  .ev .go {
+    flex: none;
+    align-self: center;
+    color: var(--accent);
+    opacity: 0;
+    transform: translateX(-4px);
+    transition: opacity 150ms cubic-bezier(0.2, 0, 0, 1), transform 150ms cubic-bezier(0.2, 0, 0, 1);
+  }
+  .comment-quote {
+    margin-top: 2px;
+    padding: 8px 10px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--ink);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .ev.link .comment-quote { background: var(--surface-2); }
+  .badge {
+    display: inline-block;
+    font-size: 11px;
+    line-height: 1;
+    padding: 3px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--line);
+    color: var(--ink-2);
+  }
+  .badge.resolved { color: #98c379; border-color: #3a4a35; }
+
+  /* entrance: rise once, staggered per event. Keyframe animation (not a
+     class-gated transition) so the default is never a blank page. */
+  @keyframes ev-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .timeline .day, .continue, .pulse-line, .chips {
+    animation: ev-in 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+  .ev { animation: ev-in 360ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+
+  /* ================= empty / hidden ================= */
+  #status { padding: 24px 0; color: var(--ink-2); max-width: 560px; }
+  #status .big { font-size: 16px; font-weight: 700; color: var(--ink); margin-bottom: 6px; }
+  .other { margin-top: 40px; }
+  .other summary { cursor: pointer; color: var(--ink-3); font-size: 12px; }
+  .all-hidden { margin-top: 28px; color: var(--ink-3); }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+    .ev .go, .continue .go { transform: none; }
+  }
 </style>
 </head>
 <body>
@@ -177,14 +335,15 @@
   // template owns `claudeSessions`, the bookmark mirror `bookmarkHistory`,
   // session restore `lastSession`, annotate `comments`. This view is a
   // READ-ONLY inspector over it — it never writes the file (HV-9), and all
-  // logic stays in this template (HV-1).
+  // logic stays in this template (HV-1). Rendered as one merged timeline:
+  // the store is temporal, so time is the primary axis, not the writer.
   // ======================================================================
 
   // ---- schema (HV-4/HV-6): per-top-level-key, subset validator below.
   // Required = only what the view renders; extra fields on entries are fine
   // (writers grow their records additively — additive must not read as
-  // corruption). `ts` marks the epoch unit: bookmark created_at / comment
-  // createdAt are ms (JS Date.now); everything else seconds (time.time()).
+  // corruption). Units: bookmark created_at / comment createdAt are ms
+  // (JS Date.now); everything else seconds (time.time()).
   const SCHEMA = {
     claudeSessions: {
       type: "array",
@@ -286,13 +445,16 @@
   }
 
   // Relative time. `unit` is per-field (HV-6): "s" or "ms" — never guessed.
+  function toMs(v, unit) {
+    if (typeof v !== "number" || !isFinite(v)) return null;
+    return unit === "ms" ? v : v * 1000;
+  }
   function relTime(v, unit) {
-    if (typeof v !== "number" || !isFinite(v)) return "";
-    const ms = unit === "ms" ? v : v * 1000;
+    const ms = toMs(v, unit);
+    if (ms === null) return "";
     const d = Date.now() - ms;
-    if (d < 0) return "just now";
+    if (d < 60000) return "just now";
     const m = Math.floor(d / 60000);
-    if (m < 1) return "just now";
     if (m < 60) return m + "m ago";
     const h = Math.floor(m / 60);
     if (h < 24) return h + "h ago";
@@ -301,8 +463,29 @@
     return new Date(ms).toLocaleDateString();
   }
   function absTime(v, unit) {
-    if (typeof v !== "number" || !isFinite(v)) return "";
-    return new Date(unit === "ms" ? v : v * 1000).toLocaleString();
+    const ms = toMs(v, unit);
+    return ms === null ? "" : new Date(ms).toLocaleString();
+  }
+  function clock(v, unit) {
+    const ms = toMs(v, unit);
+    if (ms === null) return "";
+    return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+  function dayKey(ms) {
+    const d = new Date(ms);
+    return d.getFullYear() + "-" + d.getMonth() + "-" + d.getDate();
+  }
+  function dayLabel(ms) {
+    const now = new Date();
+    const today = dayKey(now.getTime());
+    const yesterday = dayKey(now.getTime() - 86400000);
+    const k = dayKey(ms);
+    if (k === today) return "Today";
+    if (k === yesterday) return "Yesterday";
+    const d = new Date(ms);
+    const opts = { month: "short", day: "numeric" };
+    if (d.getFullYear() !== now.getFullYear()) opts.year = "numeric";
+    return d.toLocaleDateString([], opts);
   }
 
   // ---- shell navigation (HV-7) -------------------------------------------
@@ -328,55 +511,15 @@
     try { window.top.location.href = url; } catch (e) { location.href = url; }
   }
 
-  // ---- section rendering ---------------------------------------------------
   const ICONS = {
     claude: '<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M12 3a7 7 0 0 0-7 7v5.6L3.6 18A1 1 0 0 0 4.4 19.6H12a7 7 0 0 0 0-14zm-3 8.2a1.2 1.2 0 1 1 0-2.4 1.2 1.2 0 0 1 0 2.4zm3.6 0a1.2 1.2 0 1 1 0-2.4 1.2 1.2 0 0 1 0 2.4zm3.6 0a1.2 1.2 0 1 1 0-2.4 1.2 1.2 0 0 1 0 2.4z"/></svg>',
     bookmark: '<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z"/></svg>',
-    session: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg>',
     comment: '<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M4 4h16a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H9l-5 4V5a1 1 0 0 1 1-1z"/></svg>',
     chevron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M9 6l6 6-6 6"/></svg>',
+    play: '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M8 5v14l11-7-11-7z"/></svg>',
+    clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2"/></svg>',
     warn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" width="14" height="14"><path d="M12 3L2.5 20h19L12 3z"/><path d="M12 10v4"/><path d="M12 17.2v.1"/></svg>',
   };
-
-  function sectionShell(title, countText, hint) {
-    const sec = el(
-      '<section><div class="sec-head"><h2>' + esc(title) + "</h2>" +
-      (countText ? '<span class="count">' + esc(countText) + "</span>" : "") +
-      (hint ? '<span class="hint">' + esc(hint) + "</span>" : "") +
-      "</div><div class=\"sec-body\"></div></section>"
-    );
-    return { sec, body: sec.querySelector(".sec-body") };
-  }
-
-  function warnCard(keyName, err, rawValue) {
-    return el(
-      '<div class="warn"><div class="msg"><span class="icon">' + ICONS.warn +
-      "</span><span><b>" + esc(keyName) +
-      "</b> is corrupted — " + esc(err) + "</span></div>" +
-      '<details><summary>Show raw data</summary><pre class="raw">' +
-      esc(JSON.stringify(rawValue, null, 2)) + "</pre></details></div>"
-    );
-  }
-
-  function emptyLine(text) {
-    return el('<div class="empty">' + esc(text) + "</div>");
-  }
-
-  function linkRow(icon, titleHtml, metaHtml, onClick, titleAttr) {
-    const row = el(
-      '<div class="row link" role="button" tabindex="0"' +
-      (titleAttr ? ' title="' + esc(titleAttr) + '"' : "") + ">" +
-      '<span class="icon">' + icon + "</span>" +
-      '<span class="body"><div class="title">' + titleHtml + "</div>" +
-      '<div class="meta">' + metaHtml + "</div></span>" +
-      '<span class="go">' + ICONS.chevron + "</span></div>"
-    );
-    row.addEventListener("click", onClick);
-    row.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick(); }
-    });
-    return row;
-  }
 
   // ---- boot ----------------------------------------------------------------
   const root = document.getElementById("root");
@@ -393,11 +536,14 @@
     sidecarPath = file + ".json";
   }
   const targetName = targetPath.split("/").pop() || targetPath;
+  const dotAt = targetName.lastIndexOf(".");
+  const nameStem = dotAt > 0 ? targetName.slice(0, dotAt) : targetName;
+  const nameExt = dotAt > 0 ? targetName.slice(dotAt) : "";
 
   function header() {
     return el(
-      '<div class="head"><div class="eyebrow">History</div>' +
-      "<h1>" + esc(targetName) + "</h1>" +
+      '<div class="head"><h1>' + esc(nameStem) +
+      '<span class="ext">' + esc(nameExt) + "</span></h1>" +
       '<div class="sub">' + esc(sidecarPath) + "</div></div>"
     );
   }
@@ -419,7 +565,7 @@
     fullPage([el(
       '<div id="status"><div class="big">No history yet</div>' +
       "Nothing has been recorded for <b>" + esc(targetName) + "</b> — " +
-      "claude sessions, bookmarks and review comments will appear here.</div>"
+      "claude sessions, bookmarks and review comments will appear here as you work.</div>"
     )]);
     return;
   }
@@ -444,7 +590,7 @@
   }
 
   // Validate each known key independently (HV-4): one corrupt key warns only
-  // its own section.
+  // its own card; the rest of the timeline renders normally.
   const checked = {};
   for (const key of Object.keys(SCHEMA)) {
     if (!(key in data)) { checked[key] = { state: "absent" }; continue; }
@@ -454,121 +600,219 @@
       : { state: "ok", value: data[key] };
   }
 
+  // ---- flatten valid keys into one event stream --------------------------
+  // Every event: { type, ms, node } — ms drives day-grouping + ordering.
+  const events = [];
+
+  if (checked.claudeSessions.state === "ok") {
+    for (const s of checked.claudeSessions.value) {
+      const ms = toMs(s.last_used, "s") || toMs(s.created_at, "s") || 0;
+      events.push({ type: "session", ms, data: s });
+    }
+  }
+  if (checked.bookmarkHistory.state === "ok") {
+    for (const b of checked.bookmarkHistory.value) {
+      const ms = toMs(b.updated_at, "s") || toMs(b.created_at, "ms") || 0;
+      events.push({ type: "bookmark", ms, data: b });
+    }
+  }
+  if (checked.comments.state === "ok") {
+    for (const c of checked.comments.value) {
+      const ms = toMs(c.createdAt, "ms") || toMs(c.recorded_at, "s") || 0;
+      events.push({ type: "comment", ms, data: c });
+    }
+  }
+  events.sort((a, b) => b.ms - a.ms);
+
+  const KIND = {
+    session: { label: "Claude session", icon: ICONS.claude },
+    bookmark: { label: "Bookmark", icon: ICONS.bookmark },
+    comment: { label: "Comment", icon: ICONS.comment },
+  };
+
+  // ---- event row builders -------------------------------------------------
+  function baseRow(ev, clickable, titleAttr) {
+    const row = el(
+      '<div class="ev' + (clickable ? " link\" role=\"button\" tabindex=\"0" : "") + '"' +
+      (titleAttr ? ' title="' + esc(titleAttr) + '"' : "") + ">" +
+      '<span class="icon">' + KIND[ev.type].icon + "</span>" +
+      '<span class="body"></span>' +
+      '<span class="when">' + esc(clock(ev.ms, "ms")) + "</span>" +
+      (clickable ? '<span class="go">' + ICONS.chevron + "</span>" : "") +
+      "</div>"
+    );
+    return { row, body: row.querySelector(".body") };
+  }
+
+  function wireClick(row, fn) {
+    row.addEventListener("click", fn);
+    row.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fn(); }
+    });
+  }
+
+  function renderEvent(ev) {
+    if (ev.type === "session") {
+      const s = ev.data;
+      const { row, body } = baseRow(ev, true, absTime(s.last_used, "s"));
+      body.innerHTML =
+        '<div class="kind">Claude session · click to resume</div>' +
+        '<div class="title">' + esc(s.preview || s.id) + "</div>" +
+        '<div class="meta">' +
+        (s.created_at ? "<span>started " + esc(relTime(s.created_at, "s")) + "</span>" : "") +
+        (s.cwd ? '<span class="sep">·</span><span>' + esc(s.cwd) + "</span>" : "") +
+        "</div>";
+      wireClick(row, () =>
+        navigateShell(targetPath, "_mode=claude&session_id=" + encodeURIComponent(s.id)));
+      return row;
+    }
+    if (ev.type === "bookmark") {
+      const b = ev.data;
+      const { row, body } = baseRow(ev, true, absTime(b.updated_at, "s"));
+      body.innerHTML =
+        '<div class="kind">Bookmark · click to open</div>' +
+        '<div class="title">' + (b.icon ? esc(b.icon) + " " : "") +
+        esc(b.name || targetName) +
+        (b.search ? ' <span class="q">?' + esc(b.search) + "</span>" : "") +
+        "</div>";
+      wireClick(row, () => navigateShell(targetPath, b.search || ""));
+      return row;
+    }
+    // comment — read-only log (HV-8)
+    const c = ev.data;
+    const { row, body } = baseRow(ev, false, absTime(c.createdAt, "ms") || absTime(c.recorded_at, "s"));
+    body.innerHTML =
+      '<div class="kind">Comment' +
+      (c.resolved ? ' <span class="badge resolved">resolved</span>' : "") +
+      (c.view ? ' <span class="badge">' + esc(c.view) + "</span>" : "") +
+      "</div>" +
+      '<div class="comment-quote">' + esc(c.content || "(no text)") + "</div>";
+    return row;
+  }
+
+  // ---- assemble page -------------------------------------------------------
   const nodes = [];
 
-  // ---- claude sessions ----
-  {
-    const c = checked.claudeSessions;
-    const list = c.state === "ok" ? c.value.slice() : [];
-    list.sort((a, b) => (b.last_used || 0) - (a.last_used || 0));
-    const { sec, body } = sectionShell(
-      "Claude sessions",
-      c.state === "ok" && list.length ? String(list.length) : "",
-      c.state === "ok" && list.length ? "click to resume" : ""
-    );
-    if (c.state === "invalid") body.appendChild(warnCard("claudeSessions", c.error, c.raw));
-    else if (!list.length) body.appendChild(emptyLine("No claude sessions recorded."));
-    else for (const s of list) {
-      body.appendChild(linkRow(
-        ICONS.claude,
-        esc(s.preview || s.id),
-        esc(relTime(s.last_used, "s") || "") +
-          (s.created_at ? '<span class="sep">·</span>started ' + esc(relTime(s.created_at, "s")) : "") +
-          (s.cwd ? '<span class="sep">·</span>' + esc(s.cwd) : ""),
-        () => navigateShell(targetPath, "_mode=claude&session_id=" + encodeURIComponent(s.id)),
-        absTime(s.last_used, "s")
-      ));
-    }
-    nodes.push(sec);
+  // vitals line
+  if (events.length) {
+    const oldest = events[events.length - 1].ms;
+    nodes.push(el(
+      '<p class="pulse-line"><b>' + events.length + "</b> event" +
+      (events.length === 1 ? "" : "s") + " since <b>" + esc(dayLabel(oldest)) +
+      "</b> · last activity <b>" + esc(relTime(events[0].ms, "ms")) + "</b></p>"
+    ));
   }
 
-  // ---- bookmark history ----
-  {
-    const c = checked.bookmarkHistory;
-    const list = c.state === "ok" ? c.value.slice() : [];
-    list.sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
-    const { sec, body } = sectionShell(
-      "Bookmarks",
-      c.state === "ok" && list.length ? String(list.length) : "",
-      c.state === "ok" && list.length ? "click to open" : ""
-    );
-    if (c.state === "invalid") body.appendChild(warnCard("bookmarkHistory", c.error, c.raw));
-    else if (!list.length) body.appendChild(emptyLine("No bookmarks recorded."));
-    else for (const b of list) {
-      const label = b.name || targetName;
-      body.appendChild(linkRow(
-        ICONS.bookmark,
-        (b.icon ? esc(b.icon) + " " : "") + esc(label),
-        (b.search ? esc("?" + b.search) + '<span class="sep">·</span>' : "") +
-          esc(relTime(b.updated_at, "s")),
-        () => navigateShell(targetPath, b.search || ""),
-        absTime(b.updated_at, "s")
-      ));
+  // filter chips — toggle a type in/out of the timeline
+  const hidden = new Set();
+  const counts = { session: 0, bookmark: 0, comment: 0 };
+  for (const ev of events) counts[ev.type]++;
+  let chipsEl = null;
+  if (events.length) {
+    chipsEl = el('<div class="chips" role="group" aria-label="Filter event types"></div>');
+    for (const t of ["session", "bookmark", "comment"]) {
+      if (!counts[t]) continue;
+      const chip = el(
+        '<button class="chip" aria-pressed="true" type="button">' +
+        '<span class="dot"></span>' + esc(KIND[t].label) +
+        (counts[t] > 1 ? "s" : "") +
+        ' <span class="n">' + counts[t] + "</span></button>"
+      );
+      chip.addEventListener("click", () => {
+        if (hidden.has(t)) hidden.delete(t); else hidden.add(t);
+        chip.setAttribute("aria-pressed", hidden.has(t) ? "false" : "true");
+        renderTimeline();
+      });
+      chipsEl.appendChild(chip);
     }
-    nodes.push(sec);
+    nodes.push(chipsEl);
   }
 
-  // ---- last session ----
+  // continue banner (lastSession) — the one hero moment
   {
     const c = checked.lastSession;
-    const { sec, body } = sectionShell("Last session", "", c.state === "ok" ? "click to restore" : "");
-    if (c.state === "invalid") body.appendChild(warnCard("lastSession", c.error, c.raw));
-    else if (c.state === "absent") body.appendChild(emptyLine("No session params recorded."));
-    else {
+    if (c.state === "ok") {
       const ls = c.value;
-      body.appendChild(linkRow(
-        ICONS.session,
-        esc(ls.search ? "?" + ls.search : "(no params)"),
-        "updated " + esc(relTime(ls.updated_at, "s")),
-        () => navigateShell(targetPath, ls.search || ""),
-        absTime(ls.updated_at, "s")
+      const banner = el(
+        '<button class="continue" type="button" title="' +
+        esc(absTime(ls.updated_at, "s")) + '">' +
+        '<span class="play">' + ICONS.play + "</span>" +
+        '<span class="c-body"><div class="c-title">Continue where you left off</div>' +
+        '<div class="c-meta"><span class="q">' +
+        esc(ls.search ? "?" + ls.search : "(no params)") + "</span>" +
+        (ls.updated_at ? " · " + esc(relTime(ls.updated_at, "s")) : "") +
+        "</div></span>" +
+        '<span class="go">' + ICONS.chevron + "</span></button>"
+      );
+      banner.addEventListener("click", () => navigateShell(targetPath, ls.search || ""));
+      nodes.push(banner);
+    } else if (c.state === "invalid") {
+      // fall through to the warnings block below
+    }
+  }
+
+  // per-key corruption warnings (HV-4)
+  {
+    const warns = el('<div class="warns"></div>');
+    for (const key of Object.keys(SCHEMA)) {
+      const c = checked[key];
+      if (c.state !== "invalid") continue;
+      warns.appendChild(el(
+        '<div class="warn"><div class="msg"><span class="icon">' + ICONS.warn +
+        "</span><span><b>" + esc(key) + "</b> is corrupted — " + esc(c.error) +
+        '</span></div><details><summary>Show raw data</summary><pre class="raw">' +
+        esc(JSON.stringify(c.raw, null, 2)) + "</pre></details></div>"
       ));
     }
-    nodes.push(sec);
+    if (warns.children.length) nodes.push(warns);
   }
 
-  // ---- comments (read-only log, HV-8) ----
-  {
-    const c = checked.comments;
-    const list = c.state === "ok" ? c.value.slice() : [];
-    list.sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
-    const { sec, body } = sectionShell(
-      "Comments",
-      c.state === "ok" && list.length ? String(list.length) : "",
-      c.state === "ok" && list.length ? "log — read-only" : ""
-    );
-    if (c.state === "invalid") body.appendChild(warnCard("comments", c.error, c.raw));
-    else if (!list.length) body.appendChild(emptyLine("No review comments recorded."));
-    else for (const cm of list) {
-      const badges =
-        (cm.resolved ? '<span class="badge resolved">resolved</span> ' : "") +
-        (cm.view ? '<span class="badge">' + esc(cm.view) + "</span> " : "");
-      const row = el(
-        '<div class="row"' +
-        (cm.createdAt ? ' title="' + esc(absTime(cm.createdAt, "ms")) + '"' : "") + ">" +
-        '<span class="icon muted">' + ICONS.comment + "</span>" +
-        '<span class="body"><div class="comment-content">' + esc(cm.content || "(no text)") +
-        '</div><div class="meta">' + badges +
-        esc(relTime(cm.createdAt, "ms") || relTime(cm.recorded_at, "s")) +
-        "</div></span></div>"
-      );
-      body.appendChild(row);
+  // timeline (or the no-events line)
+  const timelineHost = el('<div class="timeline"></div>');
+  function renderTimeline() {
+    timelineHost.innerHTML = "";
+    const visible = events.filter((ev) => !hidden.has(ev.type));
+    if (!visible.length) {
+      timelineHost.appendChild(el(
+        '<div class="all-hidden">' +
+        (events.length ? "Everything is filtered out." :
+          "No events recorded yet — claude sessions, bookmarks and review comments will land here.") +
+        "</div>"
+      ));
+      return;
     }
-    nodes.push(sec);
+    let currentKey = null, dayEl = null, i = 0;
+    for (const ev of visible) {
+      const k = dayKey(ev.ms);
+      if (k !== currentKey) {
+        currentKey = k;
+        dayEl = el(
+          '<div class="day"><div class="day-label"><span class="tick">' +
+          ICONS.clock + "</span>" + esc(dayLabel(ev.ms)) + "</div></div>"
+        );
+        timelineHost.appendChild(dayEl);
+      }
+      const row = renderEvent(ev);
+      row.style.animationDelay = Math.min(i * 30, 420) + "ms";
+      dayEl.appendChild(row);
+      i++;
+    }
   }
+  renderTimeline();
+  nodes.push(timelineHost);
 
-  // ---- unknown keys (HV-5: not corruption) ----
+  // unknown keys (HV-5: not corruption)
   {
     const known = new Set(Object.keys(SCHEMA));
     const other = {};
     for (const k of Object.keys(data)) if (!known.has(k)) other[k] = data[k];
     if (Object.keys(other).length) {
-      const { sec, body } = sectionShell("Other keys", String(Object.keys(other).length), "");
-      body.appendChild(el(
-        '<details><summary class="empty">Raw data from other writers</summary>' +
-        '<pre class="raw">' + esc(JSON.stringify(other, null, 2)) + "</pre></details>"
+      nodes.push(el(
+        '<details class="other"><summary>' + Object.keys(other).length +
+        ' other key' + (Object.keys(other).length === 1 ? "" : "s") +
+        ' from other writers</summary><pre class="raw">' +
+        esc(JSON.stringify(other, null, 2)) + "</pre></details>"
       ));
-      nodes.push(sec);
     }
   }
 
