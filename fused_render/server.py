@@ -28,6 +28,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from fused_render import __version__
+from fused_render.core_templates import ensure_core_templates
 from fused_render.deploy import router as deploy_router
 from fused_render.executor import run_python
 from fused_render.shell import prefs as shell_prefs
@@ -84,7 +85,10 @@ def _forced_engine() -> str | None:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
-TEMPLATES_DIR = os.path.join(HERE, "templates")
+# Core templates ship in the package but are staged into
+# ~/.fused-render/.core-templates on startup (reset-on-release); the server
+# reads every built-in template/registry/helper from that copy, not the bundle.
+TEMPLATES_DIR = ensure_core_templates()
 
 # Built-in extension → mode-list bindings ship as data, not code (D73):
 # templates/registry.json, exactly the user-registry format (SPEC §16). Keys
@@ -137,8 +141,9 @@ USER_REGISTRY = os.path.join(USER_TEMPLATES_DIR, "registry.json")
 def _resolve_name(name):
     """Single template-name resolution rule, used identically for built-in
     table entries and registry entries (SPEC PT-6): `<name>` resolves to
-    `~/.fused-render/templates/<name>/template.html` if present, else
-    `fused_render/templates/<name>/template.html`, else unusable. A user
+    `~/.fused-render/templates/<name>/template.html` if present, else the staged
+    core template `<TEMPLATES_DIR>/<name>/template.html` (core_templates), else
+    unusable. A user
     folder shadows a built-in of the same name — the deliberate override
     channel. Returns (abs template.html path | None, error | None).
     """
@@ -167,7 +172,7 @@ def _resolve_name(name):
     builtin = os.path.join(TEMPLATES_DIR, name, "template.html")
     if os.path.isfile(builtin):
         return builtin, None
-    return None, f"no template.html for {name!r} (looked in ~/.fused-render/templates/{name}/ and built-in templates/{name}/)"
+    return None, f"no template.html for {name!r} (looked in ~/.fused-render/templates/{name}/ and core {TEMPLATES_DIR}/{name}/)"
 
 
 def _icon_for(template_path: str):
