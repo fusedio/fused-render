@@ -113,6 +113,60 @@ other endpoint — see the module docstring in `server.py`). It collects the pag
 subset of the runtime API is supported (no `writeFile`, `stat`, or live-reload).
 See `docs/EXPORT.md` for the bundle format and rules.
 
+## Deploy to a hosted URL
+
+The shell automates the whole export → publish chain: any renderable page's
+preview header has a **Deploy** button (green dot = currently deployed) opening
+a modal that exports the page to a temporary bundle and publishes it through
+the separately-installed `fused` CLI (`fused share create <bundle> --public`) —
+fused-render itself still hosts nothing and mints no URLs.
+
+The modal handles the whole flow:
+
+- **The `fused` package.** Deploying needs the `fused` CLI. It is resolved from
+  exactly two places: an explicit `FUSED_RENDER_FUSED_BIN` override, or — the
+  one autodetected source — the `fused` package importable in the server's own
+  Python (run in-interpreter; no PATH scanning). If it's missing, the modal
+  offers a one-click install of the wheel pinned by this package's `[fused]`
+  extra into the server's environment (Python 3.11+ with pip), or names the
+  manual command: `pip install "fused-render[fused]"`. The packaged macOS app
+  ships the CLI built in — no setup — plus a terminal wrapper at
+  `FusedRender.app/Contents/Resources/bin/fused` for the one-time
+  `fused cloud setup` / `fused env create` steps.
+- **Environment choice.** Deploy targets are the *hosted* environments from the
+  fused CLI's own store (`~/.openfused/envs.json`): a managed `fused` env (the
+  default) or an `aws` env whose serving plane `fused infra serve` provisioned.
+  `local` envs have no serving plane and are never offered.
+- **The URL.** Deploys mint a **public share link** — an opaque, unguessable
+  URL shown with copy/open actions. Redeploying the same page republishes to
+  the **same URL**; Revoke takes it down (deploying again restores the link).
+- **What's deployed.** A per-page pointer (`~/.fused-render/deployments.json`)
+  marks deployed files in the preview header, and the modal's share list
+  (`fused share list`) shows every mount on the chosen environment, joined back
+  to the local pages that deployed them.
+
+Whether a given backend accepts a *page bundle* is the installed `fused` CLI's
+contract (its `spec/serve/fused-render.md`): AWS serving planes build the
+hosted-page artifact today; the managed backend's inline-upload bundle
+classification is an upstream follow-up — until then its CLI error shows in the
+modal verbatim.
+
+## Preferences
+
+The gear at the sidebar's bottom-left opens **Preferences** (`/view/_prefs`):
+
+- **Execution engine** — switch `fused.runPython` between the built-in
+  executor (fresh subprocess per call) and the fused engine (PEP 723 inline
+  requirements in cached venvs). Persisted to `~/.fused-render/prefs.json`
+  and applied to the next run, no restart; a set `FUSED_RENDER_ENGINE`
+  pins the engine for the whole process and locks the switch.
+- **Logs** — this run's log file path, with an "Open logs location" action.
+- **Deployments** — every mount on a chosen hosted environment
+  (`fused share list`), with per-mount **Revoke**, including mounts not
+  created from this app.
+- **Template registry** — the merged extension → templates bindings (built-in
+  plus your `~/.fused-render/templates/registry.json` overrides), read-only.
+
 ## Logs
 
 The server writes an application log so that when something goes wrong — an

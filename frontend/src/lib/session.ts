@@ -1,4 +1,4 @@
-// Per-file session restore (LSN-*, SPEC §18). A viewed file remembers its last
+// Per-file session restore (LSN-*, SPEC §21). A viewed file remembers its last
 // URL query in its <file>.json sidecar; opening it with a bare URL replays that
 // query, while opening it with params already present lets those params win.
 import { useEffect, useRef, useState } from "react";

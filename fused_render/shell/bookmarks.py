@@ -88,7 +88,10 @@ def _fs_path_from_url(url: str) -> str | None:
     else:
         return None
     segments = [unquote(s) for s in rest.split("/") if s]
-    if not segments or segments[-1] in _SENTINELS:
+    # Sentinels are the exact top-level pathnames `/view/_panel` and `/view/_tab`
+    # (App.tsx matches the whole pathname) — a real file/dir named `_panel`/`_tab`
+    # nested deeper is NOT a sentinel and gets a sidecar like any other path.
+    if not segments or (len(segments) == 1 and segments[0] in _SENTINELS):
         return None
     fs_path = "/" + "/".join(segments)
     # Only a path that actually exists gets a sidecar (a file OR a directory

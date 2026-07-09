@@ -109,6 +109,17 @@ def test_sentinel_no_op(tmp_path):
     assert resp == {"recorded": False}
 
 
+def test_nested_file_named_like_sentinel_records(tmp_path):
+    # Only the exact top-level `/view/_panel`|`/view/_tab` is a sentinel; a real
+    # file that merely happens to be named `_panel` deeper in the tree is a
+    # normal target and must get a sidecar.
+    f = tmp_path / "_panel"
+    f.write_text("<html></html>")
+    resp = _post({"id": "bk-1", "url": _url_for(f)})
+    assert resp == {"recorded": True}
+    assert (tmp_path / "_panel.json").exists()
+
+
 def test_nonexistent_path_no_op(tmp_path):
     resp = _post({"id": "bk-1", "url": _url_for(tmp_path / "nope.html")})
     assert resp == {"recorded": False}

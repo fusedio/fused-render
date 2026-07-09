@@ -17,6 +17,7 @@ import Listing from "./views/Listing";
 import Preview from "./views/Preview";
 import Panel from "./views/Panel";
 import Tabs from "./views/Tabs";
+import Preferences from "./views/Preferences";
 
 type StatState =
   | { status: "loading" }
@@ -122,6 +123,20 @@ export default function App({ config }: { config: Config }) {
         </div>
         <div id="content">
           <Tabs key={epoch} config={config} />
+        </div>
+      </>
+    );
+  } else if (pathname === "/view/_prefs") {
+    // Preferences (SPEC §20): a sentinel pathname like _panel/_tab — not a
+    // file; entered from the sidebar's gear. /view only (no embed variant —
+    // settings chrome inside a pane makes no sense).
+    main = (
+      <>
+        <div id="breadcrumb">
+          <StaticBreadcrumb label="Preferences" />
+        </div>
+        <div id="content">
+          <Preferences key={epoch} />
         </div>
       </>
     );
