@@ -1943,7 +1943,11 @@ body.embed .preview-browse-chip:hover {
 /* ---- Templates management view (TEMPLATE_MGMT_SPEC §3) -------------------- */
 
 .templates-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   max-width: 880px;
+  width: 100%;
   margin: 0 auto;
   padding: 32px 24px;
 }
