@@ -493,12 +493,22 @@
     }
 
     // Rank: longest consecutive matched run, then fuzzy score, then shallower
-    // path, then alphabetical (verbatim from Listing.tsx searchWalk).
+    // path, then alphabetical (mirrors Listing.tsx). On top of the fuzzy score
+    // the entry NAME (last path segment) gets intent bonuses: an exact name
+    // match outranks everything, a name-prefix match ranks above a scattered
+    // subsequence — so "Downloads" beats "DownloadStage" for the query
+    // "downloads" (Listing.tsx scoreEntries).
     function searchWalk(q, entries) {
+      const ql = q.toLowerCase();
       const hits = [];
       for (const entry of entries) {
         const m = fuzzyMatch(q, entry.rel);
-        if (m) hits.push({ entry, positions: m.positions, score: m.score, longestRun: m.longestRun });
+        if (!m) continue;
+        const name = entry.rel.split("/").pop().toLowerCase();
+        let score = m.score;
+        if (name === ql) score += 100;
+        else if (name.startsWith(ql)) score += 25;
+        hits.push({ entry, positions: m.positions, score, longestRun: m.longestRun });
       }
       hits.sort((a, b) => {
         if (b.longestRun !== a.longestRun) return b.longestRun - a.longestRun;
@@ -516,6 +526,9 @@
       // (Re)fetch the recursive walk when the cache is missing or for the wrong
       // folder / hidden generation.
       if (!WALK || WALK.dir !== baseDir || WALK.hidden !== wantHidden) {
+        // Clear the selectable rows while a message-only view is up, so arrow
+        // keys / Enter can't drive preview or navigation against a stale list.
+        currentRows = [];
         listBodyEl.innerHTML = `<div class="status-message">Searching…</div>`;
         searchCountEl.textContent = "";
         try {
@@ -544,8 +557,14 @@
       }));
 
       const head = `<thead><tr>${COLUMNS.map(([, l]) => `<th>${escapeHtml(l)}</th>`).join("")}</tr></thead>`;
+      // Distinguish "nothing matched" from "nothing matched in the part we
+      // could scan" — a truncated walk means the file may simply never have
+      // been walked (matches Listing.tsx's honest empty state).
+      const noMatchMsg = WALK.truncated
+        ? "No matches in the first entries scanned — this folder tree is too large to search fully"
+        : "No matches";
       const body = currentRows.length === 0
-        ? `<tr><td colspan="3" class="status-message">No matches</td></tr>`
+        ? `<tr><td colspan="3" class="status-message">${escapeHtml(noMatchMsg)}</td></tr>`
         : currentRows.map((r) =>
             rowHtml(r, `<span class="search-path">${highlightHtml(r.rel, r.positions)}</span>`)).join("");
       listBodyEl.innerHTML = `<table class="listing-table">${head}<tbody>${body}</tbody></table>`;
@@ -568,8 +587,10 @@
       if (!typing && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
         e.preventDefault();
         const idx = rows.findIndex((r) => r.path === selectedPath);
-        let next = e.key === "ArrowDown" ? idx + 1 : idx - 1;
-        if (idx === -1) next = 0;
+        // Nothing selected yet: Down starts at the top, Up starts at the bottom.
+        let next = idx === -1
+          ? (e.key === "ArrowDown" ? 0 : rows.length - 1)
+          : (e.key === "ArrowDown" ? idx + 1 : idx - 1);
         next = Math.max(0, Math.min(rows.length - 1, next));
         const entry = rows[next];
         select(entry);
