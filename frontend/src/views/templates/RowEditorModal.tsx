@@ -55,6 +55,10 @@ export function RowEditorModal({
   }, [onClose]);
 
   const known = new Set(inventory.templates.map((t) => t.name));
+  // Names that resolve to no template folder (and aren't the "..." splice or a
+  // "_" sentinel) — dangling registry pointers. We only surface them; the user
+  // decides whether to remove or keep (never auto-removed).
+  const brokenNames = chosen.filter((n) => n !== "..." && !n.startsWith("_") && !known.has(n));
   const move = (from: number, to: number) => {
     if (to < 0 || to >= chosen.length || from === to) return;
     setChosen((prev) => {
@@ -255,6 +259,14 @@ export function RowEditorModal({
             <div className="deploy-muted templates-reorder-hint">
               Drag chips to reorder — the first is the default mode.
             </div>
+            {brokenNames.length > 0 && (
+              <div className="templates-broken-note">
+                ⚠ {brokenNames.join(", ")} {brokenNames.length === 1 ? "resolves" : "resolve"} to no
+                template folder — a dangling registry pointer that won't render. Remove{" "}
+                {brokenNames.length === 1 ? "it" : "them"} here, or add the missing template. Nothing
+                is removed automatically.
+              </div>
+            )}
           </div>
 
           {error && <div className="deploy-error">{error}</div>}

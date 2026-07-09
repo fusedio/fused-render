@@ -2246,6 +2246,17 @@ body.embed .preview-browse-chip:hover {
   color: var(--fg-muted);
 }
 
+.templates-broken-note {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--error);
+  border-radius: 6px;
+  background: rgba(255, 107, 107, 0.08);
+  color: var(--error);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .templates-key-error {
   font-size: 12px;
   color: var(--error);
