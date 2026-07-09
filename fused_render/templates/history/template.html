@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>History</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #131417;
+    --surface: #1b1d21;
+    --surface-2: #22252b;
+    --line: #2a2d33;
+    --ink: #e8eaed;
+    --ink-2: #9aa0a6;
+    --ink-3: #868d94;
+    --accent: #E5FF44;
+    --accent-dim: #b8cc36;
+    --spine-x: 7px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--ink);
+    background: var(--bg);
+    /* faint dot grid — terminal graph paper, fades out below the header */
+    background-image: radial-gradient(circle, #1e2126 1px, transparent 1px);
+    background-size: 28px 28px;
+  }
+  #root { max-width: 720px; margin: 0 auto; padding: 40px 24px 80px; }
+
+  /* ================= header ================= */
+  .head { margin-bottom: 12px; }
+  .head h1 {
+    margin: 0;
+    font-size: 32px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+    word-break: break-all;
+    text-wrap: balance;
+  }
+  .head h1 .ext { color: var(--ink-3); font-weight: 400; }
+  .head .sub {
+    margin-top: 6px;
+    color: var(--ink-3);
+    font-size: 12px;
+    word-break: break-all;
+  }
+  .pulse-line {
+    /* one-line vitals under the name: total events + span */
+    margin: 20px 0 0;
+    color: var(--ink-2);
+    font-size: 13px;
+  }
+  .pulse-line b { color: var(--ink); font-weight: 700; }
+
+  /* ================= filter chips ================= */
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 0; }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 6px 12px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--ink-2);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    transition: border-color 150ms cubic-bezier(0.2, 0, 0, 1),
+                color 150ms cubic-bezier(0.2, 0, 0, 1),
+                background-color 150ms cubic-bezier(0.2, 0, 0, 1);
+  }
+  .chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); transition: background-color 150ms; }
+  .chip[aria-pressed="true"] { color: var(--ink); border-color: #3a3e46; background: var(--surface); }
+  .chip[aria-pressed="true"] .dot { background: var(--accent); }
+  .chip:hover { border-color: #454a53; }
+  .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .chip .n { color: var(--ink-3); }
+  .chip[aria-pressed="true"] .n { color: var(--ink-2); }
+
+  /* ================= continue banner (lastSession) ================= */
+  .continue {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    margin: 28px 0 0;
+    padding: 14px 16px;
+    border: 1px solid #3d421c;
+    border-radius: 10px;
+    background: linear-gradient(180deg, #1c1e12, #17190f);
+    color: var(--ink);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 150ms cubic-bezier(0.2, 0, 0, 1),
+                background-color 150ms cubic-bezier(0.2, 0, 0, 1);
+  }
+  .continue:hover, .continue:focus-visible { border-color: #5a6229; }
+  .continue:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .continue .play {
+    flex: none;
+    width: 34px; height: 34px;
+    display: grid; place-items: center;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #131417;
+    transition: transform 200ms cubic-bezier(0.2, 0, 0, 1);
+  }
+  .continue:hover .play { transform: scale(1.08); }
+  .continue .c-body { min-width: 0; flex: 1; }
+  .continue .c-title { font-weight: 700; }
+  .continue .c-meta {
+    color: var(--ink-2); font-size: 12px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .continue .c-meta .q { color: var(--accent-dim); }
+  .continue .go { flex: none; color: var(--accent); opacity: 0.7; transition: transform 200ms cubic-bezier(0.2, 0, 0, 1), opacity 200ms; }
+  .continue:hover .go { transform: translateX(3px); opacity: 1; }
+
+  /* ================= warnings ================= */
+  .warns { margin: 24px 0 0; display: grid; gap: 10px; }
+  .warn {
+    border: 1px solid #5c4a1f;
+    border-radius: 10px;
+    background: #1b1913;
+    padding: 12px 14px;
+    color: #e8d8ac;
+  }
+  .warn .msg { display: flex; align-items: baseline; gap: 8px; }
+  .warn .msg .icon { flex: none; color: #d4a72c; align-self: center; }
+  .warn details summary { cursor: pointer; color: var(--ink-2); font-size: 12px; margin-top: 4px; }
+  pre.raw {
+    margin: 8px 0 0;
+    padding: 10px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: #c8ccd2;
+    font-size: 12px;
+    max-height: 320px;
+    overflow: auto;
+  }
+  .error-page {
+    margin-top: 24px;
+    border: 1px solid #5c2a2a;
+    border-radius: 10px;
+    background: #1b1315;
+    padding: 14px 16px;
+    color: #f0c4c4;
+  }
+
+  /* ================= timeline ================= */
+  .timeline { margin-top: 36px; position: relative; }
+  .day {
+    position: relative;
+    padding-left: 34px;
+  }
+  /* the spine: one continuous line per day group, threading the dots */
+  .day::before {
+    content: "";
+    position: absolute;
+    left: var(--spine-x);
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--line);
+  }
+  .day:last-child::before { bottom: 12px; }
+  .day-label {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    display: inline-block;
+    margin: 0 0 4px -34px;
+    padding: 4px 10px 4px 0;
+    background: var(--bg);
+    color: var(--ink-3);
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .day-label .tick {
+    display: inline-grid;
+    place-items: center;
+    width: 15px;
+    margin-right: 12px;
+    color: var(--accent);
+  }
+
+  .ev {
+    position: relative;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 9px 10px 9px 12px;
+    margin: 0 0 2px -8px;
+    border-radius: 8px;
+  }
+  /* node dot on the spine: 10px box (7px dot + 1.5px ring), centered on the
+     spine's 7.5px axis. The .ev sits 26px right of the .day edge (34px pad,
+     -8px margin), so left = 7.5 - 5 - 26 = -23.5px; top centers the dot ring
+     on the single 19.5px title line inside 9px padding. */
+  .ev::before {
+    content: "";
+    position: absolute;
+    left: -23.5px;
+    top: 13.5px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--bg);
+    border: 1.5px solid #4b5057;
+    transition: border-color 150ms cubic-bezier(0.2, 0, 0, 1),
+                background-color 150ms cubic-bezier(0.2, 0, 0, 1),
+                box-shadow 150ms cubic-bezier(0.2, 0, 0, 1);
+  }
+  .ev.link { cursor: pointer; transition: background-color 150ms cubic-bezier(0.2, 0, 0, 1); }
+  .ev.link:hover { background: var(--surface); }
+  .ev.link:hover::before,
+  .ev.link:focus-visible::before {
+    border-color: var(--accent);
+    background: var(--accent);
+    box-shadow: 0 0 10px 1px rgba(229, 255, 68, 0.35);
+  }
+  .ev.link:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+    background: var(--surface);
+  }
+  .ev.link:hover .go, .ev.link:focus-visible .go { opacity: 1; transform: translateX(0); }
+
+  .ev .icon {
+    flex: none;
+    width: 16px;
+    height: 19.5px;
+    display: grid;
+    place-items: center;
+    color: var(--ink-3);
+  }
+  .ev .icon .star { font-size: 12px; line-height: 1; }
+  .ev .body { min-width: 0; flex: 1; }
+  .ev .title {
+    color: var(--ink);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ev .title .q { color: var(--accent-dim); }
+  .ev .title.wrap {
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    word-break: break-word;
+  }
+  .ev.resolved .title { color: var(--ink-2); }
+  /* fixed right column: the time sits in every row at the same x; on hover
+     of a clickable row the chevron takes its exact slot (no layout shift). */
+  .ev .right {
+    flex: none;
+    position: relative;
+    width: 64px;
+    height: 19.5px;
+  }
+  .ev .when {
+    position: absolute;
+    inset: 0;
+    text-align: right;
+    color: var(--ink-3);
+    font-size: 12px;
+    line-height: 19.5px;
+    font-variant-numeric: tabular-nums;
+    transition: opacity 150ms cubic-bezier(0.2, 0, 0, 1);
+  }
+  .ev .go {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    color: var(--accent);
+    opacity: 0;
+    transform: translateX(-4px);
+    transition: opacity 150ms cubic-bezier(0.2, 0, 0, 1), transform 150ms cubic-bezier(0.2, 0, 0, 1);
+  }
+  .ev.link:hover .when, .ev.link:focus-visible .when { opacity: 0; }
+
+  /* entrance: rise once, staggered per event. Keyframe animation (not a
+     class-gated transition) so the default is never a blank page. */
+  @keyframes ev-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .timeline .day, .continue, .pulse-line, .chips {
+    animation: ev-in 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+  .ev { animation: ev-in 360ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+
+  /* ================= empty / hidden ================= */
+  #status { padding: 24px 0; color: var(--ink-2); max-width: 560px; }
+  #status .big { font-size: 16px; font-weight: 700; color: var(--ink); margin-bottom: 6px; }
+  .other { margin-top: 40px; }
+  .other summary { cursor: pointer; color: var(--ink-3); font-size: 12px; }
+  .all-hidden { margin-top: 28px; color: var(--ink-3); }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+    .ev .go, .continue .go { transform: none; }
+  }
+</style>
+</head>
+<body>
+  <div id="root"><div id="status">Loading…</div></div>
+
+<script>
+(async function () {
+  "use strict";
+
+  // ======================================================================
+  // The sidecar `<file>.json` is a SHARED store (SPEC §21/§24): the claude
+  // template owns `claudeSessions`, the bookmark mirror `bookmarkHistory`,
+  // session restore `lastSession`, annotate `comments`. This view is a
+  // READ-ONLY inspector over it — it never writes the file (HV-9), and all
+  // logic stays in this template (HV-1). Rendered as one merged timeline:
+  // the store is temporal, so time is the primary axis, not the writer.
+  // ======================================================================
+
+  // ---- schema (HV-4/HV-6): per-top-level-key, subset validator below.
+  // Required = only what the view renders; extra fields on entries are fine
+  // (writers grow their records additively — additive must not read as
+  // corruption). Units: bookmark created_at / comment createdAt are ms
+  // (JS Date.now); everything else seconds (time.time()).
+  const SCHEMA = {
+    claudeSessions: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["id"],
+        properties: {
+          id: { type: "string" },
+          preview: { type: "string" },
+          created_at: { type: "number" },
+          last_used: { type: "number" },
+          cwd: { type: "string" },
+        },
+      },
+    },
+    bookmarkHistory: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["id", "search"],
+        properties: {
+          id: { type: "string" },
+          search: { type: "string" },
+          name: { type: "string" },
+          icon: { type: "string" },
+          created_at: { type: "number" },
+          recorded_at: { type: "number" },
+          updated_at: { type: "number" },
+        },
+      },
+    },
+    lastSession: {
+      type: "object",
+      required: ["search"],
+      properties: {
+        search: { type: "string" },
+        updated_at: { type: "number" },
+      },
+    },
+    comments: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["id"],
+        properties: {
+          id: { type: "string" },
+          content: { type: "string" },
+          createdAt: { type: "number" },
+          resolved: { type: "boolean" },
+          view: { type: "string" },
+          anchorPath: { type: "string" },
+          recorded_at: { type: "number" },
+          updated_at: { type: "number" },
+        },
+      },
+    },
+  };
+
+  // Subset JSON-Schema validator: `type` (object/array/string/number/boolean),
+  // `required`, `properties`, `items`. Returns the FIRST error as a human
+  // path + message, or null when valid.
+  function validate(value, schema, path) {
+    path = path || "";
+    const at = path || "value";
+    if (schema.type) {
+      const t = Array.isArray(value) ? "array" : value === null ? "null" : typeof value;
+      if (t !== schema.type) return at + ": expected " + schema.type + ", got " + t;
+    }
+    if (schema.type === "object") {
+      for (const k of schema.required || []) {
+        if (!(k in value)) return at + ": missing required field \"" + k + "\"";
+      }
+      for (const k of Object.keys(schema.properties || {})) {
+        if (k in value && value[k] !== undefined) {
+          const err = validate(value[k], schema.properties[k], path ? path + "." + k : k);
+          if (err) return err;
+        }
+      }
+    }
+    if (schema.type === "array" && schema.items) {
+      for (let i = 0; i < value.length; i++) {
+        const err = validate(value[i], schema.items, path + "[" + i + "]");
+        if (err) return err;
+      }
+    }
+    return null;
+  }
+
+  // ---- tiny html helpers -------------------------------------------------
+  function esc(s) {
+    return String(s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+  function el(html) {
+    const t = document.createElement("template");
+    t.innerHTML = html.trim();
+    return t.content.firstChild;
+  }
+
+  // Relative time. `unit` is per-field (HV-6): "s" or "ms" — never guessed.
+  function toMs(v, unit) {
+    if (typeof v !== "number" || !isFinite(v)) return null;
+    return unit === "ms" ? v : v * 1000;
+  }
+  function relTime(v, unit) {
+    const ms = toMs(v, unit);
+    if (ms === null) return "";
+    const d = Date.now() - ms;
+    if (d < 60000) return "just now";
+    const m = Math.floor(d / 60000);
+    if (m < 60) return m + "m ago";
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + "h ago";
+    const days = Math.floor(h / 24);
+    if (days < 30) return days + "d ago";
+    return new Date(ms).toLocaleDateString();
+  }
+  function absTime(v, unit) {
+    const ms = toMs(v, unit);
+    return ms === null ? "" : new Date(ms).toLocaleString();
+  }
+  function clock(v, unit) {
+    const ms = toMs(v, unit);
+    if (ms === null) return "";
+    return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+  function dayKey(ms) {
+    const d = new Date(ms);
+    return d.getFullYear() + "-" + d.getMonth() + "-" + d.getDate();
+  }
+  function dayLabel(ms) {
+    const now = new Date();
+    const today = dayKey(now.getTime());
+    const yesterday = dayKey(now.getTime() - 86400000);
+    const k = dayKey(ms);
+    if (k === today) return "Today";
+    if (k === yesterday) return "Yesterday";
+    const d = new Date(ms);
+    const opts = { month: "short", day: "numeric" };
+    if (d.getFullYear() !== now.getFullYear()) opts.year = "numeric";
+    return d.toLocaleDateString([], opts);
+  }
+
+  // ---- shell navigation (HV-7) -------------------------------------------
+  // Mirrors frontend/src/lib/router.ts urlForFsPath + navigate: /view/ with
+  // each path segment encoded, then pushState + "fused:navigate" on the top
+  // window so the shell re-routes without a full reload. Falls back to a
+  // plain location set if the top window is unreachable.
+  function urlForFsPath(fsPath, search) {
+    const norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;
+    const rest = norm.replace(/^\/+/, "");
+    const encoded = rest.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+    return shellPrefix() + encoded + (search ? "?" + search : "");
+  }
+  function shellPrefix() {
+    // Stay inside the shell's active prefix (router.ts PREFIX): an /embed/
+    // session keeps routing under /embed/, never teleported to /view/.
+    try {
+      const p = window.top.location.pathname;
+      if (p.startsWith("/embed/") || p === "/embed") return "/embed/";
+    } catch (e) { /* cross-origin — assume the normal shell */ }
+    return "/view/";
+  }
+  function navigateShell(fsPath, search) {
+    const url = urlForFsPath(fsPath, search);
+    try {
+      const top = window.top;
+      void top.location.href; // throws when cross-origin
+      top.history.pushState(null, "", url);
+      top.dispatchEvent(new Event("fused:navigate"));
+      return;
+    } catch (e) { /* fall through */ }
+    try { window.top.location.href = url; } catch (e) { location.href = url; }
+  }
+
+  // Type icons match what the user already knows: the claude/annotate MODE
+  // icons (templates/<name>/icon.svg) and the shell's ★ bookmark glyph —
+  // never a third vocabulary for the same concepts.
+  const ICONS = {
+    claude: '<svg viewBox="0 0 512 512" fill="currentColor" width="14" height="14"><path d="M100.4 340.5l100.7-56.5 1.7-4.9-1.7-2.7-4.9 0-16.8-1-57.5-1.6-49.9-2.1-48.3-2.6-12.2-2.6-11.4-15 1.2-7.5 10.2-6.9 14.7 1.3c18.9 1.3 45.9 3.1 81 5.6l35.2 2.1 52.2 5.4 8.3 0 1.2-3.4-2.8-2.1-2.2-2.1-50.3-34.1-54.4-36-28.5-20.7-15.4-10.5-7.8-9.8-3.4-21.5 14-15.4 18.8 1.3 4.8 1.3 19 14.7 40.7 31.5 53.1 39.1 7.8 6.5 3.1-2.2.4-1.6-3.5-5.8-28.9-52.2-30.8-53.1-13.7-22-3.6-13.2c-1.3-5.4-2.2-10-2.2-15.5l15.9-21.6 8.8-2.8 21.2 2.8 8.9 7.8 13.2 30.2 21.4 47.5 33.2 64.6 9.7 19.2 5.2 17.8 1.9 5.4 3.4 0 0-3.1 2.7-36.4 5-44.7 4.9-57.5 1.7-16.2 8-19.4 15.9-10.5 12.4 5.9 10.2 14.7-1.4 9.5-6.1 39.5-11.9 61.9-7.8 41.5 4.5 0 5.2-5.2 21-27.8 35.2-44.1 15.5-17.5 18.1-19.3 11.6-9.2 22 0 16.2 24.1-7.3 24.9-22.7 28.7-18.8 24.4-27 36.3-16.8 29 1.6 2.3 4-.4 60.9-13 32.9-5.9 39.3-6.7 17.8 8.3 1.9 8.4-7 17.2-42 10.4-49.2 9.8-73.3 17.3-.9.7 1 1.3 33 3.1 14.1.8 34.6 0 64.4 4.8 16.8 11.1 10.1 13.6-1.7 10.4-25.9 13.2c-15.5-3.7-54.4-12.9-116.6-27.7l-28-7-3.9 0 0 2.3 23.3 22.8 42.7 38.6 53.5 49.8 2.7 12.3-6.9 9.7-7.3-1-47-35.4-18.1-15.9-41.1-34.6-2.7 0 0 3.6 9.5 13.9 50 75.2 2.6 23-3.6 7.5-13 4.5-14.2-2.6-29.3-41.1-30.2-46.3-24.4-41.5-3 1.7-14.4 154.8-6.7 7.9-15.5 5.9-13-9.8-6.9-15.9 6.9-31.5 8.3-41.1 6.7-32.7 6.1-40.6 3.6-13.5-.2-.9-3 .4-30.6 42-46.5 62.9-36.8 39.4-8.8 3.5-15.3-7.9 1.4-14.1 8.5-12.6 50.9-64.8 30.7-40.2 19.8-23.2-.1-3.4-1.2 0-135.3 87.8-24.1 3.1-10.4-9.7 1.3-15.9 4.9-5.2 40.7-28-.1.1 0 .1z"/></svg>',
+    bookmark: '<span class="star">★</span>',
+    comment: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="15" height="15"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="13" y2="12"/></svg>',
+    chevron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M9 6l6 6-6 6"/></svg>',
+    play: '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M8 5v14l11-7-11-7z"/></svg>',
+    clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2"/></svg>',
+    warn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" width="14" height="14"><path d="M12 3L2.5 20h19L12 3z"/><path d="M12 10v4"/><path d="M12 17.2v.1"/></svg>',
+  };
+
+  // ---- boot ----------------------------------------------------------------
+  const root = document.getElementById("root");
+  const file = fused.params.get("_file") || "";
+
+  // Role resolution (HV-3): the mode is reachable from both the target and
+  // the sidecar itself.
+  let sidecarPath, targetPath;
+  // A sidecar is any `<name>.<ext>.json` — stripping `.json` must leave a
+  // basename that still has its own extension (matches the registry's
+  // `.*.json` wildcard key).
+  const base = (file.split("/").pop() || "");
+  if (/\.json$/i.test(base) && base.slice(0, -".json".length).lastIndexOf(".") > 0) {
+    sidecarPath = file;
+    targetPath = file.slice(0, -".json".length);
+  } else {
+    targetPath = file;
+    sidecarPath = file + ".json";
+  }
+  const targetName = targetPath.split("/").pop() || targetPath;
+  const dotAt = targetName.lastIndexOf(".");
+  const nameStem = dotAt > 0 ? targetName.slice(0, dotAt) : targetName;
+  const nameExt = dotAt > 0 ? targetName.slice(dotAt) : "";
+
+  function header() {
+    return el(
+      '<div class="head"><h1>' + esc(nameStem) +
+      '<span class="ext">' + esc(nameExt) + "</span></h1>" +
+      '<div class="sub">' + esc(sidecarPath) + "</div></div>"
+    );
+  }
+
+  function fullPage(nodes) {
+    root.innerHTML = "";
+    root.appendChild(header());
+    for (const n of nodes) root.appendChild(n);
+  }
+
+  // Absent sidecar (HTTP 404) is the normal "no history yet" state; any other
+  // read failure (permissions, server error) is a real error and must not
+  // masquerade as an empty history.
+  let text = null;
+  try {
+    text = await fused.readFile(sidecarPath);
+  } catch (e) {
+    if (!/HTTP 404/.test(e && e.message || "")) {
+      fullPage([el(
+        '<div class="error-page">Could not read the sidecar — ' +
+        esc((e && e.message) || "unknown error") + "</div>"
+      )]);
+      return;
+    }
+  }
+
+  if (text === null || text === undefined) {
+    fullPage([el(
+      '<div id="status"><div class="big">No history yet</div>' +
+      "Nothing has been recorded for <b>" + esc(targetName) + "</b> — " +
+      "claude sessions, bookmarks and review comments will appear here as you work.</div>"
+    )]);
+    return;
+  }
+
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (e) {
+    fullPage([el(
+      '<div class="error-page">The sidecar is not valid JSON — ' +
+      esc(e.message) + '.<pre class="raw">' + esc(text.slice(0, 20000)) + "</pre></div>"
+    )]);
+    return;
+  }
+  if (data === null || typeof data !== "object" || Array.isArray(data)) {
+    fullPage([el(
+      '<div class="error-page">Expected a JSON object at the top level, got ' +
+      esc(Array.isArray(data) ? "array" : data === null ? "null" : typeof data) +
+      '.<pre class="raw">' + esc(text.slice(0, 20000)) + "</pre></div>"
+    )]);
+    return;
+  }
+
+  // Validate each known key independently (HV-4): one corrupt key warns only
+  // its own card; the rest of the timeline renders normally.
+  const checked = {};
+  for (const key of Object.keys(SCHEMA)) {
+    if (!(key in data)) { checked[key] = { state: "absent" }; continue; }
+    const err = validate(data[key], SCHEMA[key], key);
+    checked[key] = err
+      ? { state: "invalid", error: err, raw: data[key] }
+      : { state: "ok", value: data[key] };
+  }
+
+  // ---- flatten valid keys into one event stream --------------------------
+  // Every event: { type, ms, node } — ms drives day-grouping + ordering.
+  const events = [];
+
+  if (checked.claudeSessions.state === "ok") {
+    for (const s of checked.claudeSessions.value) {
+      const ms = toMs(s.last_used, "s") || toMs(s.created_at, "s") || 0;
+      events.push({ type: "session", ms, data: s });
+    }
+  }
+  if (checked.bookmarkHistory.state === "ok") {
+    for (const b of checked.bookmarkHistory.value) {
+      const ms = toMs(b.updated_at, "s") || toMs(b.created_at, "ms") || 0;
+      events.push({ type: "bookmark", ms, data: b });
+    }
+  }
+  if (checked.comments.state === "ok") {
+    for (const c of checked.comments.value) {
+      const ms = toMs(c.createdAt, "ms") || toMs(c.recorded_at, "s") || 0;
+      events.push({ type: "comment", ms, data: c });
+    }
+  }
+  events.sort((a, b) => b.ms - a.ms);
+
+  const KIND = {
+    session: { label: "Claude session", icon: ICONS.claude },
+    bookmark: { label: "Bookmark", icon: ICONS.bookmark },
+    comment: { label: "Comment", icon: ICONS.comment },
+  };
+
+  // ---- event row builders -------------------------------------------------
+  // One-line rows: the icon says what it is (same glyphs as the mode
+  // switcher / sidebar), the title says which one, the fixed right column
+  // says when — every richer detail lives in the hover tooltip.
+  function baseRow(ev, clickable, titleAttr, extraClass) {
+    const cls = "ev" + (extraClass ? " " + extraClass : "") + (clickable ? " link" : "");
+    const row = el(
+      '<div class="' + cls + '"' +
+      (clickable ? ' role="button" tabindex="0"' : "") +
+      (titleAttr ? ' title="' + esc(titleAttr) + '"' : "") + ">" +
+      '<span class="icon">' + KIND[ev.type].icon + "</span>" +
+      '<span class="body"></span>' +
+      '<span class="right"><span class="when">' + esc(clock(ev.ms, "ms")) + "</span>" +
+      (clickable ? '<span class="go">' + ICONS.chevron + "</span>" : "") +
+      "</span></div>"
+    );
+    return { row, body: row.querySelector(".body") };
+  }
+
+  function wireClick(row, fn) {
+    row.addEventListener("click", fn);
+    row.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fn(); }
+    });
+  }
+
+  function renderEvent(ev) {
+    if (ev.type === "session") {
+      const s = ev.data;
+      const tip = "Claude session — click to resume\n" +
+        (s.created_at ? "started " + relTime(s.created_at, "s") + " · " : "") +
+        absTime(s.last_used, "s");
+      const { row, body } = baseRow(ev, true, tip);
+      body.innerHTML = '<div class="title">' + esc(s.preview || s.id) + "</div>";
+      wireClick(row, () =>
+        navigateShell(targetPath, "_mode=claude&session_id=" + encodeURIComponent(s.id)));
+      return row;
+    }
+    if (ev.type === "bookmark") {
+      const b = ev.data;
+      const { row, body } = baseRow(ev, true,
+        "Bookmark — click to open\n" + absTime(b.updated_at, "s"));
+      body.innerHTML =
+        '<div class="title">' + (b.icon ? esc(b.icon) + " " : "") +
+        esc(b.name || targetName) +
+        (b.search ? ' <span class="q">?' + esc(b.search) + "</span>" : "") +
+        "</div>";
+      wireClick(row, () => navigateShell(targetPath, b.search || ""));
+      return row;
+    }
+    // comment — read-only log (HV-8); resolved reads as settled (dimmed).
+    const c = ev.data;
+    const tip = "Comment" + (c.resolved ? " — resolved" : "") +
+      (c.view ? " · on " + c.view : "") + "\n" +
+      (absTime(c.createdAt, "ms") || absTime(c.recorded_at, "s"));
+    const { row, body } = baseRow(ev, false, tip, c.resolved ? "resolved" : "");
+    body.innerHTML = '<div class="title wrap">' + esc(c.content || "(no text)") + "</div>";
+    return row;
+  }
+
+  // ---- assemble page -------------------------------------------------------
+  const nodes = [];
+
+  // vitals line
+  if (events.length) {
+    const oldest = events[events.length - 1].ms;
+    nodes.push(el(
+      '<p class="pulse-line"><b>' + events.length + "</b> event" +
+      (events.length === 1 ? "" : "s") + " since <b>" + esc(dayLabel(oldest)) +
+      "</b> · last activity <b>" + esc(relTime(events[0].ms, "ms")) + "</b></p>"
+    ));
+  }
+
+  // filter chips — single-select: "All" or exactly one event type
+  let activeFilter = "all";
+  const counts = { session: 0, bookmark: 0, comment: 0 };
+  for (const ev of events) counts[ev.type]++;
+  if (events.length) {
+    const chipsEl = el('<div class="chips" role="group" aria-label="Filter event types"></div>');
+    const defs = [["all", "All", events.length]];
+    for (const t of ["session", "bookmark", "comment"]) {
+      if (counts[t]) defs.push([t, KIND[t].label + (counts[t] > 1 ? "s" : ""), counts[t]]);
+    }
+    const chips = new Map();
+    for (const [key, label, n] of defs) {
+      const chip = el(
+        '<button class="chip" type="button" aria-pressed="' +
+        (key === activeFilter ? "true" : "false") + '">' +
+        '<span class="dot"></span>' + esc(label) +
+        ' <span class="n">' + n + "</span></button>"
+      );
+      chip.addEventListener("click", () => {
+        if (activeFilter === key) return;
+        activeFilter = key;
+        for (const [k, c] of chips) c.setAttribute("aria-pressed", k === key ? "true" : "false");
+        renderTimeline();
+      });
+      chips.set(key, chip);
+      chipsEl.appendChild(chip);
+    }
+    nodes.push(chipsEl);
+  }
+
+  // continue banner (lastSession) — the one hero moment
+  {
+    const c = checked.lastSession;
+    if (c.state === "ok") {
+      const ls = c.value;
+      const banner = el(
+        '<button class="continue" type="button" title="' +
+        esc(absTime(ls.updated_at, "s")) + '">' +
+        '<span class="play">' + ICONS.play + "</span>" +
+        '<span class="c-body"><div class="c-title">Continue where you left off</div>' +
+        '<div class="c-meta"><span class="q">' +
+        esc(ls.search ? "?" + ls.search : "(no params)") + "</span>" +
+        (ls.updated_at ? " · " + esc(relTime(ls.updated_at, "s")) : "") +
+        "</div></span>" +
+        '<span class="go">' + ICONS.chevron + "</span></button>"
+      );
+      banner.addEventListener("click", () => navigateShell(targetPath, ls.search || ""));
+      nodes.push(banner);
+    } else if (c.state === "invalid") {
+      // fall through to the warnings block below
+    }
+  }
+
+  // per-key corruption warnings (HV-4)
+  {
+    const warns = el('<div class="warns"></div>');
+    for (const key of Object.keys(SCHEMA)) {
+      const c = checked[key];
+      if (c.state !== "invalid") continue;
+      warns.appendChild(el(
+        '<div class="warn"><div class="msg"><span class="icon">' + ICONS.warn +
+        "</span><span><b>" + esc(key) + "</b> is corrupted — " + esc(c.error) +
+        '</span></div><details><summary>Show raw data</summary><pre class="raw">' +
+        esc(JSON.stringify(c.raw, null, 2)) + "</pre></details></div>"
+      ));
+    }
+    if (warns.children.length) nodes.push(warns);
+  }
+
+  // timeline (or the no-events line)
+  const timelineHost = el('<div class="timeline"></div>');
+  function renderTimeline() {
+    timelineHost.innerHTML = "";
+    const visible = activeFilter === "all"
+      ? events
+      : events.filter((ev) => ev.type === activeFilter);
+    if (!visible.length) {
+      timelineHost.appendChild(el(
+        '<div class="all-hidden">No events recorded yet — claude sessions, ' +
+        "bookmarks and review comments will land here.</div>"
+      ));
+      return;
+    }
+    let currentKey = null, dayEl = null, i = 0;
+    for (const ev of visible) {
+      const k = dayKey(ev.ms);
+      if (k !== currentKey) {
+        currentKey = k;
+        dayEl = el(
+          '<div class="day"><div class="day-label"><span class="tick">' +
+          ICONS.clock + "</span>" + esc(dayLabel(ev.ms)) + "</div></div>"
+        );
+        timelineHost.appendChild(dayEl);
+      }
+      const row = renderEvent(ev);
+      row.style.animationDelay = Math.min(i * 30, 420) + "ms";
+      dayEl.appendChild(row);
+      i++;
+    }
+  }
+  renderTimeline();
+  nodes.push(timelineHost);
+
+  // unknown keys (HV-5: not corruption)
+  {
+    const known = new Set(Object.keys(SCHEMA));
+    const other = {};
+    for (const k of Object.keys(data)) if (!known.has(k)) other[k] = data[k];
+    if (Object.keys(other).length) {
+      nodes.push(el(
+        '<details class="other"><summary>' + Object.keys(other).length +
+        ' other key' + (Object.keys(other).length === 1 ? "" : "s") +
+        ' from other writers</summary><pre class="raw">' +
+        esc(JSON.stringify(other, null, 2)) + "</pre></details>"
+      ));
+    }
+  }
+
+  fullPage(nodes);
+})();
+</script>
+</body>
+</html>
