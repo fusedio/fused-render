@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import time
+import zipfile
 
 # The fused engine execs this script without setting __file__; it puts the
 # script's own directory first on sys.path, so rebuild __file__ from it. Under
@@ -152,9 +153,48 @@ def _cache_dir(file: str) -> str:
     return d
 
 
+# Diagram/signature nodes and named styles can't survive pandoc's docx round-
+# trip, so they ride inside the .docx itself (an extra zip part) — the document
+# stays self-contained, no sidecar next to it.
+EMBED_PART = "fused/embeds.json"
+
+
+def _write_embeds(docx_path, embeds, styles):
+    if not (embeds or styles):
+        return
+    payload = json.dumps({"embeds": json.loads(embeds or "{}"),
+                          "styles": json.loads(styles or "{}")})
+    with zipfile.ZipFile(docx_path) as z:
+        parts = {n: z.read(n) for n in z.namelist()}
+    # Register the json content type so the package stays valid OPC — Word and
+    # Google Docs open it cleanly and ignore this unreferenced extra part.
+    ct = parts["[Content_Types].xml"].decode("utf-8")
+    if 'Extension="json"' not in ct:
+        ct = ct.replace("</Types>", '<Default Extension="json" ContentType="application/json"/></Types>')
+    parts["[Content_Types].xml"] = ct.encode("utf-8")
+    parts[EMBED_PART] = payload.encode("utf-8")
+    tmp = docx_path + ".rezip"
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, data in parts.items():
+            z.writestr(name, data)
+    os.replace(tmp, docx_path)
+
+
+def _read_embeds(docx_path):
+    try:
+        with zipfile.ZipFile(docx_path) as z:
+            if EMBED_PART in z.namelist():
+                data = json.loads(z.read(EMBED_PART))
+                return data.get("embeds") or {}, data.get("styles") or {}
+    except (OSError, zipfile.BadZipFile, ValueError):
+        pass
+    return {}, {}
+
+
 # -------------------------------------------------------------------- dispatcher
 def main(action: str = "export", file: str = "", html: str = "", title: str = "",
-         fmt: str = "pdf", path: str = "", directory: str = "", expected_mtime: str = ""):
+         fmt: str = "pdf", path: str = "", directory: str = "", expected_mtime: str = "",
+         embeds: str = "", styles: str = ""):
     if action == "warmup":
         import pypandoc
         return {"pandoc": pypandoc.get_pandoc_version()}
@@ -196,7 +236,8 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
                            "--wrap=none", file])
         except Exception as e:
             return {"error": f"could not read {os.path.basename(file)}: {e}"}
-        return {"html": out.decode("utf-8", "replace")}
+        embeds_obj, styles_obj = _read_embeds(file)
+        return {"html": out.decode("utf-8", "replace"), "embeds": embeds_obj, "styles": styles_obj}
 
     # ---- export/convert: browser sends serialized HTML, we fan out to formats
     if action == "export":
@@ -247,6 +288,7 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
         try:
             _pandoc(["-f", "html+tex_math_dollars+tex_math_single_backslash", "-t", "docx", "--wrap=none",
                      "--standalone", "-o", tmp], input_text=html)
+            _write_embeds(tmp, embeds, styles)
             os.replace(tmp, file)
         except Exception as e:
             if os.path.exists(tmp):
@@ -268,6 +310,7 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
         try:
             _pandoc(["-f", "html+tex_math_dollars+tex_math_single_backslash", "-t", "docx", "--wrap=none",
                      "--standalone", "-o", dest], input_text=html)
+            _write_embeds(dest, embeds, styles)
         except Exception as e:
             return {"error": f"save to {dest} failed: {e}"}
         return {"path": dest.replace(os.sep, "/"), "name": os.path.basename(dest)}

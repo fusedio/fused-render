@@ -1534,12 +1534,12 @@
     try {
       const doc = S.view.state.doc;
       const docJson = JSON.stringify(doc.toJSON());
-      const embeds = collectEmbeds(doc);
-      const res = await py({ action: "save", file: FILE, html: docToSaveHtml(doc), expected_mtime: String(fileMtime ?? "") });
+      const res = await py({ action: "save", file: FILE, html: docToSaveHtml(doc),
+        embeds: JSON.stringify(collectEmbeds(doc)), styles: JSON.stringify(S.styles),
+        expected_mtime: String(fileMtime ?? "") });
       if (res.conflict) { toast("This file changed on disk — reload to see the latest version."); return; }
       if (res.error) throw new Error(res.error);
       fileMtime = res.mtime;
-      await saveSidecar((d) => { d.styles = S.styles; d.embeds = embeds; });
       // Edits made while the write was in flight leave the doc != the snapshot;
       // keep it dirty so the pending autosave picks them up (no false "saved").
       if (S.view.state.doc.eq(doc)) { S.dirty = false; S.savedMtime = Date.now(); }
@@ -1647,8 +1647,10 @@
         if (!name) { toast("Enter a file name"); return; }
         closeDialog();
         try {
-          const html = docToHtml(S.view.state.doc);
-          const res = await py({ action: "save_as", html, path: name, directory: curDir });
+          const doc = S.view.state.doc;
+          const res = await py({ action: "save_as", html: docToSaveHtml(doc),
+            embeds: JSON.stringify(collectEmbeds(doc)), styles: JSON.stringify(S.styles),
+            path: name, directory: curDir });
           if (res.error) { toast("Save failed: " + res.error); return; }
           toast("Saved a copy to " + res.path);
         } catch (e) { toast("Save failed: " + e.message); }
@@ -1775,11 +1777,12 @@
   }
   try { fileMtime = (await fused.stat(FILE)).mtime; } catch (e) {}
   const sidecar = await loadSidecar();
-  const dom = new DOMParser().parseFromString(reconstructEmbeds(res.html, sidecar.docs.embeds), "text/html");
+  const embeds = (res.embeds && Object.keys(res.embeds).length) ? res.embeds : sidecar.docs.embeds;
+  const dom = new DOMParser().parseFromString(reconstructEmbeds(res.html, embeds), "text/html");
   const importedDoc = PMDOMParser.fromSchema(schema).parse(dom.body);
   S.comments = sidecar.docs.comments;
   S.author = sidecar.docs.author || "";
-  S.styles = sidecar.docs.styles;
+  S.styles = (res.styles && Object.keys(res.styles).length) ? res.styles : sidecar.docs.styles;
   injectStyleCss();
   $("docTitle").textContent = BASENAME;
   $("topbar").classList.remove("hidden"); $("toolbar").classList.remove("hidden"); $("main").classList.remove("hidden");
