@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8" />
-<title>Parquet layout</title>
+<title>Parquet structure</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -173,17 +173,14 @@
 
     function renderMetadata() {
       const f = data.file;
+      // The top summary bar already carries size / rows / row groups / columns /
+      // compression — the File section only adds what it doesn't show.
       const fileRows = [
         ["Path", esc(f.path)],
-        ["Size", `${humanBytes(f.size)} <span style="color:#9aa0a6">(${n(f.size)} bytes)</span>`],
-        ["Rows", n(f.num_rows)],
-        ["Row groups", n(f.num_row_groups)],
-        ["Columns", n(f.num_columns)],
         ["Format version", esc(f.format_version)],
         ["Created by", esc(f.created_by || "—")],
-        ["Compressed", humanBytes(f.total_compressed)],
-        ["Uncompressed", humanBytes(f.total_uncompressed)],
-        ["Compression", esc(f.compression.join(", ") || "—")],
+        ["Compressed", `${humanBytes(f.total_compressed)} <span style="color:#9aa0a6">(${n(f.total_compressed)} bytes)</span>`],
+        ["Uncompressed", `${humanBytes(f.total_uncompressed)} <span style="color:#9aa0a6">(${n(f.total_uncompressed)} bytes)</span>`],
         ["Footer size", `${n(f.serialized_size)} bytes`],
       ].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
 

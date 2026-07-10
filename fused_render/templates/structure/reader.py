@@ -1,4 +1,4 @@
-"""Reader backing layout/template.html — the internal structure of a Parquet
+"""Reader backing structure/template.html — the internal structure of a Parquet
 file: its file-level metadata, per-column schema, and the physical byte layout
 down to each row group's column chunks (offsets, sizes, compression, encodings
 and statistics). No data pages are read; pyarrow parses only the footer, so

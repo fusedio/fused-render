@@ -1,4 +1,4 @@
-"""Tests for the layout template's reader.py — parquet metadata + physical
+"""Tests for the structure template's reader.py — parquet metadata + physical
 byte layout (row-group / column-chunk level), built on pyarrow.
 
 Skipped when pyarrow isn't installed.
@@ -15,8 +15,8 @@ import pyarrow.parquet as pq  # noqa: E402
 
 def _load(name):
     path = os.path.join(os.path.dirname(__file__), "..", "fused_render",
-                        "templates", "layout", name)
-    spec = importlib.util.spec_from_file_location(f"layout_{name}", path)
+                        "templates", "structure", name)
+    spec = importlib.util.spec_from_file_location(f"structure_{name}", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod

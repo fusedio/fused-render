@@ -1,8 +1,7 @@
 {
   ".parquet": [
     "duckdb",
-    "table",
-    "layout",
+    "structure",
     "h3",
     "claude",
     "annotate",
