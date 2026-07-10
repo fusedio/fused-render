@@ -79,6 +79,30 @@
   details.rgd[open] > summary { border-bottom: 1px solid #24262b; }
   details.rgd .rgd-body { padding: 4px 6px 8px; overflow-x: auto; }
   code.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #b7c0cb; }
+
+  /* ---- Grid view: whole-file storage profile ---- */
+  .grid-legend {
+    display: flex; flex-wrap: wrap; gap: 8px 18px; margin-bottom: 16px;
+    padding-bottom: 12px; border-bottom: 1px solid #24262b;
+  }
+  .leg-item { display: inline-flex; align-items: center; gap: 6px; }
+  .leg-item .swatch { width: 11px; height: 11px; border-radius: 3px; flex: 0 0 auto; }
+  .leg-pct { color: #9aa0a6; font-size: 12px; }
+  .grid-chart { display: flex; flex-direction: column; gap: 6px; max-width: 1000px; }
+  .g-row { display: flex; align-items: center; gap: 10px; }
+  .g-label {
+    flex: 0 0 46px; text-align: right; color: #9aa0a6; font-variant-numeric: tabular-nums;
+  }
+  .g-track { flex: 1 1 auto; min-width: 0; background: #17181c; border-radius: 4px; height: 22px; overflow: hidden; }
+  .g-bar { display: flex; height: 100%; min-width: 2px; }
+  .g-seg { height: 100%; transition: filter 0.08s; }
+  .g-seg:hover { filter: brightness(1.35); }
+  .g-size {
+    flex: 0 0 auto; color: #cfd3d7; font-variant-numeric: tabular-nums; font-size: 12px;
+    white-space: nowrap; min-width: 120px;
+  }
+  .g-size .muted { color: #6b7076; }
+  .grid-note { max-width: 700px; margin: 16px 0 0; color: #9aa0a6; font-size: 12px; line-height: 1.5; }
 </style>
 </head>
 <body>
@@ -86,6 +110,7 @@
     <div id="summary"></div>
     <div id="tabs">
       <button id="tab-layout" class="active">Layout</button>
+      <button id="tab-grid">Grid</button>
       <button id="tab-metadata">Metadata</button>
     </div>
   </div>
@@ -114,7 +139,7 @@
 
     function currentTab() {
       const t = fused.params.get("view");
-      return t === "metadata" ? "metadata" : "layout";
+      return (t === "metadata" || t === "grid") ? t : "layout";
     }
 
     function renderSummary() {
@@ -228,12 +253,60 @@
         <div class="meta-section"><h3>Row groups</h3>${rgDetails}</div>`;
     }
 
+    // Grid: the whole file's storage profile at a glance. One row per row group;
+    // the bar's length is the row group's compressed size relative to the
+    // largest (so a fat row group looks fat), split into per-column segments
+    // sized by each column chunk's bytes. A legend maps colour -> column with
+    // its file-wide share, so "where do the bytes go?" is answerable instantly.
+    function renderGrid() {
+      const rgs = data.row_groups;
+      if (!rgs.length) { content.innerHTML = `<div id="status">No row groups.</div>`; return; }
+      const cols = rgs[0].columns.map((c) => c.path);
+      const maxRg = Math.max(...rgs.map((r) => r.compressed_size), 1);
+
+      // File-wide bytes per column, for the legend (biggest first).
+      const totals = cols.map((path, i) => ({
+        path, i,
+        bytes: rgs.reduce((s, r) => s + (r.columns[i] ? r.columns[i].compressed_size : 0), 0),
+      }));
+      const grand = totals.reduce((s, c) => s + c.bytes, 0) || 1;
+      const legend = [...totals].sort((a, b) => b.bytes - a.bytes).map((c) => `
+        <span class="leg-item" title="${esc(c.path)}: ${humanBytes(c.bytes)}">
+          <span class="swatch" style="background:${colColor(c.i)}"></span>
+          <code class="mono">${esc(c.path)}</code>
+          <span class="leg-pct">${humanBytes(c.bytes)} · ${(c.bytes / grand * 100).toFixed(0)}%</span>
+        </span>`).join("");
+
+      const rows = rgs.map((r) => {
+        const rgTotal = r.columns.reduce((s, c) => s + c.compressed_size, 0) || 1;
+        const seg = r.columns.map((c, i) =>
+          `<span class="g-seg" title="RowGroup ${r.index} · ${esc(c.path)}: ${humanBytes(c.compressed_size)} (${(c.compressed_size / rgTotal * 100).toFixed(1)}% of group)"
+                 style="width:${(c.compressed_size / rgTotal * 100).toFixed(3)}%;background:${colColor(i)}"></span>`).join("");
+        return `<div class="g-row">
+          <span class="g-label" title="RowGroup ${r.index}">RG ${r.index}</span>
+          <span class="g-track">
+            <span class="g-bar" style="width:${(r.compressed_size / maxRg * 100).toFixed(3)}%">${seg}</span>
+          </span>
+          <span class="g-size">${humanBytes(r.compressed_size)}<span class="muted"> · ${n(r.num_rows)} rows</span></span>
+        </div>`;
+      }).join("");
+
+      content.innerHTML = `
+        <div class="grid-legend">${legend}</div>
+        <div class="grid-chart">${rows}</div>
+        <p class="grid-note">Bar length is each row group's compressed size on disk, relative to the largest group.
+        Segments show how those bytes split across columns — hover any segment for exact sizes.</p>`;
+    }
+
     function renderTab() {
       const tab = currentTab();
       el("tab-layout").classList.toggle("active", tab === "layout");
+      el("tab-grid").classList.toggle("active", tab === "grid");
       el("tab-metadata").classList.toggle("active", tab === "metadata");
       if (!data) return;
-      if (tab === "metadata") renderMetadata(); else renderLayout();
+      if (tab === "metadata") renderMetadata();
+      else if (tab === "grid") renderGrid();
+      else renderLayout();
     }
 
     let loadSeq = 0; // stale-response guard: two rapid loads race their reads
@@ -262,6 +335,7 @@
     }
 
     el("tab-layout").addEventListener("click", () => fused.params.set("view", "layout"));
+    el("tab-grid").addEventListener("click", () => fused.params.set("view", "grid"));
     el("tab-metadata").addEventListener("click", () => fused.params.set("view", "metadata"));
     // Tab changes only reshuffle already-loaded data; a file change reloads.
     let lastFile = null;
