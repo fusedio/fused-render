@@ -280,7 +280,7 @@
       const rows = rgs.map((r) => {
         const rgTotal = r.columns.reduce((s, c) => s + c.compressed_size, 0) || 1;
         const seg = r.columns.map((c, i) =>
-          `<span class="g-seg" title="RowGroup ${r.index} · ${esc(c.path)}: ${humanBytes(c.compressed_size)} (${(c.compressed_size / rgTotal * 100).toFixed(1)}% of group)"
+          `<span class="g-seg" title="${esc(c.path)}: ${humanBytes(c.compressed_size)} (${(c.compressed_size / rgTotal * 100).toFixed(1)}% of group)"
                  style="width:${(c.compressed_size / rgTotal * 100).toFixed(3)}%;background:${colColor(i)}"></span>`).join("");
         return `<div class="g-row">
           <span class="g-label" title="RowGroup ${r.index}">RG ${r.index}</span>
