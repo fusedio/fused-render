@@ -1155,7 +1155,12 @@
       card.querySelector("#tyGo").onclick = async () => {
         card.querySelector("#tyGo").classList.add("hidden");
         card.querySelector("#tyBar").classList.remove("hidden");
-        await py({ action: "typst_install" });
+        try { await py({ action: "typst_install" }); }
+        catch (e) {
+          card.querySelector("#tyDetail").textContent = e.message;
+          card.querySelector("#tyGo").classList.remove("hidden");
+          return;
+        }
         const poll = async () => {
           const s = await py({ action: "typst_status" }).catch(() => null);
           const p = (s && s.progress) || {};

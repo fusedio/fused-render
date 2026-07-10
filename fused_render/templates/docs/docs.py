@@ -223,9 +223,15 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
             if abs(on_disk - float(expected_mtime)) > 1e-6:
                 return {"conflict": True, "mtime": on_disk}
         tmp = file + ".tmp"
-        _pandoc(["-f", HTML_FROM, "-t", "docx", "--wrap=none",
-                 "--standalone", "-o", tmp], input_text=html)
-        os.replace(tmp, file)
+        try:
+            _pandoc(["-f", HTML_FROM, "-t", "docx", "--wrap=none",
+                     "--standalone", "-o", tmp], input_text=html)
+            os.replace(tmp, file)
+        finally:
+            # cleanup only — errors still propagate; on success the replace
+            # already consumed the tmp
+            with contextlib.suppress(OSError):
+                os.remove(tmp)
         # Version snapshot for the history panel: content-addressed blob in the
         # cache, deduped by sha and capped at 200 — the sidecar holds metadata
         # only, so image-heavy documents can't balloon it. Best-effort: a
