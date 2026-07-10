@@ -137,6 +137,88 @@ def test_migration_is_idempotent_and_writes_only_on_change(tmp_path, monkeypatch
     assert (home / "bookmarks.json").read_text(encoding="utf-8") == saved
 
 
+# --- POST /api/bookmarks/export (.bookmark file, SB-8/D98) --------------------
+
+
+def _export_body(tmp_path, **overrides):
+    body = {
+        "dir": str(tmp_path),
+        "filename": "sales-dash.bookmark",
+        "content": '{\n  "version": 1,\n  "name": "sales-dash",\n  "kind": "single",\n  "path": "a.parquet",\n  "search": "sort=name"\n}\n',
+    }
+    body.update(overrides)
+    return body
+
+
+def test_export_writes_content_verbatim(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    body = _export_body(tmp_path)
+    resp = client.post("/api/bookmarks/export", json=body, headers=FUSED)
+    assert resp.status_code == 200
+    path = resp.json()["path"]
+    assert path == str(tmp_path / "sales-dash.bookmark")
+    # Exact bytes: the frontend owns the formatting, the server must not touch it.
+    with open(path, encoding="utf-8") as f:
+        assert f.read() == body["content"]
+
+
+def test_export_overwrites_existing_file(tmp_path, monkeypatch):
+    # Re-saving refreshes the snapshot: the name is unique (D97), so an
+    # existing file is a stale copy of the same bookmark.
+    client, _ = _client(tmp_path, monkeypatch)
+    (tmp_path / "sales-dash.bookmark").write_text("stale", encoding="utf-8")
+    body = _export_body(tmp_path)
+    assert client.post("/api/bookmarks/export", json=body, headers=FUSED).status_code == 200
+    assert (tmp_path / "sales-dash.bookmark").read_text(encoding="utf-8") == body["content"]
+
+
+def test_export_without_fused_header_is_rejected(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    resp = client.post("/api/bookmarks/export", json=_export_body(tmp_path))
+    assert resp.status_code == 403
+    assert not (tmp_path / "sales-dash.bookmark").exists()
+
+
+def test_export_rejects_bad_dir(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    for dir_ in ["relative/dir", str(tmp_path / "missing"), 7]:
+        body = _export_body(tmp_path, dir=dir_)
+        assert client.post("/api/bookmarks/export", json=body, headers=FUSED).status_code == 400
+    # A file is not a directory either.
+    target = tmp_path / "a.parquet"
+    target.write_text("x", encoding="utf-8")
+    body = _export_body(tmp_path, dir=str(target))
+    assert client.post("/api/bookmarks/export", json=body, headers=FUSED).status_code == 400
+
+
+def test_export_rejects_bad_filename(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    for filename in [
+        "no-suffix.txt",  # wrong extension
+        ".bookmark",  # empty stem
+        "sub/dir.bookmark",  # path separator
+        "sub\\dir.bookmark",  # backslash separator
+        "..bookmark",  # traversal-shaped stem
+        "",  # empty
+    ]:
+        body = _export_body(tmp_path, filename=filename)
+        assert client.post("/api/bookmarks/export", json=body, headers=FUSED).status_code == 400
+
+
+def test_export_rejects_garbage_content(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    for content in [
+        "not json at all",
+        "[1, 2]",  # JSON, but not an object
+        '{"name": "x"}',  # no version
+        '{"version": "1"}',  # version not an int
+        '{"version": true}',  # bool is not a version
+    ]:
+        body = _export_body(tmp_path, content=content)
+        assert client.post("/api/bookmarks/export", json=body, headers=FUSED).status_code == 400
+    assert not (tmp_path / "sales-dash.bookmark").exists()
+
+
 def test_migration_leaves_unique_tree_unwritten(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     # Compact JSON (no indent) differs from write_json's output; surviving a GET

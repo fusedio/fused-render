@@ -10,6 +10,7 @@ written, letting the shell run its one-time localStorage import exactly once
 (a user who later deletes every bookmark leaves an existing `[]` file, so the
 old localStorage data is never re-imported). See frontend lib/bookmarks.ts.
 """
+import json
 import os
 import time
 from urllib.parse import unquote, urlsplit
@@ -97,6 +98,57 @@ def put_bookmarks(
         return guard
     storage.write_json(_path(), bookmarks)
     return {"ok": True, "count": len(bookmarks)}
+
+
+# --------------------------------------------------------- .bookmark file export
+#
+# "Save to disk" (SB-8, D98): the frontend computes the whole file —
+# destination dir (the deepest common ancestor of the bookmark's targets),
+# `<name>.bookmark` filename and the format-v1 JSON content
+# (lib/bookmark-file.ts, next to the `_layout` codec it reuses) — and this
+# endpoint only validates and writes. Overwrite is allowed by design: the
+# name is globally unique (D97), so an existing file is a stale snapshot of
+# the same bookmark and a re-save refreshes it.
+
+
+@router.post("/api/bookmarks/export")
+def export_bookmark(
+    payload: dict = Body(...), x_fused: str | None = Header(default=None)
+):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    dir_ = payload.get("dir")
+    filename = payload.get("filename")
+    content = payload.get("content")
+    if not (isinstance(dir_, str) and isinstance(filename, str) and isinstance(content, str)):
+        return JSONResponse({"error": "dir, filename and content required"}, status_code=400)
+    if not os.path.isabs(dir_) or not os.path.isdir(dir_):
+        return JSONResponse({"error": "dir must be an existing absolute directory"}, status_code=400)
+    # Bare `<stem>.bookmark` only — no separators, no traversal, non-empty stem.
+    stem = filename[: -len(".bookmark")]
+    if (
+        not filename.endswith(".bookmark")
+        or not stem
+        or stem in (".", "..")
+        or "/" in filename
+        or "\\" in filename
+        or filename != os.path.basename(filename)
+    ):
+        return JSONResponse({"error": "filename must be a bare <name>.bookmark"}, status_code=400)
+    # Defense against a garbage body reaching disk: the content must at least
+    # be a JSON object with an integer format version (bool is not a version).
+    try:
+        doc = json.loads(content)
+    except ValueError:
+        doc = None
+    version = doc.get("version") if isinstance(doc, dict) else None
+    if not isinstance(version, int) or isinstance(version, bool):
+        return JSONResponse({"error": "content must be .bookmark JSON with an int version"}, status_code=400)
+    path = os.path.join(dir_, filename)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+    return {"path": path}
 
 
 # ------------------------------------------------------ bookmark history sidecar
