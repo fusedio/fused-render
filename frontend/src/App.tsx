@@ -22,6 +22,7 @@ import Tabs from "./views/Tabs";
 import Preferences from "./views/Preferences";
 import Templates from "./views/Templates";
 import Connectors from "./views/Connectors";
+import BookmarkOpen from "./views/BookmarkOpen";
 
 type StatState =
   | { status: "loading" }
@@ -127,8 +128,15 @@ export default function App({ config }: { config: Config }) {
   const isTemplates = pathname === "/view/_templates";
   // PROTOTYPE: connectors sentinel (see views/Connectors.tsx).
   const isConnectors = pathname === "/view/_connectors";
+  const isBookmark = pathname === "/view/_bookmark";
   const fsPath =
-    isPanel || isTabs || isPrefs || isTemplates || isConnectors ? null : fsPathFromLocation();
+    isPanel || isTabs || isPrefs || isTemplates || isConnectors || isBookmark
+      ? null
+      : fsPathFromLocation();
+  // Browsing to a `.bookmark` file in the explorer opens it like a Finder
+  // double-click (SB-9): same component as the `_bookmark` sentinel, fed the
+  // fs path directly — never StatView (the file describes a view, it isn't one).
+  const bookmarkFile = fsPath && fsPath.toLowerCase().endsWith(".bookmark") ? fsPath : null;
   // A resolved fsPath mounts StatView below, which owns the title itself.
   useDocumentTitle(
     isPanel
@@ -141,6 +149,8 @@ export default function App({ config }: { config: Config }) {
             ? "Templates"
             : isConnectors
               ? "Connectors"
+              : isBookmark || bookmarkFile
+                ? "Bookmark"
               : fsPath
                 ? undefined
                 : null
@@ -205,6 +215,20 @@ export default function App({ config }: { config: Config }) {
         </div>
         <div id="content">
           <Connectors key={epoch} />
+        </div>
+      </>
+    );
+  } else if (isBookmark || bookmarkFile) {
+    // `.bookmark` open flow (SB-9, D99): Finder double-click lands on the
+    // `/view/_bookmark?file=` sentinel; browsing to the file in the explorer
+    // renders the same redirector with the fs path as a prop.
+    main = (
+      <>
+        <div id="breadcrumb">
+          <StaticBreadcrumb label="Bookmark" />
+        </div>
+        <div id="content">
+          <BookmarkOpen key={epoch} file={bookmarkFile ?? undefined} />
         </div>
       </>
     );

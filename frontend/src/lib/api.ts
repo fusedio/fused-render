@@ -27,7 +27,8 @@ export interface WalkEntry {
   is_dir: boolean;
   size: number | null;
   mtime: number | null;
-  ignored?: boolean; // matched by .gitignore inside a git repo (dimmed in the UI)
+  // No `ignored` flag here (unlike FsEntry): the walk PRUNES gitignored
+  // entries server-side, so nothing ignored ever reaches search results.
 }
 
 export interface WalkResult {
@@ -194,6 +195,31 @@ export interface BookmarkHistoryEntry {
 // sidecar (bookmarkHistory). Server no-ops for sentinel/dir-gone/non-file urls.
 export function recordBookmarkHistory(entry: BookmarkHistoryEntry): Promise<void> {
   return postJson<unknown>("/api/bookmarks/history", entry).then(() => undefined);
+}
+
+// Write a portable `<name>.bookmark` file next to the bookmark's target(s)
+// (SB-8). The frontend computes dir/filename/content (lib/bookmark-file.ts);
+// the server validates and writes, overwriting any previous save.
+export interface BookmarkExport {
+  dir: string;
+  filename: string;
+  content: string;
+}
+
+export function exportBookmarkFile(payload: BookmarkExport): Promise<{ path: string }> {
+  return postJson<{ path: string }>("/api/bookmarks/export", payload);
+}
+
+// Read a `.bookmark` file from disk (SB-9): the `_bookmark` sentinel resolves
+// the record's relative paths against `dir` (the file's own directory) and
+// redirects. The server validates (absolute path, exists, version 1) and reads.
+export interface BookmarkFileResult {
+  dir: string;
+  bookmark: Record<string, unknown>;
+}
+
+export function getBookmarkFile(path: string): Promise<BookmarkFileResult> {
+  return getJson<BookmarkFileResult>("/api/bookmark-file?path=" + encodeURIComponent(path));
 }
 
 // Per-file session restore (LSN-*). `search` is the shell query without the

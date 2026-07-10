@@ -123,14 +123,167 @@ WALK_MAX_ENTRIES = 200_000
 # overhead is noise, small enough that the client gets its first scoreable
 # batch within a few filesystem reads.
 WALK_BATCH_SIZE = 500
-# Directories never descended into by the walk: heavy, machine-managed trees
-# that only add noise to a file search. Checked against the bare name, so it
-# also applies under hidden=1 (".git" is machine noise, not "hidden data").
-WALK_IGNORE_DIRS = {"node_modules", "__pycache__", "venv", ".venv", ".git"}
+# Directory names never descended into by the walk, checked against the bare
+# name so it also applies under hidden=1 (".git" is machine noise, not
+# "hidden data"). This is only the UNIVERSAL floor — inside a git repository
+# the walk additionally prunes whatever the repo's own .gitignore ignores
+# (see _IgnoreOracle), which is what actually catches dist/, build/, .next/,
+# target/ and friends without hardcoding every ecosystem's junk dir. The
+# floor still matters outside repos (a stray node_modules in ~/Downloads)
+# and for .git itself, which git never reports as ignored.
+WALK_IGNORE_DIRS = {"node_modules", "__pycache__", "venv", ".venv", ".git", "site-packages"}
+# Cap on concurrently open check-ignore co-processes during one walk (a home
+# walk crosses dozens of repos; each oracle holds a git subprocess).
+WALK_MAX_ORACLES = 8
 # macOS package directories: emitted as a single (dir) entry but never
 # descended — their internals are implementation details (Finder hides them
 # too), and one Electron .app alone can be thousands of files.
 WALK_LEAF_DIR_SUFFIXES = (".app", ".framework", ".bundle", ".photoslibrary")
+
+
+# Lazily-created empty git dir backing check-ignore for NON-repo directories
+# that still carry a .gitignore (an un-inited project, an Obsidian vault…).
+# With GIT_DIR pointing here and GIT_WORK_TREE at the directory, git applies
+# that tree's .gitignore files exactly as it would inside a real repo. One
+# per process, a few KB, left for the OS tempdir cleanup.
+_EMPTY_GIT_DIR: str | None | bool = None  # None = not tried, False = failed
+
+
+def _empty_git_dir():
+    global _EMPTY_GIT_DIR
+    if _EMPTY_GIT_DIR is None:
+        try:
+            root = tempfile.mkdtemp(prefix="fused-render-emptygit-")
+            subprocess.run(
+                ["git", "init", "-q", root],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+            _EMPTY_GIT_DIR = os.path.join(root, ".git")
+        except (OSError, subprocess.SubprocessError):
+            _EMPTY_GIT_DIR = False
+    return _EMPTY_GIT_DIR or None
+
+
+class _IgnoreOracle:
+    """One repository's `git check-ignore` as a streaming co-process.
+
+    `git check-ignore --stdin -z -v -n` answers path queries incrementally on
+    one long-lived subprocess (measured ~14µs/query), so the walk can ask
+    about every directory's children as it reaches them — no subprocess per
+    directory, no giant upfront batch. `-v -n` makes git echo all four
+    NUL-terminated fields for EVERY query (matching or not), which is what
+    makes the stream pairable: query order in = verdict order out.
+
+    Any failure (git missing, repo gone mid-walk, pipe breakage) marks the
+    oracle broken and it answers "nothing ignored" from then on — gitignore
+    pruning is an optimization, never a hard dependency (same posture as
+    _git_ignored's dimming).
+    """
+
+    # Queries per write/read cycle: bounded so git's stdout can't fill the
+    # pipe while we are still writing stdin (classic co-process deadlock).
+    CHUNK = 200
+
+    def __init__(self, repo_root):
+        self.root = repo_root
+        self.broken = False
+        # Real repo (a .git exists at or above the root): plain `git -C`.
+        # Standalone-.gitignore directory (no repo): graft the dir onto a
+        # shared empty GIT_DIR as its work tree, which makes check-ignore
+        # honor the tree's .gitignore files without a repository.
+        env = None
+        if not os.path.exists(os.path.join(repo_root, ".git")):
+            empty = _empty_git_dir()
+            if empty is None:
+                self.proc = None
+                self.broken = True
+                self._buf = b""
+                return
+            env = {**os.environ, "GIT_DIR": empty, "GIT_WORK_TREE": repo_root}
+        try:
+            self.proc = subprocess.Popen(
+                ["git", "-C", repo_root, "check-ignore", "--stdin", "-z", "-v", "-n"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                env=env,
+            )
+        except OSError:
+            self.proc = None
+            self.broken = True
+        self._buf = b""
+
+    def _read_field(self):
+        while True:
+            cut = self._buf.find(b"\0")
+            if cut != -1:
+                field = self._buf[:cut]
+                self._buf = self._buf[cut + 1:]
+                return field
+            chunk = self.proc.stdout.read1(65536)
+            if not chunk:
+                raise OSError("check-ignore stream closed")
+            self._buf += chunk
+
+    def ignored(self, rel_paths):
+        """Subset of `rel_paths` (POSIX, relative to repo root) git ignores."""
+        if self.broken or not rel_paths:
+            return set()
+        out = set()
+        try:
+            for i in range(0, len(rel_paths), self.CHUNK):
+                chunk = rel_paths[i : i + self.CHUNK]
+                payload = b"".join(os.fsencode(r) + b"\0" for r in chunk)
+                self.proc.stdin.write(payload)
+                self.proc.stdin.flush()
+                for r in chunk:
+                    # <source> NUL <linenum> NUL <pattern> NUL <path> NUL.
+                    # Empty source = no pattern matched (not ignored). A
+                    # NEGATED pattern ("!keep.log") is also echoed with its
+                    # source under -v — that match means explicitly NOT
+                    # ignored, so test the pattern's sign, not mere presence.
+                    source = self._read_field()
+                    self._read_field()
+                    pattern = self._read_field()
+                    self._read_field()
+                    if source and not pattern.startswith(b"!"):
+                        out.add(r)
+            return out
+        except OSError:
+            self.broken = True
+            self.close()
+            return set()
+
+    def close(self):
+        if self.proc is not None:
+            try:
+                self.proc.stdin.close()
+            except OSError:
+                pass
+            self.proc.terminate()
+            self.proc = None
+
+
+def _repo_toplevel(path):
+    """The git work-tree root containing `path`, or None. One call per walk —
+    covers walking a SUBDIRECTORY of a repo, where no `.git` marker is ever
+    seen during the walk itself."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", path, "rev-parse", "--show-toplevel"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    top = os.fsdecode(proc.stdout.strip())
+    return top or None
 
 
 def _walk_bfs(path, include_hidden):
@@ -144,52 +297,104 @@ def _walk_bfs(path, include_hidden):
     follow the link (matching os.walk/os.stat), so a broken symlink is skipped
     like any other unstatable entry. Unreadable directories are skipped
     silently (matches /api/fs/list).
+
+    Inside a git repository, entries the repo's own gitignore rules ignore are
+    pruned entirely — not emitted, not descended (the generic answer to
+    build/cache junk; WALK_IGNORE_DIRS is just the non-repo floor). Each
+    directory inherits its parent's repo root through the queue; a child
+    directory containing a `.git` entry (dir or worktree/submodule gitfile)
+    starts a nested repo with its own rules. Verdicts come from one streaming
+    check-ignore co-process per repo (_IgnoreOracle), capped at
+    WALK_MAX_ORACLES concurrently, all closed when the walk ends.
     """
-    queue = deque([(path, "")])
-    while queue:
-        current, rel_base = queue.popleft()
-        try:
-            with os.scandir(current) as it:
-                children = list(it)
-        except OSError:
-            continue  # unreadable dir skipped silently
-        dirs = []
-        files = []
-        for child in children:
-            name = child.name
-            if not include_hidden and name.startswith("."):
-                continue
+    oracles = {}  # repo root -> _IgnoreOracle, insertion order = LRU
+
+    def oracle_for(repo):
+        oracle = oracles.pop(repo, None)
+        if oracle is None:
+            oracle = _IgnoreOracle(repo)
+            while len(oracles) >= WALK_MAX_ORACLES:
+                oracles.pop(next(iter(oracles))).close()
+        oracles[repo] = oracle  # re-insert = mark most-recently-used
+        return oracle
+
+    try:
+        # (abs dir, rel from walk root, repo root or None, rel from repo root)
+        top = _repo_toplevel(path)
+        top_rel = "" if top is None else os.path.relpath(path, top).replace(os.sep, "/")
+        queue = deque([(path, "", top, "" if top_rel == "." else top_rel)])
+        while queue:
+            current, rel_base, repo, repo_rel_base = queue.popleft()
             try:
-                is_dir = child.is_dir()
+                with os.scandir(current) as it:
+                    children = list(it)
             except OSError:
-                continue
-            if is_dir:
-                if name in WALK_IGNORE_DIRS:
+                continue  # unreadable dir skipped silently
+            # A .git entry (dir, or gitfile for worktrees/submodules) marks a
+            # nested repository: its own gitignore rules take over below here.
+            # A .gitignore WITHOUT any repo in scope marks a standalone
+            # ignore root (un-inited project, vault, …): same pruning, backed
+            # by the empty-GIT_DIR graft (see _IgnoreOracle). Not applied
+            # inside a real repo — there git already cascades nested
+            # .gitignore files itself.
+            names = {c.name for c in children}
+            if ".git" in names and current != repo:
+                repo, repo_rel_base = current, ""
+            elif repo is None and ".gitignore" in names:
+                repo, repo_rel_base = current, ""
+            dirs = []
+            files = []
+            for child in children:
+                name = child.name
+                if not include_hidden and name.startswith("."):
                     continue
-                dirs.append(child)
-            else:
-                files.append(child)
-        dirs.sort(key=lambda e: e.name)
-        files.sort(key=lambda e: e.name)
-        for child, is_dir in [(d, True) for d in dirs] + [(f, False) for f in files]:
-            try:
-                st = child.stat()
-            except OSError:
-                continue  # unreadable entries skipped silently
-            rel = rel_base + "/" + child.name if rel_base else child.name
-            yield {
-                "rel": rel,
-                "is_dir": is_dir,
-                "size": None if is_dir else st.st_size,
-                "mtime": st.st_mtime,
-            }
-            if is_dir:
                 try:
-                    is_link = child.is_symlink()
+                    is_dir = child.is_dir()
                 except OSError:
-                    is_link = True  # can't tell — safer not to descend
-                if not is_link and not child.name.lower().endswith(WALK_LEAF_DIR_SUFFIXES):
-                    queue.append((os.path.join(current, child.name), rel))
+                    continue
+                if is_dir:
+                    if name in WALK_IGNORE_DIRS:
+                        continue
+                    dirs.append(child)
+                else:
+                    files.append(child)
+            if repo is not None and (dirs or files):
+                prefix = repo_rel_base + "/" if repo_rel_base else ""
+                ignored = oracle_for(repo).ignored(
+                    [prefix + c.name for c in dirs + files]
+                )
+                if ignored:
+                    dirs = [c for c in dirs if prefix + c.name not in ignored]
+                    files = [c for c in files if prefix + c.name not in ignored]
+            dirs.sort(key=lambda e: e.name)
+            files.sort(key=lambda e: e.name)
+            for child, is_dir in [(d, True) for d in dirs] + [(f, False) for f in files]:
+                try:
+                    st = child.stat()
+                except OSError:
+                    continue  # unreadable entries skipped silently
+                rel = rel_base + "/" + child.name if rel_base else child.name
+                yield {
+                    "rel": rel,
+                    "is_dir": is_dir,
+                    "size": None if is_dir else st.st_size,
+                    "mtime": st.st_mtime,
+                }
+                if is_dir:
+                    try:
+                        is_link = child.is_symlink()
+                    except OSError:
+                        is_link = True  # can't tell — safer not to descend
+                    if not is_link and not child.name.lower().endswith(WALK_LEAF_DIR_SUFFIXES):
+                        repo_rel = (
+                            (repo_rel_base + "/" + child.name if repo_rel_base else child.name)
+                            if repo is not None
+                            else ""
+                        )
+                        queue.append((os.path.join(current, child.name), rel, repo, repo_rel))
+    finally:
+        for oracle in oracles.values():
+            oracle.close()
 
 
 def _error(message: str, status: int = 400) -> JSONResponse:
@@ -816,13 +1021,6 @@ def create_app(start_dir: str) -> FastAPI:
         entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
         return {"path": path, "entries": entries}
 
-    def _annotate_ignored(root: str, batch: list[dict]) -> None:
-        # Gitignore dimming for walk entries (#75's list behavior, per batch in
-        # the streamed walk — one `git check-ignore --stdin` call per batch).
-        ignored = _git_ignored(root, [e["rel"] for e in batch])
-        for e in batch:
-            e["ignored"] = e["rel"] in ignored
-
     @app.get("/api/fs/walk")
     def api_fs_walk(path: str, hidden: str = "0", stream: str = "0"):
         # Recursive listing of a directory subtree, for the explorer search
@@ -830,16 +1028,18 @@ def create_app(start_dir: str) -> FastAPI:
         # the ones a search almost always targets — are all emitted before any
         # deep subtree can exhaust the WALK_MAX_ENTRIES cap (the old
         # depth-first walk let one big sibling starve every later one). Prunes
-        # WALK_IGNORE_DIRS entirely, emits WALK_LEAF_DIR_SUFFIXES packages
-        # without descending, never follows symlinks, and skips unreadable
-        # entries silently (matches /api/fs/list). `rel` is posix-relative to
-        # `path`.
+        # WALK_IGNORE_DIRS entirely, prunes gitignored entries inside git
+        # repositories (see _walk_bfs — which is why walk entries carry no
+        # `ignored` dimming flag: nothing ignored survives to be dimmed),
+        # emits WALK_LEAF_DIR_SUFFIXES packages without descending, never
+        # follows symlinks, and skips unreadable entries silently (matches
+        # /api/fs/list). `rel` is posix-relative to `path`.
         #
         # `hidden=1` (explicit intent: the user typed a dot-leading query)
-        # includes dot-files and descends into dot-dirs. WALK_IGNORE_DIRS is
-        # always pruned regardless — those trees are noise, not "hidden data",
-        # and letting hidden=1 descend into .git/node_modules would flood the
-        # results with machine-managed junk.
+        # includes dot-files and descends into dot-dirs. WALK_IGNORE_DIRS and
+        # gitignore pruning apply regardless — those trees are noise, not
+        # "hidden data", and letting hidden=1 descend into .git/node_modules
+        # would flood the results with machine-managed junk.
         #
         # `stream=1` returns NDJSON: zero or more `{"entries": [...]}` batch
         # lines (WALK_BATCH_SIZE each) followed by exactly one terminal
@@ -861,7 +1061,6 @@ def create_app(start_dir: str) -> FastAPI:
                 if len(entries) >= WALK_MAX_ENTRIES:
                     truncated = True
                     break
-            _annotate_ignored(path, entries)
             return {"path": path, "entries": entries, "truncated": truncated}
 
         def ndjson():
@@ -872,14 +1071,12 @@ def create_app(start_dir: str) -> FastAPI:
                 batch.append(entry)
                 total += 1
                 if len(batch) >= WALK_BATCH_SIZE:
-                    _annotate_ignored(path, batch)
                     yield json.dumps({"entries": batch}) + "\n"
                     batch = []
                 if total >= WALK_MAX_ENTRIES:
                     truncated = True
                     break
             if batch:
-                _annotate_ignored(path, batch)
                 yield json.dumps({"entries": batch}) + "\n"
             yield json.dumps({"done": True, "truncated": truncated, "total": total}) + "\n"
 

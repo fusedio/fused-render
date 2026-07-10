@@ -494,11 +494,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
             {visibleHits.map(({ entry, positions }) => {
               const childPath = base + "/" + entry.rel;
               return (
-                <tr
-                  key={entry.rel}
-                  className={entry.ignored ? "row ignored" : "row"}
-                  onClick={() => navigate(childPath)}
-                >
+                <tr key={entry.rel} className="row" onClick={() => navigate(childPath)}>
                   <td className="name">
                     <span className="icon">{iconForEntry(entry.rel.split("/").pop() ?? entry.rel, entry.is_dir)}</span>
                     <span className="search-path">{renderHighlight(entry.rel, positions)}</span>
