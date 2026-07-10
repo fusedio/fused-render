@@ -353,6 +353,13 @@
   ".laz": [
     "las"
   ],
+  ".glb": [
+    "glb"
+  ],
+  ".gltf": [
+    "glb",
+    "code"
+  ],
   ".zip": [
     "zip"
   ],
