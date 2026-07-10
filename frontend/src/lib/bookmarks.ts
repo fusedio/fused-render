@@ -210,6 +210,32 @@ export function allBookmarks(): Bookmark[] {
   return out;
 }
 
+// Bookmark names are globally unique, case-insensitive (they become
+// `<name>.bookmark` filenames — D97); folder names are a separate namespace.
+// Returns `base` when free, else `base-1`, `base-2`, ... (first free suffix).
+// `excludeId` skips the bookmark being renamed so a no-op rename isn't suffixed.
+function uniqueNameIn(items: BookmarkItem[], base: string, excludeId?: string): string {
+  const taken = new Set<string>();
+  const collect = (list: BookmarkItem[]): void => {
+    for (const it of list) {
+      if (isFolder(it)) collect(it.children);
+      else if (it.id !== excludeId) taken.add(it.name.toLowerCase());
+    }
+  };
+  collect(items);
+  if (!taken.has(base.toLowerCase())) return base;
+  for (let n = 1; ; n++) {
+    const candidate = `${base}-${n}`;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+}
+
+// Public preview against the current cache (mutations dedupe internally via
+// uniqueNameIn on their own snapshot, so callers need not pre-clean names).
+export function uniqueBookmarkName(base: string, excludeId?: string): string {
+  return uniqueNameIn(cache, base, excludeId);
+}
+
 // Remove folders left empty by a mutation. Mutates in place, returns items.
 function prune(items: BookmarkItem[]): BookmarkItem[] {
   for (let i = items.length - 1; i >= 0; i--) {
@@ -233,12 +259,13 @@ function mutate(transform: (items: BookmarkItem[]) => BookmarkItem[] | null): Pr
 export async function addBookmark(name: string, url: string): Promise<void> {
   const item: Bookmark = { id: crypto.randomUUID(), name, url, created_at: Date.now() };
   await mutate((items) => {
+    item.name = uniqueNameIn(items, name); // dedupe against the same snapshot we push into
     items.push(item);
     return items;
   });
   // Fire-and-forget after the bookmark write commits, so sidecar I/O never
   // blocks or fails the bookmark itself.
-  recordBookmarkHistory({ id: item.id, name, url, created_at: item.created_at })
+  recordBookmarkHistory({ id: item.id, name: item.name, url, created_at: item.created_at })
     .catch((e) => console.error("[fused] failed to record bookmark history:", e));
 }
 
@@ -280,7 +307,8 @@ export function renameBookmark(id: string, name: string): Promise<void> {
       }
     }
     if (!target) return null; // nothing to change -> no write
-    target.name = name;
+    // Folders keep their own namespace; bookmark names auto-suffix on clash.
+    target.name = isFolder(target) ? name : uniqueNameIn(items, name, id);
     return items;
   });
 }

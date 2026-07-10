@@ -39,6 +39,41 @@ def _path() -> str:
     return os.path.join(storage.home_dir(), "bookmarks.json")
 
 
+def _dedupe_names(items: list) -> bool:
+    """One-time migration (D97): make bookmark names globally unique,
+    case-insensitive, across top-level bookmarks and folder children (folder
+    names are a separate namespace and are left alone). The oldest bookmark by
+    created_at keeps its name; each newer duplicate gets the first `-1`, `-2`,
+    ... suffix that collides with nothing already in the tree. Idempotent —
+    returns True only when something was renamed."""
+    bookmarks = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "folder":
+            bookmarks.extend(c for c in item.get("children") or [] if isinstance(c, dict))
+        else:
+            bookmarks.append(item)
+    named = [b for b in bookmarks if isinstance(b.get("name"), str)]
+    # Suffix candidates must dodge EVERY current name (including a pre-existing
+    # literal "x-1"), not just the ones processed so far.
+    taken = {b["name"].lower() for b in named}
+    seen = set()
+    changed = False
+    for b in sorted(named, key=lambda b: b.get("created_at") or 0):
+        key = b["name"].lower()
+        if key not in seen:
+            seen.add(key)  # first (oldest) holder keeps the name
+            continue
+        n = 1
+        while f"{b['name']}-{n}".lower() in taken:
+            n += 1
+        b["name"] = f"{b['name']}-{n}"
+        taken.add(b["name"].lower())
+        changed = True
+    return changed
+
+
 @router.get("/api/bookmarks")
 def get_bookmarks():
     data = storage.read_json(_path())
@@ -46,6 +81,10 @@ def get_bookmarks():
     # import from localStorage; a valid file (even []) reports exists=true.
     if not isinstance(data, list):
         return {"exists": False, "bookmarks": []}
+    # Pre-D97 files may hold duplicate names; migrate once (write only when
+    # something actually changed — the normal GET stays read-only).
+    if _dedupe_names(data):
+        storage.write_json(_path(), data)
     return {"exists": True, "bookmarks": data}
 
 

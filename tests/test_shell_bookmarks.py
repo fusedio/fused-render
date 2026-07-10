@@ -80,3 +80,68 @@ def test_put_overwrites_last_write_wins(tmp_path, monkeypatch):
     client.put("/api/bookmarks", json=[{"id": "2", "name": "b", "url": "/view/y", "created_at": 2}], headers=FUSED)
     got = client.get("/api/bookmarks").json()
     assert [b["id"] for b in got["bookmarks"]] == ["2"]
+
+
+# --- D97 duplicate-name migration (GET-time, one write, idempotent) -----------
+
+
+def _bm(id, name, created_at):
+    return {"id": id, "name": name, "url": f"/view/{id}", "created_at": created_at}
+
+
+def _write_tree(home, tree):
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "bookmarks.json").write_text(json.dumps(tree), encoding="utf-8")
+
+
+def test_migration_suffixes_duplicates_oldest_keeps_name(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    # Newest listed first: created_at, not list order, decides who keeps "a".
+    _write_tree(home, [_bm("2", "a", 20), _bm("1", "a", 10), _bm("3", "a", 30)])
+    got = {b["id"]: b["name"] for b in client.get("/api/bookmarks").json()["bookmarks"]}
+    assert got == {"1": "a", "2": "a-1", "3": "a-2"}
+    # Migrated tree persisted to disk.
+    saved = json.loads((home / "bookmarks.json").read_text(encoding="utf-8"))
+    assert {b["id"]: b["name"] for b in saved} == got
+
+
+def test_migration_is_case_insensitive_and_global_across_folders(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    folder = {"id": "f", "type": "folder", "name": "a", "collapsed": False,
+              "children": [_bm("2", "A", 20)]}
+    _write_tree(home, [_bm("1", "a", 10), folder])
+    got = client.get("/api/bookmarks").json()["bookmarks"]
+    assert got[0]["name"] == "a"
+    # Folder child collides with the top-level bookmark despite the case, but
+    # the folder's own name "a" is a separate namespace and stays untouched.
+    assert got[1]["name"] == "a"
+    assert got[1]["children"][0]["name"] == "A-1"
+
+
+def test_migration_suffix_skips_existing_names(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    # A pre-existing literal "a-1" blocks that suffix: the duplicate jumps to -2.
+    _write_tree(home, [_bm("1", "a", 10), _bm("2", "a", 20), _bm("3", "a-1", 30)])
+    got = {b["id"]: b["name"] for b in client.get("/api/bookmarks").json()["bookmarks"]}
+    assert got == {"1": "a", "2": "a-2", "3": "a-1"}
+
+
+def test_migration_is_idempotent_and_writes_only_on_change(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    _write_tree(home, [_bm("1", "a", 10), _bm("2", "a", 20)])
+    first = client.get("/api/bookmarks").json()["bookmarks"]
+    saved = (home / "bookmarks.json").read_text(encoding="utf-8")
+    # Second GET: already unique, so the exact bytes on disk are untouched
+    # (write_json would reformat — unchanged text proves no write happened).
+    assert client.get("/api/bookmarks").json()["bookmarks"] == first
+    assert (home / "bookmarks.json").read_text(encoding="utf-8") == saved
+
+
+def test_migration_leaves_unique_tree_unwritten(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    # Compact JSON (no indent) differs from write_json's output; surviving a GET
+    # byte-identical proves the no-duplicates path never writes.
+    _write_tree(home, [_bm("1", "a", 10), _bm("2", "b", 20)])
+    raw = (home / "bookmarks.json").read_text(encoding="utf-8")
+    assert client.get("/api/bookmarks").json()["exists"] is True
+    assert (home / "bookmarks.json").read_text(encoding="utf-8") == raw
