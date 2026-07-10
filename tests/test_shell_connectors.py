@@ -166,6 +166,29 @@ def test_mounted_paths_merges_listmounts(home, rcd):
     assert view["mounted"] is True and view["mountpoint"] == mp
 
 
+def test_mount_rejects_mountpoint_serving_other_remote(home, rcd, monkeypatch):
+    # A stale mount from a deleted same-name connector must not pass for the
+    # new remote: rcd lists the old fs at the mountpoint -> mount errors.
+    c = conn_mod.add_connector("data", "remote:new")
+    mp = conn_mod.mountpoint(c)
+    rcd.responses["mount/listmounts"] = {
+        "mountPoints": [{"Fs": "remote:old", "MountPoint": mp}]}
+    monkeypatch.setattr(conn_mod.os.path, "ismount", lambda p: p == mp)
+    err = conn_mod.mount_connector(c)
+    assert err is not None and "remote:old" in err
+    assert not any(m == "mount/mount" for m, _ in rcd.calls)
+
+
+def test_mount_adopts_matching_existing_mount(home, rcd, monkeypatch):
+    c = conn_mod.add_connector("data", "remote:bucket")
+    mp = conn_mod.mountpoint(c)
+    rcd.responses["mount/listmounts"] = {
+        "mountPoints": [{"Fs": "remote:bucket", "MountPoint": mp}]}
+    monkeypatch.setattr(conn_mod.os.path, "ismount", lambda p: p == mp)
+    assert conn_mod.mount_connector(c) is None
+    assert not any(m == "mount/mount" for m, _ in rcd.calls)
+
+
 def test_mounted_paths_empty_when_rcd_down(home):
     # No state file, no daemon: status degrades to unmounted, never raises.
     # (ensure_rcd would spawn; mounted_paths must NOT spawn just to read.)
@@ -320,6 +343,17 @@ def test_unmount_success_never_touches_daemons(home, rcd, tile_daemon):
     assert tile_daemon == []
 
 
+def test_unmount_non_busy_error_skips_daemons(home, rcd, tile_daemon):
+    # Only a busy error means a daemon holds a file open; on any other
+    # failure quitting tile servers would kill unrelated local previews.
+    c = conn_mod.add_connector("data", "remote:bucket")
+    rcd.responses["mount/unmount"] = (500, {"error": "some rc failure"})
+    err = conn_mod.unmount_connector(c)
+    assert err is not None and "some rc failure" in err
+    assert tile_daemon == []
+    assert sum(1 for m, _ in rcd.calls if m == "mount/unmount") == 1
+
+
 def test_unmount_still_busy_after_release_reports_error(home, rcd, tile_daemon, monkeypatch):
     monkeypatch.setattr(conn_mod.time, "sleep", lambda s: None)
     c = conn_mod.add_connector("data", "remote:bucket")
@@ -327,6 +361,19 @@ def test_unmount_still_busy_after_release_reports_error(home, rcd, tile_daemon, 
     err = conn_mod.unmount_connector(c)
     assert err is not None and "hold a file open" in err
     assert tile_daemon == ["/quit"]
+
+
+def test_delete_blocked_while_still_mounted(client, rcd, tile_daemon, monkeypatch):
+    monkeypatch.setattr(conn_mod.time, "sleep", lambda s: None)
+    cid = client.post(
+        "/api/connectors", json={"name": "data", "remote": "r:bucket"},
+        headers=FUSED).json()["id"]
+    mp = conn_mod.mountpoint(conn_mod.get_connector(cid))
+    rcd.responses["mount/unmount"] = (500, {"error": "device busy"})
+    monkeypatch.setattr(conn_mod.os.path, "ismount", lambda p: p == mp)
+    r = client.delete(f"/api/connectors/{cid}", headers=FUSED)
+    assert r.status_code == 502 and "not deleted" in r.json()["error"]
+    assert len(client.get("/api/connectors").json()["connectors"]) == 1
 
 
 # -- automount at startup --------------------------------------------------------

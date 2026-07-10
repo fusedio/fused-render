@@ -26,6 +26,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -184,10 +185,21 @@ def rclone_bin() -> str | None:
     return shutil.which("rclone")
 
 
+# Spawn-or-reuse must be serialized: the startup automount thread and a user
+# mount request can race between "no live daemon" and Popen, each starting
+# its own rcd and clobbering rcd.json (the loser's daemon is orphaned).
+_rcd_lock = threading.Lock()
+
+
 def ensure_rcd() -> int:
     """Port of a live rcd daemon, spawning one (detached) if none answers.
     Raises RuntimeError when rclone is not installed or the daemon won't come
     up."""
+    with _rcd_lock:
+        return _ensure_rcd_locked()
+
+
+def _ensure_rcd_locked() -> int:
     port = _live_rcd_port()
     if port is not None:
         return port
@@ -215,17 +227,22 @@ def ensure_rcd() -> int:
     raise RuntimeError("rclone rcd did not come up within 10s")
 
 
-def mounted_paths() -> set:
-    """Mountpoints rcd currently serves (empty when no daemon is live).
-    Read-only: never spawns a daemon just to answer a status question."""
+def rcd_mount_map() -> dict:
+    """{mountpoint: remote fs} for every mount rcd currently serves (empty
+    when no daemon is live). Read-only: never spawns a daemon just to answer
+    a status question."""
     port = _live_rcd_port()
     if port is None:
-        return set()
+        return {}
     try:
         listed = _rc(port, "mount/listmounts").get("mountPoints", [])
     except RuntimeError:
-        return set()
-    return {m.get("MountPoint") for m in listed if isinstance(m, dict)}
+        return {}
+    return {m.get("MountPoint"): m.get("Fs") for m in listed if isinstance(m, dict)}
+
+
+def mounted_paths() -> set:
+    return set(rcd_mount_map())
 
 
 def mount_connector(conn: dict) -> str | None:
@@ -233,6 +250,15 @@ def mount_connector(conn: dict) -> str | None:
     mp = mountpoint(conn)
     os.makedirs(mp, exist_ok=True)
     if os.path.ismount(mp):
+        # Already a kernel mount — but is it OURS? A stale mount left by a
+        # deleted connector of the same name would otherwise pass for the
+        # new remote. rcd knows the fs of every mount it serves; a mismatch
+        # is an error, not a silent adopt. (A mount rcd doesn't know about
+        # has no queryable fs — adopted as-is, the pre-rcd prototype case.)
+        fs = rcd_mount_map().get(mp)
+        if fs is not None and fs != conn["remote"]:
+            return (f"mountpoint already serves '{fs}' — unmount it before "
+                    f"mounting '{conn['remote']}'")
         return None  # already mounted (double-click, adopted foreign mount)
     try:
         port = ensure_rcd()
@@ -278,8 +304,13 @@ def unmount_connector(conn: dict) -> str | None:
     try:
         _rc(port, "mount/unmount", params)
         return None
-    except RuntimeError:
-        pass
+    except RuntimeError as e:
+        # Quitting the tile daemons only helps when the failure is an
+        # open-file busy error ("resource busy", "device busy" — macOS and
+        # Linux both say "busy"); on any other failure quitting them would
+        # tear down previews of unrelated LOCAL files for nothing.
+        if "busy" not in str(e).lower():
+            return f"unmount failed: {e}"
     _quit_tile_daemons()
     time.sleep(0.5)
     try:
@@ -324,8 +355,6 @@ def run_automount() -> None:
 def startup() -> None:
     """Called from create_app: automount in a daemon thread so a slow or
     missing rclone never delays server start."""
-    import threading
-
     threading.Thread(target=run_automount, daemon=True, name="connectors-automount").start()
 
 
@@ -428,8 +457,12 @@ def delete_connector(cid: str, x_fused: str | None = Header(default=None)):
     conn = get_connector(cid)
     if conn is None:
         return JSONResponse({"error": "unknown connector"}, status_code=404)
-    unmount_connector(conn)  # best-effort; delete proceeds regardless
+    err = unmount_connector(conn)
     mp = mountpoint(conn)
+    if err and os.path.ismount(mp):
+        # Deleting the record while the filesystem is still mounted would
+        # strand a live mount (and let a re-added name silently reuse it).
+        return JSONResponse({"error": f"not deleted — {err}"}, status_code=502)
     if os.path.isdir(mp) and not os.path.ismount(mp) and not os.listdir(mp):
         os.rmdir(mp)
     remove_connector(cid)
