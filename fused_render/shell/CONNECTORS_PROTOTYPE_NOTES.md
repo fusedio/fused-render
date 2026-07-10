@@ -40,10 +40,26 @@ Prototype files (all throwaway):
   Quitting the daemon frees it. Prototype answers with `umount -f` fallback;
   a real feature should ask daemons to release (they already expose /quit).
 
+## Provider desktop clients (the second connector kind)
+
+Round 2 added "local" connectors: detect vendor desktop apps' synced folders
+(macOS File Provider under `~/Library/CloudStorage` — GoogleDrive-*,
+OneDrive-*, Dropbox*; classic `~/Dropbox` fallback) and register them as
+connectors with **no mount lifecycle at all**. Verified live against the
+user's Google Drive Desktop (My Drive + Shared drives detected, listed
+through untouched /api/fs/list). When an app isn't installed, the page shows
+its install link — guidance instead of OAuth. This is the preferred path for
+consumer clouds; rclone remains for object storage (S3 etc.).
+Caveat: File Provider files can be online-only placeholders; first read
+triggers an OS-managed download (latency, but transparent).
+
 ## Notes for a real implementation
 
-- Mount lifecycle is in-memory + atexit; a server restart leaves connectors
-  persisted but unmounted (rclone nfsmount dies with parent) — acceptable.
+- Mount lifecycle is in-memory + atexit, but measured: a pkill'd server
+  ORPHANS its rclone child and the NFS mount survives. The next server
+  re-detects it via os.path.ismount and can still unmount (umount by path,
+  not by tracked process). A real feature should adopt orphaned mounts
+  deliberately (or manage rclone via its rc API) rather than rely on atexit.
 - `walk` over a mount works but each dir listing is an S3 LIST round-trip;
   fine at prefix scope, dangerous at bucket root. Consider depth limits.
 - "Local only, forever" (DECISIONS D2/D3) survives reframed: the app still

@@ -137,6 +137,8 @@ def _mount(conn: dict) -> str | None:
 
 
 def _unmount(conn: dict) -> str | None:
+    if conn.get("kind") == "local":
+        return None  # nothing mounted by us
     mp = _mountpoint(conn)
     if _is_mounted(mp):
         umount = ["umount", mp] if sys.platform == "darwin" else ["fusermount", "-u", mp]
@@ -177,8 +179,81 @@ atexit.register(_unmount_all)
 
 
 def _view(conn: dict) -> dict:
+    # "local" connectors point at a path some desktop client (Google Drive,
+    # OneDrive, Dropbox) already keeps synced — no mount lifecycle to own,
+    # "mounted" just means the path is currently there.
+    if conn.get("kind") == "local":
+        return {**conn, "mountpoint": conn["path"], "mounted": os.path.isdir(conn["path"])}
     mp = _mountpoint(conn)
     return {**conn, "mountpoint": mp, "mounted": _is_mounted(mp)}
+
+
+# ------------------------------------------------- provider desktop clients
+#
+# The "proper way" for consumer clouds: the vendor's own desktop client
+# already exposes a synced local folder (macOS File Provider under
+# ~/Library/CloudStorage, Dropbox's classic ~/Dropbox). Detect those and
+# offer one-click connectors; when absent, the UI shows setup guidance
+# instead of an OAuth dance.
+
+_PROVIDER_CATALOG = [
+    {
+        "kind": "gdrive",
+        "label": "Google Drive",
+        "help_url": "https://www.google.com/drive/download/",
+    },
+    {
+        "kind": "onedrive",
+        "label": "OneDrive",
+        "help_url": "https://www.microsoft.com/microsoft-365/onedrive/download",
+    },
+    {
+        "kind": "dropbox",
+        "label": "Dropbox",
+        "help_url": "https://www.dropbox.com/install",
+    },
+]
+
+
+def _detect_provider_paths() -> dict[str, list[dict]]:
+    """kind -> [{label_suffix, path}] of synced roots present on this machine."""
+    found: dict[str, list[dict]] = {"gdrive": [], "onedrive": [], "dropbox": []}
+    cloud = os.path.expanduser("~/Library/CloudStorage")
+    try:
+        entries = sorted(os.listdir(cloud))
+    except OSError:
+        entries = []
+    for entry in entries:
+        full = os.path.join(cloud, entry)
+        if not os.path.isdir(full):
+            continue
+        if entry.startswith("GoogleDrive-"):
+            account = entry[len("GoogleDrive-"):]
+            for root in ("My Drive", "Shared drives"):
+                p = os.path.join(full, root)
+                if os.path.isdir(p):
+                    found["gdrive"].append({"label_suffix": f"{root} ({account})", "path": p})
+        elif entry.startswith("OneDrive-"):
+            found["onedrive"].append({"label_suffix": entry[len("OneDrive-"):], "path": full})
+        elif entry.startswith("Dropbox"):
+            found["dropbox"].append({"label_suffix": entry, "path": full})
+    classic_dropbox = os.path.expanduser("~/Dropbox")
+    if not found["dropbox"] and os.path.isdir(classic_dropbox):
+        found["dropbox"].append({"label_suffix": "Dropbox", "path": classic_dropbox})
+    return found
+
+
+def _providers() -> list[dict]:
+    detected = _detect_provider_paths()
+    connected_paths = {c.get("path") for c in _read() if c.get("kind") == "local"}
+    out = []
+    for cat in _PROVIDER_CATALOG:
+        roots = [
+            {**r, "connected": r["path"] in connected_paths}
+            for r in detected.get(cat["kind"], [])
+        ]
+        out.append({**cat, "installed": bool(roots), "roots": roots})
+    return out
 
 
 # ---------------------------------------------------------------- endpoints
@@ -186,7 +261,11 @@ def _view(conn: dict) -> dict:
 
 @router.get("/api/connectors")
 def get_connectors():
-    return {"rclone": _rclone_state(), "connectors": [_view(c) for c in _read()]}
+    return {
+        "rclone": _rclone_state(),
+        "providers": _providers(),
+        "connectors": [_view(c) for c in _read()],
+    }
 
 
 @router.post("/api/connectors")
@@ -195,18 +274,28 @@ def create_connector(body: dict = Body(...), x_fused: str | None = Header(defaul
     if guard is not None:
         return guard
     name = (body.get("name") or "").strip()
-    remote = (body.get("remote") or "").strip()
     if not name or any(ch in name for ch in "/\\:") or name.startswith("."):
         return JSONResponse({"error": "name must be a plain folder-safe name"}, status_code=400)
-    if ":" not in remote:
-        return JSONResponse({"error": "remote must be an rclone spec like 'gdrive:' or 's3:bucket/prefix'"}, status_code=400)
     connectors = _read()
     if any(c["name"] == name for c in connectors):
         return JSONResponse({"error": f"a connector named '{name}' already exists"}, status_code=400)
-    conn = {"id": uuid.uuid4().hex[:12], "name": name, "remote": remote}
-    err = _mount(conn)
-    if err:
-        return JSONResponse({"error": err}, status_code=502)
+    if body.get("kind") == "local":
+        # Desktop-client folder (Google Drive / OneDrive / Dropbox): no mount
+        # to manage, just register the synced root.
+        path = os.path.abspath(os.path.expanduser((body.get("path") or "").strip()))
+        if not os.path.isdir(path):
+            return JSONResponse({"error": f"not a directory: {path}"}, status_code=400)
+        if any(c.get("path") == path for c in connectors):
+            return JSONResponse({"error": "that folder is already connected"}, status_code=400)
+        conn = {"id": uuid.uuid4().hex[:12], "name": name, "kind": "local", "path": path}
+    else:
+        remote = (body.get("remote") or "").strip()
+        if ":" not in remote:
+            return JSONResponse({"error": "remote must be an rclone spec like 'gdrive:' or 's3:bucket/prefix'"}, status_code=400)
+        conn = {"id": uuid.uuid4().hex[:12], "name": name, "kind": "rclone", "remote": remote}
+        err = _mount(conn)
+        if err:
+            return JSONResponse({"error": err}, status_code=502)
     connectors.append(conn)
     _write(connectors)
     return _view(conn)
@@ -220,6 +309,8 @@ def mount_connector(cid: str, x_fused: str | None = Header(default=None)):
     conn = next((c for c in _read() if c["id"] == cid), None)
     if conn is None:
         return JSONResponse({"error": "unknown connector"}, status_code=404)
+    if conn.get("kind") == "local":
+        return JSONResponse({"error": "local connectors have no mount to manage"}, status_code=400)
     err = _mount(conn)
     if err:
         return JSONResponse({"error": err}, status_code=502)
@@ -234,6 +325,8 @@ def unmount_connector(cid: str, x_fused: str | None = Header(default=None)):
     conn = next((c for c in _read() if c["id"] == cid), None)
     if conn is None:
         return JSONResponse({"error": "unknown connector"}, status_code=404)
+    if conn.get("kind") == "local":
+        return JSONResponse({"error": "local connectors have no mount to manage"}, status_code=400)
     err = _unmount(conn)
     if err:
         return JSONResponse({"error": err}, status_code=502)
@@ -250,9 +343,10 @@ def delete_connector(cid: str, x_fused: str | None = Header(default=None)):
     if conn is None:
         return JSONResponse({"error": "unknown connector"}, status_code=404)
     _unmount(conn)
-    mp = _mountpoint(conn)
-    if os.path.isdir(mp) and not _is_mounted(mp) and not os.listdir(mp):
-        os.rmdir(mp)
+    if conn.get("kind") != "local":
+        mp = _mountpoint(conn)
+        if os.path.isdir(mp) and not _is_mounted(mp) and not os.listdir(mp):
+            os.rmdir(mp)
     _write([c for c in connectors if c["id"] != cid])
     return {"ok": True}
 
