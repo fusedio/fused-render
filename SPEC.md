@@ -527,8 +527,10 @@ no-op) and focuses. Deletion is an **explicit** signal: the annotate delete
 button drops the comment from the URL and sends its id as `deleted_ids` on the
 SAME `record` call, so upsert and tombstone land in one atomic sidecar write
 (two separate calls could interleave and lose the tombstone); `annotate.py`
-stamps `deleted_at` (server `time.time()` SECONDS) on each named log entry;
-re-recording that id clears the tombstone (it is live again). Absence
+stamps `deleted_at` (server `time.time()` SECONDS) on each named log entry.
+The tombstone is **permanent** — recording an id never clears it, so a stale
+bookmarked URL that still carries the deleted comment (or the hydration merge's
+live-wins rule) cannot silently resurrect it in the log. Absence
 from a `record` array NEVER deletes — each URL carries only its own review
 subset, so a missing id means "not in this review", not "deleted". The live URL
 `comments` param stays the sole live store; the sidecar read is one boot-time

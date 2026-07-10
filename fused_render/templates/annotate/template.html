@@ -699,8 +699,8 @@
           // tombstone in the SAME write (a separate delete call could race the
           // record and lose it) and history shows it struck-through. Absence
           // alone never deletes there (per-URL subsets) — deleted_ids is the
-          // one signal that says "deleted on purpose", and record clears it if
-          // the id is ever re-recorded.
+          // one signal that says "deleted on purpose", and the stamp is
+          // permanent: a stale URL re-recording the id can't undo the delete.
           save(comments.filter((x) => x.id !== c.id), [c.id]);
         };
         list.appendChild(card);

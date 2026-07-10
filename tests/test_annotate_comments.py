@@ -10,7 +10,8 @@ Semantics under test: the sidecar is a WRITE-ONLY LOG. Comments upsert by `id`
 (update in place + bump updated_at, or append with recorded_at+updated_at); a
 comment dropped from the incoming array is NEVER deleted — last-seen state
 persists forever; only an id named in `deleted_ids` (same call, same atomic
-write) is tombstoned with `deleted_at`, and re-recording it clears the stamp. Unowned keys (claudeSessions/bookmarkHistory/lastSession) are
+write) is tombstoned with `deleted_at`, and the stamp is permanent — a stale
+URL re-recording the id can't undo the delete. Unowned keys (claudeSessions/bookmarkHistory/lastSession) are
 preserved through the read-merge-write.
 """
 import importlib.util
@@ -165,15 +166,17 @@ def test_deleted_ids_tombstone_in_same_write(tmp_path):
     assert "deleted_at" not in a
 
 
-def test_rerecording_clears_tombstone(tmp_path):
+def test_rerecording_keeps_tombstone(tmp_path):
     ann = _load_annotate()
     f = _target(tmp_path)
     ann._record(str(f), [{"id": "A", "content": "hi", "createdAt": 1}], [])
     ann._record(str(f), [], ["A"])
+    # A stale bookmarked URL still carrying A re-records it on its next save —
+    # fields merge, but the tombstone is permanent (deleted stays deleted).
     ann._record(str(f), [{"id": "A", "content": "hi again", "createdAt": 1}], [])
 
     log = json.loads(_sidecar(tmp_path).read_text())["comments"]
-    assert "deleted_at" not in log[0]  # live again
+    assert log[0]["deleted_at"]  # survives the re-record
     assert log[0]["content"] == "hi again"
 
 

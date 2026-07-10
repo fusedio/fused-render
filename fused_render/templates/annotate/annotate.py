@@ -7,9 +7,10 @@ this sidecar is pure history — every comment ever seen for the file, keyed by
 is simply left as its last-seen state, forever: absence NEVER deletes (each URL
 carries only its own review subset). Only an id named in `deleted_ids` — sent on
 the SAME `record` call, so upsert and tombstone land in one atomic
-read-merge-write with no cross-call ordering race — is stamped `deleted_at`;
-re-recording that id clears the tombstone (it is live again). Nothing here is
-read back into the view.
+read-merge-write with no cross-call ordering race — is stamped `deleted_at`.
+The tombstone is PERMANENT: recording an id never clears it, so a stale
+bookmarked URL that still carries a deleted comment cannot silently resurrect
+it. Nothing here is read back into the view.
 
 It is the SAME sidecar the claude chat template keeps next to each target
 (templates/claude/agent.py) and the bookmark history mirror
@@ -83,8 +84,9 @@ def _record(file: str, comments: list, deleted_ids: list) -> dict:
     last-seen state persists forever — absence never deletes (each URL carries
     only its own review subset, so a missing id means "not in this review").
     `deleted_ids` is the ONE signal that says "deleted on purpose": each named
-    log entry gets `deleted_at` stamped (unknown ids are ignored). Re-recording
-    a tombstoned id clears its `deleted_at`: the comment is live again.
+    log entry gets `deleted_at` stamped (unknown ids are ignored). The stamp is
+    permanent — re-recording the id merges its fields but keeps `deleted_at`,
+    so a stale URL still carrying the comment can't undo the delete.
 
     `createdAt` is the comment's own ms-epoch (Date.now, from the template);
     `recorded_at`/`updated_at`/`deleted_at` are server `time.time()` SECONDS
@@ -110,10 +112,10 @@ def _record(file: str, comments: list, deleted_ids: list) -> dict:
         # comment's live fields; the None guard only mirrors bookmarks.py so a
         # sparse update can't clobber a stored value with null.
         fields = {k: v for k, v in c.items() if v is not None}
+        fields.pop("deleted_at", None)  # the stamp is server-owned, never incoming
         existing = by_id.get(cid)
         if existing is not None:
             existing.update(fields)
-            existing.pop("deleted_at", None)  # re-recording an id makes it live again
             existing["updated_at"] = now
         else:
             entry = {**fields, "recorded_at": now, "updated_at": now}
