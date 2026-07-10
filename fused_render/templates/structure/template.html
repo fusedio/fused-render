@@ -236,18 +236,27 @@
       if (tab === "metadata") renderMetadata(); else renderLayout();
     }
 
+    let loadSeq = 0; // stale-response guard: two rapid loads race their reads
     async function load() {
+      const seq = ++loadSeq;
       const file = fused.params.get("_file");
+      // Drop any prior file's data up front so a tab switch mid-load (or after
+      // a failure) can't repaint stale layout/metadata for the wrong file.
+      data = null;
+      summaryEl.innerHTML = "";
       content.innerHTML = `<div id="status">Loading…</div>`;
       if (!file) {
         content.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
         return;
       }
       try {
-        data = await fused.runPython("./reader.py", { file });
+        const result = await fused.runPython("./reader.py", { file });
+        if (seq !== loadSeq) return; // a newer load superseded this one
+        data = result;
         renderSummary();
         renderTab();
       } catch (err) {
+        if (seq !== loadSeq) return;
         content.innerHTML = `<div id="status" class="error"><strong>${esc(err.type || "Error")}</strong>: ${esc(err.message || "")}</div>`;
       }
     }
