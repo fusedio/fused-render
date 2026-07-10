@@ -64,7 +64,7 @@ Measured cold (vfs cache wiped each round):
     that's pure network throughput.
   * WARM repeat: 0.01s — rclone's sparse read cache absorbs everything.
 So the lever is cache retention, not SQL: raised --vfs-cache-max-age to
-168h (default 1h evicted chunks within the hour), chunk sizes to 8M/64M.
+24h (default 1h evicted chunks within the hour), chunk sizes to 8M/64M.
 --vfs-read-ahead 128M was measured a net LOSS (slower footer read, wasted
 bytes) and left out. Deep-narrow row groups (or remote-optimized layouts
 like partitioned datasets) are the real fix, and that's the data's problem,
