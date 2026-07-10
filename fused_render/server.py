@@ -141,6 +141,32 @@ WALK_MAX_ORACLES = 8
 WALK_LEAF_DIR_SUFFIXES = (".app", ".framework", ".bundle", ".photoslibrary")
 
 
+# Lazily-created empty git dir backing check-ignore for NON-repo directories
+# that still carry a .gitignore (an un-inited project, an Obsidian vault…).
+# With GIT_DIR pointing here and GIT_WORK_TREE at the directory, git applies
+# that tree's .gitignore files exactly as it would inside a real repo. One
+# per process, a few KB, left for the OS tempdir cleanup.
+_EMPTY_GIT_DIR: str | None | bool = None  # None = not tried, False = failed
+
+
+def _empty_git_dir():
+    global _EMPTY_GIT_DIR
+    if _EMPTY_GIT_DIR is None:
+        try:
+            root = tempfile.mkdtemp(prefix="fused-render-emptygit-")
+            subprocess.run(
+                ["git", "init", "-q", root],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+            _EMPTY_GIT_DIR = os.path.join(root, ".git")
+        except (OSError, subprocess.SubprocessError):
+            _EMPTY_GIT_DIR = False
+    return _EMPTY_GIT_DIR or None
+
+
 class _IgnoreOracle:
     """One repository's `git check-ignore` as a streaming co-process.
 
@@ -164,12 +190,26 @@ class _IgnoreOracle:
     def __init__(self, repo_root):
         self.root = repo_root
         self.broken = False
+        # Real repo (a .git exists at or above the root): plain `git -C`.
+        # Standalone-.gitignore directory (no repo): graft the dir onto a
+        # shared empty GIT_DIR as its work tree, which makes check-ignore
+        # honor the tree's .gitignore files without a repository.
+        env = None
+        if not os.path.exists(os.path.join(repo_root, ".git")):
+            empty = _empty_git_dir()
+            if empty is None:
+                self.proc = None
+                self.broken = True
+                self._buf = b""
+                return
+            env = {**os.environ, "GIT_DIR": empty, "GIT_WORK_TREE": repo_root}
         try:
             self.proc = subprocess.Popen(
                 ["git", "-C", repo_root, "check-ignore", "--stdin", "-z", "-v", "-n"],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
+                env=env,
             )
         except OSError:
             self.proc = None
@@ -292,7 +332,15 @@ def _walk_bfs(path, include_hidden):
                 continue  # unreadable dir skipped silently
             # A .git entry (dir, or gitfile for worktrees/submodules) marks a
             # nested repository: its own gitignore rules take over below here.
-            if any(c.name == ".git" for c in children) and current != repo:
+            # A .gitignore WITHOUT any repo in scope marks a standalone
+            # ignore root (un-inited project, vault, …): same pruning, backed
+            # by the empty-GIT_DIR graft (see _IgnoreOracle). Not applied
+            # inside a real repo — there git already cascades nested
+            # .gitignore files itself.
+            names = {c.name for c in children}
+            if ".git" in names and current != repo:
+                repo, repo_rel_base = current, ""
+            elif repo is None and ".gitignore" in names:
                 repo, repo_rel_base = current, ""
             dirs = []
             files = []

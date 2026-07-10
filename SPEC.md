@@ -957,8 +957,15 @@ job is to deliver the corpus fast, shallow-first, and pruned of machine noise.
   closed when the walk ends); each directory inherits its repo root through
   the BFS queue, a `.git` entry starts a nested repo with its own rules, and
   a walk rooted *below* a repo root resolves it via one `git rev-parse
-  --show-toplevel`. Pruning is an optimization, never a dependency: git
-  missing or failing degrades to no gitignore pruning.
+  --show-toplevel`. A directory with a `.gitignore` but NO repo anywhere in
+  scope (an un-inited project, an Obsidian vault) prunes the same way: the
+  oracle grafts it onto a shared empty `GIT_DIR` as its `GIT_WORK_TREE`, so
+  check-ignore honors standalone `.gitignore` files too (cascading into
+  subdirs, negations included). Pruning is an optimization, never a
+  dependency: git missing or failing degrades to no gitignore pruning.
+  Known miss, accepted: walking a SUBDIRECTORY of a repo-less project looks
+  upward for nothing (no work-tree boundary to find), so an ancestor's
+  standalone `.gitignore` doesn't apply there.
 - **SR-2a** `WALK_IGNORE_DIRS` (`node_modules`, `__pycache__`, `venv`,
   `.venv`, `.git`, `site-packages`) stays as the **universal floor**, checked
   by bare name everywhere: it covers junk outside any repo (a stray

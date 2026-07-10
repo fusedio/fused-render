@@ -335,3 +335,33 @@ def test_walk_stream_prunes_gitignored_too(tmp_path):
     lines = _stream_lines(client, str(tmp_path))
     streamed = {e["rel"] for line in lines if "entries" in line for e in line["entries"]}
     assert streamed == _rels(client, tmp_path)  # stream/non-stream parity
+
+
+def test_walk_standalone_gitignore_without_repo(tmp_path):
+    # No `git init` anywhere — a bare .gitignore still prunes (empty-GIT_DIR
+    # graft): the exact "content-engine/.env shows up in search" report.
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".gitignore").write_text(".env\nbuild/\n!keep.env\n", encoding="utf-8")
+    (proj / ".env").write_text("secret", encoding="utf-8")
+    (proj / "keep.env").write_text("x", encoding="utf-8")
+    (proj / "notes.md").write_text("x", encoding="utf-8")
+    (proj / "build").mkdir()
+    (proj / "build" / "out.js").write_text("x", encoding="utf-8")
+    rels = _rels(_client(tmp_path), tmp_path, hidden="1")
+    assert "proj/notes.md" in rels
+    assert "proj/keep.env" in rels  # negation honored without a repo
+    assert "proj/.gitignore" in rels  # the ignore file itself is not ignored
+    assert "proj/.env" not in rels  # pruned even under hidden=1
+    assert not any(r.startswith("proj/build") for r in rels)
+
+
+def test_walk_standalone_gitignore_cascades_to_subdirs(tmp_path):
+    proj = tmp_path / "proj"
+    (proj / "sub").mkdir(parents=True)
+    (proj / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    (proj / "sub" / "app.log").write_text("x", encoding="utf-8")
+    (proj / "sub" / "app.txt").write_text("x", encoding="utf-8")
+    rels = _rels(_client(tmp_path), tmp_path)
+    assert "proj/sub/app.txt" in rels
+    assert "proj/sub/app.log" not in rels  # root rules reach subdirs
