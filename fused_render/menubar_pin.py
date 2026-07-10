@@ -53,6 +53,7 @@ from AppKit import (
     NSViewWidthSizable,
     NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSWindowCollectionBehaviorFullScreenAuxiliary,
+    NSWindowStyleMaskResizable,
 )
 from Foundation import NSURL, NSURLRequest
 from PyObjCTools import AppHelper
@@ -64,7 +65,9 @@ logger = logging.getLogger("fused_render")
 
 POPOVER_WIDTH = 420
 BAR_HEIGHT = 30
-BODY_HEIGHT = 560
+# Square webview by default (owner call 2026-07-10); the popover is
+# user-resizable (PV-4) and the chosen size is remembered in pin.json.
+BODY_HEIGHT = POPOVER_WIDTH
 
 _PLACEHOLDER_HTML = """<!doctype html><html><head><meta charset="utf-8"><style>
   body {{ font: 13px -apple-system, sans-serif; color: #808080;
@@ -125,6 +128,9 @@ class _PopoverDelegate(NSObject):
 
     def popoverShouldDetach_(self, _popover):
         return True
+
+    def popoverDidClose_(self, _notification):
+        self._controller._save_current_size()
 
     def popoverDidDetach_(self, _popover):
         # The content view has just been re-hosted in the detached window.
@@ -209,6 +215,24 @@ class PinController:
                 | NSWindowCollectionBehaviorCanJoinAllSpaces
                 | NSWindowCollectionBehaviorFullScreenAuxiliary
             )
+            # NSPopover has no official user-resize; adding Resizable to its
+            # window's style mask enables edge-drag resizing (PV-4). The
+            # chosen size is saved on close and becomes the new default.
+            window.setStyleMask_(window.styleMask() | NSWindowStyleMaskResizable)
+
+    def _save_current_size(self) -> None:
+        view = self._popover.contentViewController().view()
+        size = view.frame().size
+        width, height = int(size.width), int(size.height)
+        if (width, height) == pin_store.load_size(self._app_support_dir):
+            return
+        if width < 200 or height < 150:
+            return  # degenerate mid-detach frames; never remember those
+        pin_store.save_size(self._app_support_dir, width, height)
+        # Keep the popover's own notion in sync so the next show uses it even
+        # when AppKit rebuilds the popover window.
+        self._popover.setContentSize_(NSMakeSize(width, height))
+        logger.info("popover size remembered: %dx%d", width, height)
 
     def toggle_popover(self) -> None:
         if self._popover.isShown():
@@ -237,21 +261,27 @@ class PinController:
         borderless SF-Symbol buttons on the right (pin, open-in-browser, and
         an overflow "…" carrying Copy URL / Unpin / Logs / Quit). Menu-bar
         popover convention: chrome whispers, content is the hero.
+
+        Default size gives a square webview; a remembered user resize
+        (pin.json "size") overrides it.
         """
-        total_height = BAR_HEIGHT + BODY_HEIGHT
+        width, total_height = (
+            pin_store.load_size(self._app_support_dir)
+            or (POPOVER_WIDTH, BODY_HEIGHT + BAR_HEIGHT)
+        )
         container = NSView.alloc().initWithFrame_(
-            NSMakeRect(0, 0, POPOVER_WIDTH, total_height)
+            NSMakeRect(0, 0, width, total_height)
         )
 
         config = WKWebViewConfiguration.alloc().init()
         self._webview = WKWebView.alloc().initWithFrame_configuration_(
-            NSMakeRect(0, BAR_HEIGHT, POPOVER_WIDTH, BODY_HEIGHT), config
+            NSMakeRect(0, BAR_HEIGHT, width, total_height - BAR_HEIGHT), config
         )
         self._webview.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
         container.addSubview_(self._webview)
 
         separator = NSBox.alloc().initWithFrame_(
-            NSMakeRect(0, BAR_HEIGHT - 1, POPOVER_WIDTH, 1)
+            NSMakeRect(0, BAR_HEIGHT - 1, width, 1)
         )
         separator.setBoxType_(NSBoxSeparator)
         separator.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
@@ -270,7 +300,7 @@ class PinController:
             container.addSubview_(b)
             return b
 
-        right = POPOVER_WIDTH
+        right = width
         self._more_button = icon_button(
             "ellipsis.circle", b"showMore:", "More", right - 34
         )
@@ -283,7 +313,7 @@ class PinController:
         label.setFont_(NSFont.systemFontOfSize_(11))
         label.setTextColor_(NSColor.secondaryLabelColor())
         label.setLineBreakMode_(NSLineBreakByTruncatingMiddle)
-        label.setFrame_(NSMakeRect(12, 7, POPOVER_WIDTH - 12 - 100, 16))
+        label.setFrame_(NSMakeRect(12, 7, width - 12 - 100, 16))
         label.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
         container.addSubview_(label)
         self._file_label = label
@@ -292,7 +322,7 @@ class PinController:
         vc.setView_(container)
         popover = NSPopover.alloc().init()
         popover.setContentViewController_(vc)
-        popover.setContentSize_(NSMakeSize(POPOVER_WIDTH, total_height))
+        popover.setContentSize_(NSMakeSize(width, total_height))
         popover.setBehavior_(NSPopoverBehaviorTransient)
         popover.setDelegate_(self._popover_delegate)
         self._popover = popover

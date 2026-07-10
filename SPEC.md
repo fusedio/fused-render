@@ -1280,10 +1280,14 @@ SPEC DM-7); the CLI/browser experience is unchanged.
   Finder), **Quit**. Native, not web chrome: the header must work when the
   server is dead — a web-based Quit would die with it.
 - **PV-4** Popover: `NSPopover`, transient behavior (click-away dismisses),
-  content 420×~600 (header + webview), one `WKWebView` created with the
-  popover and kept alive — view state (params, scroll) survives close/reopen.
-  Re-pinning a different file reloads the webview; reopening does not. No pin
-  (or server not ready) → the webview shows a built-in placeholder page.
+  default content 420×450 — a square 420×420 webview over the 30 px bar —
+  and user-resizable (Resizable added to the popover window's style mask;
+  edge-drag). The chosen size is saved on close (pin.json `size`, surviving
+  re-pins/unpins) and becomes the new default. One `WKWebView` created with
+  the popover and kept alive — view state (params, scroll) survives
+  close/reopen. Re-pinning a different file reloads the webview; reopening
+  does not. No pin (or server not ready) → the webview shows a built-in
+  placeholder page.
 - **PV-5** Detach: the popover is detachable (`popoverShouldDetach:` → YES).
   On detach the resulting window is raised to `NSFloatingWindowLevel` — it
   stays above other apps' windows ("pin on top"), is resizable, and closing it

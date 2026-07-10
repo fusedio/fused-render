@@ -57,3 +57,26 @@ def test_empty_or_nonstring_path_is_none(tmp_path):
     assert pin_store.load_pin(str(tmp_path)) is None
     (tmp_path / pin_store.PIN_FILENAME).write_text('{"path": 42}')
     assert pin_store.load_pin(str(tmp_path)) is None
+
+
+def test_size_roundtrip(tmp_path):
+    assert pin_store.load_size(str(tmp_path)) is None
+    pin_store.save_size(str(tmp_path), 500, 430)
+    assert pin_store.load_size(str(tmp_path)) == (500, 430)
+
+
+def test_size_survives_repin_and_unpin(tmp_path):
+    pin_store.save_pin(str(tmp_path), "/a.html")
+    pin_store.save_size(str(tmp_path), 500, 430)
+    pin_store.save_pin(str(tmp_path), "/b.html")  # re-pin keeps size
+    assert pin_store.load_size(str(tmp_path)) == (500, 430)
+    pin_store.clear_pin(str(tmp_path))  # unpin keeps size, drops path
+    assert pin_store.load_pin(str(tmp_path)) is None
+    assert pin_store.load_size(str(tmp_path)) == (500, 430)
+
+
+def test_bad_size_is_none(tmp_path):
+    (tmp_path / pin_store.PIN_FILENAME).write_text('{"size": [0, -3]}')
+    assert pin_store.load_size(str(tmp_path)) is None
+    (tmp_path / pin_store.PIN_FILENAME).write_text('{"size": "big"}')
+    assert pin_store.load_size(str(tmp_path)) is None
