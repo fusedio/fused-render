@@ -126,6 +126,29 @@ def test_migration_suffix_skips_existing_names(tmp_path, monkeypatch):
     assert got == {"1": "a", "2": "a-2", "3": "a-1"}
 
 
+def test_migration_keys_on_sanitized_filename_stem(tmp_path, monkeypatch):
+    # `a/b` and `a:b` are distinct strings but both export as `a-b.bookmark`,
+    # so they must count as duplicates (key = sanitized lowercase stem). The
+    # newer one gets the first suffix whose sanitized key is free.
+    client, home = _client(tmp_path, monkeypatch)
+    _write_tree(home, [_bm("1", "a/b", 10), _bm("2", "a:b", 20), _bm("3", "A-B", 30)])
+    got = {b["id"]: b["name"] for b in client.get("/api/bookmarks").json()["bookmarks"]}
+    assert got == {"1": "a/b", "2": "a:b-1", "3": "A-B-2"}
+    # Idempotent: the migrated tree survives a second GET byte-identical.
+    saved = (home / "bookmarks.json").read_text(encoding="utf-8")
+    client.get("/api/bookmarks")
+    assert (home / "bookmarks.json").read_text(encoding="utf-8") == saved
+
+
+def test_migration_suffix_dodges_sanitized_collision(tmp_path, monkeypatch):
+    # A literal "a-b-1" occupies the key the suffixed "a:b" would take, so the
+    # duplicate jumps to "a:b-2" (sanitized key "a-b-2").
+    client, home = _client(tmp_path, monkeypatch)
+    _write_tree(home, [_bm("1", "a/b", 10), _bm("2", "a:b", 20), _bm("3", "a-b-1", 5)])
+    got = {b["id"]: b["name"] for b in client.get("/api/bookmarks").json()["bookmarks"]}
+    assert got == {"1": "a/b", "2": "a:b-2", "3": "a-b-1"}
+
+
 def test_migration_is_idempotent_and_writes_only_on_change(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     _write_tree(home, [_bm("1", "a", 10), _bm("2", "a", 20)])

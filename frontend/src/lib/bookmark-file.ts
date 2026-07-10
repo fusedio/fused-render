@@ -22,7 +22,7 @@ import {
   encodeNode,
   buildSentinelUrl,
 } from "./layout-codec";
-import type { Bookmark } from "./bookmarks";
+import { sanitizeBookmarkStem, type Bookmark } from "./bookmarks";
 
 export interface BookmarkSaveTarget {
   dir: string; // absolute directory the .bookmark file lands in
@@ -51,13 +51,10 @@ function joinAbs(root: string, segs: string[]): string {
   return root + "/" + segs.join("/");
 }
 
-// Bookmark name -> filename stem: path separators, the colon (path-hostile on
-// Windows, legacy-HFS on macOS) and control chars become "-". Names are
-// already globally unique (D97), so no collision handling here.
-function sanitizeStem(name: string): string {
-  // eslint-disable-next-line no-control-regex
-  return name.replace(/[/\\:\u0000-\u001f\u007f]/g, "-").trim();
-}
+// Bookmark name -> filename stem: sanitizeBookmarkStem (lib/bookmarks.ts) —
+// the same function D97 uniqueness keys on, so distinct names can never
+// sanitize to the same filename. No collision handling needed here.
+const sanitizeStem = sanitizeBookmarkStem;
 
 // Decoded path segments of a /view/ or /embed/ url, or null for any other
 // pathname (mirrors router.fsPathFromLocation, which only reads location).

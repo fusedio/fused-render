@@ -12,6 +12,7 @@ old localStorage data is never re-imported). See frontend lib/bookmarks.ts.
 """
 import json
 import os
+import re
 import time
 from urllib.parse import unquote, urlsplit
 
@@ -40,13 +41,29 @@ def _path() -> str:
     return os.path.join(storage.home_dir(), "bookmarks.json")
 
 
+# Bookmark name -> filename stem, mirroring sanitizeBookmarkStem in the
+# frontend (lib/bookmarks.ts): path separators, the colon and control chars
+# become "-". The char class must stay in sync with the TS regex.
+_STEM_UNSAFE = re.compile(r"[/\\:\x00-\x1f\x7f]")
+
+
+def _name_key(name: str) -> str:
+    """D97 uniqueness comparison key: the sanitized `.bookmark` filename stem,
+    lowercased. Keying on the stem (not the raw name) means two names that
+    would sanitize to the same filename (`a/b` vs `a:b`) count as duplicates,
+    so export files can never silently overwrite each other."""
+    return _STEM_UNSAFE.sub("-", name).strip().lower()
+
+
 def _dedupe_names(items: list) -> bool:
-    """One-time migration (D97): make bookmark names globally unique,
-    case-insensitive, across top-level bookmarks and folder children (folder
-    names are a separate namespace and are left alone). The oldest bookmark by
-    created_at keeps its name; each newer duplicate gets the first `-1`, `-2`,
-    ... suffix that collides with nothing already in the tree. Idempotent —
-    returns True only when something was renamed."""
+    """One-time migration (D97): make bookmark names globally unique by
+    sanitized-stem key (case-insensitive), across top-level bookmarks and
+    folder children (folder names are a separate namespace and are left
+    alone). The oldest bookmark by created_at keeps its name; each newer
+    duplicate gets the first `-1`, `-2`, ... suffix whose key collides with
+    nothing already in the tree ("-" and digits survive sanitization, so
+    suffixed keys stay distinct). Idempotent — returns True only when
+    something was renamed."""
     bookmarks = []
     for item in items:
         if not isinstance(item, dict):
@@ -58,19 +75,19 @@ def _dedupe_names(items: list) -> bool:
     named = [b for b in bookmarks if isinstance(b.get("name"), str)]
     # Suffix candidates must dodge EVERY current name (including a pre-existing
     # literal "x-1"), not just the ones processed so far.
-    taken = {b["name"].lower() for b in named}
+    taken = {_name_key(b["name"]) for b in named}
     seen = set()
     changed = False
     for b in sorted(named, key=lambda b: b.get("created_at") or 0):
-        key = b["name"].lower()
+        key = _name_key(b["name"])
         if key not in seen:
             seen.add(key)  # first (oldest) holder keeps the name
             continue
         n = 1
-        while f"{b['name']}-{n}".lower() in taken:
+        while _name_key(f"{b['name']}-{n}") in taken:
             n += 1
         b["name"] = f"{b['name']}-{n}"
-        taken.add(b["name"].lower())
+        taken.add(_name_key(b["name"]))
         changed = True
     return changed
 

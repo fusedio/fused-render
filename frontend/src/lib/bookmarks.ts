@@ -210,23 +210,40 @@ export function allBookmarks(): Bookmark[] {
   return out;
 }
 
-// Bookmark names are globally unique, case-insensitive (they become
+// Bookmark name -> filename stem: path separators, the colon (path-hostile on
+// Windows, legacy-HFS on macOS) and control chars become "-". Lives here (not
+// bookmark-file.ts) because uniqueness below keys on it; bookmark-file.ts
+// imports it for the actual filename. Char class must stay in sync with
+// _sanitize_stem in fused_render/shell/bookmarks.py.
+export function sanitizeBookmarkStem(name: string): string {
+  // eslint-disable-next-line no-control-regex
+  return name.replace(/[/\\:\u0000-\u001f\u007f]/g, "-").trim();
+}
+
+// Uniqueness comparison key (D97): the sanitized filename stem, lowercased.
+// Keying on the stem (not the raw name) makes `.bookmark` filename collisions
+// impossible by construction — distinct names like `a/b` and `a:b` sanitize to
+// the same `a-b` and therefore count as duplicates.
+const nameKey = (name: string): string => sanitizeBookmarkStem(name).toLowerCase();
+
+// Bookmark names are globally unique by sanitized-stem key (they become
 // `<name>.bookmark` filenames — D97); folder names are a separate namespace.
-// Returns `base` when free, else `base-1`, `base-2`, ... (first free suffix).
+// Returns `base` when free, else `base-1`, `base-2`, ... (first free suffix;
+// "-" and digits survive sanitization, so suffixed keys stay distinct).
 // `excludeId` skips the bookmark being renamed so a no-op rename isn't suffixed.
 function uniqueNameIn(items: BookmarkItem[], base: string, excludeId?: string): string {
   const taken = new Set<string>();
   const collect = (list: BookmarkItem[]): void => {
     for (const it of list) {
       if (isFolder(it)) collect(it.children);
-      else if (it.id !== excludeId) taken.add(it.name.toLowerCase());
+      else if (it.id !== excludeId) taken.add(nameKey(it.name));
     }
   };
   collect(items);
-  if (!taken.has(base.toLowerCase())) return base;
+  if (!taken.has(nameKey(base))) return base;
   for (let n = 1; ; n++) {
     const candidate = `${base}-${n}`;
-    if (!taken.has(candidate.toLowerCase())) return candidate;
+    if (!taken.has(nameKey(candidate))) return candidate;
   }
 }
 
