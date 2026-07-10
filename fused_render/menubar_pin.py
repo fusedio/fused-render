@@ -22,10 +22,12 @@ from AppKit import (
     NSApp,
     NSApplicationActivationPolicyAccessory,
     NSApplicationActivationPolicyProhibited,
+    NSBezierPath,
     NSBox,
     NSBoxSeparator,
     NSButton,
     NSColor,
+    NSCursor,
     NSEventMaskLeftMouseUp,
     NSEventMaskRightMouseUp,
     NSFloatingWindowLevel,
@@ -48,12 +50,12 @@ from AppKit import (
     NSView,
     NSViewController,
     NSViewHeightSizable,
+    NSViewMaxXMargin,
     NSViewMaxYMargin,
     NSViewMinXMargin,
     NSViewWidthSizable,
     NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSWindowCollectionBehaviorFullScreenAuxiliary,
-    NSWindowStyleMaskResizable,
 )
 from Foundation import NSURL, NSURLRequest
 from PyObjCTools import AppHelper
@@ -69,12 +71,35 @@ BAR_HEIGHT = 30
 # user-resizable (PV-4) and the chosen size is remembered in pin.json.
 BODY_HEIGHT = POPOVER_WIDTH
 
+_PIN_SVG = (
+    '<svg width="44" height="44" viewBox="0 0 24 24" fill="none"'
+    ' stroke="currentColor" stroke-width="1.4" stroke-linecap="round"'
+    ' stroke-linejoin="round"><path d="M9 4v6l-2 4v2h10v-2l-2-4V4"/>'
+    '<line x1="12" y1="16" x2="12" y2="21"/><line x1="8" y1="4" x2="16" y2="4"/></svg>'
+)
+
 _PLACEHOLDER_HTML = """<!doctype html><html><head><meta charset="utf-8"><style>
-  body {{ font: 13px -apple-system, sans-serif; color: #808080;
-         display: flex; align-items: center; justify-content: center;
-         height: 96vh; margin: 0; background: #ffffff; }}
-  @media (prefers-color-scheme: dark) {{ body {{ background: #1e1e1e; }} }}
-</style></head><body>{message}</body></html>"""
+  html, body {{ height: 100%; margin: 0; }}
+  body {{
+    font-family: -apple-system, sans-serif;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 6px; background: #ffffff; color: #333333;
+    -webkit-user-select: none; cursor: default;
+  }}
+  .icon  {{ color: #c0c0c0; margin-bottom: 6px; }}
+  .title {{ font-size: 15px; font-weight: 600; }}
+  .sub   {{ font-size: 12px; color: #909090; text-align: center; line-height: 1.5; }}
+  @media (prefers-color-scheme: dark) {{
+    body   {{ background: #1e1e1e; color: #e0e0e0; }}
+    .icon  {{ color: #4a4a4a; }}
+    .sub   {{ color: #808080; }}
+  }}
+</style></head><body>
+  <div class="icon">{icon}</div>
+  <div class="title">{title}</div>
+  <div class="sub">{subtitle}</div>
+</body></html>"""
 
 
 class _ActionsTarget(NSObject):
@@ -114,6 +139,58 @@ class _ActionsTarget(NSObject):
 
     def showMore_(self, sender):
         self._controller._show_overflow_menu(sender)
+
+
+class _ResizeGrip(NSView):
+    """Drag handle in the popover's bottom-right corner (PV-4).
+
+    NSPopover has no user-resize API (a Resizable style-mask bit on its
+    window is ignored), so the grip does it by hand: dragging calls back into
+    the controller, which grows the popover's contentSize (attached) or the
+    window frame (detached).
+    """
+
+    def initWithFrame_controller_left_(self, frame, controller, is_left):
+        self = objc.super(_ResizeGrip, self).initWithFrame_(frame)
+        if self is None:
+            return None
+        self._controller = controller
+        self._is_left = bool(is_left)
+        return self
+
+    def drawRect_(self, _rect):
+        # Classic three-diagonal-lines grip, quiet like the rest of the bar;
+        # mirrored on the left corner.
+        NSColor.tertiaryLabelColor().setStroke()
+        size = self.bounds().size
+        for inset in (3.5, 7.5, 11.5):
+            path = NSBezierPath.bezierPath()
+            if self._is_left:
+                path.moveToPoint_(NSMakePoint(inset, 1.5))
+                path.lineToPoint_(NSMakePoint(1.5, inset))
+            else:
+                path.moveToPoint_(NSMakePoint(size.width - inset, 1.5))
+                path.lineToPoint_(NSMakePoint(size.width - 1.5, inset))
+            path.stroke()
+
+    def resetCursorRects(self):
+        # The proper diagonal resize cursors are private API; pyobjc exposes
+        # them on most systems — fall back to the plain arrow rather than crash.
+        name = (
+            "_windowResizeNorthEastSouthWestCursor"
+            if self._is_left
+            else "_windowResizeNorthWestSouthEastCursor"
+        )
+        cursor = getattr(NSCursor, name, None)
+        self.addCursorRect_cursor_(
+            self.bounds(), cursor() if cursor else NSCursor.arrowCursor()
+        )
+
+    def mouseDragged_(self, event):
+        self._controller._resize_by(event.deltaX(), event.deltaY(), self._is_left)
+
+    def mouseDown_(self, _event):
+        pass  # claim the click so it doesn't fall through to the bar
 
 
 class _PopoverDelegate(NSObject):
@@ -215,10 +292,34 @@ class PinController:
                 | NSWindowCollectionBehaviorCanJoinAllSpaces
                 | NSWindowCollectionBehaviorFullScreenAuxiliary
             )
-            # NSPopover has no official user-resize; adding Resizable to its
-            # window's style mask enables edge-drag resizing (PV-4). The
-            # chosen size is saved on close and becomes the new default.
-            window.setStyleMask_(window.styleMask() | NSWindowStyleMaskResizable)
+
+    def _resize_by(self, dx: float, dy: float, from_left: bool = False) -> None:
+        """Grip drag (PV-4). deltaY is positive dragging down; the popover
+        hangs from the menu bar, so down = taller. The left grip grows the
+        width when dragged left. Attached, the popover's contentSize drives
+        the window (AppKit re-centers under the status item); detached,
+        resize the window frame directly keeping the top edge — and, for the
+        left grip, the right edge — put.
+        """
+        wdx = -dx if from_left else dx
+        if self._popover.isShown():
+            size = self._popover.contentSize()
+            self._popover.setContentSize_(
+                NSMakeSize(max(300, size.width + wdx), max(220, size.height + dy))
+            )
+            return
+        window = self._webview.window()
+        if window is None:
+            return
+        frame = window.frame()
+        new_w = max(300, frame.size.width + wdx)
+        new_h = max(220, frame.size.height + dy)
+        if from_left:
+            frame.origin.x -= new_w - frame.size.width
+        frame.origin.y -= new_h - frame.size.height
+        frame.size.width = new_w
+        frame.size.height = new_h
+        window.setFrame_display_(frame, True)
 
     def _save_current_size(self) -> None:
         view = self._popover.contentViewController().view()
@@ -301,19 +402,29 @@ class PinController:
             return b
 
         right = width
+        right_grip = _ResizeGrip.alloc().initWithFrame_controller_left_(
+            NSMakeRect(right - 16, 2, 14, 14), self, False
+        )
+        right_grip.setAutoresizingMask_(NSViewMinXMargin | NSViewMaxYMargin)
+        container.addSubview_(right_grip)
+        left_grip = _ResizeGrip.alloc().initWithFrame_controller_left_(
+            NSMakeRect(2, 2, 14, 14), self, True
+        )
+        left_grip.setAutoresizingMask_(NSViewMaxXMargin | NSViewMaxYMargin)
+        container.addSubview_(left_grip)
         self._more_button = icon_button(
-            "ellipsis.circle", b"showMore:", "More", right - 34
+            "ellipsis.circle", b"showMore:", "More", right - 42
         )
         self._browser_button = icon_button(
-            "safari", b"openBrowser:", "Open in Browser", right - 64
+            "safari", b"openBrowser:", "Open in Browser", right - 72
         )
-        self._pin_button = icon_button("pin", b"pinOrUnpin:", "Pin a file…", right - 94)
+        self._pin_button = icon_button("pin", b"pinOrUnpin:", "Pin a file…", right - 102)
 
         label = NSTextField.labelWithString_("")
         label.setFont_(NSFont.systemFontOfSize_(11))
         label.setTextColor_(NSColor.secondaryLabelColor())
         label.setLineBreakMode_(NSLineBreakByTruncatingMiddle)
-        label.setFrame_(NSMakeRect(12, 7, width - 12 - 100, 16))
+        label.setFrame_(NSMakeRect(20, 7, width - 20 - 114, 16))
         label.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
         container.addSubview_(label)
         self._file_label = label
@@ -377,9 +488,12 @@ class PinController:
         (PV-4).
         """
         if not self._server_ready:
-            message = "Starting…"
+            title, subtitle = "Starting…", "The local server is booting."
         elif self._pinned_path is None:
-            message = "Nothing pinned yet — click the pin below to choose a file"
+            title, subtitle = (
+                "Nothing pinned",
+                "Click the pin below and pick any file —<br>it stays a click away, always rendered live.",
+            )
         else:
             url = self._pin_url()
             self._webview.loadRequest_(
@@ -388,7 +502,8 @@ class PinController:
             logger.info("pinned webview loading %s", url)
             return
         self._webview.loadHTMLString_baseURL_(
-            _PLACEHOLDER_HTML.format(message=message), None
+            _PLACEHOLDER_HTML.format(icon=_PIN_SVG, title=title, subtitle=subtitle),
+            None,
         )
 
     # ---- open panel (PV-3) -----------------------------------------------------
