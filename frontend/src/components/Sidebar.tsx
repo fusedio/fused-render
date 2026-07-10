@@ -25,6 +25,7 @@ import { FolderIcon } from "./FileIcons";
 import type { Bookmark, BookmarkFolder } from "../lib/bookmarks";
 import { useUrlVersion, useBookmarksVersion, notifyBookmarksChanged } from "../lib/hooks";
 import type { Config } from "../lib/api";
+import { splitShellSearch } from "../lib/layout-codec";
 import { fuzzyMatch, highlightSegments } from "../lib/fuzzy";
 import type { FuzzyResult } from "../lib/fuzzy";
 import { startTour } from "../lib/tour";
@@ -59,15 +60,17 @@ const FOLDER_ICON = (
   </svg>
 );
 
-// Hover card content: target fs path + saved params, decoded like the
-// vanilla shell (raw URLSearchParams on the saved search — bookmark
-// tooltips predate the `_layout` grammar; parity over cleverness).
+// Hover card content: target fs path + saved params. The saved search is
+// split via splitShellSearch so the literal `&` inside the `_layout=(...)`
+// span doesn't leak bogus param rows (D51).
 function TooltipContent({ bookmark }: { bookmark: Bookmark }) {
   const qIdx = bookmark.url.indexOf("?");
   const search = qIdx !== -1 ? bookmark.url.slice(qIdx) : "";
   const fsPath = bookmarkFsPath(bookmark.url);
 
-  const params = [...new URLSearchParams(search)];
+  const { layout, params: rest } = splitShellSearch(search);
+  const params: [string, string][] = [...rest];
+  if (layout !== null) params.push(["_layout", "(" + layout + ")"]);
   return (
     <>
       <div className="tip-path">{fsPath}</div>
