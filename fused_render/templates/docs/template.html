@@ -288,7 +288,7 @@
     $("nofile").textContent = "No file selected (missing _file param).";
     return;
   }
-  const BASENAME = FILE.split("/").pop();
+  const BASENAME = FILE.split(/[\\/]/).pop();
   const WORD_EXT = /\.docx$/i;
   const IS_DOCX = WORD_EXT.test(BASENAME);
   document.title = "Docs — " + BASENAME;

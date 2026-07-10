@@ -549,7 +549,7 @@
   });
 
   // ------------------------------------------------------------- boot
-  $("fname").textContent = file.split("/").pop();
+  $("fname").textContent = file.split(/[\\/]/).pop();
   fused.params.onChange(draw);
   try {
     busy(true, "loading image…");

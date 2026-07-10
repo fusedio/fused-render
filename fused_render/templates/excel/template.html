@@ -1548,8 +1548,8 @@ function normalizeLoaded(res) {
 
 async function load() {
   const file = currentFile();
-  document.title = file ? file.split("/").pop() + " — Excel editor" : "Excel editor";
-  $("fileName").textContent = file ? file.split("/").pop() : "Excel editor";
+  document.title = file ? file.split(/[\\/]/).pop() + " — Excel editor" : "Excel editor";
+  $("fileName").textContent = file ? file.split(/[\\/]/).pop() : "Excel editor";
   $("fileName").title = file || "";
   if (!file) {
     book = null; markDirty(false);
@@ -1624,7 +1624,7 @@ async function download(kind) {
   if (!book) return;
   commitEdit();
   const sh = S();
-  const base = (currentFile().split("/").pop() || "sheet").replace(/\.(xlsx|xlsm|csv|parquet)$/i, "");
+  const base = (currentFile().split(/[\\/]/).pop() || "sheet").replace(/\.(xlsx|xlsm|csv|parquet)$/i, "");
   let data;
   if (sh.big) {
     data = { big: true, file: currentFile(), sheet: sh.name,

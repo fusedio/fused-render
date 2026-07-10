@@ -446,7 +446,7 @@
   const py=(params)=>fused.runPython(PY,params);
   const PT2PX=96/72;
   const FILE=fused.params.get("_file")||"";
-  const DEFAULT_TITLE=FILE?FILE.split("/").pop().replace(/\.pptx$/i,""):"Untitled";
+  const DEFAULT_TITLE=FILE?FILE.split(/[\\/]/).pop().replace(/\.pptx$/i,""):"Untitled";
 
   // ---------------- state ----------------
   const S={ doc:null, title:null, model:null, mediaDir:"", mtime:0, cur:0, sel:null, selIds:[],
