@@ -278,6 +278,8 @@
     return;
   }
 
+  fused.autoReload(false); // editor must not reload out from under the cursor — own autosave changes mtime; external edits are the conflict lock's job (SPEC LR-5)
+
   // The target file arrives as the read-only _file param (template contract).
   const FILE = fused.params.get("_file") || "";
   if (!FILE) {
@@ -670,11 +672,14 @@
     }
     return keep;
   }
-  async function recordVersion(docJson, kind, label = "") {
-    const sha = await sha256hex(docJson);
+  // Snapshots hold the same self-contained docToSaveHtml form the .docx does
+  // (comment text/author ride inside the marker spans), so restore rebuilds
+  // everything through the import path.
+  async function recordVersion(html, kind, label = "") {
+    const sha = await sha256hex(html);
     await saveSidecar((d) => {
       if (d.versions.some((v) => v.sha === sha)) return;   // identical content already stored — skip
-      d.versions.unshift({ id: String(Date.now()), ts: Date.now(), kind, label, sha, size: docJson.length, doc: docJson });
+      d.versions.unshift({ id: String(Date.now()), ts: Date.now(), kind, label, sha, size: html.length, html });
       d.versions = thinVersions(d.versions);
     });
   }
@@ -1063,11 +1068,10 @@
   async function restoreVersion(versionId) {
     const data = await loadSidecar();
     const v = data.docs.versions.find((x) => x.id === versionId);
-    if (!v) { toast("Version not found."); return; }
-    let doc;
-    try { doc = schema.nodeFromJSON(JSON.parse(v.doc)); }
-    catch (e) { toast("This version can't be restored."); return; }
-    mountEditor(doc);
+    if (!v || !v.html) { toast("Version not found."); return; }
+    const dom = new DOMParser().parseFromString(v.html, "text/html");
+    S.comments = extractComments(dom);
+    mountEditor(PMDOMParser.fromSchema(schema).parse(dom.body));
     setMode("edit"); S.dirty = true; updateSavedTag(); toast("Version restored — save to keep it.");
   }
 
@@ -1089,7 +1093,8 @@
     S.saving = true; updateSavedTag();
     try {
       const doc = S.view.state.doc;
-      const res = await py({ action: "save", file: FILE, html: docToSaveHtml(doc),
+      const html = docToSaveHtml(doc);
+      const res = await py({ action: "save", file: FILE, html,
         expected_mtime: String(fileMtime ?? "") });
       if (res.conflict) { toast("This file changed on disk — reload to see the latest version."); return; }
       if (res.error) throw new Error(res.error);
@@ -1097,7 +1102,7 @@
       // Edits made while the write was in flight leave the doc != the snapshot;
       // keep it dirty so the pending autosave picks them up (no false "saved").
       if (S.view.state.doc.eq(doc)) { S.dirty = false; S.savedMtime = Date.now(); }
-      await recordVersion(JSON.stringify(doc.toJSON()), kind, label);   // best-effort, never rejects
+      await recordVersion(html, kind, label);   // best-effort, never rejects
     } catch (e) {
       toast("Save failed: " + e.message);
     } finally { S.saving = false; updateSavedTag(); }

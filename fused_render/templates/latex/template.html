@@ -290,6 +290,7 @@ import * as pdfjs from "/template-assets/pdfjs.bundle.mjs";
 pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs";
 
 (async () => {
+  fused.autoReload(false); // editor must not reload out from under the cursor — own autosave changes mtime; external edits are the conflict lock's job (SPEC LR-5)
   const FILE = fused.params.get("_file") || "";
   if (!FILE) {
     document.getElementById("boot").remove();

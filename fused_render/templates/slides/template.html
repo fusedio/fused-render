@@ -441,6 +441,7 @@
   if(typeof fused==="undefined"){ $("boot").textContent=
     "Open inside fused-render, e.g. /embed/<path>/template.html?_file=<deck.pptx>"; return; }
 
+  fused.autoReload(false); // editor must not reload out from under the cursor — own autosave changes mtime; external edits are the conflict lock's job (SPEC LR-5)
   const PY="./slides.py";
   const py=(params)=>fused.runPython(PY,params);
   const PT2PX=96/72;

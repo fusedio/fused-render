@@ -364,6 +364,7 @@
 
 <script>
 "use strict";
+fused.autoReload(false); // editor must not reload out from under the cursor — own autosave changes mtime; external edits are the conflict lock's job (SPEC LR-5)
 const PY = "./reader.py";
 const $ = (id) => document.getElementById(id);
 const RENDER_CAP = 1000, MIN_ROWS = 100, MIN_COLS = 26, MAX_UNDO = 60, LOAD_BATCH = 2000;
