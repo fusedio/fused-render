@@ -76,6 +76,26 @@ def test_builtin_parquet_default_is_duckdb():
     assert entries[0]["path"].endswith("duckdb/template.html")
 
 
+def test_compressed_tabular_routes_to_duckdb():
+    # A gzip/zstd-compressed CSV/JSON is still tabular data DuckDB reads through
+    # its auto-decompressing scan, so the 2-segment compound key (.csv.gz) wins
+    # over the generic 1-segment .gz archive binding.
+    assert modes("/x/data.csv.gz")[0][0] == "duckdb"
+    assert modes("/x/data.tsv.zst")[0][0] == "duckdb"
+    assert modes("/x/data.json.gz")[0][0] == "duckdb"
+    assert modes("/x/data.ndjson.gz")[0][0] == "duckdb"
+    # A real archive (or a bare .gz) still opens in the tar viewer, untouched.
+    assert modes("/x/bundle.tar.gz") == (["tar"], None)
+    assert modes("/x/blob.gz") == (["tar"], None)
+
+
+def test_duckdb_database_files_route_to_duckdb():
+    # .duckdb/.ddb open in the tabular grid; .db stays with the sqlite viewer.
+    assert modes("/x/warehouse.duckdb") == (["duckdb"], None)
+    assert modes("/x/warehouse.ddb") == (["duckdb"], None)
+    assert modes("/x/legacy.db") == (["sqlite"], None)
+
+
 def test_builtin_zarr_directory_key():
     # zarr dir carries the map preview plus the raw member listing as a peer
     # mode (D81 — replaces the old `?listing=1` escape hatch)
