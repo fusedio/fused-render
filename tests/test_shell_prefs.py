@@ -212,10 +212,10 @@ def test_registry_view_lists_builtin_bindings(tmp_path, monkeypatch):
     assert html["overridesCore"] is False
     assert html["keyKind"] == "simple"
     parquet = by_key[".parquet"]
-    assert _names(parquet)[0] == "table"
+    assert _names(parquet)[0] == "duckdb"
     # Per-template objects carry the resolved source + icon presence.
-    table = parquet["templates"][0]
-    assert table["source"] == "core" and table["exists"] is True and table["hasIcon"] is True
+    first = parquet["templates"][0]
+    assert first["source"] == "core" and first["exists"] is True and first["hasIcon"] is True
     # Directory keys sort after file keys and keep their trailing slash.
     assert body["entries"][-1]["key"].endswith("/")
     assert by_key[".zarr/"]["keyKind"] == "directory"

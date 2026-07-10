@@ -64,7 +64,7 @@ INPROCESS_HELPERS = frozenset(
     for parts in (
         ("duckdb", "reader.py"),
         ("duckdb", "writer.py"),
-        ("table", "reader.py"),
+        ("structure", "reader.py"),
         ("csv", "reader.py"),
         ("xlsx", "reader.py"),
         ("sqlite", "reader.py"),
@@ -83,7 +83,7 @@ def _error(err_type: str, message: str, detail: str = "") -> dict:
 
 
 def _is_builtin_helper(path: str) -> bool:
-    """True only for the allowlisted in-process helpers (D72): the duckdb/table/
+    """True only for the allowlisted in-process helpers (D72): the duckdb/structure/
     csv/xlsx/sqlite readers and the api inspector. Exact realpath membership — every other
     script (user code, and other shipped helpers like the claude agent or the
     geo tile servers/browsers) stays on the subprocess path with its timeout and

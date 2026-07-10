@@ -262,10 +262,13 @@
     function renderGrid() {
       const rgs = data.row_groups;
       if (!rgs.length) { content.innerHTML = `<div id="status">No row groups.</div>`; return; }
-      const cols = rgs[0].columns.map((c) => c.path);
+      // Enumerate columns from the file schema (authoritative + stable order),
+      // not from row group 0 — so the legend and totals cover every column even
+      // if some row group happens to hold fewer chunks.
+      const cols = data.schema.map((s) => s.path);
       const maxRg = Math.max(...rgs.map((r) => r.compressed_size), 1);
 
-      // File-wide bytes per column, for the legend (biggest first).
+      // File-wide bytes per column, summed across every row group (biggest first).
       const totals = cols.map((path, i) => ({
         path, i,
         bytes: rgs.reduce((s, r) => s + (r.columns[i] ? r.columns[i].compressed_size : 0), 0),

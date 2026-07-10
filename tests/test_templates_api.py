@@ -93,12 +93,12 @@ def test_inventory_sources_and_core_templates(ctx):
     assert sources_by_id["user"]["dir"] == os.path.abspath(server.USER_TEMPLATES_DIR)
     by_name = {t["name"]: t for t in body["templates"]}
     # Core templates are present, locked, and carry usedBy from the registry.
-    table = by_name["table"]
-    assert table["source"] == "core"
-    assert table["editable"] is False
-    assert table["shadowsCore"] is False
-    assert ".parquet" in table["usedBy"]
-    assert table["path"] == os.path.join(os.path.abspath(server.TEMPLATES_DIR), "table")
+    structure = by_name["structure"]
+    assert structure["source"] == "core"
+    assert structure["editable"] is False
+    assert structure["shadowsCore"] is False
+    assert ".parquet" in structure["usedBy"]
+    assert structure["path"] == os.path.join(os.path.abspath(server.TEMPLATES_DIR), "structure")
     # vendor/ and shared/ have no template.html -> never listed as templates.
     assert "vendor" not in by_name and "shared" not in by_name
 
