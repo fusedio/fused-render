@@ -482,16 +482,16 @@
     // diagram: mermaid source stored as an attr, rendered to SVG via a NodeView.
     diagram: {
       group: "block", atom: true, isolating: true, draggable: true,
-      attrs: { source: { default: "graph TD;\n  A-->B;" } },
-      parseDOM: [{ tag: "div[data-diagram]", getAttrs: (d) => ({ source: d.getAttribute("data-diagram") }) }],
-      toDOM: (n) => ["div", { "data-diagram": n.attrs.source, class: "diagram" }],
+      attrs: { source: { default: "graph TD;\n  A-->B;" }, id: { default: null } },
+      parseDOM: [{ tag: "div[data-diagram]", getAttrs: (d) => ({ source: d.getAttribute("data-diagram"), id: d.getAttribute("data-id") }) }],
+      toDOM: (n) => ["div", { "data-diagram": n.attrs.source, "data-id": n.attrs.id, class: "diagram" }],
     },
     // signature: a drawn/typed signature image + integrity metadata.
     signature: {
       group: "block", atom: true, draggable: false,
-      attrs: { image: { default: "" }, name: { default: "" }, reason: { default: "" }, signed_at: { default: "" }, hash: { default: "" } },
-      parseDOM: [{ tag: "figure[data-signature]", getAttrs: (d) => ({ image: d.querySelector("img") ? d.querySelector("img").getAttribute("src") : "", name: d.getAttribute("data-name"), reason: d.getAttribute("data-reason"), signed_at: d.getAttribute("data-signed-at"), hash: d.getAttribute("data-hash") }) }],
-      toDOM: (n) => ["figure", { "data-signature": "1", "data-name": n.attrs.name, "data-reason": n.attrs.reason, "data-signed-at": n.attrs.signed_at, "data-hash": n.attrs.hash, class: "sig-node" },
+      attrs: { image: { default: "" }, name: { default: "" }, reason: { default: "" }, signed_at: { default: "" }, hash: { default: "" }, id: { default: null } },
+      parseDOM: [{ tag: "figure[data-signature]", getAttrs: (d) => ({ image: d.querySelector("img") ? d.querySelector("img").getAttribute("src") : "", name: d.getAttribute("data-name"), reason: d.getAttribute("data-reason"), signed_at: d.getAttribute("data-signed-at"), hash: d.getAttribute("data-hash"), id: d.getAttribute("data-id") }) }],
+      toDOM: (n) => ["figure", { "data-signature": "1", "data-id": n.attrs.id, "data-name": n.attrs.name, "data-reason": n.attrs.reason, "data-signed-at": n.attrs.signed_at, "data-hash": n.attrs.hash, class: "sig-node" },
         ["img", { src: n.attrs.image, style: "max-height:90px" }],
         ["figcaption", {}, `${n.attrs.name || "Signed"}${n.attrs.reason ? " — " + n.attrs.reason : ""} · ${n.attrs.signed_at ? new Date(+n.attrs.signed_at).toLocaleString() : ""}`]],
     },
@@ -529,6 +529,42 @@
     const div = document.createElement("div");
     div.appendChild(frag);
     return div.innerHTML;
+  }
+
+  // Diagram and signature nodes can't survive pandoc's docx round-trip, so the
+  // docx save path replaces each with a text sentinel and stashes its data in
+  // the sidecar (keyed by a stable id); import re-expands the sentinels.
+  const genId = () => "e" + Date.now().toString(36) + Math.floor(Math.random() * 1e9).toString(36);
+  const EMBED_RE = /\[\[fused-embed:([0-9a-z]+)\]\]/g;
+  const saveSerializer = new DOMSerializer(
+    Object.assign({}, domSerializer.nodes, {
+      diagram: (n) => ["p", "[[fused-embed:" + n.attrs.id + "]]"],
+      signature: (n) => ["p", "[[fused-embed:" + n.attrs.id + "]]"],
+    }), domSerializer.marks);
+  function docToSaveHtml(doc) {
+    const div = document.createElement("div");
+    div.appendChild(saveSerializer.serializeFragment(doc.content));
+    return div.innerHTML;
+  }
+  function collectEmbeds(doc) {
+    const embeds = {};
+    doc.descendants((n) => {
+      if (n.type === schema.nodes.diagram) embeds[n.attrs.id] = { type: "diagram", source: n.attrs.source };
+      else if (n.type === schema.nodes.signature) embeds[n.attrs.id] = { type: "signature", image: n.attrs.image, name: n.attrs.name, reason: n.attrs.reason, signed_at: n.attrs.signed_at, hash: n.attrs.hash };
+    });
+    return embeds;
+  }
+  function embedHtml(id, e) {
+    if (!e) return "";
+    if (e.type === "diagram") return `<div data-diagram="${esc(e.source)}" data-id="${id}" class="diagram"></div>`;
+    const cap = `${e.name || "Signed"}${e.reason ? " — " + e.reason : ""}${e.signed_at ? " · " + new Date(+e.signed_at).toLocaleString() : ""}`;
+    return `<figure data-signature="1" data-id="${id}" data-name="${esc(e.name)}" data-reason="${esc(e.reason)}" data-signed-at="${esc(e.signed_at)}" data-hash="${esc(e.hash)}" class="sig-node"><img src="${esc(e.image)}" style="max-height:90px"><figcaption>${esc(cap)}</figcaption></figure>`;
+  }
+  function reconstructEmbeds(html, embeds) {
+    embeds = embeds || {};
+    return html
+      .replace(/<p>\s*\[\[fused-embed:([0-9a-z]+)\]\]\s*<\/p>/g, (m, id) => embedHtml(id, embeds[id]))
+      .replace(EMBED_RE, (m, id) => embedHtml(id, embeds[id]));
   }
 
   // ---------------------------------------------------------------- nodeviews ---
@@ -596,7 +632,7 @@
     }
     setSource(src) {
       const pos = this.getPos(); if (pos == null) return;
-      this.view.dispatch(this.view.state.tr.setNodeMarkup(pos, undefined, { source: src }));
+      this.view.dispatch(this.view.state.tr.setNodeMarkup(pos, undefined, { ...this.node.attrs, source: src }));
     }
     stopEvent(e) { return this.bar.contains(e.target); } // let PM handle clicks (select) + drags
     ignoreMutation() { return true; }
@@ -742,6 +778,7 @@
     const d = data.docs;
     if (!d.comments || typeof d.comments !== "object") d.comments = {};
     if (!d.styles || typeof d.styles !== "object") d.styles = {};
+    if (!d.embeds || typeof d.embeds !== "object") d.embeds = {};
     if (!Array.isArray(d.versions)) d.versions = [];
     if (!Array.isArray(d.signatures)) d.signatures = [];
     if (typeof d.author !== "string") d.author = "";
@@ -1213,7 +1250,7 @@
     applyCmd((s, d) => { d(s.tr.replaceSelectionWith(node).scrollIntoView()); return true; });
   }
   function insertDiagram(src) {
-    const node = schema.nodes.diagram.create({ source: src });
+    const node = schema.nodes.diagram.create({ source: src, id: genId() });
     applyCmd((s, d) => { d(s.tr.replaceSelectionWith(node).scrollIntoView()); return true; });
   }
   function doLink() {
@@ -1452,7 +1489,7 @@
       const signed_at = String(Date.now());
       closeDialog();
       const hash = await docHash();
-      const node = schema.nodes.signature.create({ image, name, reason, signed_at, hash });
+      const node = schema.nodes.signature.create({ image, name, reason, signed_at, hash, id: genId() });
       applyCmd((s, d) => { d(s.tr.replaceSelectionWith(node).scrollIntoView()); return true; });
       S.author = name;
       await recordSignature(name, reason, hash);
@@ -1497,11 +1534,12 @@
     try {
       const doc = S.view.state.doc;
       const docJson = JSON.stringify(doc.toJSON());
-      const res = await py({ action: "save", file: FILE, html: docToHtml(doc), expected_mtime: String(fileMtime ?? "") });
+      const embeds = collectEmbeds(doc);
+      const res = await py({ action: "save", file: FILE, html: docToSaveHtml(doc), expected_mtime: String(fileMtime ?? "") });
       if (res.conflict) { toast("This file changed on disk — reload to see the latest version."); return; }
       if (res.error) throw new Error(res.error);
       fileMtime = res.mtime;
-      await saveSidecar((d) => { d.styles = S.styles; });
+      await saveSidecar((d) => { d.styles = S.styles; d.embeds = embeds; });
       // Edits made while the write was in flight leave the doc != the snapshot;
       // keep it dirty so the pending autosave picks them up (no false "saved").
       if (S.view.state.doc.eq(doc)) { S.dirty = false; S.savedMtime = Date.now(); }
@@ -1736,9 +1774,9 @@
     return;
   }
   try { fileMtime = (await fused.stat(FILE)).mtime; } catch (e) {}
-  const dom = new DOMParser().parseFromString(res.html, "text/html");
-  const importedDoc = PMDOMParser.fromSchema(schema).parse(dom.body);
   const sidecar = await loadSidecar();
+  const dom = new DOMParser().parseFromString(reconstructEmbeds(res.html, sidecar.docs.embeds), "text/html");
+  const importedDoc = PMDOMParser.fromSchema(schema).parse(dom.body);
   S.comments = sidecar.docs.comments;
   S.author = sidecar.docs.author || "";
   S.styles = sidecar.docs.styles;
