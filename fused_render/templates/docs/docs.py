@@ -139,7 +139,8 @@ def _cache_dir(file: str) -> str:
 
 # -------------------------------------------------------------------- dispatcher
 def main(action: str = "export", file: str = "", html: str = "", title: str = "",
-         fmt: str = "pdf", path: str = "", directory: str = "", expected_mtime: str = ""):
+         fmt: str = "pdf", path: str = "", directory: str = "", expected_mtime: str = "",
+         sha: str = ""):
     if action == "warmup":
         import pypandoc
         return {"pandoc": pypandoc.get_pandoc_version()}
@@ -224,7 +225,33 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
         _pandoc(["-f", HTML_FROM, "-t", "docx", "--wrap=none",
                  "--standalone", "-o", tmp], input_text=html)
         os.replace(tmp, file)
-        return {"path": file.replace(os.sep, "/"), "mtime": os.path.getmtime(file)}
+        # Version snapshot for the history panel: content-addressed blob in the
+        # cache, deduped by sha and capped at 200 — the sidecar holds metadata
+        # only, so image-heavy documents can't balloon it. Best-effort: a
+        # snapshot hiccup must not fail a document save that already landed.
+        version_sha = hashlib.sha256(html.encode("utf-8")).hexdigest()
+        try:
+            vdir = os.path.join(_cache_dir(file), "versions")
+            os.makedirs(vdir, exist_ok=True)
+            vpath = os.path.join(vdir, version_sha + ".html")
+            if not os.path.exists(vpath):
+                with open(vpath, "w", encoding="utf-8") as f:
+                    f.write(html)
+            blobs = sorted(os.scandir(vdir), key=lambda e: e.stat().st_mtime)
+            for e in blobs[:-200]:
+                os.unlink(e.path)
+        except OSError:
+            version_sha = ""
+        return {"path": file.replace(os.sep, "/"), "mtime": os.path.getmtime(file),
+                "version_sha": version_sha}
+
+    # ---- fetch a version snapshot recorded by a previous save
+    if action == "version_html":
+        if not re.fullmatch(r"[0-9a-f]{64}", sha):
+            raise ValueError(f"bad version id: {sha}")
+        vpath = os.path.join(_cache_dir(file), "versions", sha + ".html")
+        with open(vpath, encoding="utf-8") as f:
+            return {"html": f.read()}
 
     # ---- "Save a copy…": write a .docx to a location the user browsed to
     if action == "save_as":

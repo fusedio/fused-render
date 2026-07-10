@@ -504,9 +504,12 @@
   // One import path for both file open and version restore: extract comments,
   // then lift display math to block level — pandoc wraps it in a <p>, and
   // ProseMirror ignores block parse rules in inline context, so left inline it
-  // would degrade to literal \[…\] text.
+  // would degrade to literal \[…\] text. `revisions` counts tracked changes,
+  // which the editor can't represent (pandoc reads but can't write them) —
+  // they're shown accepted and the boot toast says so.
   function parseDocHtml(html) {
     const dom = new DOMParser().parseFromString(html, "text/html");
+    const revisions = dom.querySelectorAll("span.insertion, span.deletion").length;
     const comments = extractComments(dom);
     dom.querySelectorAll("p > span.math.display").forEach((span) => {
       const p = span.parentNode;
@@ -517,7 +520,7 @@
       if (!p.childNodes.length) p.remove();
       if (!after.childNodes.length) after.remove();
     });
-    return { dom, comments };
+    return { dom, comments, revisions };
   }
 
   // ---------------------------------------------------------------- nodeviews ---
@@ -645,15 +648,12 @@
   let toastTimer;
   function toast(msg, ms = 2800) { const t = $("toast"); t.textContent = msg; t.style.display = "block"; clearTimeout(toastTimer); toastTimer = setTimeout(() => t.style.display = "none", ms); }
   const fileToBase64 = (file) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(",", 2)[1]); r.onerror = () => rej(r.error); r.readAsDataURL(file); });
-  async function sha256hex(str) {
-    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
-    return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
-  }
 
-  // ================= sidecar (version history + author name) ======
-  // The document itself lives in the .docx; the sidecar (<file>.json, "docs"
-  // key, read-modify-write) holds only what can't: version snapshots and the
-  // last-used author name for comments.
+  // ================= sidecar (version metadata + author name) ======
+  // The document itself lives in the .docx; version snapshot CONTENT lives as
+  // content-addressed blobs in the cache (written by the save action). The
+  // sidecar (<file>.json, "docs" key, read-modify-write) holds only what's
+  // left: version metadata and the last-used author name for comments.
   const SIDECAR = FILE + ".json";
   async function loadSidecar() {
     let data;
@@ -678,27 +678,28 @@
     }).catch((e) => console.warn("docs sidecar write failed:", e));
     return sidecarChain;
   }
-  // Keep everything <24h, hourly to 7 days, daily older. Never drop manual saves.
+  // Keep one per 10 minutes <24h, hourly to 7 days, daily older. Never drop
+  // manual saves.
   function thinVersions(versions) {
     const now = Date.now(); const keep = []; const buckets = new Set();
     for (const v of versions) {
       if (v.kind === "manual") { keep.push(v); continue; }
       const age = now - v.ts;
-      const bucket = age < 86400000 ? "m" + Math.floor(v.ts / 60000)
+      const bucket = age < 86400000 ? "m" + Math.floor(v.ts / 600000)
         : age < 7 * 86400000 ? "h" + Math.floor(v.ts / 3600000)
         : "d" + Math.floor(v.ts / 86400000);
       if (!buckets.has(bucket)) { buckets.add(bucket); keep.push(v); }
     }
     return keep;
   }
-  // Snapshots hold the same self-contained docToSaveHtml form the .docx does
-  // (comment text/author ride inside the marker spans), so restore rebuilds
-  // everything through the import path.
-  async function recordVersion(html, kind, label = "") {
-    const sha = await sha256hex(html);
+  // The save action already wrote the snapshot blob (the same self-contained
+  // docToSaveHtml form the .docx uses — comment text/author ride inside the
+  // marker spans) and returned its sha; only the metadata goes in the sidecar.
+  async function recordVersion(sha, size, kind, label = "") {
+    if (!sha) return;
     await saveSidecar((d) => {
       if (d.versions.some((v) => v.sha === sha)) return;   // identical content already stored — skip
-      d.versions.unshift({ id: String(Date.now()), ts: Date.now(), kind, label, sha, size: html.length, html });
+      d.versions.unshift({ id: String(Date.now()), ts: Date.now(), kind, label, sha, size });
       d.versions = thinVersions(d.versions);
     });
   }
@@ -1087,10 +1088,13 @@
   async function restoreVersion(versionId) {
     const data = await loadSidecar();
     const v = data.docs.versions.find((x) => x.id === versionId);
-    if (!v || !v.html) { toast("Version not found."); return; }
-    const { dom, comments } = parseDocHtml(v.html);
-    S.comments = comments;
-    mountEditor(PMDOMParser.fromSchema(schema).parse(dom.body));
+    if (!v || !v.sha) { toast("Version not found."); return; }
+    try {
+      const res = await py({ action: "version_html", file: FILE, sha: v.sha });
+      const { dom, comments } = parseDocHtml(res.html);
+      S.comments = comments;
+      mountEditor(PMDOMParser.fromSchema(schema).parse(dom.body));
+    } catch (e) { toast("This version is no longer available."); return; }
     setMode("edit"); S.dirty = true; updateSavedTag(); toast("Version restored — save to keep it.");
   }
 
@@ -1121,7 +1125,7 @@
       // Edits made while the write was in flight leave the doc != the snapshot;
       // keep it dirty so the pending autosave picks them up (no false "saved").
       if (S.view.state.doc.eq(doc)) { S.dirty = false; S.savedMtime = Date.now(); }
-      await recordVersion(html, kind, label);   // best-effort, never rejects
+      await recordVersion(res.version_sha, html.length, kind, label);   // best-effort, never rejects
     } catch (e) {
       toast("Save failed: " + e.message);
     } finally { S.saving = false; updateSavedTag(); }
@@ -1351,7 +1355,7 @@
     return;
   }
   fileMtime = res.mtime;
-  const { dom, comments } = parseDocHtml(res.html);
+  const { dom, comments, revisions } = parseDocHtml(res.html);
   S.comments = comments;
   const importedDoc = PMDOMParser.fromSchema(schema).parse(dom.body);
   const sidecar = await loadSidecar();
@@ -1363,6 +1367,7 @@
   const panelParam = fused.params.get("panel");
   if (panelParam === "comments" || panelParam === "history") openPanel(panelParam);
   updateSavedTag();
+  if (revisions) toast("This document has tracked changes, shown here as accepted — saving an edit writes the accepted version.", 8000);
 })();
 </script>
 </body>
