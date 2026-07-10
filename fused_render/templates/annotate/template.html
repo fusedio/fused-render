@@ -307,7 +307,7 @@
     // Measure what actually lands on the URL — the encoded form (quotes and
     // braces percent-encode, roughly tripling), not the raw JSON.
     const urlSize = (arr) => encodeURIComponent(JSON.stringify(arr)).length;
-    function save(arr) {
+    function save(arr, deletedIds) {
       let dropped = 0;
       while (urlSize(arr) > BUDGET) {
         const resolved = arr.filter((c) => c.resolved);
@@ -327,11 +327,17 @@
       // no delete API), so an emptied list persists as "[]".
       fused.params.set("comments", JSON.stringify(arr));
       // Mirror the review into the target file's `<file>.json` sidecar as a
-      // write-only history log (upsert-by-id, never deletes) — the same sidecar
-      // the claude chat (agent.py) and bookmark history use. The URL stays the
-      // sole live store; this is pure history, so it is fire-and-forget: a
-      // failed record must never block or throw into the review UI.
-      fused.runPython("./annotate.py", { action: "record", comments: arr, file }).catch(() => {});
+      // write-only history log (upsert-by-id; absence never deletes) — the same
+      // sidecar the claude chat (agent.py) and bookmark history use. An
+      // explicit delete rides the SAME call as deleted_ids, so upsert and
+      // tombstone land in one atomic sidecar write (a separate delete call
+      // could race this record and lose the tombstone). The URL stays the sole
+      // live store; this is pure history, so it is fire-and-forget: a failed
+      // record must never block or throw into the review UI.
+      fused.runPython("./annotate.py", {
+        action: "record", comments: arr, file,
+        deleted_ids: deletedIds && deletedIds.length ? deletedIds : undefined,
+      }).catch(() => {});
       render();
     }
 
@@ -688,7 +694,14 @@
           c.resolved = !c.resolved; save(comments);
         };
         card.querySelector('[data-a="delete"]').onclick = () => {
-          save(comments.filter((x) => x.id !== c.id));
+          // Local delete is just absence from the URL array; the id also rides
+          // save()'s record call as a deleted_id, so the sidecar log stamps its
+          // tombstone in the SAME write (a separate delete call could race the
+          // record and lose it) and history shows it struck-through. Absence
+          // alone never deletes there (per-URL subsets) — deleted_ids is the
+          // one signal that says "deleted on purpose", and the stamp is
+          // permanent: a stale URL re-recording the id can't undo the delete.
+          save(comments.filter((x) => x.id !== c.id), [c.id]);
         };
         list.appendChild(card);
       }
@@ -793,12 +806,75 @@
       }, 350);
     }
 
+    // history → annotate deep link: focus the comment named by the `comment`
+    // param (id-only, mirroring the claude session_id resume contract — the id
+    // is the whole contract and is never cleared after use). Runs once per
+    // page-load, after the initial render, so the card/pin exist to light up.
+    let deepLinkDone = false;
+    async function focusFromParam() {
+      if (deepLinkDone) return;
+      deepLinkDone = true;
+      const wanted = fused.params.get("comment");
+      if (!wanted) return;
+      let comments = load();
+      let c = comments.find((x) => x.id === wanted);
+      if (!c) {
+        // Not in the live URL store: one-shot FULL-STATE hydration from the
+        // sidecar. The id arrived from the timeline, so `<file>.json`'s
+        // upsert-by-id log is the authoritative history. Import EVERY live log
+        // entry (those without a `deleted_at` tombstone), stripping the server
+        // stamps. A tombstoned wanted id gets no special pass — deleted stays
+        // deleted (owner call 2026-07-10); hydrate the live set, skip the
+        // focus. Merge into the live array, live entries winning by id; save
+        // once (re-records — a harmless upsert no-op). If the wanted id isn't
+        // logged at all, import nothing and skip silently.
+        try {
+          const sidecar = JSON.parse(await fused.readFile(file + ".json"));
+          const log = Array.isArray(sidecar.comments) ? sidecar.comments : [];
+          const wantedEntry = log.find((x) => x && x.id === wanted);
+          if (wantedEntry && !wantedEntry.deleted_at) {
+            const strip = ({ recorded_at, updated_at, deleted_at, ...rest }) => rest;
+            const byId = new Map();
+            for (const e of log) {
+              if (e && typeof e.id === "string" && !e.deleted_at) byId.set(e.id, strip(e));
+            }
+            for (const live of comments) byId.set(live.id, live); // live wins by id
+            save([...byId.values()]); // re-records to the sidecar — a harmless upsert no-op
+            // Re-read what actually persisted: save() evicts oldest RESOLVED
+            // comments when the URL budget overflows, so the wanted id may not
+            // have survived — focusing a card that isn't rendered lights nothing.
+            comments = load();
+            c = comments.find((x) => x.id === wanted);
+          }
+        } catch (e) {
+          // sidecar unreadable / unparseable / id missing: no focus, no error UI.
+        }
+      }
+      if (!c) return;
+      // Same cross-view behavior as a card click: jump to the comment's own
+      // view first (that reloads the template — the param survives, so this
+      // resolver re-runs there and lands the focus), else light it up here.
+      const ownView = (c.view || defaultViewMode) === activeView.mode;
+      if (!ownView && c.view) {
+        // A refused/failed switch (unsaved-edits flush) means the reload this
+        // focus is staked on never comes — re-arm the one-shot guard so the
+        // next frame load (e.g. the user switching views by hand) retries.
+        if (!(await switchView(c.view))) deepLinkDone = false;
+      } else {
+        setActive(c.id);
+        reveal(c);
+      }
+    }
+
     // Switching the annotated view reloads this template — an editor framed
     // inside with unsaved edits must be flushed FIRST (same contract as the
     // shell's own mode switch); refuse the switch when it can't be made safe.
     let switchingView = false;
+    // Resolves true only when the switch actually landed (the `view` param was
+    // written); false on refusal/failure so a caller staking work on the
+    // reload (the deep-link resolver) knows it never comes.
     async function switchView(mode) {
-      if (switchingView || (activeView && mode === activeView.mode)) return;
+      if (switchingView || (activeView && mode === activeView.mode)) return false;
       switchingView = true;
       try {
         const inner = frame.contentWindow && frame.contentWindow.__fusedFlushEdits;
@@ -809,14 +885,16 @@
           ]);
           if (res && res.ok === false) {
             if (activeView) viewSel.value = activeView.mode; // snap the picker back
-            return;
+            return false;
           }
         }
         fused.params.set("view", mode); // inside the lock — param write is part of the switch
+        return true;
       } catch (e) {
         // Flush rejected / frame torn down: the switch did NOT happen — the
         // picker must not claim otherwise.
         if (activeView) viewSel.value = activeView.mode;
+        return false;
       } finally {
         switchingView = false;
       }
@@ -1025,6 +1103,7 @@
       // anchors when the framed document mutates.
       new MutationObserver(queueRender).observe(doc.body || doc.documentElement, { childList: true, subtree: true });
       render();
+      focusFromParam(); // consume a `comment` deep link once the frame is wired
     });
     // Send to Claude: hand the whole review to the claude chat mode. Copies
     // the current comments verbatim into a `claudeComments` param and flips
