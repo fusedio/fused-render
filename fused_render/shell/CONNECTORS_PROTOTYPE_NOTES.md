@@ -40,18 +40,17 @@ Prototype files (all throwaway):
   Quitting the daemon frees it. Prototype answers with `umount -f` fallback;
   a real feature should ask daemons to release (they already expose /quit).
 
-## Provider desktop clients (the second connector kind)
+## Provider desktop clients — explored, then removed
 
-Round 2 added "local" connectors: detect vendor desktop apps' synced folders
-(macOS File Provider under `~/Library/CloudStorage` — GoogleDrive-*,
-OneDrive-*, Dropbox*; classic `~/Dropbox` fallback) and register them as
-connectors with **no mount lifecycle at all**. Verified live against the
-user's Google Drive Desktop (My Drive + Shared drives detected, listed
-through untouched /api/fs/list). When an app isn't installed, the page shows
-its install link — guidance instead of OAuth. This is the preferred path for
-consumer clouds; rclone remains for object storage (S3 etc.).
-Caveat: File Provider files can be online-only placeholders; first read
-triggers an OS-managed download (latency, but transparent).
+Round 2 tried "local" connectors: detecting vendor desktop apps' synced
+folders (macOS `~/Library/CloudStorage`) and registering them mount-free.
+It worked (verified against live Google Drive Desktop), but was REMOVED in
+round 3: detection paths and install guidance are macOS-specific (Google
+Drive and OneDrive have no official Linux clients at all), and the two-tier
+model complicated the connector concept. Decision: rclone-only — one
+OS-agnostic mechanism for every backend, consumer clouds included.
+(Users can still just browse/bookmark ~/Library/CloudStorage paths directly;
+that needs no feature.)
 
 ## Notes for a real implementation
 

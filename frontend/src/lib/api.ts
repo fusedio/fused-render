@@ -376,30 +376,13 @@ export function revealPath(fsPath: string): Promise<void> {
 export interface Connector {
   id: string;
   name: string;
-  kind?: "rclone" | "local";
-  remote?: string;
-  path?: string;
+  remote: string;
   mountpoint: string;
   mounted: boolean;
 }
 
-export interface ProviderRoot {
-  label_suffix: string;
-  path: string;
-  connected: boolean;
-}
-
-export interface Provider {
-  kind: string;
-  label: string;
-  help_url: string;
-  installed: boolean;
-  roots: ProviderRoot[];
-}
-
 export interface ConnectorsResult {
   rclone: { available: boolean; version: string | null; remotes: string[] };
-  providers: Provider[];
   connectors: Connector[];
 }
 
@@ -408,11 +391,7 @@ export function getConnectors(): Promise<ConnectorsResult> {
 }
 
 export function createConnector(name: string, remote: string): Promise<Connector> {
-  return postJson<Connector>("/api/connectors", { name, remote, kind: "rclone" });
-}
-
-export function createLocalConnector(name: string, path: string): Promise<Connector> {
-  return postJson<Connector>("/api/connectors", { name, path, kind: "local" });
+  return postJson<Connector>("/api/connectors", { name, remote });
 }
 
 export function mountConnector(id: string): Promise<Connector> {

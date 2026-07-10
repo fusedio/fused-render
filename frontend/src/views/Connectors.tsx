@@ -7,14 +7,13 @@
 import { useEffect, useState } from "react";
 import {
   createConnector,
-  createLocalConnector,
   createRemote,
   deleteConnector,
   getConnectors,
   mountConnector,
   unmountConnector,
 } from "../lib/api";
-import type { Connector, ConnectorsResult, Provider } from "../lib/api";
+import type { Connector, ConnectorsResult } from "../lib/api";
 import { navigate } from "../lib/router";
 
 function ConnectorRow({
@@ -56,17 +55,13 @@ function ConnectorRow({
         <div style={{ flex: 1, minWidth: 0 }}>
           <b>{conn.name}</b>{" "}
           <code className="deploy-muted" style={{ fontSize: "0.85em" }}>
-            {conn.kind === "local" ? "desktop app" : conn.remote}
+            {conn.remote}
           </code>
           <div className="deploy-muted" style={{ fontSize: "0.8em" }}>
             {conn.mountpoint}
           </div>
         </div>
-        {conn.kind === "local" ? (
-          <button type="button" disabled={busy || !conn.mounted} onClick={() => navigate(conn.mountpoint)}>
-            Open
-          </button>
-        ) : conn.mounted ? (
+        {conn.mounted ? (
           <>
             <button type="button" disabled={busy} onClick={() => navigate(conn.mountpoint)}>
               Open
@@ -86,74 +81,6 @@ function ConnectorRow({
       </div>
       {error && <div className="deploy-error">{error}</div>}
     </div>
-  );
-}
-
-function ProvidersSection({
-  providers,
-  onChanged,
-}: {
-  providers: Provider[];
-  onChanged: () => void;
-}) {
-  const [busyPath, setBusyPath] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const connect = async (provider: Provider, rootLabel: string, path: string) => {
-    setBusyPath(path);
-    setError(null);
-    try {
-      // e.g. "Google Drive — My Drive (me@gmail.com)"
-      await createLocalConnector(`${provider.label} — ${rootLabel}`.replace(/[/\\:]/g, "-"), path);
-      onChanged();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusyPath(null);
-    }
-  };
-
-  return (
-    <section className="prefs-section">
-      <h2>Cloud storage apps</h2>
-      <p className="deploy-muted">
-        The proper way to connect consumer clouds: their own desktop app keeps a synced folder on
-        this machine, and a connector just points at it. Install the app, sign in, and it shows up
-        here — no credentials ever touch fused-render.
-      </p>
-      {providers.map((p) => (
-        <div key={p.kind} style={{ display: "flex", alignItems: "baseline", gap: 12, padding: "6px 0", flexWrap: "wrap" }}>
-          <b style={{ minWidth: 110 }}>{p.label}</b>
-          {p.installed ? (
-            p.roots.map((r) => (
-              <span key={r.path} style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
-                <span className="deploy-muted" style={{ fontSize: "0.85em" }}>{r.label_suffix}</span>
-                {r.connected ? (
-                  <span className="deploy-muted" style={{ fontSize: "0.85em" }}>✓ connected</span>
-                ) : (
-                  <button
-                    type="button"
-                    disabled={busyPath !== null}
-                    onClick={() => connect(p, r.label_suffix, r.path)}
-                  >
-                    {busyPath === r.path ? "Connecting…" : "Connect"}
-                  </button>
-                )}
-              </span>
-            ))
-          ) : (
-            <span className="deploy-muted" style={{ fontSize: "0.85em" }}>
-              not detected —{" "}
-              <a href={p.help_url} target="_blank" rel="noreferrer">
-                install the {p.label} desktop app
-              </a>
-              , sign in, then reload this page
-            </span>
-          )}
-        </div>
-      ))}
-      {error && <div className="deploy-error">{error}</div>}
-    </section>
   );
 }
 
@@ -334,7 +261,6 @@ export default function Connectors() {
       ) : (
         state.connectors.map((c) => <ConnectorRow key={c.id} conn={c} onChanged={reload} />)
       )}
-      <ProvidersSection providers={state.providers} onChanged={reload} />
       {state.rclone.available && (
         <>
           <AddConnector remotes={state.rclone.remotes} onChanged={reload} />
