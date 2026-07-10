@@ -293,8 +293,8 @@
     // ---- sort / filter state, carried in the URL params so it survives reload
     // and drives the reader query. sort is "<col>:asc|desc"; filters is a JSON
     // array of {column, op, value?} (the top bar drives a single condition).
-    // Both are applied server-side; the reader keeps ids pinned to the sqlite
-    // rowid so editing stays correct even while sorted/filtered.
+    // Both are applied server-side; the reader keeps ids pinned to physical row
+    // positions so editing stays correct even while sorted/filtered.
 
     function currentSort() {
       const raw = fused.params.get("sort") || "";
@@ -312,9 +312,8 @@
     }
 
     const NULL_OPS = new Set(["is_null", "not_null"]);
-    // SQLite declared affinities: INTEGER / REAL / NUMERIC read as comparable.
-    const isNumericType = (t) => /INT|DEC|DOUBLE|FLOAT|REAL|NUMERIC/i.test(t || "");
-    const isTemporalType = (t) => /DATE|TIME|TIMESTAMP/i.test(t || "");
+    const isNumericType = (t) => /INT|DEC|DOUBLE|FLOAT|REAL|NUMERIC|HUGE/i.test(t || "");
+    const isTemporalType = (t) => /DATE|TIME|TIMESTAMP|INTERVAL/i.test(t || "");
 
     // Operators offered for a column, chosen by its type: comparable columns
     // (numbers, dates) lead with ordering ops; text leads with substring match.
@@ -703,7 +702,7 @@
       const edits = [...staged.edits.values()].map((e) => ({ row: e.row, column: e.column, value: e.value }));
       const deletes = [...staged.deletes];
       // Only send columns the user touched; an untouched column falls back to
-      // the table's column default (NULL), matching its "(NULL)" display.
+      // the writer's column default (NULL), matching its "(NULL)" display.
       const inserts = staged.inserts
         .filter((ins) => Object.keys(ins.values).length)
         .map((ins) => {
@@ -733,10 +732,6 @@
     nextBtn.addEventListener("click", () => fused.params.set("offset", String(currentOffset() + LIMIT)));
     tableSel.addEventListener("change", () => {
       fused.params.set("offset", "0");
-      // A new table has different columns, so any sort/filter keyed to the old
-      // one no longer applies — clear them.
-      fused.params.set("sort", "");
-      fused.params.set("filters", "");
       fused.params.set("table", tableSel.value);
     });
     addBtn.addEventListener("click", () => { staged.inserts.push({ values: {} }); renderAll(); });

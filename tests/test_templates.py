@@ -68,12 +68,32 @@ def test_builtin_html_default_is_render_sentinel():
     assert entries[2]["path"].endswith("claude/template.html")
 
 
-def test_builtin_parquet_default_is_table():
+def test_builtin_parquet_default_is_duckdb():
     # `history` (HV-2) is bound here too — not `.html`-only.
     entries, error = server._templates_for("/x/data.parquet", False)
     assert error is None
-    assert [e["mode"] for e in entries] == ["table", "h3", "claude", "annotate", "history"]
-    assert entries[0]["path"].endswith("table/template.html")
+    assert [e["mode"] for e in entries] == ["duckdb", "structure", "h3", "claude", "annotate", "history"]
+    assert entries[0]["path"].endswith("duckdb/template.html")
+
+
+def test_compressed_tabular_routes_to_duckdb():
+    # A gzip/zstd-compressed CSV/JSON is still tabular data DuckDB reads through
+    # its auto-decompressing scan, so the 2-segment compound key (.csv.gz) wins
+    # over the generic 1-segment .gz archive binding.
+    assert modes("/x/data.csv.gz")[0][0] == "duckdb"
+    assert modes("/x/data.tsv.zst")[0][0] == "duckdb"
+    assert modes("/x/data.json.gz")[0][0] == "duckdb"
+    assert modes("/x/data.ndjson.gz")[0][0] == "duckdb"
+    # A real archive (or a bare .gz) still opens in the tar viewer, untouched.
+    assert modes("/x/bundle.tar.gz") == (["tar"], None)
+    assert modes("/x/blob.gz") == (["tar"], None)
+
+
+def test_duckdb_database_files_route_to_duckdb():
+    # .duckdb/.ddb open in the tabular grid; .db stays with the sqlite viewer.
+    assert modes("/x/warehouse.duckdb") == (["duckdb"], None)
+    assert modes("/x/warehouse.ddb") == (["duckdb"], None)
+    assert modes("/x/legacy.db") == (["sqlite"], None)
 
 
 def test_builtin_zarr_directory_key():
@@ -88,11 +108,12 @@ def test_unmapped_file_empty_and_plain_dir_lists():
     # an unmapped, non-existent file resolves to nothing — it can't be sniffed
     # as text (no such path), so it stays on the metadata fallback
     assert modes("/x/a.xyz") == ([], None)
-    # every directory resolves at least the universal `/` key's ["_listing"]
-    # (D81) — a plain folder, a dotted folder, and the filesystem root all list
-    assert modes("/x/somedir", is_dir=True) == (["_listing"], None)
-    assert modes("/x/my.data", is_dir=True) == (["_listing"], None)
-    assert modes("/", is_dir=True) == (["_listing"], None)
+    # every directory resolves the universal `/` key (D81): the built-in
+    # listing (default) plus the switchable preview (folder browser) view — a
+    # plain folder, a dotted folder, and the filesystem root all list.
+    assert modes("/x/somedir", is_dir=True) == (["_listing", "preview"], None)
+    assert modes("/x/my.data", is_dir=True) == (["_listing", "preview"], None)
+    assert modes("/", is_dir=True) == (["_listing", "preview"], None)
 
 
 # --------------------------------------------- text sniff for unmapped files
@@ -218,7 +239,7 @@ def test_user_wildcard_key(user_dir):
     user_dir.template("geo")
     user_dir.registry({".*.json": "geo"})
     assert modes("/x/a.tiles.json") == (["geo"], None)
-    assert modes("/x/a.json")[0] == ["tree", "code", "annotate"]  # builtin still applies
+    assert modes("/x/a.json")[0] == ["tree", "code", "duckdb", "annotate"]  # builtin still applies
 
 
 def test_user_directory_binding(user_dir):
@@ -289,7 +310,7 @@ def test_unknown_sentinel_dropped_with_error(user_dir):
 def test_unresolvable_user_value_falls_back_to_builtin(user_dir):
     user_dir.registry({".csv": "no-such-template"})
     m, error = modes("/x/a.csv")
-    assert m == ["csv", "code", "annotate"]
+    assert m == ["duckdb", "csv", "code", "annotate"]
     assert "no-such-template" in error
 
 
@@ -298,19 +319,19 @@ def test_all_dangling_names_fall_back(user_dir):
     # dangling names resolves to nothing -> built-in fallback, error names one.
     user_dir.registry({".csv": ["...", "..."]})
     m, error = modes("/x/a.csv")
-    assert m == ["csv", "code", "annotate"]
+    assert m == ["duckdb", "csv", "code", "annotate"]
     assert "..." in error
 
 
 def test_bad_value_type_falls_back(user_dir):
     user_dir.registry({".csv": 42})
     m, error = modes("/x/a.csv")
-    assert m == ["csv", "code", "annotate"]
+    assert m == ["duckdb", "csv", "code", "annotate"]
     assert "must be a list" in error
 
 
 def test_unreadable_user_registry_reports_and_falls_back(user_dir):
     (user_dir.path / "registry.json").write_text("{not json")
     m, error = modes("/x/a.csv")
-    assert m == ["csv", "code", "annotate"]
+    assert m == ["duckdb", "csv", "code", "annotate"]
     assert "cannot read registry.json" in error

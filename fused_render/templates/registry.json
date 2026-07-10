@@ -1,17 +1,20 @@
 {
   ".parquet": [
-    "table",
+    "duckdb",
+    "structure",
     "h3",
     "claude",
     "annotate",
     "history"
   ],
   ".csv": [
+    "duckdb",
     "csv",
     "code",
     "annotate"
   ],
   ".tsv": [
+    "duckdb",
     "csv",
     "code",
     "annotate"
@@ -28,14 +31,67 @@
   ".json": [
     "tree",
     "code",
+    "duckdb",
     "annotate"
   ],
   ".jsonl": [
     "code",
+    "duckdb",
     "annotate"
   ],
   ".ndjson": [
     "code",
+    "duckdb",
+    "annotate"
+  ],
+  ".csv.gz": [
+    "duckdb",
+    "tar",
+    "annotate"
+  ],
+  ".csv.zst": [
+    "duckdb",
+    "tar",
+    "annotate"
+  ],
+  ".tsv.gz": [
+    "duckdb",
+    "tar",
+    "annotate"
+  ],
+  ".tsv.zst": [
+    "duckdb",
+    "tar",
+    "annotate"
+  ],
+  ".json.gz": [
+    "duckdb",
+    "tar",
+    "annotate"
+  ],
+  ".json.zst": [
+    "duckdb",
+    "tar",
+    "annotate"
+  ],
+  ".jsonl.gz": [
+    "duckdb",
+    "tar",
+    "annotate"
+  ],
+  ".jsonl.zst": [
+    "duckdb",
+    "tar",
+    "annotate"
+  ],
+  ".ndjson.gz": [
+    "duckdb",
+    "tar",
+    "annotate"
+  ],
+  ".ndjson.zst": [
+    "duckdb",
+    "tar",
     "annotate"
   ],
   ".geojson": [
@@ -254,7 +310,8 @@
     "netcdf"
   ],
   "/": [
-    "_listing"
+    "_listing",
+    "preview"
   ],
   ".zarr/": [
     "zarr",
@@ -348,6 +405,12 @@
   ],
   ".db": [
     "sqlite"
+  ],
+  ".duckdb": [
+    "duckdb"
+  ],
+  ".ddb": [
+    "duckdb"
   ],
   ".plist": [
     "plist",
