@@ -17,6 +17,7 @@ Error handling: raise. The executor turns any exception into the error payload
 the page toasts; only structured, expected outcomes (conflict, missing typst)
 are returned as data.
 """
+import contextlib
 import hashlib
 import json
 import os
@@ -230,18 +231,24 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
         # only, so image-heavy documents can't balloon it. Best-effort: a
         # snapshot hiccup must not fail a document save that already landed.
         version_sha = hashlib.sha256(html.encode("utf-8")).hexdigest()
+        vdir = os.path.join(_cache_dir(file), "versions")
         try:
-            vdir = os.path.join(_cache_dir(file), "versions")
             os.makedirs(vdir, exist_ok=True)
             vpath = os.path.join(vdir, version_sha + ".html")
             if not os.path.exists(vpath):
                 with open(vpath, "w", encoding="utf-8") as f:
                     f.write(html)
-            blobs = sorted(os.scandir(vdir), key=lambda e: e.stat().st_mtime)
-            for e in blobs[:-200]:
-                os.unlink(e.path)
         except OSError:
             version_sha = ""
+        else:
+            # The cap prune is per-file best-effort, separate from the write:
+            # one locked old blob must neither un-record the version that just
+            # landed nor block pruning the rest.
+            with contextlib.suppress(OSError):
+                blobs = sorted(os.scandir(vdir), key=lambda e: e.stat().st_mtime)
+                for e in blobs[:-200]:
+                    with contextlib.suppress(OSError):
+                        os.unlink(e.path)
         return {"path": file.replace(os.sep, "/"), "mtime": os.path.getmtime(file),
                 "version_sha": version_sha}
 

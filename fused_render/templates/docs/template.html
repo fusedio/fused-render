@@ -417,10 +417,13 @@
   const schema = new Schema({ nodes, marks });
   const domSerializer = DOMSerializer.fromSchema(schema);
 
+  // Content-only serialization for non-docx exports: the comment anchor
+  // spans are unwrapped so no comment markup leaks into the output.
   function docToHtml(doc) {
     const frag = domSerializer.serializeFragment(doc.content);
     const div = document.createElement("div");
     div.appendChild(frag);
+    div.querySelectorAll("span.comment[data-cid]").forEach((el) => el.replaceWith(...el.childNodes));
     return div.innerHTML;
   }
 
