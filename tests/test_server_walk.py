@@ -238,3 +238,100 @@ def test_walk_stream_not_a_directory(tmp_path):
     )
     assert resp.status_code == 400
     assert "not a directory" in resp.json()["error"]
+
+
+# --- gitignore-driven pruning ---------------------------------------------------
+
+
+def _git(cwd, *args):
+    import subprocess
+
+    subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _make_repo(root):
+    root.mkdir(exist_ok=True)
+    _git(root, "init", "-q")
+    (root / ".gitignore").write_text("dist/\n*.log\n!keep.log\n", encoding="utf-8")
+    (root / "src").mkdir()
+    (root / "src" / "main.py").write_text("x", encoding="utf-8")
+    (root / "dist").mkdir()
+    (root / "dist" / "bundle.js").write_text("x", encoding="utf-8")
+    (root / "debug.log").write_text("x", encoding="utf-8")
+    (root / "keep.log").write_text("x", encoding="utf-8")
+
+
+def _rels(client, path, **params):
+    data = client.get("/api/fs/walk", params={"path": str(path), **params}).json()
+    return {e["rel"] for e in data["entries"]}
+
+
+def test_walk_prunes_gitignored_entries(tmp_path):
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    rels = _rels(_client(tmp_path), tmp_path)
+    assert "repo/src/main.py" in rels
+    assert "repo/keep.log" in rels  # negation pattern honored
+    assert "repo/dist" not in rels  # ignored dir not emitted...
+    assert not any(r.startswith("repo/dist/") for r in rels)  # ...nor descended
+    assert "repo/debug.log" not in rels  # ignored file dropped
+
+
+def test_walk_gitignore_applies_when_walking_repo_subdir(tmp_path):
+    # Walk STARTS below the repo root: no .git is ever seen during the walk,
+    # so the rev-parse toplevel lookup must supply the repo.
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    sub = repo / "src"
+    (sub / "out.log").write_text("x", encoding="utf-8")
+    rels = _rels(_client(tmp_path), sub)
+    assert "main.py" in rels
+    assert "out.log" not in rels  # repo rules reach the subdir walk
+
+
+def test_walk_nested_repo_uses_its_own_rules(tmp_path):
+    outer = tmp_path / "outer"
+    _make_repo(outer)
+    inner = outer / "inner"
+    inner.mkdir()
+    _git(inner, "init", "-q")
+    (inner / ".gitignore").write_text("secret/\n", encoding="utf-8")
+    (inner / "secret").mkdir()
+    (inner / "secret" / "x.txt").write_text("x", encoding="utf-8")
+    (inner / "visible.log").write_text("x", encoding="utf-8")  # outer's *.log must NOT apply
+    rels = _rels(_client(tmp_path), tmp_path)
+    assert "outer/inner/visible.log" in rels  # inner repo boundary respected
+    assert not any("secret" in r for r in rels)  # inner's own ignore applies
+
+
+def test_walk_non_repo_tree_unaffected(tmp_path):
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "dist" / "bundle.js").write_text("x", encoding="utf-8")
+    (tmp_path / "debug.log").write_text("x", encoding="utf-8")
+    rels = _rels(_client(tmp_path), tmp_path)
+    assert "dist/bundle.js" in rels  # no repo, no gitignore semantics
+    assert "debug.log" in rels
+
+
+def test_walk_gitignore_pruning_applies_under_hidden(tmp_path):
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    rels = _rels(_client(tmp_path), tmp_path, hidden="1")
+    assert "repo/.gitignore" in rels  # dotfile shows under hidden=1
+    assert not any(r.startswith("repo/dist") for r in rels)  # pruning still applies
+    assert not any(r.startswith("repo/.git/") for r in rels)  # floor still applies
+
+
+def test_walk_stream_prunes_gitignored_too(tmp_path):
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    client = _client(tmp_path)
+    lines = _stream_lines(client, str(tmp_path))
+    streamed = {e["rel"] for line in lines if "entries" in line for e in line["entries"]}
+    assert streamed == _rels(client, tmp_path)  # stream/non-stream parity

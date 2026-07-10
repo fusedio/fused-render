@@ -27,7 +27,8 @@ export interface WalkEntry {
   is_dir: boolean;
   size: number | null;
   mtime: number | null;
-  ignored?: boolean; // matched by .gitignore inside a git repo (dimmed in the UI)
+  // No `ignored` flag here (unlike FsEntry): the walk PRUNES gitignored
+  // entries server-side, so nothing ignored ever reaches search results.
 }
 
 export interface WalkResult {

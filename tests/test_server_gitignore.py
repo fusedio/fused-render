@@ -47,12 +47,16 @@ def test_list_flags_gitignored_entries(tmp_path):
     assert by_name[".gitignore"]["ignored"] is False
 
 
-def test_walk_flags_gitignored_entries(tmp_path):
+def test_walk_excludes_gitignored_entries(tmp_path):
+    # The walk PRUNES gitignored entries outright (see _walk_bfs) — search
+    # never sees them, so walk entries carry no `ignored` dimming flag (that
+    # stays a /api/fs/list concern, where ignored entries are still shown).
     _make_repo(tmp_path)
     data = _client(tmp_path).get("/api/fs/walk", params={"path": str(tmp_path)}).json()
-    by_rel = {e["rel"]: e for e in data["entries"]}
-    assert by_rel["src/app.log"]["ignored"] is True  # nested match
-    assert by_rel["src/main.py"]["ignored"] is False
+    rels = {e["rel"] for e in data["entries"]}
+    assert "src/main.py" in rels
+    assert "src/app.log" not in rels  # nested gitignore match pruned
+    assert all("ignored" not in e for e in data["entries"])
 
 
 def test_list_flags_dot_git_directory(tmp_path):

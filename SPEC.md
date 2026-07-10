@@ -947,11 +947,31 @@ job is to deliver the corpus fast, shallow-first, and pruned of machine noise.
   └─ Music     ✗ 0 children              └─ cap cuts the DEEPEST level only
   ```
 
-- **SR-2** `WALK_IGNORE_DIRS` (`node_modules`, `__pycache__`, `venv`, `.venv`,
-  `.git`) are never descended **nor emitted**, hidden mode or not — they are
-  machine-managed noise, not "hidden data" (a `.py` extension search must not
-  drown in `.git` object files). `.git` *files* (worktree/submodule pointers)
-  are ordinary files and do show.
+- **SR-2** Machine-noise pruning is **gitignore-driven inside git
+  repositories** (D100): entries the containing repo's own gitignore rules
+  ignore are never emitted **nor descended** — the generic answer to `dist/`,
+  `build/`, `.next/`, `target/` and every other ecosystem's junk, with the
+  repo's own file as the authority (negations like `!keep.log` honored).
+  Verdicts come from one streaming `git check-ignore --stdin` co-process per
+  repo (`_IgnoreOracle`, ~14 µs/query, ≤ `WALK_MAX_ORACLES` open at once, all
+  closed when the walk ends); each directory inherits its repo root through
+  the BFS queue, a `.git` entry starts a nested repo with its own rules, and
+  a walk rooted *below* a repo root resolves it via one `git rev-parse
+  --show-toplevel`. Pruning is an optimization, never a dependency: git
+  missing or failing degrades to no gitignore pruning.
+- **SR-2a** `WALK_IGNORE_DIRS` (`node_modules`, `__pycache__`, `venv`,
+  `.venv`, `.git`, `site-packages`) stays as the **universal floor**, checked
+  by bare name everywhere: it covers junk outside any repo (a stray
+  `node_modules` in `~/Downloads`, `Library/Python/*/site-packages`) and
+  `.git` itself, which git never reports as ignored. Both SR-2 and SR-2a
+  apply in hidden mode too — those trees are machine noise, not "hidden
+  data" (a `.py` extension search must not drown in `.git` object files).
+  `.git` *files* (worktree/submodule pointers) are ordinary files and do show.
+- **SR-2b** Because the walk excludes gitignored entries outright, walk
+  entries carry **no `ignored` dimming flag** — dimming remains a
+  `/api/fs/list` (plain listing) concern, where ignored entries are still
+  shown. Search excludes; the listing dims. (VS Code's split: explorer shows
+  gitignored files, Quick Open doesn't.)
 - **SR-3** macOS package directories (`WALK_LEAF_DIR_SUFFIXES`: `.app`,
   `.framework`, `.bundle`, `.photoslibrary`, case-insensitive) are emitted as
   a single dir entry but never descended — Finder semantics; one Electron
