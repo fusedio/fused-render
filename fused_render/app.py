@@ -1,7 +1,9 @@
 """Menu-bar entry point for the packaged macOS app (SPEC DM-3/DM-5/DM-7).
 
-Wraps the existing `create_app()` server with a `rumps` NSStatusItem: no Dock
-icon, no windows, just Open in browser / Copy URL / Quit. The CLI (`cli.py`,
+Wraps the existing `create_app()` server with a `rumps` NSStatusItem whose
+single surface is the pinned-view popover (menubar_pin.py, SPEC §25 D98):
+header row of app actions + a WKWebView of the pinned file. The rumps menu is
+only a fallback if the popover controller fails (PV-8). The CLI (`cli.py`,
 `fused-render`) is unaffected and remains the dev entry point.
 
 `rumps` is macOS-only and is not a core dependency (see the `app` extra in
@@ -163,6 +165,7 @@ def main() -> None:
         "docs": False,       # at least one document open event arrived
         "pending": [],       # file views requested before the server was ready
         "server": None,      # uvicorn.Server, set by the bootstrap thread
+        "pin": None,         # menubar_pin.PinController, built after run loop start
     }
 
     def open_file_view(fs_path: str) -> None:
@@ -224,6 +227,11 @@ def main() -> None:
         _write_pidfile(port)
         state["ready"] = True
         logger.info("server ready on port %s", port)
+        if state["pin"] is not None:
+            # AppKit is main-thread-only; this bootstrap runs on a worker.
+            from PyObjCTools import AppHelper
+
+            AppHelper.callAfter(state["pin"].server_ready)
         pending, state["pending"] = state["pending"], []
         for target in pending:
             webbrowser.open(target)
@@ -236,40 +244,79 @@ def main() -> None:
             # Template icon (black+alpha) — macOS recolors it for menu bar
             # appearance. Icon beats a text title: recognizable and compact
             # in a crowded (notched) menu bar.
+            # This menu is normally never seen: the popover controller strips
+            # it from the status item and carries these actions in its header
+            # row (SPEC §25 PV-3, D98). It stays built as the fallback surface
+            # if the controller fails to construct (PV-8) — the app must never
+            # be left unquittable.
             super().__init__("fused-render", icon=icon_path, template=True, quit_button=None)
             self.menu = ["Open in browser", "Copy URL", "Open logs", "Quit"]
 
         @rumps.clicked("Open in browser")
         def open_browser(self, _sender):
-            webbrowser.open(url)
+            _open_browser()
 
         @rumps.clicked("Copy URL")
         def copy_url(self, _sender):
-            subprocess.run(["pbcopy"], input=url.encode(), check=False)
+            _copy_url()
 
         @rumps.clicked("Open logs")
         def open_logs(self, _sender):
-            # Reveal in Finder rather than opening the file: users are asked to
-            # zip/attach it, and Console.app (the .log default handler) confuses
-            # more than it helps.
-            subprocess.run(["open", "-R", log_path()], check=False)
+            _open_logs()
 
         @rumps.clicked("Quit")
         def quit(self, _sender):
-            if state["server"] is not None:
-                state["server"].should_exit = True
-            _remove_pidfile()
-            rumps.quit_application()
+            _do_quit()
+
+    def _open_browser():
+        webbrowser.open(url)
+
+    def _copy_url():
+        subprocess.run(["pbcopy"], input=url.encode(), check=False)
+
+    def _open_logs():
+        # Reveal in Finder rather than opening the file: users are asked to
+        # zip/attach it, and Console.app (the .log default handler) confuses
+        # more than it helps.
+        subprocess.run(["open", "-R", log_path()], check=False)
+
+    def _do_quit():
+        if state["server"] is not None:
+            state["server"].should_exit = True
+        _remove_pidfile()
+        rumps.quit_application()
+
+    status_app = FusedRenderStatusApp()
 
     def _kickoff(timer):
-        # One-shot, fired right after the run loop starts.
+        # One-shot, fired right after the run loop starts — the status item
+        # (status_app._nsapp.nsstatusitem) exists only from this point on.
         timer.stop()
+        try:
+            # Lazy + guarded: pyobjc-framework-WebKit may be missing in an
+            # older [app] env; on failure the rumps menu stays attached and
+            # the app runs menu-only (PV-8).
+            from fused_render.menubar_pin import PinController
+
+            state["pin"] = PinController(
+                status_app._nsapp.nsstatusitem,
+                port,
+                APP_SUPPORT_DIR,
+                actions={
+                    "open_browser": _open_browser,
+                    "copy_url": _copy_url,
+                    "open_logs": _open_logs,
+                    "quit": _do_quit,
+                },
+            )
+        except Exception:
+            logger.exception("popover unavailable; falling back to the status-item menu")
         threading.Thread(target=_bootstrap_server, daemon=True).start()
 
     boot_timer = rumps.Timer(_kickoff, 0.1)
     boot_timer.start()
 
-    FusedRenderStatusApp().run()
+    status_app.run()
 
 
 if __name__ == "__main__":
