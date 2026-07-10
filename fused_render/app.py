@@ -1,7 +1,9 @@
 """Menu-bar entry point for the packaged macOS app (SPEC DM-3/DM-5/DM-7).
 
-Wraps the existing `create_app()` server with a `rumps` NSStatusItem: no Dock
-icon, no windows, just Open in browser / Copy URL / Quit. The CLI (`cli.py`,
+Wraps the existing `create_app()` server with a `rumps` NSStatusItem whose
+single surface is the pinned-view popover (menubar_pin.py, SPEC §25 D98):
+header row of app actions + a WKWebView of the pinned file. The rumps menu is
+only a fallback if the popover controller fails (PV-8). The CLI (`cli.py`,
 `fused-render`) is unaffected and remains the dev entry point.
 
 `rumps` is macOS-only and is not a core dependency (see the `app` extra in
@@ -242,58 +244,47 @@ def main() -> None:
             # Template icon (black+alpha) — macOS recolors it for menu bar
             # appearance. Icon beats a text title: recognizable and compact
             # in a crowded (notched) menu bar.
+            # This menu is normally never seen: the popover controller strips
+            # it from the status item and carries these actions in its header
+            # row (SPEC §25 PV-3, D98). It stays built as the fallback surface
+            # if the controller fails to construct (PV-8) — the app must never
+            # be left unquittable.
             super().__init__("fused-render", icon=icon_path, template=True, quit_button=None)
-            self.menu = [
-                "Open in browser",
-                "Copy URL",
-                "Pin File…",
-                "Show Pinned View",
-                "Unpin",
-                "Open logs",
-                "Quit",
-            ]
+            self.menu = ["Open in browser", "Copy URL", "Open logs", "Quit"]
 
         @rumps.clicked("Open in browser")
         def open_browser(self, _sender):
-            webbrowser.open(url)
-
-        # ---- Pinned view (SPEC §25, D97) ----------------------------------
-        # state["pin"] is None until the kickoff timer builds the controller
-        # (and stays None if menubar_pin failed to import — see _kickoff);
-        # the items are then quiet no-ops rather than crashes.
-
-        @rumps.clicked("Pin File…")
-        def pin_file(self, _sender):
-            if state["pin"] is not None:
-                state["pin"].choose_and_pin()
-
-        @rumps.clicked("Show Pinned View")
-        def show_pinned(self, _sender):
-            if state["pin"] is not None:
-                state["pin"].show_popover()
-
-        @rumps.clicked("Unpin")
-        def unpin(self, _sender):
-            if state["pin"] is not None:
-                state["pin"].clear_pin()
+            _open_browser()
 
         @rumps.clicked("Copy URL")
         def copy_url(self, _sender):
-            subprocess.run(["pbcopy"], input=url.encode(), check=False)
+            _copy_url()
 
         @rumps.clicked("Open logs")
         def open_logs(self, _sender):
-            # Reveal in Finder rather than opening the file: users are asked to
-            # zip/attach it, and Console.app (the .log default handler) confuses
-            # more than it helps.
-            subprocess.run(["open", "-R", log_path()], check=False)
+            _open_logs()
 
         @rumps.clicked("Quit")
         def quit(self, _sender):
-            if state["server"] is not None:
-                state["server"].should_exit = True
-            _remove_pidfile()
-            rumps.quit_application()
+            _do_quit()
+
+    def _open_browser():
+        webbrowser.open(url)
+
+    def _copy_url():
+        subprocess.run(["pbcopy"], input=url.encode(), check=False)
+
+    def _open_logs():
+        # Reveal in Finder rather than opening the file: users are asked to
+        # zip/attach it, and Console.app (the .log default handler) confuses
+        # more than it helps.
+        subprocess.run(["open", "-R", log_path()], check=False)
+
+    def _do_quit():
+        if state["server"] is not None:
+            state["server"].should_exit = True
+        _remove_pidfile()
+        rumps.quit_application()
 
     status_app = FusedRenderStatusApp()
 
@@ -303,24 +294,23 @@ def main() -> None:
         timer.stop()
         try:
             # Lazy + guarded: pyobjc-framework-WebKit may be missing in an
-            # older [app] env; the app must still run, pin items as no-ops.
+            # older [app] env; on failure the rumps menu stays attached and
+            # the app runs menu-only (PV-8).
             from fused_render.menubar_pin import PinController
 
             state["pin"] = PinController(
                 status_app._nsapp.nsstatusitem,
-                status_app.menu._menu,
                 port,
                 APP_SUPPORT_DIR,
-                menu_items={
-                    # NSMenuItems of the PV-3 entries; the controller hides/
-                    # renames them to match pin state.
-                    "pin": status_app.menu["Pin File…"]._menuitem,
-                    "show": status_app.menu["Show Pinned View"]._menuitem,
-                    "unpin": status_app.menu["Unpin"]._menuitem,
+                actions={
+                    "open_browser": _open_browser,
+                    "copy_url": _copy_url,
+                    "open_logs": _open_logs,
+                    "quit": _do_quit,
                 },
             )
         except Exception:
-            logger.exception("pinned view unavailable; running menu-only")
+            logger.exception("popover unavailable; falling back to the status-item menu")
         threading.Thread(target=_bootstrap_server, daemon=True).start()
 
     boot_timer = rumps.Timer(_kickoff, 0.1)

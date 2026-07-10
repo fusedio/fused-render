@@ -323,7 +323,7 @@ Distribute as a DMG containing a menu-bar app; all UI stays in the browser.
 - **M9 — Annotation mode:** annotate toggle over any preview mode, element/selection-anchored comment threads stored in the URL (§17).
 - **M13 — Directory views:** directories resolve through the registry like files — the built-in listing becomes the `_listing` sentinel (PT-12), the universal `/` directory key (CT-3) makes it every folder's default mode, custom directory-view templates ride the same mode list + switcher, and `?listing=1` is removed in favor of `_mode=_listing` (§7, §16 / PT-12/PT-13, CT-3 / D81).
 - **M14 — Explorer search:** the in-folder search's recursive walk goes breadth-first and streams NDJSON batches; client-side incremental fuzzy scoring, scroll-paged results, honest truncation, machine-noise pruning (§22 / SR-1..SR-11 / D85).
-- **M16 — Pinned view:** one file pinned to the menu bar — status-item click drops an NSPopover with a live WKWebView of its `/embed` view; detaches into a floating always-on-top window (§25 / PV-1..PV-7 / D97).
+- **M16 — Pinned view:** the status item's only surface — any click drops an NSPopover whose native header row carries all app actions (menu removed, D98) above a live WKWebView of the pinned file's `/embed` view; detaches into a floating always-on-top window (§25 / PV-1..PV-8 / D97/D98).
 - **Follow-ups (unordered):** remaining preview templates (csv/json/markdown/media/pdf/syntax-highlighted code); warm worker pool; DataFrame/Arrow returns; security layer (token, origin checks, sandboxed bridge); exec console; search/sort/tree/keyboard nav; caching; editing.
 
 ## 13. Live Editing — Autosave & Auto-Reload (M4)
@@ -1253,40 +1253,52 @@ opening `sine.html` and switching to the `history` mode, or opening `sine.html.j
 
 ## 25. Pinned View — Menu-Bar Popover (M16)
 
-One file "pinned" to the menu bar: clicking the status-item icon drops an
-NSPopover under it containing a live WKWebView of that file's rendered view —
-the same `/embed/<path>` page the shell's panes iframe (chrome-free, full
-runtime: `fused.runPython`, params, templates, live reload). Dragging the
-popover off the menu bar detaches it into a floating always-on-top window.
-macOS app bundle only (rides the rumps entry point, SPEC DM-7); the CLI/browser
-experience is unchanged.
+The status item IS the app's whole surface: any click on the menu-bar icon
+drops an NSPopover under it — a native header row carrying every app action
+(the old dropdown menu is gone, D98) above a live WKWebView of the pinned
+file's rendered view — the same `/embed/<path>` page the shell's panes iframe
+(chrome-free, full runtime: `fused.runPython`, params, templates, live
+reload). Dragging the popover off the menu bar detaches it into a floating
+always-on-top window. macOS app bundle only (rides the rumps entry point,
+SPEC DM-7); the CLI/browser experience is unchanged.
 
 - **PV-1** Pin state: a single pinned filesystem path, persisted at
   `APP_SUPPORT_DIR/pin.json` (`{"path": "<abs path>"}`). Survives app restarts.
   Any path the registry can render is pinnable — html, parquet, images,
   directories — because the popover loads `/embed/<path>`, which dispatches
   modes exactly like a shell pane. One pin in v1; no pin list.
-- **PV-2** Status-item click routing: with a pin set **and the server ready**,
-  left-click toggles the popover; right-click (or ctrl-click) opens the
-  existing rumps menu. With no pin (or before server-ready), every click opens
-  the menu — current behavior, untouched. Mode switches live when the pin is
-  set/cleared at runtime.
-- **PV-3** Menu gains three items above Quit: **"Pin File…"** (NSOpenPanel,
-  files and directories choosable; picking persists the pin and swaps click
-  routing), **"Show Pinned View"** (opens the popover — the discoverable path,
-  and the only path while the menu is open), **"Unpin"** (clears pin.json,
-  restores menu-on-click; no-op when nothing is pinned).
+- **PV-2** Status-item click routing: every click — left, right, ctrl —
+  toggles the popover. No NSMenu on the status item (D98: right-click-for-menu
+  is undiscoverable; one icon, one gesture, one surface). The popover opens
+  even before the server is ready (the body shows a placeholder) so Quit is
+  always reachable.
+- **PV-3** Header row (native NSButtons above the webview, in the popover):
+  **Open in Browser** (home tab, same pending-queue semantics as before
+  readiness), **Copy URL**, **Pin…** (NSOpenPanel; becomes **Change…** when a
+  pin is set), **Unpin** (hidden when nothing is pinned), **Logs** (reveal in
+  Finder), **Quit**. Native, not web chrome: the header must work when the
+  server is dead — a web-based Quit would die with it.
 - **PV-4** Popover: `NSPopover`, transient behavior (click-away dismisses),
-  content 420×560, containing one `WKWebView` created lazily on first show and
-  kept alive afterwards — view state (params, scroll) survives close/reopen.
-  Re-pinning a different file reloads the webview; reopening does not.
+  content 420×~600 (header + webview), one `WKWebView` created with the
+  popover and kept alive — view state (params, scroll) survives close/reopen.
+  Re-pinning a different file reloads the webview; reopening does not. No pin
+  (or server not ready) → the webview shows a built-in placeholder page.
 - **PV-5** Detach: the popover is detachable (`popoverShouldDetach:` → YES).
   On detach the resulting window is raised to `NSFloatingWindowLevel` — it
   stays above other apps' windows ("pin on top"), is resizable, and closing it
-  returns to popover-on-click. Closing/detaching never clears the pin.
+  returns to popover-on-click. Closing/detaching never clears the pin. The
+  popover, the detached window, and the open panel all carry
+  `CanJoinAllSpaces | FullScreenAuxiliary` so they appear over fullscreen
+  apps; the open panel lifts a Prohibited activation policy to Accessory
+  (source runs) so it can hold key focus.
 - **PV-6** Dependency: `pyobjc-framework-WebKit` joins the `[app]` extra and
   py2app's `packages` list. Like rumps it is macOS-only and imported lazily
   inside the app entry point — core install and CI stay cross-platform.
 - **PV-7** New AppKit code lives in `fused_render/menubar_pin.py` (popover +
   click routing controller) and the pure-python pin store in
   `fused_render/pin_store.py` (unit-tested; AppKit code is not CI-testable).
+- **PV-8** Fallback: the rumps menu (Open in browser / Copy URL / Open logs /
+  Quit) is still built but never attached while the popover controller is
+  alive. If `menubar_pin` fails to import or construct (e.g. missing WebKit
+  framework), the menu is attached as before — the app is never left
+  unquittable.
