@@ -140,6 +140,7 @@ def _tectonic_install():
     child = subprocess.Popen(
         [sys.executable, worker, TECTONIC_VERSION, BIN_DIR, INSTALL_DIR],
         stdout=logf, stderr=logf, stdin=subprocess.DEVNULL, cwd=HERE, **detach_kwargs)
+    logf.close()
     stamp = os.path.join(INSTALL_DIR, "progress.json")
     with open(stamp + ".tmp", "w", encoding="utf-8") as f:
         json.dump({"stage": "spawn", "pct": 0, "detail": "starting installer",

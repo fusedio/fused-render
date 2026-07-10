@@ -747,11 +747,18 @@
     if (typeof d.author !== "string") d.author = "";
     return data;
   }
-  async function saveSidecar(mutate) {
-    const data = await loadSidecar();
-    mutate(data.docs);
-    await fused.writeFile(SIDECAR, JSON.stringify(data));
-    return data.docs;
+  // Serialized read-modify-write: overlapping callers would otherwise read the
+  // same base and the later write would clobber the earlier mutation.
+  let sidecarChain = Promise.resolve();
+  function saveSidecar(mutate) {
+    const run = sidecarChain.then(async () => {
+      const data = await loadSidecar();
+      mutate(data.docs);
+      await fused.writeFile(SIDECAR, JSON.stringify(data));
+      return data.docs;
+    });
+    sidecarChain = run.catch(() => {});
+    return run;
   }
   // Keep everything <24h, hourly to 7 days, daily older. Never drop manual/signed.
   function thinVersions(versions) {

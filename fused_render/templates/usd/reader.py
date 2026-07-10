@@ -171,6 +171,7 @@ def main(action: str = "inspect", file: str = "", budget: int = 1000000,
             stdout=logf, stderr=logf, stdin=subprocess.DEVNULL,
             cwd=HERE,                # the backend's exec dir is deleted after
             **detach_kwargs)
+        logf.close()
         # stamp progress immediately: the worker needs a second or two to boot,
         # and a status poll in that window must see "running", not "dead"
         stamp = os.path.join(cd, "progress.json")

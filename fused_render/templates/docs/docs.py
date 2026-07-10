@@ -133,6 +133,7 @@ def _typst_install():
     child = subprocess.Popen(
         [sys.executable, worker, TYPST_VERSION, BIN_DIR, TYPST_INSTALL_DIR],
         stdout=logf, stderr=logf, stdin=subprocess.DEVNULL, cwd=HERE, **detach_kwargs)
+    logf.close()
     stamp = os.path.join(TYPST_INSTALL_DIR, "progress.json")
     with open(stamp + ".tmp", "w", encoding="utf-8") as f:
         json.dump({"stage": "spawn", "pct": 0, "detail": "starting installer",
@@ -191,7 +192,7 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
         if not file or not os.path.isfile(file):
             return {"error": f"file not found: {file}"}
         try:
-            out = _pandoc(["-f", "docx", "-t", "html+tex_math_dollars",
+            out = _pandoc(["-f", "docx", "-t", "html+tex_math_dollars", "--mathjax",
                            "--wrap=none", file])
         except Exception as e:
             return {"error": f"could not read {os.path.basename(file)}: {e}"}
@@ -210,7 +211,7 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
                 typ_bin = _typst_bin()
                 if not typ_bin:
                     return {"error": "typst is not installed", "missing_typst": True}
-                typ = _pandoc(["-f", "html+tex_math_dollars", "-t", "typst",
+                typ = _pandoc(["-f", "html+tex_math_dollars+tex_math_single_backslash", "-t", "typst",
                                "--wrap=none"], input_text=html)
                 typ_path = os.path.join(out_dir, stem + ".typ")
                 with open(typ_path, "wb") as f:
@@ -221,7 +222,7 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
             elif ext in PANDOC_TO:
                 out_ext = {"latex": "tex", "markdown": "md"}.get(ext, ext)
                 out_path = os.path.join(out_dir, f"{stem}.{out_ext}")
-                data = _pandoc(["-f", "html+tex_math_dollars", "-t", PANDOC_TO[ext],
+                data = _pandoc(["-f", "html+tex_math_dollars+tex_math_single_backslash", "-t", PANDOC_TO[ext],
                                 "--wrap=none", "--standalone", "-o", out_path],
                                input_text=html)
                 if not os.path.exists(out_path):  # some writers go to stdout
@@ -244,7 +245,7 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
                 return {"conflict": True, "mtime": on_disk}
         tmp = file + ".tmp"
         try:
-            _pandoc(["-f", "html+tex_math_dollars", "-t", "docx", "--wrap=none",
+            _pandoc(["-f", "html+tex_math_dollars+tex_math_single_backslash", "-t", "docx", "--wrap=none",
                      "--standalone", "-o", tmp], input_text=html)
             os.replace(tmp, file)
         except Exception as e:
@@ -265,7 +266,7 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
             dest += ".docx"
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         try:
-            _pandoc(["-f", "html+tex_math_dollars", "-t", "docx", "--wrap=none",
+            _pandoc(["-f", "html+tex_math_dollars+tex_math_single_backslash", "-t", "docx", "--wrap=none",
                      "--standalone", "-o", dest], input_text=html)
         except Exception as e:
             return {"error": f"save to {dest} failed: {e}"}
