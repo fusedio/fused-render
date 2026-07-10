@@ -511,6 +511,29 @@ put annotation-aware code inside view templates. Accepted trade-off: annotate
 cannot ask a view whether a row is truly gone from the data, so a comment
 past the data's end keeps its "row N" chip instead of turning "detached".
 
+**Comment focus deep link:** an ordinary `comment` template param carries an
+id-only deep link (the history→annotate contract, HV-8; mirrors the claude
+`session_id` resume precedent — the id is the whole contract and is never
+cleared after use). At boot, once the framed view is wired, the template reads
+`comment`: if the id is in the live URL store it focuses it (jumping to the
+comment's own view first when it differs, then lighting the pin/card); if it
+isn't, the template does a **one-shot full-state hydration** — a single read of
+`<file>.json`'s `comments` log that imports every LIVE entry (those without a
+`deleted_at` tombstone; a tombstoned wanted id gets no import and no focus —
+deleted stays deleted, owner call 2026-07-10), strips the server stamps
+(`recorded_at`/`updated_at`/`deleted_at`), and merges them into the live set
+(live entries win by id) — then saves once (re-recording, a harmless upsert
+no-op) and focuses. Deletion is an **explicit** action: the annotate delete
+button both drops the comment from the URL and fires `annotate.py`'s `delete`
+action, which stamps `deleted_at` (server `time.time()` SECONDS) on the log
+entry; re-recording that id clears the tombstone (it is live again). Absence
+from a `record` array NEVER deletes — each URL carries only its own review
+subset, so a missing id means "not in this review", not "deleted". The live URL
+`comments` param stays the sole live store; the sidecar read is one boot-time
+hydration for a deep link whose id is absent from the live set, not a live-store
+sync back from the sidecar. An unreadable/unparseable sidecar or a missing id
+fails silently (no error UI, no focus).
+
 ## 18. Export — Portable Bundles for Hosted Serving (M10)
 
 Goal: pack a renderable page into a portable *bundle* that a **separate** hosting
@@ -1245,11 +1268,20 @@ opening `sine.html` and switching to the `history` mode, or opening `sine.html.j
   with the `/view/` codec (router.ts shape), the claude-template precedent:
   a claude session opens the target with `_mode=claude&session_id=<id>` (the
   resume contract); a bookmark-history entry and the `lastSession` card open
-  the target with their stored `search` verbatim.
-- **HV-8** Comments are a **read-only** section (content, created/updated time,
-  resolved badge, annotated view). No navigation: annotate's live store is the
-  URL `comments` param, and the sidecar log is write-only — the view does not
-  synthesize comment URLs (owner call 2026-07-09).
+  the target with their stored `search` verbatim; a comment row opens the
+  target with `_mode=annotate&comment=<id>` (HV-8, §17), the same id-only
+  precedent.
+- **HV-8** Comments render **read-only** (content, created/updated time,
+  resolved badge, annotated view — the view never writes the sidecar, HV-9)
+  but are now **navigable**: a comment row with an `id` opens the target with
+  `_mode=annotate&comment=<id>` — an id-only deep link mirroring the claude
+  `session_id` resume contract (HV-7), where annotate resolves the id against
+  its live store or a one-shot sidecar lookup (§17). A tombstoned entry (an
+  explicit `deleted_at`, stamped by annotate's delete action) renders dimmed and
+  struck-through with a " · deleted" tooltip note and is **inert** — no deep
+  link; a deleted comment never comes back (owner call 2026-07-10). Supersedes
+  the 2026-07-09 owner call that kept comments non-navigable (owner reversed
+  2026-07-10).
 - **HV-9** The view never writes the sidecar.
 
 ## 25. Pinned View — Menu-Bar Popover (M16)

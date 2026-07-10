@@ -688,7 +688,13 @@
           c.resolved = !c.resolved; save(comments);
         };
         card.querySelector('[data-a="delete"]').onclick = () => {
+          // Local delete is just absence from the URL array; ALSO stamp an
+          // explicit tombstone in the sidecar log (fire-and-forget) so history
+          // can show it struck-through. Absence alone never deletes there
+          // (per-URL subsets), so this is the one signal that says "deleted on
+          // purpose" — and record clears it if the id is ever re-recorded.
           save(comments.filter((x) => x.id !== c.id));
+          fused.runPython("./annotate.py", { action: "delete", file, id: c.id }).catch(() => {});
         };
         list.appendChild(card);
       }
@@ -791,6 +797,63 @@
         hl.style.height = r.height + "px";
         setTimeout(() => (hl.style.display = "none"), 1200);
       }, 350);
+    }
+
+    // history → annotate deep link: focus the comment named by the `comment`
+    // param (id-only, mirroring the claude session_id resume contract — the id
+    // is the whole contract and is never cleared after use). Runs once per
+    // page-load, after the initial render, so the card/pin exist to light up.
+    let deepLinkDone = false;
+    async function focusFromParam() {
+      if (deepLinkDone) return;
+      deepLinkDone = true;
+      const wanted = fused.params.get("comment");
+      if (!wanted) return;
+      let comments = load();
+      let c = comments.find((x) => x.id === wanted);
+      if (!c) {
+        // Not in the live URL store: one-shot FULL-STATE hydration from the
+        // sidecar. The id arrived from the timeline, so `<file>.json`'s
+        // upsert-by-id log is the authoritative history. Import EVERY live log
+        // entry (those without a `deleted_at` tombstone), stripping the server
+        // stamps. A tombstoned wanted id gets no special pass — deleted stays
+        // deleted (owner call 2026-07-10); hydrate the live set, skip the
+        // focus. Merge into the live array, live entries winning by id; save
+        // once (re-records — a harmless upsert no-op). If the wanted id isn't
+        // logged at all, import nothing and skip silently.
+        try {
+          const sidecar = JSON.parse(await fused.readFile(file + ".json"));
+          const log = Array.isArray(sidecar.comments) ? sidecar.comments : [];
+          const wantedEntry = log.find((x) => x && x.id === wanted);
+          if (wantedEntry && !wantedEntry.deleted_at) {
+            const strip = ({ recorded_at, updated_at, deleted_at, ...rest }) => rest;
+            const byId = new Map();
+            for (const e of log) {
+              if (e && typeof e.id === "string" && !e.deleted_at) byId.set(e.id, strip(e));
+            }
+            for (const live of comments) byId.set(live.id, live); // live wins by id
+            save([...byId.values()]); // re-records to the sidecar — a harmless upsert no-op
+            // Re-read what actually persisted: save() evicts oldest RESOLVED
+            // comments when the URL budget overflows, so the wanted id may not
+            // have survived — focusing a card that isn't rendered lights nothing.
+            comments = load();
+            c = comments.find((x) => x.id === wanted);
+          }
+        } catch (e) {
+          // sidecar unreadable / unparseable / id missing: no focus, no error UI.
+        }
+      }
+      if (!c) return;
+      // Same cross-view behavior as a card click: jump to the comment's own
+      // view first (that reloads the template — the param survives, so this
+      // resolver re-runs there and lands the focus), else light it up here.
+      const ownView = (c.view || defaultViewMode) === activeView.mode;
+      if (!ownView && c.view) {
+        switchView(c.view);
+      } else {
+        setActive(c.id);
+        reveal(c);
+      }
     }
 
     // Switching the annotated view reloads this template — an editor framed
@@ -1025,6 +1088,7 @@
       // anchors when the framed document mutates.
       new MutationObserver(queueRender).observe(doc.body || doc.documentElement, { childList: true, subtree: true });
       render();
+      focusFromParam(); // consume a `comment` deep link once the frame is wired
     });
     // Send to Claude: hand the whole review to the claude chat mode. Copies
     // the current comments verbatim into a `claudeComments` param and flips
