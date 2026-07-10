@@ -856,7 +856,10 @@
       // resolver re-runs there and lands the focus), else light it up here.
       const ownView = (c.view || defaultViewMode) === activeView.mode;
       if (!ownView && c.view) {
-        switchView(c.view);
+        // A refused/failed switch (unsaved-edits flush) means the reload this
+        // focus is staked on never comes — re-arm the one-shot guard so the
+        // next frame load (e.g. the user switching views by hand) retries.
+        if (!(await switchView(c.view))) deepLinkDone = false;
       } else {
         setActive(c.id);
         reveal(c);
@@ -867,8 +870,11 @@
     // inside with unsaved edits must be flushed FIRST (same contract as the
     // shell's own mode switch); refuse the switch when it can't be made safe.
     let switchingView = false;
+    // Resolves true only when the switch actually landed (the `view` param was
+    // written); false on refusal/failure so a caller staking work on the
+    // reload (the deep-link resolver) knows it never comes.
     async function switchView(mode) {
-      if (switchingView || (activeView && mode === activeView.mode)) return;
+      if (switchingView || (activeView && mode === activeView.mode)) return false;
       switchingView = true;
       try {
         const inner = frame.contentWindow && frame.contentWindow.__fusedFlushEdits;
@@ -879,14 +885,16 @@
           ]);
           if (res && res.ok === false) {
             if (activeView) viewSel.value = activeView.mode; // snap the picker back
-            return;
+            return false;
           }
         }
         fused.params.set("view", mode); // inside the lock — param write is part of the switch
+        return true;
       } catch (e) {
         // Flush rejected / frame torn down: the switch did NOT happen — the
         // picker must not claim otherwise.
         if (activeView) viewSel.value = activeView.mode;
+        return false;
       } finally {
         switchingView = false;
       }
