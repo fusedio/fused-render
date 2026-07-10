@@ -501,6 +501,25 @@
     return comments;
   }
 
+  // One import path for both file open and version restore: extract comments,
+  // then lift display math to block level — pandoc wraps it in a <p>, and
+  // ProseMirror ignores block parse rules in inline context, so left inline it
+  // would degrade to literal \[…\] text.
+  function parseDocHtml(html) {
+    const dom = new DOMParser().parseFromString(html, "text/html");
+    const comments = extractComments(dom);
+    dom.querySelectorAll("p > span.math.display").forEach((span) => {
+      const p = span.parentNode;
+      const after = dom.createElement("p");
+      while (span.nextSibling) after.appendChild(span.nextSibling);
+      p.parentNode.insertBefore(span, p.nextSibling);
+      p.parentNode.insertBefore(after, span.nextSibling);
+      if (!p.childNodes.length) p.remove();
+      if (!after.childNodes.length) after.remove();
+    });
+    return { dom, comments };
+  }
+
   // ---------------------------------------------------------------- nodeviews ---
   class MathViewInline { // lightweight KaTeX renderer for atoms (edit source on click)
     constructor(node, view, getPos, display) {
@@ -1069,8 +1088,8 @@
     const data = await loadSidecar();
     const v = data.docs.versions.find((x) => x.id === versionId);
     if (!v || !v.html) { toast("Version not found."); return; }
-    const dom = new DOMParser().parseFromString(v.html, "text/html");
-    S.comments = extractComments(dom);
+    const { dom, comments } = parseDocHtml(v.html);
+    S.comments = comments;
     mountEditor(PMDOMParser.fromSchema(schema).parse(dom.body));
     setMode("edit"); S.dirty = true; updateSavedTag(); toast("Version restored — save to keep it.");
   }
@@ -1332,8 +1351,8 @@
     return;
   }
   fileMtime = res.mtime;
-  const dom = new DOMParser().parseFromString(res.html, "text/html");
-  S.comments = extractComments(dom);
+  const { dom, comments } = parseDocHtml(res.html);
+  S.comments = comments;
   const importedDoc = PMDOMParser.fromSchema(schema).parse(dom.body);
   const sidecar = await loadSidecar();
   S.author = sidecar.docs.author || "";
