@@ -41,6 +41,22 @@ DEFAULT_PORT = branch_port()
 MAX_PORT = DEFAULT_PORT + 10
 
 
+def view_url_path(fs_path: str) -> str:
+    """Shell URL path for a Finder-opened file (SB-9, D99).
+
+    A `.bookmark` file is not previewed — it routes to the `_bookmark`
+    sentinel, which reads the file server-side and redirects to the view it
+    describes (the frontend resolves its relative paths against the file's
+    own directory). Everything else opens as a plain `/view/<path>`.
+    Module-level (not a closure) so it is testable without AppKit.
+    """
+    from urllib.parse import quote
+
+    if fs_path.lower().endswith(".bookmark"):
+        return "/view/_bookmark?file=" + quote(fs_path, safe="")
+    return "/view" + quote(fs_path)
+
+
 def _is_process_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -169,9 +185,7 @@ def main() -> None:
     }
 
     def open_file_view(fs_path: str) -> None:
-        from urllib.parse import quote
-
-        target = f"http://127.0.0.1:{port}/view{quote(fs_path)}"
+        target = f"http://127.0.0.1:{port}" + view_url_path(fs_path)
         if state["ready"]:
             logger.info("opening file view: %s", target)
             webbrowser.open(target)

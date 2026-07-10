@@ -331,6 +331,18 @@ a.bookmark-name::after {
   background: var(--bg);
 }
 
+/* Save-to-disk button with no savable target (SB-8): greyed, inert, but still
+   hoverable so its explanatory title shows. */
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.icon-btn:disabled:hover {
+  color: var(--fg-muted);
+  background: none;
+}
+
 .bookmark-rename-input {
   flex: 1 1 auto;
   min-width: 0;

@@ -20,6 +20,8 @@ import {
   getArmedBookmark,
   setBookmarkIcon,
 } from "../lib/bookmarks";
+import { bookmarkSaveTarget } from "../lib/bookmark-file";
+import { exportBookmarkFile } from "../lib/api";
 import IconPicker from "./IconPicker";
 import { FolderIcon } from "./FileIcons";
 import type { Bookmark, BookmarkFolder } from "../lib/bookmarks";
@@ -153,8 +155,10 @@ interface BookmarkRowProps {
   child?: boolean;
   parentId?: string;
   isRenaming: boolean;
+  justSaved: boolean; // transient ✓ on the save button after a successful export
   namePositions?: number[]; // search-match highlight positions in b.name
   onNameClick: (e: React.MouseEvent<HTMLAnchorElement>) => void;
+  onSave: (e: React.MouseEvent<HTMLButtonElement>) => void;
   onRename: (e: React.MouseEvent<HTMLButtonElement>) => void;
   onDelete: (e: React.MouseEvent<HTMLButtonElement>) => void;
   onCommitRename: (value: string) => void;
@@ -167,7 +171,13 @@ interface BookmarkRowProps {
 }
 
 // Template for a bookmark row (top-level or, with child=true, inside a folder).
-function BookmarkRow({ b, child, parentId, isRenaming, namePositions, onNameClick, onRename, onDelete, onCommitRename, onCancelRename, onMouseEnter, onMouseLeave, onGlyphClick, registerRef, dragProps }: BookmarkRowProps) {
+function BookmarkRow({ b, child, parentId, isRenaming, justSaved, namePositions, onNameClick, onSave, onRename, onDelete, onCommitRename, onCancelRename, onMouseEnter, onMouseLeave, onGlyphClick, registerRef, dragProps }: BookmarkRowProps) {
+  // Where "Save to disk" would write — shown on the button itself (title) so
+  // the destination is visible before the click; null disables the button.
+  const saveTarget = bookmarkSaveTarget(b);
+  const savePath = saveTarget
+    ? (saveTarget.dir.endsWith("/") ? saveTarget.dir : saveTarget.dir + "/") + saveTarget.filename
+    : null;
   return (
     <div
       className={"bookmark-row" + (child ? " child-row" : "") + (b.url === currentUrl() ? " active" : "")}
@@ -194,6 +204,14 @@ function BookmarkRow({ b, child, parentId, isRenaming, namePositions, onNameClic
         </a>
       )}
       <span className="bookmark-actions">
+        <button
+          className="icon-btn save-btn"
+          title={savePath ? `Save to ${savePath}` : "Not savable: no common folder"}
+          disabled={!savePath}
+          onClick={onSave}
+        >
+          {justSaved ? "✓" : "💾︎"}
+        </button>
         <button className="icon-btn rename-btn" title="Rename" onClick={onRename}>
           ✎
         </button>
@@ -269,6 +287,9 @@ export default function Sidebar({ config }: SidebarProps) {
   useBookmarksVersion();
 
   const [renamingId, setRenamingId] = useState<string | null>(null);
+  // Bookmark just exported to disk: its save button shows ✓ for a moment.
+  const [savedId, setSavedId] = useState<string | null>(null);
+  const savedTimer = useRef<number | null>(null);
   const [bmQuery, setBmQuery] = useState("");
   const [hover, setHover] = useState<HoverState | null>(null);
   // Icon picker: which bookmark's glyph was clicked + where to anchor it.
@@ -399,6 +420,24 @@ export default function Sidebar({ config }: SidebarProps) {
       window.dispatchEvent(new Event("fused:urlchange"));
     }
     notifyBookmarksChanged();
+  };
+
+  const onSaveBookmark = async (e: React.MouseEvent<HTMLButtonElement>, b: Bookmark) => {
+    // Write the `<name>.bookmark` snapshot next to the bookmark's target(s)
+    // (SB-8). The button is disabled when there is no save target, so a null
+    // here is only a race with a concurrent rename — just do nothing.
+    e.preventDefault();
+    const target = bookmarkSaveTarget(b);
+    if (!target) return;
+    try {
+      await exportBookmarkFile(target);
+    } catch (err) {
+      console.error("[fused] failed to save bookmark file:", err);
+      return;
+    }
+    setSavedId(b.id);
+    if (savedTimer.current !== null) window.clearTimeout(savedTimer.current);
+    savedTimer.current = window.setTimeout(() => setSavedId(null), 1500);
   };
 
   const onRenameBookmark = (e: React.MouseEvent<HTMLButtonElement>, id: string) => {
@@ -680,8 +719,10 @@ export default function Sidebar({ config }: SidebarProps) {
                     b={b}
                     namePositions={namePositions}
                     isRenaming={renamingId === b.id}
+                    justSaved={savedId === b.id}
                     registerRef={() => {}}
                     onNameClick={(e) => onBookmarkNameClick(e, b)}
+                    onSave={(e) => onSaveBookmark(e, b)}
                     onRename={(e) => onRenameBookmark(e, b.id)}
                     onDelete={(e) => onDeleteBookmark(e, b.id)}
                     onCommitRename={(value) => commitRename(b.id, value, b.name)}
@@ -726,8 +767,10 @@ export default function Sidebar({ config }: SidebarProps) {
                           child
                           parentId={it.id}
                           isRenaming={renamingId === c.id}
+                          justSaved={savedId === c.id}
                           registerRef={registerRow(c.id)}
                           onNameClick={(e) => onBookmarkNameClick(e, c)}
+                          onSave={(e) => onSaveBookmark(e, c)}
                           onRename={(e) => onRenameBookmark(e, c.id)}
                           onDelete={(e) => onDeleteBookmark(e, c.id)}
                           onCommitRename={(value) => commitRename(c.id, value, c.name)}
@@ -748,8 +791,10 @@ export default function Sidebar({ config }: SidebarProps) {
                 key={it.id}
                 b={it}
                 isRenaming={renamingId === it.id}
+                justSaved={savedId === it.id}
                 registerRef={registerRow(it.id)}
                 onNameClick={(e) => onBookmarkNameClick(e, it)}
+                onSave={(e) => onSaveBookmark(e, it)}
                 onRename={(e) => onRenameBookmark(e, it.id)}
                 onDelete={(e) => onDeleteBookmark(e, it.id)}
                 onCommitRename={(value) => commitRename(it.id, value, it.name)}
