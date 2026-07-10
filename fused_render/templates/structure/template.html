@@ -61,8 +61,16 @@
     padding: 5px 10px; border-bottom: 1px solid #24262b; text-align: left;
     vertical-align: top; white-space: nowrap;
   }
-  th { background: #1b1d21; font-weight: 600; color: #cfd3d7; }
-  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  /* Header reads as a distinct label band, not another data row: darker fill,
+     uppercase small caps, and a solid rule separating it from the body. */
+  th {
+    background: #101114; color: #8b9099; font-weight: 600;
+    font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase;
+    border-bottom: 2px solid #33363c;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover td { background: #202329; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; max-width: 720px; }
   .kv dt { color: #9aa0a6; }
   .kv dd { margin: 0; color: #e8eaed; font-variant-numeric: tabular-nums; }
