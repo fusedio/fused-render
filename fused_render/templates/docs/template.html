@@ -724,6 +724,7 @@
     if (!data.docs || typeof data.docs !== "object") data.docs = {};
     const d = data.docs;
     if (!d.comments || typeof d.comments !== "object") d.comments = {};
+    if (!d.styles || typeof d.styles !== "object") d.styles = {};
     if (!Array.isArray(d.versions)) d.versions = [];
     if (!Array.isArray(d.signatures)) d.signatures = [];
     if (typeof d.author !== "string") d.author = "";
@@ -1472,17 +1473,11 @@
     try {
       const doc = S.view.state.doc.toJSON();
       const docJson = JSON.stringify(doc);
-      if (IS_DOCX) {
-        const res = await py({ action: "save", file: FILE, html: docToHtml(S.view.state.doc), expected_mtime: String(fileMtime ?? "") });
-        if (res.conflict) { toast("This file changed on disk — reload to see the latest version."); return; }
-        if (res.error) throw new Error(res.error);
-        fileMtime = res.mtime;
-        await saveSidecar((d) => { d.styles = S.styles; });
-      } else {
-        const payload = JSON.stringify({ doc, styles: S.styles });
-        const fresh = await fused.writeFile(FILE, payload, fileMtime != null ? { expectedMtime: fileMtime } : undefined);
-        fileMtime = fresh.mtime;
-      }
+      const res = await py({ action: "save", file: FILE, html: docToHtml(S.view.state.doc), expected_mtime: String(fileMtime ?? "") });
+      if (res.conflict) { toast("This file changed on disk — reload to see the latest version."); return; }
+      if (res.error) throw new Error(res.error);
+      fileMtime = res.mtime;
+      await saveSidecar((d) => { d.styles = S.styles; });
       S.dirty = false; S.savedMtime = Date.now();
       await recordVersion(docJson, kind, label);
     } catch (e) {
@@ -1701,37 +1696,31 @@
 
   // ---- boot: load the file + its sidecar, mount the editor ----
   $("boot").classList.add("hidden");
-  let saved = null, importedDoc = null;
-  if (IS_DOCX) {
-    let res;
-    try { res = await py({ action: "import", file: FILE }); }
-    catch (e) { res = { error: e.message }; }
-    if (res.error) {
-      $("nofile").classList.remove("hidden");
-      $("nofile").textContent = "Cannot open " + BASENAME + ": " + res.error;
-      return;
-    }
-    try { fileMtime = (await fused.stat(FILE)).mtime; } catch (e) {}
-    const dom = new DOMParser().parseFromString(res.html, "text/html");
-    importedDoc = PMDOMParser.fromSchema(schema).parse(dom.body);
-  } else try {
-    const st = await fused.stat(FILE);
-    fileMtime = st.mtime;
-    const text = await fused.readFile(FILE);
-    saved = text.trim() ? JSON.parse(text) : null;
-  } catch (e) {
-    saved = null;   // file doesn't exist yet (or unreadable) — start blank
+  if (!IS_DOCX) {
+    $("nofile").classList.remove("hidden");
+    $("nofile").textContent = "Unsupported file type: " + BASENAME + " — this template only opens .docx files.";
+    return;
   }
+  let res;
+  try { res = await py({ action: "import", file: FILE }); }
+  catch (e) { res = { error: e.message }; }
+  if (res.error) {
+    $("nofile").classList.remove("hidden");
+    $("nofile").textContent = "Cannot open " + BASENAME + ": " + res.error;
+    return;
+  }
+  try { fileMtime = (await fused.stat(FILE)).mtime; } catch (e) {}
+  const dom = new DOMParser().parseFromString(res.html, "text/html");
+  const importedDoc = PMDOMParser.fromSchema(schema).parse(dom.body);
   const sidecar = await loadSidecar();
   S.comments = sidecar.docs.comments;
   S.author = sidecar.docs.author || "";
-  S.styles = (saved && saved.styles) || {};
+  S.styles = sidecar.docs.styles;
   injectStyleCss();
   $("docTitle").textContent = BASENAME;
   $("topbar").classList.remove("hidden"); $("toolbar").classList.remove("hidden"); $("main").classList.remove("hidden");
-  const pmDoc = importedDoc || (saved && saved.doc ? schema.nodeFromJSON(saved.doc) : schema.nodes.doc.createAndFill(null, schema.nodes.paragraph.create()));
-  mountEditor(pmDoc);
-  setMode(fused.params.get("mode") || (saved || importedDoc ? "view" : "edit"));
+  mountEditor(importedDoc);
+  setMode(fused.params.get("mode") || "view");
   const panelParam = fused.params.get("panel");
   if (panelParam === "comments" || panelParam === "history" || panelParam === "signatures") openPanel(panelParam);
   updateSavedTag();

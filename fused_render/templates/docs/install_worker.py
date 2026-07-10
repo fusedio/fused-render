@@ -40,7 +40,8 @@ def _asset():
     system = platform.system()
     machine = platform.machine().lower()
     if system == "Linux":
-        return "typst-x86_64-unknown-linux-musl.tar.xz", "tar.xz"
+        arch = "aarch64" if machine in ("arm64", "aarch64") else "x86_64"
+        return f"typst-{arch}-unknown-linux-musl.tar.xz", "tar.xz"
     if system == "Darwin":
         arch = "aarch64" if machine in ("arm64", "aarch64") else "x86_64"
         return f"typst-{arch}-apple-darwin.tar.xz", "tar.xz"
