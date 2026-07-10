@@ -2,195 +2,460 @@
 <html>
 <head>
 <meta charset="utf-8" />
-<title>Map preview</title>
-<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css">
-<script src="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js"></script>
-<script src="https://unpkg.com/deck.gl@9/dist.min.js"></script>
+<title>Map Viewer</title>
 <style>
-  :root { color-scheme: dark; }
+  /* ---- Felt-inspired light theme ---------------------------------------- */
+  :root {
+    color-scheme: light;
+    --bg: #f3f4f6;
+    --panel: #ffffff;
+    --panel-2: #f5f6f8;
+    --panel-3: #eceef1;
+    --border: #e5e7eb;
+    --border-2: #d1d5db;
+    --text: #1f2937;
+    --muted: #6b7280;
+    --faint: #9ca3af;
+    --accent: #ff3e00;
+    --accent-soft: #ff3e0018;
+    --good: #16a34a;
+    --warn: #d97706;
+    --bad: #dc2626;
+    --r: 12px;
+    --shadow: 0 4px 16px rgba(0,0,0,.12);
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, system-ui, sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
   * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; overflow: hidden;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    color: #e8eaed; background: #131417; font-size: 13px; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: var(--font); font-size: 13.5px; color: var(--text);
+    background: var(--bg); -webkit-font-smoothing: antialiased;
+  }
+  #app { display: flex; height: 100%; }
+  button { font-family: inherit; cursor: pointer; }
+  input { font-family: inherit; }
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 6px; }
+  ::-webkit-scrollbar-thumb:hover { background: #b9bec7; }
+
+  /* ---------------- floating left panel ---------------- */
+  #panel {
+    position: absolute; top: 12px; left: 12px; z-index: 7; width: 300px;
+    max-height: calc(100% - 24px); display: flex; flex-direction: column;
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--r);
+    box-shadow: var(--shadow); overflow: hidden;
+  }
+  .panel-head {
+    display: flex; align-items: center; gap: 9px; padding: 11px 12px;
+    border-bottom: 1px solid var(--border); flex: none;
+  }
+  .panel-head .logo {
+    width: 22px; height: 22px; border-radius: 6px; flex: none;
+    background: linear-gradient(135deg, var(--accent), #ff7a4d);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .panel-head .title { font-weight: 640; font-size: 14px; letter-spacing: -.01em; flex: 1; }
+  .panel-head .title small { color: var(--faint); font-weight: 500; }
+  .ph-btn { background: transparent; border: 0; color: var(--faint); display: flex; padding: 3px; border-radius: 6px; }
+  .ph-btn:hover { color: var(--text); background: var(--panel-2); }
+
+  .panel-scroll { overflow-y: auto; min-height: 0; flex: 1; }
+  .sec-head {
+    display: flex; align-items: center; gap: 7px; padding: 10px 12px 6px;
+    font-size: 11px; font-weight: 640; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); user-select: none;
+  }
+  .sec-head .chev { display: flex; color: var(--faint); transition: transform .15s; }
+  .sec-head .sec-sub { margin-left: auto; font-family: var(--mono); font-size: 10.5px; font-weight: 500;
+    text-transform: none; letter-spacing: 0; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px; }
+  #browse-head { cursor: pointer; border-top: 1px solid var(--border); padding-top: 10px; padding-bottom: 8px; }
+  #browse-head:hover { color: var(--text); }
+  #browsesec:not(.open) .sec-body { display: none; }
+  #browsesec.open .chev { transform: rotate(90deg); }
+
+  #layercards { padding: 4px 10px 10px; }
+  .lp-empty { color: var(--faint); font-size: 12px; padding: 14px 6px 16px; line-height: 1.6; text-align: center; }
+
+  .lc {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    margin-bottom: 6px; cursor: pointer; transition: border-color .12s, box-shadow .12s;
+  }
+  .lc:hover { border-color: var(--border-2); }
+  .lc.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+  .lc.bad-tint { background: #fef2f2; border-color: #fecaca; }
+  .lc.warn-tint { background: #fffbeb; border-color: #fde68a; }
+  .lc-h { display: flex; align-items: center; gap: 8px; padding: 8px 10px; }
+  .lc-swatch { width: 14px; height: 14px; border-radius: 4px; flex: none; border: 1px solid rgba(0,0,0,.10); }
+  .lc-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 560; }
+  .lc.off .lc-nm, .lc.off .lc-swatch { opacity: .4; }
+  .lc-badge { font-size: 9.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--faint); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; flex: none; }
+  .lc-badge:empty { display: none; }
+  .lc-eye, .lc-dots { background: transparent; border: 0; color: var(--muted); display: flex; padding: 2px; border-radius: 5px; flex: none; opacity: 0; transition: opacity .12s; }
+  .lc:hover .lc-eye, .lc:hover .lc-dots, .lc-eye.off { opacity: 1; }
+  .lc-eye:hover, .lc-dots:hover { color: var(--text); background: var(--panel-2); }
+  .lc-eye.off { color: var(--faint); }
+  .lc-msg { font-size: 11px; color: var(--muted); padding: 0 10px 8px 32px; line-height: 1.45; word-break: break-word; }
+  .lc .spin { width: 13px; height: 13px; border: 2px solid #00000014; border-top-color: var(--accent); border-radius: 50%; flex: none; animation: spin .7s linear infinite; }
+
+  #lmenu {
+    position: fixed; z-index: 40; min-width: 156px; padding: 4px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: var(--shadow);
+  }
+  #lmenu button {
+    display: block; width: 100%; text-align: left; background: none; border: 0;
+    padding: 7px 10px; border-radius: 6px; font-size: 12.5px; color: var(--text);
+  }
+  #lmenu button:hover { background: var(--panel-2); }
+  #lmenu button.danger:hover { background: #fef2f2; color: var(--bad); }
+
+  .side-tools { padding: 0 12px 8px; display: flex; flex-direction: column; gap: 7px; }
+  .field {
+    display: flex; align-items: center; gap: 7px; background: var(--panel-2);
+    border: 1px solid var(--border); border-radius: 9px; padding: 0 9px;
+    transition: border-color .15s;
+  }
+  .field:focus-within { border-color: var(--accent); }
+  .field svg { color: var(--faint); flex: none; }
+  .field input {
+    flex: 1; min-width: 0; background: transparent; border: 0; outline: 0;
+    color: var(--text); padding: 8px 0; font-size: 13px;
+  }
+  .field input::placeholder { color: var(--faint); }
+  .field .mini {
+    background: transparent; border: 0; color: var(--faint); padding: 3px;
+    border-radius: 5px; display: flex;
+  }
+  .field .mini:hover { color: var(--text); background: var(--panel-3); }
+
+  #dirbar { font-family: var(--mono); font-size: 11px; }
+  #dirbar input { font-family: var(--mono); font-size: 11px; }
+
+  #filelist { max-height: 300px; overflow-y: auto; padding: 0 8px 4px; }
+  .file {
+    display: flex; align-items: center; gap: 9px; padding: 6px 8px;
+    border-radius: 8px; cursor: pointer; user-select: none;
+    border: 1px solid transparent; transition: background .12s;
+  }
+  .file:hover { background: var(--panel-2); }
+  .file.selected { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
+  .file.loading { opacity: .6; }
+  .file .ic { width: 20px; height: 20px; flex: none; display: flex; align-items: center; justify-content: center; color: var(--muted); }
+  .file.selected .ic { color: var(--accent); }
+  .file .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+  .file .kd { font-size: 10px; color: var(--faint); text-transform: uppercase; letter-spacing: .04em; }
+  .file .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .file .spin { width: 13px; height: 13px; border: 2px solid #00000014; border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+  .file.parent { color: var(--muted); }
+  .file.parent .nm { font-family: var(--mono); letter-spacing: .08em; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .empty-note { color: var(--faint); font-size: 12px; padding: 14px 12px; line-height: 1.6; text-align: center; }
+
+  /* basemap switch */
+  #basemaprow { border-top: 1px solid var(--border); padding: 10px 12px; flex: none; }
+  .seg { display: flex; background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px; overflow: hidden; padding: 2px; gap: 2px; }
+  .seg button { flex: 1; background: transparent; border: 0; color: var(--muted); padding: 5px 4px; font-size: 11.5px; border-radius: 7px; }
+  .seg button.on { background: var(--panel); color: var(--text); font-weight: 560; box-shadow: 0 1px 3px rgba(0,0,0,.10); }
+
+  /* show-panel button (when panel hidden) */
+  #btn-panel {
+    position: absolute; top: 12px; left: 12px; z-index: 6;
+    width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--border);
+    background: var(--panel); box-shadow: var(--shadow); color: var(--muted);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #btn-panel:hover { color: var(--text); }
+
+  /* ---------------- map ---------------- */
+  #mapwrap { position: relative; flex: 1; min-width: 0; background: #e5e7eb; }
   #map { position: absolute; inset: 0; }
-  .panel { position: absolute; background: rgba(19,20,23,.92); border: 1px solid #2a2d33;
-    border-radius: 10px; backdrop-filter: blur(6px); z-index: 10; }
-  #topbar { top: 10px; left: 10px; right: 10px; display: flex; gap: 8px; align-items: center;
-    pointer-events: none; }
-  #topbar .pill { pointer-events: auto; padding: 0 12px; height: 34px; display: flex;
-    align-items: center; gap: 8px; }
-  #title { font-weight: 600; }
-  #title small { color: #9aa0a6; font-weight: 400; margin-left: 4px; }
-  #coords { margin-left: auto; font-variant-numeric: tabular-nums; color: #9aa0a6; }
-  #ctrls { position: absolute; top: 54px; right: 10px; z-index: 10; display: flex;
-    flex-direction: column; gap: 8px; }
-  .fab { width: 36px; height: 36px; border-radius: 9px; border: 1px solid #2a2d33;
-    background: rgba(19,20,23,.92); backdrop-filter: blur(6px); color: #9aa0a6;
-    display: flex; align-items: center; justify-content: center; cursor: pointer; }
-  .fab:hover { color: #e8eaed; border-color: #4a4d55; }
-  .fab.on { color: #46c5d8; border-color: #46c5d877; background: #46c5d81f; }
-  #status { position: absolute; left: 50%; top: 54px; transform: translateX(-50%);
-    background: rgba(19,20,23,.9); border: 1px solid #2a2d33; border-radius: 999px;
-    padding: 4px 14px; color: #9aa0a6; z-index: 20; display: none; max-width: 70%; }
-  #status.err { color: #ff7b72; display: block; }
-  #empty { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
-    color: #6b7178; font-size: 13px; text-align: center; z-index: 25; }
-  #geobox { top: 54px; right: 54px; width: 300px; display: none; overflow: hidden; }
-  #geobox .field { display: flex; align-items: center; gap: 7px; padding: 8px 10px;
-    border-bottom: 1px solid #2a2d33; }
-  #geobox input { flex: 1; min-width: 0; background: transparent; border: 0; outline: 0;
-    color: #e8eaed; font: inherit; }
-  #georesults { max-height: 260px; overflow: auto; }
-  .geores { padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #ffffff08; }
-  .geores:hover { background: #1b1d21; }
+  #map canvas { outline: none; }
+  .maplibregl-ctrl-attrib { font-size: 10px !important; }
+
+  /* floating right controls */
+  #ctrls {
+    position: absolute; top: 12px; right: 12px; z-index: 6;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .fab {
+    width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--border);
+    background: var(--panel); box-shadow: 0 2px 8px rgba(0,0,0,.10); color: var(--muted);
+    display: flex; align-items: center; justify-content: center; transition: all .14s;
+  }
+  .fab:hover { color: var(--text); border-color: var(--border-2); }
+  .fab.on { color: var(--accent); border-color: #ff3e0055; background: var(--accent-soft); }
+
+  /* geocode box */
+  #geobox {
+    position: absolute; top: 12px; right: 62px; z-index: 8; width: 320px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--r);
+    box-shadow: var(--shadow); overflow: hidden;
+  }
+  #geobox .field { border: 0; border-radius: 0; border-bottom: 1px solid var(--border); background: var(--panel); }
+  #georesults { max-height: 280px; overflow-y: auto; }
+  .geores { padding: 9px 12px; cursor: pointer; border-bottom: 1px solid var(--panel-2); }
+  .geores:hover { background: var(--panel-2); }
   .geores .g1 { font-size: 13px; }
-  .geores .g2 { font-size: 11px; color: #9aa0a6; }
-  .geores.none { color: #6b7178; cursor: default; }
-  #addpanel { top: 54px; right: 54px; width: 340px; max-height: 60vh; display: none;
-    flex-direction: column; overflow: hidden; }
-  #addpanel .field { display: flex; align-items: center; gap: 7px; padding: 8px 10px;
-    border-bottom: 1px solid #2a2d33; }
-  #addpanel input[type=text] { flex: 1; min-width: 0; background: transparent; border: 0;
-    outline: 0; color: #e8eaed; font: inherit; }
-  #addpanel button.mini { background: transparent; border: 1px solid #2a2d33; color: #9aa0a6;
-    border-radius: 6px; padding: 3px 8px; cursor: pointer; }
-  #addpanel button.mini:hover { color: #e8eaed; border-color: #4a4d55; }
-  #crumbs { font-size: 11px; padding: 6px 10px; color: #9aa0a6; border-bottom: 1px solid #23262c; }
-  #crumbs a { color: #8ab4ff; cursor: pointer; }
-  #explorerList { flex: 1; overflow: auto; }
-  .row { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer;
-    font-size: 12.5px; border-bottom: 1px solid #1e2025; }
-  .row:hover { background: #1b1d21; }
-  .row.dim { color: #55585f; cursor: default; }
-  .row .ic { width: 16px; text-align: center; flex: none; }
-  .row .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .row .sz { color: #6b7178; font-size: 11px; }
-  #layerpanel { top: 54px; right: 10px; bottom: 34px; width: 320px; display: none;
-    flex-direction: column; }
-  .lp-head { display: flex; align-items: center; padding: 10px 12px; border-bottom: 1px solid #2a2d33;
-    font-weight: 600; }
-  .lp-head .x { margin-left: auto; background: transparent; border: 0; color: #6b7178;
-    font-size: 18px; cursor: pointer; }
-  .lp-head .x:hover { color: #e8eaed; }
-  #layercards { flex: 1; overflow-y: auto; padding: 8px; }
-  .lp-empty { color: #6b7178; text-align: center; padding: 22px 12px; font-size: 12px; line-height: 1.6; }
-  .lc { background: #1b1d21; border: 1px solid #2a2d33; border-radius: 8px; margin-bottom: 8px;
-    overflow: hidden; }
-  .lc-h { display: flex; align-items: center; gap: 7px; padding: 8px 9px; }
-  .lc-eye { background: transparent; border: 0; color: #9aa0a6; display: flex; cursor: pointer; padding: 1px; }
-  .lc-eye.off { color: #55585f; }
-  .lc-eye:hover { color: #e8eaed; }
-  .lc-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    font-size: 12px; font-weight: 560; cursor: pointer; }
-  .lc-badge { font-size: 9px; text-transform: uppercase; letter-spacing: .04em; color: #6b7178;
-    border: 1px solid #2f333b; border-radius: 5px; padding: 1px 5px; }
-  .lc-x { background: transparent; border: 0; color: #6b7178; font-size: 15px; cursor: pointer; padding: 0 2px; }
-  .lc-x:hover { color: #ff7b72; }
-  .lc-body { padding: 2px 10px 10px; border-top: 1px solid #23262c; display: none; }
-  .lc.open .lc-body { display: block; }
-  .ctl { margin-top: 10px; }
-  .ctl-lbl { font-size: 10.5px; color: #9aa0a6; margin-bottom: 4px; display: flex; justify-content: space-between; }
-  .ctl-lbl b { color: #e8eaed; font-weight: 560; font-family: ui-monospace, Menlo, monospace; font-size: 10px; }
-  input[type=range] { width: 100%; vertical-align: middle; }
-  input[type=color] { width: 28px; height: 24px; border: 1px solid #2a2d33; border-radius: 6px;
-    background: none; padding: 0; cursor: pointer; }
-  select { width: 100%; background: #232329; color: #e8eaed; border: 1px solid #2a2d33;
-    border-radius: 6px; padding: 5px 7px; font-size: 11.5px; }
-  .stat { font-size: 10.5px; color: #9aa0a6; line-height: 1.6; margin-top: 8px;
-    font-family: ui-monospace, Menlo, monospace; white-space: pre-line; }
-  .warnline { font-size: 10.5px; color: #fbbf24; margin-top: 6px; line-height: 1.5; }
-  .legend { margin-top: 8px; }
-  .legend .bar { height: 9px; border-radius: 5px; }
-  .legend .ends { display: flex; justify-content: space-between; font-size: 9.5px; color: #9aa0a6;
-    font-family: ui-monospace, Menlo, monospace; margin-top: 3px; }
-  .swatchrow { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
-  .swatch { display: flex; align-items: center; gap: 4px; font-size: 10.5px; color: #9aa0a6; }
-  .swatch i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
-  #basemaprow { border-top: 1px solid #2a2d33; padding: 9px 11px; }
-  .seg { display: flex; background: #1b1d21; border: 1px solid #2a2d33; border-radius: 7px; overflow: hidden; }
-  .seg button { flex: 1; background: transparent; border: 0; color: #9aa0a6; padding: 5px 4px;
-    font-size: 11px; cursor: pointer; }
-  .seg button.on { background: #232329; color: #e8eaed; }
-  #attr { position: absolute; left: 12px; bottom: 8px; z-index: 5; font-size: 10.5px; color: #6b7178;
-    background: rgba(12,12,14,.6); padding: 2px 8px; border-radius: 6px; pointer-events: none; }
-  .maplibregl-popup-content { background: rgba(19,20,23,.97); color: #e8eaed;
-    border: 1px solid #2a2d33; border-radius: 8px; font-size: 12px; max-height: 40vh;
-    overflow: auto; padding: 8px 10px; font-family: inherit; }
-  .maplibregl-popup-close-button { color: #8ab4ff; font-size: 16px; }
+  .geores .g2 { font-size: 11.5px; color: var(--muted); }
+  .geores.none { color: var(--faint); cursor: default; }
+
+  /* style controls */
+  .ctl { margin-top: 11px; }
+  .ctl-lbl { font-size: 11px; color: var(--muted); margin-bottom: 5px; display: flex; justify-content: space-between; }
+  .ctl-lbl b { color: var(--text); font-weight: 560; font-family: var(--mono); font-size: 10.5px; }
+  .row { display: flex; align-items: center; gap: 8px; }
+  input[type=range] { -webkit-appearance: none; width: 100%; height: 4px; background: var(--panel-3); border-radius: 3px; outline: none; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--accent); cursor: pointer; border: 2px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,.25); }
+  input[type=color] { -webkit-appearance: none; width: 30px; height: 26px; border: 1px solid var(--border-2); border-radius: 6px; background: none; padding: 0; cursor: pointer; }
+  input[type=color]::-webkit-color-swatch-wrapper { padding: 2px; }
+  input[type=color]::-webkit-color-swatch { border: 0; border-radius: 4px; }
+  select {
+    width: 100%; background: var(--panel); color: var(--text); border: 1px solid var(--border-2);
+    border-radius: 7px; padding: 6px 8px; font-size: 12px; outline: none;
+  }
+  .num { width: 70px; background: var(--panel); color: var(--text); border: 1px solid var(--border-2); border-radius: 6px; padding: 5px 7px; font-size: 11.5px; font-family: var(--mono); }
+  .stat { font-size: 11px; color: var(--muted); line-height: 1.7; margin-top: 8px; font-family: var(--mono); white-space: pre-wrap; }
+  .warnline { font-size: 11px; color: var(--warn); margin-top: 8px; line-height: 1.5; }
+
+  .legend { margin-top: 10px; }
+  .legend .bar { height: 10px; border-radius: 5px; }
+  .legend .ends { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); font-family: var(--mono); margin-top: 3px; }
+  .swatchrow { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .swatch { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
+  .swatch i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+
+  /* right-docked style panel */
+  #stylepanel {
+    flex: none; width: 320px; min-width: 0; background: var(--panel);
+    border-left: 1px solid var(--border); display: flex; flex-direction: column;
+    min-height: 0; position: relative;
+  }
+  #stylepanel.hidden { display: none !important; }
+  .sp-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+  .sp-head .sp-nm { font-weight: 620; font-size: 13px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sp-head .x, .cp-head .x { background: transparent; border: 0; color: var(--faint); font-size: 18px; line-height: 1; }
+  .sp-head .x:hover, .cp-head .x:hover { color: var(--text); }
+  .sp-body { flex: 1; overflow-y: auto; min-height: 0; padding: 4px 14px 16px; }
+  .sp-empty { color: var(--faint); text-align: center; padding: 24px 14px; font-size: 12.5px; line-height: 1.6; }
+
+  /* right-docked code editor */
+  #codepanel {
+    flex: none; width: 460px; min-width: 0; background: var(--panel);
+    border-left: 1px solid var(--border); display: flex; flex-direction: column;
+    min-height: 0; position: relative;
+  }
+  #codepanel.hidden { display: none !important; }
+  .cp-head { display: flex; align-items: center; gap: 8px; padding: 11px 14px; border-bottom: 1px solid var(--border); }
+  .cp-head .fn { font-family: var(--mono); font-size: 12px; font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cp-head .lang { font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--faint); border: 1px solid var(--border-2); border-radius: 5px; padding: 1px 5px; }
+  .cp-head .lang:empty { display: none; }
+  .cp-body { flex: 1; overflow: auto; min-height: 0; }
+  .cp-empty, .cp-note { color: var(--faint); padding: 22px 16px; font-size: 12.5px; line-height: 1.6; }
+  .cp-note { color: var(--muted); font-family: var(--mono); white-space: pre-wrap; word-break: break-all; }
+  .cp-code { display: flex; min-width: min-content; }
+  .cp-code .gutter { flex: none; text-align: right; padding: 12px 8px 12px 12px; color: var(--faint); font-family: var(--mono); font-size: 12px; line-height: 1.55; white-space: pre; user-select: none; border-right: 1px solid var(--border); background: var(--panel); position: sticky; left: 0; }
+  .cp-code pre { margin: 0; }
+  .cp-code code { font-family: var(--mono); font-size: 12px; line-height: 1.55; display: block; padding: 12px 14px; tab-size: 4; background: transparent; color: var(--text); }
+  /* light highlight.js palette (replaces the dark vendor theme) */
+  .hljs { background: transparent; color: var(--text); }
+  .hljs-comment, .hljs-quote { color: #9ca3af; font-style: italic; }
+  .hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-section { color: #7c3aed; }
+  .hljs-string, .hljs-regexp, .hljs-addition { color: #15803d; }
+  .hljs-number, .hljs-symbol, .hljs-bullet { color: #b45309; }
+  .hljs-title, .hljs-name, .hljs-function .hljs-title { color: #2563eb; }
+  .hljs-built_in, .hljs-type, .hljs-class .hljs-title { color: #0e7490; }
+  .hljs-attr, .hljs-attribute, .hljs-variable, .hljs-template-variable { color: #b91c1c; }
+  .hljs-meta, .hljs-deletion { color: #6b7280; }
+  /* drag handle to resize a right-anchored panel */
+  .resizer { position: absolute; top: 0; left: -3px; width: 8px; height: 100%; cursor: col-resize; z-index: 8; }
+  .resizer:hover { background: linear-gradient(90deg, transparent, #ff3e0033); }
+
+  /* attribution + coords + toast */
+  #attr {
+    position: absolute; left: 12px; bottom: 10px; z-index: 5; font-size: 11px; color: var(--faint);
+    background: rgba(255,255,255,.75); padding: 3px 9px; border-radius: 6px; pointer-events: none;
+  }
+  #attr b { color: var(--muted); }
+  #coordpill {
+    position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); z-index: 5;
+    background: rgba(255,255,255,.85); border: 1px solid var(--border); border-radius: 999px;
+    padding: 3px 11px; font-family: var(--mono); font-size: 11px; color: var(--muted);
+    pointer-events: none; white-space: nowrap;
+  }
+  #toast {
+    position: absolute; left: 50%; bottom: 48px; transform: translateX(-50%); z-index: 20;
+    max-width: 560px; background: var(--panel); border: 1px solid var(--border);
+    border-left: 3px solid var(--accent); border-radius: 10px; padding: 11px 14px;
+    box-shadow: var(--shadow); font-size: 12.5px; line-height: 1.5;
+    display: flex; gap: 10px; align-items: flex-start;
+  }
+  #toast.warn { border-left-color: var(--warn); }
+  #toast.bad { border-left-color: var(--bad); }
+  #toast .tx { flex: 1; }
+  #toast .tx b { display: block; margin-bottom: 2px; }
+  #toast .tclose { background: transparent; border: 0; color: var(--faint); font-size: 16px; line-height: 1; }
+  .hidden { display: none !important; }
+  .mono { font-family: var(--mono); }
+  #boot-msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; z-index: 30; }
 </style>
 </head>
 <body>
-  <div id="map"></div>
-  <div id="empty">No file selected — open this template for a geospatial file.</div>
+<div id="app">
+  <main id="mapwrap">
+    <div id="map"></div>
+    <div id="boot-msg">initializing…</div>
 
-  <div class="panel pill" id="topbar">
-    <span id="title">Map</span>
-    <span id="coords">—</span>
-  </div>
-
-  <div id="ctrls">
-    <button class="fab" id="btn-add" title="Add another layer">
-      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+    <button id="btn-panel" class="hidden" title="Show panel">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l9 5-9 5-9-5 9-5zM3 12l9 5 9-5M3 17l9 5 9-5"/></svg>
     </button>
-    <button class="fab" id="btn-search" title="Search place / address">
-      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-    </button>
-    <button class="fab" id="btn-layers" title="Layers & style">
-      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l9 5-9 5-9-5 9-5zM3 12l9 5 9-5M3 17l9 5 9-5"/></svg>
-    </button>
-    <button class="fab" id="btn-full" title="Toggle fullscreen">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
-    </button>
-  </div>
 
-  <div id="status"></div>
-
-  <div class="panel" id="geobox">
-    <div class="field">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-      <input type="text" id="geoinput" placeholder="Search address or place…" spellcheck="false" autocomplete="off" />
-    </div>
-    <div id="georesults"></div>
-  </div>
-
-  <div class="panel" id="addpanel">
-    <div class="field">
-      <input type="text" id="addpath" placeholder="/path/to/file.geojson or a URL…" spellcheck="false" />
-      <button class="mini" id="add-go">Add</button>
-    </div>
-    <div id="crumbs"></div>
-    <div id="explorerList"></div>
-  </div>
-
-  <div class="panel" id="layerpanel">
-    <div class="lp-head">Layers &amp; style <button class="x" id="lp-close">×</button></div>
-    <div id="layercards"></div>
-    <div id="basemaprow">
-      <div class="ctl-lbl">Basemap</div>
-      <div class="seg" id="basemap-seg">
-        <button data-b="dark" class="on">Dark</button>
-        <button data-b="light">Light</button>
-        <button data-b="sat">Satellite</button>
+    <div id="panel">
+      <div class="panel-head">
+        <span class="logo">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3z"/><path d="M9 3v15M15 6v15"/></svg>
+        </span>
+        <span class="title">Map viewer <small>· fused</small></span>
+        <button class="ph-btn" id="btn-hide-panel" title="Hide panel">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 17l-5-5 5-5M18 17l-5-5 5-5"/></svg>
+        </button>
+      </div>
+      <div class="panel-scroll">
+        <div class="sec" id="layersec">
+          <div class="sec-head"><span>Layers</span></div>
+          <div id="layercards"></div>
+        </div>
+        <div class="sec open" id="browsesec">
+          <div class="sec-head" id="browse-head">
+            <span class="chev"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></span>
+            <span>Browse</span>
+            <span class="sec-sub" id="browse-cur"></span>
+          </div>
+          <div class="sec-body" id="browse-body">
+            <div class="side-tools">
+              <div class="field" id="dirbar">
+                <button class="mini" id="btn-up" title="Parent folder">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+                </button>
+                <input id="dir" spellcheck="false" placeholder="directory…" />
+                <button class="mini" id="btn-reload" title="Reload list">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.4M21 3v6h-6"/></svg>
+                </button>
+              </div>
+              <div class="field">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+                <input id="filter" placeholder="Search files…" spellcheck="false" />
+              </div>
+            </div>
+            <div id="filelist"></div>
+            <div class="side-tools" style="padding-top:2px;">
+              <div class="field">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+                <input id="importpath" placeholder="Add any file path or URL…" spellcheck="false" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="basemaprow">
+        <div class="ctl-lbl" style="margin-bottom:6px;">Basemap</div>
+        <div class="seg" id="basemap-seg">
+          <button data-b="light" class="on">Light</button>
+          <button data-b="dark">Dark</button>
+          <button data-b="sat">Satellite</button>
+        </div>
       </div>
     </div>
-  </div>
 
-  <div id="attr">© OpenStreetMap © CARTO</div>
+    <div id="ctrls">
+      <button class="fab" id="btn-search" title="Search place / address">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+      </button>
+      <button class="fab" id="btn-full" title="Toggle fullscreen">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+      </button>
+      <button class="fab" id="btn-style" title="Style selected layer">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r="2"/><circle cx="17.5" cy="12.5" r="2"/><circle cx="8.5" cy="7.5" r="2"/><circle cx="6.5" cy="14.5" r="2"/><path d="M12 22a10 10 0 1 1 10-10c0 2-1.5 3-3 3h-2a2 2 0 0 0-2 2c0 1 .5 1.5.5 2.5A2.5 2.5 0 0 1 12 22z"/></svg>
+      </button>
+      <button class="fab" id="btn-code" title="View source of selected file">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/></svg>
+      </button>
+    </div>
+
+    <div id="geobox" class="hidden">
+      <div class="field">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <input id="geoinput" placeholder="Search address or place…" spellcheck="false" autocomplete="off" />
+      </div>
+      <div id="georesults"></div>
+    </div>
+
+    <div id="attr">Made with <b>fused-render</b> · © OpenStreetMap © CARTO</div>
+    <div id="coordpill"><span id="coords">—</span></div>
+    <div id="toast" class="hidden"></div>
+  </main>
+
+  <aside id="stylepanel" class="hidden">
+    <div class="resizer" id="sp-resizer"></div>
+    <div class="sp-head">
+      <span class="sp-nm" id="sp-nm">Style</span>
+      <span class="lc-badge" id="sp-kind"></span>
+      <button class="x" id="sp-close">×</button>
+    </div>
+    <div class="sp-body" id="sp-body"><div class="sp-empty">Select a layer to style it.</div></div>
+  </aside>
+
+  <aside id="codepanel" class="hidden">
+    <div class="resizer" id="cp-resizer"></div>
+    <div class="cp-head">
+      <span class="fn" id="cp-fn">—</span>
+      <span class="lang" id="cp-lang"></span>
+      <button class="x" id="cp-close">×</button>
+    </div>
+    <div class="cp-body" id="cp-body"><div class="cp-empty">Select a file on the left, then this shows its source.</div></div>
+  </aside>
+</div>
 
 <script>
 "use strict";
+(async function boot() {
+if (typeof fused === "undefined") {
+  document.getElementById("boot-msg").textContent =
+    "Open this inside fused-render (http://127.0.0.1:8765/view/<path-to-map_viewer.html>)";
+  return;
+}
+
+/* ---- load vendored libs (next to this file) --------------------------- */
+const HTML_PATH = new URLSearchParams(window.location.search).get("path") || "";
+const BASE_DIR = HTML_PATH.slice(0, HTML_PATH.lastIndexOf("/") + 1);
+const assetUrl = rel => fused.rawUrl(BASE_DIR + rel);
+const loadScript = rel => new Promise((ok, bad) => {
+  const s = document.createElement("script"); s.src = assetUrl(rel);
+  s.onload = ok; s.onerror = () => bad(new Error("failed to load " + rel));
+  document.head.appendChild(s);
+});
+const loadCss = rel => new Promise((ok, bad) => {
+  const l = document.createElement("link"); l.rel = "stylesheet"; l.href = assetUrl(rel);
+  l.onload = ok; l.onerror = () => bad(new Error("failed to load " + rel));
+  document.head.appendChild(l);
+});
+await loadCss("vendor/maplibre-gl.css");
+await loadScript("vendor/maplibre-gl.js");
+await loadScript("vendor/deck.gl.min.js");
+loadScript("vendor/highlight.min.js").catch(() => {});   // code viewer (optional; light palette is inline)
+
 const qs = id => document.getElementById(id);
 const P = fused.params;
-const FILE = P.get("_file") || "";
 
-const CAT_COLORS = [[255,99,71],[70,193,216],[255,193,7],[126,211,33],[171,71,188],[255,138,101],
-                    [41,182,246],[141,110,99],[236,64,122],[102,187,106]];
+/* ---- colormaps (for legends + vector color-by) ------------------------ */
 const CMAPS = {
   viridis: [[68,1,84],[59,82,139],[33,145,140],[94,201,98],[253,231,37]],
   plasma:  [[13,8,135],[126,3,168],[204,71,120],[248,149,64],[240,249,33]],
   magma:   [[0,0,4],[81,18,124],[183,55,121],[252,137,97],[252,253,191]],
   inferno: [[0,0,4],[87,16,110],[188,55,84],[249,142,9],[252,255,164]],
+  cividis: [[0,32,76],[62,86,114],[124,123,120],[188,166,99],[255,234,70]],
   turbo:   [[48,18,59],[42,160,215],[103,241,105],[249,182,45],[122,4,3]],
+  terrain: [[51,51,153],[0,181,153],[86,204,102],[221,204,120],[150,110,80],[240,240,240]],
   greys:   [[240,240,240],[20,20,20]],
 };
 function cmapColor(name, t) {
@@ -205,23 +470,11 @@ function cmapGradient(name) {
   return "linear-gradient(90deg," + stops.map((c,i) =>
     `rgb(${c[0]},${c[1]},${c[2]}) ${Math.round(i/(stops.length-1)*100)}%`).join(",") + ")";
 }
+const CATEGORICAL = [[255,99,71],[70,193,216],[255,193,7],[126,211,33],[171,71,188],[255,138,101],[41,182,246],[141,110,99],[236,64,122],[102,187,106]];
 const rgbToHex = c => "#" + c.slice(0,3).map(x => x.toString(16).padStart(2,"0")).join("");
-const hexToRgb = h => { const n = parseInt(h.replace("#",""),16); return [(n>>16)&255,(n>>8)&255,n&255]; };
-const human = n => n > 1e9 ? (n/1e9).toFixed(2)+' GB' : n > 1e6 ? (n/1e6).toFixed(1)+' MB' : Math.round(n/1e3)+' KB';
-const fmt = v => v == null ? "—" : (Math.abs(v) >= 1000 || (v !== 0 && Math.abs(v) < 0.01) ? Number(v).toExponential(1) : Number(v).toFixed(2));
-function status(msg, err){ qs("status").innerHTML = msg || ''; qs("status").style.display = msg ? 'block' : 'none'; qs("status").className = err ? 'err' : ''; }
-let toastTimer = null;
-function toast(kind, msg){ status(msg, kind === 'bad'); clearTimeout(toastTimer); if (kind !== 'bad') toastTimer = setTimeout(() => status(''), 6000); }
+const hexToRgb = h => { const n = parseInt(h.slice(1),16); return [(n>>16)&255,(n>>8)&255,n&255]; };
 
-if (!FILE) {
-  qs("empty").style.display = "flex";
-  qs("title").textContent = "Map";
-} else {
-
-qs("title").innerHTML = FILE.split("/").pop() + " <small>· map</small>";
-document.title = FILE.split("/").pop() + " — Map preview";
-
-/* ---------------- map ---------------- */
+/* ---- basemaps --------------------------------------------------------- */
 function rasterStyle(tiles, attribution, maxzoom) {
   return { version: 8, sources: { base: { type: "raster", tiles, tileSize: 256, attribution, maxzoom } },
            layers: [{ id: "base", type: "raster", source: "base" }] };
@@ -231,13 +484,18 @@ const BASEMAPS = {
   light: rasterStyle(["a","b","c","d"].map(s=>`https://${s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png`), "© OpenStreetMap © CARTO", 20),
   sat:   rasterStyle(["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"], "Esri, Maxar, Earthstar Geographics", 18),
 };
+
+/* ---- map -------------------------------------------------------------- */
 const startCam = (P.get("cam") || "37.7749,-122.4194,11").split(",").map(Number);
-let baseName = ["dark","light","sat"].includes(P.get("base")) ? P.get("base") : "dark";
-const map = new maplibregl.Map({ container: "map", style: BASEMAPS[baseName],
+let baseName = ["dark","light","sat"].includes(P.get("base")) ? P.get("base") : "light";
+const map = new maplibregl.Map({
+  container: "map", style: BASEMAPS[baseName],
   center: [startCam[1] || -122.4194, startCam[0] || 37.7749], zoom: startCam[2] || 11,
-  attributionControl: false });
-map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-left");
+  attributionControl: false,
+});
+map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
 map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-right");
+qs("boot-msg").classList.add("hidden");
 
 const overlay = new deck.MapboxOverlay({
   interleaved: false, layers: [],
@@ -255,7 +513,8 @@ const overlay = new deck.MapboxOverlay({
       return { text: t };
     }
     if (object && object.properties) {
-      const rows = Object.keys(object.properties).slice(0, 8).map(k => `${k}: ${object.properties[k]}`).join("\n");
+      const p = object.properties;
+      const rows = Object.keys(p).slice(0, 8).map(k => `${k}: ${p[k]}`).join("\n");
       return rows ? { text: rows } : null;
     }
     return null;
@@ -263,75 +522,158 @@ const overlay = new deck.MapboxOverlay({
 });
 map.addControl(overlay);
 
-/* ---------------- state + sidecar ---------------- */
-const state = { layers: new Map(), selected: P.get("sel") ? decodeURIComponent(P.get("sel")) : FILE };
+/* ---- state ------------------------------------------------------------ */
+const state = { layers: new Map(), selected: null, dir: P.get("dir") || "", entries: [] };
 
-const SIDECAR_PATH = FILE + ".json";
-async function loadSidecarLayers() {
+/* =======================================================================
+   FILE BROWSER
+   ===================================================================== */
+const KIND_ICON = {
+  python: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/></svg>',
+  raster: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 15l5-5 4 4 3-3 6 6"/><circle cx="8.5" cy="8.5" r="1.5"/></svg>',
+  vector: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3z"/></svg>',
+  table:  '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18"/></svg>',
+  pmtiles:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/></svg>',
+  dir:    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
+  other:  '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>',
+};
+
+const dirBase = p => { const parts = String(p).replace(/\/+$/, "").split("/"); return parts[parts.length - 1] || p; };
+
+async function loadDir(dir) {
   try {
-    const data = JSON.parse(await fused.readFile(SIDECAR_PATH));
-    return (data && data.map && Array.isArray(data.map.layers)) ? data.map.layers : [];
-  } catch { return []; }
+    const res = await fused.runPython("./discover.py", dir ? { dir } : {});
+    if (res.error) { toast("bad", "Can't list folder", res.error); return; }
+    state.dir = res.dir; state.parent = res.parent; state.entries = res.entries || [];
+    qs("dir").value = res.dir;
+    qs("browse-cur").textContent = dirBase(res.dir);
+    if (dir) P.set("dir", res.dir);
+    renderFileList();
+  } catch (e) { toast("bad", "Discovery failed", e.message); }
 }
-let persistTimer = null;
-function schedulePersist() { clearTimeout(persistTimer); persistTimer = setTimeout(persistNow, 250); }
-async function persistNow() {
-  const overlays = [...state.layers.values()]
-    .filter(L => !L.isPrimary && L.descriptor && L.descriptor.status === "ok")
-    .map(L => ({ path: L.target, opacity: L.opacity, style: L.style }));
-  let data = {}, mtime;
+
+function renderFileList() {
+  const box = qs("filelist");
+  const filter = qs("filter").value.trim().toLowerCase();
+  box.innerHTML = "";
+
+  // ".." back row — the intuitive way up after entering a folder
+  if (state.parent && state.parent !== state.dir) {
+    const up = document.createElement("div");
+    up.className = "file parent";
+    up.innerHTML = `<span class="ic">${KIND_ICON.dir}</span><span class="nm">..</span><span class="kd">back</span>`;
+    up.onclick = () => loadDir(state.parent);
+    box.appendChild(up);
+  }
+
+  const items = state.entries.filter(e => !filter || e.name.toLowerCase().includes(filter));
+  if (!items.length) {
+    box.insertAdjacentHTML("beforeend",
+      `<div class="empty-note">Nothing here yet.<br/>Point the folder above at your data, or add a path below.</div>`);
+    return;
+  }
+
+  for (const e of items) {
+    const L = state.layers.get(e.path);
+    const div = document.createElement("div");
+    div.className = "file" + (state.selected === e.path ? " selected" : "") + (L && L.loading ? " loading" : "");
+
+    if (e.kind === "dir") {
+      div.innerHTML = `<span class="ic">${KIND_ICON.dir}</span><span class="nm">${e.name}</span><span class="kd">open</span>`;
+      div.onclick = () => loadDir(e.path);
+    } else {
+      const ic = document.createElement("span"); ic.className = "ic";
+      ic.innerHTML = KIND_ICON[e.kind] || KIND_ICON.other; div.appendChild(ic);
+      const nm = document.createElement("span"); nm.className = "nm"; nm.textContent = e.name; div.appendChild(nm);
+      const right = document.createElement("span");
+      if (L && L.loading) right.className = "spin";
+      else if (L && L.descriptor) { right.className = "dot"; right.style.background = statusColor(L.descriptor); }
+      else { right.className = "kd"; right.textContent = e.kind; }
+      div.appendChild(right);
+      div.onclick = () => selectFile(e);
+    }
+    box.appendChild(div);
+  }
+}
+function statusColor(d) {
+  return d.status === "ok" ? "var(--good)" : d.status === "not_georeferenced" ? "var(--warn)" : "var(--bad)";
+}
+
+/* =======================================================================
+   LAYER LOAD / RENDER
+   ===================================================================== */
+// File row click = load it as a layer (or select it if already loaded).
+async function selectFile(entry) {
+  const key = entry.path;
+  const L = state.layers.get(key);
+  if (L && L.loading) return;
+  if (L && L.descriptor) { selectLayer(key); return; }
+  await loadTarget(key, entry.name);
+}
+
+// Select a layer: highlight it, fit the map to it, drive the style dock + code viewer.
+function selectLayer(key) {
+  state.selected = key;
+  const L = state.layers.get(key);
+  if (L && L.descriptor && L.descriptor.status === "ok") fitTo(L.descriptor.bounds);
+  renderFileList(); renderLayerCards(); renderStyleDock();
+  refreshCode();
+}
+
+async function loadTarget(target, name) {
+  name = name || target.split(/[\\/]/).pop();
+  const L = state.layers.get(target) || { target, name, visible: true, opacity: 1, style: {}, geojson: null };
+  if (!L.defaultColor) L.defaultColor = CATEGORICAL[state.layers.size % CATEGORICAL.length];
+  L.loading = true; L.name = name;
+  state.layers.set(target, L);
+  renderFileList(); renderLayerCards();
   try {
-    const st = await fused.stat(SIDECAR_PATH);
-    mtime = st.mtime;
-    data = JSON.parse(await fused.readFile(SIDECAR_PATH));
-  } catch { /* no sidecar yet */ }
-  if (!data || typeof data !== "object") data = {};
-  data.map = { layers: overlays };
-  try {
-    await fused.writeFile(SIDECAR_PATH, JSON.stringify(data, null, 2), mtime ? { expectedMtime: mtime } : undefined);
+    const desc = await fused.runPython("./map_render.py", {
+      target, colormap: (L.style && L.style.colormap) || "viridis",
+      rescale: (L.style && L.style.rescale) ? L.style.rescale.join(",") : "",
+    });
+    L.loading = false; L.descriptor = desc;
+    if (desc.status !== "ok") {
+      L.visible = false;
+      state.selected = target;   // still let the user read its code / message
+      const kind = desc.status === "not_georeferenced" ? "warn" : "bad";
+      toast(kind, desc.status === "not_georeferenced" ? "Not georeferenced" : "Couldn't render " + name,
+            desc.message || (desc.error && desc.error.message) || "unknown error");
+      renderAll(); refreshCode(); return;
+    }
+    const touched = L.style && L.style._touched;
+    L.style = touched ? Object.assign({}, desc.style, L.style) : Object.assign({}, desc.style);
+    if (desc.kind === "vector_geojson") {
+      L.geojson = await (await fetch(fused.rawUrl(desc.data.geojson_path))).json();
+      computeColorByStats(L);
+    } else if (desc.kind === "vector_points_binary") {
+      const buf = await (await fetch(fused.rawUrl(desc.data.points_path))).arrayBuffer();
+      L.binary = { count: desc.data.count, columns: desc.data.columns,
+                   positions: new Float32Array(buf), colCache: {} };
+      L._cb = null; L._colorBuf = null;
+    }
+    L.visible = true;
+    state.selected = target;
+    persistOpen();
+    renderAll();
+    fitTo(desc.bounds);
+    refreshCode();
   } catch (e) {
-    if (e && e.type === "conflict") await fused.writeFile(SIDECAR_PATH, JSON.stringify(data, null, 2)).catch(() => {});
+    L.loading = false;
+    L.descriptor = { status: "error", message: e.message, error: { traceback: e.traceback } };
+    L.visible = false;
+    toast("bad", "Error running " + name, (e.type ? e.type + ": " : "") + e.message);
+    renderAll();
   }
 }
 
-function primaryOverridesFromParams() {
-  const ov = {};
-  const op = P.get("opacity"); if (op) ov.opacity = parseFloat(op);
-  const cm = P.get("colormap"); if (cm) ov.colormap = cm;
-  const rs = P.get("rescale");
-  if (rs) { const parts = rs.split(",").map(Number); if (parts.length === 2 && parts.every(Number.isFinite)) ov.rescale = parts; }
-  const cb = P.get("colorby"); if (cb) ov.color_by = cb;
-  const fill = P.get("fill"); if (fill) ov.fill_rgb = hexToRgb(fill);
-  const line = P.get("line"); if (line) ov.line_rgb = hexToRgb(line);
-  const lw = P.get("linewidth"); if (lw) ov.line_width = parseFloat(lw);
-  const ps = P.get("pointsize"); if (ps) ov.point_radius = parseFloat(ps);
-  return ov;
+function fitTo(bounds) {
+  if (!bounds) return;
+  const [w, s, e, n] = bounds;
+  if (![w, s, e, n].every(Number.isFinite)) return;
+  if (w === e && s === n) { map.flyTo({ center: [w, s], zoom: Math.max(map.getZoom(), 13) }); return; }
+  map.fitBounds([[w, s], [e, n]], { padding: 60, maxZoom: 16, duration: 800 });
 }
-function applyStyleOverrides(base, ov) {
-  const out = Object.assign({}, base);
-  for (const k of ["colormap", "rescale", "color_by", "line_width", "point_radius"])
-    if (ov[k] !== undefined) out[k] = ov[k];
-  if (ov.fill_rgb) out.fill_color = [...ov.fill_rgb, (base.fill_color || [0,0,0,90])[3] ?? 90];
-  if (ov.line_rgb) out.line_color = [...ov.line_rgb, (base.line_color || [0,0,0,220])[3] ?? 220];
-  return out;
-}
-function persistPrimaryParams(L) {
-  P.set("opacity", String(+L.opacity.toFixed(2)));
-  P.set("colormap", L.style.colormap || "");
-  P.set("rescale", L.style.rescale ? L.style.rescale.join(",") : "");
-  P.set("colorby", L.style.color_by || "");
-  P.set("fill", L.style.fill_color ? rgbToHex(L.style.fill_color) : "");
-  P.set("line", L.style.line_color ? rgbToHex(L.style.line_color) : "");
-  P.set("linewidth", L.style.line_width != null ? String(L.style.line_width) : "");
-  P.set("pointsize", L.style.point_radius != null ? String(L.style.point_radius) : "");
-}
-function onLayerStyleChanged(L) {
-  if (L.isPrimary) { clearTimeout(persistTimer); persistTimer = setTimeout(() => persistPrimaryParams(L), 250); }
-  else schedulePersist();
-}
-
-/* ---------------- load / render ---------------- */
-async function fetchJson(path) { return (await fetch(fused.rawUrl(path))).json(); }
 
 function computeColorByStats(L) {
   const col = L.style.color_by;
@@ -347,109 +689,28 @@ function computeColorByStats(L) {
   if (numeric && Number.isFinite(mn)) L._cb = { numeric: true, min: mn, max: mx };
   else L._cb = { numeric: false, cats: [...cats].slice(0, 24) };
 }
-async function ensureColumn(L, col) {
-  const b = L.binary;
-  if (b.colCache[col]) return b.colCache[col];
-  const meta = b.columns[col];
-  const buf = await (await fetch(fused.rawUrl(meta.path))).arrayBuffer();
-  const arr = meta.dtype === "u8" ? new Uint8Array(buf) : new Float32Array(buf);
-  b.colCache[col] = { arr, meta };
-  return b.colCache[col];
-}
-async function computeBinaryColors(L) {
-  const s = L.style, b = L.binary;
-  if (!s.color_by || !b.columns[s.color_by]) { L._colorBuf = null; L._cb = null; return; }
-  const { arr, meta } = await ensureColumn(L, s.color_by);
-  const a = (s.fill_color && s.fill_color[3]) ?? 220;
-  const out = new Uint8Array(b.count * 4);
-  const name = s.colormap || "viridis";
-  if (meta.dtype === "f32") {
-    const mn = meta.min ?? 0, mx = meta.max ?? 1, rng = mx > mn ? mx - mn : 1;
-    for (let i = 0; i < b.count; i++) { const c = cmapColor(name, (arr[i] - mn) / rng); const o = i*4; out[o]=c[0]; out[o+1]=c[1]; out[o+2]=c[2]; out[o+3]=a; }
-    L._cb = { numeric: true, min: mn, max: mx };
-  } else {
-    for (let i = 0; i < b.count; i++) { const c = CAT_COLORS[arr[i] % CAT_COLORS.length]; const o = i*4; out[o]=c[0]; out[o+1]=c[1]; out[o+2]=c[2]; out[o+3]=a; }
-    L._cb = { numeric: false, cats: meta.categories };
-  }
-  L._colorBuf = out;
-}
 
-async function loadLayer(target, isPrimary, initial) {
-  const L = state.layers.get(target) || {
-    target, name: target.split("/").pop(), isPrimary, visible: true,
-    opacity: (initial && initial.opacity) ?? 1, style: (initial && initial.style) || {},
-    defaultColor: CAT_COLORS[state.layers.size % CAT_COLORS.length],
-  };
-  L.loading = true;
-  state.layers.set(target, L);
-  renderAll();
-  const desc = await fused.runPython("./map_render.py", {
-    target, colormap: L.style.colormap || "viridis",
-    rescale: L.style.rescale ? L.style.rescale.join(",") : "",
-  }).catch(e => ({ status: "error", message: e.message, kind: null, bounds: null, data: {}, warnings: [] }));
-  L.loading = false;
-  L.descriptor = desc;
-  if (desc.status !== "ok") {
-    L.visible = false;
-    toast(desc.status === "not_georeferenced" ? "warn" : "bad",
-          (isPrimary ? "" : `${L.name}: `) + (desc.message || "could not render"));
-    if (!isPrimary) state.layers.delete(target);
-    renderAll();
-    return;
-  }
-  const ov = isPrimary ? primaryOverridesFromParams() : {};
-  L.style = isPrimary ? applyStyleOverrides(desc.style, ov) : Object.assign({}, desc.style, L.style);
-  if (desc.kind === "vector_geojson") {
-    L.geojson = await fetchJson(desc.data.geojson_path);
-    computeColorByStats(L);
-  } else if (desc.kind === "vector_points_binary") {
-    const buf = await (await fetch(fused.rawUrl(desc.data.points_path))).arrayBuffer();
-    L.binary = { count: desc.data.count, columns: desc.data.columns, positions: new Float32Array(buf), colCache: {} };
-    if (L.style.color_by) await computeBinaryColors(L);
-  }
-  state.selected = state.selected || target;
-  renderAll();
-  fitTo(desc.bounds);
-}
-
-function fitTo(bounds) {
-  if (!bounds) return;
-  const [w, s, e, n] = bounds;
-  if (![w, s, e, n].every(Number.isFinite)) return;
-  if (w === e && s === n) { map.flyTo({ center: [w, s], zoom: Math.max(map.getZoom(), 13) }); return; }
-  map.fitBounds([[w, s], [e, n]], { padding: 60, maxZoom: 16, duration: 800 });
-}
-
-async function addOverlay(path) {
-  path = path.trim();
-  if (!path || state.layers.has(path)) return;
-  await loadLayer(path, false);
-  schedulePersist();
-}
-function removeOverlay(path) {
-  state.layers.delete(path);
-  if (state.selected === path) state.selected = FILE;
-  renderAll();
-  schedulePersist();
-}
-
-/* ---------------- deck layers ---------------- */
+/* ---- deck layers ------------------------------------------------------ */
+// state.layers insertion order = z-order, bottom → top.
 function rebuildDeck() {
-  const rasters = [], vectors = [];
+  const layers = [];
   for (const [key, L] of state.layers) {
     if (!L.visible || !L.descriptor || L.descriptor.status !== "ok") continue;
     const d = L.descriptor;
     if (d.kind === "raster_image" && d.data.image_path) {
-      rasters.push(new deck.BitmapLayer({ id: "r_" + key, image: fused.rawUrl(d.data.image_path),
-        bounds: d.bounds, opacity: L.opacity }));
+      layers.push(new deck.BitmapLayer({
+        id: "r_" + key, image: fused.rawUrl(d.data.image_path),
+        bounds: d.bounds, opacity: L.opacity, _imageCoordinateSystem: undefined,
+      }));
     } else if (d.kind === "vector_geojson" && L.geojson) {
-      vectors.push(makeGeoJsonLayer(key, L));
+      layers.push(makeGeoJsonLayer(key, L));
     } else if (d.kind === "vector_points_binary" && L.binary) {
-      vectors.push(makePointsBinaryLayer(key, L));
+      layers.push(makePointsBinaryLayer(key, L));
     }
   }
-  overlay.setProps({ layers: [...rasters, ...vectors] });
+  overlay.setProps({ layers });
 }
+
 function makePointsBinaryLayer(key, L) {
   const s = L.style, b = L.binary;
   const fill = s.fill_color || [...L.defaultColor, 220];
@@ -463,6 +724,35 @@ function makePointsBinaryLayer(key, L) {
     updateTriggers: { getFillColor: [!!useCB, s.fill_color, s.color_by, s.colormap], getRadius: [s.point_radius] },
   });
 }
+
+async function ensureColumn(L, col) {
+  const b = L.binary;
+  if (b.colCache[col]) return b.colCache[col];
+  const meta = b.columns[col];
+  const buf = await (await fetch(fused.rawUrl(meta.path))).arrayBuffer();
+  const arr = meta.dtype === "u8" ? new Uint8Array(buf) : new Float32Array(buf);
+  b.colCache[col] = { arr, meta };
+  return b.colCache[col];
+}
+
+async function computeBinaryColors(L) {
+  const s = L.style, b = L.binary;
+  if (!s.color_by || !b.columns[s.color_by]) { L._colorBuf = null; L._cb = null; return; }
+  const { arr, meta } = await ensureColumn(L, s.color_by);
+  const a = (s.fill_color && s.fill_color[3]) ?? 220;
+  const out = new Uint8Array(b.count * 4);
+  const name = s.colormap || "viridis";
+  if (meta.dtype === "f32") {
+    const mn = meta.min ?? 0, mx = meta.max ?? 1, rng = mx > mn ? mx - mn : 1;
+    for (let i = 0; i < b.count; i++) { const c = cmapColor(name, (arr[i] - mn) / rng); const o = i*4; out[o]=c[0]; out[o+1]=c[1]; out[o+2]=c[2]; out[o+3]=a; }
+    L._cb = { numeric: true, min: mn, max: mx };
+  } else {
+    for (let i = 0; i < b.count; i++) { const c = CATEGORICAL[arr[i] % CATEGORICAL.length]; const o = i*4; out[o]=c[0]; out[o+1]=c[1]; out[o+2]=c[2]; out[o+3]=a; }
+    L._cb = { numeric: false, cats: meta.categories };
+  }
+  L._colorBuf = out;
+}
+
 function makeGeoJsonLayer(key, L) {
   const s = L.style;
   const fill = s.fill_color || [...L.defaultColor, 90];
@@ -470,13 +760,13 @@ function makeGeoJsonLayer(key, L) {
   let getFill = fill, getLine = line;
   if (s.color_by && L._cb) {
     const cb = L._cb, name = s.colormap || "viridis";
-    const colorFor = v => {
+    const colorFor = (v) => {
       if (v === undefined || v === null) return [130,130,140,180];
       if (cb.numeric) {
         const t = cb.max > cb.min ? (Number(v) - cb.min) / (cb.max - cb.min) : 0.5;
         const c = cmapColor(name, t); return [c[0], c[1], c[2], fill[3] ?? 200];
       }
-      const i = cb.cats.indexOf(String(v)); const c = CAT_COLORS[(i < 0 ? 0 : i) % CAT_COLORS.length];
+      const i = cb.cats.indexOf(String(v)); const c = CATEGORICAL[(i < 0 ? 0 : i) % CATEGORICAL.length];
       return [c[0], c[1], c[2], fill[3] ?? 200];
     };
     getFill = f => colorFor(f.properties && f.properties[s.color_by]);
@@ -496,64 +786,178 @@ function makeGeoJsonLayer(key, L) {
     },
   });
 }
-function renderAll() { rebuildDeck(); renderLayerPanel(); }
 
-/* ---------------- layer / style panel ---------------- */
-const EYE = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
-const EYEOFF = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.9 17.9A10.7 10.7 0 0 1 12 20C5 20 1 12 1 12a19.6 19.6 0 0 1 5.1-5.9m3.9-1.8A10.7 10.7 0 0 1 12 4c7 0 11 8 11 8a19.6 19.6 0 0 1-2.3 3.3M1 1l22 22"/></svg>';
+function renderAll() { renderFileList(); rebuildDeck(); renderLayerCards(); renderStyleDock(); }
 
-function renderLayerPanel() {
-  const box = qs("layercards");
-  const active = [...state.layers.values()].filter(L => L.descriptor && L.descriptor.status === "ok");
-  if (!active.length) { box.innerHTML = '<div class="lp-empty">No layers loaded yet.</div>'; return; }
-  box.innerHTML = "";
-  for (const L of active) box.appendChild(layerCard(L));
+/* =======================================================================
+   LAYERS SECTION (cards in the left panel)
+   ===================================================================== */
+const EYE = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYEOFF = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.9 17.9A10.7 10.7 0 0 1 12 20C5 20 1 12 1 12a19.6 19.6 0 0 1 5.1-5.9m3.9-1.8A10.7 10.7 0 0 1 12 4c7 0 11 8 11 8a19.6 19.6 0 0 1-2.3 3.3M1 1l22 22"/></svg>';
+const DOTS = '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>';
+
+function kindBadge(d) {
+  return d.kind === "raster_image" ? "raster"
+       : d.kind === "vector_points_binary" ? "points"
+       : d.kind === "vector_tiles_pmtiles" ? "pmtiles" : "vector";
 }
+
+function swatchStyle(L) {
+  const d = L.descriptor, s = L.style || {};
+  if (d && d.kind === "raster_image") {
+    return s.render_mode === "rgb"
+      ? "background:linear-gradient(90deg,#f87171,#4ade80,#60a5fa)"
+      : `background:${cmapGradient(s.colormap || "viridis")}`;
+  }
+  if (s.color_by) return `background:${cmapGradient(s.colormap || "viridis")}`;
+  const c = s.fill_color || s.line_color || L.defaultColor || [160, 160, 170];
+  return `background:rgb(${c[0]},${c[1]},${c[2]})`;
+}
+
+function renderLayerCards() {
+  const box = qs("layercards");
+  const all = [...state.layers.values()];
+  if (!all.length) {
+    box.innerHTML = `<div class="lp-empty">No layers yet.<br/>Pick a file in Browse below, or paste a path to add one to the map.</div>`;
+    return;
+  }
+  box.innerHTML = "";
+  for (const L of all.reverse()) box.appendChild(layerCard(L));   // topmost card = topmost on map
+}
+
 function layerCard(L) {
-  const d = L.descriptor, open = state.selected === L.target;
+  const d = L.descriptor;
   const card = document.createElement("div");
-  card.className = "lc" + (open ? " open" : "");
-  const badge = d.kind === "raster_image" ? "raster" : d.kind === "vector_tiles_pmtiles" ? "pmtiles" : "vector";
+  card.className = "lc" + (state.selected === L.target ? " selected" : "") + (L.visible ? "" : " off");
+  if (d && d.status === "error") card.classList.add("bad-tint");
+  if (d && d.status === "not_georeferenced") card.classList.add("warn-tint");
+
   const h = document.createElement("div"); h.className = "lc-h";
-  h.innerHTML =
-    `<button class="lc-eye ${L.visible?'':'off'}" title="Toggle">${L.visible?EYE:EYEOFF}</button>` +
-    `<span class="lc-nm" title="${L.target}">${L.name}${L.isPrimary ? ' (primary)' : ''}</span>` +
-    `<span class="lc-badge">${badge}</span>` +
-    (L.isPrimary ? '' : '<button class="lc-x" title="Remove">×</button>');
-  h.querySelector(".lc-eye").onclick = () => { L.visible = !L.visible; renderAll(); };
-  h.querySelector(".lc-nm").onclick = () => {
-    state.selected = open ? null : L.target;
-    P.set("sel", state.selected ? encodeURIComponent(state.selected) : "");
-    renderLayerPanel();
-  };
-  const xBtn = h.querySelector(".lc-x");
-  if (xBtn) xBtn.onclick = () => removeOverlay(L.target);
+  if (L.loading) {
+    h.innerHTML = `<span class="spin"></span><span class="lc-nm" title="${L.target}">${L.name}</span><span class="lc-badge">loading</span>`;
+  } else if (d && d.status !== "ok") {
+    h.innerHTML =
+      `<span class="lc-swatch" style="background:${d.status === "error" ? "var(--bad)" : "var(--warn)"}"></span>` +
+      `<span class="lc-nm" title="${L.target}">${L.name}</span>` +
+      `<button class="lc-dots" title="More">${DOTS}</button>`;
+  } else {
+    h.innerHTML =
+      `<span class="lc-swatch" style="${swatchStyle(L)}"></span>` +
+      `<span class="lc-nm" title="${L.target}">${L.name}</span>` +
+      `<span class="lc-badge">${kindBadge(d)}</span>` +
+      `<button class="lc-eye ${L.visible ? "" : "off"}" title="Toggle visibility">${L.visible ? EYE : EYEOFF}</button>` +
+      `<button class="lc-dots" title="More">${DOTS}</button>`;
+  }
   card.appendChild(h);
 
-  const body = document.createElement("div"); body.className = "lc-body";
+  if (d && !L.loading && d.status !== "ok") {
+    const m = document.createElement("div"); m.className = "lc-msg";
+    m.textContent = d.message || (d.error && d.error.message) || "Couldn't render this file.";
+    card.appendChild(m);
+  }
+
+  card.onclick = () => { if (!L.loading) selectLayer(L.target); };
+  const eye = h.querySelector(".lc-eye");
+  if (eye) eye.onclick = ev => { ev.stopPropagation(); L.visible = !L.visible; renderLayerCards(); rebuildDeck(); };
+  const dots = h.querySelector(".lc-dots");
+  if (dots) dots.onclick = ev => { ev.stopPropagation(); openLayerMenu(dots, L); };
+  return card;
+}
+
+let menuEl = null;
+function closeMenu() { if (menuEl) { menuEl.remove(); menuEl = null; } }
+document.addEventListener("click", closeMenu);
+
+function openLayerMenu(btn, L) {
+  closeMenu();
+  menuEl = document.createElement("div"); menuEl.id = "lmenu";
+  const items = [];
+  if (L.descriptor && L.descriptor.status === "ok") {
+    items.push(["Zoom to layer", () => fitTo(L.descriptor.bounds)]);
+    items.push(["Move up", () => moveLayer(L.target, +1)]);
+    items.push(["Move down", () => moveLayer(L.target, -1)]);
+  }
+  items.push(["View source", () => { state.selected = L.target; renderFileList(); renderLayerCards(); openCodePanel(); }]);
+  items.push(["Remove", () => removeLayer(L.target), "danger"]);
+  for (const [label, fn, cls] of items) {
+    const b = document.createElement("button");
+    b.textContent = label; if (cls) b.className = cls;
+    b.onclick = ev => { ev.stopPropagation(); closeMenu(); fn(); };
+    menuEl.appendChild(b);
+  }
+  document.body.appendChild(menuEl);
+  const r = btn.getBoundingClientRect(), mw = menuEl.offsetWidth, mh = menuEl.offsetHeight;
+  menuEl.style.left = Math.min(r.left, window.innerWidth - mw - 8) + "px";
+  menuEl.style.top = (r.bottom + mh + 8 > window.innerHeight ? r.top - mh - 4 : r.bottom + 4) + "px";
+}
+
+// Reorder within state.layers (insertion order = z-order); dir +1 = up the stack.
+function moveLayer(key, dir) {
+  const keys = [...state.layers.keys()];
+  const i = keys.indexOf(key), j = i + dir;
+  if (i < 0 || j < 0 || j >= keys.length) return;
+  [keys[i], keys[j]] = [keys[j], keys[i]];
+  const m = new Map();
+  for (const k of keys) m.set(k, state.layers.get(k));
+  state.layers = m;
+  persistOpen();
+  renderLayerCards(); rebuildDeck();
+}
+
+function removeLayer(key) {
+  state.layers.delete(key);
+  if (state.selected === key) state.selected = null;
+  persistOpen();
+  renderAll();
+  refreshCode();
+}
+
+/* =======================================================================
+   STYLE DOCK (right-docked, shows the selected layer)
+   ===================================================================== */
+function renderStyleDock() {
+  if (qs("stylepanel").classList.contains("hidden")) return;
+  const body = qs("sp-body");
+  const L = state.selected ? state.layers.get(state.selected) : null;
+  if (!L || !L.descriptor) {
+    qs("sp-nm").textContent = "Style"; qs("sp-kind").textContent = "";
+    body.innerHTML = `<div class="sp-empty">Select a layer to style it.</div>`;
+    return;
+  }
+  const d = L.descriptor;
+  qs("sp-nm").textContent = L.name; qs("sp-nm").title = L.target;
+  qs("sp-kind").textContent = d.kind ? kindBadge(d) : "";
+  body.innerHTML = "";
+  if (d.status !== "ok") {
+    body.innerHTML = `<div class="sp-empty">${d.message || (d.error && d.error.message) || "This layer couldn't be rendered."}</div>`;
+    return;
+  }
+
   body.appendChild(sliderCtl("Opacity", Math.round(L.opacity*100)+"%", 0, 100, Math.round(L.opacity*100),
-    v => { L.opacity = v/100; rebuildDeck(); updateCtlLabel(body,"Opacity",v+"%"); onLayerStyleChanged(L); }));
+    v => { L.opacity = v/100; rebuildDeck(); updateCtlLabel(body,"Opacity",v+"%"); }));
 
   if (d.kind === "raster_image") rasterControls(body, L);
   else if (d.kind === "vector_points_binary") binaryPointControls(body, L);
   else if (d.kind === "vector_geojson") vectorControls(body, L);
 
+  // stats + warnings
   const st = d.stats || {};
   let statTxt = "";
   if (d.kind === "raster_image") statTxt = `${st.bands}-band · ${st.width}×${st.height} · ${st.dtype}`;
   else if (d.kind === "vector_geojson" || d.kind === "vector_points_binary") statTxt = `${(st.feature_count||0).toLocaleString()} features · ${(st.geometry_types||[]).join(", ")}`;
   if (d.crs_original) statTxt += `\nCRS: ${d.crs_original}`;
+  if (d.timing_ms != null) statTxt += ` · ${d.timing_ms} ms`;
   if (statTxt) { const s = document.createElement("div"); s.className = "stat"; s.textContent = statTxt; body.appendChild(s); }
   (d.warnings||[]).forEach(w => { const el = document.createElement("div"); el.className="warnline"; el.textContent="⚠ "+w; body.appendChild(el); });
-  card.appendChild(body);
-  return card;
 }
+
 function rasterControls(body, L) {
   const s = L.style;
   if (s.render_mode !== "rgb") {
     body.appendChild(selectCtl("Colormap", Object.keys(CMAPS), s.colormap || "viridis", v => {
-      s.colormap = v; reloadRaster(L);
+      s.colormap = v; s._touched = true; reloadRaster(L);
     }));
+    // legend
     const st = (L.descriptor.stats.band_stats || [{}])[0];
     const leg = document.createElement("div"); leg.className = "legend";
     leg.innerHTML = `<div class="bar" style="background:${cmapGradient(s.colormap||'viridis')}"></div>
@@ -563,70 +967,80 @@ function rasterControls(body, L) {
     const note = document.createElement("div"); note.className="stat"; note.textContent="RGB composite (bands 1–3)"; body.appendChild(note);
   }
 }
-async function reloadRaster(L) {
-  L.loading = true; renderLayerPanel();
-  const desc = await fused.runPython("./map_render.py", { target: L.target, colormap: L.style.colormap || "viridis",
-    rescale: L.style.rescale ? L.style.rescale.join(",") : "" }).catch(e => null);
-  L.loading = false;
-  if (desc && desc.status === "ok") { const keepStyle = L.style; L.descriptor = desc; L.style = Object.assign({}, desc.style, keepStyle); }
-  renderAll();
-  onLayerStyleChanged(L);
-}
+
 function vectorControls(body, L) {
   const s = L.style, d = L.descriptor;
   const gtypes = d.stats.geometry_types || [];
   const isPoint = gtypes.some(g => g.includes("Point"));
   const isLine = gtypes.some(g => g.includes("Line"));
+  const numCols = d.stats.numeric_columns || [];
   const allCols = Object.keys(d.stats.columns || {});
 
-  body.appendChild(selectCtl("Color by", ["(single color)", ...allCols], s.color_by || "(single color)", v => {
-    s.color_by = v === "(single color)" ? null : v;
-    computeColorByStats(L); rebuildDeck(); renderLayerPanel(); onLayerStyleChanged(L);
+  // color-by
+  const cbOpts = ["(single color)", ...allCols];
+  body.appendChild(selectCtl("Color by", cbOpts, s.color_by || "(single color)", v => {
+    s.color_by = v === "(single color)" ? null : v; s._touched = true;
+    computeColorByStats(L); rebuildDeck(); renderLayerCards(); renderStyleDock();
   }));
   if (s.color_by && L._cb) {
-    body.appendChild(selectCtl("Palette", Object.keys(CMAPS), s.colormap || "viridis", v => { s.colormap=v; rebuildDeck(); renderLayerPanel(); onLayerStyleChanged(L); }));
+    body.appendChild(selectCtl("Palette", Object.keys(CMAPS), s.colormap || "viridis", v => { s.colormap=v; s._touched=true; rebuildDeck(); renderLayerCards(); renderStyleDock(); }));
     const leg = document.createElement("div"); leg.className="legend";
     if (L._cb.numeric) leg.innerHTML = `<div class="bar" style="background:${cmapGradient(s.colormap||'viridis')}"></div><div class="ends"><span>${fmt(L._cb.min)}</span><span>${fmt(L._cb.max)}</span></div>`;
-    else leg.innerHTML = `<div class="swatchrow">${L._cb.cats.map((c,i)=>{const col=CAT_COLORS[i%CAT_COLORS.length];return `<span class="swatch"><i style="background:rgb(${col[0]},${col[1]},${col[2]})"></i>${c}</span>`;}).join("")}</div>`;
+    else leg.innerHTML = `<div class="swatchrow">${L._cb.cats.map((c,i)=>{const col=CATEGORICAL[i%CATEGORICAL.length];return `<span class="swatch"><i style="background:rgb(${col[0]},${col[1]},${col[2]})"></i>${c}</span>`;}).join("")}</div>`;
     body.appendChild(leg);
   } else {
+    // fill + line color pickers
     if (!isLine) body.appendChild(colorCtl("Fill", rgbToHex(s.fill_color||L.defaultColor), hex => {
-      const a = (s.fill_color && s.fill_color[3]) ?? 90; s.fill_color = [...hexToRgb(hex), a]; rebuildDeck(); onLayerStyleChanged(L);
+      const a = (s.fill_color && s.fill_color[3]) ?? 90; s.fill_color = [...hexToRgb(hex), a]; s._touched=true; rebuildDeck(); renderLayerCards();
     }));
     body.appendChild(colorCtl("Line / point", rgbToHex(s.line_color||L.defaultColor), hex => {
-      const a = (s.line_color && s.line_color[3]) ?? 220; s.line_color = [...hexToRgb(hex), a];
+      const a = (s.line_color && s.line_color[3]) ?? 220; s.line_color = [...hexToRgb(hex), a]; s._touched=true;
       if (isPoint) { const fa=(s.fill_color&&s.fill_color[3])??220; s.fill_color=[...hexToRgb(hex),fa]; }
-      rebuildDeck(); onLayerStyleChanged(L);
+      rebuildDeck(); renderLayerCards();
     }));
   }
   if (!isPoint) body.appendChild(sliderCtl("Line width", (s.line_width??1.5).toFixed(1), 0, 8, Math.round((s.line_width??1.5)*2),
-    v => { s.line_width = v/2; rebuildDeck(); updateCtlLabel(body,"Line width",(v/2).toFixed(1)); onLayerStyleChanged(L); }));
+    v => { s.line_width = v/2; s._touched=true; rebuildDeck(); updateCtlLabel(body,"Line width",(v/2).toFixed(1)); }));
   if (isPoint) body.appendChild(sliderCtl("Point size", String(s.point_radius??5), 1, 24, s.point_radius??5,
-    v => { s.point_radius = v; rebuildDeck(); updateCtlLabel(body,"Point size",String(v)); onLayerStyleChanged(L); }));
+    v => { s.point_radius = v; s._touched=true; rebuildDeck(); updateCtlLabel(body,"Point size",String(v)); }));
 }
+
 function binaryPointControls(body, L) {
   const s = L.style, b = L.binary;
   const cols = Object.keys(b.columns);
   body.appendChild(selectCtl("Color by", ["(single color)", ...cols], s.color_by || "(single color)", async v => {
-    s.color_by = v === "(single color)" ? null : v;
-    await computeBinaryColors(L); rebuildDeck(); renderLayerPanel(); onLayerStyleChanged(L);
+    s.color_by = v === "(single color)" ? null : v; s._touched = true;
+    await computeBinaryColors(L); rebuildDeck(); renderLayerCards(); renderStyleDock();
   }));
   if (s.color_by && L._cb) {
     body.appendChild(selectCtl("Palette", Object.keys(CMAPS), s.colormap || "viridis", async v => {
-      s.colormap = v; await computeBinaryColors(L); rebuildDeck(); renderLayerPanel(); onLayerStyleChanged(L);
+      s.colormap = v; s._touched = true; await computeBinaryColors(L); rebuildDeck(); renderLayerCards(); renderStyleDock();
     }));
     const leg = document.createElement("div"); leg.className = "legend";
     if (L._cb.numeric) leg.innerHTML = `<div class="bar" style="background:${cmapGradient(s.colormap||'viridis')}"></div><div class="ends"><span>${fmt(L._cb.min)}</span><span>${fmt(L._cb.max)}</span></div>`;
-    else leg.innerHTML = `<div class="swatchrow">${(L._cb.cats||[]).slice(0,24).map((c,i)=>{const col=CAT_COLORS[i%CAT_COLORS.length];return `<span class="swatch"><i style="background:rgb(${col[0]},${col[1]},${col[2]})"></i>${c}</span>`;}).join("")}</div>`;
+    else leg.innerHTML = `<div class="swatchrow">${(L._cb.cats||[]).slice(0,24).map((c,i)=>{const col=CATEGORICAL[i%CATEGORICAL.length];return `<span class="swatch"><i style="background:rgb(${col[0]},${col[1]},${col[2]})"></i>${c}</span>`;}).join("")}</div>`;
     body.appendChild(leg);
   } else {
     body.appendChild(colorCtl("Color", rgbToHex(s.fill_color||L.defaultColor), hex => {
-      const a = (s.fill_color && s.fill_color[3]) ?? 220; s.fill_color = [...hexToRgb(hex), a]; rebuildDeck(); onLayerStyleChanged(L);
+      const a = (s.fill_color && s.fill_color[3]) ?? 220; s.fill_color = [...hexToRgb(hex), a]; s._touched = true; rebuildDeck(); renderLayerCards();
     }));
   }
   body.appendChild(sliderCtl("Point size", String(s.point_radius??4), 1, 24, s.point_radius??4,
-    v => { s.point_radius = v; rebuildDeck(); updateCtlLabel(body,"Point size",String(v)); onLayerStyleChanged(L); }));
+    v => { s.point_radius = v; s._touched = true; rebuildDeck(); updateCtlLabel(body,"Point size",String(v)); }));
 }
+
+async function reloadRaster(L) {
+  L.loading = true; renderFileList();
+  try {
+    const desc = await fused.runPython("./map_render.py", { target: L.target, colormap: L.style.colormap || "viridis",
+      rescale: L.style.rescale ? L.style.rescale.join(",") : "" });
+    L.loading = false;
+    if (desc.status === "ok") { const keepStyle = L.style; L.descriptor = desc; L.style = Object.assign({}, desc.style, keepStyle); }
+    renderAll();
+  } catch (e) { L.loading = false; toast("bad","Re-render failed", e.message); }
+}
+
+/* ---- small control builders ------------------------------------------ */
 function ctlShell(label, valTxt) {
   const c = document.createElement("div"); c.className = "ctl"; c.dataset.label = label;
   const l = document.createElement("div"); l.className = "ctl-lbl";
@@ -651,38 +1065,140 @@ function colorCtl(label, hex, on) {
   const c = ctlShell(label, "");
   const inp = document.createElement("input"); inp.type = "color"; inp.value = hex;
   inp.oninput = e => on(e.target.value);
-  c.querySelector(".ctl-lbl b").replaceWith(inp);
+  c.querySelector(".ctl-lbl b").replaceWith(inp);   // swatch sits on the label's right
   return c;
 }
+const fmt = v => v == null ? "—" : (Math.abs(v) >= 1000 || (v !== 0 && Math.abs(v) < 0.01) ? Number(v).toExponential(1) : Number(v).toFixed(2));
 
-/* ---------------- top controls ---------------- */
+/* =======================================================================
+   CONTROLS: panel toggle / fullscreen / geocode / docks / basemap / coords
+   ===================================================================== */
+function setPanelVisible(show) {
+  qs("panel").classList.toggle("hidden", !show);
+  qs("btn-panel").classList.toggle("hidden", show);
+}
+qs("btn-hide-panel").onclick = () => setPanelVisible(false);
+qs("btn-panel").onclick = () => setPanelVisible(true);
+
+qs("browse-head").onclick = () => qs("browsesec").classList.toggle("open");
+
 qs("btn-full").onclick = () => {
-  if (!document.fullscreenElement) document.body.requestFullscreen().catch(()=>{});
+  const el = qs("mapwrap");
+  if (!document.fullscreenElement) el.requestFullscreen().catch(()=>{});
   else document.exitFullscreen();
 };
 document.addEventListener("fullscreenchange", () => {
   qs("btn-full").classList.toggle("on", !!document.fullscreenElement);
   setTimeout(()=>map.resize(), 120);
 });
-qs("btn-layers").onclick = () => {
-  const p = qs("layerpanel"); const show = p.style.display !== "flex";
-  p.style.display = show ? "flex" : "none"; qs("btn-layers").classList.toggle("on", show);
-  if (show) { qs("geobox").style.display = "none"; qs("addpanel").style.display = "none"; }
-};
-qs("lp-close").onclick = () => { qs("layerpanel").style.display = "none"; qs("btn-layers").classList.remove("on"); };
 
-qs("basemap-seg").querySelectorAll("button").forEach(b => b.onclick = () => setBasemap(b.dataset.b));
+qs("btn-style").onclick = () => {
+  const p = qs("stylepanel"); const show = p.classList.contains("hidden");
+  p.classList.toggle("hidden", !show); qs("btn-style").classList.toggle("on", show);
+  setTimeout(() => map.resize(), 60);
+  if (show) renderStyleDock();
+};
+qs("sp-close").onclick = () => {
+  qs("stylepanel").classList.add("hidden"); qs("btn-style").classList.remove("on");
+  setTimeout(() => map.resize(), 60);
+};
+
+/* ---- code viewer (right-docked, collapsed by default) ---------------- */
+const TEXT_EXT = ["py","json","geojson","csv","txt","md","yaml","yml","toml","cfg","ini","js","ts","html","css","sh","sql"];
+const LANG_ALIAS = { py: "python", geojson: "json", yml: "yaml", sh: "bash", ts: "typescript" };
+
+function openCodePanel() {
+  qs("codepanel").classList.remove("hidden"); qs("btn-code").classList.add("on");
+  setTimeout(() => map.resize(), 60);
+  updateCodeViewer(state.selected);
+}
+qs("btn-code").onclick = () => {
+  if (qs("codepanel").classList.contains("hidden")) { openCodePanel(); return; }
+  qs("codepanel").classList.add("hidden"); qs("btn-code").classList.remove("on");
+  setTimeout(() => map.resize(), 60);
+};
+qs("cp-close").onclick = () => {
+  qs("codepanel").classList.add("hidden"); qs("btn-code").classList.remove("on");
+  setTimeout(() => map.resize(), 60);
+};
+
+function refreshCode() {
+  if (!qs("codepanel").classList.contains("hidden")) updateCodeViewer(state.selected);
+}
+
+async function updateCodeViewer(path) {
+  const body = qs("cp-body"), fnEl = qs("cp-fn"), langEl = qs("cp-lang");
+  if (!path) { fnEl.textContent = "—"; langEl.textContent = ""; body.innerHTML = `<div class="cp-empty">Select a file on the left, then this shows its source.</div>`; return; }
+  const name = path.split(/[\\/]/).pop();
+  fnEl.textContent = name; fnEl.title = path;
+  const ext = (name.split(".").pop() || "").toLowerCase();
+  if (!TEXT_EXT.includes(ext)) {
+    langEl.textContent = ext || "data";
+    body.innerHTML = `<div class="cp-note">Binary dataset — no source to show.\n\n${path}</div>`;
+    return;
+  }
+  langEl.textContent = ext;
+  body.innerHTML = `<div class="cp-empty">Loading…</div>`;
+  try {
+    const text = await fused.readFile(path);
+    const lang = LANG_ALIAS[ext] || ext;
+    const nLines = text.split("\n").length;
+    const codeEl = document.createElement("code");
+    codeEl.className = "language-" + lang;
+    codeEl.textContent = text;
+    if (window.hljs) { try { window.hljs.highlightElement(codeEl); } catch (e) { /* fall back to plain */ } }
+    const wrap = document.createElement("div"); wrap.className = "cp-code";
+    const g = document.createElement("div"); g.className = "gutter";
+    g.textContent = Array.from({ length: nLines }, (_, i) => i + 1).join("\n");
+    const pre = document.createElement("pre"); pre.appendChild(codeEl);
+    wrap.appendChild(g); wrap.appendChild(pre);
+    body.innerHTML = ""; body.appendChild(wrap);
+  } catch (e) {
+    body.innerHTML = `<div class="cp-note">Couldn't read file:\n${e.message}</div>`;
+  }
+}
+
+/* ---- resizable right panels ------------------------------------------ */
+function makeResizable(panel, handle, rightEdgeFn, min, max) {
+  let dragging = false;
+  handle.addEventListener("pointerdown", e => {
+    dragging = true; try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+    document.body.style.cursor = "col-resize"; e.preventDefault();
+  });
+  handle.addEventListener("pointermove", e => {
+    if (!dragging) return;
+    const w = Math.max(min, Math.min(max, rightEdgeFn() - e.clientX));
+    panel.style.width = w + "px";
+    map.resize();
+  });
+  const end = e => {
+    if (!dragging) return; dragging = false;
+    try { handle.releasePointerCapture(e.pointerId); } catch (_) {}
+    document.body.style.cursor = "";
+    map.resize();
+  };
+  handle.addEventListener("pointerup", end);
+  handle.addEventListener("pointercancel", end);
+}
+makeResizable(qs("codepanel"), qs("cp-resizer"), () => window.innerWidth, 320, 900);
+makeResizable(qs("stylepanel"), qs("sp-resizer"), () => qs("stylepanel").getBoundingClientRect().right, 260, 560);
+
+qs("basemap-seg").querySelectorAll("button").forEach(b => {
+  b.classList.toggle("on", b.dataset.b === baseName);
+  b.onclick = () => setBasemap(b.dataset.b);
+});
 function setBasemap(name) {
   if (!BASEMAPS[name] || name === baseName) return;
   baseName = name; P.set("base", name);
   qs("basemap-seg").querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.b === name));
-  map.setStyle(BASEMAPS[name]);
+  map.setStyle(BASEMAPS[name]);   // overlay is a control → survives setStyle
 }
 
+/* geocode (Photon) */
 qs("btn-search").onclick = () => {
-  const g = qs("geobox"); const show = g.style.display !== "block";
-  g.style.display = show ? "block" : "none"; qs("btn-search").classList.toggle("on", show);
-  if (show) { qs("layerpanel").style.display = "none"; qs("addpanel").style.display = "none"; qs("geoinput").focus(); }
+  const g = qs("geobox"); const show = g.classList.contains("hidden");
+  g.classList.toggle("hidden", !show); qs("btn-search").classList.toggle("on", show);
+  if (show) qs("geoinput").focus();
 };
 let geoTimer = null;
 qs("geoinput").oninput = e => {
@@ -692,12 +1208,12 @@ qs("geoinput").oninput = e => {
 };
 async function geocode(q) {
   const box = qs("georesults");
-  box.innerHTML = '<div class="geores none">Searching…</div>';
+  box.innerHTML = `<div class="geores none">Searching…</div>`;
   try {
     const r = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=6`);
     const j = await r.json();
     const feats = j.features || [];
-    if (!feats.length) { box.innerHTML = '<div class="geores none">No matches.</div>'; return; }
+    if (!feats.length) { box.innerHTML = `<div class="geores none">No matches.</div>`; return; }
     box.innerHTML = "";
     for (const f of feats) {
       const p = f.properties || {}, c = f.geometry.coordinates;
@@ -708,57 +1224,69 @@ async function geocode(q) {
       div.onclick = () => {
         if (p.extent) { const [w,nn,ee,ss] = p.extent; map.fitBounds([[w,ss],[ee,nn]], { padding: 60, maxZoom: 15, duration: 900 }); }
         else map.flyTo({ center: [c[0], c[1]], zoom: 13, duration: 900 });
-        qs("geobox").style.display = "none"; qs("btn-search").classList.remove("on");
+        qs("geobox").classList.add("hidden"); qs("btn-search").classList.remove("on");
       };
       box.appendChild(div);
     }
-  } catch { box.innerHTML = '<div class="geores none">Geocoding failed (offline?).</div>'; }
+  } catch (err) { box.innerHTML = `<div class="geores none">Geocoding failed (offline?).</div>`; }
 }
 
-/* ---------------- add-layer panel ---------------- */
-qs("btn-add").onclick = () => {
-  const p = qs("addpanel"); const show = p.style.display !== "flex";
-  p.style.display = show ? "flex" : "none"; qs("btn-add").classList.toggle("on", show);
-  if (show) { qs("geobox").style.display = "none"; qs("layerpanel").style.display = "none"; refreshExplorer(); }
-};
-qs("add-go").onclick = () => { const v = qs("addpath").value.trim(); if (v) { addOverlay(v); qs("addpath").value = ""; } };
-qs("addpath").onkeydown = e => { if (e.key === "Enter") qs("add-go").click(); };
-async function refreshExplorer(dir) {
-  dir = dir || FILE.slice(0, Math.max(FILE.lastIndexOf("/"), FILE.lastIndexOf("\\")) + 1);
-  const r = await fused.runPython("./browse.py", { dir }).catch(() => null);
-  if (!r || r.error) return;
-  qs("crumbs").innerHTML = r.crumbs.map(c => `<a data-p="${c.path}">${c.label}</a>`).join(' <span style="color:#4b5058">/</span> ');
-  qs("crumbs").querySelectorAll("a").forEach(a => a.onclick = () => refreshExplorer(a.dataset.p));
-  const entries = [...r.dirs, ...r.files];
-  qs("explorerList").innerHTML = entries.map(e =>
-    `<div class="row${e.is_dir ? '' : (e.loadable ? '' : ' dim')}" data-p="${e.path}" data-d="${e.is_dir?1:0}" data-l="${e.loadable?1:0}">
-       <span class="ic">${e.is_dir ? '📁' : '🗺'}</span><span class="nm">${e.name}</span>
-       <span class="sz">${e.size ? human(e.size) : ''}</span></div>`).join('') || '<div class="row dim">empty</div>';
-  qs("explorerList").querySelectorAll(".row[data-p]").forEach(row => row.onclick = () => {
-    if (row.dataset.d === "1") refreshExplorer(row.dataset.p);
-    else if (row.dataset.l === "1") { addOverlay(row.dataset.p); qs("addpanel").style.display = "none"; qs("btn-add").classList.remove("on"); }
-  });
-}
-
-/* ---------------- coordinate readout + camera persist ---------------- */
-map.on("mousemove", e => { qs("coords").textContent = `${e.lngLat.lat.toFixed(4)}, ${e.lngLat.lng.toFixed(4)}  z${map.getZoom().toFixed(1)}`; });
+/* coordinate readout + camera persist */
+map.on("mousemove", e => {
+  qs("coords").textContent = `${e.lngLat.lat.toFixed(4)}, ${e.lngLat.lng.toFixed(4)}  z${map.getZoom().toFixed(1)}`;
+});
 map.on("mouseout", () => { const c = map.getCenter(); qs("coords").textContent = `${c.lat.toFixed(4)}, ${c.lng.toFixed(4)}  z${map.getZoom().toFixed(1)}`; });
 map.on("moveend", () => { const c = map.getCenter(); P.set("cam", `${c.lat.toFixed(4)},${c.lng.toFixed(4)},${map.getZoom().toFixed(1)}`); });
 
-/* ---------------- params -> live state (e.g. back/forward navigation) ---------------- */
-fused.params.onChange(() => {
-  const bn = P.get("base");
-  if (bn && bn !== baseName) setBasemap(bn);
-});
+/* browser wiring */
+qs("filter").oninput = renderFileList;
+qs("btn-up").onclick = () => { if (state.parent && state.parent !== state.dir) loadDir(state.parent); };
+qs("btn-reload").onclick = () => loadDir(state.dir);
+qs("dir").onkeydown = e => { if (e.key === "Enter") loadDir(e.target.value.trim()); };
+qs("importpath").onkeydown = e => { if (e.key === "Enter" && e.target.value.trim()) { loadTarget(e.target.value.trim()); e.target.value = ""; } };
 
-/* ---------------- boot ---------------- */
-(async function boot() {
-  await loadLayer(FILE, true);
-  const saved = await loadSidecarLayers();
-  for (const ov of saved) await loadLayer(ov.path, false, ov);
-})();
-
+/* toast */
+let toastTimer = null;
+function toast(kind, title, msg) {
+  const t = qs("toast"); t.className = kind === "warn" ? "warn" : kind === "bad" ? "bad" : "";
+  t.innerHTML = `<div class="tx"><b>${title}</b>${msg ? `<span>${String(msg).slice(0,300)}</span>` : ""}</div><button class="tclose">×</button>`;
+  t.classList.remove("hidden");
+  t.querySelector(".tclose").onclick = () => t.classList.add("hidden");
+  clearTimeout(toastTimer);
+  if (kind !== "bad") toastTimer = setTimeout(() => t.classList.add("hidden"), 6000);
 }
+
+/* open-layer persistence in URL (keeps z-order) */
+function persistOpen() {
+  const targets = [...state.layers.keys()].filter(k => { const L = state.layers.get(k); return L.descriptor && L.descriptor.status === "ok"; });
+  if (targets.length) P.set("open", targets.map(encodeURIComponent).join("~"));
+}
+
+/* ---- boot ------------------------------------------------------------- */
+// `_file` is fused-render's "open this file in a view" hook — right-clicking a
+// dataset / .py in the shell and opening it with the map viewer lands here.
+const openFile = fused.params.get("_file");
+if (openFile) {
+  await loadDir(openFile.slice(0, Math.max(openFile.lastIndexOf("/"), openFile.lastIndexOf("\\")) + 1));
+  await loadTarget(openFile);
+} else {
+  await loadDir(state.dir);
+  const openParam = P.get("open");
+  if (openParam) {
+    for (const enc of openParam.split("~")) {
+      const t = decodeURIComponent(enc);
+      await loadTarget(t);
+    }
+  } else {
+    renderLayerCards();
+  }
+}
+
+})().catch(err => {
+  const el = document.getElementById("boot-msg");
+  if (el) { el.classList.remove("hidden"); el.textContent = "Error: " + err.message; }
+  console.error(err);
+});
 </script>
 </body>
 </html>
