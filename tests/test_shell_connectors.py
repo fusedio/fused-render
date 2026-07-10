@@ -46,6 +46,8 @@ class StubRcd:
                 method = self.path.lstrip("/")
                 stub.calls.append((method, body))
                 resp = stub.responses.get(method)
+                if isinstance(resp, list):  # per-call sequence; last repeats
+                    resp = resp.pop(0) if len(resp) > 1 else resp[0]
                 if resp is None:
                     payload, code = {"error": f"unknown method {method}"}, 404
                 elif isinstance(resp, tuple):
@@ -271,6 +273,60 @@ def test_create_s3_remote_builds_rclone_argv(client, monkeypatch):
 def test_create_remote_rejects_bad_name(client):
     r = client.post("/api/connectors/remotes", json={"name": "a:b"}, headers=FUSED)
     assert r.status_code == 400
+
+
+# -- unmount-busy: release tile daemons, retry once -------------------------------
+
+
+@pytest.fixture()
+def tile_daemon(tmp_path, monkeypatch):
+    """A stub tile-server daemon (records /quit) plus a state file pointing at
+    it, wired in as one of the module's DAEMON_STATE_FILES."""
+    quits = []
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            quits.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Length", "3")
+            self.end_headers()
+            self.wfile.write(b"bye")
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    state = tmp_path / "daemon.json"
+    state.write_text(json.dumps({"port": server.server_address[1], "pid": 1}))
+    missing = tmp_path / "absent" / "daemon.json"  # the parallel file, absent
+    monkeypatch.setattr(conn_mod, "DAEMON_STATE_FILES", (str(state), str(missing)))
+    yield quits
+    server.shutdown()
+
+
+def test_unmount_busy_quits_daemons_and_retries(home, rcd, tile_daemon, monkeypatch):
+    monkeypatch.setattr(conn_mod.time, "sleep", lambda s: None)
+    c = conn_mod.add_connector("data", "remote:bucket")
+    rcd.responses["mount/unmount"] = [(500, {"error": "device busy"}), {}]
+    assert conn_mod.unmount_connector(c) is None
+    assert tile_daemon == ["/quit"]
+    assert sum(1 for m, _ in rcd.calls if m == "mount/unmount") == 2
+
+
+def test_unmount_success_never_touches_daemons(home, rcd, tile_daemon):
+    c = conn_mod.add_connector("data", "remote:bucket")
+    assert conn_mod.unmount_connector(c) is None
+    assert tile_daemon == []
+
+
+def test_unmount_still_busy_after_release_reports_error(home, rcd, tile_daemon, monkeypatch):
+    monkeypatch.setattr(conn_mod.time, "sleep", lambda s: None)
+    c = conn_mod.add_connector("data", "remote:bucket")
+    rcd.responses["mount/unmount"] = (500, {"error": "device busy"})
+    err = conn_mod.unmount_connector(c)
+    assert err is not None and "hold a file open" in err
+    assert tile_daemon == ["/quit"]
 
 
 # -- automount at startup --------------------------------------------------------
