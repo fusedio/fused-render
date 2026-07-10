@@ -339,15 +339,15 @@
     return;
   }
   const BASENAME = FILE.split("/").pop();
+  const IS_DOCX = /\.docx$/i.test(BASENAME);
   document.title = "Docs — " + BASENAME;
 
   // ---- vendored asset loading (relative src 404s inside the render iframe) ----
   const HTML_PATH = new URLSearchParams(location.search).get("path") || "";
   const BASE_DIR = HTML_PATH.slice(0, Math.max(HTML_PATH.lastIndexOf("/"), HTML_PATH.lastIndexOf("\\")) + 1);
   const assetUrl = (rel) => fused.rawUrl(BASE_DIR + rel);
-  async function loadCss(rel, rewriteFonts) {
-    let css = await (await fetch(assetUrl(rel))).text();
-    if (rewriteFonts) css = css.replace(/url\(fonts\/([^)]+)\)/g, (_, f) => `url(${assetUrl("vendor/fonts/" + f)})`);
+  async function loadCss(rel) {
+    const css = await (await fetch(assetUrl(rel))).text();
     const s = document.createElement("style"); s.textContent = css; document.head.appendChild(s);
   }
   let PM, katex, mermaid;
@@ -357,12 +357,22 @@
       loadCss("vendor/prosemirror-gapcursor.css"),
       loadCss("vendor/prosemirror-tables.css"),
       loadCss("vendor/prosemirror-math.css"),
-      loadCss("vendor/katex.min.css", true),
     ]);
     PM = await import(assetUrl("vendor/prosemirror.esm.js"));
     katex = PM.katex;
   } catch (err) {
     $("boot").textContent = "Failed to load editor libraries: " + err.message; throw err;
+  }
+  // KaTeX fonts load from the CDN on first equation render, not from the bundle.
+  const KATEX_FONT_CDN = "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/fonts/";
+  let katexCssPromise = null;
+  function ensureKatexCss() {
+    if (!katexCssPromise) katexCssPromise = (async () => {
+      let css = await (await fetch(assetUrl("vendor/katex.min.css"))).text();
+      css = css.replace(/url\(fonts\/([^)]+)\)/g, (_, f) => `url(${KATEX_FONT_CDN}${f})`);
+      const s = document.createElement("style"); s.textContent = css; document.head.appendChild(s);
+    })();
+    return katexCssPromise;
   }
   // mermaid is heavy (3MB) — load it lazily on first diagram use.
   async function ensureMermaid() {
@@ -514,6 +524,7 @@
       this.dom.addEventListener("click", () => this.edit());
     }
     render() {
+      ensureKatexCss();
       try { katex.renderToString; katex.render(this.node.textContent || "\\;", this.dom, { displayMode: this.display, throwOnError: false }); }
       catch (e) { this.dom.textContent = this.node.textContent; }
       if (this.display) this.dom.style.textAlign = "center";
@@ -1262,7 +1273,7 @@
     openDialog(display ? "Display equation (LaTeX)" : "Inline equation (LaTeX)",
       [{ id: "tex", label: "LaTeX — e.g. \\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}", value: cur, area: true, rows: 4 }],
       (v) => onOk(v.tex.trim()),
-      { preview: true, okLabel: "Insert equation", onInput: (v) => { const pv = $("dlgPreview"); if (pv) { try { katex.render(v.tex || "\\;", pv, { displayMode: display, throwOnError: false }); } catch (e) { pv.textContent = e.message; } } } });
+      { preview: true, okLabel: "Insert equation", onInput: (v) => { ensureKatexCss(); const pv = $("dlgPreview"); if (pv) { try { katex.render(v.tex || "\\;", pv, { displayMode: display, throwOnError: false }); } catch (e) { pv.textContent = e.message; } } } });
   }
   function openDiagramDialog(cur, onOk) {
     openDialog("Diagram (Mermaid)",
@@ -1458,9 +1469,15 @@
     try {
       const doc = S.view.state.doc.toJSON();
       const docJson = JSON.stringify(doc);
-      const payload = JSON.stringify({ doc, styles: S.styles });
-      const fresh = await fused.writeFile(FILE, payload, fileMtime != null ? { expectedMtime: fileMtime } : undefined);
-      fileMtime = fresh.mtime;
+      if (IS_DOCX) {
+        const res = await py({ action: "save_as", path: FILE, html: docToHtml(S.view.state.doc) });
+        if (res.error) throw new Error(res.error);
+        try { fileMtime = (await fused.stat(FILE)).mtime; } catch (e) {}
+      } else {
+        const payload = JSON.stringify({ doc, styles: S.styles });
+        const fresh = await fused.writeFile(FILE, payload, fileMtime != null ? { expectedMtime: fileMtime } : undefined);
+        fileMtime = fresh.mtime;
+      }
       S.dirty = false; S.savedMtime = Date.now();
       await recordVersion(docJson, kind, label);
     } catch (e) {
@@ -1474,7 +1491,7 @@
     toast("Preparing " + fmt.toUpperCase() + "…", 8000);
     try {
       const html = docToHtml(S.view.state.doc);
-      const res = await py({ action: "export", file: FILE, title: BASENAME.replace(/\.doc\.json$/i, ""), html, fmt });
+      const res = await py({ action: "export", file: FILE, title: BASENAME.replace(/\.doc\.json$|\.docx$/i, ""), html, fmt });
       if (res.error) { toast("Export failed: " + res.error, 5000); return; }
       const a = document.createElement("a"); a.href = fused.rawUrl(res.path); a.download = res.name; a.click();
       toast("Downloaded " + res.name);
@@ -1501,7 +1518,7 @@
       const dirAt = (i) => { const q = segs.slice(0, i + 1).join("/"); return winRoot ? (i ? q : q + "/") : "/" + q; };
       const crumb = (winRoot ? "" : `<span data-dir="/" style="cursor:pointer">/</span>`) + segs.map((s, i) =>
         `${i || !winRoot ? " › " : ""}<span data-dir="${esc(dirAt(i))}" style="cursor:pointer">${esc(s)}</span>`).join("");
-      const prevName = card.querySelector("#fbName") ? card.querySelector("#fbName").value : BASENAME.replace(/\.doc\.json$/i, "");
+      const prevName = card.querySelector("#fbName") ? card.querySelector("#fbName").value : BASENAME.replace(/\.doc\.json$|\.docx$/i, "");
       card.innerHTML = `<div style="font-weight:700;font-size:15px;margin-bottom:10px">Save a copy</div>
         <div style="font-size:12px;color:var(--ink-2);margin-bottom:8px;word-break:break-all">${crumb}</div>
         <div style="border:1px solid var(--hair);border-radius:6px;max-height:240px;overflow-y:auto;font-size:13px">
@@ -1638,8 +1655,20 @@
 
   // ---- boot: load the file + its sidecar, mount the editor ----
   $("boot").classList.add("hidden");
-  let saved = null;
-  try {
+  let saved = null, importedDoc = null;
+  if (IS_DOCX) {
+    let res;
+    try { res = await py({ action: "import", file: FILE }); }
+    catch (e) { res = { error: e.message }; }
+    if (res.error) {
+      $("nofile").classList.remove("hidden");
+      $("nofile").textContent = "Cannot open " + BASENAME + ": " + res.error;
+      return;
+    }
+    try { fileMtime = (await fused.stat(FILE)).mtime; } catch (e) {}
+    const dom = new DOMParser().parseFromString(res.html, "text/html");
+    importedDoc = PMDOMParser.fromSchema(schema).parse(dom.body);
+  } else try {
     const st = await fused.stat(FILE);
     fileMtime = st.mtime;
     const text = await fused.readFile(FILE);
@@ -1654,9 +1683,9 @@
   injectStyleCss();
   $("docTitle").textContent = BASENAME;
   $("topbar").classList.remove("hidden"); $("toolbar").classList.remove("hidden"); $("main").classList.remove("hidden");
-  const pmDoc = saved && saved.doc ? schema.nodeFromJSON(saved.doc) : schema.nodes.doc.createAndFill(null, schema.nodes.paragraph.create());
+  const pmDoc = importedDoc || (saved && saved.doc ? schema.nodeFromJSON(saved.doc) : schema.nodes.doc.createAndFill(null, schema.nodes.paragraph.create()));
   mountEditor(pmDoc);
-  setMode(fused.params.get("mode") || (saved ? "view" : "edit"));
+  setMode(fused.params.get("mode") || (saved || importedDoc ? "view" : "edit"));
   const panelParam = fused.params.get("panel");
   if (panelParam === "comments" || panelParam === "history" || panelParam === "signatures") openPanel(panelParam);
   updateSavedTag();

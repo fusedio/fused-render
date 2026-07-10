@@ -90,7 +90,9 @@ def _state(cache_dir, budget, crop=1):
         manifest.get("kind") == "usd"
         or f"{budget}c{crop}" in manifest.get("splatFiles", {})
         or str(budget) in manifest.get("pointFiles", {})))
-    return {"cacheKey": os.path.basename(cache_dir), "manifest": manifest,
+    return {"cacheKey": os.path.basename(cache_dir),
+            "cacheDir": os.path.abspath(cache_dir).replace(os.sep, "/"),
+            "manifest": manifest,
             "progress": progress, "running": running, "ready": ready}
 
 

@@ -92,6 +92,17 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
                 "dirs": dirs, "files": files,
                 "home": os.path.expanduser("~").replace(os.sep, "/")}
 
+    # ---- open an existing .docx: convert to HTML for the editor
+    if action == "import":
+        if not file or not os.path.isfile(file):
+            return {"error": f"file not found: {file}"}
+        try:
+            out = _pandoc(["-f", "docx", "-t", "html+tex_math_dollars",
+                           "--wrap=none", file])
+        except Exception as e:
+            return {"error": f"could not read {os.path.basename(file)}: {e}"}
+        return {"html": out.decode("utf-8", "replace")}
+
     # ---- export/convert: browser sends serialized HTML, we fan out to formats
     if action == "export":
         os.makedirs(CACHE_ROOT, exist_ok=True)

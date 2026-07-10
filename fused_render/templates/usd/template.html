@@ -1092,24 +1092,24 @@
 
     s.manifest = info.manifest;
     s.kind = info.manifest?.kind || info.kind;
-    const cacheRel = "cache/" + info.cacheKey + "/";
+    const cacheUrl = (f) => fused.rawUrl(info.cacheDir + "/" + f);
     const budKey = `${budget}c${crop}`;
     const pointEntry = s.manifest?.pointFiles?.[budget];
     const splatFile = s.manifest?.splatFiles?.[budKey]?.file;
     const jobs = [];
     if (pointEntry) {
       setOverlay("Streaming points…", pointEntry.file, 5);
-      s.splatUrl = assetUrl(cacheRel + pointEntry.file); s.splatName = pointEntry.file;
+      s.splatUrl = cacheUrl(pointEntry.file); s.splatName = pointEntry.file;
       jobs.push(loadPoints(s, s.splatUrl, token, pointEntry)
         .then(() => { s.splatCount = pointEntry.count; }));
     } else if (splatFile) {
       setOverlay("Streaming splats…", splatFile, 5);
-      s.splatUrl = assetUrl(cacheRel + splatFile); s.splatName = splatFile;
+      s.splatUrl = cacheUrl(splatFile); s.splatName = splatFile;
       jobs.push(loadSplats(s, s.splatUrl, token, splatFile)
         .then(() => { s.splatCount = s.manifest.splatFiles[budKey].count; }));
     }
     if (s.manifest?.mesh?.file) {
-      s.meshUrl = assetUrl(cacheRel + s.manifest.mesh.file);
+      s.meshUrl = cacheUrl(s.manifest.mesh.file);
       jobs.push(loadMesh(s, s.meshUrl, token));
     }
     try { await Promise.all(jobs); }

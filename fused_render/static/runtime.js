@@ -218,6 +218,26 @@
     target.dispatchEvent(new Event("fused:urlchange"));
   }
 
+  function del(key) {
+    if (isReserved(key)) {
+      throw new Error(`fused.params.delete: '${key}' is a reserved param name and cannot be deleted`);
+    }
+    const { layoutSpan, rest } = splitSearch(target.location.search);
+    const params = new URLSearchParams(rest);
+    if (!params.has(key)) return;
+    params.delete(key);
+    let search = params.toString();
+    if (layoutSpan) search += (search ? "&" : "") + layoutSpan;
+    const newUrl = target.location.pathname + (search ? "?" + search : "");
+    const prevState = target.history.state;
+    if (prevState && prevState.fusedParamEntry) {
+      target.history.replaceState(prevState, "", newUrl);
+    } else {
+      target.history.pushState(Object.assign({}, prevState, { fusedParamEntry: true }), "", newUrl);
+    }
+    target.dispatchEvent(new Event("fused:urlchange"));
+  }
+
   function onChange(cb) {
     listeners.add(cb);
     return () => listeners.delete(cb);
@@ -426,7 +446,7 @@
     readFile,
     writeFile,
     autoReload,
-    params: { get, getAll, set, onChange },
+    params: { get, getAll, set, delete: del, onChange },
   };
 
   // Error overlay: shows for unhandled runPython rejections the page didn't

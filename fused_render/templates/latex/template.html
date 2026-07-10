@@ -653,7 +653,18 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     await pdfScrollToSource(fileAbs, s.line);
   }
 
-  // =========================================================== file tree + open
+  // =========================================================== open files list
+  const relOf = (abs) => {
+    const a = abs.replace(/\\/g, "/"), r = S.root.replace(/\\/g, "/") + "/";
+    return a.startsWith(r) ? a.slice(r.length) : baseName(abs);
+  };
+  function addOpenFile(abs) {
+    if (S.tree.some((f) => f.path === abs)) return;
+    const m = abs.match(/\.[^./\\]+$/);
+    S.tree.push({ path: abs, rel: relOf(abs), ext: m ? m[0].toLowerCase() : "", editable: true });
+    S.tree.sort((a, b) =>
+      (a.path === S.mainAbs ? 0 : 1) - (b.path === S.mainAbs ? 0 : 1) || a.rel.localeCompare(b.rel));
+  }
   function renderTree() {
     const el = $("tree");
     if (!S.tree.length) { el.innerHTML = '<div class="side-empty">No files.</div>'; return; }
@@ -677,9 +688,9 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
       S.fileAbs = abs; S.mtime = st.mtime; S.dirty = false; $("dirtyDot").classList.add("hidden");
       $("curFile").textContent = baseName(abs);
       makeEditor(text); updateCursor();
-      renderTree();
-      const rel = abs === S.mainAbs ? "" : abs.startsWith(S.root + "/") ? abs.slice(S.root.length + 1) : abs;
-      fused.params.set("open", rel);
+      addOpenFile(abs); renderTree();
+      const rel = abs === S.mainAbs ? "" : relOf(abs);
+      if (rel) fused.params.set("open", rel); else fused.params.delete("open");
       saveSidecarOpen(rel);
     } catch (err) { toast("Open failed: " + err.message); }
   }
@@ -790,9 +801,6 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
 
     async function openPick(abs) {
       closeModal();
-      if (!S.tree.some(f => f.path === abs)) {
-        const tr = await py({ action: "tree", path: S.mainAbs }); S.tree = tr.tree; renderTree();
-      }
       await openFile(abs);
     }
     async function createAndOpen(rawName) {
@@ -937,9 +945,6 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
   document.title = baseName(FILE) + " — LaTeX";
   $("docName").textContent = baseName(FILE);
 
-  const tr = await py({ action: "tree", path: S.mainAbs });
-  S.tree = tr.tree;
-
   const qMode = fused.params.get("mode") || "edit";
   const qZoom = parseInt(fused.params.get("zoom") || "100", 10);
   const qSplit = parseFloat(fused.params.get("split") || "50");
@@ -950,14 +955,13 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
   $("editPane").style.flex = `1 1 ${qSplit}%`; $("pdfPane").style.flex = `1 1 ${100 - qSplit}%`;
   if (qDrawer) $("drawer").classList.toggle("collapsed", qDrawer === "collapsed");
 
-  // Resume where the user left off: an explicit `open` param wins (bookmark/
-  // refresh), else the sidecar's last-open sub-file (survives a fresh tab),
-  // else the entrypoint itself.
+  addOpenFile(S.mainAbs);
+
+  // Resume where the user left off: `open` param wins, else sidecar, else main.
   let openRel = fused.params.get("open");
   if (openRel === undefined) openRel = await loadSidecarOpen();
   const openAbs = openRel ? (openRel.startsWith("/") ? openRel : S.root + "/" + openRel) : S.mainAbs;
   await openFile((await fused.stat(openAbs).catch(() => null)) ? openAbs : S.mainAbs);
-  renderTree();
   compile();
 })();
 </script>

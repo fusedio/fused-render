@@ -2,14 +2,12 @@
   ".parquet": [
     "table",
     "h3",
-    "map",
     "claude",
     "annotate",
     "history"
   ],
   ".csv": [
     "csv",
-    "map",
     "code",
     "annotate"
   ],
@@ -46,6 +44,9 @@
     "annotate"
   ],
   ".doc.json": [
+    "docs"
+  ],
+  ".docx": [
     "docs"
   ],
   ".ndjson": [
@@ -90,31 +91,31 @@
     "annotate"
   ],
   ".png": [
-    "photos",
     "image",
+    "photos",
     "pano",
     "annotate"
   ],
   ".jpg": [
-    "photos",
     "image",
+    "photos",
     "pano",
     "annotate"
   ],
   ".jpeg": [
-    "photos",
     "image",
+    "photos",
     "pano",
     "annotate"
   ],
   ".gif": [
-    "photos",
     "image",
+    "photos",
     "annotate"
   ],
   ".webp": [
-    "photos",
     "image",
+    "photos",
     "pano",
     "annotate"
   ],
@@ -294,12 +295,10 @@
   ],
   ".tif": [
     "geotiff",
-    "pano",
     "map"
   ],
   ".tiff": [
     "geotiff",
-    "pano",
     "map"
   ],
   ".nc": [

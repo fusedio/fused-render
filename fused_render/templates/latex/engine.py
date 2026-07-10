@@ -57,7 +57,6 @@ BIN_DIR = os.path.expanduser("~/.fused-render/bin")          # user-owned instal
 TECTONIC_VERSION = "0.16.9"
 
 TEX_EXT = (".tex", ".ltx", ".latex")
-TEXT_EXT = TEX_EXT + (".bib", ".cls", ".sty", ".bst", ".txt", ".md", ".json")
 
 
 # --------------------------------------------------------------- tectonic ---
@@ -490,26 +489,6 @@ def _synctex_forward(synctex_gz: str, target_file: str, line: int):
             "hits": len(hits)}
 
 
-# ------------------------------------------------------------------ file tree
-def _tree(root: str, main: str = ""):
-    root = os.path.abspath(root)
-    items = []
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in (".build", ".git", "__pycache__")]
-        for fn in filenames:
-            low = fn.lower()
-            if low.endswith(".json") and low[:-5].endswith(TEX_EXT):
-                continue  # a state sidecar (main.tex.json) — not a source file
-            full = os.path.join(dirpath, fn)
-            rel = os.path.relpath(full, root)
-            items.append({"path": os.path.abspath(full), "rel": rel,
-                          "size": os.path.getsize(full),
-                          "ext": os.path.splitext(fn)[1].lower(),
-                          "editable": os.path.splitext(fn)[1].lower() in TEXT_EXT})
-    items.sort(key=lambda e: (e["rel"] != main, e["rel"]))
-    return items
-
-
 # -------------------------------------------------------------------- dispatcher
 def main(action: str = "tectonic_status", path: str = "", target: str = "",
          line: int = 0, synctex: bool = True, name: str = ""):
@@ -518,12 +497,6 @@ def main(action: str = "tectonic_status", path: str = "", target: str = "",
 
     if action == "tectonic_install":
         return _tectonic_install()
-
-    if action == "tree":
-        if not path:
-            return {"error": "tree needs path"}
-        root = os.path.dirname(os.path.abspath(path))
-        return {"root": root, "main": os.path.basename(path), "tree": _tree(root, os.path.basename(path))}
 
     if action == "browse":
         # List one directory for the file-browser modal. `path` = dir to show
@@ -571,6 +544,9 @@ def main(action: str = "tectonic_status", path: str = "", target: str = "",
         for dp, dns, fns in os.walk(root):
             dns[:] = [x for x in dns if not x.startswith(".")
                       and x not in ("node_modules", "__pycache__", ".git")]
+            # relpath on a file named "nul"/"con" device-expands and raises;
+            # derive rel from the walk's dir instead.
+            reldir = os.path.relpath(dp, root)
             for fn in sorted(fns, key=str.lower):
                 ext = os.path.splitext(fn)[1].lower()
                 if tex_only and ext not in TEX_EXT:
@@ -578,8 +554,8 @@ def main(action: str = "tectonic_status", path: str = "", target: str = "",
                 if q and q not in fn.lower():
                     continue
                 full = os.path.join(dp, fn)
-                out.append({"name": fn, "path": full,
-                            "rel": os.path.relpath(full, root), "ext": ext})
+                rel = fn if reldir == os.curdir else os.path.join(reldir, fn)
+                out.append({"name": fn, "path": full, "rel": rel, "ext": ext})
                 if len(out) >= cap:
                     return {"root": root, "results": out, "truncated": True}
         return {"root": root, "results": out, "truncated": False}
