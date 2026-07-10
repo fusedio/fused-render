@@ -385,6 +385,18 @@
   ".ksplat": [
     "usd"
   ],
+  ".glb": [
+    "usd"
+  ],
+  ".gltf": [
+    "usd"
+  ],
+  ".obj": [
+    "usd"
+  ],
+  ".stl": [
+    "usd"
+  ],
   ".zip": [
     "zip"
   ],

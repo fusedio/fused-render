@@ -27,7 +27,8 @@ if "__file__" not in globals():
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_ROOT = os.path.expanduser(os.path.join("~", ".fused-render", "cache", "usd"))
 
-LOADABLE = (".usdz", ".usd", ".usda", ".usdc", ".ply", ".splat", ".ksplat")
+LOADABLE = (".usdz", ".usd", ".usda", ".usdc", ".ply", ".splat", ".ksplat",
+            ".glb", ".gltf", ".obj", ".stl")
 
 
 def _cache_dir(source):
@@ -88,6 +89,7 @@ def _state(cache_dir, budget, crop=1):
                    and _pid_alive(progress.get("pid")))
     ready = bool(manifest and (
         manifest.get("kind") == "usd"
+        or manifest.get("mesh")
         or f"{budget}c{crop}" in manifest.get("splatFiles", {})
         or str(budget) in manifest.get("pointFiles", {})))
     return {"cacheKey": os.path.basename(cache_dir),
@@ -131,11 +133,15 @@ def main(action: str = "inspect", file: str = "", budget: int = 1000000,
     ext = os.path.splitext(file.split("?")[0])[1].lower()
     # .ply is NOT direct: gaussian plys need activation baking and plain
     # point-cloud plys (SLAM dumps) need synthesized gaussians server-side
-    direct = ext in (".splat", ".ksplat")
+    direct_splat = ext in (".splat", ".ksplat")
+    # glTF is already the viewer's mesh format — hand it straight to GLTFLoader
+    direct_mesh = ext in (".glb", ".gltf")
+    direct = direct_splat or direct_mesh
 
     if action == "inspect":
         if direct:
-            return {"kind": "splat-direct", "ext": ext, "ready": True,
+            return {"kind": "mesh-direct" if direct_mesh else "splat-direct",
+                    "ext": ext, "ready": True,
                     "size": None if is_url else os.path.getsize(file)}
         cd = _cache_dir(file)
         out = _state(cd, budget, crop)

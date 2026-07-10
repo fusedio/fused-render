@@ -30,6 +30,7 @@ import numpy as np
 
 CHUNK = 8 << 20  # 8 MB stream chunks
 SH_C0 = 0.28209479177387814
+IDENTITY = [1.0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 1.0]
 
 
 # --------------------------------------------------------------- progress ---
@@ -394,6 +395,70 @@ def write_glb(meshes, out_path):
     os.replace(tmp, out_path)
 
 
+# ------------------------------------------------------- obj / stl layer ---
+
+def _mesh_dict(name, points, tris):
+    return {"name": name, "points": points, "tris": tris,
+            "normals": smooth_normals(points, tris.astype(np.int64)),
+            "matrix": IDENTITY, "color": None, "vcolor": None}
+
+
+def read_obj(path, prog):
+    """Wavefront OBJ: positions + triangulated faces (UVs/materials ignored)."""
+    prog.update("parse", 0, "reading obj vertices")
+    verts, faces = [], []
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            if line.startswith("v "):
+                p = line.split()
+                verts.append((float(p[1]), float(p[2]), float(p[3])))
+            elif line.startswith("f "):
+                idx = []
+                for tok in line.split()[1:]:
+                    v = tok.split("/")[0]
+                    if v:
+                        i = int(v)
+                        idx.append(i - 1 if i > 0 else len(verts) + i)
+                for k in range(1, len(idx) - 1):    # fan-triangulate n-gons
+                    faces.append((idx[0], idx[k], idx[k + 1]))
+    if not verts or not faces:
+        raise ValueError("obj has no geometry")
+    points = np.asarray(verts, dtype=np.float32)
+    tris = np.asarray(faces, dtype=np.uint32)
+    prog.update("mesh", 60, f"{len(points):,} verts, {len(tris):,} tris")
+    name = os.path.splitext(os.path.basename(path))[0]
+    return [_mesh_dict(name, points, tris)], "Y"
+
+
+def read_stl(path, prog):
+    """STL (binary or ASCII) as a flat triangle soup; normals recomputed."""
+    prog.update("parse", 0, "reading stl")
+    size = os.path.getsize(path)
+    with open(path, "rb") as f:
+        data = f.read()
+    name = os.path.splitext(os.path.basename(path))[0]
+    if size >= 84:
+        n = struct.unpack("<I", data[80:84])[0]
+        if size == 84 + n * 50:                 # exact length -> binary stl
+            arr = np.frombuffer(data, count=n, offset=84, dtype=np.dtype(
+                [("n", "<f4", 3), ("v", "<f4", (3, 3)), ("attr", "<u2")]))
+            points = arr["v"].reshape(-1, 3).astype(np.float32)
+            tris = np.arange(n * 3, dtype=np.uint32).reshape(-1, 3)
+            prog.update("mesh", 60, f"{n:,} triangles (binary stl)")
+            return [_mesh_dict(name, points, tris)], "Y"
+    verts = []
+    for line in data.decode("latin1", "ignore").splitlines():
+        p = line.split()
+        if len(p) == 4 and p[0] == "vertex":
+            verts.append((float(p[1]), float(p[2]), float(p[3])))
+    if len(verts) < 3:
+        raise ValueError("stl has no vertices")
+    points = np.asarray(verts, dtype=np.float32)
+    tris = np.arange(len(points) - len(points) % 3, dtype=np.uint32).reshape(-1, 3)
+    prog.update("mesh", 60, f"{len(tris):,} triangles (ascii stl)")
+    return [_mesh_dict(name, points, tris)], "Y"
+
+
 # ------------------------------------------------------------------ main ----
 
 def download(url, cache_dir, prog):
@@ -449,6 +514,30 @@ def convert(source, cache_dir, budget, crop=1):
                 manifest.setdefault("pointFiles", {})[str(budget)] = entry
             else:
                 manifest["splatFiles"][f"{budget}c{crop}"] = entry
+        manifest["updated"] = time.time()
+        tmp = manifest_path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(manifest, f, indent=1)
+        os.replace(tmp, manifest_path)
+        prog.update("done", 100, "conversion complete", done=True)
+        return
+
+    if ext in (".obj", ".stl"):
+        glb_path = os.path.join(cache_dir, "mesh.glb")
+        if not os.path.exists(glb_path):
+            meshes, up = (read_obj if ext == ".obj" else read_stl)(source, prog)
+            prog.update("mesh", 90, "writing mesh.glb")
+            write_glb(meshes, glb_path)
+            manifest["kind"] = "mesh"
+            manifest["upAxis"] = up
+            manifest["mesh"] = {
+                "file": "mesh.glb", "bytes": os.path.getsize(glb_path),
+                "meshes": [{"name": m["name"], "verts": len(m["points"]),
+                            "tris": len(m["tris"]), "color": m["color"],
+                            "vertexColors": m["vcolor"] is not None}
+                           for m in meshes]}
+        else:
+            manifest.setdefault("kind", "mesh")
         manifest["updated"] = time.time()
         tmp = manifest_path + ".tmp"
         with open(tmp, "w") as f:

@@ -189,7 +189,7 @@
   <div id="topbar">
     <div id="logo">USD Studio <span>· NuRec / splat viewer</span></div>
     <input id="filePath" spellcheck="false"
-           placeholder="add another .usdz / .ply / .splat — path or URL">
+           placeholder="add another .usdz / .ply / .glb / .obj / .stl / .splat — path or URL">
     <button id="btnBrowse" title="pick a file from the system">📁 Import</button>
     <button id="btnLoad" class="primary">Load</button>
     <button id="btnShot" title="save PNG screenshot">📷 PNG</button>
@@ -208,7 +208,7 @@
       <button id="navOrbit" class="on" title="orbit / examine: drag to orbit · wheel to zoom (G toggles)">🧭 Orbit</button>
       <button id="navWalk" title="walk through the scene: WASD to move · drag to look (G toggles)">🚶 Walk</button>
     </div>
-    <div id="dropHint">drop a .ply / .splat / .ksplat file to view it</div>
+    <div id="dropHint">drop a .splat / .ksplat / .glb file to view it</div>
     <div id="overlay">
       <div id="overlayMsg">Loading…</div>
       <div id="overlayBar"><div id="overlayBarFill"></div></div>
@@ -882,7 +882,7 @@
       n.style.color = "var(--dim)";
       n.textContent = FILE
         ? "empty — nothing loaded yet"
-        : "no file selected — open a .usd / .usdz / .ply / .splat file, or paste a path/URL above";
+        : "no file selected — open a .usd / .usdz / .ply / .glb / .obj / .stl / .splat file, or paste a path/URL above";
       el.tree.appendChild(n);
       updateExport(null);
       return;
@@ -1056,6 +1056,19 @@
       return;
     }
 
+    // .glb/.gltf: hand straight to the mesh loader (Y-up, no conversion)
+    if (info.kind === "mesh-direct") {
+      const url = file.startsWith("http") ? file : fused.rawUrl(file);
+      setOverlay("Loading mesh…", file, 5);
+      s.manifest = { name: s.name, upAxis: "Y" };
+      s.group.rotation.x = Math.PI / 2;      // cancel root's Z-up rotation
+      await loadMesh(s, url, token);
+      if (token !== loadToken) { removeScene(s); return; }
+      s.meshUrl = url;
+      finishScene(s, hadLayers, t0);
+      return;
+    }
+
     // usdz/ply path: ensure conversion artifacts exist
     if (!info.ready) {
       setOverlay("Converting…",
@@ -1092,6 +1105,7 @@
 
     s.manifest = info.manifest;
     s.kind = info.manifest?.kind || info.kind;
+    if ((s.manifest?.upAxis || "Z") === "Y") s.group.rotation.x = Math.PI / 2;
     const cacheUrl = (f) => fused.rawUrl(info.cacheDir + "/" + f);
     const budKey = `${budget}c${crop}`;
     const pointEntry = s.manifest?.pointFiles?.[budget];
@@ -1755,6 +1769,20 @@
       } catch (err) { removeScene(s); setOverlay("Drop failed", err.message, 0); }
     } else if (/\.usd[zac]?$/i.test(f.name)) {
       setStatus("usdz needs local conversion — paste its full path in the top bar instead");
+    } else if (/\.glb$/i.test(f.name)) {
+      const token = ++loadToken;
+      const hadLayers = anyLayers();
+      const s = makeScene(f.name + " (dropped)", "blob:" + f.name);
+      s.loadKey = "blob"; s.kind = "mesh-direct";
+      s.manifest = { name: s.name, upAxis: "Y" };
+      s.group.rotation.x = Math.PI / 2;
+      setOverlay("Loading dropped mesh…", f.name, 10);
+      try {
+        await loadMesh(s, URL.createObjectURL(f), token);
+        finishScene(s, hadLayers, performance.now());
+      } catch (err) { removeScene(s); setOverlay("Drop failed", err.message, 0); }
+    } else if (/\.(obj|stl|gltf)$/i.test(f.name)) {
+      setStatus("OBJ/STL/glTF need conversion — pick via 📁 Import (or paste the path)");
     } else {
       setStatus(`unsupported drop: ${f.name}`);
     }
