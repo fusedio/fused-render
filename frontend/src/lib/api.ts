@@ -423,6 +423,7 @@ export interface InventoryTemplate {
   source: string; // source id
   editable: boolean;
   hasIcon: boolean;
+  hasCondition: boolean; // folder has a condition.py gate (SPEC CT-12)
   usedBy: string[]; // registry keys whose effective list contains this name
   shadowsCore: boolean;
   path: string; // absolute path of this template's folder on disk (core or user)

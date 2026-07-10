@@ -238,9 +238,11 @@ def _single_entry(key) -> dict | None:
 
 
 def _folders_with_template(base: str) -> dict:
-    """name -> {hasIcon} for every immediate subdir of `base` that contains a
-    template.html (a template folder; SPEC §0 — folder name = identity). Dirs
-    without template.html (vendor/, shared/) are naturally excluded."""
+    """name -> {hasIcon, hasCondition} for every immediate subdir of `base` that
+    contains a template.html (a template folder; SPEC §0 — folder name =
+    identity). Dirs without template.html (vendor/, shared/) are naturally
+    excluded. hasCondition reports the optional condition.py gate (SPEC CT-12)
+    so the management UI can flag templates that only show for some files."""
     out = {}
     try:
         names = os.listdir(base)
@@ -252,7 +254,10 @@ def _folders_with_template(base: str) -> dict:
             continue
         if not os.path.isfile(os.path.join(folder, "template.html")):
             continue
-        out[name] = {"hasIcon": os.path.isfile(os.path.join(folder, "icon.svg"))}
+        out[name] = {
+            "hasIcon": os.path.isfile(os.path.join(folder, "icon.svg")),
+            "hasCondition": os.path.isfile(os.path.join(folder, "condition.py")),
+        }
     return out
 
 
@@ -297,11 +302,11 @@ def _inventory_payload() -> dict:
     templates = []
     for name in sorted(set(core) | set(user)):
         if name in user:
-            src, editable, has_icon = "user", True, user[name]["hasIcon"]
+            src, editable, meta = "user", True, user[name]
             shadows = name in core
             folder_path = os.path.join(user_dir, name)
         else:
-            src, editable, has_icon = "core", False, core[name]["hasIcon"]
+            src, editable, meta = "core", False, core[name]
             shadows = False
             folder_path = os.path.join(core_dir, name)
         templates.append(
@@ -309,7 +314,8 @@ def _inventory_payload() -> dict:
                 "name": name,
                 "source": src,
                 "editable": editable,
-                "hasIcon": has_icon,
+                "hasIcon": meta["hasIcon"],
+                "hasCondition": meta["hasCondition"],
                 "usedBy": sorted(used_by.get(name, [])),
                 "shadowsCore": shadows,
                 "path": folder_path,

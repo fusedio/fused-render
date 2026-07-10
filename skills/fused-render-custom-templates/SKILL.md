@@ -80,6 +80,7 @@ def method(path):
 - **Re-evaluated on every file open** (like the registry) — edit `condition.py` and the next navigation/refresh picks it up, no restart.
 - **A broken condition drops that template** (no callable `method`, an exception, etc.) and sets `template_error` on the stat response — same as a bad registry name. It's never silently shown.
 - **Sentinel modes** (`_render`, `_listing`) have no folder and can't be gated.
+- **Visible in the UI:** a template with a `condition.py` shows a **"conditional"** badge in the templates management page (Templates → Library), so you can tell at a glance which templates are gated.
 
 ## Workflow: create and register a template
 
