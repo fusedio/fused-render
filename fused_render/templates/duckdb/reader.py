@@ -1,5 +1,7 @@
 """Reader backing duckdb/template.html — one tabular viewer/editor for every
-flat file DuckDB can read: Parquet, CSV/TSV and JSON/JSONL.
+flat file DuckDB can read: Parquet, CSV/TSV and JSON/JSONL, including their
+gzip/zstd-compressed forms (data.csv.gz, data.json.zst, …) which DuckDB's
+read_*_auto scans decompress transparently.
 
 DuckDB does the COUNT(*) and LIMIT/OFFSET paging *in-engine*, so paging a huge
 CSV never loads the whole file into memory. Reads are non-mutating (the file
@@ -20,8 +22,14 @@ Returns {columns, types, rows, ids, total_rows, editable}. `types` maps each
 column to its DuckDB type name (BIGINT, VARCHAR, …) for the header label.
 `editable` is false for
 JSON — rewriting a flattened JSON grid would corrupt nested structure, so the
-JSON grid is view-only. `tables`/`table` are absent (single-relation files);
-the grid hides its relation selector when they're missing.
+JSON grid is view-only.
+
+Flat files are single-relation, so `tables`/`table` are absent and the grid
+hides its relation selector. A DuckDB **database** file (.duckdb/.ddb) is the
+exception: it holds many tables/views, so the reader ATTACHes it, returns the
+full `tables` list plus the selected `table`, and keys edits by DuckDB's real
+`rowid` (edited in place by writer.py, not rewritten). Views have no rowid and
+stay read-only.
 """
 import datetime
 import decimal
@@ -33,6 +41,27 @@ MAX_LIMIT = 1000
 
 # Extensions the grid can safely edit (rewrite in place). JSON is read-only.
 _EDITABLE_EXTS = {".parquet", ".csv", ".tsv"}
+
+# DuckDB database files: multi-table, edited in place by rowid (not rewritten
+# like a flat file). Handled by a separate ATTACH-based path below.
+_DB_EXTS = {".duckdb", ".ddb"}
+
+# Compression suffixes DuckDB transparently decodes; a file's *logical* format
+# is the extension underneath (data.csv.gz reads as CSV). read_*_auto detect the
+# codec from the .gz/.zst suffix, so no explicit COMPRESSION arg is needed here.
+_COMPRESSION_SUFFIXES = (".gz", ".zst")
+
+
+def _logical_ext(file: str) -> str:
+    """Format extension, seeing past a trailing compression suffix:
+    'a.csv.gz' -> '.csv', 'a.parquet' -> '.parquet'."""
+    base = file
+    low = base.lower()
+    for comp in _COMPRESSION_SUFFIXES:
+        if low.endswith(comp):
+            base = base[: -len(comp)]
+            break
+    return os.path.splitext(base)[1].lower()
 
 # Physical-position column injected into the page query. row_number() over the
 # raw scan is the 0-based file position — the same key the writer's rowid uses —
@@ -118,24 +147,92 @@ def relation_for(file: str) -> str:
     """The read-only table-function that reads `file` by extension. Shared with
     writer.py so read and write agree on how each format is parsed."""
     lit = _quote_str(os.path.abspath(file))
-    ext = os.path.splitext(file)[1].lower()
+    ext = _logical_ext(file)
     if ext == ".parquet":
         return f"read_parquet({lit})"
     if ext == ".tsv":
         return f"read_csv_auto({lit}, delim='\t', all_varchar=true)"
     if ext == ".csv":
         return f"read_csv_auto({lit}, all_varchar=true)"
-    # .json / .jsonl / .ndjson
+    # .json / .jsonl / .ndjson (optionally .gz/.zst — DuckDB auto-decompresses)
     return f"read_json_auto({lit})"
 
 
-def main(file: str, offset: int = 0, limit: int = 100,
+def _db_tables(con):
+    """(names, {name: type}) for the attached `db` — base tables and views,
+    sorted by name so the relation selector is stable."""
+    rows = con.execute(
+        "SELECT table_name, table_type FROM information_schema.tables "
+        "WHERE table_catalog = 'db' ORDER BY table_name").fetchall()
+    return [r[0] for r in rows], {r[0]: r[1] for r in rows}
+
+
+def _read_database(file, table, offset, limit, sort, filters):
+    """Page one relation of a DuckDB database file. Unlike the flat-file path,
+    row identity is DuckDB's real `rowid` pseudo-column (the key writer.py edits
+    by), and nothing is rewritten. Views have no rowid, so they're view-only —
+    the same rule the SQLite grid applies."""
+    con = duckdb.connect(":memory:")
+    try:
+        con.execute(f"ATTACH {_quote_str(os.path.abspath(file))} AS db (READ_ONLY)")
+        tables, kinds = _db_tables(con)
+        if not tables:
+            return {"columns": [], "types": {}, "rows": [], "ids": [],
+                    "total_rows": 0, "editable": False, "tables": [], "table": "",
+                    "readonly_message": "", "readonly_tooltip": ""}
+        # An unknown/stale table param falls back to the first real table
+        # rather than erroring the whole view.
+        sel = table if table in tables else tables[0]
+        is_view = kinds[sel] != "BASE TABLE"
+        relation = f"db.{_quote_ident(sel)}"
+
+        types = {r[0]: r[1] for r in
+                 con.execute(f"DESCRIBE SELECT * FROM {relation}").fetchall()}
+        where, wbinds = _build_where(filters, types)
+        order = _build_order(sort, types)
+        total_rows = con.execute(
+            f"SELECT COUNT(*) FROM {relation}{where}", wbinds).fetchone()[0]
+
+        # Base tables carry rowid (the edit key); a view has none, so it pages
+        # without ids and stays read-only.
+        pos = "rowid AS " + _POS if not is_view else f"CAST(NULL AS BIGINT) AS {_POS}"
+        paged = (f"SELECT {pos}, * FROM {relation}{where}{order} LIMIT ? OFFSET ?")
+        cur = con.execute(paged, wbinds + [limit, offset])
+        desc = [d[0] for d in cur.description] if cur.description else []
+        columns = desc[1:]
+        rows, ids = [], []
+        for raw in cur.fetchall():
+            if not is_view:
+                ids.append(raw[0])
+            rows.append({columns[j] if j < len(columns) else f"col{j}": _jsonify(v)
+                         for j, v in enumerate(raw[1:])})
+        return {
+            "columns": columns,
+            "types": types,
+            "rows": rows,
+            "ids": ids,
+            "total_rows": total_rows,
+            "editable": not is_view,
+            "tables": tables,
+            "table": sel,
+            "readonly_message": "" if not is_view else "View",
+            "readonly_tooltip": "" if not is_view else (
+                "Read-only. A view has no stored rows of its own to edit — "
+                "change the underlying table instead."),
+        }
+    finally:
+        con.close()
+
+
+def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
          sort: "dict | None" = None, filters: "list | None" = None) -> dict:
     # Clamp so a hostile/negative limit can't turn LIMIT ? into an unbounded
     # fetch, and a negative offset can't error out mid-query.
     limit = max(1, min(int(limit), MAX_LIMIT))
     offset = max(0, int(offset))
-    ext = os.path.splitext(file)[1].lower()
+    ext = _logical_ext(file)
+    if ext in _DB_EXTS:
+        return _read_database(file, table, offset, limit, sort, filters)
     relation = relation_for(file)
 
     con = duckdb.connect(":memory:")

@@ -44,6 +44,56 @@
     "duckdb",
     "annotate"
   ],
+  ".csv.gz": [
+    "duckdb",
+    "tar",
+    "annotate"
+  ],
+  ".csv.zst": [
+    "duckdb",
+    "tar",
+    "annotate"
+  ],
+  ".tsv.gz": [
+    "duckdb",
+    "tar",
+    "annotate"
+  ],
+  ".tsv.zst": [
+    "duckdb",
+    "tar",
+    "annotate"
+  ],
+  ".json.gz": [
+    "duckdb",
+    "tar",
+    "annotate"
+  ],
+  ".json.zst": [
+    "duckdb",
+    "tar",
+    "annotate"
+  ],
+  ".jsonl.gz": [
+    "duckdb",
+    "tar",
+    "annotate"
+  ],
+  ".jsonl.zst": [
+    "duckdb",
+    "tar",
+    "annotate"
+  ],
+  ".ndjson.gz": [
+    "duckdb",
+    "tar",
+    "annotate"
+  ],
+  ".ndjson.zst": [
+    "duckdb",
+    "tar",
+    "annotate"
+  ],
   ".geojson": [
     "vector",
     "tree",
@@ -344,6 +394,12 @@
   ],
   ".db": [
     "sqlite"
+  ],
+  ".duckdb": [
+    "duckdb"
+  ],
+  ".ddb": [
+    "duckdb"
   ],
   ".plist": [
     "plist",

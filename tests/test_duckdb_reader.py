@@ -51,6 +51,40 @@ def csv_file(tmp_path):
                  "SELECT range AS id, printf('%05d', range) AS zip FROM range(250)")
 
 
+def _make_compressed(tmp_path, name, sql, opts):
+    """Write a gzip/zstd-compressed csv/tsv/json via DuckDB COPY, matching what
+    the grid must read back through the same auto-decompressing scan."""
+    p = tmp_path / name
+    con = duckdb.connect()
+    con.execute(f"COPY ({sql}) TO '{p}' {opts}")
+    con.close()
+    return str(p)
+
+
+@pytest.fixture
+def csv_gz_file(tmp_path):
+    return _make_compressed(
+        tmp_path, "s.csv.gz",
+        "SELECT range AS id, printf('%05d', range) AS zip FROM range(250)",
+        "(FORMAT csv, HEADER, COMPRESSION gzip)")
+
+
+@pytest.fixture
+def duckdb_db(tmp_path):
+    """A .duckdb database file with two base tables and a view — the multi-
+    relation, edit-in-place case (vs the single-relation flat files above)."""
+    p = tmp_path / "s.duckdb"
+    con = duckdb.connect(str(p))
+    con.execute("CREATE TABLE actor(first_name TEXT, last_name TEXT)")
+    con.executemany("INSERT INTO actor VALUES (?, ?)",
+                    [(f"F{i}", f"L{i}") for i in range(5)])
+    con.execute("CREATE TABLE film(title TEXT)")
+    con.execute("INSERT INTO film VALUES ('x')")
+    con.execute("CREATE VIEW adults AS SELECT * FROM actor")
+    con.close()
+    return str(p)
+
+
 # ------------------------------------------------------------------ reader
 
 def test_parquet_shape(parquet_file):
@@ -156,10 +190,157 @@ def test_json_is_read_only(tmp_path):
     assert "read-only" in out["readonly_tooltip"].lower()
 
 
+# ----------------------------------------------------- compressed variants
+
+def test_csv_gz_reads_as_editable_text(csv_gz_file):
+    # A gzip-compressed CSV is the same tabular data behind a compression
+    # suffix — DuckDB auto-decompresses, so it reads all-VARCHAR and stays
+    # editable just like a plain .csv.
+    out = reader.main(csv_gz_file)
+    assert out["total_rows"] == 250
+    assert out["rows"][0]["zip"] == "00000"       # leading zero preserved
+    assert set(out["types"].values()) == {"VARCHAR"}
+    assert out["editable"] is True
+
+
+def test_csv_zst_reads(tmp_path):
+    p = _make_compressed(
+        tmp_path, "s.csv.zst",
+        "SELECT range AS id, printf('%05d', range) AS zip FROM range(10)",
+        "(FORMAT csv, HEADER, COMPRESSION zstd)")
+    out = reader.main(p)
+    assert out["total_rows"] == 10
+    assert out["editable"] is True
+
+
+def test_json_gz_is_read_only(tmp_path):
+    # JSON stays view-only whether or not it's compressed.
+    p = _make_compressed(
+        tmp_path, "s.json.gz", "SELECT range AS id FROM range(3)",
+        "(FORMAT json, ARRAY true, COMPRESSION gzip)")
+    out = reader.main(p)
+    assert out["total_rows"] == 3
+    assert out["editable"] is False
+    assert out["readonly_message"] == "JSON"
+
+
+def test_csv_gz_edit_round_trips_compressed(csv_gz_file):
+    # Editing a compressed CSV rewrites it still-compressed; the leading-zero
+    # text of untouched rows survives and the new value reads back exactly.
+    writer.main(csv_gz_file, edits=[{"row": 1, "column": "zip", "value": "07001"}])
+    out = reader.main(csv_gz_file)
+    assert out["rows"][1]["zip"] == "07001"
+    assert out["rows"][0]["zip"] == "00000"
+    # still gzip on disk (magic bytes 1f 8b), not a plain-text CSV.
+    with open(csv_gz_file, "rb") as f:
+        assert f.read(2) == b"\x1f\x8b"
+
+
 def test_limit_clamped(tmp_path):
     p = _make(tmp_path, "big.parquet", f"SELECT range AS id FROM range({reader.MAX_LIMIT + 500})")
     out = reader.main(p, limit=10 ** 9)
     assert len(out["rows"]) == reader.MAX_LIMIT
+
+
+# --------------------------------------------------- .duckdb database reader
+
+def test_duckdb_lists_tables_and_defaults_to_first(duckdb_db):
+    out = reader.main(duckdb_db)
+    # Base tables and the view are all selectable; sorted by name.
+    assert out["tables"] == ["actor", "adults", "film"]
+    assert out["table"] == "actor"               # first table, no param
+    assert out["columns"] == ["first_name", "last_name"]
+    assert out["ids"] == [0, 1, 2, 3, 4]         # duckdb rowids (0-based)
+    assert out["rows"][0] == {"first_name": "F0", "last_name": "L0"}
+    assert out["editable"] is True
+
+
+def test_duckdb_table_param_selects_relation(duckdb_db):
+    out = reader.main(duckdb_db, table="film")
+    assert out["table"] == "film"
+    assert out["total_rows"] == 1
+    assert out["rows"][0] == {"title": "x"}
+
+
+def test_duckdb_view_is_read_only(duckdb_db):
+    out = reader.main(duckdb_db, table="adults")
+    assert out["editable"] is False
+    assert out["ids"] == []
+    assert out["total_rows"] == 5                 # still viewable
+    assert "view" in out["readonly_message"].lower()
+    assert out["readonly_tooltip"]
+
+
+def test_duckdb_sort_desc_keeps_rowids(duckdb_db):
+    out = reader.main(duckdb_db, table="actor",
+                      sort={"column": "first_name", "dir": "desc"})
+    assert out["rows"][0]["first_name"] == "F4"
+    assert out["ids"][0] == 4                     # rowid tracks physical row
+
+
+def test_duckdb_filter_narrows(duckdb_db):
+    out = reader.main(duckdb_db, table="actor",
+                      filters=[{"column": "first_name", "op": "contains", "value": "3"}])
+    assert out["ids"] == [3]
+    assert out["rows"][0]["first_name"] == "F3"
+
+
+def test_duckdb_unknown_table_falls_back_to_first(duckdb_db):
+    # A stale/garbled table param must not error — fall back to a real one.
+    out = reader.main(duckdb_db, table="does_not_exist")
+    assert out["table"] == "actor"
+
+
+# --------------------------------------------------- .duckdb database writer
+
+def _db_rows(path, table="actor"):
+    con = duckdb.connect(":memory:")
+    try:
+        con.execute(f"ATTACH '{path}' AS db (READ_ONLY)")
+        return con.execute(f"SELECT rowid, * FROM db.{table} ORDER BY rowid").fetchall()
+    finally:
+        con.close()
+
+
+def test_duckdb_edit_delete_insert(duckdb_db):
+    writer.main(duckdb_db, table="actor",
+                edits=[{"row": 0, "column": "first_name", "value": "EDITED"}],
+                deletes=[1, 2],
+                inserts=[{"first_name": "new", "last_name": "row"}])
+    vals = [(r[1], r[2]) for r in _db_rows(duckdb_db)]
+    assert ("EDITED", "L0") in vals
+    assert ("F1", "L1") not in vals and ("F2", "L2") not in vals
+    assert ("new", "row") in vals
+    assert len(vals) == 5 - 2 + 1
+
+
+def test_duckdb_edit_casts_and_null(duckdb_db):
+    writer.main(duckdb_db, table="actor",
+                edits=[{"row": 0, "column": "last_name", "value": None}])
+    con = duckdb.connect(":memory:")
+    con.execute(f"ATTACH '{duckdb_db}' AS db (READ_ONLY)")
+    val = con.execute("SELECT last_name FROM db.actor WHERE rowid = 0").fetchone()[0]
+    con.close()
+    assert val is None
+
+
+def test_duckdb_writer_rejects_view(duckdb_db):
+    with pytest.raises(ValueError):
+        writer.main(duckdb_db, table="adults",
+                    edits=[{"row": 0, "column": "first_name", "value": "x"}])
+
+
+def test_duckdb_writer_rolls_back_on_bad_cast(tmp_path):
+    p = tmp_path / "n.duckdb"
+    con = duckdb.connect(str(p))
+    con.execute("CREATE TABLE t(id INTEGER)")
+    con.execute("INSERT INTO t VALUES (1), (2)")
+    con.close()
+    before = _db_rows(str(p), "t")
+    with pytest.raises(Exception):
+        writer.main(str(p), table="t",
+                    edits=[{"row": 0, "column": "id", "value": "not-a-number"}])
+    assert _db_rows(str(p), "t") == before        # transaction rolled back
 
 
 # ------------------------------------------------------------------ writer
