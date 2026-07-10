@@ -10,7 +10,11 @@
 // all `_layout` leaves, each leaf path rewritten relative to that dir
 // (grammar, nesting, per-leaf queries and global params untouched). Every
 // leaf sits under the save dir, so relative paths never contain `..`.
-import { rootedFsPath, VIEW_PREFIX, EMBED_PREFIX } from "./router";
+//
+// The inverse direction (SB-9, D99) lives here too: bookmarkOpenUrl() takes a
+// parsed `.bookmark` + the file's own directory and absolutizes every relative
+// path back, producing the shell URL the `_bookmark` sentinel redirects to.
+import { rootedFsPath, urlForFsPath, VIEW_PREFIX, EMBED_PREFIX } from "./router";
 import {
   splitShellSearch,
   parseLayout,
@@ -135,4 +139,43 @@ export function bookmarkSaveTarget(b: Bookmark): BookmarkSaveTarget | null {
     filename: stem + ".bookmark",
     content: JSON.stringify(record, null, 2) + "\n",
   };
+}
+
+// --- Open direction (SB-9, D99) ---------------------------------------------
+
+// A path from a `.bookmark` file made absolute against the file's own dir.
+// Already-absolute paths pass through unchanged (defensive — v1 writers only
+// emit relative ones, but a hand-edited file shouldn't double-prefix).
+function absolutize(dir: string, path: string): string {
+  if (splitAbs(path)) return path;
+  return dir.replace(/\/+$/, "") + "/" + path;
+}
+
+// The shell URL a parsed `.bookmark` opens at, its relative paths resolved
+// against `dir` (the file's own directory). Throws with a readable message on
+// any malformed record — the caller (views/BookmarkOpen.tsx) renders it.
+export function bookmarkOpenUrl(dir: string, bookmark: Record<string, unknown>): string {
+  const kind = bookmark.kind;
+  const search = typeof bookmark.search === "string" ? bookmark.search : "";
+  if (kind === "single") {
+    if (typeof bookmark.path !== "string" || !bookmark.path) {
+      throw new Error("malformed bookmark: kind 'single' without a path");
+    }
+    return urlForFsPath(absolutize(dir, bookmark.path), search ? "?" + search : "");
+  }
+  if (kind !== "panel" && kind !== "tab") {
+    throw new Error(`malformed bookmark: unknown kind ${JSON.stringify(kind)}`);
+  }
+  const { layout, params } = splitShellSearch(search);
+  if (layout === null) {
+    throw new Error(`malformed bookmark: kind '${kind}' without a _layout`);
+  }
+  const tree = parseLayout(layout);
+  const leaves = flattenToLeaves(tree);
+  if (leaves.length === 0) throw new Error("malformed bookmark: empty layout");
+  // Rewrite in place (flattenToLeaves returns the tree's own nodes), the
+  // exact inverse of the relativize loop in bookmarkSaveTarget above.
+  for (const l of leaves) l.path = absolutize(dir, l.path);
+  const sentinel = kind === "panel" ? "_panel" : "_tab";
+  return buildSentinelUrl(VIEW_PREFIX + sentinel, encodeNode(tree), params);
 }

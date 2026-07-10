@@ -219,6 +219,70 @@ def test_export_rejects_garbage_content(tmp_path, monkeypatch):
     assert not (tmp_path / "sales-dash.bookmark").exists()
 
 
+# --- GET /api/bookmark-file (.bookmark open flow, SB-9/D99) -------------------
+
+
+def _write_bookmark(tmp_path, name="sales-dash.bookmark", doc=None):
+    if doc is None:
+        doc = {"version": 1, "name": "sales-dash", "kind": "single",
+               "path": "a.parquet", "search": "sort=name"}
+    path = tmp_path / name
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    return path, doc
+
+
+def test_bookmark_file_returns_dir_and_content(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    path, doc = _write_bookmark(tmp_path)
+    resp = client.get("/api/bookmark-file", params={"path": str(path)})
+    assert resp.status_code == 200
+    # `dir` is the file's own directory — what the frontend resolves the
+    # record's relative paths against.
+    assert resp.json() == {"dir": str(tmp_path), "bookmark": doc}
+
+
+def test_bookmark_file_rejects_relative_path(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    resp = client.get("/api/bookmark-file", params={"path": "rel/sales.bookmark"})
+    assert resp.status_code == 400
+
+
+def test_bookmark_file_rejects_wrong_extension(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    other = tmp_path / "a.json"
+    other.write_text("{}", encoding="utf-8")
+    resp = client.get("/api/bookmark-file", params={"path": str(other)})
+    assert resp.status_code == 400
+
+
+def test_bookmark_file_missing_file_is_404(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    resp = client.get("/api/bookmark-file", params={"path": str(tmp_path / "gone.bookmark")})
+    assert resp.status_code == 404
+
+
+def test_bookmark_file_rejects_malformed_json(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    path = tmp_path / "bad.bookmark"
+    path.write_text("{ not json", encoding="utf-8")
+    resp = client.get("/api/bookmark-file", params={"path": str(path)})
+    assert resp.status_code == 400
+    # A JSON array is not a bookmark record either.
+    path.write_text("[1, 2]", encoding="utf-8")
+    assert client.get("/api/bookmark-file", params={"path": str(path)}).status_code == 400
+
+
+def test_bookmark_file_rejects_unsupported_version(tmp_path, monkeypatch):
+    # Forward-compat: a v2 file from a newer build must fail with a clear
+    # message, not redirect somewhere wrong.
+    client, _ = _client(tmp_path, monkeypatch)
+    path, _ = _write_bookmark(tmp_path, doc={"version": 2, "name": "x", "kind": "single",
+                                             "path": "a", "search": ""})
+    resp = client.get("/api/bookmark-file", params={"path": str(path)})
+    assert resp.status_code == 400
+    assert "version" in resp.json()["error"]
+
+
 def test_migration_leaves_unique_tree_unwritten(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     # Compact JSON (no indent) differs from write_json's output; surviving a GET

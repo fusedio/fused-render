@@ -151,6 +151,40 @@ def export_bookmark(
     return {"path": path}
 
 
+# ------------------------------------------------------- .bookmark file open
+#
+# Finder double-click (SB-9, D99): the app maps a `.bookmark` document to the
+# `/view/_bookmark?file=<abs path>` sentinel, whose frontend calls this to
+# read the file, then resolves the relative paths inside it against `dir` and
+# redirects — mirror of the export split above: the `_layout` grammar's only
+# parser lives in the shell codec, so the server stays a dumb validated reader.
+# Read-only GET, unguarded like GET /api/bookmarks.
+
+
+@router.get("/api/bookmark-file")
+def get_bookmark_file(path: str):
+    if not os.path.isabs(path):
+        return JSONResponse({"error": "path must be absolute"}, status_code=400)
+    if not path.lower().endswith(".bookmark"):
+        return JSONResponse({"error": "path must end in .bookmark"}, status_code=400)
+    if not os.path.isfile(path):
+        return JSONResponse({"error": f"no such file: {path}"}, status_code=404)
+    try:
+        with open(path, encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return JSONResponse({"error": "file is not valid .bookmark JSON"}, status_code=400)
+    version = doc.get("version") if isinstance(doc, dict) else None
+    if version != 1 or isinstance(version, bool):
+        # Forward-compat: a v2 file from a newer build gets a clear refusal,
+        # not a garbled redirect.
+        return JSONResponse(
+            {"error": f"unsupported .bookmark version: {version!r} (this build reads version 1)"},
+            status_code=400,
+        )
+    return {"dir": os.path.dirname(path), "bookmark": doc}
+
+
 # ------------------------------------------------------ bookmark history sidecar
 #
 # A bookmark create/url-update is mirrored into the target file's `<file>.json`

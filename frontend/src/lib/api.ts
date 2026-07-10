@@ -209,6 +209,18 @@ export function exportBookmarkFile(payload: BookmarkExport): Promise<{ path: str
   return postJson<{ path: string }>("/api/bookmarks/export", payload);
 }
 
+// Read a `.bookmark` file from disk (SB-9): the `_bookmark` sentinel resolves
+// the record's relative paths against `dir` (the file's own directory) and
+// redirects. The server validates (absolute path, exists, version 1) and reads.
+export interface BookmarkFileResult {
+  dir: string;
+  bookmark: Record<string, unknown>;
+}
+
+export function getBookmarkFile(path: string): Promise<BookmarkFileResult> {
+  return getJson<BookmarkFileResult>("/api/bookmark-file?path=" + encodeURIComponent(path));
+}
+
 // Per-file session restore (LSN-*). `search` is the shell query without the
 // leading "?", stored verbatim in the target file's .html.json sidecar.
 export interface LastSession {

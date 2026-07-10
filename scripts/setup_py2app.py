@@ -65,6 +65,15 @@ _PREVIEWABLE_EXTENSIONS = [
 
 DOCUMENT_TYPES = [
     {
+        # `.bookmark` is our own format (SB-9, D99): declare the UTI below and
+        # claim Owner rank so a Finder double-click always opens FusedRender.
+        "CFBundleTypeName": "FusedRender bookmark",
+        "CFBundleTypeRole": "Viewer",
+        "LSHandlerRank": "Owner",
+        "CFBundleTypeExtensions": ["bookmark"],
+        "LSItemContentTypes": ["io.fused.render.bookmark"],
+    },
+    {
         "CFBundleTypeName": "Apache Parquet data",
         "CFBundleTypeRole": "Viewer",
         "LSHandlerRank": "Default",  # no other app owns .parquet
@@ -161,6 +170,19 @@ OPTIONS = {
         # No LSUIElement (D34): regular app, Dock icon + menu bar item both.
         # Finder "Open with FusedRender" (SPEC DM-8):
         "CFBundleDocumentTypes": DOCUMENT_TYPES,
+        # No other app defines `.bookmark`, so export the UTI ourselves —
+        # without this, LaunchServices treats the extension as dynamic data
+        # and the Owner rank above binds unreliably. Identifier deliberately
+        # NOT branch-suffixed: every FusedRender build describes the same
+        # file format, even though only one can be the Finder default.
+        "UTExportedTypeDeclarations": [
+            {
+                "UTTypeIdentifier": "io.fused.render.bookmark",
+                "UTTypeDescription": "FusedRender bookmark",
+                "UTTypeConformsTo": ["public.json"],
+                "UTTypeTagSpecification": {"public.filename-extension": ["bookmark"]},
+            }
+        ],
         # macOS shows these strings in the TCC permission prompt when the app
         # first reads a file under a protected folder (the app browses the
         # whole filesystem by design, D2). Purpose strings don't change WHEN
