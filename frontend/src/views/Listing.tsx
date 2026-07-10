@@ -69,7 +69,14 @@ function isHiddenRel(rel: string): boolean {
 
 function sortEntries(entries: FsEntry[], sort: SortKey, order: SortOrder): FsEntry[] {
   const flip = order === "desc" ? -1 : 1;
-  const byName = (a: FsEntry, b: FsEntry) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+  // Case-insensitive primary order, then an exact (case-sensitive) tiebreak so
+  // names differing only by case/accent get a stable, deterministic order.
+  // Without the tiebreak such names compare equal and the sort falls back to
+  // the arbitrary os.listdir() arrival order, which changes between refreshes.
+  const byName = (a: FsEntry, b: FsEntry) => {
+    const c = a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+    return c !== 0 ? c : a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+  };
   return [...entries].sort((a, b) => {
     const aDot = a.name.startsWith(".");
     const bDot = b.name.startsWith(".");

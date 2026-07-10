@@ -415,7 +415,14 @@
 
     function sortedEntries() {
       const flip = sortOrder === "desc" ? -1 : 1;
-      const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+      // Case-insensitive primary order, then an exact (case-sensitive) tiebreak
+      // so names differing only by case/accent get a stable, deterministic
+      // order (otherwise the sort falls back to arbitrary listdir order and
+      // changes between refreshes). Mirrors views/Listing.tsx byName.
+      const byName = (a, b) => {
+        const c = a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+        return c !== 0 ? c : a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+      };
       return [...ENTRIES].sort((a, b) => {
         const aDot = a.name.startsWith("."), bDot = b.name.startsWith(".");
         if (aDot !== bDot) return aDot ? 1 : -1;              // dot entries last
