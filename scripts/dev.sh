@@ -46,9 +46,27 @@ fi
 echo "==> initial shell build (tsc + vite)"
 (cd "$FRONTEND" && npm run build)
 
+# `vite build --watch` empties fused_render/static/shell-dist/ before its first
+# rebuild — so the bundle the initial build just produced vanishes for a beat.
+# The server's startup check (create_app) fails hard if shell-dist is missing,
+# so it must not launch during that gap. Delete the index first, then wait for
+# the watch to re-emit it: its reappearance unambiguously means the watch's
+# first build finished (checking before deletion would pass instantly on the
+# initial build's copy and still race the empty). Bounded so a genuinely broken
+# build surfaces instead of hanging forever.
+DIST_INDEX="$REPO_ROOT/fused_render/static/shell-dist/index.html"
+rm -f "$DIST_INDEX"
+
 echo "==> starting vite watch + fused-render server (Ctrl-C stops both)"
 (cd "$FRONTEND" && npm run watch) &
 WATCH_PID=$!
 trap 'kill "$WATCH_PID" 2>/dev/null || true' EXIT INT TERM
+
+echo "==> waiting for the vite watch to emit the shell bundle"
+for _ in $(seq 1 60); do
+  [[ -f "$DIST_INDEX" ]] && break
+  sleep 0.5
+done
+[[ -f "$DIST_INDEX" ]] || { echo "shell bundle never appeared at $DIST_INDEX — check the vite watch output above"; exit 1; }
 
 "$PY" -m fused_render.cli "$@"
