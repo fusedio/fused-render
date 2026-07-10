@@ -429,3 +429,24 @@ def test_conditions_run_concurrently(user_dir):
 
     assert m == names and error is None
     assert elapsed < 0.9, f"expected concurrent (~0.3s), got {elapsed:.2f}s (serial would be ~1.2s)"
+
+
+def test_condition_pool_failure_falls_back_to_serial(user_dir, monkeypatch):
+    # If the thread pool can't be created/run (e.g. the OS refuses a new thread
+    # under load), evaluation must NOT propagate and 500 the stat — it falls
+    # back to serial evaluation, preserving both the fail-closed guarantee and
+    # correct results.
+    user_dir.template("a", condition="def method(path):\n    return True\n")
+    user_dir.template("b", condition="def method(path):\n    return 'keep' in path\n")
+    user_dir.registry({".csv": ["a", "b", "code"]})
+
+    import concurrent.futures
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(concurrent.futures, "ThreadPoolExecutor", boom)
+
+    # Serial fallback still evaluates every gate correctly.
+    assert modes("/d/keep.csv") == (["a", "b", "code"], None)
+    assert modes("/d/drop.csv") == (["a", "code"], None)

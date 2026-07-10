@@ -633,18 +633,31 @@ def _apply_conditions(entries: list, target_path: str):
                 gated.append((i, cf))
 
     results = {}  # index -> (allowed, error)
+
+    def _serial():
+        for i, cf in gated:
+            results[i] = _run_condition(cf, target_path)
+
     if len(gated) == 1:
-        i, cf = gated[0]
-        results[i] = _run_condition(cf, target_path)
+        _serial()
     elif gated:
         # Bounded fan-out — an extension has at most a handful of conditional
-        # templates (SPEC CT-12), so one worker per gate is fine.
-        from concurrent.futures import ThreadPoolExecutor
+        # templates (SPEC CT-12), so one worker per gate is fine. The pool
+        # machinery itself (thread creation, submit, result) lives OUTSIDE
+        # _run_condition's catch-all, so an OS refusing a new thread under load
+        # would otherwise escape and 500 the stat — breaking the fail-closed
+        # guarantee. Contain it: on any pool failure, fall back to serial
+        # evaluation, which is wholly inside _run_condition's catch-all.
+        try:
+            from concurrent.futures import ThreadPoolExecutor
 
-        with ThreadPoolExecutor(max_workers=len(gated)) as pool:
-            futures = {pool.submit(_run_condition, cf, target_path): i for i, cf in gated}
-            for fut, i in futures.items():
-                results[i] = fut.result()
+            with ThreadPoolExecutor(max_workers=len(gated)) as pool:
+                futures = {pool.submit(_run_condition, cf, target_path): i for i, cf in gated}
+                for fut, i in futures.items():
+                    results[i] = fut.result()
+        except BaseException:
+            results.clear()  # drop any partial results, re-evaluate cleanly
+            _serial()
 
     kept, error = [], None
     for i, entry in enumerate(entries):
