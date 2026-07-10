@@ -808,7 +808,10 @@ def create_app(start_dir: str) -> FastAPI:
         ignored = _git_ignored(path, [e["name"] for e in entries])
         for e in entries:
             e["ignored"] = e["name"] in ignored
-        entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
+        # Case-insensitive primary order, then exact name as a deterministic
+        # tiebreak so names differing only by case get a stable order instead of
+        # falling back to arbitrary os.listdir() order (which changes per call).
+        entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower(), e["name"]))
         return {"path": path, "entries": entries}
 
     def _annotate_ignored(root: str, batch: list[dict]) -> None:
