@@ -365,3 +365,33 @@ def test_walk_standalone_gitignore_cascades_to_subdirs(tmp_path):
     rels = _rels(_client(tmp_path), tmp_path)
     assert "proj/sub/app.txt" in rels
     assert "proj/sub/app.log" not in rels  # root rules reach subdirs
+
+
+# -- remote-mount clamp (connectors) ---------------------------------------------
+#
+# A walk under a connector mountpoint turns every directory into a remote LIST
+# call, so it gets a much smaller entry cap than a local walk. The clamp keys
+# off the connectors mounts dir (home_dir()/mounts), which follows
+# FUSED_RENDER_HOME.
+
+
+def test_walk_clamped_under_connector_mounts(tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    mount = tmp_path / "home" / "mounts" / "bucket"
+    mount.mkdir(parents=True)
+    for i in range(10):
+        (mount / f"f{i}.txt").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(server, "WALK_MAX_ENTRIES_REMOTE", 3)
+    data = _client(tmp_path).get("/api/fs/walk", params={"path": str(mount)}).json()
+    assert data["truncated"] is True
+    assert len(data["entries"]) == 3
+
+
+def test_walk_outside_mounts_keeps_big_cap(tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    for i in range(10):
+        (tmp_path / f"f{i}.txt").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(server, "WALK_MAX_ENTRIES_REMOTE", 3)
+    data = _client(tmp_path).get("/api/fs/walk", params={"path": str(tmp_path)}).json()
+    assert data["truncated"] is False
+    assert len(data["entries"]) == 10

@@ -119,6 +119,12 @@ KNOWN_SENTINELS = {"_render", "_listing"}
 # are all emitted long before the cap can bite. Module-level so tests can
 # shrink it.
 WALK_MAX_ENTRIES = 200_000
+# Much smaller cap when the walked path sits under a connector mountpoint
+# (shell/connectors.py): there every directory listing is a remote LIST call
+# (S3 etc.), so an unbounded walk over a bucket is a slow, potentially paid
+# API storm. The walk truncates early and the existing `truncated` flag tells
+# the client search was bounded.
+WALK_MAX_ENTRIES_REMOTE = 2_000
 # Entries per NDJSON batch line in the streamed walk: big enough that framing
 # overhead is noise, small enough that the client gets its first scoreable
 # batch within a few filesystem reads.
@@ -1054,13 +1060,22 @@ def create_app(start_dir: str) -> FastAPI:
         if not os.path.isdir(path):
             return _error(f"not a directory: {path}", status=400)
         walker = _walk_bfs(path, include_hidden)
+        # Remote-mount clamp: under a connector mountpoint every directory is
+        # a remote LIST round-trip, so the cap drops to WALK_MAX_ENTRIES_REMOTE
+        # (see the constant's comment). Resolved per request — the mounts dir
+        # follows home_dir()'s env-based redirection.
+        from fused_render.shell.connectors import mounts_dir as _mounts_dir
+
+        mroot = os.path.abspath(_mounts_dir())
+        under_mount = os.path.abspath(path).startswith(mroot + os.sep)
+        max_entries = WALK_MAX_ENTRIES_REMOTE if under_mount else WALK_MAX_ENTRIES
 
         if stream != "1":
             entries = []
             truncated = False
             for entry in walker:
                 entries.append(entry)
-                if len(entries) >= WALK_MAX_ENTRIES:
+                if len(entries) >= max_entries:
                     truncated = True
                     break
             return {"path": path, "entries": entries, "truncated": truncated}
@@ -1075,7 +1090,7 @@ def create_app(start_dir: str) -> FastAPI:
                 if len(batch) >= WALK_BATCH_SIZE:
                     yield json.dumps({"entries": batch}) + "\n"
                     batch = []
-                if total >= WALK_MAX_ENTRIES:
+                if total >= max_entries:
                     truncated = True
                     break
             if batch:
