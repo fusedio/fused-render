@@ -43,10 +43,16 @@
     "code",
     "annotate"
   ],
-  ".doc.json": [
+  ".docx": [
     "docs"
   ],
-  ".docx": [
+  ".docm": [
+    "docs"
+  ],
+  ".dotx": [
+    "docs"
+  ],
+  ".dotm": [
     "docs"
   ],
   ".ndjson": [

@@ -339,7 +339,8 @@
     return;
   }
   const BASENAME = FILE.split("/").pop();
-  const IS_DOCX = /\.docx$/i.test(BASENAME);
+  const WORD_EXT = /\.(docx|docm|dotx|dotm)$/i;
+  const IS_DOCX = WORD_EXT.test(BASENAME);
   document.title = "Docs — " + BASENAME;
 
   // ---- vendored asset loading (relative src 404s inside the render iframe) ----
@@ -1485,13 +1486,54 @@
       else toast("Save failed: " + e.message);
     } finally { S.saving = false; updateSavedTag(); }
   }
+  async function ensureTypst() {
+    const st = await py({ action: "typst_status" }).catch(() => ({ available: false }));
+    if (st.available) return true;
+    return await new Promise((resolve) => {
+      closeDialog();
+      const wrap = document.createElement("div"); wrap.className = "modal-overlay";
+      wrap.style.cssText = "position:fixed;inset:0;background:rgba(15,23,42,.28);display:grid;place-items:center;z-index:80";
+      const card = document.createElement("div");
+      card.style.cssText = "background:#fff;border-radius:10px;box-shadow:var(--shadow-2);padding:20px;width:min(420px,92vw);text-align:center";
+      card.innerHTML = `<div style="font-weight:600;margin-bottom:6px">PDF export needs the typst compiler</div>
+        <div style="font-size:12.5px;color:var(--ink-2);margin-bottom:14px">The first PDF export downloads the typst compiler (~30 MB). This happens once.</div>
+        <button class="btn primary" id="tyGo">Download typst (~30 MB)</button>
+        <div id="tyBar" class="hidden" style="height:6px;border-radius:4px;background:var(--hair-2);overflow:hidden;margin:14px 0"><div style="height:100%;background:var(--blue);width:0%;transition:width .2s"></div></div>
+        <div id="tyDetail" style="font-size:12px;color:var(--ink-2);word-break:break-word"></div>
+        <div style="margin-top:14px"><button class="btn" id="tyCancel">Cancel</button></div>`;
+      wrap.appendChild(card); document.body.appendChild(wrap); dialogEl = wrap;
+      const finish = (ok) => { closeDialog(); resolve(ok); };
+      wrap.onclick = (e) => { if (e.target === wrap) finish(false); };
+      card.querySelector("#tyCancel").onclick = () => finish(false);
+      card.querySelector("#tyGo").onclick = async () => {
+        card.querySelector("#tyGo").classList.add("hidden");
+        card.querySelector("#tyBar").classList.remove("hidden");
+        await py({ action: "typst_install" });
+        const poll = async () => {
+          const s = await py({ action: "typst_status" }).catch(() => null);
+          const p = (s && s.progress) || {};
+          if (s && s.available) { toast("typst installed."); finish(true); return; }
+          if (p.error) {
+            card.querySelector("#tyDetail").textContent = p.error;
+            card.querySelector("#tyGo").classList.remove("hidden");
+            return;
+          }
+          card.querySelector("#tyBar").firstElementChild.style.width = (p.pct || 0) + "%";
+          card.querySelector("#tyDetail").textContent = p.detail || p.stage || "downloading…";
+          setTimeout(poll, 800);
+        };
+        poll();
+      };
+    });
+  }
   async function doExport(fmt) {
     if (!S.view) return;
     $("exportMenu").classList.add("hidden");
+    if (fmt === "pdf" && !(await ensureTypst())) return;
     toast("Preparing " + fmt.toUpperCase() + "…", 8000);
     try {
       const html = docToHtml(S.view.state.doc);
-      const res = await py({ action: "export", file: FILE, title: BASENAME.replace(/\.doc\.json$|\.docx$/i, ""), html, fmt });
+      const res = await py({ action: "export", file: FILE, title: BASENAME.replace(WORD_EXT, ""), html, fmt });
       if (res.error) { toast("Export failed: " + res.error, 5000); return; }
       const a = document.createElement("a"); a.href = fused.rawUrl(res.path); a.download = res.name; a.click();
       toast("Downloaded " + res.name);
@@ -1518,7 +1560,7 @@
       const dirAt = (i) => { const q = segs.slice(0, i + 1).join("/"); return winRoot ? (i ? q : q + "/") : "/" + q; };
       const crumb = (winRoot ? "" : `<span data-dir="/" style="cursor:pointer">/</span>`) + segs.map((s, i) =>
         `${i || !winRoot ? " › " : ""}<span data-dir="${esc(dirAt(i))}" style="cursor:pointer">${esc(s)}</span>`).join("");
-      const prevName = card.querySelector("#fbName") ? card.querySelector("#fbName").value : BASENAME.replace(/\.doc\.json$|\.docx$/i, "");
+      const prevName = card.querySelector("#fbName") ? card.querySelector("#fbName").value : BASENAME.replace(WORD_EXT, "");
       card.innerHTML = `<div style="font-weight:700;font-size:15px;margin-bottom:10px">Save a copy</div>
         <div style="font-size:12px;color:var(--ink-2);margin-bottom:8px;word-break:break-all">${crumb}</div>
         <div style="border:1px solid var(--hair);border-radius:6px;max-height:240px;overflow-y:auto;font-size:13px">

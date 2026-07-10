@@ -36,15 +36,14 @@ bundled = [
     "openpyxl",
     "shapely",
     "geopandas",
-    # Preview-template backends. pandoc is intentionally absent — it is fetched
-    # on demand at runtime (see docs/docs.py, latex/engine.py) rather than
-    # bundling pypandoc-binary's ~220 MB per-platform pandoc.
+    # Preview-template backends. pandoc and typst are intentionally absent —
+    # they are large per-platform binaries fetched on demand at runtime (see
+    # docs/docs.py, docs/install_worker.py, latex/engine.py).
     "python-pptx",
     "fpdf2>=2.8.7",
     "usd-core>=24.5",
     "msgpack>=1.0",
     "rasterio",
-    "typst",
 ]
 # Menu-bar app shell (SPEC DM-3/DM-7). macOS-only; not a core dependency so
 # `pip install fused-render` stays cross-platform. Only the packaged .app

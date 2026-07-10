@@ -1,31 +1,37 @@
 # /// script
-# dependencies = ["pypandoc-binary", "typst"]
+# dependencies = ["pypandoc-binary"]
 # ///
 """Backend for the docs preview template (fused-render).
 
-The document itself is one user file — a `.doc.json` sidecar-free JSON file
-holding the ProseMirror doc plus named paragraph styles — read and written
-directly by the page via fused.readFile/writeFile. Comments, version history
-and signatures live in the file's JSON sidecar (<file>.json), also read and
-written by the page (read-modify-write under the "docs" key). This script
-only holds what genuinely needs Python: converting the current document to
-other formats via pandoc/typst, and browsing the filesystem for "Save a
-copy…". Params arrive as strings; annotate.
+The document is one user file — a Microsoft Word file (.docx/.docm/.dotx/.dotm)
+converted to/from the editor's HTML by pandoc. Comments, version history and
+signatures live in the file's JSON sidecar (<file>.json), read and written by
+the page (read-modify-write under the "docs" key). This script only holds what
+genuinely needs Python: converting the document to other formats via pandoc,
+PDF via the typst compiler, and browsing the filesystem for "Save a copy…".
+Params arrive as strings; annotate.
 """
 import hashlib
+import json
 import os
+import platform
 import re
+import shutil
 import subprocess
+import sys
+import time
 
 # The fused engine execs this script without setting __file__; it puts the
 # script's own directory first on sys.path, so rebuild __file__ from it. Under
 # the built-in executor __file__ is already set, so this is a no-op.
 if "__file__" not in globals():
-    import sys
     __file__ = os.path.join(sys.path[0], "docs.py")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_ROOT = os.path.join(os.path.expanduser("~"), ".fused-render", "cache", "docs")
+BIN_DIR = os.path.expanduser(os.path.join("~", ".fused-render", "bin"))
+TYPST_INSTALL_DIR = os.path.join(CACHE_ROOT, "_typst_install")
+TYPST_VERSION = "v0.13.1"
 
 # pandoc target format per requested extension (typst/pdf handled specially).
 PANDOC_TO = {
@@ -54,6 +60,61 @@ def _pandoc(args, input_text=None):
     return p.stdout
 
 
+def _typst_bin():
+    found = shutil.which("typst")
+    if found:
+        return found
+    candidate = os.path.join(BIN_DIR, "typst.exe" if os.name == "nt" else "typst")
+    return candidate if os.path.exists(candidate) else None
+
+
+def _install_progress():
+    path = os.path.join(TYPST_INSTALL_DIR, "progress.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not data.get("done"):
+        try:
+            os.kill(data.get("pid", -1), 0)
+        except (OSError, ValueError):
+            data["done"] = True
+            data["error"] = data.get("error") or "installer exited unexpectedly"
+    return data
+
+
+def _typst_status():
+    return {"available": _typst_bin() is not None, "path": _typst_bin(),
+            "progress": _install_progress()}
+
+
+def _typst_install():
+    prog = _install_progress()
+    if _typst_bin() or (prog and not prog.get("done")):
+        return _typst_status()
+    os.makedirs(TYPST_INSTALL_DIR, exist_ok=True)
+    os.makedirs(BIN_DIR, exist_ok=True)
+    worker = os.path.join(HERE, "install_worker.py")
+    logf = open(os.path.join(TYPST_INSTALL_DIR, "worker.log"), "ab")
+    detach_kwargs = (
+        {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
+        if os.name == "nt" else {"start_new_session": True}
+    )
+    child = subprocess.Popen(
+        [sys.executable, worker, TYPST_VERSION, BIN_DIR, TYPST_INSTALL_DIR],
+        stdout=logf, stderr=logf, stdin=subprocess.DEVNULL, cwd=HERE, **detach_kwargs)
+    stamp = os.path.join(TYPST_INSTALL_DIR, "progress.json")
+    with open(stamp + ".tmp", "w", encoding="utf-8") as f:
+        json.dump({"stage": "spawn", "pct": 0, "detail": "starting installer",
+                   "done": False, "error": None, "pid": child.pid}, f)
+    os.replace(stamp + ".tmp", stamp)
+    time.sleep(0.3)
+    return _typst_status()
+
+
 def _cache_dir(file: str) -> str:
     # One subfolder per document (keyed by its own path) so exports from
     # different documents never collide; lives outside the template folder.
@@ -69,6 +130,12 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
     if action == "warmup":
         import pypandoc
         return {"pandoc": pypandoc.get_pandoc_version()}
+
+    if action == "typst_status":
+        return _typst_status()
+
+    if action == "typst_install":
+        return _typst_install()
 
     # ---- directory listing for the "Save a copy…" browser
     if action == "listdir":
@@ -113,14 +180,17 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
         ext = fmt.lower()
         try:
             if ext == "pdf":
-                import typst
+                typ_bin = _typst_bin()
+                if not typ_bin:
+                    return {"error": "typst is not installed", "missing_typst": True}
                 typ = _pandoc(["-f", "html+tex_math_dollars", "-t", "typst",
                                "--wrap=none"], input_text=html)
                 typ_path = os.path.join(out_dir, stem + ".typ")
                 with open(typ_path, "wb") as f:
                     f.write(typ)
                 out_path = os.path.join(out_dir, stem + ".pdf")
-                typst.compile(typ_path, output=out_path)
+                subprocess.run([typ_bin, "compile", typ_path, out_path],
+                               check=True, capture_output=True)
             elif ext in PANDOC_TO:
                 out_ext = {"latex": "tex", "markdown": "md"}.get(ext, ext)
                 out_path = os.path.join(out_dir, f"{stem}.{out_ext}")
