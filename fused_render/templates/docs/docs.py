@@ -4,23 +4,27 @@
 """Backend for the docs preview template (fused-render).
 
 The document is one user file — a Microsoft Word .docx file — converted
-to/from the editor's HTML by pandoc. Comments, version history and
-signatures live in the file's JSON sidecar (<file>.json), read and written by
-the page (read-modify-write under the "docs" key). This script only holds what
-genuinely needs Python: converting the document to other formats via pandoc,
-PDF via the typst compiler, and browsing the filesystem for "Save a copy…".
-Params arrive as strings; annotate.
+to/from the editor's HTML by pandoc. Everything the editor offers is limited
+to what pandoc's HTML<->docx round-trip genuinely preserves, so the .docx is
+the single source of truth: text, headings, lists, tables, images, math, and
+comments (written as native Word comments via pandoc's comment-start/
+comment-end spans). Version history lives in the file's JSON sidecar
+(<file>.json under the "docs" key). This script only holds what genuinely
+needs Python: pandoc conversion, PDF via the typst compiler, and browsing the
+filesystem for "Save a copy…". Params arrive as strings; annotate.
+
+Error handling: raise. The executor turns any exception into the error payload
+the page toasts; only structured, expected outcomes (conflict, missing typst)
+are returned as data.
 """
 import hashlib
 import json
 import os
-import platform
 import re
 import shutil
 import subprocess
 import sys
 import time
-import zipfile
 
 # The fused engine execs this script without setting __file__; it puts the
 # script's own directory first on sys.path, so rebuild __file__ from it. Under
@@ -29,10 +33,20 @@ if "__file__" not in globals():
     __file__ = os.path.join(sys.path[0], "docs.py")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
+from procutil import pid_alive as _pid_alive
+
 CACHE_ROOT = os.path.join(os.path.expanduser("~"), ".fused-render", "cache", "docs")
 BIN_DIR = os.path.expanduser(os.path.join("~", ".fused-render", "bin"))
 TYPST_INSTALL_DIR = os.path.join(CACHE_ROOT, "_typst_install")
 TYPST_VERSION = "v0.13.1"
+
+# The editor emits \(…\)/\[…\] math delimiters (tex_math_single_backslash) as
+# well as $…$; the import side asks for --mathjax so equations come back the
+# same way. --track-changes=all surfaces Word comments as comment-start/
+# comment-end spans; --embed-resources returns images as data URIs instead of
+# dangling media/ paths.
+HTML_FROM = "html+tex_math_dollars+tex_math_single_backslash"
 
 # pandoc target format per requested extension (typst/pdf handled specially).
 PANDOC_TO = {
@@ -67,36 +81,6 @@ def _typst_bin():
         return found
     candidate = os.path.join(BIN_DIR, "typst.exe" if os.name == "nt" else "typst")
     return candidate if os.path.exists(candidate) else None
-
-
-def _pid_alive(pid):
-    # os.kill(pid, 0) is the POSIX no-op liveness check, but on Windows signal 0
-    # aliases CTRL_C_EVENT and doesn't reliably error on a dead pid — check the
-    # process's exit code via the Win32 API instead.
-    try:
-        pid = int(pid)
-    except (TypeError, ValueError):
-        return False
-    if os.name == "nt":
-        import ctypes
-        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        STILL_ACTIVE = 259
-        handle = ctypes.windll.kernel32.OpenProcess(
-            PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-        if not handle:
-            return False
-        try:
-            code = ctypes.c_ulong()
-            if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
-                return False
-            return code.value == STILL_ACTIVE
-        finally:
-            ctypes.windll.kernel32.CloseHandle(handle)
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
 
 
 def _install_progress():
@@ -153,48 +137,9 @@ def _cache_dir(file: str) -> str:
     return d
 
 
-# Diagram/signature nodes and named styles can't survive pandoc's docx round-
-# trip, so they ride inside the .docx itself (an extra zip part) — the document
-# stays self-contained, no sidecar next to it.
-EMBED_PART = "fused/embeds.json"
-
-
-def _write_embeds(docx_path, embeds, styles):
-    if not (embeds or styles):
-        return
-    payload = json.dumps({"embeds": json.loads(embeds or "{}"),
-                          "styles": json.loads(styles or "{}")})
-    with zipfile.ZipFile(docx_path) as z:
-        parts = {n: z.read(n) for n in z.namelist()}
-    # Register the json content type so the package stays valid OPC — Word and
-    # Google Docs open it cleanly and ignore this unreferenced extra part.
-    ct = parts["[Content_Types].xml"].decode("utf-8")
-    if 'Extension="json"' not in ct:
-        ct = ct.replace("</Types>", '<Default Extension="json" ContentType="application/json"/></Types>')
-    parts["[Content_Types].xml"] = ct.encode("utf-8")
-    parts[EMBED_PART] = payload.encode("utf-8")
-    tmp = docx_path + ".rezip"
-    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
-        for name, data in parts.items():
-            z.writestr(name, data)
-    os.replace(tmp, docx_path)
-
-
-def _read_embeds(docx_path):
-    try:
-        with zipfile.ZipFile(docx_path) as z:
-            if EMBED_PART in z.namelist():
-                data = json.loads(z.read(EMBED_PART))
-                return data.get("embeds") or {}, data.get("styles") or {}
-    except (OSError, zipfile.BadZipFile, ValueError):
-        pass
-    return {}, {}
-
-
 # -------------------------------------------------------------------- dispatcher
 def main(action: str = "export", file: str = "", html: str = "", title: str = "",
-         fmt: str = "pdf", path: str = "", directory: str = "", expected_mtime: str = "",
-         embeds: str = "", styles: str = ""):
+         fmt: str = "pdf", path: str = "", directory: str = "", expected_mtime: str = ""):
     if action == "warmup":
         import pypandoc
         return {"pandoc": pypandoc.get_pandoc_version()}
@@ -211,16 +156,13 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
         if not os.path.isdir(base):
             base = os.path.dirname(base) or os.path.expanduser("~")
         dirs, files = [], []
-        try:
-            for nm in sorted(os.listdir(base), key=str.lower):
-                if nm.startswith("."):
-                    continue
-                if os.path.isdir(os.path.join(base, nm)):
-                    dirs.append(nm)
-                elif nm.lower().endswith(".docx"):
-                    files.append(nm)
-        except PermissionError:
-            pass
+        for nm in sorted(os.listdir(base), key=str.lower):
+            if nm.startswith("."):
+                continue
+            if os.path.isdir(os.path.join(base, nm)):
+                dirs.append(nm)
+            elif nm.lower().endswith(".docx"):
+                files.append(nm)
         parent = os.path.dirname(base) or base   # dirname(root) == root, so "up" stops there
         # forward slashes on every platform: the browser's crumb/join logic is "/"-based
         return {"path": base.replace(os.sep, "/"), "parent": parent.replace(os.sep, "/"),
@@ -230,76 +172,64 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
     # ---- open an existing .docx: convert to HTML for the editor
     if action == "import":
         if not file or not os.path.isfile(file):
-            return {"error": f"file not found: {file}"}
-        try:
-            out = _pandoc(["-f", "docx", "-t", "html+tex_math_dollars", "--mathjax",
-                           "--wrap=none", file])
-        except Exception as e:
-            return {"error": f"could not read {os.path.basename(file)}: {e}"}
-        embeds_obj, styles_obj = _read_embeds(file)
-        return {"html": out.decode("utf-8", "replace"), "embeds": embeds_obj, "styles": styles_obj}
+            raise FileNotFoundError(f"file not found: {file}")
+        out = _pandoc(["-f", "docx", "-t", "html+tex_math_dollars", "--mathjax",
+                       "--track-changes=all", "--embed-resources",
+                       "--wrap=none", file])
+        return {"html": out.decode("utf-8", "replace"), "mtime": os.path.getmtime(file)}
 
     # ---- export/convert: browser sends serialized HTML, we fan out to formats
     if action == "export":
         os.makedirs(CACHE_ROOT, exist_ok=True)
         if not html:
-            return {"error": "no html to export"}
+            raise ValueError("no html to export")
         out_dir = _cache_dir(file)
         stem = re.sub(r"[^A-Za-z0-9_-]+", "_", (title or "document")).strip("_") or "document"
         ext = fmt.lower()
-        try:
-            if ext == "pdf":
-                typ_bin = _typst_bin()
-                if not typ_bin:
-                    return {"error": "typst is not installed", "missing_typst": True}
-                typ = _pandoc(["-f", "html+tex_math_dollars+tex_math_single_backslash", "-t", "typst",
-                               "--wrap=none"], input_text=html)
-                typ_path = os.path.join(out_dir, stem + ".typ")
-                with open(typ_path, "wb") as f:
-                    f.write(typ)
-                out_path = os.path.join(out_dir, stem + ".pdf")
-                subprocess.run([typ_bin, "compile", typ_path, out_path],
-                               check=True, capture_output=True)
-            elif ext in PANDOC_TO:
-                out_ext = {"latex": "tex", "markdown": "md"}.get(ext, ext)
-                out_path = os.path.join(out_dir, f"{stem}.{out_ext}")
-                data = _pandoc(["-f", "html+tex_math_dollars+tex_math_single_backslash", "-t", PANDOC_TO[ext],
-                                "--wrap=none", "--standalone", "-o", out_path],
-                               input_text=html)
-                if not os.path.exists(out_path):  # some writers go to stdout
-                    with open(out_path, "wb") as f:
-                        f.write(data)
-            else:
-                return {"error": f"unsupported format: {fmt}"}
-        except Exception as e:
-            return {"error": f"export to {fmt} failed: {e}"}
+        if ext == "pdf":
+            typ_bin = _typst_bin()
+            if not typ_bin:
+                return {"error": "typst is not installed", "missing_typst": True}
+            typ = _pandoc(["-f", HTML_FROM, "-t", "typst", "--wrap=none"],
+                          input_text=html)
+            typ_path = os.path.join(out_dir, stem + ".typ")
+            with open(typ_path, "wb") as f:
+                f.write(typ)
+            out_path = os.path.join(out_dir, stem + ".pdf")
+            subprocess.run([typ_bin, "compile", typ_path, out_path],
+                           check=True, capture_output=True)
+        elif ext in PANDOC_TO:
+            out_ext = {"latex": "tex", "markdown": "md"}.get(ext, ext)
+            out_path = os.path.join(out_dir, f"{stem}.{out_ext}")
+            data = _pandoc(["-f", HTML_FROM, "-t", PANDOC_TO[ext],
+                            "--wrap=none", "--standalone", "-o", out_path],
+                           input_text=html)
+            if not os.path.exists(out_path):  # some writers go to stdout
+                with open(out_path, "wb") as f:
+                    f.write(data)
+        else:
+            raise ValueError(f"unsupported format: {fmt}")
         return {"path": out_path, "name": os.path.basename(out_path), "size": os.path.getsize(out_path)}
 
     # ---- save the bound .docx in place, with a conflict lock
     if action == "save":
         if not html:
-            return {"error": "nothing to save"}
+            raise ValueError("nothing to save")
         file = os.path.abspath(file)
         if expected_mtime and os.path.exists(file):
             on_disk = os.path.getmtime(file)
             if abs(on_disk - float(expected_mtime)) > 1e-6:
                 return {"conflict": True, "mtime": on_disk}
         tmp = file + ".tmp"
-        try:
-            _pandoc(["-f", "html+tex_math_dollars+tex_math_single_backslash", "-t", "docx", "--wrap=none",
-                     "--standalone", "-o", tmp], input_text=html)
-            _write_embeds(tmp, embeds, styles)
-            os.replace(tmp, file)
-        except Exception as e:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-            return {"error": f"save to {file} failed: {e}"}
+        _pandoc(["-f", HTML_FROM, "-t", "docx", "--wrap=none",
+                 "--standalone", "-o", tmp], input_text=html)
+        os.replace(tmp, file)
         return {"path": file.replace(os.sep, "/"), "mtime": os.path.getmtime(file)}
 
     # ---- "Save a copy…": write a .docx to a location the user browsed to
     if action == "save_as":
         if not html:
-            return {"error": "nothing to save"}
+            raise ValueError("nothing to save")
         # os.path.join resolves it: a full path in `path` wins, a bare name joins
         # onto `directory` — handles absolute/relative and either separator.
         raw = os.path.join(directory, path) if directory else path
@@ -307,12 +237,8 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
         if not dest.lower().endswith(".docx"):
             dest += ".docx"
         os.makedirs(os.path.dirname(dest), exist_ok=True)
-        try:
-            _pandoc(["-f", "html+tex_math_dollars+tex_math_single_backslash", "-t", "docx", "--wrap=none",
-                     "--standalone", "-o", dest], input_text=html)
-            _write_embeds(dest, embeds, styles)
-        except Exception as e:
-            return {"error": f"save to {dest} failed: {e}"}
+        _pandoc(["-f", HTML_FROM, "-t", "docx", "--wrap=none",
+                 "--standalone", "-o", dest], input_text=html)
         return {"path": dest.replace(os.sep, "/"), "name": os.path.basename(dest)}
 
-    return {"error": f"unknown action: {action}"}
+    raise ValueError(f"unknown action: {action}")

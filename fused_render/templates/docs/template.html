@@ -69,7 +69,6 @@
   select.tb { -webkit-appearance: none; appearance: none; padding: 0 22px 0 9px; cursor: pointer;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%238a929e' stroke-width='3'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
     background-repeat: no-repeat; background-position: right 6px center; border-color: var(--hair); }
-  input[type=color].tb { padding: 3px; width: 32px; }
 
   /* ---- workspace: TOC | page | (panels) ---- */
   #main { flex: 1 1 auto; min-height: 0; display: flex; position: relative; }
@@ -130,15 +129,12 @@
   .menu .menu-sub > .menu { display: none; top: -6px; left: calc(100% + 2px); right: auto; }
   .menu .menu-sub:hover > .menu, .menu .menu-sub.open > .menu { display: block; }
 
-  /* ---- comments + signature in the document ---- */
+  /* ---- comments in the document ---- */
   .ProseMirror .comment { background: #fff3c4; border-bottom: 2px solid #f2c14e; cursor: pointer; }
   .ProseMirror .comment.active { background: #ffe08a; }
-  .ProseMirror .sig-node { margin: 16px 0; padding: 10px 14px; border: 1px dashed var(--hair); border-radius: 8px; display: inline-block; }
-  .ProseMirror .sig-node img { display: block; }
-  .ProseMirror .sig-node figcaption { font-family: var(--font); font-size: 11.5px; color: var(--ink-3); margin-top: 4px; }
   .math-node { cursor: pointer; }
 
-  /* ---- right panel (comments / history / signatures) ---- */
+  /* ---- right panel (comments / history) ---- */
   #panel { flex: 0 0 300px; border-left: 1px solid var(--hair); background: var(--chrome); display: flex; flex-direction: column; }
   #panel.hidden { display: none; }
   .panel-head { display: flex; align-items: center; gap: 4px; padding: 8px 10px; border-bottom: 1px solid var(--hair); }
@@ -153,61 +149,14 @@
   .card .body { font-size: 13px; margin: 4px 0; white-space: pre-wrap; }
   .card .acts { display: flex; gap: 8px; margin-top: 6px; }
   .card .acts button { border: none; background: none; color: var(--blue); font-size: 12px; cursor: pointer; padding: 0; }
-  .card.resolved { opacity: .6; }
-  .card.resolved .body { text-decoration: line-through; }
   .ver-row { display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 6px; }
   .ver-row:hover { background: var(--hair-2); }
   .ver-row .vk { font-size: 10px; text-transform: uppercase; letter-spacing: .4px; padding: 1px 5px; border-radius: 4px; }
   .ver-row .vk.manual { background: var(--blue-soft); color: var(--blue); }
-  .ver-row .vk.signed { background: #e7f6ee; color: var(--ok); }
   .ver-row .vk.auto { background: var(--hair-2); color: var(--ink-3); }
   .ver-row .vwhen { flex: 1 1 auto; font-size: 12px; color: var(--ink-2); }
   .ver-row button { border: 1px solid var(--hair); background: #fff; border-radius: 5px; font-size: 11.5px; padding: 3px 8px; cursor: pointer; }
-  .sigpad { border: 1px solid var(--hair); border-radius: 8px; background: #fff; touch-action: none; cursor: crosshair; width: 100%; }
   .empty-note { color: var(--ink-3); font-size: 12.5px; padding: 10px 4px; }
-
-  /* ---- checklist ---- */
-  .ProseMirror ul.task-list { list-style: none; padding-left: 4px; }
-  .ProseMirror li.task-item { display: flex; align-items: flex-start; gap: 8px; }
-  .ProseMirror li.task-item > .task-box { flex: 0 0 auto; width: 17px; height: 17px; margin-top: 4px; border: 2px solid #b6bcc6; border-radius: 4px; cursor: pointer; position: relative; background: #fff; }
-  .ProseMirror li.task-item.done > .task-box { background: var(--blue); border-color: var(--blue); }
-  .ProseMirror li.task-item.done > .task-box::after { content: ""; position: absolute; left: 4px; top: 0px; width: 5px; height: 10px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
-  .ProseMirror li.task-item > .task-body { flex: 1 1 auto; }
-  .ProseMirror li.task-item > .task-body p { margin: 0 0 4px; }
-  .ProseMirror li.task-item.done > .task-body { color: var(--ink-3); text-decoration: line-through; }
-
-  /* ---- diagram node ---- */
-  .ProseMirror .diagram-node { position: relative; border: 1px solid var(--hair); border-radius: 8px; padding: 10px; margin: 0 0 14px; text-align: center; background: #fff; }
-  .ProseMirror .diagram-node.ProseMirror-selectednode { outline: 2px solid var(--blue); outline-offset: 1px; }
-  .diagram-node .diagram-bar { position: absolute; top: 6px; right: 6px; display: none; gap: 4px; font-family: var(--font); }
-  body.mode-edit .diagram-node:hover .diagram-bar { display: flex; }
-  .diagram-bar button { border: 1px solid var(--hair); background: #fff; border-radius: 5px; font-size: 11.5px; padding: 3px 8px; cursor: pointer; }
-  .diagram-bar button:hover { background: var(--hair-2); }
-
-  /* ---- font picker dropdown ---- */
-  .fontbox { position: relative; }
-  #fontBtn { min-width: 132px; justify-content: space-between; }
-  #fontName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 104px; }
-  .font-pop { position: absolute; top: calc(100% + 4px); left: 0; width: 260px; background: #fff; border: 1px solid var(--hair);
-    border-radius: var(--radius); box-shadow: var(--shadow-2); z-index: 45; display: flex; flex-direction: column; max-height: 380px; }
-  .font-pop input { margin: 8px; padding: 7px 9px; border: 1px solid var(--hair); border-radius: var(--radius); font: inherit; }
-  .font-pop .flist { overflow-y: auto; padding: 0 6px 6px; }
-  .font-pop .fitem { padding: 7px 10px; border-radius: 5px; cursor: pointer; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .font-pop .fitem:hover, .font-pop .fitem.sel { background: var(--blue-soft); }
-  .font-pop .fcat { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: var(--ink-3); padding: 8px 10px 2px; }
-
-  /* size stepper */
-  .sizebox { display: inline-flex; align-items: center; gap: 2px; }
-  .sizebox input { width: 34px; text-align: center; border: 1px solid var(--hair); border-radius: 5px; padding: 4px 2px; font: inherit; color: var(--ink); }
-  .sizebox button { width: 24px; height: 28px; border: 1px solid transparent; background: transparent; border-radius: 5px; font-size: 15px; color: var(--ink-2); }
-  .sizebox button:hover { background: var(--hair-2); }
-
-  /* dropdown popovers for align / spacing */
-  .pop { position: absolute; top: calc(100% + 4px); left: 0; background: #fff; border: 1px solid var(--hair); border-radius: var(--radius); box-shadow: var(--shadow-2); z-index: 45; padding: 4px; }
-  .pop button { display: flex; align-items: center; gap: 8px; width: 100%; border: none; background: none; padding: 7px 12px 7px 10px; border-radius: 5px; color: var(--ink); font-size: 13px; white-space: nowrap; }
-  .pop button:hover { background: var(--hair-2); }
-  .pop.row { display: flex; padding: 3px; }
-  .pop.row button { width: 32px; height: 30px; justify-content: center; padding: 0; }
 
   /* ---- find & replace bar ---- */
   #findbar { position: absolute; top: 8px; right: 20px; z-index: 30; background: #fff; border: 1px solid var(--hair);
@@ -313,7 +262,6 @@
       <div class="panel-head">
         <button class="ptab" data-tab="comments">Comments</button>
         <button class="ptab" data-tab="history">History</button>
-        <button class="ptab" data-tab="signatures">Signatures</button>
         <button class="pclose" id="panelClose">×</button>
       </div>
       <div class="panel-body" id="panelBody"></div>
@@ -351,7 +299,7 @@
     const css = await (await fetch(assetUrl(rel))).text();
     const s = document.createElement("style"); s.textContent = css; document.head.appendChild(s);
   }
-  let PM, katex, mermaid;
+  let PM, katex;
   try {
     await Promise.all([
       loadCss("vendor/prosemirror-view.css"),
@@ -375,13 +323,6 @@
     })();
     return katexCssPromise;
   }
-  // mermaid is heavy (3MB) — load it lazily on first diagram use.
-  async function ensureMermaid() {
-    if (mermaid) return mermaid;
-    ({ mermaid } = await import(assetUrl("vendor/mermaid.esm.js")));
-    mermaid.initialize({ startOnLoad: false, theme: "neutral", securityLevel: "loose" });
-    return mermaid;
-  }
 
   const { Schema, DOMParser: PMDOMParser, DOMSerializer, Fragment } = PM.pmModel;
   const { EditorState, Plugin, PluginKey, TextSelection } = PM.pmState;
@@ -397,16 +338,9 @@
   const M = PM.pmMath;
 
   // ------------------------------------------------------------------ schema ---
-  // Shared block attribute serializer (align + named style + line spacing + indent).
-  function blockAttrs(n) {
-    const attrs = {}; const st = [];
-    if (n.attrs.align) st.push("text-align:" + n.attrs.align);
-    if (n.attrs.lineHeight) st.push("line-height:" + n.attrs.lineHeight);
-    if (n.attrs.indent) st.push("margin-left:" + (n.attrs.indent * 36) + "px");
-    if (st.length) attrs.style = st.join(";");
-    if (n.attrs.style) { attrs["data-custom-style"] = n.attrs.style; attrs.class = "cs-" + n.attrs.style.replace(/\s+/g, "-").toLowerCase(); }
-    return attrs;
-  }
+  // Deliberately limited to what pandoc's HTML<->docx round-trip preserves, so
+  // the .docx on disk is the single source of truth — nothing the editor can
+  // produce is silently lost on save/reopen.
   const tableNodes = T.tableNodes({ tableGroup: "block", cellContent: "block+",
     cellAttributes: { background: { default: null } } });
 
@@ -421,20 +355,12 @@
 
   const nodes = {
     doc: { content: "block+" },
-    paragraph: {
-      group: "block", content: "inline*",
-      attrs: { align: { default: null }, style: { default: null }, lineHeight: { default: null }, indent: { default: 0 } },
-      parseDOM: [
-        { tag: "div[data-custom-style] > p", getAttrs: (d) => ({ style: d.parentElement.getAttribute("data-custom-style"), align: d.style.textAlign || null, lineHeight: d.style.lineHeight || null, indent: parseInt(d.style.marginLeft) / 36 || 0 }) },
-        { tag: "p", getAttrs: (d) => ({ align: d.style.textAlign || null, style: d.getAttribute("data-custom-style") || null, lineHeight: d.style.lineHeight || null, indent: parseInt(d.style.marginLeft) / 36 || 0 }) },
-      ],
-      toDOM: (n) => ["p", blockAttrs(n), 0],
-    },
+    paragraph: { group: "block", content: "inline*", parseDOM: [{ tag: "p" }], toDOM: () => ["p", 0] },
     heading: {
       group: "block", content: "inline*", defining: true,
-      attrs: { level: { default: 1 }, align: { default: null }, lineHeight: { default: null }, indent: { default: 0 } },
-      parseDOM: [1, 2, 3, 4, 5, 6].map((level) => ({ tag: "h" + level, getAttrs: (d) => ({ level, align: d.style.textAlign || null, lineHeight: d.style.lineHeight || null, indent: parseInt(d.style.marginLeft) / 36 || 0 }) })),
-      toDOM: (n) => ["h" + n.attrs.level, blockAttrs(n), 0],
+      attrs: { level: { default: 1 } },
+      parseDOM: [1, 2, 3, 4, 5, 6].map((level) => ({ tag: "h" + level, attrs: { level } })),
+      toDOM: (n) => ["h" + n.attrs.level, 0],
     },
     blockquote: { group: "block", content: "block+", defining: true, parseDOM: [{ tag: "blockquote" }], toDOM: () => ["blockquote", 0] },
     code_block: {
@@ -446,13 +372,8 @@
     ordered_list: { group: "block", content: "list_item+", attrs: { order: { default: 1 } },
       parseDOM: [{ tag: "ol", getAttrs: (d) => ({ order: +d.getAttribute("start") || 1 }) }],
       toDOM: (n) => n.attrs.order === 1 ? ["ol", 0] : ["ol", { start: n.attrs.order }, 0] },
-    bullet_list: { group: "block", content: "list_item+", parseDOM: [{ tag: "ul", getAttrs: (d) => d.getAttribute("data-type") === "tasklist" ? false : null }], toDOM: () => ["ul", 0] },
-    list_item: { content: "paragraph block*", defining: true, parseDOM: [{ tag: "li", getAttrs: (d) => d.hasAttribute("data-checked") ? false : null }], toDOM: () => ["li", 0] },
-    task_list: { group: "block", content: "task_item+",
-      parseDOM: [{ tag: "ul[data-type=tasklist]" }], toDOM: () => ["ul", { "data-type": "tasklist", class: "task-list" }, 0] },
-    task_item: { content: "paragraph block*", defining: true, attrs: { checked: { default: false } },
-      parseDOM: [{ tag: "li[data-checked]", getAttrs: (d) => ({ checked: d.getAttribute("data-checked") === "true" }) }],
-      toDOM: (n) => ["li", { "data-checked": String(n.attrs.checked), class: "task-item" + (n.attrs.checked ? " done" : "") }, ["span", { class: "task-box", contenteditable: "false" }], ["div", { class: "task-body" }, 0]] },
+    bullet_list: { group: "block", content: "list_item+", parseDOM: [{ tag: "ul" }], toDOM: () => ["ul", 0] },
+    list_item: { content: "paragraph block*", defining: true, parseDOM: [{ tag: "li" }], toDOM: () => ["li", 0] },
     image: {
       group: "inline", inline: true, draggable: true,
       attrs: { src: {}, alt: { default: null }, title: { default: null }, width: { default: null } },
@@ -462,38 +383,16 @@
     hard_break: { group: "inline", inline: true, selectable: false, parseDOM: [{ tag: "br" }], toDOM: () => ["br"] },
     // math: content is the LaTeX source. parseDOM reads the pandoc-style
     // span.math that both toDOM and pandoc's docx import emit, so equations
-    // survive open/save round-trips (not just the vestigial <math-*> tags).
+    // survive open/save round-trips.
     math_inline: {
       group: "inline math", content: "text*", inline: true, atom: true,
-      parseDOM: [
-        { tag: "span.math.inline", getContent: mathContent },
-        { tag: "math-inline" },
-      ],
+      parseDOM: [{ tag: "span.math.inline", getContent: mathContent }],
       toDOM: (n) => ["span", { class: "math inline" }, "\\(" + (n.textContent || "") + "\\)"],
     },
     math_display: {
       group: "block math", content: "text*", atom: true, code: true,
-      parseDOM: [
-        { tag: "span.math.display", getContent: mathContent },
-        { tag: "math-display" },
-      ],
+      parseDOM: [{ tag: "span.math.display", getContent: mathContent }],
       toDOM: (n) => ["span", { class: "math display" }, "\\[" + (n.textContent || "") + "\\]"],
-    },
-    // diagram: mermaid source stored as an attr, rendered to SVG via a NodeView.
-    diagram: {
-      group: "block", atom: true, isolating: true, draggable: true,
-      attrs: { source: { default: "graph TD;\n  A-->B;" }, id: { default: null } },
-      parseDOM: [{ tag: "div[data-diagram]", getAttrs: (d) => ({ source: d.getAttribute("data-diagram"), id: d.getAttribute("data-id") }) }],
-      toDOM: (n) => ["div", { "data-diagram": n.attrs.source, "data-id": n.attrs.id, class: "diagram" }],
-    },
-    // signature: a drawn/typed signature image + integrity metadata.
-    signature: {
-      group: "block", atom: true, draggable: false,
-      attrs: { image: { default: "" }, name: { default: "" }, reason: { default: "" }, signed_at: { default: "" }, hash: { default: "" }, id: { default: null } },
-      parseDOM: [{ tag: "figure[data-signature]", getAttrs: (d) => ({ image: d.querySelector("img") ? d.querySelector("img").getAttribute("src") : "", name: d.getAttribute("data-name"), reason: d.getAttribute("data-reason"), signed_at: d.getAttribute("data-signed-at"), hash: d.getAttribute("data-hash"), id: d.getAttribute("data-id") }) }],
-      toDOM: (n) => ["figure", { "data-signature": "1", "data-id": n.attrs.id, "data-name": n.attrs.name, "data-reason": n.attrs.reason, "data-signed-at": n.attrs.signed_at, "data-hash": n.attrs.hash, class: "sig-node" },
-        ["img", { src: n.attrs.image, style: "max-height:90px" }],
-        ["figcaption", {}, `${n.attrs.name || "Signed"}${n.attrs.reason ? " — " + n.attrs.reason : ""} · ${n.attrs.signed_at ? new Date(+n.attrs.signed_at).toLocaleString() : ""}`]],
     },
     text: { group: "inline" },
     ...tableNodes,
@@ -508,17 +407,9 @@
     underline: { parseDOM: [{ tag: "u" }, { style: "text-decoration=underline" }], toDOM: () => ["u", 0] },
     strike: { parseDOM: [{ tag: "s" }, { tag: "del" }, { style: "text-decoration=line-through" }], toDOM: () => ["s", 0] },
     code: { parseDOM: [{ tag: "code" }], toDOM: () => ["code", 0] },
-    textColor: { attrs: { color: {} }, parseDOM: [{ style: "color", getAttrs: (v) => ({ color: v }) }], toDOM: (m) => ["span", { style: "color:" + m.attrs.color }, 0] },
-    highlight: { attrs: { color: { default: "#fff3a3" } }, parseDOM: [{ tag: "mark", getAttrs: (d) => ({ color: d.style.backgroundColor || "#fff3a3" }) }], toDOM: (m) => ["mark", { style: "background:" + m.attrs.color }, 0] },
     comment: { attrs: { id: {} }, inclusive: false, excludes: "",
       parseDOM: [{ tag: "span.comment[data-cid]", getAttrs: (d) => ({ id: d.getAttribute("data-cid") }) }],
       toDOM: (m) => ["span", { class: "comment", "data-cid": m.attrs.id }, 0] },
-    fontFamily: { attrs: { family: {} },
-      parseDOM: [{ style: "font-family", getAttrs: (v) => ({ family: v.replace(/["']/g, "") }) }],
-      toDOM: (m) => ["span", { style: `font-family:${m.attrs.family}` }, 0] },
-    fontSize: { attrs: { size: {} },
-      parseDOM: [{ style: "font-size", getAttrs: (v) => (/pt|px|em|rem/.test(v) ? { size: v } : false) }],
-      toDOM: (m) => ["span", { style: `font-size:${m.attrs.size}` }, 0] },
   };
 
   const schema = new Schema({ nodes, marks });
@@ -531,40 +422,81 @@
     return div.innerHTML;
   }
 
-  // Diagram and signature nodes can't survive pandoc's docx round-trip, so the
-  // docx save path replaces each with a text sentinel and stashes its data in
-  // the sidecar (keyed by a stable id); import re-expands the sentinels.
-  const genId = () => "e" + Date.now().toString(36) + Math.floor(Math.random() * 1e9).toString(36);
-  const EMBED_RE = /\[\[fused-embed:([0-9a-z]+)\]\]/g;
-  const saveSerializer = new DOMSerializer(
-    Object.assign({}, domSerializer.nodes, {
-      diagram: (n) => ["p", "[[fused-embed:" + n.attrs.id + "]]"],
-      signature: (n) => ["p", "[[fused-embed:" + n.attrs.id + "]]"],
-    }), domSerializer.marks);
+  // ================= comments <-> native Word comments =================
+  // Comments live IN the .docx as first-class Word comments: on save the
+  // comment marks become pandoc's comment-start/comment-end spans (which its
+  // docx writer turns into w:comment + commentRange), and on import pandoc
+  // (--track-changes=all) hands the same spans back. Word ids must be numeric
+  // (ST_DecimalNumber), so save renumbers them positionally.
+  const genId = () => "c" + Date.now().toString(36) + Math.floor(Math.random() * 1e9).toString(36);
+
+  // Serialize for writing back to .docx: unwrap comment anchor spans and emit
+  // the paired marker spans pandoc understands, with the comment text inside
+  // the start marker.
   function docToSaveHtml(doc) {
     const div = document.createElement("div");
-    div.appendChild(saveSerializer.serializeFragment(doc.content));
+    div.appendChild(domSerializer.serializeFragment(doc.content));
+    const anchors = [...div.querySelectorAll("span.comment[data-cid]")];
+    const ranges = new Map();   // cid -> {first, last} anchor spans, in doc order
+    anchors.forEach((el) => {
+      const cid = el.getAttribute("data-cid");
+      if (!ranges.has(cid)) ranges.set(cid, { first: el, last: el });
+      else ranges.get(cid).last = el;
+    });
+    let n = 0;
+    for (const [cid, { first, last }] of ranges) {
+      const c = S.comments[cid] || {};
+      const start = document.createElement("span");
+      start.className = "comment-start"; start.id = String(++n);
+      start.setAttribute("author", c.author || "Anonymous");
+      start.setAttribute("date", new Date(c.ts || Date.now()).toISOString());
+      start.textContent = c.text || "";
+      first.before(start);
+      const end = document.createElement("span");
+      end.className = "comment-end"; end.id = String(n);
+      last.after(end);
+    }
+    anchors.forEach((el) => el.replaceWith(...el.childNodes));
     return div.innerHTML;
   }
-  function collectEmbeds(doc) {
-    const embeds = {};
-    doc.descendants((n) => {
-      if (n.type === schema.nodes.diagram) embeds[n.attrs.id] = { type: "diagram", source: n.attrs.source };
-      else if (n.type === schema.nodes.signature) embeds[n.attrs.id] = { type: "signature", image: n.attrs.image, name: n.attrs.name, reason: n.attrs.reason, signed_at: n.attrs.signed_at, hash: n.attrs.hash };
+
+  // Import: pull comment metadata out of the marker spans, wrap the anchored
+  // text in the span.comment form the schema's mark parse rule reads (per text
+  // node, so ranges crossing block boundaries work), and resolve any tracked
+  // changes (keep insertions, drop deletions).
+  function extractComments(dom) {
+    dom.querySelectorAll("span.deletion").forEach((el) => el.remove());
+    dom.querySelectorAll("span.insertion").forEach((el) => el.replaceWith(...el.childNodes));
+    const comments = {};
+    dom.querySelectorAll("span.comment-start").forEach((start) => {
+      const id = start.getAttribute("id");
+      if (!id) { start.remove(); return; }
+      comments[id] = {
+        text: start.textContent,
+        author: start.getAttribute("data-author") || start.getAttribute("author") || "?",
+        ts: Date.parse(start.getAttribute("data-date") || start.getAttribute("date") || "") || Date.now(),
+      };
+      start.textContent = "";
+      const end = [...dom.querySelectorAll("span.comment-end")]
+        .find((e) => e.getAttribute("id") === id);
+      if (end) {
+        const walker = dom.createTreeWalker(dom.body, NodeFilter.SHOW_TEXT);
+        const between = [];
+        let t;
+        while ((t = walker.nextNode())) {
+          if ((start.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_FOLLOWING)
+            && (end.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_PRECEDING)
+            && t.textContent) between.push(t);
+        }
+        between.forEach((tn) => {
+          const span = dom.createElement("span");
+          span.className = "comment"; span.setAttribute("data-cid", id);
+          tn.before(span); span.appendChild(tn);
+        });
+      }
     });
-    return embeds;
-  }
-  function embedHtml(id, e) {
-    if (!e) return "";
-    if (e.type === "diagram") return `<div data-diagram="${esc(e.source)}" data-id="${id}" class="diagram"></div>`;
-    const cap = `${e.name || "Signed"}${e.reason ? " — " + e.reason : ""}${e.signed_at ? " · " + new Date(+e.signed_at).toLocaleString() : ""}`;
-    return `<figure data-signature="1" data-id="${id}" data-name="${esc(e.name)}" data-reason="${esc(e.reason)}" data-signed-at="${esc(e.signed_at)}" data-hash="${esc(e.hash)}" class="sig-node"><img src="${esc(e.image)}" style="max-height:90px"><figcaption>${esc(cap)}</figcaption></figure>`;
-  }
-  function reconstructEmbeds(html, embeds) {
-    embeds = embeds || {};
-    return html
-      .replace(/<p>\s*\[\[fused-embed:([0-9a-z]+)\]\]\s*<\/p>/g, (m, id) => embedHtml(id, embeds[id]))
-      .replace(EMBED_RE, (m, id) => embedHtml(id, embeds[id]));
+    dom.querySelectorAll("span.comment-start, span.comment-end").forEach((el) => el.remove());
+    return comments;
   }
 
   // ---------------------------------------------------------------- nodeviews ---
@@ -579,8 +511,7 @@
     }
     render() {
       ensureKatexCss();
-      try { katex.renderToString; katex.render(this.node.textContent || "\\;", this.dom, { displayMode: this.display, throwOnError: false }); }
-      catch (e) { this.dom.textContent = this.node.textContent; }
+      katex.render(this.node.textContent || "\\;", this.dom, { displayMode: this.display, throwOnError: false });
       if (this.display) this.dom.style.textAlign = "center";
     }
     edit() {
@@ -599,61 +530,6 @@
     update(node) { if (node.type !== this.node.type) return false; this.node = node; this.render(); return true; }
   }
 
-  class DiagramView {
-    // single click selects (PM NodeSelection), drag moves, double-click or the
-    // hover toolbar edits; Delete/Backspace on the selection removes it.
-    constructor(node, view, getPos) {
-      this.node = node; this.view = view; this.getPos = getPos;
-      this.dom = document.createElement("div");
-      this.dom.className = "diagram-node";
-      this.body = document.createElement("div");
-      this.bar = document.createElement("div");
-      this.bar.className = "diagram-bar";
-      this.bar.innerHTML = '<button data-d="edit">Edit</button><button data-d="del">Delete</button>';
-      this.bar.addEventListener("mousedown", (e) => e.preventDefault());
-      this.bar.addEventListener("click", (e) => {
-        const act = e.target.dataset && e.target.dataset.d;
-        if (!act || !this.view.editable) return;
-        if (act === "edit") this.edit();
-        else { const pos = this.getPos(); if (pos != null) this.view.dispatch(this.view.state.tr.delete(pos, pos + this.node.nodeSize)); }
-      });
-      this.dom.append(this.body, this.bar);
-      this.dom.addEventListener("dblclick", () => this.edit());
-      this.render();
-    }
-    edit() { if (this.view.editable) openDiagramDialog(this.node.attrs.source, (src) => this.setSource(src)); }
-    async render() {
-      this.body.innerHTML = '<div class="muted" style="font-size:12px">Rendering diagram…</div>';
-      try {
-        const mer = await ensureMermaid();
-        const { svg } = await mer.render("d" + Math.abs(hashStr(this.node.attrs.source)) + "_" + (this.getPos() || 0), this.node.attrs.source);
-        this.body.innerHTML = svg;
-      } catch (e) { this.body.innerHTML = '<div class="muted" style="font-size:12px;color:var(--danger)">Diagram error: ' + esc(e.message || e) + "</div>"; }
-    }
-    setSource(src) {
-      const pos = this.getPos(); if (pos == null) return;
-      this.view.dispatch(this.view.state.tr.setNodeMarkup(pos, undefined, { ...this.node.attrs, source: src }));
-    }
-    stopEvent(e) { return this.bar.contains(e.target); } // let PM handle clicks (select) + drags
-    ignoreMutation() { return true; }
-    update(node) { if (node.type !== this.node.type) return false; const changed = node.attrs.source !== this.node.attrs.source; this.node = node; if (changed) this.render(); return true; }
-  }
-
-  class TaskItemView {
-    constructor(node, view, getPos) {
-      this.node = node; this.view = view; this.getPos = getPos;
-      this.dom = document.createElement("li");
-      this.dom.className = "task-item" + (node.attrs.checked ? " done" : "");
-      this.dom.setAttribute("data-checked", String(node.attrs.checked));
-      this.box = document.createElement("span"); this.box.className = "task-box"; this.box.contentEditable = "false";
-      this.box.addEventListener("mousedown", (e) => { e.preventDefault(); this.toggle(); });
-      this.contentDOM = document.createElement("div"); this.contentDOM.className = "task-body";
-      this.dom.append(this.box, this.contentDOM);
-    }
-    toggle() { if (!this.view.editable) return; const pos = this.getPos(); if (pos == null) return; this.view.dispatch(this.view.state.tr.setNodeMarkup(pos, undefined, { checked: !this.node.attrs.checked })); }
-    update(node) { if (node.type !== this.node.type) return false; this.node = node; this.dom.className = "task-item" + (node.attrs.checked ? " done" : ""); this.dom.setAttribute("data-checked", String(node.attrs.checked)); return true; }
-  }
-
   // ---------------------------------------------------------------- plugins ----
   function buildInputRules() {
     const rules = [...smartQuotes, ellipsis];
@@ -665,16 +541,6 @@
     rules.push(M.makeBlockMathInputRule(M.REGEX_BLOCK_MATH_DOLLARS, schema.nodes.math_display));
     return inputRules({ rules });
   }
-
-  const setAlign = (align) => (state, dispatch) => {
-    const { from, to } = state.selection; let tr = state.tr, changed = false;
-    state.doc.nodesBetween(from, to, (node, pos) => {
-      if (node.type === schema.nodes.paragraph || node.type === schema.nodes.heading) {
-        tr.setNodeMarkup(pos, undefined, { ...node.attrs, align }); changed = true;
-      }
-    });
-    if (changed && dispatch) dispatch(tr); return changed;
-  };
 
   function buildKeymap() {
     const k = {
@@ -688,11 +554,10 @@
       "Mod-Alt-3": C.setBlockType(schema.nodes.heading, { level: 3 }),
       "Shift-Ctrl-8": toggleList(schema.nodes.bullet_list),
       "Shift-Ctrl-9": toggleList(schema.nodes.ordered_list),
-      "Mod-Shift-l": setAlign("left"), "Mod-Shift-e": setAlign("center"), "Mod-Shift-r": setAlign("right"),
       // splitListItem returns false outside a list, so baseKeymap's Enter still runs.
-      "Enter": C.chainCommands(L.splitListItem(schema.nodes.list_item), L.splitListItem(schema.nodes.task_item)),
-      "Tab": C.chainCommands(L.sinkListItem(schema.nodes.list_item), L.sinkListItem(schema.nodes.task_item)),
-      "Shift-Tab": C.chainCommands(L.liftListItem(schema.nodes.list_item), L.liftListItem(schema.nodes.task_item)),
+      "Enter": L.splitListItem(schema.nodes.list_item),
+      "Tab": L.sinkListItem(schema.nodes.list_item),
+      "Shift-Tab": L.liftListItem(schema.nodes.list_item),
       "Backspace": C.chainCommands(M.mathBackspaceCmd, C.deleteSelection, C.joinBackward, C.selectNodeBackward),
       "Mod-s": () => { doSave("manual"); return true; },
       "Mod-Shift-s": () => { doSaveAs(); return true; },
@@ -752,11 +617,10 @@
   }
 
   // ------------------------------------------------------------------- app -----
-  const S = { view: null, mode: "view", dirty: false, saving: false, savedMtime: 0, comments: {}, styles: {}, author: "", panelTab: "comments" };
-  let fileMtime = null;   // arms the writeFile conflict lock; re-armed after every save
+  const S = { view: null, mode: "view", dirty: false, saving: false, savedMtime: 0, comments: {}, author: "", panelTab: "comments" };
+  let fileMtime = null;   // arms the save conflict lock; re-armed after every save
   const py = (params) => fused.runPython("./docs.py", params);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  const hashStr = (s) => { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return h; };
   let toastTimer;
   function toast(msg, ms = 2800) { const t = $("toast"); t.textContent = msg; t.style.display = "block"; clearTimeout(toastTimer); toastTimer = setTimeout(() => t.style.display = "none", ms); }
   const fileToBase64 = (file) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(",", 2)[1]); r.onerror = () => rej(r.error); r.readAsDataURL(file); });
@@ -765,10 +629,10 @@
     return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
   }
 
-  // ================= sidecar (comments / versions / signatures / author) ======
-  // Persistent-but-not-content state lives in the shared JSON sidecar next to
-  // the file (<file>.json), namespaced under "docs" — every other key (e.g.
-  // another template's own state) is preserved via read-modify-write.
+  // ================= sidecar (version history + author name) ======
+  // The document itself lives in the .docx; the sidecar (<file>.json, "docs"
+  // key, read-modify-write) holds only what can't: version snapshots and the
+  // last-used author name for comments.
   const SIDECAR = FILE + ".json";
   async function loadSidecar() {
     let data;
@@ -776,32 +640,28 @@
     if (!data || typeof data !== "object") data = {};
     if (!data.docs || typeof data.docs !== "object") data.docs = {};
     const d = data.docs;
-    if (!d.comments || typeof d.comments !== "object") d.comments = {};
-    if (!d.styles || typeof d.styles !== "object") d.styles = {};
-    if (!d.embeds || typeof d.embeds !== "object") d.embeds = {};
     if (!Array.isArray(d.versions)) d.versions = [];
-    if (!Array.isArray(d.signatures)) d.signatures = [];
     if (typeof d.author !== "string") d.author = "";
     return data;
   }
   // Serialized read-modify-write: overlapping callers would otherwise read the
-  // same base and the later write would clobber the earlier mutation.
+  // same base and the later write would clobber the earlier mutation. Sidecar
+  // writes are best-effort metadata — they never reject, so no caller needs a
+  // catch and a version-history hiccup can't fail a save that already landed.
   let sidecarChain = Promise.resolve();
   function saveSidecar(mutate) {
-    const run = sidecarChain.then(async () => {
+    sidecarChain = sidecarChain.then(async () => {
       const data = await loadSidecar();
       mutate(data.docs);
       await fused.writeFile(SIDECAR, JSON.stringify(data));
-      return data.docs;
-    });
-    sidecarChain = run.catch(() => {});
-    return run;
+    }).catch((e) => console.warn("docs sidecar write failed:", e));
+    return sidecarChain;
   }
-  // Keep everything <24h, hourly to 7 days, daily older. Never drop manual/signed.
+  // Keep everything <24h, hourly to 7 days, daily older. Never drop manual saves.
   function thinVersions(versions) {
     const now = Date.now(); const keep = []; const buckets = new Set();
     for (const v of versions) {
-      if (v.kind === "manual" || v.kind === "signed") { keep.push(v); continue; }
+      if (v.kind === "manual") { keep.push(v); continue; }
       const age = now - v.ts;
       const bucket = age < 86400000 ? "m" + Math.floor(v.ts / 60000)
         : age < 7 * 86400000 ? "h" + Math.floor(v.ts / 3600000)
@@ -818,15 +678,10 @@
       d.versions = thinVersions(d.versions);
     });
   }
-  async function recordSignature(signer, reason, sha) {
-    await saveSidecar((d) => { d.signatures.unshift({ id: String(Date.now()), ts: Date.now(), signer, reason, sha }); });
-  }
 
   const nodeViews = {
     math_inline: (node, view, getPos) => new MathViewInline(node, view, getPos, false),
     math_display: (node, view, getPos) => new MathViewInline(node, view, getPos, true),
-    diagram: (node, view, getPos) => new DiagramView(node, view, getPos),
-    task_item: (node, view, getPos) => new TaskItemView(node, view, getPos),
   };
 
   function mountEditor(doc) {
@@ -913,11 +768,6 @@
     table: '<rect x="3" y="4" width="18" height="16" rx="1"/><path d="M3 10h18M3 15h18M12 4v16"/>',
     image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 17l-5-5-9 8"/>',
     equation: '<path d="M4 5h16M8 5l4 14M14 12h6"/>',
-    diagram: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><path d="M10 6h4a2 2 0 0 1 2 2v6"/>',
-    alignL: '<path d="M3 6h18M3 12h12M3 18h15"/>',
-    alignC: '<path d="M3 6h18M6 12h12M4 18h16"/>',
-    alignR: '<path d="M3 6h18M9 12h12M6 18h15"/>',
-    sig: '<path d="M3 17c3 0 3-8 6-8s2 6 5 6 3-4 6-4M3 21h18"/>',
     comment: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
     clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
     search: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>',
@@ -925,26 +775,8 @@
     redo: '<path d="M15 14l5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h3"/>',
     print: '<path d="M6 9V3h12v6M6 18H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2M6 14h12v7H6z"/>',
     clear: '<path d="M4 7h16M10 11l4 8M14 11l-4 8M7 7l1-3h8l1 3"/>',
-    indentInc: '<path d="M3 6h18M3 18h18M8 12h13M3 10v4l3-2z"/>',
-    indentDec: '<path d="M3 6h18M3 18h18M8 12h13M6 10v4l-3-2z"/>',
-    lineSpace: '<path d="M3 6h13M3 12h13M3 18h13M19 5v14M19 5l-2 2M19 5l2 2M19 19l-2-2M19 19l2-2"/>',
-    check: '<path d="M9 6h12M9 12h12M9 18h12M3 6l1.5 1.5L7 5M3 12l1.5 1.5L7 11M3 18l1.5 1.5L7 17"/>',
-    chev: '<path d="M6 9l6 6 6-6"/>',
-    palette: '<path d="M5 3h14v4H5z"/><path d="M5 21h14"/>',
   };
   const svg = (name) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${TB_ICONS[name]}</svg>`;
-
-  // ---- font catalog (names local & searchable; glyphs fetched on demand) ----
-  const GENERIC_FONTS = ["Default", "Georgia", "Times New Roman", "Arial", "Helvetica", "Verdana", "Courier New"];
-  const FONT_GROUPS = [
-    ["Suggested", ["Default", "Arial", "Georgia", "Times New Roman", "Verdana", "Courier New", "Roboto", "Open Sans", "Lato", "Merriweather"]],
-    ["Sans-serif", ["Roboto", "Open Sans", "Lato", "Montserrat", "Inter", "Poppins", "Nunito", "Nunito Sans", "Work Sans", "Source Sans 3", "Raleway", "Ubuntu", "Rubik", "Noto Sans", "Mulish", "DM Sans", "Manrope", "Karla", "Fira Sans", "PT Sans", "Oxygen", "Cabin", "Barlow", "Kanit", "Quicksand", "Josefin Sans", "Archivo", "Titillium Web", "Hind", "Assistant", "Heebo", "Signika", "Jost", "Public Sans", "Overpass", "Red Hat Display", "Sora", "Space Grotesk", "Lexend", "Figtree", "Onest", "Albert Sans", "Plus Jakarta Sans", "Outfit", "Schibsted Grotesk", "Bricolage Grotesque"]],
-    ["Serif", ["Merriweather", "Playfair Display", "PT Serif", "Lora", "Noto Serif", "Roboto Slab", "Slabo 27px", "Bitter", "Crimson Text", "Libre Baskerville", "EB Garamond", "Cormorant", "Cormorant Garamond", "Source Serif 4", "Domine", "Zilla Slab", "Frank Ruhl Libre", "Spectral", "Vollkorn", "Alegreya", "Cardo", "Neuton", "Arvo", "Bodoni Moda", "DM Serif Display", "DM Serif Text", "Fraunces", "Newsreader", "Petrona", "Instrument Serif", "Gelasio"]],
-    ["Display", ["Oswald", "Bebas Neue", "Anton", "Righteous", "Abril Fatface", "Lobster", "Pacifico", "Comfortaa", "Fredoka", "Bungee", "Alfa Slab One", "Passion One", "Teko", "Staatliches", "Archivo Black", "Concert One", "Baloo 2", "Chewy", "Luckiest Guy", "Bangers", "Monoton", "Press Start 2P", "Russo One", "Secular One", "Titan One", "Ultra", "Fjalla One", "Yeseva One"]],
-    ["Handwriting", ["Caveat", "Dancing Script", "Shadows Into Light", "Indie Flower", "Satisfy", "Great Vibes", "Sacramento", "Kalam", "Permanent Marker", "Amatic SC", "Gloria Hallelujah", "Patrick Hand", "Courgette", "Handlee", "Rock Salt", "Homemade Apple", "Cookie", "Marck Script", "Yellowtail", "Allura"]],
-    ["Monospace", ["Roboto Mono", "Source Code Pro", "JetBrains Mono", "Fira Code", "IBM Plex Mono", "Space Mono", "Inconsolata", "Ubuntu Mono", "PT Mono", "Cousine", "Overpass Mono", "DM Mono", "Red Hat Mono", "Martian Mono"]],
-  ];
-  const ALL_FONTS = [...new Set(FONT_GROUPS.flatMap(([, f]) => f))];
 
   function buildToolbar() {
     const tb = $("toolbar");
@@ -969,150 +801,41 @@
         <option value="h4">Heading 4</option>
         <option value="pre">Code block</option>
       </select>
-      <select class="tb" id="styleSel" title="Named paragraph style"><option value="">No style</option></select>
-      <div class="fontbox">
-        <button class="tb" id="fontBtn" title="Font"><span id="fontName">Default</span>${svg("chev")}</button>
-        <div id="fontPop" class="font-pop hidden">
-          <input id="fontSearch" placeholder="Search fonts" autocomplete="off">
-          <div class="flist" id="fontList"></div>
-        </div>
-      </div>
-      <div class="sizebox">
-        <button id="sizeDown" title="Decrease font size">−</button>
-        <input id="sizeInput" title="Font size (pt)" value="11">
-        <button id="sizeUp" title="Increase font size">+</button>
-      </div>
       <span class="tsep"></span>
       <button class="tb txt" data-mark="strong" title="Bold (Ctrl+B)">${svg("bold")}</button>
       <button class="tb" data-mark="em" title="Italic (Ctrl+I)">${svg("italic")}</button>
       <button class="tb" data-mark="underline" title="Underline (Ctrl+U)">${svg("underline")}</button>
       <button class="tb" data-mark="strike" title="Strikethrough">${svg("strike")}</button>
-      <label class="tb" title="Text color" style="position:relative;padding:0 4px"><span style="font-weight:700;border-bottom:3px solid var(--txtc,#202124);line-height:1;padding-bottom:1px">A</span><input type="color" id="txtColor" value="#202124" style="position:absolute;inset:0;opacity:0;cursor:pointer"></label>
-      <label class="tb" title="Highlight color" style="position:relative;padding:0 4px">${svg("palette")}<input type="color" id="hlColor" value="#fff3a3" style="position:absolute;inset:0;opacity:0;cursor:pointer"></label>
+      <button class="tb" data-mark="code" title="Inline code">${svg("code")}</button>
       <span class="tsep"></span>
       <button class="tb" data-cmd="link" title="Insert link (Ctrl+K)">${svg("link")}</button>
       <button class="tb" data-cmd="image" title="Insert image">${svg("image")}</button>
       <button class="tb" data-cmd="comment" title="Add comment">${svg("comment")}</button>
       <span class="tsep"></span>
-      <div class="menu-wrap" id="alignWrap"><button class="tb" id="alignBtn" title="Align">${svg("alignL")}${svg("chev")}</button>
-        <div class="pop row hidden" id="alignPop">
-          <button data-align="left" title="Left">${svg("alignL")}</button>
-          <button data-align="center" title="Center">${svg("alignC")}</button>
-          <button data-align="right" title="Right">${svg("alignR")}</button>
-          <button data-align="justify" title="Justify">${svg("alignL")}</button>
-        </div></div>
-      <div class="menu-wrap" id="lsWrap"><button class="tb" id="lsBtn" title="Line spacing">${svg("lineSpace")}${svg("chev")}</button>
-        <div class="pop hidden" id="lsPop">
-          <button data-ls="1">Single</button><button data-ls="1.15">1.15</button><button data-ls="1.5">1.5</button><button data-ls="2">Double</button>
-        </div></div>
-      <button class="tb" data-cmd="check" title="Checklist">${svg("check")}</button>
       <button class="tb" data-cmd="ul" title="Bulleted list">${svg("ul")}</button>
       <button class="tb" data-cmd="ol" title="Numbered list">${svg("ol")}</button>
-      <button class="tb" data-cmd="indentDec" title="Decrease indent">${svg("indentDec")}</button>
-      <button class="tb" data-cmd="indentInc" title="Increase indent">${svg("indentInc")}</button>
       <span class="tsep"></span>
       <button class="tb" data-cmd="equation" title="Insert equation (LaTeX)">${svg("equation")}</button>
-      <button class="tb" data-cmd="diagram" title="Insert diagram">${svg("diagram")}</button>
       <button class="tb" data-cmd="table" title="Insert table">${svg("table")}</button>
       <button class="tb" data-cmd="quote" title="Quote">${svg("quote")}</button>
       <button class="tb" data-cmd="hr" title="Divider">${svg("hr")}</button>
-      <button class="tb" data-cmd="signature" title="Insert signature">${svg("sig")}</button>
     `;
     tb.querySelectorAll("[data-mark]").forEach((b) => b.addEventListener("mousedown", (e) => { e.preventDefault(); toggleMark(b.dataset.mark); }));
     tb.querySelectorAll("[data-cmd]").forEach((b) => b.addEventListener("mousedown", (e) => { e.preventDefault(); runCmd(b.dataset.cmd); }));
     $("blockType").addEventListener("change", (e) => setBlockType(e.target.value));
-    $("styleSel") && $("styleSel").addEventListener("change", (e) => applyNamedStyle(e.target.value));
-    $("txtColor").addEventListener("input", (e) => { e.target.parentElement.style.setProperty("--txtc", e.target.value); setInlineMark(schema.marks.textColor, { color: e.target.value }); });
-    $("hlColor").addEventListener("input", (e) => setInlineMark(schema.marks.highlight, { color: e.target.value }));
     $("zoomSel").addEventListener("change", (e) => { $("page").style.zoom = e.target.value; });
-    // size stepper
-    $("sizeUp").addEventListener("mousedown", (e) => { e.preventDefault(); bumpSize(1); });
-    $("sizeDown").addEventListener("mousedown", (e) => { e.preventDefault(); bumpSize(-1); });
-    $("sizeInput").addEventListener("change", () => setFontSize(parseInt($("sizeInput").value) || 11));
-    // font picker
-    $("fontBtn").addEventListener("mousedown", (e) => { e.preventDefault(); toggleFontPop(); });
-    $("fontSearch").addEventListener("input", () => renderFontList($("fontSearch").value));
-    // align + line-spacing popovers
-    $("alignBtn").addEventListener("mousedown", (e) => { e.preventDefault(); togglePop("alignPop"); });
-    $("lsBtn").addEventListener("mousedown", (e) => { e.preventDefault(); togglePop("lsPop"); });
-    $("alignPop").querySelectorAll("[data-align]").forEach((b) => b.addEventListener("mousedown", (e) => { e.preventDefault(); applyCmd(setAlign(b.dataset.align)); hidePops(); }));
-    $("lsPop").querySelectorAll("[data-ls]").forEach((b) => b.addEventListener("mousedown", (e) => { e.preventDefault(); setLineHeight(b.dataset.ls); hidePops(); }));
-  }
-  function togglePop(id) { const el = $(id); const open = !el.classList.contains("hidden"); hidePops(); if (!open) el.classList.remove("hidden"); }
-  function hidePops() { ["alignPop", "lsPop", "fontPop"].forEach((id) => $(id) && $(id).classList.add("hidden")); }
-
-  // ================= named paragraph / typography styles =================
-  const slug = (name) => name.replace(/\s+/g, "-").toLowerCase().replace(/[^a-z0-9-]/g, "");
-  function injectStyleCss() {
-    let css = "";
-    for (const [name, st] of Object.entries(S.styles)) {
-      const r = [];
-      if (st.fontSize) r.push("font-size:" + st.fontSize + "px");
-      if (st.color) r.push("color:" + st.color);
-      if (st.bold) r.push("font-weight:700");
-      if (st.italic) r.push("font-style:italic");
-      if (st.font) r.push("font-family:" + st.font);
-      if (st.align) r.push("text-align:" + st.align);
-      if (st.lineHeight) r.push("line-height:" + st.lineHeight);
-      css += `.ProseMirror .cs-${slug(name)}{${r.join(";")}}\n`;
-    }
-    let el = $("docStyles"); if (!el) { el = document.createElement("style"); el.id = "docStyles"; document.head.appendChild(el); }
-    el.textContent = css;
-  }
-  function discoveredStyles() { const set = new Set(); if (S.view) S.view.state.doc.descendants((n) => { if ((n.type === schema.nodes.paragraph || n.type === schema.nodes.heading) && n.attrs.style) set.add(n.attrs.style); }); return [...set]; }
-  function currentParaStyle() { if (!S.view) return ""; const p = S.view.state.selection.$from.parent; return p.attrs.style || ""; }
-  function refreshStyleMenu() {
-    const sel = $("styleSel"); if (!sel) return;
-    const names = [...new Set([...Object.keys(S.styles), ...discoveredStyles()])].sort();
-    sel.innerHTML = '<option value="">No style</option>' + names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("") + '<option value="__new">✎ New style…</option>';
-    sel.value = currentParaStyle() || "";
-  }
-  function applyNamedStyle(name) {
-    if (name === "__new") { openStyleDialog(); refreshStyleMenu(); return; }
-    const { from, to } = S.view.state.selection; let tr = S.view.state.tr; let changed = false;
-    S.view.state.doc.nodesBetween(from, to, (node, pos) => {
-      if (node.type === schema.nodes.paragraph || node.type === schema.nodes.heading) { tr.setNodeMarkup(pos, undefined, { ...node.attrs, style: name || null }); changed = true; }
-    });
-    if (changed) S.view.dispatch(tr); focusView();
-  }
-  function openStyleDialog() {
-    openDialog("New paragraph style", [
-      { id: "name", label: "Style name (e.g. Callout, Lead)", value: "" },
-      { id: "fontSize", label: "Font size (px)", value: "16" },
-      { id: "color", label: "Text color (hex)", value: "#202124" },
-      { id: "font", label: "Font family (optional)", value: "" },
-    ], (v) => {
-      const nm = v.name.trim(); if (!nm) return;
-      S.styles[nm] = { fontSize: +v.fontSize || null, color: v.color || null, font: v.font || null };
-      injectStyleCss(); applyNamedStyle(nm); refreshStyleMenu(); S.dirty = true;
-      clearTimeout(S._ssave); S._ssave = setTimeout(() => doSave("auto"), 1200); updateSavedTag();
-    }, { okLabel: "Create & apply" });
   }
 
   function focusView() { S.view && S.view.focus(); }
   function applyCmd(cmd) { focusView(); cmd(S.view.state, S.view.dispatch); focusView(); syncToolbar(); }
   function toggleMark(name) { applyCmd(C.toggleMark(schema.marks[name])); }
-  // "Set" (not toggle) an attributed inline mark — replaces any existing mark of
-  // the same type. toggleMark would REMOVE it when re-applying (wrong for font/size/color).
-  function setInlineMark(type, attrs) {
-    focusView();
-    const { from, to, empty } = S.view.state.selection;
-    if (empty) {
-      const marks = (S.view.state.storedMarks || S.view.state.selection.$from.marks()).filter((m) => m.type !== type);
-      S.view.dispatch(S.view.state.tr.setStoredMarks([...marks, type.create(attrs)]));
-    } else {
-      S.view.dispatch(S.view.state.tr.addMark(from, to, type.create(attrs)));
-    }
-    focusView(); syncToolbar();
-  }
   function setBlockType(v) {
     if (v === "p") applyCmd(C.setBlockType(schema.nodes.paragraph));
     else if (v === "pre") applyCmd(C.setBlockType(schema.nodes.code_block));
     else applyCmd(C.setBlockType(schema.nodes.heading, { level: +v.slice(1) }));
   }
   // ---- list toggling (wrapInList is a no-op when already inside a list) ----
-  const listItemFor = (listType) => listType === schema.nodes.task_list ? schema.nodes.task_item : schema.nodes.list_item;
-  const isListType = (t) => t === schema.nodes.bullet_list || t === schema.nodes.ordered_list || t === schema.nodes.task_list;
+  const isListType = (t) => t === schema.nodes.bullet_list || t === schema.nodes.ordered_list;
   function findList(state) {
     const { $from } = state.selection;
     for (let d = $from.depth; d > 0; d--) {
@@ -1123,17 +846,13 @@
     if ($from.nodeAfter && isListType($from.nodeAfter.type)) return { node: $from.nodeAfter, pos: $from.pos };
     return null;
   }
-  // same type -> lift out; different type -> convert in place (remapping the
-  // item type, list_item <-> task_item); not in a list -> wrap.
+  // same type -> lift out; different type -> convert in place; not in a list -> wrap.
   const toggleList = (listType) => (state, dispatch) => {
     const cur = findList(state);
     if (!cur) return L.wrapInList(listType)(state, dispatch);
-    if (cur.node.type === listType) return L.liftListItem(listItemFor(listType))(state, dispatch);
+    if (cur.node.type === listType) return L.liftListItem(schema.nodes.list_item)(state, dispatch);
     if (dispatch) {
-      const item = listItemFor(listType);
-      const items = [];
-      cur.node.forEach((ch) => items.push(ch.type === item ? ch : item.create(null, ch.content, ch.marks)));
-      const tr = state.tr.replaceWith(cur.pos, cur.pos + cur.node.nodeSize, listType.create(null, items));
+      const tr = state.tr.replaceWith(cur.pos, cur.pos + cur.node.nodeSize, listType.create(null, cur.node.content));
       tr.setSelection(TextSelection.between(tr.doc.resolve(state.selection.anchor), tr.doc.resolve(state.selection.head)));
       dispatch(tr.scrollIntoView());
     }
@@ -1141,51 +860,22 @@
   };
 
   function runCmd(cmd) {
-    const v = S.view;
     if (cmd === "ul") return applyCmd(toggleList(schema.nodes.bullet_list));
     if (cmd === "ol") return applyCmd(toggleList(schema.nodes.ordered_list));
     if (cmd === "quote") return applyCmd(C.wrapIn(schema.nodes.blockquote));
     if (cmd === "hr") return applyCmd((s, d) => { d(s.tr.replaceSelectionWith(schema.nodes.horizontal_rule.create()).scrollIntoView()); return true; });
-    if (cmd === "alignL") return applyCmd(setAlign("left"));
-    if (cmd === "alignC") return applyCmd(setAlign("center"));
-    if (cmd === "alignR") return applyCmd(setAlign("right"));
     if (cmd === "undo") return applyCmd(undo);
     if (cmd === "redo") return applyCmd(redo);
     if (cmd === "link") return doLink();
     if (cmd === "table") return applyCmd((s, d) => { d(s.tr.replaceSelectionWith(makeTable(3, 3)).scrollIntoView()); return true; });
     if (cmd === "image") return doImage();
     if (cmd === "equation") return openTexDialog("", false, (tex) => insertMath(tex, false));
-    if (cmd === "diagram") return openDiagramDialog("graph TD;\n  A[Start] --> B[End];", (src) => insertDiagram(src));
     if (cmd === "comment") return addComment();
-    if (cmd === "signature") return openSignatureDialog();
-    if (cmd === "check") return applyCmd(toggleList(schema.nodes.task_list));
-    if (cmd === "indentInc") return changeIndent(1);
-    if (cmd === "indentDec") return changeIndent(-1);
     if (cmd === "clear") return clearFormatting();
     if (cmd === "print") return doPrint();
     if (cmd === "find") return toggleFind();
   }
 
-  // ---- indent / line-height / clear formatting ----
-  function changeIndent(delta) {
-    const cur = findList(S.view.state);
-    if (cur) { const item = listItemFor(cur.node.type); return applyCmd(delta > 0 ? L.sinkListItem(item) : L.liftListItem(item)); }
-    const { from, to } = S.view.state.selection; let tr = S.view.state.tr, changed = false;
-    S.view.state.doc.nodesBetween(from, to, (node, pos) => {
-      if (node.type === schema.nodes.paragraph || node.type === schema.nodes.heading) {
-        const ind = Math.max(0, Math.min(12, (node.attrs.indent || 0) + delta));
-        tr.setNodeMarkup(pos, undefined, { ...node.attrs, indent: ind }); changed = true;
-      }
-    });
-    if (changed) { S.view.dispatch(tr); focusView(); }
-  }
-  function setLineHeight(lh) {
-    const { from, to } = S.view.state.selection; let tr = S.view.state.tr, changed = false;
-    S.view.state.doc.nodesBetween(from, to, (node, pos) => {
-      if (node.type === schema.nodes.paragraph || node.type === schema.nodes.heading) { tr.setNodeMarkup(pos, undefined, { ...node.attrs, lineHeight: lh }); changed = true; }
-    });
-    if (changed) { S.view.dispatch(tr); focusView(); }
-  }
   function clearFormatting() {
     const { from, to, empty } = S.view.state.selection; if (empty) { toast("Select text to clear its formatting."); return; }
     let tr = S.view.state.tr;
@@ -1193,49 +883,6 @@
     tr.setStoredMarks([]); S.view.dispatch(tr); focusView();
   }
   function doPrint() { window.print(); }
-
-  // ---- font family (on-demand Google Fonts) ----
-  const loadedFonts = new Set();
-  function ensureFont(family) {
-    if (!family || loadedFonts.has(family) || GENERIC_FONTS.includes(family)) return;
-    loadedFonts.add(family);
-    const l = document.createElement("link"); l.rel = "stylesheet";
-    l.href = "https://fonts.googleapis.com/css2?family=" + encodeURIComponent(family).replace(/%20/g, "+") + ":ital,wght@0,400;0,700;1,400;1,700&display=swap";
-    document.head.appendChild(l);
-  }
-  function setFontFamily(family) {
-    ensureFont(family);
-    setInlineMark(schema.marks.fontFamily, { family });
-    $("fontName").textContent = family; hidePops();
-  }
-  function setFontSize(pt) {
-    pt = Math.max(6, Math.min(400, pt || 11));
-    $("sizeInput").value = pt;
-    setInlineMark(schema.marks.fontSize, { size: pt + "pt" });
-  }
-  function bumpSize(delta) { setFontSize((parseInt($("sizeInput").value) || 11) + delta); }
-  function toggleFontPop() { const el = $("fontPop"); const open = !el.classList.contains("hidden"); hidePops(); if (!open) { el.classList.remove("hidden"); renderFontList(""); $("fontSearch").value = ""; $("fontSearch").focus(); } }
-  // Load a font's stylesheet only when its row scrolls into view — opening the
-  // picker must not fire ~180 stylesheet requests at once.
-  const fontPreviewObserver = new IntersectionObserver((entries) => {
-    entries.forEach((en) => { if (en.isIntersecting) { ensureFont(en.target.textContent); fontPreviewObserver.unobserve(en.target); } });
-  }, { root: null, rootMargin: "80px" });
-  function renderFontList(q) {
-    q = (q || "").toLowerCase();
-    const list = $("fontList"); list.innerHTML = "";
-    const groups = q ? [["Fonts", ALL_FONTS.filter((f) => f.toLowerCase().includes(q))]] : FONT_GROUPS;
-    groups.forEach(([cat, fonts]) => {
-      if (!fonts.length) return;
-      if (!q) { const h = document.createElement("div"); h.className = "fcat"; h.textContent = cat; list.appendChild(h); }
-      fonts.slice(0, q ? 60 : fonts.length).forEach((f) => {
-        const it = document.createElement("div"); it.className = "fitem"; it.textContent = f; it.style.fontFamily = "'" + f + "'";
-        it.addEventListener("mousedown", (e) => { e.preventDefault(); setFontFamily(f); });
-        list.appendChild(it);
-        fontPreviewObserver.observe(it); // fetch the face lazily for preview
-      });
-    });
-    if (!list.children.length) list.innerHTML = '<div class="empty-note">No fonts match.</div>';
-  }
 
   function makeTable(rows, cols) {
     const cell = schema.nodes.table_cell; const header = schema.nodes.table_header;
@@ -1247,10 +894,6 @@
   function insertMath(tex, display) {
     const type = display ? schema.nodes.math_display : schema.nodes.math_inline;
     const node = type.create(null, tex ? schema.text(tex) : null);
-    applyCmd((s, d) => { d(s.tr.replaceSelectionWith(node).scrollIntoView()); return true; });
-  }
-  function insertDiagram(src) {
-    const node = schema.nodes.diagram.create({ source: src, id: genId() });
     applyCmd((s, d) => { d(s.tr.replaceSelectionWith(node).scrollIntoView()); return true; });
   }
   function doLink() {
@@ -1278,7 +921,7 @@
   function syncToolbar() {
     if (S.mode !== "edit" || !S.view) return;
     const tb = $("toolbar");
-    ["strong", "em", "underline", "strike", "code", "highlight"].forEach((m) => {
+    ["strong", "em", "underline", "strike", "code"].forEach((m) => {
       const b = tb.querySelector(`[data-mark="${m}"]`); if (b && schema.marks[m]) b.classList.toggle("on", markActive(schema.marks[m]));
     });
     const $from = S.view.state.selection.$from; const parent = $from.parent;
@@ -1288,15 +931,6 @@
       else if (parent.type === schema.nodes.code_block) sel.value = "pre";
       else sel.value = "p";
     }
-    refreshStyleMenu();
-    // reflect font family + size at the cursor
-    const seln = S.view.state.selection;
-    const markAttr = (type, attr, def) => {
-      if (seln.empty) { const m = (S.view.state.storedMarks || seln.$from.marks()).find((mk) => mk.type === type); return m ? m.attrs[attr] : def; }
-      let v = def; S.view.state.doc.nodesBetween(seln.from, seln.to, (n) => { if (n.isText) { const m = n.marks.find((mk) => mk.type === type); if (m) v = m.attrs[attr]; } }); return v;
-    };
-    if ($("fontName")) $("fontName").textContent = markAttr(schema.marks.fontFamily, "family", "Default") || "Default";
-    if ($("sizeInput") && document.activeElement !== $("sizeInput")) $("sizeInput").value = parseInt(markAttr(schema.marks.fontSize, "size", "11pt")) || 11;
   }
 
   // ---- dialogs (no native prompt/confirm) ----
@@ -1336,17 +970,13 @@
     openDialog(display ? "Display equation (LaTeX)" : "Inline equation (LaTeX)",
       [{ id: "tex", label: "LaTeX — e.g. \\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}", value: cur, area: true, rows: 4 }],
       (v) => onOk(v.tex.trim()),
-      { preview: true, okLabel: "Insert equation", onInput: (v) => { ensureKatexCss(); const pv = $("dlgPreview"); if (pv) { try { katex.render(v.tex || "\\;", pv, { displayMode: display, throwOnError: false }); } catch (e) { pv.textContent = e.message; } } } });
-  }
-  function openDiagramDialog(cur, onOk) {
-    openDialog("Diagram (Mermaid)",
-      [{ id: "src", label: "Mermaid source — flowcharts, sequence, gantt, etc.", value: cur, area: true, rows: 8 }],
-      (v) => onOk(v.src.trim()), { okLabel: "Insert diagram" });
+      { preview: true, okLabel: "Insert equation", onInput: (v) => { ensureKatexCss(); const pv = $("dlgPreview"); if (pv) katex.render(v.tex || "\\;", pv, { displayMode: display, throwOnError: false }); } });
   }
 
   // ================= comments =================
   // Anchored by the `comment` mark in the doc (moves with edits); text/author
-  // metadata lives in S.comments, persisted to the sidecar (not the doc itself).
+  // metadata lives in S.comments and is written into the .docx on save as a
+  // native Word comment.
   function eachCommentRange(id, cb) {
     S.view.state.doc.descendants((node, pos) => {
       if (!node.isInline) return;
@@ -1363,17 +993,18 @@
     openDialog("Add comment", [{ id: "text", label: "Comment", value: "", area: true, rows: 3 }, { id: "author", label: "Your name", value: S.author || "" }], (v) => {
       if (!v.text.trim()) return;
       S.author = v.author || "You";
-      const id = "c" + Date.now().toString(36) + Math.floor(performance.now() % 1000);
+      saveSidecar((d) => { d.author = S.author; });
+      const id = genId();
+      S.comments[id] = { text: v.text.trim(), author: S.author, ts: Date.now(), quote };
       S.view.dispatch(S.view.state.tr.addMark(from, to, schema.marks.comment.create({ id })));
-      S.comments[id] = { text: v.text.trim(), author: S.author, ts: Date.now(), quote, resolved: false };
-      persistComments(); openPanel("comments"); renderPanel();
+      openPanel("comments"); renderPanel();
     }, { okLabel: "Comment" });
   }
   function removeComment(id) {
     let tr = S.view.state.tr; const ranges = [];
     eachCommentRange(id, (cid, from, to) => ranges.push([from, to]));
     ranges.forEach(([from, to]) => tr.removeMark(from, to, schema.marks.comment));
-    S.view.dispatch(tr); delete S.comments[id]; persistComments(); renderPanel();
+    S.view.dispatch(tr); delete S.comments[id]; renderPanel();
   }
   function scrollToComment(id) {
     const pos = commentPos(id); if (pos == null) return;
@@ -1381,10 +1012,6 @@
     document.querySelectorAll(".comment.active").forEach((n) => n.classList.remove("active"));
     node.closest && node.closest(".comment") && node.closest(".comment").classList.add("active");
     (node.closest ? (node.closest(".comment") || node) : node).scrollIntoView({ behavior: "smooth", block: "center" });
-  }
-  function persistComments() {
-    clearTimeout(S._csave);
-    S._csave = setTimeout(() => saveSidecar((d) => { d.comments = S.comments; if (S.author) d.author = S.author; }), 800);
   }
 
   // ================= right panel =================
@@ -1400,27 +1027,21 @@
     const body = $("panelBody"); if ($("panel").classList.contains("hidden")) return;
     if (S.panelTab === "comments") return renderComments(body);
     if (S.panelTab === "history") return renderHistory(body);
-    if (S.panelTab === "signatures") return renderSignatures(body);
   }
   function renderComments(body) {
     const live = liveCommentIds();
-    if (!IS_DOCX) {
-      let pruned = false;
-      Object.keys(S.comments).forEach((id) => { if (!live.has(id)) { delete S.comments[id]; pruned = true; } }); // prune orphans
-      if (pruned) persistComments();
-    }
-    const ids = (IS_DOCX ? Object.keys(S.comments) : [...live]).sort((a, b) => (commentPos(a) || 0) - (commentPos(b) || 0));
+    Object.keys(S.comments).forEach((id) => { if (!live.has(id)) delete S.comments[id]; }); // prune orphans
+    const ids = [...live].sort((a, b) => (commentPos(a) || 0) - (commentPos(b) || 0));
     if (!ids.length) { body.innerHTML = '<div class="empty-note">No comments. Select text and click the comment button to add one.</div>'; return; }
     body.innerHTML = "";
     ids.forEach((id) => {
       const c = S.comments[id] || { text: "", author: "?", ts: Date.now() };
-      const card = document.createElement("div"); card.className = "card" + (c.resolved ? " resolved" : "");
+      const card = document.createElement("div"); card.className = "card";
       card.innerHTML = `<div class="who">${esc(c.author)} <span class="when">· ${new Date(c.ts).toLocaleString()}</span></div>
         ${c.quote ? `<div class="quote">“${esc(c.quote)}”</div>` : ""}
         <div class="body">${esc(c.text)}</div>
-        <div class="acts"><button data-a="go">Go to</button><button data-a="resolve">${c.resolved ? "Reopen" : "Resolve"}</button><button data-a="del">Delete</button></div>`;
+        <div class="acts"><button data-a="go">Go to</button><button data-a="del">Delete</button></div>`;
       card.querySelector('[data-a="go"]').onclick = () => scrollToComment(id);
-      card.querySelector('[data-a="resolve"]').onclick = () => { c.resolved = !c.resolved; persistComments(); renderComments(body); };
       card.querySelector('[data-a="del"]').onclick = () => removeComment(id);
       card.onclick = (e) => { if (e.target.tagName !== "BUTTON") scrollToComment(id); };
       body.appendChild(card);
@@ -1443,76 +1064,11 @@
     const data = await loadSidecar();
     const v = data.docs.versions.find((x) => x.id === versionId);
     if (!v) { toast("Version not found."); return; }
-    mountEditor(schema.nodeFromJSON(JSON.parse(v.doc)));
+    let doc;
+    try { doc = schema.nodeFromJSON(JSON.parse(v.doc)); }
+    catch (e) { toast("This version can't be restored."); return; }
+    mountEditor(doc);
     setMode("edit"); S.dirty = true; updateSavedTag(); toast("Version restored — save to keep it.");
-  }
-
-  // ================= signatures =================
-  async function docHash() {
-    // Hash the document's text content EXCLUDING signature nodes, so signing
-    // (which inserts a signature node) does not itself invalidate the hash.
-    const parts = [];
-    S.view.state.doc.descendants((node) => {
-      if (node.type === schema.nodes.signature) return false; // skip subtree
-      if (node.isText) parts.push(node.text);
-    });
-    return sha256hex(parts.join(""));
-  }
-  function openSignatureDialog() {
-    closeDialog();
-    const wrap = document.createElement("div");
-    wrap.className = "modal-overlay";
-    wrap.style.cssText = "position:fixed;inset:0;background:rgba(15,23,42,.28);display:grid;place-items:center;z-index:80";
-    const card = document.createElement("div"); card.style.cssText = "background:#fff;border-radius:10px;box-shadow:var(--shadow-2);padding:18px;width:min(520px,92vw)";
-    card.innerHTML = `<div style="font-weight:700;font-size:15px;margin-bottom:10px">Sign document</div>
-      <div style="font-size:12px;color:var(--ink-2);margin-bottom:4px">Draw your signature</div>
-      <canvas class="sigpad" height="150"></canvas>
-      <div style="display:flex;gap:8px;margin-top:8px"><label style="flex:1;font-size:12px;color:var(--ink-2)">Name<input id="sgName" style="display:block;width:100%;margin-top:4px;padding:7px;border:1px solid var(--hair);border-radius:6px;font:inherit"></label>
-      <label style="flex:1;font-size:12px;color:var(--ink-2)">Reason<input id="sgReason" placeholder="Approved" style="display:block;width:100%;margin-top:4px;padding:7px;border:1px solid var(--hair);border-radius:6px;font:inherit"></label></div>
-      <div style="display:flex;justify-content:space-between;gap:8px;margin-top:14px"><button class="btn" id="sgClear">Clear</button><span style="flex:1"></span><button class="btn" id="sgCancel">Cancel</button><button class="btn primary" id="sgOk">Sign</button></div>`;
-    wrap.appendChild(card); document.body.appendChild(wrap); dialogEl = wrap;
-    card.querySelector("#sgName").value = S.author || "";
-    const cv = card.querySelector("canvas"); cv.width = cv.offsetWidth || 480;
-    const ctx = cv.getContext("2d"); ctx.strokeStyle = "#14213d"; ctx.lineWidth = 2; ctx.lineJoin = ctx.lineCap = "round";
-    let drawing = false, drawn = false;
-    const pt = (e) => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height]; };
-    cv.addEventListener("pointerdown", (e) => { drawing = true; drawn = true; const [x, y] = pt(e); ctx.beginPath(); ctx.moveTo(x, y); });
-    cv.addEventListener("pointermove", (e) => { if (!drawing) return; const [x, y] = pt(e); ctx.lineTo(x, y); ctx.stroke(); });
-    window.addEventListener("pointerup", () => drawing = false);
-    card.querySelector("#sgClear").onclick = () => { ctx.clearRect(0, 0, cv.width, cv.height); drawn = false; };
-    card.querySelector("#sgCancel").onclick = closeDialog; wrap.onclick = (e) => { if (e.target === wrap) closeDialog(); };
-    card.querySelector("#sgOk").onclick = async () => {
-      if (!drawn) { toast("Please draw your signature."); return; }
-      const image = cv.toDataURL("image/png");
-      const name = card.querySelector("#sgName").value || "Signed";
-      const reason = card.querySelector("#sgReason").value || "";
-      const signed_at = String(Date.now());
-      closeDialog();
-      const hash = await docHash();
-      const node = schema.nodes.signature.create({ image, name, reason, signed_at, hash, id: genId() });
-      applyCmd((s, d) => { d(s.tr.replaceSelectionWith(node).scrollIntoView()); return true; });
-      S.author = name;
-      await recordSignature(name, reason, hash);
-      toast("Document signed."); openPanel("signatures");
-    };
-    card.querySelector("#sgName").focus && card.querySelector("#sgName").focus();
-  }
-  async function renderSignatures(body) {
-    body.innerHTML = '<div class="empty-note">Loading…</div>';
-    const data = await loadSidecar();
-    const signatures = data.docs.signatures;
-    const current = await docHash();
-    if (!signatures.length) { body.innerHTML = '<div class="empty-note">No signatures. Use the signature button to sign.</div>'; return; }
-    body.innerHTML = "";
-    signatures.forEach((sg) => {
-      const valid = sg.sha === current;
-      const card = document.createElement("div"); card.className = "card";
-      card.innerHTML = `<div class="who">${esc(sg.signer || "Signed")}${sg.reason ? ' <span class="when">· ' + esc(sg.reason) + "</span>" : ""}</div>
-        <div class="when">${new Date(sg.ts).toLocaleString()}</div>
-        <div class="body" style="font-size:12px;color:${valid ? "var(--ok)" : "var(--danger)"}">${valid ? "✓ Valid — document matches this signature" : "⚠ Document changed since signing"}</div>
-        <div class="quote" style="font-family:ui-monospace,monospace">sha256 ${esc((sg.sha || "").slice(0, 24))}…</div>`;
-      body.appendChild(card);
-    });
   }
 
   // ---- mode switch ----
@@ -1533,9 +1089,7 @@
     S.saving = true; updateSavedTag();
     try {
       const doc = S.view.state.doc;
-      const docJson = JSON.stringify(doc.toJSON());
       const res = await py({ action: "save", file: FILE, html: docToSaveHtml(doc),
-        embeds: JSON.stringify(collectEmbeds(doc)), styles: JSON.stringify(S.styles),
         expected_mtime: String(fileMtime ?? "") });
       if (res.conflict) { toast("This file changed on disk — reload to see the latest version."); return; }
       if (res.error) throw new Error(res.error);
@@ -1543,10 +1097,9 @@
       // Edits made while the write was in flight leave the doc != the snapshot;
       // keep it dirty so the pending autosave picks them up (no false "saved").
       if (S.view.state.doc.eq(doc)) { S.dirty = false; S.savedMtime = Date.now(); }
-      await recordVersion(docJson, kind, label);
+      await recordVersion(JSON.stringify(doc.toJSON()), kind, label);   // best-effort, never rejects
     } catch (e) {
-      if (e.type === "conflict") toast("This file changed on disk — reload to see the latest version.");
-      else toast("Save failed: " + e.message);
+      toast("Save failed: " + e.message);
     } finally { S.saving = false; updateSavedTag(); }
   }
   async function ensureTypst() {
@@ -1595,7 +1148,8 @@
     if (fmt === "pdf" && !(await ensureTypst())) return;
     toast("Preparing " + fmt.toUpperCase() + "…", 8000);
     try {
-      const html = docToHtml(S.view.state.doc);
+      // A Word download keeps native comments; other formats get content only.
+      const html = fmt === "docx" ? docToSaveHtml(S.view.state.doc) : docToHtml(S.view.state.doc);
       const res = await py({ action: "export", file: FILE, title: BASENAME.replace(WORD_EXT, ""), html, fmt });
       if (res.error) { toast("Export failed: " + res.error, 5000); return; }
       const a = document.createElement("a"); a.href = fused.rawUrl(res.path); a.download = res.name; a.click();
@@ -1647,9 +1201,7 @@
         if (!name) { toast("Enter a file name"); return; }
         closeDialog();
         try {
-          const doc = S.view.state.doc;
-          const res = await py({ action: "save_as", html: docToSaveHtml(doc),
-            embeds: JSON.stringify(collectEmbeds(doc)), styles: JSON.stringify(S.styles),
+          const res = await py({ action: "save_as", html: docToSaveHtml(S.view.state.doc),
             path: name, directory: curDir });
           if (res.error) { toast("Save failed: " + res.error); return; }
           toast("Saved a copy to " + res.path);
@@ -1692,7 +1244,6 @@
       ["⌘/Ctrl + F", "Find & replace"], ["⌘/Ctrl + K", "Insert link"],
       ["⌘/Ctrl + B / I / U", "Bold / Italic / Underline"], ["⌘/Ctrl + Shift + X", "Strikethrough"],
       ["⌘/Ctrl + Z / Y", "Undo / Redo"], ["⌘/Ctrl + Alt + 1–3", "Heading 1–3"], ["⌘/Ctrl + Shift + 0", "Normal text"],
-      ["⌘/Ctrl + Shift + L / E / R", "Align left / center / right"],
       ["Ctrl + Shift + 8 / 9", "Bulleted / numbered list"], ["Tab / Shift + Tab", "Indent / outdent list item"],
       ["# ## ### + space", "Heading (markdown style)"], ["- or 1. + space", "List (markdown style)"],
       ["$…$ / $$…$$", "Inline / display equation"], ["> + space", "Blockquote"],
@@ -1732,8 +1283,8 @@
   document.addEventListener("click", (e) => {
     // ignore clicks inside any dropdown container — mousedown already toggled it,
     // and the bubbled click must not immediately close what just opened
-    if (e.target.closest && (e.target.closest(".menu-wrap") || e.target.closest(".fontbox"))) return;
-    $("exportMenu").classList.add("hidden"); $("fileMenu").classList.add("hidden"); hidePops();
+    if (e.target.closest && e.target.closest(".menu-wrap")) return;
+    $("exportMenu").classList.add("hidden"); $("fileMenu").classList.add("hidden");
   });
   // find & replace bar
   $("findInput").addEventListener("input", () => doFind($("findInput").value));
@@ -1775,21 +1326,18 @@
     $("nofile").textContent = "Cannot open " + BASENAME + ": " + res.error;
     return;
   }
-  try { fileMtime = (await fused.stat(FILE)).mtime; } catch (e) {}
-  const sidecar = await loadSidecar();
-  const embeds = (res.embeds && Object.keys(res.embeds).length) ? res.embeds : sidecar.docs.embeds;
-  const dom = new DOMParser().parseFromString(reconstructEmbeds(res.html, embeds), "text/html");
+  fileMtime = res.mtime;
+  const dom = new DOMParser().parseFromString(res.html, "text/html");
+  S.comments = extractComments(dom);
   const importedDoc = PMDOMParser.fromSchema(schema).parse(dom.body);
-  S.comments = sidecar.docs.comments;
+  const sidecar = await loadSidecar();
   S.author = sidecar.docs.author || "";
-  S.styles = (res.styles && Object.keys(res.styles).length) ? res.styles : sidecar.docs.styles;
-  injectStyleCss();
   $("docTitle").textContent = BASENAME;
   $("topbar").classList.remove("hidden"); $("toolbar").classList.remove("hidden"); $("main").classList.remove("hidden");
   mountEditor(importedDoc);
   setMode(fused.params.get("mode") || "view");
   const panelParam = fused.params.get("panel");
-  if (panelParam === "comments" || panelParam === "history" || panelParam === "signatures") openPanel(panelParam);
+  if (panelParam === "comments" || panelParam === "history") openPanel(panelParam);
   updateSavedTag();
 })();
 </script>
