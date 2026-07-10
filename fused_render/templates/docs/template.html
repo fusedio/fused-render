@@ -365,7 +365,7 @@
     $("boot").textContent = "Failed to load editor libraries: " + err.message; throw err;
   }
   // KaTeX fonts load from the CDN on first equation render, not from the bundle.
-  const KATEX_FONT_CDN = "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/fonts/";
+  const KATEX_FONT_CDN = "https://cdn.jsdelivr.net/npm/katex@0.17.0/dist/fonts/";
   let katexCssPromise = null;
   function ensureKatexCss() {
     if (!katexCssPromise) katexCssPromise = (async () => {
@@ -1488,14 +1488,16 @@
     if (!S.view || S.saving) return;
     S.saving = true; updateSavedTag();
     try {
-      const doc = S.view.state.doc.toJSON();
-      const docJson = JSON.stringify(doc);
-      const res = await py({ action: "save", file: FILE, html: docToHtml(S.view.state.doc), expected_mtime: String(fileMtime ?? "") });
+      const doc = S.view.state.doc;
+      const docJson = JSON.stringify(doc.toJSON());
+      const res = await py({ action: "save", file: FILE, html: docToHtml(doc), expected_mtime: String(fileMtime ?? "") });
       if (res.conflict) { toast("This file changed on disk — reload to see the latest version."); return; }
       if (res.error) throw new Error(res.error);
       fileMtime = res.mtime;
       await saveSidecar((d) => { d.styles = S.styles; });
-      S.dirty = false; S.savedMtime = Date.now();
+      // Edits made while the write was in flight leave the doc != the snapshot;
+      // keep it dirty so the pending autosave picks them up (no false "saved").
+      if (S.view.state.doc.eq(doc)) { S.dirty = false; S.savedMtime = Date.now(); }
       await recordVersion(docJson, kind, label);
     } catch (e) {
       if (e.type === "conflict") toast("This file changed on disk — reload to see the latest version.");
