@@ -52,6 +52,24 @@ OS-agnostic mechanism for every backend, consumer clouds included.
 (Users can still just browse/bookmark ~/Library/CloudStorage paths directly;
 that needs no feature.)
 
+## DuckDB-over-mount benchmark (362MB Ookla parquet, 12 row groups)
+
+Question: can the duckdb reader's first load be made faster over a mount?
+Answer: **no reader change helps — the floor is the file's row-group size.**
+Measured cold (vfs cache wiped each round):
+  * DESCRIBE ≈ 2-10s (footer), COUNT(*) ≈ 0s (parquet metadata only).
+  * First page ≈ 15-22s regardless of query shape: the row_number() window
+    vs a direct LIMIT made no difference, and threads=1 was slower. LIMIT
+    100 must fetch+decode row group 0 ≈ 31MB compressed across 11 columns;
+    that's pure network throughput.
+  * WARM repeat: 0.01s — rclone's sparse read cache absorbs everything.
+So the lever is cache retention, not SQL: raised --vfs-cache-max-age to
+168h (default 1h evicted chunks within the hour), chunk sizes to 8M/64M.
+--vfs-read-ahead 128M was measured a net LOSS (slower footer read, wasted
+bytes) and left out. Deep-narrow row groups (or remote-optimized layouts
+like partitioned datasets) are the real fix, and that's the data's problem,
+not the viewer's.
+
 ## Notes for a real implementation
 
 - Mount lifecycle is in-memory + atexit, but measured: a pkill'd server

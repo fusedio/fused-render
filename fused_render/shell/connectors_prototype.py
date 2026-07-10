@@ -109,14 +109,19 @@ def _mount(conn: dict) -> str | None:
     subcmd = "nfsmount" if sys.platform == "darwin" else "mount"
     cmd = [
         bin_, subcmd, conn["remote"], mp,
-        # `full` caches read ranges as sparse files: measured on a 204MB COG,
-        # a first deep-zoom tile is slow either way (the tiff reader does bulk
-        # native-res reads), but every subsequent read of the touched region
-        # is instant (0.02s vs 107s). Chunked ranges bound each S3 GET.
+        # `full` caches read ranges as sparse files: measured on a 204MB COG
+        # and a 362MB parquet, cold first-reads are network-bound either way,
+        # but every later read of a touched region is ~0.01s. The cache
+        # survives remounts/restarts, so max-age is raised from the 1h
+        # default — eviction is what makes "slow again the next morning".
+        # (--vfs-read-ahead measured as a net LOSS here: it slows the parquet
+        # footer read and wastes bandwidth on ranges nothing asks for.)
         "--vfs-cache-mode", "full",
-        "--vfs-read-chunk-size", "2M",
-        "--vfs-read-chunk-size-limit", "16M",
-        "--dir-cache-time", "10s",
+        "--vfs-read-chunk-size", "8M",
+        "--vfs-read-chunk-size-limit", "64M",
+        "--vfs-cache-max-age", "168h",
+        "--vfs-fast-fingerprint",
+        "--dir-cache-time", "30s",
     ]
     proc = subprocess.Popen(
         cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
