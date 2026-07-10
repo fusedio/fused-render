@@ -28,10 +28,12 @@ def user_dir(tmp_path, monkeypatch):
             (udir / "registry.json").write_text(json.dumps(mapping))
 
         @staticmethod
-        def template(name):
+        def template(name, condition=None):
             folder = udir / name
             folder.mkdir()
             (folder / "template.html").write_text("<html></html>")
+            if condition is not None:
+                (folder / "condition.py").write_text(condition)
 
     return Helper
 
@@ -335,3 +337,75 @@ def test_unreadable_user_registry_reports_and_falls_back(user_dir):
     m, error = modes("/x/a.csv")
     assert m == ["duckdb", "csv", "code", "annotate"]
     assert "cannot read registry.json" in error
+
+
+# ------------------------------------------------- conditional templates (PT-8)
+
+def test_condition_true_keeps_template(user_dir):
+    user_dir.template("special", condition="def method(path):\n    return True\n")
+    user_dir.registry({".csv": ["special", "code"]})
+    m, error = modes("/x/a.csv")
+    assert m == ["special", "code"]
+    assert error is None
+
+
+def test_condition_false_drops_template(user_dir):
+    user_dir.template("special", condition="def method(path):\n    return False\n")
+    user_dir.registry({".csv": ["special", "code"]})
+    m, error = modes("/x/a.csv")
+    assert m == ["code"]
+    assert error is None
+
+
+def test_condition_receives_file_path(user_dir):
+    # Only show the template for files under a "reports" directory.
+    user_dir.template(
+        "special",
+        condition="def method(path):\n    return 'reports' in path\n",
+    )
+    user_dir.registry({".csv": ["special", "code"]})
+
+    m, _ = modes("/x/reports/a.csv")
+    assert m == ["special", "code"]
+
+    m, _ = modes("/x/other/a.csv")
+    assert m == ["code"]
+
+
+def test_condition_missing_is_unconditional(user_dir):
+    user_dir.template("special")  # no condition.py
+    user_dir.registry({".csv": ["special", "code"]})
+    m, error = modes("/x/a.csv")
+    assert m == ["special", "code"]
+    assert error is None
+
+
+def test_condition_error_drops_and_reports(user_dir):
+    user_dir.template(
+        "special", condition="def method(path):\n    raise ValueError('boom')\n"
+    )
+    user_dir.registry({".csv": ["special", "code"]})
+    m, error = modes("/x/a.csv")
+    assert m == ["code"]
+    assert "boom" in error
+
+
+def test_condition_missing_method_drops_and_reports(user_dir):
+    user_dir.template("special", condition="x = 1\n")  # no `method`
+    user_dir.registry({".csv": ["special", "code"]})
+    m, error = modes("/x/a.csv")
+    assert m == ["code"]
+    assert "method" in error
+
+
+def test_condition_reevaluated_per_call(user_dir):
+    # Registries + conditions are read fresh per stat (no restart): editing
+    # condition.py flips visibility on the next resolution.
+    user_dir.template("special", condition="def method(path):\n    return False\n")
+    user_dir.registry({".csv": ["special", "code"]})
+    assert modes("/x/a.csv")[0] == ["code"]
+
+    (user_dir.path / "special" / "condition.py").write_text(
+        "def method(path):\n    return True\n"
+    )
+    assert modes("/x/a.csv")[0] == ["special", "code"]

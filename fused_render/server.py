@@ -567,6 +567,62 @@ def _icon_for(template_path: str):
     return icon if os.path.isfile(icon) else None
 
 
+def _condition_allows(template_path: str, target_path: str):
+    """Evaluate a template folder's optional `condition.py` gate.
+
+    A template folder may ship a `condition.py` defining `def method(path):
+    bool`. When present, the template is shown for a given file only if
+    `method(<that file's path>)` returns truthy — this is how one extension can
+    offer different templates for different files (e.g. only show a template for
+    files under a certain path, or matching a naming convention). Returns
+    (allowed: bool, error: str|None).
+
+    No `condition.py` -> unconditionally allowed (the common case). The module
+    is loaded fresh per call (like the registries, so an edit applies on the
+    next stat with no restart) and never inserted into `sys.modules`. A broken
+    condition — no `method`, an exception, a non-bool return — drops the
+    template and surfaces the reason as `template_error`, mirroring how an
+    unresolvable name is dropped (SPEC CT-6): a template gated by code that
+    can't decide is not silently shown.
+    """
+    import importlib.util
+
+    condition_file = os.path.join(os.path.dirname(template_path), "condition.py")
+    if not os.path.isfile(condition_file):
+        return True, None
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "__fused_condition__", condition_file
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        fn = getattr(mod, "method", None)
+        if not callable(fn):
+            return False, f"{condition_file}: does not define a callable 'method'"
+        return bool(fn(target_path)), None
+    except BaseException as e:  # never let a bad condition tear down the stat
+        return False, f"{condition_file}: {e}"
+
+
+def _apply_conditions(entries: list, target_path: str):
+    """Filter resolved template entries through their `condition.py` gates
+    (SPEC PT-8). Sentinel entries (`path is None`, D73) have no folder and are
+    always kept. Returns (kept: list, error: str|None) — the first gate error,
+    matching `_resolve_mode_list`'s first-error convention.
+    """
+    kept, error = [], None
+    for entry in entries:
+        if entry.get("path") is None:
+            kept.append(entry)
+            continue
+        allowed, err = _condition_allows(entry["path"], target_path)
+        if err and error is None:
+            error = err
+        if allowed:
+            kept.append(entry)
+    return kept, error
+
+
 def _resolve_mode_list(names):
     """Resolve an ordered list of template names into `templates` stat
     entries (SPEC PT-8). Per-entry validation (SPEC CT-6): a name that can't
@@ -799,6 +855,13 @@ def _templates_for(path: str, is_dir: bool):
         # text, offer the same viewers .txt gets. Binary keeps the metadata
         # fallback (empty list).
         entries, _ = _resolve_mode_list(["text", "code"])
+
+    # Conditional templates (SPEC PT-8): a template folder may gate itself on
+    # the file with a `condition.py`. Filter after resolution so gating is
+    # orthogonal to the registry — it runs on whatever list survived, built-in
+    # or user, main path or text-sniff fallback.
+    entries, cond_err = _apply_conditions(entries, path)
+    error = error or cond_err
     return entries, error
 
 
