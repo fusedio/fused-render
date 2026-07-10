@@ -66,11 +66,6 @@ fused = [
 fused-render = "fused_render.cli:main"
 fused-render-app = "fused_render.app:main"
 
-# No-console launcher for the Explorer "Open with" registration; a dedicated
-# exe because the Open With dialog displays a pythonw.exe command as "Python".
-[project.gui-scripts]
-fused-render-open = "fused_render.winopen:main"
-
 [tool.hatch.metadata]
 # The `fused` extra pins a direct wheel URL (not a PyPI dependency) — hatchling
 # refuses that unless explicitly allowed.
