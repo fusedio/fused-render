@@ -523,10 +523,12 @@ isn't, the template does a **one-shot full-state hydration** — a single read o
 deleted stays deleted, owner call 2026-07-10), strips the server stamps
 (`recorded_at`/`updated_at`/`deleted_at`), and merges them into the live set
 (live entries win by id) — then saves once (re-recording, a harmless upsert
-no-op) and focuses. Deletion is an **explicit** action: the annotate delete
-button both drops the comment from the URL and fires `annotate.py`'s `delete`
-action, which stamps `deleted_at` (server `time.time()` SECONDS) on the log
-entry; re-recording that id clears the tombstone (it is live again). Absence
+no-op) and focuses. Deletion is an **explicit** signal: the annotate delete
+button drops the comment from the URL and sends its id as `deleted_ids` on the
+SAME `record` call, so upsert and tombstone land in one atomic sidecar write
+(two separate calls could interleave and lose the tombstone); `annotate.py`
+stamps `deleted_at` (server `time.time()` SECONDS) on each named log entry;
+re-recording that id clears the tombstone (it is live again). Absence
 from a `record` array NEVER deletes — each URL carries only its own review
 subset, so a missing id means "not in this review", not "deleted". The live URL
 `comments` param stays the sole live store; the sidecar read is one boot-time
@@ -1277,7 +1279,7 @@ opening `sine.html` and switching to the `history` mode, or opening `sine.html.j
   `_mode=annotate&comment=<id>` — an id-only deep link mirroring the claude
   `session_id` resume contract (HV-7), where annotate resolves the id against
   its live store or a one-shot sidecar lookup (§17). A tombstoned entry (an
-  explicit `deleted_at`, stamped by annotate's delete action) renders dimmed and
+  explicit `deleted_at`, stamped via `record`'s `deleted_ids`) renders dimmed and
   struck-through with a " · deleted" tooltip note and is **inert** — no deep
   link; a deleted comment never comes back (owner call 2026-07-10). Supersedes
   the 2026-07-09 owner call that kept comments non-navigable (owner reversed

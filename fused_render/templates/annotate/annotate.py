@@ -5,9 +5,11 @@ The URL `comments` param stays the sole LIVE store the annotate view reads back;
 this sidecar is pure history — every comment ever seen for the file, keyed by
 `id`, updated in place. A comment that has disappeared from the incoming array
 is simply left as its last-seen state, forever: absence NEVER deletes (each URL
-carries only its own review subset). Only an explicit `delete` action tombstones
-an entry with `deleted_at`; re-recording that id clears the tombstone (it is
-live again). Nothing here is read back into the view.
+carries only its own review subset). Only an id named in `deleted_ids` — sent on
+the SAME `record` call, so upsert and tombstone land in one atomic
+read-merge-write with no cross-call ordering race — is stamped `deleted_at`;
+re-recording that id clears the tombstone (it is live again). Nothing here is
+read back into the view.
 
 It is the SAME sidecar the claude chat template keeps next to each target
 (templates/claude/agent.py) and the bookmark history mirror
@@ -19,8 +21,8 @@ them off disk.
 Stdlib only (runs in a subprocess; cannot import fused_render.shell).
 
 Actions:
-  main(action="record", file=..., comments=[...]) -> {"recorded": True, "count": N}
-  main(action="delete", file=..., id=...) -> {"deleted": True/False}
+  main(action="record", file=..., comments=[...], deleted_ids=[...])
+    -> {"recorded": True, "count": N, "deleted": M}
 """
 import json
 import os
@@ -68,23 +70,26 @@ def _save_sidecar(file: str, data: dict) -> None:
 
 # ------------------------------------------------------------- comments log
 
-def _record(file: str, comments: list) -> dict:
+def _record(file: str, comments: list, deleted_ids: list) -> dict:
     """Upsert each incoming comment (keyed by its `id`) into the sidecar's
     top-level "comments" log, preserving claudeSessions/bookmarkHistory/
-    lastSession and every other key.
+    lastSession and every other key — then tombstone each `deleted_ids` entry
+    in the SAME write, so a delete can never race a concurrent record call.
 
     Write-only LOG semantics (mirrors bookmarks.py `_record_history`): an id
     already in the log is updated in place — non-None incoming fields merged,
     server `updated_at` bumped; a new id is appended with recorded_at+updated_at.
     A comment that has DISAPPEARED from the incoming array is left untouched: its
-    last-seen state persists forever — absence never deletes. Re-recording an id
-    that was explicitly tombstoned (see `_delete`) clears its `deleted_at`: the
-    comment is live again. Absence itself never stamps `deleted_at`.
+    last-seen state persists forever — absence never deletes (each URL carries
+    only its own review subset, so a missing id means "not in this review").
+    `deleted_ids` is the ONE signal that says "deleted on purpose": each named
+    log entry gets `deleted_at` stamped (unknown ids are ignored). Re-recording
+    a tombstoned id clears its `deleted_at`: the comment is live again.
 
     `createdAt` is the comment's own ms-epoch (Date.now, from the template);
-    `recorded_at`/`updated_at` are server `time.time()` SECONDS (matching
-    agent.py's created_at/last_used and bookmarks.py's history stamps).
-    Different units in one file, by design — do not "unify" them."""
+    `recorded_at`/`updated_at`/`deleted_at` are server `time.time()` SECONDS
+    (matching agent.py's created_at/last_used and bookmarks.py's history
+    stamps). Different units in one file, by design — do not "unify" them."""
     file = os.path.abspath(file)
     data = _load_sidecar(file)
     log = data.get("comments")
@@ -116,54 +121,33 @@ def _record(file: str, comments: list) -> dict:
             by_id[cid] = entry
         count += 1
 
-    # Nothing to record (empty or all-invalid array) is a true no-op: never
-    # touch disk, so an emptied URL can't spuriously create/rewrite the sidecar
-    # and the existing log stays exactly as last seen.
-    if count == 0:
-        return {"recorded": True, "count": 0}
+    deleted = 0
+    for did in deleted_ids:
+        entry = by_id.get(did) if isinstance(did, str) else None
+        if entry is None:
+            continue
+        entry["deleted_at"] = now
+        entry["updated_at"] = now
+        deleted += 1
+
+    # Nothing recorded AND nothing tombstoned is a true no-op: never touch
+    # disk, so an emptied URL can't spuriously create/rewrite the sidecar and
+    # the existing log stays exactly as last seen.
+    if count == 0 and deleted == 0:
+        return {"recorded": True, "count": 0, "deleted": 0}
 
     data["comments"] = log
     _save_sidecar(file, data)
-    return {"recorded": True, "count": count}
+    return {"recorded": True, "count": count, "deleted": deleted}
 
 
-def _delete(file: str, cid: str) -> dict:
-    """Tombstone ONE comment: stamp `deleted_at` on the sidecar `comments` log
-    entry with this `id` and bump `updated_at`, leaving every other key intact.
-
-    This is the ONLY path that marks a comment deleted — absence from a `record`
-    array never does (each URL carries only its own review subset, so a missing
-    id means "not in this review", not "deleted"). A missing file or unknown id
-    is a graceful no-op ({"deleted": False}), never an exception; `deleted_at` is
-    server `time.time()` SECONDS, matching recorded_at/updated_at."""
-    file = os.path.abspath(file)
-    data = _load_sidecar(file)
-    log = data.get("comments")
-    if not isinstance(log, list):
-        return {"deleted": False}
-    entry = next((c for c in log
-                  if isinstance(c, dict) and c.get("id") == cid), None)
-    if entry is None:
-        return {"deleted": False}
-    now = time.time()
-    entry["deleted_at"] = now
-    entry["updated_at"] = now
-    data["comments"] = log
-    _save_sidecar(file, data)
-    return {"deleted": True}
-
-
-def main(action: str = "record", file: str = "", comments=None, id: str = "") -> dict:
+def main(action: str = "record", file: str = "", comments=None, deleted_ids=None) -> dict:
     if action == "record":
         if not file:
             return {"error": "missing target file (no _file param?)"}
         if not isinstance(comments, list):
             comments = []
-        return _record(file, comments)
-    if action == "delete":
-        if not file:
-            return {"error": "missing target file (no _file param?)"}
-        if not isinstance(id, str) or not id:
-            return {"deleted": False}
-        return _delete(file, id)
+        if not isinstance(deleted_ids, list):
+            deleted_ids = []
+        return _record(file, comments, deleted_ids)
     return {"error": f"unknown action: {action}"}
