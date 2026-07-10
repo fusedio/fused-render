@@ -44,7 +44,19 @@
     border: 1px solid #2a2d33; border-radius: 6px;
     background: #131417; color: #e8eaed;
   }
-  #bar button, #filterbar button { cursor: pointer; }
+  #bar button, #filterbar button { cursor: pointer; white-space: nowrap; }
+  /* Keep the paging group and its row count on one line, and let the table
+     selector give up width first so nothing wraps as the bar narrows. */
+  #bar .bar-page { flex: 0 0 auto; }
+  #rowcount { white-space: nowrap; }
+  #table { min-width: 0; max-width: 160px; text-overflow: ellipsis; }
+  #add { flex: 0 0 auto; }
+  /* Narrow bar: tighten spacing and collapse "+ Add row" to just "+" so the
+     action buttons never wrap onto a second line. */
+  @media (max-width: 560px) {
+    #bar { gap: 6px; padding: 8px; }
+    #add .add-label { display: none; }
+  }
   #bar button:disabled, #filterbar button:disabled { opacity: 0.4; cursor: default; }
   #filterbar select:disabled, #filterbar input:disabled { opacity: 0.4; }
   /* Strip the native <select> chrome (WebKit otherwise ignores our radius &
@@ -233,7 +245,7 @@
     </div>
     <div class="bar-group side right">
       <span id="ro" class="ro-badge" hidden></span>
-      <button id="add" hidden>+ Add row</button>
+      <button id="add" hidden title="Add row" aria-label="Add row">+<span class="add-label">&nbsp;Add row</span></button>
       <button id="discard" class="icon-btn" hidden disabled title="Discard changes" aria-label="Discard changes"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2.8 8a5.2 5.2 0 1 1 1.4 3.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.8 4.4V8h3.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       <button id="save" class="icon-btn" hidden disabled title="Save changes" aria-label="Save changes"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M6.2 11.4 2.8 8l1.1-1.1 2.3 2.3 5.9-5.9L13.2 4.4z" fill="currentColor"/></svg><span class="save-count" hidden></span></button>
     </div>
