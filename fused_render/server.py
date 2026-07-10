@@ -923,11 +923,13 @@ def create_app(start_dir: str) -> FastAPI:
     # prefs), kept out of this module's fs/render internals.
     app.include_router(bookmarks_router)
     app.include_router(prefs_router)
-    # PROTOTYPE: remote-storage connectors (rclone-managed mounts as local
-    # paths). Throwaway — see shell/connectors_prototype.py.
-    from fused_render.shell.connectors_prototype import router as connectors_router
+    # Connectors: remote storage mounted as local paths via rclone rcd
+    # (shell/connectors.py). startup() automounts flagged connectors in a
+    # background thread; mounts deliberately survive server restarts.
+    from fused_render.shell import connectors as shell_connectors
 
-    app.include_router(connectors_router)
+    app.include_router(shell_connectors.router)
+    shell_connectors.startup()
     # Deploy (hosted publish through the fused CLI) — export + `fused share`
     # orchestration and the per-page deployment pointer store (deploy.py).
     app.include_router(deploy_router)

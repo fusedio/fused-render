@@ -289,7 +289,184 @@ def unmount_connector(conn: dict) -> str | None:
         return f"unmount failed (a preview may still hold a file open): {e}"
 
 
-def connector_view(conn: dict) -> dict:
+def connector_view(conn: dict, rcd_mounts: set | None = None) -> dict:
     mp = mountpoint(conn)
-    mounted = mp in mounted_paths() or os.path.ismount(mp)
-    return {**conn, "mountpoint": mp, "mounted": mounted}
+    listed = mounted_paths() if rcd_mounts is None else rcd_mounts
+    return {
+        **conn,
+        # Records written by the prototype predate the automount field.
+        "automount": bool(conn.get("automount")),
+        "mountpoint": mp,
+        "mounted": mp in listed or os.path.ismount(mp),
+    }
+
+
+# ---------------------------------------------------------- automount/startup
+
+
+def run_automount() -> None:
+    """Mount every automount-flagged connector that isn't already mounted.
+    Adoption is implicit: mount/listmounts is the status source of truth, so
+    mounts that survived a server restart just show up. Best-effort — a
+    failure logs and moves on, never blocks startup."""
+    connectors = [c for c in list_connectors() if c.get("automount")]
+    if not connectors:
+        return
+    live = mounted_paths()
+    for conn in connectors:
+        if mountpoint(conn) in live or os.path.ismount(mountpoint(conn)):
+            continue
+        err = mount_connector(conn)
+        if err:
+            logger.warning("automount of %r failed: %s", conn["name"], err)
+
+
+def startup() -> None:
+    """Called from create_app: automount in a daemon thread so a slow or
+    missing rclone never delays server start."""
+    import threading
+
+    threading.Thread(target=run_automount, daemon=True, name="connectors-automount").start()
+
+
+# ---------------------------------------------------------------- endpoints
+
+
+def _rclone_state() -> dict:
+    bin_ = rclone_bin()
+    if not bin_:
+        return {"available": False, "version": None, "remotes": []}
+    try:
+        version = subprocess.run(
+            [bin_, "version"], capture_output=True, text=True, timeout=10
+        ).stdout.splitlines()[0]
+        remotes_out = subprocess.run(
+            [bin_, "listremotes"], capture_output=True, text=True, timeout=10
+        ).stdout
+        remotes = [r.strip() for r in remotes_out.splitlines() if r.strip()]
+    except (OSError, subprocess.TimeoutExpired, IndexError):
+        return {"available": False, "version": None, "remotes": []}
+    return {"available": True, "version": version, "remotes": remotes}
+
+
+@router.get("/api/connectors")
+def get_connectors():
+    live = mounted_paths()
+    return {
+        "rclone": _rclone_state(),
+        "connectors": [connector_view(c, live) for c in list_connectors()],
+    }
+
+
+@router.post("/api/connectors")
+def create_connector(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    try:
+        conn = add_connector(
+            body.get("name") or "", body.get("remote") or "",
+            automount=bool(body.get("automount")),
+        )
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    err = mount_connector(conn)
+    if err:
+        # Create implies mount; a connector that never mounted is not kept.
+        remove_connector(conn["id"])
+        return JSONResponse({"error": err}, status_code=502)
+    return connector_view(conn)
+
+
+@router.post("/api/connectors/{cid}/mount")
+def mount_endpoint(cid: str, x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    conn = get_connector(cid)
+    if conn is None:
+        return JSONResponse({"error": "unknown connector"}, status_code=404)
+    err = mount_connector(conn)
+    if err:
+        return JSONResponse({"error": err}, status_code=502)
+    return connector_view(conn)
+
+
+@router.post("/api/connectors/{cid}/unmount")
+def unmount_endpoint(cid: str, x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    conn = get_connector(cid)
+    if conn is None:
+        return JSONResponse({"error": "unknown connector"}, status_code=404)
+    err = unmount_connector(conn)
+    if err:
+        return JSONResponse({"error": err}, status_code=502)
+    return connector_view(conn)
+
+
+@router.put("/api/connectors/{cid}")
+def update_connector(cid: str, body: dict = Body(...),
+                     x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    if not isinstance(body.get("automount"), bool):
+        return JSONResponse({"error": "'automount' must be a boolean"}, status_code=400)
+    conn = set_automount(cid, body["automount"])
+    if conn is None:
+        return JSONResponse({"error": "unknown connector"}, status_code=404)
+    return connector_view(conn)
+
+
+@router.delete("/api/connectors/{cid}")
+def delete_connector(cid: str, x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    conn = get_connector(cid)
+    if conn is None:
+        return JSONResponse({"error": "unknown connector"}, status_code=404)
+    unmount_connector(conn)  # best-effort; delete proceeds regardless
+    mp = mountpoint(conn)
+    if os.path.isdir(mp) and not os.path.ismount(mp) and not os.listdir(mp):
+        os.rmdir(mp)
+    remove_connector(cid)
+    return {"ok": True}
+
+
+@router.post("/api/connectors/remotes")
+def create_remote(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Create an S3-compatible rclone remote non-interactively from keys.
+    OAuth backends (Drive etc.) are deliberately NOT handled here — users run
+    `rclone config` in a terminal; the page explains that. Credentials go
+    straight into rclone's own config, never through the store."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    bin_ = rclone_bin()
+    if not bin_:
+        return JSONResponse({"error": "rclone is not installed"}, status_code=502)
+    name = (body.get("name") or "").strip()
+    if not name or ":" in name or "/" in name:
+        return JSONResponse({"error": "invalid remote name"}, status_code=400)
+    p = body.get("params") or {}
+    cmd = [
+        bin_, "config", "create", name, "s3",
+        "provider", p.get("provider") or "Other",
+        "access_key_id", p.get("access_key_id") or "",
+        "secret_access_key", p.get("secret_access_key") or "",
+        "env_auth", "false",
+    ]
+    if p.get("endpoint"):
+        cmd += ["endpoint", p["endpoint"]]
+    if p.get("region"):
+        cmd += ["region", p["region"]]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return JSONResponse({"error": "rclone config create timed out (30s)"}, status_code=502)
+    if r.returncode != 0:
+        return JSONResponse({"error": (r.stderr or r.stdout or "").strip()[-500:]}, status_code=502)
+    return {"ok": True, "name": name + ":"}
