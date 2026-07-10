@@ -643,14 +643,12 @@ async function loadTarget(target, name) {
     }
     const touched = L.style && L.style._touched;
     L.style = touched ? Object.assign({}, desc.style, L.style) : Object.assign({}, desc.style);
-    if (desc.kind === "vector_geojson") {
-      L.geojson = await (await fetch(fused.rawUrl(desc.data.geojson_path))).json();
-      computeColorByStats(L);
-    } else if (desc.kind === "vector_points_binary") {
-      const buf = await (await fetch(fused.rawUrl(desc.data.points_path))).arrayBuffer();
-      L.binary = { count: desc.data.count, columns: desc.data.columns,
-                   positions: new Float32Array(buf), colCache: {} };
-      L._cb = null; L._colorBuf = null;
+    if (desc.kind === "vector_tiles_mvt") {
+      L.mvt = { tileUrl: desc.data.tile_url, statusUrl: desc.data.status_url,
+                metaUrl: desc.data.meta_url, minzoom: desc.minzoom ?? 0,
+                maxzoom: desc.maxzoom ?? 18, geometry_type: desc.geometry_type,
+                version: 0, ready: false, phase: "reading", pct: 0,
+                detail_zoom: null, count: null };
     }
     L.visible = true;
     state.selected = target;
@@ -658,6 +656,7 @@ async function loadTarget(target, name) {
     renderAll();
     fitTo(desc.bounds);
     refreshCode();
+    if (L.mvt) pollMvtStatus(target);
   } catch (e) {
     L.loading = false;
     L.descriptor = { status: "error", message: e.message, error: { traceback: e.traceback } };
@@ -702,10 +701,8 @@ function rebuildDeck() {
         id: "r_" + key, image: fused.rawUrl(d.data.image_path),
         bounds: d.bounds, opacity: L.opacity, _imageCoordinateSystem: undefined,
       }));
-    } else if (d.kind === "vector_geojson" && L.geojson) {
-      layers.push(makeGeoJsonLayer(key, L));
-    } else if (d.kind === "vector_points_binary" && L.binary) {
-      layers.push(makePointsBinaryLayer(key, L));
+    } else if (d.kind === "vector_tiles_mvt" && L.mvt && L.mvt.ready) {
+      layers.push(makeMvtLayer(key, L));
     }
   }
   overlay.setProps({ layers });
@@ -787,6 +784,58 @@ function makeGeoJsonLayer(key, L) {
   });
 }
 
+function makeMvtLayer(key, L) {
+  const s = L.style, m = L.mvt;
+  const g = (m.geometry_type || "").toLowerCase();
+  const isPoint = g.includes("point");
+  const fill = s.fill_color || [...L.defaultColor, isPoint ? 220 : 90];
+  const line = s.line_color || [...L.defaultColor, 220];
+  return new deck.MVTLayer({
+    id: "v_" + key,
+    data: `${m.tileUrl}&_v=${m.version}`,
+    minZoom: m.minzoom, maxZoom: m.maxzoom,
+    pickable: true, opacity: L.opacity,
+    stroked: !isPoint, filled: true, pointType: "circle",
+    getFillColor: fill, getLineColor: line,
+    getLineWidth: s.line_width ?? 1.5, lineWidthUnits: "pixels", lineWidthMinPixels: 1,
+    getPointRadius: s.point_radius ?? 5, pointRadiusUnits: "pixels", pointRadiusMinPixels: 2,
+    updateTriggers: {
+      getFillColor: [s.fill_color], getLineColor: [s.line_color],
+      getLineWidth: [s.line_width], getPointRadius: [s.point_radius],
+    },
+  });
+}
+
+// Poll the tile daemon: enable the layer when the base table is ready, then
+// bump a cache-busting version as coarse→fine overviews finish so deck refetches
+// the improved tiles for the current view.
+async function pollMvtStatus(target) {
+  const L = state.layers.get(target); if (!L || !L.mvt) return;
+  const m = L.mvt;
+  try {
+    const st = await (await fetch(m.statusUrl)).json();
+    if (!state.layers.has(target)) return;
+    if (st.error) { m.phase = "error"; toast("bad", "Tile preparation failed", st.error);
+                    renderLayerCards(); renderStyleDock(); return; }
+    const pctChanged = st.pct !== m.pct;
+    const becameReady = st.ready && !m.ready;
+    m.phase = st.phase; m.pct = st.pct; m.detail_zoom = st.detail_zoom; m.ready = st.ready;
+    if (becameReady) {
+      try { const meta = await (await fetch(m.metaUrl)).json();
+            m.count = meta.count; if (meta.geometry_type) m.geometry_type = meta.geometry_type; }
+      catch (e) { /* meta optional */ }
+      rebuildDeck();
+    } else if (m.ready && pctChanged) {
+      m.version++; rebuildDeck();
+    }
+    renderLayerCards(); renderStyleDock();
+    if (st.phase !== "ready" && st.phase !== "error")
+      setTimeout(() => pollMvtStatus(target), 800);
+  } catch (e) {
+    setTimeout(() => pollMvtStatus(target), 1500);
+  }
+}
+
 function renderAll() { renderFileList(); rebuildDeck(); renderLayerCards(); renderStyleDock(); }
 
 /* =======================================================================
@@ -841,10 +890,11 @@ function layerCard(L) {
       `<span class="lc-nm" title="${L.target}">${L.name}</span>` +
       `<button class="lc-dots" title="More">${DOTS}</button>`;
   } else {
+    const preparing = d.kind === "vector_tiles_mvt" && L.mvt && !L.mvt.ready && L.mvt.phase !== "error";
     h.innerHTML =
-      `<span class="lc-swatch" style="${swatchStyle(L)}"></span>` +
+      (preparing ? `<span class="spin"></span>` : `<span class="lc-swatch" style="${swatchStyle(L)}"></span>`) +
       `<span class="lc-nm" title="${L.target}">${L.name}</span>` +
-      `<span class="lc-badge">${kindBadge(d)}</span>` +
+      `<span class="lc-badge">${preparing ? "tiles " + (L.mvt.pct || 0) + "%" : kindBadge(d)}</span>` +
       `<button class="lc-eye ${L.visible ? "" : "off"}" title="Toggle visibility">${L.visible ? EYE : EYEOFF}</button>` +
       `<button class="lc-dots" title="More">${DOTS}</button>`;
   }
@@ -939,12 +989,18 @@ function renderStyleDock() {
   if (d.kind === "raster_image") rasterControls(body, L);
   else if (d.kind === "vector_points_binary") binaryPointControls(body, L);
   else if (d.kind === "vector_geojson") vectorControls(body, L);
+  else if (d.kind === "vector_tiles_mvt") mvtControls(body, L);
 
   // stats + warnings
   const st = d.stats || {};
   let statTxt = "";
   if (d.kind === "raster_image") statTxt = `${st.bands}-band · ${st.width}×${st.height} · ${st.dtype}`;
   else if (d.kind === "vector_geojson" || d.kind === "vector_points_binary") statTxt = `${(st.feature_count||0).toLocaleString()} features · ${(st.geometry_types||[]).join(", ")}`;
+  else if (d.kind === "vector_tiles_mvt") {
+    const m = L.mvt || {};
+    statTxt = `${m.geometry_type || d.geometry_type || "vector"}${m.count ? ` · ${m.count.toLocaleString()} features` : ""}`;
+    if (m.phase && m.phase !== "ready") statTxt += `\npreparing tiles — ${m.phase} ${m.pct || 0}%`;
+  }
   if (d.crs_original) statTxt += `\nCRS: ${d.crs_original}`;
   if (d.timing_ms != null) statTxt += ` · ${d.timing_ms} ms`;
   if (statTxt) { const s = document.createElement("div"); s.className = "stat"; s.textContent = statTxt; body.appendChild(s); }
@@ -1003,6 +1059,32 @@ function vectorControls(body, L) {
     v => { s.line_width = v/2; s._touched=true; rebuildDeck(); updateCtlLabel(body,"Line width",(v/2).toFixed(1)); }));
   if (isPoint) body.appendChild(sliderCtl("Point size", String(s.point_radius??5), 1, 24, s.point_radius??5,
     v => { s.point_radius = v; s._touched=true; rebuildDeck(); updateCtlLabel(body,"Point size",String(v)); }));
+}
+
+function mvtControls(body, L) {
+  const s = L.style;
+  const g = ((L.mvt && L.mvt.geometry_type) || "").toLowerCase();
+  const isPoint = g.includes("point");
+  const isLine = g.includes("line") && !g.includes("polygon");
+  if (isPoint) {
+    body.appendChild(colorCtl("Color", rgbToHex(s.fill_color || L.defaultColor), hex => {
+      const a = (s.fill_color && s.fill_color[3]) ?? 220; s.fill_color = [...hexToRgb(hex), a];
+      s._touched = true; rebuildDeck(); renderLayerCards();
+    }));
+    body.appendChild(sliderCtl("Point size", String(s.point_radius ?? 5), 1, 24, s.point_radius ?? 5,
+      v => { s.point_radius = v; s._touched = true; rebuildDeck(); updateCtlLabel(body, "Point size", String(v)); }));
+    return;
+  }
+  if (!isLine) body.appendChild(colorCtl("Fill", rgbToHex(s.fill_color || L.defaultColor), hex => {
+    const a = (s.fill_color && s.fill_color[3]) ?? 90; s.fill_color = [...hexToRgb(hex), a];
+    s._touched = true; rebuildDeck(); renderLayerCards();
+  }));
+  body.appendChild(colorCtl("Line", rgbToHex(s.line_color || L.defaultColor), hex => {
+    const a = (s.line_color && s.line_color[3]) ?? 220; s.line_color = [...hexToRgb(hex), a];
+    s._touched = true; rebuildDeck(); renderLayerCards();
+  }));
+  body.appendChild(sliderCtl("Line width", (s.line_width ?? 1.5).toFixed(1), 0, 8, Math.round((s.line_width ?? 1.5) * 2),
+    v => { s.line_width = v / 2; s._touched = true; rebuildDeck(); updateCtlLabel(body, "Line width", (v / 2).toFixed(1)); }));
 }
 
 function binaryPointControls(body, L) {

@@ -1,12 +1,12 @@
 """runPython target for the map template: classify a geospatial file into a
-map-layer descriptor (see geo_classify.py) and cache its artifacts.
+map-layer descriptor (see geo_classify.py).
 
-Each call is a fresh subprocess, so there's no warm daemon to keep geopandas/
-rasterio imported between clicks (unlike the standalone map_viewer app this
-template is based on) — imports stay lazy inside main()/geo_classify and the
-descriptor + its artifacts (GeoJSON / PNG / binary point buffers) are cached
-under ~/.fused-render/cache/map/<hash>/ keyed by (target, mtime, opts), so
-re-opening an unchanged file is instant on the next call.
+Raster and PMTiles targets are rendered to cached artifacts under
+~/.fused-render/cache/map/<hash>/ keyed by (target, mtime, opts), so re-opening
+an unchanged file is instant. Vector targets are served as on-the-fly Mapbox
+Vector Tiles by a warm DuckDB daemon (vector_tile_server.py) — this call only
+ensures the daemon is up, kicks off its per-file warm-up, and returns the tile
+endpoint descriptor; the client polls the daemon's /status until ready.
 """
 import hashlib
 import json
@@ -25,33 +25,66 @@ def _artifacts_exist(desc):
     return True
 
 
-def main(target: str = "", colormap: str = "viridis", rescale: str = ""):
-    """Classify `target` (a geospatial file path or URL) and return a map-layer
-    descriptor. colormap/rescale style a single-band raster (rescale = "lo,hi");
-    changing either re-renders it."""
-    target = (target or "").strip()
-    if not target:
-        return {"status": "error", "message": "No file selected.", "kind": None,
-                "bounds": None, "data": {}, "warnings": []}
+def _err(msg):
+    return {"status": "error", "message": msg, "kind": None,
+            "bounds": None, "data": {}, "warnings": []}
 
-    is_url = target.startswith(_URLISH)
-    if not is_url:
-        target = os.path.abspath(os.path.expanduser(target))
-        if not os.path.exists(target):
-            return {"status": "error", "message": f"Not found: {target}", "kind": None,
-                    "bounds": None, "data": {}, "warnings": []}
-        mtime = os.path.getmtime(target)
-    else:
-        mtime = 0.0
 
-    opts = {"colormap": colormap}
-    if rescale:
-        try:
-            lo, hi = (float(x) for x in rescale.split(","))
-            opts["rescale"] = [lo, hi]
-        except ValueError:
-            pass
+def _vector_tiles(target):
+    """Ensure the MVT daemon is running, start warm-up for `target`, and return
+    the tile descriptor with quick metadata for immediate framing."""
+    import geo_classify
+    import vector_tile_server as vts
 
+    ensured = vts.main("ensure")
+    port = ensured.get("port")
+    if not port:
+        return _err(ensured.get("error", "tile daemon failed to start"))
+
+    import urllib.parse
+    import urllib.request
+    qs = urllib.parse.urlencode({"file": target})
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/open?{qs}", timeout=5).read()
+    except Exception:
+        pass
+
+    try:
+        meta = geo_classify.vector_meta(target)
+    except Exception as e:  # noqa: BLE001
+        return _err(f"couldn't read vector file: {type(e).__name__}: {e}")
+
+    return {
+        "status": "ok",
+        "kind": "vector_tiles_mvt",
+        "crs_original": meta.get("crs_original"),
+        "bounds": meta.get("bounds"),
+        "data": {"port": port, "file": target,
+                 "tile_url": f"http://127.0.0.1:{port}/tile/{{z}}/{{x}}/{{y}}.mvt?{qs}",
+                 "status_url": f"http://127.0.0.1:{port}/status?{qs}",
+                 "meta_url": f"http://127.0.0.1:{port}/meta?{qs}"},
+        "stats": {"geometry_types": [meta.get("geometry_type")],
+                  "columns": {c: "" for c in meta.get("columns", [])}},
+        "style": _default_vector_style(meta.get("geometry_type")),
+        "minzoom": 0, "maxzoom": 18,
+        "geometry_type": meta.get("geometry_type"),
+        "columns": meta.get("columns", []),
+        "warnings": [],
+        "detected_type": "vector",
+    }
+
+
+def _default_vector_style(gtype):
+    g = (gtype or "").lower()
+    style = {"opacity": 1.0, "fill_color": [56, 135, 255, 90],
+             "line_color": [90, 200, 255, 220], "line_width": 1.5,
+             "point_radius": 5, "color_by": None, "colormap": "viridis"}
+    if "point" in g and "polygon" not in g and "line" not in g:
+        style["fill_color"] = [0, 200, 255, 220]
+    return style
+
+
+def _cached(target, mtime, opts):
     opts_json = json.dumps(opts, sort_keys=True)
     artifact_id = hashlib.sha256(f"{target}|{mtime}|{opts_json}".encode()).hexdigest()[:16]
     cache_dir = os.path.join(CACHE_ROOT, artifact_id)
@@ -75,6 +108,38 @@ def main(target: str = "", colormap: str = "viridis", rescale: str = ""):
         json.dump(desc, fh)
     os.replace(tmp, desc_path)
     return desc
+
+
+def main(target: str = "", colormap: str = "viridis", rescale: str = ""):
+    """Classify `target` (a geospatial file path or URL) and return a map-layer
+    descriptor. colormap/rescale style a single-band raster (rescale = "lo,hi")."""
+    target = (target or "").strip()
+    if not target:
+        return {"status": "error", "message": "No file selected.", "kind": None,
+                "bounds": None, "data": {}, "warnings": []}
+
+    is_url = target.startswith(_URLISH)
+    if not is_url:
+        target = os.path.abspath(os.path.expanduser(target))
+        if not os.path.exists(target):
+            return {"status": "error", "message": f"Not found: {target}", "kind": None,
+                    "bounds": None, "data": {}, "warnings": []}
+        mtime = os.path.getmtime(target)
+    else:
+        mtime = 0.0
+
+    import geo_classify
+    if geo_classify.route_target(target) == "vector":
+        return _vector_tiles(target)
+
+    opts = {"colormap": colormap}
+    if rescale:
+        try:
+            lo, hi = (float(x) for x in rescale.split(","))
+            opts["rescale"] = [lo, hi]
+        except ValueError:
+            pass
+    return _cached(target, mtime, opts)
 
 
 try:
