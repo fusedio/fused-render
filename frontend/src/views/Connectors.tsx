@@ -1,9 +1,10 @@
-// PROTOTYPE — Connectors page (/view/_connectors sentinel, sidebar footer).
-// Throwaway UI over shell/connectors_prototype.py: manage rclone-backed
-// remote mounts (GDrive / S3-compatible) that appear as local paths. Once
-// mounted, "Open" navigates into the mountpoint and every existing view
-// (Listing/Preview/readers/tile servers) works untouched — that's the
-// feasibility question this page exists to answer. Delete when answered.
+// Connectors page — the /view/_connectors sentinel, entered from the sidebar
+// footer. Remote storage (S3-compatible and anything else rclone speaks)
+// mounted as local folders under ~/.fused-render/mounts; everything
+// downstream — previews, readers, tile servers — sees ordinary local paths.
+// Backend: shell/connectors.py (rclone rcd). Credentials live in rclone's
+// own config, never here. Section layout and per-action busy/error state
+// follow views/Preferences.tsx.
 import { useEffect, useState } from "react";
 import {
   createConnector,
@@ -11,6 +12,7 @@ import {
   deleteConnector,
   getConnectors,
   mountConnector,
+  putConnectorAutomount,
   unmountConnector,
 } from "../lib/api";
 import type { Connector, ConnectorsResult } from "../lib/api";
@@ -61,6 +63,19 @@ function ConnectorRow({
             {conn.mountpoint}
           </div>
         </div>
+        <label
+          className="deploy-muted"
+          style={{ fontSize: "0.85em", display: "flex", gap: 4, alignItems: "center" }}
+          title="Mount automatically when the server starts"
+        >
+          <input
+            type="checkbox"
+            checked={conn.automount}
+            disabled={busy}
+            onChange={(e) => act(() => putConnectorAutomount(conn.id, e.target.checked))}
+          />
+          automount
+        </label>
         {conn.mounted ? (
           <>
             <button type="button" disabled={busy} onClick={() => navigate(conn.mountpoint)}>
@@ -116,13 +131,13 @@ function AddConnector({
     <section className="prefs-section">
       <h2>Add connector</h2>
       <p className="deploy-muted">
-        A connector mounts an rclone remote as a local folder. Pick a configured
-        remote (and optionally a bucket/folder inside it), give it a name, and
-        it appears under <code>~/.fused-render/mounts/</code>.
+        A connector mounts an rclone remote as a local folder. Mount a specific{" "}
+        <b>bucket/prefix</b>, not a whole bucket — narrow mounts browse and search much faster
+        (every folder listed inside a mount is a remote API call).
       </p>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <input
-          placeholder="name (e.g. my-drive)"
+          placeholder="name (e.g. sensor-data)"
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
@@ -135,7 +150,8 @@ function AddConnector({
           ))}
         </select>
         <input
-          placeholder="bucket/prefix (optional)"
+          placeholder="bucket/prefix (recommended)"
+          style={{ minWidth: 220 }}
           value={subpath}
           onChange={(e) => setSubpath(e.target.value)}
         />
@@ -149,7 +165,6 @@ function AddConnector({
 }
 
 function AddRemote({ onChanged }: { onChanged: () => void }) {
-  const [kind, setKind] = useState<"s3" | "drive">("s3");
   const [name, setName] = useState("");
   const [endpoint, setEndpoint] = useState("");
   const [region, setRegion] = useState("");
@@ -157,34 +172,22 @@ function AddRemote({ onChanged }: { onChanged: () => void }) {
   const [secretKey, setSecretKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
 
   const add = async () => {
     setBusy(true);
     setError(null);
-    if (kind === "drive") {
-      setNotice("A browser tab should open for Google sign-in — approve it there.");
-    }
     try {
-      await createRemote(
-        name,
-        kind,
-        kind === "s3"
-          ? {
-              access_key_id: accessKey,
-              secret_access_key: secretKey,
-              endpoint,
-              region,
-            }
-          : undefined
-      );
+      await createRemote(name, {
+        access_key_id: accessKey,
+        secret_access_key: secretKey,
+        endpoint,
+        region,
+      });
       setName("");
       setAccessKey("");
       setSecretKey("");
-      setNotice(null);
       onChanged();
     } catch (e) {
-      setNotice(null);
       setError((e as Error).message);
     } finally {
       setBusy(false);
@@ -195,39 +198,32 @@ function AddRemote({ onChanged }: { onChanged: () => void }) {
     <section className="prefs-section">
       <h2>Add rclone remote</h2>
       <p className="deploy-muted">
-        Credentials live in rclone's own config, never in fused-render. S3 keys
-        are written straight through; Google Drive runs rclone's OAuth flow in
-        your browser.
+        A remote holds the credentials; connectors mount paths inside it. Keys are written
+        straight into rclone's own config — fused-render never stores them. S3-compatible
+        storage can be set up here; for <b>Google Drive</b> and other sign-in-based backends,
+        run <code>rclone config</code> in a terminal instead, then the remote appears in the
+        dropdown above on reload.
       </p>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-        <select value={kind} onChange={(e) => setKind(e.target.value as "s3" | "drive")}>
-          <option value="s3">S3-compatible</option>
-          <option value="drive">Google Drive</option>
-        </select>
         <input placeholder="remote name" value={name} onChange={(e) => setName(e.target.value)} />
-        {kind === "s3" && (
-          <>
-            <input
-              placeholder="endpoint (e.g. https://…r2.cloudflarestorage.com)"
-              style={{ minWidth: 280 }}
-              value={endpoint}
-              onChange={(e) => setEndpoint(e.target.value)}
-            />
-            <input placeholder="region (optional)" value={region} onChange={(e) => setRegion(e.target.value)} />
-            <input placeholder="access key id" value={accessKey} onChange={(e) => setAccessKey(e.target.value)} />
-            <input
-              placeholder="secret access key"
-              type="password"
-              value={secretKey}
-              onChange={(e) => setSecretKey(e.target.value)}
-            />
-          </>
-        )}
+        <input
+          placeholder="endpoint (blank for AWS S3)"
+          style={{ minWidth: 260 }}
+          value={endpoint}
+          onChange={(e) => setEndpoint(e.target.value)}
+        />
+        <input placeholder="region (optional)" value={region} onChange={(e) => setRegion(e.target.value)} />
+        <input placeholder="access key id" value={accessKey} onChange={(e) => setAccessKey(e.target.value)} />
+        <input
+          placeholder="secret access key"
+          type="password"
+          value={secretKey}
+          onChange={(e) => setSecretKey(e.target.value)}
+        />
         <button type="button" disabled={busy || !name} onClick={add}>
-          {busy ? (kind === "drive" ? "Waiting for OAuth…" : "Creating…") : "Create remote"}
+          {busy ? "Creating…" : "Create remote"}
         </button>
       </div>
-      {notice && <div className="deploy-muted">{notice}</div>}
       {error && <div className="deploy-error">{error}</div>}
     </section>
   );
@@ -252,26 +248,30 @@ export default function Connectors() {
   return (
     <div className="prefs-page">
       <p className="deploy-muted" style={{ marginTop: 0 }}>
-        <b>PROTOTYPE.</b> Remote storage mounted as local folders via rclone
-        {state.rclone.version ? ` (${state.rclone.version})` : ""}. Everything
-        downstream — previews, readers, tile servers — sees ordinary local paths.
+        Remote storage mounted as local folders
+        {state.rclone.version ? ` (${state.rclone.version})` : ""}. The <b>first</b> open of a
+        large remote file downloads what it needs and can be slow; repeat opens are served from
+        a local cache and are fast. Mounts stay up until you unmount them — including across
+        restarts.
       </p>
       {state.connectors.length === 0 ? (
         <p className="deploy-muted">No connectors yet.</p>
       ) : (
         state.connectors.map((c) => <ConnectorRow key={c.id} conn={c} onChanged={reload} />)
       )}
-      {state.rclone.available && (
+      {state.rclone.available ? (
         <>
           <AddConnector remotes={state.rclone.remotes} onChanged={reload} />
           <AddRemote onChanged={reload} />
         </>
-      )}
-      {!state.rclone.available && (
+      ) : (
         <p className="deploy-muted">
-          For S3-compatible and other object storage, install{" "}
-          <a href="https://rclone.org/install/" target="_blank" rel="noreferrer">rclone</a>{" "}
-          (<code>brew install rclone</code>) and reload — mount forms appear here.
+          Connectors need{" "}
+          <a href="https://rclone.org/install/" target="_blank" rel="noreferrer">
+            rclone
+          </a>{" "}
+          (<code>brew install rclone</code> on macOS, your distro's package on Linux). Install
+          it and reload this page.
         </p>
       )}
     </div>

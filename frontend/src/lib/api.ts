@@ -395,14 +395,16 @@ export function revealPath(fsPath: string): Promise<void> {
   return postJson<unknown>("/api/fs/reveal", { path: fsPath }).then(() => undefined);
 }
 
-// -- Connectors PROTOTYPE (shell/connectors_prototype.py) ----------------------
-// Throwaway: remote storage (GDrive / S3-compatible) mounted as local paths
-// via rclone. Delete alongside the backend module when the prototype is done.
+// -- Connectors (shell/connectors.py) ------------------------------------------
+// Remote storage mounted as local paths via rclone rcd. Credentials live in
+// rclone's config; mounts survive server restarts and are adopted on start.
 
 export interface Connector {
   id: string;
   name: string;
   remote: string;
+  // Mount automatically when the server starts (opt-in per connector).
+  automount: boolean;
   mountpoint: string;
   mounted: boolean;
 }
@@ -428,6 +430,10 @@ export function unmountConnector(id: string): Promise<Connector> {
   return postJson<Connector>(`/api/connectors/${id}/unmount`, {});
 }
 
+export function putConnectorAutomount(id: string, automount: boolean): Promise<Connector> {
+  return putJson<Connector>(`/api/connectors/${id}`, { automount });
+}
+
 export function deleteConnector(id: string): Promise<void> {
   const res = fetch(`/api/connectors/${id}`, {
     method: "DELETE",
@@ -438,14 +444,15 @@ export function deleteConnector(id: string): Promise<void> {
   });
 }
 
+// S3-compatible only: keys are written straight into rclone's own config.
+// OAuth backends (Google Drive, …) are set up with `rclone config` in a
+// terminal instead — the Connectors page explains that.
 export function createRemote(
   name: string,
-  type: "s3" | "drive",
-  params?: Record<string, string>
+  params: Record<string, string>
 ): Promise<{ ok: boolean; name: string }> {
   return postJson<{ ok: boolean; name: string }>("/api/connectors/remotes", {
     name,
-    type,
     params,
   });
 }
