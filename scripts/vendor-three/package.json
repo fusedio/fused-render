@@ -1,13 +1,12 @@
 {
   "name": "fused-render-three-vendor",
   "private": true,
-  "description": "Build workspace that bundles Three.js (core + OrbitControls + TransformControls + GLTFLoader) and @gltf-transform/core into self-contained ESM bundles for fused-render's glb/glbmodel templates. Not shipped; only the built bundles are committed. See README.md.",
+  "description": "Build workspace that bundles Three.js (core + OrbitControls + GLTFLoader) into a self-contained ESM bundle for fused-render's read-only glb viewer template. Not shipped; only the built bundle is committed. See README.md.",
   "version": "0.0.0",
   "scripts": {
     "build": "./build.sh"
   },
   "dependencies": {
-    "@gltf-transform/core": "4.4.1",
     "esbuild": "^0.25.11",
     "three": "0.160.0"
   }

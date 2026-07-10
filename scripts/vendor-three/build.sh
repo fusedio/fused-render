@@ -20,8 +20,3 @@ build() {
 }
 
 build three-entry.mjs          three.bundle.mjs
-# @gltf-transform/core lazily import()s node:fs/node:path in its NodeIO path,
-# which the browser never uses (we only touch WebIO/Document/VertexLayout).
-# Mark them external so esbuild leaves the untriggered dynamic import in place
-# instead of failing to resolve a Node builtin.
-build gltf-transform-entry.mjs gltf-transform.bundle.mjs --external:node:fs --external:node:path

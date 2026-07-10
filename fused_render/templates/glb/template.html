@@ -38,27 +38,10 @@
   }
   #status.error { color: #ff6b6b; }
   #status.hidden { display: none; }
-  #edit {
-    position: absolute;
-    top: 8px; right: 10px;
-    z-index: 4;
-    padding: 5px 12px;
-    font: inherit;
-    font-size: 12px;
-    color: #e8eaed;
-    background: #2a2d33;
-    border: 1px solid #3a3f47;
-    border-radius: 6px;
-    cursor: pointer;
-  }
-  #edit:hover { background: #343841; }
-  #edit[disabled] { opacity: 0.5; cursor: default; }
-  #edit.hidden { display: none; }
 </style>
 </head>
 <body>
   <div id="bar"></div>
-  <button id="edit" class="hidden" title="Create an editable model project from this file">Edit</button>
   <canvas id="c"></canvas>
   <div id="status">Loading…</div>
   <script type="module">
@@ -155,65 +138,6 @@
       if (/^(data:|blob:|https?:)/i.test(url)) return url;
       return fused.rawUrl(resolveSibling(dir, url));
     });
-
-    // --- Edit bridge: turn this .glb into an editable model project ---
-    // fused-render has no workspace; an editable model is a self-contained
-    // sibling `<name>.glbproj/` directory (routed to the glbmodel editor, the
-    // same way a `.zarr/` dir routes to the zarr template). "Edit" scaffolds
-    // that dir next to this file, imports this .glb into it as parts (exploded
-    // client-side by the editor's own import_part.mjs), then opens the editor.
-    // Only .glb is supported — importPart takes binary glTF; a .gltf would need
-    // converting to .glb first.
-    const editBtn = document.getElementById("edit");
-    const tplDir = (() => {
-      const p = new URLSearchParams(location.search).get("path") || "";
-      return p.slice(0, p.lastIndexOf("/") + 1);
-    })();
-    // sibling glbmodel/ template dir (this file lives in glb/), reached by
-    // absolute path — /api/run and fused.rawUrl both accept absolute paths.
-    const glbmodelDir = tplDir.replace(/glb\/$/, "glbmodel/");
-    const opsPy = glbmodelDir + "project_ops.py";
-
-    function b64(bytes) {
-      let s = "";
-      for (let i = 0; i < bytes.length; i += 0x8000)
-        s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-      return btoa(s);
-    }
-
-    async function startEdit() {
-      editBtn.disabled = true;
-      const prev = editBtn.textContent;
-      editBtn.textContent = "Preparing…";
-      try {
-        const base = file.split("/").pop().replace(/\.glb$/i, "");
-        const dir = file.slice(0, file.lastIndexOf("/") + 1);
-        const proj = dir + base + ".glbproj";
-        // info scaffolds the dir and returns existing parts (idempotent).
-        const info = await fused.runPython(opsPy, { action: "info", model_dir: proj });
-        if (info.error) throw new Error(info.error);
-        if ((info.parts || []).length === 0) {
-          const { importPart } = await import(fused.rawUrl(glbmodelDir + "import_part.mjs"));
-          const bytes = new Uint8Array(await (await fetch(fused.rawUrl(file))).arrayBuffer());
-          const { parts } = await importPart(bytes, base, []);
-          for (const p of parts) {
-            const w = await fused.runPython(opsPy,
-              { action: "write_part", model_dir: proj, name: p.name, data_b64: b64(p.glbBytes) });
-            if (w.error) throw new Error(w.error);
-          }
-        }
-        const url = "/view/" + proj.replace(/^\/+/, "").split("/").map(encodeURIComponent).join("/");
-        (window.top || window).location.href = url;
-      } catch (err) {
-        editBtn.disabled = false;
-        editBtn.textContent = prev;
-        fail(`Couldn't create editable project: ${String(err && err.message ? err.message : err)}`);
-      }
-    }
-    if (/\.glb$/i.test(file)) {
-      editBtn.classList.remove("hidden");
-      editBtn.addEventListener("click", startEdit);
-    }
 
     async function load() {
       if (!file) return fail("No file selected (missing _file param).");

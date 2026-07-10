@@ -360,10 +360,6 @@
     "glb",
     "code"
   ],
-  ".glbproj/": [
-    "glbmodel",
-    "_listing"
-  ],
   ".zip": [
     "zip"
   ],

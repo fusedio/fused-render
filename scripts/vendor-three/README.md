@@ -1,14 +1,11 @@
 # vendor-three
 
-Build workspace that bundles the 3D libraries used by the `glb` (read-only
-viewer) and `glbmodel` (interactive editor) templates into self-contained ESM
-bundles committed under `fused_render/templates/vendor/`:
+Build workspace that bundles the Three.js surface used by the read-only `glb`
+viewer template into a self-contained ESM bundle committed under
+`fused_render/templates/vendor/`:
 
-- `three.bundle.mjs` — Three.js core + `OrbitControls` + `TransformControls` +
-  `GLTFLoader`, re-exported by `three-entry.mjs`.
-- `gltf-transform.bundle.mjs` — `@gltf-transform/core` (`Document`, `WebIO`,
-  `VertexLayout`), re-exported by `gltf-transform-entry.mjs`, used by the
-  editor's client-side GLB import.
+- `three.bundle.mjs` — Three.js core + `OrbitControls` + `GLTFLoader`,
+  re-exported by `three-entry.mjs`.
 
 ## Rebuild
 
@@ -16,11 +13,10 @@ bundles committed under `fused_render/templates/vendor/`:
 ./build.sh
 ```
 
-Needs `bun` on PATH. Installs the pinned deps and runs esbuild. Only the two
-built `*.bundle.mjs` files are committed — `node_modules/` and `bun.lockb` are
-git-ignored (see `.gitignore`). The versions are pinned in `package.json`
-(three 0.160.0, @gltf-transform/core 4.4.1) to match what the reference
-`model-editor` was written against.
+Needs `bun` on PATH. Installs the pinned deps and runs esbuild. Only the built
+`three.bundle.mjs` file is committed — `node_modules/` and `bun.lockb` are
+git-ignored (see `.gitignore`). The version is pinned in `package.json`
+(three 0.160.0) to match what the reference `model-editor` was written against.
 
 The templates load these from `/template-assets/` (mapped to
 `fused_render/templates/vendor/`), never from a CDN — same offline
