@@ -74,6 +74,55 @@ def _vector_tiles(target):
     }
 
 
+def _raster_tiles(target, colormap, rescale):
+    """Ensure the daemon is up and return an XYZ PNG tile descriptor for a
+    georeferenced raster (reprojected + colormapped per tile by the daemon)."""
+    import json
+    import urllib.parse
+    import urllib.request
+    import vector_tile_server as vts
+
+    ensured = vts.main("ensure")
+    port = ensured.get("port")
+    if not port:
+        return _err(ensured.get("error", "tile daemon failed to start"))
+
+    qs = urllib.parse.urlencode({"file": target})
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/rmeta?{qs}", timeout=120) as r:
+            meta = json.loads(r.read())
+    except Exception as e:  # noqa: BLE001
+        return _err(f"raster meta failed: {type(e).__name__}: {e}")
+    if not meta.get("supported"):
+        return {**_err(meta.get("error") or "raster not supported"),
+                "status": "not_georeferenced", "message": meta.get("error")}
+
+    st = meta.get("stretch") or [[None, None]]
+    rmode = meta.get("render_mode", "single")
+    tile_url = (f"http://127.0.0.1:{port}/rtile/{{z}}/{{x}}/{{y}}.png?{qs}"
+                f"&colormap={colormap}&rescale={rescale}")
+    band_stats = [{"index": 1, "p2": st[0][0], "p98": st[0][1],
+                   "min": st[0][0], "max": st[0][1]}]
+    return {
+        "status": "ok",
+        "kind": "raster_tiles",
+        "crs_original": meta.get("crs"),
+        "bounds": meta.get("bounds_4326"),
+        "data": {"port": port, "file": target, "tile_url": tile_url,
+                 "rmeta_url": f"http://127.0.0.1:{port}/rmeta?{qs}"},
+        "stats": {"bands": meta.get("bands"), "width": meta.get("width"),
+                  "height": meta.get("height"), "dtype": meta.get("dtype"),
+                  "nodata": meta.get("nodata"), "band_stats": band_stats,
+                  "render_mode": rmode},
+        "style": {"opacity": 0.9, "colormap": colormap,
+                  "rescale": (st[0] if rmode == "single" else None),
+                  "render_mode": rmode},
+        "minzoom": 0, "maxzoom": meta.get("maxzoom", 22),
+        "warnings": [],
+        "detected_type": "GeoTIFF/raster",
+    }
+
+
 def _default_vector_style(gtype):
     g = (gtype or "").lower()
     style = {"opacity": 1.0, "fill_color": [56, 135, 255, 90],
@@ -129,8 +178,11 @@ def main(target: str = "", colormap: str = "viridis", rescale: str = ""):
         mtime = 0.0
 
     import geo_classify
-    if geo_classify.route_target(target) == "vector":
+    route = geo_classify.route_target(target)
+    if route == "vector":
         return _vector_tiles(target)
+    if route == "raster":
+        return _raster_tiles(target, colormap, rescale)
 
     opts = {"colormap": colormap}
     if rescale:

@@ -458,13 +458,6 @@ const CMAPS = {
   terrain: [[51,51,153],[0,181,153],[86,204,102],[221,204,120],[150,110,80],[240,240,240]],
   greys:   [[240,240,240],[20,20,20]],
 };
-function cmapColor(name, t) {
-  const stops = CMAPS[name] || CMAPS.viridis;
-  t = Math.max(0, Math.min(1, t));
-  const f = t * (stops.length - 1), i = Math.floor(f), r = f - i;
-  const a = stops[i], b = stops[Math.min(i + 1, stops.length - 1)];
-  return [Math.round(a[0]+(b[0]-a[0])*r), Math.round(a[1]+(b[1]-a[1])*r), Math.round(a[2]+(b[2]-a[2])*r)];
-}
 function cmapGradient(name) {
   const stops = CMAPS[name] || CMAPS.viridis;
   return "linear-gradient(90deg," + stops.map((c,i) =>
@@ -499,19 +492,8 @@ qs("boot-msg").classList.add("hidden");
 
 const overlay = new deck.MapboxOverlay({
   interleaved: false, layers: [],
-  getTooltip: ({ object, layer, index }) => {
+  getTooltip: ({ object, layer }) => {
     if (!layer || !layer.id.startsWith("v_")) return null;
-    const L = state.layers.get(layer.id.slice(2));
-    if (L && L.binary && index != null && index >= 0) {
-      const b = L.binary, lon = b.positions[index*2], lat = b.positions[index*2+1];
-      let t = `#${index}\n${lat.toFixed(4)}, ${lon.toFixed(4)}`;
-      for (const col in b.colCache) {
-        const cc = b.colCache[col];
-        const v = cc.meta.dtype === "u8" ? cc.meta.categories[cc.arr[index]] : cc.arr[index];
-        t += `\n${col}: ${typeof v === "number" ? (+v).toFixed(3) : v}`;
-      }
-      return { text: t };
-    }
     if (object && object.properties) {
       const p = object.properties;
       const rows = Object.keys(p).slice(0, 8).map(k => `${k}: ${p[k]}`).join("\n");
@@ -674,21 +656,6 @@ function fitTo(bounds) {
   map.fitBounds([[w, s], [e, n]], { padding: 60, maxZoom: 16, duration: 800 });
 }
 
-function computeColorByStats(L) {
-  const col = L.style.color_by;
-  if (!col || !L.geojson) { L._cb = null; return; }
-  let mn = Infinity, mx = -Infinity, numeric = true; const cats = new Set();
-  for (const f of L.geojson.features) {
-    const v = f.properties ? f.properties[col] : undefined;
-    if (v === undefined || v === null) continue;
-    const n = Number(v);
-    if (Number.isFinite(n) && typeof v !== "string") { mn = Math.min(mn, n); mx = Math.max(mx, n); }
-    else { numeric = false; cats.add(String(v)); }
-  }
-  if (numeric && Number.isFinite(mn)) L._cb = { numeric: true, min: mn, max: mx };
-  else L._cb = { numeric: false, cats: [...cats].slice(0, 24) };
-}
-
 /* ---- deck layers ------------------------------------------------------ */
 // state.layers insertion order = z-order, bottom → top.
 function rebuildDeck() {
@@ -696,93 +663,53 @@ function rebuildDeck() {
   for (const [key, L] of state.layers) {
     if (!L.visible || !L.descriptor || L.descriptor.status !== "ok") continue;
     const d = L.descriptor;
-    if (d.kind === "raster_image" && d.data.image_path) {
-      layers.push(new deck.BitmapLayer({
-        id: "r_" + key, image: fused.rawUrl(d.data.image_path),
-        bounds: d.bounds, opacity: L.opacity, _imageCoordinateSystem: undefined,
-      }));
-    } else if (d.kind === "vector_tiles_mvt" && L.mvt && L.mvt.ready) {
+    if (d.kind === "vector_tiles_mvt" && L.mvt && L.mvt.ready) {
       layers.push(makeMvtLayer(key, L));
     }
   }
   overlay.setProps({ layers });
+  syncRasterLayers();
 }
 
-function makePointsBinaryLayer(key, L) {
-  const s = L.style, b = L.binary;
-  const fill = s.fill_color || [...L.defaultColor, 220];
-  const useCB = s.color_by && b.columns[s.color_by] && L._colorBuf;
-  return new deck.ScatterplotLayer({
-    id: "v_" + key,
-    data: { length: b.count, attributes: { getPosition: { value: b.positions, size: 2 } } },
-    getFillColor: useCB ? { value: L._colorBuf, size: 4 } : fill,
-    getRadius: s.point_radius ?? 4, radiusUnits: "pixels", radiusMinPixels: 1, radiusMaxPixels: 40,
-    stroked: false, opacity: L.opacity, pickable: true,
-    updateTriggers: { getFillColor: [!!useCB, s.fill_color, s.color_by, s.colormap], getRadius: [s.point_radius] },
-  });
+/* Raster tiles ride a maplibre raster source (auto-refetches on zoom/pan),
+   below the deck overlay. setStyle wipes them, so we re-add on style.load. */
+let rasterLayerIds = [];
+function rasterTileUrl(L) {
+  const cm = L.style.colormap || "viridis";
+  const rs = (L.style.rescale && L.style.rescale.length === 2 &&
+              L.style.rescale.every(Number.isFinite)) ? L.style.rescale.join(",") : "";
+  return L.descriptor.data.tile_url
+    .replace(/colormap=[^&]*/, "colormap=" + encodeURIComponent(cm))
+    .replace(/rescale=[^&]*/, "rescale=" + encodeURIComponent(rs));
 }
-
-async function ensureColumn(L, col) {
-  const b = L.binary;
-  if (b.colCache[col]) return b.colCache[col];
-  const meta = b.columns[col];
-  const buf = await (await fetch(fused.rawUrl(meta.path))).arrayBuffer();
-  const arr = meta.dtype === "u8" ? new Uint8Array(buf) : new Float32Array(buf);
-  b.colCache[col] = { arr, meta };
-  return b.colCache[col];
-}
-
-async function computeBinaryColors(L) {
-  const s = L.style, b = L.binary;
-  if (!s.color_by || !b.columns[s.color_by]) { L._colorBuf = null; L._cb = null; return; }
-  const { arr, meta } = await ensureColumn(L, s.color_by);
-  const a = (s.fill_color && s.fill_color[3]) ?? 220;
-  const out = new Uint8Array(b.count * 4);
-  const name = s.colormap || "viridis";
-  if (meta.dtype === "f32") {
-    const mn = meta.min ?? 0, mx = meta.max ?? 1, rng = mx > mn ? mx - mn : 1;
-    for (let i = 0; i < b.count; i++) { const c = cmapColor(name, (arr[i] - mn) / rng); const o = i*4; out[o]=c[0]; out[o+1]=c[1]; out[o+2]=c[2]; out[o+3]=a; }
-    L._cb = { numeric: true, min: mn, max: mx };
-  } else {
-    for (let i = 0; i < b.count; i++) { const c = CATEGORICAL[arr[i] % CATEGORICAL.length]; const o = i*4; out[o]=c[0]; out[o+1]=c[1]; out[o+2]=c[2]; out[o+3]=a; }
-    L._cb = { numeric: false, cats: meta.categories };
+function syncRasterLayers() {
+  if (!map.isStyleLoaded()) { map.once("idle", syncRasterLayers); return; }
+  const want = new Map();
+  for (const [key, L] of state.layers) {
+    if (L.visible && L.descriptor && L.descriptor.status === "ok" && L.descriptor.kind === "raster_tiles")
+      want.set("r_" + key, L);
   }
-  L._colorBuf = out;
-}
-
-function makeGeoJsonLayer(key, L) {
-  const s = L.style;
-  const fill = s.fill_color || [...L.defaultColor, 90];
-  const line = s.line_color || [...L.defaultColor, 220];
-  let getFill = fill, getLine = line;
-  if (s.color_by && L._cb) {
-    const cb = L._cb, name = s.colormap || "viridis";
-    const colorFor = (v) => {
-      if (v === undefined || v === null) return [130,130,140,180];
-      if (cb.numeric) {
-        const t = cb.max > cb.min ? (Number(v) - cb.min) / (cb.max - cb.min) : 0.5;
-        const c = cmapColor(name, t); return [c[0], c[1], c[2], fill[3] ?? 200];
-      }
-      const i = cb.cats.indexOf(String(v)); const c = CATEGORICAL[(i < 0 ? 0 : i) % CATEGORICAL.length];
-      return [c[0], c[1], c[2], fill[3] ?? 200];
-    };
-    getFill = f => colorFor(f.properties && f.properties[s.color_by]);
-    getLine = f => colorFor(f.properties && f.properties[s.color_by]);
+  for (const id of rasterLayerIds) {
+    if (!want.has(id)) {
+      if (map.getLayer(id)) map.removeLayer(id);
+      if (map.getSource(id)) map.removeSource(id);
+    }
   }
-  return new deck.GeoJsonLayer({
-    id: "v_" + key, data: L.geojson, pickable: true,
-    stroked: true, filled: true, pointType: "circle",
-    getFillColor: getFill, getLineColor: (s.color_by && L._cb) ? getLine : line,
-    getLineWidth: s.line_width ?? 1.5, lineWidthUnits: "pixels", lineWidthMinPixels: 1,
-    getPointRadius: s.point_radius ?? 5, pointRadiusUnits: "pixels", pointRadiusMinPixels: 2,
-    opacity: L.opacity,
-    updateTriggers: {
-      getFillColor: [s.fill_color, s.color_by, s.colormap],
-      getLineColor: [s.line_color, s.color_by, s.colormap],
-      getLineWidth: [s.line_width], getPointRadius: [s.point_radius],
-    },
-  });
+  rasterLayerIds = [...want.keys()];
+  for (const [id, L] of want) {
+    const url = rasterTileUrl(L);
+    if (!map.getSource(id)) {
+      const b = L.descriptor.bounds;
+      map.addSource(id, { type: "raster", tiles: [url], tileSize: 256,
+        bounds: (b && b.every(Number.isFinite)) ? b : undefined });
+      map.addLayer({ id, type: "raster", source: id, paint: { "raster-opacity": L.opacity ?? 1 } });
+    } else {
+      map.getSource(id).setTiles([url]);
+      map.setPaintProperty(id, "raster-opacity", L.opacity ?? 1);
+    }
+  }
 }
+map.on("style.load", () => syncRasterLayers());
 
 function makeMvtLayer(key, L) {
   const s = L.style, m = L.mvt;
@@ -846,14 +773,13 @@ const EYEOFF = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stro
 const DOTS = '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>';
 
 function kindBadge(d) {
-  return d.kind === "raster_image" ? "raster"
-       : d.kind === "vector_points_binary" ? "points"
+  return d.kind === "raster_tiles" ? "raster"
        : d.kind === "vector_tiles_pmtiles" ? "pmtiles" : "vector";
 }
 
 function swatchStyle(L) {
   const d = L.descriptor, s = L.style || {};
-  if (d && d.kind === "raster_image") {
+  if (d && d.kind === "raster_tiles") {
     return s.render_mode === "rgb"
       ? "background:linear-gradient(90deg,#f87171,#4ade80,#60a5fa)"
       : `background:${cmapGradient(s.colormap || "viridis")}`;
@@ -986,16 +912,13 @@ function renderStyleDock() {
   body.appendChild(sliderCtl("Opacity", Math.round(L.opacity*100)+"%", 0, 100, Math.round(L.opacity*100),
     v => { L.opacity = v/100; rebuildDeck(); updateCtlLabel(body,"Opacity",v+"%"); }));
 
-  if (d.kind === "raster_image") rasterControls(body, L);
-  else if (d.kind === "vector_points_binary") binaryPointControls(body, L);
-  else if (d.kind === "vector_geojson") vectorControls(body, L);
+  if (d.kind === "raster_tiles") rasterControls(body, L);
   else if (d.kind === "vector_tiles_mvt") mvtControls(body, L);
 
   // stats + warnings
   const st = d.stats || {};
   let statTxt = "";
-  if (d.kind === "raster_image") statTxt = `${st.bands}-band · ${st.width}×${st.height} · ${st.dtype}`;
-  else if (d.kind === "vector_geojson" || d.kind === "vector_points_binary") statTxt = `${(st.feature_count||0).toLocaleString()} features · ${(st.geometry_types||[]).join(", ")}`;
+  if (d.kind === "raster_tiles") statTxt = `${st.bands}-band · ${st.width}×${st.height} · ${st.dtype}`;
   else if (d.kind === "vector_tiles_mvt") {
     const m = L.mvt || {};
     statTxt = `${m.geometry_type || d.geometry_type || "vector"}${m.count ? ` · ${m.count.toLocaleString()} features` : ""}`;
@@ -1011,7 +934,8 @@ function rasterControls(body, L) {
   const s = L.style;
   if (s.render_mode !== "rgb") {
     body.appendChild(selectCtl("Colormap", Object.keys(CMAPS), s.colormap || "viridis", v => {
-      s.colormap = v; s._touched = true; reloadRaster(L);
+      s.colormap = v; s._touched = true;
+      rebuildDeck(); renderStyleDock(); renderLayerCards();
     }));
     // legend
     const st = (L.descriptor.stats.band_stats || [{}])[0];
@@ -1022,43 +946,6 @@ function rasterControls(body, L) {
   } else {
     const note = document.createElement("div"); note.className="stat"; note.textContent="RGB composite (bands 1–3)"; body.appendChild(note);
   }
-}
-
-function vectorControls(body, L) {
-  const s = L.style, d = L.descriptor;
-  const gtypes = d.stats.geometry_types || [];
-  const isPoint = gtypes.some(g => g.includes("Point"));
-  const isLine = gtypes.some(g => g.includes("Line"));
-  const numCols = d.stats.numeric_columns || [];
-  const allCols = Object.keys(d.stats.columns || {});
-
-  // color-by
-  const cbOpts = ["(single color)", ...allCols];
-  body.appendChild(selectCtl("Color by", cbOpts, s.color_by || "(single color)", v => {
-    s.color_by = v === "(single color)" ? null : v; s._touched = true;
-    computeColorByStats(L); rebuildDeck(); renderLayerCards(); renderStyleDock();
-  }));
-  if (s.color_by && L._cb) {
-    body.appendChild(selectCtl("Palette", Object.keys(CMAPS), s.colormap || "viridis", v => { s.colormap=v; s._touched=true; rebuildDeck(); renderLayerCards(); renderStyleDock(); }));
-    const leg = document.createElement("div"); leg.className="legend";
-    if (L._cb.numeric) leg.innerHTML = `<div class="bar" style="background:${cmapGradient(s.colormap||'viridis')}"></div><div class="ends"><span>${fmt(L._cb.min)}</span><span>${fmt(L._cb.max)}</span></div>`;
-    else leg.innerHTML = `<div class="swatchrow">${L._cb.cats.map((c,i)=>{const col=CATEGORICAL[i%CATEGORICAL.length];return `<span class="swatch"><i style="background:rgb(${col[0]},${col[1]},${col[2]})"></i>${c}</span>`;}).join("")}</div>`;
-    body.appendChild(leg);
-  } else {
-    // fill + line color pickers
-    if (!isLine) body.appendChild(colorCtl("Fill", rgbToHex(s.fill_color||L.defaultColor), hex => {
-      const a = (s.fill_color && s.fill_color[3]) ?? 90; s.fill_color = [...hexToRgb(hex), a]; s._touched=true; rebuildDeck(); renderLayerCards();
-    }));
-    body.appendChild(colorCtl("Line / point", rgbToHex(s.line_color||L.defaultColor), hex => {
-      const a = (s.line_color && s.line_color[3]) ?? 220; s.line_color = [...hexToRgb(hex), a]; s._touched=true;
-      if (isPoint) { const fa=(s.fill_color&&s.fill_color[3])??220; s.fill_color=[...hexToRgb(hex),fa]; }
-      rebuildDeck(); renderLayerCards();
-    }));
-  }
-  if (!isPoint) body.appendChild(sliderCtl("Line width", (s.line_width??1.5).toFixed(1), 0, 8, Math.round((s.line_width??1.5)*2),
-    v => { s.line_width = v/2; s._touched=true; rebuildDeck(); updateCtlLabel(body,"Line width",(v/2).toFixed(1)); }));
-  if (isPoint) body.appendChild(sliderCtl("Point size", String(s.point_radius??5), 1, 24, s.point_radius??5,
-    v => { s.point_radius = v; s._touched=true; rebuildDeck(); updateCtlLabel(body,"Point size",String(v)); }));
 }
 
 function mvtControls(body, L) {
@@ -1085,41 +972,6 @@ function mvtControls(body, L) {
   }));
   body.appendChild(sliderCtl("Line width", (s.line_width ?? 1.5).toFixed(1), 0, 8, Math.round((s.line_width ?? 1.5) * 2),
     v => { s.line_width = v / 2; s._touched = true; rebuildDeck(); updateCtlLabel(body, "Line width", (v / 2).toFixed(1)); }));
-}
-
-function binaryPointControls(body, L) {
-  const s = L.style, b = L.binary;
-  const cols = Object.keys(b.columns);
-  body.appendChild(selectCtl("Color by", ["(single color)", ...cols], s.color_by || "(single color)", async v => {
-    s.color_by = v === "(single color)" ? null : v; s._touched = true;
-    await computeBinaryColors(L); rebuildDeck(); renderLayerCards(); renderStyleDock();
-  }));
-  if (s.color_by && L._cb) {
-    body.appendChild(selectCtl("Palette", Object.keys(CMAPS), s.colormap || "viridis", async v => {
-      s.colormap = v; s._touched = true; await computeBinaryColors(L); rebuildDeck(); renderLayerCards(); renderStyleDock();
-    }));
-    const leg = document.createElement("div"); leg.className = "legend";
-    if (L._cb.numeric) leg.innerHTML = `<div class="bar" style="background:${cmapGradient(s.colormap||'viridis')}"></div><div class="ends"><span>${fmt(L._cb.min)}</span><span>${fmt(L._cb.max)}</span></div>`;
-    else leg.innerHTML = `<div class="swatchrow">${(L._cb.cats||[]).slice(0,24).map((c,i)=>{const col=CATEGORICAL[i%CATEGORICAL.length];return `<span class="swatch"><i style="background:rgb(${col[0]},${col[1]},${col[2]})"></i>${c}</span>`;}).join("")}</div>`;
-    body.appendChild(leg);
-  } else {
-    body.appendChild(colorCtl("Color", rgbToHex(s.fill_color||L.defaultColor), hex => {
-      const a = (s.fill_color && s.fill_color[3]) ?? 220; s.fill_color = [...hexToRgb(hex), a]; s._touched = true; rebuildDeck(); renderLayerCards();
-    }));
-  }
-  body.appendChild(sliderCtl("Point size", String(s.point_radius??4), 1, 24, s.point_radius??4,
-    v => { s.point_radius = v; s._touched = true; rebuildDeck(); updateCtlLabel(body,"Point size",String(v)); }));
-}
-
-async function reloadRaster(L) {
-  L.loading = true; renderFileList();
-  try {
-    const desc = await fused.runPython("./map_render.py", { target: L.target, colormap: L.style.colormap || "viridis",
-      rescale: L.style.rescale ? L.style.rescale.join(",") : "" });
-    L.loading = false;
-    if (desc.status === "ok") { const keepStyle = L.style; L.descriptor = desc; L.style = Object.assign({}, desc.style, keepStyle); }
-    renderAll();
-  } catch (e) { L.loading = false; toast("bad","Re-render failed", e.message); }
 }
 
 /* ---- small control builders ------------------------------------------ */

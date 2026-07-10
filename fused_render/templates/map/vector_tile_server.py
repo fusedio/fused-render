@@ -36,6 +36,8 @@ MERC_R = 6378137.0
 MERC_MAX = math.pi * MERC_R
 CAP_AREA = 4000        # per tile-cell feature cap (polygons / lines)
 CAP_POINT = 12000      # generous cap for points
+OVERVIEW_ZOOM_STRIDE = 3   # build an overview every N zooms below detail_zoom
+SIMPLIFY_PX = 2            # geometry simplify tolerance, in tile pixels
 
 
 def _me():
@@ -127,6 +129,12 @@ def _serve():
     tile_lock = threading.Lock()
     MAX_TILES = 500
 
+    rfiles = {}                      # raster path -> dataset/vrt/stretch state
+    rfiles_lock = threading.Lock()
+    rtile_cache = {}                 # (path,z,x,y,cmap,rescale) -> png bytes
+    rtile_order = []
+    rtile_lock = threading.Lock()
+
     def _tid(path):
         return "f" + hashlib.sha1(path.encode()).hexdigest()[:12]
 
@@ -134,6 +142,11 @@ def _serve():
         lon = x / MERC_MAX * 180.0
         lat = math.degrees(2 * math.atan(math.exp(y / MERC_R)) - math.pi / 2)
         return lon, lat
+
+    def _tile_bbox_3857(z, x, y):
+        span = 2 * MERC_MAX / (1 << z)
+        return (-MERC_MAX + x * span, MERC_MAX - (y + 1) * span,
+                -MERC_MAX + (x + 1) * span, MERC_MAX - y * span)
 
     # ---------------- load an arbitrary vector file -> registered relation ----
     GDAL_EXT = (".gpkg", ".shp", ".geojson", ".json", ".fgb", ".kml", ".gml")
@@ -236,6 +249,7 @@ def _serve():
             f["geometry_type"] = gtype
             f["count"] = count
             fam = _fam(gtype)
+            f["fam"] = fam
             qa = _qattrs(attrs)
             sel_a = (", " + ", ".join(qa)) if qa else ""
             base = tid + "_base"
@@ -284,11 +298,13 @@ def _serve():
             f["ready"] = True
             f["phase"] = "overviews"
 
-            for i, z in enumerate(range(0, zd)):          # coarsest first
+            levels = sorted({z for z in range(zd - OVERVIEW_ZOOM_STRIDE, -1,
+                                              -OVERVIEW_ZOOM_STRIDE)})
+            for i, z in enumerate(levels):                 # coarsest first
                 _build_overview(cur, f, z, fam, cap, qa)
                 f["ov_built"].append(z)
                 _drop_file_tiles(path)
-                f["pct"] = 20 + int(78 * (i + 1) / max(zd, 1))
+                f["pct"] = 20 + int(78 * (i + 1) / max(len(levels), 1))
             f["pct"] = 100
             f["phase"] = "ready"
         except Exception as e:
@@ -319,7 +335,7 @@ def _serve():
         ov = f["tid"] + f"_ov{z}"
         span = 2 * MERC_MAX / (1 << z)
         px = span / 256.0
-        tol = span / 4096.0
+        tol = SIMPLIFY_PX * span / 4096.0
         sel = (", " + ", ".join(qa)) if qa else ""
         prefilter = f"WHERE imp >= {px * px}" if fam != "point" else ""
         cur.execute(f"""
@@ -353,7 +369,13 @@ def _serve():
     def _render_tile(f, z, x, y):
         table = _route_table(f, z)
         qa = _qattrs(f["columns"])
-        struct = ["geom: ST_AsMVTGeom(geom, "
+        # overviews are pre-simplified; also shed vertices when serving the
+        # full-detail base table for polygons/lines.
+        span = 2 * MERC_MAX / (1 << z)
+        geom_in = "geom"
+        if table == f["base"] and f.get("fam") in ("polygon", "line"):
+            geom_in = f"ST_SimplifyPreserveTopology(geom, {SIMPLIFY_PX * span / 4096.0})"
+        struct = [f"geom: ST_AsMVTGeom({geom_in}, "
                   f"ST_Extent(ST_TileEnvelope({z},{x},{y}))::BOX_2D, 4096, 256, true)"]
         for a, qn in zip(f["columns"], qa):
             struct.append(f'"{a}": {qn}')
@@ -372,6 +394,156 @@ def _serve():
             for k in keys:
                 tile_cache.pop(k, None)
             tile_order[:] = [k for k in tile_order if k[0] != path]
+
+    # ---------------- raster tiles (rasterio WarpedVRT) ----------------
+    def _ropen(path):
+        with rfiles_lock:
+            r = rfiles.get(path)
+        if r is not None:
+            return r
+        import rasterio
+        from rasterio.enums import Resampling
+        from rasterio.vrt import WarpedVRT
+        from rasterio.warp import transform_bounds
+        try:
+            src = rasterio.open(path)
+        except Exception as e:  # noqa: BLE001
+            r = {"supported": False, "error": f"cannot open raster: {e}"}
+            with rfiles_lock:
+                rfiles[path] = r
+            return r
+        if src.crs is None:
+            src.close()
+            r = {"supported": False, "error": "raster has no CRS (not georeferenced)"}
+            with rfiles_lock:
+                rfiles[path] = r
+            return r
+        vrt = WarpedVRT(src, crs="EPSG:3857", resampling=Resampling.bilinear)
+        w, s, e, n = transform_bounds(src.crs, "EPSG:4326", *src.bounds)
+        r = {"supported": True, "src": src, "vrt": vrt, "lock": threading.Lock(),
+             "count": src.count, "dtype": str(src.dtypes[0]), "nodata": src.nodata,
+             "width": src.width, "height": src.height, "crs": src.crs.to_string(),
+             "bounds_4326": [w, s, e, n], "stretch": None}
+        with rfiles_lock:
+            rfiles[path] = r
+        return r
+
+    def _rstretch(r):
+        if r.get("stretch") is not None:
+            return r["stretch"]
+        import numpy as np
+        src = r["src"]
+        idx = [1, 2, 3] if r["count"] >= 3 else [1]
+        factor = max(1, int(max(src.width, src.height) / 512))
+        oh, ow = max(1, src.height // factor), max(1, src.width // factor)
+        with r["lock"]:
+            arr = src.read(idx, out_shape=(len(idx), oh, ow), masked=True).astype("float64")
+        arr = np.ma.filled(arr, np.nan)
+        st = []
+        for k in range(arr.shape[0]):
+            fin = arr[k][np.isfinite(arr[k])]
+            lo = float(np.percentile(fin, 2)) if fin.size else 0.0
+            hi = float(np.percentile(fin, 98)) if fin.size else 1.0
+            if hi <= lo:
+                hi = lo + 1.0
+            st.append([lo, hi])
+        r["stretch"] = st
+        return st
+
+    def _render_rtile(r, z, x, y, cmap, rescale):
+        import io
+        import numpy as np
+        from PIL import Image
+        from rasterio.enums import Resampling
+        from rasterio.windows import Window, from_bounds
+        import geo_classify as gc
+
+        minx, miny, maxx, maxy = _tile_bbox_3857(z, x, y)
+        vrt = r["vrt"]
+        idx = [1, 2, 3] if r["count"] >= 3 else [1]
+        n = len(idx)
+        arr = np.full((n, 256, 256), np.nan, dtype="float64")
+        valid = np.zeros((256, 256), dtype=bool)
+        # WarpedVRT forbids boundless reads, so read the window's intersection
+        # with the raster and paste it into the tile at the right offset.
+        with r["lock"]:
+            win = from_bounds(minx, miny, maxx, maxy, transform=vrt.transform)
+            try:
+                inter = win.intersection(Window(0, 0, vrt.width, vrt.height))
+            except Exception:
+                inter = None
+            if inter is not None and inter.width > 0.5 and inter.height > 0.5:
+                sx, sy = 256.0 / win.width, 256.0 / win.height
+                oc = max(0, int(round((inter.col_off - win.col_off) * sx)))
+                orow = max(0, int(round((inter.row_off - win.row_off) * sy)))
+                ow = max(1, min(256 - oc, int(round(inter.width * sx))))
+                oh = max(1, min(256 - orow, int(round(inter.height * sy))))
+                sub = vrt.read(idx, window=inter, out_shape=(n, oh, ow),
+                               resampling=Resampling.bilinear, masked=True).astype("float64")
+                m = (np.ma.getmaskarray(sub) if np.ma.isMaskedArray(sub)
+                     else np.zeros(sub.shape, bool))
+                arr[:, orow:orow + oh, oc:oc + ow] = np.ma.filled(sub, np.nan)
+                valid[orow:orow + oh, oc:oc + ow] = ~m.any(axis=0)
+        st = _rstretch(r)
+        lohi = None
+        if rescale:
+            try:
+                parts = [float(v) for v in rescale.split(",")]
+                if len(parts) == 2:
+                    lohi = parts
+            except ValueError:
+                pass
+        if r["count"] >= 3:
+            chans = []
+            for i in range(3):
+                lo, hi = lohi if lohi else st[i]
+                chans.append((gc._stretch(arr[i], lo, hi) * 255).astype("uint8"))
+            alpha = np.where(valid, 255, 0).astype("uint8")
+            rgba = np.dstack([chans[0], chans[1], chans[2], alpha])
+        else:
+            lo, hi = lohi if lohi else st[0]
+            norm = gc._stretch(arr[0], lo, hi)
+            rgba = gc._apply_colormap(norm, cmap, np.isfinite(arr[0]) & valid)
+        buf = io.BytesIO()
+        Image.fromarray(np.ascontiguousarray(rgba), "RGBA").save(buf, format="PNG")
+        return buf.getvalue()
+
+    def do_rmeta(q):
+        path = _abspath(q.get("file", [None])[0])
+        if not path:
+            return 400, b'{"error":"missing file"}', "application/json"
+        r = _ropen(path)
+        if not r.get("supported"):
+            return 200, json.dumps({"supported": False, "error": r.get("error")}).encode(), "application/json"
+        st = _rstretch(r)
+        m = {"supported": True, "bounds_4326": r["bounds_4326"], "bands": r["count"],
+             "dtype": r["dtype"], "nodata": r["nodata"], "width": r["width"],
+             "height": r["height"], "crs": r["crs"], "stretch": st,
+             "render_mode": "rgb" if r["count"] >= 3 else "single",
+             "minzoom": 0, "maxzoom": 22}
+        return 200, json.dumps(m).encode(), "application/json"
+
+    PNG_CT = "image/png"
+
+    def do_rtile(q, z, x, y):
+        path = _abspath(q.get("file", [None])[0])
+        r = _ropen(path) if path else None
+        if r is None or not r.get("supported"):
+            return 404, b"", PNG_CT
+        cmap = (q.get("colormap", ["viridis"])[0]) or "viridis"
+        rescale = q.get("rescale", [""])[0] or ""
+        key = (path, z, x, y, cmap, rescale)
+        with rtile_lock:
+            b = rtile_cache.get(key)
+        if b is not None:
+            return 200, b, PNG_CT
+        b = _render_rtile(r, z, x, y, cmap, rescale)
+        with rtile_lock:
+            rtile_cache[key] = b
+            rtile_order.append(key)
+            while len(rtile_order) > MAX_TILES:
+                rtile_cache.pop(rtile_order.pop(0), None)
+        return 200, b, PNG_CT
 
     # ---------------- request handlers ----------------
     def _ensure_open(path):
@@ -411,6 +583,7 @@ def _serve():
         m = {"bounds_4326": f["bounds_4326"], "count": f["count"],
              "geometry_type": f["geometry_type"], "columns": f["columns"],
              "minzoom": 0, "maxzoom": 18, "detail_zoom": f["detail_zoom"],
+             "overview_levels": list(f["ov_built"]),
              "ready": f["ready"], "phase": f["phase"], "error": f["error"]}
         return 200, json.dumps(m).encode(), "application/json"
 
@@ -458,11 +631,18 @@ def _serve():
                 return do_status(q)
             if u.path == "/meta":
                 return do_meta(q)
+            if u.path == "/rmeta":
+                return do_rmeta(q)
             if u.path.startswith("/tile/"):
                 parts = u.path.split("/")
                 z, x = int(parts[2]), int(parts[3])
                 y = int(parts[4].split(".")[0])
                 return do_tile(q, z, x, y)
+            if u.path.startswith("/rtile/"):
+                parts = u.path.split("/")
+                z, x = int(parts[2]), int(parts[3])
+                y = int(parts[4].split(".")[0])
+                return do_rtile(q, z, x, y)
             return 404, b"not found", "text/plain"
 
         def do_GET(self):
