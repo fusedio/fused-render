@@ -21,6 +21,7 @@ import Panel from "./views/Panel";
 import Tabs from "./views/Tabs";
 import Preferences from "./views/Preferences";
 import Templates from "./views/Templates";
+import Connectors from "./views/Connectors";
 
 type StatState =
   | { status: "loading" }
@@ -124,7 +125,10 @@ export default function App({ config }: { config: Config }) {
   const isTabs = pathname === "/view/_tab" || pathname === "/embed/_tab";
   const isPrefs = pathname === "/view/_prefs";
   const isTemplates = pathname === "/view/_templates";
-  const fsPath = isPanel || isTabs || isPrefs || isTemplates ? null : fsPathFromLocation();
+  // PROTOTYPE: connectors sentinel (see views/Connectors.tsx).
+  const isConnectors = pathname === "/view/_connectors";
+  const fsPath =
+    isPanel || isTabs || isPrefs || isTemplates || isConnectors ? null : fsPathFromLocation();
   // A resolved fsPath mounts StatView below, which owns the title itself.
   useDocumentTitle(
     isPanel
@@ -135,9 +139,11 @@ export default function App({ config }: { config: Config }) {
           ? "Preferences"
           : isTemplates
             ? "Templates"
-            : fsPath
-              ? undefined
-              : null
+            : isConnectors
+              ? "Connectors"
+              : fsPath
+                ? undefined
+                : null
   );
 
   let main;
@@ -187,6 +193,18 @@ export default function App({ config }: { config: Config }) {
         </div>
         <div id="content">
           <Templates key={epoch} />
+        </div>
+      </>
+    );
+  } else if (isConnectors) {
+    // PROTOTYPE — remote-mount connectors, same sentinel pattern as _prefs.
+    main = (
+      <>
+        <div id="breadcrumb">
+          <StaticBreadcrumb label="Connectors" />
+        </div>
+        <div id="content">
+          <Connectors key={epoch} />
         </div>
       </>
     );

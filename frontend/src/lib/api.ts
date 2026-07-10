@@ -369,6 +369,61 @@ export function revealPath(fsPath: string): Promise<void> {
   return postJson<unknown>("/api/fs/reveal", { path: fsPath }).then(() => undefined);
 }
 
+// -- Connectors PROTOTYPE (shell/connectors_prototype.py) ----------------------
+// Throwaway: remote storage (GDrive / S3-compatible) mounted as local paths
+// via rclone. Delete alongside the backend module when the prototype is done.
+
+export interface Connector {
+  id: string;
+  name: string;
+  remote: string;
+  mountpoint: string;
+  mounted: boolean;
+}
+
+export interface ConnectorsResult {
+  rclone: { available: boolean; version: string | null; remotes: string[] };
+  connectors: Connector[];
+}
+
+export function getConnectors(): Promise<ConnectorsResult> {
+  return getJson<ConnectorsResult>("/api/connectors");
+}
+
+export function createConnector(name: string, remote: string): Promise<Connector> {
+  return postJson<Connector>("/api/connectors", { name, remote });
+}
+
+export function mountConnector(id: string): Promise<Connector> {
+  return postJson<Connector>(`/api/connectors/${id}/mount`, {});
+}
+
+export function unmountConnector(id: string): Promise<Connector> {
+  return postJson<Connector>(`/api/connectors/${id}/unmount`, {});
+}
+
+export function deleteConnector(id: string): Promise<void> {
+  const res = fetch(`/api/connectors/${id}`, {
+    method: "DELETE",
+    headers: { "X-Fused": "1" },
+  });
+  return res.then(async (r) => {
+    if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
+  });
+}
+
+export function createRemote(
+  name: string,
+  type: "s3" | "drive",
+  params?: Record<string, string>
+): Promise<{ ok: boolean; name: string }> {
+  return postJson<{ ok: boolean; name: string }>("/api/connectors/remotes", {
+    name,
+    type,
+    params,
+  });
+}
+
 // -- Template management (fused_render/templates_api.py; TEMPLATE_MGMT_SPEC) --
 //
 // Two template dirs, modelled as an ordered list of "sources" (core is

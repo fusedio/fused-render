@@ -1,0 +1,50 @@
+# Connectors prototype — findings
+
+**Question:** Can fused-render treat rclone-managed remote mounts (Google
+Drive, S3-compatible) as ordinary local paths, with the app owning the mount
+lifecycle, while everything downstream stays "local only"?
+
+**Verdict: yes — feasible, with two caveats (deep-zoom latency, unmount-while-open).**
+
+Prototype files (all throwaway):
+- `fused_render/shell/connectors_prototype.py` — /api/connectors backend
+- `frontend/src/views/Connectors.tsx` — /view/_connectors page
+- small wiring edits: server.py (router include), App.tsx (sentinel),
+  Sidebar.tsx (footer button), lib/api.ts (wrappers)
+
+## What was verified (macOS 26.4, rclone v1.74.4, public S3 sentinel-cogs bucket)
+
+1. **No macFUSE needed.** `rclone nfsmount` uses macOS's built-in NFS client;
+   mounts appear in ~15s worst case, `os.path.ismount` detects them.
+2. **Zero downstream changes.** `/api/fs/list`, `/api/fs/stat`, template
+   resolution, and the geotiff tile-server daemon all worked unmodified
+   against a 204 MB COG living in S3.
+3. **S3 remotes are creatable non-interactively** (`rclone config create …
+   s3 …`), including anonymous access to public buckets. Credentials live in
+   rclone's config; the app stores none.
+4. **Google Drive**: wired via rclone's own OAuth browser flow
+   (`rclone config create <name> drive`); needs a human to approve, so it was
+   not machine-verified here. UI notice tells the user a browser tab opens.
+
+## Measured behavior (the caveats)
+
+- COG /meta (header parse): **6.4s cold**.
+- Overview-zoom tiles (z9): **~10ms** after meta.
+- Deep-zoom tile (z12) cold: **107–134s** — the tiff reader does bulk
+  native-resolution strip reads; harmless locally, massive over the network.
+  rclone vfs tuning (`full` cache, 2M chunked reads) does NOT fix the first
+  read, but makes every later read of the touched region **~20ms** (sparse
+  file cache). A real feature would need either reader-level windowed reads
+  or an explicit "download on first preview" affordance for large rasters.
+- **Unmount fails EBUSY while a tile-server daemon holds a file open.**
+  Quitting the daemon frees it. Prototype answers with `umount -f` fallback;
+  a real feature should ask daemons to release (they already expose /quit).
+
+## Notes for a real implementation
+
+- Mount lifecycle is in-memory + atexit; a server restart leaves connectors
+  persisted but unmounted (rclone nfsmount dies with parent) — acceptable.
+- `walk` over a mount works but each dir listing is an S3 LIST round-trip;
+  fine at prefix scope, dangerous at bucket root. Consider depth limits.
+- "Local only, forever" (DECISIONS D2/D3) survives reframed: the app still
+  only ever sees local absolute paths; remoteness lives in the mount.

@@ -785,6 +785,23 @@ export default function Sidebar({ config }: SidebarProps) {
           </span>
           <span className="prefs-label">Templates</span>
         </button>
+        {/* PROTOTYPE: connectors entry — remote mounts, /view/_connectors. */}
+        <button
+          type="button"
+          title="Connectors"
+          aria-label="Connectors"
+          className={
+            "sidebar-item prefs-link" + (location.pathname === "/view/_connectors" ? " active" : "")
+          }
+          onClick={() => navigateUrl("/view/_connectors")}
+        >
+          <span className="icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M17.5 19a4.5 4.5 0 1 0-.9-8.9 6 6 0 1 0-11.4 2.4A3.5 3.5 0 0 0 6.5 19h11z" />
+            </svg>
+          </span>
+          <span className="prefs-label">Connectors</span>
+        </button>
         <button
           type="button"
           title="Preferences"
