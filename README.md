@@ -167,6 +167,31 @@ The gear at the sidebar's bottom-left opens **Preferences** (`/view/_prefs`):
 - **Template registry** — the merged extension → templates bindings (built-in
   plus your `~/.fused-render/templates/registry.json` overrides), read-only.
 
+## Remote storage (connectors)
+
+The cloud icon at the sidebar's bottom-left opens **Connectors**
+(`/view/_connectors`): remote storage — S3-compatible object stores, Google
+Drive, and anything else [rclone](https://rclone.org) speaks — mounted as
+local folders under `~/.fused-render/mounts/`. Everything downstream
+(previews, readers, tile servers) sees ordinary local paths.
+
+- **One prerequisite:** rclone (`brew install rclone` on macOS, your distro's
+  package on Linux). macOS mounts via the built-in NFS client — no macFUSE;
+  Linux uses FUSE. Windows is not supported yet.
+- **Credentials never touch fused-render** — they live in rclone's own
+  config. S3-compatible remotes can be created from the page; for Google
+  Drive and other sign-in backends, run `rclone config` in a terminal once.
+- **Mount narrow prefixes** (`bucket/prefix`), not whole buckets — every
+  folder listed inside a mount is a remote API call, and search inside a
+  mount is capped for the same reason.
+- **First open is slow, repeats are fast**: the first read of a large remote
+  file downloads what it needs; a local cache (24h retention) makes repeat
+  opens near-instant. How slow the first open is depends on the file's
+  layout — cloud-optimized formats (COGs, small parquet row groups) behave
+  far better than monolithic files.
+- Mounts stay up until you unmount them — including across app restarts.
+  Per-connector **automount** remounts at startup.
+
 ## Logs
 
 The server writes an application log so that when something goes wrong — an
