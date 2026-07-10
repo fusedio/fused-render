@@ -3,8 +3,8 @@
 # ///
 """Backend for the docs preview template (fused-render).
 
-The document is one user file — a Microsoft Word file (.docx/.docm/.dotx/.dotm)
-converted to/from the editor's HTML by pandoc. Comments, version history and
+The document is one user file — a Microsoft Word .docx file — converted
+to/from the editor's HTML by pandoc. Comments, version history and
 signatures live in the file's JSON sidecar (<file>.json), read and written by
 the page (read-modify-write under the "docs" key). This script only holds what
 genuinely needs Python: converting the document to other formats via pandoc,

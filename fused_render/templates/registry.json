@@ -51,15 +51,6 @@
   ".docx": [
     "docs"
   ],
-  ".docm": [
-    "docs"
-  ],
-  ".dotx": [
-    "docs"
-  ],
-  ".dotm": [
-    "docs"
-  ],
   ".ndjson": [
     "code",
     "duckdb",

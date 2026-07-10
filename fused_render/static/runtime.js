@@ -213,33 +213,18 @@
     return result;
   }
 
-  function set(key, value) {
-    if (isReserved(key)) {
-      throw new Error(`fused.params.set: '${key}' is a reserved param name and cannot be set`);
-    }
-    if (typeof value !== "string") {
-      throw new Error(
-        `fused.params.set: value for '${key}' must be a string, got ${typeof value}`
-      );
-    }
-    const { layoutSpan, rest } = splitSearch(targetSearch());
-    const params = new URLSearchParams(rest);
-    params.set(key, value);
-    // Rebuild with the raw `_layout=(...)` span untouched and LAST (D51): the
-    // layout stays readable (no URLSearchParams.toString() percent-soup) and
-    // the global/local boundary stays visually stable.
-    let search = params.toString();
-    if (layoutSpan) search += (search ? "&" : "") + layoutSpan;
-    const newSearch = search ? "?" + search : "";
+  // First-change-push: the first param write on a pristine history entry
+  // pushes a new entry (preserving the as-loaded state for Back), every later
+  // write replaces on top of it — so param churn costs at most one entry per
+  // visit. "Pristine" is tracked via a flag on history.state, not a JS
+  // variable: the flag travels with the entry, so after Back to the pristine
+  // entry the next write correctly pushes again (truncating the old forward
+  // branch), and it survives reloads. Existing state (e.g. the tab shell's
+  // fusedActiveTab) is merged, not clobbered. Shared by set() and delete() so
+  // both go through the same pending-overlay + coalesced-write path (D99) —
+  // a delete can't skip the overlay and race a not-yet-flushed set().
+  function commitSearch(newSearch) {
     const newUrl = target.location.pathname + newSearch;
-    // First-change-push: the first param write on a pristine history entry
-    // pushes a new entry (preserving the as-loaded state for Back), every
-    // later write replaces on top of it — so param churn costs at most one
-    // entry per visit. "Pristine" is tracked via a flag on history.state, not
-    // a JS variable: the flag travels with the entry, so after Back to the
-    // pristine entry the next write correctly pushes again (truncating the
-    // old forward branch), and it survives reloads. Existing state (e.g. the
-    // tab shell's fusedActiveTab) is merged, not clobbered.
     const prevState = target.history.state;
     const unchanged = newSearch === targetSearch();
     if (unchanged) {
@@ -271,6 +256,27 @@
         console.warn("[fused] history write throttled:", e);
       }
     }
+  }
+
+  function set(key, value) {
+    if (isReserved(key)) {
+      throw new Error(`fused.params.set: '${key}' is a reserved param name and cannot be set`);
+    }
+    if (typeof value !== "string") {
+      throw new Error(
+        `fused.params.set: value for '${key}' must be a string, got ${typeof value}`
+      );
+    }
+    const { layoutSpan, rest } = splitSearch(targetSearch());
+    const params = new URLSearchParams(rest);
+    params.set(key, value);
+    // Rebuild with the raw `_layout=(...)` span untouched and LAST (D51): the
+    // layout stays readable (no URLSearchParams.toString() percent-soup) and
+    // the global/local boundary stays visually stable.
+    let search = params.toString();
+    if (layoutSpan) search += (search ? "&" : "") + layoutSpan;
+    const newSearch = search ? "?" + search : "";
+    commitSearch(newSearch);
     // Notify via the event path only (no direct notify(), D46). When the shell
     // wrapper exists it also fires fused:urlchange on the history write — the
     // snapshot diff in notifyIfChanged() makes the duplicate harmless; this
@@ -282,19 +288,14 @@
     if (isReserved(key)) {
       throw new Error(`fused.params.delete: '${key}' is a reserved param name and cannot be deleted`);
     }
-    const { layoutSpan, rest } = splitSearch(target.location.search);
+    const { layoutSpan, rest } = splitSearch(targetSearch());
     const params = new URLSearchParams(rest);
     if (!params.has(key)) return;
     params.delete(key);
     let search = params.toString();
     if (layoutSpan) search += (search ? "&" : "") + layoutSpan;
-    const newUrl = target.location.pathname + (search ? "?" + search : "");
-    const prevState = target.history.state;
-    if (prevState && prevState.fusedParamEntry) {
-      target.history.replaceState(prevState, "", newUrl);
-    } else {
-      target.history.pushState(Object.assign({}, prevState, { fusedParamEntry: true }), "", newUrl);
-    }
+    const newSearch = search ? "?" + search : "";
+    commitSearch(newSearch);
     target.dispatchEvent(new Event("fused:urlchange"));
   }
 
