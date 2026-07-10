@@ -22,14 +22,21 @@ from AppKit import (
     NSApp,
     NSApplicationActivationPolicyAccessory,
     NSApplicationActivationPolicyProhibited,
+    NSBox,
+    NSBoxSeparator,
     NSButton,
-    NSControlSizeSmall,
+    NSColor,
     NSEventMaskLeftMouseUp,
     NSEventMaskRightMouseUp,
     NSFloatingWindowLevel,
     NSFont,
+    NSImage,
+    NSLineBreakByTruncatingMiddle,
+    NSMakePoint,
     NSMakeRect,
     NSMakeSize,
+    NSMenu,
+    NSMenuItem,
     NSModalPanelWindowLevel,
     NSModalResponseOK,
     NSObject,
@@ -37,12 +44,12 @@ from AppKit import (
     NSPopover,
     NSPopoverBehaviorTransient,
     NSRectEdgeMinY,
-    NSStackView,
-    NSUserInterfaceLayoutOrientationHorizontal,
+    NSTextField,
     NSView,
     NSViewController,
     NSViewHeightSizable,
-    NSViewMinYMargin,
+    NSViewMaxYMargin,
+    NSViewMinXMargin,
     NSViewWidthSizable,
     NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSWindowCollectionBehaviorFullScreenAuxiliary,
@@ -56,7 +63,7 @@ from fused_render import pin_store
 logger = logging.getLogger("fused_render")
 
 POPOVER_WIDTH = 420
-HEADER_HEIGHT = 32
+BAR_HEIGHT = 30
 BODY_HEIGHT = 560
 
 _PLACEHOLDER_HTML = """<!doctype html><html><head><meta charset="utf-8"><style>
@@ -89,14 +96,21 @@ class _ActionsTarget(NSObject):
     def pinFile_(self, _sender):
         self._controller.choose_and_pin()
 
-    def unpin_(self, _sender):
-        self._controller.clear_pin()
+    def pinOrUnpin_(self, _sender):
+        # Bottom-bar pin icon is a toggle: pin when empty, unpin when pinned.
+        if self._controller.pinned_path is None:
+            self._controller.choose_and_pin()
+        else:
+            self._controller.clear_pin()
 
     def openLogs_(self, _sender):
         self._controller._actions["open_logs"]()
 
     def quitApp_(self, _sender):
         self._controller._actions["quit"]()
+
+    def showMore_(self, sender):
+        self._controller._show_overflow_menu(sender)
 
 
 class _PopoverDelegate(NSObject):
@@ -218,41 +232,61 @@ class PinController:
     # ---- popover construction (PV-3/PV-4) -------------------------------------
 
     def _build_popover(self) -> None:
-        total_height = HEADER_HEIGHT + BODY_HEIGHT
+        """Content-first layout (PV-3/PV-4): the webview is the whole popover
+        except a slim bottom bar — truncating filename on the left, three
+        borderless SF-Symbol buttons on the right (pin, open-in-browser, and
+        an overflow "…" carrying Copy URL / Unpin / Logs / Quit). Menu-bar
+        popover convention: chrome whispers, content is the hero.
+        """
+        total_height = BAR_HEIGHT + BODY_HEIGHT
         container = NSView.alloc().initWithFrame_(
             NSMakeRect(0, 0, POPOVER_WIDTH, total_height)
         )
 
         config = WKWebViewConfiguration.alloc().init()
         self._webview = WKWebView.alloc().initWithFrame_configuration_(
-            NSMakeRect(0, 0, POPOVER_WIDTH, BODY_HEIGHT), config
+            NSMakeRect(0, BAR_HEIGHT, POPOVER_WIDTH, BODY_HEIGHT), config
         )
         self._webview.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
         container.addSubview_(self._webview)
 
-        def button(title, action):
-            b = NSButton.buttonWithTitle_target_action_(title, self._target, action)
-            b.setControlSize_(NSControlSizeSmall)
-            b.setFont_(NSFont.systemFontOfSize_(11))
+        separator = NSBox.alloc().initWithFrame_(
+            NSMakeRect(0, BAR_HEIGHT - 1, POPOVER_WIDTH, 1)
+        )
+        separator.setBoxType_(NSBoxSeparator)
+        separator.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
+        container.addSubview_(separator)
+
+        def icon_button(symbol, action, tooltip, x):
+            image = NSImage.imageWithSystemSymbolName_accessibilityDescription_(
+                symbol, tooltip
+            )
+            b = NSButton.buttonWithImage_target_action_(image, self._target, action)
+            b.setBordered_(False)
+            b.setToolTip_(tooltip)
+            b.setContentTintColor_(NSColor.secondaryLabelColor())
+            b.setFrame_(NSMakeRect(x, 4, 26, 22))
+            b.setAutoresizingMask_(NSViewMinXMargin | NSViewMaxYMargin)
+            container.addSubview_(b)
             return b
 
-        self._pin_button = button("Pin…", b"pinFile:")
-        self._unpin_button = button("Unpin", b"unpin:")
-        header = NSStackView.stackViewWithViews_([
-            button("Open in Browser", b"openBrowser:"),
-            button("Copy URL", b"copyUrl:"),
-            self._pin_button,
-            self._unpin_button,
-            button("Logs", b"openLogs:"),
-            button("Quit", b"quitApp:"),
-        ])
-        header.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
-        header.setSpacing_(4)
-        header.setFrame_(
-            NSMakeRect(8, BODY_HEIGHT + 5, POPOVER_WIDTH - 16, HEADER_HEIGHT - 10)
+        right = POPOVER_WIDTH
+        self._more_button = icon_button(
+            "ellipsis.circle", b"showMore:", "More", right - 34
         )
-        header.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
-        container.addSubview_(header)
+        self._browser_button = icon_button(
+            "safari", b"openBrowser:", "Open in Browser", right - 64
+        )
+        self._pin_button = icon_button("pin", b"pinOrUnpin:", "Pin a file…", right - 94)
+
+        label = NSTextField.labelWithString_("")
+        label.setFont_(NSFont.systemFontOfSize_(11))
+        label.setTextColor_(NSColor.secondaryLabelColor())
+        label.setLineBreakMode_(NSLineBreakByTruncatingMiddle)
+        label.setFrame_(NSMakeRect(12, 7, POPOVER_WIDTH - 12 - 100, 16))
+        label.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
+        container.addSubview_(label)
+        self._file_label = label
 
         vc = NSViewController.alloc().initWithNibName_bundle_(None, None)
         vc.setView_(container)
@@ -268,8 +302,36 @@ class PinController:
 
     def _update_header(self) -> None:
         pinned = self._pinned_path is not None
-        self._pin_button.setTitle_("Change…" if pinned else "Pin…")
-        self._unpin_button.setHidden_(not pinned)
+        tooltip = "Unpin" if pinned else "Pin a file…"
+        self._pin_button.setImage_(
+            NSImage.imageWithSystemSymbolName_accessibilityDescription_(
+                "pin.slash" if pinned else "pin", tooltip
+            )
+        )
+        self._pin_button.setToolTip_(tooltip)
+        self._file_label.setStringValue_(
+            os.path.basename(self._pinned_path) if pinned else "Nothing pinned"
+        )
+
+    def _show_overflow_menu(self, sender) -> None:
+        menu = NSMenu.alloc().init()
+
+        def add(title, action):
+            item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                title, action, ""
+            )
+            item.setTarget_(self._target)
+            menu.addItem_(item)
+
+        add("Copy URL", b"copyUrl:")
+        if self._pinned_path is not None:
+            add("Change Pinned File…", b"pinFile:")
+        menu.addItem_(NSMenuItem.separatorItem())
+        add("Open Logs", b"openLogs:")
+        add("Quit fused-render", b"quitApp:")
+        menu.popUpMenuPositioningItem_atLocation_inView_(
+            None, NSMakePoint(0, sender.bounds().size.height + 4), sender
+        )
 
     # ---- webview body ----------------------------------------------------------
 
@@ -287,7 +349,7 @@ class PinController:
         if not self._server_ready:
             message = "Starting…"
         elif self._pinned_path is None:
-            message = "No file pinned — use Pin… above"
+            message = "Nothing pinned yet — click the pin below to choose a file"
         else:
             url = self._pin_url()
             self._webview.loadRequest_(
