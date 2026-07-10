@@ -68,6 +68,36 @@ def _typst_bin():
     return candidate if os.path.exists(candidate) else None
 
 
+def _pid_alive(pid):
+    # os.kill(pid, 0) is the POSIX no-op liveness check, but on Windows signal 0
+    # aliases CTRL_C_EVENT and doesn't reliably error on a dead pid — check the
+    # process's exit code via the Win32 API instead.
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if os.name == "nt":
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        handle = ctypes.windll.kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return code.value == STILL_ACTIVE
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
 def _install_progress():
     path = os.path.join(TYPST_INSTALL_DIR, "progress.json")
     if not os.path.exists(path):
@@ -77,12 +107,9 @@ def _install_progress():
             data = json.load(f)
     except (OSError, json.JSONDecodeError):
         return None
-    if not data.get("done"):
-        try:
-            os.kill(data.get("pid", -1), 0)
-        except (OSError, ValueError):
-            data["done"] = True
-            data["error"] = data.get("error") or "installer exited unexpectedly"
+    if not data.get("done") and not _pid_alive(data.get("pid", -1)):
+        data["done"] = True
+        data["error"] = data.get("error") or "installer exited unexpectedly"
     return data
 
 
@@ -126,7 +153,7 @@ def _cache_dir(file: str) -> str:
 
 # -------------------------------------------------------------------- dispatcher
 def main(action: str = "export", file: str = "", html: str = "", title: str = "",
-         fmt: str = "pdf", path: str = "", directory: str = ""):
+         fmt: str = "pdf", path: str = "", directory: str = "", expected_mtime: str = ""):
     if action == "warmup":
         import pypandoc
         return {"pandoc": pypandoc.get_pandoc_version()}
@@ -205,6 +232,26 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
         except Exception as e:
             return {"error": f"export to {fmt} failed: {e}"}
         return {"path": out_path, "name": os.path.basename(out_path), "size": os.path.getsize(out_path)}
+
+    # ---- save the bound .docx in place, with a conflict lock
+    if action == "save":
+        if not html:
+            return {"error": "nothing to save"}
+        file = os.path.abspath(file)
+        if expected_mtime and os.path.exists(file):
+            on_disk = os.path.getmtime(file)
+            if abs(on_disk - float(expected_mtime)) > 1e-6:
+                return {"conflict": True, "mtime": on_disk}
+        tmp = file + ".tmp"
+        try:
+            _pandoc(["-f", "html+tex_math_dollars", "-t", "docx", "--wrap=none",
+                     "--standalone", "-o", tmp], input_text=html)
+            os.replace(tmp, file)
+        except Exception as e:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            return {"error": f"save to {file} failed: {e}"}
+        return {"path": file.replace(os.sep, "/"), "mtime": os.path.getmtime(file)}
 
     # ---- "Save a copy…": write a .docx to a location the user browsed to
     if action == "save_as":

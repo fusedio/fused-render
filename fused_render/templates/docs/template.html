@@ -1342,10 +1342,12 @@
   }
   function renderComments(body) {
     const live = liveCommentIds();
-    let pruned = false;
-    Object.keys(S.comments).forEach((id) => { if (!live.has(id)) { delete S.comments[id]; pruned = true; } }); // prune orphans
-    if (pruned) persistComments();
-    const ids = [...live].sort((a, b) => (commentPos(a) || 0) - (commentPos(b) || 0));
+    if (!IS_DOCX) {
+      let pruned = false;
+      Object.keys(S.comments).forEach((id) => { if (!live.has(id)) { delete S.comments[id]; pruned = true; } }); // prune orphans
+      if (pruned) persistComments();
+    }
+    const ids = (IS_DOCX ? Object.keys(S.comments) : [...live]).sort((a, b) => (commentPos(a) || 0) - (commentPos(b) || 0));
     if (!ids.length) { body.innerHTML = '<div class="empty-note">No comments. Select text and click the comment button to add one.</div>'; return; }
     body.innerHTML = "";
     ids.forEach((id) => {
@@ -1471,9 +1473,11 @@
       const doc = S.view.state.doc.toJSON();
       const docJson = JSON.stringify(doc);
       if (IS_DOCX) {
-        const res = await py({ action: "save_as", path: FILE, html: docToHtml(S.view.state.doc) });
+        const res = await py({ action: "save", file: FILE, html: docToHtml(S.view.state.doc), expected_mtime: String(fileMtime ?? "") });
+        if (res.conflict) { toast("This file changed on disk — reload to see the latest version."); return; }
         if (res.error) throw new Error(res.error);
-        try { fileMtime = (await fused.stat(FILE)).mtime; } catch (e) {}
+        fileMtime = res.mtime;
+        await saveSidecar((d) => { d.styles = S.styles; });
       } else {
         const payload = JSON.stringify({ doc, styles: S.styles });
         const fresh = await fused.writeFile(FILE, payload, fileMtime != null ? { expectedMtime: fileMtime } : undefined);
