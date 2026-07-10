@@ -61,15 +61,16 @@
     padding: 5px 10px; border-bottom: 1px solid #24262b; text-align: left;
     vertical-align: top; white-space: nowrap;
   }
-  /* Header reads as a distinct label band, not another data row: darker fill,
-     uppercase small caps, and a solid rule separating it from the body. */
+  /* Header sits slightly lifted above the body with a crisp divider, so it
+     reads as a header rather than another data row (shared by the Schema table
+     and the per-row-group chunk tables). */
   th {
-    background: #101114; color: #8b9099; font-weight: 600;
-    font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase;
-    border-bottom: 2px solid #33363c;
+    background: #23262c; color: #cfd3d7; font-weight: 600;
+    border-bottom: 1px solid #3a3d44;
   }
+  td { color: #c2c7cd; }
+  tbody tr:hover td { background: #1d2025; }
   tbody tr:last-child td { border-bottom: none; }
-  tbody tr:hover td { background: #202329; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; max-width: 720px; }
   .kv dt { color: #9aa0a6; }
