@@ -45,6 +45,8 @@ bundled = [
 # build (scripts/build_dmg.sh) installs this extra.
 app = [
     "rumps",
+    # Pinned view (SPEC §25, D97): WKWebView inside the status-item popover.
+    "pyobjc-framework-WebKit",
 ]
 # Optional execution engine (D69): when installed, /api/run runs code through
 # the fused local compute backend; absent, the built-in executor runs. Pinned

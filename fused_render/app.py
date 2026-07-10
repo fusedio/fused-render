@@ -163,6 +163,7 @@ def main() -> None:
         "docs": False,       # at least one document open event arrived
         "pending": [],       # file views requested before the server was ready
         "server": None,      # uvicorn.Server, set by the bootstrap thread
+        "pin": None,         # menubar_pin.PinController, built after run loop start
     }
 
     def open_file_view(fs_path: str) -> None:
@@ -224,6 +225,11 @@ def main() -> None:
         _write_pidfile(port)
         state["ready"] = True
         logger.info("server ready on port %s", port)
+        if state["pin"] is not None:
+            # AppKit is main-thread-only; this bootstrap runs on a worker.
+            from PyObjCTools import AppHelper
+
+            AppHelper.callAfter(state["pin"].server_ready)
         pending, state["pending"] = state["pending"], []
         for target in pending:
             webbrowser.open(target)
@@ -237,11 +243,39 @@ def main() -> None:
             # appearance. Icon beats a text title: recognizable and compact
             # in a crowded (notched) menu bar.
             super().__init__("fused-render", icon=icon_path, template=True, quit_button=None)
-            self.menu = ["Open in browser", "Copy URL", "Open logs", "Quit"]
+            self.menu = [
+                "Open in browser",
+                "Copy URL",
+                "Pin File…",
+                "Show Pinned View",
+                "Unpin",
+                "Open logs",
+                "Quit",
+            ]
 
         @rumps.clicked("Open in browser")
         def open_browser(self, _sender):
             webbrowser.open(url)
+
+        # ---- Pinned view (SPEC §25, D97) ----------------------------------
+        # state["pin"] is None until the kickoff timer builds the controller
+        # (and stays None if menubar_pin failed to import — see _kickoff);
+        # the items are then quiet no-ops rather than crashes.
+
+        @rumps.clicked("Pin File…")
+        def pin_file(self, _sender):
+            if state["pin"] is not None:
+                state["pin"].choose_and_pin()
+
+        @rumps.clicked("Show Pinned View")
+        def show_pinned(self, _sender):
+            if state["pin"] is not None:
+                state["pin"].show_popover()
+
+        @rumps.clicked("Unpin")
+        def unpin(self, _sender):
+            if state["pin"] is not None:
+                state["pin"].clear_pin()
 
         @rumps.clicked("Copy URL")
         def copy_url(self, _sender):
@@ -261,15 +295,38 @@ def main() -> None:
             _remove_pidfile()
             rumps.quit_application()
 
+    status_app = FusedRenderStatusApp()
+
     def _kickoff(timer):
-        # One-shot, fired right after the run loop starts.
+        # One-shot, fired right after the run loop starts — the status item
+        # (status_app._nsapp.nsstatusitem) exists only from this point on.
         timer.stop()
+        try:
+            # Lazy + guarded: pyobjc-framework-WebKit may be missing in an
+            # older [app] env; the app must still run, pin items as no-ops.
+            from fused_render.menubar_pin import PinController
+
+            state["pin"] = PinController(
+                status_app._nsapp.nsstatusitem,
+                status_app.menu._menu,
+                port,
+                APP_SUPPORT_DIR,
+                menu_items={
+                    # NSMenuItems of the PV-3 entries; the controller hides/
+                    # renames them to match pin state.
+                    "pin": status_app.menu["Pin File…"]._menuitem,
+                    "show": status_app.menu["Show Pinned View"]._menuitem,
+                    "unpin": status_app.menu["Unpin"]._menuitem,
+                },
+            )
+        except Exception:
+            logger.exception("pinned view unavailable; running menu-only")
         threading.Thread(target=_bootstrap_server, daemon=True).start()
 
     boot_timer = rumps.Timer(_kickoff, 0.1)
     boot_timer.start()
 
-    FusedRenderStatusApp().run()
+    status_app.run()
 
 
 if __name__ == "__main__":

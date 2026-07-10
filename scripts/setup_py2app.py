@@ -121,6 +121,8 @@ OPTIONS = {
         # modulegraph's regular import tracing - only forcing the whole
         # package via `packages` breaks on its bootstrap lookup.
         "rumps", "objc", "AppKit", "Foundation", "Cocoa", "CoreFoundation",
+        # Pinned view (SPEC §25, D97): WKWebView for the status-item popover.
+        "WebKit",
         # The deploy CLI (SPEC §19 DP-3): the [fused] extra build_dmg.sh
         # installs, run in-bundle via fused_render/_fused_cli.py. `fused`
         # itself is forced whole (pluggy entry-point plugins + pervasive
