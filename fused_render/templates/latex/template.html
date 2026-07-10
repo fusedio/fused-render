@@ -300,7 +300,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
   // ---- vendored CodeMirror loading (relative <script src> 404s inside the
   // render iframe — resolve against this template's own directory instead).
   const HTML_PATH = new URLSearchParams(location.search).get("path") || "";
-  const BASE_DIR = HTML_PATH.slice(0, HTML_PATH.lastIndexOf("/") + 1);
+  const BASE_DIR = HTML_PATH.slice(0, Math.max(HTML_PATH.lastIndexOf("/"), HTML_PATH.lastIndexOf("\\")) + 1);
   const assetUrl = (rel) => fused.rawUrl(BASE_DIR + rel);
 
   let CM;
@@ -316,7 +316,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
   const py = (params) => fused.runPython("./engine.py", params);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
   const fmtSize = (n) => n < 1024 ? n+" B" : n < 1048576 ? (n/1024).toFixed(0)+" KB" : (n/1048576).toFixed(1)+" MB";
-  const baseName = (p) => p.slice(p.lastIndexOf("/") + 1);
+  const baseName = (p) => p.slice(Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\")) + 1);
   let toastTimer;
   const toast = (m, ms=2600) => { const t=$("toast"); t.textContent=m; t.style.display="block"; clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.style.display="none", ms); };
   const debounce = (fn, ms) => { let h; return (...a) => { clearTimeout(h); h=setTimeout(()=>fn(...a), ms); }; };
@@ -332,7 +332,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
 
   // ---- state
   const S = {
-    root: FILE.slice(0, FILE.lastIndexOf("/")),  // the .tex file's own directory — also the compile cwd
+    root: FILE.slice(0, Math.max(FILE.lastIndexOf("/"), FILE.lastIndexOf("\\"))),  // the .tex file's own directory — also the compile cwd
     mainAbs: FILE,          // the entrypoint this template was opened for (fixed for its lifetime)
     fileAbs: "",            // currently open buffer (abs) — may be an \input child
     mtime: 0,               // optimistic-lock mtime of the open buffer

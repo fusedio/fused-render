@@ -208,7 +208,7 @@
   // directory. Resolve our own directory the same way runPython does, and
   // load them through the raw-bytes endpoint instead.
   const ownPath = new URLSearchParams(location.search).get("path") || "";
-  const BASE_DIR = ownPath.slice(0, ownPath.lastIndexOf("/") + 1);
+  const BASE_DIR = ownPath.slice(0, Math.max(ownPath.lastIndexOf("/"), ownPath.lastIndexOf("\\")) + 1);
   const vendorUrl = (name) => fused.rawUrl(BASE_DIR + name);
   const py = (params) => fused.runPython("./pano.py", { file, ...params });
 

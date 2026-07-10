@@ -724,7 +724,7 @@ qs("btn-add").onclick = () => {
 qs("add-go").onclick = () => { const v = qs("addpath").value.trim(); if (v) { addOverlay(v); qs("addpath").value = ""; } };
 qs("addpath").onkeydown = e => { if (e.key === "Enter") qs("add-go").click(); };
 async function refreshExplorer(dir) {
-  dir = dir || FILE.slice(0, FILE.lastIndexOf("/") + 1);
+  dir = dir || FILE.slice(0, Math.max(FILE.lastIndexOf("/"), FILE.lastIndexOf("\\")) + 1);
   const r = await fused.runPython("./browse.py", { dir }).catch(() => null);
   if (!r || r.error) return;
   qs("crumbs").innerHTML = r.crumbs.map(c => `<a data-p="${c.path}">${c.label}</a>`).join(' <span style="color:#4b5058">/</span> ');

@@ -343,7 +343,7 @@
 
   // ---- vendored asset loading (relative src 404s inside the render iframe) ----
   const HTML_PATH = new URLSearchParams(location.search).get("path") || "";
-  const BASE_DIR = HTML_PATH.slice(0, HTML_PATH.lastIndexOf("/") + 1);
+  const BASE_DIR = HTML_PATH.slice(0, Math.max(HTML_PATH.lastIndexOf("/"), HTML_PATH.lastIndexOf("\\")) + 1);
   const assetUrl = (rel) => fused.rawUrl(BASE_DIR + rel);
   async function loadCss(rel, rewriteFonts) {
     let css = await (await fetch(assetUrl(rel))).text();
@@ -1491,7 +1491,7 @@
     card.style.cssText = "background:#fff;border-radius:10px;box-shadow:var(--shadow-2);padding:18px;width:min(560px,92vw)";
     wrap.appendChild(card); document.body.appendChild(wrap); dialogEl = wrap;
     wrap.onclick = (e) => { if (e.target === wrap) closeDialog(); };
-    let curDir = FILE.slice(0, FILE.lastIndexOf("/"));
+    let curDir = FILE.slice(0, Math.max(FILE.lastIndexOf("/"), FILE.lastIndexOf("\\")));
     async function render(p) {
       let d;
       try { d = await py({ action: "listdir", path: p || "" }); } catch (e) { toast("Cannot list folder: " + e.message); return; }

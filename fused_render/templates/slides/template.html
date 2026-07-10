@@ -1054,7 +1054,7 @@
   // In-app directory browser for Save as (no native dialogs).
   async function saveAsDeck(){ if(!S.doc)return;
     const ov=$("overlay");
-    const fileDir=FILE.slice(0,FILE.lastIndexOf("/")+1).replace(/\\/g,"/");
+    const fileDir=FILE.slice(0,Math.max(FILE.lastIndexOf("/"),FILE.lastIndexOf("\\"))+1).replace(/\\/g,"/");
     let curDir=fileDir;
     const startName=(S.title||DEFAULT_TITLE)+" copy";
     async function render(p){
