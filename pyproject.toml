@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fused-render"
-version = "0.2.0"
+version = "0.2.1"
 description = "Local file explorer with Python-powered renderable HTML previews"
 requires-python = ">=3.10"
 dependencies = [
@@ -14,6 +14,14 @@ dependencies = [
     # implementation, so the ws library is a hard dependency, not an extra.
     "websockets>=12",
     "pyarrow>=14",
+    # The duckdb template reads AND edits every tabular file format (parquet,
+    # csv/tsv, json) through one engine, so it's a core dependency, not an
+    # optional extra — a plain `pip install fused-render` ships the viewer.
+    "duckdb>=1.1",
+    # FastAPI's /api/templates/import endpoint accepts multipart form/file
+    # uploads, which requires python-multipart at import time (FastAPI raises
+    # at route registration otherwise).
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]
@@ -28,7 +36,6 @@ bundled = [
     "numpy",
     "pandas",
     "requests",
-    "duckdb",
     "polars",
     "matplotlib",
     "scipy",
@@ -50,6 +57,8 @@ bundled = [
 # build (scripts/build_dmg.sh) installs this extra.
 app = [
     "rumps",
+    # Pinned view (SPEC §25, D97): WKWebView inside the status-item popover.
+    "pyobjc-framework-WebKit",
 ]
 # Optional execution engine (D69): when installed, /api/run runs code through
 # the fused local compute backend; absent, the built-in executor runs. Pinned

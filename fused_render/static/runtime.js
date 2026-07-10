@@ -104,8 +104,44 @@
     };
   }
 
+  // ---- coalesced history writes (D99) ---------------------------------------
+  // WebKit (Safari, and the WKWebView the menu-bar popover uses, §25) hard-
+  // limits history.replaceState/pushState to 100 calls per 30 s — past that it
+  // THROWS SecurityError, which would kill the caller mid-scrub. Chrome has no
+  // such limit, so this only ever bit inside the popover. Params therefore
+  // take effect immediately through a pending-search overlay (targetSearch()),
+  // while the actual history write is rate-limited to one per
+  // HISTORY_MIN_INTERVAL_MS with a trailing flush — a scrub burst costs ~75
+  // writes/30 s, safely under the cap, and the URL still lands on the final
+  // value.
+  const HISTORY_MIN_INTERVAL_MS = 400;
+  let pendingSearch = null; // what target.location.search WILL be after flush
+  let pendingUrl = null;
+  let historyTimer = null;
+  let lastHistoryWrite = 0;
+
+  function targetSearch() {
+    return pendingSearch !== null ? pendingSearch : target.location.search;
+  }
+
+  function flushHistory() {
+    historyTimer = null;
+    if (pendingUrl === null) return;
+    const url = pendingUrl;
+    pendingUrl = null;
+    pendingSearch = null;
+    lastHistoryWrite = Date.now();
+    try {
+      target.history.replaceState(target.history.state, "", url);
+    } catch (e) {
+      // WebKit throttle hit anyway (e.g. another writer burned the budget).
+      // The overlay already served readers; losing one URL write is benign.
+      console.warn("[fused] history write throttled:", e);
+    }
+  }
+
   function currentParams() {
-    return new URLSearchParams(splitSearch(target.location.search).rest);
+    return new URLSearchParams(splitSearch(targetSearch()).rest);
   }
 
   const listeners = new Set();
@@ -165,7 +201,8 @@
     const chain = ancestorWindows().reverse();
     chain.push(target);
     for (const win of chain) {
-      const params = new URLSearchParams(splitSearch(win.location.search).rest);
+      const search = win === target ? targetSearch() : win.location.search;
+      const params = new URLSearchParams(splitSearch(search).rest);
       for (const [key, value] of params) {
         if (isReserved(key)) continue;
         result[key] = value;
@@ -185,7 +222,7 @@
         `fused.params.set: value for '${key}' must be a string, got ${typeof value}`
       );
     }
-    const { layoutSpan, rest } = splitSearch(target.location.search);
+    const { layoutSpan, rest } = splitSearch(targetSearch());
     const params = new URLSearchParams(rest);
     params.set(key, value);
     // Rebuild with the raw `_layout=(...)` span untouched and LAST (D51): the
@@ -193,7 +230,8 @@
     // the global/local boundary stays visually stable.
     let search = params.toString();
     if (layoutSpan) search += (search ? "&" : "") + layoutSpan;
-    const newUrl = target.location.pathname + (search ? "?" + search : "");
+    const newSearch = search ? "?" + search : "";
+    const newUrl = target.location.pathname + newSearch;
     // First-change-push: the first param write on a pristine history entry
     // pushes a new entry (preserving the as-loaded state for Back), every
     // later write replaces on top of it — so param churn costs at most one
@@ -203,13 +241,35 @@
     // old forward branch), and it survives reloads. Existing state (e.g. the
     // tab shell's fusedActiveTab) is merged, not clobbered.
     const prevState = target.history.state;
-    const unchanged =
-      newUrl === target.location.pathname + target.location.search;
-    if (unchanged || (prevState && prevState.fusedParamEntry)) {
-      target.history.replaceState(prevState, "", newUrl);
+    const unchanged = newSearch === targetSearch();
+    if (unchanged) {
+      // Nothing to write; fall through to the notification below.
+    } else if (prevState && prevState.fusedParamEntry) {
+      // Replace-on-top writes are the scrub-hot path: coalesce them (D99).
+      // Readers see the new value immediately via the overlay; the history
+      // write happens now if the budget allows, else on the trailing timer.
+      pendingSearch = newSearch;
+      pendingUrl = newUrl;
+      if (!historyTimer) {
+        const wait = Math.max(
+          0,
+          HISTORY_MIN_INTERVAL_MS - (Date.now() - lastHistoryWrite)
+        );
+        if (wait === 0) flushHistory();
+        else historyTimer = setTimeout(flushHistory, wait);
+      }
     } else {
+      // The once-per-visit push: immediate, so Back gets its entry even if
+      // the page dies within the debounce window.
       const nextState = Object.assign({}, prevState, { fusedParamEntry: true });
-      target.history.pushState(nextState, "", newUrl);
+      pendingSearch = null;
+      pendingUrl = null;
+      lastHistoryWrite = Date.now();
+      try {
+        target.history.pushState(nextState, "", newUrl);
+      } catch (e) {
+        console.warn("[fused] history write throttled:", e);
+      }
     }
     // Notify via the event path only (no direct notify(), D46). When the shell
     // wrapper exists it also fires fused:urlchange on the history write — the
@@ -260,6 +320,9 @@
     win.addEventListener("fused:urlchange", notifyIfChanged);
   }
   window.addEventListener("pagehide", () => {
+    // A pending coalesced write (D99) must not die with this document — the
+    // URL is the bookmarkable truth.
+    flushHistory();
     for (const win of hookedWindows) {
       try {
         win.removeEventListener("fused:urlchange", notifyIfChanged);

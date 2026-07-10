@@ -79,8 +79,10 @@ Left sidebar in the shell, always visible:
 - **SB-3** Capture UI: a bookmark button in the shell header area, one click, no prompt. Default name = basename of the viewed path (file or dir name).
 - **SB-4** Bookmarks are renamable inline (edit affordance on hover → input → Enter/blur commits) and deletable. No confirm on delete (re-bookmarking is one click).
 - **SB-5** **DECIDED: persistence = server-side file** `~/.fused-render/bookmarks.json` (D75; superseded the original localStorage store). JSON array `{id, name, url, created_at}` (+ folders, D44); `id = crypto.randomUUID()`. Served by `GET /api/bookmarks` → `{exists, bookmarks}` and `PUT /api/bookmarks` (whole-tree, atomic, last-write-wins); server code lives in `fused_render/shell/`. Frontend reads a synchronous in-memory cache hydrated at boot; mutations await the PUT (no optimistic update); a 30 s poll re-reads the server so another tab's edits converge (D77, eventual ≤30 s, still last-write-wins). Legacy `localStorage["fused.bookmarks"]` is imported once (gated on the file not yet existing), then left dormant.
-- **SB-6** Duplicate URLs allowed; list ordered by creation time. *(drag reorder, active-bookmark highlight: polish, later)*
+- **SB-6** Duplicate URLs allowed; **names are globally unique, case-insensitive** (D97 — names become `<name>.bookmark` filenames): a colliding create/rename auto-suffixes `-1`, `-2`, ... instead of rejecting, existing duplicates migrate once on GET (oldest by `created_at` keeps its name). Folder names are a separate namespace. List ordered by creation time. *(drag reorder, active-bookmark highlight: polish, later)*
 - **SB-7** **DECIDED: bookmark create/update is mirrored into the target file's `.html.json` sidecar** (D83) as `bookmarkHistory` — the same per-file sidecar the `claude` chat template owns via `claudeSessions` (§7). `POST /api/bookmarks/history` upserts an entry by bookmark `id`; the frontend calls it fire-and-forget right after `addBookmark`/`updateBookmarkUrl` commit. A bookmark targeting a layout/tab sentinel or a path no longer on disk records nothing. **Delete never touches the sidecar** — history is permanent, independent of the bookmark's current lifetime.
+- **SB-8** **Save to disk**: a per-bookmark button writes a portable `<name>.bookmark` JSON file (format v1: `{version, name, icon?, kind: single|panel|tab, path?, search}`, D98) next to the file(s) the bookmark points at — a single bookmark into its target's own directory (`path` relative to it), a panel/tab bookmark into the deepest common ancestor directory of all `_layout` leaves, each leaf path rewritten relative to that dir (grammar, nesting, per-leaf queries and global params untouched). The button's hover title shows the exact destination path before the click; it is disabled (greyed, explanatory title) when no save target exists — a leaf without an absolute fs path, or no common root. Frontend computes `{dir, filename, content}` (`lib/bookmark-file.ts`); `POST /api/bookmarks/export` validates and writes, overwrite allowed (a re-save refreshes the snapshot).
+- **SB-9** **Double-click open** (macOS): the packaged app registers `.bookmark` as an Owner document type (D99); Finder-opening one routes to the `/view/_bookmark?file=<abs path>` sentinel, which reads the file (`GET /api/bookmark-file`), resolves its relative paths against the file's own directory (`lib/bookmark-file.ts` `bookmarkOpenUrl`, the inverse of SB-8's relativize) and `location.replace()`s to the described view — single, panel or tab. Browsing to a `.bookmark` file in the explorer opens it the same way (never a preview). Malformed / unsupported-version files render a readable error, no redirect.
 
 ### Server FS API (shape, not final contract)
 
@@ -192,6 +194,7 @@ The core state-sharing mechanism between an HTML view and the browser URL.
 - **PR-5** **DECIDED (v1): strings only.** Param values are strings, period — `set()` rejects non-strings, `get()` returns strings. Users JSON-encode themselves if they need structure. Zero magic.
 - **PR-6** **Reserved namespace:** param keys beginning with `_` belong to the app shell (e.g. `_file`, `_raw`). User HTML cannot set them; the runtime rejects the call.
 - **PR-7** Full page refresh reproduces the exact view: same file, same params, same rendered state (assuming user code is deterministic in its params).
+- **PR-8** History writes are coalesced (D99): a `set()` takes effect immediately for all readers via a pending-search overlay, but the underlying `replaceState` lands at most once per 400 ms (trailing flush; flushed on pagehide). WebKit throttles history writes to 100/30 s and throws past the cap — scrub-speed param churn in the popover's WKWebView (§25) must never hit it, and a throttle error is caught, never propagated into the calling view.
 
 ---
 
@@ -323,6 +326,7 @@ Distribute as a DMG containing a menu-bar app; all UI stays in the browser.
 - **M9 — Annotation mode:** annotate toggle over any preview mode, element/selection-anchored comment threads stored in the URL (§17).
 - **M13 — Directory views:** directories resolve through the registry like files — the built-in listing becomes the `_listing` sentinel (PT-12), the universal `/` directory key (CT-3) makes it every folder's default mode, custom directory-view templates ride the same mode list + switcher, and `?listing=1` is removed in favor of `_mode=_listing` (§7, §16 / PT-12/PT-13, CT-3 / D81).
 - **M14 — Explorer search:** the in-folder search's recursive walk goes breadth-first and streams NDJSON batches; client-side incremental fuzzy scoring, scroll-paged results, honest truncation, machine-noise pruning (§22 / SR-1..SR-11 / D85).
+- **M16 — Pinned view:** the status item's only surface — any click drops an NSPopover whose native header row carries all app actions (menu removed, D98) above a live WKWebView of the pinned file's `/embed` view; detaches into a floating always-on-top window (§25 / PV-1..PV-8 / D97/D98).
 - **Follow-ups (unordered):** remaining preview templates (csv/json/markdown/media/pdf/syntax-highlighted code); warm worker pool; DataFrame/Arrow returns; security layer (token, origin checks, sandboxed bridge); exec console; search/sort/tree/keyboard nav; caching; editing.
 
 ## 13. Live Editing — Autosave & Auto-Reload (M4)
@@ -508,6 +512,33 @@ controls write). An earlier iteration had each paged view expose a
 put annotation-aware code inside view templates. Accepted trade-off: annotate
 cannot ask a view whether a row is truly gone from the data, so a comment
 past the data's end keeps its "row N" chip instead of turning "detached".
+
+**Comment focus deep link:** an ordinary `comment` template param carries an
+id-only deep link (the history→annotate contract, HV-8; mirrors the claude
+`session_id` resume precedent — the id is the whole contract and is never
+cleared after use). At boot, once the framed view is wired, the template reads
+`comment`: if the id is in the live URL store it focuses it (jumping to the
+comment's own view first when it differs, then lighting the pin/card); if it
+isn't, the template does a **one-shot full-state hydration** — a single read of
+`<file>.json`'s `comments` log that imports every LIVE entry (those without a
+`deleted_at` tombstone; a tombstoned wanted id gets no import and no focus —
+deleted stays deleted, owner call 2026-07-10), strips the server stamps
+(`recorded_at`/`updated_at`/`deleted_at`), and merges them into the live set
+(live entries win by id) — then saves once (re-recording, a harmless upsert
+no-op) and focuses. Deletion is an **explicit** signal: the annotate delete
+button drops the comment from the URL and sends its id as `deleted_ids` on the
+SAME `record` call, so upsert and tombstone land in one atomic sidecar write
+(two separate calls could interleave and lose the tombstone); `annotate.py`
+stamps `deleted_at` (server `time.time()` SECONDS) on each named log entry.
+The tombstone is **permanent** — recording an id never clears it, so a stale
+bookmarked URL that still carries the deleted comment (or the hydration merge's
+live-wins rule) cannot silently resurrect it in the log. Absence
+from a `record` array NEVER deletes — each URL carries only its own review
+subset, so a missing id means "not in this review", not "deleted". The live URL
+`comments` param stays the sole live store; the sidecar read is one boot-time
+hydration for a deep link whose id is absent from the live set, not a live-store
+sync back from the sidecar. An unreadable/unparseable sidecar or a missing id
+fails silently (no error UI, no focus).
 
 ## 18. Export — Portable Bundles for Hosted Serving (M10)
 
@@ -945,11 +976,38 @@ job is to deliver the corpus fast, shallow-first, and pruned of machine noise.
   └─ Music     ✗ 0 children              └─ cap cuts the DEEPEST level only
   ```
 
-- **SR-2** `WALK_IGNORE_DIRS` (`node_modules`, `__pycache__`, `venv`, `.venv`,
-  `.git`) are never descended **nor emitted**, hidden mode or not — they are
-  machine-managed noise, not "hidden data" (a `.py` extension search must not
-  drown in `.git` object files). `.git` *files* (worktree/submodule pointers)
-  are ordinary files and do show.
+- **SR-2** Machine-noise pruning is **gitignore-driven inside git
+  repositories** (D100): entries the containing repo's own gitignore rules
+  ignore are never emitted **nor descended** — the generic answer to `dist/`,
+  `build/`, `.next/`, `target/` and every other ecosystem's junk, with the
+  repo's own file as the authority (negations like `!keep.log` honored).
+  Verdicts come from one streaming `git check-ignore --stdin` co-process per
+  repo (`_IgnoreOracle`, ~14 µs/query, ≤ `WALK_MAX_ORACLES` open at once, all
+  closed when the walk ends); each directory inherits its repo root through
+  the BFS queue, a `.git` entry starts a nested repo with its own rules, and
+  a walk rooted *below* a repo root resolves it via one `git rev-parse
+  --show-toplevel`. A directory with a `.gitignore` but NO repo anywhere in
+  scope (an un-inited project, an Obsidian vault) prunes the same way: the
+  oracle grafts it onto a shared empty `GIT_DIR` as its `GIT_WORK_TREE`, so
+  check-ignore honors standalone `.gitignore` files too (cascading into
+  subdirs, negations included). Pruning is an optimization, never a
+  dependency: git missing or failing degrades to no gitignore pruning.
+  Known miss, accepted: walking a SUBDIRECTORY of a repo-less project looks
+  upward for nothing (no work-tree boundary to find), so an ancestor's
+  standalone `.gitignore` doesn't apply there.
+- **SR-2a** `WALK_IGNORE_DIRS` (`node_modules`, `__pycache__`, `venv`,
+  `.venv`, `.git`, `site-packages`) stays as the **universal floor**, checked
+  by bare name everywhere: it covers junk outside any repo (a stray
+  `node_modules` in `~/Downloads`, `Library/Python/*/site-packages`) and
+  `.git` itself, which git never reports as ignored. Both SR-2 and SR-2a
+  apply in hidden mode too — those trees are machine noise, not "hidden
+  data" (a `.py` extension search must not drown in `.git` object files).
+  `.git` *files* (worktree/submodule pointers) are ordinary files and do show.
+- **SR-2b** Because the walk excludes gitignored entries outright, walk
+  entries carry **no `ignored` dimming flag** — dimming remains a
+  `/api/fs/list` (plain listing) concern, where ignored entries are still
+  shown. Search excludes; the listing dims. (VS Code's split: explorer shows
+  gitignored files, Quick Open doesn't.)
 - **SR-3** macOS package directories (`WALK_LEAF_DIR_SUFFIXES`: `.app`,
   `.framework`, `.bundle`, `.photoslibrary`, case-insensitive) are emitted as
   a single dir entry but never descended — Finder semantics; one Electron
@@ -1243,9 +1301,74 @@ opening `sine.html` and switching to the `history` mode, or opening `sine.html.j
   with the `/view/` codec (router.ts shape), the claude-template precedent:
   a claude session opens the target with `_mode=claude&session_id=<id>` (the
   resume contract); a bookmark-history entry and the `lastSession` card open
-  the target with their stored `search` verbatim.
-- **HV-8** Comments are a **read-only** section (content, created/updated time,
-  resolved badge, annotated view). No navigation: annotate's live store is the
-  URL `comments` param, and the sidecar log is write-only — the view does not
-  synthesize comment URLs (owner call 2026-07-09).
+  the target with their stored `search` verbatim; a comment row opens the
+  target with `_mode=annotate&comment=<id>` (HV-8, §17), the same id-only
+  precedent.
+- **HV-8** Comments render **read-only** (content, created/updated time,
+  resolved badge, annotated view — the view never writes the sidecar, HV-9)
+  but are now **navigable**: a comment row with an `id` opens the target with
+  `_mode=annotate&comment=<id>` — an id-only deep link mirroring the claude
+  `session_id` resume contract (HV-7), where annotate resolves the id against
+  its live store or a one-shot sidecar lookup (§17). A tombstoned entry (an
+  explicit `deleted_at`, stamped via `record`'s `deleted_ids`) renders dimmed and
+  struck-through with a " · deleted" tooltip note and is **inert** — no deep
+  link; a deleted comment never comes back (owner call 2026-07-10). Supersedes
+  the 2026-07-09 owner call that kept comments non-navigable (owner reversed
+  2026-07-10).
 - **HV-9** The view never writes the sidecar.
+
+## 25. Pinned View — Menu-Bar Popover (M16)
+
+The status item IS the app's whole surface: any click on the menu-bar icon
+drops an NSPopover under it — a native header row carrying every app action
+(the old dropdown menu is gone, D98) above a live WKWebView of the pinned
+file's rendered view — the same `/embed/<path>` page the shell's panes iframe
+(chrome-free, full runtime: `fused.runPython`, params, templates, live
+reload). Dragging the popover off the menu bar detaches it into a floating
+always-on-top window. macOS app bundle only (rides the rumps entry point,
+SPEC DM-7); the CLI/browser experience is unchanged.
+
+- **PV-1** Pin state: a single pinned filesystem path, persisted at
+  `APP_SUPPORT_DIR/pin.json` (`{"path": "<abs path>"}`). Survives app restarts.
+  Any path the registry can render is pinnable — html, parquet, images,
+  directories — because the popover loads `/embed/<path>`, which dispatches
+  modes exactly like a shell pane. One pin in v1; no pin list.
+- **PV-2** Status-item click routing: every click — left, right, ctrl —
+  toggles the popover. No NSMenu on the status item (D98: right-click-for-menu
+  is undiscoverable; one icon, one gesture, one surface). The popover opens
+  even before the server is ready (the body shows a placeholder) so Quit is
+  always reachable.
+- **PV-3** Header row (native NSButtons above the webview, in the popover):
+  **Open in Browser** (home tab, same pending-queue semantics as before
+  readiness), **Copy URL**, **Pin…** (NSOpenPanel; becomes **Change…** when a
+  pin is set), **Unpin** (hidden when nothing is pinned), **Logs** (reveal in
+  Finder), **Quit**. Native, not web chrome: the header must work when the
+  server is dead — a web-based Quit would die with it.
+- **PV-4** Popover: `NSPopover`, transient behavior (click-away dismisses),
+  default content 420×450 — a square 420×420 webview over the 30 px bar —
+  and user-resizable (Resizable added to the popover window's style mask;
+  edge-drag). The chosen size is saved on close (pin.json `size`, surviving
+  re-pins/unpins) and becomes the new default. One `WKWebView` created with
+  the popover and kept alive — view state (params, scroll) survives
+  close/reopen. Re-pinning a different file reloads the webview; reopening
+  does not. No pin (or server not ready) → the webview shows a built-in
+  placeholder page.
+- **PV-5** Detach: the popover is detachable (`popoverShouldDetach:` → YES).
+  On detach the resulting window is raised to `NSFloatingWindowLevel` — it
+  stays above other apps' windows ("pin on top"), is resizable, and closing it
+  returns to popover-on-click. Closing/detaching never clears the pin. The
+  popover, the detached window, and the open panel all carry
+  `CanJoinAllSpaces | FullScreenAuxiliary` so they appear over fullscreen
+  apps; the open panel lifts a Prohibited activation policy to Accessory
+  (source runs) so it can hold key focus.
+- **PV-6** Dependency: `pyobjc-framework-WebKit` joins the `[app]` extra and
+  py2app's `packages` list. Like rumps it is macOS-only and imported lazily
+  inside the app entry point — core install and CI stay cross-platform.
+- **PV-7** New AppKit code lives in `fused_render/menubar_pin.py` (popover +
+  click routing controller) and the pure-python pin store in
+  `fused_render/pin_store.py` (unit-tested; AppKit code is not CI-testable).
+- **PV-8** Fallback: the rumps menu (Open in browser / Copy URL / Open logs /
+  Quit) is still built but never attached while the popover controller is
+  alive. If `menubar_pin` fails to import or construct (e.g. missing WebKit
+  framework), the menu is attached as before — the app is never left
+  unquittable.

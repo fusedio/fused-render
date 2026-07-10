@@ -10,7 +10,9 @@ written, letting the shell run its one-time localStorage import exactly once
 (a user who later deletes every bookmark leaves an existing `[]` file, so the
 old localStorage data is never re-imported). See frontend lib/bookmarks.ts.
 """
+import json
 import os
+import re
 import time
 from urllib.parse import unquote, urlsplit
 
@@ -39,6 +41,57 @@ def _path() -> str:
     return os.path.join(storage.home_dir(), "bookmarks.json")
 
 
+# Bookmark name -> filename stem, mirroring sanitizeBookmarkStem in the
+# frontend (lib/bookmarks.ts): path separators, the colon and control chars
+# become "-". The char class must stay in sync with the TS regex.
+_STEM_UNSAFE = re.compile(r"[/\\:\x00-\x1f\x7f]")
+
+
+def _name_key(name: str) -> str:
+    """D97 uniqueness comparison key: the sanitized `.bookmark` filename stem,
+    lowercased. Keying on the stem (not the raw name) means two names that
+    would sanitize to the same filename (`a/b` vs `a:b`) count as duplicates,
+    so export files can never silently overwrite each other."""
+    return _STEM_UNSAFE.sub("-", name).strip().lower()
+
+
+def _dedupe_names(items: list) -> bool:
+    """One-time migration (D97): make bookmark names globally unique by
+    sanitized-stem key (case-insensitive), across top-level bookmarks and
+    folder children (folder names are a separate namespace and are left
+    alone). The oldest bookmark by created_at keeps its name; each newer
+    duplicate gets the first `-1`, `-2`, ... suffix whose key collides with
+    nothing already in the tree ("-" and digits survive sanitization, so
+    suffixed keys stay distinct). Idempotent — returns True only when
+    something was renamed."""
+    bookmarks = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "folder":
+            bookmarks.extend(c for c in item.get("children") or [] if isinstance(c, dict))
+        else:
+            bookmarks.append(item)
+    named = [b for b in bookmarks if isinstance(b.get("name"), str)]
+    # Suffix candidates must dodge EVERY current name (including a pre-existing
+    # literal "x-1"), not just the ones processed so far.
+    taken = {_name_key(b["name"]) for b in named}
+    seen = set()
+    changed = False
+    for b in sorted(named, key=lambda b: b.get("created_at") or 0):
+        key = _name_key(b["name"])
+        if key not in seen:
+            seen.add(key)  # first (oldest) holder keeps the name
+            continue
+        n = 1
+        while _name_key(f"{b['name']}-{n}") in taken:
+            n += 1
+        b["name"] = f"{b['name']}-{n}"
+        taken.add(_name_key(b["name"]))
+        changed = True
+    return changed
+
+
 @router.get("/api/bookmarks")
 def get_bookmarks():
     data = storage.read_json(_path())
@@ -46,6 +99,10 @@ def get_bookmarks():
     # import from localStorage; a valid file (even []) reports exists=true.
     if not isinstance(data, list):
         return {"exists": False, "bookmarks": []}
+    # Pre-D97 files may hold duplicate names; migrate once (write only when
+    # something actually changed — the normal GET stays read-only).
+    if _dedupe_names(data):
+        storage.write_json(_path(), data)
     return {"exists": True, "bookmarks": data}
 
 
@@ -58,6 +115,91 @@ def put_bookmarks(
         return guard
     storage.write_json(_path(), bookmarks)
     return {"ok": True, "count": len(bookmarks)}
+
+
+# --------------------------------------------------------- .bookmark file export
+#
+# "Save to disk" (SB-8, D98): the frontend computes the whole file —
+# destination dir (the deepest common ancestor of the bookmark's targets),
+# `<name>.bookmark` filename and the format-v1 JSON content
+# (lib/bookmark-file.ts, next to the `_layout` codec it reuses) — and this
+# endpoint only validates and writes. Overwrite is allowed by design: the
+# name is globally unique (D97), so an existing file is a stale snapshot of
+# the same bookmark and a re-save refreshes it.
+
+
+@router.post("/api/bookmarks/export")
+def export_bookmark(
+    payload: dict = Body(...), x_fused: str | None = Header(default=None)
+):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    dir_ = payload.get("dir")
+    filename = payload.get("filename")
+    content = payload.get("content")
+    if not (isinstance(dir_, str) and isinstance(filename, str) and isinstance(content, str)):
+        return JSONResponse({"error": "dir, filename and content required"}, status_code=400)
+    if not os.path.isabs(dir_) or not os.path.isdir(dir_):
+        return JSONResponse({"error": "dir must be an existing absolute directory"}, status_code=400)
+    # Bare `<stem>.bookmark` only — no separators, no traversal, non-empty stem.
+    stem = filename[: -len(".bookmark")]
+    if (
+        not filename.endswith(".bookmark")
+        or not stem
+        or stem in (".", "..")
+        or "/" in filename
+        or "\\" in filename
+        or filename != os.path.basename(filename)
+    ):
+        return JSONResponse({"error": "filename must be a bare <name>.bookmark"}, status_code=400)
+    # Defense against a garbage body reaching disk: the content must at least
+    # be a JSON object with an integer format version (bool is not a version).
+    try:
+        doc = json.loads(content)
+    except ValueError:
+        doc = None
+    version = doc.get("version") if isinstance(doc, dict) else None
+    if not isinstance(version, int) or isinstance(version, bool):
+        return JSONResponse({"error": "content must be .bookmark JSON with an int version"}, status_code=400)
+    path = os.path.join(dir_, filename)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+    return {"path": path}
+
+
+# ------------------------------------------------------- .bookmark file open
+#
+# Finder double-click (SB-9, D99): the app maps a `.bookmark` document to the
+# `/view/_bookmark?file=<abs path>` sentinel, whose frontend calls this to
+# read the file, then resolves the relative paths inside it against `dir` and
+# redirects — mirror of the export split above: the `_layout` grammar's only
+# parser lives in the shell codec, so the server stays a dumb validated reader.
+# Read-only GET, unguarded like GET /api/bookmarks.
+
+
+@router.get("/api/bookmark-file")
+def get_bookmark_file(path: str):
+    if not os.path.isabs(path):
+        return JSONResponse({"error": "path must be absolute"}, status_code=400)
+    if not path.lower().endswith(".bookmark"):
+        return JSONResponse({"error": "path must end in .bookmark"}, status_code=400)
+    if not os.path.isfile(path):
+        return JSONResponse({"error": f"no such file: {path}"}, status_code=404)
+    try:
+        with open(path, encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return JSONResponse({"error": "file is not valid .bookmark JSON"}, status_code=400)
+    version = doc.get("version") if isinstance(doc, dict) else None
+    if version != 1 or isinstance(version, bool):
+        # Forward-compat: a v2 file from a newer build gets a clear refusal,
+        # not a garbled redirect.
+        return JSONResponse(
+            {"error": f"unsupported .bookmark version: {version!r} (this build reads version 1)"},
+            status_code=400,
+        )
+    return {"dir": os.path.dirname(path), "bookmark": doc}
 
 
 # ------------------------------------------------------ bookmark history sidecar

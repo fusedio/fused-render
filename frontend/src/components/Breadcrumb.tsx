@@ -2,7 +2,7 @@
 // Rendered by every view: path crumbs for listing/preview, a static label for
 // the layout modes (LM-11 / TM-9 — ★/update still operate on currentUrl()).
 import React, { useEffect, useState } from "react";
-import { navigate, navigateUrl, currentUrl, IS_EMBED } from "../lib/router";
+import { navigate, navigateUrl, urlForFsPath, currentUrl, IS_EMBED } from "../lib/router";
 import { basename } from "../lib/format";
 import {
   addBookmark,
@@ -192,6 +192,16 @@ function enterPanel(fsPath: string, dir: "row" | "col"): void {
   navigateUrl(panelUrl(seg + (dir === "row" ? "," : ";") + seg, null));
 }
 
+// Carry the active `_mode` (e.g. a folder viewed in "preview") across top-bar
+// navigation so moving between folders preserves the chosen view. Other query
+// params are dropped — a fresh path is a fresh view — and an unknown `_mode`
+// on the target silently falls back to its default (Preview.activeTemplate).
+function navigatePreservingMode(target: string): void {
+  const mode = new URLSearchParams(location.search).get("_mode");
+  if (mode) navigateUrl(urlForFsPath(target, "?_mode=" + encodeURIComponent(mode)));
+  else navigate(target);
+}
+
 export function Breadcrumb({ fsPath }: { fsPath: string }) {
   const parts = fsPath.split("/").filter((s) => s.length > 0);
   const pieces: React.ReactNode[] = [
@@ -201,7 +211,7 @@ export function Breadcrumb({ fsPath }: { fsPath: string }) {
       className={"path-crumb" + (parts.length === 0 ? " last" : "")}
       onClick={(e) => {
         e.preventDefault();
-        navigate("/");
+        navigatePreservingMode("/");
       }}
     >
       /
@@ -234,7 +244,7 @@ export function Breadcrumb({ fsPath }: { fsPath: string }) {
           className="path-crumb"
           onClick={(e) => {
             e.preventDefault();
-            navigate(target);
+            navigatePreservingMode(target);
           }}
         >
           {part}

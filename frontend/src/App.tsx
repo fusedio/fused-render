@@ -21,6 +21,7 @@ import Panel from "./views/Panel";
 import Tabs from "./views/Tabs";
 import Preferences from "./views/Preferences";
 import Templates from "./views/Templates";
+import BookmarkOpen from "./views/BookmarkOpen";
 
 type StatState =
   | { status: "loading" }
@@ -124,7 +125,13 @@ export default function App({ config }: { config: Config }) {
   const isTabs = pathname === "/view/_tab" || pathname === "/embed/_tab";
   const isPrefs = pathname === "/view/_prefs";
   const isTemplates = pathname === "/view/_templates";
-  const fsPath = isPanel || isTabs || isPrefs || isTemplates ? null : fsPathFromLocation();
+  const isBookmark = pathname === "/view/_bookmark";
+  const fsPath =
+    isPanel || isTabs || isPrefs || isTemplates || isBookmark ? null : fsPathFromLocation();
+  // Browsing to a `.bookmark` file in the explorer opens it like a Finder
+  // double-click (SB-9): same component as the `_bookmark` sentinel, fed the
+  // fs path directly — never StatView (the file describes a view, it isn't one).
+  const bookmarkFile = fsPath && fsPath.toLowerCase().endsWith(".bookmark") ? fsPath : null;
   // A resolved fsPath mounts StatView below, which owns the title itself.
   useDocumentTitle(
     isPanel
@@ -135,9 +142,11 @@ export default function App({ config }: { config: Config }) {
           ? "Preferences"
           : isTemplates
             ? "Templates"
-            : fsPath
-              ? undefined
-              : null
+            : isBookmark || bookmarkFile
+              ? "Bookmark"
+              : fsPath
+                ? undefined
+                : null
   );
 
   let main;
@@ -187,6 +196,20 @@ export default function App({ config }: { config: Config }) {
         </div>
         <div id="content">
           <Templates key={epoch} />
+        </div>
+      </>
+    );
+  } else if (isBookmark || bookmarkFile) {
+    // `.bookmark` open flow (SB-9, D99): Finder double-click lands on the
+    // `/view/_bookmark?file=` sentinel; browsing to the file in the explorer
+    // renders the same redirector with the fs path as a prop.
+    main = (
+      <>
+        <div id="breadcrumb">
+          <StaticBreadcrumb label="Bookmark" />
+        </div>
+        <div id="content">
+          <BookmarkOpen key={epoch} file={bookmarkFile ?? undefined} />
         </div>
       </>
     );
