@@ -207,7 +207,7 @@ function BookmarkRow({ b, child, parentId, isRenaming, justSaved, namePositions,
           disabled={!savePath}
           onClick={onSave}
         >
-          {justSaved ? "✓" : "⤓"}
+          {justSaved ? "✓" : "💾︎"}
         </button>
         <button className="icon-btn rename-btn" title="Rename" onClick={onRename}>
           ✎
