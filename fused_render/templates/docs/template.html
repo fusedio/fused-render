@@ -1149,7 +1149,8 @@
         <div id="tyDetail" style="font-size:12px;color:var(--ink-2);word-break:break-word"></div>
         <div style="margin-top:14px"><button class="btn" id="tyCancel">Cancel</button></div>`;
       wrap.appendChild(card); document.body.appendChild(wrap); dialogEl = wrap;
-      const finish = (ok) => { closeDialog(); resolve(ok); };
+      let done = false;   // stops the poll loop — a canceled dialog's timer must not close a later one
+      const finish = (ok) => { done = true; closeDialog(); resolve(ok); };
       wrap.onclick = (e) => { if (e.target === wrap) finish(false); };
       card.querySelector("#tyCancel").onclick = () => finish(false);
       card.querySelector("#tyGo").onclick = async () => {
@@ -1162,7 +1163,9 @@
           return;
         }
         const poll = async () => {
+          if (done) return;
           const s = await py({ action: "typst_status" }).catch(() => null);
+          if (done) return;   // canceled while the status call was in flight
           const p = (s && s.progress) || {};
           if (s && s.available) { toast("typst installed."); finish(true); return; }
           if (p.error) {
