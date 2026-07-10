@@ -425,10 +425,10 @@ if (typeof fused === "undefined") {
   return;
 }
 
-/* ---- load vendored libs (next to this file) --------------------------- */
+/* ---- load map libraries from CDN -------------------------------------- */
 const HTML_PATH = new URLSearchParams(window.location.search).get("path") || "";
 const BASE_DIR = HTML_PATH.slice(0, HTML_PATH.lastIndexOf("/") + 1);
-const assetUrl = rel => fused.rawUrl(BASE_DIR + rel);
+const assetUrl = rel => /^https?:/.test(rel) ? rel : fused.rawUrl(BASE_DIR + rel);
 const loadScript = rel => new Promise((ok, bad) => {
   const s = document.createElement("script"); s.src = assetUrl(rel);
   s.onload = ok; s.onerror = () => bad(new Error("failed to load " + rel));
@@ -439,10 +439,10 @@ const loadCss = rel => new Promise((ok, bad) => {
   l.onload = ok; l.onerror = () => bad(new Error("failed to load " + rel));
   document.head.appendChild(l);
 });
-await loadCss("vendor/maplibre-gl.css");
-await loadScript("vendor/maplibre-gl.js");
-await loadScript("vendor/deck.gl.min.js");
-loadScript("vendor/highlight.min.js").catch(() => {});   // code viewer (optional; light palette is inline)
+await loadCss("https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css");
+await loadScript("https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js");
+await loadScript("https://unpkg.com/deck.gl@9/dist.min.js");
+loadScript("https://unpkg.com/@highlightjs/cdn-assets@11.9.0/highlight.min.js").catch(() => {});   // code viewer (optional; light palette is inline)
 
 const qs = id => document.getElementById(id);
 const P = fused.params;
