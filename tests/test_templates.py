@@ -72,7 +72,7 @@ def test_builtin_parquet_default_is_duckdb():
     # `history` (HV-2) is bound here too — not `.html`-only.
     entries, error = server._templates_for("/x/data.parquet", False)
     assert error is None
-    assert [e["mode"] for e in entries] == ["duckdb", "table", "h3", "claude", "annotate", "history"]
+    assert [e["mode"] for e in entries] == ["duckdb", "table", "layout", "h3", "claude", "annotate", "history"]
     assert entries[0]["path"].endswith("duckdb/template.html")
 
 

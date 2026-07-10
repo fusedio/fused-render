@@ -2,6 +2,7 @@
   ".parquet": [
     "duckdb",
     "table",
+    "layout",
     "h3",
     "claude",
     "annotate",

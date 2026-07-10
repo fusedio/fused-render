@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Parquet layout</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px; color: #e8eaed; background: #131417;
+  }
+  /* Top bar: file summary on the left, the Layout/Metadata toggle on the right. */
+  #bar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px; border-bottom: 1px solid #2a2d33; background: #1b1d21;
+    position: sticky; top: 0; z-index: 3; flex-wrap: wrap;
+  }
+  #summary { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; color: #9aa0a6; }
+  #summary .stat { white-space: nowrap; }
+  #summary .stat b { color: #e8eaed; font-weight: 600; }
+  #summary .sep { color: #3a3d44; }
+  #tabs { margin-left: auto; display: flex; gap: 4px; }
+  #tabs button {
+    font: inherit; padding: 4px 12px; border: 1px solid #2a2d33; border-radius: 6px;
+    background: #131417; color: #cfd3d7; cursor: pointer;
+  }
+  #tabs button.active { background: #23324a; border-color: #35507a; color: #eaf1ff; }
+  #content { padding: 14px; }
+  #status { padding: 24px; color: #9aa0a6; }
+  #status.error { color: #ff6b6b; }
+
+  /* ---- Layout view: nested byte-range boxes ---- */
+  .lay { display: flex; flex-direction: column; gap: 10px; max-width: 760px; }
+  .box {
+    border: 1px solid #2f333b; border-radius: 8px; background: #191b1f;
+    padding: 10px 12px;
+  }
+  .box-head {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  }
+  .box-title { font-weight: 600; }
+  .box-title .muted { color: #9aa0a6; font-weight: 400; margin-left: 6px; }
+  .box-range { color: #9aa0a6; font-size: 12px; text-align: right; white-space: nowrap; line-height: 1.35; }
+  .box-range b { color: #cfd3d7; font-weight: 600; }
+  .magic { background: #16181c; border-style: dashed; }
+  .rg { border-color: #3a4152; background: #1a1d24; }
+  .rg > .cols { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+  .col { border-color: #333844; background: #1e2128; }
+  .col > .data {
+    margin-top: 8px; border: 1px solid #2c313b; border-radius: 6px;
+    background: #23262e; padding: 8px 10px;
+  }
+  /* A thin proportional bar under each row group showing how its column chunks
+     split the row group's bytes. */
+  .track { display: flex; height: 6px; border-radius: 3px; overflow: hidden; margin-top: 10px; background: #14161a; }
+  .track > span { height: 100%; }
+
+  /* ---- Metadata view ---- */
+  .meta-section { margin-bottom: 20px; }
+  .meta-section h3 { margin: 0 0 8px; font-size: 13px; color: #cfd3d7; }
+  table { border-collapse: collapse; width: 100%; max-width: 900px; }
+  th, td {
+    padding: 5px 10px; border-bottom: 1px solid #24262b; text-align: left;
+    vertical-align: top; white-space: nowrap;
+  }
+  th { background: #1b1d21; font-weight: 600; color: #cfd3d7; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; max-width: 720px; }
+  .kv dt { color: #9aa0a6; }
+  .kv dd { margin: 0; color: #e8eaed; font-variant-numeric: tabular-nums; }
+  details.rgd { border: 1px solid #2a2d33; border-radius: 6px; margin-bottom: 8px; background: #191b1f; }
+  details.rgd > summary {
+    cursor: pointer; padding: 8px 10px; color: #cfd3d7; font-weight: 600;
+    display: flex; gap: 12px; align-items: baseline;
+  }
+  details.rgd > summary .muted { color: #9aa0a6; font-weight: 400; }
+  details.rgd[open] > summary { border-bottom: 1px solid #24262b; }
+  details.rgd .rgd-body { padding: 4px 6px 8px; overflow-x: auto; }
+  code.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #b7c0cb; }
+</style>
+</head>
+<body>
+  <div id="bar">
+    <div id="summary"></div>
+    <div id="tabs">
+      <button id="tab-layout" class="active">Layout</button>
+      <button id="tab-metadata">Metadata</button>
+    </div>
+  </div>
+  <div id="content"><div id="status">Loading…</div></div>
+  <script>
+    const el = (id) => document.getElementById(id);
+    const content = el("content");
+    const summaryEl = el("summary");
+    let data = null;
+
+    const esc = (s) => String(s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    const n = (x) => (x == null ? "—" : Number(x).toLocaleString());
+
+    // Human byte size (1.0 KB / 399.0 MB / 1.2 GB). Base-1024, one decimal.
+    function humanBytes(b) {
+      if (b == null) return "—";
+      const u = ["B", "KB", "MB", "GB", "TB"];
+      let v = b, i = 0;
+      while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+      return (i === 0 ? v : v.toFixed(1)) + " " + u[i];
+    }
+
+    // Stable-ish colour per column so a column keeps its hue across row groups.
+    function colColor(i) { return `hsl(${(i * 47) % 360} 45% 45%)`; }
+
+    function currentTab() {
+      const t = fused.params.get("view");
+      return t === "metadata" ? "metadata" : "layout";
+    }
+
+    function renderSummary() {
+      const f = data.file;
+      const stats = [
+        ["size", humanBytes(f.size)],
+        ["rows", n(f.num_rows)],
+        ["row groups", n(f.num_row_groups)],
+        ["columns", n(f.num_columns)],
+        ["compression", f.compression.length ? f.compression.join(", ") : "—"],
+      ];
+      summaryEl.innerHTML = stats
+        .map(([k, v]) => `<span class="stat">${esc(k)} <b>${esc(v)}</b></span>`)
+        .join(`<span class="sep">·</span>`);
+    }
+
+    function renderLayout() {
+      const f = data.file;
+      const parts = [];
+      for (const r of data.layout) {
+        if (r.kind === "header" || r.kind === "footer") {
+          parts.push(`<div class="box magic">
+            <div class="box-head">
+              <span class="box-title">${esc(r.label)}<span class="muted">${r.kind}</span></span>
+              <span class="box-range">start <b>${n(r.start)}</b><br>bytes <b>${n(r.bytes)}</b><br>end <b>${n(r.end)}</b></span>
+            </div></div>`);
+        } else if (r.kind === "row_group") {
+          const cols = r.columns.map((c, i) => `
+            <div class="box col">
+              <div class="box-head">
+                <span class="box-title">Column <code class="mono">${esc(c.path)}</code></span>
+                <span class="box-range">bytes <b>${n(c.bytes)}</b></span>
+              </div>
+              <div class="data">
+                <div class="box-head">
+                  <span class="box-title" style="font-weight:400;color:#9aa0a6">Data</span>
+                  <span class="box-range">start <b>${n(c.start)}</b><br>bytes <b>${n(c.bytes)}</b><br>end <b>${n(c.end)}</b></span>
+                </div>
+              </div>
+            </div>`).join("");
+          const total = r.columns.reduce((s, c) => s + c.bytes, 0) || 1;
+          const track = r.columns.map((c, i) =>
+            `<span title="${esc(c.path)}: ${n(c.bytes)} bytes" style="width:${(c.bytes / total * 100).toFixed(3)}%;background:${colColor(i)}"></span>`).join("");
+          parts.push(`<div class="box rg">
+            <div class="box-head">
+              <span class="box-title">RowGroup ${r.index}<span class="muted">${n(r.num_rows)} rows</span></span>
+              <span class="box-range">bytes <b>${n(r.bytes)}</b></span>
+            </div>
+            <div class="track">${track}</div>
+            <div class="cols">${cols}</div>
+          </div>`);
+        }
+      }
+      content.innerHTML = `<div class="lay">${parts.join("")}</div>`;
+    }
+
+    function renderMetadata() {
+      const f = data.file;
+      const fileRows = [
+        ["Path", esc(f.path)],
+        ["Size", `${humanBytes(f.size)} <span style="color:#9aa0a6">(${n(f.size)} bytes)</span>`],
+        ["Rows", n(f.num_rows)],
+        ["Row groups", n(f.num_row_groups)],
+        ["Columns", n(f.num_columns)],
+        ["Format version", esc(f.format_version)],
+        ["Created by", esc(f.created_by || "—")],
+        ["Compressed", humanBytes(f.total_compressed)],
+        ["Uncompressed", humanBytes(f.total_uncompressed)],
+        ["Compression", esc(f.compression.join(", ") || "—")],
+        ["Footer size", `${n(f.serialized_size)} bytes`],
+      ].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+
+      const schemaRows = data.schema.map((c) => `<tr>
+        <td><code class="mono">${esc(c.path)}</code></td>
+        <td>${esc(c.physical_type)}</td>
+        <td>${esc(c.logical_type || c.converted_type || "—")}</td>
+        <td class="num">${c.max_def}</td>
+        <td class="num">${c.max_rep}</td></tr>`).join("");
+
+      const rgDetails = data.row_groups.map((rg) => {
+        const chunkRows = rg.columns.map((c) => {
+          const st = c.stats || {};
+          const mm = (st.min == null && st.max == null) ? "—"
+            : `${esc(String(st.min))} … ${esc(String(st.max))}`;
+          return `<tr>
+            <td><code class="mono">${esc(c.path)}</code></td>
+            <td>${esc(c.physical_type)}</td>
+            <td>${esc(c.compression)}</td>
+            <td>${esc(c.encodings.join(", "))}</td>
+            <td class="num">${n(c.num_values)}</td>
+            <td class="num">${humanBytes(c.compressed_size)}</td>
+            <td class="num">${humanBytes(c.uncompressed_size)}</td>
+            <td class="num">${n(c.start)}</td>
+            <td>${mm}</td>
+            <td class="num">${st.nulls == null ? "—" : n(st.nulls)}</td></tr>`;
+        }).join("");
+        return `<details class="rgd">
+          <summary>RowGroup ${rg.index}
+            <span class="muted">${n(rg.num_rows)} rows · ${humanBytes(rg.compressed_size)} compressed · ${humanBytes(rg.total_byte_size)} raw</span>
+          </summary>
+          <div class="rgd-body"><table><thead><tr>
+            <th>Column</th><th>Type</th><th>Codec</th><th>Encodings</th><th>Values</th>
+            <th>Compressed</th><th>Uncompressed</th><th>Offset</th><th>Min … Max</th><th>Nulls</th>
+          </tr></thead><tbody>${chunkRows}</tbody></table></div>
+        </details>`;
+      }).join("");
+
+      content.innerHTML = `
+        <div class="meta-section"><h3>File</h3><dl class="kv">${fileRows}</dl></div>
+        <div class="meta-section"><h3>Schema</h3>
+          <table><thead><tr><th>Column</th><th>Physical type</th><th>Logical type</th>
+          <th class="num">Max def</th><th class="num">Max rep</th></tr></thead>
+          <tbody>${schemaRows}</tbody></table></div>
+        <div class="meta-section"><h3>Row groups</h3>${rgDetails}</div>`;
+    }
+
+    function renderTab() {
+      const tab = currentTab();
+      el("tab-layout").classList.toggle("active", tab === "layout");
+      el("tab-metadata").classList.toggle("active", tab === "metadata");
+      if (!data) return;
+      if (tab === "metadata") renderMetadata(); else renderLayout();
+    }
+
+    async function load() {
+      const file = fused.params.get("_file");
+      content.innerHTML = `<div id="status">Loading…</div>`;
+      if (!file) {
+        content.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
+        return;
+      }
+      try {
+        data = await fused.runPython("./reader.py", { file });
+        renderSummary();
+        renderTab();
+      } catch (err) {
+        content.innerHTML = `<div id="status" class="error"><strong>${esc(err.type || "Error")}</strong>: ${esc(err.message || "")}</div>`;
+      }
+    }
+
+    el("tab-layout").addEventListener("click", () => fused.params.set("view", "layout"));
+    el("tab-metadata").addEventListener("click", () => fused.params.set("view", "metadata"));
+    // Tab changes only reshuffle already-loaded data; a file change reloads.
+    let lastFile = null;
+    fused.params.onChange(() => {
+      const file = fused.params.get("_file");
+      if (file !== lastFile) { lastFile = file; load(); }
+      else renderTab();
+    });
+    lastFile = fused.params.get("_file");
+    load();
+  </script>
+</body>
+</html>
