@@ -567,29 +567,34 @@ def _icon_for(template_path: str):
     return icon if os.path.isfile(icon) else None
 
 
-def _condition_allows(template_path: str, target_path: str):
-    """Evaluate a template folder's optional `condition.py` gate.
+def _condition_file(template_path: str):
+    """The template folder's `condition.py` path, or None when it has no gate.
 
     A template folder may ship a `condition.py` defining `def method(path):
-    bool`. When present, the template is shown for a given file only if
-    `method(<that file's path>)` returns truthy — this is how one extension can
-    offer different templates for different files (e.g. only show a template for
-    files under a certain path, or matching a naming convention). Returns
+    bool` — the gate that decides whether the template shows for a given file
+    (SPEC CT-12). No file -> the template is unconditional (the common case).
+    Split from evaluation so `_apply_conditions` can cheaply tell which entries
+    need running before paying to load any code.
+    """
+    condition_file = os.path.join(os.path.dirname(template_path), "condition.py")
+    return condition_file if os.path.isfile(condition_file) else None
+
+
+def _run_condition(condition_file: str, target_path: str):
+    """Load+exec a `condition.py` and call `method(target_path)`. Returns
     (allowed: bool, error: str|None).
 
-    No `condition.py` -> unconditionally allowed (the common case). The module
-    is loaded fresh per call (like the registries, so an edit applies on the
-    next stat with no restart) and never inserted into `sys.modules`. A broken
-    condition — no `method`, an exception, a non-bool return — drops the
+    The module is loaded fresh per call (like the registries, so an edit applies
+    on the next stat with no restart) and never inserted into `sys.modules` — so
+    concurrent calls with the fixed spec name get independent module objects and
+    are safe to run in parallel (same rationale as executor._run_in_process). A
+    broken condition — no callable `method`, or any raised exception — drops the
     template and surfaces the reason as `template_error`, mirroring how an
     unresolvable name is dropped (SPEC CT-6): a template gated by code that
     can't decide is not silently shown.
     """
     import importlib.util
 
-    condition_file = os.path.join(os.path.dirname(template_path), "condition.py")
-    if not os.path.isfile(condition_file):
-        return True, None
     try:
         spec = importlib.util.spec_from_file_location(
             "__fused_condition__", condition_file
@@ -606,20 +611,50 @@ def _condition_allows(template_path: str, target_path: str):
 
 def _apply_conditions(entries: list, target_path: str):
     """Filter resolved template entries through their `condition.py` gates
-    (SPEC PT-8). Sentinel entries (`path is None`, D73) have no folder and are
-    always kept. Returns (kept: list, error: str|None) — the first gate error,
-    matching `_resolve_mode_list`'s first-error convention.
+    (SPEC PT-8/CT-12). Sentinel entries (`path is None`, D73) and folders with
+    no `condition.py` are kept as-is. Returns (kept: list, error: str|None) —
+    the first gate error in list order, matching `_resolve_mode_list`'s
+    first-error convention.
+
+    Gates are independent and may be slow (user code — filesystem reads, etc.),
+    so the entries that have one are evaluated **concurrently**: the per-stat
+    cost is the slowest single gate, not their sum. Results are keyed by entry
+    index and reassembled in list order, so ordering and error precedence are
+    unaffected by completion order. The common case (no gates) spawns no threads.
     """
+    # Cheap first pass: which entries actually carry a condition.py? (isfile,
+    # ~1µs each). Only these need code loaded; everything else is kept as-is.
+    gated = []  # list[(index, condition_file)]
+    for i, entry in enumerate(entries):
+        path = entry.get("path")
+        if path is not None:
+            cf = _condition_file(path)
+            if cf is not None:
+                gated.append((i, cf))
+
+    results = {}  # index -> (allowed, error)
+    if len(gated) == 1:
+        i, cf = gated[0]
+        results[i] = _run_condition(cf, target_path)
+    elif gated:
+        # Bounded fan-out — an extension has at most a handful of conditional
+        # templates (SPEC CT-12), so one worker per gate is fine.
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=len(gated)) as pool:
+            futures = {pool.submit(_run_condition, cf, target_path): i for i, cf in gated}
+            for fut, i in futures.items():
+                results[i] = fut.result()
+
     kept, error = [], None
-    for entry in entries:
-        if entry.get("path") is None:
-            kept.append(entry)
-            continue
-        allowed, err = _condition_allows(entry["path"], target_path)
-        if err and error is None:
-            error = err
-        if allowed:
-            kept.append(entry)
+    for i, entry in enumerate(entries):
+        if i in results:
+            allowed, err = results[i]
+            if err and error is None:
+                error = err
+            if not allowed:
+                continue
+        kept.append(entry)
     return kept, error
 
 

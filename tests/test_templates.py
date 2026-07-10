@@ -409,3 +409,23 @@ def test_condition_reevaluated_per_call(user_dir):
         "def method(path):\n    return True\n"
     )
     assert modes("/x/a.csv")[0] == ["special", "code"]
+
+
+def test_conditions_run_concurrently(user_dir):
+    # Independent gates are evaluated in parallel, so total time is the slowest
+    # single gate, not their sum. Four ~0.3s sleeps would take ~1.2s serially;
+    # concurrently they finish in well under that. Generous margin for CI jitter.
+    import time
+
+    sleep = "import time\ndef method(path):\n    time.sleep(0.3)\n    return True\n"
+    names = [f"cond{i}" for i in range(4)]
+    for name in names:
+        user_dir.template(name, condition=sleep)
+    user_dir.registry({".csv": names})
+
+    t = time.perf_counter()
+    m, error = modes("/x/a.csv")
+    elapsed = time.perf_counter() - t
+
+    assert m == names and error is None
+    assert elapsed < 0.9, f"expected concurrent (~0.3s), got {elapsed:.2f}s (serial would be ~1.2s)"

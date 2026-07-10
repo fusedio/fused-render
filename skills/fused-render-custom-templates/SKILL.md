@@ -78,6 +78,7 @@ def method(path):
 - **No `condition.py` = always shown** — the common case. Only add one when a template should apply to *some* files of an extension, not all.
 - **Runs after registry resolution**, for both user and built-in folders (whichever `template.html` resolves). So `".csv": ["reports-view", "csv", "code"]` offers `reports-view` only for files where its `method` returns True; the others always show.
 - **Re-evaluated on every file open** (like the registry) — edit `condition.py` and the next navigation/refresh picks it up, no restart.
+- **Keep it fast.** When an extension has several gated templates they're evaluated concurrently (so the cost is the slowest gate, not the sum), but every gate still runs on every file of that extension — a gate that returns False still had to run to decide that. Use quick, path-based checks (`in path`, `endswith`, `os.path`), not network calls or reads of large files.
 - **A broken condition drops that template** (no callable `method`, an exception, etc.) and sets `template_error` on the stat response — same as a bad registry name. It's never silently shown.
 - **Sentinel modes** (`_render`, `_listing`) have no folder and can't be gated.
 - **Visible in the UI:** a template with a `condition.py` shows a **"conditional"** badge in the templates management page (Templates → Library), so you can tell at a glance which templates are gated.
