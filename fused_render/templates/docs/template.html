@@ -383,7 +383,7 @@
     return mermaid;
   }
 
-  const { Schema, DOMParser: PMDOMParser, DOMSerializer } = PM.pmModel;
+  const { Schema, DOMParser: PMDOMParser, DOMSerializer, Fragment } = PM.pmModel;
   const { EditorState, Plugin, PluginKey, TextSelection } = PM.pmState;
   const { EditorView, Decoration, DecorationSet } = PM.pmView;
   const C = PM.pmCommands;
@@ -409,6 +409,15 @@
   }
   const tableNodes = T.tableNodes({ tableGroup: "block", cellContent: "block+",
     cellAttributes: { background: { default: null } } });
+
+  // Strip the TeX delimiters pandoc/toDOM wrap around math (\(…\), \[…\], $…$).
+  const mathTex = (dom) => {
+    const t = (dom.textContent || "").trim();
+    const m = t.match(/^\\\(([\s\S]*)\\\)$/) || t.match(/^\\\[([\s\S]*)\\\]$/)
+      || t.match(/^\$\$([\s\S]*)\$\$$/) || t.match(/^\$([\s\S]*)\$$/);
+    return (m ? m[1] : t).trim();
+  };
+  const mathContent = (dom, sch) => { const tex = mathTex(dom); return tex ? Fragment.from(sch.text(tex)) : Fragment.empty; };
 
   const nodes = {
     doc: { content: "block+" },
@@ -451,15 +460,23 @@
       toDOM: (n) => ["img", { src: n.attrs.src, alt: n.attrs.alt, title: n.attrs.title, width: n.attrs.width }],
     },
     hard_break: { group: "inline", inline: true, selectable: false, parseDOM: [{ tag: "br" }], toDOM: () => ["br"] },
-    // math: content is the LaTeX source; toDOM emits pandoc-style spans so export round-trips.
+    // math: content is the LaTeX source. parseDOM reads the pandoc-style
+    // span.math that both toDOM and pandoc's docx import emit, so equations
+    // survive open/save round-trips (not just the vestigial <math-*> tags).
     math_inline: {
       group: "inline math", content: "text*", inline: true, atom: true,
-      parseDOM: [{ tag: "math-inline" }],
+      parseDOM: [
+        { tag: "span.math.inline", getContent: mathContent },
+        { tag: "math-inline" },
+      ],
       toDOM: (n) => ["span", { class: "math inline" }, "\\(" + (n.textContent || "") + "\\)"],
     },
     math_display: {
       group: "block math", content: "text*", atom: true, code: true,
-      parseDOM: [{ tag: "math-display" }],
+      parseDOM: [
+        { tag: "span.math.display", getContent: mathContent },
+        { tag: "math-display" },
+      ],
       toDOM: (n) => ["span", { class: "math display" }, "\\[" + (n.textContent || "") + "\\]"],
     },
     // diagram: mermaid source stored as an attr, rendered to SVG via a NodeView.
