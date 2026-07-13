@@ -1,0 +1,1388 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Tableau viewer</title>
+<style>
+  :root {
+    --bg: #f9f9f7; --surface: #fcfcfb; --panel: #fcfcfb;
+    --text: #0b0b0b; --text2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --baseline: #c3c2b7; --border: rgba(11,11,11,.10);
+    --accent: #2a78d6; --accent-soft: rgba(42,120,214,.10); --on-accent: #fff;
+    --dim: #2a78d6; --dim-soft: rgba(42,120,214,.12);
+    --meas: #008300; --meas-soft: rgba(0,131,0,.10);
+    --hover: rgba(11,11,11,.05); --input: #ffffff; --scrim: rgba(32,33,36,.4);
+    --err: #d03b3b; --ok: #006300; --warn: #b06000;
+    --shadow: 0 6px 24px rgba(11,11,11,.14);
+    color-scheme: light;
+  }
+  body[data-theme=dark] {
+    --bg: #0d0d0d; --surface: #1a1a19; --panel: #1a1a19;
+    --text: #ffffff; --text2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --baseline: #383835; --border: rgba(255,255,255,.10);
+    --accent: #3987e5; --accent-soft: rgba(57,135,229,.16); --on-accent: #fff;
+    --dim: #3987e5; --dim-soft: rgba(57,135,229,.18);
+    --meas: #1baf7a; --meas-soft: rgba(27,175,122,.14);
+    --hover: rgba(255,255,255,.06); --input: #111110; --scrim: rgba(0,0,0,.55);
+    --err: #e66767; --ok: #0ca30c; --warn: #c98500;
+    --shadow: 0 6px 24px rgba(0,0,0,.5);
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; display: flex; flex-direction: column; overflow: hidden;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 13px; color: var(--text); background: var(--bg);
+  }
+  button {
+    font: inherit; color: var(--text); background: none; border: none;
+    border-radius: 6px; padding: 4px 9px; cursor: pointer; white-space: nowrap;
+  }
+  button:hover { background: var(--hover); }
+  button.primary { background: var(--accent); color: var(--on-accent); }
+  button.primary:hover { filter: brightness(1.08); }
+  button.outline { border: 1px solid var(--border); }
+  input, select {
+    font: inherit; color: var(--text); background: var(--input);
+    border: 1px solid var(--baseline); border-radius: 6px; padding: 4px 8px; outline: none;
+  }
+  input:focus { border-color: var(--accent); }
+
+  /* ---- top bar ---- */
+  #topbar {
+    display: flex; align-items: center; gap: 6px; padding: 6px 12px;
+    border-bottom: 1px solid var(--grid); background: var(--surface); flex: none;
+  }
+  #topbar .logo { font-weight: 650; font-size: 13.5px; margin-right: 2px; letter-spacing: .1px; }
+  #topbar .logo span { color: var(--accent); }
+  #wbName { color: var(--text2); padding: 2px 8px; border-radius: 5px; max-width: 260px;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #wbName.editable:hover { background: var(--hover); cursor: text; }
+  #dirtyDot { color: var(--warn); font-size: 15px; line-height: 1; display: none; }
+  #status { margin-left: auto; font-size: 12px; color: var(--muted); overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap; max-width: 45%; }
+  #status.err { color: var(--err); } #status.ok { color: var(--ok); }
+  .menuBtn::after { content: " ▾"; font-size: 9px; color: var(--muted); }
+
+  /* ---- layout ---- */
+  #main { display: flex; flex: 1; min-height: 0; }
+  #rail {
+    width: 248px; flex: none; display: flex; flex-direction: column; min-height: 0;
+    border-right: 1px solid var(--grid); background: var(--surface);
+    transition: margin-left .18s ease;
+  }
+  #rail.hidden { margin-left: -248px; }
+  #railHead {
+    display: flex; align-items: center; gap: 6px; padding: 8px 10px 6px;
+    font-weight: 600; font-size: 12px;
+  }
+  #srcName { color: var(--text2); font-weight: 500; overflow: hidden; text-overflow: ellipsis;
+             white-space: nowrap; flex: 1; }
+  #srcRows { color: var(--muted); font-weight: 400; font-size: 11px; }
+  #fields { flex: 1; overflow-y: auto; padding: 2px 6px 12px; }
+  .fgroup { margin: 8px 4px 3px; font-size: 10.5px; font-weight: 650; color: var(--muted);
+            text-transform: uppercase; letter-spacing: .7px; }
+  .field {
+    display: flex; align-items: center; gap: 7px; padding: 4px 8px; border-radius: 6px;
+    cursor: grab; user-select: none;
+  }
+  .field:hover { background: var(--hover); }
+  .field .ficon { font-size: 10px; width: 20px; flex: none; text-align: center;
+                  font-weight: 650; border-radius: 4px; padding: 1px 0; }
+  .field.dim .ficon { color: var(--dim); background: var(--dim-soft); }
+  .field.meas .ficon { color: var(--meas); background: var(--meas-soft); }
+  .field .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #railEmpty { padding: 14px 12px; color: var(--muted); line-height: 1.5; }
+
+  /* ---- shelves ---- */
+  #sheetArea { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  #shelves {
+    flex: none; padding: 8px 14px 2px; background: var(--surface);
+    border-bottom: 1px solid var(--grid);
+  }
+  .shelfRow { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .shelfLabel { width: 62px; flex: none; text-align: right; font-size: 11px; color: var(--muted); }
+  .shelf {
+    flex: 1; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-height: 30px;
+    border: 1px dashed var(--baseline); border-radius: 7px; padding: 3px 6px; background: var(--bg);
+  }
+  .shelf.dragover { border-color: var(--accent); background: var(--accent-soft); }
+  .shelf .hint { color: var(--muted); font-size: 11.5px; padding: 0 4px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 4px; max-width: 230px;
+    padding: 3px 5px 3px 10px; border-radius: 20px; font-size: 12px; cursor: pointer;
+    user-select: none; border: 1px solid transparent;
+  }
+  .pill span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pill.dim { background: var(--dim); color: #fff; }
+  .pill.meas { background: var(--meas); color: #fff; }
+  body[data-theme=dark] .pill.meas { color: #06130c; }
+  .pill .caret { font-size: 8.5px; opacity: .85; }
+  .pill .rm { border-radius: 50%; width: 16px; height: 16px; line-height: 14px; text-align: center;
+              font-size: 11px; opacity: 0; flex: none; }
+  .pill:hover .rm { opacity: .8; }
+  .pill .rm:hover { background: rgba(0,0,0,.25); opacity: 1; }
+  #chartCtl { display: flex; align-items: center; gap: 8px; }
+  #chartCtl .spacer { flex: 1; }
+
+  /* ---- filter chips ---- */
+  #filterBar {
+    flex: none; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    padding: 7px 14px; border-bottom: 1px solid var(--grid); background: var(--surface);
+  }
+  #filterBar .flabel { font-size: 11px; color: var(--muted); margin-right: 2px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 5px; max-width: 300px;
+    border: 1px solid var(--baseline); border-radius: 20px; padding: 2.5px 6px 2.5px 10px;
+    font-size: 12px; cursor: pointer; background: var(--bg); user-select: none;
+  }
+  .chip:hover { border-color: var(--accent); }
+  .chip b { font-weight: 600; }
+  .chip span.val { color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip .rm { border-radius: 50%; width: 15px; height: 15px; line-height: 13px; text-align: center;
+              font-size: 11px; color: var(--muted); flex: none; }
+  .chip .rm:hover { background: var(--hover); color: var(--text); }
+  #addFilter { color: var(--muted); font-size: 12px; border-radius: 20px; }
+
+  /* ---- chart ---- */
+  #chartWrap { flex: 1; min-height: 0; position: relative; overflow: auto; padding: 14px 18px; }
+  #chart { width: 100%; height: 100%; }
+  #chart.vega-embed { display: block; }
+  #chartMsg {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: var(--muted); font-size: 13px; text-align: center; padding: 30px; pointer-events: none;
+  }
+  #truncNote {
+    position: absolute; right: 18px; bottom: 8px; font-size: 11px; color: var(--warn);
+    background: var(--surface); border: 1px solid var(--grid); border-radius: 6px; padding: 2px 8px;
+  }
+  /* stat tiles */
+  #statRow { display: flex; gap: 14px; flex-wrap: wrap; align-content: center; height: 100%;
+             align-items: center; justify-content: center; }
+  .stat {
+    min-width: 200px; padding: 22px 26px; border: 1px solid var(--grid); border-radius: 10px;
+    background: var(--surface);
+  }
+  .stat .v { font-size: 34px; font-weight: 650; letter-spacing: -.5px; }
+  .stat .l { margin-top: 6px; color: var(--muted); font-size: 12px; }
+  /* raw table */
+  table.raw { border-collapse: collapse; font-size: 12px; width: max-content; min-width: 100%; }
+  table.raw th, table.raw td {
+    padding: 5px 12px; text-align: left; border-bottom: 1px solid var(--grid);
+    white-space: nowrap; max-width: 340px; overflow: hidden; text-overflow: ellipsis;
+  }
+  table.raw th { position: sticky; top: -14px; background: var(--surface); color: var(--text2);
+                 font-weight: 600; border-bottom: 1px solid var(--baseline); }
+  table.raw td.num { font-variant-numeric: tabular-nums; text-align: right; }
+  table.raw tr:hover td { background: var(--hover); }
+  .tableMeta { color: var(--muted); font-size: 11.5px; margin: 0 0 8px; }
+
+  /* ---- sheet tabs ---- */
+  #tabs {
+    flex: none; display: flex; align-items: center; gap: 2px; padding: 4px 10px;
+    border-top: 1px solid var(--grid); background: var(--surface); overflow-x: auto;
+  }
+  .tab {
+    display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 6px 6px 0 0;
+    cursor: pointer; color: var(--text2); font-size: 12px; user-select: none; white-space: nowrap;
+  }
+  .tab:hover { background: var(--hover); }
+  .tab.on { color: var(--text); font-weight: 600; box-shadow: inset 0 -2px var(--accent); }
+  .tab .x { color: var(--muted); font-size: 11px; border-radius: 50%; width: 15px; height: 15px;
+            line-height: 14px; text-align: center; visibility: hidden; }
+  .tab:hover .x { visibility: visible; }
+  .tab .x:hover { background: var(--hover); color: var(--text); }
+  #addTab { color: var(--muted); font-size: 15px; padding: 2px 9px; }
+
+  /* ---- menus / dropdowns ---- */
+  .menu {
+    position: fixed; z-index: 60; min-width: 170px; padding: 5px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 9px;
+    box-shadow: var(--shadow); max-height: 60vh; overflow-y: auto;
+  }
+  .menu .mi {
+    display: flex; align-items: center; gap: 8px; padding: 5.5px 10px; border-radius: 6px;
+    cursor: pointer; white-space: nowrap;
+  }
+  .menu .mi:hover { background: var(--hover); }
+  .menu .mi .chk { width: 14px; flex: none; color: var(--accent); font-weight: 700; }
+  .menu .mi.disabled { color: var(--muted); pointer-events: none; }
+  .menu .sep { height: 1px; background: var(--grid); margin: 5px 6px; }
+  .menu .mhead { font-size: 10.5px; color: var(--muted); text-transform: uppercase;
+                 letter-spacing: .6px; padding: 6px 10px 3px; font-weight: 650; }
+  /* filter editor dropdown */
+  .fedit { width: 260px; padding: 10px; }
+  .fedit input[type=search] { width: 100%; margin-bottom: 7px; }
+  .fedit .vlist { max-height: 240px; overflow-y: auto; margin: 0 -4px; }
+  .fedit .vrow { display: flex; align-items: center; gap: 8px; padding: 3.5px 6px; border-radius: 5px;
+                 cursor: pointer; }
+  .fedit .vrow:hover { background: var(--hover); }
+  .fedit .vrow .cnt { margin-left: auto; color: var(--muted); font-size: 11px;
+                      font-variant-numeric: tabular-nums; }
+  .fedit .frow { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
+  .fedit .frow input { flex: 1; min-width: 0; }
+  .fedit .foot { display: flex; gap: 8px; margin-top: 9px; align-items: center; }
+  .fedit .foot .mini { font-size: 11.5px; color: var(--accent); padding: 2px 4px; }
+  .fedit .foot button.primary { margin-left: auto; }
+
+  /* ---- modal (file browser / dialogs) ---- */
+  #scrim { position: fixed; inset: 0; background: var(--scrim); z-index: 80; display: none;
+           align-items: center; justify-content: center; }
+  #scrim.on { display: flex; }
+  .modal {
+    width: 560px; max-width: 92vw; max-height: 80vh; display: flex; flex-direction: column;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: var(--shadow); padding: 16px;
+  }
+  .modal h2 { margin: 0 0 10px; font-size: 14px; }
+  .crumbs { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; margin-bottom: 8px;
+            font-size: 12px; color: var(--text2); }
+  .crumbs button { padding: 2px 6px; }
+  .flist { flex: 1; overflow-y: auto; border: 1px solid var(--grid); border-radius: 8px;
+           min-height: 220px; max-height: 44vh; padding: 4px; }
+  .frow2 { display: flex; align-items: center; gap: 9px; padding: 5px 9px; border-radius: 6px;
+           cursor: pointer; }
+  .frow2:hover { background: var(--hover); }
+  .frow2 .ic { flex: none; width: 18px; text-align: center; }
+  .frow2 .sz { margin-left: auto; color: var(--muted); font-size: 11px; }
+  .frow2.wb .nm { color: var(--accent); }
+  .mfoot { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
+  .mfoot input { flex: 1; }
+  .mfoot button.primary { margin-left: auto; }
+  .modal p.msg { color: var(--text2); line-height: 1.5; margin: 2px 0 4px; }
+
+  /* ---- start screen ---- */
+  #start { height: 100%; display: flex; align-items: center; justify-content: center; }
+  #start .card { width: 430px; max-width: 90%; }
+  #start h1 { font-size: 21px; margin: 0 0 6px; font-weight: 650; }
+  #start h1 span { color: var(--accent); }
+  #start p { color: var(--muted); margin: 0 0 18px; line-height: 1.5; }
+  #start .big {
+    display: flex; align-items: center; gap: 11px; width: 100%; text-align: left;
+    padding: 11px 14px; border: 1px solid var(--grid); border-radius: 10px; margin-bottom: 9px;
+    background: var(--surface);
+  }
+  #start .big:hover { border-color: var(--accent); background: var(--accent-soft); }
+  #start .big .t { font-weight: 600; }
+  #start .big .d { color: var(--muted); font-size: 12px; margin-top: 1px; }
+  #start .recent { margin-top: 16px; }
+  #start .recent .rh { font-size: 10.5px; color: var(--muted); text-transform: uppercase;
+                       letter-spacing: .7px; font-weight: 650; margin-bottom: 5px; }
+  #start .recent button { display: block; width: 100%; text-align: left; color: var(--accent);
+                          padding: 4px 8px; overflow: hidden; text-overflow: ellipsis; }
+
+  /* vega tooltip */
+  #vg-tooltip-element.vg-tooltip {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif !important;
+    font-size: 12px !important; border-radius: 8px !important;
+    border: 1px solid var(--border) !important; background: var(--panel) !important;
+    color: var(--text) !important; box-shadow: var(--shadow) !important; padding: 8px 10px !important;
+  }
+  #vg-tooltip-element.vg-tooltip td.key { color: var(--muted) !important; }
+  #vg-tooltip-element.vg-tooltip td.value { color: var(--text) !important;
+    font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body data-theme="light">
+
+<div id="topbar">
+  <button id="railBtn" title="Show / hide the data pane">☰</button>
+  <div class="logo">Tableau <span>viewer</span></div>
+  <button class="menuBtn" id="fileMenuBtn">File</button>
+  <button class="menuBtn" id="dlMenuBtn">Download</button>
+  <div id="wbName"></div><div id="dirtyDot">●</div>
+  <div id="status"></div>
+  <button id="themeBtn" title="Toggle light / dark theme">◐</button>
+</div>
+
+<div id="main">
+  <div id="rail">
+    <div id="railHead">Data <span id="srcName"></span> <span id="srcRows"></span></div>
+    <div id="fields"><div id="railEmpty">No data source yet.<br><br>Use <b>File ▸ Open…</b> or pick the sample on the start screen.</div></div>
+  </div>
+
+  <div id="sheetArea">
+    <div id="shelves">
+      <div class="shelfRow"><div class="shelfLabel">Columns</div><div class="shelf" id="shelfCols" data-shelf="cols"></div></div>
+      <div class="shelfRow"><div class="shelfLabel">Rows</div><div class="shelf" id="shelfRows" data-shelf="rows"></div></div>
+      <div class="shelfRow">
+        <div class="shelfLabel">Color</div>
+        <div class="shelf" id="shelfColor" data-shelf="color" style="flex:0 1 300px"></div>
+        <div id="chartCtl">
+          <button class="menuBtn outline" id="chartBtn">Chart: Auto</button>
+          <button class="outline" id="swapBtn" title="Swap Columns and Rows">⇄</button>
+          <button class="outline" id="sortBtn" title="Sort by measure">Sort ↕</button>
+        </div>
+        <div class="spacer"></div>
+      </div>
+    </div>
+    <div id="filterBar">
+      <span class="flabel">Filters</span>
+      <span id="chips"></span>
+      <button id="addFilter">+ Add filter</button>
+    </div>
+    <div id="chartWrap">
+      <div id="chart"></div>
+      <div id="chartMsg"></div>
+      <div id="truncNote" style="display:none"></div>
+    </div>
+    <div id="tabs"></div>
+  </div>
+</div>
+
+<div id="scrim"></div>
+
+<script>
+"use strict";
+(async function boot() {
+if (typeof fused === "undefined") {
+  document.getElementById("chartMsg").textContent =
+    "Open this inside fused-render (http://127.0.0.1:8766/view/<path-to-tableau.html>)";
+  return;
+}
+
+/* ---- load vendored vega (next to this file) ---- */
+const HTML_PATH = new URLSearchParams(window.location.search).get("path") || "";
+const BASE_DIR = HTML_PATH.slice(0, Math.max(HTML_PATH.lastIndexOf("/"), HTML_PATH.lastIndexOf("\\")) + 1);
+const loadScript = rel => new Promise((ok, bad) => {
+  const s = document.createElement("script"); s.src = fused.rawUrl(BASE_DIR + rel);
+  s.onload = ok; s.onerror = () => bad(new Error("failed to load " + rel));
+  document.head.appendChild(s);
+});
+await loadScript("vendor/vega.min.js");
+await loadScript("vendor/vega-lite.min.js");
+await loadScript("vendor/vega-embed.min.js");
+
+const PY = "./tableau.py";
+const $ = id => document.getElementById(id);
+
+/* ================= palette (validated — see dataviz reference palette) ================= */
+const PAL = {
+  light: {
+    cat: ["#2a78d6","#1baf7a","#eda100","#008300","#4a3aa7","#e34948","#e87ba4","#eb6834"],
+    seq: ["#cde2fb","#9ec5f4","#6da7ec","#3987e5","#256abf","#184f95","#0d366b"],
+    surface: "#fcfcfb", ink: "#0b0b0b", ink2: "#52514e", muted: "#898781",
+    grid: "#e1e0d9", baseline: "#c3c2b7",
+  },
+  dark: {
+    cat: ["#3987e5","#199e70","#c98500","#008300","#9085e9","#e66767","#d55181","#d95926"],
+    seq: ["#0d366b","#184f95","#256abf","#3987e5","#6da7ec","#9ec5f4","#cde2fb"],
+    surface: "#1a1a19", ink: "#ffffff", ink2: "#c3c2b7", muted: "#898781",
+    grid: "#2c2c2a", baseline: "#383835",
+  },
+};
+
+/* ================= state ================= */
+const AGG_LABEL = { sum: "SUM", avg: "AVG", median: "MED", min: "MIN", max: "MAX",
+                    count: "CNT", countd: "CNTD" };
+const GRAIN_LABEL = { year: "YEAR", quarter: "QUARTER", month: "MONTH", week: "WEEK", day: "DAY" };
+const CHARTS = [
+  ["auto", "Auto"], ["bar", "Bar"], ["line", "Line"], ["area", "Area"],
+  ["scatter", "Scatter"], ["pie", "Pie"], ["heatmap", "Heatmap"], ["table", "Text table"],
+];
+
+let BOOT = null;        // {home, workbooks_dir, workbooks}
+let schema = null;      // {file, nrows, fields}
+let fieldsBy = {};
+let wb = null;          // {version, name, source, sheets, active}
+let wbFile = "";        // path of the saved .tviz.json ("" = unsaved)
+let dirty = false;
+let view = null;        // current vega view (for PNG export)
+let renderSeq = 0;
+
+const newSheet = n => ({ name: n, chart: "auto", cols: [], rows: [], color: [], filters: [], sortDir: "" });
+const S = () => wb.sheets[wb.active];
+
+function setStatus(msg, cls) {
+  const el = $("status");
+  el.textContent = msg || ""; el.className = cls || "";
+  if (msg && !cls) setTimeout(() => { if (el.textContent === msg) el.textContent = ""; }, 4000);
+}
+function markDirty(v) { dirty = v; $("dirtyDot").style.display = v ? "block" : "none"; }
+function fmtSize(b) { return b > 1e6 ? (b / 1e6).toFixed(1) + " MB" : b > 1e3 ? (b / 1e3).toFixed(0) + " KB" : b + " B"; }
+function baseName(p) { return (p || "").split("/").pop(); }
+function fmtNum(v) {
+  if (v == null || v === "") return "";
+  if (Math.abs(v) >= 1e5) return v.toLocaleString("en-US", { notation: "compact", maximumFractionDigits: 1 });
+  return v.toLocaleString("en-US", { maximumFractionDigits: 2 });
+}
+
+/* ================= pills ================= */
+function pillIsMeasure(p) {
+  const f = fieldsBy[p.field];
+  return f.role === "measure" || !!p.agg;   // a dim with CNT/CNTD acts as a measure
+}
+function pillLabel(p) {
+  const f = fieldsBy[p.field];
+  if (p.agg) return `${AGG_LABEL[p.agg]}(${p.field})`;
+  if (f.dtype === "date") return `${GRAIN_LABEL[p.grain || "year"]}(${p.field})`;
+  return p.field;
+}
+function makePill(name) {
+  const f = fieldsBy[name];
+  const p = { field: name };
+  if (f.role === "measure") p.agg = "sum";
+  else if (f.dtype === "date") p.grain = "year";
+  return p;
+}
+
+/* ================= schema / data pane ================= */
+async function openData(file, keepSheets) {
+  setStatus("Opening data…");
+  const res = await fused.runPython(PY, { action: "open_data", file });
+  schema = res;
+  fieldsBy = {};
+  for (const f of schema.fields) fieldsBy[f.name] = f;
+  if (!keepSheets) {
+    wb = { version: 1, name: baseName(file).replace(/\.[^.]+$/, ""), source: schema.file,
+           sheets: [newSheet("Sheet 1")], active: 0 };
+    wbFile = "";
+    markDirty(false);
+  }
+  renderFieldPane(); renderTabs(); renderAll();
+  setStatus("");
+}
+
+function renderFieldPane() {
+  const host = $("fields");
+  if (!schema) return;
+  $("srcName").textContent = "· " + baseName(schema.file);
+  $("srcRows").textContent = schema.nrows.toLocaleString() + " rows";
+  host.innerHTML = "";
+  const groups = [["Dimensions", f => f.role === "dimension"], ["Measures", f => f.role === "measure"]];
+  for (const [title, test] of groups) {
+    const h = document.createElement("div"); h.className = "fgroup"; h.textContent = title;
+    host.appendChild(h);
+    for (const f of schema.fields.filter(test)) {
+      const el = document.createElement("div");
+      el.className = "field " + (f.role === "measure" ? "meas" : "dim");
+      el.draggable = true;
+      const icon = f.dtype === "date" ? "📅" : f.dtype === "number" ? "#" : f.dtype === "bool" ? "T|F" : "Abc";
+      el.innerHTML = `<span class="ficon">${icon}</span><span class="fname"></span>`;
+      el.querySelector(".fname").textContent = f.name;
+      el.title = `${f.name} — ${f.dtype}. Click to add, or drag onto a shelf.`;
+      el.addEventListener("dragstart", ev => ev.dataTransfer.setData("text/field", f.name));
+      el.addEventListener("click", () => smartAdd(f.name));
+      host.appendChild(el);
+    }
+  }
+}
+
+function smartAdd(name) {
+  const sh = S(), f = fieldsBy[name];
+  const target = f.role === "measure"
+    ? (sh.rows.length && !sh.rows.some(pillIsMeasure) ? "rows" : sh.rows.length === 0 ? "rows" : "cols")
+    : (sh.cols.length === 0 || !sh.cols.some(p => !pillIsMeasure(p)) ? "cols" : "rows");
+  addPill(target, name);
+}
+function addPill(shelf, name, idx) {
+  const sh = S();
+  const p = makePill(name);
+  if (shelf === "color") sh.color = [p];
+  else sh[shelf].splice(idx == null ? sh[shelf].length : idx, 0, p);
+  markDirty(true); renderAll();
+}
+
+/* ================= shelves ================= */
+function renderShelves() {
+  const sh = S();
+  const defs = [["shelfCols", sh.cols, "drag a field here"],
+                ["shelfRows", sh.rows, "drag a field here"],
+                ["shelfColor", sh.color, "color"]];
+  for (const [id, pills, hint] of defs) {
+    const host = $(id);
+    host.innerHTML = "";
+    if (!pills.length) host.innerHTML = `<span class="hint">${hint}</span>`;
+    pills.forEach((p, i) => {
+      const el = document.createElement("div");
+      el.className = "pill " + (pillIsMeasure(p) ? "meas" : "dim");
+      el.draggable = true;
+      el.innerHTML = `<span></span><span class="caret">▾</span><span class="rm" title="Remove">×</span>`;
+      el.firstChild.textContent = pillLabel(p);
+      el.addEventListener("dragstart", ev => {
+        ev.dataTransfer.setData("text/pill", JSON.stringify({ shelf: host.dataset.shelf, i }));
+      });
+      el.querySelector(".rm").addEventListener("click", ev => {
+        ev.stopPropagation(); removePill(host.dataset.shelf, i);
+      });
+      el.addEventListener("click", ev => pillMenu(ev.currentTarget, host.dataset.shelf, i));
+      host.appendChild(el);
+    });
+  }
+  const chart = S().chart;
+  $("chartBtn").textContent = "Chart: " + CHARTS.find(c => c[0] === chart)[1];
+  $("sortBtn").textContent = S().sortDir === "desc" ? "Sort ↓" : S().sortDir === "asc" ? "Sort ↑" : "Sort ↕";
+}
+function removePill(shelf, i) {
+  const sh = S();
+  if (shelf === "color") sh.color = [];
+  else sh[shelf].splice(i, 1);
+  markDirty(true); renderAll();
+}
+function getPill(shelf, i) { return shelf === "color" ? S().color[i] : S()[shelf][i]; }
+
+for (const host of document.querySelectorAll(".shelf")) {
+  host.addEventListener("dragover", ev => { ev.preventDefault(); host.classList.add("dragover"); });
+  host.addEventListener("dragleave", () => host.classList.remove("dragover"));
+  host.addEventListener("drop", ev => {
+    ev.preventDefault(); host.classList.remove("dragover");
+    const fieldName = ev.dataTransfer.getData("text/field");
+    const pillData = ev.dataTransfer.getData("text/pill");
+    if (fieldName) addPill(host.dataset.shelf, fieldName);
+    else if (pillData) {
+      const { shelf, i } = JSON.parse(pillData);
+      if (shelf === host.dataset.shelf) return;
+      const p = getPill(shelf, i);
+      removePillSilent(shelf, i);
+      if (host.dataset.shelf === "color") S().color = [p];
+      else S()[host.dataset.shelf].push(p);
+      markDirty(true); renderAll();
+    }
+  });
+}
+function removePillSilent(shelf, i) {
+  if (shelf === "color") S().color = [];
+  else S()[shelf].splice(i, 1);
+}
+
+function pillMenu(anchor, shelf, i) {
+  const p = getPill(shelf, i);
+  const f = fieldsBy[p.field];
+  const items = [];
+  if (f.role === "measure") {
+    items.push({ head: "Aggregate" });
+    for (const a of ["sum", "avg", "median", "min", "max", "count", "countd"])
+      items.push({ label: AGG_LABEL[a] + " — " + { sum: "Sum", avg: "Average", median: "Median", min: "Minimum", max: "Maximum", count: "Count", countd: "Count distinct" }[a],
+                   checked: p.agg === a, act: () => { p.agg = a; } });
+  } else if (f.dtype === "date") {
+    items.push({ head: "Date level" });
+    for (const g of ["year", "quarter", "month", "week", "day"])
+      items.push({ label: GRAIN_LABEL[g][0] + GRAIN_LABEL[g].slice(1).toLowerCase(),
+                   checked: (p.grain || "year") === g, act: () => { p.grain = g; delete p.agg; } });
+  } else {
+    items.push({ head: "Use as" });
+    items.push({ label: "Values (dimension)", checked: !p.agg, act: () => { delete p.agg; } });
+    items.push({ label: "Count distinct", checked: p.agg === "countd", act: () => { p.agg = "countd"; } });
+  }
+  items.push({ sep: true });
+  items.push({ label: "Filter by this field…", act: () => openFilterEditor(p.field, anchor) });
+  items.push({ label: "Remove", act: () => removePill(shelf, i) });
+  openMenu(anchor, items);
+}
+
+/* ================= generic dropdown menu ================= */
+let openMenuEl = null;
+function closeMenu() { if (openMenuEl) { openMenuEl.remove(); openMenuEl = null; } }
+document.addEventListener("mousedown", ev => {
+  if (openMenuEl && !openMenuEl.contains(ev.target)) closeMenu();
+});
+function placeMenu(m, anchor) {
+  document.body.appendChild(m);
+  const r = anchor.getBoundingClientRect();
+  m.style.left = Math.min(r.left, window.innerWidth - m.offsetWidth - 8) + "px";
+  m.style.top = Math.min(r.bottom + 4, window.innerHeight - m.offsetHeight - 8) + "px";
+}
+function openMenu(anchor, items) {
+  closeMenu();
+  const m = document.createElement("div"); m.className = "menu";
+  for (const it of items) {
+    if (it.sep) { const s = document.createElement("div"); s.className = "sep"; m.appendChild(s); continue; }
+    if (it.head) { const h = document.createElement("div"); h.className = "mhead"; h.textContent = it.head; m.appendChild(h); continue; }
+    const el = document.createElement("div");
+    el.className = "mi" + (it.disabled ? " disabled" : "");
+    el.innerHTML = `<span class="chk">${it.checked ? "✓" : ""}</span><span></span>`;
+    el.lastChild.textContent = it.label;
+    el.addEventListener("click", () => {
+      closeMenu();
+      if (it.act) it.act();
+      if (it.rerender !== false && !it.noRender) { markDirty(true); renderAll(); }
+    });
+    m.appendChild(el);
+  }
+  openMenuEl = m;
+  placeMenu(m, anchor);
+}
+
+/* ================= filters ================= */
+function filterSummary(f) {
+  if (f.type === "in") {
+    const v = f.values || [];
+    return v.length === 0 ? "all" : v.length <= 2 ? v.join(", ") : `${v.length} selected`;
+  }
+  const lo = f.min ?? "", hi = f.max ?? "";
+  if (lo !== "" && hi !== "") return `${lo} – ${hi}`;
+  if (lo !== "") return `≥ ${lo}`;
+  if (hi !== "") return `≤ ${hi}`;
+  return "all";
+}
+function renderFilters() {
+  const host = $("chips");
+  host.innerHTML = "";
+  S().filters.forEach((f, i) => {
+    const el = document.createElement("span");
+    el.className = "chip";
+    el.innerHTML = `<b></b><span class="val"></span><span class="rm" title="Remove filter">×</span>`;
+    el.querySelector("b").textContent = f.field + ":";
+    el.querySelector(".val").textContent = filterSummary(f);
+    el.querySelector(".rm").addEventListener("click", ev => {
+      ev.stopPropagation(); S().filters.splice(i, 1); markDirty(true); renderAll();
+    });
+    el.addEventListener("click", () => openFilterEditor(f.field, el));
+    host.appendChild(el);
+  });
+}
+$("addFilter").addEventListener("click", ev => {
+  if (!schema) return;
+  const items = schema.fields.map(f => ({
+    label: f.name, noRender: true, act: () => openFilterEditor(f.name, ev.target),
+  }));
+  openMenu(ev.target, items);
+});
+
+async function openFilterEditor(fieldName, anchor) {
+  closeMenu();
+  const f = fieldsBy[fieldName];
+  const existing = S().filters.find(x => x.field === fieldName);
+  setStatus("Loading values…");
+  let dom;
+  try { dom = await fused.runPython(PY, { action: "filter_domain", file: schema.file, field: fieldName }); }
+  catch (err) { setStatus(err.message, "err"); return; }
+  setStatus("");
+  const m = document.createElement("div"); m.className = "menu fedit";
+  const head = document.createElement("div"); head.className = "mhead"; head.textContent = "Filter: " + fieldName;
+  m.appendChild(head);
+
+  let apply;
+  if (dom.kind === "values") {
+    const sel = new Set(existing && existing.type === "in" ? existing.values : []);
+    const search = document.createElement("input");
+    search.type = "search"; search.placeholder = "Search values…";
+    m.appendChild(search);
+    const list = document.createElement("div"); list.className = "vlist";
+    m.appendChild(list);
+    const draw = () => {
+      const q = search.value.toLowerCase();
+      list.innerHTML = "";
+      for (const { v, n } of dom.values) {
+        if (q && !String(v).toLowerCase().includes(q)) continue;
+        const row = document.createElement("label"); row.className = "vrow";
+        const cb = document.createElement("input"); cb.type = "checkbox";
+        cb.checked = sel.has(v);
+        cb.addEventListener("change", () => { cb.checked ? sel.add(v) : sel.delete(v); });
+        row.appendChild(cb);
+        const nm = document.createElement("span"); nm.textContent = v === "" ? "(blank)" : v;
+        row.appendChild(nm);
+        const cnt = document.createElement("span"); cnt.className = "cnt"; cnt.textContent = n.toLocaleString();
+        row.appendChild(cnt);
+        list.appendChild(row);
+      }
+    };
+    search.addEventListener("input", draw);
+    draw();
+    const foot = document.createElement("div"); foot.className = "foot";
+    const all = document.createElement("button"); all.className = "mini"; all.textContent = "All";
+    all.addEventListener("click", () => { for (const x of dom.values) sel.add(x.v); draw(); });
+    const none = document.createElement("button"); none.className = "mini"; none.textContent = "None";
+    none.addEventListener("click", () => { sel.clear(); draw(); });
+    foot.appendChild(all); foot.appendChild(none);
+    if (dom.total > dom.values.length) {
+      const note = document.createElement("span"); note.className = "mini";
+      note.style.color = "var(--muted)";
+      note.textContent = `top ${dom.values.length} of ${dom.total}`;
+      foot.appendChild(note);
+    }
+    const ok = document.createElement("button"); ok.className = "primary"; ok.textContent = "Apply";
+    foot.appendChild(ok); m.appendChild(foot);
+    apply = () => sel.size ? { field: fieldName, type: "in", values: [...sel] } : null;
+    ok.addEventListener("click", () => commit());
+  } else {
+    const isDate = f.dtype === "date";
+    const mk = (label, val) => {
+      const row = document.createElement("div"); row.className = "frow";
+      const l = document.createElement("span"); l.textContent = label; l.style.width = "34px";
+      l.style.color = "var(--muted)"; l.style.fontSize = "11.5px";
+      const inp = document.createElement("input");
+      inp.type = isDate ? "date" : "number";
+      inp.value = val ?? "";
+      inp.placeholder = "any";
+      row.appendChild(l); row.appendChild(inp); m.appendChild(row);
+      return inp;
+    };
+    const hint = document.createElement("div");
+    hint.style.cssText = "color:var(--muted);font-size:11px;margin:2px 0 6px";
+    hint.textContent = `data range: ${String(dom.min).slice(0, 10)} – ${String(dom.max).slice(0, 10)}`;
+    m.appendChild(hint);
+    const lo = mk("min", existing && existing.type === "range" ? existing.min : "");
+    const hi = mk("max", existing && existing.type === "range" ? existing.max : "");
+    const foot = document.createElement("div"); foot.className = "foot";
+    const clear = document.createElement("button"); clear.className = "mini"; clear.textContent = "Clear";
+    clear.addEventListener("click", () => { lo.value = ""; hi.value = ""; });
+    const ok = document.createElement("button"); ok.className = "primary"; ok.textContent = "Apply";
+    foot.appendChild(clear); foot.appendChild(ok); m.appendChild(foot);
+    apply = () => (lo.value === "" && hi.value === "") ? null
+      : { field: fieldName, type: "range", min: lo.value === "" ? null : (isDate ? lo.value : +lo.value),
+          max: hi.value === "" ? null : (isDate ? hi.value : +hi.value) };
+    ok.addEventListener("click", () => commit());
+  }
+  function commit() {
+    const nf = apply();
+    const idx = S().filters.findIndex(x => x.field === fieldName);
+    if (nf) { idx >= 0 ? S().filters[idx] = nf : S().filters.push(nf); }
+    else if (idx >= 0) S().filters.splice(idx, 1);
+    closeMenu(); markDirty(true); renderAll();
+  }
+  openMenuEl = m;
+  placeMenu(m, anchor || $("addFilter"));
+}
+
+/* ================= chart resolution ================= */
+function shelfPills(sh) { return [...sh.cols, ...sh.rows]; }
+function resolveChart(sh) {
+  if (sh.chart !== "auto") return sh.chart;
+  const pills = shelfPills(sh);
+  const dims = pills.filter(p => !pillIsMeasure(p));
+  const meas = pills.filter(pillIsMeasure);
+  if (!pills.length) return "empty";
+  if (!dims.length && meas.length) return "stat";
+  if (meas.length >= 2) return "scatter";
+  if (!meas.length) return "table";
+  if (dims.length >= 2) return "heatmap";
+  const d = fieldsBy[dims[0].field];
+  return d.dtype === "date" ? "line" : "bar";
+}
+function chartHint(chart, sh) {
+  const pills = shelfPills(sh);
+  const dims = pills.filter(p => !pillIsMeasure(p));
+  const meas = pills.filter(pillIsMeasure);
+  if (chart === "empty") return "Add fields to the Columns and Rows shelves — click or drag from the data pane.";
+  if (chart === "scatter" && meas.length < 2) return "Scatter needs two measures — one on Columns, one on Rows.";
+  if (chart === "pie" && (!dims.length || !meas.length)) return "Pie needs one dimension (slices) and one measure (size).";
+  if (chart === "heatmap" && (dims.length < 2 || !meas.length)) return "Heatmap needs two dimensions and one measure.";
+  if (["bar", "line", "area"].includes(chart) && (!dims.length || !meas.length))
+    return "This chart needs at least one dimension and one measure.";
+  return "";
+}
+
+/* ---- shelves -> backend query spec ---- */
+function buildQuerySpec(sh, chart) {
+  const dims = [], measures = [], seen = new Set();
+  const push = p => {
+    const alias = pillLabel(p);
+    if (seen.has(alias)) return;
+    seen.add(alias);
+    if (pillIsMeasure(p)) measures.push({ field: p.field, agg: p.agg || "sum", as: alias });
+    else dims.push({ field: p.field, grain: p.grain, as: alias });
+  };
+  for (const p of shelfPills(sh)) push(p);
+  for (const p of sh.color) push(p);
+  const spec = { dims, measures, filters: sh.filters };
+  if (sh.sortDir && measures.length)
+    spec.sort = { by: measures[0].as, dir: sh.sortDir };
+  return spec;
+}
+
+/* ---- vega-lite spec ---- */
+function themePal() { return PAL[document.body.dataset.theme === "dark" ? "dark" : "light"]; }
+function vlConfig() {
+  const p = themePal();
+  const font = 'system-ui, -apple-system, "Segoe UI", sans-serif';
+  return {
+    background: "transparent", font,
+    axis: {
+      labelColor: p.muted, titleColor: p.ink2, gridColor: p.grid, domainColor: p.baseline,
+      tickColor: p.baseline, labelFontSize: 11, titleFontSize: 11.5, titleFontWeight: 500,
+      titlePadding: 8, labelLimit: 130, labelPadding: 4,
+    },
+    view: { stroke: null },
+    legend: { labelColor: p.ink2, titleColor: p.ink2, titleFontWeight: 600, labelFontSize: 11.5,
+              titleFontSize: 11, symbolSize: 90 },
+    header: { labelColor: p.ink2, titleColor: p.ink2, labelFontSize: 11.5, titleFontSize: 11.5 },
+    range: { category: p.cat },
+    bar: { cornerRadiusEnd: 3 },
+    line: { strokeWidth: 2 },
+    point: { size: 72, filled: true, stroke: p.surface, strokeWidth: 1 },
+    arc: { stroke: p.surface, strokeWidth: 2, padAngle: 0.006 },
+    rect: { stroke: p.surface, strokeWidth: 1 },
+  };
+}
+function tooltipChannel(q, discrete) {
+  return [
+    ...q.dims.map(d => {
+      const isDate = fieldsBy[d.field].dtype === "date";
+      return { field: d.as, type: isDate && !discrete ? "temporal" : "nominal",
+               ...(isDate && !discrete ? { format: grainFormat(d.grain) } : {}) };
+    }),
+    ...q.measures.map(mm => ({ field: mm.as, type: "quantitative", format: ",.2f" })),
+  ];
+}
+function grainFormat(grain) {
+  return { year: "%Y", quarter: "%Y Q%q", month: "%b %Y", week: "%b %d, %Y", day: "%b %d, %Y" }[grain || "year"];
+}
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+function fmtDateVal(v, grain) {
+  const d = new Date(v);
+  if (isNaN(d)) return v;
+  const y = d.getFullYear(), m = d.getMonth();
+  if ((grain || "year") === "year") return String(y);
+  if (grain === "quarter") return `Q${Math.floor(m / 3) + 1} ${y}`;
+  if (grain === "month") return `${MONTHS[m]} ${y}`;
+  return `${MONTHS[m]} ${String(d.getDate()).padStart(2, "0")}, ${y}`;
+}
+/* bar / heatmap / pie treat dates as discrete labels (server rows arrive in date order) */
+function discretizeDates(dims, records) {
+  const dateDims = dims.filter(d => d && fieldsBy[d.field].dtype === "date");
+  if (!dateDims.length) return records;
+  return records.map(r => {
+    const o = { ...r };
+    for (const d of dateDims) o[d.as] = fmtDateVal(r[d.as], d.grain);
+    return o;
+  });
+}
+function dimEnc(d, extra, discrete) {
+  const f = fieldsBy[d.field];
+  if (f.dtype === "date") {
+    if (discrete) return { field: d.as, type: "ordinal", sort: null, title: d.as,
+                           axis: extra ? { ...extra } : undefined };
+    return { field: d.as, type: "temporal", title: d.as,
+             axis: { format: grainFormat(d.grain), ...extra } };
+  }
+  return { field: d.as, type: "nominal", title: d.as, axis: extra ? { ...extra } : undefined };
+}
+function measEnc(mm) {
+  return { field: mm.as, type: "quantitative", title: mm.as, axis: { format: "~s" } };
+}
+
+function buildVLSpec(sh, chart, q, records) {
+  const p = themePal();
+  const colDims = sh.cols.filter(x => !pillIsMeasure(x)).map(x => q.dims.find(d => d.as === pillLabel(x)));
+  const rowDims = sh.rows.filter(x => !pillIsMeasure(x)).map(x => q.dims.find(d => d.as === pillLabel(x)));
+  const colMeas = sh.cols.filter(pillIsMeasure).map(x => q.measures.find(mm => mm.as === pillLabel(x)));
+  const rowMeas = sh.rows.filter(pillIsMeasure).map(x => q.measures.find(mm => mm.as === pillLabel(x)));
+  const colorPill = sh.color[0];
+  const colorDim = colorPill && !pillIsMeasure(colorPill) ? q.dims.find(d => d.as === pillLabel(colorPill)) : null;
+  const colorMeas = colorPill && pillIsMeasure(colorPill) ? q.measures.find(mm => mm.as === pillLabel(colorPill)) : null;
+
+  const discrete = ["bar", "heatmap", "pie"].includes(chart);
+  records = discretizeDates(discrete ? q.dims : [colorDim], records);
+
+  const enc = { tooltip: tooltipChannel(q, discrete) };
+  let mark;
+  const wrap = $("chartWrap");
+  const W = Math.max(280, wrap.clientWidth - 56), H = Math.max(200, wrap.clientHeight - 66);
+  let width = W, height = H;
+
+  const dim = colDims[0] || rowDims[0];
+  const meas = rowMeas[0] || colMeas[0];
+  const horizontal = !colDims.length && !!rowDims.length;   // dim only on Rows -> horizontal
+  const sortSpec = sh.sortDir && meas ? { field: meas.as, op: "max", order: sh.sortDir === "desc" ? "descending" : "ascending" } : undefined;
+
+  if (colorDim) enc.color = { field: colorDim.as, type: "nominal", title: colorDim.as, scale: { range: p.cat } };
+  else if (colorMeas) enc.color = { field: colorMeas.as, type: "quantitative", title: colorMeas.as, scale: { range: p.seq } };
+
+  if (chart === "bar") {
+    mark = { type: "bar", cornerRadiusEnd: 3 };
+    if (colorDim) { mark.stroke = p.surface; mark.strokeWidth = 1; }   // 2px gap between stacked fills
+    if (horizontal) {
+      enc.y = { ...dimEnc(dim, null, discrete), ...(sortSpec ? { sort: sortSpec } : {}) };
+      enc.x = measEnc(meas);
+    } else {
+      enc.x = { ...dimEnc(dim, { labelAngle: records.length > 8 ? -38 : 0 }, discrete),
+                ...(sortSpec ? { sort: sortSpec } : {}) };
+      enc.y = measEnc(meas);
+    }
+  } else if (chart === "line" || chart === "area") {
+    mark = chart === "line"
+      ? { type: "line", strokeWidth: 2, point: { size: 45 } }
+      : { type: "area", line: { strokeWidth: 1.5 }, opacity: 0.85 };
+    enc.x = dimEnc(dim);
+    enc.y = measEnc(meas);
+    if (chart === "area" && colorDim) { mark.stroke = p.surface; mark.strokeWidth = 1; }
+  } else if (chart === "scatter") {
+    mark = { type: "point", filled: true, size: 76, stroke: p.surface, strokeWidth: 1 };
+    enc.x = { ...measEnc(colMeas[0] || meas), scale: { zero: false } };
+    enc.y = { ...measEnc(rowMeas[1 - (colMeas.length ? 1 : 0)] || rowMeas[0] || meas), scale: { zero: false } };
+    if (enc.x.field === enc.y.field) {
+      const other = q.measures.find(mm => mm.as !== enc.x.field);
+      if (other) enc.y = { ...measEnc(other), scale: { zero: false } };
+    }
+    if (dim) enc.detail = { field: dim.as };
+  } else if (chart === "pie") {
+    mark = { type: "arc", innerRadius: Math.min(W, H) * 0.14 };
+    enc.theta = { field: meas.as, type: "quantitative" };
+    if (!enc.color) enc.color = { field: dim.as, type: "nominal", title: dim.as, scale: { range: p.cat } };
+    width = Math.min(W, H); height = Math.min(W, H);
+  } else if (chart === "heatmap") {
+    mark = { type: "rect", stroke: p.surface, strokeWidth: 1.5 };
+    const d2 = colDims[1] || rowDims[1] || rowDims[0];
+    const d1 = dim === d2 ? (colDims[0] || rowDims[0]) : dim;
+    enc.x = dimEnc(d1, { labelAngle: -38 }, discrete);
+    enc.y = dimEnc(d2 === d1 ? rowDims[0] : d2, null, discrete);
+    enc.color = { field: meas.as, type: "quantitative", title: meas.as, scale: { range: p.seq } };
+  }
+
+  /* facet: second dimension on a shelf becomes small multiples */
+  let facet = null;
+  if (["bar", "line", "area", "scatter"].includes(chart)) {
+    const extraCol = colDims.length > 1 ? colDims[1] : null;
+    const extraRow = rowDims.length > (horizontal ? 1 : 0) && chart !== "bar" ? null : null;
+    if (extraCol) facet = { column: { field: extraCol.as, type: "nominal", title: extraCol.as } };
+    else if (rowDims.length > 1 && !horizontal) facet = { row: { field: rowDims[1].as, type: "nominal", title: rowDims[1].as } };
+  }
+
+  let spec = {
+    $schema: "https://vega.github.io/schema/vega-lite/v5.json",
+    data: { values: records },
+    mark, encoding: enc,
+    width, height,
+    autosize: { type: "fit", contains: "padding" },
+    config: vlConfig(),
+  };
+
+  /* selective direct labels on plain bars (relief for sub-3:1 palette slots) */
+  if (chart === "bar" && !colorDim && records.length <= 24) {
+    const text = {
+      mark: { type: "text", color: p.ink2, fontSize: 10.5,
+              ...(horizontal ? { align: "left", dx: 5 } : { dy: -7 }) },
+      encoding: { x: enc.x, y: enc.y, text: { field: meas.as, type: "quantitative", format: ".3~s" } },
+    };
+    spec = { ...spec, mark: undefined, encoding: undefined,
+             layer: [{ mark, encoding: enc }, text] };
+  }
+
+  if (facet) {
+    delete spec.autosize;   // vega-lite can't fit-size faceted charts
+    const n = new Set(records.map(r => r[(facet.column || facet.row).field])).size || 1;
+    spec.width = facet.column ? Math.max(120, Math.floor((W - 90) / n) - 24) : Math.min(W - 120, 640);
+    spec.height = facet.row ? Math.max(110, Math.floor((H - 60) / n) - 22) : height;
+    spec.encoding = { ...(spec.encoding || spec.layer[0].encoding), ...facet };
+    if (spec.layer) { spec.encoding = { ...spec.layer[0].encoding, ...facet }; spec.layer = undefined; spec.mark = mark; }
+  }
+  return spec;
+}
+
+/* ================= render ================= */
+function renderAll() {
+  renderShelves(); renderFilters(); renderChart();
+}
+
+let renderTimer = null;
+function renderChart() {
+  clearTimeout(renderTimer);
+  renderTimer = setTimeout(doRenderChart, 60);
+}
+
+async function doRenderChart() {
+  const seq = ++renderSeq;
+  const chartEl = $("chart"), msgEl = $("chartMsg"), trunc = $("truncNote");
+  trunc.style.display = "none";
+  view = null;
+
+  if (!schema || !wb) { chartEl.innerHTML = ""; if (BOOT) renderStart(); return; }
+  const sh = S();
+  const chart = resolveChart(sh);
+  const hint = chartHint(chart, sh);
+  if (chart === "empty" || hint) {
+    chartEl.innerHTML = ""; msgEl.textContent = hint || ""; return;
+  }
+  msgEl.textContent = "";
+
+  try {
+    if (chart === "table") { await renderTable(seq); return; }
+    const q = buildQuerySpec(sh, chart);
+    setStatus("Querying…");
+    const res = await fused.runPython(PY, {
+      action: "query", file: schema.file, spec: JSON.stringify(q),
+    });
+    if (seq !== renderSeq) return;
+    setStatus("");
+    if (!res.records.length) { chartEl.innerHTML = ""; msgEl.textContent = "No data — check the filters."; return; }
+    if (res.truncated) {
+      trunc.textContent = "showing first " + res.records.length.toLocaleString() + " groups";
+      trunc.style.display = "block";
+    }
+    if (chart === "stat") { renderStats(q, res.records[0]); return; }
+    const spec = buildVLSpec(sh, chart, q, res.records);
+    const out = await vegaEmbed(chartEl, spec, { actions: false, renderer: "canvas", tooltip: true });
+    if (seq !== renderSeq) { out.view.finalize(); return; }
+    view = out.view;
+  } catch (err) {
+    if (seq !== renderSeq) return;
+    setStatus((err && err.message) || String(err), "err");
+  }
+}
+
+function renderStats(q, rec) {
+  const host = $("chart");
+  host.innerHTML = "";
+  const row = document.createElement("div"); row.id = "statRow";
+  for (const mm of q.measures) {
+    const t = document.createElement("div"); t.className = "stat";
+    t.innerHTML = `<div class="v"></div><div class="l"></div>`;
+    t.querySelector(".v").textContent = fmtNum(rec[mm.as]);
+    t.querySelector(".l").textContent = mm.as;
+    row.appendChild(t);
+  }
+  host.appendChild(row);
+}
+
+async function renderTable(seq) {
+  const sh = S();
+  setStatus("Loading rows…");
+  const res = await fused.runPython(PY, {
+    action: "rows", file: schema.file, offset: 0, limit: 200,
+    filters: JSON.stringify(sh.filters),
+  });
+  if (seq !== renderSeq) return;
+  setStatus("");
+  const host = $("chart");
+  host.innerHTML = "";
+  const meta = document.createElement("div"); meta.className = "tableMeta";
+  meta.textContent = `${res.rows.length.toLocaleString()} of ${res.matched.toLocaleString()} rows` +
+    (res.matched !== res.total ? ` (filtered from ${res.total.toLocaleString()})` : "");
+  host.appendChild(meta);
+  const numCols = res.columns.map(c => fieldsBy[c] && fieldsBy[c].dtype === "number");
+  const tbl = document.createElement("table"); tbl.className = "raw";
+  tbl.innerHTML = "<thead><tr></tr></thead><tbody></tbody>";
+  const hr = tbl.querySelector("tr");
+  for (const c of res.columns) { const th = document.createElement("th"); th.textContent = c; hr.appendChild(th); }
+  const tb = tbl.querySelector("tbody");
+  for (const r of res.rows) {
+    const tr = document.createElement("tr");
+    r.forEach((v, i) => {
+      const td = document.createElement("td");
+      if (numCols[i]) { td.className = "num"; td.textContent = fmtNum(v); }
+      else td.textContent = v == null ? "" : v;
+      tr.appendChild(td);
+    });
+    tb.appendChild(tr);
+  }
+  host.appendChild(tbl);
+}
+
+/* ================= start screen ================= */
+function renderStart() {
+  const host = $("chart");
+  const wbs = (BOOT.workbooks || []).slice(0, 5);
+  host.innerHTML = `
+    <div id="start"><div class="card">
+      <h1>Tableau <span>viewer</span></h1>
+      <p>Open a data file, drag fields onto shelves, pick a chart. Save the result as a workbook.</p>
+      <button class="big" id="startBrowse">
+        <span style="font-size:20px">📂</span>
+        <span><div class="t">Open a file…</div><div class="d">csv · tsv · parquet · xlsx · hyper · Tableau files · saved workbooks</div></span>
+      </button>
+      <div class="recent" id="startRecent"></div>
+    </div></div>`;
+  $("startBrowse").addEventListener("click", () => filePicker("open"));
+  if (wbs.length) {
+    const r = $("startRecent");
+    r.innerHTML = `<div class="rh">Recent workbooks</div>`;
+    for (const w of wbs) {
+      const b = document.createElement("button");
+      b.textContent = "📈 " + w.name;
+      b.addEventListener("click", () => openAny(w.file));
+      r.appendChild(b);
+    }
+  }
+}
+
+/* ================= open / save ================= */
+let importFile = "";   // the .twb a workbook was imported from (until saved)
+function syncUrl() {
+  const u = new URL(window.location);
+  const f = wbFile || importFile || (schema && schema.file) || "";
+  if (f) u.searchParams.set("file", f); else u.searchParams.delete("file");
+  history.replaceState(null, "", u);
+}
+function renderWbName() {
+  $("wbName").textContent = wb ? wb.name : "";
+  $("wbName").className = wb ? "editable" : "";
+}
+
+async function openAny(path) {
+  try {
+    if (path.toLowerCase().endsWith(".tviz.json")) {
+      setStatus("Opening workbook…");
+      const res = await fused.runPython(PY, { action: "load_workbook", file: path });
+      wb = res.workbook; wbFile = res.file; importFile = "";
+      for (const sh of wb.sheets) { sh.color = sh.color || []; sh.filters = sh.filters || []; }
+      await openData(wb.source, true);
+      markDirty(false);
+    } else if (/\.(twb|twbx|tds|tdsx)$/i.test(path)) {
+      setStatus("Importing Tableau file…");
+      const res = await fused.runPython(PY, { action: "import_tableau", file: path });
+      importFile = path;
+      if (res.workbook) {
+        wb = res.workbook; wbFile = "";
+        await openData(wb.source, true);
+        markDirty(true);   // imported, not yet saved as .tviz.json
+        setStatus("Imported " + baseName(path) + " — use File ▸ Save to keep it", "ok");
+      } else {
+        await openData(res.source, false);   // .tds/.tdsx: a datasource, fresh workbook
+        setStatus("Opened data source from " + baseName(path), "ok");
+      }
+    } else {
+      importFile = "";
+      await openData(path, false);
+    }
+    renderWbName(); syncUrl(); renderTabs(); renderAll();
+  } catch (err) { setStatus(err.message, "err"); }
+}
+
+async function saveWorkbook(as) {
+  if (!wb) return;
+  wb.version = 1;
+  if (!as && wbFile) {
+    const res = await fused.runPython(PY, { action: "save_workbook", file: wbFile, data: JSON.stringify(wb) });
+    wbFile = res.file; markDirty(false); setStatus("Saved", "ok"); syncUrl();
+    return;
+  }
+  filePicker("saveAs");
+}
+
+/* ================= file browser modal ================= */
+let browseDir = null;
+function modal(html) {
+  const scrim = $("scrim");
+  scrim.innerHTML = "";
+  const m = document.createElement("div"); m.className = "modal"; m.innerHTML = html;
+  scrim.appendChild(m); scrim.classList.add("on");
+  scrim.onmousedown = ev => { if (ev.target === scrim) closeModal(); };
+  return m;
+}
+function closeModal() { $("scrim").classList.remove("on"); $("scrim").innerHTML = ""; }
+
+async function filePicker(mode) {
+  const m = modal(`
+    <h2>${mode === "open" ? "Open data or workbook" : "Save workbook as"}</h2>
+    <div class="crumbs"></div>
+    <div class="flist"></div>
+    <div class="mfoot">
+      ${mode === "saveAs" ? '<input id="saveName" placeholder="workbook name" />' : ""}
+      <button id="mCancel">Cancel</button>
+      ${mode === "saveAs" ? '<button class="primary" id="mOk">Save</button>' : ""}
+    </div>`);
+  m.querySelector("#mCancel").addEventListener("click", closeModal);
+  const start = browseDir ||
+    (mode === "saveAs" ? BOOT.workbooks_dir : BOOT.home);
+  if (mode === "saveAs") {
+    const inp = m.querySelector("#saveName");
+    inp.value = wb ? wb.name : "workbook";
+    m.querySelector("#mOk").addEventListener("click", async () => {
+      const nm = inp.value.trim() || "workbook";
+      try {
+        wb.name = nm;
+        const res = await fused.runPython(PY, {
+          action: "save_workbook_as", directory: browseDir || "", name: nm, data: JSON.stringify(wb),
+        });
+        wbFile = res.file; markDirty(false); renderWbName(); syncUrl();
+        setStatus("Saved " + baseName(res.file), "ok");
+        closeModal();
+      } catch (err) { setStatus(err.message, "err"); }
+    });
+  }
+  await listInto(m, start, mode);
+}
+
+async function listInto(m, path, mode) {
+  let res;
+  try { res = await fused.runPython(PY, { action: "listdir", file: path }); }
+  catch (err) { setStatus(err.message, "err"); return; }
+  if (res.error) { setStatus(res.error, "err"); }
+  browseDir = res.path;
+  const crumbs = m.querySelector(".crumbs");
+  crumbs.innerHTML = "";
+  const parts = res.path.split("/").filter(Boolean);
+  let acc = res.path.startsWith("/") ? "" : "";
+  parts.forEach((seg, i) => {
+    acc += (i === 0 && /^[A-Za-z]:$/.test(seg)) ? seg : "/" + seg;
+    if (i === 0 && !/^[A-Za-z]:$/.test(seg)) acc = "/" + seg;
+    const target = acc + (i === 0 && /^[A-Za-z]:$/.test(seg) ? "/" : "");
+    const b = document.createElement("button"); b.textContent = seg;
+    b.addEventListener("click", () => listInto(m, target, mode));
+    crumbs.appendChild(b);
+    if (i < parts.length - 1) crumbs.appendChild(document.createTextNode("›"));
+  });
+  const list = m.querySelector(".flist");
+  list.innerHTML = "";
+  if (res.path !== res.parent) {
+    const up = document.createElement("div"); up.className = "frow2";
+    up.innerHTML = `<span class="ic">↩</span><span class="nm">..</span>`;
+    up.addEventListener("click", () => listInto(m, res.parent, mode));
+    list.appendChild(up);
+  }
+  for (const d of res.dirs) {
+    if (d === "__pycache__" || d === "vendor") continue;
+    const el = document.createElement("div"); el.className = "frow2";
+    el.innerHTML = `<span class="ic">📁</span><span class="nm"></span>`;
+    el.querySelector(".nm").textContent = d;
+    el.addEventListener("click", () => listInto(m, res.path + "/" + d, mode));
+    list.appendChild(el);
+  }
+  for (const f of res.files) {
+    const el = document.createElement("div");
+    el.className = "frow2" + (f.kind === "workbook" ? " wb" : "");
+    el.innerHTML = `<span class="ic">${f.kind === "workbook" ? "📈" : f.kind === "tableau" ? "📘" : "🗒"}</span><span class="nm"></span><span class="sz"></span>`;
+    el.querySelector(".nm").textContent = f.name;
+    el.querySelector(".sz").textContent = fmtSize(f.size);
+    if (mode === "open") {
+      el.addEventListener("click", () => { closeModal(); openAny(res.path + "/" + f.name); });
+    } else if (f.kind === "workbook") {
+      el.addEventListener("click", () => {
+        m.querySelector("#saveName").value = f.name.replace(/\.tviz\.json$/i, "");
+      });
+    }
+    list.appendChild(el);
+  }
+}
+
+/* ================= dialogs ================= */
+function confirmDialog(title, msg, okText) {
+  return new Promise(resolve => {
+    const m = modal(`<h2>${title}</h2><p class="msg">${msg}</p>
+      <div class="mfoot"><button id="dCancel">Cancel</button>
+      <button class="primary" id="dOk" style="margin-left:auto">${okText || "OK"}</button></div>`);
+    m.querySelector("#dOk").addEventListener("click", () => { closeModal(); resolve(true); });
+    m.querySelector("#dCancel").addEventListener("click", () => { closeModal(); resolve(false); });
+  });
+}
+
+/* ================= menus: file / download / chart ================= */
+$("fileMenuBtn").addEventListener("click", ev => {
+  openMenu(ev.target, [
+    { label: "New workbook", noRender: true, act: async () => {
+        if (dirty && !(await confirmDialog("Discard changes?", "The current workbook has unsaved changes.", "Discard"))) return;
+        if (schema) {
+          wb = { version: 1, name: baseName(schema.file).replace(/\.[^.]+$/, ""), source: schema.file,
+                 sheets: [newSheet("Sheet 1")], active: 0 };
+          wbFile = ""; importFile = ""; markDirty(false);
+          renderWbName(); syncUrl(); renderTabs(); renderAll();
+        }
+      } },
+    { label: "Open…", noRender: true, act: () => filePicker("open") },
+    { sep: true },
+    { label: "Save", disabled: !wb, noRender: true, act: () => saveWorkbook(false) },
+    { label: "Save as…", disabled: !wb, noRender: true, act: () => saveWorkbook(true) },
+  ]);
+});
+
+$("dlMenuBtn").addEventListener("click", ev => {
+  const has = !!(schema && wb);
+  openMenu(ev.target, [
+    { label: "PNG image", disabled: !view, noRender: true, act: downloadPng },
+    { sep: true },
+    { label: "Chart data as CSV", disabled: !has, noRender: true, act: () => exportData("csv") },
+    { label: "Chart data as Parquet", disabled: !has, noRender: true, act: () => exportData("parquet") },
+  ]);
+});
+
+async function downloadPng() {
+  if (!view) return;
+  const url = await view.toImageURL("png", 2);
+  const a = document.createElement("a");
+  a.href = url; a.download = (S().name || "chart") + ".png"; a.click();
+}
+async function exportData(kind) {
+  try {
+    setStatus("Exporting…");
+    const sh = S();
+    const q = buildQuerySpec(sh, resolveChart(sh));
+    const res = await fused.runPython(PY, {
+      action: "export", kind, name: (wb.name + "-" + sh.name).toLowerCase().replace(/\s+/g, "-"),
+      file: schema.file, spec: JSON.stringify(q),
+    });
+    setStatus("Exported " + res.name, "ok");
+    const a = document.createElement("a");
+    a.href = fused.rawUrl(res.file); a.download = res.name; a.click();
+  } catch (err) { setStatus(err.message, "err"); }
+}
+
+$("chartBtn").addEventListener("click", ev => {
+  openMenu(ev.target, CHARTS.map(([id, label]) => ({
+    label, checked: S().chart === id, act: () => { S().chart = id; },
+  })));
+});
+$("swapBtn").addEventListener("click", () => {
+  const sh = S();
+  [sh.cols, sh.rows] = [sh.rows, sh.cols];
+  markDirty(true); renderAll();
+});
+$("sortBtn").addEventListener("click", () => {
+  const sh = S();
+  sh.sortDir = sh.sortDir === "" ? "desc" : sh.sortDir === "desc" ? "asc" : "";
+  markDirty(true); renderAll();
+});
+
+/* ================= sheet tabs ================= */
+function renderTabs() {
+  const host = $("tabs");
+  host.innerHTML = "";
+  if (!wb) return;
+  wb.sheets.forEach((sh, i) => {
+    const el = document.createElement("div");
+    el.className = "tab" + (i === wb.active ? " on" : "");
+    el.innerHTML = `<span class="nm"></span><span class="x" title="Delete sheet">×</span>`;
+    el.querySelector(".nm").textContent = sh.name;
+    el.addEventListener("click", () => { wb.active = i; renderTabs(); renderAll(); });
+    el.addEventListener("dblclick", () => renameSheet(i));
+    el.querySelector(".x").addEventListener("click", async ev => {
+      ev.stopPropagation();
+      if (wb.sheets.length === 1) return;
+      wb.sheets.splice(i, 1);
+      wb.active = Math.min(wb.active, wb.sheets.length - 1);
+      markDirty(true); renderTabs(); renderAll();
+    });
+    host.appendChild(el);
+  });
+  const add = document.createElement("button");
+  add.id = "addTab"; add.textContent = "+"; add.title = "New sheet";
+  add.addEventListener("click", () => {
+    wb.sheets.push(newSheet("Sheet " + (wb.sheets.length + 1)));
+    wb.active = wb.sheets.length - 1;
+    markDirty(true); renderTabs(); renderAll();
+  });
+  host.appendChild(add);
+}
+function renameSheet(i) {
+  const sh = wb.sheets[i];
+  const nm = prompt("Sheet name", sh.name);
+  if (nm && nm.trim()) { sh.name = nm.trim(); markDirty(true); renderTabs(); }
+}
+$("wbName").addEventListener("dblclick", () => {
+  if (!wb) return;
+  const nm = prompt("Workbook name", wb.name);
+  if (nm && nm.trim()) { wb.name = nm.trim(); markDirty(true); renderWbName(); }
+});
+
+/* ================= chrome ================= */
+$("railBtn").addEventListener("click", () => $("rail").classList.toggle("hidden"));
+function applyTheme(t) {
+  document.body.dataset.theme = t;
+  $("themeBtn").textContent = t === "light" ? "◐" : "◑";
+  try { localStorage.setItem("tviz-theme", t); } catch {}
+  renderChart();
+}
+$("themeBtn").addEventListener("click", () =>
+  applyTheme(document.body.dataset.theme === "light" ? "dark" : "light"));
+
+document.addEventListener("keydown", ev => {
+  if ((ev.ctrlKey || ev.metaKey) && ev.key === "s") { ev.preventDefault(); saveWorkbook(false); }
+});
+window.addEventListener("resize", () => renderChart());
+
+/* ================= boot ================= */
+applyTheme((() => { try { return localStorage.getItem("tviz-theme") || "light"; } catch { return "light"; } })());
+try {
+  BOOT = await fused.runPython(PY, { action: "boot" });
+} catch (err) {
+  $("chartMsg").textContent = "Backend error: " + err.message;
+  return;
+}
+const startFile = fused.params.get("_file") || fused.params.get("file");
+if (startFile) await openAny(startFile);
+else { renderStart(); }
+})();
+</script>
+</body>
+</html>
