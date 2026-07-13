@@ -4,7 +4,7 @@
 // No file-type checks live in the shell — html arrives through stat.templates
 // like everything else, via the "_render" sentinel (SPEC PT-12).
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { getDeployStatus, getPrefs, rawUrl } from "../lib/api";
+import { getDeployStatus, getPrefs, rawUrl, resolveConditions } from "../lib/api";
 import type { Deployment, StatResult, TemplateEntry } from "../lib/api";
 import { formatSize, formatMtime } from "../lib/format";
 import ModeSwitcher, { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "../components/ModeSwitcher";
@@ -27,10 +27,47 @@ function Header({ fsPath, stat, children }: HeaderProps) {
 }
 
 // `_mode` (shell URL) selects among stat.templates by name (SPEC PT-9): absent
-// or unknown/stale value falls back to the default (templates[0]) silently.
+// or unknown/stale value falls back to the default silently. The default is
+// the first UNCONDITIONAL entry (CT-12: a gated template is never the default
+// while a normal one exists) — only an all-conditional list falls back to its
+// first (by then verdict-allowed) entry.
+function defaultTemplate(templates: TemplateEntry[]): TemplateEntry {
+  return templates.find((t) => !t.conditional) || templates[0];
+}
+
 function activeTemplate(templates: TemplateEntry[]): TemplateEntry {
   const requested = new URLSearchParams(location.search).get("_mode");
-  return templates.find((t) => t.mode === requested) || templates[0];
+  return templates.find((t) => t.mode === requested) || defaultTemplate(templates);
+}
+
+// Deferred condition.py verdicts (CT-12). Stat only MARKS gated templates
+// (`conditional: true`) so it stays fast on remote mounts; the actual gates
+// run here, in the background, while the first unconditional template is
+// already rendering. Returns null while resolving, then {mode: allowed}.
+// A failed request resolves to {} — every gated entry then reads as denied,
+// the same fail-closed posture as a broken gate server-side.
+function useConditions(fsPath: string, templates: TemplateEntry[]): Record<string, boolean> | null {
+  const anyConditional = templates.some((t) => t.conditional);
+  const [verdicts, setVerdicts] = useState<Record<string, boolean> | null>(anyConditional ? null : {});
+  useEffect(() => {
+    if (!anyConditional) {
+      setVerdicts({});
+      return;
+    }
+    let alive = true;
+    setVerdicts(null);
+    resolveConditions(fsPath)
+      .then((r) => {
+        if (alive) setVerdicts(r.conditions);
+      })
+      .catch(() => {
+        if (alive) setVerdicts({});
+      });
+    return () => {
+      alive = false;
+    };
+  }, [fsPath, anyConditional]);
+  return verdicts;
 }
 
 // --- Deploy button (SPEC §19) -----------------------------------------------
@@ -132,11 +169,31 @@ function useDeployEnabled(): boolean {
   return enabled;
 }
 
-function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: StatResult; templates: TemplateEntry[] }) {
+function TemplatePreview({
+  fsPath,
+  stat,
+  templates,
+  conditions,
+}: {
+  fsPath: string;
+  stat: StatResult;
+  templates: TemplateEntry[];
+  conditions: Record<string, boolean> | null;
+}) {
   // Caller only renders this when `templates` (already sentinel-filtered by
-  // Preview's dispatch, SPEC PT-12) is non-empty.
+  // Preview's dispatch, SPEC PT-12) is non-empty. Entries whose condition.py
+  // verdict is still in flight (CT-12) are present but PENDING — shown in the
+  // switcher as a disabled spinner, not selectable, never the default.
+  const isPending = (t: TemplateEntry) => !!t.conditional && conditions === null;
+  const defaultEntry = defaultTemplate(templates);
   const [mode, setModeState] = useState<string>(() => activeTemplate(templates).mode);
-  const entry = templates.find((t) => t.mode === mode) || templates[0];
+  const entry = templates.find((t) => t.mode === mode) || defaultEntry;
+  // A verdict landing can DROP the current mode (URL-requested conditional
+  // that resolved false): fall back to the default, same silent posture as an
+  // unknown `_mode`.
+  useEffect(() => {
+    if (!templates.some((t) => t.mode === mode)) setModeState(defaultEntry.mode);
+  }, [templates, mode, defaultEntry.mode]);
   const deployEnabled = useDeployEnabled();
   // `_listing` sentinel (D81): the shell's built-in directory listing, mounted
   // in place of the preview iframe — no iframe, no `_file`. Every directory
@@ -151,6 +208,9 @@ function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: St
   const switching = useRef(false);
   const setMode = async (next: string) => {
     if (next === mode || switching.current) return;
+    // Unresolved gate: not selectable (the switcher disables it too).
+    const target = templates.find((t) => t.mode === next);
+    if (target && isPending(target)) return;
     switching.current = true;
     try {
       await doSetMode(next);
@@ -189,7 +249,7 @@ function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: St
     if (location.pathname !== startedAt) return; // navigated away mid-flush
     const params = new URLSearchParams(location.search);
     // Selecting the default mode DELETES _mode (clean URLs); any other mode sets it.
-    if (next === templates[0].mode) params.delete("_mode");
+    if (next === defaultEntry.mode) params.delete("_mode");
     else params.set("_mode", next);
     const search = params.toString();
     history.replaceState(null, "", location.pathname + (search ? "?" + search : ""));
@@ -215,7 +275,7 @@ function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: St
   // the first non-listing mode, so an embed whose default is the listing still
   // has a path to the secondary view. Shown only when a non-listing mode exists.
   const otherEntry = templates.find((t) => t.mode !== "_listing");
-  const counterpart = templates[0].mode !== "_listing" ? templates[0].mode : otherEntry?.mode;
+  const counterpart = defaultEntry.mode !== "_listing" ? defaultEntry.mode : otherEntry?.mode;
   const toggleListing =
     otherEntry && templates.some((t) => t.mode === "_listing")
       ? () => setMode(isListing ? (counterpart as string) : "_listing")
@@ -238,13 +298,21 @@ function TemplatePreview({ fsPath, stat, templates }: { fsPath: string; stat: St
           templates.some((t) => t.mode === "_render") &&
           /\.html?$/i.test(fsPath) && <DeployButton fsPath={fsPath} />}
         <ModeSwitcher
-          entries={templates.map((t) => ({ mode: t.mode, icon: templateModeIcon(t) }))}
+          entries={templates.map((t) => ({ mode: t.mode, icon: templateModeIcon(t), pending: isPending(t) }))}
           active={entry.mode}
           onSelect={setMode}
         />
       </Header>
       <div className="preview-body">
-        {isListing ? (
+        {isPending(entry) ? (
+          /* URL-requested a gated mode whose verdict is still in flight: hold
+             the body until it lands (the iframe must not render a template on
+             a file its gate may deny). */
+          <div className="preview-resolving">
+            <span className="mode-icon-spinner" />
+            Checking if this view applies…
+          </div>
+        ) : isListing ? (
           <Listing fsPath={fsPath} />
         ) : (
           /* key: switching mode replaces the iframe (fresh document per switch). */
@@ -300,6 +368,28 @@ export default function Preview({ fsPath, stat }: PreviewProps) {
   // keeps the non-empty dispatch check honest (an all-unknown list falls back
   // instead of crashing TemplatePreview).
   const templates = stat.templates.filter((t) => t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode));
-  if (templates.length > 0) return <TemplatePreview fsPath={fsPath} stat={stat} templates={templates} />;
+  // Deferred gates (CT-12): resolve condition.py verdicts in the background.
+  // The first unconditional template renders immediately — only an
+  // ALL-conditional list has nothing safe to show and waits here.
+  const conditions = useConditions(fsPath, templates);
+  const resolving = conditions === null;
+  // While resolving, gated entries stay visible (as pending); once verdicts
+  // land, denied ones drop.
+  const visible = templates.filter((t) => !t.conditional || resolving || conditions[t.mode] === true);
+  if (resolving && templates.length > 0 && templates.every((t) => t.conditional)) {
+    return (
+      <>
+        <Header fsPath={fsPath} stat={stat} />
+        <div className="preview-body">
+          <div className="preview-resolving">
+            <span className="mode-icon-spinner" />
+            Checking which views apply…
+          </div>
+        </div>
+      </>
+    );
+  }
+  if (visible.length > 0)
+    return <TemplatePreview fsPath={fsPath} stat={stat} templates={visible} conditions={conditions} />;
   return <FallbackPreview fsPath={fsPath} stat={stat} />;
 }

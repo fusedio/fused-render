@@ -6,6 +6,23 @@ unconditionally. The detection mirrors `h3_reader.py` — a name match against
 the known H3 column names, else a uint64/hex-string bit-pattern sniff — so the
 gate agrees with what the reader would pick once opened.
 
+Remote mounts make I/O the whole cost here, so the gate is footer-first:
+
+1. `parquet_metadata()` reads only the footer — column names, physical types,
+   and per-row-group min/max stats. A column whose every row group has stats
+   and whose min AND max both carry the H3 bit pattern is decided True with
+   zero data pages read; stats present but non-H3 decide it False the same
+   way. Writers almost always emit stats, so the common case never touches
+   row data.
+2. Only columns with a stats gap fall back to sampling, and the sample
+   projects just those columns (`SELECT "col", … LIMIT 128`) instead of a
+   `SELECT *` — projection pushdown means one column's pages from the first
+   row group, not a full row group of every column.
+
+Only INT64 and BYTE_ARRAY columns can hold an H3 index (uint64 / hex string),
+so everything else — and nested columns, which the value sniff could never
+match anyway — is skipped outright.
+
 Self-contained on purpose: the condition module is loaded standalone (not part
 of a package), so it cannot rely on importing `h3_reader`. Fails closed — any
 read error means "cannot prove it's H3" and the template is dropped quietly.
@@ -45,10 +62,53 @@ def method(path: str) -> bool:
         import duckdb
         con = duckdb.connect()
         src = path.replace("'", "''")
-        schema = con.execute(f"DESCRIBE SELECT * FROM '{src}'").fetchall()
-        names = [s[0] for s in schema]
-        sample = con.execute(f"SELECT * FROM '{src}' LIMIT 200").fetchall()
+        # Footer-only read: names, physical types, per-row-group min/max.
+        meta = con.execute(
+            "SELECT path_in_schema, type, stats_min_value, stats_max_value"
+            f" FROM parquet_metadata('{src}')"
+        ).fetchall()
     except Exception:  # noqa: BLE001 — unreadable/not-parquet: fail closed, quietly
+        return False
+
+    # Aggregate the per-row-group rows into per-column footer verdicts. Only
+    # types that can hold an H3 index matter, and a nested column (dotted
+    # path) can't be projected by bare name — the whole-row sniff could never
+    # match its struct values either, so skipping it changes nothing.
+    cols = {}  # name -> {"str": bool, "stats": [(min, max), ...], "gap": bool}
+    for name, ptype, smin, smax in meta:
+        if ptype not in ("INT64", "BYTE_ARRAY") or "." in name:
+            continue
+        c = cols.setdefault(
+            name, {"str": ptype == "BYTE_ARRAY", "stats": [], "gap": False}
+        )
+        if smin is None or smax is None:
+            c["gap"] = True  # this row group can't be judged from the footer
+        else:
+            c["stats"].append((smin, smax))
+
+    def looks(c, v):
+        return _looks_h3_str(v) if c["str"] else _looks_h3_int(v)
+
+    # Known H3 names first, mirroring the reader's precedence.
+    ordered = sorted(cols, key=lambda n: (n.lower() not in H3_NAMES, n))
+    unresolved = []
+    for name in ordered:
+        c = cols[name]
+        if c["stats"] and not c["gap"]:
+            # Full footer coverage: min/max of every row group decide it.
+            if all(looks(c, lo) and looks(c, hi) for lo, hi in c["stats"]):
+                return True
+        else:
+            unresolved.append(name)
+
+    if not unresolved:
+        return False
+
+    # A stats gap somewhere: sample just those columns, narrowly projected.
+    try:
+        sel = ", ".join('"%s"' % n.replace('"', '""') for n in unresolved)
+        sample = con.execute(f"SELECT {sel} FROM '{src}' LIMIT 128").fetchall()
+    except Exception:  # noqa: BLE001 — fail closed, quietly
         return False
 
     def col_ok(i):
@@ -59,10 +119,4 @@ def method(path: str) -> bool:
                    if (_looks_h3_str(v) if isinstance(v, str) else _looks_h3_int(v)))
         return good >= max(1, int(len(vals) * 0.9))
 
-    lower = [n.lower() for n in names]
-    # name match first (cheap, matches reader precedence), still validated by values
-    for n in H3_NAMES:
-        if n in lower and col_ok(lower.index(n)):
-            return True
-    # value sniff any remaining column
-    return any(col_ok(i) for i in range(len(names)))
+    return any(col_ok(i) for i in range(len(unresolved)))
