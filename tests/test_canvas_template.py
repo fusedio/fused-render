@@ -228,6 +228,21 @@ def test_reader_viewport(reader, canvas_folder):
     assert out["viewport"] == {"x": 12.0, "y": 34.0, "zoom": 0.5}
 
 
+def test_reader_empty_viewport_is_none(reader, tmp_path):
+    # An empty (or x/y-less) [canvas.viewport] table must NOT fabricate an
+    # origin camera — it returns None so the viewer falls back to fit-to-bounds.
+    d = tmp_path / "emptyvp"
+    d.mkdir()
+    (d / "canvas.toml").write_text(
+        'type = "canvas"\nversion = 2\n[canvas]\nedges = []\n'
+        '[[canvas.nodes]]\nudfName = "a"\nx = 500.0\ny = 500.0\n'
+        'zIndex = 1\nwidth = 100\nheight = 100\n'
+        "[canvas.viewport]\n"
+    )
+    out = reader.main(file=str(d / "canvas.toml"))
+    assert out["viewport"] is None
+
+
 def test_reader_siblings(reader, canvas_folder):
     out = reader.main(file=str(canvas_folder / "canvas.toml"))
     assert out["siblings"]["a"] == [".py", ".json"]

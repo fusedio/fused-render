@@ -114,9 +114,14 @@ def main(file: str = "") -> dict:
                 edges.append([pair[0], pair[1]])
 
     # ---- viewport ---------------------------------------------------------
+    # A viewport only counts when x and y are actually present — an empty
+    # [canvas.viewport] table must fall through to fit-to-bounds, not pin the
+    # camera at a fabricated origin.
     viewport = None
     raw_vp = canvas.get("viewport")
-    if isinstance(raw_vp, dict):
+    if (isinstance(raw_vp, dict)
+            and isinstance(raw_vp.get("x"), (int, float))
+            and isinstance(raw_vp.get("y"), (int, float))):
         viewport = {
             "x": num(raw_vp.get("x")),
             "y": num(raw_vp.get("y")),

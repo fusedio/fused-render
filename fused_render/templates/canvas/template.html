@@ -151,7 +151,10 @@
   var emptyEl = document.getElementById("cv-empty");
 
   var file = fused.params.get("_file") || "";
-  var fileDir = file.slice(0, Math.max(0, file.lastIndexOf("/")));
+  // Windows drive paths arrive with backslashes; normalize before slicing so
+  // fileDir/folderName (and the sibling links built from them) stay correct.
+  var normFile = /^[A-Za-z]:[\\/]/.test(file) ? file.replace(/\\/g, "/") : file;
+  var fileDir = normFile.slice(0, Math.max(0, normFile.lastIndexOf("/")));
   var folderName = (fileDir.split("/").pop() || "canvas");
 
   // Header renders immediately from the path, BEFORE the reader runs — so a
