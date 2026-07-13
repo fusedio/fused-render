@@ -404,7 +404,11 @@ export interface Mount {
   name: string;
   remote: string;
   mountpoint: string;
-  mounted: boolean;
+  // Health, not just presence: "disconnected" = a kernel mount is (or was)
+  // there but its rclone daemon no longer serves it — listings show stale or
+  // empty data. Repaired via reconnectMount (force unmount + fresh mount).
+  state: "mounted" | "disconnected" | "unmounted";
+  mounted: boolean; // state === "mounted"
 }
 
 // A remote we can offer from credentials already present in the user's
@@ -441,8 +445,15 @@ export function attachMount(id: string): Promise<Mount> {
   return postJson<Mount>(`/api/mounts/${id}/mount`, {});
 }
 
-export function detachMount(id: string): Promise<Mount> {
-  return postJson<Mount>(`/api/mounts/${id}/unmount`, {});
+// force=true is for a mount already shown as disconnected: its dead NFS
+// mount rejects a plain unmount, so the backend escalates to a force unmount.
+export function detachMount(id: string, force = false): Promise<Mount> {
+  return postJson<Mount>(`/api/mounts/${id}/unmount${force ? "?force=1" : ""}`, {});
+}
+
+// Repair a disconnected mount: force-clear the dead mountpoint, remount.
+export function reconnectMount(id: string): Promise<Mount> {
+  return postJson<Mount>(`/api/mounts/${id}/reconnect`, {});
 }
 
 export function deleteMount(id: string): Promise<void> {

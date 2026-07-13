@@ -1225,7 +1225,17 @@ def create_app(start_dir: str) -> FastAPI:
             with os.scandir(path) as it:
                 dents = list(it)
         except OSError as e:
+            broken = shell_mounts.broken_mount_error(path)
+            if broken:
+                return _error(broken, status=503)
             return _error(f"cannot read directory {path}: {e}", status=400)
+        if not dents:
+            # A dead mount leaves a plain empty dir (or a wedged NFS mount
+            # serving nothing) at the mountpoint — an empty listing under
+            # mounts/ is only trustworthy while the mount is healthy.
+            broken = shell_mounts.broken_mount_error(path)
+            if broken:
+                return _error(broken, status=503)
         for de in dents:
             try:
                 st = de.stat()

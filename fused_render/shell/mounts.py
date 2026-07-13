@@ -305,19 +305,49 @@ def _quit_tile_daemons() -> None:
             continue
 
 
-def detach_mount(m: dict) -> str | None:
+def _force_unmount(mp: str) -> str | None:
+    """Kernel-level unmount for a DEAD mount, escalating to force. Only for
+    mounts whose serving daemon is gone/wedged — there is nothing left to
+    corrupt, and rcd's own unmount either failed or can't be asked. Returns
+    an error string or None."""
+    attempts = [["umount", mp]]
+    if sys.platform == "darwin":
+        attempts += [["umount", "-f", mp], ["diskutil", "unmount", "force", mp]]
+    else:
+        attempts += [["umount", "-l", mp]]  # lazy: detach now, cleanup later
+    last = ""
+    for cmd in attempts:
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            last = (r.stderr or r.stdout or "").strip()
+        except (OSError, subprocess.TimeoutExpired) as e:
+            last = str(e)
+            continue
+        if not os.path.ismount(mp):
+            return None
+    if not os.path.ismount(mp):
+        return None
+    return f"force unmount of {mp} failed: {last or 'still mounted'}"
+
+
+def detach_mount(m: dict, force: bool = False) -> str | None:
     """Unmount via rcd; on failure ask the tile daemons to release their
     open files and retry once. Returns an error string or None. Never
-    force-unmounts — failing loudly beats corrupted reads."""
+    force-unmounts on its own — failing loudly beats corrupted reads.
+    `force=True` (an explicit user action on a mount already shown as
+    disconnected) escalates every dead end below to _force_unmount."""
+    mp = mountpoint(m)
     port = _live_rcd_port()
     if port is None:
         # No daemon: nothing rcd-owned to unmount. A foreign mount at the
         # path (pre-rcd prototype, manual rclone) is not ours to force.
-        if os.path.ismount(mountpoint(m)):
+        if os.path.ismount(mp):
+            if force:
+                return _force_unmount(mp)
             return ("mounted outside the app (no rclone daemon running) — "
                     "unmount it from the terminal")
         return None
-    params = {"mountPoint": mountpoint(m)}
+    params = {"mountPoint": mp}
     try:
         _rc(port, "mount/unmount", params)
         return None
@@ -327,6 +357,8 @@ def detach_mount(m: dict) -> str | None:
         # Linux both say "busy"); on any other failure quitting them would
         # tear down previews of unrelated LOCAL files for nothing.
         if "busy" not in str(e).lower():
+            if force and os.path.ismount(mp):
+                return _force_unmount(mp)
             return f"unmount failed: {e}"
     _quit_tile_daemons()
     time.sleep(0.5)
@@ -334,12 +366,90 @@ def detach_mount(m: dict) -> str | None:
         _rc(port, "mount/unmount", params)
         return None
     except RuntimeError as e:
+        if force and os.path.ismount(mp):
+            return _force_unmount(mp)
         return f"unmount failed (a preview may still hold a file open): {e}"
 
 
-def mount_view(m: dict, rcd_mounts: set | None = None) -> dict:
+def reconnect_mount(m: dict) -> str | None:
+    """Repair a disconnected mount: clear whatever is wedged at the
+    mountpoint, then mount fresh. Returns an error string or None.
+
+    Order matters: ask rcd nicely first (clears its tracking when it still
+    lists the mount), force-unmount whatever kernel mount remains (a dead
+    NFS mount rejects plain umount — the state this whole path exists for),
+    ask rcd once more so a force-cleared mount doesn't linger in its
+    listmounts and block the remount, then attach as usual."""
+    mp = mountpoint(m)
+    port = _live_rcd_port()
+    if port is not None:
+        try:
+            _rc(port, "mount/unmount", {"mountPoint": mp})
+        except RuntimeError:
+            pass  # wedged: rcd's own umount fails; the force path handles it
+    if os.path.ismount(mp):
+        err = _force_unmount(mp)
+        if err:
+            return err
+        if port is not None:
+            try:
+                _rc(port, "mount/unmount", {"mountPoint": mp})
+            except RuntimeError:
+                pass  # "mount not found" once the kernel mount is gone — fine
+    return attach_mount(m)
+
+
+# How long a mount gets to answer a stat/listdir before it is declared
+# disconnected. A wedged NFS mount (rclone's macOS backend) can block those
+# syscalls indefinitely, so every probe runs in a throwaway daemon thread —
+# a hang costs one leaked (blocked) thread, never a stuck request.
+PROBE_TIMEOUT = 3.0
+
+
+def mount_state(m: dict, rcd_mounts: set, timeout: float = PROBE_TIMEOUT) -> str:
+    """Health of one mount: "mounted" | "disconnected" | "unmounted".
+
+    "mounted" requires both that a live rcd serves the mountpoint AND that the
+    filesystem actually answers a listdir. The failure this catches: the rclone
+    daemon (or its NFS serve) dies while the kernel mount entry survives —
+    os.path.ismount() still says True, listings return stale/empty data, and
+    a plain unmount fails ("failed to umount the NFS volume"). That state is
+    "disconnected", which the UI repairs via /reconnect (force unmount +
+    remount) instead of showing a green dot over an empty folder.
+    """
+    mp = mountpoint(m)
+    out: dict = {}
+
+    def probe() -> None:
+        try:
+            is_mnt = os.path.ismount(mp)
+            served = mp in rcd_mounts
+            if not is_mnt and not served:
+                out["state"] = "unmounted"
+            elif is_mnt != served:
+                # Kernel and daemon disagree: either a kernel mount whose rcd
+                # is gone (or a foreign mount we can't health-check), or rcd
+                # still tracking a mount the kernel dropped — the mountpoint
+                # is a plain dir masquerading as remote data. Either way,
+                # remote data isn't flowing.
+                out["state"] = "disconnected"
+            else:
+                os.listdir(mp)  # the actual I/O health check
+                out["state"] = "mounted"
+        except OSError:
+            out["state"] = "disconnected"
+
+    t = threading.Thread(target=probe, daemon=True, name=f"mount-probe-{m['name']}")
+    t.start()
+    t.join(timeout)
+    return out.get("state", "disconnected")  # no answer in time == wedged
+
+
+def mount_view(m: dict, rcd_mounts: set | None = None, state: str | None = None) -> dict:
     mp = mountpoint(m)
     listed = mounted_paths() if rcd_mounts is None else rcd_mounts
+    if state is None:
+        state = mount_state(m, listed)
     return {
         # Only the persisted fields the UI needs; drop any stray keys (e.g. a
         # legacy "automount" flag from prototype-era records).
@@ -347,7 +457,9 @@ def mount_view(m: dict, rcd_mounts: set | None = None) -> dict:
         "name": m["name"],
         "remote": m["remote"],
         "mountpoint": mp,
-        "mounted": mp in listed or os.path.ismount(mp),
+        "state": state,
+        # Healthy only — a disconnected mount must not read as mounted.
+        "mounted": state == "mounted",
     }
 
 
@@ -493,12 +605,49 @@ def _rclone_state() -> dict:
             "suggested": _suggestions_view(remotes)}
 
 
+def broken_mount_error(path: str) -> str | None:
+    """If `path` sits under one of our mountpoints whose mount isn't healthy,
+    the user-facing reason — else None. /api/fs/list consults this before
+    trusting an empty or failed listing: a dead mount leaves a plain (empty)
+    local dir or a wedged NFS mount behind, which would otherwise render as
+    an ordinary empty folder with no hint the remote data ever existed."""
+    root = mounts_dir()
+    if not path.startswith(root + os.sep):
+        return None
+    name = path[len(root) + 1:].split(os.sep, 1)[0]
+    m = next((c for c in list_mounts() if c["name"] == name), None)
+    if m is None:
+        return None
+    state = mount_state(m, mounted_paths())
+    if state == "mounted":
+        return None
+    reason = "disconnected" if state == "disconnected" else "not mounted"
+    return (f"mount '{name}' is {reason} — reconnect it from the Mounts page "
+            f"in the sidebar")
+
+
 @router.get("/api/mounts")
 def get_mounts():
     live = mounted_paths()
+    mounts = list_mounts()
+    # Probe states concurrently: each disconnected/wedged mount blocks its
+    # probe for the full PROBE_TIMEOUT, and serially those would stack.
+    states: list[str | None] = [None] * len(mounts)
+    threads = []
+    for i, m in enumerate(mounts):
+        def probe(i=i, m=m):
+            states[i] = mount_state(m, live)
+        t = threading.Thread(target=probe, daemon=True)
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join(PROBE_TIMEOUT + 1)
     return {
         "rclone": _rclone_state(),
-        "mounts": [mount_view(c, live) for c in list_mounts()],
+        "mounts": [
+            mount_view(m, live, state=s or "disconnected")
+            for m, s in zip(mounts, states)
+        ],
     }
 
 
@@ -533,15 +682,31 @@ def mount_endpoint(cid: str, x_fused: str | None = Header(default=None)):
     return mount_view(m)
 
 
-@router.post("/api/mounts/{cid}/unmount")
-def unmount_endpoint(cid: str, x_fused: str | None = Header(default=None)):
+@router.post("/api/mounts/{cid}/reconnect")
+def reconnect_endpoint(cid: str, x_fused: str | None = Header(default=None)):
+    """Repair a disconnected mount: force-clear the dead mountpoint, remount."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
     m = get_mount(cid)
     if m is None:
         return JSONResponse({"error": "unknown mount"}, status_code=404)
-    err = detach_mount(m)
+    err = reconnect_mount(m)
+    if err:
+        return JSONResponse({"error": err}, status_code=502)
+    return mount_view(m)
+
+
+@router.post("/api/mounts/{cid}/unmount")
+def unmount_endpoint(cid: str, force: str = "0",
+                     x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    m = get_mount(cid)
+    if m is None:
+        return JSONResponse({"error": "unknown mount"}, status_code=404)
+    err = detach_mount(m, force=force == "1")
     if err:
         return JSONResponse({"error": err}, status_code=502)
     return mount_view(m)
