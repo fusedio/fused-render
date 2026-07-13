@@ -336,12 +336,16 @@ def _filter_domain(file, field):
 # ---------- tableau .twb import ----------
 
 # .twb shelf tokens: [Datasource].[sum:Sales:qk], [Datasource].[yr:Order Date:ok],
-# [Datasource].[Region:nk] — [derivation:]name[:kind], where the derivation is
-# an aggregate or date grain and the kind is a two-letter role code (nk/qk/ok).
+# [Datasource].[none:Region:nk] — [derivation:]name[:kind], where the derivation
+# is an aggregate, a date grain, or none/attr (use the values unaggregated) and
+# the kind is a two-letter role code (nk/qk/ok).
 _TWB_AGG = {"sum": "sum", "avg": "avg", "mdn": "median", "min": "min", "max": "max",
             "cnt": "count", "ctd": "countd"}
 _TWB_GRAIN = {"yr": "year", "qr": "quarter", "mn": "month", "wk": "week", "dy": "day",
-              "tyr": "year", "tqr": "quarter", "tmn": "month", "twk": "week", "tdy": "day"}
+              "tyr": "year", "tqr": "quarter", "tmn": "month", "twk": "week", "tdy": "day",
+              # sub-day grains collapse to day, the finest this viewer offers
+              "hr": "day", "mi": "day", "sc": "day",
+              "thr": "day", "tmi": "day", "tsc": "day"}
 _TWB_MARK = {"Automatic": "auto", "Bar": "bar", "Line": "line", "Area": "area",
              "Square": "heatmap", "Circle": "scatter", "Shape": "scatter",
              "Pie": "pie", "Text": "table"}
@@ -362,6 +366,10 @@ def _twb_pill(token, meta):
         return {"field": name, "agg": _TWB_AGG[prefix]}
     if prefix in _TWB_GRAIN:
         return {"field": name, "grain": _TWB_GRAIN[prefix]}
+    if prefix in ("none", "attr"):
+        # explicitly unaggregated: a numeric shelved as a discrete dimension
+        # must not fall through to SUM; an exact date maps to the day grain
+        return {"field": name, "grain": "day"} if fld["dtype"] == "date" else {"field": name}
     if fld["role"] == "measure":
         return {"field": name, "agg": "sum"}
     if fld["dtype"] == "date":

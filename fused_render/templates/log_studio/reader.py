@@ -231,13 +231,15 @@ def _counts():
     return {level: 0 for level in _LEVELS}
 
 
-def _row(offset, text, stamp, level, truncated=False):
+def _row(offset, text, stamp, level, effective, truncated=False):
     return {
         "offset": offset,
         "text": text,
         "timestamp": stamp[1] if stamp else None,
         "epoch": stamp[0] if stamp else None,
-        "level": level or "OTHER",
+        # the badge wears the effective level: a continuation line shows the
+        # level it inherited (and was filtered under), not OTHER
+        "level": effective[1] or "OTHER",
         "continuation": stamp is None and level is None,
         "truncated": truncated,
     }
@@ -264,6 +266,7 @@ def _overview(file):
     minimum = None
     maximum = None
     clipped_lines = 0
+    last = (None, None)
     with open(file, "rb") as source:
         while line_count < _SCAN_LINES and time.monotonic() < deadline:
             raw, clipped = _readline(source, deadline)
@@ -272,9 +275,12 @@ def _overview(file):
             line_count += 1
             clipped_lines += int(clipped)
             text = _text(raw)
-            level = _level(text)
-            level_counts[level or "OTHER"] += 1
             stamp = _timestamp(text)
+            level = _level(text)
+            effective = _effective(stamp, level, last)
+            if stamp or level:
+                last = effective
+            level_counts[effective[1] or "OTHER"] += 1
             if stamp:
                 format_counts[stamp[2]] = format_counts.get(stamp[2], 0) + 1
                 if minimum is None or stamp[0] < minimum[0]:
@@ -405,7 +411,7 @@ def _tail_page(file, limit, q, levels, from_epoch, to_epoch):
                     if len(rows) == limit:
                         has_more = True
                         break
-                    rows.append(_row(offsets[index], text, stamp, level, clipped))
+                    rows.append(_row(offsets[index], text, stamp, level, effs[index], clipped))
                 if scanned >= _SCAN_LINES or time.monotonic() >= deadline:
                     break
             if has_more or scanned >= _SCAN_LINES or time.monotonic() >= deadline:
@@ -458,7 +464,7 @@ def _page(file, page, limit, q, levels, from_epoch, to_epoch, tail):
                 last = effective
             if not matches(text, effective):
                 continue
-            row = _row(offset, text, stamp, level, clipped)
+            row = _row(offset, text, stamp, level, effective, clipped)
             end = source.tell()
             if len(rows) < limit:
                 rows.append(row)
@@ -497,7 +503,6 @@ def _histogram(file, bins, q, levels, from_epoch, to_epoch):
     buckets = {}
     width = 1.0
     matching_count = 0
-    timestamped_count = 0
     level_counts = _counts()
     scanned = 0
     clipped_lines = 0
@@ -518,12 +523,11 @@ def _histogram(file, bins, q, levels, from_epoch, to_epoch):
             if not matches(text, effective):
                 continue
             matching_count += 1
-            normalized_level = level or "OTHER"
+            normalized_level = effective[1] or "OTHER"
             level_counts[normalized_level] += 1
-            if stamp is None:
+            if effective[0] is None:
                 continue
-            timestamped_count += 1
-            index = math.floor(stamp[0] / width)
+            index = math.floor(effective[0] / width)
             bucket = buckets.setdefault(index, {"count": 0, "levels": _counts()})
             bucket["count"] += 1
             bucket["levels"][normalized_level] += 1
@@ -548,7 +552,6 @@ def _histogram(file, bins, q, levels, from_epoch, to_epoch):
         "bins": output,
         "bucket_seconds": width,
         "matching_count": matching_count,
-        "timestamped_count": timestamped_count,
         "levels": level_counts,
         "scanned_lines": scanned,
         "clipped_lines": clipped_lines,

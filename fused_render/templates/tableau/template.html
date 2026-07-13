@@ -397,9 +397,11 @@ function fmtNum(v) {
 }
 
 /* ================= pills ================= */
+/* A pill is a measure iff it aggregates: a dim with CNT/CNTD acts as a
+   measure, and a numeric field without an aggregate (Tableau's "none:"
+   discrete use, or Values in the pill menu) acts as a dimension. */
 function pillIsMeasure(p) {
-  const f = fieldsBy[p.field];
-  return f.role === "measure" || !!p.agg;   // a dim with CNT/CNTD acts as a measure
+  return !!p.agg;
 }
 function pillLabel(p) {
   const f = fieldsBy[p.field];
@@ -542,6 +544,7 @@ function pillMenu(anchor, shelf, i) {
     for (const a of ["sum", "avg", "median", "min", "max", "count", "countd"])
       items.push({ label: AGG_LABEL[a] + " — " + { sum: "Sum", avg: "Average", median: "Median", min: "Minimum", max: "Maximum", count: "Count", countd: "Count distinct" }[a],
                    checked: p.agg === a, act: () => { p.agg = a; } });
+    items.push({ label: "Values (dimension)", checked: !p.agg, act: () => { delete p.agg; } });
   } else if (f.dtype === "date") {
     items.push({ head: "Date level" });
     for (const g of ["year", "quarter", "month", "week", "day"])
@@ -767,7 +770,7 @@ function buildQuerySpec(sh, chart) {
     const alias = pillLabel(p);
     if (seen.has(alias)) return;
     seen.add(alias);
-    if (pillIsMeasure(p)) measures.push({ field: p.field, agg: p.agg || "sum", as: alias });
+    if (pillIsMeasure(p)) measures.push({ field: p.field, agg: p.agg, as: alias });
     else dims.push({ field: p.field, grain: p.grain, as: alias });
   };
   for (const p of shelfPills(sh)) push(p);
@@ -825,6 +828,20 @@ function fmtDateVal(v, grain) {
   if (grain === "month") return `${MONTHS[m]} ${y}`;
   return `${MONTHS[m]} ${String(d.getDate()).padStart(2, "0")}, ${y}`;
 }
+/* DuckDB DATE columns arrive as bare YYYY-MM-DD strings, which JS Date and
+   vega parse as UTC midnight but format in local time — west of UTC every
+   label would shift back a day. Pin them to local midnight instead. */
+function pinDates(dims, records) {
+  const dateDims = dims.filter(d => d && fieldsBy[d.field].dtype === "date");
+  if (!dateDims.length) return records;
+  return records.map(r => {
+    const o = { ...r };
+    for (const d of dateDims) {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(o[d.as])) o[d.as] += "T00:00:00";
+    }
+    return o;
+  });
+}
 /* bar / heatmap / pie treat dates as discrete labels (server rows arrive in date order) */
 function discretizeDates(dims, records) {
   const dateDims = dims.filter(d => d && fieldsBy[d.field].dtype === "date");
@@ -860,6 +877,7 @@ function buildVLSpec(sh, chart, q, records) {
   const colorMeas = colorPill && pillIsMeasure(colorPill) ? q.measures.find(mm => mm.as === pillLabel(colorPill)) : null;
 
   const discrete = ["bar", "heatmap", "pie"].includes(chart);
+  records = pinDates(q.dims, records);
   records = discretizeDates(discrete ? q.dims : [colorDim], records);
 
   const enc = { tooltip: tooltipChannel(q, discrete) };
