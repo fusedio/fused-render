@@ -389,7 +389,13 @@ def attach_mount(m: dict) -> str | None:
         if fs is not None and fs != m["remote"]:
             return (f"mountpoint already serves '{fs}' — unmount it before "
                     f"mounting '{m['remote']}'")
-        return None  # already mounted (double-click, adopted foreign mount)
+        # Already mounted (double-click, adopted foreign mount) — but the
+        # HTTP serve may still be missing (a prior serve/start failed, or the
+        # mount predates the serve layer), so reconcile serves here too:
+        # without one, /api/fs/raw silently falls back to reads through the
+        # wedge-prone kernel mount.
+        sync_serves()
+        return None
     try:
         port = ensure_rcd()
         _rc(port, "mount/mount", {

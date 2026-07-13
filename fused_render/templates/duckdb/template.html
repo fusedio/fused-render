@@ -176,6 +176,7 @@
   td.is-null:focus::before { content: ""; }
   /* Column still in flight (remote per-column parallel load): shimmer bar. */
   td.skel { color: transparent; pointer-events: none; }
+  td.load-err { color: #ff6b6b; opacity: 0.75; }
   td.skel::before {
     content: "";
     display: block;
@@ -534,6 +535,11 @@
             if (state.pending && state.pending.has(c)) {
               return `<td class="skel" data-col="${escapeHtml(c)}"></td>`;
             }
+            // Column's batch failed: an explicit marker, not editable and not
+            // a silent blank a reader would take for real empty values.
+            if (state.failedCols && state.failedCols.has(c)) {
+              return `<td class="load-err" data-col="${escapeHtml(c)}" title="Column failed to load — reload to retry">⚠</td>`;
+            }
             const k = editKey(id, c);
             const edited = staged.edits.has(k);
             const raw = edited ? staged.edits.get(k).value : row[c];
@@ -732,7 +738,7 @@
           }
           staged = { edits: new Map(), deletes: new Set(), inserts: [] };
           idIndex = new Map();
-          state = { ...schema, rows: [], ids: [], pending: new Set(schema.columns), colErrors: 0 };
+          state = { ...schema, rows: [], ids: [], pending: new Set(schema.columns), colErrors: 0, failedCols: new Set() };
           state.idsByAttr = new Map();
           if (countVal !== undefined) state.total_rows = countVal;
           rendered = true;
@@ -816,7 +822,10 @@
         });
       }
       cols.forEach((c) => state.pending.delete(c));
-      if (!d) state.colErrors++;
+      if (!d) {
+        state.colErrors++;
+        cols.forEach((c) => state.failedCols.add(c));
+      }
       if (d && state.ids.length) {
         d.ids.forEach((id, i) => {
           const row = idIndex.get(id);
@@ -847,8 +856,23 @@
         state.rowsRendered = true;
         renderAll();
       } else {
-        cols.forEach(fillColumn);
+        cols.forEach((c) => (d ? fillColumn(c) : fillColumnError(c)));
       }
+    }
+
+    // A batch failed after the rows were already on screen: swap its skeleton
+    // cells for an explicit error marker (a silent blank would read as data).
+    function fillColumnError(col) {
+      wrap.querySelectorAll("tbody tr[data-id]").forEach((tr) => {
+        const td = tr.querySelector(`td[data-col="${CSS.escape(col)}"]`);
+        if (!td) return;
+        td.classList.remove("skel");
+        td.classList.add("load-err");
+        td.removeAttribute("contenteditable");
+        td.style.pointerEvents = "";
+        td.title = "Column failed to load — reload to retry";
+        td.textContent = "⚠";
+      });
     }
 
     // Replace one landed column's skeleton cells in place (no full re-render,

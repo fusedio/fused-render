@@ -1000,8 +1000,15 @@ def _proxy_raw(upstream: str, request: Request):
     try:
         r = urllib.request.urlopen(req, timeout=120)
     except urllib.error.HTTPError as e:
-        e.close()
-        return Response(status_code=e.code)
+        # Error responses carry protocol-level headers too — a 416's
+        # `Content-Range: bytes */<size>` is how a range client learns the
+        # file's length — so forward the same header set as on success.
+        out = {k: v for k, v in e.headers.items() if k.lower() in _PROXY_HEADERS}
+        try:
+            payload = b"" if request.method == "HEAD" else e.read()
+        finally:
+            e.close()
+        return Response(content=payload, status_code=e.code, headers=out)
     except OSError:
         return None
     out = {k: v for k, v in r.headers.items() if k.lower() in _PROXY_HEADERS}

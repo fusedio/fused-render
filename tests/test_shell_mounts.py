@@ -721,6 +721,20 @@ def test_attach_starts_http_serve_and_writes_map(home, rcd):
     assert serves == {mounts_mod.mountpoint(c): "http://127.0.0.1:59999"}
 
 
+def test_attach_syncs_serves_when_already_mounted(home, rcd, monkeypatch):
+    # The already-a-kernel-mount early return must still reconcile serves:
+    # without one, /api/fs/raw falls back to reads through the kernel mount.
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    monkeypatch.setattr(mounts_mod.os.path, "ismount",
+                        lambda p: p == mounts_mod.mountpoint(c))
+    assert mounts_mod.attach_mount(c) is None
+    assert not any(m == "mount/mount" for m, _ in rcd.calls)
+    [(_, body)] = [x for x in rcd.calls if x[0] == "serve/start"]
+    assert body["fs"] == "remote:bucket"
+    serves = json.load(open(mounts_mod.serves_path()))
+    assert serves == {mounts_mod.mountpoint(c): "http://127.0.0.1:59999"}
+
+
 def test_sync_serves_reuses_existing_serve(home, rcd):
     c = mounts_mod.add_mount("data", "remote:bucket")
     rcd.responses["serve/list"] = {"list": [{
@@ -844,3 +858,41 @@ def test_fs_raw_falls_back_to_file_when_serve_dead(client, home):
     storage.write_json(mounts_mod.serves_path(), {mp: f"http://127.0.0.1:{dead}"})
     r = client.get("/api/fs/raw", params={"path": f})
     assert r.status_code == 200 and r.content == b"LOCAL-BYTES"
+
+
+def test_fs_raw_proxy_error_keeps_range_headers(client, home):
+    """An HTTP error from a live serve passes through WITH its protocol
+    headers — a 416's `Content-Range: bytes */<size>` is how a range client
+    (DuckDB httpfs) learns the file length."""
+    import http.server
+    import os
+    import threading
+
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    os.makedirs(mp)
+    f = os.path.join(mp, "x.bin")
+    open(f, "wb").write(b"LOCAL-BYTES")
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(416)
+            self.send_header("Content-Range", "bytes */12345")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        import fused_render.shell.storage as storage
+        storage.write_json(mounts_mod.serves_path(),
+                           {mp: f"http://127.0.0.1:{srv.server_address[1]}"})
+        r = client.get("/api/fs/raw", params={"path": f},
+                       headers={"Range": "bytes=99999999-"})
+        assert r.status_code == 416
+        assert r.headers["content-range"] == "bytes */12345"
+    finally:
+        srv.shutdown()
