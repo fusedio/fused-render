@@ -190,6 +190,81 @@ def test_json_is_read_only(tmp_path):
     assert "read-only" in out["readonly_tooltip"].lower()
 
 
+# -------------------------------------------- page SQL / pushdown-safe paging
+
+def test_parquet_page_sql_uses_file_row_number(parquet_file):
+    # The parquet page must get its physical-position key from read_parquet's
+    # file_row_number pseudo-column (which preserves predicate + row-group
+    # pushdown), NOT a row_number() window (which blocks both). EXCLUDE drops the
+    # pseudo-column from the visible page so it isn't rendered as a data column.
+    rel = reader.relation_for(parquet_file)
+    sql = reader._page_sql(parquet_file, rel, "", "")
+    assert "file_row_number=true" in reader.relation_for(parquet_file, file_row_number=True)
+    assert "file_row_number AS" in sql
+    assert "EXCLUDE (file_row_number)" in sql
+    assert "row_number() OVER" not in sql
+
+
+def test_csv_page_sql_keeps_window(csv_file):
+    # CSV/JSON can't prune, and have no file_row_number, so they keep the
+    # streaming row_number() window.
+    rel = reader.relation_for(csv_file)
+    sql = reader._page_sql(csv_file, rel, "", "")
+    assert "row_number() OVER" in sql
+    assert "file_row_number" not in sql
+
+
+def test_parquet_filter_sort_positions_via_file_row_number(parquet_file):
+    # End-to-end through the file_row_number path: a filtered + sorted page still
+    # returns the physical file positions the writer edits by.
+    out = reader.main(parquet_file,
+                      filters=[{"column": "id", "op": ">=", "value": "200"}],
+                      sort={"column": "id", "dir": "desc"})
+    assert out["rows"][0]["id"] == 249
+    assert out["ids"][0] == 249                   # physical position, sorted desc
+    assert "file_row_number" not in out["columns"]  # pseudo-column not leaked
+
+
+# --------------------------------------------------- deferred count (mode)
+
+def test_page_mode_defers_count(parquet_file):
+    # "page" returns the rows but leaves total_rows None — the grid fetches the
+    # count separately so the page can render before the (heavy) count finishes.
+    out = reader.main(parquet_file, mode="page")
+    assert out["total_rows"] is None
+    assert len(out["rows"]) == 100
+    assert out["ids"] == list(range(100))
+    assert out["editable"] is True
+
+
+def test_count_mode_returns_total_only(parquet_file):
+    out = reader.main(parquet_file, mode="count")
+    assert out == {"total_rows": 250}
+
+
+def test_count_mode_respects_filter(parquet_file):
+    out = reader.main(parquet_file, mode="count",
+                      filters=[{"column": "id", "op": ">=", "value": "200"}])
+    assert out == {"total_rows": 50}
+
+
+def test_full_mode_is_default_and_inlines_count(parquet_file):
+    # The default (no mode) still returns the count inline, so existing callers
+    # and the .py test suite are unaffected.
+    assert reader.main(parquet_file)["total_rows"] == 250
+
+
+def test_duckdb_count_mode(duckdb_db):
+    assert reader.main(duckdb_db, table="actor", mode="count") == {"total_rows": 5}
+
+
+def test_duckdb_page_mode_defers_count(duckdb_db):
+    out = reader.main(duckdb_db, table="actor", mode="page")
+    assert out["total_rows"] is None
+    assert out["ids"] == [0, 1, 2, 3, 4]
+    assert out["editable"] is True
+
+
 # ----------------------------------------------------- compressed variants
 
 def test_csv_gz_reads_as_editable_text(csv_gz_file):

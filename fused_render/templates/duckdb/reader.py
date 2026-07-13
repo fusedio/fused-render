@@ -143,19 +143,44 @@ def _build_order(sort, columns):
     return f" ORDER BY {_quote_ident(col)} {direction.upper()}"
 
 
-def relation_for(file: str) -> str:
+def relation_for(file: str, file_row_number: bool = False) -> str:
     """The read-only table-function that reads `file` by extension. Shared with
-    writer.py so read and write agree on how each format is parsed."""
+    writer.py so read and write agree on how each format is parsed.
+
+    `file_row_number` (parquet only) asks read_parquet to expose its
+    `file_row_number` pseudo-column — the row's physical position in the file.
+    It's ignored for the other formats, which have no such pseudo-column."""
     lit = _quote_str(os.path.abspath(file))
     ext = _logical_ext(file)
     if ext == ".parquet":
-        return f"read_parquet({lit})"
+        opt = ", file_row_number=true" if file_row_number else ""
+        return f"read_parquet({lit}{opt})"
     if ext == ".tsv":
         return f"read_csv_auto({lit}, delim='\t', all_varchar=true)"
     if ext == ".csv":
         return f"read_csv_auto({lit}, all_varchar=true)"
     # .json / .jsonl / .ndjson (optionally .gz/.zst — DuckDB auto-decompresses)
     return f"read_json_auto({lit})"
+
+
+def _page_sql(file: str, relation: str, where: str, order: str) -> str:
+    """The paging SELECT, which must also yield each row's physical file position
+    as `_POS` (the writer's edit key) even after WHERE/ORDER reshuffle the page.
+
+    For parquet the position comes from read_parquet's `file_row_number`
+    pseudo-column. Crucially, that leaves predicate + row-group pushdown intact:
+    a filtered/sorted page prunes to the matching row groups. The obvious
+    alternative — numbering rows with a `row_number() OVER ()` window — is a
+    blocking operator that sits between the filter and the scan, defeating both
+    pushdowns and forcing DuckDB to read row groups that provably hold no match.
+    CSV/JSON have no such pseudo-column and can't prune anyway, so they keep the
+    streaming window (LIMIT still pushes through it)."""
+    if _logical_ext(file) == ".parquet":
+        rel = relation_for(file, file_row_number=True)
+        return (f"SELECT file_row_number AS {_POS}, * EXCLUDE (file_row_number) "
+                f"FROM {rel}{where}{order} LIMIT ? OFFSET ?")
+    return (f"SELECT * FROM (SELECT (row_number() OVER () - 1) AS {_POS}, * "
+            f"FROM {relation}){where}{order} LIMIT ? OFFSET ?")
 
 
 def _db_tables(con):
@@ -167,18 +192,24 @@ def _db_tables(con):
     return [r[0] for r in rows], {r[0]: r[1] for r in rows}
 
 
-def _read_database(file, table, offset, limit, sort, filters):
+def _read_database(file, table, offset, limit, sort, filters, mode="full"):
     """Page one relation of a DuckDB database file. Unlike the flat-file path,
     row identity is DuckDB's real `rowid` pseudo-column (the key writer.py edits
     by), and nothing is rewritten. Views have no rowid, so they're view-only —
-    the same rule the SQLite grid applies."""
+    the same rule the SQLite grid applies.
+
+    `mode` gates the count/page split identically to the flat-file path (see
+    main): "count" returns only {total_rows}, "page" the page with total_rows
+    None, "full" both."""
     con = duckdb.connect(":memory:")
     try:
         con.execute(f"ATTACH {_quote_str(os.path.abspath(file))} AS db (READ_ONLY)")
         tables, kinds = _db_tables(con)
         if not tables:
+            if mode == "count":
+                return {"total_rows": 0}
             return {"columns": [], "types": {}, "rows": [], "ids": [],
-                    "total_rows": 0, "editable": False, "tables": [], "table": "",
+                    "total_rows": None, "editable": False, "tables": [], "table": "",
                     "readonly_message": "", "readonly_tooltip": ""}
         # An unknown/stale table param falls back to the first real table
         # rather than erroring the whole view.
@@ -189,9 +220,16 @@ def _read_database(file, table, offset, limit, sort, filters):
         types = {r[0]: r[1] for r in
                  con.execute(f"DESCRIBE SELECT * FROM {relation}").fetchall()}
         where, wbinds = _build_where(filters, types)
+        if mode == "count":
+            total = con.execute(
+                f"SELECT COUNT(*) FROM {relation}{where}", wbinds).fetchone()[0]
+            return {"total_rows": total}
         order = _build_order(sort, types)
+        # "page" defers the count (the grid fetches it in a second call); "full"
+        # returns it inline.
         total_rows = con.execute(
-            f"SELECT COUNT(*) FROM {relation}{where}", wbinds).fetchone()[0]
+            f"SELECT COUNT(*) FROM {relation}{where}", wbinds).fetchone()[0] \
+            if mode == "full" else None
 
         # Base tables carry rowid (the edit key); a view has none, so it pages
         # without ids and stays read-only.
@@ -238,36 +276,48 @@ def _fs_gate(file, out):
 
 
 def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
-         sort: "dict | None" = None, filters: "list | None" = None) -> dict:
+         sort: "dict | None" = None, filters: "list | None" = None,
+         mode: str = "full") -> dict:
     # Clamp so a hostile/negative limit can't turn LIMIT ? into an unbounded
     # fetch, and a negative offset can't error out mid-query.
     limit = max(1, min(int(limit), MAX_LIMIT))
     offset = max(0, int(offset))
     ext = _logical_ext(file)
     if ext in _DB_EXTS:
-        return _fs_gate(file, _read_database(file, table, offset, limit, sort, filters))
+        out = _read_database(file, table, offset, limit, sort, filters, mode)
+        # "count" returns only {total_rows} — no editability verdict to gate.
+        return out if mode == "count" else _fs_gate(file, out)
     relation = relation_for(file)
 
     con = duckdb.connect(":memory:")
     try:
+        # Reuse parsed parquet/CSV metadata across the queries in *this* call
+        # (DESCRIBE, COUNT, page all touch the same footer). It can't cache
+        # across calls — the executor re-execs this module and never keeps it in
+        # sys.modules — so this only saves within a single reader run.
+        con.execute("PRAGMA enable_object_cache=true")
         # Column types (BIGINT, VARCHAR, DOUBLE, …) so the grid can label each
         # header. DESCRIBE reports the relation's schema without scanning rows,
         # and drives which filters are valid and how they cast.
         types = {r[0]: r[1] for r in
                  con.execute(f"DESCRIBE SELECT * FROM {relation}").fetchall()}
         where, wbinds = _build_where(filters, types)
+
+        # The filtered count scans every candidate row group, so over a remote
+        # mount it dominates. The grid fetches it in a separate "count" call and
+        # renders the page first ("… rows"), so "page" skips it (total_rows None)
+        # and "count" returns only the total. "full" (default) keeps both inline.
+        if mode == "count":
+            total = con.execute(
+                f"SELECT COUNT(*) FROM {relation}{where}", wbinds).fetchone()[0]
+            return {"total_rows": total}
         order = _build_order(sort, types)
-
-        # total_rows is the filtered count, so the grid pages within the filter.
         total_rows = con.execute(
-            f"SELECT COUNT(*) FROM {relation}{where}", wbinds).fetchone()[0]
+            f"SELECT COUNT(*) FROM {relation}{where}", wbinds).fetchone()[0] \
+            if mode == "full" else None
 
-        # Number every row by physical position *before* filtering/sorting (the
-        # window sits in the inner scan), then page the reshuffled result. ids
-        # therefore stay the file positions the writer edits by, sorted or not.
-        paged = (f"SELECT * FROM (SELECT (row_number() OVER () - 1) AS {_POS}, * "
-                 f"FROM {relation}){where}{order} LIMIT ? OFFSET ?")
-        cur = con.execute(paged, wbinds + [limit, offset])
+        cur = con.execute(_page_sql(file, relation, where, order),
+                          wbinds + [limit, offset])
         desc = [d[0] for d in cur.description] if cur.description else []
         columns = desc[1:]                      # drop the leading _POS column
         rows, ids = [], []
