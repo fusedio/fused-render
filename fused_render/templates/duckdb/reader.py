@@ -224,6 +224,19 @@ def _read_database(file, table, offset, limit, sort, filters):
         con.close()
 
 
+def _fs_gate(file, out):
+    """FS gate over either path's verdict: a chmod -w file beats a
+    content-level "editable" (the writer refuses it too — see writer.py).
+    Content-level read-only reasons (view, JSON) keep their own message."""
+    if out["editable"] and not os.access(file, os.W_OK):
+        out.update(
+            editable=False,
+            readonly_message="Read-only",
+            readonly_tooltip="The file is read-only — its permissions don't "
+                             "allow writing, so it can't be edited here.")
+    return out
+
+
 def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
          sort: "dict | None" = None, filters: "list | None" = None) -> dict:
     # Clamp so a hostile/negative limit can't turn LIMIT ? into an unbounded
@@ -232,7 +245,7 @@ def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
     offset = max(0, int(offset))
     ext = _logical_ext(file)
     if ext in _DB_EXTS:
-        return _read_database(file, table, offset, limit, sort, filters)
+        return _fs_gate(file, _read_database(file, table, offset, limit, sort, filters))
     relation = relation_for(file)
 
     con = duckdb.connect(":memory:")
@@ -263,7 +276,7 @@ def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
             rows.append({columns[j] if j < len(columns) else f"col{j}": _jsonify(v)
                          for j, v in enumerate(raw[1:])})
         editable = ext in _EDITABLE_EXTS
-        return {
+        return _fs_gate(file, {
             "columns": columns,
             "types": types,
             "rows": rows,
@@ -275,6 +288,6 @@ def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
             "readonly_tooltip": "" if editable else (
                 "Read-only. JSON is flattened into columns for viewing; writing "
                 "that back would lose the original nested structure."),
-        }
+        })
     finally:
         con.close()

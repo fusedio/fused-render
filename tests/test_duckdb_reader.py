@@ -417,3 +417,28 @@ def test_writer_rejects_readonly_format(tmp_path):
     p = _make(tmp_path, "s.json", "SELECT 1 AS id")
     with pytest.raises(ValueError):
         writer.main(p, edits=[{"row": 0, "column": "id", "value": "2"}])
+
+
+# ---------------------------------------------------- fs-level read-only file
+
+@pytest.fixture
+def readonly_parquet(parquet_file):
+    os.chmod(parquet_file, 0o444)
+    yield parquet_file
+    os.chmod(parquet_file, 0o644)  # so tmp_path cleanup works
+
+
+def test_reader_readonly_file_not_editable(readonly_parquet):
+    out = reader.main(readonly_parquet)
+    assert out["editable"] is False
+    assert out["total_rows"] == 250                  # still viewable
+    assert "read-only" in out["readonly_message"].lower()
+    assert out["readonly_tooltip"]
+
+
+def test_writer_refuses_readonly_file(readonly_parquet):
+    before = os.stat(readonly_parquet).st_size
+    with pytest.raises(PermissionError):
+        writer.main(readonly_parquet,
+                    edits=[{"row": 0, "column": "name", "value": "x"}])
+    assert os.stat(readonly_parquet).st_size == before  # bytes untouched

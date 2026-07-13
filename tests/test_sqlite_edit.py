@@ -175,3 +175,28 @@ def test_empty_string_is_distinct_from_null(db):
     val = sc.execute("SELECT name FROM people WHERE rowid = 1").fetchone()[0]
     sc.close()
     assert val == "" and val is not None
+
+
+# ---------------------------------------------------- fs-level read-only file
+
+@pytest.fixture
+def readonly_db(db):
+    os.chmod(db, 0o444)
+    yield db
+    os.chmod(db, 0o644)  # so tmp_path cleanup works
+
+
+def test_reader_readonly_file_not_editable(readonly_db):
+    out = reader.main(readonly_db, table="people")
+    assert out["editable"] is False
+    assert out["ids"] == []                          # no rowids: nothing to key edits by
+    assert out["total_rows"] == 5                    # still viewable
+    assert "read-only" in out["readonly_message"].lower()
+    assert out["readonly_tooltip"]
+
+
+def test_writer_refuses_readonly_file(readonly_db):
+    with pytest.raises(PermissionError):
+        writer.main(readonly_db, table="people",
+                    edits=[{"row": 1, "column": "name", "value": "x"}])
+    assert _all(readonly_db)[0][1] == "p0"           # bytes untouched
