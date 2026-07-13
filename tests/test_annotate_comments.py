@@ -194,3 +194,36 @@ def test_deleted_ids_alone_still_writes_and_unknown_ignored(tmp_path):
     resp = ann._record(str(f), [], ["ghost"])
     assert resp == {"recorded": True, "count": 0, "deleted": 0}
     assert _sidecar(tmp_path).read_text() == before
+
+
+# ------------------------------------------------------- status (writability)
+
+def test_status_writable_sidecar_dir(tmp_path):
+    ann = _load_annotate()
+    target = tmp_path / "page.html"
+    target.write_text("<html></html>")
+    assert ann.main(action="status", file=str(target)) == {"writable": True}
+
+
+def test_status_readonly_sidecar_file(tmp_path):
+    ann = _load_annotate()
+    target = tmp_path / "page.html"
+    target.write_text("<html></html>")
+    sidecar = tmp_path / "page.html.json"
+    sidecar.write_text("{}")
+    os.chmod(sidecar, 0o444)
+    try:
+        assert ann.main(action="status", file=str(target)) == {"writable": False}
+    finally:
+        os.chmod(sidecar, 0o644)
+
+
+def test_status_readonly_parent_dir(tmp_path):
+    ann = _load_annotate()
+    target = tmp_path / "page.html"
+    target.write_text("<html></html>")
+    os.chmod(tmp_path, 0o555)
+    try:
+        assert ann.main(action="status", file=str(target)) == {"writable": False}
+    finally:
+        os.chmod(tmp_path, 0o755)

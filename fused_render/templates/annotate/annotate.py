@@ -24,6 +24,10 @@ Stdlib only (runs in a subprocess; cannot import fused_render.shell).
 Actions:
   main(action="record", file=..., comments=[...], deleted_ids=[...])
     -> {"recorded": True, "count": N, "deleted": M}
+  main(action="status", file=...)
+    -> {"writable": bool}  # can the sidecar be written? Commenting still
+       # works read-only (the URL is the live store); the template just warns
+       # that history won't be recorded.
 """
 import json
 import os
@@ -139,11 +143,32 @@ def _record(file: str, comments: list, deleted_ids: list) -> dict:
         return {"recorded": True, "count": 0, "deleted": 0}
 
     data["comments"] = log
+    # Honor a read-only sidecar: the os.replace in _save_sidecar goes through
+    # the directory and would silently overwrite a chmod -w file. The caller
+    # (template.html) treats record as best-effort, so this just becomes the
+    # warning badge its status probe already showed.
+    if not _sidecar_writable(file):
+        raise PermissionError(f"{_sidecar_path(file)!r} is read-only")
     _save_sidecar(file, data)
     return {"recorded": True, "count": count, "deleted": deleted}
 
 
+def _sidecar_writable(file: str) -> bool:
+    """True iff _save_sidecar would succeed: an existing sidecar needs W_OK on
+    itself (the os.replace above would otherwise bypass its read-only bit via
+    the directory), a fresh one needs W_OK on the directory (mkstemp+replace
+    both land there)."""
+    path = _sidecar_path(os.path.abspath(file))
+    if os.path.exists(path):
+        return os.access(path, os.W_OK)
+    return os.access(os.path.dirname(path), os.W_OK)
+
+
 def main(action: str = "record", file: str = "", comments=None, deleted_ids=None) -> dict:
+    if action == "status":
+        if not file:
+            return {"error": "missing target file (no _file param?)"}
+        return {"writable": _sidecar_writable(file)}
     if action == "record":
         if not file:
             return {"error": "missing target file (no _file param?)"}

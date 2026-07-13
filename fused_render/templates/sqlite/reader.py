@@ -164,7 +164,15 @@ def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
             types = _column_types(conn, active)
             where, wbinds = _build_where(filters, types)
             order = _build_order(sort, types)
-            editable, readonly_message, readonly_tooltip = _editability(conn, active)
+            # FS gate first: a chmod -w file beats any per-table verdict (the
+            # writer refuses it too — see writer.py). Then the per-table gates.
+            if not os.access(file, os.W_OK):
+                editable, readonly_message, readonly_tooltip = (
+                    False, "Read-only",
+                    "The file is read-only — its permissions don't allow "
+                    "writing, so it can't be edited here.")
+            else:
+                editable, readonly_message, readonly_tooltip = _editability(conn, active)
             # total_rows is the filtered count, so the grid pages within the filter.
             total_rows = conn.execute(
                 f"SELECT COUNT(*) FROM {qname}{where}", wbinds).fetchone()[0]

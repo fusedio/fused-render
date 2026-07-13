@@ -154,6 +154,7 @@
     <select id="viewsel" title="Which view to annotate"></select>
     <span id="budgetnote" style="color:#ffb64d"></span>
     <span style="margin-left:auto">comments live in the URL — share it to share the review</span>
+    <span id="ro" hidden></span>
   </div>
   <div id="main">
     <div id="stage">
@@ -174,6 +175,7 @@
       </div>
     </div>
   </div>
+  <script src="/template-shared/ro-badge.js"></script>
   <script>
     // =========================================================================
     // Annotate — a VIEW TEMPLATE of its own (same pattern as templates/claude/):
@@ -216,6 +218,19 @@
       document.body.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
       throw new Error("no _file");
     }
+
+    // Sidecar writability probe: commenting always works (the URL is the live
+    // store), but when the `<file>.json` history log can't be written, say so
+    // instead of losing history silently. Probe failure itself stays silent —
+    // same best-effort posture as the record call below.
+    fused.runPython("./annotate.py", { action: "status", file }).then((st) => {
+      if (st && st.writable === false) {
+        fusedRoBadge.update(document.getElementById("ro"), "History not saved",
+          "The file's sidecar (" + file.split("/").pop() + ".json) isn't " +
+          "writable, so this review lives only in this URL and won't be " +
+          "recorded to comment history.");
+      }
+    }).catch(() => {});
 
     // --- data ---------------------------------------------------------------
     // Legacy import: the removed built-in stored comments in the RESERVED

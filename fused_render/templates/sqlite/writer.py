@@ -55,6 +55,11 @@ def main(file: str, table: str = "", edits: "list | None" = None,
     inserts = inserts or []
     if not table:
         raise ValueError("no table specified")
+    # Same fs gate as the reader: refuse a chmod -w file up front with a clear
+    # error instead of SQLite's mid-transaction "attempt to write a readonly
+    # database".
+    if not os.access(file, os.W_OK):
+        raise PermissionError(f"{file!r} is read-only")
 
     conn = _connect_rw(file)
     try:

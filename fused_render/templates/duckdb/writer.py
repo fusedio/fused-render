@@ -173,6 +173,11 @@ def main(file: str, table: str = "", edits: "list | None" = None,
     edits = edits or []
     deletes = deletes or []
     inserts = inserts or []
+    # Same fs gate as the reader: the COPY-to-temp + os.replace rewrite below
+    # goes through the parent directory, so without this a chmod -w file would
+    # be silently overwritten.
+    if not os.access(file, os.W_OK):
+        raise PermissionError(f"{file!r} is read-only")
     ext = _logical_ext(file)
     if ext in _DB_EXTS:
         # A DuckDB database file is edited in place, not rewritten.

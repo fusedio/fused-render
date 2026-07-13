@@ -913,6 +913,106 @@ def _templates_for(path: str, is_dir: bool):
     return entries, error
 
 
+def _writable(path: str) -> bool:
+    """True iff /api/fs/write would accept this path. An existing target needs
+    W_OK on itself — the atomic os.replace would otherwise bypass a read-only
+    bit via the parent directory — and a new file needs W_OK on its parent.
+    Templates read this off the stat payload to render read-only mode up
+    front; keep the two in agreement."""
+    if os.path.exists(path):
+        return os.access(path, os.W_OK)
+    return os.access(os.path.dirname(path) or ".", os.W_OK)
+
+
+def _stat_payload(path: str, is_dir: bool) -> dict:
+    """The /api/fs/stat shape. /api/fs/write returns it too, so the editor can
+    re-arm its optimistic lock from a save response."""
+    st = os.stat(path)
+    templates, template_error = _templates_for(path, is_dir)
+    payload = {
+        "path": path,
+        "name": os.path.basename(path) or path,
+        "is_dir": is_dir,
+        "size": None if is_dir else st.st_size,
+        "mtime": st.st_mtime,
+        "writable": _writable(path),
+        "templates": templates,
+    }
+    if template_error:
+        payload["template_error"] = template_error
+    return payload
+
+
+def _fs_stat(path: str):
+    if not os.path.exists(path):
+        return _error(f"no such file or directory: {path}", status=404)
+    return _stat_payload(path, os.path.isdir(path))
+
+
+def _fs_write(body: dict, x_fused: str | None):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    path = body.get("path")
+    content = body.get("content")
+    expected_mtime = body.get("expected_mtime")
+
+    if not path or not os.path.isabs(path):
+        return _error("'path' must be an absolute filesystem path")
+    if not isinstance(content, str):
+        return _error("'content' must be a string")
+    if os.path.isdir(path):
+        return _error(f"path is a directory: {path}")
+    parent = os.path.dirname(path)
+    if not os.path.isdir(parent):
+        return _error(f"parent directory does not exist: {parent}", status=404)
+
+    # Read-only guard: refuse before touching anything. The atomic write
+    # below replaces the target via the PARENT directory, so without this
+    # check a chmod -w file would be silently overwritten. The bare "readonly"
+    # error string is a wire contract — runtime.js writeFile turns it into a
+    # typed error, like "conflict" below.
+    if not _writable(path):
+        return JSONResponse({"error": "readonly"}, status_code=403)
+
+    # Optimistic lock: the editor sends the mtime it last saw; if the file
+    # changed (or was deleted) underneath it, refuse so the edit doesn't
+    # clobber someone else's write. Compare against the raw st_mtime float
+    # that /api/fs/stat returns, with a tolerance for float round-tripping.
+    exists = os.path.exists(path)
+    if expected_mtime is not None:
+        if not exists:
+            return JSONResponse({"error": "conflict", "mtime": None}, status_code=409)
+        current = os.stat(path).st_mtime
+        if abs(current - expected_mtime) >= 1e-6:
+            return JSONResponse({"error": "conflict", "mtime": current}, status_code=409)
+
+    # Preserve the target's permission bits across an overwrite.
+    mode = stat_mod.S_IMODE(os.stat(path).st_mode) if exists else None
+
+    # Atomic write: land the bytes in a temp file in the same directory,
+    # fsync, then os.replace onto the target so a reader never sees a
+    # half-written file (and a crash leaves the original intact).
+    fd, tmp = tempfile.mkstemp(dir=parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        if mode is not None:
+            os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except OSError as e:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return _error(f"cannot write {path}: {e}", status=400)
+
+    return _stat_payload(path, False)
+
+
 def create_app(start_dir: str) -> FastAPI:
     # Engine (D69/D70 + SPEC §20): validate any FUSED_RENDER_ENGINE override
     # ONCE at startup — this raises on a bad value and fails loudly for
@@ -1080,22 +1180,7 @@ def create_app(start_dir: str) -> FastAPI:
 
     @app.get("/api/fs/stat")
     def api_fs_stat(path: str):
-        if not os.path.exists(path):
-            return _error(f"no such file or directory: {path}", status=404)
-        is_dir = os.path.isdir(path)
-        st = os.stat(path)
-        templates, template_error = _templates_for(path, is_dir)
-        payload = {
-            "path": path,
-            "name": os.path.basename(path) or path,
-            "is_dir": is_dir,
-            "size": None if is_dir else st.st_size,
-            "mtime": st.st_mtime,
-            "templates": templates,
-        }
-        if template_error:
-            payload["template_error"] = template_error
-        return payload
+        return _fs_stat(path)
 
     @app.get("/api/fs/list")
     def api_fs_list(path: str):
@@ -1276,72 +1361,7 @@ def create_app(start_dir: str) -> FastAPI:
 
     @app.post("/api/fs/write")
     def api_fs_write(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-        guard = _require_fused(x_fused)
-        if guard is not None:
-            return guard
-
-        path = body.get("path")
-        content = body.get("content")
-        expected_mtime = body.get("expected_mtime")
-
-        if not path or not os.path.isabs(path):
-            return _error("'path' must be an absolute filesystem path")
-        if not isinstance(content, str):
-            return _error("'content' must be a string")
-        if os.path.isdir(path):
-            return _error(f"path is a directory: {path}")
-        parent = os.path.dirname(path)
-        if not os.path.isdir(parent):
-            return _error(f"parent directory does not exist: {parent}", status=404)
-
-        # Optimistic lock: the editor sends the mtime it last saw; if the file
-        # changed (or was deleted) underneath it, refuse so the edit doesn't
-        # clobber someone else's write. Compare against the raw st_mtime float
-        # that /api/fs/stat returns, with a tolerance for float round-tripping.
-        exists = os.path.exists(path)
-        if expected_mtime is not None:
-            if not exists:
-                return JSONResponse({"error": "conflict", "mtime": None}, status_code=409)
-            current = os.stat(path).st_mtime
-            if abs(current - expected_mtime) >= 1e-6:
-                return JSONResponse({"error": "conflict", "mtime": current}, status_code=409)
-
-        # Preserve the target's permission bits across an overwrite.
-        mode = stat_mod.S_IMODE(os.stat(path).st_mode) if exists else None
-
-        # Atomic write: land the bytes in a temp file in the same directory,
-        # fsync, then os.replace onto the target so a reader never sees a
-        # half-written file (and a crash leaves the original intact).
-        fd, tmp = tempfile.mkstemp(dir=parent)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(content)
-                f.flush()
-                os.fsync(f.fileno())
-            if mode is not None:
-                os.chmod(tmp, mode)
-            os.replace(tmp, path)
-        except OSError as e:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            return _error(f"cannot write {path}: {e}", status=400)
-
-        # Same shape as /api/fs/stat so the editor can re-arm its lock.
-        st = os.stat(path)
-        templates, template_error = _templates_for(path, False)
-        payload = {
-            "path": path,
-            "name": os.path.basename(path) or path,
-            "is_dir": False,
-            "size": st.st_size,
-            "mtime": st.st_mtime,
-            "templates": templates,
-        }
-        if template_error:
-            payload["template_error"] = template_error
-        return payload
+        return _fs_write(body, x_fused)
 
     @app.get("/render")
     def render(path: str):
