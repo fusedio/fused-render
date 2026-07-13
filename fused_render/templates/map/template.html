@@ -98,6 +98,19 @@
   .lc-msg { font-size: 11px; color: var(--muted); padding: 0 10px 8px 32px; line-height: 1.45; word-break: break-word; }
   .lc .spin { width: 13px; height: 13px; border: 2px solid #00000014; border-top-color: var(--accent); border-radius: 50%; flex: none; animation: spin .7s linear infinite; }
 
+  /* multi-layer file -> grouped sub-layers */
+  .lgroup { margin-bottom: 6px; }
+  .lg-head { display: flex; align-items: center; gap: 7px; padding: 7px 8px; border-radius: 8px; cursor: pointer; }
+  .lg-head:hover { background: var(--panel-2); }
+  .lg-chev { display: flex; color: var(--faint); transition: transform .15s; flex: none; }
+  .lg-chev.open { transform: rotate(90deg); }
+  .lg-head .ic { display: flex; color: var(--muted); flex: none; }
+  .lg-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 620; }
+  .lg-head .lc-eye, .lg-head .lc-dots { opacity: 0; }
+  .lg-head:hover .lc-eye, .lg-head:hover .lc-dots, .lg-head .lc-eye.off { opacity: 1; }
+  .lg-children { padding-left: 10px; margin-left: 11px; border-left: 1px solid var(--border); }
+  .lg-children .lc { margin-bottom: 4px; }
+
   #lmenu {
     position: fixed; z-index: 40; min-width: 156px; padding: 4px;
     background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
@@ -447,6 +460,10 @@ loadScript("https://unpkg.com/@highlightjs/cdn-assets@11.9.0/highlight.min.js").
 const qs = id => document.getElementById(id);
 const P = fused.params;
 
+// Windows "Copy as path" wraps the path in double quotes; a quoted path isn't
+// absolute, so os.path.abspath would join it onto the template dir. Strip them.
+const cleanPath = s => String(s || "").trim().replace(/^["']|["']$/g, "").trim();
+
 /* ---- colormaps (for legends + vector color-by) ------------------------ */
 const CMAPS = {
   viridis: [[68,1,84],[59,82,139],[33,145,140],[94,201,98],[253,231,37]],
@@ -523,6 +540,7 @@ const KIND_ICON = {
 const dirBase = p => { const parts = String(p).replace(/\/+$/, "").split("/"); return parts[parts.length - 1] || p; };
 
 async function loadDir(dir) {
+  dir = cleanPath(dir);
   try {
     const res = await fused.runPython("./discover.py", dir ? { dir } : {});
     if (res.error) { toast("bad", "Can't list folder", res.error); return; }
@@ -555,10 +573,12 @@ function renderFileList() {
     return;
   }
 
+  const selL = state.selected ? state.layers.get(state.selected) : null;
+  const selPath = selL ? (selL.group || selL.target) : state.selected;
   for (const e of items) {
-    const L = state.layers.get(e.path);
+    const L = entryLayer(e.path);
     const div = document.createElement("div");
-    div.className = "file" + (state.selected === e.path ? " selected" : "") + (L && L.loading ? " loading" : "");
+    div.className = "file" + (selPath === e.path ? " selected" : "") + (L && L.loading ? " loading" : "");
 
     if (e.kind === "dir") {
       div.innerHTML = `<span class="ic">${KIND_ICON.dir}</span><span class="nm">${e.name}</span><span class="kd">open</span>`;
@@ -577,6 +597,15 @@ function renderFileList() {
     box.appendChild(div);
   }
 }
+// A browse row's on-map state: its own layer, or the merged state of a file's grouped sub-layers.
+function entryLayer(path) {
+  const direct = state.layers.get(path);
+  if (direct) return direct;
+  const grp = [...state.layers.values()].filter(x => x.group === path);
+  if (!grp.length) return undefined;
+  const ok = grp.some(x => x.descriptor && x.descriptor.status === "ok");
+  return { loading: grp.some(x => x.loading), descriptor: { status: ok ? "ok" : "error" } };
+}
 function statusColor(d) {
   return d.status === "ok" ? "var(--good)" : d.status === "not_georeferenced" ? "var(--warn)" : "var(--bad)";
 }
@@ -590,6 +619,8 @@ async function selectFile(entry) {
   const L = state.layers.get(key);
   if (L && L.loading) return;
   if (L && L.descriptor) { selectLayer(key); return; }
+  const grouped = [...state.layers.values()].find(x => x.group === key);
+  if (grouped) { selectLayer(grouped.target); return; }
   await loadTarget(key, entry.name);
 }
 
@@ -602,7 +633,47 @@ function selectLayer(key) {
   refreshCode();
 }
 
+// Apply a rendered descriptor to a layer entry — shared by single files and group sub-layers.
+function hydrate(L, desc) {
+  L.loading = false;
+  L.descriptor = desc;
+  if (desc.status !== "ok") { L.visible = false; return; }
+  const touched = L.style && L.style._touched;
+  L.style = touched ? Object.assign({}, desc.style, L.style) : Object.assign({}, desc.style);
+  if (desc.kind === "vector_tiles_mvt") {
+    L.mvt = { tileUrl: desc.data.tile_url, statusUrl: desc.data.status_url,
+              metaUrl: desc.data.meta_url, minzoom: desc.minzoom ?? 0,
+              maxzoom: desc.maxzoom ?? 18, geometry_type: desc.geometry_type,
+              version: 0, ready: false, phase: "reading", pct: 0,
+              detail_zoom: null, count: null };
+  }
+  L.visible = true;
+}
+
+// A multi-layer file (GPKG/KML/GML) → one layer entry per sub-layer, grouped under the file.
+function loadGroup(file, name, desc) {
+  const base = state.layers.size;
+  const kids = [];
+  desc.layers.forEach((child, i) => {
+    const key = file + "::" + (child.layer ?? i);
+    const L = { target: key, file, layer: child.layer, group: file, groupName: name,
+                name: child.name || child.layer || name, visible: true, opacity: 1,
+                style: {}, defaultColor: CATEGORICAL[(base + i) % CATEGORICAL.length] };
+    state.layers.set(key, L);
+    hydrate(L, child);
+    if (child.status === "ok") kids.push(L);
+  });
+  if (kids.length) state.selected = kids[0].target;
+  else toast("bad", "Couldn't render " + name, "No layers could be read.");
+  persistOpen();
+  renderAll();
+  fitTo(desc.bounds);
+  refreshCode();
+  for (const L of kids) if (L.mvt) pollMvtStatus(L.target);
+}
+
 async function loadTarget(target, name) {
+  target = cleanPath(target);
   name = name || target.split(/[\\/]/).pop();
   const L = state.layers.get(target) || { target, name, visible: true, opacity: 1, style: {}, geojson: null };
   if (!L.defaultColor) L.defaultColor = CATEGORICAL[state.layers.size % CATEGORICAL.length];
@@ -614,25 +685,19 @@ async function loadTarget(target, name) {
       target, colormap: (L.style && L.style.colormap) || "viridis",
       rescale: (L.style && L.style.rescale) ? L.style.rescale.join(",") : "",
     });
-    L.loading = false; L.descriptor = desc;
+    if (desc.kind === "vector_group") {
+      state.layers.delete(target);
+      loadGroup(target, name, desc);
+      return;
+    }
+    hydrate(L, desc);
     if (desc.status !== "ok") {
-      L.visible = false;
       state.selected = target;   // still let the user read its code / message
       const kind = desc.status === "not_georeferenced" ? "warn" : "bad";
       toast(kind, desc.status === "not_georeferenced" ? "Not georeferenced" : "Couldn't render " + name,
             desc.message || (desc.error && desc.error.message) || "unknown error");
       renderAll(); refreshCode(); return;
     }
-    const touched = L.style && L.style._touched;
-    L.style = touched ? Object.assign({}, desc.style, L.style) : Object.assign({}, desc.style);
-    if (desc.kind === "vector_tiles_mvt") {
-      L.mvt = { tileUrl: desc.data.tile_url, statusUrl: desc.data.status_url,
-                metaUrl: desc.data.meta_url, minzoom: desc.minzoom ?? 0,
-                maxzoom: desc.maxzoom ?? 18, geometry_type: desc.geometry_type,
-                version: 0, ready: false, phase: "reading", pct: 0,
-                detail_zoom: null, count: null };
-    }
-    L.visible = true;
     state.selected = target;
     persistOpen();
     renderAll();
@@ -789,6 +854,8 @@ function swatchStyle(L) {
   return `background:rgb(${c[0]},${c[1]},${c[2]})`;
 }
 
+const collapsedGroups = new Set();
+
 function renderLayerCards() {
   const box = qs("layercards");
   const all = [...state.layers.values()];
@@ -797,11 +864,57 @@ function renderLayerCards() {
     return;
   }
   box.innerHTML = "";
-  for (const L of all.reverse()) box.appendChild(layerCard(L));   // topmost card = topmost on map
+  const done = new Set();
+  for (const L of [...all].reverse()) {   // topmost card = topmost on map
+    if (done.has(L.target)) continue;
+    if (L.group) {
+      const members = all.filter(x => x.group === L.group);
+      members.forEach(m => done.add(m.target));
+      box.appendChild(groupCard(L.group, L.groupName, members));
+    } else {
+      done.add(L.target);
+      box.appendChild(layerCard(L));
+    }
+  }
+}
+
+const CHEV = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>';
+
+function groupCard(groupKey, groupName, members) {
+  const collapsed = collapsedGroups.has(groupKey);
+  const anyVisible = members.some(m => m.visible);
+  const wrap = document.createElement("div"); wrap.className = "lgroup";
+  const head = document.createElement("div"); head.className = "lg-head";
+  head.innerHTML =
+    `<span class="lg-chev ${collapsed ? "" : "open"}">${CHEV}</span>` +
+    `<span class="ic">${KIND_ICON.dir}</span>` +
+    `<span class="lg-nm" title="${groupKey}">${groupName}</span>` +
+    `<span class="lc-badge">${members.length} layers</span>` +
+    `<button class="lc-eye ${anyVisible ? "" : "off"}" title="Toggle all layers">${anyVisible ? EYE : EYEOFF}</button>` +
+    `<button class="lc-dots" title="More">${DOTS}</button>`;
+  head.onclick = ev => {
+    if (ev.target.closest(".lc-eye") || ev.target.closest(".lc-dots")) return;
+    collapsed ? collapsedGroups.delete(groupKey) : collapsedGroups.add(groupKey);
+    renderLayerCards();
+  };
+  head.querySelector(".lc-eye").onclick = ev => {
+    ev.stopPropagation();
+    const on = !anyVisible;
+    members.forEach(m => { m.visible = on; });
+    renderLayerCards(); rebuildDeck();
+  };
+  head.querySelector(".lc-dots").onclick = ev => { ev.stopPropagation(); openGroupMenu(ev.currentTarget, groupKey, members); };
+  wrap.appendChild(head);
+  const kids = document.createElement("div"); kids.className = "lg-children";
+  if (collapsed) kids.style.display = "none";
+  for (const m of [...members].reverse()) kids.appendChild(layerCard(m));
+  wrap.appendChild(kids);
+  return wrap;
 }
 
 function layerCard(L) {
   const d = L.descriptor;
+  const tp = L.file || L.target;
   const card = document.createElement("div");
   card.className = "lc" + (state.selected === L.target ? " selected" : "") + (L.visible ? "" : " off");
   if (d && d.status === "error") card.classList.add("bad-tint");
@@ -809,17 +922,17 @@ function layerCard(L) {
 
   const h = document.createElement("div"); h.className = "lc-h";
   if (L.loading) {
-    h.innerHTML = `<span class="spin"></span><span class="lc-nm" title="${L.target}">${L.name}</span><span class="lc-badge">loading</span>`;
+    h.innerHTML = `<span class="spin"></span><span class="lc-nm" title="${tp}">${L.name}</span><span class="lc-badge">loading</span>`;
   } else if (d && d.status !== "ok") {
     h.innerHTML =
       `<span class="lc-swatch" style="background:${d.status === "error" ? "var(--bad)" : "var(--warn)"}"></span>` +
-      `<span class="lc-nm" title="${L.target}">${L.name}</span>` +
+      `<span class="lc-nm" title="${tp}">${L.name}</span>` +
       `<button class="lc-dots" title="More">${DOTS}</button>`;
   } else {
     const preparing = d.kind === "vector_tiles_mvt" && L.mvt && !L.mvt.ready && L.mvt.phase !== "error";
     h.innerHTML =
       (preparing ? `<span class="spin"></span>` : `<span class="lc-swatch" style="${swatchStyle(L)}"></span>`) +
-      `<span class="lc-nm" title="${L.target}">${L.name}</span>` +
+      `<span class="lc-nm" title="${tp}">${L.name}</span>` +
       `<span class="lc-badge">${preparing ? "tiles " + (L.mvt.pct || 0) + "%" : kindBadge(d)}</span>` +
       `<button class="lc-eye ${L.visible ? "" : "off"}" title="Toggle visibility">${L.visible ? EYE : EYEOFF}</button>` +
       `<button class="lc-dots" title="More">${DOTS}</button>`;
@@ -844,17 +957,9 @@ let menuEl = null;
 function closeMenu() { if (menuEl) { menuEl.remove(); menuEl = null; } }
 document.addEventListener("click", closeMenu);
 
-function openLayerMenu(btn, L) {
+function showMenu(btn, items) {
   closeMenu();
   menuEl = document.createElement("div"); menuEl.id = "lmenu";
-  const items = [];
-  if (L.descriptor && L.descriptor.status === "ok") {
-    items.push(["Zoom to layer", () => fitTo(L.descriptor.bounds)]);
-    items.push(["Move up", () => moveLayer(L.target, +1)]);
-    items.push(["Move down", () => moveLayer(L.target, -1)]);
-  }
-  items.push(["View source", () => { state.selected = L.target; renderFileList(); renderLayerCards(); openCodePanel(); }]);
-  items.push(["Remove", () => removeLayer(L.target), "danger"]);
   for (const [label, fn, cls] of items) {
     const b = document.createElement("button");
     b.textContent = label; if (cls) b.className = cls;
@@ -865,6 +970,42 @@ function openLayerMenu(btn, L) {
   const r = btn.getBoundingClientRect(), mw = menuEl.offsetWidth, mh = menuEl.offsetHeight;
   menuEl.style.left = Math.min(r.left, window.innerWidth - mw - 8) + "px";
   menuEl.style.top = (r.bottom + mh + 8 > window.innerHeight ? r.top - mh - 4 : r.bottom + 4) + "px";
+}
+
+function openLayerMenu(btn, L) {
+  const items = [];
+  if (L.descriptor && L.descriptor.status === "ok") {
+    items.push(["Zoom to layer", () => fitTo(L.descriptor.bounds)]);
+    items.push(["Move up", () => moveLayer(L.target, +1)]);
+    items.push(["Move down", () => moveLayer(L.target, -1)]);
+  }
+  items.push(["View source", () => { state.selected = L.target; renderFileList(); renderLayerCards(); openCodePanel(); }]);
+  items.push(["Remove", () => removeLayer(L.target), "danger"]);
+  showMenu(btn, items);
+}
+
+function openGroupMenu(btn, groupKey, members) {
+  showMenu(btn, [
+    ["Zoom to group", () => fitGroup(members)],
+    ["Remove group", () => removeGroup(groupKey), "danger"],
+  ]);
+}
+
+function fitGroup(members) {
+  const bs = members.map(m => m.descriptor).filter(d => d && d.status === "ok" && d.bounds).map(d => d.bounds);
+  if (bs.length) fitTo([Math.min(...bs.map(b => b[0])), Math.min(...bs.map(b => b[1])),
+                        Math.max(...bs.map(b => b[2])), Math.max(...bs.map(b => b[3]))]);
+}
+
+function removeGroup(groupKey) {
+  for (const [k, L] of [...state.layers]) {
+    if (L.group !== groupKey) continue;
+    if (state.selected === k) state.selected = null;
+    state.layers.delete(k);
+  }
+  persistOpen();
+  renderAll();
+  refreshCode();
 }
 
 // Reorder within state.layers (insertion order = z-order); dir +1 = up the stack.
@@ -901,7 +1042,7 @@ function renderStyleDock() {
     return;
   }
   const d = L.descriptor;
-  qs("sp-nm").textContent = L.name; qs("sp-nm").title = L.target;
+  qs("sp-nm").textContent = L.name; qs("sp-nm").title = L.file || L.target;
   qs("sp-kind").textContent = d.kind ? kindBadge(d) : "";
   body.innerHTML = "";
   if (d.status !== "ok") {
@@ -1041,10 +1182,16 @@ qs("sp-close").onclick = () => {
 const TEXT_EXT = ["py","json","geojson","csv","txt","md","yaml","yml","toml","cfg","ini","js","ts","html","css","sh","sql"];
 const LANG_ALIAS = { py: "python", geojson: "json", yml: "yaml", sh: "bash", ts: "typescript" };
 
+// A group sub-layer is keyed by a synthetic id; the code viewer needs the real file path.
+function selectedFile() {
+  const L = state.selected ? state.layers.get(state.selected) : null;
+  return L ? (L.file || L.target) : state.selected;
+}
+
 function openCodePanel() {
   qs("codepanel").classList.remove("hidden"); qs("btn-code").classList.add("on");
   setTimeout(() => map.resize(), 60);
-  updateCodeViewer(state.selected);
+  updateCodeViewer(selectedFile());
 }
 qs("btn-code").onclick = () => {
   if (qs("codepanel").classList.contains("hidden")) { openCodePanel(); return; }
@@ -1057,7 +1204,7 @@ qs("cp-close").onclick = () => {
 };
 
 function refreshCode() {
-  if (!qs("codepanel").classList.contains("hidden")) updateCodeViewer(state.selected);
+  if (!qs("codepanel").classList.contains("hidden")) updateCodeViewer(selectedFile());
 }
 
 async function updateCodeViewer(path) {
@@ -1176,8 +1323,8 @@ map.on("moveend", () => { const c = map.getCenter(); P.set("cam", `${c.lat.toFix
 qs("filter").oninput = renderFileList;
 qs("btn-up").onclick = () => { if (state.parent && state.parent !== state.dir) loadDir(state.parent); };
 qs("btn-reload").onclick = () => loadDir(state.dir);
-qs("dir").onkeydown = e => { if (e.key === "Enter") loadDir(e.target.value.trim()); };
-qs("importpath").onkeydown = e => { if (e.key === "Enter" && e.target.value.trim()) { loadTarget(e.target.value.trim()); e.target.value = ""; } };
+qs("dir").onkeydown = e => { if (e.key === "Enter") loadDir(cleanPath(e.target.value)); };
+qs("importpath").onkeydown = e => { if (e.key === "Enter" && cleanPath(e.target.value)) { loadTarget(cleanPath(e.target.value)); e.target.value = ""; } };
 
 /* toast */
 let toastTimer = null;
@@ -1192,8 +1339,12 @@ function toast(kind, title, msg) {
 
 /* open-layer persistence in URL (keeps z-order) */
 function persistOpen() {
-  const targets = [...state.layers.keys()].filter(k => { const L = state.layers.get(k); return L.descriptor && L.descriptor.status === "ok"; });
-  if (targets.length) P.set("open", targets.map(encodeURIComponent).join("~"));
+  const seen = new Set();
+  for (const L of state.layers.values()) {
+    if (!(L.descriptor && L.descriptor.status === "ok")) continue;
+    seen.add(L.group || L.target);   // a group re-opens from its file path
+  }
+  if (seen.size) P.set("open", [...seen].map(encodeURIComponent).join("~"));
 }
 
 /* ---- boot ------------------------------------------------------------- */
