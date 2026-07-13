@@ -25,6 +25,22 @@ import type {
   ShareMount,
 } from "../lib/api";
 import { basename } from "../lib/format";
+import { startTour } from "../lib/tour";
+
+function TourSection() {
+  return (
+    <section className="prefs-section">
+      <h2>Tour</h2>
+      <p className="deploy-muted">
+        A short guided walkthrough of the interface. It also runs automatically on your first
+        visit.
+      </p>
+      <button type="button" onClick={() => startTour()}>
+        Start tour
+      </button>
+    </section>
+  );
+}
 
 function LogsSection({ prefs }: { prefs: Prefs }) {
   const [error, setError] = useState<string | null>(null);
@@ -340,6 +356,7 @@ export default function Preferences() {
           <LogsSection prefs={prefs} />
           <EngineSection prefs={prefs} onChange={setPrefs} />
           <DeploymentsSection prefs={prefs} onChange={setPrefs} />
+          <TourSection />
         </>
       )}
     </div>

@@ -21,6 +21,7 @@ import Panel from "./views/Panel";
 import Tabs from "./views/Tabs";
 import Preferences from "./views/Preferences";
 import Templates from "./views/Templates";
+import Mounts from "./views/Mounts";
 import BookmarkOpen from "./views/BookmarkOpen";
 
 type StatState =
@@ -125,9 +126,13 @@ export default function App({ config }: { config: Config }) {
   const isTabs = pathname === "/view/_tab" || pathname === "/embed/_tab";
   const isPrefs = pathname === "/view/_prefs";
   const isTemplates = pathname === "/view/_templates";
+  // PROTOTYPE: mounts sentinel (see views/Mounts.tsx).
+  const isMounts = pathname === "/view/_mounts";
   const isBookmark = pathname === "/view/_bookmark";
   const fsPath =
-    isPanel || isTabs || isPrefs || isTemplates || isBookmark ? null : fsPathFromLocation();
+    isPanel || isTabs || isPrefs || isTemplates || isMounts || isBookmark
+      ? null
+      : fsPathFromLocation();
   // Browsing to a `.bookmark` file in the explorer opens it like a Finder
   // double-click (SB-9): same component as the `_bookmark` sentinel, fed the
   // fs path directly — never StatView (the file describes a view, it isn't one).
@@ -142,8 +147,10 @@ export default function App({ config }: { config: Config }) {
           ? "Preferences"
           : isTemplates
             ? "Templates"
-            : isBookmark || bookmarkFile
-              ? "Bookmark"
+            : isMounts
+              ? "Mounts"
+              : isBookmark || bookmarkFile
+                ? "Bookmark"
               : fsPath
                 ? undefined
                 : null
@@ -196,6 +203,18 @@ export default function App({ config }: { config: Config }) {
         </div>
         <div id="content">
           <Templates key={epoch} />
+        </div>
+      </>
+    );
+  } else if (isMounts) {
+    // PROTOTYPE — remote-storage mounts, same sentinel pattern as _prefs.
+    main = (
+      <>
+        <div id="breadcrumb">
+          <StaticBreadcrumb label="Mounts" />
+        </div>
+        <div id="content">
+          <Mounts key={epoch} />
         </div>
       </>
     );

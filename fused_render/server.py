@@ -119,10 +119,25 @@ KNOWN_SENTINELS = {"_render", "_listing"}
 # are all emitted long before the cap can bite. Module-level so tests can
 # shrink it.
 WALK_MAX_ENTRIES = 200_000
-# Entries per NDJSON batch line in the streamed walk: big enough that framing
-# overhead is noise, small enough that the client gets its first scoreable
-# batch within a few filesystem reads.
+# Much smaller cap when the walked path sits under a mount mountpoint
+# (shell/mounts.py): there every directory listing is a remote LIST call
+# (S3 etc.), so an unbounded walk over a bucket is a slow, potentially paid
+# API storm. The walk truncates early and the existing `truncated` flag tells
+# the client search was bounded.
+WALK_MAX_ENTRIES_REMOTE = 2_000
+# Max entries per NDJSON batch line in the streamed walk — a framing CAP, not
+# the streaming lever (WALK_FLUSH_INTERVAL_S below is). Kept large so a big
+# local walk emits few lines; the timer guarantees timely flushing regardless.
 WALK_BATCH_SIZE = 500
+# Flush whatever has accumulated this long after the last flush, even if the
+# batch isn't full. This is what makes the walk actually STREAM: without it, a
+# tree smaller than one batch (a bucket prefix is often dozens–hundreds of
+# objects) buffers entirely and arrives as one end-of-walk lump, so the
+# client's incremental scoring/paint never runs and results appear only once
+# the whole walk finishes. With it, entries paint per directory as the walk
+# descends, on mounts and locally alike. Checked between yielded entries
+# (best-effort — a single blocking listdir can't be interrupted mid-call).
+WALK_FLUSH_INTERVAL_S = 0.15
 # Directory names never descended into by the walk, checked against the bare
 # name so it also applies under hidden=1 (".git" is machine noise, not
 # "hidden data"). This is only the UNIVERSAL floor — inside a git repository
@@ -924,10 +939,12 @@ def _writable(path: str) -> bool:
     return os.access(os.path.dirname(path) or ".", os.W_OK)
 
 
-def _stat_payload(path: str, is_dir: bool) -> dict:
+def _stat_payload(path: str, is_dir: bool, st: os.stat_result | None = None) -> dict:
     """The /api/fs/stat shape. /api/fs/write returns it too, so the editor can
-    re-arm its optimistic lock from a save response."""
-    st = os.stat(path)
+    re-arm its optimistic lock from a save response. Pass a pre-fetched `st` to
+    avoid a redundant stat() — one remote round-trip under a mount."""
+    if st is None:
+        st = os.stat(path)
     templates, template_error = _templates_for(path, is_dir)
     payload = {
         "path": path,
@@ -944,9 +961,14 @@ def _stat_payload(path: str, is_dir: bool) -> dict:
 
 
 def _fs_stat(path: str):
-    if not os.path.exists(path):
+    # One stat, not the exists()+isdir()+stat() trio: over a remote mount each
+    # is a round-trip, so a plain metadata fetch cost 3 LISTs. os.path.exists()
+    # returns False for any OSError, so mirror that -> 404.
+    try:
+        st = os.stat(path)
+    except OSError:
         return _error(f"no such file or directory: {path}", status=404)
-    return _stat_payload(path, os.path.isdir(path))
+    return _stat_payload(path, stat_mod.S_ISDIR(st.st_mode), st)
 
 
 def _fs_write(body: dict, x_fused: str | None):
@@ -1134,6 +1156,13 @@ def create_app(start_dir: str) -> FastAPI:
     # prefs), kept out of this module's fs/render internals.
     app.include_router(bookmarks_router)
     app.include_router(prefs_router)
+    # Mounts: remote storage mounted as local paths via rclone rcd
+    # (shell/mounts.py). startup() remounts every mount in a background
+    # thread; mounts deliberately survive server restarts.
+    from fused_render.shell import mounts as shell_mounts
+
+    app.include_router(shell_mounts.router)
+    shell_mounts.startup()
     # Deploy (hosted publish through the fused CLI) — export + `fused share`
     # orchestration and the per-page deployment pointer store (deploy.py).
     app.include_router(deploy_router)
@@ -1187,20 +1216,25 @@ def create_app(start_dir: str) -> FastAPI:
         if not os.path.isdir(path):
             return _error(f"not a directory: {path}", status=400)
         entries = []
+        # scandir over listdir+per-entry stat/isdir: the readdir already carries
+        # each entry's type, so is_dir() is free and stat() is a single call —
+        # the old loop did two stats per entry (os.stat + os.path.isdir's own
+        # stat), i.e. 2N remote round-trips under a mount. Both follow symlinks,
+        # matching the previous os.stat/os.path.isdir behavior.
         try:
-            names = os.listdir(path)
+            with os.scandir(path) as it:
+                dents = list(it)
         except OSError as e:
             return _error(f"cannot read directory {path}: {e}", status=400)
-        for name in names:
-            full = os.path.join(path, name)
+        for de in dents:
             try:
-                st = os.stat(full)
+                st = de.stat()
+                is_dir = de.is_dir()
             except OSError:
                 continue  # unreadable entries skipped silently
-            is_dir = os.path.isdir(full)
             entries.append(
                 {
-                    "name": name,
+                    "name": de.name,
                     "is_dir": is_dir,
                     "size": None if is_dir else st.st_size,
                     "mtime": st.st_mtime,
@@ -1246,13 +1280,22 @@ def create_app(start_dir: str) -> FastAPI:
         if not os.path.isdir(path):
             return _error(f"not a directory: {path}", status=400)
         walker = _walk_bfs(path, include_hidden)
+        # Remote-mount clamp: under a mount mountpoint every directory is
+        # a remote LIST round-trip, so the cap drops to WALK_MAX_ENTRIES_REMOTE
+        # (see the constant's comment). Resolved per request — the mounts dir
+        # follows home_dir()'s env-based redirection.
+        from fused_render.shell.mounts import mounts_dir as _mounts_dir
+
+        mroot = os.path.abspath(_mounts_dir())
+        under_mount = os.path.abspath(path).startswith(mroot + os.sep)
+        max_entries = WALK_MAX_ENTRIES_REMOTE if under_mount else WALK_MAX_ENTRIES
 
         if stream != "1":
             entries = []
             truncated = False
             for entry in walker:
                 entries.append(entry)
-                if len(entries) >= WALK_MAX_ENTRIES:
+                if len(entries) >= max_entries:
                     truncated = True
                     break
             return {"path": path, "entries": entries, "truncated": truncated}
@@ -1261,13 +1304,16 @@ def create_app(start_dir: str) -> FastAPI:
             batch = []
             total = 0
             truncated = False
+            last_flush = time.monotonic()
             for entry in walker:
                 batch.append(entry)
                 total += 1
-                if len(batch) >= WALK_BATCH_SIZE:
+                now = time.monotonic()
+                if len(batch) >= WALK_BATCH_SIZE or now - last_flush >= WALK_FLUSH_INTERVAL_S:
                     yield json.dumps({"entries": batch}) + "\n"
                     batch = []
-                if total >= WALK_MAX_ENTRIES:
+                    last_flush = now
+                if total >= max_entries:
                     truncated = True
                     break
             if batch:

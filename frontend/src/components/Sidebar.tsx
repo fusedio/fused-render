@@ -30,7 +30,6 @@ import type { Config } from "../lib/api";
 import { splitShellSearch } from "../lib/layout-codec";
 import { fuzzyMatch, highlightSegments } from "../lib/fuzzy";
 import type { FuzzyResult } from "../lib/fuzzy";
-import { startTour } from "../lib/tour";
 
 // The fs path a bookmark targets, decoded from its /view/ url (same rule as
 // the hover card). Used for search matching and the tooltip.
@@ -833,6 +832,23 @@ export default function Sidebar({ config }: SidebarProps) {
           </span>
           <span className="prefs-label">Templates</span>
         </button>
+        {/* PROTOTYPE: mounts entry — remote mounts, /view/_mounts. */}
+        <button
+          type="button"
+          title="Mounts"
+          aria-label="Mounts"
+          className={
+            "sidebar-item prefs-link" + (location.pathname === "/view/_mounts" ? " active" : "")
+          }
+          onClick={() => navigateUrl("/view/_mounts")}
+        >
+          <span className="icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M17.5 19a4.5 4.5 0 1 0-.9-8.9 6 6 0 1 0-11.4 2.4A3.5 3.5 0 0 0 6.5 19h11z" />
+            </svg>
+          </span>
+          <span className="prefs-label">Mounts</span>
+        </button>
         <button
           type="button"
           title="Preferences"
@@ -849,22 +865,6 @@ export default function Sidebar({ config }: SidebarProps) {
             </svg>
           </span>
           <span className="prefs-label">Preferences</span>
-        </button>
-        <button
-          type="button"
-          className="sidebar-item tour-link"
-          title="Show tour"
-          aria-label="Show tour"
-          onClick={() => startTour()}
-        >
-          <span className="icon">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <circle cx="12" cy="12" r="10" />
-              <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
-              <line x1="12" y1="17" x2="12.01" y2="17" />
-            </svg>
-          </span>
-          <span className="prefs-label">Tour</span>
         </button>
       </div>
       <div id="bookmark-tooltip" ref={tooltipRef} style={hover ? { display: "block" } : undefined}>

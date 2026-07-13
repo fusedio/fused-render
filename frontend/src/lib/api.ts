@@ -395,6 +395,84 @@ export function revealPath(fsPath: string): Promise<void> {
   return postJson<unknown>("/api/fs/reveal", { path: fsPath }).then(() => undefined);
 }
 
+// -- Mounts (shell/mounts.py) ------------------------------------------
+// Remote storage mounted as local paths via rclone rcd. Credentials live in
+// rclone's config; mounts survive server restarts and are adopted on start.
+
+export interface Mount {
+  id: string;
+  name: string;
+  remote: string;
+  mountpoint: string;
+  mounted: boolean;
+}
+
+// A remote we can offer from credentials already present in the user's
+// dotfiles (AWS profiles/env, gcloud ADC). Materialized on first use into a
+// keyless env_auth remote; `id` identifies the source to the detect endpoint.
+export interface RemoteSuggestion {
+  id: string;
+  label: string;
+  remote_name: string;
+}
+
+export interface MountsResult {
+  rclone: {
+    available: boolean;
+    version: string | null;
+    remotes: string[];
+    suggested: RemoteSuggestion[];
+  };
+  mounts: Mount[];
+}
+
+export function getMounts(): Promise<MountsResult> {
+  return getJson<MountsResult>("/api/mounts");
+}
+
+export function createMount(name: string, remote: string): Promise<Mount> {
+  return postJson<Mount>("/api/mounts", { name, remote });
+}
+
+export function attachMount(id: string): Promise<Mount> {
+  return postJson<Mount>(`/api/mounts/${id}/mount`, {});
+}
+
+export function detachMount(id: string): Promise<Mount> {
+  return postJson<Mount>(`/api/mounts/${id}/unmount`, {});
+}
+
+export function deleteMount(id: string): Promise<void> {
+  const res = fetch(`/api/mounts/${id}`, {
+    method: "DELETE",
+    headers: { "X-Fused": "1" },
+  });
+  return res.then(async (r) => {
+    if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
+  });
+}
+
+// S3-compatible only: keys are written straight into rclone's own config.
+// OAuth backends (Google Drive, …) are set up with `rclone config` in a
+// terminal instead — the Mounts page explains that.
+export function createRemote(
+  name: string,
+  params: Record<string, string>
+): Promise<{ ok: boolean; name: string }> {
+  return postJson<{ ok: boolean; name: string }>("/api/mounts/remotes", {
+    name,
+    params,
+  });
+}
+
+// Materialize a keyless remote from auto-detected credentials (idempotent).
+// Returns the rclone remote name (e.g. "aws:") to mount against.
+export function createDetectedRemote(id: string): Promise<{ ok: boolean; name: string }> {
+  return postJson<{ ok: boolean; name: string }>("/api/mounts/remotes/detect", {
+    id,
+  });
+}
+
 // -- Template management (fused_render/templates_api.py; TEMPLATE_MGMT_SPEC) --
 //
 // Two template dirs, modelled as an ordered list of "sources" (core is
