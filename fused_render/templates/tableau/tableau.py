@@ -455,15 +455,40 @@ def _import_twb(file):
 
 
 def _extract_tableau_zip(file):
-    """Unpack a .twbx/.tdsx into a cached directory (keyed like the data cache)."""
+    """Unpack a .twbx/.tdsx and return its extract dir. Keyed by path hash
+    only (no mtime) and outside _clean_stale's reach: saved workbooks hold
+    absolute paths into the extracted tree, so the location must stay stable
+    across reopens; the tree is re-extracted in place when the archive
+    changes. Staged into a sibling dir and swapped, marker written last, so
+    a failed extraction is retried instead of a partial tree being reused."""
+    import hashlib
+    import shutil
     import zipfile
 
-    d = _cache_dir(file)
-    if not os.path.isdir(d) or not os.listdir(d):
-        _clean_stale(d)
-        os.makedirs(d, exist_ok=True)
-        with zipfile.ZipFile(file) as z:
-            z.extractall(d)
+    file = os.path.abspath(file)
+    h = hashlib.sha1(file.encode()).hexdigest()[:16]
+    d = os.path.join(SOURCES, f"{h}-pkg")
+    src_mtime = os.path.getmtime(file)
+    try:
+        with open(os.path.join(d, ".extracted.json"), encoding="utf-8") as f:
+            if json.load(f).get("src_mtime") == src_mtime:
+                return d
+    except (OSError, ValueError):
+        pass
+    staging = f"{d}.staging.{os.getpid()}"
+    shutil.rmtree(staging, ignore_errors=True)
+    os.makedirs(staging)
+    root = os.path.realpath(staging)
+    with zipfile.ZipFile(file) as z:
+        for info in z.infolist():
+            target = os.path.realpath(os.path.join(root, info.filename))
+            if target != root and not target.startswith(root + os.sep):
+                raise ValueError(f"unsafe path in archive (path traversal): {info.filename!r}")
+            z.extract(info, root)
+    with open(os.path.join(root, ".extracted.json"), "w", encoding="utf-8") as f:
+        json.dump({"src_mtime": src_mtime}, f)
+    shutil.rmtree(d, ignore_errors=True)
+    os.replace(staging, d)
     return d
 
 

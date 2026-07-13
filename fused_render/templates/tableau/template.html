@@ -428,20 +428,37 @@ function makePill(name) {
 }
 
 /* ================= schema / data pane ================= */
+/* Pills saved against a schema that has since changed (renamed/removed
+   columns) would crash shelf rendering — drop them and tell the user. */
+function pruneMissingFields(wb) {
+  let dropped = 0;
+  for (const sh of wb.sheets) {
+    for (const key of ["cols", "rows", "color", "filters"]) {
+      const kept = sh[key].filter(p => fieldsBy[p.field]);
+      dropped += sh[key].length - kept.length;
+      sh[key] = kept;
+    }
+  }
+  return dropped;
+}
+
 async function openData(file, keepSheets) {
   setStatus("Opening data…");
   const res = await fused.runPython(PY, { action: "open_data", file });
   schema = res;
   fieldsBy = {};
   for (const f of schema.fields) fieldsBy[f.name] = f;
+  let dropped = 0;
   if (!keepSheets) {
     wb = { version: 1, name: baseName(file).replace(/\.[^.]+$/, ""), source: schema.file,
            sheets: [newSheet("Sheet 1")], active: 0 };
     wbFile = "";
     markDirty(false);
+  } else if (wb) {
+    dropped = pruneMissingFields(wb);
   }
   renderFieldPane(); renderTabs(); renderAll();
-  setStatus("");
+  setStatus(dropped ? `Removed ${dropped} shelf field(s) no longer in the data source` : "", dropped ? "err" : "");
 }
 
 function renderFieldPane() {
@@ -925,7 +942,6 @@ function buildVLSpec(sh, chart, q, records) {
   let facet = null;
   if (["bar", "line", "area", "scatter"].includes(chart)) {
     const extraCol = colDims.length > 1 ? colDims[1] : null;
-    const extraRow = rowDims.length > (horizontal ? 1 : 0) && chart !== "bar" ? null : null;
     if (extraCol) facet = { column: { field: extraCol.as, type: "nominal", title: extraCol.as } };
     else if (rowDims.length > 1 && !horizontal) facet = { row: { field: rowDims[1].as, type: "nominal", title: rowDims[1].as } };
   }
