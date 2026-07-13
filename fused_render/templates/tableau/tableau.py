@@ -344,7 +344,7 @@ _TWB_GRAIN = {"yr": "year", "qr": "quarter", "mn": "month", "wk": "week", "dy": 
 _TWB_MARK = {"Automatic": "auto", "Bar": "bar", "Line": "line", "Area": "area",
              "Square": "heatmap", "Circle": "scatter", "Shape": "scatter",
              "Pie": "pie", "Text": "table"}
-_TWB_FIELD = re.compile(r"\[[^\]]*\]\.\[([^\]]*)\]")
+_TWB_FIELD = re.compile(r"\[([^\]]*)\]\.\[([^\]]*)\]")
 
 
 def _twb_pill(token, meta):
@@ -366,25 +366,29 @@ def _twb_pill(token, meta):
 
 
 def _twb_data_file(root, twb_dir):
-    for conn in root.iter("connection"):
-        fn = conn.get("filename") or conn.get("dbname") or ""  # hyper uses dbname
-        if not fn.lower().endswith(DATA_EXTS):
-            continue
-        d = conn.get("directory") or "."
-        cands = [fn] if os.path.isabs(fn) else [os.path.join(twb_dir, d, fn),
-                                                os.path.join(twb_dir, fn)]
-        for cand in cands:
-            if os.path.exists(cand):
-                return os.path.abspath(cand)
-        # zip layouts vary (Data/…/file) — fall back to a name search
-        base = os.path.basename(fn)
-        for dirpath, _, names in os.walk(twb_dir):
-            if base in names:
-                return os.path.abspath(os.path.join(dirpath, base))
-        raise ValueError(
-            f"The workbook's data source “{fn}” was not found next to the file. "
-            f"Place the data file in the same folder and reopen."
-        )
+    """Resolve the first file-based data source. Returns (abs_path, ds_name):
+    ds_name is the enclosing <datasource> name so the caller can tell which
+    worksheets bind to it (a workbook may have several data sources)."""
+    for ds in root.iter("datasource"):
+        for conn in ds.iter("connection"):
+            fn = conn.get("filename") or conn.get("dbname") or ""  # hyper uses dbname
+            if not fn.lower().endswith(DATA_EXTS):
+                continue
+            d = conn.get("directory") or "."
+            cands = [fn] if os.path.isabs(fn) else [os.path.join(twb_dir, d, fn),
+                                                    os.path.join(twb_dir, fn)]
+            for cand in cands:
+                if os.path.exists(cand):
+                    return os.path.abspath(cand), ds.get("name")
+            # zip layouts vary (Data/…/file) — fall back to a name search
+            base = os.path.basename(fn)
+            for dirpath, _, names in os.walk(twb_dir):
+                if base in names:
+                    return os.path.abspath(os.path.join(dirpath, base)), ds.get("name")
+            raise ValueError(
+                f"The workbook's data source “{fn}” was not found next to the file. "
+                f"Place the data file in the same folder and reopen."
+            )
     raise ValueError("No file-based data source found (only local csv/tsv/xlsx/"
                      "parquet/hyper connections are supported).")
 
@@ -394,16 +398,31 @@ def _import_twb(file):
 
     file = os.path.abspath(file)
     root = ET.parse(file).getroot()
-    src = _twb_data_file(root, os.path.dirname(file))
+    src, primary_ds = _twb_data_file(root, os.path.dirname(file))
     meta = _ensure_cache(src)
+
+    # A workbook can bind several data sources; we only load the first. When
+    # more than one exists, drop pills that reference another one instead of
+    # resolving them against this schema by bare name — a shared column name
+    # would otherwise plot the wrong data source's values with no warning.
+    multi_source = len({ds.get("name") for ds in root.iter("datasource")
+                        if ds.get("name")}) > 1
+
+    def pills(text):
+        out = []
+        for ds_ref, token in _TWB_FIELD.findall(text or ""):
+            if multi_source and primary_ds and ds_ref != primary_ds:
+                continue
+            p = _twb_pill(token, meta)
+            if p:
+                out.append(p)
+        return out
 
     sheets = []
     for ws in root.iter("worksheet"):
         table = ws.find("table")
         if table is None:
             continue
-        pills = lambda text: [p for t in _TWB_FIELD.findall(text or "")
-                              if (p := _twb_pill(t, meta))]
         cols = pills(table.findtext("cols"))
         rows = pills(table.findtext("rows"))
         mark = table.find(".//pane/mark")
@@ -477,7 +496,7 @@ def _import_tds(file):
 
     file = os.path.abspath(file)
     root = ET.parse(file).getroot()
-    src = _twb_data_file(root, os.path.dirname(file))
+    src, _ = _twb_data_file(root, os.path.dirname(file))
     return {"source": src.replace(os.sep, "/")}
 
 
@@ -538,10 +557,29 @@ def _boot():
 
 # ---------- export ----------
 
-def _export(kind, name, file, spec):
+def _export(kind, name, file, spec, raw=False):
     os.makedirs(EXPORTS, exist_ok=True)
     base = _safe_name(name, "export")
     base = re.sub(r"\.(csv|parquet)$", "", base, flags=re.I)
+    if raw:
+        # The "table" chart shows raw rows (via _rows), so its export must be
+        # the raw filtered data too — not the aggregated GROUP BY that _query
+        # would return for the dims-only spec.
+        meta = _ensure_cache(file)
+        where, params = _filters_sql(meta, spec.get("filters"))
+        con = _duck()
+        con.execute(f"CREATE TABLE t AS SELECT * FROM read_parquet({_q(_parquet(meta))}){where}", params)
+        if not con.execute("SELECT count(*) FROM t").fetchone()[0]:
+            raise ValueError("nothing to export — no rows match the filters")
+        if kind == "csv":
+            dest = os.path.join(EXPORTS, base + ".csv")
+            con.execute(f"COPY t TO {_q(dest)} (FORMAT CSV, HEADER)")
+        elif kind == "parquet":
+            dest = os.path.join(EXPORTS, base + ".parquet")
+            con.execute(f"COPY t TO {_q(dest)} (FORMAT PARQUET)")
+        else:
+            raise ValueError(f"unknown export kind {kind!r}")
+        return {"file": dest.replace(os.sep, "/"), "name": os.path.basename(dest)}
     out = _query(file, spec)
     records = out["records"]
     if not records:
@@ -581,6 +619,7 @@ def main(
     field: str = "",
     spec: str = "",
     filters: str = "",
+    raw: str = "",
     offset: int = 0,
     limit: int = 200,
 ):
@@ -601,5 +640,5 @@ def main(
     if action == "import_tableau":
         return _import_tableau(file)
     if action == "export":
-        return _export(kind, name, file, json.loads(spec))
+        return _export(kind, name, file, json.loads(spec), raw=(raw == "1"))
     raise ValueError(f"unknown action {action!r}")

@@ -216,10 +216,19 @@ def _filters(q, levels, from_epoch, to_epoch):
         if value.strip()
     }
 
-    def matches(text, stamp, level):
+    def matches(text, level, epoch):
+        # `epoch` is the line's effective time: its own timestamp, or the one
+        # inherited from the record it continues (stack traces and other
+        # untimestamped continuation lines), so brushing a range keeps the
+        # context attached to an in-range event instead of dropping it.
         if not matches_query(text) or (wanted and (level or "OTHER") not in wanted):
             return False
-        epoch = stamp[0] if stamp else None
+        # A continuation line whose parent timestamp is unknown — the first
+        # lines of a scan, or a record split across a tail chunk boundary —
+        # isn't excluded by the range: hiding the stack trace of an in-range
+        # event is worse than occasionally keeping a boundary line.
+        if epoch is None and level is None:
+            return True
         if from_epoch and (epoch is None or epoch < from_epoch):
             return False
         if to_epoch and (epoch is None or epoch > to_epoch):
@@ -227,6 +236,12 @@ def _filters(q, levels, from_epoch, to_epoch):
         return True
 
     return matches
+
+
+def _effective_epoch(stamp, last_epoch):
+    """A line's own epoch, or the previous timestamped line's for an
+    untimestamped continuation line."""
+    return stamp[0] if stamp else last_epoch
 
 
 def _counts():
@@ -383,16 +398,26 @@ def _tail_page(file, limit, q, levels, from_epoch, to_epoch):
                 offsets.append(offset)
                 offset += len(part) + 1
             first = 0 if chunk_start == 0 else 1
+            # Forward pass (file order) over the chunk so a continuation line can
+            # inherit the timestamp of the record above it; the collection sweep
+            # below runs backward, which can't see a line's parent on its own.
+            texts, stamps, line_levels, effs = [None] * len(parts), [None] * len(parts), [None] * len(parts), [None] * len(parts)
+            chunk_epoch = None
+            for i in range(first, len(parts)):
+                t = _text(parts[i][:_MAX_LINE_BYTES])
+                s = _timestamp(t)
+                texts[i], stamps[i], line_levels[i] = t, s, _level(t)
+                if s:
+                    chunk_epoch = s[0]
+                effs[i] = _effective_epoch(s, chunk_epoch)
             for index in range(len(parts) - 1, first - 1, -1):
                 if offsets[index] == size and not parts[index]:
                     continue
                 scanned += 1
                 clipped = len(parts[index]) > _MAX_LINE_BYTES
                 clipped_lines += int(clipped)
-                text = _text(parts[index][:_MAX_LINE_BYTES])
-                stamp = _timestamp(text)
-                level = _level(text)
-                if matches(text, stamp, level):
+                text, stamp, level = texts[index], stamps[index], line_levels[index]
+                if matches(text, level, effs[index]):
                     if len(rows) == limit:
                         has_more = True
                         break
@@ -431,6 +456,7 @@ def _page(file, page, limit, q, levels, from_epoch, to_epoch, tail):
     has_more = False
     last_end = None
     clipped_lines = 0
+    last_epoch = None
     with open(file, "rb") as source:
         _seek_line(source, page, size)
         while scanned < _SCAN_LINES and time.monotonic() < deadline:
@@ -443,7 +469,9 @@ def _page(file, page, limit, q, levels, from_epoch, to_epoch, tail):
             text = _text(raw)
             stamp = _timestamp(text)
             level = _level(text)
-            if not matches(text, stamp, level):
+            if stamp:
+                last_epoch = stamp[0]
+            if not matches(text, level, _effective_epoch(stamp, last_epoch)):
                 continue
             row = _row(offset, text, stamp, level, clipped)
             end = source.tell()
@@ -488,6 +516,7 @@ def _histogram(file, bins, q, levels, from_epoch, to_epoch):
     level_counts = _counts()
     scanned = 0
     clipped_lines = 0
+    last_epoch = None
     with open(file, "rb") as source:
         while scanned < _SCAN_LINES and time.monotonic() < deadline:
             raw, clipped = _readline(source, deadline)
@@ -498,7 +527,9 @@ def _histogram(file, bins, q, levels, from_epoch, to_epoch):
             text = _text(raw)
             stamp = _timestamp(text)
             level = _level(text)
-            if not matches(text, stamp, level):
+            if stamp:
+                last_epoch = stamp[0]
+            if not matches(text, level, _effective_epoch(stamp, last_epoch)):
                 continue
             matching_count += 1
             normalized_level = level or "OTHER"
@@ -566,6 +597,7 @@ def _patterns(file, limit, q, levels, from_epoch, to_epoch):
     scanned = 0
     matching_count = 0
     clipped_lines = 0
+    last_epoch = None
     with open(file, "rb") as source:
         while scanned < 250_000 and time.monotonic() < deadline:
             raw, clipped = _readline(source, deadline)
@@ -576,7 +608,9 @@ def _patterns(file, limit, q, levels, from_epoch, to_epoch):
             text = _text(raw)
             stamp = _timestamp(text)
             level = _level(text)
-            if not matches(text, stamp, level):
+            if stamp:
+                last_epoch = stamp[0]
+            if not matches(text, level, _effective_epoch(stamp, last_epoch)):
                 continue
             matching_count += 1
             result = miner.add_log_message(text)
@@ -643,7 +677,12 @@ def _context(file, page, context):
         lines = []
         found_target = False
         after = 0
-        while time.monotonic() < deadline:
+        # Bound the window: count lines before the target, the target, count
+        # after. Without this cap a stale/rotated target offset that never
+        # matches any line would read all the way to EOF (a big payload on an
+        # actively written log).
+        max_lines = 2 * count + 2
+        while time.monotonic() < deadline and len(lines) < max_lines:
             offset = source.tell()
             raw, clipped = _readline(source, deadline)
             if not raw:
@@ -657,6 +696,8 @@ def _context(file, page, context):
             lines.append({"offset": offset, "text": _text(raw), "target": is_target, "truncated": clipped})
             if is_target:
                 found_target = True
+        if not found_target:
+            truncated = True
         if time.monotonic() >= deadline and source.tell() < size:
             truncated = True
     return {"offset": target, "lines": lines, "truncated": truncated}

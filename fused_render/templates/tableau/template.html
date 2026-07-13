@@ -1073,7 +1073,9 @@ function syncUrl() {
   const u = new URL(window.location);
   const f = importFile || (schema && schema.file) || "";
   if (f) u.searchParams.set("file", f); else u.searchParams.delete("file");
-  history.replaceState(null, "", u);
+  // Preserve the runtime's history.state (it tracks pristine/back-forward for
+  // params) — passing null would wipe it and break Back restoration.
+  history.replaceState(history.state, "", u);
 }
 function renderWbName() {
   $("wbName").textContent = wb ? wb.name : "";
@@ -1194,9 +1196,11 @@ async function exportData(kind) {
   try {
     setStatus("Exporting…");
     const sh = S();
-    const q = buildQuerySpec(sh, resolveChart(sh));
+    const chart = resolveChart(sh);
+    const q = buildQuerySpec(sh, chart);
     const res = await fused.runPython(PY, {
-      action: "export", kind, name: (wb.name + "-" + sh.name).toLowerCase().replace(/\s+/g, "-"),
+      action: "export", kind, raw: chart === "table" ? "1" : "",
+      name: (wb.name + "-" + sh.name).toLowerCase().replace(/\s+/g, "-"),
       file: schema.file, spec: JSON.stringify(q),
     });
     setStatus("Exported " + res.name, "ok");
