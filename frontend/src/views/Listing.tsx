@@ -702,7 +702,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
           ref={searchInputRef}
           type="search"
           className="listing-search-input"
-          placeholder="Search this folder…"
+          placeholder="Start typing to search…"
           value={query}
           onFocus={prefetchWalk}
           onChange={(e) => setQuery(e.target.value)}
