@@ -37,13 +37,19 @@ export interface WalkResult {
   truncated: boolean; // hit the server's entry cap
 }
 
-// One entry per resolved template mode (SPEC PT-8), in order, first = default.
-// path is null for a sentinel mode (PT-12, e.g. "_render") — no template
-// folder backs it, the shell knows what to do from the mode name alone.
+// One entry per resolved template mode (SPEC PT-8), in order; the default is
+// the first entry WITHOUT `conditional` (a gated template is never the default
+// while normal ones exist). path is null for a sentinel mode (PT-12, e.g.
+// "_render") — no template folder backs it, the shell knows what to do from
+// the mode name alone. `conditional` marks a template whose condition.py gate
+// has NOT been run yet (CT-12): stat no longer evaluates gates (they may do
+// remote I/O), so the shell resolves them in the background via
+// resolveConditions and shows the entry as pending until the verdict lands.
 export interface TemplateEntry {
   mode: string;
   path: string | null;
   icon: string | null;
+  conditional?: boolean;
 }
 
 export interface StatResult {
@@ -160,6 +166,32 @@ export async function walkDirStream(
 
 export function statPath(fsPath: string): Promise<StatResult> {
   return getJson<StatResult>("/api/fs/stat?path=" + encodeURIComponent(fsPath));
+}
+
+// Deferred condition.py verdicts (CT-12): {mode: allowed} for every entry
+// stat marked `conditional`. `error` carries the first broken gate's reason
+// (that gate reports false — fail closed), mirroring stat's template_error.
+export interface ConditionsResult {
+  path: string;
+  conditions: Record<string, boolean>;
+  error?: string;
+}
+
+// Gates can be slow (remote I/O) and both the preview and the pane menu ask
+// for the same path at the same time, so in-flight calls are shared: one
+// request per path, dropped from the map once settled (a later call — e.g.
+// after a nav back — re-evaluates, matching stat's freshness posture).
+const inflightConditions = new Map<string, Promise<ConditionsResult>>();
+
+export function resolveConditions(fsPath: string): Promise<ConditionsResult> {
+  let p = inflightConditions.get(fsPath);
+  if (!p) {
+    p = getJson<ConditionsResult>(
+      "/api/fs/conditions?path=" + encodeURIComponent(fsPath)
+    ).finally(() => inflightConditions.delete(fsPath));
+    inflightConditions.set(fsPath, p);
+  }
+  return p;
 }
 
 export function rawUrl(fsPath: string): string {
