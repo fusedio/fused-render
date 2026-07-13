@@ -219,12 +219,19 @@ def _filters_sql(meta, filters):
                 params.extend(str(v) for v in vals)
         elif kind == "range":
             lo, hi = f.get("min"), f.get("max")
-            cast = f"CAST({col} AS TIMESTAMP)" if fld["dtype"] == "date" else col
+            is_date = fld["dtype"] == "date"
+            cast = f"CAST({col} AS TIMESTAMP)" if is_date else col
             if lo not in (None, ""):
                 where.append(f"{cast} >= ?")
                 params.append(lo)
             if hi not in (None, ""):
-                where.append(f"{cast} <= ?")
+                # The date picker sends a bare YYYY-MM-DD; treat it as the whole
+                # calendar day (everything before the next midnight) instead of
+                # just its 00:00:00, which would drop same-day rows with a time.
+                if is_date and len(str(hi)) <= 10:
+                    where.append(f"{cast} < CAST(? AS DATE) + INTERVAL 1 DAY")
+                else:
+                    where.append(f"{cast} <= ?")
                 params.append(hi)
         elif kind == "contains":
             q = str(f.get("q", "")).strip()

@@ -73,7 +73,14 @@ def _readline(source, deadline):
         return b"", False
     clipped = len(raw) > _MAX_LINE_BYTES
     head = raw[:_MAX_LINE_BYTES] if clipped else raw
-    while len(raw) > _MAX_LINE_BYTES and not raw.endswith(b"\n") and time.monotonic() < deadline:
+    # Consume the rest of an over-long line so the next read starts at a real
+    # line boundary; leaving the cursor mid-line would misalign every offset,
+    # level, and timestamp that follows. If the scan deadline expires while
+    # skipping, jump to EOF so the caller stops cleanly rather than mid-line.
+    while len(raw) > _MAX_LINE_BYTES and not raw.endswith(b"\n"):
+        if time.monotonic() >= deadline:
+            source.seek(0, os.SEEK_END)
+            break
         raw = source.readline(_MAX_LINE_BYTES + 1)
     return head, clipped
 
