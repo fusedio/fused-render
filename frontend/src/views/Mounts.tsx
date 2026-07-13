@@ -259,9 +259,13 @@ function AddMount({
             onChange={(e) => setSubpath(e.target.value)}
           />
         </Field>
-        <button type="button" disabled={busy || !name || !remote} onClick={add}>
-          {busy ? "Mounting…" : "Add & mount"}
-        </button>
+        {/* Blank caption reserves the label row's height so the button
+            aligns with the input boxes, not the labels above them. */}
+        <Field label={" "}>
+          <button type="button" disabled={busy || !name || !remote} onClick={add}>
+            {busy ? "Mounting…" : "Add & mount"}
+          </button>
+        </Field>
       </div>
       <p className="deploy-muted" style={{ fontSize: "0.8em", margin: 0 }}>
         Tip: mount a specific <b>bucket/prefix</b>, not a whole bucket — narrow mounts browse and
