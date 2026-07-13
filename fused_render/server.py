@@ -982,10 +982,14 @@ def create_app(start_dir: str) -> FastAPI:
 
     @app.get("/api/fs/stat")
     def api_fs_stat(path: str):
-        if not os.path.exists(path):
+        # One stat, not three (was exists()+isdir()+stat()): over a remote
+        # mount each is a round-trip, so a plain metadata fetch cost 3 LISTs.
+        # os.path.exists() returns False for any OSError, so mirror that ->404.
+        try:
+            st = os.stat(path)
+        except OSError:
             return _error(f"no such file or directory: {path}", status=404)
-        is_dir = os.path.isdir(path)
-        st = os.stat(path)
+        is_dir = stat_mod.S_ISDIR(st.st_mode)
         templates, template_error = _templates_for(path, is_dir)
         payload = {
             "path": path,
@@ -1004,20 +1008,25 @@ def create_app(start_dir: str) -> FastAPI:
         if not os.path.isdir(path):
             return _error(f"not a directory: {path}", status=400)
         entries = []
+        # scandir over listdir+per-entry stat/isdir: the readdir already carries
+        # each entry's type, so is_dir() is free and stat() is a single call —
+        # the old loop did two stats per entry (os.stat + os.path.isdir's own
+        # stat), i.e. 2N remote round-trips under a mount. Both follow symlinks,
+        # matching the previous os.stat/os.path.isdir behavior.
         try:
-            names = os.listdir(path)
+            with os.scandir(path) as it:
+                dents = list(it)
         except OSError as e:
             return _error(f"cannot read directory {path}: {e}", status=400)
-        for name in names:
-            full = os.path.join(path, name)
+        for de in dents:
             try:
-                st = os.stat(full)
+                st = de.stat()
+                is_dir = de.is_dir()
             except OSError:
                 continue  # unreadable entries skipped silently
-            is_dir = os.path.isdir(full)
             entries.append(
                 {
-                    "name": name,
+                    "name": de.name,
                     "is_dir": is_dir,
                     "size": None if is_dir else st.st_size,
                     "mtime": st.st_mtime,
