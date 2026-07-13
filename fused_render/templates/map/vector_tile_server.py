@@ -38,6 +38,9 @@ CAP_AREA = 4000        # per tile-cell feature cap (polygons / lines)
 CAP_POINT = 12000      # generous cap for points
 OVERVIEW_ZOOM_STRIDE = 3   # build an overview every N zooms below detail_zoom
 SIMPLIFY_PX = 2            # geometry simplify tolerance, in tile pixels
+# ST_AsMVT only accepts these property types; everything else (timestamps,
+# dates, decimals from e.g. KML/GPKG) is cast to VARCHAR before tiling.
+_MVT_OK = {"BOOLEAN", "INTEGER", "BIGINT", "FLOAT", "DOUBLE", "VARCHAR"}
 
 
 def _me():
@@ -135,8 +138,8 @@ def _serve():
     rtile_order = []
     rtile_lock = threading.Lock()
 
-    def _tid(path):
-        return "f" + hashlib.sha1(path.encode()).hexdigest()[:12]
+    def _tid(path, layer):
+        return "f" + hashlib.sha1(f"{path}\x00{layer or ''}".encode()).hexdigest()[:12]
 
     def _merc_to_lonlat(x, y):
         lon = x / MERC_MAX * 180.0
@@ -151,26 +154,26 @@ def _serve():
     # ---------------- load an arbitrary vector file -> registered relation ----
     GDAL_EXT = (".gpkg", ".shp", ".geojson", ".json", ".fgb", ".kml", ".gml")
 
-    def _load_source(cur, path, tid):
-        """Register a source relation for `path`; return
-        (relname, geom_sql, attrs, src_crs, geometry_type, count)."""
+    def _load_source(cur, path, tid, layer=None):
+        """Register a source relation for `path` (optionally a named layer);
+        return (relname, geom_sql, attrs, src_crs, geometry_type, count)."""
         low = path.lower()
         rel = tid + "_src"
         if low.endswith(GDAL_EXT):
             import pyogrio
             from pyogrio.raw import read_arrow
-            layer = None
-            try:
-                layers = pyogrio.list_layers(path)
-                if layers is not None and len(layers) > 1:
-                    best, bestn = None, -1
-                    for lname in [row[0] for row in layers]:
-                        ni = pyogrio.read_info(path, layer=lname).get("features", 0)
-                        if ni > bestn:
-                            best, bestn = lname, ni
-                    layer = best
-            except Exception:
-                layer = None
+            if layer is None:
+                try:
+                    layers = pyogrio.list_layers(path)
+                    if layers is not None and len(layers) > 1:
+                        best, bestn = None, -1
+                        for lname in [row[0] for row in layers]:
+                            ni = pyogrio.read_info(path, layer=lname).get("features", 0)
+                            if ni > bestn:
+                                best, bestn = lname, ni
+                        layer = best
+                except Exception:
+                    layer = None
             meta, tbl = read_arrow(path, layer=layer) if layer else read_arrow(path)
             fields = [str(f) for f in list(meta.get("fields", []))]
             gname = meta.get("geometry_name") or ""
@@ -238,20 +241,24 @@ def _serve():
         return [f'"{a}"' for a in attrs]
 
     # ---------------- warm-up (background thread) ----------------
-    def _warm(path):
-        f = files[path]
+    def _warm(path, layer):
+        f = files[(path, layer)]
         cur = con.cursor()
         tid = f["tid"]
         try:
             f["phase"] = "reading"
-            rel, geom_sql, attrs, crs, gtype, count = _load_source(cur, path, tid)
+            rel, geom_sql, attrs, crs, gtype, count = _load_source(cur, path, tid, layer)
             f["columns"] = attrs
             f["geometry_type"] = gtype
             f["count"] = count
             fam = _fam(gtype)
             f["fam"] = fam
             qa = _qattrs(attrs)
-            sel_a = (", " + ", ".join(qa)) if qa else ""
+            coltypes = {r[0]: (r[1] or "").upper() for r in cur.execute(f"DESCRIBE {rel}").fetchall()}
+            sel_a = "".join(
+                f', "{a}" AS "{a}"' if coltypes.get(a, "VARCHAR").split("(")[0] in _MVT_OK
+                else f', "{a}"::VARCHAR AS "{a}"'
+                for a in attrs)
             base = tid + "_base"
 
             f["phase"] = "materializing"; f["pct"] = 5
@@ -267,6 +274,12 @@ def _serve():
             """)
             cur.unregister(rel)
             cur.execute(f"DELETE FROM {base} WHERE geom IS NULL OR ST_IsEmpty(geom)")
+            if not gtype or str(gtype).lower() == "unknown":
+                row = cur.execute(f"""SELECT ST_GeometryType(geom) AS g, count(*) AS c
+                                      FROM {base} GROUP BY g ORDER BY c DESC LIMIT 1""").fetchone()
+                if row and row[0]:
+                    gtype = row[0]; f["geometry_type"] = gtype
+                    fam = _fam(gtype); f["fam"] = fam
             cur.execute(f"ALTER TABLE {base} ADD COLUMN imp DOUBLE")
             if fam == "polygon":
                 cur.execute(f"UPDATE {base} SET imp = ST_Area(geom)")
@@ -303,7 +316,7 @@ def _serve():
             for i, z in enumerate(levels):                 # coarsest first
                 _build_overview(cur, f, z, fam, cap, qa)
                 f["ov_built"].append(z)
-                _drop_file_tiles(path)
+                _drop_file_tiles(path, layer)
                 f["pct"] = 20 + int(78 * (i + 1) / max(len(levels), 1))
             f["pct"] = 100
             f["phase"] = "ready"
@@ -388,12 +401,12 @@ def _serve():
         """).fetchone()
         return row[0] if row else None
 
-    def _drop_file_tiles(path):
+    def _drop_file_tiles(path, layer):
         with tile_lock:
-            keys = [k for k in tile_cache if k[0] == path]
+            keys = [k for k in tile_cache if k[0] == path and k[1] == layer]
             for k in keys:
                 tile_cache.pop(k, None)
-            tile_order[:] = [k for k in tile_order if k[0] != path]
+            tile_order[:] = [k for k in tile_order if not (k[0] == path and k[1] == layer)]
 
     # ---------------- raster tiles (rasterio WarpedVRT) ----------------
     def _ropen(path):
@@ -546,29 +559,35 @@ def _serve():
         return 200, b, PNG_CT
 
     # ---------------- request handlers ----------------
-    def _ensure_open(path):
+    def _fkey(q):
+        path = _abspath(q.get("file", [None])[0])
+        layer = (q.get("layer", [None])[0]) or None
+        return path, layer
+
+    def _ensure_open(path, layer):
+        key = (path, layer)
         with files_lock:
-            f = files.get(path)
+            f = files.get(key)
             if f is not None:
                 return f
-            f = {"tid": _tid(path), "phase": "queued", "pct": 0, "ready": False,
+            f = {"tid": _tid(path, layer), "phase": "queued", "pct": 0, "ready": False,
                  "error": None, "detail_zoom": None, "bounds_4326": None,
                  "count": None, "geometry_type": None, "columns": [],
                  "base": None, "ov_built": []}
-            files[path] = f
-        threading.Thread(target=_warm, args=(path,), daemon=True).start()
+            files[key] = f
+        threading.Thread(target=_warm, args=(path, layer), daemon=True).start()
         return f
 
     def do_open(q):
-        path = _abspath(q.get("file", [None])[0])
+        path, layer = _fkey(q)
         if not path:
             return 400, b'{"error":"missing file"}', "application/json"
-        f = _ensure_open(path)
+        f = _ensure_open(path, layer)
         return 200, json.dumps({"opening": not f["ready"], "ready": f["ready"]}).encode(), "application/json"
 
     def do_status(q):
-        path = _abspath(q.get("file", [None])[0])
-        f = files.get(path) if path else None
+        path, layer = _fkey(q)
+        f = files.get((path, layer)) if path else None
         if f is None:
             return 200, json.dumps({"phase": "unopened", "pct": 0, "ready": False,
                                     "detail_zoom": None, "error": None}).encode(), "application/json"
@@ -576,8 +595,8 @@ def _serve():
                                 "detail_zoom": f["detail_zoom"], "error": f["error"]}).encode(), "application/json"
 
     def do_meta(q):
-        path = _abspath(q.get("file", [None])[0])
-        f = _ensure_open(path) if path else None
+        path, layer = _fkey(q)
+        f = _ensure_open(path, layer) if path else None
         if f is None:
             return 400, b'{"error":"missing file"}', "application/json"
         m = {"bounds_4326": f["bounds_4326"], "count": f["count"],
@@ -590,11 +609,11 @@ def _serve():
     MVT_CT = "application/vnd.mapbox-vector-tile"
 
     def do_tile(q, z, x, y):
-        path = _abspath(q.get("file", [None])[0])
-        f = files.get(path) if path else None
-        if f is None or f["base"] is None:
+        path, layer = _fkey(q)
+        f = files.get((path, layer)) if path else None
+        if f is None or not f.get("ready") or f["base"] is None:
             return 204, b"", MVT_CT
-        key = (path, z, x, y)
+        key = (path, layer, z, x, y)
         with tile_lock:
             b = tile_cache.get(key)
         if b is not None:

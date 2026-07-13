@@ -50,7 +50,24 @@ def route_target(target):
     return "vector"
 
 
-def vector_meta(target):
+def list_layers(target):
+    """Layer names for a multi-layer vector source (GPKG/KML/GML); [] for a
+    single-layer source, which is rendered as one target."""
+    low = target.lower().split("?")[0]
+    if not low.endswith(VECTOR_EXT):
+        return []
+    import pyogrio
+    try:
+        rows = pyogrio.list_layers(target)
+    except Exception:
+        return []
+    if rows is None:
+        return []
+    names = [str(row[0]) for row in rows]
+    return names if len(names) > 1 else []
+
+
+def vector_meta(target, layer=None):
     """Fast metadata for the MVT descriptor: 4326 bounds, geometry type,
     attribute columns and source CRS — read without materializing geometry."""
     low = target.lower().split("?")[0]
@@ -77,15 +94,15 @@ def vector_meta(target):
                 "geometry_type": "Point", "columns": cols, "crs_original": "EPSG:4326"}
 
     import pyogrio
-    layer = None
-    layers = pyogrio.list_layers(target)
-    if layers is not None and len(layers) > 1:
-        best, bestn = None, -1
-        for lname in [row[0] for row in layers]:
-            ni = pyogrio.read_info(target, layer=lname).get("features", 0)
-            if ni > bestn:
-                best, bestn = lname, ni
-        layer = best
+    if layer is None:
+        layers = pyogrio.list_layers(target)
+        if layers is not None and len(layers) > 1:
+            best, bestn = None, -1
+            for lname in [row[0] for row in layers]:
+                ni = pyogrio.read_info(target, layer=lname).get("features", 0)
+                if ni > bestn:
+                    best, bestn = lname, ni
+            layer = best
     info = pyogrio.read_info(target, layer=layer) if layer else pyogrio.read_info(target)
     crs = info.get("crs")
     w, s, e, n = (float(v) for v in info["total_bounds"])

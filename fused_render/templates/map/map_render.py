@@ -30,36 +30,43 @@ def _err(msg):
             "bounds": None, "data": {}, "warnings": []}
 
 
-def _vector_tiles(target):
-    """Ensure the MVT daemon is running, start warm-up for `target`, and return
-    the tile descriptor with quick metadata for immediate framing."""
+def _union_bounds(boxes):
+    return [min(b[0] for b in boxes), min(b[1] for b in boxes),
+            max(b[2] for b in boxes), max(b[3] for b in boxes)]
+
+
+def _vector_layer(target, port, layer):
+    """MVT tile descriptor for one layer of `target` (layer=None for a
+    single-layer file). Kicks off the daemon's warm-up for that layer."""
     import geo_classify
-    import vector_tile_server as vts
-
-    ensured = vts.main("ensure")
-    port = ensured.get("port")
-    if not port:
-        return _err(ensured.get("error", "tile daemon failed to start"))
-
     import urllib.parse
     import urllib.request
-    qs = urllib.parse.urlencode({"file": target})
+
+    params = {"file": target}
+    if layer:
+        params["layer"] = layer
+    qs = urllib.parse.urlencode(params)
+
+    meta = geo_classify.vector_meta(target, layer)
+    b = meta.get("bounds")
+    if b and (abs(b[0]) > 180 or abs(b[2]) > 180 or abs(b[1]) > 90 or abs(b[3]) > 90):
+        return {**_err("coordinates fall outside the valid lon/lat range — this file doesn't look "
+                       "georeferenced (e.g. image/pixel coordinates)"),
+                "status": "not_georeferenced", "layer": layer,
+                "name": layer or os.path.basename(target)}
     try:
         urllib.request.urlopen(f"http://127.0.0.1:{port}/open?{qs}", timeout=5).read()
     except Exception:
         pass
 
-    try:
-        meta = geo_classify.vector_meta(target)
-    except Exception as e:  # noqa: BLE001
-        return _err(f"couldn't read vector file: {type(e).__name__}: {e}")
-
     return {
         "status": "ok",
         "kind": "vector_tiles_mvt",
+        "layer": layer,
+        "name": layer or os.path.basename(target),
         "crs_original": meta.get("crs_original"),
         "bounds": meta.get("bounds"),
-        "data": {"port": port, "file": target,
+        "data": {"port": port, "file": target, "layer": layer,
                  "tile_url": f"http://127.0.0.1:{port}/tile/{{z}}/{{x}}/{{y}}.mvt?{qs}",
                  "status_url": f"http://127.0.0.1:{port}/status?{qs}",
                  "meta_url": f"http://127.0.0.1:{port}/meta?{qs}"},
@@ -72,6 +79,38 @@ def _vector_tiles(target):
         "warnings": [],
         "detected_type": "vector",
     }
+
+
+def _vector_tiles(target):
+    """Ensure the MVT daemon is running and return a tile descriptor. A
+    multi-layer source (GPKG/KML/GML) returns a `vector_group` listing one
+    child descriptor per layer; a single-layer source returns the child."""
+    import geo_classify
+    import vector_tile_server as vts
+
+    ensured = vts.main("ensure")
+    port = ensured.get("port")
+    if not port:
+        return _err(ensured.get("error", "tile daemon failed to start"))
+
+    layers = geo_classify.list_layers(target)
+    if not layers:
+        try:
+            return _vector_layer(target, port, None)
+        except Exception as e:  # noqa: BLE001
+            return _err(f"couldn't read vector file: {type(e).__name__}: {e}")
+
+    children = []
+    for lname in layers:
+        try:
+            children.append(_vector_layer(target, port, lname))
+        except Exception as e:  # noqa: BLE001
+            children.append({**_err(f"{type(e).__name__}: {e}"),
+                             "layer": lname, "name": lname})
+    ok = [c["bounds"] for c in children if c.get("status") == "ok" and c.get("bounds")]
+    return {"status": "ok", "kind": "vector_group", "file": target,
+            "bounds": _union_bounds(ok) if ok else None,
+            "layers": children, "detected_type": "vector"}
 
 
 def _raster_tiles(target, colormap, rescale):
