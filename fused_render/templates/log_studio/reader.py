@@ -191,19 +191,22 @@ def _filters(q, levels, from_epoch, to_epoch):
         if value.strip()
     }
 
-    def matches(text, level, epoch):
-        # `epoch` is the line's effective time: its own timestamp, or the one
-        # inherited from the record it continues (stack traces and other
-        # untimestamped continuation lines), so brushing a range keeps the
-        # context attached to an in-range event instead of dropping it.
-        if not matches_query(text) or (wanted and (level or "OTHER") not in wanted):
+    def matches(text, effective):
+        # `effective` is the line's (epoch, level): its own values, or the
+        # ones inherited from the record it continues (stack traces and other
+        # continuation lines), so level facets and time brushes keep the
+        # context attached to a matching event instead of dropping it.
+        epoch, level = effective
+        if not matches_query(text):
             return False
-        # A continuation line whose parent timestamp is unknown — the first
-        # lines of a scan, or a record split across a tail chunk boundary —
-        # isn't excluded by the range: hiding the stack trace of an in-range
+        # A continuation line whose parent is unknown — the first lines of a
+        # scan, or a record split across a tail chunk boundary — is not
+        # excluded by level or range: hiding the stack trace of a matching
         # event is worse than occasionally keeping a boundary line.
         if epoch is None and level is None:
             return True
+        if wanted and (level or "OTHER") not in wanted:
+            return False
         if from_epoch and (epoch is None or epoch < from_epoch):
             return False
         if to_epoch and (epoch is None or epoch > to_epoch):
@@ -213,10 +216,15 @@ def _filters(q, levels, from_epoch, to_epoch):
     return matches
 
 
-def _effective_epoch(stamp, last_epoch):
-    """A line's own epoch, or the previous timestamped line's for an
-    untimestamped continuation line."""
-    return stamp[0] if stamp else last_epoch
+def _effective(stamp, level, last):
+    """A line's effective (epoch, level): an untimestamped line inherits the
+    enclosing record's epoch, and a continuation line (no timestamp, no level)
+    inherits its level too."""
+    if stamp:
+        return stamp[0], level
+    if level:
+        return last[0], level
+    return last
 
 
 def _counts():
@@ -374,17 +382,18 @@ def _tail_page(file, limit, q, levels, from_epoch, to_epoch):
                 offset += len(part) + 1
             first = 0 if chunk_start == 0 else 1
             # Forward pass (file order) over the chunk so a continuation line can
-            # inherit the timestamp of the record above it; the collection sweep
-            # below runs backward, which can't see a line's parent on its own.
+            # inherit the timestamp and level of the record above it; the collection
+            # sweep below runs backward, which can't see a line's parent on its own.
             texts, stamps, line_levels, effs = [None] * len(parts), [None] * len(parts), [None] * len(parts), [None] * len(parts)
-            chunk_epoch = None
+            chunk_last = (None, None)
             for i in range(first, len(parts)):
                 t = _text(parts[i][:_MAX_LINE_BYTES])
                 s = _timestamp(t)
-                texts[i], stamps[i], line_levels[i] = t, s, _level(t)
-                if s:
-                    chunk_epoch = s[0]
-                effs[i] = _effective_epoch(s, chunk_epoch)
+                lv = _level(t)
+                texts[i], stamps[i], line_levels[i] = t, s, lv
+                effs[i] = _effective(s, lv, chunk_last)
+                if s or lv:
+                    chunk_last = effs[i]
             for index in range(len(parts) - 1, first - 1, -1):
                 if offsets[index] == size and not parts[index]:
                     continue
@@ -392,7 +401,7 @@ def _tail_page(file, limit, q, levels, from_epoch, to_epoch):
                 clipped = len(parts[index]) > _MAX_LINE_BYTES
                 clipped_lines += int(clipped)
                 text, stamp, level = texts[index], stamps[index], line_levels[index]
-                if matches(text, level, effs[index]):
+                if matches(text, effs[index]):
                     if len(rows) == limit:
                         has_more = True
                         break
@@ -431,7 +440,7 @@ def _page(file, page, limit, q, levels, from_epoch, to_epoch, tail):
     has_more = False
     last_end = None
     clipped_lines = 0
-    last_epoch = None
+    last = (None, None)
     with open(file, "rb") as source:
         _seek_line(source, page, size)
         while scanned < _SCAN_LINES and time.monotonic() < deadline:
@@ -444,9 +453,10 @@ def _page(file, page, limit, q, levels, from_epoch, to_epoch, tail):
             text = _text(raw)
             stamp = _timestamp(text)
             level = _level(text)
-            if stamp:
-                last_epoch = stamp[0]
-            if not matches(text, level, _effective_epoch(stamp, last_epoch)):
+            effective = _effective(stamp, level, last)
+            if stamp or level:
+                last = effective
+            if not matches(text, effective):
                 continue
             row = _row(offset, text, stamp, level, clipped)
             end = source.tell()
@@ -491,7 +501,7 @@ def _histogram(file, bins, q, levels, from_epoch, to_epoch):
     level_counts = _counts()
     scanned = 0
     clipped_lines = 0
-    last_epoch = None
+    last = (None, None)
     with open(file, "rb") as source:
         while scanned < _SCAN_LINES and time.monotonic() < deadline:
             raw, clipped = _readline(source, deadline)
@@ -502,9 +512,10 @@ def _histogram(file, bins, q, levels, from_epoch, to_epoch):
             text = _text(raw)
             stamp = _timestamp(text)
             level = _level(text)
-            if stamp:
-                last_epoch = stamp[0]
-            if not matches(text, level, _effective_epoch(stamp, last_epoch)):
+            effective = _effective(stamp, level, last)
+            if stamp or level:
+                last = effective
+            if not matches(text, effective):
                 continue
             matching_count += 1
             normalized_level = level or "OTHER"
@@ -572,7 +583,7 @@ def _patterns(file, limit, q, levels, from_epoch, to_epoch):
     scanned = 0
     matching_count = 0
     clipped_lines = 0
-    last_epoch = None
+    last = (None, None)
     with open(file, "rb") as source:
         while scanned < 250_000 and time.monotonic() < deadline:
             raw, clipped = _readline(source, deadline)
@@ -583,9 +594,10 @@ def _patterns(file, limit, q, levels, from_epoch, to_epoch):
             text = _text(raw)
             stamp = _timestamp(text)
             level = _level(text)
-            if stamp:
-                last_epoch = stamp[0]
-            if not matches(text, level, _effective_epoch(stamp, last_epoch)):
+            effective = _effective(stamp, level, last)
+            if stamp or level:
+                last = effective
+            if not matches(text, effective):
                 continue
             matching_count += 1
             result = miner.add_log_message(text)

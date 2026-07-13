@@ -336,7 +336,8 @@ def _filter_domain(file, field):
 # ---------- tableau .twb import ----------
 
 # .twb shelf tokens: [Datasource].[sum:Sales:qk], [Datasource].[yr:Order Date:ok],
-# [Datasource].[Region] — an aggregate or date-grain prefix, or a bare field.
+# [Datasource].[Region:nk] — [derivation:]name[:kind], where the derivation is
+# an aggregate or date grain and the kind is a two-letter role code (nk/qk/ok).
 _TWB_AGG = {"sum": "sum", "avg": "avg", "mdn": "median", "min": "min", "max": "max",
             "cnt": "count", "ctd": "countd"}
 _TWB_GRAIN = {"yr": "year", "qr": "quarter", "mn": "month", "wk": "week", "dy": "day",
@@ -349,15 +350,18 @@ _TWB_FIELD = re.compile(r"\[([^\]]*)\]\.\[([^\]]*)\]")
 
 def _twb_pill(token, meta):
     parts = token.split(":")
-    name = parts[1] if len(parts) >= 2 else parts[0]
+    if len(parts) > 1 and re.fullmatch(r"[a-z]k", parts[-1]):
+        parts.pop()   # trailing kind code
+    prefix = parts.pop(0) if len(parts) > 1 else None
+    name = ":".join(parts)
     try:
         fld = _field(meta, name)
     except ValueError:
         return None
-    if len(parts) >= 2 and parts[0] in _TWB_AGG:
-        return {"field": name, "agg": _TWB_AGG[parts[0]]}
-    if len(parts) >= 2 and parts[0] in _TWB_GRAIN:
-        return {"field": name, "grain": _TWB_GRAIN[parts[0]]}
+    if prefix in _TWB_AGG:
+        return {"field": name, "agg": _TWB_AGG[prefix]}
+    if prefix in _TWB_GRAIN:
+        return {"field": name, "grain": _TWB_GRAIN[prefix]}
     if fld["role"] == "measure":
         return {"field": name, "agg": "sum"}
     if fld["dtype"] == "date":
