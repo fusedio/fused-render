@@ -1,0 +1,1468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDF Studio</title>
+<style>
+  /* ---- Light Airtable-flavored design system (shared with latex/docs) ---- */
+  :root {
+    --blue: #166ee1; --blue-2: #2d7ff9; --blue-soft: #e8f0fe; --blue-ink: #0f5bc4;
+    --canvas: #f7f8fa; --chrome: #ffffff; --hair: #e0e3e8; --hair-2: #eceef1;
+    --ink: #1d2025; --ink-2: #4c5560; --ink-3: #8a929e;
+    --danger: #d64b4b; --danger-soft: #fdecec; --ok: #1a9c67; --amber: #d98218;
+    --radius: 6px; --radius-lg: 10px;
+    --shadow-1: 0 1px 2px rgba(15,23,42,.06), 0 1px 3px rgba(15,23,42,.08);
+    --shadow-2: 0 6px 24px rgba(15,23,42,.16);
+    --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: var(--font); color: var(--ink); background: var(--canvas);
+    font-size: 13px; height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  button { font: inherit; cursor: pointer; }
+  .hidden { display: none !important; }
+  .spacer { flex: 1 1 auto; }
+  svg { pointer-events: none; }
+
+  /* ---- top bar ---- */
+  #topbar {
+    display: flex; align-items: center; gap: 10px; padding: 7px 12px; flex: 0 0 auto;
+    background: var(--chrome); border-bottom: 1px solid var(--hair); z-index: 30;
+  }
+  .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; letter-spacing: .2px; }
+  .brand .mark { width: 22px; height: 22px; border-radius: 5px; background: var(--blue);
+    color: #fff; display: grid; place-items: center; font-size: 10px; font-weight: 800; font-family: var(--mono); }
+  .btn { display: inline-flex; align-items: center; gap: 6px; background: var(--chrome); color: var(--ink);
+    border: 1px solid var(--hair); border-radius: var(--radius); padding: 6px 11px; font-weight: 500; }
+  .btn:hover { background: var(--hair-2); }
+  .btn.primary { background: var(--blue); color: #fff; border-color: var(--blue); font-weight: 600; }
+  .btn.primary:hover { background: var(--blue-ink); }
+  .btn.ghost { border-color: transparent; background: transparent; }
+  .btn.ghost:hover { background: var(--hair-2); }
+  .btn svg { width: 15px; height: 15px; }
+  #projBtn { max-width: 240px; }
+  #projBtn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+  #docName { font-weight: 600; font-size: 13.5px; max-width: 26vw; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; color: var(--ink); }
+  #docPages { color: var(--ink-3); font-size: 12px; white-space: nowrap; }
+
+  #status { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600;
+    color: var(--ink-3); font-variant-numeric: tabular-nums; }
+  #status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); }
+  #status.ok .dot { background: var(--ok); } #status.ok { color: var(--ok); }
+  #status.err .dot { background: var(--danger); } #status.err { color: var(--danger); }
+  #status.warn .dot { background: var(--amber); } #status.warn { color: var(--amber); }
+  #status.busy .dot { background: var(--amber); animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+  .seg { display: inline-flex; background: var(--hair-2); border-radius: var(--radius); padding: 2px; gap: 2px; }
+  .seg button { border: none; background: transparent; color: var(--ink-2); border-radius: 4px;
+    padding: 5px 12px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
+  .seg button.on { background: #fff; color: var(--blue); box-shadow: var(--shadow-1); }
+  .seg button svg { width: 15px; height: 15px; }
+
+  /* dropdown menus (topbar project menu) */
+  .menu-wrap { position: relative; }
+  .pop { position: absolute; top: calc(100% + 4px); left: 0; background: #fff; border: 1px solid var(--hair);
+    border-radius: var(--radius); box-shadow: var(--shadow-2); padding: 5px; min-width: 220px; z-index: 60; }
+  .pop button { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; border: none;
+    background: none; color: var(--ink); padding: 7px 10px; border-radius: 5px; font-size: 13px; }
+  .pop button:hover { background: var(--hair-2); }
+  .pop .sub { color: var(--ink-3); font-size: 11px; padding: 6px 10px 3px; text-transform: uppercase; letter-spacing: .5px; }
+  .pop .divider { height: 1px; background: var(--hair-2); margin: 5px 4px; }
+  .pop .scrolllist { max-height: 260px; overflow-y: auto; }
+  .pop .pj.now { background: var(--blue-soft); color: var(--blue-ink); font-weight: 600; }
+  .pop .pj .pjm { margin-left: auto; color: var(--ink-3); font-size: 11px; font-weight: 400; }
+
+  /* ---- menubar ---- */
+  #menubar { display: flex; padding: 0 8px; user-select: none; background: var(--chrome);
+    border-bottom: 1px solid var(--hair); flex: 0 0 auto; z-index: 25; }
+  .menu { position: relative; padding: 5px 10px; border-radius: 5px; margin: 3px 1px; color: var(--ink-2); font-weight: 500; }
+  .menu:hover, .menu.open { background: var(--hair-2); color: var(--ink); }
+  .dropdown { display: none; position: absolute; top: 100%; left: 0; background: #fff; border: 1px solid var(--hair);
+    border-radius: var(--radius); box-shadow: var(--shadow-2); padding: 5px; min-width: 220px; z-index: 60; }
+  .menu.open .dropdown { display: block; }
+  .mi { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 5px; color: var(--ink);
+    font-weight: 400; white-space: nowrap; }
+  .mi:hover { background: var(--hair-2); }
+  .mi .kbd { margin-left: auto; color: var(--ink-3); font-size: 11px; font-family: var(--mono); }
+  .mi.off { opacity: .4; pointer-events: none; }
+  .dropdown .divider { height: 1px; background: var(--hair-2); margin: 5px 4px; }
+  body.mode-view #menubar { display: none; }
+
+  /* ---- workspace ---- */
+  #main { flex: 1 1 auto; min-height: 0; display: flex; }
+  #side { flex: 0 0 224px; min-width: 0; overflow-y: auto; background: var(--chrome); border-right: 1px solid var(--hair);
+    padding: 12px 8px; display: flex; flex-direction: column; gap: 16px; }
+  body.panel-off #side { display: none; }
+  #side h4 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .7px; color: var(--ink-3);
+    padding: 0 6px; display: flex; align-items: center; }
+  #side h4 .add { margin-left: auto; border: none; background: none; color: var(--ink-3); font-size: 15px;
+    line-height: 1; padding: 0 4px; border-radius: 4px; }
+  #side h4 .add:hover { background: var(--hair-2); color: var(--blue); }
+
+  .doc-row { display: flex; align-items: center; gap: 7px; width: 100%; border: none; background: none;
+    color: var(--ink-2); padding: 5px 6px; border-radius: 5px; font-size: 12.5px; cursor: pointer; position: relative; }
+  .doc-row:hover { background: var(--hair-2); color: var(--ink); }
+  .doc-row.on { background: var(--blue-soft); color: var(--blue-ink); font-weight: 600; }
+  .doc-row .nm { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+  .doc-row .meta { color: var(--ink-3); font-size: 11px; flex: 0 0 auto; }
+  .doc-row .ops { display: none; position: absolute; right: 4px; background: #fff; border-radius: 5px;
+    box-shadow: var(--shadow-1); padding: 1px; }
+  .doc-row:hover .ops { display: inline-flex; }
+  .doc-row:hover .meta { visibility: hidden; }
+  .ops button { border: none; background: none; padding: 3px 5px; border-radius: 4px; color: var(--ink-2);
+    display: inline-flex; }
+  .ops button:hover { background: var(--hair-2); color: var(--ink); }
+  .ops button.danger:hover { background: var(--danger-soft); color: var(--danger); }
+  .ops svg { width: 13px; height: 13px; }
+  .side-empty { color: var(--ink-3); padding: 4px 6px; font-size: 12px; }
+
+  /* thumbnail rail */
+  #thumbs { display: flex; flex-direction: column; gap: 10px; padding: 0 6px; }
+  .thumb { position: relative; cursor: pointer; border-radius: 4px; }
+  .thumb canvas { display: block; width: 100%; background: #fff; border: 1px solid var(--hair);
+    border-radius: 4px; box-shadow: var(--shadow-1); }
+  .thumb.on canvas { outline: 2px solid var(--blue); outline-offset: 1px; }
+  .thumb .pn { position: absolute; left: 6px; bottom: 6px; background: rgba(29,32,37,.72); color: #fff;
+    font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 8px; }
+  .qa { position: absolute; top: 6px; right: 6px; display: inline-flex; gap: 1px; background: #fff;
+    border-radius: 6px; box-shadow: var(--shadow-2); padding: 2px; opacity: 0; transition: opacity .12s; z-index: 5; }
+  .thumb:hover .qa, .pdf-page:hover .qa { opacity: 1; }
+  .qa button { border: none; background: none; padding: 4px 5px; border-radius: 4px; color: var(--ink-2); display: inline-flex; }
+  .qa button:hover { background: var(--hair-2); color: var(--ink); }
+  .qa button.danger:hover { background: var(--danger-soft); color: var(--danger); }
+  .qa svg { width: 14px; height: 14px; }
+  body.mode-view .qa { display: none; }
+
+  /* pages */
+  #canvasWrap { flex: 1 1 auto; min-width: 0; overflow: auto; padding: 24px; }
+  #pages { display: flex; flex-direction: column; align-items: center; gap: 20px; }
+  .pdf-page { position: relative; background: #fff; box-shadow: 0 2px 10px rgba(15,23,42,.14); }
+  .pdf-page canvas { display: block; }
+  .pdf-page .overlay { position: absolute; inset: 0; }
+  body.mode-view .overlay { display: none; }
+  .pdf-page .textLayer { position: absolute; inset: 0; overflow: clip; line-height: 1; text-align: initial;
+    transform-origin: 0 0; forced-color-adjust: none; caret-color: CanvasText; }
+  .textLayer :is(span, br) { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0 0; }
+  .textLayer ::selection { background: rgba(45,127,249,.28); }
+  body.mode-edit .textLayer { display: none; }
+  .tspan { position: absolute; cursor: text; border-radius: 2px; }
+  .tspan:hover { outline: 1.5px solid var(--blue-2); background: rgba(45,127,249,.08); }
+  .tedit { position: absolute; z-index: 10; border: 1.5px solid var(--blue); border-radius: 3px; background: #fff;
+    box-shadow: var(--shadow-2); font-family: var(--font); color: var(--ink); padding: 0 2px; min-width: 60px; }
+  .tedit:focus { outline: none; }
+  #pagesNote { color: var(--ink-3); text-align: center; font-size: 12px; padding: 6px; }
+
+  /* ---- modal ---- */
+  .modal-bg { position: fixed; inset: 0; background: rgba(15,23,42,.35); display: grid; place-items: center; z-index: 100; }
+  .modal { background: #fff; border-radius: var(--radius-lg); box-shadow: var(--shadow-2); padding: 20px; width: 400px; max-width: 94vw; }
+  .modal.wide { width: 560px; }
+  .modal h3 { margin: 0 0 12px; font-size: 16px; }
+  .modal p { margin: 0 0 10px; color: var(--ink-2); line-height: 1.45; }
+  .modal label { display: block; font-size: 12px; color: var(--ink-2); font-weight: 600; margin: 10px 0 4px; }
+  .modal input[type=text], .modal select { width: 100%; padding: 8px 10px; border: 1px solid var(--hair); border-radius: var(--radius); font: inherit; }
+  .modal .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+  .modal .radio { display: flex; align-items: flex-start; gap: 8px; padding: 8px; border: 1px solid var(--hair);
+    border-radius: var(--radius); margin-top: 6px; cursor: pointer; }
+  .modal .radio:hover { border-color: var(--blue); }
+  .modal .radio small { color: var(--ink-3); display: block; margin-top: 2px; }
+  .modal .checklist { max-height: 220px; overflow-y: auto; border: 1px solid var(--hair); border-radius: var(--radius); padding: 4px; margin-top: 6px; }
+  .modal .checklist label { display: flex; align-items: center; gap: 8px; margin: 0; padding: 6px 8px; border-radius: 4px; font-weight: 400; cursor: pointer; }
+  .modal .checklist label:hover { background: var(--hair-2); }
+
+  /* file browser */
+  .modal input.fb-path { font-family: var(--mono); font-size: 12px; margin-bottom: 8px; }
+  .fb-crumbs { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; font-size: 12px;
+    background: var(--hair-2); border-radius: var(--radius); padding: 5px 8px; margin-bottom: 10px; }
+  .fb-crumbs button { border: none; background: none; color: var(--blue-ink); padding: 2px 4px; border-radius: 4px; font: inherit; }
+  .fb-crumbs button:hover { background: #fff; }
+  .fb-crumbs .sep { color: var(--ink-3); }
+  .fb-list { height: 280px; overflow-y: auto; border: 1px solid var(--hair); border-radius: var(--radius); padding: 4px; }
+  .fb-row { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; border: none; background: none;
+    color: var(--ink); padding: 6px 8px; border-radius: 5px; font-size: 13px; }
+  .fb-row:hover { background: var(--blue-soft); }
+  .fb-row .ico { width: 17px; flex: 0 0 auto; display: inline-flex; color: var(--ink-3); }
+  .fb-row .ico svg { width: 16px; height: 16px; }
+  .fb-row.dir .ico { color: var(--blue); }
+  .fb-row.dir .nm { font-weight: 600; }
+  .fb-row .nm { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fb-row .sz { color: var(--ink-3); font-size: 11px; }
+  .fb-empty { color: var(--ink-3); font-size: 12.5px; padding: 20px; text-align: center; }
+
+  /* destination picker + operation results */
+  .destrow { display: flex; gap: 6px; margin-top: 6px; }
+  .destrow input { flex: 1 1 auto; min-width: 0; }
+  .modal .hint { color: var(--ink-3); font-size: 12px; margin: 10px 0 0; line-height: 1.45; }
+  .filelist { max-height: 220px; overflow-y: auto; border: 1px solid var(--hair); border-radius: var(--radius); padding: 4px; margin-top: 6px; }
+  .file-row { display: flex; align-items: center; gap: 9px; padding: 5px 8px; border-radius: 5px; font-size: 13px; }
+  .file-row:hover { background: var(--hair-2); }
+  .file-row .ico { width: 17px; flex: 0 0 auto; display: inline-flex; color: var(--ink-3); }
+  .file-row .ico svg { width: 16px; height: 16px; }
+  .file-row .nm { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-row .sz { color: var(--ink-3); font-size: 11px; }
+  .file-row .dl { border: none; background: none; padding: 3px 5px; border-radius: 4px; color: var(--ink-2); display: inline-flex; }
+  .file-row .dl:hover { background: var(--blue-soft); color: var(--blue-ink); }
+  .file-row .dl svg { width: 14px; height: 14px; }
+
+  #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--ink); color: #fff;
+    padding: 9px 16px; border-radius: 8px; font-size: 13px; box-shadow: var(--shadow-2); z-index: 200; display: none; max-width: 70vw; }
+  #toast.err { background: var(--danger); }
+  #boot { position: fixed; inset: 0; display: grid; place-items: center; color: var(--ink-3); font-size: 14px;
+    background: var(--canvas); z-index: 300; text-align: center; line-height: 1.7; }
+  #banner { background: #fff7e8; border-bottom: 1px solid #f2dfb8; color: #8a6116; padding: 7px 14px;
+    font-size: 12.5px; flex: 0 0 auto; }
+</style>
+</head>
+<body class="mode-edit">
+<div id="boot">Loading PDF Studio…</div>
+
+<div id="topbar">
+  <div class="brand"><span class="mark">PDF</span><span>PDF Studio</span></div>
+  <div class="menu-wrap">
+    <button class="btn" id="projBtn">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+      <span id="projLabel">Projects</span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" style="width:13px;height:13px;opacity:.6"><path d="M6 9l6 6 6-6"/></svg>
+    </button>
+    <div class="pop hidden" id="projMenu"></div>
+  </div>
+  <span id="docName"></span>
+  <span id="docPages"></span>
+  <div class="spacer"></div>
+  <div id="status"><span class="dot"></span><span class="txt">idle</span></div>
+  <div class="seg" id="modeSeg">
+    <button data-mode="edit" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg> Edit</button>
+    <button data-mode="view"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg> View</button>
+  </div>
+  <button class="btn primary" id="exportBtn">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+    Export
+  </button>
+</div>
+
+<div id="menubar">
+  <div class="menu" data-menu>File<div class="dropdown">
+    <div class="mi" data-act="importPdf">Import PDF…</div>
+    <div class="mi" data-act="importUrl">Import from URL…</div>
+    <div class="mi" data-act="openPath">Open anywhere… <span class="kbd">Ctrl+O</span></div>
+    <div class="divider"></div>
+    <div class="mi" data-act="save">Save <span class="kbd">Ctrl+S</span></div>
+    <div class="mi" data-act="revert">Revert to saved</div>
+    <div class="mi" data-act="saveAs">Save a copy… <span class="kbd">Ctrl+Shift+S</span></div>
+    <div class="divider"></div>
+    <div class="mi" data-act="export">Export… <span class="kbd">PDF · PNG · TXT</span></div>
+  </div></div>
+  <div class="menu" data-menu>Edit<div class="dropdown">
+    <div class="mi" data-act="undo" id="miUndo">Undo <span class="kbd">Ctrl+Z</span></div>
+    <div class="mi" data-act="redo" id="miRedo">Redo <span class="kbd">Ctrl+Y</span></div>
+    <div class="divider"></div>
+    <div class="mi" data-act="editTextHint">Edit text — click any line on a page</div>
+  </div></div>
+  <div class="menu" data-menu>Page<div class="dropdown">
+    <div class="mi" data-act="rotateL">Rotate left</div>
+    <div class="mi" data-act="rotateR">Rotate right</div>
+    <div class="mi" data-act="rotate180">Rotate 180°</div>
+    <div class="divider"></div>
+    <div class="mi" data-act="deletePage">Delete page</div>
+    <div class="mi" data-act="extractPages">Extract pages…</div>
+    <div class="mi" data-act="insertBlank">Insert blank page after</div>
+    <div class="divider"></div>
+    <div class="mi" data-act="moveUp">Move page up</div>
+    <div class="mi" data-act="moveDown">Move page down</div>
+  </div></div>
+  <div class="menu" data-menu>Document<div class="dropdown">
+    <div class="mi" data-act="merge">Merge PDFs…</div>
+    <div class="mi" data-act="split">Split…</div>
+    <div class="mi" data-act="compress">Compress…</div>
+  </div></div>
+  <div class="menu" data-menu>View<div class="dropdown">
+    <div class="mi" data-act="togglePanel">Toggle side panel <span class="kbd">Ctrl+\</span></div>
+    <div class="divider"></div>
+    <div class="mi" data-act="zoomIn">Zoom in</div>
+    <div class="mi" data-act="zoomOut">Zoom out</div>
+    <div class="mi" data-act="zoom100">Actual size</div>
+  </div></div>
+</div>
+
+<div id="banner" class="hidden"></div>
+
+<div id="main">
+  <div id="side">
+    <div>
+      <h4>Documents <button class="add" id="importBtn" title="Import a PDF into this project">＋</button></h4>
+      <div id="docList"></div>
+    </div>
+    <div>
+      <h4>Pages</h4>
+      <div id="thumbs"></div>
+    </div>
+  </div>
+  <div id="canvasWrap"><div id="pages"></div><div id="pagesNote" class="hidden"></div></div>
+</div>
+
+<div id="modalHost"></div>
+<div id="toast"></div>
+
+<script type="module">
+import * as pdfjs from "/template-assets/pdfjs.bundle.mjs";
+pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs";
+
+const PY = "./pdf.py";
+const MAX_PAGES = 100;
+const $ = (id) => document.getElementById(id);
+
+const state = {
+  projects: [], project: "", projTitle: "",
+  docs: [], doc: "", work: "", info: null, mtime: 0, dirty: false,
+  pdf: null, curPage: 1, zoom: 100,
+  standalone: false, undoDepth: 0, redoDepth: 0,
+  spans: {},          // pageNo -> {mtime, spans}
+  editing: null,      // the floating text input, if any
+};
+
+// ---------- plumbing ----------
+function py(params) {
+  const clean = {};
+  for (const [k, v] of Object.entries(params)) {
+    if (v === null || v === undefined) continue;
+    clean[k] = typeof v === "string" ? v : (typeof v === "number" || typeof v === "boolean") ? v : String(v);
+  }
+  return fused.runPython(PY, clean);
+}
+let toastTimer = 0;
+function toast(msg, err = false) {
+  const t = $("toast");
+  t.textContent = msg; t.className = err ? "err" : ""; t.style.display = "block";
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.style.display = "none"; }, err ? 6000 : 3200);
+}
+function setStatus(txt, cls = "") {
+  const s = $("status");
+  s.className = cls; s.querySelector(".txt").textContent = txt || "idle";
+}
+const fmtSize = (b) => b > 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(b / 1024)) + " KB";
+
+// ---------- modal helpers ----------
+function modal(html) {
+  const bg = document.createElement("div");
+  bg.className = "modal-bg";
+  bg.innerHTML = `<div class="modal">${html}</div>`;
+  $("modalHost").appendChild(bg);
+  bg.addEventListener("mousedown", (e) => { if (e.target === bg) close(null); });
+  function onKey(e) {
+    if (e.key === "Escape" && bg === $("modalHost").lastElementChild) { e.stopPropagation(); close(null); }
+  }
+  document.addEventListener("keydown", onKey, true);
+  let resolve;
+  const done = new Promise((r) => { resolve = r; });
+  function close(v) { document.removeEventListener("keydown", onKey, true); bg.remove(); resolve(v); }
+  return { el: bg.firstElementChild, done, close };
+}
+
+function dialog({ title, message = "", label = "", value = "", okText = "OK", danger = false, input = true }) {
+  const m = modal(`
+    <h3></h3>${message ? "<p></p>" : ""}
+    ${input ? `<input type="text" id="dlgInput" placeholder="${label.replace(/"/g, "&quot;")}">` : ""}
+    <div class="row">
+      <button class="btn" data-x="cancel">Cancel</button>
+      <button class="btn primary" data-x="ok" ${danger ? 'style="background:var(--danger);border-color:var(--danger)"' : ""}></button>
+    </div>`);
+  m.el.querySelector("h3").textContent = title;
+  if (message) m.el.querySelector("p").textContent = message;
+  m.el.querySelector("[data-x=ok]").textContent = okText;
+  const inp = m.el.querySelector("#dlgInput");
+  if (inp) { inp.value = value; inp.focus(); inp.select(); }
+  m.el.addEventListener("click", (e) => {
+    const x = e.target.closest("[data-x]");
+    if (!x) return;
+    m.close(x.dataset.x === "ok" ? (inp ? inp.value.trim() : true) : null);
+  });
+  m.el.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") m.close(inp ? inp.value.trim() : true);
+    if (e.key === "Escape") m.close(null);
+  });
+  return m.done;
+}
+
+const cleanPath = (s) => (s || "").trim().replace(/^["']+|["']+$/g, "").replace(/\\/g, "/");
+const docDir = () => state.doc.split("/").slice(0, -1).join("/");
+
+function browseModal({ title, okText = "Open", pickDir = false, dirOnly = false, filename = "", start = "" }) {
+  const m = modal(`
+    <h3></h3>
+    <input type="text" id="fbPath" class="fb-path" placeholder="Paste a full path and press Enter" spellcheck="false" autocomplete="off">
+    <div class="fb-crumbs" id="fbCrumbs"></div>
+    <div class="fb-list" id="fbList"></div>
+    ${pickDir ? `<label>File name</label><input type="text" id="fbName">` : ""}
+    <div class="row"><button class="btn" data-x="cancel">Cancel</button>
+    ${pickDir || dirOnly ? `<button class="btn primary" data-x="ok"></button>` : ""}</div>`);
+  m.el.classList.add("wide");
+  m.el.querySelector("h3").textContent = title;
+  m.el.querySelector("[data-x=cancel]").onclick = () => m.close(null);
+  const pathInp = m.el.querySelector("#fbPath");
+  const nameInp = m.el.querySelector("#fbName");
+  let cur = "";
+  if (pickDir) {
+    nameInp.value = filename;
+    const finish = () => {
+      const n = cleanPath(nameInp.value);
+      if (!n) return;
+      if (/^([A-Za-z]:)?\//.test(n))
+        m.close({ dir: n.split("/").slice(0, -1).join("/") || "/", name: n.split("/").pop() });
+      else m.close({ dir: cur, name: n });
+    };
+    const ok = m.el.querySelector("[data-x=ok]");
+    ok.textContent = okText;
+    ok.onclick = finish;
+    nameInp.addEventListener("keydown", (e) => { if (e.key === "Enter") finish(); });
+  } else if (dirOnly) {
+    const ok = m.el.querySelector("[data-x=ok]");
+    ok.textContent = okText;
+    ok.onclick = () => m.close(cur);
+  }
+  async function show(path) {
+    if (/^[A-Za-z]:$/.test(path)) path += "/";
+    const res = await py({ action: "listdir", path });
+    if (res.error) { toast(res.error, true); return; }
+    cur = res.path;
+    pathInp.value = res.path;
+    const crumbs = m.el.querySelector("#fbCrumbs");
+    crumbs.innerHTML = "";
+    const rooted = res.path.startsWith("/");
+    const parts = res.path.split("/").filter(Boolean);
+    parts.forEach((p, i) => {
+      const upto = (rooted ? "/" : "") + parts.slice(0, i + 1).join("/");
+      const b = document.createElement("button");
+      b.textContent = p;
+      b.onclick = () => show(upto);
+      if (i) crumbs.insertAdjacentHTML("beforeend", `<span class="sep">/</span>`);
+      crumbs.appendChild(b);
+    });
+    const list = m.el.querySelector("#fbList");
+    list.innerHTML = "";
+    if (res.parent && res.parent !== res.path) {
+      const up = document.createElement("button");
+      up.className = "fb-row dir";
+      up.innerHTML = `<span class="ico">${icoDir}</span><span class="nm">..</span>`;
+      up.onclick = () => show(res.parent);
+      list.appendChild(up);
+    }
+    for (const d of res.dirs) {
+      const b = document.createElement("button");
+      b.className = "fb-row dir";
+      b.innerHTML = `<span class="ico">${icoDir}</span><span class="nm"></span>`;
+      b.querySelector(".nm").textContent = d;
+      b.onclick = () => show(res.path + "/" + d);
+      list.appendChild(b);
+    }
+    for (const f of res.files) {
+      const b = document.createElement("button");
+      b.className = "fb-row";
+      b.innerHTML = `<span class="ico">${icoFile}</span><span class="nm"></span><span class="sz">${fmtSize(f.size)}</span>`;
+      b.querySelector(".nm").textContent = f.name;
+      b.onclick = dirOnly ? null
+        : pickDir ? () => { nameInp.value = f.name; }
+        : () => m.close(res.path + "/" + f.name);
+      list.appendChild(b);
+    }
+    if (!res.dirs.length && !res.files.length)
+      list.innerHTML = `<div class="fb-empty">No folders or PDFs here.</div>`;
+  }
+  pathInp.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    let p = cleanPath(pathInp.value);
+    if (!p) return;
+    if (/\.pdf$/i.test(p)) {
+      if (!pickDir && !dirOnly) return m.close(p);
+      if (nameInp) nameInp.value = p.split("/").pop();
+      p = p.split("/").slice(0, -1).join("/") || "/";
+    }
+    show(p);
+  });
+  show(start || (state.doc ? docDir() : "~"))
+    .then(() => { pathInp.focus(); pathInp.select(); });
+  return m.done;
+}
+
+function destRow(m, id, value, onFile) {
+  const inp = m.el.querySelector("#" + id);
+  inp.value = value;
+  let lastDir = value;
+  const absorb = () => {
+    let p = cleanPath(inp.value);
+    const last = p.split("/").pop();
+    if (onFile && /\.(pdf|png|jpe?g|txt)$/i.test(last)) {
+      p = p.includes("/") ? p.split("/").slice(0, -1).join("/") || "/" : lastDir;
+      inp.value = p;
+      onFile(last);
+    }
+    lastDir = cleanPath(inp.value) || lastDir;
+  };
+  inp.addEventListener("change", absorb);
+  m.el.querySelector("#" + id + "Btn").onclick = async () => {
+    const dir = await browseModal({ title: "Choose a folder", okText: "Select folder",
+      dirOnly: true, start: cleanPath(inp.value) || "~" });
+    if (dir) { inp.value = dir; lastDir = dir; }
+  };
+  return () => { absorb(); return cleanPath(inp.value); };
+}
+
+async function resultModal({ title, note = "", files = [], dir = "" }) {
+  const m = modal(`
+    <h3></h3>${note ? "<p></p>" : ""}
+    ${files.length ? `<div class="filelist"></div>` : ""}
+    <div class="row">
+      ${dir ? `<button class="btn" data-x="reveal">Open folder</button>` : ""}
+      <button class="btn primary" data-x="ok">Done</button>
+    </div>`);
+  m.el.querySelector("h3").textContent = title;
+  if (note) m.el.querySelector("p").textContent = note;
+  const list = m.el.querySelector(".filelist");
+  for (const f of files) {
+    const row = document.createElement("div");
+    row.className = "file-row";
+    row.innerHTML = `<span class="ico">${icoFile}</span><span class="nm"></span>
+      <span class="sz">${fmtSize(f.size)}</span>
+      <button class="dl" title="Download">${icoDown}</button>`;
+    row.querySelector(".nm").textContent = f.name;
+    row.title = f.path;
+    row.querySelector(".dl").onclick = () => download(f.path);
+    list.appendChild(row);
+  }
+  const rev = m.el.querySelector("[data-x=reveal]");
+  if (rev) rev.onclick = () => py({ action: "reveal", path: dir }).catch((e) => toast(e?.message || String(e), true));
+  m.el.querySelector("[data-x=ok]").onclick = () => m.close(true);
+  m.el.querySelector("[data-x=ok]").focus();
+  return m.done;
+}
+
+// ---------- pdf rendering ----------
+async function loadPdfBytes() {
+  const resp = await fetch(fused.rawUrl(state.work) + "&v=" + state.mtime);
+  if (!resp.ok) throw new Error(`could not read file (HTTP ${resp.status})`);
+  return resp.arrayBuffer();
+}
+
+function pageWidth() {
+  const avail = $("canvasWrap").clientWidth - 48;
+  return Math.min(860, Math.max(320, avail)) * state.zoom / 100;
+}
+
+async function renderAll() {
+  cancelEdit();
+  state.spans = {};
+  if (state.pdf) { state.pdf.destroy(); state.pdf = null; }
+  const data = await loadPdfBytes();
+  state.pdf = await pdfjs.getDocument({ data }).promise;
+  const shown = Math.min(state.pdf.numPages, MAX_PAGES);
+  const note = $("pagesNote");
+  note.classList.toggle("hidden", state.pdf.numPages <= MAX_PAGES);
+  if (state.pdf.numPages > MAX_PAGES)
+    note.textContent = `Showing ${shown} of ${state.pdf.numPages} pages`;
+  $("docPages").textContent = `${state.pdf.numPages} ${state.pdf.numPages === 1 ? "page" : "pages"}`;
+
+  const pagesEl = $("pages");
+  pagesEl.innerHTML = "";
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const cssW = pageWidth();
+  for (let n = 1; n <= shown; n++) {
+    const page = await state.pdf.getPage(n);
+    const base = page.getViewport({ scale: 1 });
+    const scale = cssW / base.width;
+    const vp = page.getViewport({ scale });
+    const wrap = document.createElement("div");
+    wrap.className = "pdf-page";
+    wrap.id = `__fr_page_${n}`;
+    wrap.dataset.page = n;
+    wrap.dataset.scale = scale;
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.floor(vp.width * dpr);
+    canvas.height = Math.floor(vp.height * dpr);
+    canvas.style.width = vp.width + "px";
+    canvas.style.height = vp.height + "px";
+    wrap.appendChild(canvas);
+    wrap.style.setProperty("--scale-factor", scale);
+    const textLayer = document.createElement("div");
+    textLayer.className = "textLayer";
+    wrap.appendChild(textLayer);
+    const overlay = document.createElement("div");
+    overlay.className = "overlay";
+    wrap.appendChild(overlay);
+    wrap.insertAdjacentHTML("beforeend", `<div class="qa">
+      <button title="Rotate left" data-qa="rotL">${icoRotL}</button>
+      <button title="Rotate right" data-qa="rotR">${icoRotR}</button>
+      <button title="Extract this page" data-qa="extract">${icoExtract}</button>
+      <button title="Delete page" data-qa="del" class="danger">${icoTrash}</button>
+    </div>`);
+    pagesEl.appendChild(wrap);
+    await page.render({
+      canvasContext: canvas.getContext("2d"), viewport: vp,
+      transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined,
+    }).promise;
+    await new pdfjs.TextLayer({
+      textContentSource: page.streamTextContent(), container: textLayer, viewport: vp,
+    }).render();
+  }
+  renderThumbs(shown);
+  watchPages();
+  if (document.body.classList.contains("mode-edit")) primeOverlays();
+}
+
+async function renderThumbs(shown) {
+  const rail = $("thumbs");
+  rail.innerHTML = "";
+  for (let n = 1; n <= shown; n++) {
+    const page = await state.pdf.getPage(n);
+    const base = page.getViewport({ scale: 1 });
+    const vp = page.getViewport({ scale: 132 / base.width });
+    const div = document.createElement("div");
+    div.className = "thumb" + (n === state.curPage ? " on" : "");
+    div.dataset.page = n;
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.floor(vp.width);
+    canvas.height = Math.floor(vp.height);
+    div.appendChild(canvas);
+    div.insertAdjacentHTML("beforeend", `<span class="pn">${n}</span><div class="qa">
+      <button title="Rotate left" data-qa="rotL">${icoRotL}</button>
+      <button title="Rotate right" data-qa="rotR">${icoRotR}</button>
+      <button title="Delete page" data-qa="del" class="danger">${icoTrash}</button>
+    </div>`);
+    rail.appendChild(div);
+    await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+  }
+}
+
+let pageWatcher = null;
+function watchPages() {
+  if (pageWatcher) pageWatcher.disconnect();
+  pageWatcher = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (!e.isIntersecting) continue;
+      setCurPage(+e.target.dataset.page, false);
+      if (document.body.classList.contains("mode-edit")) buildOverlay(+e.target.dataset.page).catch(() => {});
+    }
+  }, { root: $("canvasWrap"), threshold: 0.25 });
+  document.querySelectorAll(".pdf-page").forEach((p) => pageWatcher.observe(p));
+}
+
+function setCurPage(n, scroll = true) {
+  state.curPage = n;
+  document.querySelectorAll(".thumb").forEach((t) => t.classList.toggle("on", +t.dataset.page === n));
+  if (scroll) document.getElementById(`__fr_page_${n}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function primeOverlays() {
+  document.querySelectorAll(".pdf-page").forEach((p) => {
+    const r = p.getBoundingClientRect();
+    if (r.bottom > 0 && r.top < innerHeight) buildOverlay(+p.dataset.page).catch(() => {});
+  });
+}
+
+// ---------- text edit overlay ----------
+async function buildOverlay(n) {
+  const wrap = document.getElementById(`__fr_page_${n}`);
+  if (!wrap || wrap.dataset.overlayFor === String(state.mtime)) return;
+  wrap.dataset.overlayFor = state.mtime;
+  let pt = state.spans[n];
+  if (!pt || pt.mtime !== state.mtime) {
+    pt = await py({ action: "page_text", doc: state.doc, page: n });
+    state.spans[n] = pt;
+  }
+  const overlay = wrap.querySelector(".overlay");
+  overlay.innerHTML = "";
+  const s = +wrap.dataset.scale;
+  pt.spans.forEach((sp, i) => {
+    const d = document.createElement("div");
+    d.className = "tspan";
+    d.dataset.i = i;
+    d.style.left = sp.bbox[0] * s + "px";
+    d.style.top = sp.bbox[1] * s + "px";
+    d.style.width = (sp.bbox[2] - sp.bbox[0]) * s + "px";
+    d.style.height = (sp.bbox[3] - sp.bbox[1]) * s + "px";
+    overlay.appendChild(d);
+  });
+}
+
+function cancelEdit() {
+  if (state.editing) { state.editing.remove(); state.editing = null; }
+}
+
+function startEdit(wrap, span) {
+  cancelEdit();
+  const s = +wrap.dataset.scale;
+  const pageNo = +wrap.dataset.page;
+  const pt = state.spans[pageNo];
+  if (pt.rotation !== 0) { toast("Rotate this page to 0° before editing its text"); return; }
+  const inp = document.createElement("input");
+  inp.type = "text";
+  inp.className = "tedit";
+  inp.value = span.text;
+  inp.style.left = span.bbox[0] * s - 3 + "px";
+  inp.style.top = span.bbox[1] * s - 3 + "px";
+  inp.style.width = Math.max(80, (span.bbox[2] - span.bbox[0]) * s + 30) + "px";
+  inp.style.height = (span.bbox[3] - span.bbox[1]) * s + 6 + "px";
+  inp.style.fontSize = span.size * s + "px";
+  if (span.flags & 16) inp.style.fontWeight = "700";
+  if (span.flags & 2) inp.style.fontStyle = "italic";
+  if (span.flags & 8) inp.style.fontFamily = "var(--mono)";
+  wrap.appendChild(inp);
+  inp.focus(); inp.select();
+  state.editing = inp;
+  inp.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Escape") cancelEdit();
+    if (e.key === "Enter") {
+      const val = inp.value;
+      cancelEdit();
+      if (val !== span.text) act("commitEdit", { pageNo, span, val });
+    }
+  });
+  inp.addEventListener("blur", () => setTimeout(cancelEdit, 120));
+}
+
+// ---------- data flows ----------
+async function applyMut(res) {
+  state.mtime = res.mtime;
+  state.info = res.doc;
+  state.work = res.doc.work;
+  state.dirty = !!res.dirty;
+  state.undoDepth = res.undo_depth; state.redoDepth = res.redo_depth;
+  updateUndoUi();
+  await renderAll();
+  refreshDocList().catch(() => {});
+}
+
+async function mutate(action, params = {}) {
+  setStatus("working…", "busy");
+  const res = await py({ action, doc: state.doc, expected_mtime: String(state.mtime), ...params });
+  if (res.conflict) {
+    toast("File changed on disk — reloaded the latest version", true);
+    await openDoc(state.doc);
+    setStatus("reloaded", "err");
+    return null;
+  }
+  await applyMut(res);
+  setStatus("unsaved changes", "warn");
+  return res;
+}
+
+function updateUndoUi() {
+  $("miUndo").classList.toggle("off", !state.undoDepth);
+  $("miRedo").classList.toggle("off", !state.redoDepth);
+}
+
+async function refreshDocList() {
+  if (state.standalone || !state.project) return renderDocList();
+  const res = await py({ action: "open_project", slug: state.project });
+  state.docs = res.docs; state.projTitle = res.title;
+  renderDocList();
+}
+
+function renderDocList() {
+  $("projLabel").textContent = state.standalone ? "No project" : (state.projTitle || "Projects");
+  const list = $("docList");
+  list.innerHTML = "";
+  if (state.standalone) {
+    const row = document.createElement("div");
+    row.className = "doc-row on";
+    row.innerHTML = `<span class="nm"></span>`;
+    row.querySelector(".nm").textContent = state.doc.split("/").pop();
+    list.appendChild(row);
+    const add = document.createElement("button");
+    add.className = "btn ghost";
+    add.style.margin = "6px 2px";
+    add.textContent = "＋ Add to a project";
+    add.onclick = () => act("addToLibrary");
+    list.appendChild(add);
+    return;
+  }
+  if (!state.docs.length) {
+    list.innerHTML = `<div class="side-empty">No PDFs yet — use ＋ to import one.</div>`;
+    return;
+  }
+  for (const d of state.docs) {
+    const row = document.createElement("div");
+    row.className = "doc-row" + (d.path === state.doc ? " on" : "");
+    const meta = d.missing ? `<span class="meta" style="color:var(--danger)">missing</span>`
+      : `<span class="meta">${d.page_count ?? "?"}p · ${fmtSize(d.size)}</span>`;
+    row.innerHTML = `<span class="nm"></span>${meta}
+      <span class="ops">
+        <button title="Rename" data-op="rename">${icoPen}</button>
+        <button title="${d.linked ? "Remove from project" : "Delete"}" data-op="delete" class="danger">${icoTrash}</button>
+      </span>`;
+    row.title = d.path;
+    row.querySelector(".nm").textContent = d.name;
+    row.addEventListener("click", (e) => {
+      const op = e.target.closest("[data-op]");
+      if (op) { act(op.dataset.op === "rename" ? "renameDoc" : "deleteDoc", d); return; }
+      if (d.path !== state.doc) act("openDoc", d.path);
+    });
+    list.appendChild(row);
+  }
+}
+
+async function openDoc(path) {
+  cancelEdit();
+  const info = await py({ action: "open_doc", doc: path });
+  if (info.encrypted) throw new Error("this PDF is password-protected — decrypt it first");
+  state.doc = info.path; state.work = info.work; state.info = info; state.mtime = info.mtime;
+  state.dirty = !!info.dirty;
+  state.curPage = 1; state.spans = {};
+  state.undoDepth = info.undo_depth; state.redoDepth = info.redo_depth;
+  setStatus(state.dirty ? "unsaved changes" : "", state.dirty ? "warn" : "");
+  $("docName").textContent = info.name;
+  $("banner").classList.toggle("hidden", info.has_text);
+  if (!info.has_text) $("banner").textContent =
+    "This PDF has no text layer (likely scanned) — page operations work, text editing won't find anything to edit.";
+  fused.params.set("doc", info.path);
+  updateUndoUi();
+  renderDocList();
+  await renderAll();
+}
+
+async function openProject(slug, docPath = "") {
+  const res = await py({ action: "open_project", slug });
+  state.project = res.slug; state.projTitle = res.title;
+  state.docs = res.docs; state.standalone = false;
+  fused.params.set("project", res.slug);
+  renderProjMenu();
+  if (docPath || res.docs.length) await openDoc(docPath || res.docs[0].path);
+  else {
+    state.doc = ""; state.pdf?.destroy(); state.pdf = null;
+    $("pages").innerHTML = ""; $("thumbs").innerHTML = "";
+    $("docName").textContent = ""; $("docPages").textContent = "";
+    renderDocList();
+  }
+}
+
+// ---------- project menu ----------
+function renderProjMenu() {
+  const menu = $("projMenu");
+  menu.innerHTML = `
+    <button data-p="new">${icoPlus} New project…</button>
+    <button data-p="rename">${icoPen} Rename project…</button>
+    <button data-p="dup">${icoCopy} Duplicate project</button>
+    <button data-p="del" style="color:var(--danger)">${icoTrash} Delete project…</button>
+    <div class="divider"></div><div class="sub">Projects</div><div class="scrolllist"></div>`;
+  const list = menu.querySelector(".scrolllist");
+  for (const p of state.projects) {
+    const b = document.createElement("button");
+    b.className = "pj" + (p.slug === state.project ? " now" : "");
+    b.innerHTML = `<span class="nm"></span><span class="pjm">${p.ndocs} PDF${p.ndocs === 1 ? "" : "s"}</span>`;
+    b.querySelector(".nm").textContent = p.title;
+    b.onclick = () => { hideProjMenu(); act("switchProject", p.slug); };
+    list.appendChild(b);
+  }
+  menu.querySelectorAll("[data-p]").forEach((b) => b.addEventListener("click", () => {
+    hideProjMenu();
+    act({ new: "newProject", rename: "renameProject", dup: "duplicateProject", del: "deleteProject" }[b.dataset.p]);
+  }));
+}
+const hideProjMenu = () => $("projMenu").classList.add("hidden");
+$("projBtn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  $("projMenu").classList.toggle("hidden");
+});
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".menu-wrap")) hideProjMenu();
+});
+
+async function reloadProjects() {
+  const res = await py({ action: "list_projects" });
+  state.projects = res.projects;
+  renderProjMenu();
+}
+
+// ---------- downloads ----------
+function download(path) {
+  const a = document.createElement("a");
+  a.href = fused.rawUrl(path);
+  a.download = path.split("/").pop();
+  document.body.appendChild(a); a.click(); a.remove();
+}
+
+// ---------- actions ----------
+const needDoc = () => { if (!state.doc) throw new Error("open a PDF first"); };
+
+const acts = {
+  switchProject: (slug) => openProject(slug),
+  openDoc: (path) => openDoc(path),
+
+  newProject: async () => {
+    const title = await dialog({ title: "New project", label: "Project name", okText: "Create" });
+    if (!title) return;
+    const res = await py({ action: "new_project", title });
+    await reloadProjects();
+    await openProject(res.slug);
+    toast(`Project “${title}” created`);
+  },
+  renameProject: async () => {
+    if (state.standalone) return;
+    const title = await dialog({ title: "Rename project", value: state.projTitle, okText: "Rename" });
+    if (!title) return;
+    await py({ action: "rename_project", slug: state.project, title });
+    state.projTitle = title;
+    await reloadProjects();
+    renderDocList();
+  },
+  duplicateProject: async () => {
+    if (state.standalone) return;
+    const res = await py({ action: "duplicate_project", slug: state.project, title: state.projTitle + " copy" });
+    await reloadProjects();
+    await openProject(res.slug);
+    toast("Project duplicated");
+  },
+  deleteProject: async () => {
+    if (state.standalone) return;
+    const ok = await dialog({
+      title: `Delete “${state.projTitle}”?`, input: false, danger: true, okText: "Delete",
+      message: "The project folder and every PDF in it are removed. This cannot be undone.",
+    });
+    if (!ok) return;
+    await py({ action: "delete_project", slug: state.project });
+    await reloadProjects();
+    const next = state.projects[0];
+    if (next) await openProject(next.slug);
+    else { fused.params.set("project", ""); location.reload(); }
+  },
+
+  importPdf: async () => {
+    if (state.standalone) return acts.addToLibrary();
+    const src = await browseModal({ title: "Import a PDF into this project" });
+    if (!src) return;
+    const res = await py({ action: "import_doc", project: state.project, src });
+    await refreshDocList();
+    await openDoc(res.path);
+    toast(`Linked ${res.name} — the file stays where it is`);
+  },
+  importUrl: async () => {
+    if (state.standalone) return toast("Add this file to a project first");
+    const url = await dialog({ title: "Import from URL", label: "https://…/file.pdf", okText: "Import" });
+    if (!url) return;
+    setStatus("importing…", "busy");
+    const res = await py({ action: "import_url", project: state.project, url });
+    await refreshDocList();
+    await openDoc(res.path);
+    setStatus("imported", "ok");
+  },
+  openPath: async () => {
+    const src = await browseModal({ title: "Open a PDF from anywhere" });
+    if (src) await bootDoc(src);
+  },
+  addToLibrary: async () => {
+    const choice = await projectPickModal();
+    if (!choice) return;
+    const res = await py({ action: "import_doc", project: choice, src: state.doc });
+    await reloadProjects();
+    await openProject(choice, res.path);
+    toast("Added to project");
+  },
+  renameDoc: async (d) => {
+    const name = await dialog({ title: "Rename PDF", value: d.name, okText: "Rename" });
+    if (!name || name === d.name) return;
+    const res = await py({ action: "rename_doc", doc: d.path, name, project: state.project });
+    if (state.doc === d.path) { state.doc = res.path; fused.params.set("doc", res.path); $("docName").textContent = res.name; }
+    await refreshDocList();
+  },
+  deleteDoc: async (d) => {
+    const ok = await dialog({
+      title: d.linked ? `Remove ${d.name}?` : `Delete ${d.name}?`,
+      input: false, danger: true, okText: d.linked ? "Remove" : "Delete",
+      message: d.linked ? "The document is removed from this project — the file on disk is kept."
+        : "The file and its undo history are removed from the project.",
+    });
+    if (!ok) return;
+    await py({ action: "delete_doc", doc: d.path, project: state.project });
+    await refreshDocList();
+    if (state.doc === d.path) {
+      state.doc = "";
+      if (state.docs.length) await openDoc(state.docs[0].path);
+      else await openProject(state.project);
+    }
+  },
+  save: async () => {
+    needDoc();
+    let res = await py({ action: "save", doc: state.doc });
+    if (res.conflict) {
+      const ok = await dialog({ title: "Overwrite changed file?", input: false, danger: true, okText: "Overwrite",
+        message: "The file on disk changed after you opened it. Saving replaces those changes with yours." });
+      if (!ok) return;
+      res = await py({ action: "save", doc: state.doc, force: 1 });
+    }
+    state.dirty = false;
+    setStatus("saved", "ok");
+    if (!res.unchanged) toast(`Saved to ${res.file}`);
+  },
+  revert: async () => {
+    needDoc();
+    if (!state.dirty) return toast("No unsaved changes");
+    const ok = await dialog({ title: "Revert to saved?", input: false, danger: true, okText: "Revert",
+      message: "Unsaved changes to this document are discarded." });
+    if (!ok) return;
+    const res = await py({ action: "revert", doc: state.doc });
+    await applyMut(res);
+    setStatus("reverted", "ok");
+  },
+  saveAs: async () => {
+    needDoc();
+    const picked = await browseModal({ title: "Save a copy", okText: "Save",
+      pickDir: true, filename: state.info.name, start: "~" });
+    if (!picked) return;
+    const res = await py({ action: "save_as", doc: state.doc, directory: picked.dir, name: picked.name });
+    toast(`Saved to ${res.file}`);
+  },
+
+  undo: async () => {
+    needDoc();
+    if (!state.undoDepth) return;
+    const res = await py({ action: "undo", doc: state.doc });
+    await applyMut(res);
+    setStatus("undone — unsaved", "warn");
+  },
+  redo: async () => {
+    needDoc();
+    if (!state.redoDepth) return;
+    const res = await py({ action: "redo", doc: state.doc });
+    await applyMut(res);
+    setStatus("redone — unsaved", "warn");
+  },
+  editTextHint: () => toast("Click any line of text on a page to edit it in place"),
+  commitEdit: async ({ pageNo, span, val }) => {
+    setStatus("editing…", "busy");
+    const res = await mutate("edit_text", {
+      page: pageNo, bbox: JSON.stringify(span.bbox), origin: JSON.stringify(span.origin),
+      old_text: span.text, new_text: val, font: span.font, size: String(span.size),
+      flags: span.flags, color: JSON.stringify(span.color),
+    });
+    if (res && res.used_size < span.size) toast(`Text shrunk to ${res.used_size}pt to fit the line`);
+  },
+
+  rotateL: (n) => mutate("rotate_pages", { pages: String(n || state.curPage), degrees: -90 }),
+  rotateR: (n) => mutate("rotate_pages", { pages: String(n || state.curPage), degrees: 90 }),
+  rotate180: (n) => mutate("rotate_pages", { pages: String(n || state.curPage), degrees: 180 }),
+  deletePage: async (n) => {
+    needDoc();
+    const res = await mutate("delete_pages", { pages: String(n || state.curPage) });
+    if (res) toast(`Page ${n || state.curPage} deleted — Ctrl+Z to undo`);
+  },
+  insertBlank: () => mutate("insert_blank", { at: state.curPage + 1 }),
+  moveUp: async () => {
+    needDoc();
+    const n = state.curPage, total = state.info.page_count;
+    if (n <= 1) return;
+    const order = [...Array(total)].map((_, i) => i + 1);
+    [order[n - 2], order[n - 1]] = [order[n - 1], order[n - 2]];
+    await mutate("reorder_pages", { order: order.join(",") });
+    setCurPage(n - 1);
+  },
+  moveDown: async () => {
+    needDoc();
+    const n = state.curPage, total = state.info.page_count;
+    if (n >= total) return;
+    const order = [...Array(total)].map((_, i) => i + 1);
+    [order[n - 1], order[n]] = [order[n], order[n - 1]];
+    await mutate("reorder_pages", { order: order.join(",") });
+    setCurPage(n + 1);
+  },
+  extractPages: async (n) => {
+    needDoc();
+    const pages = await dialog({ title: "Extract pages", label: "e.g. 2 or 1,3-5",
+      value: String(n || state.curPage), okText: "Extract",
+      message: "The pages are copied into a new PDF next to this one." });
+    if (!pages) return;
+    const res = await py({ action: "extract_pages", doc: state.doc, pages });
+    await refreshDocList();
+    await resultModal({ title: "Pages extracted",
+      note: `Pages ${pages} were copied into a new PDF in ${res.dir}. The original document is unchanged.`,
+      files: [res], dir: res.dir });
+  },
+
+  merge: async () => {
+    needDoc();
+    const picked = await mergeModal();
+    if (!picked) return;
+    setStatus("merging…", "busy");
+    const res = await py({ action: "merge", project: state.standalone ? "" : state.project,
+      sources: JSON.stringify(picked.sources), name: picked.name, directory: picked.dir });
+    if (!state.standalone && state.project)
+      await py({ action: "import_doc", project: state.project, src: res.path });
+    await refreshDocList();
+    await openDoc(res.path);
+    setStatus("merged", "ok");
+    toast(`Created ${res.name} in ${res.dir}`);
+  },
+  split: async () => {
+    needDoc();
+    const opt = await splitModal();
+    if (!opt) return;
+    setStatus("splitting…", "busy");
+    const res = await py({ action: "split", doc: state.doc, mode: opt.mode,
+      ranges: opt.ranges, prefix: opt.prefix, directory: opt.dir });
+    await refreshDocList();
+    setStatus("done", "ok");
+    await resultModal({ title: "Split complete",
+      note: `${state.info.name} was split into ${res.files.length} file${res.files.length === 1 ? "" : "s"} in ${res.dir}. The original document is unchanged.`,
+      files: res.files, dir: res.dir });
+  },
+  compress: async () => {
+    needDoc();
+    const level = await compressModal();
+    if (!level) return;
+    setStatus("compressing…", "busy");
+    const res = await mutate("compress", { level });
+    if (!res) return;
+    const pct = Math.round((1 - res.after / res.before) * 100);
+    await resultModal({ title: "Compression complete",
+      note: `${state.info.name}: ${fmtSize(res.before)} → ${fmtSize(res.after)}`
+        + (pct > 0 ? ` — ${pct}% smaller.` : " — no size reduction.")
+        + " The change is not saved yet: press Ctrl+S to keep it, or Ctrl+Z to undo." });
+  },
+
+  export: async () => {
+    needDoc();
+    const opt = await exportModal();
+    if (!opt) return;
+    setStatus("exporting…", "busy");
+    const res = await py({ action: "export", doc: state.doc, kind: opt.kind,
+      pages: opt.pages, name: opt.name, directory: opt.dir });
+    setStatus("exported", "ok");
+    await resultModal({ title: "Export complete",
+      note: `${res.files.length} file${res.files.length === 1 ? "" : "s"} saved to ${res.dir}.`,
+      files: res.files, dir: res.dir });
+  },
+
+  togglePanel: () => {
+    document.body.classList.toggle("panel-off");
+    fused.params.set("panel", document.body.classList.contains("panel-off") ? "0" : "1");
+  },
+  zoomIn: () => setZoom(state.zoom + 15),
+  zoomOut: () => setZoom(state.zoom - 15),
+  zoom100: () => setZoom(100),
+};
+
+async function act(name, arg) {
+  try {
+    await acts[name]?.(arg);
+  } catch (err) {
+    console.error(err);
+    setStatus("error", "err");
+    toast(err?.message || String(err), true);
+  }
+}
+
+function setZoom(z) {
+  state.zoom = Math.min(300, Math.max(40, z));
+  fused.params.set("zoom", String(state.zoom));
+  return renderAll();
+}
+
+// ---------- specialized modals ----------
+async function projectPickModal() {
+  await reloadProjects();
+  const m = modal(`<h3>Add to a project</h3><div class="checklist" id="ppList"></div>
+    <div class="row"><button class="btn" data-x="new">New project…</button>
+    <button class="btn" data-x="cancel">Cancel</button></div>`);
+  const list = m.el.querySelector("#ppList");
+  for (const p of state.projects) {
+    const b = document.createElement("label");
+    b.textContent = p.title;
+    b.style.cursor = "pointer";
+    b.onclick = () => m.close(p.slug);
+    list.appendChild(b);
+  }
+  m.el.querySelector("[data-x=cancel]").onclick = () => m.close(null);
+  m.el.querySelector("[data-x=new]").onclick = () => m.close("__new__");
+  const slug = await m.done;
+  if (slug !== "__new__") return slug;
+  const title = await dialog({ title: "New project", label: "Project name", okText: "Create" });
+  if (!title) return null;
+  const res = await py({ action: "new_project", title });
+  return res.slug;
+}
+
+async function mergeModal() {
+  const m = modal(`<h3>Merge PDFs</h3>
+    <p>Pick the documents to combine, in order. The current document is included first.</p>
+    <div class="checklist" id="mgList"></div>
+    <button class="btn ghost" id="mgBrowse" style="margin-top:8px">＋ Add a PDF from disk…</button>
+    <label>Output name</label><input type="text" id="mgName" value="merged">
+    <label>Save to</label>
+    <div class="destrow"><input type="text" id="mgDir" spellcheck="false"><button class="btn" id="mgDirBtn">Browse…</button></div>
+    <div class="row"><button class="btn" data-x="cancel">Cancel</button>
+    <button class="btn primary" data-x="ok">Merge</button></div>`);
+  const getDir = destRow(m, "mgDir", docDir(),
+    (f) => { m.el.querySelector("#mgName").value = f.replace(/\.pdf$/i, ""); });
+  const chosen = [state.doc];
+  const list = m.el.querySelector("#mgList");
+  function addRow(path, name, checked) {
+    const lab = document.createElement("label");
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.checked = checked; cb.dataset.path = path;
+    cb.disabled = path === state.doc;
+    const span = document.createElement("span");
+    span.textContent = name;
+    lab.append(cb, span);
+    list.appendChild(lab);
+  }
+  addRow(state.doc, state.doc.split("/").pop() + " (current)", true);
+  for (const d of state.docs) if (d.path !== state.doc && !d.missing) addRow(d.path, d.name, false);
+  m.el.querySelector("#mgBrowse").onclick = async () => {
+    const src = await browseModal({ title: "Add a PDF to the merge" });
+    if (src) addRow(src, src.split("/").pop(), true);
+  };
+  m.el.querySelector("[data-x=cancel]").onclick = () => m.close(null);
+  m.el.querySelector("[data-x=ok]").onclick = () => {
+    const sources = [...list.querySelectorAll("input:checked")].map((c) => c.dataset.path);
+    if (sources.length < 2) { toast("Pick at least two PDFs"); return; }
+    const dir = getDir();
+    m.close({ sources, name: m.el.querySelector("#mgName").value.trim() || "merged", dir });
+  };
+  return m.done;
+}
+
+async function splitModal() {
+  const stem = state.info.name.replace(/\.pdf$/i, "");
+  const total = state.info.page_count;
+  const m = modal(`<h3>Split document</h3>
+    <label class="radio"><input type="radio" name="sm" value="each" checked>
+      <span>One PDF per page<small>${total} files</small></span></label>
+    <label class="radio"><input type="radio" name="sm" value="ranges">
+      <span>By ranges<small>Semicolon-separated, e.g. 1-3;4-6</small></span></label>
+    <input type="text" id="spRanges" placeholder="1-3;4-6" style="margin-top:6px" disabled>
+    <label>Filename prefix</label><input type="text" id="spPrefix" value="${stem.replace(/"/g, "&quot;")}">
+    <label>Save to</label>
+    <div class="destrow"><input type="text" id="spDir" spellcheck="false"><button class="btn" id="spDirBtn">Browse…</button></div>
+    <p class="hint" id="spPreview"></p>
+    <div class="row"><button class="btn" data-x="cancel">Cancel</button>
+    <button class="btn primary" data-x="ok">Split</button></div>`);
+  const ranges = m.el.querySelector("#spRanges");
+  const prefixInp = m.el.querySelector("#spPrefix");
+  const preview = m.el.querySelector("#spPreview");
+  const getDir = destRow(m, "spDir", docDir(),
+    (f) => { prefixInp.value = f.replace(/\.pdf$/i, ""); updatePreview(); });
+  function labels() {
+    if (m.el.querySelector("[name=sm]:checked").value === "each")
+      return [...Array(total)].map((_, i) => `p${i + 1}`);
+    return ranges.value.split(";").map((t) => t.trim()).filter(Boolean).map((t) => {
+      const r = t.match(/^(\d+)\s*-\s*(\d+)$/);
+      return r ? `p${r[1]}-${r[2]}` : `p${t}`;
+    });
+  }
+  function updatePreview() {
+    const ls = labels();
+    if (!ls.length) { preview.textContent = "Enter ranges like 1-3;4-6 — each range becomes its own PDF."; return; }
+    const prefix = prefixInp.value.trim() || stem;
+    const names = ls.slice(0, 3).map((l) => `${prefix}-${l}.pdf`).join(", ");
+    preview.textContent = `Creates ${ls.length} new PDF${ls.length === 1 ? "" : "s"}: ${names}${ls.length > 3 ? ", …" : ""}. The original document is not modified.`;
+  }
+  m.el.querySelectorAll("[name=sm]").forEach((r) => r.addEventListener("change", () => {
+    ranges.disabled = m.el.querySelector("[name=sm]:checked").value !== "ranges";
+    if (!ranges.disabled) ranges.focus();
+    updatePreview();
+  }));
+  ranges.addEventListener("input", updatePreview);
+  prefixInp.addEventListener("input", updatePreview);
+  updatePreview();
+  m.el.querySelector("[data-x=cancel]").onclick = () => m.close(null);
+  m.el.querySelector("[data-x=ok]").onclick = () => {
+    const dir = getDir();
+    m.close({
+      mode: m.el.querySelector("[name=sm]:checked").value,
+      ranges: ranges.value.trim(),
+      prefix: prefixInp.value.trim(),
+      dir,
+    });
+  };
+  return m.done;
+}
+
+async function compressModal() {
+  const m = modal(`<h3>Compress</h3>
+    <label class="radio"><input type="radio" name="cl" value="lossless" checked>
+      <span>Lossless<small>Recompress streams and pack objects (qpdf). Always safe.</small></span></label>
+    <label class="radio"><input type="radio" name="cl" value="aggressive">
+      <span>Aggressive<small>Also downsample images to 150 dpi and subset fonts. Smaller, lossy.</small></span></label>
+    <div class="row"><button class="btn" data-x="cancel">Cancel</button>
+    <button class="btn primary" data-x="ok">Compress</button></div>`);
+  m.el.querySelector("[data-x=cancel]").onclick = () => m.close(null);
+  m.el.querySelector("[data-x=ok]").onclick = () =>
+    m.close(m.el.querySelector("[name=cl]:checked").value);
+  return m.done;
+}
+
+async function exportModal() {
+  const m = modal(`<h3>Export</h3>
+    <label>Format</label>
+    <select id="exKind">
+      <option value="pdf">PDF (page subset)</option>
+      <option value="png">PNG images (one per page)</option>
+      <option value="jpg">JPG images (one per page)</option>
+      <option value="txt">Plain text</option>
+    </select>
+    <label>Pages</label><input type="text" id="exPages" value="all" placeholder="all or 1,3-5">
+    <label>Name</label><input type="text" id="exName" value="${state.info.name.replace(/\.pdf$/i, "").replace(/"/g, "&quot;")}">
+    <label>Save to</label>
+    <div class="destrow"><input type="text" id="exDir" spellcheck="false"><button class="btn" id="exDirBtn">Browse…</button></div>
+    <div class="row"><button class="btn" data-x="cancel">Cancel</button>
+    <button class="btn primary" data-x="ok">Export</button></div>`);
+  const nameInp = m.el.querySelector("#exName");
+  const getDir = destRow(m, "exDir", docDir(),
+    (f) => { nameInp.value = f.replace(/\.[a-z0-9]+$/i, ""); });
+  m.el.querySelector("[data-x=cancel]").onclick = () => m.close(null);
+  m.el.querySelector("[data-x=ok]").onclick = () => {
+    const dir = getDir();
+    m.close({
+      kind: m.el.querySelector("#exKind").value,
+      pages: m.el.querySelector("#exPages").value.trim() || "all",
+      name: nameInp.value.trim(),
+      dir,
+    });
+  };
+  return m.done;
+}
+
+// ---------- icons ----------
+const icoRotL = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8v5h5"/><path d="M3 13a9 9 0 1 0 3-7.7L3 8"/></svg>`;
+const icoRotR = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v5h-5"/><path d="M21 13a9 9 0 1 1-3-7.7L21 8"/></svg>`;
+const icoTrash = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg>`;
+const icoExtract = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/><path d="M12 18v-6"/><path d="m9 15 3 3 3-3"/></svg>`;
+const icoPen = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>`;
+const icoPlus = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>`;
+const icoCopy = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`;
+const icoDir = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>`;
+const icoFile = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/></svg>`;
+const icoDown = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>`;
+
+// ---------- global wiring ----------
+document.querySelectorAll(".menu[data-menu]").forEach((menu) => {
+  menu.addEventListener("click", () => menu.classList.toggle("open"));
+  menu.addEventListener("mouseenter", () => {
+    if (document.querySelector(".menu.open") && !menu.classList.contains("open")) {
+      document.querySelectorAll(".menu.open").forEach((x) => x.classList.remove("open"));
+      menu.classList.add("open");
+    }
+  });
+});
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".menu")) document.querySelectorAll(".menu.open").forEach((x) => x.classList.remove("open"));
+  const mi = e.target.closest(".mi[data-act]");
+  if (mi) {
+    document.querySelectorAll(".menu.open").forEach((x) => x.classList.remove("open"));
+    act(mi.dataset.act);
+  }
+});
+
+$("modeSeg").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-mode]");
+  if (!b) return;
+  setMode(b.dataset.mode);
+});
+function setMode(mode) {
+  const panelOff = document.body.classList.contains("panel-off");
+  document.body.className = mode === "view" ? "mode-view" : "mode-edit";
+  if (panelOff) document.body.classList.add("panel-off");
+  document.querySelectorAll("#modeSeg [data-mode]").forEach((b) => b.classList.toggle("on", b.dataset.mode === mode));
+  fused.params.set("mode", mode);
+  if (mode === "edit" && state.pdf) primeOverlays();
+}
+
+$("exportBtn").addEventListener("click", () => act("export"));
+$("importBtn").addEventListener("click", () => act("importPdf"));
+
+$("pages").addEventListener("click", (e) => {
+  const wrap = e.target.closest(".pdf-page");
+  if (!wrap) return;
+  const qa = e.target.closest("[data-qa]");
+  const n = +wrap.dataset.page;
+  if (qa) {
+    setCurPage(n, false);
+    act({ rotL: "rotateL", rotR: "rotateR", extract: "extractPages", del: "deletePage" }[qa.dataset.qa], n);
+    return;
+  }
+  if (!document.body.classList.contains("mode-edit")) return;
+  const ts = e.target.closest(".tspan");
+  if (ts) {
+    const pt = state.spans[n];
+    startEdit(wrap, pt.spans[+ts.dataset.i]);
+  }
+});
+
+$("thumbs").addEventListener("click", (e) => {
+  const t = e.target.closest(".thumb");
+  if (!t) return;
+  const n = +t.dataset.page;
+  const qa = e.target.closest("[data-qa]");
+  if (qa) {
+    setCurPage(n, false);
+    act({ rotL: "rotateL", rotR: "rotateR", del: "deletePage" }[qa.dataset.qa], n);
+    return;
+  }
+  setCurPage(n);
+});
+
+document.addEventListener("keydown", (e) => {
+  if (state.editing || e.target.closest(".modal")) return;
+  const mod = e.ctrlKey || e.metaKey;
+  if (mod && e.key.toLowerCase() === "z" && !e.shiftKey) { e.preventDefault(); act("undo"); }
+  else if (mod && (e.key.toLowerCase() === "y" || (e.key.toLowerCase() === "z" && e.shiftKey))) { e.preventDefault(); act("redo"); }
+  else if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); act(e.shiftKey ? "saveAs" : "save"); }
+  else if (mod && e.key.toLowerCase() === "o") { e.preventDefault(); act("openPath"); }
+  else if (mod && e.key === "\\") { e.preventDefault(); act("togglePanel"); }
+});
+
+// ---------- boot ----------
+async function bootDoc(path) {
+  const res = await py({ action: "which_project", doc: path });
+  if (res.slug) await openProject(res.slug, path);
+  else {
+    state.standalone = true; state.project = "";
+    renderProjMenu();
+    await openDoc(path);
+  }
+}
+
+async function boot() {
+  try {
+    let health;
+    try { health = await py({ action: "health" }); }
+    catch { health = await py({ action: "health" }); }   // one retry: engine warm-up
+    if (!health.ok) {
+      $("boot").innerHTML = "";
+      const msg = document.createElement("div");
+      msg.innerHTML = `<b>PDF Studio needs its Python engines.</b><br>
+        Install into the server environment:<br>
+        <code style="font-family:var(--mono);background:#fff;padding:2px 8px;border-radius:4px;border:1px solid var(--hair)">uv pip install pymupdf pikepdf</code><br>
+        …or switch the run engine to <b>Fused</b> in preferences (installs from the script header).`;
+      $("boot").appendChild(msg);
+      return;
+    }
+    state.zoom = +(fused.params.get("zoom") || 100) || 100;
+    if (fused.params.get("panel") === "0") document.body.classList.add("panel-off");
+    await reloadProjects();
+    const wanted = fused.params.get("doc") || fused.params.get("_file") || "";
+    let opened = false;
+    if (wanted && wanted.toLowerCase().endsWith(".pdf")) {
+      try { await bootDoc(wanted); opened = true; }
+      catch (err) { console.error(err); toast(`Could not open ${wanted.split("/").pop()}: ${err?.message || err}`, true); }
+    }
+    if (!opened) {
+      const slug = fused.params.get("project") || state.projects[0]?.slug;
+      if (slug) await openProject(slug);
+    }
+    setMode(fused.params.get("mode") === "view" ? "view" : "edit");
+    $("boot").remove();
+  } catch (err) {
+    console.error(err);
+    $("boot").textContent = `PDF Studio failed to start: ${err?.message || err}`;
+  }
+}
+boot();
+</script>
+</body>
+</html>

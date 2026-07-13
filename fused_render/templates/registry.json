@@ -189,6 +189,7 @@
   ],
   ".pdf": [
     "pdf",
+    "pdf_studio",
     "annotate"
   ],
   ".mp4": [
