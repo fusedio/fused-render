@@ -90,104 +90,79 @@ def _readline(source, deadline):
     return head, clipped
 
 
-def _epoch(value, formats):
-    # The date regexes accept a "T" between date and time but the strptime
-    # formats are space-separated; digit-T-digit keeps month names intact.
-    normalized = re.sub(r"(?<=\d)T(?=\d)", " ", value.replace(",", "."))
-    for fmt in formats:
-        try:
-            parsed = datetime.strptime(normalized, fmt).replace(tzinfo=timezone.utc)
-            return parsed.timestamp()
-        except ValueError:
-            pass
-    return None
+def _from_iso(display):
+    value = display.replace(",", ".")
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    value = re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", value)  # +0530 -> +05:30
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def _from_apache(display):
+    return datetime.strptime(display, "%d/%b/%Y:%H:%M:%S %z").timestamp()
+
+
+def _from_syslog(display):
+    now = datetime.now(timezone.utc)
+    parsed = datetime.strptime(f"{now.year} {display}", "%Y %b %d %H:%M:%S").replace(
+        tzinfo=timezone.utc
+    )
+    if parsed.timestamp() > now.timestamp() + 86400:  # no year in a syslog stamp
+        parsed = parsed.replace(year=now.year - 1)
+    return parsed.timestamp()
+
+
+def _strptime(*formats):
+    def parse(display):
+        value = re.sub(r"(?<=\d)T(?=\d)", " ", display.replace(",", "."))
+        for fmt in formats:
+            try:
+                return datetime.strptime(value, fmt).replace(tzinfo=timezone.utc).timestamp()
+            except ValueError:
+                continue
+        return None
+
+    return parse
+
+
+# Ordered timestamp strategies: the first regex to match a line wins, and its
+# parser turns the match into epoch seconds (UTC), or raises / returns None so
+# the next strategy is tried. Same-shaped stamps share the "datetime" label.
+_PARSERS = (
+    ("iso", _ISO_RE, _from_iso),
+    ("apache", _APACHE_RE, _from_apache),
+    ("syslog", _SYSLOG_RE, _from_syslog),
+    ("datetime", _YMD_RE, _strptime(
+        "%Y/%m/%d %H:%M:%S.%f", "%Y/%m/%d %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S")),
+    ("datetime", _MDY_RE, _strptime(
+        "%m/%d/%Y %H:%M:%S.%f", "%m/%d/%Y %H:%M:%S",
+        "%m/%d/%y %H:%M:%S.%f", "%m/%d/%y %H:%M:%S",
+        "%d/%m/%Y %H:%M:%S.%f", "%d/%m/%Y %H:%M:%S",
+        "%d/%m/%y %H:%M:%S.%f", "%d/%m/%y %H:%M:%S",
+        "%m-%d-%Y %H:%M:%S.%f", "%m-%d-%Y %H:%M:%S",
+        "%m-%d-%y %H:%M:%S.%f", "%m-%d-%y %H:%M:%S",
+        "%d-%m-%Y %H:%M:%S.%f", "%d-%m-%Y %H:%M:%S",
+        "%d-%m-%y %H:%M:%S.%f", "%d-%m-%y %H:%M:%S")),
+    ("datetime", _TEXT_DATE_RE, _strptime("%d-%b-%Y %H:%M:%S", "%d %b %Y %H:%M:%S")),
+)
 
 
 def _timestamp(text):
-    match = _ISO_RE.search(text)
-    if match:
-        display = match.group(1)
-        value = display.replace(",", ".")
-        if value.endswith("Z"):
-            value = value[:-1] + "+00:00"
-        try:
-            parsed = datetime.fromisoformat(value)
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
-            return parsed.timestamp(), display, "iso"
-        except ValueError:
-            pass
-
-    match = _APACHE_RE.search(text)
-    if match:
+    for name, regex, parse in _PARSERS:
+        match = regex.search(text)
+        if not match:
+            continue
         display = match.group(1)
         try:
-            return datetime.strptime(display, "%d/%b/%Y:%H:%M:%S %z").timestamp(), display, "apache"
+            epoch = parse(display)
         except ValueError:
-            pass
-
-    match = _SYSLOG_RE.search(text)
-    if match:
-        display = match.group(1)
-        try:
-            now = datetime.now(timezone.utc)
-            parsed = datetime.strptime(f"{now.year} {display}", "%Y %b %d %H:%M:%S").replace(
-                tzinfo=timezone.utc
-            )
-            if parsed.timestamp() > now.timestamp() + 86400:
-                parsed = parsed.replace(year=now.year - 1)
-            return parsed.timestamp(), display, "syslog"
-        except ValueError:
-            pass
-
-    match = _YMD_RE.search(text)
-    if match:
-        display = match.group(1)
-        value = _epoch(
-            display,
-            (
-                "%Y/%m/%d %H:%M:%S.%f",
-                "%Y/%m/%d %H:%M:%S",
-                "%Y-%m-%d %H:%M:%S.%f",
-                "%Y-%m-%d %H:%M:%S",
-            ),
-        )
-        if value is not None:
-            return value, display, "datetime"
-
-    match = _MDY_RE.search(text)
-    if match:
-        display = match.group(1)
-        value = _epoch(
-            display,
-            (
-                "%m/%d/%Y %H:%M:%S.%f",
-                "%m/%d/%Y %H:%M:%S",
-                "%m/%d/%y %H:%M:%S.%f",
-                "%m/%d/%y %H:%M:%S",
-                "%d/%m/%Y %H:%M:%S.%f",
-                "%d/%m/%Y %H:%M:%S",
-                "%d/%m/%y %H:%M:%S.%f",
-                "%d/%m/%y %H:%M:%S",
-                "%m-%d-%Y %H:%M:%S.%f",
-                "%m-%d-%Y %H:%M:%S",
-                "%m-%d-%y %H:%M:%S.%f",
-                "%m-%d-%y %H:%M:%S",
-                "%d-%m-%Y %H:%M:%S.%f",
-                "%d-%m-%Y %H:%M:%S",
-                "%d-%m-%y %H:%M:%S.%f",
-                "%d-%m-%y %H:%M:%S",
-            ),
-        )
-        if value is not None:
-            return value, display, "datetime"
-
-    match = _TEXT_DATE_RE.search(text)
-    if match:
-        display = match.group(1)
-        value = _epoch(display, ("%d-%b-%Y %H:%M:%S", "%d %b %Y %H:%M:%S"))
-        if value is not None:
-            return value, display, "datetime"
+            epoch = None
+        if epoch is not None:
+            return epoch, display, name
     return None
 
 

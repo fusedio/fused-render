@@ -40,6 +40,8 @@
     border-radius: 6px; padding: 4px 9px; cursor: pointer; white-space: nowrap;
   }
   button:hover { background: var(--hover); }
+  button:disabled { opacity: .45; cursor: default; }
+  button:disabled:hover { background: none; }
   button.primary { background: var(--accent); color: var(--on-accent); }
   button.primary:hover { filter: brightness(1.08); }
   button.outline { border: 1px solid var(--border); }
@@ -299,9 +301,9 @@
         <div class="shelfLabel">Color</div>
         <div class="shelf" id="shelfColor" data-shelf="color" style="flex:0 1 300px"></div>
         <div id="chartCtl">
-          <button class="menuBtn outline" id="chartBtn">Chart: Auto</button>
-          <button class="outline" id="swapBtn" title="Swap Columns and Rows">⇄</button>
-          <button class="outline" id="sortBtn" title="Sort by measure">Sort ↕</button>
+          <button class="menuBtn outline" id="chartBtn" disabled>Chart: Auto</button>
+          <button class="outline" id="swapBtn" title="Swap Columns and Rows" disabled>⇄</button>
+          <button class="outline" id="sortBtn" title="Sort by measure" disabled>Sort ↕</button>
         </div>
         <div class="spacer"></div>
       </div>
@@ -495,6 +497,7 @@ function renderShelves() {
     });
   }
   const chart = S().chart;
+  for (const id of ["chartBtn", "swapBtn", "sortBtn"]) $(id).disabled = false;
   $("chartBtn").textContent = "Chart: " + CHARTS.find(c => c[0] === chart)[1];
   $("sortBtn").textContent = S().sortDir === "desc" ? "Sort ↓" : S().sortDir === "asc" ? "Sort ↑" : "Sort ↕";
 }
@@ -1241,7 +1244,8 @@ function renderTabs() {
       ev.stopPropagation();
       if (wb.sheets.length === 1) return;
       wb.sheets.splice(i, 1);
-      wb.active = Math.min(wb.active, wb.sheets.length - 1);
+      if (i < wb.active) wb.active--;
+      else if (wb.active >= wb.sheets.length) wb.active = wb.sheets.length - 1;
       renderTabs(); renderAll();
     });
     host.appendChild(el);
