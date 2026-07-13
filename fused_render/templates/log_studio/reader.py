@@ -1,7 +1,12 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["drain3>=0.9.11"]
+# dependencies = []
 # ///
+# drain3 is deliberately NOT a hard dependency: it powers only pattern mining,
+# which _patterns() degrades gracefully without (an install-hint fallback).
+# Declaring it here would let a failed/blocked install of that one extra break
+# every op the reader serves, so it stays optional (shipped via the bundled
+# extra / present in the app venv).
 
 import math
 import os

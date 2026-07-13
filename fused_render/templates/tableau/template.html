@@ -722,12 +722,23 @@ async function openFilterEditor(fieldName, anchor) {
 
 /* ================= chart resolution ================= */
 function shelfPills(sh) { return [...sh.cols, ...sh.rows]; }
+/* Distinct shelf pills by their query alias — same dedup the backend query
+   applies, so chart choice and encodings never see a duplicate the aggregated
+   result won't contain (e.g. the same dimension dropped on two shelves). */
+function shelfDistinct(sh) {
+  const dims = [], meas = [], seen = new Set();
+  for (const p of shelfPills(sh)) {
+    const alias = pillLabel(p);
+    if (seen.has(alias)) continue;
+    seen.add(alias);
+    (pillIsMeasure(p) ? meas : dims).push(p);
+  }
+  return { dims, meas };
+}
 function resolveChart(sh) {
   if (sh.chart !== "auto") return sh.chart;
-  const pills = shelfPills(sh);
-  const dims = pills.filter(p => !pillIsMeasure(p));
-  const meas = pills.filter(pillIsMeasure);
-  if (!pills.length) return "empty";
+  const { dims, meas } = shelfDistinct(sh);
+  if (!dims.length && !meas.length) return "empty";
   if (!dims.length && meas.length) return "stat";
   if (meas.length >= 2) return "scatter";
   if (!meas.length) return "table";
@@ -736,9 +747,7 @@ function resolveChart(sh) {
   return d.dtype === "date" ? "line" : "bar";
 }
 function chartHint(chart, sh) {
-  const pills = shelfPills(sh);
-  const dims = pills.filter(p => !pillIsMeasure(p));
-  const meas = pills.filter(pillIsMeasure);
+  const { dims, meas } = shelfDistinct(sh);
   if (chart === "empty") return "Add fields to the Columns and Rows shelves — click or drag from the data pane.";
   if (chart === "scatter" && meas.length < 2) return "Scatter needs two measures — one on Columns, one on Rows.";
   if (chart === "pie" && (!dims.length || !meas.length)) return "Pie needs one dimension (slices) and one measure (size).";
