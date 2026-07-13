@@ -125,10 +125,19 @@ WALK_MAX_ENTRIES = 200_000
 # API storm. The walk truncates early and the existing `truncated` flag tells
 # the client search was bounded.
 WALK_MAX_ENTRIES_REMOTE = 2_000
-# Entries per NDJSON batch line in the streamed walk: big enough that framing
-# overhead is noise, small enough that the client gets its first scoreable
-# batch within a few filesystem reads.
+# Max entries per NDJSON batch line in the streamed walk — a framing CAP, not
+# the streaming lever (WALK_FLUSH_INTERVAL_S below is). Kept large so a big
+# local walk emits few lines; the timer guarantees timely flushing regardless.
 WALK_BATCH_SIZE = 500
+# Flush whatever has accumulated this long after the last flush, even if the
+# batch isn't full. This is what makes the walk actually STREAM: without it, a
+# tree smaller than one batch (a bucket prefix is often dozens–hundreds of
+# objects) buffers entirely and arrives as one end-of-walk lump, so the
+# client's incremental scoring/paint never runs and results appear only once
+# the whole walk finishes. With it, entries paint per directory as the walk
+# descends, on mounts and locally alike. Checked between yielded entries
+# (best-effort — a single blocking listdir can't be interrupted mid-call).
+WALK_FLUSH_INTERVAL_S = 0.15
 # Directory names never descended into by the walk, checked against the bare
 # name so it also applies under hidden=1 (".git" is machine noise, not
 # "hidden data"). This is only the UNIVERSAL floor — inside a git repository
@@ -1096,12 +1105,15 @@ def create_app(start_dir: str) -> FastAPI:
             batch = []
             total = 0
             truncated = False
+            last_flush = time.monotonic()
             for entry in walker:
                 batch.append(entry)
                 total += 1
-                if len(batch) >= WALK_BATCH_SIZE:
+                now = time.monotonic()
+                if len(batch) >= WALK_BATCH_SIZE or now - last_flush >= WALK_FLUSH_INTERVAL_S:
                     yield json.dumps({"entries": batch}) + "\n"
                     batch = []
+                    last_flush = now
                 if total >= max_entries:
                     truncated = True
                     break

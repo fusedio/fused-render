@@ -209,6 +209,22 @@ def test_walk_stream_batches_and_terminal_record(tmp_path, monkeypatch):
     assert sorted(rels) == sorted(f"f{i}.txt" for i in range(7))
 
 
+def test_walk_stream_time_flush_streams_below_one_batch(tmp_path, monkeypatch):
+    # A tree far smaller than one batch (WALK_BATCH_SIZE stays at its large
+    # default) must still stream in multiple lines rather than buffering into a
+    # single end-of-walk lump — the time-based flush is what makes the walk
+    # stream, not the batch size. Forcing a zero flush interval flushes after
+    # every entry, so five files must arrive as five batches, not one.
+    for i in range(5):
+        (tmp_path / f"f{i}.txt").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(server, "WALK_FLUSH_INTERVAL_S", 0.0)
+    lines = _stream_lines(_client(tmp_path), str(tmp_path))
+    *batches, terminal = lines
+    assert terminal == {"done": True, "truncated": False, "total": 5}
+    assert len(batches) == 5  # timer flushed each entry; not one buffered lump
+    assert sum(len(b["entries"]) for b in batches) == 5
+
+
 def test_walk_stream_same_entries_as_plain(tmp_path):
     _make_tree(tmp_path)
     client = _client(tmp_path)
