@@ -314,8 +314,12 @@
 
     var S = 1 / z; // multiply screen-constant sizes so they don't scale w/ zoom
 
+    // Paint in ascending zIndex (highest last = on top) so the visual stack
+    // agrees with hitTest(), which picks descending zIndex.
+    var byZ = function (a, b) { return (a.zIndex || 0) - (b.zIndex || 0); };
+
     // 1) folder groups (behind everything)
-    folders.forEach(function (f) {
+    folders.slice().sort(byZ).forEach(function (f) {
       ctx.fillStyle = f.folderColor || COLORS.folderDefault;
       ctx.strokeStyle = COLORS.folderStroke;
       ctx.lineWidth = 1.5 * S;
@@ -355,7 +359,7 @@
     });
 
     // 3) UDF nodes (front). Hidden nodes ghost at 40% alpha (SPEC §26).
-    nodes.forEach(function (n) {
+    nodes.slice().sort(byZ).forEach(function (n) {
       ctx.globalAlpha = (n.visible === false) ? 0.4 : 1;
       ctx.fillStyle = COLORS.surfaceNode;
       ctx.strokeStyle = COLORS.line;
