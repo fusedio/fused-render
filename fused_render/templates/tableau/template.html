@@ -58,12 +58,10 @@
   #topbar .logo span { color: var(--accent); }
   #wbName { color: var(--text2); padding: 2px 8px; border-radius: 5px; max-width: 260px;
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #wbName.editable:hover { background: var(--hover); cursor: text; }
-  #dirtyDot { color: var(--warn); font-size: 15px; line-height: 1; display: none; }
   #status { margin-left: auto; font-size: 12px; color: var(--muted); overflow: hidden;
             text-overflow: ellipsis; white-space: nowrap; max-width: 45%; }
   #status.err { color: var(--err); } #status.ok { color: var(--ok); }
-  .menuBtn::after { content: " ▾"; font-size: 9px; color: var(--muted); }
+  #dlMenuBtn::after, #chartBtn::after { content: " ▾"; font-size: 9px; color: var(--muted); }
 
   /* ---- layout ---- */
   #main { display: flex; flex: 1; min-height: 0; }
@@ -246,11 +244,7 @@
   .frow2:hover { background: var(--hover); }
   .frow2 .ic { flex: none; width: 18px; text-align: center; }
   .frow2 .sz { margin-left: auto; color: var(--muted); font-size: 11px; }
-  .frow2.wb .nm { color: var(--accent); }
   .mfoot { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
-  .mfoot input { flex: 1; }
-  .mfoot button.primary { margin-left: auto; }
-  .modal p.msg { color: var(--text2); line-height: 1.5; margin: 2px 0 4px; }
 
   /* ---- start screen ---- */
   #start { height: 100%; display: flex; align-items: center; justify-content: center; }
@@ -266,11 +260,6 @@
   #start .big:hover { border-color: var(--accent); background: var(--accent-soft); }
   #start .big .t { font-weight: 600; }
   #start .big .d { color: var(--muted); font-size: 12px; margin-top: 1px; }
-  #start .recent { margin-top: 16px; }
-  #start .recent .rh { font-size: 10.5px; color: var(--muted); text-transform: uppercase;
-                       letter-spacing: .7px; font-weight: 650; margin-bottom: 5px; }
-  #start .recent button { display: block; width: 100%; text-align: left; color: var(--accent);
-                          padding: 4px 8px; overflow: hidden; text-overflow: ellipsis; }
 
   /* vega tooltip */
   #vg-tooltip-element.vg-tooltip {
@@ -289,9 +278,9 @@
 <div id="topbar">
   <button id="railBtn" title="Show / hide the data pane">☰</button>
   <div class="logo">Tableau <span>viewer</span></div>
-  <button class="menuBtn" id="fileMenuBtn">File</button>
+  <button class="menuBtn" id="openBtn">Open…</button>
   <button class="menuBtn" id="dlMenuBtn">Download</button>
-  <div id="wbName"></div><div id="dirtyDot">●</div>
+  <div id="wbName"></div>
   <div id="status"></div>
   <button id="themeBtn" title="Toggle light / dark theme">◐</button>
 </div>
@@ -299,7 +288,7 @@
 <div id="main">
   <div id="rail">
     <div id="railHead">Data <span id="srcName"></span> <span id="srcRows"></span></div>
-    <div id="fields"><div id="railEmpty">No data source yet.<br><br>Use <b>File ▸ Open…</b> or pick the sample on the start screen.</div></div>
+    <div id="fields"><div id="railEmpty">No data source yet.<br><br>Use <b>Open…</b> to pick a Tableau file.</div></div>
   </div>
 
   <div id="sheetArea">
@@ -382,12 +371,10 @@ const CHARTS = [
   ["scatter", "Scatter"], ["pie", "Pie"], ["heatmap", "Heatmap"], ["table", "Text table"],
 ];
 
-let BOOT = null;        // {home, workbooks_dir, workbooks}
+let BOOT = null;        // {home}
 let schema = null;      // {file, nrows, fields}
 let fieldsBy = {};
 let wb = null;          // {version, name, source, sheets, active}
-let wbFile = "";        // path of the saved .tviz.json ("" = unsaved)
-let dirty = false;
 let view = null;        // current vega view (for PNG export)
 let renderSeq = 0;
 
@@ -399,7 +386,6 @@ function setStatus(msg, cls) {
   el.textContent = msg || ""; el.className = cls || "";
   if (msg && !cls) setTimeout(() => { if (el.textContent === msg) el.textContent = ""; }, 4000);
 }
-function markDirty(v) { dirty = v; $("dirtyDot").style.display = v ? "block" : "none"; }
 function fmtSize(b) { return b > 1e6 ? (b / 1e6).toFixed(1) + " MB" : b > 1e3 ? (b / 1e3).toFixed(0) + " KB" : b + " B"; }
 function baseName(p) { return (p || "").split(/[\\/]/).pop(); }
 function fmtNum(v) {
@@ -428,37 +414,18 @@ function makePill(name) {
 }
 
 /* ================= schema / data pane ================= */
-/* Pills saved against a schema that has since changed (renamed/removed
-   columns) would crash shelf rendering — drop them and tell the user. */
-function pruneMissingFields(wb) {
-  let dropped = 0;
-  for (const sh of wb.sheets) {
-    for (const key of ["cols", "rows", "color", "filters"]) {
-      const kept = sh[key].filter(p => fieldsBy[p.field]);
-      dropped += sh[key].length - kept.length;
-      sh[key] = kept;
-    }
-  }
-  return dropped;
-}
-
 async function openData(file, keepSheets) {
   setStatus("Opening data…");
   const res = await fused.runPython(PY, { action: "open_data", file });
   schema = res;
   fieldsBy = {};
   for (const f of schema.fields) fieldsBy[f.name] = f;
-  let dropped = 0;
   if (!keepSheets) {
-    wb = { version: 1, name: baseName(file).replace(/\.[^.]+$/, ""), source: schema.file,
+    wb = { name: baseName(file).replace(/\.[^.]+$/, ""), source: schema.file,
            sheets: [newSheet("Sheet 1")], active: 0 };
-    wbFile = "";
-    markDirty(false);
-  } else if (wb) {
-    dropped = pruneMissingFields(wb);
   }
   renderFieldPane(); renderTabs(); renderAll();
-  setStatus(dropped ? `Removed ${dropped} shelf field(s) no longer in the data source` : "", dropped ? "err" : "");
+  setStatus("");
 }
 
 function renderFieldPane() {
@@ -498,7 +465,7 @@ function addPill(shelf, name, idx) {
   const p = makePill(name);
   if (shelf === "color") sh.color = [p];
   else sh[shelf].splice(idx == null ? sh[shelf].length : idx, 0, p);
-  markDirty(true); renderAll();
+  renderAll();
 }
 
 /* ================= shelves ================= */
@@ -535,7 +502,7 @@ function removePill(shelf, i) {
   const sh = S();
   if (shelf === "color") sh.color = [];
   else sh[shelf].splice(i, 1);
-  markDirty(true); renderAll();
+  renderAll();
 }
 function getPill(shelf, i) { return shelf === "color" ? S().color[i] : S()[shelf][i]; }
 
@@ -554,7 +521,7 @@ for (const host of document.querySelectorAll(".shelf")) {
       removePillSilent(shelf, i);
       if (host.dataset.shelf === "color") S().color = [p];
       else S()[host.dataset.shelf].push(p);
-      markDirty(true); renderAll();
+      renderAll();
     }
   });
 }
@@ -613,7 +580,7 @@ function openMenu(anchor, items) {
     el.addEventListener("click", () => {
       closeMenu();
       if (it.act) it.act();
-      if (it.rerender !== false && !it.noRender) { markDirty(true); renderAll(); }
+      if (it.rerender !== false && !it.noRender) { renderAll(); }
     });
     m.appendChild(el);
   }
@@ -643,7 +610,7 @@ function renderFilters() {
     el.querySelector("b").textContent = f.field + ":";
     el.querySelector(".val").textContent = filterSummary(f);
     el.querySelector(".rm").addEventListener("click", ev => {
-      ev.stopPropagation(); S().filters.splice(i, 1); markDirty(true); renderAll();
+      ev.stopPropagation(); S().filters.splice(i, 1); renderAll();
     });
     el.addEventListener("click", () => openFilterEditor(f.field, el));
     host.appendChild(el);
@@ -747,7 +714,7 @@ async function openFilterEditor(fieldName, anchor) {
     const idx = S().filters.findIndex(x => x.field === fieldName);
     if (nf) { idx >= 0 ? S().filters[idx] = nf : S().filters.push(nf); }
     else if (idx >= 0) S().filters.splice(idx, 1);
-    closeMenu(); markDirty(true); renderAll();
+    closeMenu(); renderAll();
   }
   openMenuEl = m;
   placeMenu(m, anchor || $("addFilter"));
@@ -1079,82 +1046,50 @@ async function renderTable(seq) {
 /* ================= start screen ================= */
 function renderStart() {
   const host = $("chart");
-  const wbs = (BOOT.workbooks || []).slice(0, 5);
   host.innerHTML = `
     <div id="start"><div class="card">
       <h1>Tableau <span>viewer</span></h1>
-      <p>Open a data file, drag fields onto shelves, pick a chart. Save the result as a workbook.</p>
+      <p>Open a Tableau file, drag fields onto shelves, pick a chart.</p>
       <button class="big" id="startBrowse">
         <span style="font-size:20px">📂</span>
-        <span><div class="t">Open a file…</div><div class="d">csv · tsv · parquet · xlsx · hyper · Tableau files · saved workbooks</div></span>
+        <span><div class="t">Open a Tableau file…</div><div class="d">twb · twbx · tds · tdsx · hyper</div></span>
       </button>
-      <div class="recent" id="startRecent"></div>
     </div></div>`;
-  $("startBrowse").addEventListener("click", () => filePicker("open"));
-  if (wbs.length) {
-    const r = $("startRecent");
-    r.innerHTML = `<div class="rh">Recent workbooks</div>`;
-    for (const w of wbs) {
-      const b = document.createElement("button");
-      b.textContent = "📈 " + w.name;
-      b.addEventListener("click", () => openAny(w.file));
-      r.appendChild(b);
-    }
-  }
+  $("startBrowse").addEventListener("click", () => filePicker());
 }
 
-/* ================= open / save ================= */
-let importFile = "";   // the .twb a workbook was imported from (until saved)
+/* ================= open ================= */
+let importFile = "";   // the Tableau file the current sheets came from
 function syncUrl() {
   const u = new URL(window.location);
-  const f = wbFile || importFile || (schema && schema.file) || "";
+  const f = importFile || (schema && schema.file) || "";
   if (f) u.searchParams.set("file", f); else u.searchParams.delete("file");
   history.replaceState(null, "", u);
 }
 function renderWbName() {
   $("wbName").textContent = wb ? wb.name : "";
-  $("wbName").className = wb ? "editable" : "";
 }
 
 async function openAny(path) {
   try {
-    if (path.toLowerCase().endsWith(".tviz.json")) {
-      setStatus("Opening workbook…");
-      const res = await fused.runPython(PY, { action: "load_workbook", file: path });
-      wb = res.workbook; wbFile = res.file; importFile = "";
-      for (const sh of wb.sheets) { sh.color = sh.color || []; sh.filters = sh.filters || []; }
-      await openData(wb.source, true);
-      markDirty(false);
-    } else if (/\.(twb|twbx|tds|tdsx)$/i.test(path)) {
+    if (/\.(twb|twbx|tds|tdsx)$/i.test(path)) {
       setStatus("Importing Tableau file…");
       const res = await fused.runPython(PY, { action: "import_tableau", file: path });
       importFile = path;
       if (res.workbook) {
-        wb = res.workbook; wbFile = "";
+        wb = res.workbook;
         await openData(wb.source, true);
-        markDirty(true);   // imported, not yet saved as .tviz.json
-        setStatus("Imported " + baseName(path) + " — use File ▸ Save to keep it", "ok");
+        setStatus("Imported " + baseName(path), "ok");
       } else {
-        await openData(res.source, false);   // .tds/.tdsx: a datasource, fresh workbook
+        await openData(res.source, false);   // .tds/.tdsx: a datasource, fresh sheets
         setStatus("Opened data source from " + baseName(path), "ok");
       }
     } else {
       importFile = "";
-      await openData(path, false);
+      await openData(path, false);   // .hyper extracts open as plain data sources
     }
     renderWbName(); syncUrl(); renderTabs(); renderAll();
   } catch (err) { setStatus(err.message, "err"); }
-}
-
-async function saveWorkbook(as) {
-  if (!wb) return;
-  wb.version = 1;
-  if (!as && wbFile) {
-    const res = await fused.runPython(PY, { action: "save_workbook", file: wbFile, data: JSON.stringify(wb) });
-    wbFile = res.file; markDirty(false); setStatus("Saved", "ok"); syncUrl();
-    return;
-  }
-  filePicker("saveAs");
 }
 
 /* ================= file browser modal ================= */
@@ -1169,39 +1104,19 @@ function modal(html) {
 }
 function closeModal() { $("scrim").classList.remove("on"); $("scrim").innerHTML = ""; }
 
-async function filePicker(mode) {
+async function filePicker() {
   const m = modal(`
-    <h2>${mode === "open" ? "Open data or workbook" : "Save workbook as"}</h2>
+    <h2>Open a Tableau file</h2>
     <div class="crumbs"></div>
     <div class="flist"></div>
     <div class="mfoot">
-      ${mode === "saveAs" ? '<input id="saveName" placeholder="workbook name" />' : ""}
       <button id="mCancel">Cancel</button>
-      ${mode === "saveAs" ? '<button class="primary" id="mOk">Save</button>' : ""}
     </div>`);
   m.querySelector("#mCancel").addEventListener("click", closeModal);
-  const start = browseDir ||
-    (mode === "saveAs" ? BOOT.workbooks_dir : BOOT.home);
-  if (mode === "saveAs") {
-    const inp = m.querySelector("#saveName");
-    inp.value = wb ? wb.name : "workbook";
-    m.querySelector("#mOk").addEventListener("click", async () => {
-      const nm = inp.value.trim() || "workbook";
-      try {
-        wb.name = nm;
-        const res = await fused.runPython(PY, {
-          action: "save_workbook_as", directory: browseDir || "", name: nm, data: JSON.stringify(wb),
-        });
-        wbFile = res.file; markDirty(false); renderWbName(); syncUrl();
-        setStatus("Saved " + baseName(res.file), "ok");
-        closeModal();
-      } catch (err) { setStatus(err.message, "err"); }
-    });
-  }
-  await listInto(m, start, mode);
+  await listInto(m, browseDir || BOOT.home);
 }
 
-async function listInto(m, path, mode) {
+async function listInto(m, path) {
   let res;
   try { res = await fused.runPython(PY, { action: "listdir", file: path }); }
   catch (err) { setStatus(err.message, "err"); return; }
@@ -1216,7 +1131,7 @@ async function listInto(m, path, mode) {
     if (i === 0 && !/^[A-Za-z]:$/.test(seg)) acc = "/" + seg;
     const target = acc + (i === 0 && /^[A-Za-z]:$/.test(seg) ? "/" : "");
     const b = document.createElement("button"); b.textContent = seg;
-    b.addEventListener("click", () => listInto(m, target, mode));
+    b.addEventListener("click", () => listInto(m, target));
     crumbs.appendChild(b);
     if (i < parts.length - 1) crumbs.appendChild(document.createTextNode("›"));
   });
@@ -1225,7 +1140,7 @@ async function listInto(m, path, mode) {
   if (res.path !== res.parent) {
     const up = document.createElement("div"); up.className = "frow2";
     up.innerHTML = `<span class="ic">↩</span><span class="nm">..</span>`;
-    up.addEventListener("click", () => listInto(m, res.parent, mode));
+    up.addEventListener("click", () => listInto(m, res.parent));
     list.appendChild(up);
   }
   for (const d of res.dirs) {
@@ -1233,55 +1148,22 @@ async function listInto(m, path, mode) {
     const el = document.createElement("div"); el.className = "frow2";
     el.innerHTML = `<span class="ic">📁</span><span class="nm"></span>`;
     el.querySelector(".nm").textContent = d;
-    el.addEventListener("click", () => listInto(m, res.path + "/" + d, mode));
+    el.addEventListener("click", () => listInto(m, res.path + "/" + d));
     list.appendChild(el);
   }
   for (const f of res.files) {
     const el = document.createElement("div");
-    el.className = "frow2" + (f.kind === "workbook" ? " wb" : "");
-    el.innerHTML = `<span class="ic">${f.kind === "workbook" ? "📈" : f.kind === "tableau" ? "📘" : "🗒"}</span><span class="nm"></span><span class="sz"></span>`;
+    el.className = "frow2";
+    el.innerHTML = `<span class="ic">${f.kind === "tableau" ? "📘" : "🗒"}</span><span class="nm"></span><span class="sz"></span>`;
     el.querySelector(".nm").textContent = f.name;
     el.querySelector(".sz").textContent = fmtSize(f.size);
-    if (mode === "open") {
-      el.addEventListener("click", () => { closeModal(); openAny(res.path + "/" + f.name); });
-    } else if (f.kind === "workbook") {
-      el.addEventListener("click", () => {
-        m.querySelector("#saveName").value = f.name.replace(/\.tviz\.json$/i, "");
-      });
-    }
+    el.addEventListener("click", () => { closeModal(); openAny(res.path + "/" + f.name); });
     list.appendChild(el);
   }
 }
 
-/* ================= dialogs ================= */
-function confirmDialog(title, msg, okText) {
-  return new Promise(resolve => {
-    const m = modal(`<h2>${title}</h2><p class="msg">${msg}</p>
-      <div class="mfoot"><button id="dCancel">Cancel</button>
-      <button class="primary" id="dOk" style="margin-left:auto">${okText || "OK"}</button></div>`);
-    m.querySelector("#dOk").addEventListener("click", () => { closeModal(); resolve(true); });
-    m.querySelector("#dCancel").addEventListener("click", () => { closeModal(); resolve(false); });
-  });
-}
-
-/* ================= menus: file / download / chart ================= */
-$("fileMenuBtn").addEventListener("click", ev => {
-  openMenu(ev.target, [
-    { label: "New workbook", noRender: true, act: async () => {
-        if (dirty && !(await confirmDialog("Discard changes?", "The current workbook has unsaved changes.", "Discard"))) return;
-        if (schema) {
-          wb = { version: 1, name: baseName(schema.file).replace(/\.[^.]+$/, ""), source: schema.file,
-                 sheets: [newSheet("Sheet 1")], active: 0 };
-          wbFile = ""; importFile = ""; markDirty(false);
-          renderWbName(); syncUrl(); renderTabs(); renderAll();
-        }
-      } },
-    { label: "Open…", noRender: true, act: () => filePicker("open") },
-    { sep: true },
-    { label: "Save", disabled: !wb, noRender: true, act: () => saveWorkbook(false) },
-    { label: "Save as…", disabled: !wb, noRender: true, act: () => saveWorkbook(true) },
-  ]);
-});
+/* ================= menus: open / download / chart ================= */
+$("openBtn").addEventListener("click", () => filePicker());
 
 $("dlMenuBtn").addEventListener("click", ev => {
   const has = !!(schema && wb);
@@ -1322,12 +1204,12 @@ $("chartBtn").addEventListener("click", ev => {
 $("swapBtn").addEventListener("click", () => {
   const sh = S();
   [sh.cols, sh.rows] = [sh.rows, sh.cols];
-  markDirty(true); renderAll();
+  renderAll();
 });
 $("sortBtn").addEventListener("click", () => {
   const sh = S();
   sh.sortDir = sh.sortDir === "" ? "desc" : sh.sortDir === "desc" ? "asc" : "";
-  markDirty(true); renderAll();
+  renderAll();
 });
 
 /* ================= sheet tabs ================= */
@@ -1347,7 +1229,7 @@ function renderTabs() {
       if (wb.sheets.length === 1) return;
       wb.sheets.splice(i, 1);
       wb.active = Math.min(wb.active, wb.sheets.length - 1);
-      markDirty(true); renderTabs(); renderAll();
+      renderTabs(); renderAll();
     });
     host.appendChild(el);
   });
@@ -1356,20 +1238,15 @@ function renderTabs() {
   add.addEventListener("click", () => {
     wb.sheets.push(newSheet("Sheet " + (wb.sheets.length + 1)));
     wb.active = wb.sheets.length - 1;
-    markDirty(true); renderTabs(); renderAll();
+    renderTabs(); renderAll();
   });
   host.appendChild(add);
 }
 function renameSheet(i) {
   const sh = wb.sheets[i];
   const nm = prompt("Sheet name", sh.name);
-  if (nm && nm.trim()) { sh.name = nm.trim(); markDirty(true); renderTabs(); }
+  if (nm && nm.trim()) { sh.name = nm.trim(); renderTabs(); }
 }
-$("wbName").addEventListener("dblclick", () => {
-  if (!wb) return;
-  const nm = prompt("Workbook name", wb.name);
-  if (nm && nm.trim()) { wb.name = nm.trim(); markDirty(true); renderWbName(); }
-});
 
 /* ================= chrome ================= */
 $("railBtn").addEventListener("click", () => $("rail").classList.toggle("hidden"));
@@ -1382,9 +1259,6 @@ function applyTheme(t) {
 $("themeBtn").addEventListener("click", () =>
   applyTheme(document.body.dataset.theme === "light" ? "dark" : "light"));
 
-document.addEventListener("keydown", ev => {
-  if ((ev.ctrlKey || ev.metaKey) && ev.key === "s") { ev.preventDefault(); saveWorkbook(false); }
-});
 window.addEventListener("resize", () => renderChart());
 
 /* ================= boot ================= */

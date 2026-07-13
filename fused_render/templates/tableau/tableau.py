@@ -8,15 +8,12 @@ mirrors Tableau's own VizQL model: the UI state compiles to a query, the
 database aggregates, the client only renders the result.
 
 Actions (dispatched via the `action` param):
-  boot           — home + workbooks dir + saved workbooks
+  boot           — the user home (file-picker start dir)
   listdir        — directory listing for the in-app file browser
   open_data      — build/reuse the parquet cache, return schema + row count
   query          — shelves + filters -> aggregated records for the chart
   rows           — windowed raw-data preview (with the same filters applied)
   filter_domain  — distinct values (dimension) or min/max (measure/date)
-  save_workbook  — write a *.tviz.json workbook file
-  save_workbook_as — write to a user-chosen directory + name
-  load_workbook  — read a workbook file back
   import_tableau — best-effort convert Tableau files into a workbook or data
                    source: .twb/.twbx (workbook XML, zipped), .tds/.tdsx
                    (datasource XML, zipped). .hyper extracts open directly as
@@ -29,17 +26,14 @@ import os
 import re
 
 # State lives under the user home dir, never inside the installed template
-# package (same layout as pdf_studio): saved workbooks are primary content
-# (data/); parquet caches and exports are regenerable (cache/).
-DATA_ROOT = os.path.expanduser(os.path.join("~", ".fused-render", "data", "tableau"))
+# package (same layout as pdf_studio); everything the viewer writes — parquet
+# caches, extracts, exports — is regenerable (cache/).
 CACHE_ROOT = os.path.expanduser(os.path.join("~", ".fused-render", "cache", "tableau"))
-WORKBOOKS = os.path.join(DATA_ROOT, "workbooks")
 EXPORTS = os.path.join(CACHE_ROOT, "exports")
 SOURCES = os.path.join(CACHE_ROOT, "sources")
 
 DATA_EXTS = (".csv", ".tsv", ".parquet", ".xlsx", ".hyper")
 TABLEAU_EXTS = (".twb", ".twbx", ".tds", ".tdsx")
-WORKBOOK_EXT = ".tviz.json"
 MAX_CHART_ROWS = 5_000       # aggregated rows sent to the chart
 MAX_DOMAIN_VALUES = 300      # distinct values sent to a filter dropdown
 
@@ -332,32 +326,6 @@ def _filter_domain(file, field):
             "values": [{"v": "" if v is None else v, "n": n} for v, n in vals]}
 
 
-# ---------- workbooks ----------
-
-def _save_workbook(file, data):
-    file = os.path.abspath(file)
-    if not file.endswith(WORKBOOK_EXT):
-        raise ValueError(f"workbook files must end with {WORKBOOK_EXT}")
-    os.makedirs(os.path.dirname(file), exist_ok=True)
-    with open(file, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=1)
-    return {"file": file.replace(os.sep, "/"), "mtime": os.path.getmtime(file)}
-
-
-def _save_workbook_as(directory, name, data):
-    name = _safe_name(name, "workbook")
-    name = re.sub(r"(\.tviz)?(\.json)?$", "", name, flags=re.I) + WORKBOOK_EXT
-    base = os.path.abspath(os.path.expanduser(directory)) if directory else WORKBOOKS
-    return _save_workbook(os.path.join(base, name), data)
-
-
-def _load_workbook(file):
-    file = os.path.abspath(file)
-    with open(file, encoding="utf-8") as f:
-        data = json.load(f)
-    return {"file": file.replace(os.sep, "/"), "workbook": data}
-
-
 # ---------- tableau .twb import ----------
 
 # .twb shelf tokens: [Datasource].[sum:Sales:qk], [Datasource].[yr:Order Date:ok],
@@ -448,19 +416,16 @@ def _import_twb(file):
     if not sheets:
         sheets = [{"name": "Sheet 1", "chart": "auto", "cols": [], "rows": [],
                    "color": [], "filters": [], "sortDir": ""}]
-    wb = {"version": 1,
-          "name": re.sub(r"\.twb$", "", os.path.basename(file), flags=re.I),
+    wb = {"name": re.sub(r"\.twb$", "", os.path.basename(file), flags=re.I),
           "source": src.replace(os.sep, "/"), "sheets": sheets, "active": 0}
     return {"workbook": wb}
 
 
 def _extract_tableau_zip(file):
-    """Unpack a .twbx/.tdsx and return its extract dir. Keyed by path hash
-    only (no mtime) and outside _clean_stale's reach: saved workbooks hold
-    absolute paths into the extracted tree, so the location must stay stable
-    across reopens; the tree is re-extracted in place when the archive
-    changes. Staged into a sibling dir and swapped, marker written last, so
-    a failed extraction is retried instead of a partial tree being reused."""
+    """Unpack a .twbx/.tdsx and return its extract dir, re-extracting in
+    place only when the archive changes. Staged into a sibling dir and
+    swapped, marker written last, so a failed extraction is retried instead
+    of a partial tree being reused."""
     import hashlib
     import shutil
     import zipfile
@@ -549,11 +514,9 @@ def _listdir(path):
         try:
             if os.path.isdir(full):
                 dirs.append(name)
-            elif name.lower().endswith(WORKBOOK_EXT):
-                files.append({"name": name, "size": os.path.getsize(full), "kind": "workbook"})
             elif name.lower().endswith(TABLEAU_EXTS):
                 files.append({"name": name, "size": os.path.getsize(full), "kind": "tableau"})
-            elif name.lower().endswith(DATA_EXTS):
+            elif name.lower().endswith(".hyper"):
                 files.append({"name": name, "size": os.path.getsize(full), "kind": "data"})
         except OSError:
             continue
@@ -563,18 +526,7 @@ def _listdir(path):
 
 
 def _boot():
-    workbooks = []
-    if os.path.isdir(WORKBOOKS):
-        for n in sorted(os.listdir(WORKBOOKS)):
-            if n.endswith(WORKBOOK_EXT):
-                full = os.path.join(WORKBOOKS, n)
-                workbooks.append({"file": full.replace(os.sep, "/"),
-                                  "name": n[: -len(WORKBOOK_EXT)],
-                                  "mtime": os.path.getmtime(full)})
-    workbooks.sort(key=lambda w: -w["mtime"])
-    return {"home": os.path.expanduser("~").replace(os.sep, "/"),
-            "workbooks_dir": WORKBOOKS.replace(os.sep, "/"),
-            "workbooks": workbooks}
+    return {"home": os.path.expanduser("~").replace(os.sep, "/")}
 
 
 # ---------- export ----------
@@ -617,9 +569,7 @@ def _export(kind, name, file, spec):
 def main(
     action: str = "boot",
     file: str = "",
-    data: str = "",
     name: str = "",
-    directory: str = "",
     kind: str = "",
     field: str = "",
     spec: str = "",
@@ -641,12 +591,6 @@ def main(
         return _rows(file, offset, min(limit, 1000), json.loads(filters) if filters else None)
     if action == "filter_domain":
         return _filter_domain(file, field)
-    if action == "save_workbook":
-        return _save_workbook(file, json.loads(data))
-    if action == "save_workbook_as":
-        return _save_workbook_as(directory, name, json.loads(data))
-    if action == "load_workbook":
-        return _load_workbook(file)
     if action == "import_tableau":
         return _import_tableau(file)
     if action == "export":
