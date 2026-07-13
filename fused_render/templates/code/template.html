@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <title>Code editor</title>
 <script src="/template-assets/codemirror.bundle.js"></script>
+<script src="/template-shared/ro-badge.js"></script>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -80,6 +81,7 @@
       <button id="reload">Reload</button>
       <button id="overwrite">Overwrite</button>
     </span>
+    <span id="ro" hidden></span>
     <span id="status-text">Saved</span>
     <button id="save" disabled>Save</button>
   </div>
@@ -101,6 +103,7 @@
     let view = null;
     let file = null;
     let mtime = null;   // last known on-disk mtime; the optimistic-lock token
+    let writable = true; // stat.writable — false locks the buffer read-only
     let dirty = false;
     let saveTimer = null;  // pending autosave debounce (AS-1)
     let saving = false;    // a save() write is in flight
@@ -259,6 +262,7 @@
         }
         text = await fused.readFile(file);
         mtime = stat.mtime;
+        writable = stat.writable !== false; // absent field (older server) → editable
       } catch (err) {
         root.innerHTML = `<div id="status" class="error">Failed to load file: ${escapeHtml(err.message)}</div>`;
         return;
@@ -279,12 +283,22 @@
       ];
       const lang = languageFor(ext);
       if (lang) extensions.push(lang);
+      // Read-only file: lock the buffer, so dirty can never flip and no save
+      // path (autosave, Cmd+S, flush hook) ever fires. The server refuses the
+      // write anyway (403 readonly); this makes the UI honest up front.
+      if (!writable) extensions.push(CM.EditorView.editable.of(false));
 
       root.innerHTML = "";
       view = new CM.EditorView({ doc: text, extensions, parent: root });
       filenameEl.textContent = file.split("/").pop();
       barEl.style.display = "flex";
       setDirty(false);
+      if (!writable) {
+        saveBtn.hidden = true;
+        statusTextEl.textContent = "";
+        fusedRoBadge.update(document.getElementById("ro"), "Read-only",
+          "The file's permissions don't allow writing, so it can't be edited here.");
+      }
     }
 
     saveBtn.addEventListener("click", save);
