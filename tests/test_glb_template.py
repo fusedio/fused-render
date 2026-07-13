@@ -13,7 +13,7 @@ def test_glb_template_resolves_for_glb_and_gltf():
     assert err is None
     assert [e["mode"] for e in entries][0] == "glb"
     entries, err = server._templates_for("/tmp/model.gltf", False)
-    assert [e["mode"] for e in entries] == ["glb", "code"]
+    assert [e["mode"] for e in entries] == ["glb", "usd", "code"]
 
 
 def test_glbproj_dir_no_longer_resolves_to_an_editor():

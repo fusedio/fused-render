@@ -1,0 +1,1838 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>USD Studio</title>
+<style>
+  :root {
+    --bg: #16161a; --panel: #232327; --panel2: #2a2a2f; --line: #0e0e10;
+    --text: #cfcfd4; --dim: #8b8b93; --accent: #e8830d; --accent2: #4a90d9;
+    --input: #1b1b1f;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 11.5px/1.45 -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: grid; grid-template-rows: 34px 1fr 24px;
+    grid-template-columns: 232px 1fr 258px;
+    grid-template-areas: "top top top" "outliner viewport props" "status status status";
+    user-select: none;
+  }
+  /* ---------- top bar ---------- */
+  #topbar {
+    grid-area: top; background: var(--panel); border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 8px; padding: 0 10px;
+  }
+  #logo { font-weight: 700; color: var(--accent); letter-spacing: .4px; }
+  #logo span { color: var(--dim); font-weight: 400; }
+  #filePath {
+    flex: 1; min-width: 120px; background: var(--input); border: 1px solid var(--line);
+    color: var(--text); border-radius: 3px; padding: 4px 8px; font: inherit;
+  }
+  #filePath:focus { outline: 1px solid var(--accent2); }
+  button, select {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 3px; padding: 4px 9px; font: inherit; cursor: pointer;
+  }
+  button:hover { background: #333338; }
+  button.primary { background: var(--accent); color: #1a1105; font-weight: 600; }
+  button.primary:hover { background: #f79422; }
+  button.on { background: var(--accent2); color: #fff; }
+  select:focus, button:focus { outline: none; }
+  /* ---------- outliner ---------- */
+  #outliner {
+    grid-area: outliner; background: var(--panel); border-right: 1px solid var(--line);
+    overflow-y: auto; padding: 6px 0;
+  }
+  .paneTitle {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .8px;
+    color: var(--dim); padding: 4px 10px 6px;
+  }
+  .node {
+    display: flex; align-items: center; gap: 6px; padding: 3px 10px;
+    cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .node:hover { background: #2c2c31; }
+  .node.sel { background: #39415a; }
+  .node .ico { width: 13px; text-align: center; opacity: .9; }
+  .node .cnt { color: var(--dim); font-size: 10px; margin-left: auto; }
+  .node input[type=checkbox] { accent-color: var(--accent); margin: 0; cursor: pointer; }
+  .node .x {
+    margin-left: 5px; opacity: 0; cursor: pointer; color: #d66;
+    width: 13px; text-align: center;
+  }
+  .node:hover .x { opacity: .65; }
+  .node .x:hover { opacity: 1; }
+  .indent1 { padding-left: 26px; }
+  /* ---------- viewport ---------- */
+  #viewport { grid-area: viewport; position: relative; min-width: 0; }
+  #canvas3d { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #overlay {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 10px; text-align: center;
+    background: rgba(16,16,20,.72); backdrop-filter: blur(2px); z-index: 5;
+  }
+  #overlay.hidden { display: none; }
+  #overlayMsg { color: var(--text); font-size: 13px; }
+  #overlaySub { color: var(--dim); max-width: 420px; }
+  #overlayBar { width: 300px; height: 5px; background: #333; border-radius: 3px; overflow: hidden; }
+  #overlayBarFill { height: 100%; width: 0%; background: var(--accent); transition: width .3s; }
+  #axisHud {
+    position: absolute; top: 8px; left: 10px; color: var(--dim); font-size: 10px;
+    z-index: 4; pointer-events: none; line-height: 1.6;
+  }
+  #gizmo {
+    position: absolute; top: 10px; right: 10px; width: 92px; height: 92px;
+    z-index: 4; cursor: pointer; touch-action: none;
+  }
+  #navbar {
+    position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 4px; z-index: 4;
+    background: rgba(35,35,39,.92); border: 1px solid var(--line);
+    border-radius: 6px; padding: 4px 6px; box-shadow: 0 4px 14px rgba(0,0,0,.4);
+  }
+  #navbar button { padding: 3px 8px; }
+  #navbar button:disabled { opacity: .4; cursor: default; }
+  #tourLabel {
+    color: var(--dim); font-size: 10.5px; padding: 0 4px; min-width: 64px;
+    text-align: center; font-variant-numeric: tabular-nums;
+  }
+  .navSep { width: 1px; height: 16px; background: #3a3a42; margin: 0 3px; }
+  #dropHint {
+    position: absolute; inset: 12px; border: 2px dashed var(--accent2); border-radius: 8px;
+    display: none; align-items: center; justify-content: center; z-index: 9;
+    background: rgba(30,40,60,.5); color: #cfe2ff; font-size: 14px; pointer-events: none;
+  }
+  body.dragging #dropHint { display: flex; }
+  /* ---------- properties ---------- */
+  #props {
+    grid-area: props; background: var(--panel); border-left: 1px solid var(--line);
+    overflow-y: auto;
+  }
+  .sect { border-bottom: 1px solid var(--line); }
+  .sectHead {
+    padding: 6px 10px; font-weight: 600; cursor: pointer; display: flex; gap: 6px;
+    background: var(--panel2); font-size: 11px;
+  }
+  .sectHead::before { content: "▾"; color: var(--dim); width: 10px; }
+  .sect.closed .sectHead::before { content: "▸"; }
+  .sect.closed .sectBody { display: none; }
+  .sectBody { padding: 8px 10px; display: flex; flex-direction: column; gap: 7px; }
+  .row { display: flex; align-items: center; gap: 6px; }
+  .row label { flex: 0 0 78px; color: var(--dim); }
+  .row input[type=range] { flex: 1; accent-color: var(--accent); min-width: 0; }
+  .row .val { flex: 0 0 34px; text-align: right; color: var(--text); font-size: 10.5px; }
+  .row input[type=color] {
+    width: 42px; height: 20px; border: 1px solid var(--line); background: none;
+    padding: 0; border-radius: 3px; cursor: pointer;
+  }
+  .row input[type=checkbox] { accent-color: var(--accent); }
+  .seg { display: flex; flex: 1; }
+  .seg button { flex: 1; border-radius: 0; padding: 3px 4px; font-size: 10.5px; }
+  .seg button:first-child { border-radius: 3px 0 0 3px; }
+  .seg button:last-child { border-radius: 0 3px 3px 0; }
+  .grid6 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+  .kv { display: grid; grid-template-columns: 92px 1fr; gap: 2px 8px; font-size: 10.5px; }
+  .kv div:nth-child(odd) { color: var(--dim); }
+  .kv div:nth-child(even) { text-align: right; font-variant-numeric: tabular-nums; }
+  /* ---------- status bar ---------- */
+  #statusbar {
+    grid-area: status; background: var(--panel); border-top: 1px solid var(--line);
+    display: flex; align-items: center; gap: 10px; padding: 0 10px;
+    font-size: 10.5px; color: var(--dim);
+  }
+  #statusProg { width: 160px; height: 4px; background: #333; border-radius: 2px; overflow: hidden; display: none; }
+  #statusProgFill { height: 100%; width: 0; background: var(--accent); }
+  #fps { margin-left: auto; font-variant-numeric: tabular-nums; }
+  /* ---------- file browser modal ---------- */
+  #fileModal {
+    position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.55);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #fileModal.hidden { display: none; }
+  #fmBox {
+    width: 560px; max-width: 92vw; max-height: 78vh; display: flex;
+    flex-direction: column; background: var(--panel); border: 1px solid #3a3a42;
+    border-radius: 6px; box-shadow: 0 12px 40px rgba(0,0,0,.6);
+  }
+  #fmHead {
+    padding: 9px 12px; font-weight: 600; border-bottom: 1px solid var(--line);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  #fmClose { cursor: pointer; color: var(--dim); padding: 0 4px; }
+  #fmClose:hover { color: #d66; }
+  #fmPath {
+    padding: 6px 12px; color: var(--dim); font-size: 10.5px; border-bottom: 1px solid var(--line);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left;
+  }
+  #fmList { flex: 1; overflow-y: auto; min-height: 220px; padding: 4px 0; }
+  .fmRow {
+    display: flex; align-items: center; gap: 8px; padding: 4px 14px; cursor: pointer;
+    white-space: nowrap; overflow: hidden;
+  }
+  .fmRow:hover { background: #2c2c31; }
+  .fmRow.sel { background: #39415a; }
+  .fmRow .sz { margin-left: auto; color: var(--dim); font-size: 10px; }
+  .fmEmpty { padding: 14px; color: var(--dim); }
+  #fmFoot {
+    padding: 8px 12px; border-top: 1px solid var(--line); display: flex;
+    align-items: center; gap: 10px;
+  }
+  #fmSel { flex: 1; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #3a3a40; border-radius: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+<body>
+  <div id="topbar">
+    <div id="logo">USD Studio <span>· NuRec / splat viewer</span></div>
+    <input id="filePath" spellcheck="false"
+           placeholder="add another .usdz / .ply / .glb / .obj / .stl / .splat — path or URL">
+    <button id="btnBrowse" title="pick a file from the system">📁 Import</button>
+    <button id="btnLoad" class="primary">Load</button>
+    <button id="btnShot" title="save PNG screenshot">📷 PNG</button>
+  </div>
+
+  <div id="outliner">
+    <div class="paneTitle">Outliner</div>
+    <div id="tree"><div class="node" style="color:var(--dim)">no scene loaded</div></div>
+  </div>
+
+  <div id="viewport">
+    <canvas id="canvas3d"></canvas>
+    <div id="axisHud"></div>
+    <canvas id="gizmo" title="click a face/edge/corner to snap the view · drag to orbit"></canvas>
+    <div id="navbar">
+      <button id="navOrbit" class="on" title="orbit / examine: drag to orbit · wheel to zoom (G toggles)">🧭 Orbit</button>
+      <button id="navWalk" title="walk through the scene: WASD to move · drag to look (G toggles)">🚶 Walk</button>
+    </div>
+    <div id="dropHint">drop a .splat / .ksplat / .glb file to view it</div>
+    <div id="overlay">
+      <div id="overlayMsg">Loading…</div>
+      <div id="overlayBar"><div id="overlayBarFill"></div></div>
+      <div id="overlaySub"></div>
+    </div>
+  </div>
+
+  <div id="props">
+    <div class="sect" id="sectRender">
+      <div class="sectHead">Render</div>
+      <div class="sectBody">
+        <div class="row"><label>Show</label>
+          <div class="seg" id="segMode">
+            <button data-v="splats">Splats</button>
+            <button data-v="mesh">Mesh</button>
+            <button data-v="both">Both</button>
+          </div>
+        </div>
+        <div class="row"><label>Splat budget</label>
+          <select id="selBudget" style="flex:1">
+            <option value="250000">250 k</option>
+            <option value="500000">500 k</option>
+            <option value="1000000">1 M</option>
+            <option value="2000000">2 M</option>
+            <option value="4000000">4 M</option>
+            <option value="0">All</option>
+          </select>
+        </div>
+        <div class="row"><label>Splat scale</label>
+          <input type="range" id="rngSplatScale" min="0.2" max="2" step="0.05" value="1">
+          <span class="val" id="valSplatScale">1.0</span>
+        </div>
+        <div class="row"><label>Mesh shading</label>
+          <div class="seg" id="segShade">
+            <button data-v="shaded">Shaded</button>
+            <button data-v="wire">Wire</button>
+            <button data-v="normal">Normal</button>
+          </div>
+        </div>
+        <div class="row"><label>Background</label><input type="color" id="inpBg">
+          <label style="flex:0 0 auto"><input type="checkbox" id="chkGrid"> grid</label>
+          <label style="flex:0 0 auto"><input type="checkbox" id="chkBbox"> bbox</label>
+        </div>
+        <div class="row"><label>Sky shell</label>
+          <input type="checkbox" id="chkSky">
+          <span style="color:var(--dim)">include far background splats</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="sect" id="sectLight">
+      <div class="sectHead">Lighting</div>
+      <div class="sectBody">
+        <div class="row"><label>Exposure</label>
+          <input type="range" id="rngExp" min="0.2" max="3" step="0.05" value="1">
+          <span class="val" id="valExp">1.0</span>
+        </div>
+        <div class="row"><label>Key light</label>
+          <input type="range" id="rngKey" min="0" max="4" step="0.1" value="1.6">
+          <span class="val" id="valKey">1.6</span>
+        </div>
+        <div class="row"><label>Ambient</label>
+          <input type="range" id="rngAmb" min="0" max="2" step="0.05" value="0.7">
+          <span class="val" id="valAmb">0.7</span>
+        </div>
+        <div class="row"><label>Shadows</label><input type="checkbox" id="chkShadow">
+          <span style="color:var(--dim)">(mesh only)</span></div>
+        <div style="color:var(--dim); font-size:10px">
+          Splat colors are baked radiance — lighting affects the mesh layer.</div>
+      </div>
+    </div>
+
+    <div class="sect" id="sectCam">
+      <div class="sectHead">Camera</div>
+      <div class="sectBody">
+        <div class="grid6">
+          <button data-view="front">Front</button>
+          <button data-view="back">Back</button>
+          <button data-view="top">Top</button>
+          <button data-view="bottom">Bottom</button>
+          <button data-view="left">Left</button>
+          <button data-view="right">Right</button>
+        </div>
+        <button id="btnFit">Fit view (F)</button>
+        <div style="color:var(--dim); font-size:10px">
+          orbit: drag · pan: right/middle drag · zoom: wheel (to cursor)<br>
+          double-click: focus point · <b>G</b>: walk mode (WASD + drag)<br>
+          gizmo (top-right): click a face/edge/corner to snap the view</div>
+      </div>
+    </div>
+
+    <div class="sect" id="sectInspect">
+      <div class="sectHead">Inspector</div>
+      <div class="sectBody"><div class="kv" id="inspectKv">
+        <div>selection</div><div>—</div>
+      </div></div>
+    </div>
+
+    <div class="sect" id="sectStats">
+      <div class="sectHead">Stats</div>
+      <div class="sectBody"><div class="kv" id="statsKv"></div></div>
+    </div>
+
+    <div class="sect" id="sectExport">
+      <div class="sectHead">Export</div>
+      <div class="sectBody">
+        <button id="btnDlSplat" disabled>Download .splat</button>
+        <button id="btnDlGlb" disabled>Download mesh .glb (glTF)</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="fileModal" class="hidden">
+    <div id="fmBox">
+      <div id="fmHead">Open file<span id="fmClose" title="close">✕</span></div>
+      <div id="fmPath"></div>
+      <div id="fmList"></div>
+      <div id="fmFoot">
+        <span id="fmSel">no file selected</span>
+        <button id="fmLoad" class="primary" disabled>Load</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="statusbar">
+    <span id="statusMsg">booting…</span>
+    <div id="statusProg"><div id="statusProgFill"></div></div>
+    <span id="fps"></span>
+  </div>
+
+<script>
+(async function boot() {
+  if (typeof fused === "undefined") {
+    document.body.innerHTML = "<p style='padding:2em;font-family:sans-serif;color:#ccc'>" +
+      "Open this file inside fused-render (http://127.0.0.1:8765/view/&lt;path to template.html&gt;).</p>";
+    return;
+  }
+  const HTML_PATH = new URLSearchParams(location.search).get("path") || "";
+  const BASE_DIR = HTML_PATH.slice(0, Math.max(HTML_PATH.lastIndexOf("/"), HTML_PATH.lastIndexOf("\\")) + 1);
+  const assetUrl = (rel) => fused.rawUrl(BASE_DIR + rel);
+  const py = (params) => fused.runPython("./reader.py", params);
+  // The target file arrives as the read-only _file param (template contract).
+  // It becomes the first scene unless the URL already carries an explicit
+  // "files" list (a bookmark, or one already reconciled earlier in this tab).
+  const FILE = fused.params.get("_file") || "";
+
+  // ---- vendor ES modules: import map must exist before the first import ----
+  const im = document.createElement("script");
+  im.type = "importmap";
+  im.textContent = JSON.stringify({ imports: {
+    "three": assetUrl("vendor/three.module.js"),
+    "three-bgutils": assetUrl("vendor/BufferGeometryUtils.js"),
+    "gaussian-splats-3d": assetUrl("vendor/gaussian-splats-3d.module.js"),
+  }});
+  document.head.appendChild(im);
+  const THREE = await import(assetUrl("vendor/three.module.js"));
+  const [{ OrbitControls }, { GLTFLoader }, GS3D] = await Promise.all([
+    import(assetUrl("vendor/OrbitControls.js")),
+    import(assetUrl("vendor/GLTFLoader.js")),
+    import("gaussian-splats-3d"),
+  ]);
+
+  // ------------------------------------------------------------ elements ---
+  const $ = (id) => document.getElementById(id);
+  const el = {
+    filePath: $("filePath"), btnLoad: $("btnLoad"), btnBrowse: $("btnBrowse"),
+    btnShot: $("btnShot"), tree: $("tree"),
+    fileModal: $("fileModal"), fmPath: $("fmPath"), fmList: $("fmList"),
+    fmSel: $("fmSel"), fmLoad: $("fmLoad"), fmClose: $("fmClose"),
+    overlay: $("overlay"), overlayMsg: $("overlayMsg"), overlaySub: $("overlaySub"),
+    overlayFill: $("overlayBarFill"), statusMsg: $("statusMsg"),
+    statusProg: $("statusProg"), statusFill: $("statusProgFill"), fps: $("fps"),
+    segMode: $("segMode"), segShade: $("segShade"), selBudget: $("selBudget"),
+    rngSplatScale: $("rngSplatScale"), valSplatScale: $("valSplatScale"),
+    inpBg: $("inpBg"), chkGrid: $("chkGrid"), chkBbox: $("chkBbox"),
+    chkSky: $("chkSky"),
+    rngExp: $("rngExp"), valExp: $("valExp"), rngKey: $("rngKey"),
+    valKey: $("valKey"), rngAmb: $("rngAmb"), valAmb: $("valAmb"),
+    chkShadow: $("chkShadow"), btnFit: $("btnFit"),
+    inspectKv: $("inspectKv"), statsKv: $("statsKv"),
+    btnDlSplat: $("btnDlSplat"), btnDlGlb: $("btnDlGlb"),
+    axisHud: $("axisHud"), canvas: $("canvas3d"), viewport: $("viewport"),
+    gizmo: $("gizmo"), navOrbit: $("navOrbit"), navWalk: $("navWalk"),
+  };
+
+  // ------------------------------------------------------- params (state) ---
+  const DEFAULTS = {
+    // "files" is a newline-separated list of loaded sources — Load/Import
+    // append to it instead of replacing, so scenes stack as outliner layers
+    files: "",
+    budget: "1000000", crop: "1", mode: "both", shade: "shaded", bg: "#16161a",
+    grid: "1", bbox: "0", exp: "1", key: "1.6", amb: "0.7", shadow: "0",
+    sscale: "1",
+  };
+  // Per-asset defaults from the sidecar (see loadSidecar below), applied only
+  // where the URL doesn't already say otherwise — a bookmarked/edited URL
+  // always wins over the asset's remembered settings.
+  const ASSET_DEFAULTS = {};
+  const P = {
+    get: (k) => fused.params.get(k) ?? ASSET_DEFAULTS[k] ?? DEFAULTS[k],
+    set: (k, v) => { if (String(v) !== P.get(k)) fused.params.set(k, String(v)); },
+  };
+  // "files" comes straight from the URL once anything has touched it; on a
+  // fresh dispatch open (no "files" param at all yet) it defaults to the
+  // target file so the template shows something without the user clicking
+  // Load/Import first.
+  const filesList = () => {
+    const raw = fused.params.get("files");
+    if (raw === undefined) return FILE ? [FILE] : [];
+    return raw.split("\n").map((s) => s.trim()).filter(Boolean);
+  };
+  const setFiles = (arr) => P.set("files", arr.join("\n"));
+
+  // ---- sidecar: per-asset settings that survive a fresh dispatch open -----
+  // URL params are the source of truth for the CURRENT tab (bookmarkable),
+  // but a preview template is re-opened with a bare _file each time — so the
+  // render/lighting choices and camera framing the user left this asset in
+  // are remembered in a JSON sidecar next to it (`<file>.json`, "usd" key)
+  // and seeded back as ASSET_DEFAULTS the next time it's opened fresh.
+  const SIDECAR_FIELDS = ["mode", "shade", "budget", "crop", "bg", "grid",
+                          "bbox", "exp", "key", "amb", "shadow", "sscale"];
+  const sidecarPath = FILE ? FILE + ".json" : "";
+  let pendingCamera = null;
+  let initialCameraApplied = false;
+
+  async function loadSidecar() {
+    if (!sidecarPath) return;
+    let saved;
+    try { saved = JSON.parse(await fused.readFile(sidecarPath)).usd; }
+    catch (e) { return; }               // no sidecar yet, or unreadable
+    if (!saved) return;
+    for (const k of SIDECAR_FIELDS) if (saved[k] !== undefined) ASSET_DEFAULTS[k] = String(saved[k]);
+    if (saved.camera) pendingCamera = saved.camera;
+  }
+
+  let sidecarSaveTimer = null;
+  function scheduleSidecarSave() {
+    clearTimeout(sidecarSaveTimer);
+    sidecarSaveTimer = setTimeout(saveSidecar, 800);
+  }
+  async function saveSidecar() {
+    if (!sidecarPath) return;
+    let doc = {};
+    try { doc = JSON.parse(await fused.readFile(sidecarPath)) || {}; }
+    catch (e) { /* new sidecar */ }
+    doc.usd = { camera: {
+      pos: camera.position.toArray().map((v) => +v.toFixed(3)),
+      target: controls.target.toArray().map((v) => +v.toFixed(3)),
+    } };
+    for (const k of SIDECAR_FIELDS) doc.usd[k] = P.get(k);
+    try { await fused.writeFile(sidecarPath, JSON.stringify(doc, null, 2)); }
+    catch (e) { console.warn("usd sidecar save failed:", e.message); }
+  }
+
+  // ------------------------------------------------------------ three.js ---
+  const renderer = new THREE.WebGLRenderer({
+    canvas: el.canvas, antialias: true, preserveDrawingBuffer: false,
+  });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.NoToneMapping;
+  renderer.shadowMap.enabled = false;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(50, 1, 0.05, 8000);
+  camera.position.set(8, 6, 12);
+  const controls = new OrbitControls(camera, el.canvas);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.09;
+  controls.screenSpacePanning = true;
+  controls.zoomToCursor = true;          // wheel dives toward the pointer
+  controls.minDistance = 0.05;           // allow going deep inside the splat
+  controls.addEventListener("end", scheduleSidecarSave);  // drag/zoom settled
+
+  // data is Z-up (USD); rotate the whole content root into three's Y-up
+  const root = new THREE.Group();
+  root.rotation.x = -Math.PI / 2;
+  scene.add(root);
+
+  const hemi = new THREE.HemisphereLight(0xdde3ee, 0x30281e, 0.7);
+  scene.add(hemi);
+  const key = new THREE.DirectionalLight(0xffffff, 1.6);
+  key.position.set(30, 60, 40);
+  key.castShadow = false;
+  key.shadow.mapSize.set(2048, 2048);
+  scene.add(key);
+
+  let grid = null, bboxHelper = null, ground = null;
+  let sceneRadius = 10, sceneCenter = new THREE.Vector3();
+  let loadToken = 0, pollTimer = null;
+
+  // ---- multi-scene model ---------------------------------------------------
+  // Each loaded file becomes an independent "scene": its own THREE.Group under
+  // root, holding a splat/points layer and mesh layers. Load / Import ADD a
+  // scene rather than replacing, and the outliner shows one subtree per scene.
+  // Per-object visibility is composed with the global Show mode by
+  // applyVisibility() — never write .visible from two places.
+  let scenes = [];
+  let sceneSeq = 0;
+  let selSel = null;                       // outliner selection descriptor
+  const sceneById = (id) => scenes.find((s) => s.id === id);
+  const scLayer = (s) => s.splatViewer || s.pointsObj;
+  function makeScene(name, source) {
+    const group = new THREE.Group();
+    root.add(group);
+    const s = {
+      id: ++sceneSeq, name, source, group,
+      splatViewer: null, pointsObj: null, meshRoot: null,
+      meshEntries: [],                     // {obj, name, verts, tris, info, idx}
+      manifest: null, kind: "", splatCount: 0,
+      splatUrl: null, splatName: null, meshUrl: null,
+      worldBox: null, budget: null, crop: null,
+      eye: true, splatsEye: true, expanded: true,
+    };
+    scenes.push(s);
+    return s;
+  }
+  const anyLayers = () =>
+    scenes.some((s) => scLayer(s) || s.meshEntries.length);
+  const splatCountAll = () => scenes.reduce((a, s) => a + s.splatCount, 0);
+  const meshStatsAll = () => scenes.reduce((a, s) => {
+    for (const e of s.meshEntries) {
+      a.verts += e.verts; a.tris += e.tris; a.meshes++;
+    }
+    return a;
+  }, { verts: 0, tris: 0, meshes: 0 });
+
+  function resize() {
+    const w = el.viewport.clientWidth, h = el.viewport.clientHeight;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / Math.max(h, 1);
+    camera.updateProjectionMatrix();
+    updatePixelScale();
+  }
+  new ResizeObserver(resize).observe(el.viewport);
+  resize();
+
+  // fps meter
+  let fpsAvg = 60, lastT = performance.now(), lastFpsUpdate = 0;
+  const frameLoop = (t) => {
+    const dtms = t - lastT; lastT = t;
+    if (dtms > 0 && dtms < 500) fpsAvg += (1000 / dtms - fpsAvg) * 0.05;
+    if (t - lastFpsUpdate > 500) {
+      el.fps.textContent = `${fpsAvg.toFixed(0)} fps`;
+      lastFpsUpdate = t;
+    }
+    stepFly(t);
+    if (navMode === "walk") stepWalk(Math.min(dtms / 1000, 0.1));
+    else if (!camAnim) controls.update();
+    renderer.render(scene, camera);
+    renderGizmo();
+  };
+  renderer.setAnimationLoop(frameLoop);
+
+  // ------------------------------------------------------------- helpers ---
+  const fmt = (n) => n == null ? "—" : n.toLocaleString("en-US");
+  const fmtMB = (b) => b == null ? "—" : (b / 1048576).toFixed(1) + " MB";
+
+  function setOverlay(msg, sub, pct) {
+    el.overlay.classList.remove("hidden");
+    el.overlayMsg.textContent = msg;
+    el.overlaySub.textContent = sub || "";
+    el.overlayFill.style.width = (pct ?? 0) + "%";
+  }
+  function hideOverlay() { el.overlay.classList.add("hidden"); }
+  function setStatus(msg, pct) {
+    el.statusMsg.textContent = msg;
+    el.statusProg.style.display = pct == null ? "none" : "block";
+    if (pct != null) el.statusFill.style.width = pct + "%";
+  }
+
+  // usd Z-up point -> three Y-up point (matches root rotation)
+  const toThree = (p) => new THREE.Vector3(p[0], p[2], -p[1]);
+
+  function bboxToThree(bb) {
+    const box = new THREE.Box3();
+    for (const x of [bb[0][0], bb[1][0]])
+      for (const y of [bb[0][1], bb[1][1]])
+        for (const z of [bb[0][2], bb[1][2]])
+          box.expandByPoint(toThree([x, y, z]));
+    return box;
+  }
+
+  // union of every loaded scene's world box drives grid / clip planes / fit
+  function recomputeBounds() {
+    const box = new THREE.Box3();
+    for (const s of scenes)
+      if (s.worldBox && (scLayer(s) || s.meshEntries.length)) box.union(s.worldBox);
+    const empty = box.isEmpty();
+    const shown = empty
+      ? new THREE.Box3(new THREE.Vector3(-1, -1, -1), new THREE.Vector3(1, 1, 1))
+      : box;
+    shown.getCenter(sceneCenter);
+    sceneRadius = Math.max(shown.getSize(new THREE.Vector3()).length() / 2, 0.5);
+    camera.near = sceneRadius / 500;
+    camera.far = Math.max(sceneRadius * 200, 8000);
+    camera.updateProjectionMatrix();
+    controls.maxDistance = sceneRadius * 40;
+    walk.speed = Math.max(sceneRadius / 8, 0.5);
+    rebuildGrid(shown);
+    rebuildBbox(shown);
+  }
+
+  function overviewPose(dir) {
+    // With the sky shell cropped away (default) a fuller fit works; when the
+    // shell is included the camera must stay inside it or all is fog.
+    const d = sceneRadius * (P.get("crop") === "1" ? 2.0 : 1.35);
+    const v = (dir || new THREE.Vector3(0.55, 0.4, 1).normalize()).clone();
+    return { pos: sceneCenter.clone().addScaledVector(v, d),
+             target: sceneCenter.clone() };
+  }
+  function fitView(dir, animate) {
+    const { pos, target } = overviewPose(dir);
+    if (animate) { flyTo(pos, target, 0.9); return; }
+    cancelFly();
+    controls.target.copy(target);
+    camera.position.copy(pos);
+    controls.update();
+  }
+  const VIEW_DIRS = {
+    front: [0, 0, 1], back: [0, 0, -1], right: [1, 0, 0], left: [-1, 0, 0],
+    top: [0.0001, 1, 0.0001], bottom: [0.0001, -1, 0.0001],
+  };
+
+  function rebuildGrid(box) {
+    if (grid) { scene.remove(grid); grid.geometry.dispose(); grid.material.dispose(); }
+    if (ground) { scene.remove(ground); ground.geometry.dispose(); ground.material.dispose(); }
+    const size = Math.max(2 * sceneRadius, 1);
+    const step = Math.pow(10, Math.floor(Math.log10(size / 10)));
+    const n = Math.min(Math.ceil(size / step), 100);
+    grid = new THREE.GridHelper(n * step, n, 0x555560, 0x2e2e34);
+    grid.position.set(sceneCenter.x, box.min.y, sceneCenter.z);
+    grid.visible = P.get("grid") === "1";
+    scene.add(grid);
+    ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(size * 4, size * 4),
+      new THREE.ShadowMaterial({ opacity: 0.35 }));
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.copy(grid.position);
+    ground.position.y -= 0.001 * sceneRadius;
+    ground.receiveShadow = true;
+    scene.add(ground);
+    key.position.copy(sceneCenter)
+       .add(new THREE.Vector3(0.8, 1.6, 1).multiplyScalar(sceneRadius));
+    key.shadow.camera.left = key.shadow.camera.bottom = -sceneRadius * 1.6;
+    key.shadow.camera.right = key.shadow.camera.top = sceneRadius * 1.6;
+    key.shadow.camera.far = sceneRadius * 8;
+    key.target.position.copy(sceneCenter);
+    scene.add(key.target);
+  }
+
+  function rebuildBbox(box) {
+    if (bboxHelper) scene.remove(bboxHelper);
+    bboxHelper = new THREE.Box3Helper(box, 0xe8830d);
+    bboxHelper.visible = P.get("bbox") === "1";
+    scene.add(bboxHelper);
+  }
+
+  // -------------------------------------------------------- scene loading ---
+  function removeSplatLayer(s) {
+    if (s.splatViewer) {
+      const v = s.splatViewer;
+      s.group.remove(v);
+      Promise.resolve().then(() => v.dispose?.()).catch(() => {});
+      s.splatViewer = null;
+    }
+    if (s.pointsObj) {
+      s.group.remove(s.pointsObj);
+      s.pointsObj.geometry.dispose();
+      s.pointsObj.material.dispose();
+      s.pointsObj = null;
+    }
+    s.splatCount = 0;
+  }
+
+  function removeMeshEntry(s, entry) {
+    entry.obj.removeFromParent();
+    entry.obj.traverse((o) => {
+      o.geometry?.dispose();
+      for (const m of [].concat(o.material || [])) m.dispose?.();
+    });
+    s.meshEntries = s.meshEntries.filter((e) => e !== entry);
+  }
+
+  function removeScene(s) {
+    removeSplatLayer(s);
+    for (const e of [...s.meshEntries]) removeMeshEntry(s, e);
+    root.remove(s.group);
+    scenes = scenes.filter((x) => x !== s);
+    if (selSel?.sceneId === s.id) selSel = null;
+  }
+
+  function clearAllScenes() {
+    for (const s of [...scenes]) removeScene(s);
+    resetNav();
+  }
+
+  async function loadSplats(s, url, token, label) {
+    const viewer = new GS3D.DropInViewer({
+      sharedMemoryForWorkers: false,
+      gpuAcceleratedSort: false,
+      integerBasedSort: true,
+      freeIntermediateSplatData: true,
+      sphericalHarmonicsDegree: 0,
+      // NOT antialiased: mip-splatting opacity compensation fades the many
+      // subpixel disks in NuRec captures to near-black; classic dilation
+      // keeps them visible (the standard 3DGS-viewer look)
+    });
+    s.splatViewer = viewer;
+    s.group.add(viewer);
+    const fmtGuess = /\.ply(\?|$)/i.test(label) ? GS3D.SceneFormat.Ply
+      : /\.ksplat(\?|$)/i.test(label) ? GS3D.SceneFormat.KSplat
+      : GS3D.SceneFormat.Splat;
+    await viewer.addSplatScene(url, {
+      format: fmtGuess,
+      showLoadingUI: false,
+      progressiveLoad: true,
+      splatAlphaRemovalThreshold: 5,   // near-invisible splats read as noise
+      onProgress: (pct, msg) => {
+        if (token !== loadToken) return;
+        if (pct < 100) setStatus(`streaming splats ${pct.toFixed(0)}%`, pct);
+        else setStatus("splats loaded");
+      },
+    });
+    if (token !== loadToken) return;
+    applySplatScale();
+    applyVisibility();
+  }
+
+  // plain point clouds render as GPU point sprites (what PLY viewers use):
+  // no depth sorting, no blending — millions of points at full frame rate
+  async function loadPoints(s, url, token, meta) {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`points fetch failed: ${resp.status}`);
+    const total = meta.bytes || +resp.headers.get("Content-Length") || 0;
+    const chunks = [];
+    let got = 0;
+    const reader = resp.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      got += value.length;
+      if (token === loadToken && total)
+        setStatus(`streaming points ${(100 * got / total).toFixed(0)}%`,
+                  100 * got / total);
+    }
+    if (token !== loadToken) return;
+    const buf = new Uint8Array(got);
+    let o = 0;
+    for (const c of chunks) { buf.set(c, o); o += c.length; }
+
+    // 16 B/point: xyz float32 + rgba uint8, interleaved views on one buffer
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.InterleavedBufferAttribute(
+      new THREE.InterleavedBuffer(new Float32Array(buf.buffer), 4), 3, 0));
+    geo.setAttribute("color", new THREE.InterleavedBufferAttribute(
+      new THREE.InterleavedBuffer(buf, 16), 3, 12, true));
+    const mat = new THREE.ShaderMaterial({
+      vertexColors: true,
+      uniforms: {
+        uSize: { value: meta.size || 0.01 },
+        uPixelScale: { value: 1 },
+      },
+      vertexShader: `
+        uniform float uSize; uniform float uPixelScale;
+        varying vec3 vColor;
+        void main() {
+          vColor = color;
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = clamp(uSize * uPixelScale / -mv.z, 1.0, 64.0);
+          gl_Position = projectionMatrix * mv;
+        }`,
+      fragmentShader: `
+        varying vec3 vColor;
+        void main() {
+          vec2 c = gl_PointCoord - 0.5;
+          if (dot(c, c) > 0.25) discard;
+          gl_FragColor = vec4(vColor, 1.0);  // stored sRGB, passed through
+        }`,
+    });
+    mat.userData.baseSize = meta.size || 0.01;
+    const pts = new THREE.Points(geo, mat);
+    pts.frustumCulled = false;
+    s.pointsObj = pts;
+    s.group.add(pts);
+    updatePixelScale();
+    applySplatScale();
+  }
+
+  function updatePixelScale() {
+    const h = renderer.domElement.height;   // physical pixels
+    const scale = h / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)));
+    for (const s of scenes)
+      if (s.pointsObj) s.pointsObj.material.uniforms.uPixelScale.value = scale;
+  }
+
+  function loadMesh(s, url, token) {
+    return new Promise((resolve) => {
+      new GLTFLoader().load(url, (gltf) => {
+        if (token !== loadToken) return resolve();
+        s.meshRoot = gltf.scene;
+        const infos = s.manifest?.mesh?.meshes || [];
+        let i = 0;
+        s.meshRoot.traverse((o) => {
+          if (o.isMesh) {
+            o.castShadow = o.receiveShadow = true;
+            o.userData.origMaterial = o.material;
+            o.userData.eye = true;
+            const info = infos[i] || {};
+            s.meshEntries.push({
+              obj: o,
+              name: (info.name || o.name || "mesh").split("/").pop() || "mesh",
+              verts: o.geometry.attributes.position.count,
+              tris: (o.geometry.index?.count || 0) / 3,
+              info, idx: i,
+            });
+            i++;
+          }
+        });
+        s.group.add(s.meshRoot);
+        applyShade(); applyVisibility(); applyShadows();
+        resolve();
+      }, undefined, (err) => {
+        console.warn("mesh load failed", err);
+        setStatus("mesh failed to load (splats still available)");
+        resolve();
+      });
+    });
+  }
+
+  function selectNode(node, sel) {
+    el.tree.querySelectorAll(".node.sel").forEach((x) => x.classList.remove("sel"));
+    node.classList.add("sel");
+    selSel = sel;
+    inspect(sel);
+    updateExport(sceneById(sel.sceneId));
+  }
+
+  function buildTree() {
+    el.tree.innerHTML = "";
+    const add = (label, ico, cnt, opts = {}) => {
+      const n = document.createElement("div");
+      n.className = "node" + (opts.indent ? " indent1" : "");
+      if (opts.sel && selSel && opts.selMatch?.(selSel)) n.classList.add("sel");
+      n.innerHTML =
+        (opts.checked === undefined ? "" :
+          `<input type="checkbox" title="show/hide layer" ${opts.checked ? "checked" : ""}>`) +
+        `<span class="ico">${ico}</span><span>${label}</span>` +
+        `<span class="cnt">${cnt || ""}</span>` +
+        (opts.remove ? `<span class="x" title="remove from scene">✕</span>` : "");
+      el.tree.appendChild(n);
+      const cb = n.querySelector("input");
+      if (cb) {
+        cb.addEventListener("click", (e) => e.stopPropagation());
+        cb.addEventListener("change", () => { opts.toggle(cb.checked); applyVisibility(); });
+      }
+      if (opts.remove) n.querySelector(".x").addEventListener("click", (e) => {
+        e.stopPropagation();
+        opts.remove();
+        buildTree(); updateStats();
+      });
+      if (opts.sel) n.addEventListener("click", () => selectNode(n, opts.sel));
+      return n;
+    };
+
+    if (!anyLayers()) {
+      const n = document.createElement("div");
+      n.className = "node";
+      n.style.color = "var(--dim)";
+      n.textContent = FILE
+        ? "empty — nothing loaded yet"
+        : "no file selected — open a .usd / .usdz / .ply / .glb / .obj / .stl / .splat file, or paste a path/URL above";
+      el.tree.appendChild(n);
+      updateExport(null);
+      return;
+    }
+
+    for (const s of scenes) {
+      add(s.name, "📦", "", {
+        checked: s.eye,
+        toggle: (on) => { s.eye = on; },
+        sel: { sceneId: s.id, kind: "scene" },
+        selMatch: (x) => x.sceneId === s.id && x.kind === "scene",
+        remove: () => {
+          setFiles(filesList().filter((f) => f !== s.source));
+          removeScene(s);
+          recomputeBounds(); rebuildNav();
+          setStatus(`removed ${s.name}`);
+        },
+      });
+      if (scLayer(s)) {
+        const isPts = s.kind === "pointcloud";
+        add(isPts ? "Points" : "Gaussians", "✳️", fmt(s.splatCount), {
+          indent: true,
+          checked: s.splatsEye,
+          toggle: (on) => { s.splatsEye = on; },
+          sel: { sceneId: s.id, kind: "splats" },
+          selMatch: (x) => x.sceneId === s.id && x.kind === "splats",
+          remove: () => {
+            removeSplatLayer(s); recomputeBounds(); rebuildNav();
+            setStatus("splat layer removed");
+          },
+        });
+      }
+      for (const entry of s.meshEntries) {
+        add(entry.name, "🔺", fmt(entry.tris) + " tris", {
+          indent: true,
+          checked: entry.obj.userData.eye !== false,
+          toggle: (on) => { entry.obj.userData.eye = on; },
+          sel: { sceneId: s.id, kind: "mesh", entryIdx: entry.idx },
+          selMatch: (x) => x.sceneId === s.id && x.kind === "mesh"
+                           && x.entryIdx === entry.idx,
+          remove: () => {
+            removeMeshEntry(s, entry); recomputeBounds(); rebuildNav();
+            setStatus(`${entry.name} removed`);
+          },
+        });
+      }
+    }
+    updateExport(selSel ? sceneById(selSel.sceneId) : null);
+  }
+
+  function inspect(sel) {
+    const s = sel && sceneById(sel.sceneId);
+    const kv = [];
+    if (s && sel.kind === "splats") {
+      const g = s.manifest?.gaussians;
+      const isPts = s.kind === "pointcloud";
+      kv.push(["type", isPts ? "point cloud" : "gaussian splats"],
+              ["rendered", fmt(s.splatCount)],
+              ["captured", fmt(g?.total)],
+              ["SH degree", g?.shDegree ?? "—"],
+              ["note", isPts ? "GPU point sprites (unsorted)"
+                             : "SH view-dependence dropped"]);
+    } else if (s && sel.kind === "mesh") {
+      const entry = s.meshEntries.find((e) => e.idx === sel.entryIdx);
+      const info = entry?.info || {};
+      kv.push(["type", "mesh (proxy)"], ["prim", info.name || entry?.name || "—"],
+              ["vertices", fmt(entry?.verts)], ["triangles", fmt(entry?.tris)],
+              ["material", info.color ? "displayColor" : "default PBR"],
+              ["vtx colors", info.vertexColors ? "yes" : "no"]);
+    } else if (s) {
+      kv.push(["type", s.kind || "—"], ["source", s.name],
+              ["up axis", s.manifest?.upAxis || "Z"],
+              ["splats", fmt(s.splatCount)],
+              ["meshes", fmt(s.meshEntries.length)]);
+    } else {
+      kv.push(["scenes", fmt(scenes.length)], ["selection", "—"]);
+    }
+    el.inspectKv.innerHTML =
+      kv.map(([k, v]) => `<div>${k}</div><div>${v}</div>`).join("");
+  }
+
+  function updateStats() {
+    const box = new THREE.Box3();
+    for (const s of scenes)
+      if (s.worldBox && (scLayer(s) || s.meshEntries.length)) box.union(s.worldBox);
+    const size = box.isEmpty() ? null : box.getSize(new THREE.Vector3());
+    const dims = size ? [size.x, size.y, size.z].map((v) => v.toFixed(1)).join(" × ") : "—";
+    const g = scenes.reduce((a, s) => a + (s.manifest?.gaussians?.total || 0), 0);
+    const ms = meshStatsAll();
+    const rows = [
+      ["scenes", fmt(scenes.length)],
+      ["splats", fmt(splatCountAll())],
+      ["gaussians", fmt(g || null)],
+      ["mesh verts", fmt(ms.verts)],
+      ["mesh tris", fmt(ms.tris)],
+      ["dims (m)", dims],
+    ];
+    el.statsKv.innerHTML =
+      rows.map(([k, v]) => `<div>${k}</div><div>${v}</div>`).join("");
+  }
+
+  // Export targets one scene: the selected one, else the most recent
+  function updateExport(s) {
+    const t = s || scenes[scenes.length - 1];
+    const hasSplat = t && t.splatUrl && t.kind !== "pointcloud";
+    const hasMesh = t && t.meshUrl;
+    el.btnDlSplat.disabled = !hasSplat;
+    el.btnDlGlb.disabled = !hasMesh;
+    el.btnDlSplat.onclick = hasSplat
+      ? () => download(t.splatUrl, t.splatName) : null;
+    el.btnDlGlb.onclick = hasMesh
+      ? () => download(t.meshUrl, (t.name || "mesh").replace(/\.\w+$/, "") + ".glb") : null;
+  }
+
+  const splatMeshOf = (s) =>
+    s.splatViewer?.viewer?.splatMesh || s.splatViewer?.splatMesh;
+
+  function computeSceneBox(s) {
+    const box = new THREE.Box3();
+    const bb = s.manifest?.gaussians?.bboxRobust;
+    if (bb) return box.copy(bboxToThree(bb));
+    const mesh = splatMeshOf(s);
+    const n = mesh?.getSplatCount?.() || 0;
+    if (n) {                               // direct splats carry no manifest bbox
+      const v = new THREE.Vector3(), xs = [], ys = [], zs = [];
+      const step = Math.max(1, Math.floor(n / 20000));
+      for (let i = 0; i < n; i += step) {
+        mesh.getSplatCenter(i, v, false);
+        xs.push(v.x); ys.push(v.y); zs.push(v.z);
+      }
+      const pct = (a, p) => { a.sort((x, y) => x - y);
+        return [a[Math.floor(a.length * p)], a[Math.floor(a.length * (1 - p))]]; };
+      const [x0, x1] = pct(xs, 0.01), [y0, y1] = pct(ys, 0.01), [z0, z1] = pct(zs, 0.01);
+      return box.copy(bboxToThree([[x0, y0, z0], [x1, y1, z1]]));
+    }
+    scene.updateMatrixWorld(true);
+    for (const e of s.meshEntries) box.expandByObject(e.obj);
+    return box;
+  }
+
+  // load ONE source into a fresh scene layer (inspect -> convert/poll -> stream)
+  let suppressFrame = false;
+  async function loadOne(file, token, loadKey) {
+    if (!file) return;
+    const budget = P.get("budget"), crop = P.get("crop");
+    const hadLayers = anyLayers();
+    const t0 = performance.now();
+    el.filePath.value = file;
+    const s = makeScene(file.split(/[\\/]/).pop(), file);
+    s.loadKey = loadKey; s.budget = budget; s.crop = crop;
+
+    setOverlay("Inspecting file…", file, 2);
+    let info;
+    try { info = await py({ action: "inspect", file, budget, crop }); }
+    catch (e) { setOverlay("Inspect failed", e.message, 0); removeScene(s); return; }
+    if (token !== loadToken) { removeScene(s); return; }
+    if (info.error) { setOverlay("Cannot load", info.error, 0); removeScene(s); return; }
+    s.kind = info.kind;
+
+    // .splat/.ksplat: feed straight to the splat renderer
+    if (info.kind === "splat-direct") {
+      const url = file.startsWith("http") ? file : fused.rawUrl(file);
+      setOverlay("Streaming splats…", file, 5);
+      try { await loadSplats(s, url, token, file); }
+      catch (e) { setOverlay("Splat load failed", e.message, 0); removeScene(s); return; }
+      if (token !== loadToken) { removeScene(s); return; }
+      s.splatCount = splatMeshOf(s)?.getSplatCount?.() || 0;
+      s.manifest = { name: s.name };
+      s.splatUrl = url; s.splatName = s.name;
+      finishScene(s, hadLayers, t0);
+      return;
+    }
+
+    // .glb/.gltf: hand straight to the mesh loader (Y-up, no conversion)
+    if (info.kind === "mesh-direct") {
+      const url = file.startsWith("http") ? file : fused.rawUrl(file);
+      setOverlay("Loading mesh…", file, 5);
+      s.manifest = { name: s.name, upAxis: "Y" };
+      s.group.rotation.x = Math.PI / 2;      // cancel root's Z-up rotation
+      await loadMesh(s, url, token);
+      if (token !== loadToken) { removeScene(s); return; }
+      s.meshUrl = url;
+      finishScene(s, hadLayers, t0);
+      return;
+    }
+
+    // usdz/ply path: ensure conversion artifacts exist
+    if (!info.ready) {
+      setOverlay("Converting…",
+        "first open of this file — extracting gaussians and proxy mesh", 0);
+      try { await py({ action: "prepare", file, budget, crop }); }
+      catch (e) { setOverlay("Convert failed to start", e.message, 0); removeScene(s); return; }
+      const ok = await new Promise((done) => {
+        let stalled = 0;
+        const poll = async () => {
+          if (token !== loadToken) return done(false);
+          let st;
+          try { st = await py({ action: "status", file, budget, crop }); }
+          catch { pollTimer = setTimeout(poll, 1500); return; }
+          const pr = st.progress || {};
+          if (pr.error) { setOverlay("Conversion failed", pr.error, 100); return done(false); }
+          if (st.ready) { info = st; return done(true); }
+          if (!st.running && !st.ready) {
+            if (++stalled >= 5) {
+              setOverlay("Conversion stalled", "worker died — check worker.log", 0);
+              return done(false);
+            }
+            pollTimer = setTimeout(poll, 1000);
+            return;
+          }
+          stalled = 0;
+          setOverlay(`Converting — ${pr.stage || "…"}`, pr.detail || "", pr.pct || 0);
+          setStatus(`converting: ${pr.stage} ${Math.round(pr.pct || 0)}%`, pr.pct);
+          pollTimer = setTimeout(poll, 1000);
+        };
+        poll();
+      });
+      if (token !== loadToken || !ok || !info.ready) { removeScene(s); return; }
+    }
+
+    s.manifest = info.manifest;
+    s.kind = info.manifest?.kind || info.kind;
+    if ((s.manifest?.upAxis || "Z") === "Y") s.group.rotation.x = Math.PI / 2;
+    const cacheUrl = (f) => fused.rawUrl(info.cacheDir + "/" + f);
+    const budKey = `${budget}c${crop}`;
+    const pointEntry = s.manifest?.pointFiles?.[budget];
+    const splatFile = s.manifest?.splatFiles?.[budKey]?.file;
+    const jobs = [];
+    if (pointEntry) {
+      setOverlay("Streaming points…", pointEntry.file, 5);
+      s.splatUrl = cacheUrl(pointEntry.file); s.splatName = pointEntry.file;
+      jobs.push(loadPoints(s, s.splatUrl, token, pointEntry)
+        .then(() => { s.splatCount = pointEntry.count; }));
+    } else if (splatFile) {
+      setOverlay("Streaming splats…", splatFile, 5);
+      s.splatUrl = cacheUrl(splatFile); s.splatName = splatFile;
+      jobs.push(loadSplats(s, s.splatUrl, token, splatFile)
+        .then(() => { s.splatCount = s.manifest.splatFiles[budKey].count; }));
+    }
+    if (s.manifest?.mesh?.file) {
+      s.meshUrl = cacheUrl(s.manifest.mesh.file);
+      jobs.push(loadMesh(s, s.meshUrl, token));
+    }
+    try { await Promise.all(jobs); }
+    catch (e) { setOverlay("Load failed", e.message, 0); removeScene(s); return; }
+    if (token !== loadToken) { removeScene(s); return; }
+    applyVisibility();
+    finishScene(s, hadLayers, t0);
+  }
+
+  function finishScene(s, hadLayers, t0) {
+    s.worldBox = computeSceneBox(s);
+    recomputeBounds();
+    if (!hadLayers && !suppressFrame) {
+      // first scene: resume the sidecar-remembered framing if this is the
+      // freshly-booted view, else frame it fresh like every later addition
+      if (!initialCameraApplied && pendingCamera) {
+        camera.position.fromArray(pendingCamera.pos);
+        controls.target.fromArray(pendingCamera.target);
+        controls.update();
+      } else {
+        fitView();
+      }
+    }
+    initialCameraApplied = true;
+    hideOverlay(); buildTree(); updateStats(); rebuildNav();
+    updateExport(s);
+    setStatus(`loaded ${s.name} in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
+  }
+
+  // reconcile loaded scenes against the files list + current budget/crop
+  async function reconcile() {
+    const token = ++loadToken;
+    clearTimeout(pollTimer);
+    const want = filesList();
+    const budget = P.get("budget"), crop = P.get("crop");
+    const key = `${budget}|${crop}`;
+    const prev = scenes.map((s) => s.source);
+    const sameSet = prev.length === want.length && want.every((f) => prev.includes(f));
+    const keyChanged = scenes.some((s) => s.loadKey !== key);
+    // a pure budget/crop change reloads everything but should NOT yank the camera
+    const keepCam = scenes.length > 0 && sameSet && keyChanged;
+    const snap = { pos: camera.position.clone(), tgt: controls.target.clone() };
+    suppressFrame = keepCam;
+
+    for (const s of [...scenes])
+      if (!want.includes(s.source) || s.loadKey !== key) removeScene(s);
+    for (const f of want) {
+      if (token !== loadToken) return;
+      if (scenes.some((s) => s.source === f)) continue;
+      await loadOne(f, token, key);
+    }
+    suppressFrame = false;
+    if (token !== loadToken) return;
+    if (keepCam) {
+      camera.position.copy(snap.pos); controls.target.copy(snap.tgt);
+      controls.update();
+    }
+    if (!anyLayers()) { hideOverlay(); setStatus("no scenes loaded"); }
+    buildTree(); updateStats(); rebuildNav();
+  }
+
+  // ---------------------------------------------------------- navigation ---
+  // Two complementary tools (modeled on Sketchfab / Blender navigation):
+  //   flyTo    smooth camera transitions shared by every programmatic move
+  //   walk     first-person WASD + drag-look for moving inside the splat
+  // plus a clickable orientation gizmo and double-click "fly to point".
+  let navMode = "orbit";
+  let camAnim = null;
+  let samplePts = null;                  // Float32Array of world-space points
+
+  function cancelFly() { camAnim = null; }
+  function flyTo(pos, target, dur = 1.2) {
+    camAnim = {
+      p0: camera.position.clone(), p1: pos.clone(),
+      t0: controls.target.clone(), t1: target.clone(),
+      q0: camera.quaternion.clone(),
+      start: performance.now(), dur: dur * 1000,
+    };
+  }
+  const _lookM = new THREE.Matrix4(), _lookQ = new THREE.Quaternion();
+  function stepFly(t) {
+    if (!camAnim) return;
+    const a = camAnim;
+    const k = Math.min((t - a.start) / a.dur, 1);
+    const s = k * k * (3 - 2 * k);
+    camera.position.lerpVectors(a.p0, a.p1, s);
+    controls.target.lerpVectors(a.t0, a.t1, s);
+    // ease the orientation in over the first third so a walk-mode camera that
+    // wasn't looking at the old target doesn't snap
+    _lookM.lookAt(camera.position, controls.target, camera.up);
+    _lookQ.setFromRotationMatrix(_lookM);
+    camera.quaternion.slerpQuaternions(a.q0, _lookQ, Math.min(s / 0.3, 1));
+    if (k >= 1) {
+      camAnim = null;
+      syncWalkAngles();
+      scheduleSidecarSave();            // programmatic move (view/gizmo) settled
+    }
+  }
+
+  // ---- walk (first-person) mode
+  const walk = { yaw: 0, pitch: 0, speed: 1, fast: false, keys: new Set(),
+                 vel: new THREE.Vector3() };
+  const WALK_KEYS = {
+    KeyW: [0, 0, -1], KeyS: [0, 0, 1], KeyA: [-1, 0, 0], KeyD: [1, 0, 0],
+    KeyQ: [0, -1, 0], KeyE: [0, 1, 0],
+    ArrowUp: [0, 0, -1], ArrowDown: [0, 0, 1],
+    ArrowLeft: [-1, 0, 0], ArrowRight: [1, 0, 0],
+  };
+  function syncWalkAngles() {
+    if (navMode !== "walk") return;
+    const e = new THREE.Euler().setFromQuaternion(camera.quaternion, "YXZ");
+    walk.yaw = e.y; walk.pitch = e.x;
+  }
+  function applyWalkLook() {
+    camera.quaternion.setFromEuler(
+      new THREE.Euler(walk.pitch, walk.yaw, 0, "YXZ"));
+  }
+  function setNavMode(m) {
+    if (m === navMode) return;
+    navMode = m;
+    cancelFly();
+    controls.enabled = m === "orbit";
+    if (m === "walk") {
+      walk.keys.clear(); walk.vel.set(0, 0, 0);
+      syncWalkAngles();
+      setStatus(`walk mode — WASD to move, drag to look, wheel sets speed (${walk.speed.toFixed(1)} m/s)`);
+    } else {
+      // hand orbit a sensible pivot: a point ahead of where we're looking
+      const fwd = new THREE.Vector3();
+      camera.getWorldDirection(fwd);
+      controls.target.copy(camera.position)
+        .addScaledVector(fwd, Math.max(sceneRadius * 0.4, 1));
+      controls.update();
+      setStatus("orbit mode");
+    }
+    el.navOrbit.classList.toggle("on", m === "orbit");
+    el.navWalk.classList.toggle("on", m === "walk");
+    el.canvas.style.cursor = m === "walk" ? "crosshair" : "";
+    updateHint();
+  }
+  const _fwd = new THREE.Vector3(), _rgt = new THREE.Vector3(),
+        _mv = new THREE.Vector3();
+  function stepWalk(dt) {
+    _mv.set(0, 0, 0);
+    for (const k of walk.keys) {
+      const v = WALK_KEYS[k];
+      if (v) { _mv.x += v[0]; _mv.y += v[1]; _mv.z += v[2]; }
+    }
+    const damp = 1 - Math.exp(-dt * 10);
+    if (_mv.lengthSq()) {
+      camera.getWorldDirection(_fwd);
+      _rgt.crossVectors(_fwd, camera.up).normalize();
+      const dir = new THREE.Vector3()
+        .addScaledVector(_rgt, _mv.x)
+        .addScaledVector(_fwd, -_mv.z)       // forward follows the look dir
+        .addScaledVector(camera.up, _mv.y);  // Q/E stay world-vertical
+      dir.normalize().multiplyScalar(walk.speed * (walk.fast ? 3.5 : 1));
+      walk.vel.lerp(dir, damp);
+    } else {
+      walk.vel.lerp(_mv.set(0, 0, 0), damp);
+    }
+    if (walk.vel.lengthSq() > 1e-8)
+      camera.position.addScaledVector(walk.vel, dt);
+  }
+
+  // ---- picking: mesh raycast first, then nearest sampled splat along the ray
+  const _picker = new THREE.Raycaster();
+  function pickPoint(ev) {
+    const r = el.canvas.getBoundingClientRect();
+    _picker.setFromCamera(new THREE.Vector2(
+      ((ev.clientX - r.left) / r.width) * 2 - 1,
+      -((ev.clientY - r.top) / r.height) * 2 + 1), camera);
+    const objs = scenes.flatMap(
+      (s) => s.meshEntries.filter((e) => e.obj.visible).map((e) => e.obj));
+    const hit = _picker.intersectObjects(objs, false)[0];
+    if (hit) return hit.point;
+    if (!samplePts?.length) return null;
+    const ro = _picker.ray.origin, rd = _picker.ray.direction;
+    let bestT = Infinity, bi = -1;
+    for (let i = 0; i < samplePts.length; i += 3) {
+      const dx = samplePts[i] - ro.x, dy = samplePts[i + 1] - ro.y,
+            dz = samplePts[i + 2] - ro.z;
+      const t = dx * rd.x + dy * rd.y + dz * rd.z;
+      if (t < 0.01 || t >= bestT) continue;
+      const per2 = dx * dx + dy * dy + dz * dz - t * t;
+      if (per2 < t * t * 0.0012) { bestT = t; bi = i; }  // ~3.5% cone
+    }
+    if (bi < 0) return null;
+    return new THREE.Vector3(samplePts[bi], samplePts[bi + 1], samplePts[bi + 2]);
+  }
+
+  // sample world-space points across every visible scene — feeds double-click
+  // "fly to point" picking when there's no mesh under the cursor
+  function collectSamplePoints() {
+    const MAXN = 30000, pts = [];
+    const v = new THREE.Vector3();
+    for (const s of scenes) {
+      if (!s.eye) continue;
+      const mesh = splatMeshOf(s);
+      const n = mesh?.getSplatCount?.() || 0;
+      if (n) {
+        const step = Math.max(1, Math.floor(n / (MAXN / Math.max(scenes.length, 1))));
+        for (let i = 0; i < n; i += step) {
+          mesh.getSplatCenter(i, v, false);
+          pts.push(v.x, v.z, -v.y);        // usd Z-up -> world Y-up
+        }
+      } else if (s.pointsObj) {
+        const pa = s.pointsObj.geometry.attributes.position;
+        const step = Math.max(1, Math.floor(pa.count / MAXN));
+        for (let i = 0; i < pa.count; i += step)
+          pts.push(pa.getX(i), pa.getZ(i), -pa.getY(i));
+      } else if (s.meshEntries.length) {
+        const total = s.meshEntries.reduce((a, e) => a + e.verts, 0);
+        const step = Math.max(1, Math.floor(total / MAXN));
+        scene.updateMatrixWorld(true);
+        for (const e of s.meshEntries) {
+          const pa = e.obj.geometry.attributes.position;
+          for (let i = 0; i < pa.count; i += step) {
+            v.fromBufferAttribute(pa, i).applyMatrix4(e.obj.matrixWorld);
+            pts.push(v.x, v.y, v.z);
+          }
+        }
+      }
+    }
+    return new Float32Array(pts);
+  }
+
+  function resetNav() { cancelFly(); samplePts = null; }
+  function rebuildNav() {
+    samplePts = collectSamplePoints();
+    walk.speed = Math.max(sceneRadius / 8, 0.5);
+  }
+
+  // ---- view gizmo: clickable orientation cube (faces + edges + corners)
+  const gizRenderer = new THREE.WebGLRenderer({
+    canvas: el.gizmo, alpha: true, antialias: true });
+  gizRenderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  gizRenderer.setSize(92, 92, false);
+  const gizScene = new THREE.Scene();
+  const gizCam = new THREE.OrthographicCamera(-1.65, 1.65, 1.65, -1.65, 0.1, 20);
+  function faceTex(label) {
+    const c = document.createElement("canvas");
+    c.width = c.height = 128;
+    const g = c.getContext("2d");
+    g.fillStyle = "#2e2e34"; g.fillRect(0, 0, 128, 128);
+    g.strokeStyle = "#4a4a52"; g.lineWidth = 5; g.strokeRect(3, 3, 122, 122);
+    g.fillStyle = "#c8c8d0"; g.font = "600 24px sans-serif";
+    g.textAlign = "center"; g.textBaseline = "middle";
+    g.fillText(label, 64, 66);
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  }
+  const GIZ_HALF = 0.8;
+  const gizCube = new THREE.Mesh(
+    new THREE.BoxGeometry(GIZ_HALF * 2, GIZ_HALF * 2, GIZ_HALF * 2),
+    ["RIGHT", "LEFT", "TOP", "BTM", "FRONT", "BACK"]
+      .map((l) => new THREE.MeshBasicMaterial({ map: faceTex(l) })));
+  gizScene.add(gizCube);
+  gizScene.add(new THREE.LineSegments(
+    new THREE.EdgesGeometry(gizCube.geometry),
+    new THREE.LineBasicMaterial({ color: 0x606068 })));
+  const gizMarker = new THREE.Mesh(
+    new THREE.SphereGeometry(0.16),
+    new THREE.MeshBasicMaterial({ color: 0xe8830d }));
+  gizMarker.visible = false;
+  gizScene.add(gizMarker);
+  const _gizDir = new THREE.Vector3();
+  function renderGizmo() {
+    if (navMode === "walk") camera.getWorldDirection(_gizDir).negate();
+    else _gizDir.copy(camera.position).sub(controls.target).normalize();
+    if (_gizDir.lengthSq() < 1e-9) _gizDir.set(0, 0, 1);
+    gizCam.position.copy(_gizDir).multiplyScalar(5);
+    gizCam.up.copy(camera.up);
+    gizCam.lookAt(0, 0, 0);
+    gizRenderer.render(gizScene, gizCam);
+  }
+  const gizRay = new THREE.Raycaster();
+  function gizZone(e) {
+    const r = el.gizmo.getBoundingClientRect();
+    gizRay.setFromCamera(new THREE.Vector2(
+      ((e.clientX - r.left) / r.width) * 2 - 1,
+      -((e.clientY - r.top) / r.height) * 2 + 1), gizCam);
+    const hit = gizRay.intersectObject(gizCube, false)[0];
+    if (!hit) return null;
+    const p = hit.point, th = GIZ_HALF * 0.62;   // face | edge | corner zones
+    const v = new THREE.Vector3(
+      Math.abs(p.x) > th ? Math.sign(p.x) : 0,
+      Math.abs(p.y) > th ? Math.sign(p.y) : 0,
+      Math.abs(p.z) > th ? Math.sign(p.z) : 0);
+    return { dir: v, point: v.clone().multiplyScalar(GIZ_HALF) };
+  }
+  function snapToDir(dir) {
+    const d = dir.clone().normalize();
+    if (navMode === "walk") {              // turn in place toward that side
+      flyTo(camera.position.clone(),
+            camera.position.clone().addScaledVector(d.negate(),
+              Math.max(sceneRadius, 1)), 0.6);
+    } else {
+      const dist = camera.position.distanceTo(controls.target);
+      flyTo(controls.target.clone().addScaledVector(d, dist),
+            controls.target.clone(), 0.6);
+    }
+  }
+  function gizOrbit(dx, dy) {
+    if (navMode === "walk") {
+      walk.yaw -= dx * 0.008;
+      walk.pitch = THREE.MathUtils.clamp(walk.pitch - dy * 0.008, -1.55, 1.55);
+      applyWalkLook();
+      return;
+    }
+    const sph = new THREE.Spherical().setFromVector3(
+      camera.position.clone().sub(controls.target));
+    sph.theta -= dx * 0.008;
+    sph.phi = THREE.MathUtils.clamp(sph.phi - dy * 0.008, 0.05, Math.PI - 0.05);
+    camera.position.copy(controls.target)
+      .add(new THREE.Vector3().setFromSpherical(sph));
+    controls.update();
+  }
+  let gizDown = null, gizDragging = false;
+  el.gizmo.addEventListener("pointerdown", (e) => {
+    cancelFly();
+    gizDown = { lx: e.clientX, ly: e.clientY, moved: 0 };
+    gizDragging = false;
+    el.gizmo.setPointerCapture(e.pointerId);
+  });
+  el.gizmo.addEventListener("pointermove", (e) => {
+    if (gizDown) {
+      const dx = e.clientX - gizDown.lx, dy = e.clientY - gizDown.ly;
+      gizDown.moved += Math.abs(dx) + Math.abs(dy);
+      if (gizDown.moved > 4) gizDragging = true;
+      if (gizDragging) { gizOrbit(dx, dy); gizMarker.visible = false; }
+      gizDown.lx = e.clientX; gizDown.ly = e.clientY;
+      return;
+    }
+    const z = gizZone(e);
+    gizMarker.visible = !!z;
+    if (z) gizMarker.position.copy(z.point).multiplyScalar(1.04);
+  });
+  el.gizmo.addEventListener("pointerup", (e) => {
+    if (gizDown && !gizDragging) {
+      const z = gizZone(e);
+      if (z) snapToDir(z.dir);
+    }
+    gizDown = null; gizDragging = false;
+  });
+  el.gizmo.addEventListener("pointerleave", () => {
+    if (!gizDown) gizMarker.visible = false;
+  });
+
+  // ---- viewport interaction: look-drag (walk), focus/teleport on dbl-click
+  let lookId = null, lookX = 0, lookY = 0;
+  el.canvas.addEventListener("pointerdown", (e) => {
+    cancelFly();
+    if (navMode !== "walk" || e.button !== 0) return;
+    lookId = e.pointerId; lookX = e.clientX; lookY = e.clientY;
+    el.canvas.setPointerCapture(e.pointerId);
+  });
+  el.canvas.addEventListener("pointermove", (e) => {
+    if (lookId !== e.pointerId) return;
+    walk.yaw -= (e.clientX - lookX) * 0.0034;
+    walk.pitch = THREE.MathUtils.clamp(
+      walk.pitch - (e.clientY - lookY) * 0.0034, -1.55, 1.55);
+    lookX = e.clientX; lookY = e.clientY;
+    applyWalkLook();
+  });
+  const endLook = (e) => { if (lookId === e.pointerId) lookId = null; };
+  el.canvas.addEventListener("pointerup", endLook);
+  el.canvas.addEventListener("pointercancel", endLook);
+  el.canvas.addEventListener("wheel", (e) => {
+    if (navMode !== "walk") { cancelFly(); return; }
+    e.preventDefault();
+    walk.speed = THREE.MathUtils.clamp(
+      walk.speed * Math.pow(1.18, -Math.sign(e.deltaY)),
+      0.05, Math.max(sceneRadius * 2, 10));
+    setStatus(`walk speed ${walk.speed.toFixed(walk.speed < 10 ? 1 : 0)} m/s`);
+  }, { passive: false });
+  el.canvas.addEventListener("dblclick", (e) => {
+    const p = pickPoint(e);
+    if (!p) return;
+    if (navMode === "walk") {              // fly to just short of the point
+      const to = p.clone().sub(camera.position);
+      const dist = to.length();
+      to.normalize();
+      const stop = Math.max(dist - Math.max(sceneRadius * 0.08, 0.8), 0);
+      flyTo(camera.position.clone().addScaledVector(to, stop), p, 1.0);
+    } else {                               // re-pivot the orbit on the point
+      flyTo(camera.position.clone(), p, 0.7);
+    }
+  });
+
+  el.navOrbit.addEventListener("click", () => setNavMode("orbit"));
+  el.navWalk.addEventListener("click", () => setNavMode("walk"));
+
+  function updateHint() {
+    el.axisHud.innerHTML = navMode === "walk"
+      ? "<b>walk</b> — drag: look · W A S D: move · Q E: down/up · Shift: fast<br>" +
+        "wheel: speed · double-click: fly to point · G / Esc: back to orbit"
+      : "orbit: drag · pan: right-drag · zoom: wheel · double-click: focus<br>" +
+        "G: walk mode · gizmo: click a face/edge/corner · F: fit all";
+  }
+
+  function download(url, name) {
+    const a = document.createElement("a");
+    a.href = url; a.download = name || "";
+    document.body.appendChild(a); a.click(); a.remove();
+  }
+
+  // ------------------------------------------------------- apply-settings ---
+  function applyVisibility() {
+    const m = P.get("mode");
+    for (const s of scenes) {
+      s.group.visible = s.eye;
+      const sl = scLayer(s);
+      if (sl) sl.visible = s.splatsEye && m !== "mesh";
+      for (const e of s.meshEntries)
+        e.obj.visible = e.obj.userData.eye !== false && m !== "splats";
+    }
+    for (const b of el.segMode.children) b.classList.toggle("on", b.dataset.v === m);
+  }
+  let wireMat = null, normalMat = null;
+  function applyShade() {
+    const sh = P.get("shade");
+    for (const b of el.segShade.children) b.classList.toggle("on", b.dataset.v === sh);
+    wireMat ??= new THREE.MeshBasicMaterial({ wireframe: true, color: 0x9ab0d0 });
+    normalMat ??= new THREE.MeshNormalMaterial();
+    for (const s of scenes) s.meshRoot?.traverse((o) => {
+      if (!o.isMesh) return;
+      o.material = sh === "wire" ? wireMat : sh === "normal" ? normalMat
+                 : o.userData.origMaterial;
+    });
+  }
+  function applyLights() {
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = parseFloat(P.get("exp"));
+    key.intensity = parseFloat(P.get("key"));
+    hemi.intensity = parseFloat(P.get("amb"));
+    el.rngExp.value = P.get("exp"); el.valExp.textContent = (+P.get("exp")).toFixed(2);
+    el.rngKey.value = P.get("key"); el.valKey.textContent = (+P.get("key")).toFixed(1);
+    el.rngAmb.value = P.get("amb"); el.valAmb.textContent = (+P.get("amb")).toFixed(2);
+  }
+  function applyShadows() {
+    const on = P.get("shadow") === "1";
+    renderer.shadowMap.enabled = on;
+    key.castShadow = on;
+    el.chkShadow.checked = on;
+    for (const s of scenes)
+      s.meshRoot?.traverse((o) => { if (o.isMesh) o.castShadow = on; });
+  }
+  function applySplatScale() {
+    const v = parseFloat(P.get("sscale"));
+    el.rngSplatScale.value = v; el.valSplatScale.textContent = v.toFixed(2);
+    for (const s of scenes) {
+      try { s.splatViewer?.viewer?.splatMesh?.setSplatScale?.(v); } catch {}
+      if (s.pointsObj)
+        s.pointsObj.material.uniforms.uSize.value =
+          s.pointsObj.material.userData.baseSize * v;
+    }
+  }
+  function applyBg() {
+    const bg = P.get("bg");
+    scene.background = new THREE.Color(bg);
+    el.inpBg.value = bg;
+  }
+  function applyToggles() {
+    if (grid) grid.visible = P.get("grid") === "1";
+    if (bboxHelper) bboxHelper.visible = P.get("bbox") === "1";
+    el.chkGrid.checked = P.get("grid") === "1";
+    el.chkBbox.checked = P.get("bbox") === "1";
+    el.chkSky.checked = P.get("crop") === "0";
+    const b = P.get("budget");
+    if (![...el.selBudget.options].some((o) => o.value === b)) {
+      const o = document.createElement("option");
+      o.value = b; o.textContent = (+b / 1e6).toFixed(2) + " M";
+      el.selBudget.appendChild(o);
+    }
+    el.selBudget.value = b;
+  }
+
+  // ---------------------------------------------------------- UI wiring ---
+  // Load / Import ADD a layer: append the path to the files list (dedup),
+  // keeping every scene already in the outliner.
+  function loadPath(v) {
+    if (!v) return;
+    const cur = filesList();
+    if (cur.includes(v)) {                 // already loaded — just frame it
+      const s = scenes.find((x) => x.source === v);
+      if (s?.worldBox) {
+        const c = s.worldBox.getCenter(new THREE.Vector3());
+        const r = Math.max(s.worldBox.getSize(new THREE.Vector3()).length() / 2, 0.5);
+        flyTo(c.clone().add(new THREE.Vector3(0.55, 0.4, 1).normalize()
+          .multiplyScalar(r * 2)), c, 0.9);
+      }
+      setStatus(`${v.split(/[\\/]/).pop()} already loaded`);
+      return;
+    }
+    setFiles([...cur, v]);                  // triggers reconcile via onChange
+  }
+  el.btnLoad.addEventListener("click", () => loadPath(el.filePath.value.trim()));
+  el.filePath.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") el.btnLoad.click();
+  });
+  // ---- file browser modal
+  let fmSelected = "";
+  async function fmOpen(dir) {
+    el.fileModal.classList.remove("hidden");
+    el.fmList.innerHTML = `<div class="fmEmpty">listing…</div>`;
+    let res;
+    try {
+      res = await py({ action: "browse", file: filesList().slice(-1)[0] || "",
+                       dir: dir || "" });
+    } catch (err) {
+      el.fmList.innerHTML = `<div class="fmEmpty">${err.message}</div>`;
+      return;
+    }
+    el.fmPath.textContent = res.dir;
+    el.fmList.innerHTML = "";
+    const row = (ico, label, sz, cls) => {
+      const r = document.createElement("div");
+      r.className = "fmRow" + (cls ? " " + cls : "");
+      r.innerHTML = `<span class="ico">${ico}</span><span>${label}</span>` +
+                    (sz ? `<span class="sz">${sz}</span>` : "");
+      el.fmList.appendChild(r);
+      return r;
+    };
+    if (res.error) row("⚠️", res.error, "");
+    if (res.parent)
+      row("📁", "..", "").addEventListener("click", () => fmOpen(res.parent));
+    for (const d of res.dirs)
+      row("📁", d.name, "").addEventListener("click", () => fmOpen(d.path));
+    for (const f of res.entries) {
+      const ico = /\.usd[zac]?$/i.test(f.name) ? "🧊" : "✳️";
+      const r = row(ico, f.name, fmtMB(f.size));
+      r.addEventListener("click", () => {
+        el.fmList.querySelectorAll(".fmRow.sel").forEach((x) => x.classList.remove("sel"));
+        r.classList.add("sel");
+        fmSelected = f.path;
+        el.fmSel.textContent = f.path;
+        el.fmLoad.disabled = false;
+      });
+      r.addEventListener("dblclick", () => { fmSelected = f.path; fmCommit(); });
+    }
+    if (!res.dirs.length && !res.entries.length && !res.error)
+      row("·", "no folders or loadable files here", "");
+  }
+  function fmCommit() {
+    if (!fmSelected) return;
+    el.fileModal.classList.add("hidden");
+    el.filePath.value = fmSelected;
+    loadPath(fmSelected);
+  }
+  el.btnBrowse.addEventListener("click", () => fmOpen());
+  el.fmLoad.addEventListener("click", fmCommit);
+  el.fmClose.addEventListener("click", () => el.fileModal.classList.add("hidden"));
+  el.fileModal.addEventListener("click", (e) => {
+    if (e.target === el.fileModal) el.fileModal.classList.add("hidden");
+  });
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") el.fileModal.classList.add("hidden");
+  });
+  el.segMode.addEventListener("click", (e) => {
+    if (e.target.dataset.v) P.set("mode", e.target.dataset.v);
+  });
+  el.segShade.addEventListener("click", (e) => {
+    if (e.target.dataset.v) P.set("shade", e.target.dataset.v);
+  });
+  el.selBudget.addEventListener("change", () => P.set("budget", el.selBudget.value));
+  el.rngSplatScale.addEventListener("input", () => P.set("sscale", el.rngSplatScale.value));
+  el.inpBg.addEventListener("input", () => P.set("bg", el.inpBg.value));
+  el.chkGrid.addEventListener("change", () => P.set("grid", el.chkGrid.checked ? "1" : "0"));
+  el.chkBbox.addEventListener("change", () => P.set("bbox", el.chkBbox.checked ? "1" : "0"));
+  el.chkSky.addEventListener("change", () => P.set("crop", el.chkSky.checked ? "0" : "1"));
+  el.rngExp.addEventListener("input", () => P.set("exp", el.rngExp.value));
+  el.rngKey.addEventListener("input", () => P.set("key", el.rngKey.value));
+  el.rngAmb.addEventListener("input", () => P.set("amb", el.rngAmb.value));
+  el.chkShadow.addEventListener("change", () => P.set("shadow", el.chkShadow.checked ? "1" : "0"));
+  el.btnFit.addEventListener("click", () => fitView(undefined, true));
+  document.querySelectorAll("[data-view]").forEach((b) =>
+    b.addEventListener("click", () =>
+      fitView(new THREE.Vector3(...VIEW_DIRS[b.dataset.view]).normalize(), true)));
+  window.addEventListener("keydown", (e) => {
+    if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+    if (!el.fileModal.classList.contains("hidden")) return;
+    if (navMode === "walk" && WALK_KEYS[e.code]) {
+      walk.keys.add(e.code); walk.fast = e.shiftKey;
+      cancelFly();
+      e.preventDefault();
+      return;
+    }
+    if (e.key === "Shift") { walk.fast = true; return; }
+    if (e.key === "f" || e.key === "F") fitView(undefined, true);
+    else if (e.key === "g" || e.key === "G")
+      setNavMode(navMode === "walk" ? "orbit" : "walk");
+    else if (e.key === "Escape" && navMode === "walk") setNavMode("orbit");
+  });
+  window.addEventListener("keyup", (e) => {
+    walk.keys.delete(e.code);
+    if (e.key === "Shift") walk.fast = false;
+  });
+  window.addEventListener("blur", () => { walk.keys.clear(); walk.fast = false; });
+
+  el.btnShot.addEventListener("click", () => {
+    renderer.render(scene, camera);   // fresh frame in the same task as toBlob
+    el.canvas.toBlob((blob) => {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = (scenes[0]?.name || "scene").replace(/\.\w+$/, "") + ".png";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    }, "image/png");
+  });
+
+  // drag & drop of splat/ply files renders straight from the blob
+  let dragDepth = 0;
+  window.addEventListener("dragenter", (e) => {
+    e.preventDefault(); dragDepth++; document.body.classList.add("dragging");
+  });
+  window.addEventListener("dragleave", () => {
+    if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove("dragging"); }
+  });
+  window.addEventListener("dragover", (e) => e.preventDefault());
+  window.addEventListener("drop", async (e) => {
+    e.preventDefault(); dragDepth = 0; document.body.classList.remove("dragging");
+    const f = e.dataTransfer.files[0];
+    if (!f) return;
+    if (/\.ply$/i.test(f.name)) {
+      // dropped blobs bypass the converter, and point-cloud plys need it
+      setStatus("PLY needs conversion — pick it via 📁 Import (or paste its path) instead");
+      return;
+    }
+    if (/\.(splat|ksplat)$/i.test(f.name)) {
+      // dropped blobs add a scene too (but aren't persisted to the files list)
+      const token = ++loadToken;
+      const hadLayers = anyLayers();
+      const s = makeScene(f.name + " (dropped)", "blob:" + f.name);
+      s.loadKey = "blob"; s.kind = "splat-direct";
+      setOverlay("Loading dropped file…", f.name, 10);
+      try {
+        await loadSplats(s, URL.createObjectURL(f), token, f.name);
+        s.splatCount = splatMeshOf(s)?.getSplatCount?.() || 0;
+        s.manifest = { name: s.name };
+        finishScene(s, hadLayers, performance.now());
+      } catch (err) { removeScene(s); setOverlay("Drop failed", err.message, 0); }
+    } else if (/\.usd[zac]?$/i.test(f.name)) {
+      setStatus("usdz needs local conversion — paste its full path in the top bar instead");
+    } else if (/\.glb$/i.test(f.name)) {
+      const token = ++loadToken;
+      const hadLayers = anyLayers();
+      const s = makeScene(f.name + " (dropped)", "blob:" + f.name);
+      s.loadKey = "blob"; s.kind = "mesh-direct";
+      s.manifest = { name: s.name, upAxis: "Y" };
+      s.group.rotation.x = Math.PI / 2;
+      setOverlay("Loading dropped mesh…", f.name, 10);
+      try {
+        await loadMesh(s, URL.createObjectURL(f), token);
+        finishScene(s, hadLayers, performance.now());
+      } catch (err) { removeScene(s); setOverlay("Drop failed", err.message, 0); }
+    } else if (/\.(obj|stl|gltf)$/i.test(f.name)) {
+      setStatus("OBJ/STL/glTF need conversion — pick via 📁 Import (or paste the path)");
+    } else {
+      setStatus(`unsupported drop: ${f.name}`);
+    }
+  });
+
+  // --------------------------------------------------------------- render ---
+  updateHint();
+  let lastLoadKey = "";
+  function drawFromParams() {
+    applyBg(); applyLights(); applyShadows(); applyToggles();
+    applyVisibility(); applyShade(); applySplatScale();
+    // reconcile only when the set of files or the budget/crop actually changed
+    const k = P.get("files") + "|" + P.get("budget") + "|" + P.get("crop");
+    if (k !== lastLoadKey) { lastLoadKey = k; reconcile(); }
+  }
+  fused.params.onChange(() => { drawFromParams(); scheduleSidecarSave(); });
+  await loadSidecar();    // seed ASSET_DEFAULTS/pendingCamera before first draw
+  drawFromParams();
+
+  // debug/test hook: capture a frame without preserveDrawingBuffer
+  window.__studio = {
+    shot() {
+      renderer.setAnimationLoop(null);
+      renderer.render(scene, camera);
+      const d = el.canvas.toDataURL("image/png");
+      renderer.setAnimationLoop(frameLoop);
+      return d;
+    },
+    pause() { renderer.setAnimationLoop(null); renderer.render(scene, camera); },
+    resume() { renderer.setAnimationLoop(frameLoop); },
+    lookAt(px, py, pz, tx, ty, tz) {
+      camera.position.set(px, py, pz);
+      controls.target.set(tx, ty, tz);
+      controls.update();
+    },
+    fit: fitView, view: (d) => fitView(new THREE.Vector3(...VIEW_DIRS[d]).normalize()),
+    setMode: setNavMode,
+    snap: (x, y, z) => snapToDir(new THREE.Vector3(x, y, z)),
+    camPos: () => camera.position.toArray().map((v) => +v.toFixed(3)),
+    addFile: (f) => loadPath(f),
+    removeScene: (i) => { const s = scenes[i]; if (s) { setFiles(filesList().filter((f) => f !== s.source)); removeScene(s); recomputeBounds(); buildTree(); rebuildNav(); } },
+    get state() {
+      return { splatCount: splatCountAll(),
+               scenes: scenes.map((s) => ({ name: s.name, kind: s.kind,
+                 splats: s.splatCount, meshes: s.meshEntries.length, eye: s.eye })),
+               radius: sceneRadius, navMode,
+               samples: samplePts ? samplePts.length / 3 : 0 };
+    },
+  };
+})();
+</script>
+</body>
+</html>
