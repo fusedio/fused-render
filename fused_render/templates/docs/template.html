@@ -189,7 +189,9 @@
     padding: 10px 16px; border-radius: var(--radius); display: none; z-index: 60; box-shadow: var(--shadow-2); max-width: 80vw; }
   #boot, #nofile { padding: 44px; color: var(--ink-3); }
   .kbd { font-family: ui-monospace, monospace; background: var(--hair-2); border-radius: 4px; padding: 1px 5px; font-size: 11px; color: var(--ink-2); margin-left: auto; }
+  /* .ro-badge / .ro-tip styles inject from /template-shared/ro-badge.js. */
 </style>
+<script src="/template-shared/ro-badge.js"></script>
 </head>
 <body class="mode-view">
   <div id="boot">Loading the editor…</div>
@@ -222,6 +224,7 @@
     </div>
     <span id="docTitle"></span>
     <span id="savedTag" class="saved-tag"></span>
+    <span id="ro" hidden></span>
     <span class="spacer"></span>
     <button id="btnComments" class="btn ghost" title="Comments"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button>
     <button id="btnHistory" class="btn ghost" title="Version history"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></button>
@@ -1137,8 +1140,27 @@
     setMode("edit"); S.dirty = true; updateSavedTag(); toast("Version restored — save to keep it.");
   }
 
+  // ---- read-only lock (SPEC §13.5) ----
+  // The import action's verdict (RO-4); applied at boot, or mid-session when a
+  // save trips the writer's fs gate (RO-3 — a chmod -w that happened after
+  // load). Viewing stays fully functional; only writes to FILE are suppressed
+  // ("Save a copy…" writes elsewhere and keeps working).
+  const RO_TOOLTIP_DEFAULT = "The file is read-only — its permissions don't allow writing, so it can't be edited here.";
+  let RO = false;
+  function applyReadonly(message, tooltip) {
+    if (RO) return;
+    RO = true;
+    clearTimeout(saveTimer);   // a pending autosave must not fire after the lock
+    fusedRoBadge.update($("ro"), message || "Read-only", tooltip || RO_TOOLTIP_DEFAULT);
+    const editBtn = $("modeSeg").querySelector('[data-mode="edit"]');
+    editBtn.disabled = true;
+    editBtn.title = tooltip || RO_TOOLTIP_DEFAULT;
+    if (S.mode === "edit") setMode("view");
+  }
+
   // ---- mode switch ----
   function setMode(mode) {
+    if (RO) mode = "view";   // honest lock: a read-only file has no edit mode
     S.mode = mode;
     document.body.classList.toggle("mode-view", mode === "view");
     document.body.classList.toggle("mode-edit", mode === "edit");
@@ -1151,6 +1173,9 @@
   // ---- save / export ----
   function updateSavedTag() { $("savedTag").textContent = S.saving ? "Saving…" : S.dirty ? "Unsaved changes" : (S.savedMtime ? "All changes saved" : ""); }
   async function doSave(kind = "auto", label = "") {
+    // Suppressed entirely on a read-only file (manual Save, ⌘S, autosave) —
+    // the badge explains why; only the deliberate paths get a toast too.
+    if (RO) { if (kind === "manual") toast("This file is read-only — use “Save a copy…” to keep changes."); return; }
     if (!S.view || S.saving) return;
     S.saving = true; updateSavedTag();
     try {
@@ -1168,6 +1193,9 @@
       await recordVersion(res.version_sha, html.length, kind, label);   // best-effort, never rejects
     } catch (e) {
       toast("Save failed: " + e.message);
+      // Mid-session chmod fallback: the writer's PermissionError arrives as a
+      // generic Error carrying its message — lock the UI like a boot verdict.
+      if (/is read-only/.test(e.message)) applyReadonly("Read-only", RO_TOOLTIP_DEFAULT);
     } finally { S.saving = false; updateSavedTag(); }
   }
   async function ensureTypst() {
@@ -1413,6 +1441,9 @@
   $("docTitle").textContent = BASENAME;
   $("topbar").classList.remove("hidden"); $("toolbar").classList.remove("hidden"); $("main").classList.remove("hidden");
   mountEditor(importedDoc);
+  // The reader's editability verdict (RO-4): lock before the initial setMode
+  // so a ?mode=edit URL lands in view mode with the badge explaining why.
+  if (res.editable === false) applyReadonly(res.readonly_message, res.readonly_tooltip);
   setMode(fused.params.get("mode") || "view");
   const panelParam = fused.params.get("panel");
   if (panelParam === "comments" || panelParam === "history") openPanel(panelParam);
