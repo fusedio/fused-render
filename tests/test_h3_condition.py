@@ -66,8 +66,29 @@ def test_plain_parquet_rejected(method, parquet):
 
 def test_h3_named_column_with_non_h3_values_rejected(method, parquet):
     # A column NAMED like H3 but holding small ints must not pass: the gate
-    # validates values (footer min/max), never trusts the name alone.
+    # validates values (footer min/max then a sample), never trusts the name.
     p = parquet("SELECT range AS h3_index FROM range(1000)")
+    assert method(p) is False
+
+
+def test_h3_named_column_with_outlier_still_accepted(method, parquet):
+    # A sentinel 0 hides the H3 pattern from min/max, but the reader accepts
+    # >=90% H3 values — for an H3-NAMED column the gate must sample past the
+    # refuting stats and agree with the reader.
+    p = parquet(
+        f"SELECT CASE WHEN range = 3 THEN 0 ELSE {H3_BASE} + range END::UBIGINT AS hex"
+        " FROM range(1000)"
+    )
+    assert method(p) is True
+
+
+def test_unknown_name_with_outlier_stays_footer_only(method, parquet):
+    # Same data under an unknown name is refuted by stats alone — no sample
+    # is paid for arbitrary columns (that's every plain parquet's columns).
+    p = parquet(
+        f"SELECT CASE WHEN range = 3 THEN 0 ELSE {H3_BASE} + range END::UBIGINT AS weird_col"
+        " FROM range(1000)"
+    )
     assert method(p) is False
 
 

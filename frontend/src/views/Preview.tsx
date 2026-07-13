@@ -322,7 +322,7 @@ function TemplatePreview({
           <button type="button" className="preview-browse-chip" onClick={toggleListing}>
             {!isListing
               ? "Browse contents"
-              : counterpart === templates[0].mode
+              : counterpart === defaultEntry.mode
                 ? "Back"
                 : modeTitle(counterpart as string)}
           </button>

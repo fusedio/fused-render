@@ -98,6 +98,15 @@ def method(path: str) -> bool:
             # Full footer coverage: min/max of every row group decide it.
             if all(looks(c, lo) and looks(c, hi) for lo, hi in c["stats"]):
                 return True
+            # Stats refuted — but the reader accepts a column at >=90% H3
+            # values, which a single outlier (a sentinel 0, a stray junk id)
+            # would hide from min/max. For a column NAMED like H3 that
+            # mismatch is likely real data the reader would render, so pay
+            # for a sample; unknown names stay footer-only (that's every
+            # column of every plain parquet — the case this gate must keep
+            # cheap on remote mounts).
+            if name.lower() in H3_NAMES:
+                unresolved.append(name)
         else:
             unresolved.append(name)
 
