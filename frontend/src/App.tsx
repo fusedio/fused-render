@@ -107,6 +107,9 @@ function StatErrorView({
     }
   };
 
+  // Mount lookup still in flight: hold off rather than flash the generic
+  // stat error and then flip it to the reconnect card a beat later.
+  if (mount === undefined) return null;
   if (mount) {
     const wedged = mount.state !== "unmounted";
     return (
