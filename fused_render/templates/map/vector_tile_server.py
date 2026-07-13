@@ -124,8 +124,9 @@ def _serve():
     con.execute("PRAGMA threads=8")
     con.execute("LOAD spatial")
 
-    files = {}                       # path -> file-state dict
+    files = {}                       # (path, layer) -> file-state dict
     files_lock = threading.Lock()
+    warm_lock = threading.Lock()     # serialize warm-up DDL (one DuckDB con)
 
     tile_cache = {}                  # (path,z,x,y) -> bytes
     tile_order = []
@@ -243,9 +244,12 @@ def _serve():
     # ---------------- warm-up (background thread) ----------------
     def _warm(path, layer):
         f = files[(path, layer)]
-        cur = con.cursor()
         tid = f["tid"]
+        # DuckDB can't run concurrent DDL on one database, so a multi-layer group
+        # builds its per-layer tables one at a time.
+        warm_lock.acquire()
         try:
+            cur = con.cursor()
             f["phase"] = "reading"
             rel, geom_sql, attrs, crs, gtype, count = _load_source(cur, path, tid, layer)
             f["columns"] = attrs
@@ -325,6 +329,8 @@ def _serve():
             traceback.print_exc()
             f["error"] = f"{type(e).__name__}: {e}"
             f["phase"] = "error"
+        finally:
+            warm_lock.release()
 
     def _detail_zoom(f, n, cap):
         bb = f.get("merc_bbox")

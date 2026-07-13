@@ -49,7 +49,9 @@ def _vector_layer(target, port, layer):
 
     meta = geo_classify.vector_meta(target, layer)
     b = meta.get("bounds")
-    if b and (abs(b[0]) > 180 or abs(b[2]) > 180 or abs(b[1]) > 90 or abs(b[3]) > 90):
+    # Latitude is the hard bound; longitude allows both the -180..180 and the
+    # 0..360 (Pacific/marine) conventions before a file is called non-geographic.
+    if b and (b[0] < -180 or b[2] > 360 or b[1] < -90 or b[3] > 90):
         return {**_err("coordinates fall outside the valid lon/lat range — this file doesn't look "
                        "georeferenced (e.g. image/pixel coordinates)"),
                 "status": "not_georeferenced", "layer": layer,
