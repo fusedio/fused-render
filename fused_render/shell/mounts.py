@@ -107,9 +107,11 @@ def mountpoint(m: dict) -> str:
     return os.path.join(mounts_dir(), m["name"])
 
 
-def add_mount(name: str, remote: str, automount: bool = False) -> dict:
+def add_mount(name: str, remote: str) -> dict:
     """Validate and persist a new mount; raises ValueError on bad input.
-    Does NOT mount — the endpoint decides whether create implies mount."""
+    Does NOT mount — the endpoint decides whether create implies mount.
+    Every mount is remounted at startup (see run_automount); there is no
+    per-mount opt-in."""
     name = (name or "").strip()
     remote = (remote or "").strip()
     if not name or any(ch in name for ch in "/\\:") or name.startswith("."):
@@ -123,8 +125,7 @@ def add_mount(name: str, remote: str, automount: bool = False) -> dict:
         raise ValueError(f"a mount named '{name}' already exists")
     if any(c["remote"] == remote for c in mounts):
         raise ValueError(f"'{remote}' is already connected")
-    m = {"id": uuid.uuid4().hex[:12], "name": name, "remote": remote,
-         "automount": bool(automount)}
+    m = {"id": uuid.uuid4().hex[:12], "name": name, "remote": remote}
     mounts.append(m)
     _write(mounts)
     return m
@@ -136,15 +137,6 @@ def get_mount(cid: str) -> dict | None:
 
 def remove_mount(cid: str) -> None:
     _write([c for c in list_mounts() if c["id"] != cid])
-
-
-def set_automount(cid: str, enabled: bool) -> dict | None:
-    mounts = list_mounts()
-    m = next((c for c in mounts if c["id"] == cid), None)
-    if m is not None:
-        m["automount"] = bool(enabled)
-        _write(mounts)
-    return m
 
 
 # -------------------------------------------------------------- rcd client
@@ -336,9 +328,11 @@ def mount_view(m: dict, rcd_mounts: set | None = None) -> dict:
     mp = mountpoint(m)
     listed = mounted_paths() if rcd_mounts is None else rcd_mounts
     return {
-        **m,
-        # Records written by the prototype predate the automount field.
-        "automount": bool(m.get("automount")),
+        # Only the persisted fields the UI needs; drop any stray keys (e.g. a
+        # legacy "automount" flag from prototype-era records).
+        "id": m["id"],
+        "name": m["name"],
+        "remote": m["remote"],
         "mountpoint": mp,
         "mounted": mp in listed or os.path.ismount(mp),
     }
@@ -348,11 +342,12 @@ def mount_view(m: dict, rcd_mounts: set | None = None) -> dict:
 
 
 def run_automount() -> None:
-    """Mount every automount-flagged mount that isn't already mounted.
-    Adoption is implicit: mount/listmounts is the status source of truth, so
-    mounts that survived a server restart just show up. Best-effort — a
-    failure logs and moves on, never blocks startup."""
-    mounts = [c for c in list_mounts() if c.get("automount")]
+    """Remount every mount that isn't already mounted. All mounts are
+    remounted at startup — there is no per-mount opt-in. Adoption is implicit:
+    mount/listmounts is the status source of truth, so mounts that survived a
+    server restart just show up. Best-effort — a failure logs and moves on,
+    never blocks startup."""
+    mounts = list_mounts()
     if not mounts:
         return
     live = mounted_paths()
@@ -482,10 +477,7 @@ def create_mount(body: dict = Body(...), x_fused: str | None = Header(default=No
     if guard is not None:
         return guard
     try:
-        m = add_mount(
-            body.get("name") or "", body.get("remote") or "",
-            automount=bool(body.get("automount")),
-        )
+        m = add_mount(body.get("name") or "", body.get("remote") or "")
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     err = attach_mount(m)
@@ -521,20 +513,6 @@ def unmount_endpoint(cid: str, x_fused: str | None = Header(default=None)):
     err = detach_mount(m)
     if err:
         return JSONResponse({"error": err}, status_code=502)
-    return mount_view(m)
-
-
-@router.put("/api/mounts/{cid}")
-def update_mount(cid: str, body: dict = Body(...),
-                 x_fused: str | None = Header(default=None)):
-    guard = _require_fused(x_fused)
-    if guard is not None:
-        return guard
-    if not isinstance(body.get("automount"), bool):
-        return JSONResponse({"error": "'automount' must be a boolean"}, status_code=400)
-    m = set_automount(cid, body["automount"])
-    if m is None:
-        return JSONResponse({"error": "unknown mount"}, status_code=404)
     return mount_view(m)
 
 

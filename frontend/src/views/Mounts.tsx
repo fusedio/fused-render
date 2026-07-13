@@ -14,7 +14,6 @@ import {
   deleteMount,
   detachMount,
   getMounts,
-  putMountAutomount,
 } from "../lib/api";
 import type { Mount, MountsResult, RemoteSuggestion } from "../lib/api";
 import { navigate } from "../lib/router";
@@ -115,19 +114,6 @@ function MountRow({
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <label
-            className="deploy-muted"
-            style={{ fontSize: "0.85em", display: "flex", gap: 4, alignItems: "center" }}
-            title="Mount automatically when the server starts"
-          >
-            <input
-              type="checkbox"
-              checked={conn.automount}
-              disabled={busy}
-              onChange={(e) => act(() => putMountAutomount(conn.id, e.target.checked))}
-            />
-            automount
-          </label>
           {conn.mounted ? (
             <>
               <button type="button" disabled={busy} onClick={() => navigate(conn.mountpoint)}>

@@ -86,7 +86,6 @@ def test_store_roundtrip(home):
     assert mounts_mod.list_mounts() == []
     c = mounts_mod.add_mount("data", "remote:bucket/prefix")
     assert c["name"] == "data" and c["remote"] == "remote:bucket/prefix"
-    assert c["automount"] is False
     [stored] = mounts_mod.list_mounts()
     assert stored["id"] == c["id"]
     mounts_mod.remove_mount(c["id"])
@@ -115,12 +114,6 @@ def test_mountpoint_derives_from_branch_aware_home(home):
     assert mp.startswith(str(home))
     assert mp.endswith("/mounts/data")
 
-
-def test_set_automount(home):
-    c = mounts_mod.add_mount("data", "remote:bucket")
-    mounts_mod.set_automount(c["id"], True)
-    [stored] = mounts_mod.list_mounts()
-    assert stored["automount"] is True
 
 
 # -- rcd client ----------------------------------------------------------------
@@ -248,14 +241,13 @@ def test_mount_unmount_delete_unknown_id(client, rcd):
     assert client.delete("/api/mounts/nope", headers=FUSED).status_code == 404
 
 
-def test_automount_toggle_endpoint(client, rcd):
-    cid = client.post(
+def test_mount_view_has_no_automount_field(client, rcd):
+    m = client.post(
         "/api/mounts", json={"name": "data", "remote": "r:bucket"},
-        headers=FUSED).json()["id"]
-    r = client.put(f"/api/mounts/{cid}", json={"automount": True}, headers=FUSED)
-    assert r.status_code == 200 and r.json()["automount"] is True
-    r = client.put(f"/api/mounts/{cid}", json={"automount": "yes"}, headers=FUSED)
-    assert r.status_code == 400
+        headers=FUSED).json()
+    # automount is implicit for every mount now — the field is gone.
+    assert "automount" not in m
+    assert set(m) == {"id", "name", "remote", "mountpoint", "mounted"}
 
 
 def test_delete_unmounts_and_removes(client, rcd):
@@ -476,17 +468,17 @@ def test_delete_blocked_while_still_mounted(client, rcd, tile_daemon, monkeypatc
 # -- automount at startup --------------------------------------------------------
 
 
-def test_run_automount_mounts_flagged_mounts(home, rcd):
-    a = mounts_mod.add_mount("auto", "r:one", automount=True)
-    mounts_mod.add_mount("manual", "r:two", automount=False)
+def test_run_automount_mounts_every_mount(home, rcd):
+    mounts_mod.add_mount("one", "r:one")
+    mounts_mod.add_mount("two", "r:two")
     mounts_mod.run_automount()
-    mounted = [b["fs"] for m, b in rcd.calls if m == "mount/mount"]
-    assert mounted == ["r:one"]
-    assert mounts_mod.mountpoint(a).endswith("/mounts/auto")
+    mounted = sorted(b["fs"] for m, b in rcd.calls if m == "mount/mount")
+    # No per-mount opt-in: every mount is remounted at startup.
+    assert mounted == ["r:one", "r:two"]
 
 
 def test_run_automount_skips_already_mounted(home, rcd):
-    c = mounts_mod.add_mount("auto", "r:one", automount=True)
+    c = mounts_mod.add_mount("auto", "r:one")
     rcd.responses["mount/listmounts"] = {
         "mountPoints": [{"Fs": "r:one", "MountPoint": mounts_mod.mountpoint(c)}]}
     mounts_mod.run_automount()

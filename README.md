@@ -189,8 +189,8 @@ local folders under `~/.fused-render/mounts/`. Everything downstream
   opens near-instant. How slow the first open is depends on the file's
   layout — cloud-optimized formats (COGs, small parquet row groups) behave
   far better than monolithic files.
-- Mounts stay up until you unmount them — including across app restarts.
-  Per-mount **automount** remounts at startup.
+- Mounts stay up until you unmount them — including across app restarts, and
+  every mount is automatically remounted when the server starts.
 
 ## Logs
 

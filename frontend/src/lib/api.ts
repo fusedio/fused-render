@@ -403,8 +403,6 @@ export interface Mount {
   id: string;
   name: string;
   remote: string;
-  // Mount automatically when the server starts (opt-in per mount).
-  automount: boolean;
   mountpoint: string;
   mounted: boolean;
 }
@@ -442,10 +440,6 @@ export function attachMount(id: string): Promise<Mount> {
 
 export function detachMount(id: string): Promise<Mount> {
   return postJson<Mount>(`/api/mounts/${id}/unmount`, {});
-}
-
-export function putMountAutomount(id: string, automount: boolean): Promise<Mount> {
-  return putJson<Mount>(`/api/mounts/${id}`, { automount });
 }
 
 export function deleteMount(id: string): Promise<void> {

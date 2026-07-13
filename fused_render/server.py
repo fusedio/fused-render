@@ -930,8 +930,8 @@ def create_app(start_dir: str) -> FastAPI:
     app.include_router(bookmarks_router)
     app.include_router(prefs_router)
     # Mounts: remote storage mounted as local paths via rclone rcd
-    # (shell/mounts.py). startup() automounts flagged mounts in a
-    # background thread; mounts deliberately survive server restarts.
+    # (shell/mounts.py). startup() remounts every mount in a background
+    # thread; mounts deliberately survive server restarts.
     from fused_render.shell import mounts as shell_mounts
 
     app.include_router(shell_mounts.router)
