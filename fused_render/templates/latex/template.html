@@ -485,11 +485,15 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
         // The file changed on disk (an AI/agent or git edit) — reload it.
         toast("File changed on disk — reloaded external edits."); await openFile(S.fileAbs);
       } else if (err.type === "readonly") {
-        // chmod -w mid-session: the buffer was built writable, so lock the save
-        // paths (S.writable gates onEdit/saveNow) and surface the state. The
-        // buffer stays editable until the next openFile re-checks stat.writable.
+        // chmod -w mid-session: the buffer was built writable. Flag it and
+        // rebuild the editor from the CURRENT buffer text (not disk) so the
+        // read-only facets actually lock typing — otherwise edits would look
+        // accepted while onEdit/saveNow silently no-op, and be lost on the
+        // next buffer switch. Unsaved text stays on screen for copy-out; the
+        // dirty dot stays lit because those edits genuinely aren't on disk.
         S.writable = false;
         showRoBadge(true);
+        makeEditor(S.view.state.doc.toString());  // live doc, not the snapshot — keeps edits typed during the failed write
         toast("File is read-only — not saved.");
       } else { toast("Save failed: " + err.message); }
     }
