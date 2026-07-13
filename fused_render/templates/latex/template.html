@@ -691,7 +691,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
       makeEditor(text); updateCursor();
       addOpenFile(abs); renderTree();
       const rel = abs === S.mainAbs ? "" : relOf(abs);
-      if (rel) fused.params.set("open", rel); else fused.params.delete("open");
+      fused.params.set("open", rel);
       saveSidecarOpen(rel);
     } catch (err) { toast("Open failed: " + err.message); }
   }
