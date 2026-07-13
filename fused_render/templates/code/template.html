@@ -220,6 +220,15 @@
     async function reloadFromDisk() {
       try {
         const st = await fused.stat(file);
+        if ((st.writable !== false) !== writable) {
+          // Writability flipped on disk (e.g. chmod while the conflict banner
+          // was up). The read-only facets live in the view's extensions, so
+          // rebuild the editor from scratch — reload discards local edits
+          // anyway, and load() re-reads the file and re-applies the lock/badge.
+          hideConflict();
+          await load();
+          return;
+        }
         const text = await fused.readFile(file);
         view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
         mtime = st.mtime;
@@ -303,6 +312,10 @@
         statusTextEl.textContent = "";
         fusedRoBadge.update(document.getElementById("ro"), "Read-only",
           "The file's permissions don't allow writing, so it can't be edited here.");
+      } else {
+        // A rebuild (reloadFromDisk after a chmod +w) must undo the lock UI.
+        saveBtn.hidden = false;
+        fusedRoBadge.update(document.getElementById("ro"), "", "");
       }
     }
 
