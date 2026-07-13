@@ -141,7 +141,7 @@ def _cache_dir(file: str) -> str:
 # -------------------------------------------------------------------- dispatcher
 def main(action: str = "export", file: str = "", html: str = "", title: str = "",
          fmt: str = "pdf", path: str = "", directory: str = "", expected_mtime: str = "",
-         sha: str = ""):
+         sha: str = "", keep: str = ""):
     if action == "warmup":
         import pypandoc
         return {"pandoc": pypandoc.get_pandoc_version()}
@@ -233,9 +233,9 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
             with contextlib.suppress(OSError):
                 os.remove(tmp)
         # Version snapshot for the history panel: content-addressed blob in the
-        # cache, deduped by sha and capped at 200 — the sidecar holds metadata
-        # only, so image-heavy documents can't balloon it. Best-effort: a
-        # snapshot hiccup must not fail a document save that already landed.
+        # cache — the sidecar holds metadata only, so image-heavy documents
+        # can't balloon it. Best-effort: a snapshot hiccup must not fail a
+        # document save that already landed.
         version_sha = hashlib.sha256(html.encode("utf-8")).hexdigest()
         vdir = os.path.join(_cache_dir(file), "versions")
         try:
@@ -247,14 +247,20 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
         except OSError:
             version_sha = ""
         else:
-            # The cap prune is per-file best-effort, separate from the write:
-            # one locked old blob must neither un-record the version that just
-            # landed nor block pruning the rest.
-            with contextlib.suppress(OSError):
-                blobs = sorted(os.scandir(vdir), key=lambda e: e.stat().st_mtime)
-                for e in blobs[:-200]:
-                    with contextlib.suppress(OSError):
-                        os.unlink(e.path)
+            # Prune blobs the sidecar no longer references, per its own
+            # retention policy (thinVersions keeps every manual save
+            # indefinitely) — never a blind age/mtime cap, which could evict a
+            # blob a manual entry still points to. `keep` is the sidecar's
+            # current version list (sent by the caller); per-file best-effort,
+            # separate from the write above, so one locked old blob can't
+            # un-record the version that just landed nor block the rest.
+            if keep:
+                with contextlib.suppress(OSError, ValueError):
+                    keep_shas = set(json.loads(keep)) | {version_sha}
+                    for e in os.scandir(vdir):
+                        if e.name[:-len(".html")] not in keep_shas:
+                            with contextlib.suppress(OSError):
+                                os.unlink(e.path)
         return {"path": file.replace(os.sep, "/"), "mtime": os.path.getmtime(file),
                 "version_sha": version_sha}
 

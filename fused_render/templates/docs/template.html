@@ -91,6 +91,8 @@
   #editor { flex: 1 1 auto; display: flex; flex-direction: column; }
   #editor > .ProseMirror { flex: 1 1 auto; }
   body.mode-view #toolbar { display: none; }
+  body.mode-view .card [data-a="del"] { display: none; }
+  body.mode-view #replaceInput, body.mode-view #replaceInput + .fr-nav { display: none; }
 
   /* ---- ProseMirror document typography ---- */
   .ProseMirror { outline: none; font-family: var(--serif); font-size: 16px; line-height: 1.6; color: #202124; }
@@ -719,6 +721,10 @@
       editable: () => S.mode === "edit",
       nodeViews,
       dispatchTransaction(tr) {
+        // View mode is read-only: `editable` only stops the browser's own
+        // typing, so this is the one place that actually blocks every path
+        // that can mutate the doc (comment delete, replace, keymap commands).
+        if (tr.docChanged && S.mode !== "edit") return;
         const ns = S.view.state.apply(tr);
         S.view.updateState(ns);
         if (tr.docChanged) { S.dirty = true; updateSavedTag(); }
@@ -1000,6 +1006,25 @@
       (v) => onOk(v.tex.trim()),
       { preview: true, okLabel: "Insert equation", onInput: (v) => { ensureKatexCss(); const pv = $("dlgPreview"); if (pv) katex.render(v.tex || "\\;", pv, { displayMode: display, throwOnError: false }); } });
   }
+  function confirmDialog(title, message, okLabel) {
+    closeDialog();
+    return new Promise((resolve) => {
+      const wrap = document.createElement("div");
+      wrap.className = "modal-overlay";
+      wrap.style.cssText = "position:fixed;inset:0;background:rgba(15,23,42,.28);display:grid;place-items:center;z-index:80";
+      const card = document.createElement("div");
+      card.style.cssText = "background:#fff;border-radius:10px;box-shadow:var(--shadow-2);padding:18px;width:min(420px,92vw)";
+      card.innerHTML = `<div style="font-weight:700;font-size:15px;margin-bottom:8px">${esc(title)}</div>
+        <div style="color:var(--ink-2);font-size:13px;margin-bottom:14px">${esc(message)}</div>
+        <div style="display:flex;justify-content:flex-end;gap:8px">
+          <button class="btn" id="cfCancel">Cancel</button><button class="btn primary" id="cfOk">${esc(okLabel)}</button></div>`;
+      wrap.appendChild(card); document.body.appendChild(wrap); dialogEl = wrap;
+      const finish = (v) => { closeDialog(); resolve(v); };
+      card.querySelector("#cfCancel").onclick = () => finish(false);
+      card.querySelector("#cfOk").onclick = () => finish(true);
+      wrap.onclick = (e) => { if (e.target === wrap) finish(false); };
+    });
+  }
 
   // ================= comments =================
   // Anchored by the `comment` mark in the doc (moves with edits); text/author
@@ -1029,6 +1054,7 @@
     }, { okLabel: "Comment" });
   }
   function removeComment(id) {
+    if (S.mode !== "edit") return;
     let tr = S.view.state.tr; const ranges = [];
     eachCommentRange(id, (cid, from, to) => ranges.push([from, to]));
     ranges.forEach(([from, to]) => tr.removeMark(from, to, schema.marks.comment));
@@ -1092,6 +1118,16 @@
     const data = await loadSidecar();
     const v = data.docs.versions.find((x) => x.id === versionId);
     if (!v || !v.sha) { toast("Version not found."); return; }
+    if (S.dirty) {
+      const ok = await confirmDialog("Discard unsaved changes?",
+        "Restoring this version replaces your current unsaved edits.", "Discard & restore");
+      if (!ok) return;
+    }
+    // Stop the pending autosave and wait out any save already in flight —
+    // doSave snapshots the doc at call time, so one finishing after the swap
+    // below would write the pre-restore content back over the restored one.
+    clearTimeout(saveTimer);
+    while (S.saving) await new Promise((r) => setTimeout(r, 100));
     try {
       const res = await py({ action: "version_html", file: FILE, sha: v.sha });
       const { dom, comments } = parseDocHtml(res.html);
@@ -1120,7 +1156,8 @@
     try {
       const doc = S.view.state.doc;
       const html = docToSaveHtml(doc);
-      const res = await py({ action: "save", file: FILE, html,
+      const keep = (await loadSidecar()).docs.versions.map((v) => v.sha);
+      const res = await py({ action: "save", file: FILE, html, keep: JSON.stringify(keep),
         expected_mtime: String(fileMtime ?? "") });
       if (res.conflict) { toast("This file changed on disk — reload to see the latest version."); return; }
       if (res.error) throw new Error(res.error);
@@ -1263,12 +1300,14 @@
     else { S.view.dispatch(S.view.state.tr.setMeta(findKey, { term: "", current: -1 })); focusView(); }
   }
   function replaceCurrent() {
+    if (S.mode !== "edit") return;
     const st = findState(); if (st.current < 0 || !st.matches[st.current]) return;
     const m = st.matches[st.current];
     S.view.dispatch(S.view.state.tr.insertText($("replaceInput").value, m.from, m.to));
     doFind($("findInput").value);
   }
   function replaceAll() {
+    if (S.mode !== "edit") return;
     const st = findState(); if (!st.matches.length) return;
     const repl = $("replaceInput").value; let tr = S.view.state.tr;
     [...st.matches].reverse().forEach((m) => tr.insertText(repl, m.from, m.to));
