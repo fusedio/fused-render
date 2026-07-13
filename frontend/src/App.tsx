@@ -21,7 +21,7 @@ import Panel from "./views/Panel";
 import Tabs from "./views/Tabs";
 import Preferences from "./views/Preferences";
 import Templates from "./views/Templates";
-import Connectors from "./views/Connectors";
+import Mounts from "./views/Mounts";
 import BookmarkOpen from "./views/BookmarkOpen";
 
 type StatState =
@@ -126,11 +126,11 @@ export default function App({ config }: { config: Config }) {
   const isTabs = pathname === "/view/_tab" || pathname === "/embed/_tab";
   const isPrefs = pathname === "/view/_prefs";
   const isTemplates = pathname === "/view/_templates";
-  // PROTOTYPE: connectors sentinel (see views/Connectors.tsx).
-  const isConnectors = pathname === "/view/_connectors";
+  // PROTOTYPE: mounts sentinel (see views/Mounts.tsx).
+  const isMounts = pathname === "/view/_mounts";
   const isBookmark = pathname === "/view/_bookmark";
   const fsPath =
-    isPanel || isTabs || isPrefs || isTemplates || isConnectors || isBookmark
+    isPanel || isTabs || isPrefs || isTemplates || isMounts || isBookmark
       ? null
       : fsPathFromLocation();
   // Browsing to a `.bookmark` file in the explorer opens it like a Finder
@@ -147,8 +147,8 @@ export default function App({ config }: { config: Config }) {
           ? "Preferences"
           : isTemplates
             ? "Templates"
-            : isConnectors
-              ? "Connectors"
+            : isMounts
+              ? "Mounts"
               : isBookmark || bookmarkFile
                 ? "Bookmark"
               : fsPath
@@ -206,15 +206,15 @@ export default function App({ config }: { config: Config }) {
         </div>
       </>
     );
-  } else if (isConnectors) {
-    // PROTOTYPE — remote-mount connectors, same sentinel pattern as _prefs.
+  } else if (isMounts) {
+    // PROTOTYPE — remote-storage mounts, same sentinel pattern as _prefs.
     main = (
       <>
         <div id="breadcrumb">
-          <StaticBreadcrumb label="Connectors" />
+          <StaticBreadcrumb label="Mounts" />
         </div>
         <div id="content">
-          <Connectors key={epoch} />
+          <Mounts key={epoch} />
         </div>
       </>
     );

@@ -119,8 +119,8 @@ KNOWN_SENTINELS = {"_render", "_listing"}
 # are all emitted long before the cap can bite. Module-level so tests can
 # shrink it.
 WALK_MAX_ENTRIES = 200_000
-# Much smaller cap when the walked path sits under a connector mountpoint
-# (shell/connectors.py): there every directory listing is a remote LIST call
+# Much smaller cap when the walked path sits under a mount mountpoint
+# (shell/mounts.py): there every directory listing is a remote LIST call
 # (S3 etc.), so an unbounded walk over a bucket is a slow, potentially paid
 # API storm. The walk truncates early and the existing `truncated` flag tells
 # the client search was bounded.
@@ -929,13 +929,13 @@ def create_app(start_dir: str) -> FastAPI:
     # prefs), kept out of this module's fs/render internals.
     app.include_router(bookmarks_router)
     app.include_router(prefs_router)
-    # Connectors: remote storage mounted as local paths via rclone rcd
-    # (shell/connectors.py). startup() automounts flagged connectors in a
+    # Mounts: remote storage mounted as local paths via rclone rcd
+    # (shell/mounts.py). startup() automounts flagged mounts in a
     # background thread; mounts deliberately survive server restarts.
-    from fused_render.shell import connectors as shell_connectors
+    from fused_render.shell import mounts as shell_mounts
 
-    app.include_router(shell_connectors.router)
-    shell_connectors.startup()
+    app.include_router(shell_mounts.router)
+    shell_mounts.startup()
     # Deploy (hosted publish through the fused CLI) — export + `fused share`
     # orchestration and the per-page deployment pointer store (deploy.py).
     app.include_router(deploy_router)
@@ -1063,11 +1063,11 @@ def create_app(start_dir: str) -> FastAPI:
         if not os.path.isdir(path):
             return _error(f"not a directory: {path}", status=400)
         walker = _walk_bfs(path, include_hidden)
-        # Remote-mount clamp: under a connector mountpoint every directory is
+        # Remote-mount clamp: under a mount mountpoint every directory is
         # a remote LIST round-trip, so the cap drops to WALK_MAX_ENTRIES_REMOTE
         # (see the constant's comment). Resolved per request — the mounts dir
         # follows home_dir()'s env-based redirection.
-        from fused_render.shell.connectors import mounts_dir as _mounts_dir
+        from fused_render.shell.mounts import mounts_dir as _mounts_dir
 
         mroot = os.path.abspath(_mounts_dir())
         under_mount = os.path.abspath(path).startswith(mroot + os.sep)

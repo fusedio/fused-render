@@ -167,10 +167,10 @@ The gear at the sidebar's bottom-left opens **Preferences** (`/view/_prefs`):
 - **Template registry** — the merged extension → templates bindings (built-in
   plus your `~/.fused-render/templates/registry.json` overrides), read-only.
 
-## Remote storage (connectors)
+## Remote storage (mounts)
 
-The cloud icon at the sidebar's bottom-left opens **Connectors**
-(`/view/_connectors`): remote storage — S3-compatible object stores, Google
+The cloud icon at the sidebar's bottom-left opens **Mounts**
+(`/view/_mounts`): remote storage — S3-compatible object stores, Google
 Drive, and anything else [rclone](https://rclone.org) speaks — mounted as
 local folders under `~/.fused-render/mounts/`. Everything downstream
 (previews, readers, tile servers) sees ordinary local paths.
@@ -190,7 +190,7 @@ local folders under `~/.fused-render/mounts/`. Everything downstream
   layout — cloud-optimized formats (COGs, small parquet row groups) behave
   far better than monolithic files.
 - Mounts stay up until you unmount them — including across app restarts.
-  Per-connector **automount** remounts at startup.
+  Per-mount **automount** remounts at startup.
 
 ## Logs
 

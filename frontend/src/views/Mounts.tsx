@@ -1,0 +1,411 @@
+// Mounts page — the /view/_mounts sentinel, entered from the sidebar
+// footer. Remote storage (S3-compatible and anything else rclone speaks)
+// mounted as local folders under ~/.fused-render/mounts; everything
+// downstream — previews, readers, tile servers — sees ordinary local paths.
+// Backend: shell/mounts.py (rclone rcd). Credentials live in rclone's
+// own config, never here. Section layout and per-action busy/error state
+// follow views/Preferences.tsx.
+import { useEffect, useState, type ReactNode } from "react";
+import {
+  attachMount,
+  createDetectedRemote,
+  createMount,
+  createRemote,
+  deleteMount,
+  detachMount,
+  getMounts,
+  putMountAutomount,
+} from "../lib/api";
+import type { Mount, MountsResult, RemoteSuggestion } from "../lib/api";
+import { navigate } from "../lib/router";
+
+// Lightweight modal reusing the Deploy modal's overlay/dialog chrome
+// (.deploy-* in shell.css): Escape or a click on the backdrop closes it.
+function Modal({
+  title,
+  onClose,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="deploy-overlay"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div
+        className="deploy-dialog"
+        role="dialog"
+        aria-modal="true"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className="deploy-head">
+          <h2>{title}</h2>
+          <button type="button" className="deploy-close" onClick={onClose} aria-label="Close">
+            ✕
+          </button>
+        </div>
+        <div className="deploy-body">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function MountRow({
+  conn,
+  onChanged,
+}: {
+  conn: Mount;
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const act = async (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await fn();
+      onChanged();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mount-card">
+      <div className="mount-card-main">
+        <span
+          title={conn.mounted ? "Mounted" : "Not mounted"}
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: "50%",
+            background: conn.mounted ? "#3fb950" : "#8b949e",
+            flexShrink: 0,
+          }}
+        />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 600 }}>{conn.name}</div>
+          <div
+            className="deploy-muted"
+            style={{
+              fontSize: "0.8em",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+            title={conn.mountpoint}
+          >
+            {conn.remote}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <label
+            className="deploy-muted"
+            style={{ fontSize: "0.85em", display: "flex", gap: 4, alignItems: "center" }}
+            title="Mount automatically when the server starts"
+          >
+            <input
+              type="checkbox"
+              checked={conn.automount}
+              disabled={busy}
+              onChange={(e) => act(() => putMountAutomount(conn.id, e.target.checked))}
+            />
+            automount
+          </label>
+          {conn.mounted ? (
+            <>
+              <button type="button" disabled={busy} onClick={() => navigate(conn.mountpoint)}>
+                Open
+              </button>
+              <button type="button" disabled={busy} onClick={() => act(() => detachMount(conn.id))}>
+                Unmount
+              </button>
+            </>
+          ) : (
+            <button type="button" disabled={busy} onClick={() => act(() => attachMount(conn.id))}>
+              Mount
+            </button>
+          )}
+        </div>
+        <button
+          type="button"
+          className="mount-delete"
+          disabled={busy}
+          title="Delete mount"
+          aria-label="Delete mount"
+          onClick={() => act(() => deleteMount(conn.id))}
+        >
+          ✕
+        </button>
+      </div>
+      {error && <div className="deploy-error">{error}</div>}
+    </div>
+  );
+}
+
+function AddMount({
+  remotes,
+  suggested,
+  onChanged,
+}: {
+  remotes: string[];
+  suggested: RemoteSuggestion[];
+  onChanged: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [remote, setRemote] = useState("");
+  const [subpath, setSubpath] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const add = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      // A "suggest:<id>" selection is a detected credential source, not an
+      // existing remote — materialize it into a keyless remote first, then
+      // mount against the real name it returns.
+      let base = remote;
+      if (remote.startsWith("suggest:")) {
+        base = (await createDetectedRemote(remote.slice("suggest:".length))).name;
+      }
+      await createMount(name, base + subpath);
+      setName("");
+      setSubpath("");
+      setRemote("");
+      onChanged();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Add mount</h2>
+      <p className="deploy-muted">
+        A mount surfaces an rclone remote as a local folder. Credentials found in your
+        environment (AWS profiles, <code>~/.aws</code>, gcloud) appear under{" "}
+        <b>Detected credentials</b> — pick one and no keys are stored. Mount a specific{" "}
+        <b>bucket/prefix</b>, not a whole bucket — narrow mounts browse and search much faster
+        (every folder listed inside a mount is a remote API call).
+      </p>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <input
+          placeholder="name (e.g. sensor-data)"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
+        <select value={remote} onChange={(e) => setRemote(e.target.value)}>
+          <option value="">— remote —</option>
+          {remotes.length > 0 && (
+            <optgroup label="Remotes">
+              {remotes.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </optgroup>
+          )}
+          {suggested.length > 0 && (
+            <optgroup label="Detected credentials">
+              {suggested.map((s) => (
+                <option key={s.id} value={`suggest:${s.id}`}>
+                  {s.label}
+                </option>
+              ))}
+            </optgroup>
+          )}
+        </select>
+        <input
+          placeholder="bucket/prefix (recommended)"
+          style={{ minWidth: 220 }}
+          value={subpath}
+          onChange={(e) => setSubpath(e.target.value)}
+        />
+        <button type="button" disabled={busy || !name || !remote} onClick={add}>
+          {busy ? "Mounting…" : "Add & mount"}
+        </button>
+      </div>
+      {error && <div className="deploy-error">{error}</div>}
+    </section>
+  );
+}
+
+function AddRemote({ onChanged }: { onChanged: () => void }) {
+  const [name, setName] = useState("");
+  const [endpoint, setEndpoint] = useState("");
+  const [region, setRegion] = useState("");
+  const [accessKey, setAccessKey] = useState("");
+  const [secretKey, setSecretKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const add = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await createRemote(name, {
+        access_key_id: accessKey,
+        secret_access_key: secretKey,
+        endpoint,
+        region,
+      });
+      setName("");
+      setAccessKey("");
+      setSecretKey("");
+      onChanged();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="prefs-section">
+      <p className="deploy-muted" style={{ marginTop: 0 }}>
+        For S3-compatible storage that needs a custom endpoint — Cloudflare R2, Backblaze B2,
+        Wasabi, MinIO, and the like. Keys are written straight into rclone's own config;
+        fused-render never stores them. For plain AWS S3 use <b>Detected credentials</b> instead,
+        and for <b>Google Drive</b> or other sign-in backends run <code>rclone config</code> in a
+        terminal — either then appears in the remote dropdown on reload.
+      </p>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <input placeholder="remote name" value={name} onChange={(e) => setName(e.target.value)} />
+        <input
+          placeholder="endpoint (blank for AWS S3)"
+          style={{ minWidth: 260 }}
+          value={endpoint}
+          onChange={(e) => setEndpoint(e.target.value)}
+        />
+        <input placeholder="region (optional)" value={region} onChange={(e) => setRegion(e.target.value)} />
+        <input placeholder="access key id" value={accessKey} onChange={(e) => setAccessKey(e.target.value)} />
+        <input
+          placeholder="secret access key"
+          type="password"
+          value={secretKey}
+          onChange={(e) => setSecretKey(e.target.value)}
+        />
+        <button type="button" disabled={busy || !name} onClick={add}>
+          {busy ? "Creating…" : "Create remote"}
+        </button>
+      </div>
+      {error && <div className="deploy-error">{error}</div>}
+    </div>
+  );
+}
+
+export default function Mounts() {
+  const [state, setState] = useState<MountsResult | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [showAddRemote, setShowAddRemote] = useState(false);
+
+  const reload = () => {
+    getMounts().then(setState, (e: Error) => setLoadError(e.message));
+  };
+  useEffect(reload, []);
+
+  if (loadError) {
+    return <div className="status-message error">Failed to load mounts: {loadError}</div>;
+  }
+  if (!state) {
+    return <div className="status-message">Loading…</div>;
+  }
+
+  return (
+    <div className="prefs-page">
+      {!state.rclone.available && (
+        <div
+          style={{
+            padding: "12px 14px",
+            border: "1px solid var(--border)",
+            borderLeft: "3px solid var(--error)",
+            borderRadius: 8,
+            background: "var(--bg-alt)",
+          }}
+        >
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>rclone not found</div>
+          <div style={{ fontSize: "0.9em" }}>
+            rclone must be installed and on your <code>PATH</code> for mounts to work. Install it
+            with <code>brew install rclone</code> (macOS), <code>apt install rclone</code> /{" "}
+            <code>dnf install rclone</code> (Linux), or the{" "}
+            <a href="https://rclone.org/install/" target="_blank" rel="noreferrer">
+              official installer
+            </a>
+            , then reload this page. Distro packages can be outdated, so a recent rclone is
+            recommended.
+          </div>
+        </div>
+      )}
+      <p className="deploy-muted" style={{ marginTop: 0 }}>
+        Remote storage mounted as local folders
+        {state.rclone.version ? ` (${state.rclone.version})` : ""}. The <b>first</b> open of a
+        large remote file downloads what it needs and can be slow; repeat opens are served from
+        a local cache and are fast. Mounts stay up until you unmount them — including across
+        restarts.
+      </p>
+      {state.mounts.length === 0 ? (
+        <p className="deploy-muted">No mounts yet.</p>
+      ) : (
+        <div className="mount-list">
+          {state.mounts.map((c) => (
+            <MountRow key={c.id} conn={c} onChanged={reload} />
+          ))}
+        </div>
+      )}
+      {state.rclone.available && (
+        <>
+          <AddMount
+            remotes={state.rclone.remotes}
+            suggested={state.rclone.suggested ?? []}
+            onChanged={reload}
+          />
+          <button
+            type="button"
+            className="deploy-muted"
+            onClick={() => setShowAddRemote(true)}
+            style={{
+              alignSelf: "flex-start",
+              border: "none",
+              background: "none",
+              cursor: "pointer",
+              padding: 0,
+              fontSize: "0.85em",
+              textDecoration: "underline",
+            }}
+          >
+            Add a custom S3 remote (R2, MinIO, …)
+          </button>
+          {showAddRemote && (
+            <Modal title="Add a custom S3 remote" onClose={() => setShowAddRemote(false)}>
+              <AddRemote
+                onChanged={() => {
+                  reload();
+                  setShowAddRemote(false);
+                }}
+              />
+            </Modal>
+          )}
+        </>
+      )}
+    </div>
+  );
+}

@@ -1895,6 +1895,72 @@ body.embed .preview-browse-chip:hover {
   padding: 5px 8px;
 }
 
+/* Mount cards — one bordered card per mounted/available mount. */
+.mount-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mount-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+}
+
+.mount-card-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.mount-card button {
+  font: inherit;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.mount-card button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.mount-card button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* Delete: quiet muted glyph, turns red on hover. Higher specificity than the
+   generic .mount-card button rules above so it wins without !important. */
+.mount-card .mount-delete {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--fg-muted);
+  font-size: 15px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.mount-card .mount-delete:hover:not(:disabled) {
+  color: var(--error);
+  border-color: var(--error);
+  background: rgba(255, 107, 107, 0.12);
+}
+
 .prefs-radio {
   display: flex;
   align-items: flex-start;

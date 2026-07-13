@@ -367,15 +367,15 @@ def test_walk_standalone_gitignore_cascades_to_subdirs(tmp_path):
     assert "proj/sub/app.log" not in rels  # root rules reach subdirs
 
 
-# -- remote-mount clamp (connectors) ---------------------------------------------
+# -- remote-mount clamp (mounts) ---------------------------------------------
 #
-# A walk under a connector mountpoint turns every directory into a remote LIST
+# A walk under a mount mountpoint turns every directory into a remote LIST
 # call, so it gets a much smaller entry cap than a local walk. The clamp keys
-# off the connectors mounts dir (home_dir()/mounts), which follows
+# off the mounts dir (home_dir()/mounts), which follows
 # FUSED_RENDER_HOME.
 
 
-def test_walk_clamped_under_connector_mounts(tmp_path, monkeypatch):
+def test_walk_clamped_under_mount_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     mount = tmp_path / "home" / "mounts" / "bucket"
     mount.mkdir(parents=True)
