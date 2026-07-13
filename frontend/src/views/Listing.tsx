@@ -220,13 +220,20 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   // Bound to `document` so it also drives the plain listing with nothing focused.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
+      // While an IME is composing, Enter confirms a candidate and the arrows
+      // move through the candidate list — never repurpose them for navigation.
+      if (e.isComposing) return;
       const el = document.activeElement as HTMLElement | null;
       const inSearch = el === searchInputRef.current;
-      const inEditable =
-        !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
+      // Only drive navigation from the search box or when nothing in particular
+      // is focused (body). If focus is on a chrome control — a breadcrumb link,
+      // the bookmark/mode-switch buttons, another input — leave its keys alone
+      // (otherwise Enter would open a file instead of activating that control).
+      const navActive =
+        inSearch || !el || el === document.body || el === document.documentElement;
 
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-        if (inEditable && !inSearch) return; // don't hijack other inputs
+        if (!navActive) return;
         const rows = navRowsRef.current;
         if (!rows.length) return;
         e.preventDefault();
@@ -241,7 +248,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
         return;
       }
       if (e.key === "Enter") {
-        if (inEditable && !inSearch) return;
+        if (!navActive) return;
         const rows = navRowsRef.current;
         if (!rows.length) return;
         const idx = rows.indexOf(selectedPathRef.current ?? "");
@@ -249,9 +256,14 @@ export default function Listing({ fsPath }: { fsPath: string }) {
         navigate(idx === -1 ? rows[0] : rows[idx]);
         return;
       }
-      // Start typing anywhere → focus the search box. Plain printable keys only
-      // (no modifiers), and never while another editable field has focus.
-      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && !inEditable) {
+      // Start typing → focus the search box so the character lands there. Only
+      // when nothing else is focused (not the search box already, not a chrome
+      // control) and only plain printable keys (no modifiers), so Space on a
+      // focused button and app shortcuts keep working.
+      if (
+        navActive && !inSearch &&
+        e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey
+      ) {
         searchInputRef.current?.focus(); // keystroke falls through into the input
       }
     }
