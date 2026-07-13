@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <title>Excel editor</title>
+<script src="/template-shared/ro-badge.js"></script>
 <style>
   :root {
     --bg: #131417; --panel: #1b1d21; --panel2: #17181c; --head: #1e2025;
@@ -57,6 +58,9 @@
   .mi { padding: 6px 12px; border-radius: 5px; white-space: nowrap; display: flex; }
   .mi:hover { background: var(--accent); color: var(--on-accent); }
   .mi .kbd { margin-left: auto; color: var(--faint); font-size: 11px; padding-left: 24px; }
+  .mi.disabled { color: var(--faint); }
+  .mi.disabled:hover { background: none; color: var(--faint); }
+  /* .ro-badge / .ro-tip styles inject from /template-shared/ro-badge.js. */
   .mi:hover .kbd { color: var(--on-accent); opacity: .8; }
   .msep { border-top: 1px solid var(--border); margin: 5px 8px; }
   /* ---- toolbar ---- */
@@ -243,6 +247,7 @@
 <body>
   <div id="topbar">
     <span id="fileName">Excel editor</span>
+    <span id="ro" hidden></span>
     <span id="savedState"></span><span id="status"></span>
     <button class="tb" id="themeBtn" title="Toggle light / dark theme">◐ Light</button>
   </div>
@@ -374,6 +379,7 @@ let book = null;          // { sheets: [...] }  — small: {rows, styles}; big: 
 let cur = 0;
 let mtime = null;
 let dirty = false;
+let readOnly = false;      // reader verdict (SPEC §13.5): blocks in-place save + edit entry, never viewing
 let sel = { ar: 0, ac: 0, r1: 0, c1: 0, r2: 0, c2: 0 };
 let editing = null;
 let undoStack = [], redoStack = [];
@@ -1312,6 +1318,10 @@ $("gridWrap").addEventListener("scroll", () => {
 function tdAt(r, c) { return tds.get(r + "," + c); }
 function startEdit(initial) {
   if (!book || editing) return;
+  if (readOnly) {
+    setStatus("Read-only — editing is disabled. Use File ▸ Save as… to edit a copy.", "err");
+    return;
+  }
   const { ar, ac } = sel;
   const td = tdAt(ar, ac); if (!td) return;
   const input = document.createElement("input");
@@ -1553,6 +1563,7 @@ async function load() {
   $("fileName").title = file || "";
   if (!file) {
     book = null; markDirty(false);
+    setReadOnly(false, "", "");
     $("gridWrap").innerHTML = `<div id="emptyState">No workbook selected.<br><br>
       Open an .xlsx file from the explorer to edit it here.</div>`;
     $("tabs").innerHTML = "";
@@ -1566,6 +1577,7 @@ async function load() {
     if (seq !== loadSeq) return;
     normalizeLoaded(res);
     mtime = res.mtime;
+    setReadOnly(res.editable === false, res.readonly_message || "", res.readonly_tooltip || "");
     undoStack = []; redoStack = []; renderLimit = RENDER_CAP; invalidateValues();
     const want = fused.params.get("sheet");
     cur = Math.max(0, book.sheets.findIndex((s2) => s2.name === want));
@@ -1579,9 +1591,25 @@ async function load() {
   }
 }
 
+// Reader verdict → badge + disabled in-place save (SPEC §13.5 RO-4/RO-5).
+// Viewing, sort/filter, export and Save-as all stay available.
+function setReadOnly(ro, message, tooltip) {
+  readOnly = ro;
+  fusedRoBadge.update($("ro"), ro ? (message || "Read-only") : "", tooltip || "");
+  const mi = document.querySelector('#menubar .mi[data-act="save"]');
+  if (mi) {
+    mi.classList.toggle("disabled", ro);
+    mi.title = ro ? (tooltip || "") : "";
+  }
+}
+
 async function save(force) {
   const file = currentFile();
   if (!file || !book) return;
+  if (readOnly) {
+    setStatus("Read-only — the file can't be saved in place. Use File ▸ Save as… for a copy.", "err");
+    return;
+  }
   commitEdit();
   setStatus("Saving…");
   try {
@@ -1756,7 +1784,17 @@ async function loadScripts() {
 async function saveScripts(scripts) {
   const data = await loadSidecar();
   data.excel = { ...(data.excel || {}), scripts };
-  await fused.writeFile(sidecarPath(), JSON.stringify(data, null, 2));
+  try {
+    await fused.writeFile(sidecarPath(), JSON.stringify(data, null, 2));
+  } catch (err) {
+    // A read-only `<file>.json` sidecar 403s (SPEC RO-2); scripts still run,
+    // they just won't persist — non-fatal.
+    if (err && err.type === "readonly") {
+      setStatus("Script not saved — the scripts sidecar file is read-only.", "err");
+      return;
+    }
+    throw err;
+  }
 }
 
 async function openScriptEditor() {

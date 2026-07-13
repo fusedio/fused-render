@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LaTeX</title>
+<script src="/template-shared/ro-badge.js"></script>
 <style>
   /* ---- Light Airtable-flavored design system (matches the source app) ---- */
   :root {
@@ -254,6 +255,7 @@
         <div id="gutterbar">
           <span class="fname" id="curFile">main.tex</span>
           <span class="dirty hidden" id="dirtyDot" title="Unsaved changes">●</span>
+          <span id="ro" hidden></span>
           <div class="spacer" style="flex:1"></div>
           <span class="muted" id="cursorPos" style="font-size:11px"></span>
         </div>
@@ -337,6 +339,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     mainAbs: FILE,          // the entrypoint this template was opened for (fixed for its lifetime)
     fileAbs: "",            // currently open buffer (abs) — may be an \input child
     mtime: 0,               // optimistic-lock mtime of the open buffer
+    writable: true,         // stat.writable of the open buffer — false locks the editor (SPEC §13.5)
     tree: [], outline: null, bib: [],
     pdf: null, scale: 1.0, lastPdf: "",
     compiling: false, pendingCompile: false,
@@ -421,29 +424,37 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
   const editParent = $("editor");
   function makeEditor(doc) {
     if (S.view) { S.view.destroy(); S.view = null; }
-    const state = CM.EditorState.create({
-      doc,
-      extensions: [
-        CM.lineNumbers(), CM.highlightActiveLine(), CM.highlightActiveLineGutter(),
-        CM.history(), CM.drawSelection(), CM.dropCursor(),
-        CM.bracketMatching(), CM.closeBrackets(), CM.codeFolding(), CM.foldGutter(),
-        CM.highlightSelectionMatches(),
-        CM.StreamLanguage.define(CM.stex),
-        CM.syntaxHighlighting(stexHL),
-        CM.autocompletion({ override: [latexCompletions] }),
-        CM.keymap.of([
-          { key: "Mod-s", preventDefault: true, run: () => { saveNow(); return true; } },
-          { key: "Mod-Enter", preventDefault: true, run: () => { compile(); return true; } },
-          ...CM.closeBracketsKeymap, ...CM.defaultKeymap, ...CM.historyKeymap,
-          ...CM.searchKeymap, ...CM.completionKeymap, ...CM.foldKeymap, CM.indentWithTab,
-        ]),
-        lightTheme, CM.syntaxHighlighting(stexHL),
-        CM.EditorView.updateListener.of((u) => {
-          if (u.docChanged) onEdit();
-          if (u.selectionSet || u.docChanged) { updateCursor(); scheduleSync(); }
-        }),
-      ],
-    });
+    const extensions = [
+      CM.lineNumbers(), CM.highlightActiveLine(), CM.highlightActiveLineGutter(),
+      CM.history(), CM.drawSelection(), CM.dropCursor(),
+      CM.bracketMatching(), CM.closeBrackets(), CM.codeFolding(), CM.foldGutter(),
+      CM.highlightSelectionMatches(),
+      CM.StreamLanguage.define(CM.stex),
+      CM.syntaxHighlighting(stexHL),
+      CM.autocompletion({ override: [latexCompletions] }),
+      CM.keymap.of([
+        { key: "Mod-s", preventDefault: true, run: () => { saveNow(); return true; } },
+        { key: "Mod-Enter", preventDefault: true, run: () => { compile(); return true; } },
+        ...CM.closeBracketsKeymap, ...CM.defaultKeymap, ...CM.historyKeymap,
+        ...CM.searchKeymap, ...CM.completionKeymap, ...CM.foldKeymap, CM.indentWithTab,
+      ]),
+      lightTheme, CM.syntaxHighlighting(stexHL),
+      CM.EditorView.updateListener.of((u) => {
+        if (u.docChanged) onEdit();
+        if (u.selectionSet || u.docChanged) { updateCursor(); scheduleSync(); }
+      }),
+    ];
+    // Read-only file (SPEC §13.5): lock the buffer so dirty can never flip and
+    // no save path (autosave, Mod-s) ever fires. The server refuses the write
+    // anyway (403 readonly); this makes the UI honest up front. Both facets:
+    // editable=false locks the DOM (caret, typing), readOnly=true rejects the
+    // transactions synthesized input can still smuggle past it. The editor is
+    // rebuilt per openFile, so the facets are simply included conditionally.
+    if (!S.writable) {
+      extensions.push(CM.EditorView.editable.of(false));
+      extensions.push(CM.EditorState.readOnly.of(true));
+    }
+    const state = CM.EditorState.create({ doc, extensions });
     S.view = new CM.EditorView({ state, parent: editParent });
   }
   function updateCursor() {
@@ -456,12 +467,15 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
   // =========================================================== edit / save
   const scheduleSave = debounce(() => saveNow(), 1200);
   const scheduleCompileAfterSave = debounce(() => compile(), 1600);
+  const RO_TOOLTIP = "The file is read-only — its permissions don't allow writing, so it can't be edited here.";
+  const showRoBadge = (on) => fusedRoBadge.update($("ro"), on ? "Read-only" : "", on ? RO_TOOLTIP : "");
   function onEdit() {
+    if (!S.writable) return;  // read-only buffer never arms autosave (belt — the locked facets are braces)
     S.dirty = true; $("dirtyDot").classList.remove("hidden");
     scheduleSave(); scheduleCompileAfterSave();
   }
   async function saveNow() {
-    if (!S.view || !S.fileAbs || !S.dirty) return;
+    if (!S.view || !S.fileAbs || !S.dirty || !S.writable) return;
     const text = S.view.state.doc.toString();
     try {
       const st = await fused.writeFile(S.fileAbs, text, S.mtime ? { expectedMtime: S.mtime } : undefined);
@@ -470,6 +484,13 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
       if (err.type === "conflict") {
         // The file changed on disk (an AI/agent or git edit) — reload it.
         toast("File changed on disk — reloaded external edits."); await openFile(S.fileAbs);
+      } else if (err.type === "readonly") {
+        // chmod -w mid-session: the buffer was built writable, so lock the save
+        // paths (S.writable gates onEdit/saveNow) and surface the state. The
+        // buffer stays editable until the next openFile re-checks stat.writable.
+        S.writable = false;
+        showRoBadge(true);
+        toast("File is read-only — not saved.");
       } else { toast("Save failed: " + err.message); }
     }
   }
@@ -687,6 +708,8 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
       const st = await fused.stat(abs);
       const text = await fused.readFile(abs);
       S.fileAbs = abs; S.mtime = st.mtime; S.dirty = false; $("dirtyDot").classList.add("hidden");
+      S.writable = st.writable !== false; // absent field (older server) → editable
+      showRoBadge(!S.writable);           // badge tracks the OPEN buffer; hide again on a writable file
       $("curFile").textContent = baseName(abs);
       makeEditor(text); updateCursor();
       addOpenFile(abs); renderTree();
