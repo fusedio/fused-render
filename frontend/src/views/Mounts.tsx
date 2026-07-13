@@ -159,6 +159,22 @@ function MountRow({
   );
 }
 
+// A labelled form control: a small uppercase caption above the input, so the
+// Add-mount row reads as named fields instead of a row of bare placeholders.
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+      <span
+        className="deploy-muted"
+        style={{ fontSize: "0.7em", textTransform: "uppercase", letterSpacing: "0.04em" }}
+      >
+        {label}
+      </span>
+      {children}
+    </label>
+  );
+}
+
 function AddMount({
   remotes,
   suggested,
@@ -201,49 +217,56 @@ function AddMount({
     <section className="prefs-section">
       <h2>Add mount</h2>
       <p className="deploy-muted">
-        A mount surfaces an rclone remote as a local folder. Credentials found in your
-        environment (AWS profiles, <code>~/.aws</code>, gcloud) appear under{" "}
-        <b>Detected credentials</b> — pick one and no keys are stored. Mount a specific{" "}
-        <b>bucket/prefix</b>, not a whole bucket — narrow mounts browse and search much faster
-        (every folder listed inside a mount is a remote API call).
+        Surface an rclone remote as a local folder. Pick a remote you created, or one under{" "}
+        <b>Detected credentials</b> (from your AWS / gcloud config — no keys stored).
       </p>
-      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-        <input
-          placeholder="name (e.g. sensor-data)"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-        />
-        <select value={remote} onChange={(e) => setRemote(e.target.value)}>
-          <option value="">— remote —</option>
-          {remotes.length > 0 && (
-            <optgroup label="Remotes">
-              {remotes.map((r) => (
-                <option key={r} value={r}>
-                  {r}
-                </option>
-              ))}
-            </optgroup>
-          )}
-          {suggested.length > 0 && (
-            <optgroup label="Detected credentials">
-              {suggested.map((s) => (
-                <option key={s.id} value={`suggest:${s.id}`}>
-                  {s.label}
-                </option>
-              ))}
-            </optgroup>
-          )}
-        </select>
-        <input
-          placeholder="bucket/prefix (recommended)"
-          style={{ minWidth: 220 }}
-          value={subpath}
-          onChange={(e) => setSubpath(e.target.value)}
-        />
+      <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
+        <Field label="Name">
+          <input
+            placeholder="e.g. sensor-data"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </Field>
+        <Field label="Remote">
+          <select value={remote} onChange={(e) => setRemote(e.target.value)}>
+            <option value="">— remote —</option>
+            {remotes.length > 0 && (
+              <optgroup label="Remotes">
+                {remotes.map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+            {suggested.length > 0 && (
+              <optgroup label="Detected credentials">
+                {suggested.map((s) => (
+                  <option key={s.id} value={`suggest:${s.id}`}>
+                    {s.label}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+        </Field>
+        <Field label="Path">
+          <input
+            placeholder="bucket/prefix"
+            style={{ minWidth: 200 }}
+            value={subpath}
+            onChange={(e) => setSubpath(e.target.value)}
+          />
+        </Field>
         <button type="button" disabled={busy || !name || !remote} onClick={add}>
           {busy ? "Mounting…" : "Add & mount"}
         </button>
       </div>
+      <p className="deploy-muted" style={{ fontSize: "0.8em", margin: 0 }}>
+        Tip: mount a specific <b>bucket/prefix</b>, not a whole bucket — narrow mounts browse and
+        search much faster.
+      </p>
       {error && <div className="deploy-error">{error}</div>}
     </section>
   );
