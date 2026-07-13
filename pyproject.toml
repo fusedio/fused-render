@@ -29,13 +29,6 @@ dependencies = [
 dev = [
     "pytest",
 ]
-# Native CPU inference for the receipt VLM example.
-vision = [
-    "pillow>=11",
-    "torch>=2.7",
-    "torchvision>=0.22",
-    "transformers>=5,<6",
-]
 # Baked into the bundled CPython of the .app (SPEC DM-2): users of the packaged
 # app cannot pip install, so the interpreter ships with the popular data stack.
 # Dev installs: pip install -e ".[bundled]"
