@@ -356,6 +356,14 @@ function InventoryRow({
             shadows core
           </span>
         )}
+        {t.hasCondition && (
+          <span
+            className="templates-pill"
+            title="Has a condition.py — this template only shows for files its condition accepts"
+          >
+            conditional
+          </span>
+        )}
       </td>
       <td className="templates-inv-usedby">
         {t.usedBy.length === 0 ? (

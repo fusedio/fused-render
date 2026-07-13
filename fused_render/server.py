@@ -582,6 +582,110 @@ def _icon_for(template_path: str):
     return icon if os.path.isfile(icon) else None
 
 
+def _condition_file(template_path: str):
+    """The template folder's `condition.py` path, or None when it has no gate.
+
+    A template folder may ship a `condition.py` defining `def method(path):
+    bool` — the gate that decides whether the template shows for a given file
+    (SPEC CT-12). No file -> the template is unconditional (the common case).
+    Split from evaluation so `_apply_conditions` can cheaply tell which entries
+    need running before paying to load any code.
+    """
+    condition_file = os.path.join(os.path.dirname(template_path), "condition.py")
+    return condition_file if os.path.isfile(condition_file) else None
+
+
+def _run_condition(condition_file: str, target_path: str):
+    """Load+exec a `condition.py` and call `method(target_path)`. Returns
+    (allowed: bool, error: str|None).
+
+    The module is loaded fresh per call (like the registries, so an edit applies
+    on the next stat with no restart) and never inserted into `sys.modules` — so
+    concurrent calls with the fixed spec name get independent module objects and
+    are safe to run in parallel (same rationale as executor._run_in_process). A
+    broken condition — no callable `method`, or any raised exception — drops the
+    template and surfaces the reason as `template_error`, mirroring how an
+    unresolvable name is dropped (SPEC CT-6): a template gated by code that
+    can't decide is not silently shown.
+    """
+    import importlib.util
+
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "__fused_condition__", condition_file
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        fn = getattr(mod, "method", None)
+        if not callable(fn):
+            return False, f"{condition_file}: does not define a callable 'method'"
+        return bool(fn(target_path)), None
+    except BaseException as e:  # never let a bad condition tear down the stat
+        return False, f"{condition_file}: {e}"
+
+
+def _apply_conditions(entries: list, target_path: str):
+    """Filter resolved template entries through their `condition.py` gates
+    (SPEC PT-8/CT-12). Sentinel entries (`path is None`, D73) and folders with
+    no `condition.py` are kept as-is. Returns (kept: list, error: str|None) —
+    the first gate error in list order, matching `_resolve_mode_list`'s
+    first-error convention.
+
+    Gates are independent and may be slow (user code — filesystem reads, etc.),
+    so the entries that have one are evaluated **concurrently**: the per-stat
+    cost is the slowest single gate, not their sum. Results are keyed by entry
+    index and reassembled in list order, so ordering and error precedence are
+    unaffected by completion order. The common case (no gates) spawns no threads.
+    """
+    # Cheap first pass: which entries actually carry a condition.py? (isfile,
+    # ~1µs each). Only these need code loaded; everything else is kept as-is.
+    gated = []  # list[(index, condition_file)]
+    for i, entry in enumerate(entries):
+        path = entry.get("path")
+        if path is not None:
+            cf = _condition_file(path)
+            if cf is not None:
+                gated.append((i, cf))
+
+    results = {}  # index -> (allowed, error)
+
+    def _serial():
+        for i, cf in gated:
+            results[i] = _run_condition(cf, target_path)
+
+    if len(gated) == 1:
+        _serial()
+    elif gated:
+        # Bounded fan-out — an extension has at most a handful of conditional
+        # templates (SPEC CT-12), so one worker per gate is fine. The pool
+        # machinery itself (thread creation, submit, result) lives OUTSIDE
+        # _run_condition's catch-all, so an OS refusing a new thread under load
+        # would otherwise escape and 500 the stat — breaking the fail-closed
+        # guarantee. Contain it: on any pool failure, fall back to serial
+        # evaluation, which is wholly inside _run_condition's catch-all.
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=len(gated)) as pool:
+                futures = {pool.submit(_run_condition, cf, target_path): i for i, cf in gated}
+                for fut, i in futures.items():
+                    results[i] = fut.result()
+        except BaseException:
+            results.clear()  # drop any partial results, re-evaluate cleanly
+            _serial()
+
+    kept, error = [], None
+    for i, entry in enumerate(entries):
+        if i in results:
+            allowed, err = results[i]
+            if err and error is None:
+                error = err
+            if not allowed:
+                continue
+        kept.append(entry)
+    return kept, error
+
+
 def _resolve_mode_list(names):
     """Resolve an ordered list of template names into `templates` stat
     entries (SPEC PT-8). Per-entry validation (SPEC CT-6): a name that can't
@@ -814,7 +918,121 @@ def _templates_for(path: str, is_dir: bool):
         # text, offer the same viewers .txt gets. Binary keeps the metadata
         # fallback (empty list).
         entries, _ = _resolve_mode_list(["text", "code"])
+
+    # Conditional templates (SPEC PT-8): a template folder may gate itself on
+    # the file with a `condition.py`. Filter after resolution so gating is
+    # orthogonal to the registry — it runs on whatever list survived, built-in
+    # or user, main path or text-sniff fallback.
+    entries, cond_err = _apply_conditions(entries, path)
+    error = error or cond_err
     return entries, error
+
+
+def _writable(path: str) -> bool:
+    """True iff /api/fs/write would accept this path. An existing target needs
+    W_OK on itself — the atomic os.replace would otherwise bypass a read-only
+    bit via the parent directory — and a new file needs W_OK on its parent.
+    Templates read this off the stat payload to render read-only mode up
+    front; keep the two in agreement."""
+    if os.path.exists(path):
+        return os.access(path, os.W_OK)
+    return os.access(os.path.dirname(path) or ".", os.W_OK)
+
+
+def _stat_payload(path: str, is_dir: bool, st: os.stat_result | None = None) -> dict:
+    """The /api/fs/stat shape. /api/fs/write returns it too, so the editor can
+    re-arm its optimistic lock from a save response. Pass a pre-fetched `st` to
+    avoid a redundant stat() — one remote round-trip under a mount."""
+    if st is None:
+        st = os.stat(path)
+    templates, template_error = _templates_for(path, is_dir)
+    payload = {
+        "path": path,
+        "name": os.path.basename(path) or path,
+        "is_dir": is_dir,
+        "size": None if is_dir else st.st_size,
+        "mtime": st.st_mtime,
+        "writable": _writable(path),
+        "templates": templates,
+    }
+    if template_error:
+        payload["template_error"] = template_error
+    return payload
+
+
+def _fs_stat(path: str):
+    # One stat, not the exists()+isdir()+stat() trio: over a remote mount each
+    # is a round-trip, so a plain metadata fetch cost 3 LISTs. os.path.exists()
+    # returns False for any OSError, so mirror that -> 404.
+    try:
+        st = os.stat(path)
+    except OSError:
+        return _error(f"no such file or directory: {path}", status=404)
+    return _stat_payload(path, stat_mod.S_ISDIR(st.st_mode), st)
+
+
+def _fs_write(body: dict, x_fused: str | None):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    path = body.get("path")
+    content = body.get("content")
+    expected_mtime = body.get("expected_mtime")
+
+    if not path or not os.path.isabs(path):
+        return _error("'path' must be an absolute filesystem path")
+    if not isinstance(content, str):
+        return _error("'content' must be a string")
+    if os.path.isdir(path):
+        return _error(f"path is a directory: {path}")
+    parent = os.path.dirname(path)
+    if not os.path.isdir(parent):
+        return _error(f"parent directory does not exist: {parent}", status=404)
+
+    # Read-only guard: refuse before touching anything. The atomic write
+    # below replaces the target via the PARENT directory, so without this
+    # check a chmod -w file would be silently overwritten. The bare "readonly"
+    # error string is a wire contract — runtime.js writeFile turns it into a
+    # typed error, like "conflict" below.
+    if not _writable(path):
+        return JSONResponse({"error": "readonly"}, status_code=403)
+
+    # Optimistic lock: the editor sends the mtime it last saw; if the file
+    # changed (or was deleted) underneath it, refuse so the edit doesn't
+    # clobber someone else's write. Compare against the raw st_mtime float
+    # that /api/fs/stat returns, with a tolerance for float round-tripping.
+    exists = os.path.exists(path)
+    if expected_mtime is not None:
+        if not exists:
+            return JSONResponse({"error": "conflict", "mtime": None}, status_code=409)
+        current = os.stat(path).st_mtime
+        if abs(current - expected_mtime) >= 1e-6:
+            return JSONResponse({"error": "conflict", "mtime": current}, status_code=409)
+
+    # Preserve the target's permission bits across an overwrite.
+    mode = stat_mod.S_IMODE(os.stat(path).st_mode) if exists else None
+
+    # Atomic write: land the bytes in a temp file in the same directory,
+    # fsync, then os.replace onto the target so a reader never sees a
+    # half-written file (and a crash leaves the original intact).
+    fd, tmp = tempfile.mkstemp(dir=parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        if mode is not None:
+            os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except OSError as e:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return _error(f"cannot write {path}: {e}", status=400)
+
+    return _stat_payload(path, False)
 
 
 def create_app(start_dir: str) -> FastAPI:
@@ -991,26 +1209,7 @@ def create_app(start_dir: str) -> FastAPI:
 
     @app.get("/api/fs/stat")
     def api_fs_stat(path: str):
-        # One stat, not three (was exists()+isdir()+stat()): over a remote
-        # mount each is a round-trip, so a plain metadata fetch cost 3 LISTs.
-        # os.path.exists() returns False for any OSError, so mirror that ->404.
-        try:
-            st = os.stat(path)
-        except OSError:
-            return _error(f"no such file or directory: {path}", status=404)
-        is_dir = stat_mod.S_ISDIR(st.st_mode)
-        templates, template_error = _templates_for(path, is_dir)
-        payload = {
-            "path": path,
-            "name": os.path.basename(path) or path,
-            "is_dir": is_dir,
-            "size": None if is_dir else st.st_size,
-            "mtime": st.st_mtime,
-            "templates": templates,
-        }
-        if template_error:
-            payload["template_error"] = template_error
-        return payload
+        return _fs_stat(path)
 
     @app.get("/api/fs/list")
     def api_fs_list(path: str):
@@ -1208,72 +1407,7 @@ def create_app(start_dir: str) -> FastAPI:
 
     @app.post("/api/fs/write")
     def api_fs_write(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-        guard = _require_fused(x_fused)
-        if guard is not None:
-            return guard
-
-        path = body.get("path")
-        content = body.get("content")
-        expected_mtime = body.get("expected_mtime")
-
-        if not path or not os.path.isabs(path):
-            return _error("'path' must be an absolute filesystem path")
-        if not isinstance(content, str):
-            return _error("'content' must be a string")
-        if os.path.isdir(path):
-            return _error(f"path is a directory: {path}")
-        parent = os.path.dirname(path)
-        if not os.path.isdir(parent):
-            return _error(f"parent directory does not exist: {parent}", status=404)
-
-        # Optimistic lock: the editor sends the mtime it last saw; if the file
-        # changed (or was deleted) underneath it, refuse so the edit doesn't
-        # clobber someone else's write. Compare against the raw st_mtime float
-        # that /api/fs/stat returns, with a tolerance for float round-tripping.
-        exists = os.path.exists(path)
-        if expected_mtime is not None:
-            if not exists:
-                return JSONResponse({"error": "conflict", "mtime": None}, status_code=409)
-            current = os.stat(path).st_mtime
-            if abs(current - expected_mtime) >= 1e-6:
-                return JSONResponse({"error": "conflict", "mtime": current}, status_code=409)
-
-        # Preserve the target's permission bits across an overwrite.
-        mode = stat_mod.S_IMODE(os.stat(path).st_mode) if exists else None
-
-        # Atomic write: land the bytes in a temp file in the same directory,
-        # fsync, then os.replace onto the target so a reader never sees a
-        # half-written file (and a crash leaves the original intact).
-        fd, tmp = tempfile.mkstemp(dir=parent)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(content)
-                f.flush()
-                os.fsync(f.fileno())
-            if mode is not None:
-                os.chmod(tmp, mode)
-            os.replace(tmp, path)
-        except OSError as e:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            return _error(f"cannot write {path}: {e}", status=400)
-
-        # Same shape as /api/fs/stat so the editor can re-arm its lock.
-        st = os.stat(path)
-        templates, template_error = _templates_for(path, False)
-        payload = {
-            "path": path,
-            "name": os.path.basename(path) or path,
-            "is_dir": False,
-            "size": st.st_size,
-            "mtime": st.st_mtime,
-            "templates": templates,
-        }
-        if template_error:
-            payload["template_error"] = template_error
-        return payload
+        return _fs_write(body, x_fused)
 
     @app.get("/render")
     def render(path: str):

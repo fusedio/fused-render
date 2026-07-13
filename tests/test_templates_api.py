@@ -116,6 +116,17 @@ def test_inventory_user_template_and_used_by(ctx):
     assert bc["path"] == os.path.join(os.path.abspath(server.USER_TEMPLATES_DIR), "brandcard")
 
 
+def test_inventory_reports_condition(ctx):
+    # A folder with a condition.py is flagged hasCondition; a plain one is not.
+    ctx.make_template("gated", extra={"condition.py": "def method(path):\n    return True\n"})
+    ctx.make_template("plain")
+    by_name = {t["name"]: t for t in ctx.client.get("/api/templates/inventory").json()["templates"]}
+    assert by_name["gated"]["hasCondition"] is True
+    assert by_name["plain"]["hasCondition"] is False
+    # core templates ship no condition.py
+    assert by_name["structure"]["hasCondition"] is False
+
+
 def test_inventory_user_shadows_core_single_entry(ctx):
     ctx.make_template("code")  # same name as a core template -> shadow
     templates = ctx.client.get("/api/templates/inventory").json()["templates"]

@@ -1,0 +1,1424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Docs</title>
+<style>
+  /* ---- Airtable-flavored light design system (authored scoped-CSS, no build step) ---- */
+  :root {
+    --blue: #166ee1; --blue-2: #2d7ff9; --blue-soft: #e8f0fe; --blue-ink: #0f5bc4;
+    --canvas: #f7f8fa; --chrome: #ffffff; --hair: #e0e3e8; --hair-2: #eceef1;
+    --ink: #1d2025; --ink-2: #4c5560; --ink-3: #8a929e;
+    --danger: #d64b4b; --ok: #1a9c67; --amber: #d98218;
+    --radius: 6px; --radius-lg: 10px;
+    --shadow-1: 0 1px 2px rgba(15,23,42,.06), 0 1px 3px rgba(15,23,42,.08);
+    --shadow-2: 0 6px 24px rgba(15,23,42,.16);
+    --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --serif: "Georgia", "Times New Roman", serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: var(--font); color: var(--ink); background: var(--canvas);
+    font-size: 13px; height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  button { font: inherit; cursor: pointer; }
+  .hidden { display: none !important; }
+
+  /* ---- top bar ---- */
+  #topbar {
+    display: flex; align-items: center; gap: 10px; padding: 7px 12px; flex: 0 0 auto;
+    background: var(--chrome); border-bottom: 1px solid var(--hair); z-index: 20;
+  }
+  .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; letter-spacing: .2px; }
+  .brand .mark { width: 22px; height: 22px; border-radius: 5px; background: var(--blue);
+    color: #fff; display: grid; place-items: center; font-size: 12px; font-weight: 800; }
+  #docTitle { font-weight: 600; font-size: 13.5px; max-width: 42vw; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; color: var(--ink); }
+  .spacer { flex: 1 1 auto; }
+  .saved-tag { color: var(--ink-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+  .btn { display: inline-flex; align-items: center; gap: 6px; background: var(--chrome); color: var(--ink);
+    border: 1px solid var(--hair); border-radius: var(--radius); padding: 6px 11px; font-weight: 500; }
+  .btn:hover { background: var(--hair-2); }
+  .btn.primary { background: var(--blue); color: #fff; border-color: var(--blue); font-weight: 600; }
+  .btn.primary:hover { background: var(--blue-ink); }
+  .btn.ghost { border-color: transparent; background: transparent; }
+  .btn.ghost:hover { background: var(--hair-2); }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .btn svg { width: 15px; height: 15px; }
+
+  /* view/edit segmented toggle */
+  .seg { display: inline-flex; background: var(--hair-2); border-radius: var(--radius); padding: 2px; gap: 2px; }
+  .seg button { border: none; background: transparent; color: var(--ink-2); border-radius: 4px;
+    padding: 5px 12px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
+  .seg button.on { background: #fff; color: var(--blue); box-shadow: var(--shadow-1); }
+
+  /* ---- toolbar (edit mode) ---- */
+  #toolbar { display: flex; align-items: center; gap: 3px; padding: 5px 12px; flex-wrap: wrap;
+    background: var(--chrome); border-bottom: 1px solid var(--hair); flex: 0 0 auto; }
+  .tb { border: 1px solid transparent; background: transparent; color: var(--ink); border-radius: var(--radius);
+    height: 30px; min-width: 30px; padding: 0 7px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+  .tb:hover { background: var(--hair-2); }
+  .tb.on { background: var(--blue-soft); color: var(--blue); }
+  .tb svg { width: 16px; height: 16px; }
+  .tb.txt { font-weight: 600; }
+  .tsep { width: 1px; height: 20px; background: var(--hair); margin: 0 5px; }
+  select.tb { -webkit-appearance: none; appearance: none; padding: 0 22px 0 9px; cursor: pointer;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%238a929e' stroke-width='3'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 6px center; border-color: var(--hair); }
+
+  /* ---- workspace: TOC | page | (panels) ---- */
+  #main { flex: 1 1 auto; min-height: 0; display: flex; position: relative; }
+  #toc { flex: 0 0 250px; overflow-y: auto; background: var(--chrome); border-right: 1px solid var(--hair);
+    padding: 14px 10px; }
+  #toc h4 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .7px; color: var(--ink-3); padding: 0 6px; }
+  .toc-item { display: block; width: 100%; text-align: left; border: none; background: none; color: var(--ink-2);
+    padding: 4px 6px; border-radius: 5px; font-size: 12.5px; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .toc-item:hover { background: var(--hair-2); color: var(--ink); }
+  .toc-item.h1 { font-weight: 600; }
+  .toc-item.h2 { padding-left: 18px; }
+  .toc-item.h3 { padding-left: 30px; color: var(--ink-3); }
+  .toc-empty { color: var(--ink-3); padding: 6px; font-size: 12px; }
+
+  #scroll { flex: 1 1 auto; overflow-y: auto; padding: 28px 20px 120px; }
+  #page { max-width: 816px; margin: 0 auto; background: #fff; border: 1px solid var(--hair);
+    border-radius: 3px; box-shadow: var(--shadow-1); padding: 72px 84px; min-height: 900px;
+    display: flex; flex-direction: column; }
+  /* editable area fills the page so clicks below the last line land in the editor */
+  #editor { flex: 1 1 auto; display: flex; flex-direction: column; }
+  #editor > .ProseMirror { flex: 1 1 auto; }
+  body.mode-view #toolbar { display: none; }
+  body.mode-view .card [data-a="del"] { display: none; }
+  body.mode-view #replaceInput, body.mode-view #replaceInput + .fr-nav { display: none; }
+
+  /* ---- ProseMirror document typography ---- */
+  .ProseMirror { outline: none; font-family: var(--serif); font-size: 16px; line-height: 1.6; color: #202124; }
+  .ProseMirror:focus { outline: none; }
+  .ProseMirror p { margin: 0 0 12px; }
+  .ProseMirror h1 { font-size: 28px; font-weight: 700; margin: 24px 0 12px; line-height: 1.25; }
+  .ProseMirror h2 { font-size: 22px; font-weight: 700; margin: 20px 0 10px; line-height: 1.3; }
+  .ProseMirror h3 { font-size: 18px; font-weight: 600; margin: 16px 0 8px; }
+  .ProseMirror h4 { font-size: 16px; font-weight: 600; margin: 14px 0 6px; }
+  .ProseMirror blockquote { border-left: 3px solid var(--hair); margin: 0 0 12px; padding: 2px 0 2px 16px; color: var(--ink-2); }
+  .ProseMirror pre { background: #f3f4f6; border-radius: 6px; padding: 12px 14px; font-family: ui-monospace, Menlo, monospace;
+    font-size: 13.5px; overflow-x: auto; margin: 0 0 12px; }
+  .ProseMirror code { background: #f0f1f3; border-radius: 4px; padding: 1px 5px; font-family: ui-monospace, Menlo, monospace; font-size: .88em; }
+  .ProseMirror pre code { background: none; padding: 0; }
+  .ProseMirror ul, .ProseMirror ol { margin: 0 0 12px; padding-left: 26px; }
+  .ProseMirror li { margin: 2px 0; }
+  .ProseMirror img { max-width: 100%; height: auto; border-radius: 3px; }
+  .ProseMirror hr { border: none; border-top: 2px solid var(--hair); margin: 20px 0; }
+  .ProseMirror a { color: var(--blue-ink); text-decoration: underline; }
+  .ProseMirror table { border-collapse: collapse; margin: 0 0 14px; width: 100%; table-layout: fixed; overflow: hidden; }
+  .ProseMirror td, .ProseMirror th { border: 1px solid var(--hair); padding: 6px 9px; vertical-align: top; position: relative; }
+  .ProseMirror th { background: #f7f8fa; font-weight: 600; }
+  .ProseMirror .selectedCell:after { content: ""; position: absolute; inset: 0; background: rgba(22,110,225,.12); pointer-events: none; }
+
+  .muted { color: var(--ink-3); }
+
+  /* ---- dropdown menu ---- */
+  .menu-wrap { position: relative; }
+  .menu { position: absolute; top: calc(100% + 4px); right: 0; background: #fff; border: 1px solid var(--hair);
+    border-radius: var(--radius); box-shadow: var(--shadow-2); padding: 5px; min-width: 190px; z-index: 40; }
+  .menu button { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; border: none;
+    background: none; color: var(--ink); padding: 7px 10px; border-radius: 5px; font-size: 13px; }
+  .menu button:hover { background: var(--hair-2); }
+  .menu .sub { color: var(--ink-3); font-size: 11px; padding: 6px 10px 3px; text-transform: uppercase; letter-spacing: .5px; }
+  .menu .menu-sub { position: relative; }
+  .menu .menu-sub > .menu { display: none; top: -6px; left: calc(100% + 2px); right: auto; }
+  .menu .menu-sub:hover > .menu, .menu .menu-sub.open > .menu { display: block; }
+
+  /* ---- comments in the document ---- */
+  .ProseMirror .comment { background: #fff3c4; border-bottom: 2px solid #f2c14e; cursor: pointer; }
+  .ProseMirror .comment.active { background: #ffe08a; }
+  .math-node { cursor: pointer; }
+
+  /* ---- right panel (comments / history) ---- */
+  #panel { flex: 0 0 300px; border-left: 1px solid var(--hair); background: var(--chrome); display: flex; flex-direction: column; }
+  #panel.hidden { display: none; }
+  .panel-head { display: flex; align-items: center; gap: 4px; padding: 8px 10px; border-bottom: 1px solid var(--hair); }
+  .panel-head .ptab { border: none; background: none; color: var(--ink-2); font-weight: 600; padding: 6px 10px; border-radius: 5px; font-size: 12.5px; }
+  .panel-head .ptab.on { background: var(--blue-soft); color: var(--blue); }
+  .panel-head .pclose { margin-left: auto; border: none; background: none; color: var(--ink-3); font-size: 18px; cursor: pointer; padding: 2px 6px; }
+  .panel-body { flex: 1 1 auto; overflow-y: auto; padding: 10px; }
+  .card { border: 1px solid var(--hair); border-radius: 8px; padding: 10px; margin-bottom: 8px; background: #fff; }
+  .card .who { font-weight: 600; font-size: 12px; }
+  .card .when { color: var(--ink-3); font-size: 11px; }
+  .card .quote { color: var(--ink-3); font-size: 11.5px; border-left: 2px solid var(--hair); padding-left: 6px; margin: 4px 0; font-style: italic; }
+  .card .body { font-size: 13px; margin: 4px 0; white-space: pre-wrap; }
+  .card .acts { display: flex; gap: 8px; margin-top: 6px; }
+  .card .acts button { border: none; background: none; color: var(--blue); font-size: 12px; cursor: pointer; padding: 0; }
+  .ver-row { display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 6px; }
+  .ver-row:hover { background: var(--hair-2); }
+  .ver-row .vk { font-size: 10px; text-transform: uppercase; letter-spacing: .4px; padding: 1px 5px; border-radius: 4px; }
+  .ver-row .vk.manual { background: var(--blue-soft); color: var(--blue); }
+  .ver-row .vk.auto { background: var(--hair-2); color: var(--ink-3); }
+  .ver-row .vwhen { flex: 1 1 auto; font-size: 12px; color: var(--ink-2); }
+  .ver-row button { border: 1px solid var(--hair); background: #fff; border-radius: 5px; font-size: 11.5px; padding: 3px 8px; cursor: pointer; }
+  .empty-note { color: var(--ink-3); font-size: 12.5px; padding: 10px 4px; }
+
+  /* ---- find & replace bar ---- */
+  #findbar { position: absolute; top: 8px; right: 20px; z-index: 30; background: #fff; border: 1px solid var(--hair);
+    border-radius: var(--radius); box-shadow: var(--shadow-2); padding: 8px; display: none; grid-template-columns: 1fr auto; gap: 6px; width: 360px; }
+  #findbar.on { display: grid; }
+  #findbar input { padding: 6px 8px; border: 1px solid var(--hair); border-radius: 5px; font: inherit; }
+  #findbar .fr-nav { display: flex; align-items: center; gap: 2px; }
+  #findbar .fr-nav button, #findbar .fr-act button { border: 1px solid var(--hair); background: #fff; border-radius: 5px; padding: 5px 9px; font-size: 12px; cursor: pointer; }
+  #findbar .fr-count { font-size: 11.5px; color: var(--ink-3); align-self: center; min-width: 54px; }
+  #findbar .fr-act { grid-column: 1 / -1; display: flex; gap: 6px; }
+  .ProseMirror .search-hit { background: #ffe9a8; }
+  .ProseMirror .search-hit.current { background: #ffbf47; }
+
+  /* ---- File menu (Google-Docs-like) ---- */
+  #fileMenu button .kbd { margin-left: auto; }
+
+  /* ---- print ---- */
+  @media print {
+    #topbar, #toolbar, #toc, #panel, #findbar, #toast, .brand { display: none !important; }
+    body, #main, #scroll { display: block !important; height: auto !important; overflow: visible !important; background: #fff !important; }
+    #scroll { padding: 0 !important; }
+    #page { box-shadow: none !important; border: none !important; max-width: none !important; margin: 0 !important; padding: 0 !important; min-height: 0 !important; }
+    .ProseMirror { font-size: 12pt; }
+  }
+
+  /* ---- toast + boot ---- */
+  #toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); background: #22262c; color: #fff;
+    padding: 10px 16px; border-radius: var(--radius); display: none; z-index: 60; box-shadow: var(--shadow-2); max-width: 80vw; }
+  #boot, #nofile { padding: 44px; color: var(--ink-3); }
+  .kbd { font-family: ui-monospace, monospace; background: var(--hair-2); border-radius: 4px; padding: 1px 5px; font-size: 11px; color: var(--ink-2); margin-left: auto; }
+</style>
+</head>
+<body class="mode-view">
+  <div id="boot">Loading the editor…</div>
+  <div id="nofile" class="hidden">No file selected.</div>
+
+  <!-- top bar -->
+  <div id="topbar" class="hidden">
+    <span class="brand"><span class="mark">D</span></span>
+    <div class="menu-wrap">
+      <button id="btnFileMenu" class="btn ghost" title="File">File <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><path d="M6 9l6 6 6-6"/></svg></button>
+      <div id="fileMenu" class="menu hidden" style="left:0;right:auto;min-width:220px">
+        <button data-file="save">Save <span class="kbd">⌘S</span></button>
+        <button data-file="saveas">Save a copy… <span class="kbd">⌘⇧S</span></button>
+        <button data-file="print">Print <span class="kbd">⌘P</span></button>
+        <button data-file="shortcuts">Keyboard shortcuts <span class="kbd">⌘/</span></button>
+        <div class="menu-sub" style="border-top:1px solid var(--hair-2);margin-top:4px;padding-top:4px">
+          <button id="dlSub">Download <span style="margin-left:auto">▸</span></button>
+          <div class="menu">
+            <button data-fmt="pdf">PDF (.pdf)</button>
+            <button data-fmt="docx">Word (.docx)</button>
+            <button data-fmt="html">HTML (.html)</button>
+            <button data-fmt="md">Markdown (.md)</button>
+            <button data-fmt="latex">LaTeX (.tex)</button>
+            <button data-fmt="odt">OpenDocument (.odt)</button>
+            <button data-fmt="rtf">Rich Text (.rtf)</button>
+            <button data-fmt="epub">EPUB (.epub)</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <span id="docTitle"></span>
+    <span id="savedTag" class="saved-tag"></span>
+    <span class="spacer"></span>
+    <button id="btnComments" class="btn ghost" title="Comments"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button>
+    <button id="btnHistory" class="btn ghost" title="Version history"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></button>
+    <div class="seg" id="modeSeg">
+      <button data-mode="view" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>View</button>
+      <button data-mode="edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>Edit</button>
+    </div>
+    <div class="menu-wrap">
+      <button id="btnExport" class="btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 15V3M7 8l5-5 5 5M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>Download</button>
+      <div id="exportMenu" class="menu hidden">
+        <div class="sub">Download as</div>
+        <button data-fmt="pdf">PDF (.pdf)</button>
+        <button data-fmt="docx">Word (.docx)</button>
+        <button data-fmt="html">HTML (.html)</button>
+        <button data-fmt="md">Markdown (.md)</button>
+        <button data-fmt="latex">LaTeX (.tex)</button>
+        <button data-fmt="odt">OpenDocument (.odt)</button>
+        <button data-fmt="rtf">Rich Text (.rtf)</button>
+        <button data-fmt="epub">EPUB (.epub)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- formatting toolbar -->
+  <div id="toolbar" class="hidden"></div>
+
+  <!-- main -->
+  <div id="main" class="hidden">
+    <div id="toc"><h4>Outline</h4><div id="tocList"><div class="toc-empty">No headings yet</div></div></div>
+    <div id="scroll">
+      <div id="findbar">
+        <input id="findInput" placeholder="Find in document" autocomplete="off">
+        <div class="fr-nav"><span id="findCount" class="fr-count"></span><button id="findPrev" title="Previous">▲</button><button id="findNext" title="Next">▼</button><button id="findClose" title="Close">✕</button></div>
+        <input id="replaceInput" placeholder="Replace with" autocomplete="off">
+        <div class="fr-nav"><button id="btnReplace">Replace</button><button id="btnReplaceAll">All</button></div>
+      </div>
+      <div id="page"><div id="editor"></div></div>
+    </div>
+    <div id="panel" class="hidden">
+      <div class="panel-head">
+        <button class="ptab" data-tab="comments">Comments</button>
+        <button class="ptab" data-tab="history">History</button>
+        <button class="pclose" id="panelClose">×</button>
+      </div>
+      <div class="panel-body" id="panelBody"></div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+<script type="module">
+(async function boot() {
+  const $ = (id) => document.getElementById(id);
+  if (typeof fused === "undefined") {
+    $("boot").textContent = "Open this page inside fused-render (e.g. http://127.0.0.1:8765/view/<path>/docs/template.html).";
+    return;
+  }
+
+  fused.autoReload(false); // editor must not reload out from under the cursor — own autosave changes mtime; external edits are the conflict lock's job (SPEC LR-5)
+
+  // The target file arrives as the read-only _file param (template contract).
+  const FILE = fused.params.get("_file") || "";
+  if (!FILE) {
+    $("boot").classList.add("hidden");
+    $("nofile").classList.remove("hidden");
+    $("nofile").textContent = "No file selected (missing _file param).";
+    return;
+  }
+  const BASENAME = FILE.split(/[\\/]/).pop();
+  const WORD_EXT = /\.docx$/i;
+  const IS_DOCX = WORD_EXT.test(BASENAME);
+  document.title = "Docs — " + BASENAME;
+
+  // ---- vendored asset loading (relative src 404s inside the render iframe) ----
+  const HTML_PATH = new URLSearchParams(location.search).get("path") || "";
+  const BASE_DIR = HTML_PATH.slice(0, Math.max(HTML_PATH.lastIndexOf("/"), HTML_PATH.lastIndexOf("\\")) + 1);
+  const assetUrl = (rel) => fused.rawUrl(BASE_DIR + rel);
+  async function loadCss(rel) {
+    const css = await (await fetch(assetUrl(rel))).text();
+    const s = document.createElement("style"); s.textContent = css; document.head.appendChild(s);
+  }
+  let PM, katex;
+  try {
+    await Promise.all([
+      loadCss("vendor/prosemirror-view.css"),
+      loadCss("vendor/prosemirror-gapcursor.css"),
+      loadCss("vendor/prosemirror-tables.css"),
+      loadCss("vendor/prosemirror-math.css"),
+    ]);
+    PM = await import(assetUrl("vendor/prosemirror.esm.js"));
+    katex = PM.katex;
+  } catch (err) {
+    $("boot").textContent = "Failed to load editor libraries: " + err.message; throw err;
+  }
+  // KaTeX fonts load from the CDN on first equation render, not from the bundle.
+  const KATEX_FONT_CDN = "https://cdn.jsdelivr.net/npm/katex@0.17.0/dist/fonts/";
+  let katexCssPromise = null;
+  function ensureKatexCss() {
+    if (!katexCssPromise) katexCssPromise = (async () => {
+      let css = await (await fetch(assetUrl("vendor/katex.min.css"))).text();
+      css = css.replace(/url\(fonts\/([^)]+)\)/g, (_, f) => `url(${KATEX_FONT_CDN}${f})`);
+      const s = document.createElement("style"); s.textContent = css; document.head.appendChild(s);
+    })();
+    return katexCssPromise;
+  }
+
+  const { Schema, DOMParser: PMDOMParser, DOMSerializer, Fragment } = PM.pmModel;
+  const { EditorState, Plugin, PluginKey, TextSelection } = PM.pmState;
+  const { EditorView, Decoration, DecorationSet } = PM.pmView;
+  const C = PM.pmCommands;
+  const { keymap } = PM.pmKeymap;
+  const { history, undo, redo } = PM.pmHistory;
+  const { inputRules, smartQuotes, ellipsis, wrappingInputRule, textblockTypeInputRule } = PM.pmInputrules;
+  const { dropCursor } = PM.pmDropcursor;
+  const { gapCursor } = PM.pmGapcursor;
+  const L = PM.pmSchemaList;
+  const T = PM.pmTables;
+  const M = PM.pmMath;
+
+  // ------------------------------------------------------------------ schema ---
+  // Deliberately limited to what pandoc's HTML<->docx round-trip preserves, so
+  // the .docx on disk is the single source of truth — nothing the editor can
+  // produce is silently lost on save/reopen.
+  const tableNodes = T.tableNodes({ tableGroup: "block", cellContent: "block+",
+    cellAttributes: { background: { default: null } } });
+
+  // Strip the TeX delimiters pandoc/toDOM wrap around math (\(…\), \[…\], $…$).
+  const mathTex = (dom) => {
+    const t = (dom.textContent || "").trim();
+    const m = t.match(/^\\\(([\s\S]*)\\\)$/) || t.match(/^\\\[([\s\S]*)\\\]$/)
+      || t.match(/^\$\$([\s\S]*)\$\$$/) || t.match(/^\$([\s\S]*)\$$/);
+    return (m ? m[1] : t).trim();
+  };
+  const mathContent = (dom, sch) => { const tex = mathTex(dom); return tex ? Fragment.from(sch.text(tex)) : Fragment.empty; };
+
+  const nodes = {
+    doc: { content: "block+" },
+    paragraph: { group: "block", content: "inline*", parseDOM: [{ tag: "p" }], toDOM: () => ["p", 0] },
+    heading: {
+      group: "block", content: "inline*", defining: true,
+      attrs: { level: { default: 1 } },
+      parseDOM: [1, 2, 3, 4, 5, 6].map((level) => ({ tag: "h" + level, attrs: { level } })),
+      toDOM: (n) => ["h" + n.attrs.level, 0],
+    },
+    blockquote: { group: "block", content: "block+", defining: true, parseDOM: [{ tag: "blockquote" }], toDOM: () => ["blockquote", 0] },
+    code_block: {
+      group: "block", content: "text*", marks: "", code: true, defining: true,
+      parseDOM: [{ tag: "pre", preserveWhitespace: "full" }],
+      toDOM: () => ["pre", ["code", 0]],
+    },
+    horizontal_rule: { group: "block", parseDOM: [{ tag: "hr" }], toDOM: () => ["hr"] },
+    ordered_list: { group: "block", content: "list_item+", attrs: { order: { default: 1 } },
+      parseDOM: [{ tag: "ol", getAttrs: (d) => ({ order: +d.getAttribute("start") || 1 }) }],
+      toDOM: (n) => n.attrs.order === 1 ? ["ol", 0] : ["ol", { start: n.attrs.order }, 0] },
+    bullet_list: { group: "block", content: "list_item+", parseDOM: [{ tag: "ul" }], toDOM: () => ["ul", 0] },
+    list_item: { content: "paragraph block*", defining: true, parseDOM: [{ tag: "li" }], toDOM: () => ["li", 0] },
+    image: {
+      group: "inline", inline: true, draggable: true,
+      attrs: { src: {}, alt: { default: null }, title: { default: null }, width: { default: null } },
+      parseDOM: [{ tag: "img[src]", getAttrs: (d) => ({ src: d.getAttribute("src"), alt: d.getAttribute("alt"), title: d.getAttribute("title"), width: d.getAttribute("width") }) }],
+      toDOM: (n) => ["img", { src: n.attrs.src, alt: n.attrs.alt, title: n.attrs.title, width: n.attrs.width }],
+    },
+    hard_break: { group: "inline", inline: true, selectable: false, parseDOM: [{ tag: "br" }], toDOM: () => ["br"] },
+    // math: content is the LaTeX source. parseDOM reads the pandoc-style
+    // span.math that both toDOM and pandoc's docx import emit, so equations
+    // survive open/save round-trips.
+    math_inline: {
+      group: "inline math", content: "text*", inline: true, atom: true,
+      parseDOM: [{ tag: "span.math.inline", getContent: mathContent }],
+      toDOM: (n) => ["span", { class: "math inline" }, "\\(" + (n.textContent || "") + "\\)"],
+    },
+    math_display: {
+      group: "block math", content: "text*", atom: true, code: true,
+      parseDOM: [{ tag: "span.math.display", getContent: mathContent }],
+      toDOM: (n) => ["span", { class: "math display" }, "\\[" + (n.textContent || "") + "\\]"],
+    },
+    text: { group: "inline" },
+    ...tableNodes,
+  };
+
+  const marks = {
+    link: { attrs: { href: {}, title: { default: null } }, inclusive: false,
+      parseDOM: [{ tag: "a[href]", getAttrs: (d) => ({ href: d.getAttribute("href"), title: d.getAttribute("title") }) }],
+      toDOM: (n) => ["a", { href: n.attrs.href, title: n.attrs.title }] },
+    strong: { parseDOM: [{ tag: "strong" }, { tag: "b" }, { style: "font-weight", getAttrs: (v) => /^(bold|[5-9]\d\d)$/.test(v) && null }], toDOM: () => ["strong", 0] },
+    em: { parseDOM: [{ tag: "em" }, { tag: "i" }, { style: "font-style=italic" }], toDOM: () => ["em", 0] },
+    underline: { parseDOM: [{ tag: "u" }, { style: "text-decoration=underline" }], toDOM: () => ["u", 0] },
+    strike: { parseDOM: [{ tag: "s" }, { tag: "del" }, { style: "text-decoration=line-through" }], toDOM: () => ["s", 0] },
+    code: { parseDOM: [{ tag: "code" }], toDOM: () => ["code", 0] },
+    comment: { attrs: { id: {} }, inclusive: false, excludes: "",
+      parseDOM: [{ tag: "span.comment[data-cid]", getAttrs: (d) => ({ id: d.getAttribute("data-cid") }) }],
+      toDOM: (m) => ["span", { class: "comment", "data-cid": m.attrs.id }, 0] },
+  };
+
+  const schema = new Schema({ nodes, marks });
+  const domSerializer = DOMSerializer.fromSchema(schema);
+
+  // Content-only serialization for non-docx exports: the comment anchor
+  // spans are unwrapped so no comment markup leaks into the output.
+  function docToHtml(doc) {
+    const frag = domSerializer.serializeFragment(doc.content);
+    const div = document.createElement("div");
+    div.appendChild(frag);
+    div.querySelectorAll("span.comment[data-cid]").forEach((el) => el.replaceWith(...el.childNodes));
+    return div.innerHTML;
+  }
+
+  // ================= comments <-> native Word comments =================
+  // Comments live IN the .docx as first-class Word comments: on save the
+  // comment marks become pandoc's comment-start/comment-end spans (which its
+  // docx writer turns into w:comment + commentRange), and on import pandoc
+  // (--track-changes=all) hands the same spans back. Word ids must be numeric
+  // (ST_DecimalNumber), so save renumbers them positionally.
+  const genId = () => "c" + Date.now().toString(36) + Math.floor(Math.random() * 1e9).toString(36);
+
+  // Serialize for writing back to .docx: unwrap comment anchor spans and emit
+  // the paired marker spans pandoc understands, with the comment text inside
+  // the start marker.
+  function docToSaveHtml(doc) {
+    const div = document.createElement("div");
+    div.appendChild(domSerializer.serializeFragment(doc.content));
+    const anchors = [...div.querySelectorAll("span.comment[data-cid]")];
+    const ranges = new Map();   // cid -> {first, last} anchor spans, in doc order
+    anchors.forEach((el) => {
+      const cid = el.getAttribute("data-cid");
+      if (!ranges.has(cid)) ranges.set(cid, { first: el, last: el });
+      else ranges.get(cid).last = el;
+    });
+    let n = 0;
+    for (const [cid, { first, last }] of ranges) {
+      const c = S.comments[cid] || {};
+      const start = document.createElement("span");
+      start.className = "comment-start"; start.id = String(++n);
+      start.setAttribute("author", c.author || "Anonymous");
+      start.setAttribute("date", new Date(c.ts || Date.now()).toISOString());
+      start.textContent = c.text || "";
+      first.before(start);
+      const end = document.createElement("span");
+      end.className = "comment-end"; end.id = String(n);
+      last.after(end);
+    }
+    anchors.forEach((el) => el.replaceWith(...el.childNodes));
+    return div.innerHTML;
+  }
+
+  // Import: pull comment metadata out of the marker spans, wrap the anchored
+  // text in the span.comment form the schema's mark parse rule reads (per text
+  // node, so ranges crossing block boundaries work), and resolve any tracked
+  // changes (keep insertions, drop deletions).
+  function extractComments(dom) {
+    dom.querySelectorAll("span.deletion").forEach((el) => el.remove());
+    dom.querySelectorAll("span.insertion").forEach((el) => el.replaceWith(...el.childNodes));
+    const comments = {};
+    dom.querySelectorAll("span.comment-start").forEach((start) => {
+      const id = start.getAttribute("id");
+      if (!id) { start.remove(); return; }
+      comments[id] = {
+        text: start.textContent,
+        author: start.getAttribute("data-author") || start.getAttribute("author") || "?",
+        ts: Date.parse(start.getAttribute("data-date") || start.getAttribute("date") || "") || Date.now(),
+      };
+      start.textContent = "";
+      const end = [...dom.querySelectorAll("span.comment-end")]
+        .find((e) => e.getAttribute("id") === id);
+      if (end) {
+        const walker = dom.createTreeWalker(dom.body, NodeFilter.SHOW_TEXT);
+        const between = [];
+        let t;
+        while ((t = walker.nextNode())) {
+          if ((start.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_FOLLOWING)
+            && (end.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_PRECEDING)
+            && t.textContent) between.push(t);
+        }
+        between.forEach((tn) => {
+          const span = dom.createElement("span");
+          span.className = "comment"; span.setAttribute("data-cid", id);
+          tn.before(span); span.appendChild(tn);
+        });
+      }
+    });
+    dom.querySelectorAll("span.comment-start, span.comment-end").forEach((el) => el.remove());
+    return comments;
+  }
+
+  // One import path for both file open and version restore: extract comments,
+  // then lift display math to block level — pandoc wraps it in a <p>, and
+  // ProseMirror ignores block parse rules in inline context, so left inline it
+  // would degrade to literal \[…\] text. `revisions` counts tracked changes,
+  // which the editor can't represent (pandoc reads but can't write them) —
+  // they're shown accepted and the boot toast says so.
+  function parseDocHtml(html) {
+    const dom = new DOMParser().parseFromString(html, "text/html");
+    const revisions = dom.querySelectorAll("span.insertion, span.deletion").length;
+    const comments = extractComments(dom);
+    dom.querySelectorAll("p > span.math.display").forEach((span) => {
+      const p = span.parentNode;
+      const after = dom.createElement("p");
+      while (span.nextSibling) after.appendChild(span.nextSibling);
+      p.parentNode.insertBefore(span, p.nextSibling);
+      p.parentNode.insertBefore(after, span.nextSibling);
+      if (!p.childNodes.length) p.remove();
+      if (!after.childNodes.length) after.remove();
+    });
+    return { dom, comments, revisions };
+  }
+
+  // ---------------------------------------------------------------- nodeviews ---
+  class MathViewInline { // lightweight KaTeX renderer for atoms (edit source on click)
+    constructor(node, view, getPos, display) {
+      this.node = node; this.view = view; this.getPos = getPos; this.display = display;
+      this.dom = document.createElement(display ? "div" : "span");
+      this.dom.className = "math-node" + (display ? " math-display-node" : "");
+      this.dom.style.cursor = "pointer";
+      this.render();
+      this.dom.addEventListener("click", () => this.edit());
+    }
+    render() {
+      ensureKatexCss();
+      katex.render(this.node.textContent || "\\;", this.dom, { displayMode: this.display, throwOnError: false });
+      if (this.display) this.dom.style.textAlign = "center";
+    }
+    edit() {
+      if (!this.view.editable) return;
+      const cur = this.node.textContent;
+      openTexDialog(cur, this.display, (val) => {
+        const pos = this.getPos(); if (pos == null) return;
+        const tr = this.view.state.tr;
+        const newNode = (this.display ? schema.nodes.math_display : schema.nodes.math_inline).create(null, val ? schema.text(val) : null);
+        tr.replaceWith(pos, pos + this.node.nodeSize, newNode);
+        this.view.dispatch(tr);
+      });
+    }
+    stopEvent() { return true; }
+    ignoreMutation() { return true; }
+    update(node) { if (node.type !== this.node.type) return false; this.node = node; this.render(); return true; }
+  }
+
+  // ---------------------------------------------------------------- plugins ----
+  function buildInputRules() {
+    const rules = [...smartQuotes, ellipsis];
+    rules.push(textblockTypeInputRule(/^(#{1,6})\s$/, schema.nodes.heading, (m) => ({ level: m[1].length })));
+    rules.push(wrappingInputRule(/^\s*>\s$/, schema.nodes.blockquote));
+    rules.push(wrappingInputRule(/^\s*([-*+])\s$/, schema.nodes.bullet_list));
+    rules.push(wrappingInputRule(/^(\d+)\.\s$/, schema.nodes.ordered_list, (m) => ({ order: +m[1] }), (m, node) => node.childCount + node.attrs.order === +m[1]));
+    rules.push(M.makeInlineMathInputRule(M.REGEX_INLINE_MATH_DOLLARS, schema.nodes.math_inline));
+    rules.push(M.makeBlockMathInputRule(M.REGEX_BLOCK_MATH_DOLLARS, schema.nodes.math_display));
+    return inputRules({ rules });
+  }
+
+  function buildKeymap() {
+    const k = {
+      "Mod-b": C.toggleMark(schema.marks.strong), "Mod-i": C.toggleMark(schema.marks.em),
+      "Mod-u": C.toggleMark(schema.marks.underline), "Mod-`": C.toggleMark(schema.marks.code),
+      "Mod-Shift-x": C.toggleMark(schema.marks.strike),
+      "Mod-z": undo, "Mod-y": redo, "Mod-Shift-z": redo,
+      "Mod-Shift-0": C.setBlockType(schema.nodes.paragraph),
+      "Mod-Alt-1": C.setBlockType(schema.nodes.heading, { level: 1 }),
+      "Mod-Alt-2": C.setBlockType(schema.nodes.heading, { level: 2 }),
+      "Mod-Alt-3": C.setBlockType(schema.nodes.heading, { level: 3 }),
+      "Shift-Ctrl-8": toggleList(schema.nodes.bullet_list),
+      "Shift-Ctrl-9": toggleList(schema.nodes.ordered_list),
+      // splitListItem returns false outside a list, so baseKeymap's Enter still runs.
+      "Enter": L.splitListItem(schema.nodes.list_item),
+      "Tab": L.sinkListItem(schema.nodes.list_item),
+      "Shift-Tab": L.liftListItem(schema.nodes.list_item),
+      "Backspace": C.chainCommands(M.mathBackspaceCmd, C.deleteSelection, C.joinBackward, C.selectNodeBackward),
+      "Mod-s": () => { doSave("manual"); return true; },
+      "Mod-Shift-s": () => { doSaveAs(); return true; },
+      "Mod-f": () => { toggleFind(true); return true; },
+      "Mod-p": () => { doPrint(); return true; },
+      "Mod-k": () => { doLink(); return true; },
+      "Mod-/": () => { openShortcutsDialog(); return true; },
+    };
+    return keymap(k);
+  }
+
+  // TOC + change tracking plugin. onDocChange is set once (below, in wiring);
+  // never reassign it elsewhere or autosave gets dropped.
+  let onDocChange = () => {};
+  const trackPlugin = new Plugin({ view: () => ({ update: (v, prev) => { if (!v.state.doc.eq(prev.doc)) onDocChange(); } }) });
+
+  // ---- find & replace plugin (highlight matches via decorations) ----
+  const findKey = new PluginKey("find");
+  function findMatches(doc, term) {
+    const res = []; const q = (term || "").toLowerCase(); if (!q) return res;
+    doc.descendants((node, pos) => {
+      if (!node.isText) return;
+      const text = node.text.toLowerCase(); let i = 0;
+      while ((i = text.indexOf(q, i)) !== -1) { res.push({ from: pos + i, to: pos + i + q.length }); i += q.length; }
+    });
+    return res;
+  }
+  const findPlugin = new Plugin({
+    key: findKey,
+    state: {
+      init: () => ({ term: "", matches: [], current: -1, deco: DecorationSet.empty }),
+      apply(tr, val, _old, newState) {
+        const meta = tr.getMeta(findKey);
+        if (!meta && !tr.docChanged) return val;
+        const term = meta && "term" in meta ? meta.term : val.term;
+        let current = meta && "current" in meta ? meta.current : val.current;
+        const matches = findMatches(newState.doc, term);
+        if (current >= matches.length) current = matches.length ? 0 : -1;
+        if (current < 0 && matches.length) current = 0;
+        const decos = matches.map((m, i) => Decoration.inline(m.from, m.to, { class: "search-hit" + (i === current ? " current" : "") }));
+        return { term, matches, current, deco: DecorationSet.create(newState.doc, decos) };
+      },
+    },
+    props: { decorations(state) { return findKey.getState(state).deco; } },
+  });
+
+  function makeState(doc) {
+    return EditorState.create({
+      doc,
+      plugins: [
+        buildInputRules(), buildKeymap(), keymap(C.baseKeymap),
+        dropCursor({ color: "#166ee1" }), gapCursor(),
+        history(), M.mathPlugin, M.mathSelectPlugin,
+        T.columnResizing(), T.tableEditing(), trackPlugin, findPlugin,
+      ],
+    });
+  }
+
+  // ------------------------------------------------------------------- app -----
+  const S = { view: null, mode: "view", dirty: false, saving: false, savedMtime: 0, comments: {}, author: "", panelTab: "comments" };
+  let fileMtime = null;   // arms the save conflict lock; re-armed after every save
+  const py = (params) => fused.runPython("./docs.py", params);
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  let toastTimer;
+  function toast(msg, ms = 2800) { const t = $("toast"); t.textContent = msg; t.style.display = "block"; clearTimeout(toastTimer); toastTimer = setTimeout(() => t.style.display = "none", ms); }
+  const fileToBase64 = (file) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(",", 2)[1]); r.onerror = () => rej(r.error); r.readAsDataURL(file); });
+
+  // ================= sidecar (version metadata + author name) ======
+  // The document itself lives in the .docx; version snapshot CONTENT lives as
+  // content-addressed blobs in the cache (written by the save action). The
+  // sidecar (<file>.json, "docs" key, read-modify-write) holds only what's
+  // left: version metadata and the last-used author name for comments.
+  const SIDECAR = FILE + ".json";
+  async function loadSidecar() {
+    let data;
+    try { data = JSON.parse(await fused.readFile(SIDECAR)); } catch (e) { data = null; }
+    if (!data || typeof data !== "object") data = {};
+    if (!data.docs || typeof data.docs !== "object") data.docs = {};
+    const d = data.docs;
+    if (!Array.isArray(d.versions)) d.versions = [];
+    if (typeof d.author !== "string") d.author = "";
+    return data;
+  }
+  // Serialized read-modify-write: overlapping callers would otherwise read the
+  // same base and the later write would clobber the earlier mutation. Sidecar
+  // writes are best-effort metadata — they never reject, so no caller needs a
+  // catch and a version-history hiccup can't fail a save that already landed.
+  let sidecarChain = Promise.resolve();
+  function saveSidecar(mutate) {
+    sidecarChain = sidecarChain.then(async () => {
+      const data = await loadSidecar();
+      mutate(data.docs);
+      await fused.writeFile(SIDECAR, JSON.stringify(data));
+    }).catch((e) => console.warn("docs sidecar write failed:", e));
+    return sidecarChain;
+  }
+  // Keep one per 10 minutes <24h, hourly to 7 days, daily older. Never drop
+  // manual saves.
+  function thinVersions(versions) {
+    const now = Date.now(); const keep = []; const buckets = new Set();
+    for (const v of versions) {
+      if (v.kind === "manual") { keep.push(v); continue; }
+      const age = now - v.ts;
+      const bucket = age < 86400000 ? "m" + Math.floor(v.ts / 600000)
+        : age < 7 * 86400000 ? "h" + Math.floor(v.ts / 3600000)
+        : "d" + Math.floor(v.ts / 86400000);
+      if (!buckets.has(bucket)) { buckets.add(bucket); keep.push(v); }
+    }
+    return keep;
+  }
+  // The save action already wrote the snapshot blob (the same self-contained
+  // docToSaveHtml form the .docx uses — comment text/author ride inside the
+  // marker spans) and returned its sha; only the metadata goes in the sidecar.
+  async function recordVersion(sha, size, kind, label = "") {
+    if (!sha) return;
+    await saveSidecar((d) => {
+      if (d.versions.some((v) => v.sha === sha)) return;   // identical content already stored — skip
+      d.versions.unshift({ id: String(Date.now()), ts: Date.now(), kind, label, sha, size });
+      d.versions = thinVersions(d.versions);
+    });
+  }
+
+  const nodeViews = {
+    math_inline: (node, view, getPos) => new MathViewInline(node, view, getPos, false),
+    math_display: (node, view, getPos) => new MathViewInline(node, view, getPos, true),
+  };
+
+  function mountEditor(doc) {
+    if (S.view) S.view.destroy();
+    S.view = new EditorView($("editor"), {
+      state: makeState(doc),
+      editable: () => S.mode === "edit",
+      nodeViews,
+      dispatchTransaction(tr) {
+        // View mode is read-only: `editable` only stops the browser's own
+        // typing, so this is the one place that actually blocks every path
+        // that can mutate the doc (comment delete, replace, keymap commands).
+        if (tr.docChanged && S.mode !== "edit") return;
+        const ns = S.view.state.apply(tr);
+        S.view.updateState(ns);
+        if (tr.docChanged) { S.dirty = true; updateSavedTag(); }
+        syncToolbar();
+      },
+    });
+    buildTOC();
+    syncToolbar();
+  }
+
+  // ---- TOC ----
+  function buildTOC() {
+    if (!S.view) return;
+    const list = $("tocList"); const items = [];
+    S.view.state.doc.descendants((node, pos) => {
+      if (node.type === schema.nodes.heading && node.attrs.level <= 3) items.push({ level: node.attrs.level, text: node.textContent || "Untitled", pos });
+    });
+    if (!items.length) { list.innerHTML = '<div class="toc-empty">No headings yet</div>'; return; }
+    list.innerHTML = "";
+    items.forEach((it) => {
+      const b = document.createElement("button");
+      b.className = "toc-item h" + it.level; b.textContent = it.text; b.title = it.text;
+      b.dataset.pos = it.pos; b.dataset.level = it.level;
+      b.addEventListener("click", () => {
+        const dom = S.view.domAtPos(it.pos + 1).node;
+        const el = dom.nodeType === 3 ? dom.parentElement : dom;
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+      // drag-to-reorder sections (edit mode only)
+      b.draggable = S.mode === "edit";
+      b.addEventListener("dragstart", (e) => { e.dataTransfer.setData("text/pos", it.pos); b.style.opacity = ".4"; });
+      b.addEventListener("dragend", () => { b.style.opacity = ""; });
+      b.addEventListener("dragover", (e) => { e.preventDefault(); b.style.borderTop = "2px solid var(--blue)"; });
+      b.addEventListener("dragleave", () => { b.style.borderTop = ""; });
+      b.addEventListener("drop", (e) => { e.preventDefault(); b.style.borderTop = ""; const src = +e.dataTransfer.getData("text/pos"); if (!isNaN(src)) reorderSections(src, it.pos); });
+      list.appendChild(b);
+    });
+  }
+
+  // Move the whole section that starts at heading `srcPos` to sit before the
+  // section starting at heading `tgtPos`. A section = a heading plus every
+  // following top-level block until the next heading of same-or-higher level
+  // (so subsections travel with their parent).
+  function reorderSections(srcPos, tgtPos) {
+    if (srcPos === tgtPos) return;
+    const doc = S.view.state.doc; const blocks = [];
+    doc.forEach((node, offset, index) => blocks.push({ node, start: offset, index, level: node.type === schema.nodes.heading ? node.attrs.level : null }));
+    const bi = (pos) => blocks.findIndex((b) => b.start === pos);
+    const sIdx = bi(srcPos), tIdx = bi(tgtPos); if (sIdx < 0 || tIdx < 0) return;
+    const sLevel = blocks[sIdx].level;
+    let sEnd = blocks.length; for (let j = sIdx + 1; j < blocks.length; j++) { if (blocks[j].level != null && blocks[j].level <= sLevel) { sEnd = j; break; } }
+    const section = blocks.slice(sIdx, sEnd).map((b) => b.node);
+    const rest = blocks.filter((_, i) => i < sIdx || i >= sEnd);
+    let insertAt = rest.findIndex((b) => b.start === tgtPos);
+    if (insertAt < 0) insertAt = rest.length;
+    const newOrder = [...rest.slice(0, insertAt).map((b) => b.node), ...section, ...rest.slice(insertAt).map((b) => b.node)];
+    const { Fragment } = PM.pmModel;
+    S.view.dispatch(S.view.state.tr.replaceWith(0, doc.content.size, Fragment.fromArray(newOrder)).scrollIntoView());
+    S.dirty = true; updateSavedTag();
+  }
+
+  // ---- toolbar (built once) ----
+  const TB_ICONS = {
+    bold: '<path d="M6 4h8a4 4 0 0 1 0 8H6zM6 12h9a4 4 0 0 1 0 8H6z"/>',
+    italic: '<path d="M19 4h-9M14 20H5M15 4L9 20"/>',
+    underline: '<path d="M6 3v7a6 6 0 0 0 12 0V3M4 21h16"/>',
+    strike: '<path d="M6 5c0-1.5 2-3 6-3s5 2 5 3M4 12h16M8 19c0 1.5 2 3 5 3s5-1 5-3"/>',
+    code: '<path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/>',
+    link: '<path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/>',
+    ul: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
+    ol: '<path d="M10 6h11M10 12h11M10 18h11M4 6h1v4M4 10h2M6 18H4l2-3H4"/>',
+    quote: '<path d="M6 17h3l2-4V7H5v6h3zM14 17h3l2-4V7h-6v6h3z"/>',
+    codeblock: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 9l-2 3 2 3M15 9l2 3-2 3"/>',
+    hr: '<path d="M3 12h18"/>',
+    table: '<rect x="3" y="4" width="18" height="16" rx="1"/><path d="M3 10h18M3 15h18M12 4v16"/>',
+    image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 17l-5-5-9 8"/>',
+    equation: '<path d="M4 5h16M8 5l4 14M14 12h6"/>',
+    comment: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+    search: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>',
+    undo: '<path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>',
+    redo: '<path d="M15 14l5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h3"/>',
+    print: '<path d="M6 9V3h12v6M6 18H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2M6 14h12v7H6z"/>',
+    clear: '<path d="M4 7h16M10 11l4 8M14 11l-4 8M7 7l1-3h8l1 3"/>',
+  };
+  const svg = (name) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${TB_ICONS[name]}</svg>`;
+
+  function buildToolbar() {
+    const tb = $("toolbar");
+    tb.innerHTML = `
+      <button class="tb" data-cmd="find" title="Find and replace (Ctrl+F)">${svg("search")}</button>
+      <span class="tsep"></span>
+      <button class="tb" data-cmd="undo" title="Undo (Ctrl+Z)">${svg("undo")}</button>
+      <button class="tb" data-cmd="redo" title="Redo (Ctrl+Y)">${svg("redo")}</button>
+      <button class="tb" data-cmd="print" title="Print (Ctrl+P)">${svg("print")}</button>
+      <button class="tb" data-cmd="clear" title="Clear formatting">${svg("clear")}</button>
+      <span class="tsep"></span>
+      <select class="tb" id="zoomSel" title="Zoom">
+        <option value="0.75">75%</option><option value="0.9">90%</option><option value="1" selected>100%</option>
+        <option value="1.25">125%</option><option value="1.5">150%</option><option value="2">200%</option>
+      </select>
+      <span class="tsep"></span>
+      <select class="tb" id="blockType" title="Paragraph style">
+        <option value="p">Normal text</option>
+        <option value="h1">Heading 1</option>
+        <option value="h2">Heading 2</option>
+        <option value="h3">Heading 3</option>
+        <option value="h4">Heading 4</option>
+        <option value="pre">Code block</option>
+      </select>
+      <span class="tsep"></span>
+      <button class="tb txt" data-mark="strong" title="Bold (Ctrl+B)">${svg("bold")}</button>
+      <button class="tb" data-mark="em" title="Italic (Ctrl+I)">${svg("italic")}</button>
+      <button class="tb" data-mark="underline" title="Underline (Ctrl+U)">${svg("underline")}</button>
+      <button class="tb" data-mark="strike" title="Strikethrough">${svg("strike")}</button>
+      <button class="tb" data-mark="code" title="Inline code">${svg("code")}</button>
+      <span class="tsep"></span>
+      <button class="tb" data-cmd="link" title="Insert link (Ctrl+K)">${svg("link")}</button>
+      <button class="tb" data-cmd="image" title="Insert image">${svg("image")}</button>
+      <button class="tb" data-cmd="comment" title="Add comment">${svg("comment")}</button>
+      <span class="tsep"></span>
+      <button class="tb" data-cmd="ul" title="Bulleted list">${svg("ul")}</button>
+      <button class="tb" data-cmd="ol" title="Numbered list">${svg("ol")}</button>
+      <span class="tsep"></span>
+      <button class="tb" data-cmd="equation" title="Insert equation (LaTeX)">${svg("equation")}</button>
+      <button class="tb" data-cmd="table" title="Insert table">${svg("table")}</button>
+      <button class="tb" data-cmd="quote" title="Quote">${svg("quote")}</button>
+      <button class="tb" data-cmd="hr" title="Divider">${svg("hr")}</button>
+    `;
+    tb.querySelectorAll("[data-mark]").forEach((b) => b.addEventListener("mousedown", (e) => { e.preventDefault(); toggleMark(b.dataset.mark); }));
+    tb.querySelectorAll("[data-cmd]").forEach((b) => b.addEventListener("mousedown", (e) => { e.preventDefault(); runCmd(b.dataset.cmd); }));
+    $("blockType").addEventListener("change", (e) => setBlockType(e.target.value));
+    $("zoomSel").addEventListener("change", (e) => { $("page").style.zoom = e.target.value; });
+  }
+
+  function focusView() { S.view && S.view.focus(); }
+  function applyCmd(cmd) { focusView(); cmd(S.view.state, S.view.dispatch); focusView(); syncToolbar(); }
+  function toggleMark(name) { applyCmd(C.toggleMark(schema.marks[name])); }
+  function setBlockType(v) {
+    if (v === "p") applyCmd(C.setBlockType(schema.nodes.paragraph));
+    else if (v === "pre") applyCmd(C.setBlockType(schema.nodes.code_block));
+    else applyCmd(C.setBlockType(schema.nodes.heading, { level: +v.slice(1) }));
+  }
+  // ---- list toggling (wrapInList is a no-op when already inside a list) ----
+  const isListType = (t) => t === schema.nodes.bullet_list || t === schema.nodes.ordered_list;
+  function findList(state) {
+    const { $from } = state.selection;
+    for (let d = $from.depth; d > 0; d--) {
+      const n = $from.node(d);
+      if (isListType(n.type)) return { node: n, pos: $from.before(d) };
+    }
+    // node/all selections sit outside the list — check the node at the cursor
+    if ($from.nodeAfter && isListType($from.nodeAfter.type)) return { node: $from.nodeAfter, pos: $from.pos };
+    return null;
+  }
+  // same type -> lift out; different type -> convert in place; not in a list -> wrap.
+  const toggleList = (listType) => (state, dispatch) => {
+    const cur = findList(state);
+    if (!cur) return L.wrapInList(listType)(state, dispatch);
+    if (cur.node.type === listType) return L.liftListItem(schema.nodes.list_item)(state, dispatch);
+    if (dispatch) {
+      const tr = state.tr.replaceWith(cur.pos, cur.pos + cur.node.nodeSize, listType.create(null, cur.node.content));
+      tr.setSelection(TextSelection.between(tr.doc.resolve(state.selection.anchor), tr.doc.resolve(state.selection.head)));
+      dispatch(tr.scrollIntoView());
+    }
+    return true;
+  };
+
+  function runCmd(cmd) {
+    if (cmd === "ul") return applyCmd(toggleList(schema.nodes.bullet_list));
+    if (cmd === "ol") return applyCmd(toggleList(schema.nodes.ordered_list));
+    if (cmd === "quote") return applyCmd(C.wrapIn(schema.nodes.blockquote));
+    if (cmd === "hr") return applyCmd((s, d) => { d(s.tr.replaceSelectionWith(schema.nodes.horizontal_rule.create()).scrollIntoView()); return true; });
+    if (cmd === "undo") return applyCmd(undo);
+    if (cmd === "redo") return applyCmd(redo);
+    if (cmd === "link") return doLink();
+    if (cmd === "table") return applyCmd((s, d) => { d(s.tr.replaceSelectionWith(makeTable(3, 3)).scrollIntoView()); return true; });
+    if (cmd === "image") return doImage();
+    if (cmd === "equation") return openTexDialog("", false, (tex) => insertMath(tex, false));
+    if (cmd === "comment") return addComment();
+    if (cmd === "clear") return clearFormatting();
+    if (cmd === "print") return doPrint();
+    if (cmd === "find") return toggleFind();
+  }
+
+  function clearFormatting() {
+    const { from, to, empty } = S.view.state.selection; if (empty) { toast("Select text to clear its formatting."); return; }
+    let tr = S.view.state.tr;
+    Object.values(schema.marks).forEach((m) => { if (m !== schema.marks.comment) tr.removeMark(from, to, m); });
+    tr.setStoredMarks([]); S.view.dispatch(tr); focusView();
+  }
+  function doPrint() { window.print(); }
+
+  function makeTable(rows, cols) {
+    const cell = schema.nodes.table_cell; const header = schema.nodes.table_header;
+    const p = () => schema.nodes.paragraph.create();
+    const mkRow = (isHead) => schema.nodes.table_row.create(null, Array.from({ length: cols }, () => (isHead ? header : cell).create(null, p())));
+    const trs = [mkRow(true)]; for (let i = 1; i < rows; i++) trs.push(mkRow(false));
+    return schema.nodes.table.create(null, trs);
+  }
+  function insertMath(tex, display) {
+    const type = display ? schema.nodes.math_display : schema.nodes.math_inline;
+    const node = type.create(null, tex ? schema.text(tex) : null);
+    applyCmd((s, d) => { d(s.tr.replaceSelectionWith(node).scrollIntoView()); return true; });
+  }
+  function doLink() {
+    openDialog("Add link", [{ id: "href", label: "URL", value: "https://" }], (vals) => {
+      if (vals.href) applyCmd(C.toggleMark(schema.marks.link, { href: vals.href }));
+    });
+  }
+  function doImage() {
+    const inp = document.createElement("input"); inp.type = "file"; inp.accept = "image/*";
+    inp.onchange = async () => {
+      const f = inp.files[0]; if (!f) return;
+      const b64 = await fileToBase64(f);
+      const src = `data:${f.type};base64,${b64}`;
+      applyCmd((s, d) => { d(s.tr.replaceSelectionWith(schema.nodes.image.create({ src, alt: f.name })).scrollIntoView()); return true; });
+    };
+    inp.click();
+  }
+
+  // ---- toolbar active-state sync ----
+  function markActive(type) {
+    const { from, $from, to, empty } = S.view.state.selection;
+    if (empty) return !!type.isInSet(S.view.state.storedMarks || $from.marks());
+    return S.view.state.doc.rangeHasMark(from, to, type);
+  }
+  function syncToolbar() {
+    if (S.mode !== "edit" || !S.view) return;
+    const tb = $("toolbar");
+    ["strong", "em", "underline", "strike", "code"].forEach((m) => {
+      const b = tb.querySelector(`[data-mark="${m}"]`); if (b && schema.marks[m]) b.classList.toggle("on", markActive(schema.marks[m]));
+    });
+    const $from = S.view.state.selection.$from; const parent = $from.parent;
+    const sel = $("blockType");
+    if (sel) {
+      if (parent.type === schema.nodes.heading) sel.value = "h" + parent.attrs.level;
+      else if (parent.type === schema.nodes.code_block) sel.value = "pre";
+      else sel.value = "p";
+    }
+  }
+
+  // ---- dialogs (no native prompt/confirm) ----
+  let dialogEl = null;
+  function closeDialog() { if (dialogEl) { dialogEl.remove(); dialogEl = null; } }
+  function openDialog(title, fields, onOk, opts = {}) {
+    closeDialog();
+    const wrap = document.createElement("div");
+    wrap.className = "modal-overlay";
+    wrap.style.cssText = "position:fixed;inset:0;background:rgba(15,23,42,.28);display:grid;place-items:center;z-index:80";
+    const card = document.createElement("div");
+    card.style.cssText = "background:#fff;border-radius:10px;box-shadow:var(--shadow-2);padding:18px;width:min(520px,92vw)";
+    card.innerHTML = `<div style="font-weight:700;font-size:15px;margin-bottom:12px">${esc(title)}</div>`;
+    const inputs = {};
+    fields.forEach((f) => {
+      const l = document.createElement("label"); l.style.cssText = "display:block;margin-bottom:10px;font-size:12px;color:var(--ink-2)";
+      l.textContent = f.label;
+      const inp = f.area ? document.createElement("textarea") : document.createElement("input");
+      inp.value = f.value || ""; if (f.area) { inp.rows = f.rows || 6; inp.style.fontFamily = "ui-monospace,monospace"; }
+      inp.style.cssText += "display:block;width:100%;margin-top:4px;padding:8px;border:1px solid var(--hair);border-radius:6px;font:inherit;color:var(--ink)";
+      if (f.mono) inp.style.fontFamily = "ui-monospace,monospace";
+      l.appendChild(inp); card.appendChild(l); inputs[f.id] = inp;
+    });
+    if (opts.preview) { const pv = document.createElement("div"); pv.id = "dlgPreview"; pv.style.cssText = "margin:6px 0 12px;padding:10px;border:1px solid var(--hair);border-radius:6px;min-height:40px;text-align:center;background:var(--canvas)"; card.appendChild(pv); }
+    const bar = document.createElement("div"); bar.style.cssText = "display:flex;justify-content:flex-end;gap:8px;margin-top:6px";
+    const cancel = document.createElement("button"); cancel.className = "btn"; cancel.textContent = "Cancel";
+    const ok = document.createElement("button"); ok.className = "btn primary"; ok.textContent = opts.okLabel || "Insert";
+    bar.append(cancel, ok); card.appendChild(bar); wrap.appendChild(card); document.body.appendChild(wrap);
+    dialogEl = wrap;
+    const collect = () => { const o = {}; for (const k in inputs) o[k] = inputs[k].value; return o; };
+    if (opts.onInput) { for (const k in inputs) inputs[k].addEventListener("input", () => opts.onInput(collect())); opts.onInput(collect()); }
+    cancel.onclick = closeDialog; wrap.onclick = (e) => { if (e.target === wrap) closeDialog(); };
+    ok.onclick = () => { const vals = collect(); closeDialog(); onOk(vals); };
+    const first = fields[0] && inputs[fields[0].id]; if (first) { first.focus(); first.select && first.select(); }
+  }
+  function openTexDialog(cur, display, onOk) {
+    openDialog(display ? "Display equation (LaTeX)" : "Inline equation (LaTeX)",
+      [{ id: "tex", label: "LaTeX — e.g. \\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}", value: cur, area: true, rows: 4 }],
+      (v) => onOk(v.tex.trim()),
+      { preview: true, okLabel: "Insert equation", onInput: (v) => { ensureKatexCss(); const pv = $("dlgPreview"); if (pv) katex.render(v.tex || "\\;", pv, { displayMode: display, throwOnError: false }); } });
+  }
+  function confirmDialog(title, message, okLabel) {
+    closeDialog();
+    return new Promise((resolve) => {
+      const wrap = document.createElement("div");
+      wrap.className = "modal-overlay";
+      wrap.style.cssText = "position:fixed;inset:0;background:rgba(15,23,42,.28);display:grid;place-items:center;z-index:80";
+      const card = document.createElement("div");
+      card.style.cssText = "background:#fff;border-radius:10px;box-shadow:var(--shadow-2);padding:18px;width:min(420px,92vw)";
+      card.innerHTML = `<div style="font-weight:700;font-size:15px;margin-bottom:8px">${esc(title)}</div>
+        <div style="color:var(--ink-2);font-size:13px;margin-bottom:14px">${esc(message)}</div>
+        <div style="display:flex;justify-content:flex-end;gap:8px">
+          <button class="btn" id="cfCancel">Cancel</button><button class="btn primary" id="cfOk">${esc(okLabel)}</button></div>`;
+      wrap.appendChild(card); document.body.appendChild(wrap); dialogEl = wrap;
+      const finish = (v) => { closeDialog(); resolve(v); };
+      card.querySelector("#cfCancel").onclick = () => finish(false);
+      card.querySelector("#cfOk").onclick = () => finish(true);
+      wrap.onclick = (e) => { if (e.target === wrap) finish(false); };
+    });
+  }
+
+  // ================= comments =================
+  // Anchored by the `comment` mark in the doc (moves with edits); text/author
+  // metadata lives in S.comments and is written into the .docx on save as a
+  // native Word comment.
+  function eachCommentRange(id, cb) {
+    S.view.state.doc.descendants((node, pos) => {
+      if (!node.isInline) return;
+      const m = node.marks.find((mk) => mk.type === schema.marks.comment && (!id || mk.attrs.id === id));
+      if (m) cb(m.attrs.id, pos, pos + node.nodeSize);
+    });
+  }
+  function commentPos(id) { let p = null; eachCommentRange(id, (cid, from) => { if (p == null) p = from; }); return p; }
+  function liveCommentIds() { const s = new Set(); eachCommentRange(null, (cid) => s.add(cid)); return s; }
+  function addComment() {
+    const { from, to, empty } = S.view.state.selection;
+    if (empty) { toast("Select some text to comment on."); return; }
+    const quote = S.view.state.doc.textBetween(from, to, " ").slice(0, 140);
+    openDialog("Add comment", [{ id: "text", label: "Comment", value: "", area: true, rows: 3 }, { id: "author", label: "Your name", value: S.author || "" }], (v) => {
+      if (!v.text.trim()) return;
+      S.author = v.author || "You";
+      saveSidecar((d) => { d.author = S.author; });
+      const id = genId();
+      S.comments[id] = { text: v.text.trim(), author: S.author, ts: Date.now(), quote };
+      S.view.dispatch(S.view.state.tr.addMark(from, to, schema.marks.comment.create({ id })));
+      openPanel("comments"); renderPanel();
+    }, { okLabel: "Comment" });
+  }
+  function removeComment(id) {
+    if (S.mode !== "edit") return;
+    let tr = S.view.state.tr; const ranges = [];
+    eachCommentRange(id, (cid, from, to) => ranges.push([from, to]));
+    ranges.forEach(([from, to]) => tr.removeMark(from, to, schema.marks.comment));
+    S.view.dispatch(tr); delete S.comments[id]; renderPanel();
+  }
+  function scrollToComment(id) {
+    const pos = commentPos(id); if (pos == null) return;
+    const el = S.view.domAtPos(pos + 1).node; const node = el.nodeType === 3 ? el.parentElement : el;
+    document.querySelectorAll(".comment.active").forEach((n) => n.classList.remove("active"));
+    node.closest && node.closest(".comment") && node.closest(".comment").classList.add("active");
+    (node.closest ? (node.closest(".comment") || node) : node).scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  // ================= right panel =================
+  function openPanel(tab) {
+    S.panelTab = tab; $("panel").classList.remove("hidden");
+    $("panel").querySelectorAll(".ptab").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
+    fused.params.set("panel", tab);
+    renderPanel();
+  }
+  function closePanel() { $("panel").classList.add("hidden"); fused.params.set("panel", ""); }
+  function togglePanel(tab) { if (!$("panel").classList.contains("hidden") && S.panelTab === tab) closePanel(); else openPanel(tab); }
+  async function renderPanel() {
+    const body = $("panelBody"); if ($("panel").classList.contains("hidden")) return;
+    if (S.panelTab === "comments") return renderComments(body);
+    if (S.panelTab === "history") return renderHistory(body);
+  }
+  function renderComments(body) {
+    const live = liveCommentIds();
+    Object.keys(S.comments).forEach((id) => { if (!live.has(id)) delete S.comments[id]; }); // prune orphans
+    const ids = [...live].sort((a, b) => (commentPos(a) || 0) - (commentPos(b) || 0));
+    if (!ids.length) { body.innerHTML = '<div class="empty-note">No comments. Select text and click the comment button to add one.</div>'; return; }
+    body.innerHTML = "";
+    ids.forEach((id) => {
+      const c = S.comments[id] || { text: "", author: "?", ts: Date.now() };
+      const card = document.createElement("div"); card.className = "card";
+      card.innerHTML = `<div class="who">${esc(c.author)} <span class="when">· ${new Date(c.ts).toLocaleString()}</span></div>
+        ${c.quote ? `<div class="quote">“${esc(c.quote)}”</div>` : ""}
+        <div class="body">${esc(c.text)}</div>
+        <div class="acts"><button data-a="go">Go to</button><button data-a="del">Delete</button></div>`;
+      card.querySelector('[data-a="go"]').onclick = () => scrollToComment(id);
+      card.querySelector('[data-a="del"]').onclick = () => removeComment(id);
+      card.onclick = (e) => { if (e.target.tagName !== "BUTTON") scrollToComment(id); };
+      body.appendChild(card);
+    });
+  }
+  async function renderHistory(body) {
+    body.innerHTML = '<div class="empty-note">Loading…</div>';
+    const data = await loadSidecar();
+    const versions = data.docs.versions;
+    if (!versions.length) { body.innerHTML = '<div class="empty-note">No saved versions yet. Save to create one.</div>'; return; }
+    body.innerHTML = "";
+    versions.forEach((v) => {
+      const row = document.createElement("div"); row.className = "ver-row";
+      row.innerHTML = `<span class="vk ${v.kind}">${v.kind}</span><span class="vwhen">${new Date(v.ts).toLocaleString()}${v.label ? " · " + esc(v.label) : ""}</span><button>Restore</button>`;
+      row.querySelector("button").onclick = () => restoreVersion(v.id);
+      body.appendChild(row);
+    });
+  }
+  async function restoreVersion(versionId) {
+    const data = await loadSidecar();
+    const v = data.docs.versions.find((x) => x.id === versionId);
+    if (!v || !v.sha) { toast("Version not found."); return; }
+    if (S.dirty) {
+      const ok = await confirmDialog("Discard unsaved changes?",
+        "Restoring this version replaces your current unsaved edits.", "Discard & restore");
+      if (!ok) return;
+    }
+    // Stop the pending autosave and wait out any save already in flight —
+    // doSave snapshots the doc at call time, so one finishing after the swap
+    // below would write the pre-restore content back over the restored one.
+    clearTimeout(saveTimer);
+    while (S.saving) await new Promise((r) => setTimeout(r, 100));
+    try {
+      const res = await py({ action: "version_html", file: FILE, sha: v.sha });
+      const { dom, comments } = parseDocHtml(res.html);
+      S.comments = comments;
+      mountEditor(PMDOMParser.fromSchema(schema).parse(dom.body));
+    } catch (e) { toast("This version is no longer available."); return; }
+    setMode("edit"); S.dirty = true; updateSavedTag(); toast("Version restored — save to keep it.");
+  }
+
+  // ---- mode switch ----
+  function setMode(mode) {
+    S.mode = mode;
+    document.body.classList.toggle("mode-view", mode === "view");
+    document.body.classList.toggle("mode-edit", mode === "edit");
+    $("modeSeg").querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.mode === mode));
+    if (S.view) { S.view.setProps({ editable: () => mode === "edit" }); if (mode === "edit") { focusView(); syncToolbar(); } }
+    buildTOC();
+    fused.params.set("mode", mode);
+  }
+
+  // ---- save / export ----
+  function updateSavedTag() { $("savedTag").textContent = S.saving ? "Saving…" : S.dirty ? "Unsaved changes" : (S.savedMtime ? "All changes saved" : ""); }
+  async function doSave(kind = "auto", label = "") {
+    if (!S.view || S.saving) return;
+    S.saving = true; updateSavedTag();
+    try {
+      const doc = S.view.state.doc;
+      const html = docToSaveHtml(doc);
+      const keep = (await loadSidecar()).docs.versions.map((v) => v.sha);
+      const res = await py({ action: "save", file: FILE, html, keep: JSON.stringify(keep),
+        expected_mtime: String(fileMtime ?? "") });
+      if (res.conflict) { toast("This file changed on disk — reload to see the latest version."); return; }
+      if (res.error) throw new Error(res.error);
+      fileMtime = res.mtime;
+      // Edits made while the write was in flight leave the doc != the snapshot;
+      // keep it dirty so the pending autosave picks them up (no false "saved").
+      if (S.view.state.doc.eq(doc)) { S.dirty = false; S.savedMtime = Date.now(); }
+      await recordVersion(res.version_sha, html.length, kind, label);   // best-effort, never rejects
+    } catch (e) {
+      toast("Save failed: " + e.message);
+    } finally { S.saving = false; updateSavedTag(); }
+  }
+  async function ensureTypst() {
+    const st = await py({ action: "typst_status" }).catch(() => ({ available: false }));
+    if (st.available) return true;
+    return await new Promise((resolve) => {
+      closeDialog();
+      const wrap = document.createElement("div"); wrap.className = "modal-overlay";
+      wrap.style.cssText = "position:fixed;inset:0;background:rgba(15,23,42,.28);display:grid;place-items:center;z-index:80";
+      const card = document.createElement("div");
+      card.style.cssText = "background:#fff;border-radius:10px;box-shadow:var(--shadow-2);padding:20px;width:min(420px,92vw);text-align:center";
+      card.innerHTML = `<div style="font-weight:600;margin-bottom:6px">PDF export needs the typst compiler</div>
+        <div style="font-size:12.5px;color:var(--ink-2);margin-bottom:14px">The first PDF export downloads the typst compiler (~30 MB). This happens once.</div>
+        <button class="btn primary" id="tyGo">Download typst (~30 MB)</button>
+        <div id="tyBar" class="hidden" style="height:6px;border-radius:4px;background:var(--hair-2);overflow:hidden;margin:14px 0"><div style="height:100%;background:var(--blue);width:0%;transition:width .2s"></div></div>
+        <div id="tyDetail" style="font-size:12px;color:var(--ink-2);word-break:break-word"></div>
+        <div style="margin-top:14px"><button class="btn" id="tyCancel">Cancel</button></div>`;
+      wrap.appendChild(card); document.body.appendChild(wrap); dialogEl = wrap;
+      let done = false;   // stops the poll loop — a canceled dialog's timer must not close a later one
+      const finish = (ok) => { done = true; closeDialog(); resolve(ok); };
+      wrap.onclick = (e) => { if (e.target === wrap) finish(false); };
+      card.querySelector("#tyCancel").onclick = () => finish(false);
+      card.querySelector("#tyGo").onclick = async () => {
+        card.querySelector("#tyGo").classList.add("hidden");
+        card.querySelector("#tyBar").classList.remove("hidden");
+        try { await py({ action: "typst_install" }); }
+        catch (e) {
+          card.querySelector("#tyDetail").textContent = e.message;
+          card.querySelector("#tyGo").classList.remove("hidden");
+          return;
+        }
+        const poll = async () => {
+          if (done) return;
+          const s = await py({ action: "typst_status" }).catch(() => null);
+          if (done) return;   // canceled while the status call was in flight
+          const p = (s && s.progress) || {};
+          if (s && s.available) { toast("typst installed."); finish(true); return; }
+          if (p.error) {
+            card.querySelector("#tyDetail").textContent = p.error;
+            card.querySelector("#tyGo").classList.remove("hidden");
+            return;
+          }
+          card.querySelector("#tyBar").firstElementChild.style.width = (p.pct || 0) + "%";
+          card.querySelector("#tyDetail").textContent = p.detail || p.stage || "downloading…";
+          setTimeout(poll, 800);
+        };
+        poll();
+      };
+    });
+  }
+  async function doExport(fmt) {
+    if (!S.view) return;
+    $("exportMenu").classList.add("hidden");
+    if (fmt === "pdf" && !(await ensureTypst())) return;
+    toast("Preparing " + fmt.toUpperCase() + "…", 8000);
+    try {
+      // A Word download keeps native comments; other formats get content only.
+      const html = fmt === "docx" ? docToSaveHtml(S.view.state.doc) : docToHtml(S.view.state.doc);
+      const res = await py({ action: "export", file: FILE, title: BASENAME.replace(WORD_EXT, ""), html, fmt });
+      if (res.error) { toast("Export failed: " + res.error, 5000); return; }
+      const a = document.createElement("a"); a.href = fused.rawUrl(res.path); a.download = res.name; a.click();
+      toast("Downloaded " + res.name);
+    } catch (e) { toast("Export failed: " + e.message, 5000); }
+  }
+  // Directory-browser popup: pick a folder + name, write a .docx copy there —
+  // this never changes what `_file` points to, it just exports a copy.
+  async function doSaveAs() {
+    if (!S.view) return;
+    closeDialog();
+    const wrap = document.createElement("div"); wrap.className = "modal-overlay";
+    wrap.style.cssText = "position:fixed;inset:0;background:rgba(15,23,42,.28);display:grid;place-items:center;z-index:80";
+    const card = document.createElement("div");
+    card.style.cssText = "background:#fff;border-radius:10px;box-shadow:var(--shadow-2);padding:18px;width:min(560px,92vw)";
+    wrap.appendChild(card); document.body.appendChild(wrap); dialogEl = wrap;
+    wrap.onclick = (e) => { if (e.target === wrap) closeDialog(); };
+    let curDir = FILE.slice(0, Math.max(FILE.lastIndexOf("/"), FILE.lastIndexOf("\\")));
+    async function render(p) {
+      let d;
+      try { d = await py({ action: "listdir", path: p || "" }); } catch (e) { toast("Cannot list folder: " + e.message); return; }
+      curDir = d.path;
+      const segs = d.path.split("/").filter(Boolean);
+      const winRoot = /^[A-Za-z]:$/.test(segs[0] || "");   // "C:" drive paths take no leading "/"
+      const dirAt = (i) => { const q = segs.slice(0, i + 1).join("/"); return winRoot ? (i ? q : q + "/") : "/" + q; };
+      const crumb = (winRoot ? "" : `<span data-dir="/" style="cursor:pointer">/</span>`) + segs.map((s, i) =>
+        `${i || !winRoot ? " › " : ""}<span data-dir="${esc(dirAt(i))}" style="cursor:pointer">${esc(s)}</span>`).join("");
+      const prevName = card.querySelector("#fbName") ? card.querySelector("#fbName").value : BASENAME.replace(WORD_EXT, "");
+      card.innerHTML = `<div style="font-weight:700;font-size:15px;margin-bottom:10px">Save a copy</div>
+        <div style="font-size:12px;color:var(--ink-2);margin-bottom:8px;word-break:break-all">${crumb}</div>
+        <div style="border:1px solid var(--hair);border-radius:6px;max-height:240px;overflow-y:auto;font-size:13px">
+          ${d.path !== d.parent ? `<div data-dir="${esc(d.parent)}" style="padding:7px 10px;cursor:pointer">⬆ ..</div>` : ""}
+          ${d.dirs.map((n) => `<div data-dir="${esc(d.path.replace(/\/$/, "") + "/" + n)}" style="padding:7px 10px;cursor:pointer">📁 ${esc(n)}</div>`).join("")}
+          ${d.files.map((n) => `<div class="fb-file" data-name="${esc(n.replace(/\.docx$/i, ""))}" style="padding:7px 10px;cursor:pointer;color:var(--ink-2)">📄 ${esc(n)}</div>`).join("")}
+          ${!d.dirs.length && !d.files.length ? `<div style="padding:10px;color:var(--ink-3)">Empty folder</div>` : ""}
+        </div>
+        <label style="display:block;margin-top:12px;font-size:12px;color:var(--ink-2)">File name
+          <div style="display:flex;gap:8px;align-items:center;margin-top:4px">
+            <input id="fbName" style="flex:1;padding:8px;border:1px solid var(--hair);border-radius:6px;font:inherit;color:var(--ink)">
+            <span style="color:var(--ink-3)">.docx</span></div></label>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+          <button class="btn" id="fbCancel">Cancel</button><button class="btn primary" id="fbSave">Save</button></div>`;
+      card.querySelector("#fbName").value = prevName;
+      card.querySelectorAll("[data-dir]").forEach((r) => r.onclick = () => render(r.dataset.dir));
+      card.querySelectorAll(".fb-file").forEach((r) => r.onclick = () => { card.querySelector("#fbName").value = r.dataset.name; });
+      card.querySelector("#fbCancel").onclick = closeDialog;
+      card.querySelector("#fbSave").onclick = async () => {
+        const name = (card.querySelector("#fbName").value || "").trim();
+        if (!name) { toast("Enter a file name"); return; }
+        closeDialog();
+        try {
+          const res = await py({ action: "save_as", html: docToSaveHtml(S.view.state.doc),
+            path: name, directory: curDir });
+          if (res.error) { toast("Save failed: " + res.error); return; }
+          toast("Saved a copy to " + res.path);
+        } catch (e) { toast("Save failed: " + e.message); }
+      };
+    }
+    render(curDir);
+  }
+
+  // ---- find & replace ----
+  function findState() { return findKey.getState(S.view.state); }
+  function updateFindUI() { const st = findState(); const n = st.matches.length; $("findCount").textContent = n ? (st.current + 1) + " / " + n : (st.term ? "No results" : ""); scrollToMatch(); }
+  function scrollToMatch() { const st = findState(); if (st.current < 0 || !st.matches[st.current]) return; const m = st.matches[st.current]; const dom = S.view.domAtPos(m.from).node; const el = dom.nodeType === 3 ? dom.parentElement : dom; el && el.scrollIntoView({ block: "center", behavior: "smooth" }); }
+  function doFind(term) { S.view.dispatch(S.view.state.tr.setMeta(findKey, { term, current: 0 })); updateFindUI(); }
+  function findNav(dir) { const st = findState(); const n = st.matches.length; if (!n) return; const c = (st.current + dir + n) % n; S.view.dispatch(S.view.state.tr.setMeta(findKey, { current: c })); updateFindUI(); }
+  function toggleFind(force) {
+    const bar = $("findbar"); const on = force != null ? force : !bar.classList.contains("on");
+    bar.classList.toggle("on", on);
+    if (on) { $("findInput").focus(); $("findInput").select(); if ($("findInput").value) doFind($("findInput").value); }
+    else { S.view.dispatch(S.view.state.tr.setMeta(findKey, { term: "", current: -1 })); focusView(); }
+  }
+  function replaceCurrent() {
+    if (S.mode !== "edit") return;
+    const st = findState(); if (st.current < 0 || !st.matches[st.current]) return;
+    const m = st.matches[st.current];
+    S.view.dispatch(S.view.state.tr.insertText($("replaceInput").value, m.from, m.to));
+    doFind($("findInput").value);
+  }
+  function replaceAll() {
+    if (S.mode !== "edit") return;
+    const st = findState(); if (!st.matches.length) return;
+    const repl = $("replaceInput").value; let tr = S.view.state.tr;
+    [...st.matches].reverse().forEach((m) => tr.insertText(repl, m.from, m.to));
+    const n = st.matches.length; S.view.dispatch(tr); doFind($("findInput").value);
+    toast("Replaced " + n + " match" + (n === 1 ? "" : "es"));
+  }
+
+  // ---- keyboard shortcuts reference ----
+  function openShortcutsDialog() {
+    const rows = [
+      ["⌘/Ctrl + S", "Save"], ["⌘/Ctrl + Shift + S", "Save a copy…"], ["⌘/Ctrl + P", "Print"],
+      ["⌘/Ctrl + F", "Find & replace"], ["⌘/Ctrl + K", "Insert link"],
+      ["⌘/Ctrl + B / I / U", "Bold / Italic / Underline"], ["⌘/Ctrl + Shift + X", "Strikethrough"],
+      ["⌘/Ctrl + Z / Y", "Undo / Redo"], ["⌘/Ctrl + Alt + 1–3", "Heading 1–3"], ["⌘/Ctrl + Shift + 0", "Normal text"],
+      ["Ctrl + Shift + 8 / 9", "Bulleted / numbered list"], ["Tab / Shift + Tab", "Indent / outdent list item"],
+      ["# ## ### + space", "Heading (markdown style)"], ["- or 1. + space", "List (markdown style)"],
+      ["$…$ / $$…$$", "Inline / display equation"], ["> + space", "Blockquote"],
+    ];
+    closeDialog();
+    const wrap = document.createElement("div"); wrap.className = "modal-overlay";
+    wrap.style.cssText = "position:fixed;inset:0;background:rgba(15,23,42,.28);display:grid;place-items:center;z-index:80";
+    const card = document.createElement("div");
+    card.style.cssText = "background:#fff;border-radius:10px;box-shadow:var(--shadow-2);padding:18px;width:min(560px,92vw);max-height:80vh;overflow-y:auto";
+    card.innerHTML = `<div style="font-weight:700;font-size:15px;margin-bottom:12px">Keyboard shortcuts</div>
+      <table style="width:100%;border-collapse:collapse;font-size:13px">${rows.map(([k, d]) =>
+        `<tr><td style="padding:5px 0;width:46%"><span class="kbd" style="margin:0">${esc(k)}</span></td><td style="color:var(--ink-2)">${esc(d)}</td></tr>`).join("")}</table>
+      <div style="display:flex;justify-content:flex-end;margin-top:12px"><button class="btn primary">Done</button></div>`;
+    card.querySelector("button").onclick = closeDialog;
+    wrap.onclick = (e) => { if (e.target === wrap) closeDialog(); };
+    wrap.appendChild(card); document.body.appendChild(wrap); dialogEl = wrap;
+  }
+
+  // ---- wiring ----
+  buildToolbar();
+  $("modeSeg").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
+  $("btnComments").addEventListener("click", () => togglePanel("comments"));
+  $("btnHistory").addEventListener("click", () => togglePanel("history"));
+  $("panelClose").addEventListener("click", closePanel);
+  $("panel").querySelectorAll(".ptab").forEach((b) => b.addEventListener("click", () => openPanel(b.dataset.tab)));
+  $("btnExport").addEventListener("click", (e) => { e.stopPropagation(); $("exportMenu").classList.toggle("hidden"); });
+  $("exportMenu").querySelectorAll("[data-fmt]").forEach((b) => b.addEventListener("click", () => doExport(b.dataset.fmt)));
+  // File menu
+  $("btnFileMenu").addEventListener("click", (e) => { e.stopPropagation(); $("fileMenu").classList.toggle("hidden"); $("fileMenu").querySelector(".menu-sub").classList.remove("open"); });
+  $("dlSub").addEventListener("click", (e) => { e.stopPropagation(); e.currentTarget.parentElement.classList.toggle("open"); });
+  $("fileMenu").querySelectorAll("[data-file]").forEach((b) => b.addEventListener("click", () => {
+    $("fileMenu").classList.add("hidden"); const a = b.dataset.file;
+    if (a === "save") doSave("manual"); else if (a === "saveas") doSaveAs();
+    else if (a === "print") doPrint(); else if (a === "shortcuts") openShortcutsDialog();
+  }));
+  $("fileMenu").querySelectorAll("[data-fmt]").forEach((b) => b.addEventListener("click", () => { $("fileMenu").classList.add("hidden"); b.closest(".menu-sub").classList.remove("open"); doExport(b.dataset.fmt); }));
+  document.addEventListener("click", (e) => {
+    // ignore clicks inside any dropdown container — mousedown already toggled it,
+    // and the bubbled click must not immediately close what just opened
+    if (e.target.closest && e.target.closest(".menu-wrap")) return;
+    $("exportMenu").classList.add("hidden"); $("fileMenu").classList.add("hidden");
+  });
+  // find & replace bar
+  $("findInput").addEventListener("input", () => doFind($("findInput").value));
+  $("findInput").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); findNav(e.shiftKey ? -1 : 1); } else if (e.key === "Escape") toggleFind(false); });
+  $("findNext").addEventListener("click", () => findNav(1));
+  $("findPrev").addEventListener("click", () => findNav(-1));
+  $("findClose").addEventListener("click", () => toggleFind(false));
+  $("btnReplace").addEventListener("click", replaceCurrent);
+  $("btnReplaceAll").addEventListener("click", replaceAll);
+  // clicking the page padding below the content puts the cursor at the end
+  $("page").addEventListener("mousedown", (e) => {
+    if (S.mode !== "edit" || !S.view || e.target !== e.currentTarget) return;
+    if (e.clientY <= S.view.dom.getBoundingClientRect().bottom) return;
+    e.preventDefault();
+    let tr = S.view.state.tr;
+    if (tr.doc.lastChild.type !== schema.nodes.paragraph) tr.insert(tr.doc.content.size, schema.nodes.paragraph.create());
+    tr.setSelection(TextSelection.near(tr.doc.resolve(tr.doc.content.size), -1));
+    S.view.dispatch(tr.scrollIntoView());
+    S.view.focus();
+  });
+  // autosave (debounced) on edits
+  let saveTimer; onDocChange = () => { buildTOC(); if (!$("panel").classList.contains("hidden") && S.panelTab === "comments") renderPanel(); clearTimeout(saveTimer); saveTimer = setTimeout(() => S.dirty && doSave("auto"), 4000); };
+
+  // warm pandoc in the background so the first export is fast
+  py({ action: "warmup" }).catch(() => {});
+
+  // ---- boot: load the file + its sidecar, mount the editor ----
+  $("boot").classList.add("hidden");
+  if (!IS_DOCX) {
+    $("nofile").classList.remove("hidden");
+    $("nofile").textContent = "Unsupported file type: " + BASENAME + " — this template only opens .docx files.";
+    return;
+  }
+  let res;
+  try { res = await py({ action: "import", file: FILE }); }
+  catch (e) { res = { error: e.message }; }
+  if (res.error) {
+    $("nofile").classList.remove("hidden");
+    $("nofile").textContent = "Cannot open " + BASENAME + ": " + res.error;
+    return;
+  }
+  fileMtime = res.mtime;
+  const { dom, comments, revisions } = parseDocHtml(res.html);
+  S.comments = comments;
+  const importedDoc = PMDOMParser.fromSchema(schema).parse(dom.body);
+  const sidecar = await loadSidecar();
+  S.author = sidecar.docs.author || "";
+  $("docTitle").textContent = BASENAME;
+  $("topbar").classList.remove("hidden"); $("toolbar").classList.remove("hidden"); $("main").classList.remove("hidden");
+  mountEditor(importedDoc);
+  setMode(fused.params.get("mode") || "view");
+  const panelParam = fused.params.get("panel");
+  if (panelParam === "comments" || panelParam === "history") openPanel(panelParam);
+  updateSavedTag();
+  if (revisions) toast("This document has tracked changes, shown here as accepted — saving an edit writes the accepted version.", 8000);
+})();
+</script>
+</body>
+</html>

@@ -369,7 +369,9 @@
   // Write UTF-8 text to a file, returning the fresh stat object. opts:
   //   { expectedMtime } — optimistic lock; omit to write unconditionally.
   // A 409 becomes an Error with `type: "conflict"` and the server's current
-  // `mtime` attached, so callers can offer reload/overwrite.
+  // `mtime` attached, so callers can offer reload/overwrite. A read-only
+  // refusal (403 {"error":"readonly"}) becomes `type: "readonly"` — the
+  // backstop for templates that never checked stat().writable.
   function writeFile(path, content, opts) {
     const payload = { path: path, content: content };
     if (opts && opts.expectedMtime !== undefined && opts.expectedMtime !== null) {
@@ -386,6 +388,11 @@
           const err = new Error("file changed on disk");
           err.type = "conflict";
           err.mtime = data && data.mtime;
+          throw err;
+        }
+        if (res.status === 403 && data && data.error === "readonly") {
+          const err = new Error("file is read-only");
+          err.type = "readonly";
           throw err;
         }
         if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);

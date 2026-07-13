@@ -95,30 +95,7 @@
   .save-count[hidden] { display: none; }
   #tablewrap { flex: 1 1 auto; min-height: 0; overflow: auto; }
   #rowcount { color: #9aa0a6; }
-  .ro-badge {
-    position: relative;
-    display: inline-flex; align-items: center; gap: 5px;
-    color: #9aa0a6; font-size: 12px; cursor: help;
-  }
-  /* display:inline-flex above beats the `hidden` attribute's UA display:none,
-     so an editable file (parquet/csv) would otherwise show a stray info icon. */
-  .ro-badge[hidden] { display: none; }
-  .ro-badge::after {
-    content: "i"; display: inline-flex; align-items: center; justify-content: center;
-    width: 13px; height: 13px; border-radius: 50%; border: 1px solid currentColor;
-    font-size: 9px; font-style: italic; font-weight: 700; line-height: 1; opacity: 0.75;
-  }
-  /* Custom tooltip: appears instantly on hover, unlike the native title's delay. */
-  .ro-tip {
-    position: absolute; bottom: calc(100% + 6px); right: 0; z-index: 10;
-    width: max-content; max-width: 280px;
-    padding: 6px 9px; border-radius: 6px;
-    background: #24262b; color: #cfd3d7; border: 1px solid #33363c;
-    font-size: 12px; line-height: 1.4; font-style: normal;
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
-    opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 0.06s;
-  }
-  .ro-badge:hover .ro-tip { opacity: 1; visibility: visible; }
+  /* .ro-badge / .ro-tip styles inject from /template-shared/ro-badge.js. */
   /* Filter bar — a builder above the grid: one or more conditions
      (column ▸ operator ▸ value) ANDed together and applied server-side. The
      first row carries Add (+) and the round Apply (search) button; extra rows
@@ -244,7 +221,7 @@
       <button id="next" class="icon-btn" title="Next page" aria-label="Next page"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
     </div>
     <div class="bar-group side right">
-      <span id="ro" class="ro-badge" hidden></span>
+      <span id="ro" hidden></span>
       <button id="add" hidden title="Add row" aria-label="Add row">+<span class="add-label">&nbsp;Add row</span></button>
       <button id="discard" class="icon-btn" hidden disabled title="Discard changes" aria-label="Discard changes"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2.8 8a5.2 5.2 0 1 1 1.4 3.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.8 4.4V8h3.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       <button id="save" class="icon-btn" hidden disabled title="Save changes" aria-label="Save changes"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M6.2 11.4 2.8 8l1.1-1.1 2.3 2.3 5.9-5.9L13.2 4.4z" fill="currentColor"/></svg><span class="save-count" hidden></span></button>
@@ -253,6 +230,7 @@
   <div id="ctxmenu" hidden>
     <button class="ctx-item" id="ctx-null">Set Null</button>
   </div>
+  <script src="/template-shared/ro-badge.js"></script>
   <script>
     const LIMIT = 100;
     const el = (id) => document.getElementById(id);
@@ -494,20 +472,11 @@
       addBtn.hidden = saveBtn.hidden = discardBtn.hidden = !editable;
 
       // Explicit read-only badge (e.g. a SQLite view, or a JSON file): says the
-      // grid can't be edited, with a tooltip explaining why. Shown only when the
-      // reader reported a reason.
-      const roEl = document.getElementById("ro");
-      if (!editable && state.readonly_message) {
-        roEl.hidden = false;
-        roEl.innerHTML = "";
-        roEl.appendChild(document.createTextNode(state.readonly_message));
-        const tip = document.createElement("span");
-        tip.className = "ro-tip";
-        tip.textContent = state.readonly_tooltip || "";
-        roEl.appendChild(tip);
-      } else {
-        roEl.hidden = true;
-      }
+      // grid can't be edited, with a tooltip explaining why. Shown only when
+      // the reader reported a reason; rendering lives in ro-badge.js.
+      fusedRoBadge.update(document.getElementById("ro"),
+                          editable ? "" : state.readonly_message,
+                          state.readonly_tooltip);
 
       if (!state.columns.length && !state.total_rows && !(state.tables && state.tables.length)) {
         rowcountEl.textContent = "";

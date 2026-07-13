@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <title>Code editor</title>
 <script src="/template-assets/codemirror.bundle.js"></script>
+<script src="/template-shared/ro-badge.js"></script>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -80,6 +81,7 @@
       <button id="reload">Reload</button>
       <button id="overwrite">Overwrite</button>
     </span>
+    <span id="ro" hidden></span>
     <span id="status-text">Saved</span>
     <button id="save" disabled>Save</button>
   </div>
@@ -101,6 +103,7 @@
     let view = null;
     let file = null;
     let mtime = null;   // last known on-disk mtime; the optimistic-lock token
+    let writable = true; // stat.writable — false locks the buffer read-only
     let dirty = false;
     let saveTimer = null;  // pending autosave debounce (AS-1)
     let saving = false;    // a save() write is in flight
@@ -217,6 +220,18 @@
     async function reloadFromDisk() {
       try {
         const st = await fused.stat(file);
+        if ((st.writable !== false) !== writable) {
+          // Writability flipped on disk (e.g. chmod while the conflict banner
+          // was up). The read-only facets live in the view's extensions, so
+          // rebuild the editor from scratch — reload discards local edits
+          // anyway, and load() re-reads the file and re-applies the lock/badge.
+          // The banner stays up until the rebuild lands: its visibility is
+          // what holds off queued autosaves (AS-2), and a failed load() must
+          // keep the Reload/Overwrite escape hatch on screen.
+          clearTimeout(saveTimer);
+          if (await load()) hideConflict();
+          return;
+        }
         const text = await fused.readFile(file);
         view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
         mtime = st.mtime;
@@ -246,7 +261,7 @@
       file = fused.params.get("_file");
       if (!file) {
         root.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
-        return;
+        return false;
       }
       const rawUrl = fused.rawUrl(file);
       let text;
@@ -255,13 +270,14 @@
         if (stat.size !== null && stat.size !== undefined && stat.size > MAX_BYTES) {
           root.innerHTML = `<div id="status">File is too large to edit inline (${stat.size.toLocaleString()} bytes).
             <a href="${rawUrl}" target="_blank" rel="noopener">Open raw</a></div>`;
-          return;
+          return false;
         }
         text = await fused.readFile(file);
         mtime = stat.mtime;
+        writable = stat.writable !== false; // absent field (older server) → editable
       } catch (err) {
         root.innerHTML = `<div id="status" class="error">Failed to load file: ${escapeHtml(err.message)}</div>`;
-        return;
+        return false;
       }
 
       const ext = (file.split("/").pop().split(".").pop() || "").toLowerCase();
@@ -279,12 +295,32 @@
       ];
       const lang = languageFor(ext);
       if (lang) extensions.push(lang);
+      // Read-only file: lock the buffer, so dirty can never flip and no save
+      // path (autosave, Cmd+S, flush hook) ever fires. The server refuses the
+      // write anyway (403 readonly); this makes the UI honest up front. Both
+      // facets: editable=false locks the DOM (caret, typing), readOnly=true
+      // rejects the transactions synthesized input can still smuggle past it.
+      if (!writable) {
+        extensions.push(CM.EditorView.editable.of(false));
+        extensions.push(CM.EditorState.readOnly.of(true));
+      }
 
       root.innerHTML = "";
       view = new CM.EditorView({ doc: text, extensions, parent: root });
       filenameEl.textContent = file.split("/").pop();
       barEl.style.display = "flex";
       setDirty(false);
+      if (!writable) {
+        saveBtn.hidden = true;
+        statusTextEl.textContent = "";
+        fusedRoBadge.update(document.getElementById("ro"), "Read-only",
+          "The file's permissions don't allow writing, so it can't be edited here.");
+      } else {
+        // A rebuild (reloadFromDisk after a chmod +w) must undo the lock UI.
+        saveBtn.hidden = false;
+        fusedRoBadge.update(document.getElementById("ro"), "", "");
+      }
+      return true;
     }
 
     saveBtn.addEventListener("click", save);

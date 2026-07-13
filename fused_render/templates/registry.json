@@ -21,7 +21,16 @@
   ],
   ".xlsx": [
     "xlsx",
+    "excel",
     "annotate"
+  ],
+  ".xlsm": [
+    "xlsx",
+    "excel",
+    "annotate"
+  ],
+  ".pptx": [
+    "slides"
   ],
   ".*.json": [
     "history",
@@ -38,6 +47,9 @@
     "code",
     "duckdb",
     "annotate"
+  ],
+  ".docx": [
+    "docs"
   ],
   ".ndjson": [
     "code",
@@ -96,6 +108,7 @@
   ],
   ".geojson": [
     "vector",
+    "map",
     "tree",
     "code",
     "annotate"
@@ -110,6 +123,21 @@
     "code",
     "annotate"
   ],
+  ".tex": [
+    "latex",
+    "code",
+    "annotate"
+  ],
+  ".ltx": [
+    "latex",
+    "code",
+    "annotate"
+  ],
+  ".latex": [
+    "latex",
+    "code",
+    "annotate"
+  ],
   ".svg": [
     "image",
     "code",
@@ -117,26 +145,51 @@
   ],
   ".png": [
     "image",
+    "photos",
+    "pano",
     "annotate"
   ],
   ".jpg": [
     "image",
+    "photos",
+    "pano",
     "annotate"
   ],
   ".jpeg": [
     "image",
+    "photos",
+    "pano",
     "annotate"
   ],
   ".gif": [
     "image",
+    "photos",
     "annotate"
   ],
   ".webp": [
     "image",
+    "photos",
+    "pano",
     "annotate"
+  ],
+  ".bmp": [
+    "photos"
+  ],
+  ".avif": [
+    "photos"
+  ],
+  ".heic": [
+    "photos"
+  ],
+  ".heif": [
+    "photos"
+  ],
+  ".dng": [
+    "photos"
   ],
   ".pdf": [
     "pdf",
+    "pdf_studio",
     "annotate"
   ],
   ".mp4": [
@@ -295,10 +348,12 @@
     "annotate"
   ],
   ".tif": [
-    "geotiff"
+    "geotiff",
+    "map"
   ],
   ".tiff": [
-    "geotiff"
+    "geotiff",
+    "map"
   ],
   ".nc": [
     "netcdf"
@@ -327,10 +382,12 @@
     "zarr"
   ],
   ".shp": [
-    "vector"
+    "vector",
+    "map"
   ],
   ".kml": [
-    "vector"
+    "vector",
+    "map"
   ],
   ".kmz": [
     "vector"
@@ -339,13 +396,16 @@
     "vector"
   ],
   ".gpkg": [
-    "vector"
+    "vector",
+    "map"
   ],
   ".fgb": [
-    "vector"
+    "vector",
+    "map"
   ],
   ".pmtiles": [
-    "pmtiles"
+    "pmtiles",
+    "map"
   ],
   ".las": [
     "las"
@@ -353,11 +413,40 @@
   ".laz": [
     "las"
   ],
+  ".usd": [
+    "usd"
+  ],
+  ".usda": [
+    "usd"
+  ],
+  ".usdc": [
+    "usd"
+  ],
+  ".usdz": [
+    "usd"
+  ],
+  ".ply": [
+    "usd"
+  ],
+  ".splat": [
+    "usd"
+  ],
+  ".ksplat": [
+    "usd"
+  ],
+  ".obj": [
+    "usd"
+  ],
+  ".stl": [
+    "usd"
+  ],
   ".glb": [
-    "glb"
+    "glb",
+    "usd"
   ],
   ".gltf": [
     "glb",
+    "usd",
     "code"
   ],
   ".zip": [

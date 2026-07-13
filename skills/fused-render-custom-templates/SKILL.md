@@ -22,6 +22,7 @@ One folder per template, self-contained:
 ├── geo/                   ← a template — the folder name IS its name
 │   ├── template.html      ← required, this is what renders
 │   ├── reader.py          ← optional siblings: readers, css, assets
+│   ├── condition.py       ← optional gate: def method(path) -> bool
 │   └── icon.svg           ← optional, shown by the mode switcher
 └── wip-thing/             ← no registry entry → inert draft
 ```
@@ -61,6 +62,27 @@ Rules:
 - Registry (any matching key) beats the built-in table — even a plain user `.json` key beats a more specific built-in `.xyz.json` one; no registry entry (or no `registry.json` at all) means built-in behavior.
 - A folder without a registry entry does nothing — that's the draft state. Registering = adding the line; unregistering = deleting it. No restart needed: the registry is re-read on every file open, so the next navigation/refresh picks changes up.
 
+## Conditional templates (`condition.py`)
+
+The registry decides *which* templates apply to an extension. A template folder can additionally decide *whether* it shows for a **specific file** by dropping a **`condition.py`** beside its `template.html`:
+
+```python
+# ~/.fused-render/reports-view/condition.py
+def method(path):
+    # path is the absolute path of the file being previewed.
+    # Return True to show this template for this file, False to hide it.
+    return "/reports/" in path and path.endswith("_final.csv")
+```
+
+- **Signature:** `def method(path): bool`. `path` is the file being previewed; return truthy to keep the template in the list, falsy to drop it.
+- **No `condition.py` = always shown** — the common case. Only add one when a template should apply to *some* files of an extension, not all.
+- **Runs after registry resolution**, for both user and built-in folders (whichever `template.html` resolves). So `".csv": ["reports-view", "csv", "code"]` offers `reports-view` only for files where its `method` returns True; the others always show.
+- **Re-evaluated on every file open** (like the registry) — edit `condition.py` and the next navigation/refresh picks it up, no restart.
+- **Keep it fast.** When an extension has several gated templates they're evaluated concurrently (so the cost is the slowest gate, not the sum), but every gate still runs on every file of that extension — a gate that returns False still had to run to decide that. Use quick, path-based checks (`in path`, `endswith`, `os.path`), not network calls or reads of large files.
+- **A broken condition drops that template** (no callable `method`, an exception, etc.) and sets `template_error` on the stat response — same as a bad registry name. It's never silently shown.
+- **Sentinel modes** (`_render`, `_listing`) have no folder and can't be gated.
+- **Visible in the UI:** a template with a `condition.py` shows a **"conditional"** badge in the templates management page (Templates → Library), so you can tell at a glance which templates are gated.
+
 ## Workflow: create and register a template
 
 1. **Make the folder:** `mkdir -p ~/.fused-render/<name>` — the name is public: it's the registry reference, the `_mode` URL value, and the switcher tooltip. Pick a real name, or reuse a built-in name on purpose to shadow it.
@@ -78,3 +100,4 @@ Rules:
 - **Template renders but is blank / errors:** that's an authoring problem, not registration — debug with the `fused-render-authoring` skill (red traceback overlay, `print()` → browser console).
 - **Registry edits not applying to an already-open preview:** open previews watch their files, not the registry — refresh or re-navigate.
 - **Mode switcher doesn't show up:** it only renders when a file has more than one mode (`templates.length > 1`) — a single-mode extension, or a `null` override, never shows it.
+- **A mode is missing only for some files:** that's a `condition.py` doing its job (or misfiring). If it's unexpectedly hidden, check `template_error` on the stat response for a condition exception, and confirm `method(path)` returns True for that file's path.
