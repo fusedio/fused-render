@@ -855,8 +855,10 @@ const acts = {
     await py({ action: "remove_from_library", doc: d.path });
     await refreshLib();
     if (state.doc === d.path) {
+      // Clear the removed doc first so a failed open of the next one (missing/
+      // encrypted) leaves an empty viewer, not the just-removed file.
+      clearOpenDoc();
       if (state.docs.length) await openDoc(state.docs[0].path);
-      else clearOpenDoc();
     }
   },
   save: async () => {
