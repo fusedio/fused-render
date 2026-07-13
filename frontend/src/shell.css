@@ -949,6 +949,43 @@ table.listing-table td.mtime {
   line-height: 1;
 }
 
+/* Conditional template whose gate is still resolving (CT-12): a small
+   currentColor ring spinner in place of the mode icon. */
+.mode-icon-spinner {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  opacity: 0.6;
+  animation: mode-spin 0.8s linear infinite;
+}
+
+@keyframes mode-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.preview-actions .mode-switcher-btn.pending,
+.pane-mode-item.pending {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* Body placeholder while a URL-requested gated mode (or an all-conditional
+   list) is still resolving. */
+.preview-resolving {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
 
 .preview-body {
   flex: 1 1 auto;

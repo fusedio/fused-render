@@ -624,34 +624,38 @@ def _run_condition(condition_file: str, target_path: str):
         return False, f"{condition_file}: {e}"
 
 
-def _apply_conditions(entries: list, target_path: str):
-    """Filter resolved template entries through their `condition.py` gates
-    (SPEC PT-8/CT-12). Sentinel entries (`path is None`, D73) and folders with
-    no `condition.py` are kept as-is. Returns (kept: list, error: str|None) —
-    the first gate error in list order, matching `_resolve_mode_list`'s
-    first-error convention.
+def _mark_conditions(entries: list):
+    """Flag resolved template entries whose folder carries a `condition.py`
+    gate with `"conditional": True` (SPEC PT-8/CT-12). Sentinel entries
+    (`path is None`, D73) and folders with no gate are left untouched.
 
-    Gates are independent and may be slow (user code — filesystem reads, etc.),
-    so the entries that have one are evaluated **concurrently**: the per-stat
-    cost is the slowest single gate, not their sum. Results are keyed by entry
-    index and reassembled in list order, so ordering and error precedence are
-    unaffected by completion order. The common case (no gates) spawns no threads.
+    Stat no longer *evaluates* gates — a gate may do real I/O (the H3 gate
+    reads a parquet footer), and over a remote mount that stalled every stat
+    of the extension. Marking is just an isfile() per entry (~1µs); the client
+    renders unconditional templates immediately and resolves the marked ones
+    in the background via /api/fs/conditions. A conditional entry is never the
+    client's default when an unconditional one exists.
     """
-    # Cheap first pass: which entries actually carry a condition.py? (isfile,
-    # ~1µs each). Only these need code loaded; everything else is kept as-is.
-    gated = []  # list[(index, condition_file)]
-    for i, entry in enumerate(entries):
+    for entry in entries:
         path = entry.get("path")
-        if path is not None:
-            cf = _condition_file(path)
-            if cf is not None:
-                gated.append((i, cf))
+        if path is not None and _condition_file(path) is not None:
+            entry["conditional"] = True
 
-    results = {}  # index -> (allowed, error)
+
+def _evaluate_conditions(gated: list, target_path: str):
+    """Evaluate `condition.py` gates: `gated` is [(key, condition_file)];
+    returns {key: (allowed: bool, error: str|None)}.
+
+    Gates are independent and may be slow (user code — filesystem reads,
+    remote I/O), so they are evaluated **concurrently**: the cost is the
+    slowest single gate, not their sum. Results are keyed, so ordering and
+    error precedence are the caller's, unaffected by completion order.
+    """
+    results = {}  # key -> (allowed, error)
 
     def _serial():
-        for i, cf in gated:
-            results[i] = _run_condition(cf, target_path)
+        for k, cf in gated:
+            results[k] = _run_condition(cf, target_path)
 
     if len(gated) == 1:
         _serial()
@@ -660,30 +664,58 @@ def _apply_conditions(entries: list, target_path: str):
         # templates (SPEC CT-12), so one worker per gate is fine. The pool
         # machinery itself (thread creation, submit, result) lives OUTSIDE
         # _run_condition's catch-all, so an OS refusing a new thread under load
-        # would otherwise escape and 500 the stat — breaking the fail-closed
+        # would otherwise escape and 500 the request — breaking the fail-closed
         # guarantee. Contain it: on any pool failure, fall back to serial
         # evaluation, which is wholly inside _run_condition's catch-all.
         try:
             from concurrent.futures import ThreadPoolExecutor
 
             with ThreadPoolExecutor(max_workers=len(gated)) as pool:
-                futures = {pool.submit(_run_condition, cf, target_path): i for i, cf in gated}
-                for fut, i in futures.items():
-                    results[i] = fut.result()
+                futures = {pool.submit(_run_condition, cf, target_path): k for k, cf in gated}
+                for fut, k in futures.items():
+                    results[k] = fut.result()
         except BaseException:
             results.clear()  # drop any partial results, re-evaluate cleanly
             _serial()
 
-    kept, error = [], None
-    for i, entry in enumerate(entries):
-        if i in results:
-            allowed, err = results[i]
-            if err and error is None:
-                error = err
-            if not allowed:
-                continue
-        kept.append(entry)
-    return kept, error
+    return results
+
+
+def _conditions_payload(path: str):
+    """The /api/fs/conditions shape: resolve the path's templates, evaluate
+    only the gated ones, and report {"conditions": {mode: bool}, "error"}.
+
+    This is the deferred half of SPEC CT-12: stat marks gated entries
+    `conditional` without running them; the client calls this endpoint in the
+    background while the first unconditional template already renders. `error`
+    carries the first gate error in list order (a broken gate reports False —
+    fail closed — with the reason), matching stat's `template_error` posture.
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return _error(f"no such file or directory: {path}", status=404)
+    entries, _ = _templates_for(path, stat_mod.S_ISDIR(st.st_mode))
+
+    gated = []  # [(mode, condition_file)] — mode keys are unique per list
+    for entry in entries:
+        if entry.get("conditional"):
+            cf = _condition_file(entry["path"])
+            if cf is not None:
+                gated.append((entry["mode"], cf))
+
+    results = _evaluate_conditions(gated, path)
+    conditions, error = {}, None
+    for mode, _cf in gated:
+        allowed, err = results[mode]
+        conditions[mode] = allowed
+        if err and error is None:
+            error = err
+
+    payload = {"path": path, "conditions": conditions}
+    if error:
+        payload["error"] = error
+    return payload
 
 
 def _resolve_mode_list(names):
@@ -920,11 +952,11 @@ def _templates_for(path: str, is_dir: bool):
         entries, _ = _resolve_mode_list(["text", "code"])
 
     # Conditional templates (SPEC PT-8): a template folder may gate itself on
-    # the file with a `condition.py`. Filter after resolution so gating is
-    # orthogonal to the registry — it runs on whatever list survived, built-in
-    # or user, main path or text-sniff fallback.
-    entries, cond_err = _apply_conditions(entries, path)
-    error = error or cond_err
+    # the file with a `condition.py`. Mark after resolution so gating is
+    # orthogonal to the registry — it applies to whatever list survived,
+    # built-in or user, main path or text-sniff fallback. Evaluation is
+    # deferred to /api/fs/conditions so a slow gate never stalls the stat.
+    _mark_conditions(entries)
     return entries, error
 
 
@@ -1210,6 +1242,13 @@ def create_app(start_dir: str) -> FastAPI:
     @app.get("/api/fs/stat")
     def api_fs_stat(path: str):
         return _fs_stat(path)
+
+    @app.get("/api/fs/conditions")
+    def api_fs_conditions(path: str):
+        # Deferred condition.py evaluation (SPEC CT-12): stat marks gated
+        # templates `conditional`; this resolves them while the client already
+        # renders the first unconditional template.
+        return _conditions_payload(path)
 
     @app.get("/api/fs/list")
     def api_fs_list(path: str):
