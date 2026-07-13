@@ -1,0 +1,1846 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Log Studio</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #101318;
+    --panel: #151920;
+    --panel-2: #1a1f27;
+    --rail: #12161c;
+    --input: #11151a;
+    --hover: #151a21;
+    --detail: #12171e;
+    --context: #0f1318;
+    --line: #2a303a;
+    --line-soft: #202630;
+    --text: #dce2ea;
+    --strong: #f2f5f8;
+    --muted: #8993a3;
+    --faint: #5d6877;
+    --accent: #55b8d2;
+    --accent-dim: rgba(85, 184, 210, 0.13);
+    --danger: #f06464;
+    --warn: #e6b450;
+    --info: #63b3ed;
+    --debug: #9b8afb;
+    --trace: #718096;
+    --fatal: #ed64a6;
+    --grid: #252c35;
+    --axis: #687281;
+    font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #f7f8fa;
+    --panel: #ffffff;
+    --panel-2: #eef1f5;
+    --rail: #f2f4f7;
+    --input: #ffffff;
+    --hover: #edf2f6;
+    --detail: #f4f6f8;
+    --context: #ffffff;
+    --line: #cfd5dd;
+    --line-soft: #e1e5ea;
+    --text: #202733;
+    --strong: #101722;
+    --muted: #5f6b7a;
+    --faint: #7b8795;
+    --accent: #147d99;
+    --accent-dim: rgba(20, 125, 153, 0.11);
+    --grid: #dce1e7;
+    --axis: #687586;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body { min-height: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+  }
+
+  button, input { font: inherit; }
+
+  button { color: inherit; }
+
+  button:focus-visible, input:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+
+  .app {
+    min-height: 100vh;
+    display: grid;
+    grid-template-columns: 240px minmax(0, 1fr);
+  }
+
+  .app.facets-collapsed { grid-template-columns: 44px minmax(0, 1fr); }
+  .app.focus-mode { grid-template-columns: minmax(0, 1fr); }
+  .app.focus-mode .facets { display: none; }
+  .app.facets-collapsed .facets-inner, .app.facets-collapsed .brand-label, .app.facets-collapsed .theme-toggle { display: none; }
+  .app.facets-collapsed .brand { justify-content: center; padding: 0; }
+  .app.focus-mode .canvas-panel { display: none; }
+
+  .facets {
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow: auto;
+    border-right: 1px solid var(--line);
+    background: var(--rail);
+  }
+
+  .brand {
+    height: 48px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 0 14px;
+    border-bottom: 1px solid var(--line);
+    color: var(--strong);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+  }
+
+  .brand-label { flex: 1; white-space: nowrap; }
+
+  .rail-toggle, .theme-toggle {
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+  }
+
+  .rail-toggle { width: 22px; height: 28px; }
+  .theme-toggle { width: 26px; height: 26px; border: 1px solid var(--line); border-radius: 4px; font-size: 15px; }
+  .rail-toggle:hover, .theme-toggle:hover { color: var(--accent); background: var(--accent-dim); }
+
+  .brand-mark {
+    width: 17px;
+    height: 17px;
+    display: grid;
+    align-content: center;
+    gap: 2px;
+  }
+
+  .brand-mark i {
+    display: block;
+    height: 2px;
+    background: var(--accent);
+  }
+
+  .brand-mark i:nth-child(2) { width: 70%; }
+  .brand-mark i:nth-child(3) { width: 88%; }
+
+  .open-file-list { display: grid; gap: 3px; }
+  .browse-button { width: 100%; margin-top: 9px; }
+
+  .picker-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: rgba(8, 11, 15, 0.55);
+  }
+
+  .picker-overlay[hidden] { display: none; }
+
+  .picker {
+    width: min(720px, 100%);
+    max-height: 82vh;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel);
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.4);
+    overflow: hidden;
+  }
+
+  .picker-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 13px 15px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .picker-title {
+    flex: 1;
+    margin: 0;
+    color: var(--strong);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .picker-close {
+    width: 28px;
+    height: 28px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--faint);
+    font-size: 20px;
+    cursor: pointer;
+  }
+
+  .picker-close:hover { color: var(--danger); background: var(--hover); }
+
+  .picker-path-form {
+    display: flex;
+    gap: 8px;
+    padding: 13px 15px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  #picker-path {
+    flex: 1;
+    height: 32px;
+    padding: 0 10px;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    background: var(--input);
+    color: var(--strong);
+    font: 12px ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+
+  #picker-path::placeholder { color: var(--faint); }
+
+  .picker-crumbs {
+    padding: 9px 15px;
+    border-bottom: 1px solid var(--line-soft);
+    color: var(--muted);
+    font: 11px ui-monospace, monospace;
+    word-break: break-all;
+  }
+
+  .picker-crumbs a { color: var(--accent); cursor: pointer; }
+  .picker-crumbs a:hover { text-decoration: underline; }
+
+  .picker-list {
+    flex: 1;
+    min-height: 120px;
+    overflow: auto;
+    padding: 6px 0;
+  }
+
+  .picker-entry {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 7px 15px;
+    border: 0;
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+    text-align: left;
+    font-size: 12px;
+  }
+
+  .picker-entry:hover { background: var(--hover); }
+  .picker-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .picker-size { color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums; }
+  .picker-empty { padding: 14px 15px; color: var(--faint); font-size: 12px; }
+
+  .picker-error {
+    padding: 11px 15px;
+    border-top: 1px solid var(--line-soft);
+    color: var(--danger);
+    font-size: 12px;
+  }
+
+  .picker-error[hidden] { display: none; }
+
+  .open-file {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 22px;
+    align-items: center;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+  }
+
+  .open-file.active { border-color: var(--accent); background: var(--accent-dim); }
+
+  .open-file-select {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 6px 7px;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .open-file-select:hover { background: var(--hover); }
+  .open-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .open-file.active .open-file-name { color: var(--strong); font-weight: 650; }
+  .file-kind { width: 26px; flex: 0 0 26px; color: var(--faint); font: 9px ui-monospace, monospace; }
+  .close-file { width: 22px; height: 26px; border: 0; background: transparent; color: var(--faint); cursor: pointer; }
+  .close-file:hover { color: var(--danger); }
+
+  .facet-section {
+    padding: 17px 13px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  .facet-title {
+    margin: 0 0 11px;
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+  }
+
+  .file-name {
+    overflow: hidden;
+    color: var(--strong);
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .file-path {
+    margin-top: 4px;
+    overflow-wrap: anywhere;
+    color: var(--faint);
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  .facts {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 7px 9px;
+    margin: 13px 0 0;
+    color: var(--muted);
+    font-size: 11px;
+  }
+
+  .facts dt, .facts dd { margin: 0; }
+  .facts dd { color: var(--text); text-align: right; }
+
+  .level-list { display: grid; gap: 3px; }
+
+  .level-option {
+    width: 100%;
+    min-height: 29px;
+    display: grid;
+    grid-template-columns: 15px 8px 1fr auto;
+    align-items: center;
+    gap: 7px;
+    padding: 4px 5px;
+    border: 0;
+    border-radius: 3px;
+    background: transparent;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .level-option:hover { background: var(--panel-2); }
+
+  .check {
+    width: 14px;
+    height: 14px;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--muted);
+    border-radius: 2px;
+    color: var(--input);
+    font-size: 10px;
+    font-weight: 900;
+  }
+
+  .level-option.active .check {
+    border-color: var(--accent);
+    background: var(--accent);
+  }
+
+  .level-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--level-color);
+  }
+
+  .level-count {
+    color: var(--faint);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .workspace { min-width: 0; }
+
+  .query-header {
+    min-height: 48px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 12px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+    position: sticky;
+    top: 0;
+    z-index: 5;
+  }
+
+  .query-form {
+    min-width: 180px;
+    flex: 1;
+    display: flex;
+    align-items: stretch;
+  }
+
+  .query-prefix {
+    display: grid;
+    place-items: center;
+    padding: 0 10px;
+    border: 1px solid var(--line);
+    border-right: 0;
+    border-radius: 3px 0 0 3px;
+    background: var(--input);
+    color: var(--accent);
+    font: 600 11px ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+
+  #query {
+    width: 100%;
+    height: 32px;
+    padding: 0 10px;
+    border: 1px solid var(--line);
+    border-radius: 0;
+    background: var(--input);
+    color: var(--strong);
+    font: 12px ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+
+  #query::placeholder { color: var(--faint); }
+
+  .button {
+    min-height: 32px;
+    padding: 0 11px;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    background: var(--panel-2);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .button:hover:not(:disabled) { border-color: var(--muted); background: var(--hover); }
+  .button:disabled { opacity: 0.38; cursor: default; }
+
+  .query-submit {
+    border-left: 0;
+    border-radius: 0 3px 3px 0;
+    border-color: #318da7;
+    background: #287e97;
+    color: white;
+    font-weight: 600;
+  }
+
+  .query-submit:hover { background: #3190aa; }
+
+  .tail-button[aria-pressed="true"] {
+    border-color: #3da5c2;
+    background: var(--accent-dim);
+    color: var(--accent);
+  }
+
+  #focus-toggle[aria-pressed="true"], #rail-toggle[aria-pressed="true"] {
+    border-color: var(--accent);
+    background: var(--accent-dim);
+    color: var(--accent);
+  }
+
+  .live-dot {
+    width: 6px;
+    height: 6px;
+    display: inline-block;
+    margin-right: 6px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+
+  .canvas-panel {
+    height: 174px;
+    display: grid;
+    grid-template-rows: 31px minmax(0, 1fr);
+    border-bottom: 1px solid var(--line);
+    background: var(--rail);
+  }
+
+  .canvas-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 13px;
+    color: var(--muted);
+    font-size: 11px;
+  }
+
+  .canvas-head strong { color: var(--text); font-weight: 600; }
+  #hist-summary { margin-left: auto; font-variant-numeric: tabular-nums; }
+
+  .canvas-wrap {
+    min-height: 0;
+    position: relative;
+    padding: 0 8px 5px;
+  }
+
+  #histogram {
+    width: 100%;
+    height: 100%;
+    display: block;
+    touch-action: none;
+    cursor: crosshair;
+  }
+
+  #hist-tooltip {
+    position: absolute;
+    z-index: 3;
+    display: none;
+    max-width: 220px;
+    padding: 6px 8px;
+    border: 1px solid #404957;
+    border-radius: 3px;
+    background: rgba(13, 16, 21, 0.96);
+    color: #dbe1e8;
+    font-size: 11px;
+    line-height: 1.45;
+    pointer-events: none;
+    box-shadow: 0 5px 18px rgba(0, 0, 0, 0.35);
+  }
+
+  .view-bar {
+    height: 42px;
+    display: flex;
+    align-items: end;
+    gap: 4px;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+  }
+
+  .tab {
+    height: 41px;
+    padding: 0 12px;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+  }
+
+  .tab:hover { color: var(--text); }
+  .tab.active { border-bottom-color: var(--accent); color: var(--strong); }
+
+  #result-summary {
+    align-self: center;
+    margin-left: auto;
+    color: var(--muted);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .notice {
+    margin: 10px 12px 0;
+    padding: 8px 10px;
+    border: 1px solid #665322;
+    border-radius: 3px;
+    background: rgba(230, 180, 80, 0.08);
+    color: #d9bf7b;
+    font-size: 11px;
+  }
+
+  .status {
+    min-height: 220px;
+    display: grid;
+    place-content: center;
+    gap: 10px;
+    padding: 30px;
+    color: var(--muted);
+    text-align: center;
+  }
+
+  .status.error { color: #f18c8c; }
+
+  .spinner {
+    width: 20px;
+    height: 20px;
+    margin: auto;
+    border: 2px solid var(--line);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.75s linear infinite;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .log-list { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+  .log-row {
+    display: grid;
+    grid-template-columns: 25px 154px 58px 82px minmax(0, 1fr);
+    min-height: 31px;
+    border-bottom: 1px solid var(--line-soft);
+    background: var(--bg);
+    cursor: pointer;
+  }
+
+  .log-row:hover { background: var(--hover); }
+  .log-row.expanded { background: var(--panel-2); }
+
+  .log-cell {
+    min-width: 0;
+    padding: 7px 8px;
+    border-right: 1px solid var(--line-soft);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .expand-mark { color: var(--faint); text-align: center; }
+  .timestamp { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .offset { color: var(--faint); text-align: right; font-variant-numeric: tabular-nums; }
+  .message { color: var(--text); }
+
+  .level {
+    color: var(--level-color);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.035em;
+  }
+
+  .line-detail {
+    display: none;
+    grid-column: 1 / -1;
+    padding: 10px 12px 12px 33px;
+    border-top: 1px solid var(--line);
+    background: var(--detail);
+  }
+
+  .log-row.expanded .line-detail { display: block; }
+
+  .line-detail pre {
+    margin: 0 0 10px;
+    color: var(--text);
+    font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+
+  .detail-actions { display: flex; align-items: center; gap: 10px; }
+  .context-button { min-height: 27px; font-size: 11px; }
+  .detail-meta { color: var(--faint); font-size: 10px; }
+
+  .context-lines {
+    display: grid;
+    margin-top: 10px;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    background: var(--context);
+  }
+
+  .context-line {
+    display: grid;
+    grid-template-columns: 78px minmax(0, 1fr);
+    gap: 10px;
+    padding: 4px 7px;
+    color: var(--muted);
+    font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  .context-line.target { background: var(--accent-dim); color: var(--strong); }
+  .context-line + .context-line { border-top: 1px solid var(--line-soft); }
+  .context-offset { color: var(--faint); text-align: right; }
+
+  .patterns { padding: 0 12px 30px; }
+
+  .pattern-row {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr) minmax(120px, 0.45fr);
+    gap: 14px;
+    align-items: start;
+    padding: 12px 8px;
+    border: 0;
+    border-bottom: 1px solid var(--line-soft);
+    background: transparent;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .pattern-row:hover { background: var(--hover); }
+  .pattern-count { color: var(--strong); font: 600 17px ui-monospace, SFMono-Regular, Consolas, monospace; }
+  .pattern-body { min-width: 0; }
+  .pattern-text { color: var(--text); font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
+  .pattern-query { margin-top: 5px; color: var(--accent); font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
+  .pattern-sample { color: var(--faint); font: 10px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
+
+  .pager {
+    min-height: 47px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 7px 12px;
+    border-top: 1px solid var(--line);
+    background: var(--panel);
+  }
+
+  .page-position {
+    margin-left: auto;
+    color: var(--muted);
+    font: 11px ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+
+  @media (max-width: 780px) {
+    .app { display: block; }
+    .facets { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+    .brand { height: 42px; }
+    .facets-inner { display: grid; grid-template-columns: 1fr 1.35fr; }
+    .facet-section { padding: 11px 13px; border-bottom: 0; }
+    .level-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .facts { display: none; }
+    .file-path { display: none; }
+    .query-header { position: static; flex-wrap: wrap; }
+    .query-form { flex-basis: 100%; order: -1; }
+    .canvas-panel { height: 146px; }
+    .log-row { grid-template-columns: 22px 126px 54px minmax(0, 1fr); }
+    .log-row > .offset { display: none; }
+    .pattern-row { grid-template-columns: 55px minmax(0, 1fr); }
+    .pattern-sample { display: none; }
+  }
+
+  @media (max-width: 480px) {
+    .facets-inner { grid-template-columns: 1fr; }
+    .facet-section:first-child { border-bottom: 1px solid var(--line-soft); }
+    .level-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .level-option { grid-template-columns: 14px 7px 1fr; }
+    .level-count { display: none; }
+    .query-header > .button { flex: 1; }
+    .canvas-head { padding: 0 8px; }
+    .log-row { grid-template-columns: 22px 102px 51px minmax(0, 1fr); }
+    .log-cell { padding-left: 5px; padding-right: 5px; }
+    #result-summary { max-width: 48%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  }
+</style>
+</head>
+<body>
+  <div class="app">
+    <aside class="facets">
+      <div class="brand">
+        <button class="rail-toggle" id="rail-toggle" type="button" title="Collapse file rail" aria-label="Collapse file rail" aria-pressed="false">
+          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        </button>
+        <span class="brand-label">LOG STUDIO</span>
+        <button class="theme-toggle" id="theme-toggle" type="button" title="Switch to dark mode" aria-label="Switch to dark mode">&#9680;</button>
+      </div>
+      <div class="facets-inner">
+        <section class="facet-section">
+          <h2 class="facet-title">Open files</h2>
+          <div class="open-file-list" id="open-files"></div>
+          <button class="button browse-button" id="browse-open" type="button">Browse files&hellip;</button>
+        </section>
+        <section class="facet-section" id="file-overview">
+          <h2 class="facet-title">Active file</h2>
+          <div class="file-name">Waiting for file</div>
+        </section>
+        <section class="facet-section">
+          <h2 class="facet-title">Level</h2>
+          <div class="level-list" id="level-list"><span class="file-path">Loading facets...</span></div>
+        </section>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="query-header">
+        <form class="query-form" id="query-form">
+          <span class="query-prefix">q</span>
+          <input id="query" type="search" autocomplete="off" spellcheck="false" placeholder="Search text, fields, or /regex/" aria-label="Log query" />
+          <button class="button query-submit" type="submit">Search</button>
+        </form>
+        <button class="button" id="focus-toggle" type="button" aria-pressed="false">Focus</button>
+        <button class="button" id="clear-range" type="button">Clear time</button>
+        <button class="button tail-button" id="tail-toggle" type="button" aria-pressed="false"><span class="live-dot"></span>Tail</button>
+      </header>
+
+      <section class="canvas-panel" aria-label="Log volume histogram">
+        <div class="canvas-head">
+          <strong>Event distribution</strong>
+          <span id="time-window">Full file range</span>
+          <span id="hist-summary"></span>
+        </div>
+        <div class="canvas-wrap" id="canvas-wrap">
+          <canvas id="histogram"></canvas>
+          <div id="hist-tooltip"></div>
+        </div>
+      </section>
+
+      <nav class="view-bar" aria-label="Result view">
+        <button class="tab active" id="lines-tab" type="button">Lines</button>
+        <button class="tab" id="patterns-tab" type="button">Patterns</button>
+        <span id="result-summary"></span>
+      </nav>
+
+      <div id="notice-area"></div>
+      <section id="results" aria-live="polite">
+        <div class="status"><span class="spinner"></span><span>Reading log...</span></div>
+      </section>
+      <footer class="pager" id="pager" hidden>
+        <button class="button" id="prev-page" type="button">Previous</button>
+        <button class="button" id="next-page" type="button">Next</button>
+        <span class="page-position" id="page-position"></span>
+      </footer>
+    </main>
+  </div>
+
+  <div class="picker-overlay" id="picker-overlay" hidden>
+    <div class="picker" role="dialog" aria-modal="true" aria-label="Open a file">
+      <div class="picker-head">
+        <h2 class="picker-title">Open a file</h2>
+        <button class="picker-close" id="picker-close" type="button" aria-label="Close">&times;</button>
+      </div>
+      <form class="picker-path-form" id="picker-path-form">
+        <input id="picker-path" type="text" spellcheck="false" autocomplete="off" placeholder="Paste a full path, e.g. C:\logs\app.log or ~/logs/app.log" aria-label="File path" />
+        <button class="button query-submit" type="submit">Open</button>
+      </form>
+      <div class="picker-crumbs" id="picker-crumbs"></div>
+      <div class="picker-list" id="picker-list"></div>
+      <div class="picker-error" id="picker-error" hidden></div>
+    </div>
+  </div>
+
+<script>
+  const PAGE_LIMIT = 200;
+  const LEVEL_ORDER = ["FATAL", "ERROR", "WARN", "INFO", "DEBUG", "TRACE", "OTHER"];
+  const LEVEL_COLORS = {
+    FATAL: "#ed64a6",
+    ERROR: "#f06464",
+    WARN: "#e6b450",
+    INFO: "#63b3ed",
+    DEBUG: "#9b8afb",
+    TRACE: "#718096",
+    OTHER: "#8993a3",
+    UNKNOWN: "#8993a3"
+  };
+
+  const fileOverview = document.getElementById("file-overview");
+  const app = document.querySelector(".app");
+  const openFiles = document.getElementById("open-files");
+  const browseButton = document.getElementById("browse-open");
+  const pickerOverlay = document.getElementById("picker-overlay");
+  const pickerClose = document.getElementById("picker-close");
+  const pickerPathForm = document.getElementById("picker-path-form");
+  const pickerPath = document.getElementById("picker-path");
+  const pickerCrumbs = document.getElementById("picker-crumbs");
+  const pickerList = document.getElementById("picker-list");
+  const pickerError = document.getElementById("picker-error");
+  const levelList = document.getElementById("level-list");
+  const queryForm = document.getElementById("query-form");
+  const queryInput = document.getElementById("query");
+  const clearRange = document.getElementById("clear-range");
+  const tailToggle = document.getElementById("tail-toggle");
+  const railToggle = document.getElementById("rail-toggle");
+  const focusToggle = document.getElementById("focus-toggle");
+  const themeToggle = document.getElementById("theme-toggle");
+  const linesTab = document.getElementById("lines-tab");
+  const patternsTab = document.getElementById("patterns-tab");
+  const resultSummary = document.getElementById("result-summary");
+  const noticeArea = document.getElementById("notice-area");
+  const results = document.getElementById("results");
+  const pager = document.getElementById("pager");
+  const prevPage = document.getElementById("prev-page");
+  const nextPage = document.getElementById("next-page");
+  const pagePosition = document.getElementById("page-position");
+  const canvas = document.getElementById("histogram");
+  const canvasWrap = document.getElementById("canvas-wrap");
+  const histTooltip = document.getElementById("hist-tooltip");
+  const histSummary = document.getElementById("hist-summary");
+  const timeWindow = document.getElementById("time-window");
+  const ctx = canvas.getContext("2d");
+
+  const IS_WINDOWS = /^win/i.test(navigator.platform);
+
+  let generation = 0;
+  let overviewData = null;
+  let overviewFile = "";
+  let pageData = null;
+  let chartData = null;
+  let histogramData = null;
+  let brush = null;
+  let tailTimer = null;
+  let tailPolling = false;
+  let loadTimer = null;
+  let lastTailState = null;
+  let dataReadyKey = "";
+  let loadingDataKey = "";
+  let tailEndOffset = 0;
+  let tailPageOffset = 0;
+  let fileWatchTimer = null;
+  let watchedFile = "";
+  let watchedSignature = "";
+  let lastTheme = "light";
+  const pathAliases = new Map();
+
+  function escapeHtml(value) {
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function number(value, fallback = 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+
+  function currentState() {
+    const rawPage = fused.params.get("page") || "0";
+    const target = fused.params.get("_file") || "";
+    const file = fused.params.get("file") || target;
+    let opened = [];
+    try {
+      const parsed = JSON.parse(fused.params.get("open") || "[]");
+      if (Array.isArray(parsed)) opened = parsed.filter((value) => typeof value === "string");
+    } catch (_) {}
+    if (file && !opened.some((value) => samePath(value, file))) opened.push(file);
+    return {
+      file,
+      opened,
+      q: fused.params.get("q") || "",
+      level: fused.params.get("level") || "",
+      levels: (fused.params.get("level") || "").split(",").map((item) => item.trim().toUpperCase()).filter(Boolean),
+      from: fused.params.get("from") || "",
+      to: fused.params.get("to") || "",
+      page: String(Math.max(0, number(rawPage, 0))),
+      back: (fused.params.get("back") || "").split(",").filter((value) => /^\d+$/.test(value)),
+      view: fused.params.get("view") === "patterns" ? "patterns" : "lines",
+      tail: !["", "0"].includes(fused.params.get("tail") || ""),
+      theme: fused.params.get("theme") === "dark" ? "dark" : "light",
+      facets: fused.params.get("facets") !== "0",
+      focus: fused.params.get("focus") === "1"
+    };
+  }
+
+  function setParams(values) {
+    for (const [key, value] of Object.entries(values)) {
+      const next = String(value);
+      if ((fused.params.get(key) || "") !== next) fused.params.set(key, next);
+    }
+  }
+
+  function basename(path) {
+    const parts = String(path).split(/[\\/]/);
+    return parts[parts.length - 1] || path;
+  }
+
+  function samePath(left, right) {
+    let a = pathKey(left);
+    let b = pathKey(right);
+    if (IS_WINDOWS) {
+      a = a.toLowerCase();
+      b = b.toLowerCase();
+    }
+    a = pathAliases.get(a) || a;
+    b = pathAliases.get(b) || b;
+    return a === b;
+  }
+
+  function pathKey(path) {
+    return String(path).replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/\.\//g, "/").replace(/\/$/, "");
+  }
+
+  function rememberPath(alias, canonical) {
+    let key = pathKey(alias);
+    let value = pathKey(canonical);
+    if (IS_WINDOWS) {
+      key = key.toLowerCase();
+      value = value.toLowerCase();
+    }
+    pathAliases.set(key, value);
+  }
+
+  function dataKey(state) {
+    return JSON.stringify([state.file, state.q, state.level, state.from, state.to, state.page, state.view, state.tail]);
+  }
+
+  function formatCount(value) {
+    return number(value).toLocaleString();
+  }
+
+  function formatBytes(value) {
+    let amount = number(value);
+    if (amount < 1024) return `${amount.toLocaleString()} B`;
+    const units = ["KB", "MB", "GB", "TB"];
+    let unit = -1;
+    do { amount /= 1024; unit += 1; } while (amount >= 1024 && unit < units.length - 1);
+    return `${amount.toFixed(amount >= 10 ? 1 : 2)} ${units[unit]}`;
+  }
+
+  function epochDate(value) {
+    const n = number(value, NaN);
+    if (!Number.isFinite(n)) return null;
+    return new Date(Math.abs(n) < 100000000000 ? n * 1000 : n);
+  }
+
+  function formatEpoch(value, includeDate = true) {
+    const date = epochDate(value);
+    if (!date || Number.isNaN(date.getTime())) return String(value || "-");
+    const options = includeDate
+      ? { year: "numeric", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }
+      : { hour: "2-digit", minute: "2-digit", second: "2-digit" };
+    return new Intl.DateTimeFormat(undefined, options).format(date);
+  }
+
+  function levelName(value) {
+    return String(value || "UNKNOWN").toUpperCase();
+  }
+
+  function levelColor(level) {
+    return LEVEL_COLORS[levelName(level)] || LEVEL_COLORS.UNKNOWN;
+  }
+
+  function errorMessage(error) {
+    if (!error) return "Unknown reader error";
+    return error.message || error.detail || String(error);
+  }
+
+  async function runReader(op, state, extra = {}) {
+    return fused.runPython("./reader.py", {
+      op,
+      file: state.file,
+      q: state.q,
+      level: state.level,
+      from: state.from,
+      to: state.to,
+      ...extra
+    });
+  }
+
+  function overviewLevels(data) {
+    const source = data.levels || data.level_counts || (data.facets && data.facets.level) || {};
+    const entries = Array.isArray(source)
+      ? source.map((item) => [item.level || item.key || "UNKNOWN", item.count || item.value || 0])
+      : Object.entries(source);
+    return entries
+      .map(([level, count]) => [levelName(level), number(count)])
+      .sort((a, b) => {
+        const ai = LEVEL_ORDER.indexOf(a[0]);
+        const bi = LEVEL_ORDER.indexOf(b[0]);
+        return (ai < 0 ? 100 : ai) - (bi < 0 ? 100 : bi) || b[1] - a[1];
+      });
+  }
+
+  function overviewRange(data) {
+    const range = data.time_range || data.range || {};
+    return {
+      min: data.from ?? data.min_time ?? data.first_timestamp ?? range.from ?? range.min ?? "",
+      max: data.to ?? data.max_time ?? data.last_timestamp ?? range.to ?? range.max ?? ""
+    };
+  }
+
+  function renderOpenFiles(state) {
+    openFiles.innerHTML = state.opened.map((path) => {
+      const active = samePath(path, state.file);
+      const name = basename(path);
+      const dot = name.lastIndexOf(".");
+      const kind = dot > 0 ? name.slice(dot + 1, dot + 5).toUpperCase() : "FILE";
+      return `
+        <div class="open-file ${active ? "active" : ""}" title="${escapeHtml(path)}">
+          <button class="open-file-select" type="button" data-open-file="${escapeHtml(path)}">
+            <span class="file-kind">${escapeHtml(kind)}</span>
+            <span class="open-file-name">${escapeHtml(name)}</span>
+          </button>
+          <button class="close-file" type="button" data-close-file="${escapeHtml(path)}" aria-label="Close ${escapeHtml(name)}">x</button>
+        </div>`;
+    }).join("");
+  }
+
+  function crumbHtml(path) {
+    const parts = String(path).split("/").filter(Boolean);
+    const winRoot = /^[A-Za-z]:$/.test(parts[0] || "");
+    const crumbs = winRoot ? [] : [`<a data-path="/">/</a>`];
+    parts.forEach((part, index) => {
+      const acc = (winRoot ? "" : "/") + parts.slice(0, index + 1).join("/") + (winRoot && !index ? "/" : "");
+      crumbs.push(`<a data-path="${escapeHtml(acc)}">${escapeHtml(part)}</a>`);
+    });
+    return crumbs.join(` <span style="color:var(--faint)">/</span> `);
+  }
+
+  function renderPickerDir(data) {
+    pickerCrumbs.innerHTML = crumbHtml(data.path);
+    const rows = [];
+    if (data.parent && data.parent !== data.path) {
+      rows.push(`<button class="picker-entry" type="button" data-dir="${escapeHtml(data.parent)}"><span class="file-kind">UP</span><span class="picker-name">..</span></button>`);
+    }
+    for (const entry of data.entries) {
+      const attr = entry.is_dir ? "data-dir" : "data-file";
+      rows.push(`
+        <button class="picker-entry" type="button" ${attr}="${escapeHtml(entry.path)}" title="${escapeHtml(entry.path)}">
+          <span class="file-kind">${entry.is_dir ? "DIR" : "FILE"}</span>
+          <span class="picker-name">${escapeHtml(entry.name)}</span>
+          ${entry.is_dir ? "" : `<span class="picker-size">${escapeHtml(formatBytes(entry.size))}</span>`}
+        </button>`);
+    }
+    pickerList.innerHTML = rows.length ? rows.join("") : `<div class="picker-empty">This folder is empty.</div>`;
+  }
+
+  async function loadPickerDir(path) {
+    pickerError.hidden = true;
+    pickerList.innerHTML = `<div class="picker-empty">Loading…</div>`;
+    try {
+      renderPickerDir(await runReader("list", currentState(), { path: path || "" }));
+    } catch (error) {
+      pickerList.innerHTML = "";
+      showPickerError(errorMessage(error));
+    }
+  }
+
+  function openPickedFile(path) {
+    const state = currentState();
+    const opened = state.opened.some((value) => samePath(value, path)) ? state.opened : [...state.opened, path];
+    closePicker();
+    activateFile(path, opened);
+  }
+
+  function showPickerError(message) {
+    pickerError.textContent = message;
+    pickerError.hidden = false;
+  }
+
+  function openPicker() {
+    pickerOverlay.hidden = false;
+    pickerPath.value = "";
+    pickerError.hidden = true;
+    loadPickerDir("");
+    pickerPath.focus();
+  }
+
+  function closePicker() {
+    pickerOverlay.hidden = true;
+  }
+
+  function activateFile(path, opened) {
+    setParams({
+      file: path,
+      open: JSON.stringify(opened),
+      q: "",
+      level: "",
+      from: "",
+      to: "",
+      page: "0",
+      back: "",
+      tail: "0"
+    });
+  }
+
+  function renderOverview(data, state) {
+    const range = overviewRange(data);
+    const size = data.size ?? data.file_size ?? data.bytes ?? 0;
+    const lines = data.lines ?? data.line_count ?? data.total_lines ?? 0;
+    fileOverview.innerHTML = `
+      <h2 class="facet-title">Active file</h2>
+      <div class="file-name" title="${escapeHtml(state.file)}">${escapeHtml(basename(state.file))}</div>
+      <div class="file-path">${escapeHtml(state.file)}</div>
+      <dl class="facts">
+        <dt>Size</dt><dd>${escapeHtml(formatBytes(size))}</dd>
+        <dt>Lines</dt><dd>${escapeHtml(formatCount(lines))}</dd>
+        <dt>First</dt><dd>${escapeHtml(range.min ? formatEpoch(range.min, false) : "-")}</dd>
+        <dt>Last</dt><dd>${escapeHtml(range.max ? formatEpoch(range.max, false) : "-")}</dd>
+      </dl>`;
+
+    const entries = overviewLevels(data);
+    const available = entries.map(([level]) => level);
+    const active = state.levels.length ? new Set(state.levels) : new Set(available);
+    levelList.innerHTML = entries.length ? entries.map(([level, count]) => `
+      <button class="level-option ${active.has(level) ? "active" : ""}" type="button" data-level="${escapeHtml(level)}" style="--level-color:${levelColor(level)}" aria-pressed="${active.has(level)}">
+        <span class="check">${active.has(level) ? "x" : ""}</span>
+        <span class="level-dot"></span>
+        <span>${escapeHtml(level)}</span>
+        <span class="level-count">${escapeHtml(formatCount(count))}</span>
+      </button>`).join("") : `<span class="file-path">No level data</span>`;
+  }
+
+  function normalizeBuckets(data) {
+    let source = data && (data.buckets || data.bins || data.histogram || data.points || []);
+    if (!Array.isArray(source) && source && Array.isArray(source.buckets)) source = source.buckets;
+    if (!Array.isArray(source)) return [];
+    return source.map((bucket, index) => {
+      const countsSource = bucket.levels || bucket.counts || bucket.by_level || {};
+      const counts = {};
+      if (Array.isArray(countsSource)) {
+        for (const item of countsSource) counts[levelName(item.level || item.key)] = number(item.count || item.value);
+      } else {
+        for (const [level, count] of Object.entries(countsSource)) counts[levelName(level)] = number(count);
+      }
+      if (!Object.keys(counts).length) counts.UNKNOWN = number(bucket.count ?? bucket.value ?? bucket.total);
+      return {
+        start: number(bucket.start ?? bucket.from ?? bucket.time ?? bucket.timestamp ?? index),
+        end: number(bucket.end ?? bucket.to ?? bucket.time_end ?? bucket.timestamp ?? index + 1),
+        counts
+      };
+    }).filter((bucket) => Number.isFinite(bucket.start) && Number.isFinite(bucket.end));
+  }
+
+  function selectedHistogramLevels(buckets) {
+    const found = new Set();
+    for (const bucket of buckets) for (const level of Object.keys(bucket.counts)) found.add(level);
+    return [...found].sort((a, b) => {
+      const ai = LEVEL_ORDER.indexOf(a);
+      const bi = LEVEL_ORDER.indexOf(b);
+      return (ai < 0 ? 100 : ai) - (bi < 0 ? 100 : bi);
+    });
+  }
+
+  function resizeCanvas() {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+    const width = Math.max(1, Math.round(rect.width * dpr));
+    const height = Math.max(1, Math.round(rect.height * dpr));
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    drawHistogram();
+  }
+
+  function chartBounds() {
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    return { left: 38, right: Math.max(39, width - 8), top: 6, bottom: Math.max(7, height - 20), width, height };
+  }
+
+  function xForTime(value, bounds, min, max) {
+    return bounds.left + ((value - min) / Math.max(1, max - min)) * (bounds.right - bounds.left);
+  }
+
+  function timeForX(value, bounds, min, max) {
+    const ratio = Math.max(0, Math.min(1, (value - bounds.left) / Math.max(1, bounds.right - bounds.left)));
+    return min + ratio * (max - min);
+  }
+
+  function drawHistogram() {
+    const bounds = chartBounds();
+    ctx.clearRect(0, 0, bounds.width, bounds.height);
+    const styles = getComputedStyle(document.documentElement);
+    ctx.fillStyle = styles.getPropertyValue("--rail").trim();
+    ctx.fillRect(0, 0, bounds.width, bounds.height);
+
+    const buckets = chartData ? chartData.buckets : [];
+    if (!buckets.length) {
+      ctx.fillStyle = styles.getPropertyValue("--axis").trim();
+      ctx.font = "11px ui-sans-serif, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("No timestamped events in this selection", bounds.width / 2, bounds.height / 2);
+      return;
+    }
+
+    const min = chartData.min;
+    const max = chartData.max;
+    const levels = selectedHistogramLevels(buckets).reverse();
+    const totals = buckets.map((bucket) => Object.values(bucket.counts).reduce((sum, count) => sum + count, 0));
+    const peak = Math.max(1, ...totals);
+
+    ctx.strokeStyle = styles.getPropertyValue("--grid").trim();
+    ctx.lineWidth = 1;
+    ctx.fillStyle = styles.getPropertyValue("--axis").trim();
+    ctx.font = "10px ui-monospace, monospace";
+    ctx.textAlign = "right";
+    for (let i = 0; i <= 2; i += 1) {
+      const y = bounds.bottom - ((bounds.bottom - bounds.top) * i) / 2;
+      ctx.beginPath();
+      ctx.moveTo(bounds.left, y + 0.5);
+      ctx.lineTo(bounds.right, y + 0.5);
+      ctx.stroke();
+      ctx.fillText(formatCount(Math.round((peak * i) / 2)), bounds.left - 5, y + 3);
+    }
+
+    const slot = (bounds.right - bounds.left) / buckets.length;
+    const barWidth = Math.max(1, slot - Math.min(2, slot * 0.16));
+    buckets.forEach((bucket, index) => {
+      let y = bounds.bottom;
+      for (const level of levels) {
+        const count = number(bucket.counts[level]);
+        if (!count) continue;
+        const height = Math.max(1, (count / peak) * (bounds.bottom - bounds.top));
+        y -= height;
+        ctx.fillStyle = levelColor(level);
+        ctx.fillRect(bounds.left + index * slot + (slot - barWidth) / 2, y, barWidth, height);
+      }
+    });
+
+    const state = currentState();
+    const selectionFrom = number(state.from, NaN);
+    const selectionTo = number(state.to, NaN);
+    if (Number.isFinite(selectionFrom) && Number.isFinite(selectionTo)) {
+      const x1 = xForTime(selectionFrom, bounds, min, max);
+      const x2 = xForTime(selectionTo, bounds, min, max);
+      ctx.fillStyle = "rgba(85,184,210,0.10)";
+      ctx.fillRect(Math.min(x1, x2), bounds.top, Math.abs(x2 - x1), bounds.bottom - bounds.top);
+      ctx.strokeStyle = styles.getPropertyValue("--accent").trim();
+      ctx.strokeRect(Math.min(x1, x2) + 0.5, bounds.top + 0.5, Math.abs(x2 - x1), bounds.bottom - bounds.top - 1);
+    }
+
+    if (brush) {
+      const x1 = Math.max(bounds.left, Math.min(bounds.right, brush.start));
+      const x2 = Math.max(bounds.left, Math.min(bounds.right, brush.current));
+      ctx.fillStyle = "rgba(85,184,210,0.18)";
+      ctx.fillRect(Math.min(x1, x2), bounds.top, Math.abs(x2 - x1), bounds.bottom - bounds.top);
+      ctx.strokeStyle = styles.getPropertyValue("--accent").trim();
+      ctx.strokeRect(Math.min(x1, x2) + 0.5, bounds.top + 0.5, Math.abs(x2 - x1), bounds.bottom - bounds.top - 1);
+    }
+
+    ctx.fillStyle = styles.getPropertyValue("--axis").trim();
+    ctx.textAlign = "left";
+    ctx.fillText(formatEpoch(min, false), bounds.left, bounds.height - 5);
+    ctx.textAlign = "right";
+    ctx.fillText(formatEpoch(max, false), bounds.right, bounds.height - 5);
+  }
+
+  function renderHistogram(data, state) {
+    const buckets = normalizeBuckets(data);
+    const overviewRangeValue = overviewRange(overviewData || {});
+    const min = buckets.length ? Math.min(...buckets.map((bucket) => bucket.start)) : number(overviewRangeValue.min);
+    const max = buckets.length ? Math.max(...buckets.map((bucket) => bucket.end)) : number(overviewRangeValue.max, min + 1);
+    chartData = { buckets, min, max: max > min ? max : min + 1 };
+    const total = buckets.reduce((sum, bucket) => sum + Object.values(bucket.counts).reduce((inner, count) => inner + count, 0), 0);
+    histSummary.textContent = `${formatCount(total)} events`;
+    timeWindow.textContent = state.from && state.to
+      ? `${formatEpoch(state.from)} to ${formatEpoch(state.to)}`
+      : "Full file range";
+    resizeCanvas();
+  }
+
+  function linesFrom(data) {
+    if (Array.isArray(data)) return data;
+    return data.lines || data.rows || data.results || data.items || [];
+  }
+
+  function lineFields(line, index) {
+    const raw = line.message ?? line.text ?? line.line ?? line.raw ?? "";
+    return {
+      timestamp: line.timestamp ?? line.time ?? line.ts ?? "",
+      level: levelName(line.level ?? line.severity),
+      offset: number(line.offset ?? line.byte_offset ?? line.start ?? index),
+      raw: typeof raw === "string" ? raw : JSON.stringify(raw)
+    };
+  }
+
+  function renderLines(data, state) {
+    pageData = data;
+    const lines = linesFrom(data);
+    if (state.tail) {
+      tailEndOffset = number(data.next_offset ?? data.end_offset, tailEndOffset);
+      if (lines.length) tailPageOffset = number(lines[0].offset ?? lines[0].byte_offset, tailPageOffset);
+    }
+    const total = data.total ?? data.total_matches ?? data.matched ?? data.count ?? (histogramData && histogramData.matching_count);
+    resultSummary.textContent = total == null ? `${formatCount(lines.length)} lines on page` : `${formatCount(total)} matching lines`;
+    pager.hidden = state.tail;
+
+    const previous = data.prev_offset ?? data.previous_offset ?? data.prev_page ?? state.back[state.back.length - 1];
+    const next = data.next_offset ?? data.next_page;
+    prevPage.dataset.offset = String(Math.max(0, number(previous, 0)));
+    prevPage.dataset.back = state.back.slice(0, -1).join(",");
+    prevPage.disabled = number(state.page) <= 0 && previous == null;
+    prevPage.textContent = previous == null ? "First" : "Previous";
+    nextPage.dataset.offset = next == null ? "" : String(Math.max(0, number(next)));
+    nextPage.disabled = next == null || data.has_more === false;
+    pagePosition.textContent = `byte ${number(state.page).toLocaleString()}${data.end_offset != null ? ` - ${number(data.end_offset).toLocaleString()}` : ""}`;
+
+    if (!lines.length) {
+      results.innerHTML = `<div class="status"><strong>No matching lines</strong><span>Adjust the query, levels, or time range.</span></div>`;
+      return;
+    }
+
+    results.innerHTML = `<div class="log-list">${lines.map((line, index) => {
+      const fields = lineFields(line, index);
+      return `
+        <article class="log-row" data-row="${index}" style="--level-color:${levelColor(fields.level)}">
+          <span class="log-cell expand-mark">+</span>
+          <time class="log-cell timestamp">${escapeHtml(fields.timestamp)}</time>
+          <span class="log-cell level">${escapeHtml(fields.level)}</span>
+          <span class="log-cell offset">${escapeHtml(fields.offset.toLocaleString())}</span>
+          <span class="log-cell message">${escapeHtml(fields.raw)}</span>
+          <div class="line-detail">
+            <pre>${escapeHtml(fields.raw)}</pre>
+            <div class="detail-actions">
+              <button class="button context-button" type="button" data-context="${escapeHtml(fields.offset)}">Show context</button>
+              <span class="detail-meta">byte ${escapeHtml(fields.offset.toLocaleString())}${fields.timestamp ? ` / ${escapeHtml(fields.timestamp)}` : ""}</span>
+            </div>
+            <div class="context-lines" hidden></div>
+          </div>
+        </article>`;
+    }).join("")}</div>`;
+  }
+
+  function patternsFrom(data) {
+    if (Array.isArray(data)) return data;
+    return data.patterns || data.results || data.items || [];
+  }
+
+  function renderPatterns(data) {
+    if (data.available === false) {
+      resultSummary.textContent = "Patterns unavailable";
+      pager.hidden = true;
+      results.innerHTML = `<div class="status"><strong>Pattern mining is not installed</strong><span>${escapeHtml(data.message || "Install drain3 to enable clustering.")}</span></div>`;
+      return;
+    }
+    const patterns = patternsFrom(data).slice().sort((a, b) => number(b.count) - number(a.count));
+    const total = data.total ?? data.total_matches ?? patterns.reduce((sum, item) => sum + number(item.count), 0);
+    resultSummary.textContent = `${formatCount(patterns.length)} patterns / ${formatCount(total)} lines`;
+    pager.hidden = true;
+    pageData = null;
+
+    if (!patterns.length) {
+      results.innerHTML = `<div class="status"><strong>No patterns found</strong><span>There are no repeated structures in this selection.</span></div>`;
+      return;
+    }
+
+    results.innerHTML = `<div class="patterns">${patterns.map((item) => {
+      const pattern = item.pattern ?? item.template ?? item.text ?? "";
+      const query = item.query ?? item.filter ?? pattern;
+      const sample = item.sample ?? item.example ?? "";
+      return `
+        <button class="pattern-row" type="button" data-query="${escapeHtml(query)}">
+          <span class="pattern-count">${escapeHtml(formatCount(item.count))}</span>
+          <span class="pattern-body">
+            <span class="pattern-text">${escapeHtml(pattern)}</span>
+            <span class="pattern-query">filter: ${escapeHtml(query)}</span>
+          </span>
+          <span class="pattern-sample">${escapeHtml(sample)}</span>
+        </button>`;
+    }).join("")}</div>`;
+  }
+
+  function renderNotices(...payloads) {
+    const truncated = payloads.find((data) => data && (data.truncated || data.is_truncated));
+    const clipped = payloads.reduce((count, data) => count + number(data && data.clipped_lines), 0);
+    if (!truncated && !clipped) {
+      noticeArea.innerHTML = "";
+      return;
+    }
+    if (truncated) {
+      const detail = truncated.truncation_reason || truncated.warning || "The reader capped this result set. Counts and patterns may be partial.";
+      noticeArea.innerHTML = `<div class="notice"><strong>Truncated result.</strong> ${escapeHtml(detail)}</div>`;
+      return;
+    }
+    noticeArea.innerHTML = `<div class="notice"><strong>Long lines clipped.</strong> ${formatCount(clipped)} scanned lines exceeded 64 KB.</div>`;
+  }
+
+  function renderState(state) {
+    document.documentElement.dataset.theme = state.theme;
+    if (lastTheme !== state.theme) {
+      lastTheme = state.theme;
+      if (chartData) requestAnimationFrame(resizeCanvas);
+    }
+    app.classList.toggle("facets-collapsed", !state.facets);
+    app.classList.toggle("focus-mode", state.focus);
+    queryInput.value = state.q;
+    clearRange.disabled = !state.from && !state.to;
+    tailToggle.setAttribute("aria-pressed", String(state.tail));
+    railToggle.setAttribute("aria-pressed", String(!state.facets));
+    railToggle.title = state.facets ? "Collapse file rail" : "Expand file rail";
+    railToggle.setAttribute("aria-label", railToggle.title);
+    focusToggle.setAttribute("aria-pressed", String(state.focus));
+    focusToggle.textContent = state.focus ? "Exit focus" : "Focus";
+    themeToggle.title = state.theme === "light" ? "Switch to dark mode" : "Switch to light mode";
+    themeToggle.setAttribute("aria-label", themeToggle.title);
+    const original = fused.params.get("_file") || "";
+    fused.autoReload(!state.tail && (!original || samePath(original, state.file)));
+    linesTab.classList.toggle("active", state.view === "lines");
+    patternsTab.classList.toggle("active", state.view === "patterns");
+  }
+
+  function setLoading(state) {
+    renderState(state);
+    resultSummary.textContent = "Loading...";
+    noticeArea.innerHTML = "";
+    pager.hidden = true;
+    results.innerHTML = `<div class="status"><span class="spinner"></span><span>Reading log...</span></div>`;
+  }
+
+  function setError(error) {
+    const type = error && error.type ? `<strong>${escapeHtml(error.type)}</strong><br>` : "";
+    resultSummary.textContent = "Reader failed";
+    pager.hidden = true;
+    results.innerHTML = `<div class="status error">${type}<span>${escapeHtml(errorMessage(error))}</span></div>`;
+  }
+
+  async function pollTail() {
+    const state = currentState();
+    if (!state.tail || state.view !== "lines" || tailPolling) return;
+    const request = generation;
+    tailPolling = true;
+    try {
+      const content = await runReader("page", state, { page: state.page, limit: String(PAGE_LIMIT), tail: "1" });
+      if (request === generation && currentState().tail) {
+        renderLines(content, state);
+        renderNotices(content);
+      }
+    } catch (error) {
+      if (request === generation) setError(error);
+    } finally {
+      tailPolling = false;
+    }
+  }
+
+  function syncTailTimer(state) {
+    if (tailTimer) clearInterval(tailTimer);
+    tailTimer = null;
+    if (state.tail && state.view === "lines") tailTimer = setInterval(pollTail, 2000);
+  }
+
+  function stopFileWatcher() {
+    if (fileWatchTimer) clearInterval(fileWatchTimer);
+    fileWatchTimer = null;
+    watchedFile = "";
+    watchedSignature = "";
+  }
+
+  function syncFileWatcher(state) {
+    stopFileWatcher();
+    if (state.tail || !overviewData) return;
+    const path = overviewData.path || state.file;
+    watchedFile = path;
+    watchedSignature = `${overviewData.mtime}:${overviewData.size}`;
+    let checking = false;
+    fileWatchTimer = setInterval(async () => {
+      if (checking || watchedFile !== path) return;
+      checking = true;
+      try {
+        const stat = await fused.stat(path);
+        const signature = `${stat.mtime}:${stat.size}`;
+        if (watchedFile === path && signature !== watchedSignature) {
+          watchedSignature = signature;
+          overviewData = null;
+          overviewFile = "";
+          dataReadyKey = "";
+          loadingDataKey = "";
+          generation += 1;
+          scheduleLoad();
+        }
+      } catch (error) {
+        if (watchedFile === path) {
+          stopFileWatcher();
+          overviewData = null;
+          overviewFile = "";
+          dataReadyKey = "";
+          loadingDataKey = "";
+          generation += 1;
+          setError({ message: `Active file is unavailable: ${errorMessage(error)}` });
+        }
+      } finally {
+        checking = false;
+      }
+    }, 2000);
+  }
+
+  async function load() {
+    const state = currentState();
+    if (!state.file) {
+      renderState(state);
+      renderOpenFiles(state);
+      fileOverview.innerHTML = "";
+      levelList.innerHTML = "";
+      resultSummary.textContent = "No file open";
+      noticeArea.innerHTML = "";
+      pager.hidden = true;
+      results.innerHTML = `<div class="status"><strong>No log file open</strong><span>Use "Browse files..." to pick a log.</span></div>`;
+      return;
+    }
+    const nextDataKey = dataKey(state);
+    if (state.tail) stopFileWatcher();
+    if (lastTailState === true && !state.tail) {
+      overviewData = null;
+      overviewFile = "";
+      dataReadyKey = "";
+      loadingDataKey = "";
+    }
+    lastTailState = state.tail;
+    renderState(state);
+    renderOpenFiles(state);
+    if (loadingDataKey === nextDataKey) return;
+    if (dataReadyKey === nextDataKey && overviewData && overviewFile === state.file) {
+      renderOverview(overviewData, state);
+      syncTailTimer(state);
+      syncFileWatcher(state);
+      return;
+    }
+
+    const request = ++generation;
+    loadingDataKey = nextDataKey;
+    if (overviewFile && overviewFile !== state.file) stopFileWatcher();
+    if (tailTimer) clearInterval(tailTimer);
+    tailTimer = null;
+    setLoading(state);
+
+    try {
+      let overview = overviewData;
+      if (!overviewData || overviewFile !== state.file) {
+        overview = await runReader("overview", state);
+        if (request !== generation) return;
+        rememberPath(state.file, overview.path);
+        overviewData = overview;
+        overviewFile = state.file;
+      }
+      renderOverview(overview, state);
+
+      const histogramPromise = runReader("histogram", state);
+      const contentPromise = state.view === "patterns"
+        ? runReader("patterns", state)
+        : runReader("page", state, { page: state.page, limit: String(PAGE_LIMIT), tail: state.tail ? "1" : "0" });
+      const [histogram, content] = await Promise.all([histogramPromise, contentPromise]);
+      if (request !== generation) return;
+
+      histogramData = histogram;
+      renderHistogram(histogram, state);
+      if (state.view === "patterns") renderPatterns(content);
+      else renderLines(content, state);
+      renderNotices(overview, histogram, content);
+      dataReadyKey = nextDataKey;
+      loadingDataKey = "";
+      syncTailTimer(state);
+      syncFileWatcher(state);
+    } catch (error) {
+      if (request !== generation) return;
+      loadingDataKey = "";
+      setError(error);
+    }
+  }
+
+  queryForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    setParams({ page: "0", back: "", q: queryInput.value.trim() });
+  });
+
+  clearRange.addEventListener("click", () => setParams({ from: "", to: "", page: "0", back: "" }));
+
+  railToggle.addEventListener("click", () => setParams({ facets: currentState().facets ? "0" : "1" }));
+  focusToggle.addEventListener("click", () => setParams({ focus: currentState().focus ? "0" : "1" }));
+  themeToggle.addEventListener("click", () => setParams({ theme: currentState().theme === "light" ? "dark" : "light" }));
+
+  openFiles.addEventListener("click", (event) => {
+    const state = currentState();
+    const close = event.target.closest("[data-close-file]");
+    if (close) {
+      if (state.opened.length <= 1) return;
+      const remaining = state.opened.filter((path) => !samePath(path, close.dataset.closeFile));
+      if (samePath(close.dataset.closeFile, state.file)) activateFile(remaining[remaining.length - 1], remaining);
+      else setParams({ open: JSON.stringify(remaining) });
+      return;
+    }
+    const select = event.target.closest("[data-open-file]");
+    if (select && !samePath(select.dataset.openFile, state.file)) activateFile(select.dataset.openFile, state.opened);
+  });
+
+  browseButton.addEventListener("click", openPicker);
+  pickerClose.addEventListener("click", closePicker);
+  pickerOverlay.addEventListener("mousedown", (event) => {
+    if (event.target === pickerOverlay) closePicker();
+  });
+
+  pickerCrumbs.addEventListener("click", (event) => {
+    const crumb = event.target.closest("[data-path]");
+    if (crumb) loadPickerDir(crumb.dataset.path);
+  });
+
+  pickerList.addEventListener("click", (event) => {
+    const dir = event.target.closest("[data-dir]");
+    if (dir) {
+      loadPickerDir(dir.dataset.dir);
+      return;
+    }
+    const file = event.target.closest("[data-file]");
+    if (file) openPickedFile(file.dataset.file);
+  });
+
+  pickerPathForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const value = pickerPath.value.trim();
+    if (!value) return;
+    pickerError.hidden = true;
+    try {
+      const info = await runReader("resolve", currentState(), { path: value });
+      if (!info.exists) {
+        showPickerError(`No such file or folder: ${info.path}`);
+        return;
+      }
+      if (info.is_dir) {
+        pickerPath.value = "";
+        loadPickerDir(info.path);
+        return;
+      }
+      openPickedFile(info.path);
+    } catch (error) {
+      showPickerError(errorMessage(error));
+    }
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !pickerOverlay.hidden) closePicker();
+  });
+
+  tailToggle.addEventListener("click", () => {
+    const state = currentState();
+    const size = overviewData && (overviewData.size ?? overviewData.file_size ?? overviewData.bytes);
+    if (!state.tail) {
+      tailEndOffset = number(size);
+      tailPageOffset = Math.max(0, tailEndOffset - 65536);
+    }
+    setParams({ page: tailPageOffset, back: "", tail: state.tail ? "0" : "1" });
+  });
+
+  linesTab.addEventListener("click", () => setParams({ view: "lines", page: "0", back: "" }));
+  patternsTab.addEventListener("click", () => setParams({ view: "patterns", page: "0", back: "", tail: "0" }));
+
+  levelList.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-level]");
+    if (!button || !overviewData) return;
+    const level = button.dataset.level;
+    const state = currentState();
+    const available = overviewLevels(overviewData).map(([name]) => name);
+    const selected = new Set(state.levels.length ? state.levels : available);
+    if (selected.has(level)) selected.delete(level);
+    else selected.add(level);
+    const next = available.filter((name) => selected.has(name));
+    setParams({ level: next.length === available.length ? "" : next.join(","), page: "0", back: "" });
+  });
+
+  results.addEventListener("click", async (event) => {
+    const contextButton = event.target.closest("[data-context]");
+    if (contextButton) {
+      event.stopPropagation();
+      const row = contextButton.closest(".log-row");
+      const target = row.querySelector(".context-lines");
+      row.classList.add("expanded");
+      row.querySelector(".expand-mark").textContent = "-";
+      contextButton.disabled = true;
+      contextButton.textContent = "Loading context...";
+      try {
+        const data = await runReader("context", currentState(), { page: contextButton.dataset.context, context: "5" });
+        target.innerHTML = data.lines.map((line) => `
+          <div class="context-line ${line.target ? "target" : ""}">
+            <span class="context-offset">${escapeHtml(number(line.offset).toLocaleString())}</span>
+            <span>${escapeHtml(line.text)}</span>
+          </div>`).join("");
+        target.hidden = false;
+        contextButton.textContent = "Refresh context";
+      } catch (error) {
+        target.innerHTML = `<div class="context-line"><span></span><span>${escapeHtml(errorMessage(error))}</span></div>`;
+        target.hidden = false;
+        contextButton.textContent = "Retry context";
+      } finally {
+        contextButton.disabled = false;
+      }
+      return;
+    }
+    const pattern = event.target.closest("[data-query]");
+    if (pattern) {
+      setParams({ q: pattern.dataset.query, page: "0", back: "", view: "lines" });
+      return;
+    }
+    const row = event.target.closest(".log-row");
+    if (row) {
+      row.classList.toggle("expanded");
+      row.querySelector(".expand-mark").textContent = row.classList.contains("expanded") ? "-" : "+";
+    }
+  });
+
+  prevPage.addEventListener("click", () => setParams({ page: prevPage.dataset.offset || "0", back: prevPage.dataset.back || "" }));
+  nextPage.addEventListener("click", () => {
+    if (!nextPage.dataset.offset) return;
+    const state = currentState();
+    setParams({ page: nextPage.dataset.offset, back: [...state.back, state.page].slice(-50).join(",") });
+  });
+
+  function canvasX(event) {
+    return event.clientX - canvas.getBoundingClientRect().left;
+  }
+
+  canvas.addEventListener("pointerdown", (event) => {
+    if (!chartData || !chartData.buckets.length) return;
+    brush = { start: canvasX(event), current: canvasX(event), pointerId: event.pointerId };
+    canvas.setPointerCapture(event.pointerId);
+    histTooltip.style.display = "none";
+    drawHistogram();
+  });
+
+  canvas.addEventListener("pointermove", (event) => {
+    if (!chartData || !chartData.buckets.length) return;
+    const x = canvasX(event);
+    if (brush && brush.pointerId === event.pointerId) {
+      brush.current = x;
+      drawHistogram();
+      return;
+    }
+
+    const bounds = chartBounds();
+    if (x < bounds.left || x > bounds.right) {
+      histTooltip.style.display = "none";
+      return;
+    }
+    const index = Math.min(chartData.buckets.length - 1, Math.floor(((x - bounds.left) / (bounds.right - bounds.left)) * chartData.buckets.length));
+    const bucket = chartData.buckets[index];
+    const counts = Object.entries(bucket.counts).filter(([, count]) => number(count) > 0);
+    histTooltip.innerHTML = `<strong>${escapeHtml(formatEpoch(bucket.start))}</strong><br>${counts.map(([level, count]) => `${escapeHtml(level)} ${escapeHtml(formatCount(count))}`).join(" / ")}`;
+    histTooltip.style.display = "block";
+    histTooltip.style.left = `${Math.min(canvasWrap.clientWidth - histTooltip.offsetWidth - 6, Math.max(6, x + 10))}px`;
+    histTooltip.style.top = `${Math.max(4, event.clientY - canvasWrap.getBoundingClientRect().top - histTooltip.offsetHeight - 8)}px`;
+  });
+
+  canvas.addEventListener("pointerleave", () => {
+    if (!brush) histTooltip.style.display = "none";
+  });
+
+  canvas.addEventListener("pointerup", (event) => {
+    if (!brush || brush.pointerId !== event.pointerId || !chartData) return;
+    const completed = brush;
+    brush = null;
+    drawHistogram();
+    if (Math.abs(completed.current - completed.start) < 5) return;
+    const bounds = chartBounds();
+    const from = timeForX(Math.min(completed.start, completed.current), bounds, chartData.min, chartData.max);
+    const to = timeForX(Math.max(completed.start, completed.current), bounds, chartData.min, chartData.max);
+    setParams({ from: String(Math.round(from)), to: String(Math.round(to)), page: "0", back: "", tail: "0" });
+  });
+
+  canvas.addEventListener("pointercancel", () => {
+    brush = null;
+    drawHistogram();
+  });
+
+  const resizeObserver = new ResizeObserver(resizeCanvas);
+  resizeObserver.observe(canvasWrap);
+
+  function scheduleLoad() {
+    if (loadTimer) clearTimeout(loadTimer);
+    loadTimer = setTimeout(load, 0);
+  }
+
+  fused.params.onChange(scheduleLoad);
+  load();
+</script>
+</body>
+</html>
