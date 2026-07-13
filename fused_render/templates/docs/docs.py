@@ -129,6 +129,16 @@ def _typst_install():
     return _typst_status()
 
 
+def _editability(file: str):
+    """Editability verdict for the reader (SPEC RO-4): fold fs writability into
+    editable + readonly_message (badge) + readonly_tooltip (hover)."""
+    if not os.access(file, os.W_OK):
+        return (False, "Read-only",
+                "The file is read-only — its permissions don't allow "
+                "writing, so it can't be edited here.")
+    return True, "", ""
+
+
 def _cache_dir(file: str) -> str:
     # One subfolder per document (keyed by its own path) so exports from
     # different documents never collide; lives outside the template folder.
@@ -175,10 +185,13 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
     if action == "import":
         if not file or not os.path.isfile(file):
             raise FileNotFoundError(f"file not found: {file}")
+        editable, ro_msg, ro_tip = _editability(file)
         out = _pandoc(["-f", "docx", "-t", "html+tex_math_dollars", "--mathjax",
                        "--track-changes=all", "--embed-resources",
                        "--wrap=none", file])
-        return {"html": out.decode("utf-8", "replace"), "mtime": os.path.getmtime(file)}
+        return {"html": out.decode("utf-8", "replace"), "mtime": os.path.getmtime(file),
+                "editable": editable, "readonly_message": ro_msg,
+                "readonly_tooltip": ro_tip}
 
     # ---- export/convert: browser sends serialized HTML, we fan out to formats
     if action == "export":
@@ -218,6 +231,11 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
         if not html:
             raise ValueError("nothing to save")
         file = os.path.abspath(file)
+        # FS gate before any tmp-write (SPEC RO-3): the tmp + os.replace
+        # pipeline below goes through the parent directory, so a chmod -w
+        # file bit would otherwise be silently overwritten.
+        if os.path.exists(file) and not os.access(file, os.W_OK):
+            raise PermissionError(f"{file!r} is read-only")
         if expected_mtime and os.path.exists(file):
             on_disk = os.path.getmtime(file)
             if abs(on_disk - float(expected_mtime)) > 1e-6:

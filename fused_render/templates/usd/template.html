@@ -184,6 +184,7 @@
   ::-webkit-scrollbar-thumb { background: #3a3a40; border-radius: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
 </style>
+<script src="/template-shared/ro-badge.js"></script>
 </head>
 <body>
   <div id="topbar">
@@ -335,6 +336,7 @@
 
   <div id="statusbar">
     <span id="statusMsg">booting…</span>
+    <span id="ro" hidden></span>
     <div id="statusProg"><div id="statusProgFill"></div></div>
     <span id="fps"></span>
   </div>
@@ -434,6 +436,18 @@
   let pendingCamera = null;
   let initialCameraApplied = false;
 
+  // Read-only sidecar (SPEC §13.5 RO-6): the viewed asset is never written,
+  // so read-onlyness never blocks viewing — settings/camera just stop being
+  // remembered, with a visible warning instead of doomed 403 writes.
+  let sidecarWritable = true;
+  function markSidecarReadonly() {
+    sidecarWritable = false;
+    const name = sidecarPath.split(/[\\/]/).pop();
+    fusedRoBadge.update(document.getElementById("ro"), "Settings not saved",
+      "The file's settings sidecar (" + name + ") is read-only, so viewer " +
+      "settings and camera position won't be remembered.");
+  }
+
   async function loadSidecar() {
     if (!sidecarPath) return;
     let saved;
@@ -450,7 +464,7 @@
     sidecarSaveTimer = setTimeout(saveSidecar, 800);
   }
   async function saveSidecar() {
-    if (!sidecarPath) return;
+    if (!sidecarPath || !sidecarWritable) return;
     let doc = {};
     try { doc = JSON.parse(await fused.readFile(sidecarPath)) || {}; }
     catch (e) { /* new sidecar */ }
@@ -460,7 +474,12 @@
     } };
     for (const k of SIDECAR_FIELDS) doc.usd[k] = P.get(k);
     try { await fused.writeFile(sidecarPath, JSON.stringify(doc, null, 2)); }
-    catch (e) { console.warn("usd sidecar save failed:", e.message); }
+    catch (e) {
+      // Mid-session chmod: the server's 403 backstop (RO-2) surfaces as a
+      // typed error — flip the badge on and stop retrying doomed saves.
+      if (e.type === "readonly") markSidecarReadonly();
+      else console.warn("usd sidecar save failed:", e.message);
+    }
   }
 
   // ------------------------------------------------------------ three.js ---
@@ -1040,6 +1059,9 @@
     catch (e) { setOverlay("Inspect failed", e.message, 0); removeScene(s); return; }
     if (token !== loadToken) { removeScene(s); return; }
     if (info.error) { setOverlay("Cannot load", info.error, 0); removeScene(s); return; }
+    // Only the target file's inspect speaks for the sidecar (`FILE + ".json"`)
+    // — extra imported scenes don't gate settings persistence.
+    if (file === FILE && info.sidecar_writable === false) markSidecarReadonly();
     s.kind = info.kind;
 
     // .splat/.ksplat: feed straight to the splat renderer

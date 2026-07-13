@@ -401,6 +401,22 @@ def _table_with_edits(con, pq, edits, ncols):
 
 # ---------- load ----------
 
+def _ro_verdict(file):
+    """Editability verdict for the viewed file (SPEC §13.5 RO-4).
+
+    Folded into every load payload so the UI can badge read-only files and
+    disable in-place saving while keeping viewing/export/save-as working.
+    """
+    if os.path.exists(file) and not os.access(file, os.W_OK):
+        return {
+            "editable": False,
+            "readonly_message": "Read-only",
+            "readonly_tooltip": "The file is read-only — its permissions "
+                                "don't allow writing, so it can't be edited here.",
+        }
+    return {"editable": True, "readonly_message": "", "readonly_tooltip": ""}
+
+
 def _sheet_view_out(ws):
     """Column widths (px) and frozen-row count from a worksheet."""
     from openpyxl.utils import column_index_from_string
@@ -444,7 +460,8 @@ def _load_rich(file):
         colw, freeze = _sheet_view_out(ws)
         sheets.append({"name": name, "rows": rows, "styles": styles, "big": False,
                        "colw": colw, "freeze": freeze})
-    return {"sheets": sheets, "mtime": os.path.getmtime(file), "rich": True}
+    return {"sheets": sheets, "mtime": os.path.getmtime(file), "rich": True,
+            **_ro_verdict(file)}
 
 
 def _load(file):
@@ -480,7 +497,8 @@ def _load(file):
             rows = [["" if v is None else v for v in r] for r in data] or [[""]]
             sheets.append({"name": sh["name"], "rows": rows, "styles": None, "big": False,
                            "kind": sh["kind"], "header": sh["header"]})
-    return {"sheets": sheets, "mtime": os.path.getmtime(file), "rich": False}
+    return {"sheets": sheets, "mtime": os.path.getmtime(file), "rich": False,
+            **_ro_verdict(file)}
 
 
 # ---------- save ----------
@@ -574,6 +592,14 @@ def _write_xlsx_streamed(dest, file, sheets_payload, meta):
 
 def _save(file, sheets_payload, expected_mtime):
     file = os.path.abspath(file)
+    # SPEC §13.5 RO-3: every branch below writes via tmp + os.replace, which
+    # goes through the (writable) parent dir and would silently bypass a
+    # chmod -w bit on the file itself — gate explicitly, before the conflict
+    # check (offering "Overwrite" on an unwritable file would be a lie).
+    # Existence-qualified: _save_as points here at a fresh dest, and
+    # os.access on a nonexistent path is False.
+    if os.path.exists(file) and not os.access(file, os.W_OK):
+        raise PermissionError(f"{file!r} is read-only")
     if expected_mtime and os.path.exists(file):
         on_disk = os.path.getmtime(file)
         if abs(on_disk - float(expected_mtime)) > 1e-6:

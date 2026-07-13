@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <title>Excel editor</title>
+<script src="/template-shared/ro-badge.js"></script>
 <style>
   :root {
     --bg: #131417; --panel: #1b1d21; --panel2: #17181c; --head: #1e2025;
@@ -57,6 +58,9 @@
   .mi { padding: 6px 12px; border-radius: 5px; white-space: nowrap; display: flex; }
   .mi:hover { background: var(--accent); color: var(--on-accent); }
   .mi .kbd { margin-left: auto; color: var(--faint); font-size: 11px; padding-left: 24px; }
+  .mi.disabled { color: var(--faint); }
+  .mi.disabled:hover { background: none; color: var(--faint); }
+  /* .ro-badge / .ro-tip styles inject from /template-shared/ro-badge.js. */
   .mi:hover .kbd { color: var(--on-accent); opacity: .8; }
   .msep { border-top: 1px solid var(--border); margin: 5px 8px; }
   /* ---- toolbar ---- */
@@ -243,6 +247,7 @@
 <body>
   <div id="topbar">
     <span id="fileName">Excel editor</span>
+    <span id="ro" hidden></span>
     <span id="savedState"></span><span id="status"></span>
     <button class="tb" id="themeBtn" title="Toggle light / dark theme">◐ Light</button>
   </div>
@@ -374,6 +379,7 @@ let book = null;          // { sheets: [...] }  — small: {rows, styles}; big: 
 let cur = 0;
 let mtime = null;
 let dirty = false;
+let readOnly = false;      // reader verdict (SPEC §13.5): blocks in-place save + edit entry, never viewing
 let sel = { ar: 0, ac: 0, r1: 0, c1: 0, r2: 0, c2: 0 };
 let editing = null;
 let undoStack = [], redoStack = [];
@@ -892,11 +898,13 @@ function restore(snap) {
   markDirty(); renderGrid();
 }
 function undo() {
+  if (roBlocked()) return;   // restore() mutates — only reachable after a mid-session RO flip
   if (!undoStack.length) return;
   redoStack.push(snapshot());
   restore(undoStack.pop());
 }
 function redo() {
+  if (roBlocked()) return;
   if (!redoStack.length) return;
   undoStack.push(snapshot());
   restore(redoStack.pop());
@@ -1236,6 +1244,7 @@ function renderTabs() {
     }
     t.onclick = () => { if (i !== cur) switchSheet(i); };
     t.ondblclick = () => {          // rename inline, no popup
+      if (roBlocked()) return;
       const inp = document.createElement("input");
       inp.value = sh.name;
       label.style.display = "none";
@@ -1312,6 +1321,7 @@ $("gridWrap").addEventListener("scroll", () => {
 function tdAt(r, c) { return tds.get(r + "," + c); }
 function startEdit(initial) {
   if (!book || editing) return;
+  if (roBlocked()) return;
   const { ar, ac } = sel;
   const td = tdAt(ar, ac); if (!td) return;
   const input = document.createElement("input");
@@ -1470,6 +1480,7 @@ function bigGuard(what) {
   return false;
 }
 function applyStyle(key, value) {
+  if (roBlocked()) return;
   if (bigGuard("Formatting")) return;
   pushUndo();
   const { r1, c1, r2, c2 } = normSel();
@@ -1506,6 +1517,9 @@ function sortSheet(dir) {
     return;
   }
   if (dir === "off") { setStatus("Clear sort applies to large sheets (small sheets sort in place).", ""); return; }
+  // Big-sheet sort above is a server-side view op and stays available on a
+  // read-only file; small sheets sort the model in place, so gate it (RO-5).
+  if (roBlocked()) return;
   pushUndo();
   ensureValues();
   const col = sel.ac;
@@ -1553,6 +1567,7 @@ async function load() {
   $("fileName").title = file || "";
   if (!file) {
     book = null; markDirty(false);
+    setReadOnly(false, "", "");
     $("gridWrap").innerHTML = `<div id="emptyState">No workbook selected.<br><br>
       Open an .xlsx file from the explorer to edit it here.</div>`;
     $("tabs").innerHTML = "";
@@ -1566,6 +1581,7 @@ async function load() {
     if (seq !== loadSeq) return;
     normalizeLoaded(res);
     mtime = res.mtime;
+    setReadOnly(res.editable === false, res.readonly_message || "", res.readonly_tooltip || "");
     undoStack = []; redoStack = []; renderLimit = RENDER_CAP; invalidateValues();
     const want = fused.params.get("sheet");
     cur = Math.max(0, book.sheets.findIndex((s2) => s2.name === want));
@@ -1579,9 +1595,35 @@ async function load() {
   }
 }
 
+// Reader verdict → badge + disabled in-place save (SPEC §13.5 RO-4/RO-5).
+// Viewing, sort/filter, export and Save-as all stay available.
+function setReadOnly(ro, message, tooltip) {
+  readOnly = ro;
+  fusedRoBadge.update($("ro"), ro ? (message || "Read-only") : "", tooltip || "");
+  const mi = document.querySelector('#menubar .mi[data-act="save"]');
+  if (mi) {
+    mi.classList.toggle("disabled", ro);
+    mi.title = ro ? (tooltip || "") : "";
+  }
+}
+
+// Central RO gate (SPEC RO-5): every model-mutating entry point checks this,
+// so a read-only workbook can't accumulate edits it can never persist —
+// cell edits, formula bar, paste/cut/clear, fill, styles, row/col/sheet ops,
+// scripts. Viewing (sort on big sheets, filter, export, Save-as) stays open.
+function roBlocked() {
+  if (!readOnly) return false;
+  setStatus("Read-only — editing is disabled. Use File ▸ Save as… to edit a copy.", "err");
+  return true;
+}
+
 async function save(force) {
   const file = currentFile();
   if (!file || !book) return;
+  if (readOnly) {
+    setStatus("Read-only — the file can't be saved in place. Use File ▸ Save as… for a copy.", "err");
+    return;
+  }
   commitEdit();
   setStatus("Saving…");
   try {
@@ -1617,6 +1659,12 @@ async function save(force) {
     setStatus(`Saved · ${new Date().toLocaleTimeString()}`, "ok");
   } catch (err) {
     setStatus(`${err.type || "error"}: ${err.message}`, "err");
+    // Mid-session chmod: the reader gate's PermissionError arrives as a
+    // generic error carrying its message — lock the UI like a load verdict.
+    if (/is read-only/.test(err.message || "")) {
+      setReadOnly(true, "Read-only",
+        "The file is read-only — its permissions don't allow writing, so it can't be edited here.");
+    }
   }
 }
 
@@ -1688,6 +1736,9 @@ function sheetApi(sh) {
   };
 }
 function runJs(code, out) {
+  // Scripts get live sheet references and mutate freely — the whole run is
+  // blocked on a read-only file rather than letting edits pile up unsaveable.
+  if (roBlocked()) { out.className = "err"; out.textContent = "Read-only file — scripts are disabled (they can edit the workbook)."; return; }
   pushUndo();
   const logs = [];
   const log = (...a) => logs.push(a.map((x) => (typeof x === "object" ? JSON.stringify(x) : String(x))).join(" "));
@@ -1711,6 +1762,7 @@ function runJs(code, out) {
   }
 }
 async function runPy(code, out) {
+  if (roBlocked()) { out.className = "err"; out.textContent = "Read-only file — scripts are disabled (they can edit the workbook)."; return; }
   out.className = ""; out.textContent = "Running…";
   const smalls = book.sheets.filter((sh) => !sh.big);
   if (!smalls.length) {
@@ -1756,7 +1808,17 @@ async function loadScripts() {
 async function saveScripts(scripts) {
   const data = await loadSidecar();
   data.excel = { ...(data.excel || {}), scripts };
-  await fused.writeFile(sidecarPath(), JSON.stringify(data, null, 2));
+  try {
+    await fused.writeFile(sidecarPath(), JSON.stringify(data, null, 2));
+  } catch (err) {
+    // A read-only `<file>.json` sidecar 403s (SPEC RO-2); scripts still run,
+    // they just won't persist — non-fatal.
+    if (err && err.type === "readonly") {
+      setStatus("Script not saved — the scripts sidecar file is read-only.", "err");
+      return;
+    }
+    throw err;
+  }
 }
 
 async function openScriptEditor() {
@@ -2001,6 +2063,13 @@ async function act(name) {
     },
     scripts: openScriptEditor,
   };
+  // View-safe actions only on a read-only file; everything else in the table
+  // above mutates the model (RO-5). `save` keeps its own, more specific gate;
+  // sort routes through sortSheet, which blocks only the in-place small-sheet
+  // branch (big-sheet sort is a server-side view op).
+  const RO_SAFE = new Set(["save", "saveAs", "dlCsv", "dlXlsx", "dlPdf", "dlParquet",
+                           "sortAsc", "sortDesc", "sortOff", "toggleFilter", "loadAll"]);
+  if (readOnly && !RO_SAFE.has(name) && roBlocked()) return;
   if (book) {
     if (!["save", "undo", "redo"].includes(name)) commitEdit();
     await acts[name]?.();
@@ -2085,7 +2154,9 @@ document.addEventListener("mouseup", () => {
     grip.classList.remove("on");
     S().colw = S().colw || {};
     S().colw[c] = parseFloat(colEl.style.width) || 90;
-    if (!isBig()) markDirty();   // widths persist into the xlsx on save
+    // Resizing stays available read-only (viewing convenience), but must not
+    // flip the dirty flag — widths only persist via a save that can't happen.
+    if (!isBig() && !readOnly) markDirty();   // widths persist into the xlsx on save
     colResizing = null;
   }
   dragging = false;
@@ -2120,6 +2191,7 @@ function jumpEdge(dr, dc, extend) {
 }
 // Ctrl+D / Ctrl+R: fill down/right from the selection's first row/column
 function fillShortcut(axis) {
+  if (roBlocked()) return;
   const { r1, c1, r2, c2 } = normSel();
   if (axis === "v" ? r2 === r1 : c2 === c1) return;
   const base = axis === "v" ? { r1, r2: r1, c1, c2 } : { r1, r2, c1, c2: c1 };
@@ -2170,12 +2242,14 @@ function selTSV() {
   return out.join("\n");
 }
 function clearSelCells() {
+  if (roBlocked()) return;   // cut degrades to copy on a read-only file
   pushUndo();
   const { r1, c1, r2, c2 } = normSel();
   for (let r = r1; r <= r2; r++) for (let c = c1; c <= c2; c++) setCell(r, c, "");
   markDirty(); paint();
 }
 function pasteText(text) {
+  if (roBlocked()) return;
   pushUndo();
   const lines = text.replace(/\r/g, "").split("\n");
   if (lines[lines.length - 1] === "") lines.pop();
@@ -2286,7 +2360,7 @@ $("fxInput").addEventListener("keydown", (e) => {
     if (editing) { editing.input.value = $("fxInput").value; commitEdit(); }
     else {
       const v = $("fxInput").value;
-      if (v !== raw(sel.ar, sel.ac)) { pushUndo(); setCell(sel.ar, sel.ac, v); markDirty(); paint(); }
+      if (v !== raw(sel.ar, sel.ac) && !roBlocked()) { pushUndo(); setCell(sel.ar, sel.ac, v); markDirty(); paint(); }
     }
     $("gridWrap").focus();
   } else if (e.key === "Escape") { acClose(); paintSel(); $("gridWrap").focus(); }

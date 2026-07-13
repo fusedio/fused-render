@@ -229,6 +229,11 @@ def _save(doc, force):
         raise ValueError("open the document first")
     if not meta.get("dirty"):
         return {"ok": True, "dirty": False, "file": _fwd(src), "unchanged": True}
+    # RO gate (SPEC §13.5 RO-3) before the conflict check: the write below goes
+    # through the parent directory (`os.replace`) and would silently overwrite
+    # a chmod -w original — and the conflict dialog's "force" must not either.
+    if os.path.isfile(src) and not os.access(src, os.W_OK):
+        raise PermissionError(f"{src!r} is read-only")
     if not force and os.path.isfile(src) and os.path.getmtime(src) != meta["base_mtime"]:
         return {"conflict": True}
     tmp = src + ".tmp"
@@ -645,7 +650,7 @@ def _lib_load():
         try:
             with open(LIBRARY, encoding="utf-8") as f:
                 data = json.load(f)
-            return data.get("paths", [])
+            return data.get("paths") or []
         except Exception:
             pass
     return []
@@ -860,6 +865,14 @@ def main(
         else:
             info["has_text"] = False
         info["undo_depth"], info["redo_depth"] = _stack_depths(p)
+        # RO verdict (SPEC §13.5 RO-4): fs writability of the ORIGINAL. Edits
+        # keep working (they hit the working copy) — only save/rename back to
+        # the original are gated, so the tooltip points at Save a copy.
+        info["writable"] = os.access(p, os.W_OK)
+        info["readonly_message"] = "" if info["writable"] else "Read-only"
+        info["readonly_tooltip"] = "" if info["writable"] else (
+            "The file is read-only — edits can't be saved back to it. "
+            "Use Save a copy.")
         return info
     if action == "listdir":
         return _listdir(path)
@@ -872,6 +885,10 @@ def main(
             raise ValueError("rename needs a name")
         if not n.lower().endswith(".pdf"):
             n += ".pdf"
+        # RO gate (SPEC §13.5 RO-3): os.rename is a parent-directory op and
+        # would silently move a chmod -w file.
+        if os.path.isfile(p) and not os.access(p, os.W_OK):
+            raise PermissionError(f"{p!r} is read-only")
         dest = _unique_path(os.path.dirname(p), n)
         os.rename(p, dest)
         _work_rename(p, dest)

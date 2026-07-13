@@ -151,6 +151,31 @@ def _save_sidecar(file, data):
         raise
 
 
+def _sidecar_writable(file):
+    """True iff _save_sidecar would succeed (SPEC RO-3, annotate's rule): an
+    existing sidecar needs W_OK on itself (the mkstemp + os.replace above would
+    otherwise bypass its read-only bit via the directory), a fresh one needs
+    W_OK on the directory (mkstemp and replace both land there)."""
+    path = _sidecar_path(os.path.abspath(file))
+    if os.path.exists(path):
+        return os.access(path, os.W_OK)
+    return os.access(os.path.dirname(path), os.W_OK)
+
+
+_READONLY_TOOLTIP = ("The file is read-only — its permissions don't allow "
+                     "writing, so it can't be edited here.")
+
+
+def _editability(file):
+    """RO-4 verdict folded into the open response:
+    (editable, readonly_message, readonly_tooltip). Read-only gates only the
+    explicit save-overwrite of the .pptx — model edits live in the cache and
+    stay allowed — but the UI surfaces the verdict up front."""
+    if os.path.exists(file) and not os.access(file, os.W_OK):
+        return False, "Read-only", _READONLY_TOOLTIP
+    return True, "", ""
+
+
 def _get_title(file):
     return _load_sidecar(file).get("slides", {}).get("title") or None
 
@@ -204,9 +229,13 @@ def main(action: str = "open",
             model = engine.parse_pptx(file, media_dir, "media")
             with open(mp, "w", encoding="utf-8") as f:
                 json.dump(model, f, ensure_ascii=False)
+        editable, ro_msg, ro_tip = _editability(file)
         return {"doc": d, "model": model, "mtime": os.path.getmtime(mp),
                 "media_dir": _media_dir(d).replace(os.sep, "/"),
-                "title": _get_title(file)}
+                "title": _get_title(file),
+                "editable": editable, "readonly_message": ro_msg,
+                "readonly_tooltip": ro_tip,
+                "sidecar_writable": _sidecar_writable(file)}
 
     # ----------------------------------------- directory browser (Save as)
     if action == "listdir":
@@ -531,6 +560,11 @@ def main(action: str = "open",
     # --------- Save = materialize model -> `file` itself (atomic overwrite)
     if action == "save":
         file = _to_native_path(file)
+        # RO-3 fs gate FIRST (before _load_model and the mkstemp below): the
+        # atomic tempfile-in-parent-dir + os.replace would otherwise silently
+        # overwrite a chmod -w file via the directory's write bit.
+        if os.path.exists(file) and not os.access(file, os.W_OK):
+            raise PermissionError(f"{file!r} is read-only")
         model = _load_model(doc)
         tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(file) or ".", suffix=".pptx.tmp")
         os.close(tmp_fd)
@@ -566,6 +600,10 @@ def main(action: str = "open",
     # ---------------------------------------------------------------- sidecar
     if action == "set_title":
         file = _to_native_path(file)
+        # RO-3 gate on the actual write target (RO-6): the title lives in the
+        # <file>.json sidecar, so it's the sidecar's writability that counts.
+        if not _sidecar_writable(file):
+            raise PermissionError(f"{_sidecar_path(file)!r} is read-only")
         _set_title(file, title)
         return {"ok": True, "title": title or None}
 

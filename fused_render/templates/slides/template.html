@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Slides Studio</title>
+<script src="/template-shared/ro-badge.js"></script>
 <style>
   :root{
     /* Svelte/D3-flavored: recessive neutral chrome, one warm flame accent
@@ -306,6 +307,7 @@
       <button class="btn ghost icon" id="redoBtn" title="Redo (Ctrl+Y)"><svg viewBox="0 0 24 24"><path d="M15 14l5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h1"/></svg></button>
       <div id="deckName" contenteditable="true" spellcheck="false" title="Rename deck"></div>
       <div class="spacer"></div>
+      <span id="ro" hidden></span>
       <span class="saved" id="saved"></span>
       <button class="btn" id="presentBtn" title="Present (from current slide)"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>Present</button>
       <div class="seg" id="modeSeg">
@@ -450,7 +452,8 @@
 
   // ---------------- state ----------------
   const S={ doc:null, title:null, model:null, mediaDir:"", mtime:0, cur:0, sel:null, selIds:[],
-            tcell:null, scale:1, mode:"view", undo:[], redo:[], dirty:false };
+            tcell:null, scale:1, mode:"view", undo:[], redo:[], dirty:false,
+            editable:true, sidecarWritable:true };
   window.__S=S;   // exposed for programmatic / AI-driven inspection of live state
 
   // ---------------- small utils ----------------
@@ -1024,6 +1027,16 @@
     $("welcome").classList.add("hidden");
     $("app").classList.remove("home");
     $("deckName").textContent=S.title||DEFAULT_TITLE;
+    // Read-only verdict (SPEC RO-4/RO-5): viewing and model editing (cache
+    // autosave) stay live; only the explicit .pptx overwrite is refused.
+    S.editable=p.editable!==false; S.sidecarWritable=p.sidecar_writable!==false;
+    fusedRoBadge.update($("ro"), S.editable?"":(p.readonly_message||"Read-only"),
+      S.editable?"":((p.readonly_tooltip||"")+" Changes can be saved to a new file via File ▸ Save as."));
+    document.querySelector('#fileMenu [data-file="save"]').disabled=!S.editable;
+    // The deck title lives in the <file>.json sidecar — gate the rename UI on
+    // ITS writability (RO-6), independent of the .pptx verdict.
+    $("deckName").contentEditable=S.sidecarWritable?"true":"false";
+    $("deckName").title=S.sidecarWritable?"Rename deck":"Rename disabled — the deck's sidecar file is read-only";
     $("saved").textContent="All changes saved";
     preloadFonts(S.model);
     setMode(fused.params.get("mode")||"view");
@@ -1045,6 +1058,7 @@
     else if(a==="saveas") saveAsDeck();
   }
   async function saveDeck(){ if(!S.doc)return;
+    if(!S.editable){ toast("Read-only — the file can't be overwritten. Use File ▸ Save as."); return; }
     await doSave();
     try{ $("saved").textContent="Saving…"; const r=await py({action:"save",doc:S.doc,file:FILE});
       S.doc=r.doc;
@@ -1155,6 +1169,10 @@
     document.addEventListener("fullscreenchange",()=>{ if(P.on&&!document.fullscreenElement)exitPresent(); });
     window.addEventListener("resize",()=>{ if(P.on)renderPresent(); });
     $("deckName").onblur=async()=>{ const n=$("deckName").textContent.trim();
+      if(!S.sidecarWritable){ // belt-and-braces: contentEditable is already off
+        $("deckName").textContent=S.title||DEFAULT_TITLE;
+        if(n!==(S.title||DEFAULT_TITLE)) toast("Read-only — the deck can't be renamed");
+        return; }
       const t=(n&&n!==DEFAULT_TITLE)?n:"";
       try{ await py({action:"set_title",file:FILE,title:t}); S.title=t||null; }
       catch(e){ toast("Rename failed: "+e.message); } };

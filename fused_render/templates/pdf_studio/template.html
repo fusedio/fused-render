@@ -203,6 +203,7 @@
   #banner { background: #fff7e8; border-bottom: 1px solid #f2dfb8; color: #8a6116; padding: 7px 14px;
     font-size: 12.5px; flex: 0 0 auto; }
 </style>
+<script src="/template-shared/ro-badge.js"></script>
 </head>
 <body class="mode-view">
 <div id="boot">Loading PDF Studio…</div>
@@ -210,6 +211,7 @@
 <div id="topbar">
   <div class="brand"><span class="mark">PDF</span><span>PDF Studio</span></div>
   <span id="docName"></span>
+  <span id="ro" hidden></span>
   <span id="docPages"></span>
   <div class="spacer"></div>
   <div id="status"><span class="dot"></span><span class="txt">idle</span></div>
@@ -228,7 +230,7 @@
     <div class="mi" data-act="addPdf">Add PDF… <span class="kbd">Ctrl+O</span></div>
     <div class="mi" data-act="importUrl">Add from URL…</div>
     <div class="divider"></div>
-    <div class="mi" data-act="save">Save <span class="kbd">Ctrl+S</span></div>
+    <div class="mi" data-act="save" id="miSave">Save <span class="kbd">Ctrl+S</span></div>
     <div class="mi" data-act="revert">Revert to saved</div>
     <div class="mi" data-act="saveAs">Save a copy… <span class="kbd">Ctrl+Shift+S</span></div>
     <div class="divider"></div>
@@ -297,6 +299,7 @@ const state = {
   docs: [], doc: "", work: "", info: null, mtime: 0, dirty: false,
   pdf: null, curPage: 1, zoom: 100,
   undoDepth: 0, redoDepth: 0,
+  writable: true,     // fs writability of the ORIGINAL (open_doc verdict)
   spans: {},          // pageNo -> {mtime, spans}
   editing: null,      // the floating text input, if any
 };
@@ -750,9 +753,12 @@ function renderDocList() {
     row.className = "doc-row" + (d.path === state.doc ? " on" : "");
     const meta = d.missing ? `<span class="meta" style="color:var(--danger)">missing</span>`
       : `<span class="meta">${d.page_count ?? "?"}p · ${fmtSize(d.size)}</span>`;
+    // Writability is only known for the open doc (open_doc's verdict). Hide
+    // rename for a read-only original; remove-from-list never touches the file.
+    const ro = d.path === state.doc && !state.writable;
     row.innerHTML = `<span class="nm"></span>${meta}
       <span class="ops">
-        <button title="Rename" data-op="rename">${icoPen}</button>
+        ${ro ? "" : `<button title="Rename" data-op="rename">${icoPen}</button>`}
         <button title="Remove from list" data-op="remove" class="danger">${icoTrash}</button>
       </span>`;
     row.title = d.path;
@@ -776,6 +782,12 @@ async function openDoc(path) {
   state.undoDepth = info.undo_depth; state.redoDepth = info.redo_depth;
   setStatus(state.dirty ? "unsaved changes" : "", state.dirty ? "warn" : "");
   $("docName").textContent = info.name;
+  // Read-only original (§13.5): viewing and working-copy edits (rotate, text,
+  // undo/redo, revert, export, save-a-copy) stay fully allowed — only writes
+  // back to the original (Save, Rename) are blocked.
+  state.writable = info.writable !== false;
+  fusedRoBadge.update($("ro"), info.readonly_message || "", info.readonly_tooltip || "");
+  $("miSave").classList.toggle("off", !state.writable);
   $("banner").classList.toggle("hidden", info.has_text);
   if (!info.has_text) $("banner").textContent =
     "This PDF has no text layer (likely scanned) — page operations work, text editing won't find anything to edit.";
@@ -826,6 +838,8 @@ const acts = {
     setStatus("added", "ok");
   },
   renameDoc: async (d) => {
+    if (d.path === state.doc && !state.writable)
+      return toast("The file is read-only — it can't be renamed", true);
     const name = await dialog({ title: "Rename PDF", value: d.name, okText: "Rename" });
     if (!name || name === d.name) return;
     const res = await py({ action: "rename_doc", doc: d.path, name });
@@ -847,6 +861,8 @@ const acts = {
   },
   save: async () => {
     needDoc();
+    if (!state.writable)  // also covers the Ctrl+S path (keydown → act("save"))
+      return toast("The file is read-only — edits can't be saved back to it. Use Save a copy.", true);
     let res = await py({ action: "save", doc: state.doc });
     if (res.conflict) {
       const ok = await dialog({ title: "Overwrite changed file?", input: false, danger: true, okText: "Overwrite",
