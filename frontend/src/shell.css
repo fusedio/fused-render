@@ -1710,8 +1710,7 @@ body.embed .preview-browse-chip:hover {
   gap: 4px;
 }
 
-.sidebar-footer .prefs-link,
-.sidebar-footer .tour-link {
+.sidebar-footer .prefs-link {
   flex: 1 1 0;
   min-width: 0;
   display: flex;
@@ -1727,8 +1726,7 @@ body.embed .preview-browse-chip:hover {
   cursor: pointer;
 }
 
-.sidebar-footer .prefs-link .icon,
-.sidebar-footer .tour-link .icon {
+.sidebar-footer .prefs-link .icon {
   margin: 0;
   display: flex;
 }
@@ -1743,8 +1741,7 @@ body.embed .preview-browse-chip:hover {
 }
 
 .sidebar-footer .prefs-link:hover,
-.sidebar-footer .prefs-link.active,
-.sidebar-footer .tour-link:hover {
+.sidebar-footer .prefs-link.active {
   color: var(--fg);
   background: rgba(255, 255, 255, 0.06);
 }
