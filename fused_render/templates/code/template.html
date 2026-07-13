@@ -285,8 +285,13 @@
       if (lang) extensions.push(lang);
       // Read-only file: lock the buffer, so dirty can never flip and no save
       // path (autosave, Cmd+S, flush hook) ever fires. The server refuses the
-      // write anyway (403 readonly); this makes the UI honest up front.
-      if (!writable) extensions.push(CM.EditorView.editable.of(false));
+      // write anyway (403 readonly); this makes the UI honest up front. Both
+      // facets: editable=false locks the DOM (caret, typing), readOnly=true
+      // rejects the transactions synthesized input can still smuggle past it.
+      if (!writable) {
+        extensions.push(CM.EditorView.editable.of(false));
+        extensions.push(CM.EditorState.readOnly.of(true));
+      }
 
       root.innerHTML = "";
       view = new CM.EditorView({ doc: text, extensions, parent: root });

@@ -335,7 +335,7 @@ Goal: a live-preview loop. Edit a file (in our editor or externally) → it save
 
 ### 13.1 Autosave (code editor)
 
-Applies to the `code` template (`templates/code/`), the only editable surface (D37).
+Applies to the `code` template (`templates/code/`), the only free-text editable surface (D37; the sqlite/duckdb grids added structured cell editing later via their own writer.py — see §13.5 for the read-only contract all edit surfaces share).
 
 - **AS-1** The editor autosaves **250 ms after the last edit** (debounced). Manual Save / Cmd+S remain and save immediately, cancelling any pending autosave timer.
 - **AS-2** Autosave uses the same optimistic lock as manual save (`expected_mtime`). On 409 the existing conflict banner shows and **autosave suspends** until the user resolves via Reload or Overwrite. Autosave must never auto-overwrite a conflict — that would reduce the lock to decoration.
@@ -368,6 +368,17 @@ The reload logic lives **entirely in the injected runtime** — the shell needs 
 - **LS-1** The directory listing view watches the directory path via the same endpoint; on change it re-fetches `/api/fs/list` and re-renders, preserving sort params.
 - **LS-2** Known limitation, accepted: a directory's mtime changes on create/delete/rename of entries — not when a child file's content or size changes. Stale sizes in an open listing are fine.
 - **LS-3** The shell closes the listing's watch `WebSocket` when navigating away (to a preview or another directory).
+
+### 13.5 Read-only files — the editability contract
+
+Write surfaces are decentralized (the code editor via `/api/fs/write`; the sqlite/duckdb grids and the annotate sidecar via their own Python writers), so read-onlyness is decided close to whoever writes, using host primitives — never probed from JS.
+
+- **RO-1** `/api/fs/stat` (and `/api/fs/write`'s stat-shaped response) carries `writable`: an existing path needs `W_OK` on itself, a not-yet-existing file needs `W_OK` on its parent. The flag means exactly "`/api/fs/write` would accept this path" — the two must never disagree.
+- **RO-2** `/api/fs/write` refuses a non-writable target with `403 {"error": "readonly"}`. This closes the atomic-write loophole: temp-file + `os.replace` goes through the parent directory and would otherwise silently overwrite a `chmod -w` file. `runtime.js` `writeFile` surfaces the refusal as a typed error (`err.type === "readonly"`), mirroring the 409 `"conflict"` case — the backstop for a template that never checked the flag.
+- **RO-3** Any template-side Python **writer** applies the same gate itself (`os.access(file, W_OK)` → `PermissionError`) before writing, for the same reason: writers that rewrite via `os.replace` (duckdb, annotate's sidecar) bypass the read-only bit, and ones that don't (sqlite) fail late with an unhelpful mid-transaction error.
+- **RO-4** Template **readers** fold fs writability into the editability verdict they already return — `editable` + `readonly_message` (short badge text) + `readonly_tooltip` (hover explanation). Filesystem read-onlyness is just one more reason alongside content-level ones ("View", "No rowid", "JSON"); the fs gate wins over a content-level "editable".
+- **RO-5** UI treatment is shared: `/template-shared/ro-badge.js` (`fusedRoBadge.update(el, message, tooltip)`) renders the identical badge in every template with an edit surface. The code editor derives its verdict from `stat.writable` (no Python reader) and locks the CodeMirror buffer; the grids disable editing per their reader's verdict.
+- **RO-6** Read-only never blocks *viewing*, and a template whose write target differs from the viewed file gates on ITS target: annotate checks the `<file>.json` sidecar (a `status` action), keeps commenting fully functional (the URL is the live store), and only warns that history won't be recorded.
 
 ## 14. Layout Mode — Split Panes (M5)
 
