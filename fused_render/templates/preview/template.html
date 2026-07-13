@@ -167,7 +167,7 @@
   <div class="split">
     <div class="list-pane" id="list-pane">
       <div class="list-search">
-        <input id="search" type="search" placeholder="Search this folder…" autocomplete="off" spellcheck="false" />
+        <input id="search" type="search" placeholder="Start typing to search…" autocomplete="off" spellcheck="false" />
         <span class="count" id="search-count"></span>
       </div>
       <div class="list-body" id="list-body"><div class="status-message">Loading…</div></div>
@@ -584,14 +584,34 @@
         : `${total}${suffix} match${total === 1 ? "" : "es"}`;
     }
 
-    // Arrow-key navigation over whatever is rendered (listing or search hits);
-    // Enter opens the selection. Arrows are ignored while typing in the search
-    // box so the caret still moves; Enter there opens the current selection.
+    // Arrow-key navigation over whatever is rendered (listing or search hits).
+    // Up/Down drive the selection even while the caret is in the search box (a
+    // single-line input doesn't need them for the caret), so you can type to
+    // filter and keep navigating without reaching for the mouse; Left/Right
+    // still move the caret. Enter opens the selection, or the top row when
+    // nothing is selected yet.
     function onKey(e) {
-      const typing = document.activeElement === searchEl;
+      // While an IME is composing, Enter confirms a candidate and the arrows
+      // move through the candidate list — never repurpose them for navigation.
+      if (e.isComposing) return;
+      const el = document.activeElement;
+      const typing = el === searchEl;
+      // Only drive navigation from the search box or when nothing in particular
+      // is focused (body). If focus is on a control — the "Open" button in the
+      // preview pane, or the preview iframe — leave its keys alone.
+      const onBody = !el || el === document.body || el === document.documentElement;
+      const navActive = typing || onBody;
+      // Start typing → focus the search box so the character lands there. Only
+      // when nothing else is focused, and only plain printable keys (no
+      // modifiers), so Space on a focused button and shortcuts keep working.
+      if (onBody && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        searchEl.focus();
+        return; // let the keystroke fall through into the now-focused input
+      }
       const rows = currentRows;
       if (!rows.length) return;
-      if (!typing && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        if (!navActive) return;
         e.preventDefault();
         const idx = rows.findIndex((r) => r.path === selectedPath);
         // Nothing selected yet: Down starts at the top, Up starts at the bottom.
@@ -603,8 +623,10 @@
         select(entry);
         const tr = listBodyEl.querySelector(`tr.row[data-path="${CSS.escape(entry.path)}"]`);
         if (tr) tr.scrollIntoView({ block: "nearest" });
-      } else if (e.key === "Enter" && selectedPath) {
-        const entry = rows.find((r) => r.path === selectedPath);
+      } else if (e.key === "Enter") {
+        if (!navActive) return;
+        e.preventDefault();
+        const entry = rows.find((r) => r.path === selectedPath) || rows[0];
         if (entry) openInShell(entry.path, entry.is_dir);
       }
     }
