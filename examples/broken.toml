@@ -1,0 +1,4 @@
+# Invalid TOML — unterminated value. The canvas gate must fail closed.
+type = "canvas"
+[canvas
+edges = [[

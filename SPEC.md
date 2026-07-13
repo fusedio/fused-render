@@ -1384,3 +1384,58 @@ SPEC DM-7); the CLI/browser experience is unchanged.
   alive. If `menubar_pin` fails to import or construct (e.g. missing WebKit
   framework), the menu is attached as before — the app is never left
   unquittable.
+
+## 26. Canvas View — Conditional Layout Viewer for `canvas.toml` (D102)
+
+A `canvas` view template renders a Fused **canvas definition** (`canvas.toml`,
+v2) as a read-only **layout viewer**: nodes drawn as positioned boxes, folder
+groups behind them, edges wired between node borders, honoring the stored
+viewport. It is the **first consumer of the conditional-template mechanism**
+(CT-12): bound as the default `.toml` mode but gated so only genuine canvas
+files get it — a plain `.toml` still opens in `code`.
+
+- **CV-1** Files (`fused_render/templates/canvas/`): `template.html` (the
+  viewer), `reader.py` (the toml→JSON parser), `condition.py` (the gate),
+  `icon.svg`. Registry binding: `".toml": ["canvas", "code", "annotate"]` —
+  canvas first (default when the gate passes), `code` the default otherwise.
+- **CV-2** **Condition gate (CT-12).** `condition.py` runs in the server
+  process on every `.toml` resolution, so it is cheap and fail-closed: a
+  **basename pre-check** (`canvas.toml`, no I/O) before any open, a **2 MB
+  size guard**, then a `tomllib` parse asserting top-level `type == "canvas"`
+  (the content sniff, D102). Any exception → False; the template is dropped and
+  `code` stays default. No `template_error` on a fail — an ordinary toml is not
+  an error.
+- **CV-3** **Reader (`reader.py`, `@fused.udf`-registered).** One `tomllib`
+  pass → `{name, version, previewImageUrl, nodes, folders, edges, viewport,
+  viewportBounds, siblings}`. `type == "udf-folder"` entries go to `folders`
+  (folderName, folderColor, childUdfOrder, isLocked); the rest to `nodes`
+  (title defaults to udfName, visible defaults true — the §26 defaults). Edges
+  are `[src, dst]` name pairs; malformed nodes/edges are **skipped, never
+  fatal**. `siblings` maps each node's udfName → the sibling file extensions
+  (`.py`/`.json`/`.md`/`.html`) present next to the toml, from one
+  `os.listdir`. **Engine isolation:** the whole body — helpers and imports —
+  lives inside `main()`; nothing but the entrypoint and its registration shim
+  is at module level.
+- **CV-4** **Viewer (`template.html`).** A single full-viewport `<canvas>` in
+  world space (toml coordinates). Draw order: folder rects (folderColor fill) →
+  edges (border-to-border lines with an arrowhead) → UDF nodes (rounded rect,
+  title, udfName subtitle, sibling-extension badges; `visible:false` ghosted at
+  40% alpha). Text and strokes are drawn at screen-constant size regardless of
+  zoom. Empty canvas → a centered "empty canvas" note; a reader error surfaces
+  through the runtime's traceback overlay (the header still renders first).
+- **CV-5** **Camera & URL sync.** Start from `[canvas.viewport]` (x/y/zoom)
+  when present, else **fit-to-bounds** of all nodes with a 10% margin. Wheel
+  zooms to the cursor, drag pans, the header **Fit** button resets. Camera
+  state mirrors to URL params `cx`/`cy`/`z` (translate + zoom) on interaction
+  (150 ms debounce) and is read on load, where it **overrides** the toml
+  viewport — so refresh/share restores the exact camera. Params are strings
+  (`set` throws otherwise); parsed at the boundary. The template's own writes
+  are echo-guarded in `onChange`; a `_file` change reloads.
+- **CV-6** **Detail panel.** Clicking a node opens a footer panel: title,
+  udfName, description, size, and sibling files as links that open
+  `/view/<abs sibling path>` in a **new tab** (no in-shell navigation, v0).
+  Clicking a folder shows its name and child list; clicking empty space clears.
+- **CV-7** Dark theme matching the explorer, no external assets, ES2020, and —
+  like every template — no runtime script tag (`window.fused` is injected).
+  Out of scope (v0): editing/writing the toml, rendering widget contents inside
+  nodes, executing UDFs, in-shell sibling navigation, non-v2 canvas versions.

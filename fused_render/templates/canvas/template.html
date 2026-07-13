@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Canvas</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #131417;
+    --surface: #1b1d21;
+    --surface-2: #22252b;
+    --line: #2a2d33;
+    --ink: #e8eaed;
+    --ink-2: #9aa0a6;
+    --ink-3: #868d94;
+    --accent: #E5FF44;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 13px;
+    color: var(--ink);
+    background: var(--bg);
+    overflow: hidden;
+  }
+  #app { position: fixed; inset: 0; display: flex; flex-direction: column; }
+
+  /* ================= header strip ================= */
+  .head {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    height: 44px;
+    padding: 0 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface);
+    z-index: 3;
+  }
+  .head .name {
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .head .counts { color: var(--ink-3); font-size: 12px; white-space: nowrap; }
+  .head .spacer { flex: 1; }
+  .head button {
+    font: inherit;
+    font-size: 12px;
+    color: var(--ink-2);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    padding: 5px 12px;
+    cursor: pointer;
+    transition: border-color 150ms, color 150ms, background-color 150ms;
+  }
+  .head button:hover { color: var(--ink); border-color: #454a53; background: var(--surface-2); }
+  .head button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ================= stage ================= */
+  .stage { position: relative; flex: 1; min-height: 0; }
+  #view { display: block; width: 100%; height: 100%; cursor: grab; }
+  #view.dragging { cursor: grabbing; }
+
+  .empty {
+    position: absolute; inset: 0;
+    display: grid; place-items: center;
+    color: var(--ink-3);
+    pointer-events: none;
+    text-align: center;
+    padding: 24px;
+  }
+  .empty .big { color: var(--ink-2); font-size: 15px; font-weight: 700; margin-bottom: 6px; }
+
+  /* ================= detail panel ================= */
+  .panel {
+    position: absolute;
+    left: 16px; right: 16px; bottom: 16px;
+    max-width: 520px;
+    padding: 14px 16px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: rgba(27, 29, 33, 0.96);
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+    z-index: 2;
+    animation: rise 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+  @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  .panel .p-head { display: flex; align-items: baseline; gap: 8px; }
+  .panel .p-title { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .panel .p-kind { color: var(--ink-3); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; flex: none; }
+  .panel .p-close {
+    margin-left: auto; flex: none;
+    background: transparent; border: none; color: var(--ink-3);
+    font: inherit; cursor: pointer; font-size: 16px; line-height: 1; padding: 0 2px;
+  }
+  .panel .p-close:hover { color: var(--ink); }
+  .panel .p-sub { color: var(--ink-3); font-size: 12px; margin-top: 2px; word-break: break-all; }
+  .panel .p-desc { color: var(--ink-2); margin-top: 8px; white-space: pre-wrap; word-break: break-word; }
+  .panel .p-meta { color: var(--ink-3); font-size: 12px; margin-top: 8px; }
+  .panel .p-files { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .panel .p-files a {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px;
+    border: 1px solid var(--line); border-radius: 999px;
+    color: var(--ink-2); text-decoration: none; font-size: 12px;
+    transition: border-color 150ms, color 150ms;
+  }
+  .panel .p-files a:hover { color: var(--ink); border-color: var(--accent); }
+  .panel .p-children { margin: 8px 0 0; padding-left: 18px; color: var(--ink-2); }
+  .panel .p-children li { margin: 2px 0; }
+</style>
+</head>
+<body>
+  <div id="app">
+    <div class="head">
+      <span class="name" id="cv-name">Canvas</span>
+      <span class="counts" id="cv-counts"></span>
+      <span class="spacer"></span>
+      <button type="button" id="cv-fit" title="Reset camera to fit all nodes">Fit</button>
+    </div>
+    <div class="stage">
+      <canvas id="view"></canvas>
+      <div class="empty" id="cv-empty" hidden></div>
+    </div>
+  </div>
+
+<script>
+(async function () {
+  "use strict";
+
+  // NOTE: the shell injects `window.fused` — this template must never add its
+  // own runtime script tag. fused.params.get(k) -> string|undefined; set(k,v)
+  // THROWS on non-string; onChange fires after every applied set (echo-guarded).
+
+  var COLORS = {
+    bg: "#131417", surfaceNode: "#22252b", line: "#2a2d33",
+    ink: "#e8eaed", ink2: "#9aa0a6", ink3: "#868d94", accent: "#E5FF44",
+    edge: "#4b5057", folderDefault: "rgba(229,255,68,0.05)",
+    folderStroke: "rgba(229,255,68,0.28)",
+  };
+
+  var view = document.getElementById("view");
+  var ctx = view.getContext("2d");
+  var nameEl = document.getElementById("cv-name");
+  var countsEl = document.getElementById("cv-counts");
+  var emptyEl = document.getElementById("cv-empty");
+
+  var file = fused.params.get("_file") || "";
+  var fileDir = file.slice(0, Math.max(0, file.lastIndexOf("/")));
+  var folderName = (fileDir.split("/").pop() || "canvas");
+
+  // Header renders immediately from the path, BEFORE the reader runs — so a
+  // reader error (which surfaces via the runtime's traceback overlay, SPEC §26)
+  // still leaves a titled page rather than a blank one.
+  nameEl.textContent = folderName;
+
+  // ---- html escape (panel content is user text) -------------------------
+  function esc(s) {
+    return String(s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
+  // ---- shell /view/ URL codec (mirrors router.ts urlForFsPath) -----------
+  // Sibling files open in a NEW TAB (SPEC §26 out-of-scope: no in-shell nav).
+  function urlForFsPath(fsPath) {
+    var norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;
+    var rest = norm.replace(/^\/+/, "");
+    var encoded = rest.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+    return "/view/" + encoded;
+  }
+
+  // ---- data -------------------------------------------------------------
+  // No try/catch: a reader rejection carries a `.traceback` and the runtime's
+  // unhandledrejection overlay shows it (SPEC §26). Header is already painted.
+  var data = await fused.runPython("./reader.py", { file: file });
+  data = data || {};
+  var nodes = Array.isArray(data.nodes) ? data.nodes : [];
+  var folders = Array.isArray(data.folders) ? data.folders : [];
+  var edges = Array.isArray(data.edges) ? data.edges : [];
+  var siblings = (data.siblings && typeof data.siblings === "object") ? data.siblings : {};
+  var viewport = data.viewport || null;
+
+  if (data.name) nameEl.textContent = data.name;
+  countsEl.textContent = nodes.length + (nodes.length === 1 ? " node" : " nodes")
+    + " · " + edges.length + (edges.length === 1 ? " edge" : " edges")
+    + (folders.length ? " · " + folders.length + (folders.length === 1 ? " folder" : " folders") : "");
+
+  var all = folders.concat(nodes); // folders drawn first (behind)
+  var byName = {};
+  nodes.forEach(function (n) { if (n.udfName) byName[n.udfName] = n; });
+  folders.forEach(function (f) { if (f.udfName) byName[f.udfName] = f; });
+
+  if (!nodes.length && !folders.length) {
+    emptyEl.hidden = false;
+    emptyEl.innerHTML = '<div><div class="big">Empty canvas</div>'
+      + 'This canvas.toml defines no nodes yet.</div>';
+  }
+
+  // ---- camera -----------------------------------------------------------
+  // cam maps world -> screen(css): sx = wx*zoom + tx. URL params cx/cy/z carry
+  // (tx, ty, zoom) verbatim so refresh/share restores the exact camera.
+  var cam = { tx: 0, ty: 0, zoom: 1 };
+
+  function bounds() {
+    if (!all.length) return null;
+    var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    all.forEach(function (n) {
+      minX = Math.min(minX, n.x);
+      minY = Math.min(minY, n.y);
+      maxX = Math.max(maxX, n.x + n.width);
+      maxY = Math.max(maxY, n.y + n.height);
+    });
+    return { minX: minX, minY: minY, maxX: maxX, maxY: maxY };
+  }
+
+  function fit() {
+    var b = bounds();
+    var w = view.clientWidth || 1, h = view.clientHeight || 1;
+    if (!b) { cam = { tx: w / 2, ty: h / 2, zoom: 1 }; return; }
+    var bw = Math.max(1, b.maxX - b.minX), bh = Math.max(1, b.maxY - b.minY);
+    var margin = 0.10; // 10% breathing room around the extent (SPEC §26)
+    var zoom = Math.min(w / (bw * (1 + margin * 2)), h / (bh * (1 + margin * 2)));
+    zoom = Math.max(0.02, Math.min(zoom, 2.5));
+    var cx = (b.minX + b.maxX) / 2, cy = (b.minY + b.maxY) / 2;
+    cam = { zoom: zoom, tx: w / 2 - cx * zoom, ty: h / 2 - cy * zoom };
+  }
+
+  function num(v) { var n = parseFloat(v); return isFinite(n) ? n : null; }
+
+  function initCamera() {
+    // URL params (post-interaction) override the toml viewport (SPEC §26).
+    var px = num(fused.params.get("cx"));
+    var py = num(fused.params.get("cy"));
+    var pz = num(fused.params.get("z"));
+    if (px !== null && py !== null && pz !== null && pz > 0) {
+      cam = { tx: px, ty: py, zoom: pz };
+      return;
+    }
+    if (viewport && num(viewport.zoom) && num(viewport.zoom) > 0) {
+      cam = { tx: num(viewport.x) || 0, ty: num(viewport.y) || 0, zoom: num(viewport.zoom) };
+      return;
+    }
+    fit();
+  }
+
+  // ---- URL sync (write cam on interaction, 150ms debounce) --------------
+  var writeTimer = null;
+  var lastWritten = "";
+  function scheduleWrite() {
+    if (writeTimer) clearTimeout(writeTimer);
+    writeTimer = setTimeout(writeCamera, 150);
+  }
+  function writeCamera() {
+    writeTimer = null;
+    // Round to keep the URL short; values are always stringified (set THROWS
+    // on non-string).
+    var sx = String(Math.round(cam.tx * 100) / 100);
+    var sy = String(Math.round(cam.ty * 100) / 100);
+    var sz = String(Math.round(cam.zoom * 10000) / 10000);
+    lastWritten = sx + "|" + sy + "|" + sz; // echo-guard token
+    try {
+      fused.params.set("cx", sx);
+      fused.params.set("cy", sy);
+      fused.params.set("z", sz);
+    } catch (e) { /* reserved-name/type guard — camera stays in-memory */ }
+  }
+
+  // ---- rendering (world-space transform; screen-constant text/strokes) --
+  var dpr = 1;
+  function resize() {
+    dpr = window.devicePixelRatio || 1;
+    var w = view.clientWidth, h = view.clientHeight;
+    view.width = Math.max(1, Math.round(w * dpr));
+    view.height = Math.max(1, Math.round(h * dpr));
+    draw();
+  }
+
+  function roundRectPath(x, y, w, h, r) {
+    r = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function borderPoint(n, tx, ty) {
+    // Point on node n's rect border pointing toward (tx, ty) from its center.
+    var cx = n.x + n.width / 2, cy = n.y + n.height / 2;
+    var dx = tx - cx, dy = ty - cy;
+    if (dx === 0 && dy === 0) return { x: cx, y: cy };
+    var sx = dx !== 0 ? (n.width / 2) / Math.abs(dx) : Infinity;
+    var sy = dy !== 0 ? (n.height / 2) / Math.abs(dy) : Infinity;
+    var s = Math.min(sx, sy);
+    return { x: cx + dx * s, y: cy + dy * s };
+  }
+
+  function draw() {
+    var z = cam.zoom;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, view.width, view.height);
+    ctx.fillStyle = COLORS.bg;
+    ctx.fillRect(0, 0, view.width, view.height);
+    // world -> device: device = dpr*(world*zoom + t)
+    ctx.setTransform(dpr * z, 0, 0, dpr * z, dpr * cam.tx, dpr * cam.ty);
+
+    var S = 1 / z; // multiply screen-constant sizes so they don't scale w/ zoom
+
+    // 1) folder groups (behind everything)
+    folders.forEach(function (f) {
+      ctx.fillStyle = f.folderColor || COLORS.folderDefault;
+      ctx.strokeStyle = COLORS.folderStroke;
+      ctx.lineWidth = 1.5 * S;
+      roundRectPath(f.x, f.y, f.width, f.height, 12 * S);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = COLORS.ink2;
+      ctx.font = "700 " + (12 * S) + "px ui-monospace, Menlo, monospace";
+      ctx.textBaseline = "bottom";
+      ctx.fillText(f.folderName || f.udfName || "folder", f.x + 10 * S, f.y - 4 * S);
+    });
+
+    // 2) edges (node border to node border, subtle arrowhead at the target)
+    ctx.strokeStyle = COLORS.edge;
+    ctx.fillStyle = COLORS.edge;
+    ctx.lineWidth = 1.5 * S;
+    edges.forEach(function (e) {
+      var src = byName[e[0]], dst = byName[e[1]];
+      if (!src || !dst) return;
+      var sc = { x: src.x + src.width / 2, y: src.y + src.height / 2 };
+      var dc = { x: dst.x + dst.width / 2, y: dst.y + dst.height / 2 };
+      var a = borderPoint(src, dc.x, dc.y);
+      var b = borderPoint(dst, sc.x, sc.y);
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+      // arrowhead
+      var ang = Math.atan2(b.y - a.y, b.x - a.x);
+      var ah = 8 * S;
+      ctx.beginPath();
+      ctx.moveTo(b.x, b.y);
+      ctx.lineTo(b.x - ah * Math.cos(ang - 0.4), b.y - ah * Math.sin(ang - 0.4));
+      ctx.lineTo(b.x - ah * Math.cos(ang + 0.4), b.y - ah * Math.sin(ang + 0.4));
+      ctx.closePath();
+      ctx.fill();
+    });
+
+    // 3) UDF nodes (front). Hidden nodes ghost at 40% alpha (SPEC §26).
+    nodes.forEach(function (n) {
+      ctx.globalAlpha = (n.visible === false) ? 0.4 : 1;
+      ctx.fillStyle = COLORS.surfaceNode;
+      ctx.strokeStyle = COLORS.line;
+      ctx.lineWidth = 1.5 * S;
+      roundRectPath(n.x, n.y, n.width, n.height, 10 * S);
+      ctx.fill();
+      ctx.stroke();
+
+      // clip text to the node box
+      ctx.save();
+      roundRectPath(n.x + 8 * S, n.y, n.width - 16 * S, n.height, 6 * S);
+      ctx.clip();
+      ctx.textBaseline = "alphabetic";
+      ctx.fillStyle = COLORS.ink;
+      ctx.font = "700 " + (14 * S) + "px ui-monospace, Menlo, monospace";
+      ctx.fillText(n.title || n.udfName || "", n.x + 12 * S, n.y + 26 * S);
+      if (n.udfName && n.title !== n.udfName) {
+        ctx.fillStyle = COLORS.ink3;
+        ctx.font = (11 * S) + "px ui-monospace, Menlo, monospace";
+        ctx.fillText(n.udfName, n.x + 12 * S, n.y + 42 * S);
+      }
+      // sibling-extension badges along the bottom
+      var exts = siblings[n.udfName] || [];
+      if (exts.length) {
+        ctx.font = (10 * S) + "px ui-monospace, Menlo, monospace";
+        var bx = n.x + 12 * S, by = n.y + n.height - 14 * S;
+        exts.forEach(function (ext) {
+          var label = ext.replace(/^\./, "");
+          var tw = ctx.measureText(label).width;
+          ctx.fillStyle = "rgba(229,255,68,0.10)";
+          roundRectPath(bx, by, tw + 10 * S, 15 * S, 4 * S);
+          ctx.fill();
+          ctx.fillStyle = COLORS.accent;
+          ctx.fillText(label, bx + 5 * S, by + 11 * S);
+          bx += tw + 10 * S + 6 * S;
+        });
+      }
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    });
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+  }
+
+  // ---- hit test + detail panel ------------------------------------------
+  var panel = null;
+  function clearPanel() { if (panel) { panel.remove(); panel = null; } }
+
+  function screenToWorld(sx, sy) {
+    return { x: (sx - cam.tx) / cam.zoom, y: (sy - cam.ty) / cam.zoom };
+  }
+  function inNode(n, wx, wy) {
+    return wx >= n.x && wx <= n.x + n.width && wy >= n.y && wy <= n.y + n.height;
+  }
+  function hitTest(wx, wy) {
+    // Nodes sit above folders; among nodes the topmost zIndex wins.
+    var ns = nodes.slice().sort(function (a, b) { return (b.zIndex || 0) - (a.zIndex || 0); });
+    for (var i = 0; i < ns.length; i++) if (inNode(ns[i], wx, wy)) return { kind: "node", n: ns[i] };
+    var fs = folders.slice().sort(function (a, b) { return (b.zIndex || 0) - (a.zIndex || 0); });
+    for (var j = 0; j < fs.length; j++) if (inNode(fs[j], wx, wy)) return { kind: "folder", n: fs[j] };
+    return null;
+  }
+
+  function showNode(n) {
+    clearPanel();
+    var exts = siblings[n.udfName] || [];
+    var files = exts.map(function (ext) {
+      var abs = fileDir + "/" + n.udfName + ext;
+      return '<a href="' + esc(urlForFsPath(abs)) + '" target="_blank" rel="noopener">'
+        + esc(n.udfName + ext) + "</a>";
+    }).join("");
+    var html = '<div class="p-head"><span class="p-title">' + esc(n.title || n.udfName || "node")
+      + '</span><span class="p-kind">UDF</span>'
+      + '<button class="p-close" type="button" title="Close">&times;</button></div>'
+      + (n.udfName ? '<div class="p-sub">' + esc(n.udfName) + "</div>" : "")
+      + (n.description ? '<div class="p-desc">' + esc(n.description) + "</div>" : "")
+      + '<div class="p-meta">' + Math.round(n.width) + " x " + Math.round(n.height)
+      + (n.visible === false ? " · hidden" : "") + "</div>"
+      + (files ? '<div class="p-files">' + files + "</div>" : "");
+    mountPanel(html);
+  }
+
+  function showFolder(f) {
+    clearPanel();
+    var kids = (f.childUdfOrder || []).map(function (c) { return "<li>" + esc(c) + "</li>"; }).join("");
+    var html = '<div class="p-head"><span class="p-title">' + esc(f.folderName || f.udfName || "folder")
+      + '</span><span class="p-kind">Folder</span>'
+      + '<button class="p-close" type="button" title="Close">&times;</button></div>'
+      + '<div class="p-meta">' + ((f.childUdfOrder || []).length) + " children"
+      + (f.isLocked ? " · locked" : "") + "</div>"
+      + (kids ? '<ul class="p-children">' + kids + "</ul>" : "");
+    mountPanel(html);
+  }
+
+  function mountPanel(html) {
+    panel = document.createElement("div");
+    panel.className = "panel";
+    panel.innerHTML = html;
+    panel.querySelector(".p-close").addEventListener("click", clearPanel);
+    document.querySelector(".stage").appendChild(panel);
+  }
+
+  // ---- interaction: drag to pan, wheel to zoom-to-cursor ----------------
+  var dragging = false, moved = false, lastX = 0, lastY = 0;
+  view.addEventListener("mousedown", function (e) {
+    dragging = true; moved = false; lastX = e.clientX; lastY = e.clientY;
+    view.classList.add("dragging");
+  });
+  window.addEventListener("mousemove", function (e) {
+    if (!dragging) return;
+    var dx = e.clientX - lastX, dy = e.clientY - lastY;
+    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) moved = true;
+    lastX = e.clientX; lastY = e.clientY;
+    cam.tx += dx; cam.ty += dy;
+    draw();
+    scheduleWrite();
+  });
+  window.addEventListener("mouseup", function () {
+    if (dragging) { dragging = false; view.classList.remove("dragging"); }
+  });
+  view.addEventListener("click", function (e) {
+    if (moved) return; // a drag, not a click
+    var rect = view.getBoundingClientRect();
+    var w = screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
+    var hit = hitTest(w.x, w.y);
+    if (!hit) { clearPanel(); return; }
+    if (hit.kind === "node") showNode(hit.n); else showFolder(hit.n);
+  });
+  view.addEventListener("wheel", function (e) {
+    e.preventDefault();
+    var rect = view.getBoundingClientRect();
+    var mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    var world = screenToWorld(mx, my);
+    var factor = Math.exp(-e.deltaY * 0.0015);
+    var z2 = Math.max(0.02, Math.min(cam.zoom * factor, 8));
+    // keep the world point under the cursor fixed
+    cam.tx = mx - world.x * z2;
+    cam.ty = my - world.y * z2;
+    cam.zoom = z2;
+    draw();
+    scheduleWrite();
+  }, { passive: false });
+
+  document.getElementById("cv-fit").addEventListener("click", function () {
+    fit(); draw(); scheduleWrite();
+  });
+
+  window.addEventListener("resize", resize);
+
+  // Reload when the target file changes; ignore our own camera param writes
+  // (echo guard — the token matches what writeCamera just set).
+  var lastFile = file;
+  fused.params.onChange(function () {
+    var f = fused.params.get("_file") || "";
+    if (f !== lastFile) { lastFile = f; location.reload(); return; }
+    var token = String(fused.params.get("cx")) + "|" + String(fused.params.get("cy"))
+      + "|" + String(fused.params.get("z"));
+    if (token === lastWritten) return; // our own write echoed back — ignore
+  });
+
+  // ---- boot -------------------------------------------------------------
+  initCamera();
+  resize(); // sizes the canvas and paints
+})();
+</script>
+</body>
+</html>
