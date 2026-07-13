@@ -225,8 +225,11 @@
           // was up). The read-only facets live in the view's extensions, so
           // rebuild the editor from scratch — reload discards local edits
           // anyway, and load() re-reads the file and re-applies the lock/badge.
-          hideConflict();
-          await load();
+          // The banner stays up until the rebuild lands: its visibility is
+          // what holds off queued autosaves (AS-2), and a failed load() must
+          // keep the Reload/Overwrite escape hatch on screen.
+          clearTimeout(saveTimer);
+          if (await load()) hideConflict();
           return;
         }
         const text = await fused.readFile(file);
@@ -258,7 +261,7 @@
       file = fused.params.get("_file");
       if (!file) {
         root.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
-        return;
+        return false;
       }
       const rawUrl = fused.rawUrl(file);
       let text;
@@ -267,14 +270,14 @@
         if (stat.size !== null && stat.size !== undefined && stat.size > MAX_BYTES) {
           root.innerHTML = `<div id="status">File is too large to edit inline (${stat.size.toLocaleString()} bytes).
             <a href="${rawUrl}" target="_blank" rel="noopener">Open raw</a></div>`;
-          return;
+          return false;
         }
         text = await fused.readFile(file);
         mtime = stat.mtime;
         writable = stat.writable !== false; // absent field (older server) → editable
       } catch (err) {
         root.innerHTML = `<div id="status" class="error">Failed to load file: ${escapeHtml(err.message)}</div>`;
-        return;
+        return false;
       }
 
       const ext = (file.split("/").pop().split(".").pop() || "").toLowerCase();
@@ -317,6 +320,7 @@
         saveBtn.hidden = false;
         fusedRoBadge.update(document.getElementById("ro"), "", "");
       }
+      return true;
     }
 
     saveBtn.addEventListener("click", save);
