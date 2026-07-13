@@ -5,6 +5,7 @@
   --border: #2a2d33;
   --bg: #131417;
   --bg-alt: #1b1d21;
+  --sel: #2b3a52;
   --accent: #E5FF44;
   --error: #ff6b6b;
 }
@@ -776,6 +777,14 @@ table.listing-table tr.row.ignored {
 
 table.listing-table tr.row:hover {
   background: var(--bg-alt);
+  opacity: 1;
+}
+
+/* Keyboard-selected row (arrow-key navigation). Distinct from :hover so the
+   selection stays visible while the cursor is elsewhere; full opacity so a
+   selected .ignored row is still readable. */
+table.listing-table tr.row.selected {
+  background: var(--sel);
   opacity: 1;
 }
 

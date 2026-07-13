@@ -200,6 +200,76 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   // How many result rows are revealed; grows by PAGE_SIZE when the sentinel
   // row scrolls into view, resets on every query change.
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  // Path of the keyboard-selected row (arrow-key navigation); null = none.
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+
+  // Search input, so a keystroke anywhere in the listing can focus it.
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  // Latest ordered list of navigable row paths + the current selection, read by
+  // the document keydown handler (registered once, so it can't close over them).
+  const navRowsRef = useRef<string[]>([]);
+  const selectedPathRef = useRef<string | null>(null);
+  selectedPathRef.current = selectedPath;
+
+  // Keyboard navigation for the listing, whether focus is in the search box or
+  // nowhere in particular:
+  //   • a plain printable key focuses the search box so the character lands there;
+  //   • Up/Down move the selection through the rendered rows — in the search box
+  //     too, since a single-line input doesn't need them for the caret;
+  //   • Enter opens the selection, or the top row when nothing is selected yet.
+  // Bound to `document` so it also drives the plain listing with nothing focused.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      // While an IME is composing, Enter confirms a candidate and the arrows
+      // move through the candidate list — never repurpose them for navigation.
+      if (e.isComposing) return;
+      const el = document.activeElement as HTMLElement | null;
+      const inSearch = el === searchInputRef.current;
+      // Only drive navigation from the search box or when nothing in particular
+      // is focused (body). If focus is on a chrome control — a breadcrumb link,
+      // the bookmark/mode-switch buttons, another input — leave its keys alone
+      // (otherwise Enter would open a file instead of activating that control).
+      const navActive =
+        inSearch || !el || el === document.body || el === document.documentElement;
+
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        if (!navActive) return;
+        const rows = navRowsRef.current;
+        if (!rows.length) return;
+        e.preventDefault();
+        const idx = rows.indexOf(selectedPathRef.current ?? "");
+        // Nothing selected yet: Down starts at the top, Up at the bottom.
+        let next =
+          idx === -1
+            ? e.key === "ArrowDown" ? 0 : rows.length - 1
+            : e.key === "ArrowDown" ? idx + 1 : idx - 1;
+        next = Math.max(0, Math.min(rows.length - 1, next));
+        setSelectedPath(rows[next]);
+        return;
+      }
+      if (e.key === "Enter") {
+        if (!navActive) return;
+        const rows = navRowsRef.current;
+        if (!rows.length) return;
+        const idx = rows.indexOf(selectedPathRef.current ?? "");
+        e.preventDefault();
+        navigate(idx === -1 ? rows[0] : rows[idx]);
+        return;
+      }
+      // Start typing → focus the search box so the character lands there. Only
+      // when nothing else is focused (not the search box already, not a chrome
+      // control) and only plain printable keys (no modifiers), so Space on a
+      // focused button and app shortcuts keep working.
+      if (
+        navActive && !inSearch &&
+        e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey
+      ) {
+        searchInputRef.current?.focus(); // keystroke falls through into the input
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   // The input echoes `query` (immediate) so keystrokes never wait on the
   // fuzzy-scoring/rendering work below. `deferredQuery` trails behind under
@@ -482,6 +552,26 @@ export default function Listing({ fsPath }: { fsPath: string }) {
 
   const base = fsPath.replace(/\/$/, "");
 
+  // Flat, ordered list of the paths the arrow keys step through: the rendered
+  // search hits while searching, otherwise the sorted listing. Keyed off the
+  // same memoized arrays the table renders, so selection never drifts from view.
+  const navRows = useMemo(
+    () =>
+      searching
+        ? visibleHits.map(({ entry }) => base + "/" + entry.rel)
+        : sortedEntries.map((entry) => base + "/" + entry.name),
+    [searching, visibleHits, sortedEntries, base]
+  );
+  navRowsRef.current = navRows;
+
+  // Keep the keyboard selection scrolled into view as it moves.
+  useEffect(() => {
+    if (!selectedPath) return;
+    document
+      .querySelector("table.listing-table tr.row.selected")
+      ?.scrollIntoView({ block: "nearest" });
+  }, [selectedPath, navRows]);
+
   // --- table body -----------------------------------------------------------
 
   let body: React.ReactNode;
@@ -501,7 +591,11 @@ export default function Listing({ fsPath }: { fsPath: string }) {
             {visibleHits.map(({ entry, positions }) => {
               const childPath = base + "/" + entry.rel;
               return (
-                <tr key={entry.rel} className="row" onClick={() => navigate(childPath)}>
+                <tr
+                  key={entry.rel}
+                  className={childPath === selectedPath ? "row selected" : "row"}
+                  onClick={() => navigate(childPath)}
+                >
                   <td className="name">
                     <span className="icon">{iconForEntry(entry.rel.split("/").pop() ?? entry.rel, entry.is_dir)}</span>
                     <span className="search-path">{renderHighlight(entry.rel, positions)}</span>
@@ -570,7 +664,10 @@ export default function Listing({ fsPath }: { fsPath: string }) {
       return (
         <tr
           key={entry.name}
-          className={entry.ignored ? "row ignored" : "row"}
+          className={
+            (entry.ignored ? "row ignored" : "row") +
+            (childPath === selectedPath ? " selected" : "")
+          }
           onClick={() => navigate(childPath)}
         >
           <td className="name">
@@ -614,9 +711,10 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     <div className="listing">
       <div className="listing-search">
         <input
+          ref={searchInputRef}
           type="search"
           className="listing-search-input"
-          placeholder="Search this folder…"
+          placeholder="Start typing to search…"
           value={query}
           onFocus={prefetchWalk}
           onChange={(e) => setQuery(e.target.value)}
