@@ -584,14 +584,23 @@
         : `${total}${suffix} match${total === 1 ? "" : "es"}`;
     }
 
-    // Arrow-key navigation over whatever is rendered (listing or search hits);
-    // Enter opens the selection. Arrows are ignored while typing in the search
-    // box so the caret still moves; Enter there opens the current selection.
+    // Arrow-key navigation over whatever is rendered (listing or search hits).
+    // Up/Down drive the selection even while the caret is in the search box (a
+    // single-line input doesn't need them for the caret), so you can type to
+    // filter and keep navigating without reaching for the mouse; Left/Right
+    // still move the caret. Enter opens the selection, or the top row when
+    // nothing is selected yet.
     function onKey(e) {
       const typing = document.activeElement === searchEl;
+      // Start typing anywhere → focus the search box so the character lands
+      // there. Only plain printable keys (no modifiers) so shortcuts still work.
+      if (!typing && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        searchEl.focus();
+        return; // let the keystroke fall through into the now-focused input
+      }
       const rows = currentRows;
       if (!rows.length) return;
-      if (!typing && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
         const idx = rows.findIndex((r) => r.path === selectedPath);
         // Nothing selected yet: Down starts at the top, Up starts at the bottom.
@@ -603,8 +612,9 @@
         select(entry);
         const tr = listBodyEl.querySelector(`tr.row[data-path="${CSS.escape(entry.path)}"]`);
         if (tr) tr.scrollIntoView({ block: "nearest" });
-      } else if (e.key === "Enter" && selectedPath) {
-        const entry = rows.find((r) => r.path === selectedPath);
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        const entry = rows.find((r) => r.path === selectedPath) || rows[0];
         if (entry) openInShell(entry.path, entry.is_dir);
       }
     }
