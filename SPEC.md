@@ -1385,7 +1385,7 @@ SPEC DM-7); the CLI/browser experience is unchanged.
   framework), the menu is attached as before — the app is never left
   unquittable.
 
-## 26. Canvas View — Conditional Layout Viewer for `canvas.toml` (D102)
+## 26. Canvas View — Conditional Layout Viewer for `canvas.toml` (D103)
 
 A `canvas` view template renders a Fused **canvas definition** (`canvas.toml`,
 v2) as a read-only **layout viewer**: nodes drawn as positioned boxes, folder
@@ -1402,7 +1402,7 @@ files get it — a plain `.toml` still opens in `code`.
   process on every `.toml` resolution, so it is cheap and fail-closed: a
   **basename pre-check** (`canvas.toml`, no I/O) before any open, a **2 MB
   size guard**, then a `tomllib` parse asserting top-level `type == "canvas"`
-  (the content sniff, D102). Any exception → False; the template is dropped and
+  (the content sniff, D103). Any exception → False; the template is dropped and
   `code` stays default. No `template_error` on a fail — an ordinary toml is not
   an error.
 - **CV-3** **Reader (`reader.py`, `@fused.udf`-registered).** One `tomllib`

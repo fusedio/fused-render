@@ -1,4 +1,4 @@
-"""Tests for the `canvas` conditional preview template (SPEC §26, D102).
+"""Tests for the `canvas` conditional preview template (SPEC §26, D103).
 
 Two surfaces:
 
