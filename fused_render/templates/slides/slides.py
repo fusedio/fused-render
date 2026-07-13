@@ -18,6 +18,9 @@ content hash under ``~/.fused-render/cache/slides/<hash>/``:
 The hash folds in ``engine.ENGINE_V`` so a parser change auto-invalidates old
 caches. The original .pptx is never mutated except by an explicit ``save``
 (overwrite) or ``save_as`` (new file) action, both of which write atomically.
+Since the hash is content-derived, every ``save`` moves the doc to a new
+cache dir; ``save`` removes the prior dir once the new one lands so re-saves
+don't leak one orphaned ``model.json``/``media/`` folder per save.
 A per-document display-name override (renaming the deck without renaming the
 file) lives in the shared JSON sidecar next to the file (``<file>.json``),
 namespaced under the "slides" key, alongside whatever other templates keep
@@ -540,6 +543,10 @@ def main(action: str = "open",
             shutil.copytree(_media_dir(doc), os.path.join(new_dir, "media"), dirs_exist_ok=True)
             with open(_model_path(new_doc), "w", encoding="utf-8") as f2:
                 json.dump(model, f2, ensure_ascii=False)
+        if new_doc != doc:
+            # every save re-hashes to a new cache dir; the old one is now
+            # unreachable (the client switches to new_doc on this response).
+            shutil.rmtree(_cache_dir(doc), ignore_errors=True)
         return {"path": file, "doc": new_doc, "mtime": os.path.getmtime(_model_path(new_doc))}
 
     # --------- Save as = write a NEW .pptx elsewhere; the open document is unchanged
