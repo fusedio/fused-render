@@ -414,6 +414,9 @@ export interface RemoteSuggestion {
   id: string;
   label: string;
   remote_name: string;
+  // "public" = anonymous, no-credentials remote (public buckets); "detected" =
+  // materialized from the user's own AWS/gcloud credentials. Groups the dropdown.
+  kind: "public" | "detected";
 }
 
 export interface MountsResult {

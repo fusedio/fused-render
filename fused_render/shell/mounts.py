@@ -416,10 +416,24 @@ def _aws_profiles() -> list[str]:
 
 
 def _credential_suggestions() -> list[dict]:
-    """Remotes offerable from already-present credentials. Full specs (rclone
-    backend + params) — the endpoint consumes these; the API view (below)
-    exposes only id/label/remote_name."""
-    out: list[dict] = []
+    """Remotes offerable without re-entering keys. Full specs (rclone backend +
+    params) — the endpoint consumes these; the API view (below) exposes only
+    id/label/remote_name/kind.
+
+    The first entry is always present: an anonymous S3 remote for public buckets
+    (AWS Open Data, etc.). It needs no credentials — env_auth=false with blank
+    keys makes rclone send unsigned requests — so it works even when the user
+    has no (or expired) AWS creds. region is just the endpoint rclone starts at;
+    it follows S3's region redirect to reach buckets in any region. The rest are
+    credential-backed (kind="detected", defaulted in _suggestions_view)."""
+    out: list[dict] = [{
+        "id": "aws-open-public",
+        "label": "AWS S3 — public buckets (no credentials)",
+        "remote_name": "aws-open",
+        "backend": "s3",
+        "kind": "public",
+        "params": {"provider": "AWS", "env_auth": "false", "region": "us-west-2"},
+    }]
     for prof in _aws_profiles():
         out.append({
             "id": f"aws-profile:{prof}",
@@ -449,9 +463,13 @@ def _credential_suggestions() -> list[dict]:
 
 
 def _suggestions_view(remotes: list[str]) -> list[dict]:
-    """Public shape, minus any suggestion already materialized as a remote."""
+    """Public shape, minus any suggestion already materialized as a remote (so
+    the built-in aws-open drops out of the suggestions once created and shows
+    under Remotes instead). `kind` groups them in the dropdown: 'public' vs the
+    default 'detected'."""
     return [
-        {"id": s["id"], "label": s["label"], "remote_name": s["remote_name"]}
+        {"id": s["id"], "label": s["label"], "remote_name": s["remote_name"],
+         "kind": s.get("kind", "detected")}
         for s in _credential_suggestions()
         if f'{s["remote_name"]}:' not in remotes
     ]

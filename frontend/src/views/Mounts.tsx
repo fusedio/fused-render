@@ -203,8 +203,9 @@ function AddMount({
     <section className="prefs-section">
       <h2>Add mount</h2>
       <p className="deploy-muted">
-        Surface an rclone remote as a local folder. Pick a remote you created, or one under{" "}
-        <b>Detected credentials</b> (from your AWS / gcloud config — no keys stored).
+        Surface an rclone remote as a local folder. Pick a remote you created, one under{" "}
+        <b>Detected credentials</b> (from your AWS / gcloud config — no keys stored), or{" "}
+        <b>Public buckets</b> for anonymous access to open data (no credentials needed).
       </p>
       <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
         <Field label="Name">
@@ -226,13 +227,26 @@ function AddMount({
                 ))}
               </optgroup>
             )}
-            {suggested.length > 0 && (
+            {suggested.some((s) => s.kind === "public") && (
+              <optgroup label="Public buckets (no credentials)">
+                {suggested
+                  .filter((s) => s.kind === "public")
+                  .map((s) => (
+                    <option key={s.id} value={`suggest:${s.id}`}>
+                      {s.label}
+                    </option>
+                  ))}
+              </optgroup>
+            )}
+            {suggested.some((s) => s.kind === "detected") && (
               <optgroup label="Detected credentials">
-                {suggested.map((s) => (
-                  <option key={s.id} value={`suggest:${s.id}`}>
-                    {s.label}
-                  </option>
-                ))}
+                {suggested
+                  .filter((s) => s.kind === "detected")
+                  .map((s) => (
+                    <option key={s.id} value={`suggest:${s.id}`}>
+                      {s.label}
+                    </option>
+                  ))}
               </optgroup>
             )}
           </select>

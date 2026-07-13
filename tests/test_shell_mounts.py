@@ -316,9 +316,55 @@ def test_suggestions_view_hides_already_materialized(monkeypatch):
         {"id": "aws-env", "label": "L", "remote_name": "aws-env",
          "backend": "s3", "params": {"provider": "AWS", "env_auth": "true"}},
     ])
+    # kind defaults to "detected" for entries that don't set it.
     assert mounts_mod._suggestions_view([]) == [
-        {"id": "aws-env", "label": "L", "remote_name": "aws-env"}]
+        {"id": "aws-env", "label": "L", "remote_name": "aws-env",
+         "kind": "detected"}]
     assert mounts_mod._suggestions_view(["aws-env:"]) == []
+
+
+def test_public_bucket_suggestion_always_present(monkeypatch):
+    """The anonymous public-bucket remote is offered even with no AWS/gcloud
+    credentials at all — it's what lets a user mount open data without keys."""
+    monkeypatch.setattr(mounts_mod, "_aws_profiles", lambda: [])
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.setattr(mounts_mod.os.path, "exists", lambda p: False)
+
+    by_id = {s["id"]: s for s in mounts_mod._credential_suggestions()}
+    pub = by_id["aws-open-public"]
+    assert pub["remote_name"] == "aws-open"
+    assert pub["kind"] == "public"
+    # anonymous: env_auth off, no key material anywhere in the spec
+    assert pub["params"]["env_auth"] == "false"
+    assert not any("secret" in k or "key" in k for k in pub["params"])
+
+
+def test_public_suggestion_hidden_once_materialized(monkeypatch):
+    monkeypatch.setattr(mounts_mod, "_aws_profiles", lambda: [])
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.setattr(mounts_mod.os.path, "exists", lambda p: False)
+    # not yet created → shown under kind="public"
+    assert any(s["id"] == "aws-open-public" and s["kind"] == "public"
+               for s in mounts_mod._suggestions_view([]))
+    # once aws-open: exists it drops out (shows under Remotes instead)
+    assert not any(s["id"] == "aws-open-public"
+                   for s in mounts_mod._suggestions_view(["aws-open:"]))
+
+
+def test_detect_materializes_public_anonymous_remote(client, monkeypatch):
+    """Selecting the built-in public option creates an anonymous S3 remote —
+    no secret material, env_auth=false — so unsigned requests reach open data."""
+    created = []
+    _fake_rclone(monkeypatch, existing_remotes=(), record=created)
+
+    r = client.post("/api/mounts/remotes/detect",
+                    json={"id": "aws-open-public"}, headers=FUSED)
+    assert r.status_code == 200
+    assert r.json()["name"] == "aws-open:"
+    [cmd] = created
+    assert cmd[:5] == ["/usr/bin/rclone", "config", "create", "aws-open", "s3"]
+    assert "env_auth" in cmd and "false" in cmd
+    assert not any("secret" in str(x).lower() for x in cmd)
 
 
 def _fake_rclone(monkeypatch, existing_remotes=(), record=None):
