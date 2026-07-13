@@ -79,7 +79,9 @@ def _readline(source, deadline):
 
 
 def _epoch(value, formats):
-    normalized = value.replace(",", ".")
+    # The date regexes accept a "T" between date and time but the strptime
+    # formats are space-separated; digit-T-digit keeps month names intact.
+    normalized = re.sub(r"(?<=\d)T(?=\d)", " ", value.replace(",", "."))
     for fmt in formats:
         try:
             parsed = datetime.strptime(normalized, fmt).replace(tzinfo=timezone.utc)
@@ -296,7 +298,12 @@ def _clean_path(path):
 
 def _listdir(file, path):
     path = _clean_path(path)
-    directory = os.path.abspath(os.path.expanduser(path)) if path else os.path.dirname(os.path.abspath(file))
+    if path:
+        directory = os.path.abspath(os.path.expanduser(path))
+    elif file:
+        directory = os.path.dirname(os.path.abspath(file))
+    else:
+        directory = os.path.expanduser("~")
     if not os.path.isdir(directory):
         directory = os.path.dirname(directory) or directory
     entries = []
