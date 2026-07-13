@@ -31,6 +31,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -60,6 +61,19 @@ VFS_OPT = {
     "FastFingerprint": True,
     "DirCacheTime": "30s",
 }
+
+# Each mount's remote is ALSO served over localhost HTTP (rcd serve/start) —
+# the duckdb reader's fast path for parquet under a mountpoint. Going through
+# the kernel NFS mount breaks down for analytical reads: DuckDB fans out many
+# concurrent range reads, each 32KB NFS READ stalls behind an 8M VFS chunk
+# fetch (minutes on a slow link), and macOS's 1s NFS timeout (timeo=10) then
+# declares the server dead — "server connections interrupted" — and drops the
+# whole mount. Over HTTP, DuckDB's range GETs go straight to rclone with no
+# kernel filesystem in between, so a slow read is just slow, never fatal.
+# The serve's own vfs cache stays OFF: DuckDB requests exactly the byte ranges
+# it needs and caches them itself (external file cache), while `full` would
+# amplify every small range into 8M chunk downloads (measured 73s vs 32s cold).
+SERVE_VFS_OPT = {"CacheMode": "off"}
 
 # Tile-server daemon state files — the two parallel implementations that can
 # hold files open under a mount (geotiff, and the grid server shared by
@@ -262,6 +276,105 @@ def mounted_paths() -> set:
     return set(rcd_mount_map())
 
 
+# --------------------------------------------------------------- http serves
+
+
+def serves_path() -> str:
+    return os.path.join(storage.home_dir(), "serves.json")
+
+
+def _http_serves(port: int) -> dict:
+    """{fs: {"addr", "id"}} for every live rc HTTP serve."""
+    try:
+        listed = _rc(port, "serve/list").get("list", [])
+    except RuntimeError:
+        return {}
+    return {
+        s["params"]["fs"]: {"addr": s.get("addr", ""), "id": s.get("id", "")}
+        for s in listed
+        if isinstance(s, dict) and s.get("params", {}).get("type") == "http"
+        and s.get("params", {}).get("fs")
+    }
+
+
+# serve/list-then-serve/start isn't atomic; concurrent syncs (automount thread
+# vs a user mount request) would each start a serve for the same remote.
+_serves_lock = threading.Lock()
+
+
+def is_mount_backed(path: str) -> bool:
+    """True when `path` sits under the mounts dir — i.e. its bytes come from a
+    remote. Pure prefix check (no probe, no rc), cheap enough for every stat."""
+    root = os.path.abspath(mounts_dir())
+    return os.path.abspath(path).startswith(root + os.sep)
+
+
+def serve_url_for(path: str) -> str | None:
+    """Localhost HTTP URL serving `path`'s bytes, if it sits under a mount
+    with a live HTTP serve (serves.json). /api/fs/raw proxies from this URL
+    instead of reading through the kernel mount: analytical readers (the
+    duckdb grid) fan out concurrent range reads that wedge the macOS NFS
+    client (see SERVE_VFS_OPT), while the same ranges over HTTP are just
+    slow, never fatal. None for anything outside a served mount."""
+    serves = storage.read_json(serves_path())
+    if not isinstance(serves, dict):
+        return None
+    p = os.path.abspath(path)
+    for mp, base in sorted(serves.items(), key=lambda kv: -len(kv[0])):
+        if isinstance(base, str) and (p == mp or p.startswith(mp + os.sep)):
+            rel = os.path.relpath(p, mp).replace(os.sep, "/")
+            return base.rstrip("/") + "/" + urllib.parse.quote(rel)
+    return None
+
+
+def sync_serves() -> None:
+    """Reconcile rcd's HTTP serves with the stored mounts — one serve per
+    mount record, stop serves whose record is gone — and write the resulting
+    {mountpoint: base_url} map to serves.json (consumed by serve_url_for).
+    Best-effort: any failure logs and leaves the previous map in place."""
+    with _serves_lock:
+        try:
+            _sync_serves_locked()
+        except Exception:
+            logger.warning("sync of mount http serves failed", exc_info=True)
+
+
+def _sync_serves_locked() -> None:
+    port = _live_rcd_port()
+    if port is None:
+        storage.write_json(serves_path(), {})
+        return
+    serves = _http_serves(port)
+    mounts = list_mounts()
+    out = {}
+    for m in mounts:
+        fs = m["remote"]
+        serve = serves.get(fs)
+        if serve is None:
+            try:
+                addr = _rc(port, "serve/start", {
+                    "type": "http",
+                    "fs": fs,
+                    "addr": "127.0.0.1:0",
+                    "vfsOpt": SERVE_VFS_OPT,
+                }, timeout=30).get("addr", "")
+            except RuntimeError as e:
+                logger.warning("http serve for %r failed: %s", m["name"], e)
+                continue
+        else:
+            addr = serve["addr"]
+        if addr:
+            out[mountpoint(m)] = f"http://{addr}"
+    wanted = {m["remote"] for m in mounts}
+    for fs, serve in serves.items():
+        if fs not in wanted and serve["id"]:
+            try:
+                _rc(port, "serve/stop", {"id": serve["id"]})
+            except RuntimeError:
+                pass
+    storage.write_json(serves_path(), out)
+
+
 def attach_mount(m: dict) -> str | None:
     """Mount via rcd; returns an error string or None."""
     mp = mountpoint(m)
@@ -287,6 +400,7 @@ def attach_mount(m: dict) -> str | None:
         }, timeout=60)
     except RuntimeError as e:
         return str(e)
+    sync_serves()
     return None
 
 
@@ -482,6 +596,9 @@ def run_automount() -> None:
         err = attach_mount(m)
         if err:
             logger.warning("automount of %r failed: %s", m["name"], err)
+    # Mounts that survived a server restart skip attach_mount above, so their
+    # HTTP serves (lost with any rcd restart) get re-ensured here.
+    sync_serves()
 
 
 def startup() -> None:
@@ -729,6 +846,7 @@ def delete_mount(cid: str, x_fused: str | None = Header(default=None)):
     if os.path.isdir(mp) and not os.path.ismount(mp) and not os.listdir(mp):
         os.rmdir(mp)
     remove_mount(cid)
+    sync_serves()  # stop the deleted mount's HTTP serve, drop its map entry
     return {"ok": True}
 
 

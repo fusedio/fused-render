@@ -33,6 +33,9 @@ class StubRcd:
             "mount/mount": {},
             "mount/unmount": {},
             "mount/listmounts": {"mountPoints": []},
+            "serve/list": {"list": []},
+            "serve/start": {"addr": "127.0.0.1:59999", "id": "http-stub"},
+            "serve/stop": {},
         }
         stub = self
 
@@ -700,3 +703,144 @@ def test_run_automount_skips_already_mounted(home, rcd):
         "mountPoints": [{"Fs": "r:one", "MountPoint": mounts_mod.mountpoint(c)}]}
     mounts_mod.run_automount()
     assert not any(m == "mount/mount" for m, _ in rcd.calls)
+
+
+# -- http serves (the duckdb reader's mounted-parquet fast path) -----------------
+
+
+def test_attach_starts_http_serve_and_writes_map(home, rcd):
+    c = mounts_mod.add_mount("data", "remote:bucket/prefix")
+    assert mounts_mod.attach_mount(c) is None
+    [(_, body)] = [x for x in rcd.calls if x[0] == "serve/start"]
+    assert body["type"] == "http"
+    assert body["fs"] == "remote:bucket/prefix"
+    # Serve-side vfs cache stays off: DuckDB caches the ranges itself; a full
+    # cache would amplify its small range GETs into multi-MB chunk downloads.
+    assert body["vfsOpt"] == {"CacheMode": "off"}
+    serves = json.load(open(mounts_mod.serves_path()))
+    assert serves == {mounts_mod.mountpoint(c): "http://127.0.0.1:59999"}
+
+
+def test_sync_serves_reuses_existing_serve(home, rcd):
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    rcd.responses["serve/list"] = {"list": [{
+        "id": "http-live", "addr": "127.0.0.1:41000",
+        "params": {"type": "http", "fs": "remote:bucket"}}]}
+    mounts_mod.sync_serves()
+    assert not any(m == "serve/start" for m, _ in rcd.calls)
+    serves = json.load(open(mounts_mod.serves_path()))
+    assert serves == {mounts_mod.mountpoint(c): "http://127.0.0.1:41000"}
+
+
+def test_sync_serves_stops_orphaned_serve(home, rcd):
+    # A serve whose mount record is gone (deleted mount) gets stopped.
+    rcd.responses["serve/list"] = {"list": [{
+        "id": "http-orphan", "addr": "127.0.0.1:41001",
+        "params": {"type": "http", "fs": "remote:deleted"}}]}
+    mounts_mod.sync_serves()
+    [(_, body)] = [x for x in rcd.calls if x[0] == "serve/stop"]
+    assert body == {"id": "http-orphan"}
+    assert json.load(open(mounts_mod.serves_path())) == {}
+
+
+def test_sync_serves_without_daemon_clears_map(home):
+    # No rcd: nothing can be served, so a stale map must not send the duckdb
+    # reader to dead URLs (it would fall back, but why leave the trap).
+    mounts_mod.add_mount("data", "remote:bucket")
+    mounts_mod.sync_serves()
+    assert json.load(open(mounts_mod.serves_path())) == {}
+
+
+def test_sync_serves_survives_serve_start_failure(home, rcd):
+    c = mounts_mod.add_mount("a", "remote:a")
+    c2 = mounts_mod.add_mount("b", "remote:b")
+    rcd.responses["serve/start"] = [
+        (500, {"error": "boom"}),
+        {"addr": "127.0.0.1:42000", "id": "http-b"},
+    ]
+    mounts_mod.sync_serves()
+    serves = json.load(open(mounts_mod.serves_path()))
+    # The failed remote is just absent; the other one still gets served.
+    assert list(serves.values()) == ["http://127.0.0.1:42000"]
+
+
+def test_serve_url_for_maps_and_quotes(home, rcd):
+    import os
+
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mounts_mod.sync_serves()  # stub serve at 127.0.0.1:59999
+    mp = mounts_mod.mountpoint(c)
+    url = mounts_mod.serve_url_for(os.path.join(mp, "year=2022", "a b.parquet"))
+    assert url == "http://127.0.0.1:59999/year%3D2022/a%20b.parquet"
+    assert mounts_mod.serve_url_for("/somewhere/else.parquet") is None
+
+
+def test_stat_marks_mount_backed_files_remote(client, home):
+    import os
+
+    mp = os.path.join(mounts_mod.mounts_dir(), "data")
+    os.makedirs(mp)
+    f = os.path.join(mp, "x.parquet")
+    open(f, "wb").write(b"pq")
+    assert client.get("/api/fs/stat", params={"path": f}).json()["remote"] is True
+    plain = os.path.join(str(home), "y.parquet")
+    open(plain, "wb").write(b"pq")
+    assert client.get("/api/fs/stat", params={"path": plain}).json()["remote"] is False
+
+
+def test_fs_raw_proxies_range_from_mount_serve(client, home):
+    """/api/fs/raw for a mount-backed path streams from the mount's HTTP
+    serve (Range and HEAD forwarded), not from the local filesystem."""
+    import functools
+    import http.server
+    import os
+
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    os.makedirs(mp)
+    f = os.path.join(mp, "x.bin")
+    open(f, "wb").write(b"LOCAL-BYTES")  # what a (dead-mount) local read would see
+
+    served = home / "served"
+    served.mkdir()
+    (served / "x.bin").write_bytes(b"REMOTE-BYTES")
+
+    class H(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0), functools.partial(H, directory=str(served)))
+    import threading
+
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        import fused_render.shell.storage as storage
+        storage.write_json(mounts_mod.serves_path(),
+                           {mp: f"http://127.0.0.1:{srv.server_address[1]}"})
+        r = client.get("/api/fs/raw", params={"path": f})
+        assert r.status_code == 200 and r.content == b"REMOTE-BYTES"
+        r = client.head("/api/fs/raw", params={"path": f})
+        assert r.status_code == 200
+        assert r.headers["content-length"] == str(len(b"REMOTE-BYTES"))
+        assert r.content == b""
+    finally:
+        srv.shutdown()
+
+
+def test_fs_raw_falls_back_to_file_when_serve_dead(client, home):
+    import os
+    import socket
+
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    os.makedirs(mp)
+    f = os.path.join(mp, "x.bin")
+    open(f, "wb").write(b"LOCAL-BYTES")
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        dead = s.getsockname()[1]
+    import fused_render.shell.storage as storage
+    storage.write_json(mounts_mod.serves_path(), {mp: f"http://127.0.0.1:{dead}"})
+    r = client.get("/api/fs/raw", params={"path": f})
+    assert r.status_code == 200 and r.content == b"LOCAL-BYTES"

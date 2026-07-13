@@ -24,10 +24,18 @@ import sys
 import tempfile
 import time
 import traceback
+import urllib.error
+import urllib.request
 from urllib.parse import parse_qsl
 
-from fastapi import Body, FastAPI, Header, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi import Body, FastAPI, Header, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 
 from fused_render import __version__
@@ -971,6 +979,46 @@ def _writable(path: str) -> bool:
     return os.access(os.path.dirname(path) or ".", os.W_OK)
 
 
+# Response headers forwarded from the rclone serve on a proxied /api/fs/raw.
+# Content-Length/-Range/Accept-Ranges make ranged readers (duckdb httpfs)
+# work; Last-Modified/ETag let their caches revalidate.
+_PROXY_HEADERS = ("content-length", "content-range", "content-type",
+                  "accept-ranges", "last-modified", "etag")
+
+
+def _proxy_raw(upstream: str, request: Request):
+    """Forward one GET/HEAD (with its Range header) to a mount's localhost
+    rclone serve and stream the answer back. None when the serve can't be
+    reached at all — the caller then reads the file the ordinary way; an HTTP
+    error from a live serve passes through as-is (a 416/404 is an answer,
+    not a reason to fall back to a different read path mid-protocol)."""
+    headers = {}
+    rng = request.headers.get("range")
+    if rng:
+        headers["Range"] = rng
+    req = urllib.request.Request(upstream, headers=headers, method=request.method)
+    try:
+        r = urllib.request.urlopen(req, timeout=120)
+    except urllib.error.HTTPError as e:
+        e.close()
+        return Response(status_code=e.code)
+    except OSError:
+        return None
+    out = {k: v for k, v in r.headers.items() if k.lower() in _PROXY_HEADERS}
+    if request.method == "HEAD":
+        r.close()
+        return Response(status_code=r.status, headers=out)
+
+    def body():
+        try:
+            while chunk := r.read(256 * 1024):
+                yield chunk
+        finally:
+            r.close()
+
+    return StreamingResponse(body(), status_code=r.status, headers=out)
+
+
 def _stat_payload(path: str, is_dir: bool, st: os.stat_result | None = None) -> dict:
     """The /api/fs/stat shape. /api/fs/write returns it too, so the editor can
     re-arm its optimistic lock from a save response. Pass a pre-fetched `st` to
@@ -978,6 +1026,10 @@ def _stat_payload(path: str, is_dir: bool, st: os.stat_result | None = None) -> 
     if st is None:
         st = os.stat(path)
     templates, template_error = _templates_for(path, is_dir)
+    # Local import, like api_fs_walk's: server -> shell.mounts only, keeping
+    # shell ↛ server acyclic.
+    from fused_render.shell.mounts import is_mount_backed
+
     payload = {
         "path": path,
         "name": os.path.basename(path) or path,
@@ -985,6 +1037,9 @@ def _stat_payload(path: str, is_dir: bool, st: os.stat_result | None = None) -> 
         "size": None if is_dir else st.st_size,
         "mtime": st.st_mtime,
         "writable": _writable(path),
+        # Bytes come from a remote (the path sits under a mount). Pages use
+        # this to prefer ranged HTTP reads (/api/fs/raw) over local file I/O.
+        "remote": is_mount_backed(path),
         "templates": templates,
     }
     if template_error:
@@ -1371,10 +1426,22 @@ def create_app(start_dir: str) -> FastAPI:
 
         return StreamingResponse(ndjson(), media_type="application/x-ndjson")
 
-    @app.get("/api/fs/raw")
-    def api_fs_raw(path: str):
+    @app.api_route("/api/fs/raw", methods=["GET", "HEAD"])
+    async def api_fs_raw(path: str, request: Request):
         if not os.path.isfile(path):
             return _error(f"no such file: {path}", status=404)
+        # Mount-backed file with a live HTTP serve: proxy the bytes from
+        # rclone instead of reading through the kernel mount. Concurrent
+        # ranged reads (duckdb's httpfs) through the NFS mount stall its 1s
+        # RPC timeout and get the whole mount dropped; the same reads proxied
+        # over HTTP are merely slow. Explicit HEAD support matters: httpfs
+        # HEADs for the length first, and Starlette's implicit HEAD-on-GET
+        # would run the full upstream GET just to drop the body.
+        upstream = shell_mounts.serve_url_for(path)
+        if upstream is not None:
+            resp = await asyncio.to_thread(_proxy_raw, upstream, request)
+            if resp is not None:
+                return resp  # upstream unreachable -> plain file read below
         media_type, _ = mimetypes.guess_type(path)
         return FileResponse(path, media_type=media_type or "application/octet-stream")
 

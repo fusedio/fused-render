@@ -259,12 +259,15 @@ function TemplatePreview({
   // "_render" sentinel (PT-12): render the target file itself, no _file param.
   // Ordinary entries: target file rides on the iframe's own URL as _file —
   // the shell URL's pathname already names the file, so no duplication there.
+  // `_remote=1` forwards stat's remote flag (bytes come from a mount) so a
+  // page can prefer ranged HTTP reads (/api/fs/raw) over local file I/O.
   // `_listing` builds no src — it renders a shell component, not an iframe.
+  const remote = stat.remote ? "&_remote=1" : "";
   const src = isListing
     ? null
     : entry.mode === "_render"
       ? `/render?path=${encodeURIComponent(fsPath)}`
-      : `/render?path=${encodeURIComponent(entry.path as string)}&_file=${encodeURIComponent(fsPath)}`;
+      : `/render?path=${encodeURIComponent(entry.path as string)}&_file=${encodeURIComponent(fsPath)}${remote}`;
 
   // Embed hides the whole preview-header, hence the switcher (shell.css). A
   // directory whose mode list carries `_listing` alongside another mode (a

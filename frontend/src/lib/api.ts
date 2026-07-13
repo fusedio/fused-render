@@ -58,6 +58,9 @@ export interface StatResult {
   is_dir: boolean;
   size: number | null;
   mtime: number | null;
+  // Bytes come from a remote (path under a mount). Preview forwards this to
+  // the template iframe as _remote=1 so pages can prefer ranged HTTP reads.
+  remote?: boolean;
   templates: TemplateEntry[];
   template_error?: string;
 }
