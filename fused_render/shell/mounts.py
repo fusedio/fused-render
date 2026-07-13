@@ -47,10 +47,15 @@ router = APIRouter()
 # parquet (see DECISIONS): `full` caches read ranges as sparse files so warm
 # reads are ~0.01s; max-age raised from the 1h default because eviction is
 # what makes revisits slow again; read-ahead measured a net loss and left out.
+# VfsReadChunkStreams parallelizes the download of a *single* requested chunk
+# across N connections — unlike read-ahead it fetches no extra bytes (so it
+# doesn't hurt the random-access COG/parquet case), it just saturates the link
+# on the big-file cold read that one serial S3 range GET leaves idle.
 VFS_OPT = {
     "CacheMode": "full",
     "ChunkSize": "8M",
     "ChunkSizeLimit": "64M",
+    "ChunkStreams": 4,
     "CacheMaxAge": "24h",
     "FastFingerprint": True,
     "DirCacheTime": "30s",
@@ -214,8 +219,16 @@ def _ensure_rcd_locked() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
+    # --use-server-modtime: take an object's mtime from the store's LIST
+    # response (S3 LastModified etc.) instead of rclone's default, which HEADs
+    # every object to read its precise metadata mtime. That per-object HEAD is
+    # what makes directory listings — hence recursive search — crawl over a
+    # mount: measured ~300ms/object, turning a 264-file sentinel-cogs subtree
+    # into a ~78s walk vs ~1.5s with the LIST mtime. We don't need upload-time
+    # precision to browse, so trade it for the 50x faster listing.
     subprocess.Popen(
-        [bin_, "rcd", "--rc-no-auth", f"--rc-addr=127.0.0.1:{port}"],
+        [bin_, "rcd", "--rc-no-auth", "--use-server-modtime",
+         f"--rc-addr=127.0.0.1:{port}"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,  # outlives this server on purpose
