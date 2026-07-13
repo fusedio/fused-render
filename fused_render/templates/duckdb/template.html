@@ -535,17 +535,20 @@
     }
 
     function updateBars(offset) {
+      // total_rows is null while the deferred count is still in flight — show
+      // "…" for the total and drive "next" off whether we got a full page.
       const total = state.total_rows;
+      const known = typeof total === "number";
       const shown = state.rows.length;
       const from = shown === 0 ? 0 : offset + 1;
       const to = offset + shown;
       const dirty = isDirty();
       // The table name is already shown in the selector — don't repeat it here.
-      rowcountEl.textContent = `rows ${from.toLocaleString()}–${to.toLocaleString()} of ${total.toLocaleString()}`;
+      rowcountEl.textContent = `rows ${from.toLocaleString()}–${to.toLocaleString()} of ${known ? total.toLocaleString() : "…"}`;
       // Paging / switching tables would discard the current page's staged edits
       // (they key off this page's rows), so block it until Save or Discard.
       prevBtn.disabled = dirty || offset <= 0;
-      nextBtn.disabled = dirty || offset + LIMIT >= total;
+      nextBtn.disabled = dirty || (known ? offset + LIMIT >= total : shown < LIMIT);
       tableSel.disabled = dirty;
       saveBtn.disabled = discardBtn.disabled = !dirty;
       const saveCount = saveBtn.querySelector(".save-count");
@@ -641,14 +644,30 @@
         wrap.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
         return;
       }
+      const args = {
+        file, table, offset: String(offset), limit: String(LIMIT),
+        sort: currentSort(), filters: currentFilters(),
+      };
+      // The filtered COUNT scans far more of the file than the 100-row page, so
+      // fetch it concurrently and fill the pager total in when it lands — the
+      // page renders without waiting for it (the pager shows "…" until then).
+      // countVal buffers the total in case the count resolves before the page
+      // has been applied to `state`.
+      let countVal, rendered = false;
+      fused.runPython("./reader.py", { ...args, mode: "count" })
+        .then((c) => {
+          if (seq !== loadSeq || !c || typeof c.total_rows !== "number") return;
+          countVal = c.total_rows;
+          if (rendered) { state.total_rows = countVal; updateBars(currentOffset()); }
+        })
+        .catch(() => {}); // a failed count just leaves the total "…"; the page still works
       try {
-        const data = await fused.runPython("./reader.py", {
-          file, table, offset: String(offset), limit: String(LIMIT),
-          sort: currentSort(), filters: currentFilters(),
-        });
+        const data = await fused.runPython("./reader.py", { ...args, mode: "page" });
         if (seq !== loadSeq) return;
         staged = { edits: new Map(), deletes: new Set(), inserts: [] };
         state = data;
+        // If the count already came back, apply it before the first render.
+        if (countVal !== undefined) state.total_rows = countVal;
         // ids may be numbers; DOM attributes are strings — map string->real id.
         idIndex = new Map();
         state.idsByAttr = new Map();
@@ -656,6 +675,7 @@
           idIndex.set(id, state.rows[i]);
           state.idsByAttr.set(String(id), id);
         });
+        rendered = true;
         renderFilterBar(); // rebuild condition rows from the (freshly loaded) param
         renderAll();
       } catch (err) {
