@@ -143,14 +143,59 @@ def _build_order(sort, columns):
     return f" ORDER BY {_quote_ident(col)} {direction.upper()}"
 
 
+# ------------------------------------------------------------- remote files
+# When the page marks the file remote (the shell's /api/fs/stat says its
+# bytes come from a mount), it passes `source_url` — the app's own
+# /api/fs/raw URL for the file — and parquet is scanned over ranged HTTP
+# instead of local file I/O. Reading a remote-backed mount like a local file
+# breaks down under an analytical read pattern: DuckDB fans out concurrent
+# range reads, each small kernel NFS READ stalls behind a multi-MB remote
+# fetch, and macOS's 1s NFS timeout drops the whole mount ("server
+# connections interrupted"). Over HTTP a slow read is just slow. This reader
+# knows nothing beyond the URL it was handed; anything that fails on it falls
+# back to the plain file path.
+
+
+def _http_connection():
+    """A DuckDB connection for reading mounted parquet over HTTP, kept alive
+    across reader runs. DuckDB's external file cache holds the byte ranges a
+    query fetched, so re-filtering the same file is served from memory instead
+    of re-downloading row groups — but the cache dies with its database
+    instance, and the executor re-execs this module per call. Stash the
+    connection on the *duckdb* module (which does survive in sys.modules of
+    the server process) and hand out cursors. Racing calls may both create
+    one; last-stashed wins and the loser is GC'd — harmless, so no lock."""
+    # Versioned stash key: bumping it (settings change) simply strands the old
+    # connection for GC and builds a fresh one — no stale-config connection can
+    # outlive a code update in a long-running server.
+    key = "_fused_render_http_con_v2"
+    con = getattr(duckdb, key, None)
+    if con is None:
+        con = duckdb.connect(":memory:")
+        con.execute("LOAD httpfs")  # raises if unavailable -> caller falls back
+        con.execute("PRAGMA enable_object_cache=true")
+        # Remote scans block worker threads in HTTP reads, and the default
+        # pool (one per core) lets a single fat-column query starve every
+        # concurrent one — the grid's parallel per-column loads would all
+        # converge to the slowest column (measured: 32 threads -> the light
+        # columns land in ~5s while an 18MB column takes 13s; default pool ->
+        # everything takes 13s). IO-bound, so way past core count is fine.
+        con.execute("SET threads=32")
+        setattr(duckdb, key, con)
+    return con.cursor()
+
+
 def relation_for(file: str, file_row_number: bool = False) -> str:
     """The read-only table-function that reads `file` by extension. Shared with
-    writer.py so read and write agree on how each format is parsed.
+    writer.py so read and write agree on how each format is parsed. `file` may
+    be an http(s) URL (the mounted-parquet fast path), which is passed through
+    verbatim; the extension logic reads the same either way.
 
     `file_row_number` (parquet only) asks read_parquet to expose its
     `file_row_number` pseudo-column — the row's physical position in the file.
     It's ignored for the other formats, which have no such pseudo-column."""
-    lit = _quote_str(os.path.abspath(file))
+    is_url = file.startswith(("http://", "https://"))
+    lit = _quote_str(file if is_url else os.path.abspath(file))
     ext = _logical_ext(file)
     if ext == ".parquet":
         opt = ", file_row_number=true" if file_row_number else ""
@@ -163,23 +208,32 @@ def relation_for(file: str, file_row_number: bool = False) -> str:
     return f"read_json_auto({lit})"
 
 
-def _page_sql(file: str, relation: str, where: str, order: str) -> str:
+def _page_sql(scan: str, relation: str, where: str, order: str,
+              projection: str = "*") -> str:
     """The paging SELECT, which must also yield each row's physical file position
     as `_POS` (the writer's edit key) even after WHERE/ORDER reshuffle the page.
+    `scan` is whatever relation_for reads — the file path, or the http URL on
+    the mounted-parquet fast path. `projection` narrows the selected columns
+    (already quoted, comma-joined); filter/sort columns need not be in it —
+    WHERE/ORDER BY bind against the scan, not the select list.
 
     For parquet the position comes from read_parquet's `file_row_number`
     pseudo-column. Crucially, that leaves predicate + row-group pushdown intact:
-    a filtered/sorted page prunes to the matching row groups. The obvious
-    alternative — numbering rows with a `row_number() OVER ()` window — is a
-    blocking operator that sits between the filter and the scan, defeating both
-    pushdowns and forcing DuckDB to read row groups that provably hold no match.
-    CSV/JSON have no such pseudo-column and can't prune anyway, so they keep the
-    streaming window (LIMIT still pushes through it)."""
-    if _logical_ext(file) == ".parquet":
-        rel = relation_for(file, file_row_number=True)
-        return (f"SELECT file_row_number AS {_POS}, * EXCLUDE (file_row_number) "
+    a filtered/sorted page prunes to the matching row groups, and a narrow
+    projection reads only those columns' bytes — what the grid's per-column
+    parallel loading over a remote file relies on. The obvious alternative —
+    numbering rows with a `row_number() OVER ()` window — is a blocking
+    operator that sits between the filter and the scan, defeating both
+    pushdowns and forcing DuckDB to read row groups that provably hold no
+    match. CSV/JSON have no such pseudo-column and can't prune anyway, so they
+    keep the streaming window (LIMIT still pushes through it)."""
+    if _logical_ext(scan) == ".parquet":
+        rel = relation_for(scan, file_row_number=True)
+        proj = "* EXCLUDE (file_row_number)" if projection == "*" else projection
+        return (f"SELECT file_row_number AS {_POS}, {proj} "
                 f"FROM {rel}{where}{order} LIMIT ? OFFSET ?")
-    return (f"SELECT * FROM (SELECT (row_number() OVER () - 1) AS {_POS}, * "
+    proj = "*" if projection == "*" else f"{_POS}, {projection}"
+    return (f"SELECT {proj} FROM (SELECT (row_number() OVER () - 1) AS {_POS}, * "
             f"FROM {relation}){where}{order} LIMIT ? OFFSET ?")
 
 
@@ -277,7 +331,8 @@ def _fs_gate(file, out):
 
 def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
          sort: "dict | None" = None, filters: "list | None" = None,
-         mode: str = "full") -> dict:
+         mode: str = "full", source_url: str = "",
+         columns: "list | None" = None) -> dict:
     # Clamp so a hostile/negative limit can't turn LIMIT ? into an unbounded
     # fetch, and a negative offset can't error out mid-query.
     limit = max(1, min(int(limit), MAX_LIMIT))
@@ -287,7 +342,23 @@ def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
         out = _read_database(file, table, offset, limit, sort, filters, mode)
         # "count" returns only {total_rows} — no editability verdict to gate.
         return out if mode == "count" else _fs_gate(file, out)
-    relation = relation_for(file)
+
+    # Remote fast path: scan the URL the page handed us on the shared
+    # connection. Any failure — httpfs unavailable, the URL gone stale, a
+    # network-level error mid-query — falls back to reading the path itself.
+    if ext == ".parquet" and source_url.startswith(("http://", "https://")):
+        try:
+            cur = _http_connection()
+        except Exception:
+            cur = None
+        if cur is not None:
+            try:
+                return _read_flat(file, source_url, cur, ext, offset, limit,
+                                  sort, filters, mode, columns)
+            except duckdb.Error:
+                pass
+            finally:
+                cur.close()
 
     con = duckdb.connect(":memory:")
     try:
@@ -296,48 +367,93 @@ def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
         # across calls — the executor re-execs this module and never keeps it in
         # sys.modules — so this only saves within a single reader run.
         con.execute("PRAGMA enable_object_cache=true")
-        # Column types (BIGINT, VARCHAR, DOUBLE, …) so the grid can label each
-        # header. DESCRIBE reports the relation's schema without scanning rows,
-        # and drives which filters are valid and how they cast.
-        types = {r[0]: r[1] for r in
-                 con.execute(f"DESCRIBE SELECT * FROM {relation}").fetchall()}
-        where, wbinds = _build_where(filters, types)
-
-        # The filtered count scans every candidate row group, so over a remote
-        # mount it dominates. The grid fetches it in a separate "count" call and
-        # renders the page first ("… rows"), so "page" skips it (total_rows None)
-        # and "count" returns only the total. "full" (default) keeps both inline.
-        if mode == "count":
-            total = con.execute(
-                f"SELECT COUNT(*) FROM {relation}{where}", wbinds).fetchone()[0]
-            return {"total_rows": total}
-        order = _build_order(sort, types)
-        total_rows = con.execute(
-            f"SELECT COUNT(*) FROM {relation}{where}", wbinds).fetchone()[0] \
-            if mode == "full" else None
-
-        cur = con.execute(_page_sql(file, relation, where, order),
-                          wbinds + [limit, offset])
-        desc = [d[0] for d in cur.description] if cur.description else []
-        columns = desc[1:]                      # drop the leading _POS column
-        rows, ids = [], []
-        for raw in cur.fetchall():
-            ids.append(raw[0])
-            rows.append({columns[j] if j < len(columns) else f"col{j}": _jsonify(v)
-                         for j, v in enumerate(raw[1:])})
-        editable = ext in _EDITABLE_EXTS
-        return _fs_gate(file, {
-            "columns": columns,
-            "types": types,
-            "rows": rows,
-            # Absolute file position of each returned row — the edit/delete key.
-            "ids": ids,
-            "total_rows": total_rows,
-            "editable": editable,
-            "readonly_message": "" if editable else "JSON",
-            "readonly_tooltip": "" if editable else (
-                "Read-only. JSON is flattened into columns for viewing; writing "
-                "that back would lose the original nested structure."),
-        })
+        return _read_flat(file, file, con, ext, offset, limit, sort, filters,
+                          mode, columns)
     finally:
         con.close()
+
+
+def _read_flat(file: str, scan: str, con, ext: str, offset: int, limit: int,
+               sort, filters, mode: str, columns: "list | None" = None) -> dict:
+    """Page a flat file on an open connection/cursor. `scan` is what DuckDB
+    reads (the file path, or its http URL on the mounted fast path); `file`
+    stays the real path for the FS-level editability gate."""
+    relation = relation_for(scan)
+    # Column types (BIGINT, VARCHAR, DOUBLE, …) so the grid can label each
+    # header. DESCRIBE reports the relation's schema without scanning rows,
+    # and drives which filters are valid and how they cast.
+    types = {r[0]: r[1] for r in
+             con.execute(f"DESCRIBE SELECT * FROM {relation}").fetchall()}
+    where, wbinds = _build_where(filters, types)
+
+    # "schema" answers from the footer alone — no row bytes moved. The grid
+    # uses it over a remote file to paint the full header + skeleton cells
+    # immediately, then fills columns in from parallel batched page calls.
+    if mode == "schema":
+        editable = ext in _EDITABLE_EXTS
+        # Compressed bytes per column (first row group — the one a first page
+        # reads). The grid packs cheap columns into shared page calls and
+        # gives expensive ones their own, so batches finish together instead
+        # of small columns waiting on a fat one. Best-effort: parquet-only,
+        # and the footer is already parsed so this moves no extra bytes.
+        col_sizes = {}
+        if ext == ".parquet":
+            try:
+                col_sizes = {r[0]: r[1] for r in con.execute(
+                    "SELECT path_in_schema, SUM(total_compressed_size) "
+                    "FROM parquet_metadata(?) WHERE row_group_id = 0 "
+                    "GROUP BY path_in_schema", [scan]).fetchall()}
+            except duckdb.Error:
+                pass
+        return _fs_gate(file, {
+            "columns": list(types), "types": types, "rows": [], "ids": [],
+            "col_sizes": col_sizes,
+            "total_rows": None, "editable": editable,
+            "readonly_message": "" if editable else "JSON",
+            "readonly_tooltip": "" if editable else (
+                "Read-only. JSON is flattened into columns for viewing; "
+                "writing that back would lose the original nested structure."),
+        })
+
+    # The filtered count scans every candidate row group, so over a remote
+    # mount it dominates. The grid fetches it in a separate "count" call and
+    # renders the page first ("… rows"), so "page" skips it (total_rows None)
+    # and "count" returns only the total. "full" (default) keeps both inline.
+    if mode == "count":
+        total = con.execute(
+            f"SELECT COUNT(*) FROM {relation}{where}", wbinds).fetchone()[0]
+        return {"total_rows": total}
+    order = _build_order(sort, types)
+    total_rows = con.execute(
+        f"SELECT COUNT(*) FROM {relation}{where}", wbinds).fetchone()[0] \
+        if mode == "full" else None
+
+    # Optional projection: page only the named (schema-checked) columns. The
+    # grid's parallel batched loads use this — each call moves only its
+    # batch's column bytes.
+    wanted = [c for c in (columns or []) if c in types]
+    projection = ", ".join(_quote_ident(c) for c in wanted) if wanted else "*"
+
+    cur = con.execute(_page_sql(scan, relation, where, order, projection),
+                      wbinds + [limit, offset])
+    desc = [d[0] for d in cur.description] if cur.description else []
+    columns = desc[1:]                      # drop the leading _POS column
+    rows, ids = [], []
+    for raw in cur.fetchall():
+        ids.append(raw[0])
+        rows.append({columns[j] if j < len(columns) else f"col{j}": _jsonify(v)
+                     for j, v in enumerate(raw[1:])})
+    editable = ext in _EDITABLE_EXTS
+    return _fs_gate(file, {
+        "columns": columns,
+        "types": types,
+        "rows": rows,
+        # Absolute file position of each returned row — the edit/delete key.
+        "ids": ids,
+        "total_rows": total_rows,
+        "editable": editable,
+        "readonly_message": "" if editable else "JSON",
+        "readonly_tooltip": "" if editable else (
+            "Read-only. JSON is flattened into columns for viewing; writing "
+            "that back would lose the original nested structure."),
+    })

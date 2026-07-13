@@ -4,6 +4,7 @@ Skipped when duckdb isn't installed. (It's now a core dependency, but the base
 test env may still lack it; guard so the suite degrades gracefully.)
 """
 import importlib.util
+import json
 import os
 
 import pytest
@@ -517,3 +518,135 @@ def test_writer_refuses_readonly_file(readonly_parquet):
         writer.main(readonly_parquet,
                     edits=[{"row": 0, "column": "name", "value": "x"}])
     assert os.stat(readonly_parquet).st_size == before  # bytes untouched
+
+
+
+# ---------------------------------------------------- remote source_url path
+# The page passes source_url (the app's /api/fs/raw URL) when the shell marks
+# the file remote; the reader scans that URL instead of the local path, and
+# falls back to the path on any failure. The reader itself knows nothing about
+# mounts — just "bytes are also available here".
+
+
+def _serve_dir(directory):
+    """A local HTTP server over `directory` that records request paths."""
+    import functools
+    import http.server
+    import threading
+
+    hits = []
+
+    class H(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            hits.append(self.path)
+            return super().do_GET()
+
+        def do_HEAD(self):
+            hits.append(self.path)
+            return super().do_HEAD()
+
+    srv = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0), functools.partial(H, directory=directory))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, hits
+
+
+def test_source_url_reads_over_http(parquet_file):
+    srv, hits = _serve_dir(os.path.dirname(parquet_file))
+    try:
+        url = f"http://127.0.0.1:{srv.server_address[1]}/s.parquet"
+        try:
+            out = reader.main(parquet_file, limit=5, source_url=url)
+        except Exception:
+            pytest.skip("duckdb httpfs extension unavailable")
+        assert [r["id"] for r in out["rows"]] == [0, 1, 2, 3, 4]
+        assert any("s.parquet" in h for h in hits), "reader never hit the URL"
+    finally:
+        srv.shutdown()
+
+
+def test_source_url_falls_back_when_dead(parquet_file):
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        dead = s.getsockname()[1]
+    out = reader.main(parquet_file, limit=5,
+                      source_url=f"http://127.0.0.1:{dead}/s.parquet")
+    assert [r["id"] for r in out["rows"]] == [0, 1, 2, 3, 4]
+    assert out["total_rows"] == 250
+
+
+def test_source_url_ignored_unless_http(parquet_file):
+    # A non-URL value must not be handed to DuckDB as a scan target.
+    out = reader.main(parquet_file, limit=3, source_url="garbage; DROP TABLE x")
+    assert len(out["rows"]) == 3
+
+
+def test_source_url_ignored_for_csv(csv_file):
+    # The fast path is parquet-only; CSV keeps reading the file even when a
+    # URL is offered (its streaming scan can't prune and sniffing over HTTP
+    # would read the whole file anyway).
+    out = reader.main(csv_file, limit=3, source_url="http://127.0.0.1:1/s.csv")
+    assert out["rows"][0]["zip"] == "00000"
+
+
+# ------------------------------------- schema mode / per-column projection
+
+
+def test_schema_mode_returns_no_rows(parquet_file):
+    out = reader.main(parquet_file, mode="schema")
+    assert out["columns"] == ["id", "name"]
+    assert out["types"] == {"id": "BIGINT", "name": "VARCHAR"}
+    assert out["rows"] == [] and out["ids"] == []
+    assert out["total_rows"] is None
+    assert out["editable"] is True
+
+
+def test_schema_mode_reports_parquet_column_sizes(parquet_file):
+    # The grid packs columns into byte-budgeted batches from these: compressed
+    # first-row-group bytes per column, straight from the footer.
+    out = reader.main(parquet_file, mode="schema")
+    assert set(out["col_sizes"]) == {"id", "name"}
+    assert all(isinstance(v, int) and v > 0 for v in out["col_sizes"].values())
+
+
+def test_schema_mode_col_sizes_empty_for_csv(tmp_path):
+    p = tmp_path / "t.csv"
+    p.write_text("a,b\n1,x\n2,y\n")
+    out = reader.main(str(p), mode="schema")
+    assert out["col_sizes"] == {}
+
+
+def test_page_with_columns_projects(parquet_file):
+    out = reader.main(parquet_file, mode="page", columns=["name"], limit=3)
+    assert out["columns"] == ["name"]
+    assert out["rows"] == [{"name": "n0"}, {"name": "n1"}, {"name": "n2"}]
+    assert out["ids"] == [0, 1, 2]  # position key still present
+
+
+def test_columns_projection_respects_filter_and_sort(parquet_file):
+    # Filter/sort columns need not be in the projection; ids must still be the
+    # physical positions so parallel per-column pages align by id.
+    out = reader.main(parquet_file, mode="page", columns=["name"],
+                      filters=[{"column": "id", "op": ">=", "value": "200"}],
+                      sort={"column": "id", "dir": "desc"}, limit=3)
+    assert out["ids"] == [249, 248, 247]
+    assert out["rows"][0] == {"name": "n249"}
+
+
+def test_unknown_columns_fall_back_to_all(parquet_file):
+    out = reader.main(parquet_file, mode="page", columns=["nope"], limit=2)
+    assert out["columns"] == ["id", "name"]
+
+
+def test_columns_projection_on_csv(csv_file):
+    # The CSV window path also supports projection (unused by the grid today,
+    # but the param must not corrupt the row_number position key).
+    out = reader.main(csv_file, mode="page", columns=["zip"], limit=2)
+    assert out["columns"] == ["zip"]
+    assert out["ids"] == [0, 1]
+    assert out["rows"][0] == {"zip": "00000"}
