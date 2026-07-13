@@ -22,24 +22,20 @@ Actions (dispatched via the `action` param):
                    (datasource XML, zipped). .hyper extracts open directly as
                    data sources (queried through the Tableau Hyper API).
   export         — re-run a query and write csv/parquet into the exports dir
-  log            — record a client-side event
 """
 
 import json
 import os
 import re
-import sqlite3
-import time
 
 # State lives under the user home dir, never inside the installed template
 # package (same layout as pdf_studio): saved workbooks are primary content
-# (data/); parquet caches, exports, and the event log are regenerable (cache/).
+# (data/); parquet caches and exports are regenerable (cache/).
 DATA_ROOT = os.path.expanduser(os.path.join("~", ".fused-render", "data", "tableau"))
 CACHE_ROOT = os.path.expanduser(os.path.join("~", ".fused-render", "cache", "tableau"))
 WORKBOOKS = os.path.join(DATA_ROOT, "workbooks")
 EXPORTS = os.path.join(CACHE_ROOT, "exports")
 SOURCES = os.path.join(CACHE_ROOT, "sources")
-DB = os.path.join(CACHE_ROOT, "events.db")
 
 DATA_EXTS = (".csv", ".tsv", ".parquet", ".xlsx", ".hyper")
 TABLEAU_EXTS = (".twb", ".twbx", ".tds", ".tdsx")
@@ -50,30 +46,6 @@ MAX_DOMAIN_VALUES = 300      # distinct values sent to a filter dropdown
 AGGS = {"sum": "SUM", "avg": "AVG", "median": "MEDIAN", "min": "MIN", "max": "MAX",
         "count": "COUNT", "countd": "COUNT(DISTINCT"}
 GRAINS = ("year", "quarter", "month", "week", "day")
-
-
-def _db():
-    os.makedirs(CACHE_ROOT, exist_ok=True)
-    con = sqlite3.connect(DB, timeout=10)
-    con.execute(
-        """CREATE TABLE IF NOT EXISTS events (
-             id INTEGER PRIMARY KEY AUTOINCREMENT,
-             ts REAL NOT NULL,
-             kind TEXT NOT NULL,
-             detail TEXT NOT NULL DEFAULT ''
-           )"""
-    )
-    return con
-
-
-def _log(kind, detail):
-    con = _db()
-    with con:
-        con.execute(
-            "INSERT INTO events (ts, kind, detail) VALUES (?, ?, ?)",
-            (time.time(), str(kind), json.dumps(detail) if not isinstance(detail, str) else detail),
-        )
-    con.close()
 
 
 def _safe_name(name, default):
@@ -369,7 +341,6 @@ def _save_workbook(file, data):
     os.makedirs(os.path.dirname(file), exist_ok=True)
     with open(file, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=1)
-    _log("save_workbook", {"file": file})
     return {"file": file.replace(os.sep, "/"), "mtime": os.path.getmtime(file)}
 
 
@@ -384,7 +355,6 @@ def _load_workbook(file):
     file = os.path.abspath(file)
     with open(file, encoding="utf-8") as f:
         data = json.load(f)
-    _log("load_workbook", {"file": file})
     return {"file": file.replace(os.sep, "/"), "workbook": data}
 
 
@@ -481,7 +451,6 @@ def _import_twb(file):
     wb = {"version": 1,
           "name": re.sub(r"\.twb$", "", os.path.basename(file), flags=re.I),
           "source": src.replace(os.sep, "/"), "sheets": sheets, "active": 0}
-    _log("import_twb", {"file": file, "source": src, "sheets": len(sheets)})
     return {"workbook": wb}
 
 
@@ -512,7 +481,6 @@ def _import_tds(file):
     file = os.path.abspath(file)
     root = ET.parse(file).getroot()
     src = _twb_data_file(root, os.path.dirname(file))
-    _log("import_tds", {"file": file, "source": src})
     return {"source": src.replace(os.sep, "/")}
 
 
@@ -615,7 +583,6 @@ def _export(kind, name, file, spec):
         con.execute(f"COPY t TO {_q(dest)} (FORMAT PARQUET)")
     else:
         raise ValueError(f"unknown export kind {kind!r}")
-    _log("export", {"kind": kind, "dest": dest, "rows": len(records)})
     return {"file": dest.replace(os.sep, "/"), "name": os.path.basename(dest)}
 
 
@@ -632,7 +599,6 @@ def main(
     field: str = "",
     spec: str = "",
     filters: str = "",
-    detail: str = "",
     offset: int = 0,
     limit: int = 200,
 ):
@@ -642,7 +608,6 @@ def main(
         return _listdir(file)
     if action == "open_data":
         meta = _ensure_cache(file)
-        _log("open_data", {"file": meta["file"], "nrows": meta["nrows"]})
         return {"file": meta["file"].replace(os.sep, "/"), "nrows": meta["nrows"],
                 "fields": meta["fields"]}
     if action == "query":
@@ -661,7 +626,4 @@ def main(
         return _import_tableau(file)
     if action == "export":
         return _export(kind, name, file, json.loads(spec))
-    if action == "log":
-        _log(kind or "event", detail)
-        return {"ok": True}
     raise ValueError(f"unknown action {action!r}")
