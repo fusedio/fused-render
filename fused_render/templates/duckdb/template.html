@@ -683,7 +683,11 @@
       // schema cached and the DuckDB file cache warm the new rows usually land
       // in well under a repaint-worth of time, and the wipe → skeleton → rows
       // sequence reads as flicker. Cold and non-parquet loads keep the wipe.
-      const keepGrid = schemaCache && schemaCache.key === file + "\n" + table
+      // Dirty staging forces the wipe: discard and the post-save reload call
+      // load() with edits still in memory, and keeping the old grid would
+      // leave their edited styling on screen until the fetch lands.
+      const keepGrid = !isDirty() && schemaCache
+        && schemaCache.key === file + "\n" + table
         && wrap.querySelector("tbody tr[data-id]");
       if (!keepGrid) wrap.innerHTML = `<div id="status">Loading…</div>`;
       if (!file) {
@@ -751,15 +755,9 @@
             // Old rows stay visible and batches buffer instead of painting as
             // they land (deferRender): a warm page change repaints exactly
             // once, when the last batch arrives. If the load is genuinely
-            // slow, the timer swaps in whatever has landed — rows with
-            // skeleton cells for the stragglers, or the skeleton grid.
+            // slow, a timer (armed below, after the serial positions step)
+            // swaps in whatever has landed.
             state.deferRender = true;
-            setTimeout(() => {
-              if (seq !== loadSeq || state.rowsRendered) return;
-              state.deferRender = false;
-              if (state.ids.length) state.rowsRendered = true;
-              if (state.pending) renderAll();
-            }, 250);
           } else {
             renderAll(); // full-skeleton grid immediately — header + shimmer rows
           }
@@ -787,6 +785,21 @@
                 });
               }
             } catch (_) { /* fall back to per-batch windows */ }
+          }
+          if (state.deferRender) {
+            // The break-the-hold timer arms only now: its 250ms budget was
+            // calibrated for the batch fetches, and starting it before the
+            // positions await would wipe the kept grid to the placeholder
+            // skeleton while the row set is still being resolved — before a
+            // single batch was even dispatched. Armed here, a slow tail
+            // swaps in skeleton rows (ids already seeded) rather than the
+            // empty placeholder.
+            setTimeout(() => {
+              if (seq !== loadSeq || state.rowsRendered) return;
+              state.deferRender = false;
+              if (state.ids.length) state.rowsRendered = true;
+              if (state.pending) renderAll();
+            }, 250);
           }
           for (const cols of packColumns(schema.columns, schema.col_sizes || {})) {
             const batchArgs = { ...args, mode: "page", columns: cols };
