@@ -82,6 +82,35 @@ def rcd(home):
     stub.close()
 
 
+# -- rclone_bin ------------------------------------------------------------
+
+
+def test_rclone_bin_prefers_bundled_when_packaged(tmp_path, monkeypatch):
+    contents = tmp_path / "FusedRender.app" / "Contents"
+    bundled = contents / "Resources" / "bin" / "rclone"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_text("")
+    monkeypatch.setattr(mounts_mod.sys, "frozen", "macosx_app", raising=False)
+    monkeypatch.setattr(mounts_mod.sys, "executable", str(contents / "MacOS" / "python"))
+    monkeypatch.setattr(mounts_mod.shutil, "which", lambda name: "/should/not/be/used")
+    assert mounts_mod.rclone_bin() == str(bundled)
+
+
+def test_rclone_bin_falls_back_when_packaged_bundle_missing(tmp_path, monkeypatch):
+    contents = tmp_path / "FusedRender.app" / "Contents"
+    (contents / "MacOS").mkdir(parents=True)
+    monkeypatch.setattr(mounts_mod.sys, "frozen", "macosx_app", raising=False)
+    monkeypatch.setattr(mounts_mod.sys, "executable", str(contents / "MacOS" / "python"))
+    monkeypatch.setattr(mounts_mod.shutil, "which", lambda name: "/usr/local/bin/rclone")
+    assert mounts_mod.rclone_bin() == "/usr/local/bin/rclone"
+
+
+def test_rclone_bin_uses_path_when_unpackaged(monkeypatch):
+    monkeypatch.setattr(mounts_mod.sys, "frozen", None, raising=False)
+    monkeypatch.setattr(mounts_mod.shutil, "which", lambda name: "/usr/local/bin/rclone")
+    assert mounts_mod.rclone_bin() == "/usr/local/bin/rclone"
+
+
 # -- store ---------------------------------------------------------------------
 
 

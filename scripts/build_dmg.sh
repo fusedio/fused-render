@@ -116,6 +116,48 @@ export FUSED_RENDER_BRANCH="$REF"
 "$BUILD_VENV/bin/pip" install --quiet --force-reinstall --no-deps --no-cache-dir "${REPO_ROOT}"
 
 # ---------------------------------------------------------------------------
+# 2b. Stage rclone (D103): mounts (shell/mounts.py, D102) shell out to a real
+#     rclone binary. Bundling it means mounts work with zero user setup - no
+#     brew/apt install, no PATH dependency - instead of the old "one
+#     prerequisite: rclone" ask (README). Pinned version + published sha256
+#     (arm64 only, matching this script's Apple Silicon-only py2app target -
+#     see the FRAMEWORK_PYTHON note above); bump both together to upgrade.
+#     Cached under build/ keyed by version, so re-running the script doesn't
+#     re-download unless the pin changes.
+# ---------------------------------------------------------------------------
+
+RCLONE_VERSION="v1.74.4"
+RCLONE_ZIP="rclone-${RCLONE_VERSION}-osx-arm64.zip"
+RCLONE_SHA256="c2100e2d4a4b3be04c55cd45380cafe7647e1ad772bb055f52f00876ed701167"
+RCLONE_STAGE_DIR="$BUILD_DIR/rclone-bin/${RCLONE_VERSION}"
+RCLONE_STAGED_BIN="$RCLONE_STAGE_DIR/rclone"
+
+if [[ ! -x "$RCLONE_STAGED_BIN" ]]; then
+  echo "==> downloading rclone ${RCLONE_VERSION} (osx-arm64)"
+  RCLONE_DL_DIR="$BUILD_DIR/rclone-download"
+  rm -rf "$RCLONE_DL_DIR"
+  mkdir -p "$RCLONE_DL_DIR"
+  curl -fsSL "https://downloads.rclone.org/${RCLONE_VERSION}/${RCLONE_ZIP}" \
+    -o "$RCLONE_DL_DIR/$RCLONE_ZIP"
+
+  ACTUAL_SHA256="$(shasum -a 256 "$RCLONE_DL_DIR/$RCLONE_ZIP" | cut -d' ' -f1)"
+  if [[ "$ACTUAL_SHA256" != "$RCLONE_SHA256" ]]; then
+    echo "FATAL: rclone download checksum mismatch." >&2
+    echo "       expected: $RCLONE_SHA256" >&2
+    echo "       actual:   $ACTUAL_SHA256" >&2
+    exit 1
+  fi
+
+  (cd "$RCLONE_DL_DIR" && unzip -q "$RCLONE_ZIP")
+  mkdir -p "$RCLONE_STAGE_DIR"
+  cp "$RCLONE_DL_DIR/rclone-${RCLONE_VERSION}-osx-arm64/rclone" "$RCLONE_STAGED_BIN"
+  chmod +x "$RCLONE_STAGED_BIN"
+  rm -rf "$RCLONE_DL_DIR"
+else
+  echo "==> rclone ${RCLONE_VERSION} already staged, skipping download"
+fi
+
+# ---------------------------------------------------------------------------
 # 3. App icon: a fresh, high-res render of the same four-pointed sparkle used
 #    for the menu-bar glyph (fused_render/assets/menubar-template.png, 36px,
 #    template/monochrome) on a rounded dark card, at the sizes iconutil wants.
@@ -317,6 +359,28 @@ for probe in "--help" "share --help" "env list"; do
   fi
 done
 echo "    fused --help / share --help / env list OK"
+
+# ---------------------------------------------------------------------------
+# 4d. Bundle rclone (D103, staged in step 2b above) at the same
+#     Contents/Resources/bin/ spot as the fused wrapper - a real Mach-O
+#     binary, not a script, so it's picked up and signed like any other
+#     nested binary by the signing sweep below (step 5), no extra rule
+#     needed there. shell/mounts.py's rclone_bin() looks here first.
+# ---------------------------------------------------------------------------
+
+echo "==> bundling rclone ${RCLONE_VERSION}"
+RCLONE_DEST="$APP_DIR/Contents/Resources/bin/rclone"
+mkdir -p "$(dirname "$RCLONE_DEST")"
+cp "$RCLONE_STAGED_BIN" "$RCLONE_DEST"
+chmod +x "$RCLONE_DEST"
+
+RCLONE_SMOKE_OUT="$("$RCLONE_DEST" version)"
+if ! echo "$RCLONE_SMOKE_OUT" | head -1 | grep -q "rclone ${RCLONE_VERSION}"; then
+  echo "FATAL: bundled rclone failed to report its version:" >&2
+  echo "$RCLONE_SMOKE_OUT" >&2
+  exit 1
+fi
+echo "    $(echo "$RCLONE_SMOKE_OUT" | head -1)"
 
 
 # ---------------------------------------------------------------------------
