@@ -52,8 +52,8 @@ def test_put_then_get_roundtrips(tmp_path, monkeypatch):
 
 
 def test_empty_list_still_reports_exists(tmp_path, monkeypatch):
-    # A user who deleted every bookmark leaves []; exists must stay true so the
-    # shell never re-imports the old localStorage data (the one-time gate).
+    # A user who deleted every bookmark leaves []; exists must stay true —
+    # an empty file is still a valid, present tree.
     client, _ = _client(tmp_path, monkeypatch)
     assert client.put("/api/bookmarks", json=[], headers=FUSED).status_code == 200
     assert client.get("/api/bookmarks").json() == {"exists": True, "bookmarks": []}
