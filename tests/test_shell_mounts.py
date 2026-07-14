@@ -1044,3 +1044,56 @@ def test_fs_raw_redirects_cold_native_range_reads(client, home, rcd, fresh_upstr
     assert r.status_code != 307
     r = client.head("/api/fs/raw", params={"path": f}, follow_redirects=False)
     assert r.status_code != 307
+
+
+def test_api_run_rewrites_raw_source_url_to_direct(
+        client, home, rcd, fresh_upstream, tmp_path):
+    """/api/run swaps a raw-proxy source_url for the store's direct URL on a
+    cold mount-backed file (redirects defeat httpfs connection pooling — the
+    reader must get the direct URL up front), and leaves everything else
+    alone: non-mount paths, warm (prefetched) files, and foreign URLs."""
+    import os
+    from urllib.parse import quote
+
+    import fused_render.shell.prefetch as prefetch_mod
+    import fused_render.shell.storage as storage
+
+    rcd.responses["operations/publiclink"] = {"url": "https://signed.example/x"}
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    os.makedirs(mp)
+    f = os.path.join(mp, "x.parquet")
+    open(f, "wb").write(b"PAR1")
+    storage.write_json(mounts_mod.serves_path(), {mp: "http://127.0.0.1:1"})
+
+    echo = tmp_path / "echo.py"
+    echo.write_text("def main(source_url=None):\n"
+                    "    return {'source_url': source_url}\n",
+                    encoding="utf-8")
+
+    def run(src):
+        r = client.post("/api/run", json={
+            "py": str(echo), "params": {"source_url": src}},
+            headers={"X-Fused": "1"})
+        return r.json()["result"]["source_url"]
+
+    raw = f"http://testserver/api/fs/raw?path={quote(f)}"
+    # Cold mount-backed file: rewritten to the store URL.
+    assert run(raw) == "https://signed.example/x"
+    # Warm file (prefetch landed): the raw proxy stays, so reads replay from
+    # the serve's local cache.
+    with prefetch_mod._lock:
+        prefetch_mod._jobs[f] = {"status": "done", "size": 4, "done": 4,
+                                 "at": 0.0}
+    try:
+        assert run(raw) == raw
+    finally:
+        with prefetch_mod._lock:
+            prefetch_mod._jobs.pop(f, None)
+    # Non-mount path and foreign URLs: untouched.
+    plain = tmp_path / "plain.bin"
+    plain.write_bytes(b"x")
+    unmounted = f"http://testserver/api/fs/raw?path={quote(str(plain))}"
+    assert run(unmounted) == unmounted
+    assert run("https://elsewhere.example/data.parquet") == \
+        "https://elsewhere.example/data.parquet"

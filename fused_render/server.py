@@ -26,7 +26,7 @@ import time
 import traceback
 import urllib.error
 import urllib.request
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlsplit
 
 from fastapi import Body, FastAPI, Header, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import (
@@ -1593,6 +1593,33 @@ def create_app(start_dir: str) -> FastAPI:
         py = body.get("py")
         html = body.get("html")
         params = body.get("params") or {}
+
+        # Cold mount-backed reads: swap the raw-proxy source_url for the
+        # store's own URL before the reader sees it. The /api/fs/raw 307
+        # already sends cold ranged GETs to the store, but a redirect
+        # defeats httpfs connection pooling — duckdb re-follows it per
+        # range read and opens a fresh TLS connection to the store each
+        # time (measured ~3x on a cold open: schema 8.5s vs 3.4s, a
+        # 9-column page 14.5s vs 3.8s). Handing the reader the direct URL
+        # up front lets httpfs pool its store connections normally. Done
+        # here in the server, not in templates: pages keep sending the raw
+        # URL and stay mount-agnostic. Warm files (prefetch landed) keep
+        # the raw URL so the serve replays ranges from local disk; the
+        # explicit schedule() below matters because a direct-reading run
+        # never touches /api/fs/raw, which is otherwise the only place the
+        # prefetch learns a file is in use.
+        src = params.get("source_url")
+        if isinstance(src, str):
+            parts = urlsplit(src)
+            fpath = dict(parse_qsl(parts.query)).get("path")
+            if parts.path.endswith("/api/fs/raw") and fpath:
+                upstream = shell_mounts.serve_url_for(fpath)
+                if upstream is not None and not shell_prefetch.is_done(fpath):
+                    shell_prefetch.schedule(fpath, upstream)
+                    direct = await asyncio.to_thread(
+                        shell_mounts.upstream_url_for, fpath)
+                    if direct:
+                        params = dict(params, source_url=direct)
 
         if not py:
             return _error("request body must include 'py': a path to a Python file")
