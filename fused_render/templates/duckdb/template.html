@@ -511,7 +511,12 @@
     // Rebuild toolbar affordances + the whole table from state + staged. Safe to
     // call any time except mid-typing (cell input updates the DOM in place so it
     // never yanks focus); it re-derives every row from staging, so edits persist.
-    function renderAll() {
+    // `fromLoad` is set only by the calls inside the load()/applyBatch path
+    // that paint a load's result; staging actions (add/remove row) call
+    // renderAll() with it unset, so they never clear a load bar for a reload
+    // that is still in flight (e.g. a sort's positions scan running while the
+    // user adds a row to the still-visible old grid).
+    function renderAll(fromLoad) {
       const offset = currentOffset();
       renderTableSelector();
       const editable = !!state.editable;
@@ -597,10 +602,11 @@
         wrap.innerHTML = `<table><thead>${head}</thead><tbody>${placeholderRows}${bodyRows}${insRows}</tbody></table>`;
       }
       updateBars(offset);
-      // Rows or skeletons are now on screen (or an empty/"nothing to show"
-      // state) — the shimmer/placeholders take over as the in-flight signal,
-      // so drop the load bar. renderAll during editing is a no-op here.
-      setLoading(false);
+      // A load just painted rows or skeletons (or an empty state) — the
+      // shimmer/placeholders take over as the in-flight signal, so drop the
+      // load bar. Only for load-driven renders: an editing render leaves an
+      // in-flight reload's bar alone.
+      if (fromLoad) setLoading(false);
     }
 
     function updateBars(offset) {
@@ -796,7 +802,7 @@
             // swaps in whatever has landed.
             state.deferRender = true;
           } else {
-            renderAll(); // full-skeleton grid immediately — header + shimmer rows
+            renderAll(true); // full-skeleton grid immediately — header + shimmer rows
           }
           // Sorted/filtered pages resolve their row positions ONCE before the
           // batches fan out (two-phase): each batch then point-reads exactly
@@ -835,7 +841,7 @@
               if (seq !== loadSeq || state.rowsRendered) return;
               state.deferRender = false;
               if (state.ids.length) state.rowsRendered = true;
-              if (state.pending) renderAll();
+              if (state.pending) renderAll(true);
             }, 250);
           }
           for (const cols of packColumns(schema.columns, schema.col_sizes || {})) {
@@ -861,7 +867,7 @@
         });
         rendered = true;
         renderFilterBar(); // rebuild condition rows from the (freshly loaded) param
-        renderAll();
+        renderAll(true);
       } catch (err) {
         if (seq !== loadSeq) return;
         setLoading(false);
@@ -929,7 +935,7 @@
             wrap.innerHTML = `<div id="status" class="error">Failed to load rows.</div>`;
           } else {
             state.pending = null; // drop the placeholder skeleton grid
-            renderAll(); // genuinely empty result -> headers + "rows 0–0"
+            renderAll(true); // genuinely empty result -> headers + "rows 0–0"
           }
         }
         return;
@@ -943,7 +949,7 @@
         // skeletons or the old page's rows) with the real rows — skeleton
         // cells remain for still-pending columns.
         state.rowsRendered = true;
-        renderAll();
+        renderAll(true);
       } else {
         cols.forEach((c) => (d ? fillColumn(c) : fillColumnError(c)));
       }
