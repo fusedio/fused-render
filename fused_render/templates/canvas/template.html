@@ -4,23 +4,34 @@
 <meta charset="utf-8" />
 <title>Canvas</title>
 <style>
+  /* Tokens mirror the Flow app widget surface (packages/widgets/src/widget.css)
+     so this preview reads as the same product: near-black bg, luminance-led
+     cards, amber links, azure canvas accent. */
   :root {
     color-scheme: dark;
-    --bg: #131417;
-    --surface: #1b1d21;
-    --surface-2: #22252b;
-    --line: #2a2d33;
-    --ink: #e8eaed;
-    --ink-2: #9aa0a6;
-    --ink-3: #868d94;
-    --accent: #E5FF44;
+    --bg: #070a0f;
+    --panel: #0e131c;
+    --panel-2: #11171f;
+    --card: #0d1219;
+    --text: #e7ecf3;
+    --text-dim: #93a0b2;
+    --text-faint: #5a6678;
+    --line: rgba(130, 160, 200, 0.11);
+    --line-2: rgba(130, 160, 200, 0.20);
+    --accent: #f5a623;
+    --accent-line: rgba(245, 166, 35, 0.34);
+    --canvas-accent: oklch(0.72 0.17 248);
+    --radius: 10px;
+    --radius-sm: 7px;
+    --font-body: ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", monospace;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; }
   body {
-    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-family: var(--font-body);
     font-size: 13px;
-    color: var(--ink);
+    color: var(--text);
     background: var(--bg);
     overflow: hidden;
   }
@@ -31,50 +42,86 @@
     flex: none;
     display: flex;
     align-items: center;
-    gap: 14px;
+    gap: 12px;
     height: 44px;
     padding: 0 16px;
     border-bottom: 1px solid var(--line);
-    background: var(--surface);
+    background: var(--panel);
     z-index: 3;
   }
   .head .name {
-    font-weight: 700;
+    font-weight: 600;
     letter-spacing: -0.01em;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .head .counts { color: var(--ink-3); font-size: 12px; white-space: nowrap; }
-  .head .spacer { flex: 1; }
-  .head button {
-    font: inherit;
-    font-size: 12px;
-    color: var(--ink-2);
-    background: transparent;
-    border: 1px solid var(--line);
-    border-radius: 7px;
-    padding: 5px 12px;
-    cursor: pointer;
-    transition: border-color 150ms, color 150ms, background-color 150ms;
-  }
-  .head button:hover { color: var(--ink); border-color: #454a53; background: var(--surface-2); }
-  .head button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .head .counts { color: var(--text-faint); font-size: 12px; white-space: nowrap; }
 
   /* ================= stage ================= */
   .stage { position: relative; flex: 1; min-height: 0; }
   #view { display: block; width: 100%; height: 100%; cursor: grab; }
   #view.dragging { cursor: grabbing; }
+  #view.hovering { cursor: pointer; }
 
   .empty {
     position: absolute; inset: 0;
     display: grid; place-items: center;
-    color: var(--ink-3);
+    color: var(--text-faint);
     pointer-events: none;
     text-align: center;
     padding: 24px;
   }
-  .empty .big { color: var(--ink-2); font-size: 15px; font-weight: 700; margin-bottom: 6px; }
+  .empty .big { color: var(--text-dim); font-size: 15px; font-weight: 600; margin-bottom: 6px; }
+
+  /* ================= controls cluster (Flow's glass, bottom-right) ======= */
+  .controls {
+    position: absolute;
+    right: 16px; bottom: 16px;
+    display: flex; gap: 4px; padding: 4px;
+    border-radius: var(--radius);
+    background: color-mix(in oklab, var(--panel) 55%, transparent);
+    border: 1px solid color-mix(in oklab, white 12%, transparent);
+    box-shadow: 0 8px 32px oklch(0 0 0 / 0.4),
+                inset 0 1px 0 0 color-mix(in oklab, white 10%, transparent);
+    backdrop-filter: blur(22px) saturate(160%);
+    -webkit-backdrop-filter: blur(22px) saturate(160%);
+    z-index: 2;
+  }
+  @supports not (backdrop-filter: blur(1px)) {
+    .controls { background: var(--panel); }
+  }
+  .controls button {
+    width: 32px; height: 32px;
+    display: grid; place-items: center;
+    border: none; border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: color 110ms cubic-bezier(0.4, 0, 0.2, 1),
+                background-color 110ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .controls button:hover {
+    color: var(--text);
+    background: color-mix(in oklab, var(--text) 8%, transparent);
+  }
+  .controls button:focus-visible { outline: 2px solid var(--canvas-accent); outline-offset: 1px; }
+  .controls svg { display: block; }
+
+  /* ================= hover tooltip (Flow's node tooltip) ================= */
+  .tip {
+    position: absolute;
+    max-width: 280px;
+    padding: 8px 10px;
+    background: var(--panel);
+    border: 1px solid var(--line-2);
+    border-radius: var(--radius-sm);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+    pointer-events: none;
+    z-index: 2;
+  }
+  .tip .t-title { font-size: 12px; font-weight: 600; color: var(--text); }
+  .tip .t-desc { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
 
   /* ================= detail panel ================= */
   .panel {
@@ -82,37 +129,51 @@
     left: 16px; right: 16px; bottom: 16px;
     max-width: 520px;
     padding: 14px 16px;
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    background: rgba(27, 29, 33, 0.96);
-    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+    border: 1px solid color-mix(in oklab, white 12%, transparent);
+    border-radius: var(--radius);
+    background: color-mix(in oklab, var(--panel) 88%, transparent);
+    box-shadow: 0 8px 32px oklch(0 0 0 / 0.4),
+                inset 0 1px 0 0 color-mix(in oklab, white 10%, transparent);
+    backdrop-filter: blur(22px) saturate(160%);
+    -webkit-backdrop-filter: blur(22px) saturate(160%);
     z-index: 2;
     animation: rise 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
   }
+  @supports not (backdrop-filter: blur(1px)) {
+    .panel { background: var(--panel); }
+  }
   @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) {
+    .panel { animation: none; }
+    .controls button { transition: none; }
+  }
   .panel .p-head { display: flex; align-items: baseline; gap: 8px; }
-  .panel .p-title { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .panel .p-kind { color: var(--ink-3); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; flex: none; }
+  .panel .p-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .panel .p-kind { color: var(--text-faint); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; flex: none; }
   .panel .p-close {
     margin-left: auto; flex: none;
-    background: transparent; border: none; color: var(--ink-3);
+    background: transparent; border: none; color: var(--text-faint);
     font: inherit; cursor: pointer; font-size: 16px; line-height: 1; padding: 0 2px;
   }
-  .panel .p-close:hover { color: var(--ink); }
-  .panel .p-sub { color: var(--ink-3); font-size: 12px; margin-top: 2px; word-break: break-all; }
-  .panel .p-desc { color: var(--ink-2); margin-top: 8px; white-space: pre-wrap; word-break: break-word; }
-  .panel .p-meta { color: var(--ink-3); font-size: 12px; margin-top: 8px; }
-  .panel .p-files { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .panel .p-close:hover { color: var(--text); }
+  .panel .p-close:focus-visible { outline: 2px solid var(--canvas-accent); outline-offset: 1px; border-radius: 3px; }
+  .panel .p-sub { color: var(--text-faint); font-family: var(--font-mono); font-size: 11px; margin-top: 3px; word-break: break-all; }
+  .panel .p-desc { color: var(--text-dim); margin-top: 8px; white-space: pre-wrap; word-break: break-word; }
+  .panel .p-meta { color: var(--text-faint); font-size: 12px; margin-top: 8px; }
+  .panel .p-files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
   .panel .p-files a {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 4px 10px;
+    display: inline-flex; align-items: center;
+    padding: 3px 10px;
     border: 1px solid var(--line); border-radius: 999px;
-    color: var(--ink-2); text-decoration: none; font-size: 12px;
-    transition: border-color 150ms, color 150ms;
+    color: var(--text-dim); text-decoration: none;
+    font-family: var(--font-mono); font-size: 11px;
+    transition: border-color 110ms cubic-bezier(0.4, 0, 0.2, 1),
+                color 110ms cubic-bezier(0.4, 0, 0.2, 1);
   }
-  .panel .p-files a:hover { color: var(--ink); border-color: var(--accent); }
-  .panel .p-children { margin: 8px 0 0; padding-left: 18px; color: var(--ink-2); }
-  .panel .p-children li { margin: 2px 0; }
+  .panel .p-files a:hover { color: var(--accent); border-color: var(--accent-line); }
+  .panel .p-files a:focus-visible { outline: 2px solid var(--canvas-accent); outline-offset: 1px; }
+  .panel .p-children { margin: 8px 0 0; padding-left: 18px; color: var(--text-dim); }
+  .panel .p-children li { margin: 2px 0; font-family: var(--font-mono); font-size: 12px; }
 </style>
 </head>
 <body>
@@ -120,12 +181,21 @@
     <div class="head">
       <span class="name" id="cv-name">Canvas</span>
       <span class="counts" id="cv-counts"></span>
-      <span class="spacer"></span>
-      <button type="button" id="cv-fit" title="Reset camera to fit all nodes">Fit</button>
     </div>
     <div class="stage">
       <canvas id="view"></canvas>
       <div class="empty" id="cv-empty" hidden></div>
+      <div class="controls">
+        <button type="button" id="cv-zoom-in" title="Zoom in" aria-label="Zoom in">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <button type="button" id="cv-zoom-out" title="Zoom out" aria-label="Zoom out">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <button type="button" id="cv-fit" title="Fit to view" aria-label="Fit to view">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+        </button>
+      </div>
     </div>
   </div>
 
@@ -137,12 +207,32 @@
   // own runtime script tag. fused.params.get(k) -> string|undefined; set(k,v)
   // THROWS on non-string; onChange fires after every applied set (echo-guarded).
 
-  var COLORS = {
-    bg: "#131417", surfaceNode: "#22252b", line: "#2a2d33",
-    ink: "#e8eaed", ink2: "#9aa0a6", ink3: "#868d94", accent: "#E5FF44",
-    edge: "#4b5057", folderDefault: "rgba(229,255,68,0.05)",
-    folderStroke: "rgba(229,255,68,0.28)",
+  // Visual constants replicate the Flow app canvas (packages/widgets/src/canvas):
+  // dot background gap 50 / size 8 at 8% text tone; #0d1219 cards with 1px
+  // rgba(130,160,200,.11) borders and a #11171f header bar; bezier edges at 22%
+  // text tone with a bg-colored legibility outline; purple-wash folder regions
+  // with a solid 26px title bar. All node/folder geometry is drawn in WORLD
+  // units so it scales with zoom, exactly like ReactFlow's transformed DOM;
+  // only edge strokes are screen-constant (Flow: min(5, 1.5/zoom)).
+  var T = {
+    bg: "#070a0f", card: "#0d1219", header: "#11171f",
+    text: "#e7ecf3", dim: "#93a0b2", faint: "#5a6678",
+    line: "rgba(130,160,200,0.11)", line2: "rgba(130,160,200,0.20)",
+    rim: "rgba(255,255,255,0.06)",
+    dot: "rgba(231,236,243,0.08)",
+    edge: "rgba(231,236,243,0.22)",
+    chipBg: "rgba(231,236,243,0.08)",
   };
+  var SERIES = ["#f5a623", "#5ec8d8", "#8a7cff", "#4ade80",
+                "#f472b6", "#60a5fa", "#fb7185", "#c084fc"];
+  var FOLDER_DEFAULT = [147, 112, 219]; // Flow's calm purple wash
+  var SANS = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+  var MONO = 'ui-monospace, Menlo, Consolas, monospace';
+  var MIN_ZOOM = 0.1, MAX_ZOOM = 2; // Flow: minZoom={0.1} maxZoom={2}
+  var HEADER_H = 33; // 8px pad + 13px/16 title + 8px pad + 1px border
+
+  var reduceMotion = window.matchMedia
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   var view = document.getElementById("view");
   var ctx = view.getContext("2d");
@@ -194,10 +284,30 @@
     + " · " + edges.length + (edges.length === 1 ? " edge" : " edges")
     + (folders.length ? " · " + folders.length + (folders.length === 1 ? " folder" : " folders") : "");
 
-  var all = folders.concat(nodes); // folders drawn first (behind)
+  var all = folders.concat(nodes);
   var byName = {};
   nodes.forEach(function (n) { if (n.udfName) byName[n.udfName] = n; });
   folders.forEach(function (f) { if (f.udfName) byName[f.udfName] = f; });
+
+  // Folder wash colors resolve like Flow: "chart-N"/"series-N"/bare N map into
+  // the series palette; a literal hex passes through; anything else gets the
+  // default purple. Alphas: region fill .14, region border .48, title bar .92.
+  folders.forEach(function (f) {
+    f._rgb = folderRgb(f.folderColor);
+  });
+  function folderRgb(c) {
+    c = String(c || "").trim();
+    var m = c.match(/^(?:chart-|series-)?([1-8])$/);
+    if (m) return hexRgb(SERIES[parseInt(m[1], 10) - 1]);
+    var h = c.match(/^#?([0-9a-fA-F]{6})$/);
+    if (h) return hexRgb("#" + h[1]);
+    return FOLDER_DEFAULT;
+  }
+  function hexRgb(hex) {
+    return [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16),
+            parseInt(hex.slice(5, 7), 16)];
+  }
+  function rgba(rgb, a) { return "rgba(" + rgb[0] + "," + rgb[1] + "," + rgb[2] + "," + a + ")"; }
 
   if (!nodes.length && !folders.length) {
     emptyEl.hidden = false;
@@ -222,16 +332,39 @@
     return { minX: minX, minY: minY, maxX: maxX, maxY: maxY };
   }
 
-  function fit() {
+  function fitCam() {
     var b = bounds();
     var w = view.clientWidth || 1, h = view.clientHeight || 1;
-    if (!b) { cam = { tx: w / 2, ty: h / 2, zoom: 1 }; return; }
+    if (!b) return { tx: w / 2, ty: h / 2, zoom: 1 };
     var bw = Math.max(1, b.maxX - b.minX), bh = Math.max(1, b.maxY - b.minY);
-    var margin = 0.10; // 10% breathing room around the extent (SPEC §26)
+    var margin = 0.10; // Flow fitView padding: 0.1
     var zoom = Math.min(w / (bw * (1 + margin * 2)), h / (bh * (1 + margin * 2)));
-    zoom = Math.max(0.02, Math.min(zoom, 2.5));
+    zoom = Math.max(MIN_ZOOM, Math.min(zoom, 1)); // Flow fitView maxZoom: 1
     var cx = (b.minX + b.maxX) / 2, cy = (b.minY + b.maxY) / 2;
-    cam = { zoom: zoom, tx: w / 2 - cx * zoom, ty: h / 2 - cy * zoom };
+    return { zoom: zoom, tx: w / 2 - cx * zoom, ty: h / 2 - cy * zoom };
+  }
+
+  // Fit animates 600ms with a cubic ease-out like Flow's fitView (instant
+  // under prefers-reduced-motion).
+  var fitAnim = null;
+  function fit() {
+    var target = fitCam();
+    if (reduceMotion) { cam = target; draw(); scheduleWrite(); return; }
+    var from = { tx: cam.tx, ty: cam.ty, zoom: cam.zoom };
+    var start = performance.now();
+    if (fitAnim) cancelAnimationFrame(fitAnim);
+    (function step(now) {
+      var t = Math.min(1, (now - start) / 600);
+      var e = 1 - Math.pow(1 - t, 3);
+      cam = {
+        tx: from.tx + (target.tx - from.tx) * e,
+        ty: from.ty + (target.ty - from.ty) * e,
+        zoom: from.zoom + (target.zoom - from.zoom) * e,
+      };
+      draw();
+      if (t < 1) { fitAnim = requestAnimationFrame(step); }
+      else { fitAnim = null; scheduleWrite(); }
+    })(start);
   }
 
   function num(v) { var n = parseFloat(v); return isFinite(n) ? n : null; }
@@ -249,7 +382,7 @@
       cam = { tx: num(viewport.x) || 0, ty: num(viewport.y) || 0, zoom: num(viewport.zoom) };
       return;
     }
-    fit();
+    cam = fitCam();
   }
 
   // ---- URL sync (write cam on interaction, 150ms debounce) --------------
@@ -274,8 +407,9 @@
     } catch (e) { /* reserved-name/type guard — camera stays in-memory */ }
   }
 
-  // ---- rendering (world-space transform; screen-constant text/strokes) --
+  // ---- rendering ---------------------------------------------------------
   var dpr = 1;
+  var hovered = null; // node under the cursor (border brightens, Flow hover)
   function resize() {
     dpr = window.devicePixelRatio || 1;
     var w = view.clientWidth, h = view.clientHeight;
@@ -295,113 +429,220 @@
     ctx.closePath();
   }
 
-  function borderPoint(n, tx, ty) {
-    // Point on node n's rect border pointing toward (tx, ty) from its center.
-    var cx = n.x + n.width / 2, cy = n.y + n.height / 2;
-    var dx = tx - cx, dy = ty - cy;
-    if (dx === 0 && dy === 0) return { x: cx, y: cy };
-    var sx = dx !== 0 ? (n.width / 2) / Math.abs(dx) : Infinity;
-    var sy = dy !== 0 ? (n.height / 2) / Math.abs(dy) : Infinity;
-    var s = Math.min(sx, sy);
-    return { x: cx + dx * s, y: cy + dy * s };
+  function truncate(text, maxW) {
+    if (ctx.measureText(text).width <= maxW) return text;
+    var lo = 0, hi = text.length;
+    while (lo < hi) {
+      var mid = (lo + hi + 1) >> 1;
+      if (ctx.measureText(text.slice(0, mid) + "…").width <= maxW) lo = mid;
+      else hi = mid - 1;
+    }
+    return text.slice(0, lo) + "…";
+  }
+
+  function wrapLines(text, maxW, maxLines) {
+    var words = String(text).split(/\s+/).filter(Boolean);
+    var lines = [], cur = "";
+    for (var i = 0; i < words.length; i++) {
+      var next = cur ? cur + " " + words[i] : words[i];
+      if (ctx.measureText(next).width <= maxW || !cur) { cur = next; continue; }
+      lines.push(cur);
+      cur = words[i];
+      if (lines.length === maxLines - 1) {
+        // last allowed line takes the remainder, ellipsized
+        var rest = words.slice(i).join(" ");
+        lines.push(truncate(rest, maxW));
+        return lines;
+      }
+    }
+    if (cur) lines.push(cur);
+    return lines;
+  }
+
+  // xyflow getBezierPath (curvature 0.25) for Right -> Left handles.
+  function bezierPoints(src, dst) {
+    var sx = src.x + src.width, sy = src.y + src.height / 2;
+    var tx = dst.x, ty = dst.y + dst.height / 2;
+    var d = tx - sx;
+    var off = d >= 0 ? 0.5 * d : 0.25 * 25 * Math.sqrt(-d);
+    return { sx: sx, sy: sy, tx: tx, ty: ty, c1x: sx + off, c1y: sy, c2x: tx - off, c2y: ty };
+  }
+
+  function drawDots(z) {
+    // Flow background: dots, gap 50, size 8 (world radius 4), text tone @ 8%.
+    var gap = 50, r = 4;
+    var w = view.clientWidth, h = view.clientHeight;
+    var x0 = -cam.tx / z, y0 = -cam.ty / z;
+    var x1 = x0 + w / z, y1 = y0 + h / z;
+    // Guard the dot count at far zoom-out: widen the stride, never drop dots.
+    while (((x1 - x0) / gap) * ((y1 - y0) / gap) > 20000) gap *= 2;
+    ctx.fillStyle = T.dot;
+    ctx.beginPath();
+    for (var x = Math.floor(x0 / gap) * gap; x <= x1; x += gap) {
+      for (var y = Math.floor(y0 / gap) * gap; y <= y1; y += gap) {
+        ctx.moveTo(x + r, y);
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+      }
+    }
+    ctx.fill();
   }
 
   function draw() {
     var z = cam.zoom;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, view.width, view.height);
-    ctx.fillStyle = COLORS.bg;
+    ctx.fillStyle = T.bg;
     ctx.fillRect(0, 0, view.width, view.height);
     // world -> device: device = dpr*(world*zoom + t)
     ctx.setTransform(dpr * z, 0, 0, dpr * z, dpr * cam.tx, dpr * cam.ty);
 
-    var S = 1 / z; // multiply screen-constant sizes so they don't scale w/ zoom
+    drawDots(z);
 
-    // Paint in ascending zIndex (highest last = on top) so the visual stack
-    // agrees with hitTest(), which picks descending zIndex.
+    // Paint order matches Flow's zIndex layering: folder regions (-1) →
+    // edges → nodes (0) → folder title bars (+1, never occluded).
     var byZ = function (a, b) { return (a.zIndex || 0) - (b.zIndex || 0); };
+    var sortedFolders = folders.slice().sort(byZ);
 
-    // 1) folder groups (behind everything)
-    folders.slice().sort(byZ).forEach(function (f) {
-      ctx.fillStyle = f.folderColor || COLORS.folderDefault;
-      ctx.strokeStyle = COLORS.folderStroke;
-      ctx.lineWidth = 1.5 * S;
-      roundRectPath(f.x, f.y, f.width, f.height, 12 * S);
+    // 1) folder regions
+    sortedFolders.forEach(function (f) {
+      ctx.fillStyle = rgba(f._rgb, 0.14);
+      ctx.strokeStyle = rgba(f._rgb, 0.48);
+      ctx.lineWidth = 1.5;
+      roundRectPath(f.x, f.y, f.width, f.height, 8);
       ctx.fill();
       ctx.stroke();
-      ctx.fillStyle = COLORS.ink2;
-      ctx.font = "700 " + (12 * S) + "px ui-monospace, Menlo, monospace";
-      ctx.textBaseline = "bottom";
-      ctx.fillText(f.folderName || f.udfName || "folder", f.x + 10 * S, f.y - 4 * S);
     });
 
-    // 2) edges (node border to node border, subtle arrowhead at the target)
-    ctx.strokeStyle = COLORS.edge;
-    ctx.fillStyle = COLORS.edge;
-    ctx.lineWidth = 1.5 * S;
+    // 2) edges: bezier, screen-constant stroke min(5, 1.5/zoom), with a
+    //    bg-colored legibility outline underneath and a target arrowhead.
+    var sw = Math.min(5, 1.5 / z);
     edges.forEach(function (e) {
       var src = byName[e[0]], dst = byName[e[1]];
       if (!src || !dst) return;
-      var sc = { x: src.x + src.width / 2, y: src.y + src.height / 2 };
-      var dc = { x: dst.x + dst.width / 2, y: dst.y + dst.height / 2 };
-      var a = borderPoint(src, dc.x, dc.y);
-      var b = borderPoint(dst, sc.x, sc.y);
+      var p = bezierPoints(src, dst);
       ctx.beginPath();
-      ctx.moveTo(a.x, a.y);
-      ctx.lineTo(b.x, b.y);
+      ctx.moveTo(p.sx, p.sy);
+      ctx.bezierCurveTo(p.c1x, p.c1y, p.c2x, p.c2y, p.tx, p.ty);
+      ctx.globalAlpha = 0.8;
+      ctx.strokeStyle = T.bg;
+      ctx.lineWidth = sw + Math.max(1, 1 / z);
       ctx.stroke();
-      // arrowhead
-      var ang = Math.atan2(b.y - a.y, b.x - a.x);
-      var ah = 8 * S;
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = T.edge;
+      ctx.lineWidth = sw;
+      ctx.stroke();
+      // arrowhead at the target, oriented along the path's final segment
+      var ang = Math.atan2(p.ty - p.c2y, p.tx - p.c2x);
+      var len = 6 * Math.max(sw, 1.2), half = 2.4 * Math.max(sw, 1.2);
+      ctx.fillStyle = T.edge;
+      ctx.save();
+      ctx.translate(p.tx, p.ty);
+      ctx.rotate(ang);
       ctx.beginPath();
-      ctx.moveTo(b.x, b.y);
-      ctx.lineTo(b.x - ah * Math.cos(ang - 0.4), b.y - ah * Math.sin(ang - 0.4));
-      ctx.lineTo(b.x - ah * Math.cos(ang + 0.4), b.y - ah * Math.sin(ang + 0.4));
+      ctx.moveTo(0, 0);
+      ctx.lineTo(-len, -half);
+      ctx.lineTo(-len, half);
       ctx.closePath();
       ctx.fill();
+      ctx.restore();
     });
 
-    // 3) UDF nodes (front). Hidden nodes ghost at 40% alpha (SPEC §26).
+    // 3) UDF node cards. Hidden nodes ghost at 40% alpha (SPEC §26).
     nodes.slice().sort(byZ).forEach(function (n) {
       ctx.globalAlpha = (n.visible === false) ? 0.4 : 1;
-      ctx.fillStyle = COLORS.surfaceNode;
-      ctx.strokeStyle = COLORS.line;
-      ctx.lineWidth = 1.5 * S;
-      roundRectPath(n.x, n.y, n.width, n.height, 10 * S);
+
+      // card shell: soft drop shadow + 1px border (brightens on hover)
+      ctx.save();
+      ctx.shadowColor = "rgba(0,0,0,0.4)";
+      ctx.shadowBlur = 2 * z * dpr;
+      ctx.shadowOffsetY = 1 * z * dpr;
+      ctx.fillStyle = T.card;
+      roundRectPath(n.x, n.y, n.width, n.height, 10);
       ctx.fill();
+      ctx.restore();
+      roundRectPath(n.x, n.y, n.width, n.height, 10);
+      ctx.strokeStyle = (n === hovered) ? T.line2 : T.line;
+      ctx.lineWidth = 1;
       ctx.stroke();
 
-      // clip text to the node box
+      // clip everything else to the card
       ctx.save();
-      roundRectPath(n.x + 8 * S, n.y, n.width - 16 * S, n.height, 6 * S);
+      roundRectPath(n.x, n.y, n.width, n.height, 10);
       ctx.clip();
-      ctx.textBaseline = "alphabetic";
-      ctx.fillStyle = COLORS.ink;
-      ctx.font = "700 " + (14 * S) + "px ui-monospace, Menlo, monospace";
-      ctx.fillText(n.title || n.udfName || "", n.x + 12 * S, n.y + 26 * S);
-      if (n.udfName && n.title !== n.udfName) {
-        ctx.fillStyle = COLORS.ink3;
-        ctx.font = (11 * S) + "px ui-monospace, Menlo, monospace";
-        ctx.fillText(n.udfName, n.x + 12 * S, n.y + 42 * S);
+
+      // inset top rim highlight (Flow: inset 0 1px 0 white 6%)
+      ctx.fillStyle = T.rim;
+      ctx.fillRect(n.x, n.y, n.width, 1);
+
+      // header bar: panel-2 bg, 1px bottom border, 13px/500 dim title
+      var hh = Math.min(HEADER_H, n.height);
+      ctx.fillStyle = T.header;
+      ctx.fillRect(n.x, n.y + 1, n.width, hh - 1);
+      ctx.fillStyle = T.line;
+      ctx.fillRect(n.x, n.y + hh - 1, n.width, 1);
+      ctx.fillStyle = T.dim;
+      ctx.font = "500 13px " + SANS;
+      ctx.textBaseline = "middle";
+      ctx.fillText(truncate(n.title || n.udfName || "", n.width - 24), n.x + 12, n.y + hh / 2);
+
+      // body: description when present, else the udfName identifier in mono
+      var bodyY = n.y + hh + 14;
+      if (n.description && n.height - hh > 34) {
+        ctx.fillStyle = T.dim;
+        ctx.font = "12px " + SANS;
+        ctx.textBaseline = "alphabetic";
+        var maxLines = Math.max(1, Math.min(3, Math.floor((n.height - hh - 40) / 17)));
+        wrapLines(n.description, n.width - 24, maxLines).forEach(function (line, i) {
+          ctx.fillText(line, n.x + 12, bodyY + 4 + i * 17);
+        });
+      } else if (n.udfName && n.title !== n.udfName && n.height - hh > 30) {
+        ctx.fillStyle = T.faint;
+        ctx.font = "11px " + MONO;
+        ctx.textBaseline = "alphabetic";
+        ctx.fillText(truncate(n.udfName, n.width - 24), n.x + 12, bodyY + 2);
       }
-      // sibling-extension badges along the bottom
+
+      // sibling-extension chips: quiet pills along the bottom (Flow's
+      // collapsed-folder chip styling — 11px, radius 999, text tone @ 8%)
       var exts = siblings[n.udfName] || [];
-      if (exts.length) {
-        ctx.font = (10 * S) + "px ui-monospace, Menlo, monospace";
-        var bx = n.x + 12 * S, by = n.y + n.height - 14 * S;
+      if (exts.length && n.height - hh > 58) {
+        ctx.font = "11px " + MONO;
+        ctx.textBaseline = "middle";
+        var bx = n.x + 12, by = n.y + n.height - 32, ch = 20;
         exts.forEach(function (ext) {
           var label = ext.replace(/^\./, "");
           var tw = ctx.measureText(label).width;
-          ctx.fillStyle = "rgba(229,255,68,0.10)";
-          roundRectPath(bx, by, tw + 10 * S, 15 * S, 4 * S);
+          ctx.fillStyle = T.chipBg;
+          roundRectPath(bx, by, tw + 16, ch, 10);
           ctx.fill();
-          ctx.fillStyle = COLORS.accent;
-          ctx.fillText(label, bx + 5 * S, by + 11 * S);
-          bx += tw + 10 * S + 6 * S;
+          ctx.fillStyle = T.dim;
+          ctx.fillText(label, bx + 8, by + ch / 2 + 0.5);
+          bx += tw + 16 + 6;
         });
       }
       ctx.restore();
       ctx.globalAlpha = 1;
+    });
+
+    // 4) folder title bars: solid pill 4px above the region, white 13px/600
+    sortedFolders.forEach(function (f) {
+      var label = f.folderName || f.udfName || "folder";
+      ctx.font = "600 13px " + SANS;
+      var tw = Math.min(ctx.measureText(label).width, Math.max(60, f.width - 20));
+      var bw = tw + 20, bh = 26;
+      var bx = f.x, by = f.y - bh - 4;
+      ctx.save();
+      ctx.shadowColor = "rgba(0,0,0,0.28)";
+      ctx.shadowBlur = 4 * z * dpr;
+      ctx.shadowOffsetY = 2 * z * dpr;
+      ctx.fillStyle = rgba(f._rgb, 0.92);
+      roundRectPath(bx, by, bw, bh, 6);
+      ctx.fill();
+      ctx.restore();
+      ctx.fillStyle = "#ffffff";
+      ctx.textBaseline = "middle";
+      ctx.fillText(truncate(label, bw - 20), bx + 10, by + bh / 2 + 0.5);
+      f._bar = { x: bx, y: by, width: bw, height: bh }; // hit target
     });
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -414,15 +655,18 @@
   function screenToWorld(sx, sy) {
     return { x: (sx - cam.tx) / cam.zoom, y: (sy - cam.ty) / cam.zoom };
   }
-  function inNode(n, wx, wy) {
-    return wx >= n.x && wx <= n.x + n.width && wy >= n.y && wy <= n.y + n.height;
+  function inRect(r, wx, wy) {
+    return wx >= r.x && wx <= r.x + r.width && wy >= r.y && wy <= r.y + r.height;
   }
   function hitTest(wx, wy) {
-    // Nodes sit above folders; among nodes the topmost zIndex wins.
-    var ns = nodes.slice().sort(function (a, b) { return (b.zIndex || 0) - (a.zIndex || 0); });
-    for (var i = 0; i < ns.length; i++) if (inNode(ns[i], wx, wy)) return { kind: "node", n: ns[i] };
+    // Stack order: folder title bars sit above nodes, nodes above regions.
     var fs = folders.slice().sort(function (a, b) { return (b.zIndex || 0) - (a.zIndex || 0); });
-    for (var j = 0; j < fs.length; j++) if (inNode(fs[j], wx, wy)) return { kind: "folder", n: fs[j] };
+    for (var k = 0; k < fs.length; k++) {
+      if (fs[k]._bar && inRect(fs[k]._bar, wx, wy)) return { kind: "folder", n: fs[k] };
+    }
+    var ns = nodes.slice().sort(function (a, b) { return (b.zIndex || 0) - (a.zIndex || 0); });
+    for (var i = 0; i < ns.length; i++) if (inRect(ns[i], wx, wy)) return { kind: "node", n: ns[i] };
+    for (var j = 0; j < fs.length; j++) if (inRect(fs[j], wx, wy)) return { kind: "folder", n: fs[j] };
     return null;
   }
 
@@ -465,6 +709,36 @@
     document.querySelector(".stage").appendChild(panel);
   }
 
+  // ---- hover: brightened border + Flow-style tooltip ----------------------
+  var tip = null;
+  function clearTip() { if (tip) { tip.remove(); tip = null; } }
+  function showTip(n, sx, sy) {
+    clearTip();
+    if (!n.description) return;
+    tip = document.createElement("div");
+    tip.className = "tip";
+    tip.innerHTML = '<div class="t-title">' + esc(n.title || n.udfName || "") + "</div>"
+      + '<div class="t-desc">' + esc(n.description) + "</div>";
+    document.querySelector(".stage").appendChild(tip);
+    var stageW = view.clientWidth;
+    var x = Math.min(sx + 12, Math.max(8, stageW - tip.offsetWidth - 8));
+    var y = Math.max(8, sy - tip.offsetHeight - 10);
+    tip.style.left = x + "px";
+    tip.style.top = y + "px";
+  }
+
+  function setHovered(n, sx, sy) {
+    if (n !== hovered) {
+      hovered = n;
+      view.classList.toggle("hovering", !!n);
+      draw();
+      if (n) showTip(n, sx, sy); else clearTip();
+    } else if (n && tip) {
+      tip.style.left = Math.min(sx + 12, Math.max(8, view.clientWidth - tip.offsetWidth - 8)) + "px";
+      tip.style.top = Math.max(8, sy - tip.offsetHeight - 10) + "px";
+    }
+  }
+
   // ---- interaction: drag to pan, wheel to zoom-to-cursor ----------------
   var dragging = false, moved = false, lastX = 0, lastY = 0;
   view.addEventListener("mousedown", function (e) {
@@ -472,13 +746,21 @@
     view.classList.add("dragging");
   });
   window.addEventListener("mousemove", function (e) {
-    if (!dragging) return;
-    var dx = e.clientX - lastX, dy = e.clientY - lastY;
-    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) moved = true;
-    lastX = e.clientX; lastY = e.clientY;
-    cam.tx += dx; cam.ty += dy;
-    draw();
-    scheduleWrite();
+    if (dragging) {
+      var dx = e.clientX - lastX, dy = e.clientY - lastY;
+      if (Math.abs(dx) > 2 || Math.abs(dy) > 2) moved = true;
+      lastX = e.clientX; lastY = e.clientY;
+      cam.tx += dx; cam.ty += dy;
+      draw();
+      scheduleWrite();
+      return;
+    }
+    if (e.target !== view) { setHovered(null, 0, 0); return; }
+    var rect = view.getBoundingClientRect();
+    var sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+    var w = screenToWorld(sx, sy);
+    var hit = hitTest(w.x, w.y);
+    setHovered(hit && hit.kind === "node" ? hit.n : null, sx, sy);
   });
   window.addEventListener("mouseup", function () {
     if (dragging) { dragging = false; view.classList.remove("dragging"); }
@@ -497,7 +779,7 @@
     var mx = e.clientX - rect.left, my = e.clientY - rect.top;
     var world = screenToWorld(mx, my);
     var factor = Math.exp(-e.deltaY * 0.0015);
-    var z2 = Math.max(0.02, Math.min(cam.zoom * factor, 8));
+    var z2 = Math.max(MIN_ZOOM, Math.min(cam.zoom * factor, MAX_ZOOM));
     // keep the world point under the cursor fixed
     cam.tx = mx - world.x * z2;
     cam.ty = my - world.y * z2;
@@ -506,9 +788,19 @@
     scheduleWrite();
   }, { passive: false });
 
-  document.getElementById("cv-fit").addEventListener("click", function () {
-    fit(); draw(); scheduleWrite();
-  });
+  function zoomBy(factor) {
+    var w = view.clientWidth / 2, h = view.clientHeight / 2;
+    var world = screenToWorld(w, h);
+    var z2 = Math.max(MIN_ZOOM, Math.min(cam.zoom * factor, MAX_ZOOM));
+    cam.tx = w - world.x * z2;
+    cam.ty = h - world.y * z2;
+    cam.zoom = z2;
+    draw();
+    scheduleWrite();
+  }
+  document.getElementById("cv-zoom-in").addEventListener("click", function () { zoomBy(1.2); });
+  document.getElementById("cv-zoom-out").addEventListener("click", function () { zoomBy(1 / 1.2); });
+  document.getElementById("cv-fit").addEventListener("click", fit);
 
   window.addEventListener("resize", resize);
 
