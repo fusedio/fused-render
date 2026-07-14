@@ -33,6 +33,7 @@ from fastapi.responses import (
     FileResponse,
     HTMLResponse,
     JSONResponse,
+    RedirectResponse,
     Response,
     StreamingResponse,
 )
@@ -1452,6 +1453,30 @@ def create_app(start_dir: str) -> FastAPI:
             # touch) its background whole-file prefetch. Cheap no-op after
             # the first call; templates stay mount-agnostic (prefetch.py).
             shell_prefetch.schedule(path, upstream)
+            # Cold ranged reads go straight to the store: the serve's VFS
+            # layer serializes concurrent uncached range reads of one file
+            # (an analytical scan pays ~0.25s per seek), while the store
+            # answers the same GETs in parallel. Once the prefetch has
+            # landed the whole file in the serve cache, the serve replays
+            # ranges from local disk and wins again. A 307 rather than a
+            # proxied fetch: the client (duckdb httpfs) re-issues each
+            # ranged GET against the store itself with its own pooled
+            # parallel connections — proxying here paid a fresh TLS
+            # handshake per range read (measured 2x on the point-read
+            # phase) and streamed every byte through this process twice.
+            # GET+Range only: presigned links are minted for GET (a HEAD
+            # fails their signature), and a whole-file GET through the
+            # serve is effectively the prefetch itself. Native clients
+            # only: a browser fetch would follow the redirect cross-origin
+            # and die on CORS — browsers always send Sec-Fetch-Mode,
+            # duckdb's httpfs never does, so its absence is the gate.
+            if (request.method == "GET" and request.headers.get("range")
+                    and "sec-fetch-mode" not in request.headers
+                    and not shell_prefetch.is_done(path)):
+                direct = await asyncio.to_thread(
+                    shell_mounts.upstream_url_for, path)
+                if direct:
+                    return RedirectResponse(direct, status_code=307)
             resp = await asyncio.to_thread(_proxy_raw, upstream, request)
             if resp is not None:
                 return resp  # upstream unreachable -> plain file read below

@@ -950,3 +950,97 @@ def test_fs_raw_proxy_error_keeps_range_headers(client, home):
         assert r.headers["content-range"] == "bytes */12345"
     finally:
         srv.shutdown()
+
+
+# -- upstream_url_for (direct-to-store bypass) -------------------------------
+
+
+@pytest.fixture()
+def fresh_upstream():
+    """The bypass memoizes per-remote capability and per-object links in
+    module globals; clear around each test so results don't leak."""
+    mounts_mod._upstream_links.clear()
+    mounts_mod._upstream_mode.clear()
+    yield
+    mounts_mod._upstream_links.clear()
+    mounts_mod._upstream_mode.clear()
+
+
+def test_upstream_url_prefers_presigned_link(home, rcd, fresh_upstream):
+    import os
+
+    rcd.responses["operations/publiclink"] = {"url": "https://signed.example/x?sig=1"}
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    f = os.path.join(mounts_mod.mountpoint(c), "a", "b.parquet")
+    assert mounts_mod.upstream_url_for(f) == "https://signed.example/x?sig=1"
+    [(_, body)] = [x for x in rcd.calls if x[0] == "operations/publiclink"]
+    assert body["fs"] == "remote:bucket" and body["remote"] == "a/b.parquet"
+    # Second ask answers from the link cache — no extra rc round-trip.
+    assert mounts_mod.upstream_url_for(f) == "https://signed.example/x?sig=1"
+    assert len([x for x in rcd.calls if x[0] == "operations/publiclink"]) == 1
+
+
+def test_upstream_url_public_s3_when_link_unsupported(home, rcd, fresh_upstream):
+    import os
+
+    # Anonymous S3 remotes can't presign ("unsupported signer type noAuth")
+    # but don't need to — the plain public object URL works.
+    rcd.responses["operations/publiclink"] = (
+        500, {"error": 'unsupported signer type "smithy.api#noAuth"'})
+    rcd.responses["config/get"] = {
+        "type": "s3", "provider": "AWS", "env_auth": "false",
+        "region": "us-west-2"}
+    c = mounts_mod.add_mount("data", "aws-open:bucket/pre fix")
+    f = os.path.join(mounts_mod.mountpoint(c), "k ey.parquet")
+    assert mounts_mod.upstream_url_for(f) == (
+        "https://bucket.s3.us-west-2.amazonaws.com/pre%20fix/k%20ey.parquet")
+
+
+def test_upstream_url_none_is_remembered(home, rcd, fresh_upstream):
+    import os
+
+    # A credentialed remote that can't presign has no reachable direct URL;
+    # the verdict is cached so the raw hot path doesn't re-ask rcd per read.
+    rcd.responses["operations/publiclink"] = (500, {"error": "boom"})
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
+    c = mounts_mod.add_mount("data", "corp:bucket")
+    f = os.path.join(mounts_mod.mountpoint(c), "x.parquet")
+    assert mounts_mod.upstream_url_for(f) is None
+    assert mounts_mod.upstream_url_for(f) is None
+    assert len([x for x in rcd.calls if x[0] == "operations/publiclink"]) == 1
+
+
+def test_upstream_url_none_outside_mounts(home, rcd, fresh_upstream):
+    assert mounts_mod.upstream_url_for("/somewhere/else.parquet") is None
+
+
+def test_fs_raw_redirects_cold_native_range_reads(client, home, rcd, fresh_upstream):
+    """A ranged GET from a native client (no Sec-Fetch-Mode) on a cold
+    mount-backed file 307s to the store's direct URL; browser requests and
+    HEADs keep today's serve proxy (a redirect would die on CORS / fail a
+    GET-signed link)."""
+    import os
+
+    import fused_render.shell.storage as storage
+
+    rcd.responses["operations/publiclink"] = {"url": "https://signed.example/x"}
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    os.makedirs(mp)
+    f = os.path.join(mp, "x.bin")
+    open(f, "wb").write(b"LOCAL-BYTES")
+    # A live-looking serve entry; the serve itself is never reached by the
+    # redirect path, and browser/HEAD fall back to the file when it's dead.
+    storage.write_json(mounts_mod.serves_path(), {mp: "http://127.0.0.1:1"})
+
+    r = client.get("/api/fs/raw", params={"path": f},
+                   headers={"Range": "bytes=0-3"}, follow_redirects=False)
+    assert r.status_code == 307
+    assert r.headers["location"] == "https://signed.example/x"
+
+    r = client.get("/api/fs/raw", params={"path": f},
+                   headers={"Range": "bytes=0-3", "Sec-Fetch-Mode": "cors"},
+                   follow_redirects=False)
+    assert r.status_code != 307
+    r = client.head("/api/fs/raw", params={"path": f}, follow_redirects=False)
+    assert r.status_code != 307

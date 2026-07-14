@@ -131,6 +131,73 @@ def _build_where(filters, types):
     return (" WHERE " + " AND ".join(clauses)) if clauses else "", binds
 
 
+def _rowgroup_prune(con, scan: str, sort: dict, types: dict, need: int) -> str:
+    """WHERE clause restricting a sorted, unfiltered positions scan to the row
+    groups that can possibly hold the top `need` rows, or "" when pruning
+    can't be proven safe. Parquet's footer carries per-row-group min/max stats
+    for every column; DuckDB's own top-N pushdown is reactive (it reads groups
+    in file order and only skips ones beaten by rows already seen), which on a
+    remote file still pays a range read per group. Deciding up front from
+    parquet_metadata() moves no extra bytes — the footer is already parsed.
+
+    Soundness (desc; asc is the mirror): rank groups by stats_min descending
+    and accumulate their non-null row counts until >= need; that last group's
+    stats_min is a proven lower bound L on the need-th largest value (at least
+    `need` rows are >= L). Any group with stats_max < L can hold no qualifying
+    row. Cumulative-row-count alone is NOT sufficient — a huge group with one
+    large value would wrongly evict a group full of runners-up.
+
+    Bails to "" (full scan — never worse than today) whenever the guarantee
+    doesn't hold: any group missing min/max/null-count stats, a window deep
+    enough to reach NULLs (they sort last, invisible to value stats), a
+    nested column (stats don't cast to the column type), or nothing pruned."""
+    col, desc_ = sort["column"], str(sort["dir"]).lower() == "desc"
+    coltype = types[col]
+    rows = con.execute(
+        f"SELECT row_group_id, row_group_num_rows,"
+        f" TRY_CAST(stats_min_value AS {coltype}),"
+        f" TRY_CAST(stats_max_value AS {coltype}), stats_null_count"
+        f" FROM parquet_metadata(?) WHERE path_in_schema = ?"
+        f" ORDER BY row_group_id", [scan, col]).fetchall()
+    # One row per row group, ids contiguous from 0 — anything else (nested
+    # column with several leaves, exotic writer) breaks the cumulative
+    # file_row_number offsets below.
+    if [r[0] for r in rows] != list(range(len(rows))) or not rows:
+        return ""
+    if any(r[2] is None or r[3] is None or r[4] is None for r in rows):
+        return ""
+    nonnull = [r[1] - r[4] for r in rows]
+    if need >= sum(nonnull):
+        return ""  # window reaches the NULL tail — stats can't bound it
+    ranked = sorted(range(len(rows)),
+                    key=lambda i: rows[i][2 if desc_ else 3], reverse=desc_)
+    acc, bound = 0, rows[ranked[0]][2 if desc_ else 3]
+    for i in ranked:
+        acc += nonnull[i]
+        bound = rows[i][2 if desc_ else 3]
+        if acc >= need:
+            break
+    if desc_:
+        keep = {r[0] for r in rows if r[3] >= bound}
+    else:
+        keep = {r[0] for r in rows if r[2] <= bound}
+    if len(keep) == len(rows):
+        return ""
+    # Row groups are contiguous in file order, so each keeps a
+    # [start, start+rows) file_row_number range; merge adjacent ones.
+    ranges, start = [], 0
+    for gid, nrows, *_ in rows:
+        if gid in keep:
+            if ranges and ranges[-1][1] == start:
+                ranges[-1][1] = start + nrows
+            else:
+                ranges.append([start, start + nrows])
+        start += nrows
+    clause = " OR ".join(
+        f"file_row_number BETWEEN {a} AND {b - 1}" for a, b in ranges)
+    return f" WHERE ({clause})"
+
+
 def _build_order(sort, columns):
     """ORDER BY clause for a single {column, dir} sort, or "" when there's no
     sort / the column is unknown / the direction isn't asc|desc."""
@@ -452,8 +519,17 @@ def _read_flat(file: str, scan: str, con, ext: str, offset: int, limit: int,
             raise ValueError("positions mode requires a parquet file")
         rel = relation_for(scan, file_row_number=True)
         tie = f"{order}, file_row_number" if order else ""
+        prune = where
+        if order and not where:
+            # Unfiltered sort: statically prune to the row groups that can
+            # hold the window. Best-effort — any surprise (unorderable stats
+            # values, metadata query failure) keeps the full scan.
+            try:
+                prune = _rowgroup_prune(con, scan, sort, types, offset + limit)
+            except (duckdb.Error, TypeError):
+                prune = ""
         cur = con.execute(
-            f"SELECT file_row_number FROM {rel}{where}{tie} LIMIT ? OFFSET ?",
+            f"SELECT file_row_number FROM {rel}{prune}{tie} LIMIT ? OFFSET ?",
             wbinds + [limit, offset])
         return {"positions": [r[0] for r in cur.fetchall()]}
 
