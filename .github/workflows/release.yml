@@ -9,7 +9,7 @@ jobs:
   build-sign-notarize-release:
     runs-on: macos-14
     permissions:
-      contents: read
+      contents: write # needed to attach the DMG to a GitHub Release
     env:
       KEYCHAIN_PATH: ${{ github.workspace }}/ci-signing.keychain-db
       NOTARY_PROFILE: ci-notary
@@ -97,6 +97,13 @@ jobs:
           echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
           echo "DMG_SHA256=$DMG_SHA256" >> "$GITHUB_ENV"
           aws s3 cp "$DMG_PATH" "s3://fused-magic/fused-render-dmgs/$(basename "$DMG_PATH")"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.DMG_PATH }}
+          name: FusedRender ${{ github.ref_name }}
+          generate_release_notes: true
 
       - name: Bump homebrew-tap cask
         env:
