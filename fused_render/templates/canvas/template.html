@@ -299,7 +299,9 @@
     c = String(c || "").trim();
     var m = c.match(/^(?:chart-|series-)?([1-8])$/);
     if (m) return hexRgb(SERIES[parseInt(m[1], 10) - 1]);
-    var h = c.match(/^#?([0-9a-fA-F]{6})$/);
+    // 6- or 8-digit hex; a trailing alpha byte (#RRGGBBAA — how Fused stores
+    // folder tints) is dropped: the wash derives its own alphas (.14/.48/.92).
+    var h = c.match(/^#?([0-9a-fA-F]{6})(?:[0-9a-fA-F]{2})?$/);
     if (h) return hexRgb("#" + h[1]);
     return FOLDER_DEFAULT;
   }
