@@ -109,18 +109,25 @@ echo "==> using framework python: $FRAMEWORK_PYTHON (PYTHONFRAMEWORK=$FRAMEWORK_
 
 export FUSED_RENDER_BRANCH="$REF"
 
-echo "==> building wheel"
-python3 -m pip install --quiet --upgrade build
-python3 -m build --quiet --wheel --outdir "$DIST_DIR" "$REPO_ROOT"
-WHEEL_PATH="$(ls "$DIST_DIR"/*.whl)"
-
 if [[ ! -x "$BUILD_VENV/bin/python" ]]; then
   echo "==> creating build venv"
   "$FRAMEWORK_PYTHON" -m venv "$BUILD_VENV"
 fi
+"$BUILD_VENV/bin/pip" install --quiet --upgrade pip
+
+echo "==> building wheel"
+# Build via the venv's pip/python, not host python3 -m pip: on Homebrew python
+# (and most other PEP 668 "externally managed" installs) a bare host-level
+# `pip install` refuses to run, which would break the documented plain
+# `bash scripts/build_dmg.sh` local path. A venv is always installable into.
+# Clear stale dist/*.whl first so the glob below can't pick up a leftover
+# wheel from an earlier version/run and resolve to more than one path.
+rm -f "$DIST_DIR"/*.whl
+"$BUILD_VENV/bin/pip" install --quiet --upgrade build
+"$BUILD_VENV/bin/python" -m build --quiet --wheel --outdir "$DIST_DIR" "$REPO_ROOT"
+WHEEL_PATH="$(ls "$DIST_DIR"/*.whl)"
 
 echo "==> installing ${WHEEL_PATH##*/} [bundled,app,fused] + py2app + dmgbuild into the build venv"
-"$BUILD_VENV/bin/pip" install --quiet --upgrade pip
 # [fused] bakes the deploy CLI into the bundle (SPEC §19 DP-3): the .app has
 # no pip and no console scripts, so the Deploy surface runs the package
 # in-interpreter via fused_render/_fused_cli.py under the bundled python.
