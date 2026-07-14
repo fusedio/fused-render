@@ -373,15 +373,18 @@
 
   function initCamera() {
     // URL params (post-interaction) override the toml viewport (SPEC §26).
+    // Zoom from a URL or stored viewport is clamped to the interactive
+    // range — a shared/hand-edited URL must not restore an unusable camera.
+    function clampZoom(zv) { return Math.max(MIN_ZOOM, Math.min(zv, MAX_ZOOM)); }
     var px = num(fused.params.get("cx"));
     var py = num(fused.params.get("cy"));
     var pz = num(fused.params.get("z"));
     if (px !== null && py !== null && pz !== null && pz > 0) {
-      cam = { tx: px, ty: py, zoom: pz };
+      cam = { tx: px, ty: py, zoom: clampZoom(pz) };
       return;
     }
     if (viewport && num(viewport.zoom) && num(viewport.zoom) > 0) {
-      cam = { tx: num(viewport.x) || 0, ty: num(viewport.y) || 0, zoom: num(viewport.zoom) };
+      cam = { tx: num(viewport.x) || 0, ty: num(viewport.y) || 0, zoom: clampZoom(num(viewport.zoom)) };
       return;
     }
     cam = fitCam();

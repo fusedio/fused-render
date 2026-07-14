@@ -262,6 +262,29 @@ def test_reader_empty_viewport_is_none(reader, tmp_path):
     assert out["viewport"] is None
 
 
+def test_reader_boolean_viewport_coords_are_absent(reader, tmp_path):
+    # bool is an int subclass — `x = true` must not count as a coordinate and
+    # fabricate an origin camera; it falls through to fit-to-bounds like an
+    # empty viewport table.
+    d = tmp_path / "boolvp"
+    d.mkdir()
+    (d / "canvas.toml").write_text(
+        'type = "canvas"\nversion = 2\n[canvas]\nedges = []\n'
+        '[[canvas.nodes]]\nudfName = "a"\nx = 500.0\ny = 500.0\n'
+        'zIndex = 1\nwidth = 100\nheight = 100\n'
+        "[canvas.viewport]\nx = true\ny = true\nzoom = 0.5\n"
+    )
+    out = reader.main(file=str(d / "canvas.toml"))
+    assert out["viewport"] is None
+
+
+def test_reader_no_file_raises(reader):
+    # A missing _file param must FAIL the call (traceback overlay, §26), not
+    # return a dict the viewer would render as a healthy empty canvas.
+    with pytest.raises(ValueError):
+        reader.main(file="")
+
+
 def test_reader_siblings(reader, canvas_folder):
     out = reader.main(file=str(canvas_folder / "canvas.toml"))
     assert out["siblings"]["a"] == [".py", ".json"]

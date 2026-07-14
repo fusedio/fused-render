@@ -58,7 +58,10 @@ def main(file: str = "") -> dict:
         }
 
     if not file:
-        return {"error": "no file (missing _file param)"}
+        # Raise (don't return an error dict the viewer would render as an
+        # empty canvas) — a reader failure surfaces via the page's traceback
+        # overlay (§26), same as a whole-file parse failure.
+        raise ValueError("no file (missing _file param)")
 
     # A whole-file parse failure propagates -> the page's traceback overlay.
     with open(file, "rb") as f:
@@ -120,8 +123,8 @@ def main(file: str = "") -> dict:
     viewport = None
     raw_vp = canvas.get("viewport")
     if (isinstance(raw_vp, dict)
-            and isinstance(raw_vp.get("x"), (int, float))
-            and isinstance(raw_vp.get("y"), (int, float))):
+            and is_num(raw_vp.get("x"))
+            and is_num(raw_vp.get("y"))):
         viewport = {
             "x": num(raw_vp.get("x")),
             "y": num(raw_vp.get("y")),
