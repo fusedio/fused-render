@@ -632,12 +632,25 @@
     // ---- load / save ----
 
     let loadSeq = 0;
+    let lastGridKey = null;
     async function load() {
       const seq = ++loadSeq;
       const file = fused.params.get("_file");
       const offset = currentOffset();
       const table = fused.params.get("table") || "";
-      wrap.innerHTML = `<div id="status">Loading…</div>`;
+      // A re-load of the same table (page/filter/sort change) keeps the
+      // current grid on screen instead of wiping to "Loading…": a local
+      // SQLite page answers in well under a repaint-worth of time, so the
+      // wipe → rows sequence reads as flicker (same treatment as the duckdb
+      // grid). A genuinely slow load swaps the wipe back in after 250ms;
+      // first loads and table switches keep it.
+      const keepGrid = lastGridKey === file + "\n" + table
+        && wrap.querySelector("tbody tr[data-id]");
+      let slowTimer = null;
+      if (!keepGrid) wrap.innerHTML = `<div id="status">Loading…</div>`;
+      else slowTimer = setTimeout(() => {
+        if (seq === loadSeq) wrap.innerHTML = `<div id="status">Loading…</div>`;
+      }, 250);
       if (!file) {
         wrap.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
         return;
@@ -647,7 +660,9 @@
           file, table, offset: String(offset), limit: String(LIMIT),
           sort: currentSort(), filters: currentFilters(),
         });
+        clearTimeout(slowTimer);
         if (seq !== loadSeq) return;
+        lastGridKey = file + "\n" + table;
         staged = { edits: new Map(), deletes: new Set(), inserts: [] };
         state = data;
         // ids may be numbers; DOM attributes are strings — map string->real id.
@@ -660,6 +675,7 @@
         renderFilterBar(); // rebuild condition rows from the (freshly loaded) param
         renderAll();
       } catch (err) {
+        clearTimeout(slowTimer);
         if (seq !== loadSeq) return;
         wrap.innerHTML = `<div id="status" class="error"><strong>${escapeHtml(err.type || "Error")}</strong>: ${escapeHtml(err.message || "")}</div>`;
       }
