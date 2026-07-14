@@ -716,9 +716,11 @@ def test_attach_starts_http_serve_and_writes_map(home, rcd):
     assert body["fs"] == "remote:bucket/prefix"
     # Serve-side vfs cache is a capped on-disk range cache: unlike DuckDB's
     # in-RAM external file cache it survives reconnects and server restarts.
-    assert body["vfsOpt"] == mounts_mod.SERVE_VFS_OPT
-    assert body["vfsOpt"]["CacheMode"] == "full"
-    assert body["vfsOpt"]["CacheMaxSize"] == "5Gi"
+    # serve/start takes vfs options as FLAT vfs_* rc params — a `vfsOpt`
+    # object is mount/mount-only and gets silently ignored (cache stays off).
+    assert "vfsOpt" not in body
+    assert body["vfs_cache_mode"] == "full"
+    assert body["vfs_cache_max_size"] == "5Gi"
     serves = json.load(open(mounts_mod.serves_path()))
     assert serves == {mounts_mod.mountpoint(c): "http://127.0.0.1:59999"}
 
@@ -742,7 +744,7 @@ def test_sync_serves_reuses_existing_serve(home, rcd):
     rcd.responses["serve/list"] = {"list": [{
         "id": "http-live", "addr": "127.0.0.1:41000",
         "params": {"type": "http", "fs": "remote:bucket",
-                   "vfsOpt": dict(mounts_mod.SERVE_VFS_OPT)}}]}
+                   **mounts_mod.SERVE_VFS_OPT}}]}
     mounts_mod.sync_serves()
     assert not any(m == "serve/start" for m, _ in rcd.calls)
     serves = json.load(open(mounts_mod.serves_path()))
@@ -752,16 +754,19 @@ def test_sync_serves_reuses_existing_serve(home, rcd):
 def test_sync_serves_restarts_serve_with_stale_vfs_opts(home, rcd):
     # Serves outlive server runs, so a SERVE_VFS_OPT change would never reach
     # an adopted serve unless the sync notices the drift and restarts it.
+    # A serve started by the old vfsOpt-object code has NO flat vfs_* params
+    # (rcd ignored the object) — exactly this drift, so the fix self-deploys.
     c = mounts_mod.add_mount("data", "remote:bucket")
     rcd.responses["serve/list"] = {"list": [{
         "id": "http-stale", "addr": "127.0.0.1:41000",
         "params": {"type": "http", "fs": "remote:bucket",
-                   "vfsOpt": {"CacheMode": "off"}}}]}
+                   "vfsOpt": {"CacheMode": "full", "CacheMaxSize": "5Gi"}}}]}
     mounts_mod.sync_serves()
     [(_, stop)] = [x for x in rcd.calls if x[0] == "serve/stop"]
     assert stop == {"id": "http-stale"}
     [(_, start)] = [x for x in rcd.calls if x[0] == "serve/start"]
-    assert start["vfsOpt"] == mounts_mod.SERVE_VFS_OPT
+    assert start["vfs_cache_mode"] == "full"
+    assert start["vfs_cache_max_size"] == "5Gi"
     serves = json.load(open(mounts_mod.serves_path()))
     assert serves == {mounts_mod.mountpoint(c): "http://127.0.0.1:59999"}
 

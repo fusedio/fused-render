@@ -79,9 +79,15 @@ VFS_OPT = {
 # the whole of every touched file, hence the LRU size cap (soft — checked
 # every poll interval, open files never evicted). Fingerprints (size+modtime,
 # with --use-server-modtime from rcd) invalidate cached files that change
-# in the store. sync_serves restarts any serve whose vfsOpt drifts from
+# in the store. sync_serves restarts any serve whose vfs options drift from
 # this, so edits here roll out to serves adopted from an older server.
-SERVE_VFS_OPT = {"CacheMode": "full", "CacheMaxSize": "5Gi"}
+#
+# Unlike mount/mount's `vfsOpt` object, serve/start takes vfs options as
+# FLAT rc parameters named after the CLI flags (--vfs-cache-mode ->
+# vfs_cache_mode). An unknown `vfsOpt` key is silently ignored — the serve
+# then runs with the cache OFF and every read, warm or not, goes to the
+# store (measured: 1MB re-read 4.4s uncached vs 2ms cached).
+SERVE_VFS_OPT = {"vfs_cache_mode": "full", "vfs_cache_max_size": "5Gi"}
 
 # Tile-server daemon state files — the two parallel implementations that can
 # hold files open under a mount (geotiff, and the grid server shared by
@@ -292,14 +298,16 @@ def serves_path() -> str:
 
 
 def _http_serves(port: int) -> dict:
-    """{fs: {"addr", "id"}} for every live rc HTTP serve."""
+    """{fs: {"addr", "id", "vfs"}} for every live rc HTTP serve. "vfs" is the
+    flat vfs_* params the serve was started with (drift check input)."""
     try:
         listed = _rc(port, "serve/list").get("list", [])
     except RuntimeError:
         return {}
     return {
         s["params"]["fs"]: {"addr": s.get("addr", ""), "id": s.get("id", ""),
-                            "vfsOpt": s["params"].get("vfsOpt")}
+                            "vfs": {k: v for k, v in s["params"].items()
+                                    if k.startswith("vfs_")}}
         for s in listed
         if isinstance(s, dict) and s.get("params", {}).get("type") == "http"
         and s.get("params", {}).get("fs")
@@ -359,7 +367,7 @@ def _sync_serves_locked() -> None:
     for m in mounts:
         fs = m["remote"]
         serve = serves.get(fs)
-        if serve is not None and serve["vfsOpt"] != SERVE_VFS_OPT:
+        if serve is not None and serve["vfs"] != SERVE_VFS_OPT:
             # Stale cache options (serves outlive server runs, so a config
             # change here never reaches an already-running serve otherwise).
             if serve["id"]:
@@ -374,7 +382,7 @@ def _sync_serves_locked() -> None:
                     "type": "http",
                     "fs": fs,
                     "addr": "127.0.0.1:0",
-                    "vfsOpt": SERVE_VFS_OPT,
+                    **SERVE_VFS_OPT,
                 }, timeout=30).get("addr", "")
             except RuntimeError as e:
                 logger.warning("http serve for %r failed: %s", m["name"], e)
