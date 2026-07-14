@@ -1,16 +1,18 @@
 """Condition gate for the `canvas` template (SPEC CT-12, §26).
 
-Runs in the SERVER process on every `.toml` stat/render resolution, so it must
-be cheap and must NEVER raise — a broken gate is meant to *drop* the template,
-and returning False is how we do that (`server._run_condition` also catches, but
-we fail closed here explicitly, SPEC CT-12/§26).
+Runs in the SERVER process when `/api/fs/conditions` resolves a `.toml`'s
+gated modes in the background (stat only marks the entry `conditional`,
+CT-12 deferred evaluation). It must be cheap and must NEVER raise — a broken
+gate is meant to *deny* the mode, and returning False is how we do that
+(`server._run_condition` also catches, but we fail closed here explicitly,
+SPEC CT-12/§26).
 
 `method(target_path)` is True only when the file is a genuine Fused canvas
 definition: basename `canvas.toml` (the cheap pre-check, done before any I/O)
 AND the parsed TOML declares `type = "canvas"` (the content sniff, D105). A
 plain `.toml`, a `canvas.toml` that isn't actually a canvas, an oversized file,
-or anything that fails to parse → False, so the `code` mode stays the default
-for ordinary toml.
+or anything that fails to parse → False, so the `canvas` mode never shows for
+ordinary toml.
 """
 import os
 import tomllib

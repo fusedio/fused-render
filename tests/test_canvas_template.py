@@ -2,11 +2,12 @@
 
 Two surfaces:
 
-  * the condition gate (CT-12) — the first consumer of the built-in conditional
-    template mechanism: a genuine `canvas.toml` gets `canvas` as its default
-    `.toml` mode, while plain / malformed / mis-named toml files fall back to
-    `code` (fail-closed). Runs through the real `server._templates_for`
-    resolution on tmp fixture files (the text-sniff tests' convention).
+  * the condition gate (CT-12, deferred) — the first consumer of the built-in
+    conditional template mechanism: stat lists `canvas` first and marks it
+    `conditional` (never running the gate), and `/api/fs/conditions` resolves
+    the verdict — True for a genuine `canvas.toml`, False (fail-closed) for
+    plain / malformed / mis-named toml. Runs through the real
+    `server._templates_for` + `server._conditions_payload` on tmp fixtures.
   * the reader (`canvas/reader.py`) — golden parse of a fixture canvas folder
     (nodes / folders / edges / viewport / siblings shape). Guarded on `fused`
     since the reader is a `@fused.udf` (engine contract, §26).
@@ -25,6 +26,12 @@ TEMPLATES_DIR = server.TEMPLATES_DIR
 def modes(path, is_dir=False):
     entries, error = server._templates_for(path, is_dir)
     return [e["mode"] for e in entries], error
+
+
+def canvas_verdict(path):
+    # The deferred half of CT-12: the background /api/fs/conditions payload.
+    payload = server._conditions_payload(path)
+    return payload["conditions"].get("canvas"), payload.get("error")
 
 
 # canonical canvas.toml body reused across gate + reader tests
@@ -97,23 +104,35 @@ def test_canvas_toml_gets_canvas_mode_first(tmp_path):
     entries, _ = server._templates_for(str(p), False)
     assert entries[0]["path"].endswith("canvas/template.html")
     assert entries[0]["icon"] is not None
+    # stat only MARKS the gate (deferred CT-12) …
+    assert entries[0].get("conditional") is True
+    assert all("conditional" not in e for e in entries[1:])
+    # … and the background verdict allows a genuine canvas.
+    allowed, err = canvas_verdict(str(p))
+    assert allowed is True
+    assert err is None
 
 
-def test_plain_toml_has_no_canvas_mode(tmp_path):
+def test_plain_toml_denied_canvas_mode(tmp_path):
     p = tmp_path / "pyproject.toml"
     p.write_text("[tool.black]\nline-length = 88\n")
     m, error = modes(str(p))
-    assert m == ["code", "annotate"]  # canvas gate dropped it
+    # stat still lists canvas (marked conditional, gate not run at stat time)
+    assert m == ["canvas", "code", "annotate"]
     assert error is None
+    allowed, err = canvas_verdict(str(p))
+    assert allowed is False  # basename pre-check denies it
+    assert err is None
 
 
 def test_malformed_toml_fails_closed(tmp_path):
     p = tmp_path / "canvas.toml"
     p.write_text('type = "canvas"\n[canvas\nedges = [[\n')  # invalid TOML
-    m, error = modes(str(p))
-    assert m == ["code", "annotate"]
-    # fail-closed: a gate that can't parse returns False, no template_error
-    assert error is None
+    allowed, err = canvas_verdict(str(p))
+    # fail-closed: a gate that can't parse returns False, and it is not an
+    # error (the gate catches internally — an ordinary toml is not a failure)
+    assert allowed is False
+    assert err is None
 
 
 def test_canvas_content_but_wrong_basename_is_dropped(tmp_path):
@@ -121,24 +140,24 @@ def test_canvas_content_but_wrong_basename_is_dropped(tmp_path):
     # canvas content under any other .toml name does not get the canvas mode.
     p = tmp_path / "layout.toml"
     p.write_text(CANVAS_TOML)
-    m, _ = modes(str(p))
-    assert m == ["code", "annotate"]
+    allowed, _ = canvas_verdict(str(p))
+    assert allowed is False
 
 
 def test_toml_named_canvas_but_not_a_canvas_is_dropped(tmp_path):
     # Right name, wrong content: type != "canvas" -> gate returns False.
     p = tmp_path / "canvas.toml"
     p.write_text('type = "config"\n[stuff]\nx = 1\n')
-    m, _ = modes(str(p))
-    assert m == ["code", "annotate"]
+    allowed, _ = canvas_verdict(str(p))
+    assert allowed is False
 
 
 def test_oversized_canvas_toml_skipped(tmp_path):
     # The 2 MB size guard fails closed without parsing a pathological file.
     p = tmp_path / "canvas.toml"
     p.write_text(CANVAS_TOML + "\n# pad\n" + ("x" * (2 * 1024 * 1024 + 10)))
-    m, _ = modes(str(p))
-    assert m == ["code", "annotate"]
+    allowed, _ = canvas_verdict(str(p))
+    assert allowed is False
 
 
 def test_condition_module_method_directly(tmp_path):

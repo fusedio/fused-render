@@ -1391,20 +1391,23 @@ A `canvas` view template renders a Fused **canvas definition** (`canvas.toml`,
 v2) as a read-only **layout viewer**: nodes drawn as positioned boxes, folder
 groups behind them, edges wired between node borders, honoring the stored
 viewport. It is the **first consumer of the conditional-template mechanism**
-(CT-12): bound as the default `.toml` mode but gated so only genuine canvas
-files get it — a plain `.toml` still opens in `code`.
+(CT-12): listed first for `.toml` but gated so only genuine canvas files ever
+offer it — a plain `.toml` never shows the mode at all.
 
 - **CV-1** Files (`fused_render/templates/canvas/`): `template.html` (the
   viewer), `reader.py` (the toml→JSON parser), `condition.py` (the gate),
   `icon.svg`. Registry binding: `".toml": ["canvas", "code", "annotate"]` —
-  canvas first (default when the gate passes), `code` the default otherwise.
-- **CV-2** **Condition gate (CT-12).** `condition.py` runs in the server
-  process on every `.toml` resolution, so it is cheap and fail-closed: a
-  **basename pre-check** (`canvas.toml`, no I/O) before any open, a **2 MB
-  size guard**, then a `tomllib` parse asserting top-level `type == "canvas"`
-  (the content sniff, D105). Any exception → False; the template is dropped and
-  `code` stays default. No `template_error` on a fail — an ordinary toml is not
-  an error.
+  canvas listed first. Under deferred CT-12 the immediate default is the first
+  *unconditional* entry (`code`); `canvas` resolves in the background and joins
+  the switcher when its verdict allows (or disappears when it doesn't).
+- **CV-2** **Condition gate (CT-12, deferred).** Stat only *marks* the canvas
+  entry `conditional`; `condition.py` is evaluated via
+  `GET /api/fs/conditions` in the background (PT-8/CT-12). The gate itself is
+  cheap and fail-closed: a **basename pre-check** (`canvas.toml`, no I/O)
+  before any open, a **2 MB size guard**, then a `tomllib` parse asserting
+  top-level `type == "canvas"` (the content sniff, D105). Any exception →
+  False; the mode is denied and `code` stays. No `template_error` on a fail —
+  an ordinary toml is not an error.
 - **CV-3** **Reader (`reader.py`, `@fused.udf`-registered).** One `tomllib`
   pass → `{name, version, previewImageUrl, nodes, folders, edges, viewport,
   viewportBounds, siblings}`. `type == "udf-folder"` entries go to `folders`
@@ -1417,15 +1420,26 @@ files get it — a plain `.toml` still opens in `code`.
   lives inside `main()`; nothing but the entrypoint and its registration shim
   is at module level.
 - **CV-4** **Viewer (`template.html`).** A single full-viewport `<canvas>` in
-  world space (toml coordinates). Draw order: folder rects (folderColor fill) →
-  edges (border-to-border lines with an arrowhead) → UDF nodes (rounded rect,
-  title, udfName subtitle, sibling-extension badges; `visible:false` ghosted at
-  40% alpha). Text and strokes are drawn at screen-constant size regardless of
-  zoom. Empty canvas → a centered "empty canvas" note; a reader error surfaces
+  world space (toml coordinates), visually replicating the Flow app canvas
+  (its widget.css tokens: #070a0f bg with a 50-gap dot grid, #0d1219 node
+  cards with a #11171f header bar, bezier edges at 22% text tone with a
+  bg-colored legibility outline and target arrowhead, folder regions as a
+  color wash with a solid title pill above; folderColor `series-N`/`chart-N`
+  keys map into the series palette, default purple). Draw order matches Flow's
+  zIndex layering: folder regions → edges → node cards (title header,
+  description/udfName body, sibling-extension chips; `visible:false` ghosted
+  at 40% alpha) → folder title pills. Geometry, text, and borders are drawn in
+  **world units** so everything scales with zoom exactly like ReactFlow's
+  transformed DOM; only edge strokes are screen-constant (`min(5, 1.5/zoom)`).
+  Hovering a node brightens its border and shows a title/description tooltip.
+  Empty canvas → a centered "empty canvas" note; a reader error surfaces
   through the runtime's traceback overlay (the header still renders first).
 - **CV-5** **Camera & URL sync.** Start from `[canvas.viewport]` (x/y/zoom)
-  when present, else **fit-to-bounds** of all nodes with a 10% margin. Wheel
-  zooms to the cursor, drag pans, the header **Fit** button resets. Camera
+  when present, else **fit-to-bounds** of all nodes with a 10% margin (fit
+  clamps zoom to ≤1; interactive zoom clamps to [0.1, 2], Flow's min/max).
+  Wheel zooms to the cursor, drag pans; a bottom-right glass cluster offers
+  zoom in/out and an animated **Fit** (600 ms cubic ease-out, instant under
+  `prefers-reduced-motion`). Camera
   state mirrors to URL params `cx`/`cy`/`z` (translate + zoom) on interaction
   (150 ms debounce) and is read on load, where it **overrides** the toml
   viewport — so refresh/share restores the exact camera. Params are strings
