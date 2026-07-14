@@ -78,20 +78,20 @@ def test_resolve_baked_main_is_baseline(monkeypatch):
     monkeypatch.setattr(_branch, "_baked_ref", lambda: "main")
     assert _branch._resolve_ref() == ""
     _branch._CACHED_REF = None
-    assert _branch.branch_port() == 8765
+    assert _branch.branch_port() == 1777
     assert _branch.branch_suffix() == ""
 
 
 def test_branch_port_baseline():
-    assert _branch.branch_port("") == 8765
+    assert _branch.branch_port("") == 1777
 
 
 def test_branch_port_deterministic_and_stable():
     p1 = _branch.branch_port("foo")
     p2 = _branch.branch_port("foo")
     assert p1 == p2
-    assert 8776 <= p1 <= 9775
-    assert p1 not in range(8765, 8776)
+    assert 1788 <= p1 <= 2787
+    assert p1 not in range(1777, 1788)
 
 
 def test_branch_suffix():
@@ -117,5 +117,5 @@ def test_cached_no_arg_path_empty_baseline(monkeypatch):
     r1 = _branch.branch_ref()
     r2 = _branch.branch_ref()
     assert r1 == r2 == ""
-    assert _branch.branch_port() == 8765
+    assert _branch.branch_port() == 1777
     assert _branch.branch_suffix() == ""

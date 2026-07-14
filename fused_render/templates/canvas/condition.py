@@ -7,7 +7,7 @@ we fail closed here explicitly, SPEC CT-12/§26).
 
 `method(target_path)` is True only when the file is a genuine Fused canvas
 definition: basename `canvas.toml` (the cheap pre-check, done before any I/O)
-AND the parsed TOML declares `type = "canvas"` (the content sniff, D103). A
+AND the parsed TOML declares `type = "canvas"` (the content sniff, D105). A
 plain `.toml`, a `canvas.toml` that isn't actually a canvas, an oversized file,
 or anything that fails to parse → False, so the `code` mode stays the default
 for ordinary toml.

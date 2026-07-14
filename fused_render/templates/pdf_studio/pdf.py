@@ -10,28 +10,22 @@ ops, PyMuPDF handles text extraction/editing and rasterization. Every action
 returns JSON so an AI agent can drive the whole app headlessly exactly as the
 UI does.
 
-The source of truth is the .pdf files on disk, wherever they live — projects
-link imported files instead of copying them. Edits never touch the original
-directly: each open doc gets a working copy under .work/ that mutations (and
-undo/redo snapshots) apply to; an explicit save writes the working copy back
-over the original. Each call is a fresh process, so no in-memory state
-survives.
+The source of truth is the .pdf files on disk, wherever they live. A flat
+library (a single JSON file of absolute paths) just remembers which files the
+user added — it never copies them. Edits never touch the original directly:
+each open doc gets a working copy under .work/ that mutations (and undo/redo
+snapshots) apply to; an explicit save writes the working copy back over the
+original. Each call is a fresh process, so no in-memory state survives.
 
 Actions
   health                                   -> {ok, pymupdf, pikepdf}
-  list_projects                            -> {projects:[...], dir}
-  new_project(title)                       -> {slug}
-  rename_project(slug,title)               -> {slug}
-  duplicate_project(slug,title)            -> {slug}
-  delete_project(slug)                     -> {ok}
-  open_project(slug)                       -> {slug, title, docs:[...]}
+  list_library                             -> {docs:[...]}
+  add_to_library(src)                      -> {name, path}  (references src in place, no copy)
+  remove_from_library(doc)                 -> {ok}  (drops the reference; file on disk is kept)
+  import_url(url,name)                     -> {name, path}
   open_doc(doc)                            -> docinfo + {work, dirty, has_text, undo_depth, redo_depth}
-  which_project(doc)                       -> {slug}  ("" when in no project)
   listdir(path)                            -> {path, parent, dirs, files}
-  import_doc(project,src)                  -> {name, path}  (links src in place, no copy)
-  import_url(project,url,name)             -> {name, path}
-  delete_doc(doc,project)                  -> {ok}  (linked docs are only unlinked)
-  rename_doc(doc,name,project)             -> {name, path}
+  rename_doc(doc,name)                     -> {name, path}
   save(doc,force)                          -> {ok, file} or {conflict}
   revert(doc)                              -> mutation contract shape
   save_as(doc,directory,name)              -> {file}
@@ -43,7 +37,7 @@ Actions
   compress(doc,level,...)                           |  or {conflict, mtime}
   edit_text(doc,page,bbox,...,...)                 /
   extract_pages(doc,pages,name)            -> {name, path, size, dir}
-  merge(project,sources,name,directory)    -> {name, path, dir}
+  merge(sources,name,directory)            -> {name, path, dir}
   split(doc,mode,ranges,prefix,directory)  -> {files:[...], dir}
   reveal(path)                             -> {ok}  (opens the OS file explorer)
   page_text(doc,page)                      -> {width, height, rotation, spans:[...]}
@@ -54,41 +48,31 @@ import json
 import os
 import re
 import shutil
-import time
 
 # NOTE: bare `def main` (no @fused.udf) is deliberate — under the built-in
 # executor the worker calls main() by its own signature; @fused.udf hides that
 # signature and triggers a hosted-auth flow that times out.
 
 # State lives under the user home dir, never inside the installed template
-# package (D76-adjacent). The project library holds primary, non-regenerable
-# content (merge output, URL imports) so it gets its own `data/` root rather
-# than sitting under `cache/`, which a future clear-cache action could sweep;
+# package (D76-adjacent). The library index and URL downloads hold primary,
+# non-regenerable content so they get their own `data/` root rather than
+# sitting under `cache/`, which a future clear-cache action could sweep;
 # working copies and undo snapshots are transient and belong under `cache/`.
 DATA_ROOT = os.path.expanduser(os.path.join("~", ".fused-render", "data", "pdf_studio"))
 CACHE_ROOT = os.path.expanduser(os.path.join("~", ".fused-render", "cache", "pdf_studio"))
-PROJECTS = os.path.join(DATA_ROOT, "projects")
+LIBRARY = os.path.join(DATA_ROOT, "library.json")   # flat list of PDF paths the user added
+DOWNLOADS = os.path.join(DATA_ROOT, "downloads")    # PDFs fetched via import_url
 EXPORTS = os.path.join(CACHE_ROOT, "exports")
-SNAPSHOTS = os.path.join(CACHE_ROOT, "snapshots")   # undo stacks for out-of-library docs
+SNAPSHOTS = os.path.join(CACHE_ROOT, "snapshots")   # undo stacks, keyed by doc path
 WORKDIR = os.path.join(CACHE_ROOT, "work")          # per-doc working copies (unsaved edits)
-DEMO_SLUG = "pdf-studio-demo"
 
 UNDO_CAP = 10
 
 
 # ---------------------------------------------------------------------- helpers
-def _safe_slug(s: str) -> str:
-    slug = re.sub(r"[^A-Za-z0-9_-]", "-", (s or "").strip())[:64].strip("-")
-    return slug or "untitled"
-
-
 def _safe_name(name, default):
     name = re.sub(r'[\\/:*?"<>|]', "-", (name or "").strip()).strip(". ")
     return name or default
-
-
-def _project_dir(slug: str) -> str:
-    return os.path.join(PROJECTS, _safe_slug(slug))
 
 
 def _fwd(p: str) -> str:
@@ -245,6 +229,11 @@ def _save(doc, force):
         raise ValueError("open the document first")
     if not meta.get("dirty"):
         return {"ok": True, "dirty": False, "file": _fwd(src), "unchanged": True}
+    # RO gate (SPEC §13.5 RO-3) before the conflict check: the write below goes
+    # through the parent directory (`os.replace`) and would silently overwrite
+    # a chmod -w original — and the conflict dialog's "force" must not either.
+    if os.path.isfile(src) and not os.access(src, os.W_OK):
+        raise PermissionError(f"{src!r} is read-only")
     if not force and os.path.isfile(src) and os.path.getmtime(src) != meta["base_mtime"]:
         return {"conflict": True}
     tmp = src + ".tmp"
@@ -269,13 +258,7 @@ def _revert(doc):
 # --------------------------------------------------------- undo/redo snapshots
 def _hist_dir(doc):
     doc = os.path.realpath(os.path.abspath(doc))
-    proj = os.path.realpath(PROJECTS)
-    if doc.startswith(proj + os.sep):
-        rel = os.path.relpath(doc, proj)
-        slug = rel.split(os.sep)[0]
-        d = os.path.join(proj, slug, ".history", os.path.basename(doc))
-    else:
-        d = os.path.join(SNAPSHOTS, hashlib.sha1(doc.encode()).hexdigest()[:16])
+    d = os.path.join(SNAPSHOTS, hashlib.sha1(doc.encode()).hexdigest()[:16])
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -484,14 +467,13 @@ def _extract_pages(doc, pages, name):
             "size": os.path.getsize(dest), "dir": _fwd(os.path.dirname(dest))}
 
 
-def _merge(project, sources, name, directory=""):
+def _merge(sources, name, directory=""):
     import pikepdf
 
     paths = [os.path.abspath(p) for p in json.loads(sources)]
     if len(paths) < 2:
         raise ValueError("merge needs at least two PDFs")
-    out_dir = _out_dir(directory,
-                       _project_dir(project) if project else os.path.dirname(paths[0]))
+    out_dir = _out_dir(directory, os.path.dirname(paths[0]))
     dst = pikepdf.Pdf.new()
     for p in paths:
         with pikepdf.open(_cur_path(p)) as src:
@@ -649,124 +631,10 @@ def _edit_text(doc, page, bbox, origin, old_text, new_text, font, size, flags, c
     return fn(doc)
 
 
-# ------------------------------------------------------------------- projects
-def _demo_pdf(dest):
-    import fitz
-
-    blue, ink, ink2 = (0.09, 0.43, 0.88), (0.11, 0.13, 0.15), (0.35, 0.4, 0.46)
-    d = fitz.open()
-    w, h = 612, 792
-    m = 64
-
-    p = d.new_page(width=w, height=h)
-    p.draw_rect(fitz.Rect(0, 0, w, 8), color=None, fill=blue)
-    p.insert_text((m, 130), "PDF Studio", fontname="hebo", fontsize=34, color=ink)
-    p.insert_text((m, 158), "A demo document you can safely mangle", fontname="helv",
-                  fontsize=14, color=ink2)
-    p.insert_textbox(fitz.Rect(m, 200, w - m, 340),
-                     "This three-page PDF was generated locally so the studio has "
-                     "something to open on first run. Try the page operations from "
-                     "the Page menu, merge it with another file, or switch to Edit "
-                     "mode and click any line of text to rewrite it in place.",
-                     fontname="tiro", fontsize=12.5, color=ink, lineheight=1.5)
-    p.insert_text((m, 380), "What to try", fontname="hebo", fontsize=16, color=ink)
-    for i, tip in enumerate(["Rotate or delete pages from the thumbnail rail",
-                             "Split this file into one PDF per page",
-                             "Compress it and compare the size",
-                             "Edit this very line of text"]):
-        y = 410 + i * 26
-        p.draw_circle(fitz.Point(m + 4, y - 4), 2.5, color=None, fill=blue)
-        p.insert_text((m + 18, y), tip, fontname="helv", fontsize=12, color=ink)
-
-    p = d.new_page(width=w, height=h)
-    p.insert_text((m, 90), "2. Tables survive page ops", fontname="hebo",
-                  fontsize=18, color=ink)
-    rows = [("Operation", "Library", "Speed"),
-            ("Merge / split / rotate", "pikepdf (qpdf)", "instant"),
-            ("Compress", "pikepdf / PyMuPDF", "fast"),
-            ("Text editing", "PyMuPDF", "per edit"),
-            ("Rendering", "pdf.js (browser)", "local")]
-    x0, y0, rh, cw = m, 130, 30, [200, 170, 114]
-    for r, row in enumerate(rows):
-        y = y0 + r * rh
-        if r == 0:
-            p.draw_rect(fitz.Rect(x0, y, x0 + sum(cw), y + rh), color=None,
-                        fill=(0.91, 0.94, 1.0))
-        x = x0
-        for c, cell in enumerate(row):
-            p.insert_text((x + 10, y + 20), cell,
-                          fontname="hebo" if r == 0 else "helv",
-                          fontsize=11.5, color=ink if r else (0.06, 0.36, 0.77))
-            x += cw[c]
-        p.draw_line(fitz.Point(x0, y), fitz.Point(x0 + sum(cw), y), color=(0.88, 0.89, 0.91))
-    y = y0 + len(rows) * rh
-    p.draw_line(fitz.Point(x0, y), fitz.Point(x0 + sum(cw), y), color=(0.88, 0.89, 0.91))
-    p.insert_textbox(fitz.Rect(m, y + 40, w - m, y + 160),
-                     "Every mutation snapshots the file first, so undo and redo "
-                     "work across sessions. External edits are caught by an mtime "
-                     "check before each write.",
-                     fontname="tiro", fontsize=12.5, color=ink, lineheight=1.5)
-
-    p = d.new_page(width=w, height=h)
-    p.insert_text((m, 90), "3. Vector art is preserved", fontname="hebo",
-                  fontsize=18, color=ink)
-    vals = [0.35, 0.6, 0.45, 0.8, 0.65, 0.95]
-    bw, gap, base_y, max_h = 48, 22, 420, 220
-    for i, v in enumerate(vals):
-        x = m + i * (bw + gap)
-        p.draw_rect(fitz.Rect(x, base_y - v * max_h, x + bw, base_y),
-                    color=None, fill=(0.09 + 0.1 * i / 6, 0.43, 0.88 - 0.06 * i))
-        p.insert_text((x + 12, base_y + 18), f"Q{i + 1}", fontname="helv",
-                      fontsize=10, color=ink2)
-    p.draw_line(fitz.Point(m, base_y), fitz.Point(w - m, base_y), color=ink2)
-    p.insert_textbox(fitz.Rect(m, 470, w - m, 570),
-                     "Text edits use redaction plus re-insertion, scoped so "
-                     "drawings and images on the page are left untouched.",
-                     fontname="tiro", fontsize=12.5, color=ink, lineheight=1.5)
-    d.save(dest, deflate=True)
-    d.close()
-
-
-def _ensure_demo():
-    os.makedirs(PROJECTS, exist_ok=True)
-    marker = os.path.join(PROJECTS, ".demo_seeded")
-    if os.path.exists(marker):
-        return
-    dest = _project_dir(DEMO_SLUG)
-    try:
-        if not os.path.exists(dest):
-            os.makedirs(dest)
-            _demo_pdf(os.path.join(dest, "welcome.pdf"))
-            with open(os.path.join(dest, "meta.json"), "w", encoding="utf-8") as f:
-                json.dump({"title": "PDF Studio — Demo", "created": time.time(),
-                           "demo": True}, f)
-        with open(marker, "w", encoding="utf-8") as f:
-            f.write("1")
-    except Exception as e:
-        print(f"[python] demo seed failed: {e}")
-
-
-def _meta(d):
-    mp = os.path.join(d, "meta.json")
-    if os.path.exists(mp):
-        try:
-            with open(mp, encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {}
-
-
-def _write_meta(d, meta):
-    with open(os.path.join(d, "meta.json"), "w", encoding="utf-8") as f:
-        json.dump(meta, f)
-
-
-def _doc_entry(path, linked=False):
+# -------------------------------------------------------------------- library
+def _doc_entry(path):
     entry = {"name": os.path.basename(path), "path": _fwd(path),
              "size": os.path.getsize(path), "mtime": os.path.getmtime(path)}
-    if linked:
-        entry["linked"] = True
     try:
         import pikepdf
         with pikepdf.open(_cur_path(path)) as pdf:
@@ -777,89 +645,64 @@ def _doc_entry(path, linked=False):
     return entry
 
 
-def _project_docs(d):
+def _lib_load():
+    if os.path.exists(LIBRARY):
+        try:
+            with open(LIBRARY, encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("paths") or []
+        except Exception:
+            pass
+    return []
+
+
+def _lib_save(paths):
+    os.makedirs(DATA_ROOT, exist_ok=True)
+    tmp = LIBRARY + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"paths": paths}, f)
+    os.replace(tmp, LIBRARY)
+
+
+def _list_library():
     docs = []
-    for name in sorted(os.listdir(d), key=str.lower):
-        full = os.path.join(d, name)
-        if not name.lower().endswith(".pdf") or not os.path.isfile(full):
-            continue
-        docs.append(_doc_entry(full))
-    for link in _meta(d).get("links", []):
-        full = os.path.abspath(link)
+    for path in _lib_load():
+        full = os.path.abspath(path)
         if not os.path.isfile(full):
             docs.append({"name": os.path.basename(full), "path": _fwd(full),
-                         "size": 0, "mtime": 0, "page_count": None,
-                         "linked": True, "missing": True})
+                         "size": 0, "mtime": 0, "page_count": None, "missing": True})
             continue
-        docs.append(_doc_entry(full, linked=True))
+        docs.append(_doc_entry(full))
     docs.sort(key=lambda e: e["name"].lower())
-    return docs
+    return {"docs": docs}
 
 
-def _list_projects():
-    os.makedirs(PROJECTS, exist_ok=True)
-    _ensure_demo()
-    out = []
-    for name in sorted(os.listdir(PROJECTS)):
-        d = os.path.join(PROJECTS, name)
-        if not os.path.isdir(d):
-            continue
-        meta = _meta(d)
-        pdfs = [f for f in os.listdir(d) if f.lower().endswith(".pdf")]
-        out.append({"slug": name, "title": meta.get("title", name),
-                    "ndocs": len(pdfs) + len(meta.get("links", [])),
-                    "demo": bool(meta.get("demo")),
-                    "mtime": os.path.getmtime(d)})
-    out.sort(key=lambda e: -e["mtime"])
-    return {"projects": out, "dir": _fwd(PROJECTS)}
-
-
-def _new_project(title):
-    slug = _safe_slug(title or "untitled")
-    if os.path.exists(_project_dir(slug)):
-        i = 2
-        while os.path.exists(_project_dir(f"{slug}-{i}")):
-            i += 1
-        slug = f"{slug}-{i}"
-    d = _project_dir(slug)
-    os.makedirs(d)
-    _write_meta(d, {"title": title or slug, "created": time.time()})
-    return {"slug": slug}
-
-
-def _open_project(slug):
-    d = _project_dir(slug)
-    if not os.path.isdir(d):
-        raise ValueError(f"no such project: {slug}")
-    meta = _meta(d)
-    return {"slug": _safe_slug(slug), "title": meta.get("title", slug),
-            "docs": _project_docs(d)}
-
-
-def _import_doc(project, src):
-    """Link src into the project — the original file stays where it is."""
+def _add_to_library(src):
+    """Remember src in the library — the file stays where it is, never copied."""
     src = os.path.abspath(src)
     if not os.path.isfile(src):
         raise ValueError(f"no such file: {src}")
-    d = _project_dir(project)
-    if not os.path.isdir(d):
-        raise ValueError(f"no such project: {project}")
-    if os.path.realpath(os.path.dirname(src)) == os.path.realpath(d):
-        return {"name": os.path.basename(src), "path": _fwd(src)}
-    meta = _meta(d)
-    links = meta.get("links", [])
-    if not any(_same_path(l, src) for l in links):
-        meta["links"] = links + [_fwd(src)]
-        _write_meta(d, meta)
+    paths = _lib_load()
+    if not any(_same_path(p, src) for p in paths):
+        _lib_save(paths + [_fwd(src)])
     return {"name": os.path.basename(src), "path": _fwd(src)}
 
 
-def _import_url(project, url, name):
+def _remove_from_library(doc):
+    p = os.path.abspath(doc)
+    paths = _lib_load()
+    kept = [x for x in paths if not _same_path(x, p)]
+    if len(kept) != len(paths):
+        _lib_save(kept)
+    shutil.rmtree(_hist_dir(p), ignore_errors=True)
+    _work_drop(p)
+    return {"ok": True}
+
+
+def _import_url(url, name):
     import urllib.request
 
-    d = _project_dir(project)
-    if not os.path.isdir(d):
-        raise ValueError(f"no such project: {project}")
+    os.makedirs(DOWNLOADS, exist_ok=True)
     req = urllib.request.Request(url, headers={"User-Agent": "fused-render-pdf/1.0"})
     with urllib.request.urlopen(req, timeout=25) as resp:
         data = resp.read()
@@ -868,9 +711,10 @@ def _import_url(project, url, name):
     name = _safe_name(name or os.path.basename(url.split("?")[0]), "imported")
     if not name.lower().endswith(".pdf"):
         name += ".pdf"
-    dest = _unique_path(d, name)
+    dest = _unique_path(DOWNLOADS, name)
     with open(dest, "wb") as f:
         f.write(data)
+    _add_to_library(dest)
     return {"name": os.path.basename(dest), "path": _fwd(dest)}
 
 
@@ -965,11 +809,8 @@ def _health():
 
 # ----------------------------------------------------------------- dispatcher
 def main(
-    action: str = "list_projects",
-    slug: str = "",
-    title: str = "",
+    action: str = "list_library",
     doc: str = "",
-    project: str = "",
     src: str = "",
     url: str = "",
     name: str = "",
@@ -999,45 +840,14 @@ def main(
     expected_mtime: str = "",
     force: int = 0,
 ):
-    os.makedirs(PROJECTS, exist_ok=True)
-
     if action == "health":
         return _health()
-    if action == "list_projects":
-        return _list_projects()
-    if action == "new_project":
-        return _new_project(title)
-    if action == "rename_project":
-        d = _project_dir(slug)
-        if not os.path.isdir(d):
-            raise ValueError(f"no such project: {slug}")
-        meta = _meta(d)
-        meta["title"] = title or slug
-        _write_meta(d, meta)
-        return {"slug": _safe_slug(slug)}
-    if action == "duplicate_project":
-        srcd = _project_dir(slug)
-        if not os.path.isdir(srcd):
-            raise ValueError(f"no such project: {slug}")
-        out = _new_project(title or (_meta(srcd).get("title", slug) + " copy"))
-        dstd = _project_dir(out["slug"])
-        for f in os.listdir(srcd):
-            if f.lower().endswith(".pdf"):
-                shutil.copyfile(os.path.join(srcd, f), os.path.join(dstd, f))
-        links = _meta(srcd).get("links", [])
-        if links:
-            meta = _meta(dstd)
-            meta["links"] = links
-            _write_meta(dstd, meta)
-        return out
-    if action == "delete_project":
-        d = _project_dir(slug)
-        if not os.path.isdir(d):
-            raise ValueError(f"no such project: {slug}")
-        shutil.rmtree(d)
-        return {"ok": True}
-    if action == "open_project":
-        return _open_project(slug)
+    if action == "list_library":
+        return _list_library()
+    if action == "add_to_library":
+        return _add_to_library(src)
+    if action == "remove_from_library":
+        return _remove_from_library(doc)
     if action == "open_doc":
         p = os.path.abspath(doc)
         wpath, wmeta = _open_work(p)
@@ -1055,40 +865,19 @@ def main(
         else:
             info["has_text"] = False
         info["undo_depth"], info["redo_depth"] = _stack_depths(p)
+        # RO verdict (SPEC §13.5 RO-4): fs writability of the ORIGINAL. Edits
+        # keep working (they hit the working copy) — only save/rename back to
+        # the original are gated, so the tooltip points at Save a copy.
+        info["writable"] = os.access(p, os.W_OK)
+        info["readonly_message"] = "" if info["writable"] else "Read-only"
+        info["readonly_tooltip"] = "" if info["writable"] else (
+            "The file is read-only — edits can't be saved back to it. "
+            "Use Save a copy.")
         return info
-    if action == "which_project":
-        p = os.path.normcase(os.path.realpath(os.path.abspath(doc)))
-        for name in sorted(os.listdir(PROJECTS)):
-            d = os.path.join(PROJECTS, name)
-            if not os.path.isdir(d):
-                continue
-            if p.startswith(os.path.normcase(os.path.realpath(d)) + os.sep):
-                return {"slug": name}
-            if any(_same_path(l, doc) for l in _meta(d).get("links", [])):
-                return {"slug": name}
-        return {"slug": ""}
     if action == "listdir":
         return _listdir(path)
-    if action == "import_doc":
-        return _import_doc(project, src)
     if action == "import_url":
-        return _import_url(project, url, name)
-    if action == "delete_doc":
-        p = os.path.abspath(doc)
-        d = _project_dir(project) if project else ""
-        meta = _meta(d) if d and os.path.isdir(d) else {}
-        links = meta.get("links", [])
-        kept = [l for l in links if not _same_path(l, p)]
-        if len(kept) != len(links):
-            meta["links"] = kept
-            _write_meta(d, meta)
-        else:
-            if not os.path.isfile(p):
-                raise ValueError(f"no such file: {p}")
-            os.remove(p)
-        shutil.rmtree(_hist_dir(p), ignore_errors=True)
-        _work_drop(p)
-        return {"ok": True}
+        return _import_url(url, name)
     if action == "rename_doc":
         p = os.path.abspath(doc)
         n = _safe_name(name, "")
@@ -1096,16 +885,16 @@ def main(
             raise ValueError("rename needs a name")
         if not n.lower().endswith(".pdf"):
             n += ".pdf"
+        # RO gate (SPEC §13.5 RO-3): os.rename is a parent-directory op and
+        # would silently move a chmod -w file.
+        if os.path.isfile(p) and not os.access(p, os.W_OK):
+            raise PermissionError(f"{p!r} is read-only")
         dest = _unique_path(os.path.dirname(p), n)
         os.rename(p, dest)
         _work_rename(p, dest)
-        if project:
-            d = _project_dir(project)
-            meta = _meta(d) if os.path.isdir(d) else {}
-            links = meta.get("links", [])
-            if any(_same_path(l, p) for l in links):
-                meta["links"] = [_fwd(dest) if _same_path(l, p) else l for l in links]
-                _write_meta(d, meta)
+        paths = _lib_load()
+        if any(_same_path(l, p) for l in paths):
+            _lib_save([_fwd(dest) if _same_path(l, p) else l for l in paths])
         return {"name": os.path.basename(dest), "path": _fwd(dest)}
     if action == "save":
         return _save(doc, force)
@@ -1143,7 +932,7 @@ def main(
     if action == "extract_pages":
         return _extract_pages(doc, pages, name)
     if action == "merge":
-        return _merge(project, sources, name, directory)
+        return _merge(sources, name, directory)
     if action == "split":
         return _split(doc, mode, ranges, prefix, directory)
     if action == "reveal":

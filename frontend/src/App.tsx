@@ -9,7 +9,7 @@
 import { useEffect, useState } from "react";
 import { IS_EMBED, fsPathFromLocation, urlForFsPath } from "./lib/router";
 import { useSessionRestore, useSessionTracking } from "./lib/session";
-import { statPath, type Config, type StatResult } from "./lib/api";
+import { statPath, getMounts, reconnectMount, type Config, type Mount, type StatResult } from "./lib/api";
 import { useNavEpoch, useDocumentTitle } from "./lib/hooks";
 import { basename } from "./lib/format";
 import { maybeAutoStartTour } from "./lib/tour";
@@ -29,7 +29,10 @@ type StatState =
   | { status: "ok"; stat: StatResult }
   | { status: "error"; message: string };
 
-function useStat(fsPath: string | null, epoch: number): StatState {
+// `reloadKey` re-runs the stat without a navigation — used to recover after a
+// disconnected mount is reconnected in place (StatErrorView), where fsPath and
+// epoch are both unchanged.
+function useStat(fsPath: string | null, epoch: number, reloadKey: number): StatState {
   const [state, setState] = useState<StatState>({ status: "loading" });
   useEffect(() => {
     if (!fsPath) {
@@ -45,15 +48,97 @@ function useStat(fsPath: string | null, epoch: number): StatState {
     return () => {
       alive = false;
     };
-  }, [fsPath, epoch]);
+  }, [fsPath, epoch, reloadKey]);
   return state;
+}
+
+// A file on a mount goes unreachable when the mount is disconnected or wedged.
+// The raw stat error is a dead end, so detect that the failing path sits under
+// a known mount and offer to reconnect it in place. `state` is a real health
+// probe (rcd listing + a timed listdir, shell/mounts.py), but a stat can fail
+// under a mount for reasons the probe misses, so the button shows whenever the
+// path is under a mount — not only when it reports down.
+function StatErrorView({
+  fsPath,
+  message,
+  onReload,
+}: {
+  fsPath: string;
+  message: string;
+  onReload: () => void;
+}) {
+  // undefined = still checking; null = not under any mount.
+  const [mount, setMount] = useState<Mount | null | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const [mountErr, setMountErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    getMounts().then(
+      (r) => {
+        if (!alive) return;
+        // Longest matching mountpoint wins (nested mounts).
+        const hit = r.mounts
+          .filter((m) => fsPath === m.mountpoint || fsPath.startsWith(m.mountpoint + "/"))
+          .sort((a, b) => b.mountpoint.length - a.mountpoint.length)[0];
+        setMount(hit ?? null);
+      },
+      () => alive && setMount(null)
+    );
+    return () => {
+      alive = false;
+    };
+  }, [fsPath]);
+
+  const reconnect = async () => {
+    if (!mount) return;
+    setBusy(true);
+    setMountErr(null);
+    try {
+      // reconnectMount handles every bad state in one call: clears rcd's
+      // tracking, force-unmounts a dead kernel mount that rejects a plain
+      // umount (the wedged-NFS case), then mounts fresh.
+      await reconnectMount(mount.id);
+      setBusy(false);
+      onReload(); // re-stat; success replaces this view with the preview
+    } catch (e) {
+      setMountErr((e as Error).message);
+      setBusy(false);
+    }
+  };
+
+  // Mount lookup still in flight: hold off rather than flash the generic
+  // stat error and then flip it to the reconnect card a beat later.
+  if (mount === undefined) return null;
+  if (mount) {
+    const wedged = mount.state !== "unmounted";
+    return (
+      <div className="status-message error">
+        <p>
+          <strong>{mount.name}</strong> {wedged ? "isn’t responding" : "is disconnected"} — this
+          file is on a mount that isn’t currently available.
+        </p>
+        <button type="button" disabled={busy} onClick={reconnect}>
+          {busy ? "Reconnecting…" : wedged ? "Reconnect" : "Mount"}
+        </button>
+        {mountErr && <div className="deploy-error">{mountErr}</div>}
+      </div>
+    );
+  }
+  return (
+    <div className="status-message error">
+      Failed to stat {fsPath}: {message}
+    </div>
+  );
 }
 
 // Stat-backed views (listing/preview): breadcrumb + content under one hook
 // component so useStat only runs when the pathname is a real fs path, not a
 // sentinel.
 function StatView({ fsPath, epoch }: { fsPath: string; epoch: number }) {
-  const stat = useStat(fsPath, epoch);
+  // Bumped by StatErrorView to re-stat in place after reconnecting a mount.
+  const [reloadKey, setReloadKey] = useState(0);
+  const stat = useStat(fsPath, epoch, reloadKey);
   // null until the stat resolves — the session hooks opt out for anything that
   // is not a confirmed file, so a directory never gets a restore/track before
   // its kind is known.
@@ -68,9 +153,11 @@ function StatView({ fsPath, epoch }: { fsPath: string; epoch: number }) {
   let content = null;
   if (stat.status === "error") {
     content = (
-      <div className="status-message error">
-        Failed to stat {fsPath}: {stat.message}
-      </div>
+      <StatErrorView
+        fsPath={fsPath}
+        message={stat.message}
+        onReload={() => setReloadKey((k) => k + 1)}
+      />
     );
   } else if (stat.status === "ok") {
     // Dispatch (ARCHITECTURE §6): a target with templates previews — even a

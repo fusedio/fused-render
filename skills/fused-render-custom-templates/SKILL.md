@@ -77,9 +77,11 @@ def method(path):
 - **Signature:** `def method(path): bool`. `path` is the file being previewed; return truthy to keep the template in the list, falsy to drop it.
 - **No `condition.py` = always shown** — the common case. Only add one when a template should apply to *some* files of an extension, not all.
 - **Runs after registry resolution**, for both user and built-in folders (whichever `template.html` resolves). So `".csv": ["reports-view", "csv", "code"]` offers `reports-view` only for files where its `method` returns True; the others always show.
+- **Evaluated in the background, not at stat time.** Stat only marks the entry `"conditional": true`; the shell renders the first *unconditional* template immediately and resolves the gates via `GET /api/fs/conditions?path=<file>` while a pending spinner shows in the switcher. This means a gate MAY read the file's contents (e.g. sniff a parquet footer) without slowing every preview — but keep reads bounded (metadata/footers/prefixes, not whole files), especially for files on remote mounts.
+- **Never the default while a normal template exists:** a gated template can only be the default mode when every template in the list is gated.
 - **Re-evaluated on every file open** (like the registry) — edit `condition.py` and the next navigation/refresh picks it up, no restart.
-- **Keep it fast.** When an extension has several gated templates they're evaluated concurrently (so the cost is the slowest gate, not the sum), but every gate still runs on every file of that extension — a gate that returns False still had to run to decide that. Use quick, path-based checks (`in path`, `endswith`, `os.path`), not network calls or reads of large files.
-- **A broken condition drops that template** (no callable `method`, an exception, etc.) and sets `template_error` on the stat response — same as a bad registry name. It's never silently shown.
+- **Concurrent:** when an extension has several gated templates they're evaluated concurrently, so the cost is the slowest gate, not the sum — but every gate still runs on every file of that extension (a gate that returns False still had to run to decide that).
+- **A broken condition drops that template** (no callable `method`, an exception, etc.) and reports the reason as `error` on the conditions response — same fail-closed posture as a bad registry name. It's never silently shown.
 - **Sentinel modes** (`_render`, `_listing`) have no folder and can't be gated.
 - **Visible in the UI:** a template with a `condition.py` shows a **"conditional"** badge in the templates management page (Templates → Library), so you can tell at a glance which templates are gated.
 
@@ -88,7 +90,7 @@ def method(path):
 1. **Make the folder:** `mkdir -p ~/.fused-render/<name>` — the name is public: it's the registry reference, the `_mode` URL value, and the switcher tooltip. Pick a real name, or reuse a built-in name on purpose to shadow it.
 2. **Author `template.html` (+ readers) following `fused-render-authoring`.** The template reads its target from the read-only `_file` param and keeps UI state (paging, sort) in normal params. A reader `.py` is only needed where Python adds value — text formats can `fused.readFile(file)` directly, media can point at `fused.rawUrl(file)`.
 3. **Optionally add `icon.svg`** — monochrome, square, simple at 16px (see above). Skip it and the mode shows a first-letter placeholder in the switcher.
-4. **Develop before registering (optional):** the draft folder is invisible to dispatch, but the template is a plain fused page — open `http://127.0.0.1:8765/view/<abs path to template.html>?_file=<abs path to a sample file>` to iterate on it directly. Saving the html or a reader auto-reloads the open view.
+4. **Develop before registering (optional):** the draft folder is invisible to dispatch, but the template is a plain fused page — open `http://127.0.0.1:1777/view/<abs path to template.html>?_file=<abs path to a sample file>` to iterate on it directly. Saving the html or a reader auto-reloads the open view.
 5. **Register:** add the extension line to `~/.fused-render/registry.json` — a bare name string for a single-mode override, or a list (optionally with `"..."`) to add it alongside the built-ins (create the file with `{}` around the first entry if it doesn't exist).
 6. **Test dispatch:** open a file of that extension in the explorer. A single-mode list renders directly; with more than one mode, the preview header shows an icon-only switcher — click your mode's icon (or its first-letter placeholder), or navigate straight to `…?_mode=<name>`. Editing `template.html` afterwards live-reloads any open preview.
 
@@ -100,4 +102,4 @@ def method(path):
 - **Template renders but is blank / errors:** that's an authoring problem, not registration — debug with the `fused-render-authoring` skill (red traceback overlay, `print()` → browser console).
 - **Registry edits not applying to an already-open preview:** open previews watch their files, not the registry — refresh or re-navigate.
 - **Mode switcher doesn't show up:** it only renders when a file has more than one mode (`templates.length > 1`) — a single-mode extension, or a `null` override, never shows it.
-- **A mode is missing only for some files:** that's a `condition.py` doing its job (or misfiring). If it's unexpectedly hidden, check `template_error` on the stat response for a condition exception, and confirm `method(path)` returns True for that file's path.
+- **A mode is missing only for some files:** that's a `condition.py` doing its job (or misfiring). If it's unexpectedly hidden, check `error` on `GET /api/fs/conditions?path=…` for a condition exception, and confirm `method(path)` returns True for that file's path.

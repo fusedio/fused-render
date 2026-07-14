@@ -45,8 +45,6 @@
   .btn.ghost { border-color: transparent; background: transparent; }
   .btn.ghost:hover { background: var(--hair-2); }
   .btn svg { width: 15px; height: 15px; }
-  #projBtn { max-width: 240px; }
-  #projBtn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
   #docName { font-weight: 600; font-size: 13.5px; max-width: 26vw; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap; color: var(--ink); }
   #docPages { color: var(--ink-3); font-size: 12px; white-space: nowrap; }
@@ -65,19 +63,6 @@
     padding: 5px 12px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
   .seg button.on { background: #fff; color: var(--blue); box-shadow: var(--shadow-1); }
   .seg button svg { width: 15px; height: 15px; }
-
-  /* dropdown menus (topbar project menu) */
-  .menu-wrap { position: relative; }
-  .pop { position: absolute; top: calc(100% + 4px); left: 0; background: #fff; border: 1px solid var(--hair);
-    border-radius: var(--radius); box-shadow: var(--shadow-2); padding: 5px; min-width: 220px; z-index: 60; }
-  .pop button { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; border: none;
-    background: none; color: var(--ink); padding: 7px 10px; border-radius: 5px; font-size: 13px; }
-  .pop button:hover { background: var(--hair-2); }
-  .pop .sub { color: var(--ink-3); font-size: 11px; padding: 6px 10px 3px; text-transform: uppercase; letter-spacing: .5px; }
-  .pop .divider { height: 1px; background: var(--hair-2); margin: 5px 4px; }
-  .pop .scrolllist { max-height: 260px; overflow-y: auto; }
-  .pop .pj.now { background: var(--blue-soft); color: var(--blue-ink); font-weight: 600; }
-  .pop .pj .pjm { margin-left: auto; color: var(--ink-3); font-size: 11px; font-weight: 400; }
 
   /* ---- menubar ---- */
   #menubar { display: flex; padding: 0 8px; user-select: none; background: var(--chrome);
@@ -218,27 +203,21 @@
   #banner { background: #fff7e8; border-bottom: 1px solid #f2dfb8; color: #8a6116; padding: 7px 14px;
     font-size: 12.5px; flex: 0 0 auto; }
 </style>
+<script src="/template-shared/ro-badge.js"></script>
 </head>
-<body class="mode-edit">
+<body class="mode-view">
 <div id="boot">Loading PDF Studio…</div>
 
 <div id="topbar">
   <div class="brand"><span class="mark">PDF</span><span>PDF Studio</span></div>
-  <div class="menu-wrap">
-    <button class="btn" id="projBtn">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
-      <span id="projLabel">Projects</span>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" style="width:13px;height:13px;opacity:.6"><path d="M6 9l6 6 6-6"/></svg>
-    </button>
-    <div class="pop hidden" id="projMenu"></div>
-  </div>
   <span id="docName"></span>
+  <span id="ro" hidden></span>
   <span id="docPages"></span>
   <div class="spacer"></div>
   <div id="status"><span class="dot"></span><span class="txt">idle</span></div>
   <div class="seg" id="modeSeg">
-    <button data-mode="edit" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg> Edit</button>
-    <button data-mode="view"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg> View</button>
+    <button data-mode="edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg> Edit</button>
+    <button data-mode="view" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg> View</button>
   </div>
   <button class="btn primary" id="exportBtn">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
@@ -248,11 +227,10 @@
 
 <div id="menubar">
   <div class="menu" data-menu>File<div class="dropdown">
-    <div class="mi" data-act="importPdf">Import PDF…</div>
-    <div class="mi" data-act="importUrl">Import from URL…</div>
-    <div class="mi" data-act="openPath">Open anywhere… <span class="kbd">Ctrl+O</span></div>
+    <div class="mi" data-act="addPdf">Add PDF… <span class="kbd">Ctrl+O</span></div>
+    <div class="mi" data-act="importUrl">Add from URL…</div>
     <div class="divider"></div>
-    <div class="mi" data-act="save">Save <span class="kbd">Ctrl+S</span></div>
+    <div class="mi" data-act="save" id="miSave">Save <span class="kbd">Ctrl+S</span></div>
     <div class="mi" data-act="revert">Revert to saved</div>
     <div class="mi" data-act="saveAs">Save a copy… <span class="kbd">Ctrl+Shift+S</span></div>
     <div class="divider"></div>
@@ -295,7 +273,7 @@
 <div id="main">
   <div id="side">
     <div>
-      <h4>Documents <button class="add" id="importBtn" title="Import a PDF into this project">＋</button></h4>
+      <h4>Documents <button class="add" id="importBtn" title="Add a PDF">＋</button></h4>
       <div id="docList"></div>
     </div>
     <div>
@@ -318,10 +296,10 @@ const MAX_PAGES = 100;
 const $ = (id) => document.getElementById(id);
 
 const state = {
-  projects: [], project: "", projTitle: "",
   docs: [], doc: "", work: "", info: null, mtime: 0, dirty: false,
   pdf: null, curPage: 1, zoom: 100,
-  standalone: false, undoDepth: 0, redoDepth: 0,
+  undoDepth: 0, redoDepth: 0,
+  writable: true,     // fs writability of the ORIGINAL (open_doc verdict)
   spans: {},          // pageNo -> {mtime, spans}
   editing: null,      // the floating text input, if any
 };
@@ -735,7 +713,7 @@ async function applyMut(res) {
   state.undoDepth = res.undo_depth; state.redoDepth = res.redo_depth;
   updateUndoUi();
   await renderAll();
-  refreshDocList().catch(() => {});
+  refreshLib().catch(() => {});
 }
 
 async function mutate(action, params = {}) {
@@ -757,33 +735,17 @@ function updateUndoUi() {
   $("miRedo").classList.toggle("off", !state.redoDepth);
 }
 
-async function refreshDocList() {
-  if (state.standalone || !state.project) return renderDocList();
-  const res = await py({ action: "open_project", slug: state.project });
-  state.docs = res.docs; state.projTitle = res.title;
+async function refreshLib() {
+  const res = await py({ action: "list_library" });
+  state.docs = res.docs;
   renderDocList();
 }
 
 function renderDocList() {
-  $("projLabel").textContent = state.standalone ? "No project" : (state.projTitle || "Projects");
   const list = $("docList");
   list.innerHTML = "";
-  if (state.standalone) {
-    const row = document.createElement("div");
-    row.className = "doc-row on";
-    row.innerHTML = `<span class="nm"></span>`;
-    row.querySelector(".nm").textContent = state.doc.split("/").pop();
-    list.appendChild(row);
-    const add = document.createElement("button");
-    add.className = "btn ghost";
-    add.style.margin = "6px 2px";
-    add.textContent = "＋ Add to a project";
-    add.onclick = () => act("addToLibrary");
-    list.appendChild(add);
-    return;
-  }
   if (!state.docs.length) {
-    list.innerHTML = `<div class="side-empty">No PDFs yet — use ＋ to import one.</div>`;
+    list.innerHTML = `<div class="side-empty">No PDFs yet — use ＋ to add one.</div>`;
     return;
   }
   for (const d of state.docs) {
@@ -791,16 +753,19 @@ function renderDocList() {
     row.className = "doc-row" + (d.path === state.doc ? " on" : "");
     const meta = d.missing ? `<span class="meta" style="color:var(--danger)">missing</span>`
       : `<span class="meta">${d.page_count ?? "?"}p · ${fmtSize(d.size)}</span>`;
+    // Writability is only known for the open doc (open_doc's verdict). Hide
+    // rename for a read-only original; remove-from-list never touches the file.
+    const ro = d.path === state.doc && !state.writable;
     row.innerHTML = `<span class="nm"></span>${meta}
       <span class="ops">
-        <button title="Rename" data-op="rename">${icoPen}</button>
-        <button title="${d.linked ? "Remove from project" : "Delete"}" data-op="delete" class="danger">${icoTrash}</button>
+        ${ro ? "" : `<button title="Rename" data-op="rename">${icoPen}</button>`}
+        <button title="Remove from list" data-op="remove" class="danger">${icoTrash}</button>
       </span>`;
     row.title = d.path;
     row.querySelector(".nm").textContent = d.name;
     row.addEventListener("click", (e) => {
       const op = e.target.closest("[data-op]");
-      if (op) { act(op.dataset.op === "rename" ? "renameDoc" : "deleteDoc", d); return; }
+      if (op) { act(op.dataset.op === "rename" ? "renameDoc" : "removeDoc", d); return; }
       if (d.path !== state.doc) act("openDoc", d.path);
     });
     list.appendChild(row);
@@ -817,6 +782,12 @@ async function openDoc(path) {
   state.undoDepth = info.undo_depth; state.redoDepth = info.redo_depth;
   setStatus(state.dirty ? "unsaved changes" : "", state.dirty ? "warn" : "");
   $("docName").textContent = info.name;
+  // Read-only original (§13.5): viewing and working-copy edits (rotate, text,
+  // undo/redo, revert, export, save-a-copy) stay fully allowed — only writes
+  // back to the original (Save, Rename) are blocked.
+  state.writable = info.writable !== false;
+  fusedRoBadge.update($("ro"), info.readonly_message || "", info.readonly_tooltip || "");
+  $("miSave").classList.toggle("off", !state.writable);
   $("banner").classList.toggle("hidden", info.has_text);
   if (!info.has_text) $("banner").textContent =
     "This PDF has no text layer (likely scanned) — page operations work, text editing won't find anything to edit.";
@@ -826,57 +797,13 @@ async function openDoc(path) {
   await renderAll();
 }
 
-async function openProject(slug, docPath = "") {
-  const res = await py({ action: "open_project", slug });
-  state.project = res.slug; state.projTitle = res.title;
-  state.docs = res.docs; state.standalone = false;
-  fused.params.set("project", res.slug);
-  renderProjMenu();
-  if (docPath || res.docs.length) await openDoc(docPath || res.docs[0].path);
-  else {
-    state.doc = ""; state.pdf?.destroy(); state.pdf = null;
-    $("pages").innerHTML = ""; $("thumbs").innerHTML = "";
-    $("docName").textContent = ""; $("docPages").textContent = "";
-    renderDocList();
-  }
-}
-
-// ---------- project menu ----------
-function renderProjMenu() {
-  const menu = $("projMenu");
-  menu.innerHTML = `
-    <button data-p="new">${icoPlus} New project…</button>
-    <button data-p="rename">${icoPen} Rename project…</button>
-    <button data-p="dup">${icoCopy} Duplicate project</button>
-    <button data-p="del" style="color:var(--danger)">${icoTrash} Delete project…</button>
-    <div class="divider"></div><div class="sub">Projects</div><div class="scrolllist"></div>`;
-  const list = menu.querySelector(".scrolllist");
-  for (const p of state.projects) {
-    const b = document.createElement("button");
-    b.className = "pj" + (p.slug === state.project ? " now" : "");
-    b.innerHTML = `<span class="nm"></span><span class="pjm">${p.ndocs} PDF${p.ndocs === 1 ? "" : "s"}</span>`;
-    b.querySelector(".nm").textContent = p.title;
-    b.onclick = () => { hideProjMenu(); act("switchProject", p.slug); };
-    list.appendChild(b);
-  }
-  menu.querySelectorAll("[data-p]").forEach((b) => b.addEventListener("click", () => {
-    hideProjMenu();
-    act({ new: "newProject", rename: "renameProject", dup: "duplicateProject", del: "deleteProject" }[b.dataset.p]);
-  }));
-}
-const hideProjMenu = () => $("projMenu").classList.add("hidden");
-$("projBtn").addEventListener("click", (e) => {
-  e.stopPropagation();
-  $("projMenu").classList.toggle("hidden");
-});
-document.addEventListener("click", (e) => {
-  if (!e.target.closest(".menu-wrap")) hideProjMenu();
-});
-
-async function reloadProjects() {
-  const res = await py({ action: "list_projects" });
-  state.projects = res.projects;
-  renderProjMenu();
+function clearOpenDoc() {
+  cancelEdit();
+  state.doc = ""; state.pdf?.destroy(); state.pdf = null;
+  $("pages").innerHTML = ""; $("thumbs").innerHTML = "";
+  $("docName").textContent = ""; $("docPages").textContent = "";
+  fused.params.set("doc", "");
+  renderDocList();
 }
 
 // ---------- downloads ----------
@@ -891,103 +818,53 @@ function download(path) {
 const needDoc = () => { if (!state.doc) throw new Error("open a PDF first"); };
 
 const acts = {
-  switchProject: (slug) => openProject(slug),
   openDoc: (path) => openDoc(path),
 
-  newProject: async () => {
-    const title = await dialog({ title: "New project", label: "Project name", okText: "Create" });
-    if (!title) return;
-    const res = await py({ action: "new_project", title });
-    await reloadProjects();
-    await openProject(res.slug);
-    toast(`Project “${title}” created`);
-  },
-  renameProject: async () => {
-    if (state.standalone) return;
-    const title = await dialog({ title: "Rename project", value: state.projTitle, okText: "Rename" });
-    if (!title) return;
-    await py({ action: "rename_project", slug: state.project, title });
-    state.projTitle = title;
-    await reloadProjects();
-    renderDocList();
-  },
-  duplicateProject: async () => {
-    if (state.standalone) return;
-    const res = await py({ action: "duplicate_project", slug: state.project, title: state.projTitle + " copy" });
-    await reloadProjects();
-    await openProject(res.slug);
-    toast("Project duplicated");
-  },
-  deleteProject: async () => {
-    if (state.standalone) return;
-    const ok = await dialog({
-      title: `Delete “${state.projTitle}”?`, input: false, danger: true, okText: "Delete",
-      message: "The project folder and every PDF in it are removed. This cannot be undone.",
-    });
-    if (!ok) return;
-    await py({ action: "delete_project", slug: state.project });
-    await reloadProjects();
-    const next = state.projects[0];
-    if (next) await openProject(next.slug);
-    else { fused.params.set("project", ""); location.reload(); }
-  },
-
-  importPdf: async () => {
-    if (state.standalone) return acts.addToLibrary();
-    const src = await browseModal({ title: "Import a PDF into this project" });
+  addPdf: async () => {
+    const src = await browseModal({ title: "Add a PDF" });
     if (!src) return;
-    const res = await py({ action: "import_doc", project: state.project, src });
-    await refreshDocList();
+    const res = await py({ action: "add_to_library", src });
+    await refreshLib();
     await openDoc(res.path);
-    toast(`Linked ${res.name} — the file stays where it is`);
+    toast(`Added ${res.name}`);
   },
   importUrl: async () => {
-    if (state.standalone) return toast("Add this file to a project first");
-    const url = await dialog({ title: "Import from URL", label: "https://…/file.pdf", okText: "Import" });
+    const url = await dialog({ title: "Add from URL", label: "https://…/file.pdf", okText: "Add" });
     if (!url) return;
-    setStatus("importing…", "busy");
-    const res = await py({ action: "import_url", project: state.project, url });
-    await refreshDocList();
+    setStatus("downloading…", "busy");
+    const res = await py({ action: "import_url", url });
+    await refreshLib();
     await openDoc(res.path);
-    setStatus("imported", "ok");
-  },
-  openPath: async () => {
-    const src = await browseModal({ title: "Open a PDF from anywhere" });
-    if (src) await bootDoc(src);
-  },
-  addToLibrary: async () => {
-    const choice = await projectPickModal();
-    if (!choice) return;
-    const res = await py({ action: "import_doc", project: choice, src: state.doc });
-    await reloadProjects();
-    await openProject(choice, res.path);
-    toast("Added to project");
+    setStatus("added", "ok");
   },
   renameDoc: async (d) => {
+    if (d.path === state.doc && !state.writable)
+      return toast("The file is read-only — it can't be renamed", true);
     const name = await dialog({ title: "Rename PDF", value: d.name, okText: "Rename" });
     if (!name || name === d.name) return;
-    const res = await py({ action: "rename_doc", doc: d.path, name, project: state.project });
+    const res = await py({ action: "rename_doc", doc: d.path, name });
     if (state.doc === d.path) { state.doc = res.path; fused.params.set("doc", res.path); $("docName").textContent = res.name; }
-    await refreshDocList();
+    await refreshLib();
   },
-  deleteDoc: async (d) => {
+  removeDoc: async (d) => {
     const ok = await dialog({
-      title: d.linked ? `Remove ${d.name}?` : `Delete ${d.name}?`,
-      input: false, danger: true, okText: d.linked ? "Remove" : "Delete",
-      message: d.linked ? "The document is removed from this project — the file on disk is kept."
-        : "The file and its undo history are removed from the project.",
+      title: `Remove ${d.name}?`, input: false, danger: true, okText: "Remove",
+      message: "The PDF is removed from this list — the file on disk is kept.",
     });
     if (!ok) return;
-    await py({ action: "delete_doc", doc: d.path, project: state.project });
-    await refreshDocList();
+    await py({ action: "remove_from_library", doc: d.path });
+    await refreshLib();
     if (state.doc === d.path) {
-      state.doc = "";
+      // Clear the removed doc first so a failed open of the next one (missing/
+      // encrypted) leaves an empty viewer, not the just-removed file.
+      clearOpenDoc();
       if (state.docs.length) await openDoc(state.docs[0].path);
-      else await openProject(state.project);
     }
   },
   save: async () => {
     needDoc();
+    if (!state.writable)  // also covers the Ctrl+S path (keydown → act("save"))
+      return toast("The file is read-only — edits can't be saved back to it. Use Save a copy.", true);
     let res = await py({ action: "save", doc: state.doc });
     if (res.conflict) {
       const ok = await dialog({ title: "Overwrite changed file?", input: false, danger: true, okText: "Overwrite",
@@ -1077,7 +954,6 @@ const acts = {
       message: "The pages are copied into a new PDF next to this one." });
     if (!pages) return;
     const res = await py({ action: "extract_pages", doc: state.doc, pages });
-    await refreshDocList();
     await resultModal({ title: "Pages extracted",
       note: `Pages ${pages} were copied into a new PDF in ${res.dir}. The original document is unchanged.`,
       files: [res], dir: res.dir });
@@ -1088,11 +964,10 @@ const acts = {
     const picked = await mergeModal();
     if (!picked) return;
     setStatus("merging…", "busy");
-    const res = await py({ action: "merge", project: state.standalone ? "" : state.project,
+    const res = await py({ action: "merge",
       sources: JSON.stringify(picked.sources), name: picked.name, directory: picked.dir });
-    if (!state.standalone && state.project)
-      await py({ action: "import_doc", project: state.project, src: res.path });
-    await refreshDocList();
+    await py({ action: "add_to_library", src: res.path });
+    await refreshLib();
     await openDoc(res.path);
     setStatus("merged", "ok");
     toast(`Created ${res.name} in ${res.dir}`);
@@ -1104,7 +979,6 @@ const acts = {
     setStatus("splitting…", "busy");
     const res = await py({ action: "split", doc: state.doc, mode: opt.mode,
       ranges: opt.ranges, prefix: opt.prefix, directory: opt.dir });
-    await refreshDocList();
     setStatus("done", "ok");
     await resultModal({ title: "Split complete",
       note: `${state.info.name} was split into ${res.files.length} file${res.files.length === 1 ? "" : "s"} in ${res.dir}. The original document is unchanged.`,
@@ -1163,29 +1037,6 @@ function setZoom(z) {
 }
 
 // ---------- specialized modals ----------
-async function projectPickModal() {
-  await reloadProjects();
-  const m = modal(`<h3>Add to a project</h3><div class="checklist" id="ppList"></div>
-    <div class="row"><button class="btn" data-x="new">New project…</button>
-    <button class="btn" data-x="cancel">Cancel</button></div>`);
-  const list = m.el.querySelector("#ppList");
-  for (const p of state.projects) {
-    const b = document.createElement("label");
-    b.textContent = p.title;
-    b.style.cursor = "pointer";
-    b.onclick = () => m.close(p.slug);
-    list.appendChild(b);
-  }
-  m.el.querySelector("[data-x=cancel]").onclick = () => m.close(null);
-  m.el.querySelector("[data-x=new]").onclick = () => m.close("__new__");
-  const slug = await m.done;
-  if (slug !== "__new__") return slug;
-  const title = await dialog({ title: "New project", label: "Project name", okText: "Create" });
-  if (!title) return null;
-  const res = await py({ action: "new_project", title });
-  return res.slug;
-}
-
 async function mergeModal() {
   const m = modal(`<h3>Merge PDFs</h3>
     <p>Pick the documents to combine, in order. The current document is included first.</p>
@@ -1333,8 +1184,6 @@ const icoRotR = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
 const icoTrash = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg>`;
 const icoExtract = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/><path d="M12 18v-6"/><path d="m9 15 3 3 3-3"/></svg>`;
 const icoPen = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>`;
-const icoPlus = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>`;
-const icoCopy = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`;
 const icoDir = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>`;
 const icoFile = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/></svg>`;
 const icoDown = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>`;
@@ -1373,7 +1222,7 @@ function setMode(mode) {
 }
 
 $("exportBtn").addEventListener("click", () => act("export"));
-$("importBtn").addEventListener("click", () => act("importPdf"));
+$("importBtn").addEventListener("click", () => act("addPdf"));
 
 $("pages").addEventListener("click", (e) => {
   const wrap = e.target.closest(".pdf-page");
@@ -1412,19 +1261,15 @@ document.addEventListener("keydown", (e) => {
   if (mod && e.key.toLowerCase() === "z" && !e.shiftKey) { e.preventDefault(); act("undo"); }
   else if (mod && (e.key.toLowerCase() === "y" || (e.key.toLowerCase() === "z" && e.shiftKey))) { e.preventDefault(); act("redo"); }
   else if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); act(e.shiftKey ? "saveAs" : "save"); }
-  else if (mod && e.key.toLowerCase() === "o") { e.preventDefault(); act("openPath"); }
+  else if (mod && e.key.toLowerCase() === "o") { e.preventDefault(); act("addPdf"); }
   else if (mod && e.key === "\\") { e.preventDefault(); act("togglePanel"); }
 });
 
 // ---------- boot ----------
 async function bootDoc(path) {
-  const res = await py({ action: "which_project", doc: path });
-  if (res.slug) await openProject(res.slug, path);
-  else {
-    state.standalone = true; state.project = "";
-    renderProjMenu();
-    await openDoc(path);
-  }
+  await py({ action: "add_to_library", src: path });
+  await refreshLib();
+  await openDoc(path);
 }
 
 async function boot() {
@@ -1444,18 +1289,18 @@ async function boot() {
     }
     state.zoom = +(fused.params.get("zoom") || 100) || 100;
     if (fused.params.get("panel") === "0") document.body.classList.add("panel-off");
-    await reloadProjects();
+    await refreshLib();
     const wanted = fused.params.get("doc") || fused.params.get("_file") || "";
     let opened = false;
     if (wanted && wanted.toLowerCase().endsWith(".pdf")) {
       try { await bootDoc(wanted); opened = true; }
       catch (err) { console.error(err); toast(`Could not open ${wanted.split("/").pop()}: ${err?.message || err}`, true); }
     }
-    if (!opened) {
-      const slug = fused.params.get("project") || state.projects[0]?.slug;
-      if (slug) await openProject(slug);
+    if (!opened && state.docs.length) {
+      try { await openDoc(state.docs[0].path); }
+      catch (err) { console.error(err); }
     }
-    setMode(fused.params.get("mode") === "view" ? "view" : "edit");
+    setMode(fused.params.get("mode") === "edit" ? "edit" : "view");
     $("boot").remove();
   } catch (err) {
     console.error(err);

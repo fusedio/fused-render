@@ -31,6 +31,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -60,6 +61,33 @@ VFS_OPT = {
     "FastFingerprint": True,
     "DirCacheTime": "30s",
 }
+
+# Each mount's remote is ALSO served over localhost HTTP (rcd serve/start) —
+# the duckdb reader's fast path for parquet under a mountpoint. Going through
+# the kernel NFS mount breaks down for analytical reads: DuckDB fans out many
+# concurrent range reads, each 32KB NFS READ stalls behind an 8M VFS chunk
+# fetch (minutes on a slow link), and macOS's 1s NFS timeout (timeo=10) then
+# declares the server dead — "server connections interrupted" — and drops the
+# whole mount. Over HTTP, DuckDB's range GETs go straight to rclone with no
+# kernel filesystem in between, so a slow read is just slow, never fatal.
+# The serve keeps a `full` vfs cache: a sparse on-disk copy of every byte
+# range read (rclone's cache dir), so re-reads survive DuckDB reconnects AND
+# server restarts — DuckDB's own external file cache is RAM, per database
+# instance. Measured on the 350MB Ookla file: cold open 45s->26s (rclone's
+# sequential chunk streaming beats many scattered range GETs) and a
+# post-restart reopen 65s->0.2s. The cost is that readahead caches roughly
+# the whole of every touched file, hence the LRU size cap (soft — checked
+# every poll interval, open files never evicted). Fingerprints (size+modtime,
+# with --use-server-modtime from rcd) invalidate cached files that change
+# in the store. sync_serves restarts any serve whose vfs options drift from
+# this, so edits here roll out to serves adopted from an older server.
+#
+# Unlike mount/mount's `vfsOpt` object, serve/start takes vfs options as
+# FLAT rc parameters named after the CLI flags (--vfs-cache-mode ->
+# vfs_cache_mode). An unknown `vfsOpt` key is silently ignored — the serve
+# then runs with the cache OFF and every read, warm or not, goes to the
+# store (measured: 1MB re-read 4.4s uncached vs 2ms cached).
+SERVE_VFS_OPT = {"vfs_cache_mode": "full", "vfs_cache_max_size": "5Gi"}
 
 # Tile-server daemon state files — the two parallel implementations that can
 # hold files open under a mount (geotiff, and the grid server shared by
@@ -191,6 +219,18 @@ def _live_rcd_port() -> int | None:
 
 
 def rclone_bin() -> str | None:
+    """Path to the rclone binary to run.
+
+    Inside the packaged macOS app (py2app sets sys.frozen = "macosx_app",
+    same check as deploy.py's _setup_cli_hint) rclone is bundled at
+    Contents/Resources/bin/rclone (D103, build_dmg.sh) so mounts work with
+    zero user setup — no brew/apt install, no PATH dependency. Outside the
+    bundle (dev checkout, Linux) fall back to the system rclone."""
+    if getattr(sys, "frozen", None) == "macosx_app":
+        contents = os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))
+        bundled = os.path.join(contents, "Resources", "bin", "rclone")
+        if os.path.isfile(bundled):
+            return bundled
     return shutil.which("rclone")
 
 
@@ -262,6 +302,117 @@ def mounted_paths() -> set:
     return set(rcd_mount_map())
 
 
+# --------------------------------------------------------------- http serves
+
+
+def serves_path() -> str:
+    return os.path.join(storage.home_dir(), "serves.json")
+
+
+def _http_serves(port: int) -> dict:
+    """{fs: {"addr", "id", "vfs"}} for every live rc HTTP serve. "vfs" is the
+    flat vfs_* params the serve was started with (drift check input)."""
+    try:
+        listed = _rc(port, "serve/list").get("list", [])
+    except RuntimeError:
+        return {}
+    return {
+        s["params"]["fs"]: {"addr": s.get("addr", ""), "id": s.get("id", ""),
+                            "vfs": {k: v for k, v in s["params"].items()
+                                    if k.startswith("vfs_")}}
+        for s in listed
+        if isinstance(s, dict) and s.get("params", {}).get("type") == "http"
+        and s.get("params", {}).get("fs")
+    }
+
+
+# serve/list-then-serve/start isn't atomic; concurrent syncs (automount thread
+# vs a user mount request) would each start a serve for the same remote.
+_serves_lock = threading.Lock()
+
+
+def is_mount_backed(path: str) -> bool:
+    """True when `path` sits under the mounts dir — i.e. its bytes come from a
+    remote. Pure prefix check (no probe, no rc), cheap enough for every stat."""
+    root = os.path.abspath(mounts_dir())
+    return os.path.abspath(path).startswith(root + os.sep)
+
+
+def serve_url_for(path: str) -> str | None:
+    """Localhost HTTP URL serving `path`'s bytes, if it sits under a mount
+    with a live HTTP serve (serves.json). /api/fs/raw proxies from this URL
+    instead of reading through the kernel mount: analytical readers (the
+    duckdb grid) fan out concurrent range reads that wedge the macOS NFS
+    client (see SERVE_VFS_OPT), while the same ranges over HTTP are just
+    slow, never fatal. None for anything outside a served mount."""
+    serves = storage.read_json(serves_path())
+    if not isinstance(serves, dict):
+        return None
+    p = os.path.abspath(path)
+    for mp, base in sorted(serves.items(), key=lambda kv: -len(kv[0])):
+        if isinstance(base, str) and (p == mp or p.startswith(mp + os.sep)):
+            rel = os.path.relpath(p, mp).replace(os.sep, "/")
+            return base.rstrip("/") + "/" + urllib.parse.quote(rel)
+    return None
+
+
+def sync_serves() -> None:
+    """Reconcile rcd's HTTP serves with the stored mounts — one serve per
+    mount record, stop serves whose record is gone — and write the resulting
+    {mountpoint: base_url} map to serves.json (consumed by serve_url_for).
+    Best-effort: any failure logs and leaves the previous map in place."""
+    with _serves_lock:
+        try:
+            _sync_serves_locked()
+        except Exception:
+            logger.warning("sync of mount http serves failed", exc_info=True)
+
+
+def _sync_serves_locked() -> None:
+    port = _live_rcd_port()
+    if port is None:
+        storage.write_json(serves_path(), {})
+        return
+    serves = _http_serves(port)
+    mounts = list_mounts()
+    out = {}
+    for m in mounts:
+        fs = m["remote"]
+        serve = serves.get(fs)
+        if serve is not None and serve["vfs"] != SERVE_VFS_OPT:
+            # Stale cache options (serves outlive server runs, so a config
+            # change here never reaches an already-running serve otherwise).
+            if serve["id"]:
+                try:
+                    _rc(port, "serve/stop", {"id": serve["id"]})
+                except RuntimeError:
+                    pass
+            serve = None
+        if serve is None:
+            try:
+                addr = _rc(port, "serve/start", {
+                    "type": "http",
+                    "fs": fs,
+                    "addr": "127.0.0.1:0",
+                    **SERVE_VFS_OPT,
+                }, timeout=30).get("addr", "")
+            except RuntimeError as e:
+                logger.warning("http serve for %r failed: %s", m["name"], e)
+                continue
+        else:
+            addr = serve["addr"]
+        if addr:
+            out[mountpoint(m)] = f"http://{addr}"
+    wanted = {m["remote"] for m in mounts}
+    for fs, serve in serves.items():
+        if fs not in wanted and serve["id"]:
+            try:
+                _rc(port, "serve/stop", {"id": serve["id"]})
+            except RuntimeError:
+                pass
+    storage.write_json(serves_path(), out)
+
+
 def attach_mount(m: dict) -> str | None:
     """Mount via rcd; returns an error string or None."""
     mp = mountpoint(m)
@@ -276,7 +427,13 @@ def attach_mount(m: dict) -> str | None:
         if fs is not None and fs != m["remote"]:
             return (f"mountpoint already serves '{fs}' — unmount it before "
                     f"mounting '{m['remote']}'")
-        return None  # already mounted (double-click, adopted foreign mount)
+        # Already mounted (double-click, adopted foreign mount) — but the
+        # HTTP serve may still be missing (a prior serve/start failed, or the
+        # mount predates the serve layer), so reconcile serves here too:
+        # without one, /api/fs/raw silently falls back to reads through the
+        # wedge-prone kernel mount.
+        sync_serves()
+        return None
     try:
         port = ensure_rcd()
         _rc(port, "mount/mount", {
@@ -287,6 +444,7 @@ def attach_mount(m: dict) -> str | None:
         }, timeout=60)
     except RuntimeError as e:
         return str(e)
+    sync_serves()
     return None
 
 
@@ -305,19 +463,49 @@ def _quit_tile_daemons() -> None:
             continue
 
 
-def detach_mount(m: dict) -> str | None:
+def _force_unmount(mp: str) -> str | None:
+    """Kernel-level unmount for a DEAD mount, escalating to force. Only for
+    mounts whose serving daemon is gone/wedged — there is nothing left to
+    corrupt, and rcd's own unmount either failed or can't be asked. Returns
+    an error string or None."""
+    attempts = [["umount", mp]]
+    if sys.platform == "darwin":
+        attempts += [["umount", "-f", mp], ["diskutil", "unmount", "force", mp]]
+    else:
+        attempts += [["umount", "-l", mp]]  # lazy: detach now, cleanup later
+    last = ""
+    for cmd in attempts:
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            last = (r.stderr or r.stdout or "").strip()
+        except (OSError, subprocess.TimeoutExpired) as e:
+            last = str(e)
+            continue
+        if not os.path.ismount(mp):
+            return None
+    if not os.path.ismount(mp):
+        return None
+    return f"force unmount of {mp} failed: {last or 'still mounted'}"
+
+
+def detach_mount(m: dict, force: bool = False) -> str | None:
     """Unmount via rcd; on failure ask the tile daemons to release their
     open files and retry once. Returns an error string or None. Never
-    force-unmounts — failing loudly beats corrupted reads."""
+    force-unmounts on its own — failing loudly beats corrupted reads.
+    `force=True` (an explicit user action on a mount already shown as
+    disconnected) escalates every dead end below to _force_unmount."""
+    mp = mountpoint(m)
     port = _live_rcd_port()
     if port is None:
         # No daemon: nothing rcd-owned to unmount. A foreign mount at the
         # path (pre-rcd prototype, manual rclone) is not ours to force.
-        if os.path.ismount(mountpoint(m)):
+        if os.path.ismount(mp):
+            if force:
+                return _force_unmount(mp)
             return ("mounted outside the app (no rclone daemon running) — "
                     "unmount it from the terminal")
         return None
-    params = {"mountPoint": mountpoint(m)}
+    params = {"mountPoint": mp}
     try:
         _rc(port, "mount/unmount", params)
         return None
@@ -327,6 +515,8 @@ def detach_mount(m: dict) -> str | None:
         # Linux both say "busy"); on any other failure quitting them would
         # tear down previews of unrelated LOCAL files for nothing.
         if "busy" not in str(e).lower():
+            if force and os.path.ismount(mp):
+                return _force_unmount(mp)
             return f"unmount failed: {e}"
     _quit_tile_daemons()
     time.sleep(0.5)
@@ -334,12 +524,90 @@ def detach_mount(m: dict) -> str | None:
         _rc(port, "mount/unmount", params)
         return None
     except RuntimeError as e:
+        if force and os.path.ismount(mp):
+            return _force_unmount(mp)
         return f"unmount failed (a preview may still hold a file open): {e}"
 
 
-def mount_view(m: dict, rcd_mounts: set | None = None) -> dict:
+def reconnect_mount(m: dict) -> str | None:
+    """Repair a disconnected mount: clear whatever is wedged at the
+    mountpoint, then mount fresh. Returns an error string or None.
+
+    Order matters: ask rcd nicely first (clears its tracking when it still
+    lists the mount), force-unmount whatever kernel mount remains (a dead
+    NFS mount rejects plain umount — the state this whole path exists for),
+    ask rcd once more so a force-cleared mount doesn't linger in its
+    listmounts and block the remount, then attach as usual."""
+    mp = mountpoint(m)
+    port = _live_rcd_port()
+    if port is not None:
+        try:
+            _rc(port, "mount/unmount", {"mountPoint": mp})
+        except RuntimeError:
+            pass  # wedged: rcd's own umount fails; the force path handles it
+    if os.path.ismount(mp):
+        err = _force_unmount(mp)
+        if err:
+            return err
+        if port is not None:
+            try:
+                _rc(port, "mount/unmount", {"mountPoint": mp})
+            except RuntimeError:
+                pass  # "mount not found" once the kernel mount is gone — fine
+    return attach_mount(m)
+
+
+# How long a mount gets to answer a stat/listdir before it is declared
+# disconnected. A wedged NFS mount (rclone's macOS backend) can block those
+# syscalls indefinitely, so every probe runs in a throwaway daemon thread —
+# a hang costs one leaked (blocked) thread, never a stuck request.
+PROBE_TIMEOUT = 3.0
+
+
+def mount_state(m: dict, rcd_mounts: set, timeout: float = PROBE_TIMEOUT) -> str:
+    """Health of one mount: "mounted" | "disconnected" | "unmounted".
+
+    "mounted" requires both that a live rcd serves the mountpoint AND that the
+    filesystem actually answers a listdir. The failure this catches: the rclone
+    daemon (or its NFS serve) dies while the kernel mount entry survives —
+    os.path.ismount() still says True, listings return stale/empty data, and
+    a plain unmount fails ("failed to umount the NFS volume"). That state is
+    "disconnected", which the UI repairs via /reconnect (force unmount +
+    remount) instead of showing a green dot over an empty folder.
+    """
+    mp = mountpoint(m)
+    out: dict = {}
+
+    def probe() -> None:
+        try:
+            is_mnt = os.path.ismount(mp)
+            served = mp in rcd_mounts
+            if not is_mnt and not served:
+                out["state"] = "unmounted"
+            elif is_mnt != served:
+                # Kernel and daemon disagree: either a kernel mount whose rcd
+                # is gone (or a foreign mount we can't health-check), or rcd
+                # still tracking a mount the kernel dropped — the mountpoint
+                # is a plain dir masquerading as remote data. Either way,
+                # remote data isn't flowing.
+                out["state"] = "disconnected"
+            else:
+                os.listdir(mp)  # the actual I/O health check
+                out["state"] = "mounted"
+        except OSError:
+            out["state"] = "disconnected"
+
+    t = threading.Thread(target=probe, daemon=True, name=f"mount-probe-{m['name']}")
+    t.start()
+    t.join(timeout)
+    return out.get("state", "disconnected")  # no answer in time == wedged
+
+
+def mount_view(m: dict, rcd_mounts: set | None = None, state: str | None = None) -> dict:
     mp = mountpoint(m)
     listed = mounted_paths() if rcd_mounts is None else rcd_mounts
+    if state is None:
+        state = mount_state(m, listed)
     return {
         # Only the persisted fields the UI needs; drop any stray keys (e.g. a
         # legacy "automount" flag from prototype-era records).
@@ -347,7 +615,9 @@ def mount_view(m: dict, rcd_mounts: set | None = None) -> dict:
         "name": m["name"],
         "remote": m["remote"],
         "mountpoint": mp,
-        "mounted": mp in listed or os.path.ismount(mp),
+        "state": state,
+        # Healthy only — a disconnected mount must not read as mounted.
+        "mounted": state == "mounted",
     }
 
 
@@ -370,6 +640,9 @@ def run_automount() -> None:
         err = attach_mount(m)
         if err:
             logger.warning("automount of %r failed: %s", m["name"], err)
+    # Mounts that survived a server restart skip attach_mount above, so their
+    # HTTP serves (lost with any rcd restart) get re-ensured here.
+    sync_serves()
 
 
 def startup() -> None:
@@ -416,10 +689,24 @@ def _aws_profiles() -> list[str]:
 
 
 def _credential_suggestions() -> list[dict]:
-    """Remotes offerable from already-present credentials. Full specs (rclone
-    backend + params) — the endpoint consumes these; the API view (below)
-    exposes only id/label/remote_name."""
-    out: list[dict] = []
+    """Remotes offerable without re-entering keys. Full specs (rclone backend +
+    params) — the endpoint consumes these; the API view (below) exposes only
+    id/label/remote_name/kind.
+
+    The first entry is always present: an anonymous S3 remote for public buckets
+    (AWS Open Data, etc.). It needs no credentials — env_auth=false with blank
+    keys makes rclone send unsigned requests — so it works even when the user
+    has no (or expired) AWS creds. region is just the endpoint rclone starts at;
+    it follows S3's region redirect to reach buckets in any region. The rest are
+    credential-backed (kind="detected", defaulted in _suggestions_view)."""
+    out: list[dict] = [{
+        "id": "aws-open-public",
+        "label": "AWS S3 — public buckets (no credentials)",
+        "remote_name": "aws-open",
+        "backend": "s3",
+        "kind": "public",
+        "params": {"provider": "AWS", "env_auth": "false", "region": "us-west-2"},
+    }]
     for prof in _aws_profiles():
         out.append({
             "id": f"aws-profile:{prof}",
@@ -449,9 +736,13 @@ def _credential_suggestions() -> list[dict]:
 
 
 def _suggestions_view(remotes: list[str]) -> list[dict]:
-    """Public shape, minus any suggestion already materialized as a remote."""
+    """Public shape, minus any suggestion already materialized as a remote (so
+    the built-in aws-open drops out of the suggestions once created and shows
+    under Remotes instead). `kind` groups them in the dropdown: 'public' vs the
+    default 'detected'."""
     return [
-        {"id": s["id"], "label": s["label"], "remote_name": s["remote_name"]}
+        {"id": s["id"], "label": s["label"], "remote_name": s["remote_name"],
+         "kind": s.get("kind", "detected")}
         for s in _credential_suggestions()
         if f'{s["remote_name"]}:' not in remotes
     ]
@@ -475,12 +766,49 @@ def _rclone_state() -> dict:
             "suggested": _suggestions_view(remotes)}
 
 
+def broken_mount_error(path: str) -> str | None:
+    """If `path` sits under one of our mountpoints whose mount isn't healthy,
+    the user-facing reason — else None. /api/fs/list consults this before
+    trusting an empty or failed listing: a dead mount leaves a plain (empty)
+    local dir or a wedged NFS mount behind, which would otherwise render as
+    an ordinary empty folder with no hint the remote data ever existed."""
+    root = mounts_dir()
+    if not path.startswith(root + os.sep):
+        return None
+    name = path[len(root) + 1:].split(os.sep, 1)[0]
+    m = next((c for c in list_mounts() if c["name"] == name), None)
+    if m is None:
+        return None
+    state = mount_state(m, mounted_paths())
+    if state == "mounted":
+        return None
+    reason = "disconnected" if state == "disconnected" else "not mounted"
+    return (f"mount '{name}' is {reason} — reconnect it from the Mounts page "
+            f"in the sidebar")
+
+
 @router.get("/api/mounts")
 def get_mounts():
     live = mounted_paths()
+    mounts = list_mounts()
+    # Probe states concurrently: each disconnected/wedged mount blocks its
+    # probe for the full PROBE_TIMEOUT, and serially those would stack.
+    states: list[str | None] = [None] * len(mounts)
+    threads = []
+    for i, m in enumerate(mounts):
+        def probe(i=i, m=m):
+            states[i] = mount_state(m, live)
+        t = threading.Thread(target=probe, daemon=True)
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join(PROBE_TIMEOUT + 1)
     return {
         "rclone": _rclone_state(),
-        "mounts": [mount_view(c, live) for c in list_mounts()],
+        "mounts": [
+            mount_view(m, live, state=s or "disconnected")
+            for m, s in zip(mounts, states)
+        ],
     }
 
 
@@ -515,15 +843,31 @@ def mount_endpoint(cid: str, x_fused: str | None = Header(default=None)):
     return mount_view(m)
 
 
-@router.post("/api/mounts/{cid}/unmount")
-def unmount_endpoint(cid: str, x_fused: str | None = Header(default=None)):
+@router.post("/api/mounts/{cid}/reconnect")
+def reconnect_endpoint(cid: str, x_fused: str | None = Header(default=None)):
+    """Repair a disconnected mount: force-clear the dead mountpoint, remount."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
     m = get_mount(cid)
     if m is None:
         return JSONResponse({"error": "unknown mount"}, status_code=404)
-    err = detach_mount(m)
+    err = reconnect_mount(m)
+    if err:
+        return JSONResponse({"error": err}, status_code=502)
+    return mount_view(m)
+
+
+@router.post("/api/mounts/{cid}/unmount")
+def unmount_endpoint(cid: str, force: str = "0",
+                     x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    m = get_mount(cid)
+    if m is None:
+        return JSONResponse({"error": "unknown mount"}, status_code=404)
+    err = detach_mount(m, force=force == "1")
     if err:
         return JSONResponse({"error": err}, status_code=502)
     return mount_view(m)
@@ -546,6 +890,7 @@ def delete_mount(cid: str, x_fused: str | None = Header(default=None)):
     if os.path.isdir(mp) and not os.path.ismount(mp) and not os.listdir(mp):
         os.rmdir(mp)
     remove_mount(cid)
+    sync_serves()  # stop the deleted mount's HTTP serve, drop its map entry
     return {"ok": True}
 
 

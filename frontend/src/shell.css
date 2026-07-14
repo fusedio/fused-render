@@ -130,14 +130,19 @@ body {
   padding: 6px 10px;
   border-radius: 8px;
   cursor: pointer;
+  /* Opaque equivalent of this row's background, for the hover actions' fade
+     mask (see .bookmark-actions). Kept in sync with the state rules below. */
+  --row-bg: var(--bg-alt);
 }
 
 .bookmark-row:hover {
   background: rgba(255, 255, 255, 0.06);
+  --row-bg: #26282c; /* bg-alt composited with the white 0.06 hover layer */
 }
 
 .bookmark-row.active {
   background: rgba(229, 255, 68, 0.13);
+  --row-bg: #353a25; /* bg-alt composited with the accent 0.13 active layer */
 }
 
 .bookmark-row.active .bookmark-name {
@@ -254,14 +259,21 @@ a.bookmark-name::after {
 }
 
 .bookmark-actions {
-  /* visibility (not display) so the buttons always occupy layout space —
-     display:none → flex on hover made the bookmark name shift width. */
+  /* Absolutely positioned (out of the flex flow) so the name occupies the full
+     row width by default instead of permanently reserving space for the icons.
+     On hover the buttons overlay the name's right end; a gradient the color of
+     the row fades the underlying text out beneath them so it stays readable and
+     nothing reflows. Same overlay trick as .folder-count. */
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
   display: flex;
   visibility: hidden;
-  flex: 0 0 auto;
   gap: 2px;
-  position: relative;
   z-index: 1;
+  padding-left: 26px;
+  background: linear-gradient(to right, transparent, var(--row-bg) 26px);
 }
 
 .bookmark-row:hover .bookmark-actions {
@@ -947,6 +959,43 @@ table.listing-table td.mtime {
   font-size: 9px;
   font-weight: 700;
   line-height: 1;
+}
+
+/* Conditional template whose gate is still resolving (CT-12): a small
+   currentColor ring spinner in place of the mode icon. */
+.mode-icon-spinner {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  opacity: 0.6;
+  animation: mode-spin 0.8s linear infinite;
+}
+
+@keyframes mode-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.preview-actions .mode-switcher-btn.pending,
+.pane-mode-item.pending {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* Body placeholder while a URL-requested gated mode (or an all-conditional
+   list) is still resolving. */
+.preview-resolving {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--fg-muted);
+  font-size: 13px;
 }
 
 

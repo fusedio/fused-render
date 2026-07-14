@@ -93,6 +93,27 @@
     font-size: 10px; line-height: 15px; text-align: center;
   }
   .save-count[hidden] { display: none; }
+  /* Indeterminate load bar between the filter bar and the grid. A sort/filter
+     change on a remote file keeps the old grid up (no "Loading…" wipe) and then
+     awaits a multi-second row-positions scan before anything repaints — so
+     without this the UI looks frozen. The bar turns on the instant load()
+     starts and off as soon as rows or skeletons paint. Always 2px tall so
+     toggling it never shifts the layout. */
+  #loadbar { flex: 0 0 auto; height: 2px; overflow: hidden; background: transparent; }
+  #loadbar::before {
+    content: ""; display: block; height: 100%; width: 40%;
+    border-radius: 2px;
+    background: linear-gradient(90deg, transparent, #4a9eff, transparent);
+    transform: translateX(-100%); opacity: 0;
+  }
+  #loadbar.active::before {
+    opacity: 1;
+    animation: loadbar-slide 1.1s ease-in-out infinite;
+  }
+  @keyframes loadbar-slide {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(350%); }
+  }
   #tablewrap { flex: 1 1 auto; min-height: 0; overflow: auto; }
   #rowcount { color: #9aa0a6; }
   /* .ro-badge / .ro-tip styles inject from /template-shared/ro-badge.js. */
@@ -174,6 +195,23 @@
   td.is-null { color: #6b7075; }
   td.is-null::before { content: "(NULL)"; font-style: italic; }
   td.is-null:focus::before { content: ""; }
+  /* Column still in flight (remote per-column parallel load): shimmer bar. */
+  td.skel { color: transparent; pointer-events: none; }
+  td.load-err { color: #ff6b6b; opacity: 0.75; }
+  td.skel::before {
+    content: "";
+    display: block;
+    height: 0.9em;
+    min-width: 3.5em;
+    border-radius: 3px;
+    background: linear-gradient(90deg, #23282e 25%, #2f353d 50%, #23282e 75%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.2s ease-in-out infinite;
+  }
+  @keyframes skel-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
   /* Subtle full-row tint for the row whose cell was last clicked/focused. Set on
      the <tr> (not the <td>) so edited/inserted cell backgrounds still paint over it. */
   tr.row-active { background: #1c1f24; }
@@ -210,6 +248,7 @@
       <button id="reset" class="fr-clear" title="Clear sort &amp; filters" aria-label="Clear sort and filters" hidden><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M3.28 2.22 8 6.94l4.72-4.72 1.06 1.06L9.06 8l4.72 4.72-1.06 1.06L8 9.06l-4.72 4.72-1.06-1.06L6.94 8 2.22 3.28z" fill="currentColor"/></svg></button>
     </div>
   </div>
+  <div id="loadbar"></div>
   <div id="tablewrap"></div>
   <div id="bar">
     <div class="bar-group side">
@@ -239,6 +278,13 @@
           discardBtn = el("discard"), wrap = el("tablewrap"), resetBtn = el("reset");
     const filterbar = el("filterbar"), frows = el("frows"), applyBtn = el("apply");
     const ctxmenu = el("ctxmenu"), ctxNull = el("ctx-null");
+    const loadbar = el("loadbar");
+
+    // Indeterminate load indicator. On from the moment a load starts until the
+    // grid next paints rows or skeletons — this is the only signal during the
+    // serial row-positions scan a remote sort/filter runs before its first
+    // repaint (renderAll turns it off; see load()).
+    const setLoading = (on) => loadbar.classList.toggle("active", !!on);
 
     // Server state for the current page, and the client-side staged mutations.
     let state = null;
@@ -465,7 +511,12 @@
     // Rebuild toolbar affordances + the whole table from state + staged. Safe to
     // call any time except mid-typing (cell input updates the DOM in place so it
     // never yanks focus); it re-derives every row from staging, so edits persist.
-    function renderAll() {
+    // `fromLoad` is set only by the calls inside the load()/applyBatch path
+    // that paint a load's result; staging actions (add/remove row) call
+    // renderAll() with it unset, so they never clear a load bar for a reload
+    // that is still in flight (e.g. a sort's positions scan running while the
+    // user adds a row to the still-visible old grid).
+    function renderAll(fromLoad) {
       const offset = currentOffset();
       renderTableSelector();
       const editable = !!state.editable;
@@ -497,6 +548,15 @@
             `</div></th>`;
         }).join("")}${actHead}</tr>`;
 
+        // Remote per-column load, no rows landed yet: a placeholder grid of
+        // all-skeleton rows so the table shape paints before any data.
+        // Replaced wholesale by the first column's renderAll (applyColumn).
+        const placeholderRows = state.pending && state.pending.size && !state.rows.length
+          ? Array.from({ length: 12 }, () =>
+              `<tr>${cols.map((c) => `<td class="skel" data-col="${escapeHtml(c)}"></td>`).join("")}${editable ? '<td class="rowact"></td>' : ""}</tr>`
+            ).join("")
+          : "";
+
         const bodyRows = state.rows.map((row, i) => {
           const id = state.ids[i];
           const deleted = staged.deletes.has(id);
@@ -504,6 +564,16 @@
             ? `<td class="rowact"><button class="del-btn" data-id="${escapeHtml(id)}">${deleted ? "↺" : "✕"}</button></td>`
             : "";
           const cells = cols.map((c) => {
+            // Column data still in flight (remote per-column parallel load):
+            // a shimmer skeleton, filled in place by fillColumn when it lands.
+            if (state.pending && state.pending.has(c)) {
+              return `<td class="skel" data-col="${escapeHtml(c)}"></td>`;
+            }
+            // Column's batch failed: an explicit marker, not editable and not
+            // a silent blank a reader would take for real empty values.
+            if (state.failedCols && state.failedCols.has(c)) {
+              return `<td class="load-err" data-col="${escapeHtml(c)}" title="Column failed to load — reload to retry">⚠</td>`;
+            }
             const k = editKey(id, c);
             const edited = staged.edits.has(k);
             const raw = edited ? staged.edits.get(k).value : row[c];
@@ -514,7 +584,7 @@
               return `<td contenteditable="true" data-col="${escapeHtml(c)}"${clsAttr}>${isNull ? "" : escapeHtml(cell(raw))}</td>`;
             }
             const disp = isNull ? "" : cell(row[c]);
-            return `<td${isNull ? ' class="is-null"' : ""} title="${escapeHtml(disp)}">${escapeHtml(disp)}</td>`;
+            return `<td${isNull ? ' class="is-null"' : ""} data-col="${escapeHtml(c)}" title="${escapeHtml(disp)}">${escapeHtml(disp)}</td>`;
           }).join("");
           return `<tr data-id="${escapeHtml(id)}"${deleted ? ' class="deleted"' : ""}>${cells}${act}</tr>`;
         }).join("");
@@ -529,23 +599,31 @@
           return `<tr class="inserted" data-ins="${idx}">${cells}${act}</tr>`;
         }).join("");
 
-        wrap.innerHTML = `<table><thead>${head}</thead><tbody>${bodyRows}${insRows}</tbody></table>`;
+        wrap.innerHTML = `<table><thead>${head}</thead><tbody>${placeholderRows}${bodyRows}${insRows}</tbody></table>`;
       }
       updateBars(offset);
+      // A load just painted rows or skeletons (or an empty state) — the
+      // shimmer/placeholders take over as the in-flight signal, so drop the
+      // load bar. Only for load-driven renders: an editing render leaves an
+      // in-flight reload's bar alone.
+      if (fromLoad) setLoading(false);
     }
 
     function updateBars(offset) {
+      // total_rows is null while the deferred count is still in flight — show
+      // "…" for the total and drive "next" off whether we got a full page.
       const total = state.total_rows;
+      const known = typeof total === "number";
       const shown = state.rows.length;
       const from = shown === 0 ? 0 : offset + 1;
       const to = offset + shown;
       const dirty = isDirty();
       // The table name is already shown in the selector — don't repeat it here.
-      rowcountEl.textContent = `rows ${from.toLocaleString()}–${to.toLocaleString()} of ${total.toLocaleString()}`;
+      rowcountEl.textContent = `rows ${from.toLocaleString()}–${to.toLocaleString()} of ${known ? total.toLocaleString() : "…"}`;
       // Paging / switching tables would discard the current page's staged edits
       // (they key off this page's rows), so block it until Save or Discard.
       prevBtn.disabled = dirty || offset <= 0;
-      nextBtn.disabled = dirty || offset + LIMIT >= total;
+      nextBtn.disabled = dirty || (known ? offset + LIMIT >= total : shown < LIMIT);
       tableSel.disabled = dirty;
       saveBtn.disabled = discardBtn.disabled = !dirty;
       const saveCount = saveBtn.querySelector(".save-count");
@@ -631,24 +709,155 @@
     // ---- load / save ----
 
     let loadSeq = 0;
+    // Last schema fetched for the remote per-column path, keyed by file+table.
+    // Lets a re-load (filter/sort/page change) skip the serial schema await.
+    let schemaCache = null;
     async function load() {
       const seq = ++loadSeq;
+      // Signal immediately — before any await — so a remote sort/filter shows
+      // motion during its positions scan instead of a frozen grid.
+      setLoading(true);
       const file = fused.params.get("_file");
       const offset = currentOffset();
       const table = fused.params.get("table") || "";
-      wrap.innerHTML = `<div id="status">Loading…</div>`;
+      // A re-load of the same parquet file (page/filter/sort change) keeps
+      // the current grid on screen instead of wiping to "Loading…": with the
+      // schema cached and the DuckDB file cache warm the new rows usually land
+      // in well under a repaint-worth of time, and the wipe → skeleton → rows
+      // sequence reads as flicker. Cold and non-parquet loads keep the wipe.
+      // Dirty staging forces the wipe: discard and the post-save reload call
+      // load() with edits still in memory, and keeping the old grid would
+      // leave their edited styling on screen until the fetch lands.
+      const keepGrid = !isDirty() && schemaCache
+        && schemaCache.key === file + "\n" + table
+        && wrap.querySelector("tbody tr[data-id]");
+      if (!keepGrid) wrap.innerHTML = `<div id="status">Loading…</div>`;
       if (!file) {
+        setLoading(false);
         wrap.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
         return;
       }
+      const args = {
+        file, table, offset: String(offset), limit: String(LIMIT),
+        sort: currentSort(), filters: currentFilters(),
+      };
+      // Remote-backed file (the shell sets _remote from stat on the iframe
+      // URL — reserved "_" params don't flow through fused.params, so read it
+      // off this frame's own URL like the runtime reads _file): hand the
+      // reader the app's ranged-read URL, so parquet is scanned over HTTP
+      // instead of hammering the mounted filesystem with random reads.
+      if (new URLSearchParams(location.search).get("_remote") === "1") {
+        args.source_url = location.origin + "/api/fs/raw?path=" + encodeURIComponent(file);
+      }
+      // The filtered COUNT scans far more of the file than the 100-row page, so
+      // fetch it concurrently and fill the pager total in when it lands — the
+      // page renders without waiting for it (the pager shows "…" until then).
+      // countVal buffers the total in case the count resolves before the page
+      // has been applied to `state`.
+      let countVal, rendered = false;
+      fused.runPython("./reader.py", { ...args, mode: "count" })
+        .then((c) => {
+          if (seq !== loadSeq || !c || typeof c.total_rows !== "number") return;
+          countVal = c.total_rows;
+          if (rendered) { state.total_rows = countVal; updateBars(currentOffset()); }
+        })
+        .catch(() => {}); // a failed count just leaves the total "…"; the page still works
       try {
-        const data = await fused.runPython("./reader.py", {
-          file, table, offset: String(offset), limit: String(LIMIT),
-          sort: currentSort(), filters: currentFilters(),
-        });
+        // Parquet, local or mounted: fetch the schema alone (footer-only,
+        // fast), then load the columns through parallel size-batched page
+        // calls. The first one to land renders the rows with shimmer
+        // skeletons in the still-loading columns; each later arrival fills
+        // its cells in place. The batching exists for remote files (the
+        // page's cost is per-column bytes over a slow link), but local
+        // parquet shares the branch for parity: same skeletons, same
+        // per-column ⚠ on failure, same schema-cached flicker-free reloads —
+        // and on a local file the columns usually pack into one batch, so it
+        // degrades to the single page call it replaced. CSV/JSON (which
+        // can't scan column-selectively anyway) keep the single call.
+        if (/\.parquet$/i.test(file)) {
+          // Awaiting the schema is the one serial step, and it only carries
+          // new information the first time: on a re-load of the same file
+          // (filter/sort/page change) reuse the last schema and fan out
+          // immediately. schemaCache is invalidated by navigation (fresh
+          // iframe) and by the auto-reload a file change triggers.
+          let schema = schemaCache && schemaCache.key === file + "\n" + table
+            ? schemaCache.schema : null;
+          if (!schema) {
+            schema = await fused.runPython("./reader.py", { ...args, mode: "schema" });
+            if (seq !== loadSeq) return;
+            schemaCache = { key: file + "\n" + table, schema };
+          }
+          staged = { edits: new Map(), deletes: new Set(), inserts: [] };
+          idIndex = new Map();
+          state = { ...schema, rows: [], ids: [], pending: new Set(schema.columns), colErrors: 0, failedCols: new Set() };
+          state.idsByAttr = new Map();
+          if (countVal !== undefined) state.total_rows = countVal;
+          rendered = true;
+          renderFilterBar();
+          if (keepGrid) {
+            // Old rows stay visible and batches buffer instead of painting as
+            // they land (deferRender): a warm page change repaints exactly
+            // once, when the last batch arrives. If the load is genuinely
+            // slow, a timer (armed below, after the serial positions step)
+            // swaps in whatever has landed.
+            state.deferRender = true;
+          } else {
+            renderAll(true); // full-skeleton grid immediately — header + shimmer rows
+          }
+          // Sorted/filtered pages resolve their row positions ONCE before the
+          // batches fan out (two-phase): each batch then point-reads exactly
+          // those rows instead of re-running the sort/filter itself, and all
+          // batches provably share one row set. Pre-seeding the ids also
+          // means no batch "defines" the rows — they only fill cells in.
+          // A failed positions call falls back to per-batch windows (the
+          // tiebreaker in reader.py keeps those consistent too). Unsorted,
+          // unfiltered pages skip the extra hop: their LIMIT/OFFSET window
+          // is already deterministic and cheap.
+          let positions = null;
+          if (args.sort || args.filters.length) {
+            try {
+              const p = await fused.runPython("./reader.py", { ...args, mode: "positions" });
+              if (seq !== loadSeq) return;
+              if (p && Array.isArray(p.positions)) {
+                positions = p.positions;
+                state.ids = positions;
+                state.rows = positions.map(() => ({}));
+                positions.forEach((id, i) => {
+                  idIndex.set(id, state.rows[i]);
+                  state.idsByAttr.set(String(id), id);
+                });
+              }
+            } catch (_) { /* fall back to per-batch windows */ }
+          }
+          if (state.deferRender) {
+            // The break-the-hold timer arms only now: its 250ms budget was
+            // calibrated for the batch fetches, and starting it before the
+            // positions await would wipe the kept grid to the placeholder
+            // skeleton while the row set is still being resolved — before a
+            // single batch was even dispatched. Armed here, a slow tail
+            // swaps in skeleton rows (ids already seeded) rather than the
+            // empty placeholder.
+            setTimeout(() => {
+              if (seq !== loadSeq || state.rowsRendered) return;
+              state.deferRender = false;
+              if (state.ids.length) state.rowsRendered = true;
+              if (state.pending) renderAll(true);
+            }, 250);
+          }
+          for (const cols of packColumns(schema.columns, schema.col_sizes || {})) {
+            const batchArgs = { ...args, mode: "page", columns: cols };
+            if (positions) batchArgs.positions = positions;
+            fused.runPython("./reader.py", batchArgs)
+              .then((d) => applyBatch(seq, cols, d), () => applyBatch(seq, cols, null));
+          }
+          return;
+        }
+        const data = await fused.runPython("./reader.py", { ...args, mode: "page" });
         if (seq !== loadSeq) return;
         staged = { edits: new Map(), deletes: new Set(), inserts: [] };
         state = data;
+        // If the count already came back, apply it before the first render.
+        if (countVal !== undefined) state.total_rows = countVal;
         // ids may be numbers; DOM attributes are strings — map string->real id.
         idIndex = new Map();
         state.idsByAttr = new Map();
@@ -656,12 +865,129 @@
           idIndex.set(id, state.rows[i]);
           state.idsByAttr.set(String(id), id);
         });
+        rendered = true;
         renderFilterBar(); // rebuild condition rows from the (freshly loaded) param
-        renderAll();
+        renderAll(true);
       } catch (err) {
         if (seq !== loadSeq) return;
+        setLoading(false);
         wrap.innerHTML = `<div id="status" class="error"><strong>${escapeHtml(err.type || "Error")}</strong>: ${escapeHtml(err.message || "")}</div>`;
       }
+    }
+
+    // Pack the columns of the parallel remote-parquet load into batches: one
+    // query per batch, each batch capped at BUDGET compressed bytes so all its
+    // columns land together — cheap columns share a call (one filter scan, one
+    // dispatch) instead of each paying query overhead, while a column bigger
+    // than the budget gets its own call and shimmers alone. First-fit
+    // decreasing; a column with no size (footer query failed) rides alone,
+    // which degrades to the old one-call-per-column plan.
+    function packColumns(cols, sizes) {
+      const BUDGET = 4 * 1024 * 1024; // ~1s on the measured multi-stream link
+      const batches = [];
+      const bySize = [...cols].sort((a, b) => (sizes[b] ?? BUDGET) - (sizes[a] ?? BUDGET));
+      for (const c of bySize) {
+        const sz = sizes[c] ?? BUDGET;
+        const fit = batches.find((b) => b.bytes + sz <= BUDGET);
+        if (fit) { fit.cols.push(c); fit.bytes += sz; }
+        else batches.push({ cols: [c], bytes: sz });
+      }
+      return batches.map((b) => b.cols);
+    }
+
+    // One batch of the parallel remote-parquet load arrived (d) or failed
+    // (null). Sorted/filtered loads pre-seed the ids from the positions
+    // phase, so every batch just fills cells in by id. Otherwise (unsorted
+    // pages, or the positions call failed) the first successful batch defines
+    // the page's rows (their ids — physical file positions — key everything)
+    // and later batches merge by id. Id-keying alone only guards against
+    // attributing a value to the wrong row — batches resolving the same page
+    // to different row sets would still leave cells silently unfilled, which
+    // is why reader.py's paging SQL pins the fallback window with a
+    // file-position ORDER BY tiebreaker.
+    function applyBatch(seq, cols, d) {
+      if (seq !== loadSeq) return;
+      if (d && !state.ids.length && d.ids.length) {
+        state.ids = d.ids;
+        state.rows = d.ids.map(() => ({}));
+        d.ids.forEach((id, i) => {
+          idIndex.set(id, state.rows[i]);
+          state.idsByAttr.set(String(id), id);
+        });
+      }
+      cols.forEach((c) => state.pending.delete(c));
+      if (!d) {
+        state.colErrors++;
+        cols.forEach((c) => state.failedCols.add(c));
+      }
+      if (d && state.ids.length) {
+        d.ids.forEach((id, i) => {
+          const row = idIndex.get(id);
+          if (row) for (const c of cols) row[c] = d.rows[i][c];
+        });
+      }
+      if (!state.ids.length) {
+        // Nothing has rows yet: an empty page (fine) or failures so far. Only
+        // decide at the end — a later column may still bring the rows.
+        if (!state.pending.size) {
+          if (state.colErrors) {
+            setLoading(false);
+            wrap.innerHTML = `<div id="status" class="error">Failed to load rows.</div>`;
+          } else {
+            state.pending = null; // drop the placeholder skeleton grid
+            renderAll(true); // genuinely empty result -> headers + "rows 0–0"
+          }
+        }
+        return;
+      }
+      if (!state.rowsRendered) {
+        // Buffering (page change with the old grid still up): hold the paint
+        // until the last batch, so the swap is a single repaint. The timer in
+        // load() breaks the hold if the tail batch is slow.
+        if (state.deferRender && state.pending.size) return;
+        // First batch with data: replace the previous grid (placeholder
+        // skeletons or the old page's rows) with the real rows — skeleton
+        // cells remain for still-pending columns.
+        state.rowsRendered = true;
+        renderAll(true);
+      } else {
+        cols.forEach((c) => (d ? fillColumn(c) : fillColumnError(c)));
+      }
+    }
+
+    // A batch failed after the rows were already on screen: swap its skeleton
+    // cells for an explicit error marker (a silent blank would read as data).
+    function fillColumnError(col) {
+      wrap.querySelectorAll("tbody tr[data-id]").forEach((tr) => {
+        const td = tr.querySelector(`td[data-col="${CSS.escape(col)}"]`);
+        if (!td) return;
+        td.classList.remove("skel");
+        td.classList.add("load-err");
+        td.removeAttribute("contenteditable");
+        td.style.pointerEvents = "";
+        td.title = "Column failed to load — reload to retry";
+        td.textContent = "⚠";
+      });
+    }
+
+    // Replace one landed column's skeleton cells in place (no full re-render,
+    // so a cell the user is already editing keeps focus and caret).
+    function fillColumn(col) {
+      const editable = !!state.editable;
+      wrap.querySelectorAll("tbody tr[data-id]").forEach((tr) => {
+        const td = tr.querySelector(`td[data-col="${CSS.escape(col)}"]`);
+        if (!td) return;
+        const id = state.idsByAttr.get(tr.getAttribute("data-id"));
+        const raw = (idIndex.get(id) || {})[col];
+        const isNull = raw === null || raw === undefined;
+        td.classList.remove("skel");
+        td.classList.toggle("is-null", isNull);
+        td.style.pointerEvents = "";
+        const disp = isNull ? "" : cell(raw);
+        if (editable) td.setAttribute("contenteditable", "true");
+        else td.title = disp;
+        td.textContent = disp;
+      });
     }
 
     async function save() {

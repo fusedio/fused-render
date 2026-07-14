@@ -37,13 +37,19 @@ export interface WalkResult {
   truncated: boolean; // hit the server's entry cap
 }
 
-// One entry per resolved template mode (SPEC PT-8), in order, first = default.
-// path is null for a sentinel mode (PT-12, e.g. "_render") — no template
-// folder backs it, the shell knows what to do from the mode name alone.
+// One entry per resolved template mode (SPEC PT-8), in order; the default is
+// the first entry WITHOUT `conditional` (a gated template is never the default
+// while normal ones exist). path is null for a sentinel mode (PT-12, e.g.
+// "_render") — no template folder backs it, the shell knows what to do from
+// the mode name alone. `conditional` marks a template whose condition.py gate
+// has NOT been run yet (CT-12): stat no longer evaluates gates (they may do
+// remote I/O), so the shell resolves them in the background via
+// resolveConditions and shows the entry as pending until the verdict lands.
 export interface TemplateEntry {
   mode: string;
   path: string | null;
   icon: string | null;
+  conditional?: boolean;
 }
 
 export interface StatResult {
@@ -52,6 +58,9 @@ export interface StatResult {
   is_dir: boolean;
   size: number | null;
   mtime: number | null;
+  // Bytes come from a remote (path under a mount). Preview forwards this to
+  // the template iframe as _remote=1 so pages can prefer ranged HTTP reads.
+  remote?: boolean;
   templates: TemplateEntry[];
   template_error?: string;
 }
@@ -160,6 +169,32 @@ export async function walkDirStream(
 
 export function statPath(fsPath: string): Promise<StatResult> {
   return getJson<StatResult>("/api/fs/stat?path=" + encodeURIComponent(fsPath));
+}
+
+// Deferred condition.py verdicts (CT-12): {mode: allowed} for every entry
+// stat marked `conditional`. `error` carries the first broken gate's reason
+// (that gate reports false — fail closed), mirroring stat's template_error.
+export interface ConditionsResult {
+  path: string;
+  conditions: Record<string, boolean>;
+  error?: string;
+}
+
+// Gates can be slow (remote I/O) and both the preview and the pane menu ask
+// for the same path at the same time, so in-flight calls are shared: one
+// request per path, dropped from the map once settled (a later call — e.g.
+// after a nav back — re-evaluates, matching stat's freshness posture).
+const inflightConditions = new Map<string, Promise<ConditionsResult>>();
+
+export function resolveConditions(fsPath: string): Promise<ConditionsResult> {
+  let p = inflightConditions.get(fsPath);
+  if (!p) {
+    p = getJson<ConditionsResult>(
+      "/api/fs/conditions?path=" + encodeURIComponent(fsPath)
+    ).finally(() => inflightConditions.delete(fsPath));
+    inflightConditions.set(fsPath, p);
+  }
+  return p;
 }
 
 export function rawUrl(fsPath: string): string {
@@ -404,7 +439,11 @@ export interface Mount {
   name: string;
   remote: string;
   mountpoint: string;
-  mounted: boolean;
+  // Health, not just presence: "disconnected" = a kernel mount is (or was)
+  // there but its rclone daemon no longer serves it — listings show stale or
+  // empty data. Repaired via reconnectMount (force unmount + fresh mount).
+  state: "mounted" | "disconnected" | "unmounted";
+  mounted: boolean; // state === "mounted"
 }
 
 // A remote we can offer from credentials already present in the user's
@@ -414,6 +453,9 @@ export interface RemoteSuggestion {
   id: string;
   label: string;
   remote_name: string;
+  // "public" = anonymous, no-credentials remote (public buckets); "detected" =
+  // materialized from the user's own AWS/gcloud credentials. Groups the dropdown.
+  kind: "public" | "detected";
 }
 
 export interface MountsResult {
@@ -438,8 +480,15 @@ export function attachMount(id: string): Promise<Mount> {
   return postJson<Mount>(`/api/mounts/${id}/mount`, {});
 }
 
-export function detachMount(id: string): Promise<Mount> {
-  return postJson<Mount>(`/api/mounts/${id}/unmount`, {});
+// force=true is for a mount already shown as disconnected: its dead NFS
+// mount rejects a plain unmount, so the backend escalates to a force unmount.
+export function detachMount(id: string, force = false): Promise<Mount> {
+  return postJson<Mount>(`/api/mounts/${id}/unmount${force ? "?force=1" : ""}`, {});
+}
+
+// Repair a disconnected mount: force-clear the dead mountpoint, remount.
+export function reconnectMount(id: string): Promise<Mount> {
+  return postJson<Mount>(`/api/mounts/${id}/reconnect`, {});
 }
 
 export function deleteMount(id: string): Promise<void> {

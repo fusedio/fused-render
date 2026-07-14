@@ -73,7 +73,7 @@ FUSED_RENDER_NOTARY_PROFILE=FUSED_RENDER_NOTARY bash scripts/build_dmg.sh
 fused-render
 ```
 
-Opens a browser tab at `http://127.0.0.1:8765/`, starting in your home
+Opens a browser tab at `http://127.0.0.1:1777/`, starting in your home
 directory. Useful flags:
 
 ```
@@ -102,7 +102,7 @@ fused-render is local-only, but the running server can pack a page into a portab
 bundle that a hosting layer (the `fused` wheel) can serve:
 
 ```
-curl -X POST http://127.0.0.1:8765/api/export \
+curl -X POST http://127.0.0.1:1777/api/export \
   -H 'Content-Type: application/json' -H 'X-Fused: 1' \
   -d '{"page": "/abs/path/to/examples/sine.html", "out": "/abs/path/to/bundle"}'
 ```
@@ -175,9 +175,11 @@ Drive, and anything else [rclone](https://rclone.org) speaks — mounted as
 local folders under `~/.fused-render/mounts/`. Everything downstream
 (previews, readers, tile servers) sees ordinary local paths.
 
-- **One prerequisite:** rclone (`brew install rclone` on macOS, your distro's
-  package on Linux). macOS mounts via the built-in NFS client — no macFUSE;
-  Linux uses FUSE. Windows is not supported yet.
+- **No setup on macOS:** the packaged app bundles rclone itself (D103) — no
+  install, nothing on PATH. Running from source, or on Linux, still needs
+  rclone (`brew install rclone` / your distro's package). macOS mounts via
+  the built-in NFS client — no macFUSE; Linux uses FUSE. Windows is not
+  supported yet.
 - **Credentials never touch fused-render** — they live in rclone's own
   config. S3-compatible remotes can be created from the page; for Google
   Drive and other sign-in backends, run `rclone config` in a terminal once.

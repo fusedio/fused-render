@@ -1,14 +1,12 @@
 """GET/PUT /api/bookmarks — the bookmark tree at ~/.fused-render/bookmarks.json.
 
-Server-side successor to the old localStorage store (DECISIONS D21 anticipated
-this move as a "trivial export"). Whole-file, last-write-wins: the tree is tiny
-(a handful of items, one level of folders) so there is no partial-update API —
-the shell PUTs the entire tree on each mutation.
+Whole-file, last-write-wins: the tree is tiny (a handful of items, one level
+of folders) so there is no partial-update API — the shell PUTs the entire
+tree on each mutation.
 
-The GET `exists` flag is load-bearing: it is false only until the file is first
-written, letting the shell run its one-time localStorage import exactly once
-(a user who later deletes every bookmark leaves an existing `[]` file, so the
-old localStorage data is never re-imported). See frontend lib/bookmarks.ts.
+The GET `exists` flag distinguishes an absent/corrupt file from a valid
+(possibly empty) one — a user who deletes every bookmark leaves an existing
+`[]` file, which still reports `exists=true`. See frontend lib/bookmarks.ts.
 """
 import json
 import os
@@ -95,8 +93,8 @@ def _dedupe_names(items: list) -> bool:
 @router.get("/api/bookmarks")
 def get_bookmarks():
     data = storage.read_json(_path())
-    # Absent or corrupt (not a list) -> report not-yet-written so the shell may
-    # import from localStorage; a valid file (even []) reports exists=true.
+    # Absent or corrupt (not a list) -> report not-yet-written; a valid file
+    # (even []) reports exists=true.
     if not isinstance(data, list):
         return {"exists": False, "bookmarks": []}
     # Pre-D97 files may hold duplicate names; migrate once (write only when

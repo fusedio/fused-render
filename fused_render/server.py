@@ -24,10 +24,18 @@ import sys
 import tempfile
 import time
 import traceback
+import urllib.error
+import urllib.request
 from urllib.parse import parse_qsl
 
-from fastapi import Body, FastAPI, Header, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi import Body, FastAPI, Header, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 
 from fused_render import __version__
@@ -624,34 +632,38 @@ def _run_condition(condition_file: str, target_path: str):
         return False, f"{condition_file}: {e}"
 
 
-def _apply_conditions(entries: list, target_path: str):
-    """Filter resolved template entries through their `condition.py` gates
-    (SPEC PT-8/CT-12). Sentinel entries (`path is None`, D73) and folders with
-    no `condition.py` are kept as-is. Returns (kept: list, error: str|None) —
-    the first gate error in list order, matching `_resolve_mode_list`'s
-    first-error convention.
+def _mark_conditions(entries: list):
+    """Flag resolved template entries whose folder carries a `condition.py`
+    gate with `"conditional": True` (SPEC PT-8/CT-12). Sentinel entries
+    (`path is None`, D73) and folders with no gate are left untouched.
 
-    Gates are independent and may be slow (user code — filesystem reads, etc.),
-    so the entries that have one are evaluated **concurrently**: the per-stat
-    cost is the slowest single gate, not their sum. Results are keyed by entry
-    index and reassembled in list order, so ordering and error precedence are
-    unaffected by completion order. The common case (no gates) spawns no threads.
+    Stat no longer *evaluates* gates — a gate may do real I/O (the H3 gate
+    reads a parquet footer), and over a remote mount that stalled every stat
+    of the extension. Marking is just an isfile() per entry (~1µs); the client
+    renders unconditional templates immediately and resolves the marked ones
+    in the background via /api/fs/conditions. A conditional entry is never the
+    client's default when an unconditional one exists.
     """
-    # Cheap first pass: which entries actually carry a condition.py? (isfile,
-    # ~1µs each). Only these need code loaded; everything else is kept as-is.
-    gated = []  # list[(index, condition_file)]
-    for i, entry in enumerate(entries):
+    for entry in entries:
         path = entry.get("path")
-        if path is not None:
-            cf = _condition_file(path)
-            if cf is not None:
-                gated.append((i, cf))
+        if path is not None and _condition_file(path) is not None:
+            entry["conditional"] = True
 
-    results = {}  # index -> (allowed, error)
+
+def _evaluate_conditions(gated: list, target_path: str):
+    """Evaluate `condition.py` gates: `gated` is [(key, condition_file)];
+    returns {key: (allowed: bool, error: str|None)}.
+
+    Gates are independent and may be slow (user code — filesystem reads,
+    remote I/O), so they are evaluated **concurrently**: the cost is the
+    slowest single gate, not their sum. Results are keyed, so ordering and
+    error precedence are the caller's, unaffected by completion order.
+    """
+    results = {}  # key -> (allowed, error)
 
     def _serial():
-        for i, cf in gated:
-            results[i] = _run_condition(cf, target_path)
+        for k, cf in gated:
+            results[k] = _run_condition(cf, target_path)
 
     if len(gated) == 1:
         _serial()
@@ -660,30 +672,58 @@ def _apply_conditions(entries: list, target_path: str):
         # templates (SPEC CT-12), so one worker per gate is fine. The pool
         # machinery itself (thread creation, submit, result) lives OUTSIDE
         # _run_condition's catch-all, so an OS refusing a new thread under load
-        # would otherwise escape and 500 the stat — breaking the fail-closed
+        # would otherwise escape and 500 the request — breaking the fail-closed
         # guarantee. Contain it: on any pool failure, fall back to serial
         # evaluation, which is wholly inside _run_condition's catch-all.
         try:
             from concurrent.futures import ThreadPoolExecutor
 
             with ThreadPoolExecutor(max_workers=len(gated)) as pool:
-                futures = {pool.submit(_run_condition, cf, target_path): i for i, cf in gated}
-                for fut, i in futures.items():
-                    results[i] = fut.result()
+                futures = {pool.submit(_run_condition, cf, target_path): k for k, cf in gated}
+                for fut, k in futures.items():
+                    results[k] = fut.result()
         except BaseException:
             results.clear()  # drop any partial results, re-evaluate cleanly
             _serial()
 
-    kept, error = [], None
-    for i, entry in enumerate(entries):
-        if i in results:
-            allowed, err = results[i]
-            if err and error is None:
-                error = err
-            if not allowed:
-                continue
-        kept.append(entry)
-    return kept, error
+    return results
+
+
+def _conditions_payload(path: str):
+    """The /api/fs/conditions shape: resolve the path's templates, evaluate
+    only the gated ones, and report {"conditions": {mode: bool}, "error"}.
+
+    This is the deferred half of SPEC CT-12: stat marks gated entries
+    `conditional` without running them; the client calls this endpoint in the
+    background while the first unconditional template already renders. `error`
+    carries the first gate error in list order (a broken gate reports False —
+    fail closed — with the reason), matching stat's `template_error` posture.
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return _error(f"no such file or directory: {path}", status=404)
+    entries, _ = _templates_for(path, stat_mod.S_ISDIR(st.st_mode))
+
+    gated = []  # [(mode, condition_file)] — mode keys are unique per list
+    for entry in entries:
+        if entry.get("conditional"):
+            cf = _condition_file(entry["path"])
+            if cf is not None:
+                gated.append((entry["mode"], cf))
+
+    results = _evaluate_conditions(gated, path)
+    conditions, error = {}, None
+    for mode, _cf in gated:
+        allowed, err = results[mode]
+        conditions[mode] = allowed
+        if err and error is None:
+            error = err
+
+    payload = {"path": path, "conditions": conditions}
+    if error:
+        payload["error"] = error
+    return payload
 
 
 def _resolve_mode_list(names):
@@ -920,11 +960,11 @@ def _templates_for(path: str, is_dir: bool):
         entries, _ = _resolve_mode_list(["text", "code"])
 
     # Conditional templates (SPEC PT-8): a template folder may gate itself on
-    # the file with a `condition.py`. Filter after resolution so gating is
-    # orthogonal to the registry — it runs on whatever list survived, built-in
-    # or user, main path or text-sniff fallback.
-    entries, cond_err = _apply_conditions(entries, path)
-    error = error or cond_err
+    # the file with a `condition.py`. Mark after resolution so gating is
+    # orthogonal to the registry — it applies to whatever list survived,
+    # built-in or user, main path or text-sniff fallback. Evaluation is
+    # deferred to /api/fs/conditions so a slow gate never stalls the stat.
+    _mark_conditions(entries)
     return entries, error
 
 
@@ -939,6 +979,53 @@ def _writable(path: str) -> bool:
     return os.access(os.path.dirname(path) or ".", os.W_OK)
 
 
+# Response headers forwarded from the rclone serve on a proxied /api/fs/raw.
+# Content-Length/-Range/Accept-Ranges make ranged readers (duckdb httpfs)
+# work; Last-Modified/ETag let their caches revalidate.
+_PROXY_HEADERS = ("content-length", "content-range", "content-type",
+                  "accept-ranges", "last-modified", "etag")
+
+
+def _proxy_raw(upstream: str, request: Request):
+    """Forward one GET/HEAD (with its Range header) to a mount's localhost
+    rclone serve and stream the answer back. None when the serve can't be
+    reached at all — the caller then reads the file the ordinary way; an HTTP
+    error from a live serve passes through as-is (a 416/404 is an answer,
+    not a reason to fall back to a different read path mid-protocol)."""
+    headers = {}
+    rng = request.headers.get("range")
+    if rng:
+        headers["Range"] = rng
+    req = urllib.request.Request(upstream, headers=headers, method=request.method)
+    try:
+        r = urllib.request.urlopen(req, timeout=120)
+    except urllib.error.HTTPError as e:
+        # Error responses carry protocol-level headers too — a 416's
+        # `Content-Range: bytes */<size>` is how a range client learns the
+        # file's length — so forward the same header set as on success.
+        out = {k: v for k, v in e.headers.items() if k.lower() in _PROXY_HEADERS}
+        try:
+            payload = b"" if request.method == "HEAD" else e.read()
+        finally:
+            e.close()
+        return Response(content=payload, status_code=e.code, headers=out)
+    except OSError:
+        return None
+    out = {k: v for k, v in r.headers.items() if k.lower() in _PROXY_HEADERS}
+    if request.method == "HEAD":
+        r.close()
+        return Response(status_code=r.status, headers=out)
+
+    def body():
+        try:
+            while chunk := r.read(256 * 1024):
+                yield chunk
+        finally:
+            r.close()
+
+    return StreamingResponse(body(), status_code=r.status, headers=out)
+
+
 def _stat_payload(path: str, is_dir: bool, st: os.stat_result | None = None) -> dict:
     """The /api/fs/stat shape. /api/fs/write returns it too, so the editor can
     re-arm its optimistic lock from a save response. Pass a pre-fetched `st` to
@@ -946,6 +1033,10 @@ def _stat_payload(path: str, is_dir: bool, st: os.stat_result | None = None) -> 
     if st is None:
         st = os.stat(path)
     templates, template_error = _templates_for(path, is_dir)
+    # Local import, like api_fs_walk's: server -> shell.mounts only, keeping
+    # shell ↛ server acyclic.
+    from fused_render.shell.mounts import is_mount_backed
+
     payload = {
         "path": path,
         "name": os.path.basename(path) or path,
@@ -953,6 +1044,9 @@ def _stat_payload(path: str, is_dir: bool, st: os.stat_result | None = None) -> 
         "size": None if is_dir else st.st_size,
         "mtime": st.st_mtime,
         "writable": _writable(path),
+        # Bytes come from a remote (the path sits under a mount). Pages use
+        # this to prefer ranged HTTP reads (/api/fs/raw) over local file I/O.
+        "remote": is_mount_backed(path),
         "templates": templates,
     }
     if template_error:
@@ -1160,6 +1254,7 @@ def create_app(start_dir: str) -> FastAPI:
     # (shell/mounts.py). startup() remounts every mount in a background
     # thread; mounts deliberately survive server restarts.
     from fused_render.shell import mounts as shell_mounts
+    from fused_render.shell import prefetch as shell_prefetch
 
     app.include_router(shell_mounts.router)
     shell_mounts.startup()
@@ -1211,6 +1306,13 @@ def create_app(start_dir: str) -> FastAPI:
     def api_fs_stat(path: str):
         return _fs_stat(path)
 
+    @app.get("/api/fs/conditions")
+    def api_fs_conditions(path: str):
+        # Deferred condition.py evaluation (SPEC CT-12): stat marks gated
+        # templates `conditional`; this resolves them while the client already
+        # renders the first unconditional template.
+        return _conditions_payload(path)
+
     @app.get("/api/fs/list")
     def api_fs_list(path: str):
         if not os.path.isdir(path):
@@ -1225,7 +1327,17 @@ def create_app(start_dir: str) -> FastAPI:
             with os.scandir(path) as it:
                 dents = list(it)
         except OSError as e:
+            broken = shell_mounts.broken_mount_error(path)
+            if broken:
+                return _error(broken, status=503)
             return _error(f"cannot read directory {path}: {e}", status=400)
+        if not dents:
+            # A dead mount leaves a plain empty dir (or a wedged NFS mount
+            # serving nothing) at the mountpoint — an empty listing under
+            # mounts/ is only trustworthy while the mount is healthy.
+            broken = shell_mounts.broken_mount_error(path)
+            if broken:
+                return _error(broken, status=503)
         for de in dents:
             try:
                 st = de.stat()
@@ -1322,10 +1434,27 @@ def create_app(start_dir: str) -> FastAPI:
 
         return StreamingResponse(ndjson(), media_type="application/x-ndjson")
 
-    @app.get("/api/fs/raw")
-    def api_fs_raw(path: str):
+    @app.api_route("/api/fs/raw", methods=["GET", "HEAD"])
+    async def api_fs_raw(path: str, request: Request):
         if not os.path.isfile(path):
             return _error(f"no such file: {path}", status=404)
+        # Mount-backed file with a live HTTP serve: proxy the bytes from
+        # rclone instead of reading through the kernel mount. Concurrent
+        # ranged reads (duckdb's httpfs) through the NFS mount stall its 1s
+        # RPC timeout and get the whole mount dropped; the same reads proxied
+        # over HTTP are merely slow. Explicit HEAD support matters: httpfs
+        # HEADs for the length first, and Starlette's implicit HEAD-on-GET
+        # would run the full upstream GET just to drop the body.
+        upstream = shell_mounts.serve_url_for(path)
+        if upstream is not None:
+            # Every remote read flows through here, so this is where the
+            # shell learns a mounted file is in use: kick off (or just
+            # touch) its background whole-file prefetch. Cheap no-op after
+            # the first call; templates stay mount-agnostic (prefetch.py).
+            shell_prefetch.schedule(path, upstream)
+            resp = await asyncio.to_thread(_proxy_raw, upstream, request)
+            if resp is not None:
+                return resp  # upstream unreachable -> plain file read below
         media_type, _ = mimetypes.guess_type(path)
         return FileResponse(path, media_type=media_type or "application/octet-stream")
 

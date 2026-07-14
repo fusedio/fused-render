@@ -18,6 +18,9 @@ export const KNOWN_SENTINEL_MODES = new Set(["_render", "_listing"]);
 export interface ModeSwitcherEntry<M extends string> {
   mode: M;
   icon: React.ReactNode;
+  // Condition.py gate not yet resolved (CT-12): rendered as a disabled
+  // spinner until the background /api/fs/conditions verdict lands.
+  pending?: boolean;
 }
 
 // Human-readable tooltip for a mode name: the "_render" sentinel reads as
@@ -43,11 +46,12 @@ export default function ModeSwitcher<M extends string>({ entries, active, onSele
         <button
           key={e.mode}
           type="button"
-          className={"mode-switcher-btn" + (e.mode === active ? " active" : "")}
-          title={modeTitle(e.mode)}
+          className={"mode-switcher-btn" + (e.mode === active ? " active" : "") + (e.pending ? " pending" : "")}
+          title={e.pending ? `${modeTitle(e.mode)} — checking if this view applies…` : modeTitle(e.mode)}
+          disabled={e.pending}
           onClick={() => onSelect(e.mode)}
         >
-          {e.icon}
+          {e.pending ? <span className="mode-icon-spinner" /> : e.icon}
         </button>
       ))}
     </div>

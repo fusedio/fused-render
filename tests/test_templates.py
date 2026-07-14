@@ -340,24 +340,54 @@ def test_unreadable_user_registry_reports_and_falls_back(user_dir):
 
 
 # ------------------------------------------------- conditional templates (PT-8)
+#
+# Evaluation is deferred (SPEC CT-12): stat only MARKS gated entries
+# `conditional: True` (never runs the gate — it may do remote I/O), and
+# /api/fs/conditions resolves them in the background. These tests exercise
+# both halves through _templates_for and _conditions_payload.
 
-def test_condition_true_keeps_template(user_dir):
+
+def conditions(path):
+    """Resolved gate map for a real file: {mode: bool}, error."""
+    payload = server._conditions_payload(path)
+    return payload["conditions"], payload.get("error")
+
+
+@pytest.fixture()
+def csv_file(tmp_path):
+    p = tmp_path / "a.csv"
+    p.write_text("x\n1\n")
+    return str(p)
+
+
+def test_condition_marks_entry_without_evaluating(user_dir):
+    # The gate would blow up if run — stat must not run it, only mark it.
+    user_dir.template("special", condition="def method(path):\n    raise RuntimeError\n")
+    user_dir.registry({".csv": ["special", "code"]})
+    entries, error = server._templates_for("/x/a.csv", False)
+    assert [e["mode"] for e in entries] == ["special", "code"]
+    assert entries[0].get("conditional") is True
+    assert "conditional" not in entries[1]
+    assert error is None
+
+
+def test_condition_true_allows_template(user_dir, csv_file):
     user_dir.template("special", condition="def method(path):\n    return True\n")
     user_dir.registry({".csv": ["special", "code"]})
-    m, error = modes("/x/a.csv")
-    assert m == ["special", "code"]
+    cond, error = conditions(csv_file)
+    assert cond == {"special": True}
     assert error is None
 
 
-def test_condition_false_drops_template(user_dir):
+def test_condition_false_disallows_template(user_dir, csv_file):
     user_dir.template("special", condition="def method(path):\n    return False\n")
     user_dir.registry({".csv": ["special", "code"]})
-    m, error = modes("/x/a.csv")
-    assert m == ["code"]
+    cond, error = conditions(csv_file)
+    assert cond == {"special": False}
     assert error is None
 
 
-def test_condition_receives_file_path(user_dir):
+def test_condition_receives_file_path(user_dir, tmp_path):
     # Only show the template for files under a "reports" directory.
     user_dir.template(
         "special",
@@ -365,53 +395,65 @@ def test_condition_receives_file_path(user_dir):
     )
     user_dir.registry({".csv": ["special", "code"]})
 
-    m, _ = modes("/x/reports/a.csv")
-    assert m == ["special", "code"]
+    (tmp_path / "reports").mkdir()
+    hit = tmp_path / "reports" / "a.csv"
+    hit.write_text("x\n")
+    miss = tmp_path / "a.csv"
+    miss.write_text("x\n")
 
-    m, _ = modes("/x/other/a.csv")
-    assert m == ["code"]
+    assert conditions(str(hit))[0] == {"special": True}
+    assert conditions(str(miss))[0] == {"special": False}
 
 
-def test_condition_missing_is_unconditional(user_dir):
+def test_condition_missing_is_unconditional(user_dir, csv_file):
     user_dir.template("special")  # no condition.py
     user_dir.registry({".csv": ["special", "code"]})
-    m, error = modes("/x/a.csv")
-    assert m == ["special", "code"]
+    entries, error = server._templates_for("/x/a.csv", False)
+    assert [e["mode"] for e in entries] == ["special", "code"]
+    assert all("conditional" not in e for e in entries)
     assert error is None
+    # ... and the conditions payload has nothing to resolve.
+    cond, err = conditions(csv_file)
+    assert cond == {} and err is None
 
 
-def test_condition_error_drops_and_reports(user_dir):
+def test_condition_error_disallows_and_reports(user_dir, csv_file):
     user_dir.template(
         "special", condition="def method(path):\n    raise ValueError('boom')\n"
     )
     user_dir.registry({".csv": ["special", "code"]})
-    m, error = modes("/x/a.csv")
-    assert m == ["code"]
+    cond, error = conditions(csv_file)
+    assert cond == {"special": False}
     assert "boom" in error
 
 
-def test_condition_missing_method_drops_and_reports(user_dir):
+def test_condition_missing_method_disallows_and_reports(user_dir, csv_file):
     user_dir.template("special", condition="x = 1\n")  # no `method`
     user_dir.registry({".csv": ["special", "code"]})
-    m, error = modes("/x/a.csv")
-    assert m == ["code"]
+    cond, error = conditions(csv_file)
+    assert cond == {"special": False}
     assert "method" in error
 
 
-def test_condition_reevaluated_per_call(user_dir):
-    # Registries + conditions are read fresh per stat (no restart): editing
-    # condition.py flips visibility on the next resolution.
+def test_condition_missing_target_is_404(user_dir, tmp_path):
+    resp = server._conditions_payload(str(tmp_path / "nope.csv"))
+    assert resp.status_code == 404
+
+
+def test_condition_reevaluated_per_call(user_dir, csv_file):
+    # Registries + conditions are read fresh per call (no restart): editing
+    # condition.py flips the verdict on the next resolution.
     user_dir.template("special", condition="def method(path):\n    return False\n")
     user_dir.registry({".csv": ["special", "code"]})
-    assert modes("/x/a.csv")[0] == ["code"]
+    assert conditions(csv_file)[0] == {"special": False}
 
     (user_dir.path / "special" / "condition.py").write_text(
         "def method(path):\n    return True\n"
     )
-    assert modes("/x/a.csv")[0] == ["special", "code"]
+    assert conditions(csv_file)[0] == {"special": True}
 
 
-def test_conditions_run_concurrently(user_dir):
+def test_conditions_run_concurrently(user_dir, csv_file):
     # Independent gates are evaluated in parallel, so total time is the slowest
     # single gate, not their sum. Four ~0.3s sleeps would take ~1.2s serially;
     # concurrently they finish in well under that. Generous margin for CI jitter.
@@ -424,16 +466,16 @@ def test_conditions_run_concurrently(user_dir):
     user_dir.registry({".csv": names})
 
     t = time.perf_counter()
-    m, error = modes("/x/a.csv")
+    cond, error = conditions(csv_file)
     elapsed = time.perf_counter() - t
 
-    assert m == names and error is None
+    assert cond == {name: True for name in names} and error is None
     assert elapsed < 0.9, f"expected concurrent (~0.3s), got {elapsed:.2f}s (serial would be ~1.2s)"
 
 
-def test_condition_pool_failure_falls_back_to_serial(user_dir, monkeypatch):
+def test_condition_pool_failure_falls_back_to_serial(user_dir, csv_file, tmp_path, monkeypatch):
     # If the thread pool can't be created/run (e.g. the OS refuses a new thread
-    # under load), evaluation must NOT propagate and 500 the stat — it falls
+    # under load), evaluation must NOT propagate and 500 the request — it falls
     # back to serial evaluation, preserving both the fail-closed guarantee and
     # correct results.
     user_dir.template("a", condition="def method(path):\n    return True\n")
@@ -447,6 +489,25 @@ def test_condition_pool_failure_falls_back_to_serial(user_dir, monkeypatch):
 
     monkeypatch.setattr(concurrent.futures, "ThreadPoolExecutor", boom)
 
+    keep = tmp_path / "keep.csv"
+    keep.write_text("x\n")
     # Serial fallback still evaluates every gate correctly.
-    assert modes("/d/keep.csv") == (["a", "b", "code"], None)
-    assert modes("/d/drop.csv") == (["a", "code"], None)
+    assert conditions(str(keep)) == ({"a": True, "b": True}, None)
+    assert conditions(csv_file) == ({"a": True, "b": False}, None)
+
+
+def test_stat_never_blocks_on_slow_condition(user_dir):
+    # The whole point of deferral: a gate sleeping 5s must not delay stat.
+    import time
+
+    user_dir.template(
+        "slow", condition="import time\ndef method(path):\n    time.sleep(5)\n    return True\n"
+    )
+    user_dir.registry({".csv": ["slow", "code"]})
+
+    t = time.perf_counter()
+    m, error = modes("/x/a.csv")
+    elapsed = time.perf_counter() - t
+
+    assert m == ["slow", "code"] and error is None
+    assert elapsed < 1.0, f"stat blocked on a condition gate ({elapsed:.2f}s)"

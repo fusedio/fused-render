@@ -331,6 +331,7 @@
     "annotate"
   ],
   ".log": [
+    "log_studio",
     "text",
     "code",
     "annotate"
@@ -497,6 +498,25 @@
   ],
   ".ddb": [
     "duckdb"
+  ],
+  ".twb": [
+    "tableau",
+    "code"
+  ],
+  ".twbx": [
+    "tableau",
+    "zip"
+  ],
+  ".tds": [
+    "tableau",
+    "code"
+  ],
+  ".tdsx": [
+    "tableau",
+    "zip"
+  ],
+  ".hyper": [
+    "tableau"
   ],
   ".plist": [
     "plist",

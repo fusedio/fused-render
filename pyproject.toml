@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fused-render"
-version = "0.2.1"
+version = "0.2.5"
 description = "Local file explorer with Python-powered renderable HTML previews"
 requires-python = ">=3.10"
 dependencies = [
@@ -55,6 +55,7 @@ bundled = [
     "rasterio",
     "pymupdf>=1.25",
     "pikepdf>=9",
+    "drain3>=0.9.11",
 ]
 # Menu-bar app shell (SPEC DM-3/DM-7). macOS-only; not a core dependency so
 # `pip install fused-render` stays cross-platform. Only the packaged .app

@@ -9,7 +9,7 @@
 // Rendered entirely with spans, not buttons: in tab mode the trigger lives
 // INSIDE the tab's <button>, and nested buttons are invalid HTML.
 import { useEffect, useRef, useState, type MouseEvent } from "react";
-import { statPath, type TemplateEntry } from "../lib/api";
+import { resolveConditions, statPath, type TemplateEntry } from "../lib/api";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "./ModeSwitcher";
 
 // Split a pane query at its raw `_layout=(...)` span (kept byte-identical —
@@ -32,6 +32,10 @@ interface PaneModeMenuProps {
 
 export default function PaneModeMenu({ path, query, onNavigate }: PaneModeMenuProps) {
   const [templates, setTemplates] = useState<TemplateEntry[]>([]);
+  // Deferred condition.py verdicts (CT-12): null while any gated entry is
+  // unresolved. The resolveConditions call is shared with Preview's (one
+  // in-flight request per path), so this costs no extra gate evaluation.
+  const [conditions, setConditions] = useState<Record<string, boolean> | null>(null);
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null); // non-null = open
   const rootRef = useRef<HTMLSpanElement | null>(null);
 
@@ -41,13 +45,28 @@ export default function PaneModeMenu({ path, query, onNavigate }: PaneModeMenuPr
   useEffect(() => {
     let stale = false;
     setTemplates([]);
+    setConditions(null);
     setPos(null);
     statPath(path)
       .then((s) => {
         // Same defensive sentinel filter as Preview's dispatch (PT-12): keep
         // resolved templates and the known sentinels (`_render`, `_listing`),
         // so a directory pane's menu offers the listing beside zarr/custom views.
-        if (!stale) setTemplates(s.templates.filter((t) => t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode)));
+        if (stale) return;
+        const filtered = s.templates.filter((t) => t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode));
+        setTemplates(filtered);
+        if (!filtered.some((t) => t.conditional)) {
+          setConditions({});
+          return;
+        }
+        resolveConditions(path)
+          .then((r) => {
+            if (!stale) setConditions(r.conditions);
+          })
+          .catch(() => {
+            // Fail closed, like a broken gate: every gated entry reads denied.
+            if (!stale) setConditions({});
+          });
       })
       .catch(() => {});
     return () => {
@@ -71,10 +90,17 @@ export default function PaneModeMenu({ path, query, onNavigate }: PaneModeMenuPr
     };
   }, [pos]);
 
-  if (templates.length < 2) return null;
+  // Pending = gated, verdict still in flight (shown as a disabled spinner);
+  // once verdicts land, denied entries drop from the menu entirely. The
+  // default (and the trigger's fallback) is the first UNCONDITIONAL entry —
+  // a gated template is never the default while a normal one exists (CT-12).
+  const isPending = (t: TemplateEntry) => !!t.conditional && conditions === null;
+  const visible = templates.filter((t) => !t.conditional || conditions === null || conditions[t.mode] === true);
+  if (visible.length < 2) return null;
 
+  const defaultEntry = visible.find((t) => !t.conditional) || visible[0];
   const activeMode = new URLSearchParams(splitAtLayout(query)[0]).get("_mode");
-  const active = templates.find((t) => t.mode === activeMode) || templates[0];
+  const active = visible.find((t) => t.mode === activeMode && !isPending(t)) || defaultEntry;
 
   const toggle = (e: MouseEvent) => {
     e.stopPropagation();
@@ -95,7 +121,7 @@ export default function PaneModeMenu({ path, query, onNavigate }: PaneModeMenuPr
     const [head, tail] = splitAtLayout(query);
     const params = new URLSearchParams(head);
     // Selecting the default mode DELETES _mode (clean URLs, PT-9).
-    if (mode === templates[0].mode) params.delete("_mode");
+    if (mode === defaultEntry.mode) params.delete("_mode");
     else params.set("_mode", mode);
     const qs = params.toString();
     const q = qs + (tail ? (qs ? "&" : "") + tail : "");
@@ -109,13 +135,19 @@ export default function PaneModeMenu({ path, query, onNavigate }: PaneModeMenuPr
       </span>
       {pos && (
         <span className="pane-mode-dropdown" style={{ top: pos.top, left: pos.left }}>
-          {templates.map((t) => (
+          {visible.map((t) => (
             <span
               key={t.mode}
-              className={"pane-mode-item" + (t.mode === active.mode ? " active" : "")}
-              onClick={(e) => select(e, t.mode)}
+              className={
+                "pane-mode-item" + (t.mode === active.mode ? " active" : "") + (isPending(t) ? " pending" : "")
+              }
+              title={isPending(t) ? "Checking if this view applies…" : undefined}
+              onClick={(e) => {
+                if (!isPending(t)) select(e, t.mode);
+                else e.stopPropagation();
+              }}
             >
-              {templateModeIcon(t)}
+              {isPending(t) ? <span className="mode-icon-spinner" /> : templateModeIcon(t)}
               <span>{modeTitle(t.mode)}</span>
             </span>
           ))}

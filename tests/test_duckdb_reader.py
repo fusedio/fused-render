@@ -4,6 +4,7 @@ Skipped when duckdb isn't installed. (It's now a core dependency, but the base
 test env may still lack it; guard so the suite degrades gracefully.)
 """
 import importlib.util
+import json
 import os
 
 import pytest
@@ -188,6 +189,184 @@ def test_json_is_read_only(tmp_path):
     assert out["editable"] is False
     assert out["readonly_message"] == "JSON"
     assert "read-only" in out["readonly_tooltip"].lower()
+
+
+# -------------------------------------------- page SQL / pushdown-safe paging
+
+def test_parquet_page_sql_uses_file_row_number(parquet_file):
+    # The parquet page must get its physical-position key from read_parquet's
+    # file_row_number pseudo-column (which preserves predicate + row-group
+    # pushdown), NOT a row_number() window (which blocks both). EXCLUDE drops the
+    # pseudo-column from the visible page so it isn't rendered as a data column.
+    rel = reader.relation_for(parquet_file)
+    sql = reader._page_sql(parquet_file, rel, "", "")
+    assert "file_row_number=true" in reader.relation_for(parquet_file, file_row_number=True)
+    assert "file_row_number AS" in sql
+    assert "EXCLUDE (file_row_number)" in sql
+    assert "row_number() OVER" not in sql
+
+
+def test_csv_page_sql_keeps_window(csv_file):
+    # CSV/JSON can't prune, and have no file_row_number, so they keep the
+    # streaming row_number() window.
+    rel = reader.relation_for(csv_file)
+    sql = reader._page_sql(csv_file, rel, "", "")
+    assert "row_number() OVER" in sql
+    assert "file_row_number" not in sql
+
+
+def test_parquet_filter_sort_positions_via_file_row_number(parquet_file):
+    # End-to-end through the file_row_number path: a filtered + sorted page still
+    # returns the physical file positions the writer edits by.
+    out = reader.main(parquet_file,
+                      filters=[{"column": "id", "op": ">=", "value": "200"}],
+                      sort={"column": "id", "dir": "desc"})
+    assert out["rows"][0]["id"] == 249
+    assert out["ids"][0] == 249                   # physical position, sorted desc
+    assert "file_row_number" not in out["columns"]  # pseudo-column not leaked
+
+
+def test_sorted_page_sql_appends_position_tiebreaker(parquet_file, csv_file):
+    # A user sort with tied values would otherwise make the LIMIT/OFFSET window
+    # itself nondeterministic — fatal for the parallel per-column batches,
+    # which are separate queries that must resolve the same page to the same
+    # rows (a batch's unmatched ids merge to nothing and render as fake NULLs).
+    order = ' ORDER BY "name" ASC'
+    psql = reader._page_sql(parquet_file, reader.relation_for(parquet_file), "", order)
+    assert f'{order}, file_row_number LIMIT' in psql
+    csql = reader._page_sql(csv_file, reader.relation_for(csv_file), "", order)
+    assert f'{order}, {reader._POS} LIMIT' in csql
+    # No sort needs no tiebreaker: the unordered window is already
+    # deterministic under DuckDB's default preserve_insertion_order.
+    assert "ORDER BY" not in reader._page_sql(
+        parquet_file, reader.relation_for(parquet_file), "", "")
+
+
+def test_sorted_ties_resolve_to_same_rows_across_column_batches(tmp_path):
+    # Regression for the batched-load window: every row shares one sort value,
+    # so the whole page is one big tie group. Two batch calls projecting
+    # different columns must land on identical ids.
+    p = _make(tmp_path, "t.parquet",
+              "SELECT range AS id, 0 AS tie, 'n'||range AS name FROM range(250)")
+    a = reader.main(p, mode="page", columns=["id"],
+                    sort={"column": "tie", "dir": "asc"}, offset=100, limit=50)
+    b = reader.main(p, mode="page", columns=["name"],
+                    sort={"column": "tie", "dir": "asc"}, offset=100, limit=50)
+    assert a["ids"] == b["ids"] == list(range(100, 150))
+    assert b["rows"][0]["name"] == "n100"
+
+
+# ----------------------------------------- two-phase load (positions mode)
+
+def test_positions_mode_resolves_sorted_filtered_window(parquet_file):
+    # Phase one: the page window as file positions, with sort + filter + offset
+    # applied exactly as a direct page call would.
+    pos = reader.main(parquet_file, mode="positions",
+                      sort={"column": "id", "dir": "desc"},
+                      filters=[{"column": "id", "op": "<", "value": 200}],
+                      offset=10, limit=5)
+    assert pos == {"positions": [189, 188, 187, 186, 185]}
+    page = reader.main(parquet_file, mode="page",
+                       sort={"column": "id", "dir": "desc"},
+                       filters=[{"column": "id", "op": "<", "value": 200}],
+                       offset=10, limit=5)
+    assert pos["positions"] == page["ids"]
+
+
+def test_positions_mode_pins_ties(tmp_path):
+    # All rows tie on the sort value; the position tiebreaker must make the
+    # window deterministic (same guarantee the one-phase page SQL gives).
+    p = _make(tmp_path, "t.parquet",
+              "SELECT range AS id, 0 AS tie FROM range(250)")
+    pos = reader.main(p, mode="positions",
+                      sort={"column": "tie", "dir": "asc"}, offset=100, limit=50)
+    assert pos["positions"] == list(range(100, 150))
+
+
+def test_page_with_positions_fetches_exactly_those_rows(parquet_file):
+    # Phase two: a column batch hands the resolved positions back and gets
+    # exactly those rows — sort/filters/offset/limit are ignored alongside
+    # them (positions are authoritative; re-filtering could drop rows the
+    # window already committed to).
+    out = reader.main(parquet_file, mode="page", columns=["name"],
+                      positions=[42, 7, 199],
+                      filters=[{"column": "id", "op": "<", "value": 5}],
+                      offset=90, limit=2)
+    assert sorted(out["ids"]) == [7, 42, 199]
+    by_id = dict(zip(out["ids"], out["rows"]))
+    assert by_id[42] == {"name": "n42"}
+    assert out["columns"] == ["name"]
+
+
+def test_page_with_empty_positions_is_empty(parquet_file):
+    # A filter that matches nothing resolves to zero positions; the batch
+    # calls still answer cleanly with an empty page.
+    out = reader.main(parquet_file, mode="page", columns=["name"], positions=[])
+    assert out["ids"] == [] and out["rows"] == []
+
+
+def test_two_phase_equals_single_sorted_page(parquet_file):
+    # End-to-end equivalence: positions + per-batch fetch reassembles the very
+    # rows the one-query sorted page returns.
+    kw = dict(sort={"column": "name", "dir": "asc"}, offset=20, limit=10)
+    direct = reader.main(parquet_file, mode="page", **kw)
+    pos = reader.main(parquet_file, mode="positions", **kw)["positions"]
+    merged = {}
+    for cols in (["id"], ["name"]):
+        batch = reader.main(parquet_file, mode="page", columns=cols,
+                            positions=pos)
+        for rid, row in zip(batch["ids"], batch["rows"]):
+            merged.setdefault(rid, {}).update(row)
+    assert [merged[p] for p in pos] == direct["rows"]
+
+
+def test_positions_requires_parquet(csv_file):
+    # CSV/JSON pages are a single call — no batches, so no two-phase. The
+    # numbered-window subquery has no prunable position column anyway.
+    with pytest.raises(ValueError):
+        reader.main(csv_file, mode="positions", sort={"column": "id", "dir": "asc"})
+    with pytest.raises(ValueError):
+        reader.main(csv_file, mode="page", positions=[1, 2])
+
+
+# --------------------------------------------------- deferred count (mode)
+
+def test_page_mode_defers_count(parquet_file):
+    # "page" returns the rows but leaves total_rows None — the grid fetches the
+    # count separately so the page can render before the (heavy) count finishes.
+    out = reader.main(parquet_file, mode="page")
+    assert out["total_rows"] is None
+    assert len(out["rows"]) == 100
+    assert out["ids"] == list(range(100))
+    assert out["editable"] is True
+
+
+def test_count_mode_returns_total_only(parquet_file):
+    out = reader.main(parquet_file, mode="count")
+    assert out == {"total_rows": 250}
+
+
+def test_count_mode_respects_filter(parquet_file):
+    out = reader.main(parquet_file, mode="count",
+                      filters=[{"column": "id", "op": ">=", "value": "200"}])
+    assert out == {"total_rows": 50}
+
+
+def test_full_mode_is_default_and_inlines_count(parquet_file):
+    # The default (no mode) still returns the count inline, so existing callers
+    # and the .py test suite are unaffected.
+    assert reader.main(parquet_file)["total_rows"] == 250
+
+
+def test_duckdb_count_mode(duckdb_db):
+    assert reader.main(duckdb_db, table="actor", mode="count") == {"total_rows": 5}
+
+
+def test_duckdb_page_mode_defers_count(duckdb_db):
+    out = reader.main(duckdb_db, table="actor", mode="page")
+    assert out["total_rows"] is None
+    assert out["ids"] == [0, 1, 2, 3, 4]
+    assert out["editable"] is True
 
 
 # ----------------------------------------------------- compressed variants
@@ -442,3 +621,135 @@ def test_writer_refuses_readonly_file(readonly_parquet):
         writer.main(readonly_parquet,
                     edits=[{"row": 0, "column": "name", "value": "x"}])
     assert os.stat(readonly_parquet).st_size == before  # bytes untouched
+
+
+
+# ---------------------------------------------------- remote source_url path
+# The page passes source_url (the app's /api/fs/raw URL) when the shell marks
+# the file remote; the reader scans that URL instead of the local path, and
+# falls back to the path on any failure. The reader itself knows nothing about
+# mounts — just "bytes are also available here".
+
+
+def _serve_dir(directory):
+    """A local HTTP server over `directory` that records request paths."""
+    import functools
+    import http.server
+    import threading
+
+    hits = []
+
+    class H(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            hits.append(self.path)
+            return super().do_GET()
+
+        def do_HEAD(self):
+            hits.append(self.path)
+            return super().do_HEAD()
+
+    srv = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0), functools.partial(H, directory=directory))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, hits
+
+
+def test_source_url_reads_over_http(parquet_file):
+    srv, hits = _serve_dir(os.path.dirname(parquet_file))
+    try:
+        url = f"http://127.0.0.1:{srv.server_address[1]}/s.parquet"
+        try:
+            out = reader.main(parquet_file, limit=5, source_url=url)
+        except Exception:
+            pytest.skip("duckdb httpfs extension unavailable")
+        assert [r["id"] for r in out["rows"]] == [0, 1, 2, 3, 4]
+        assert any("s.parquet" in h for h in hits), "reader never hit the URL"
+    finally:
+        srv.shutdown()
+
+
+def test_source_url_falls_back_when_dead(parquet_file):
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        dead = s.getsockname()[1]
+    out = reader.main(parquet_file, limit=5,
+                      source_url=f"http://127.0.0.1:{dead}/s.parquet")
+    assert [r["id"] for r in out["rows"]] == [0, 1, 2, 3, 4]
+    assert out["total_rows"] == 250
+
+
+def test_source_url_ignored_unless_http(parquet_file):
+    # A non-URL value must not be handed to DuckDB as a scan target.
+    out = reader.main(parquet_file, limit=3, source_url="garbage; DROP TABLE x")
+    assert len(out["rows"]) == 3
+
+
+def test_source_url_ignored_for_csv(csv_file):
+    # The fast path is parquet-only; CSV keeps reading the file even when a
+    # URL is offered (its streaming scan can't prune and sniffing over HTTP
+    # would read the whole file anyway).
+    out = reader.main(csv_file, limit=3, source_url="http://127.0.0.1:1/s.csv")
+    assert out["rows"][0]["zip"] == "00000"
+
+
+# ------------------------------------- schema mode / per-column projection
+
+
+def test_schema_mode_returns_no_rows(parquet_file):
+    out = reader.main(parquet_file, mode="schema")
+    assert out["columns"] == ["id", "name"]
+    assert out["types"] == {"id": "BIGINT", "name": "VARCHAR"}
+    assert out["rows"] == [] and out["ids"] == []
+    assert out["total_rows"] is None
+    assert out["editable"] is True
+
+
+def test_schema_mode_reports_parquet_column_sizes(parquet_file):
+    # The grid packs columns into byte-budgeted batches from these: compressed
+    # first-row-group bytes per column, straight from the footer.
+    out = reader.main(parquet_file, mode="schema")
+    assert set(out["col_sizes"]) == {"id", "name"}
+    assert all(isinstance(v, int) and v > 0 for v in out["col_sizes"].values())
+
+
+def test_schema_mode_col_sizes_empty_for_csv(tmp_path):
+    p = tmp_path / "t.csv"
+    p.write_text("a,b\n1,x\n2,y\n")
+    out = reader.main(str(p), mode="schema")
+    assert out["col_sizes"] == {}
+
+
+def test_page_with_columns_projects(parquet_file):
+    out = reader.main(parquet_file, mode="page", columns=["name"], limit=3)
+    assert out["columns"] == ["name"]
+    assert out["rows"] == [{"name": "n0"}, {"name": "n1"}, {"name": "n2"}]
+    assert out["ids"] == [0, 1, 2]  # position key still present
+
+
+def test_columns_projection_respects_filter_and_sort(parquet_file):
+    # Filter/sort columns need not be in the projection; ids must still be the
+    # physical positions so parallel per-column pages align by id.
+    out = reader.main(parquet_file, mode="page", columns=["name"],
+                      filters=[{"column": "id", "op": ">=", "value": "200"}],
+                      sort={"column": "id", "dir": "desc"}, limit=3)
+    assert out["ids"] == [249, 248, 247]
+    assert out["rows"][0] == {"name": "n249"}
+
+
+def test_unknown_columns_fall_back_to_all(parquet_file):
+    out = reader.main(parquet_file, mode="page", columns=["nope"], limit=2)
+    assert out["columns"] == ["id", "name"]
+
+
+def test_columns_projection_on_csv(csv_file):
+    # The CSV window path also supports projection (unused by the grid today,
+    # but the param must not corrupt the row_number position key).
+    out = reader.main(csv_file, mode="page", columns=["zip"], limit=2)
+    assert out["columns"] == ["zip"]
+    assert out["ids"] == [0, 1]
+    assert out["rows"][0] == {"zip": "00000"}
