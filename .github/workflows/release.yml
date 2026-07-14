@@ -10,6 +10,7 @@ jobs:
     runs-on: macos-14
     permissions:
       contents: write # needed to attach the DMG to a GitHub Release
+      id-token: write # needed to assume the AWS role via OIDC
     env:
       KEYCHAIN_PATH: ${{ github.workspace }}/ci-signing.keychain-db
       NOTARY_PROFILE: ci-notary
@@ -79,14 +80,14 @@ jobs:
         if: always()
         run: security delete-keychain "$KEYCHAIN_PATH" || true
 
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::926411091187:role/github_fused_render_role
+          role-session-name: GithubFusedRenderRelease
+          aws-region: us-west-2
+
       - name: Upload DMG to S3
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          # Only needed if AWS_ACCESS_KEY_ID/SECRET are STS temporary
-          # credentials (e.g. an assumed-role session) rather than a
-          # permanent IAM user's keys; empty is a no-op for the AWS CLI.
-          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
         run: |
           set -euo pipefail
           # Not `brew install awscli`: GH's macos-14 image doesn't have the
