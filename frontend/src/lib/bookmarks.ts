@@ -1,6 +1,5 @@
 // Bookmark store, persisted server-side at ~/.fused-render/bookmarks.json via
-// GET/PUT /api/bookmarks (superseded localStorage; DECISIONS D21 -> D74). Pure
-// data layer — no DOM, no React.
+// GET/PUT /api/bookmarks. Pure data layer — no DOM, no React.
 //
 // Reads are synchronous off an in-memory cache (React renders can't await);
 // hydrateBookmarks() fills it once at boot. Mutations are async: they apply to
@@ -10,34 +9,6 @@
 // components still subscribe via useBookmarksVersion (lib/hooks.ts) and call
 // notifyBookmarksChanged() after each mutation they trigger.
 import { getBookmarks, putBookmarks, recordBookmarkHistory } from "./api";
-
-// Legacy localStorage key — read once for the one-time server import, then left
-// dormant as a fallback (never written again).
-const LS_KEY = "fused.bookmarks";
-
-// One-time-migration marker. The original gate was the server `exists` flag, but
-// startup seeding (shell/seed.py, D81) writes a starter bookmarks.json, so an
-// upgrading user's server store already `exists` on first run — the legacy import
-// would never fire and their localStorage bookmarks would be silently dropped.
-// This persistent marker decouples "have we imported legacy yet" from `exists`:
-// the import/merge runs at most once regardless of whether the file was pre-seeded.
-const MIGRATED_KEY = "fused.bookmarks.migrated";
-
-function legacyMigrated(): boolean {
-  try {
-    return localStorage.getItem(MIGRATED_KEY) === "1";
-  } catch {
-    return true; // no localStorage -> nothing to migrate, treat as done
-  }
-}
-
-function markLegacyMigrated(): void {
-  try {
-    localStorage.setItem(MIGRATED_KEY, "1");
-  } catch {
-    /* ignore — a blocked write just means we may re-attempt a no-op merge */
-  }
-}
 
 export interface Bookmark {
   id: string;
@@ -95,79 +66,14 @@ function enqueue<T>(op: () => Promise<T>): Promise<T> {
   return run;
 }
 
-// Old localStorage tree, or null if absent/empty/corrupt. Only a non-empty
-// array is worth importing.
-function readLegacy(): BookmarkItem[] | null {
-  try {
-    const raw = localStorage.getItem(LS_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) && parsed.length ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-// Merge legacy localStorage items into the server tree: append every legacy
-// top-level entry whose id (and, for bookmarks, url) isn't already present
-// anywhere in the server tree. Non-destructive — server items win, legacy adds
-// only what's missing. Used both for a fresh install (server tree empty) and an
-// upgrade over a pre-seeded store (starter bookmarks already present).
-function mergeLegacy(
-  server: BookmarkItem[],
-  legacy: BookmarkItem[]
-): BookmarkItem[] {
-  const ids = new Set<string>();
-  const urls = new Set<string>();
-  const collect = (items: BookmarkItem[]): void => {
-    for (const it of items) {
-      ids.add(it.id);
-      if (isFolder(it)) collect(it.children);
-      else urls.add(it.url);
-    }
-  };
-  collect(server);
-  const out = clone(server);
-  for (const it of legacy) {
-    if (ids.has(it.id)) continue;
-    if (!isFolder(it) && urls.has(it.url)) continue;
-    out.push(it);
-  }
-  return out;
-}
-
 // Load the cache from the server once at boot (idempotent; enqueued so it wins
-// the race against any early mutation). Then run the one-time legacy import:
-// guarded by MIGRATED_KEY (not the `exists` flag) so it works even when startup
-// seeding pre-created bookmarks.json — any legacy localStorage bookmarks not
-// already in the server tree are merged in and PUT once. The marker is set only
-// after a successful commit (or when there is nothing to import), so a failed
-// PUT retries on the next boot. Failure leaves the cache empty and `hydrated`
-// false; a later mutation still tries to persist.
+// the race against any early mutation).
 export function hydrateBookmarks(): Promise<void> {
   return enqueue(async () => {
     if (hydrated) return;
     try {
       const { exists, bookmarks } = await getBookmarks();
-      const server = (exists ? (bookmarks as BookmarkItem[]) : []);
-      if (!legacyMigrated()) {
-        const legacy = readLegacy();
-        if (legacy) {
-          const merged = mergeLegacy(server, legacy);
-          // Persist only when the merge actually added something (or the server
-          // file was never written) — otherwise skip the redundant PUT.
-          if (!exists || merged.length !== server.length) {
-            await commit(merged);
-            markLegacyMigrated();
-            hydrated = true;
-            return;
-          }
-        }
-        // Nothing to import, or everything already present: mark done so we
-        // never re-read localStorage on future boots.
-        markLegacyMigrated();
-      }
-      cache = server;
+      cache = exists ? (bookmarks as BookmarkItem[]) : [];
       hydrated = true;
     } catch (e) {
       console.error("[fused] failed to load bookmarks:", e);

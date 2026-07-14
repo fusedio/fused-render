@@ -10,9 +10,9 @@ fused-render is a **local file explorer** that runs entirely on `127.0.0.1` — 
 ## Running the server
 
 ```
-fused-render                                    # opens a tab at http://127.0.0.1:8765/, starting in $HOME
+fused-render                                    # opens a tab at http://127.0.0.1:1777/, starting in $HOME
 fused-render --start-dir ~/data --port 9000     # different start dir + port
-fused-render --port 8765 --no-browser           # don't steal focus (best when driving it yourself)
+fused-render --port 1777 --no-browser           # don't steal focus (best when driving it yourself)
 ```
 
 `--start-dir` only sets the initial location; the whole filesystem stays browsable from there. When you launch it to open something for the user or to test a change, prefer `--no-browser` and open the specific URL yourself (see below) rather than landing them on the home directory.

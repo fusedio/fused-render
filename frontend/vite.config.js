@@ -15,10 +15,10 @@ export default defineConfig({
     // `npm run dev` proxies API/render traffic to a running fused-render
     // server for hot-reload development of the shell itself.
     proxy: {
-      "/api": "http://127.0.0.1:8765",
-      "/render": "http://127.0.0.1:8765",
-      "/static": "http://127.0.0.1:8765",
-      "/template-assets": "http://127.0.0.1:8765",
+      "/api": "http://127.0.0.1:1777",
+      "/render": "http://127.0.0.1:1777",
+      "/static": "http://127.0.0.1:1777",
+      "/template-assets": "http://127.0.0.1:1777",
     },
   },
 });

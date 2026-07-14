@@ -51,9 +51,9 @@ def test_baseline_ref_empty(monkeypatch):
     assert app.APP_SUPPORT_DIR == os.path.expanduser(
         "~/Library/Application Support/fused-render"
     )
-    assert app.DEFAULT_PORT == 8765
-    assert app.MAX_PORT == 8775
-    assert cli.DEFAULT_PORT == 8765
+    assert app.DEFAULT_PORT == 1777
+    assert app.MAX_PORT == 1787
+    assert cli.DEFAULT_PORT == 1777
 
 
 def test_branch_ref_foo(monkeypatch):

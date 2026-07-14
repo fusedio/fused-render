@@ -345,7 +345,7 @@
 (async function boot() {
   if (typeof fused === "undefined") {
     document.body.innerHTML = "<p style='padding:2em;font-family:sans-serif;color:#ccc'>" +
-      "Open this file inside fused-render (http://127.0.0.1:8765/view/&lt;path to template.html&gt;).</p>";
+      "Open this file inside fused-render (http://127.0.0.1:1777/view/&lt;path to template.html&gt;).</p>";
     return;
   }
   const HTML_PATH = new URLSearchParams(location.search).get("path") || "";
