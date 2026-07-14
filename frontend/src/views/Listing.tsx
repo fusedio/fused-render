@@ -15,6 +15,7 @@ import type { FsEntry, WalkEntry } from "../lib/api";
 import { formatSize, formatMtime } from "../lib/format";
 import { fuzzyMatch, highlightSegments } from "../lib/fuzzy";
 import { iconForEntry } from "../components/FileIcons";
+import { getViewState, setViewState } from "../lib/viewstate";
 
 const SORT_KEYS = { name: "Name", size: "Size", mtime: "Modified" };
 type SortKey = keyof typeof SORT_KEYS;
@@ -38,11 +39,18 @@ const URL_SYNC_MS = 200;
 // flushes immediately (lastFlush starts at 0), so first paint isn't delayed.
 const STREAM_FLUSH_MS = 200;
 
-function currentSort(): { sort: SortKey; order: SortOrder } {
-  const q = new URLSearchParams(location.search);
-  const key = q.get("sort");
+// Effective sort for a folder. An explicit `?sort` in the URL wins — a shared
+// or hand-typed link is authoritative — otherwise fall back to this folder's
+// own saved state (lib/viewstate), otherwise the default name/asc. So each
+// folder shows its own remembered order regardless of how it was reached
+// (clicked into, a breadcrumb, Back, or a fresh URL), and sibling folders keep
+// independent sorts.
+function resolveSort(fsPath: string): { sort: SortKey; order: SortOrder } {
+  const url = new URLSearchParams(location.search);
+  const src = url.get("sort") ? url : new URLSearchParams(getViewState(fsPath));
+  const key = src.get("sort");
   const sort: SortKey = key && key in SORT_KEYS ? (key as SortKey) : "name";
-  const order: SortOrder = q.get("order") === "desc" ? "desc" : "asc";
+  const order: SortOrder = src.get("order") === "desc" ? "desc" : "asc";
   return { sort, order };
 }
 
@@ -178,7 +186,24 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   const [state, setState] = useState<ListingState>({ status: "loading" });
   // Sort lives in the URL; mirror it in state so clicks re-render without a
   // navigation (vanilla re-ran renderListing after its replaceState).
-  const [{ sort, order }, setSortState] = useState<{ sort: SortKey; order: SortOrder }>(currentSort);
+  const [{ sort, order }, setSortState] = useState<{ sort: SortKey; order: SortOrder }>(() =>
+    resolveSort(fsPath)
+  );
+  // When the sort was restored from saved state (URL carried none), reflect it
+  // in the URL so the address bar, bookmarks, and Back-button history match
+  // what's shown — as if the column had been clicked. Only syncs a genuinely
+  // saved order; an unsorted folder keeps its clean, param-free URL. replaceState
+  // (not navigate) so the view doesn't remount.
+  useEffect(() => {
+    if (new URLSearchParams(location.search).get("sort")) return; // URL is authoritative
+    const saved = getViewState(fsPath);
+    if (!saved) return; // nothing stored → leave default sort + clean URL
+    const s = new URLSearchParams(saved);
+    const params = new URLSearchParams(location.search);
+    params.set("sort", s.get("sort") || "name");
+    params.set("order", s.get("order") === "desc" ? "desc" : "asc");
+    history.replaceState(null, "", location.pathname + "?" + params.toString());
+  }, [fsPath]);
   const [refresh, setRefresh] = useState(0); // bumped by the dir watch socket
   const [query, setQueryState] = useState<string>(currentQuery);
   const [walk, setWalk] = useState<WalkState>(IDLE_WALK);
@@ -463,6 +488,9 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     params.set("order", next.order);
     history.replaceState(null, "", location.pathname + "?" + params.toString());
     setSortState(next);
+    // Remember this folder's choice so returning to it later restores this sort.
+    // Only sort/order are persisted — the in-folder search `q` stays transient.
+    setViewState(fsPath, "?sort=" + next.sort + "&order=" + next.order);
   };
 
   const setSearchSortKey = (key: SortKey) => {
