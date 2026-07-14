@@ -84,7 +84,7 @@ jobs:
           role-session-name: GithubFusedRenderRelease
           aws-region: us-west-2
 
-      - name: Upload DMG to S3
+      - name: Upload DMG + wheel to S3
         run: |
           set -euo pipefail
           # Not `brew install awscli`: GH's macos-14 image doesn't have the
@@ -97,9 +97,12 @@ jobs:
           fi
           DMG_PATH="$(ls dist/*.dmg)"
           DMG_SHA256="$(shasum -a 256 "$DMG_PATH" | cut -d' ' -f1)"
+          WHL_PATH="$(ls dist/*.whl)"
           echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
           echo "DMG_SHA256=$DMG_SHA256" >> "$GITHUB_ENV"
+          echo "WHL_PATH=$WHL_PATH" >> "$GITHUB_ENV"
           aws s3 cp "$DMG_PATH" "s3://fused-magic/fused-render-dmgs/$(basename "$DMG_PATH")"
+          aws s3 cp "$WHL_PATH" "s3://fused-magic/fused-render-wheels/$(basename "$WHL_PATH")"
 
       - name: Find previous tag
         id: prev_tag
@@ -118,7 +121,9 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.DMG_PATH }}
+          files: |
+            ${{ env.DMG_PATH }}
+            ${{ env.WHL_PATH }}
           name: FusedRender ${{ github.ref_name }}
           generate_release_notes: true
           previous_tag: ${{ steps.prev_tag.outputs.tag }}

@@ -2,9 +2,10 @@
 # Build FusedRender.app + a distributable DMG via py2app (SPEC §12, D33-D35).
 #
 # Pipeline: pick/bootstrap a FRAMEWORK-build python (py2app needs one to
-# produce a real standalone bundle, see the note below) -> build a venv on it
-# -> pip install fused-render[bundled,app] + py2app + dmgbuild into that venv
-# -> generate the app icon -> run py2app -> codesign -> dmgbuild -> notarize.
+# produce a real standalone bundle, see the note below) -> build the wheel
+# once (dist/*.whl) -> build a venv on it -> pip install that wheel
+# [bundled,app] + py2app + dmgbuild into the venv -> generate the app icon ->
+# run py2app -> codesign -> dmgbuild -> notarize.
 #
 # Signing (step 5, D73) is credential-driven: with a Developer ID identity in
 # your keychain the bundle is signed with the hardened runtime (and optionally
@@ -94,26 +95,48 @@ fi
 echo "==> using framework python: $FRAMEWORK_PYTHON (PYTHONFRAMEWORK=$FRAMEWORK_TAG)"
 
 # ---------------------------------------------------------------------------
-# 2. Build venv: fused-render[bundled,app,fused] + py2app + dmgbuild
+# 2. Build the wheel (dist/*.whl), then a venv: that wheel[bundled,app,fused]
+#    + py2app + dmgbuild.
+#
+#    The wheel is built ONCE here and reused for both installs below, rather
+#    than each `pip install "${REPO_ROOT}[...]"` re-triggering
+#    scripts/hatch_build.py's `npm install && npm run build` frontend step
+#    from source. Installing an already-built .whl is a plain unpack — no
+#    build hook runs — so this also gives the release pipeline a real
+#    dist/*.whl artifact to upload/attach, instead of one pip builds
+#    internally and discards after install.
 # ---------------------------------------------------------------------------
+
+export FUSED_RENDER_BRANCH="$REF"
 
 if [[ ! -x "$BUILD_VENV/bin/python" ]]; then
   echo "==> creating build venv"
   "$FRAMEWORK_PYTHON" -m venv "$BUILD_VENV"
 fi
-
-echo "==> installing fused-render[bundled,app,fused] + py2app + dmgbuild into the build venv"
-export FUSED_RENDER_BRANCH="$REF"
 "$BUILD_VENV/bin/pip" install --quiet --upgrade pip
+
+echo "==> building wheel"
+# Build via the venv's pip/python, not host python3 -m pip: on Homebrew python
+# (and most other PEP 668 "externally managed" installs) a bare host-level
+# `pip install` refuses to run, which would break the documented plain
+# `bash scripts/build_dmg.sh` local path. A venv is always installable into.
+# Clear stale dist/*.whl first so the glob below can't pick up a leftover
+# wheel from an earlier version/run and resolve to more than one path.
+rm -f "$DIST_DIR"/*.whl
+"$BUILD_VENV/bin/pip" install --quiet --upgrade build
+"$BUILD_VENV/bin/python" -m build --quiet --wheel --outdir "$DIST_DIR" "$REPO_ROOT"
+WHEEL_PATH="$(ls "$DIST_DIR"/*.whl)"
+
+echo "==> installing ${WHEEL_PATH##*/} [bundled,app,fused] + py2app + dmgbuild into the build venv"
 # [fused] bakes the deploy CLI into the bundle (SPEC §19 DP-3): the .app has
 # no pip and no console scripts, so the Deploy surface runs the package
 # in-interpreter via fused_render/_fused_cli.py under the bundled python.
-"$BUILD_VENV/bin/pip" install --quiet "${REPO_ROOT}[bundled,app,fused]" py2app dmgbuild
-# Force a fresh rebuild+reinstall of fused-render itself every run so the branch
-# ref is re-baked to match $REF. The build venv is reused across builds, so pip
-# would otherwise treat an unchanged version as already-satisfied (or reuse a
-# cached wheel) and ship a stale _baked_branch.py from a previous ref.
-"$BUILD_VENV/bin/pip" install --quiet --force-reinstall --no-deps --no-cache-dir "${REPO_ROOT}"
+"$BUILD_VENV/bin/pip" install --quiet "${WHEEL_PATH}[bundled,app,fused]" py2app dmgbuild
+# Force a fresh reinstall of fused-render itself every run so the branch ref
+# baked into $WHEEL_PATH is picked up. The build venv is reused across builds,
+# so pip would otherwise treat an unchanged version as already-satisfied and
+# keep a stale _baked_branch.py from a previous ref/wheel.
+"$BUILD_VENV/bin/pip" install --quiet --force-reinstall --no-deps --no-cache-dir "${WHEEL_PATH}"
 
 # ---------------------------------------------------------------------------
 # 2b. Stage rclone (D103): mounts (shell/mounts.py, D102) shell out to a real
