@@ -219,6 +219,18 @@ def _live_rcd_port() -> int | None:
 
 
 def rclone_bin() -> str | None:
+    """Path to the rclone binary to run.
+
+    Inside the packaged macOS app (py2app sets sys.frozen = "macosx_app",
+    same check as deploy.py's _setup_cli_hint) rclone is bundled at
+    Contents/Resources/bin/rclone (D103, build_dmg.sh) so mounts work with
+    zero user setup — no brew/apt install, no PATH dependency. Outside the
+    bundle (dev checkout, Linux) fall back to the system rclone."""
+    if getattr(sys, "frozen", None) == "macosx_app":
+        contents = os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))
+        bundled = os.path.join(contents, "Resources", "bin", "rclone")
+        if os.path.isfile(bundled):
+            return bundled
     return shutil.which("rclone")
 
 

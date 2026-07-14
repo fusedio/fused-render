@@ -175,9 +175,11 @@ Drive, and anything else [rclone](https://rclone.org) speaks — mounted as
 local folders under `~/.fused-render/mounts/`. Everything downstream
 (previews, readers, tile servers) sees ordinary local paths.
 
-- **One prerequisite:** rclone (`brew install rclone` on macOS, your distro's
-  package on Linux). macOS mounts via the built-in NFS client — no macFUSE;
-  Linux uses FUSE. Windows is not supported yet.
+- **No setup on macOS:** the packaged app bundles rclone itself (D103) — no
+  install, nothing on PATH. Running from source, or on Linux, still needs
+  rclone (`brew install rclone` / your distro's package). macOS mounts via
+  the built-in NFS client — no macFUSE; Linux uses FUSE. Windows is not
+  supported yet.
 - **Credentials never touch fused-render** — they live in rclone's own
   config. S3-compatible remotes can be created from the page; for Google
   Drive and other sign-in backends, run `rclone config` in a terminal once.
