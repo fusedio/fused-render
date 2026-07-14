@@ -110,7 +110,11 @@ jobs:
           # GitHub's own previous-tag auto-detection has proven unreliable
           # here (past releases each listed the full PR history instead of
           # just what changed since the prior release) — pin it explicitly.
-          PREV_TAG="$(git tag --sort=-v:refname | grep -v "^${GITHUB_REF_NAME}$" | head -n1)"
+          # grep exits 1 (failing the pipeline under pipefail) when there's
+          # no other tag yet, e.g. on the very first release — that's a
+          # legitimate case, not an error, so tolerate it and leave PREV_TAG
+          # empty; the release action falls back to its own auto-detection.
+          PREV_TAG="$(git tag --sort=-v:refname | grep -v "^${GITHUB_REF_NAME}$" | head -n1 || true)"
           echo "tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
@@ -119,7 +123,7 @@ jobs:
           files: ${{ env.DMG_PATH }}
           name: FusedRender ${{ github.ref_name }}
           generate_release_notes: true
-          previous_tag_name: ${{ steps.prev_tag.outputs.tag }}
+          previous_tag: ${{ steps.prev_tag.outputs.tag }}
 
       - name: Bump homebrew-tap cask
         env:
