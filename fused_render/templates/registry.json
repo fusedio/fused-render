@@ -5,29 +5,34 @@
     "h3",
     "claude",
     "annotate",
+    "annotate-live",
     "history"
   ],
   ".csv": [
     "duckdb",
     "csv",
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".tsv": [
     "duckdb",
     "csv",
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".xlsx": [
     "xlsx",
     "excel",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".xlsm": [
     "xlsx",
     "excel",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".pptx": [
     "slides"
@@ -41,12 +46,14 @@
     "tree",
     "code",
     "duckdb",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".jsonl": [
     "code",
     "duckdb",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".docx": [
     "docs"
@@ -54,123 +61,146 @@
   ".ndjson": [
     "code",
     "duckdb",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".csv.gz": [
     "duckdb",
     "tar",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".csv.zst": [
     "duckdb",
     "tar",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".tsv.gz": [
     "duckdb",
     "tar",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".tsv.zst": [
     "duckdb",
     "tar",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".json.gz": [
     "duckdb",
     "tar",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".json.zst": [
     "duckdb",
     "tar",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".jsonl.gz": [
     "duckdb",
     "tar",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".jsonl.zst": [
     "duckdb",
     "tar",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".ndjson.gz": [
     "duckdb",
     "tar",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".ndjson.zst": [
     "duckdb",
     "tar",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".geojson": [
     "vector",
     "map",
     "tree",
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".md": [
     "markdown",
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".markdown": [
     "markdown",
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".tex": [
     "latex",
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".ltx": [
     "latex",
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".latex": [
     "latex",
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".svg": [
     "image",
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".png": [
     "image",
     "photos",
     "pano",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".jpg": [
     "image",
     "photos",
     "pano",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".jpeg": [
     "image",
     "photos",
     "pano",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".gif": [
     "image",
     "photos",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".webp": [
     "image",
     "photos",
     "pano",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".bmp": [
     "photos"
@@ -190,23 +220,28 @@
   ".pdf": [
     "pdf",
     "pdf_studio",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".mp4": [
     "media",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".mov": [
     "media",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".m4v": [
     "media",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".webm": [
     "media",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".mp3": [
     "media"
@@ -226,127 +261,156 @@
   ".py": [
     "code",
     "api",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".js": [
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".ts": [
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".tsx": [
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".jsx": [
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".cjs": [
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".mjs": [
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".cts": [
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".mts": [
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".sh": [
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".zsh": [
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".fish": [
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".ps1": [
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".csh": [
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".zsh-theme": [
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".vim": [
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".yaml": [
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".yml": [
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".toml": [
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".ini": [
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".cfg": [
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".conf": [
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".tf": [
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".hcl": [
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".css": [
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".txt": [
     "text",
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".log": [
     "log_studio",
     "text",
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".html": [
     "_render",
     "code",
     "claude",
     "annotate",
+    "annotate-live",
     "history"
   ],
   ".htm": [
     "_render",
     "code",
     "claude",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ],
   ".tif": [
     "geotiff",
@@ -520,6 +584,7 @@
   ".plist": [
     "plist",
     "code",
-    "annotate"
+    "annotate",
+    "annotate-live"
   ]
 }
