@@ -306,11 +306,21 @@
         for (const [id, e] of entries) lastSynced.set(id, serial(e)); // echo guard
         const local = hooks.load();
         const merged = mergeInto(local, entries);
+        // Remote deletions must reach the LOCAL sidecar log too: collect ids we
+        // held locally that arrived tombstoned, and ride them through save()'s
+        // deleted_ids so annotate_live.py stamps deleted_at. publish() skips
+        // already-tombstoned ids, so this never bounces back out.
+        const remoteDeleted = [];
+        const entryById = new Map(entries); // readMap() yields [id, value] pairs
+        for (const c of local) {
+          const e = c && entryById.get(c.id);
+          if (e && e.deleted === true) remoteDeleted.push(c.id);
+        }
         // A pure echo (our own write bouncing back) is a no-op — skip save so we
         // don't re-record the sidecar / re-render for nothing. The late-join
         // pass always saves so local-only comments get published upward.
-        if (!pushLocal && sameSet(local, merged)) return;
-        hooks.save(merged); // sets URL + records sidecar + republishes + renders
+        if (!pushLocal && !remoteDeleted.length && sameSet(local, merged)) return;
+        hooks.save(merged, remoteDeleted); // URL + sidecar (incl. tombstones) + republish + render
       } finally {
         applyingRemote = false;
       }
@@ -320,6 +330,29 @@
     // Skips any id whose serialized value equals lastSynced (echo guard) so an
     // inbound apply never bounces back out. deletedIds become permanent
     // tombstone entries (deleted:true) that survive reloads and late joins.
+    // Storage writes are applied locally first and flushed to the server in the
+    // background; a wedged flush is silent (local map looks right, peers see
+    // nothing). After every publish, verify the room reaches "synchronized" —
+    // if it hasn't within the window, surface it and force a reconnect, which
+    // re-flushes pending local ops.
+    let syncTimer = null;
+    function armSyncWatchdog() {
+      if (!lbRoom || typeof lbRoom.getStorageStatus !== "function") return;
+      if (syncTimer) clearTimeout(syncTimer);
+      syncTimer = setTimeout(() => {
+        syncTimer = null;
+        let st = null;
+        try { st = lbRoom.getStorageStatus(); } catch (e) { return; }
+        if (st === "synchronized") {
+          if (hooks && hooks.onSyncState) hooks.onSyncState("ok");
+          return;
+        }
+        if (hooks && hooks.onSyncState) hooks.onSyncState("stuck");
+        try { lbRoom.reconnect(); } catch (e) {}
+        armSyncWatchdog(); // keep checking until synchronized
+      }, 4000);
+    }
+
     function publish(arr, deletedIds) {
       if (!map) return; // transport=off (never connected) — pure local mode
       for (const c of arr || []) {
@@ -338,6 +371,7 @@
         map.set(id, tomb);
         lastSynced.set(id, serial(tomb));
       }
+      armSyncWatchdog();
     }
 
     // ---- presence ----------------------------------------------------------
@@ -1510,7 +1544,15 @@
 
     // The annotate view drives the live layer; the live layer never reaches
     // into the DOM itself.
-    AnnotateLive.attach({ load, save, render, onPresence: renderPresence });
+    AnnotateLive.attach({
+      load, save, render, onPresence: renderPresence,
+      onSyncState(state) {
+        const live = document.getElementById("livestatus");
+        if (!live) return;
+        if (state === "stuck") { live.textContent = "re-syncing…"; live.className = "warn"; }
+        else { live.textContent = ""; live.className = ""; }
+      },
+    });
 
     // transport=off never imports the CDN — the page is then pure-local
     // annotate. Otherwise pin a room (generated if absent) and connect.
