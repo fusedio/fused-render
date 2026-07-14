@@ -266,7 +266,11 @@
       if (!b) return a;
       const ad = a.deleted === true, bd = b.deleted === true;
       if (ad !== bd) return ad ? a : b;
-      return (Number(a.updatedAt) || 0) >= (Number(b.updatedAt) || 0) ? a : b;
+      const at = Number(a.updatedAt) || 0, bt = Number(b.updatedAt) || 0;
+      if (at !== bt) return at > bt ? a : b;
+      // Equal timestamps: deterministic content tiebreak so every peer picks
+      // the SAME winner (local-favoring ties let two peers diverge forever).
+      return serial(a) >= serial(b) ? a : b;
     }
     // Merge the LiveMap entries into the local URL array. Tombstoned ids drop
     // out of the (live-only) URL mirror but persist in the LiveMap.
