@@ -127,7 +127,4 @@ jobs:
           git config user.email "ci@fused.io"
           git add Casks/fused-render.rb
           git commit -m "fused-render ${VERSION}"
-
-          # Commented out for CI testing (per request) — uncomment to actually
-          # publish the cask bump once the pipeline is verified end-to-end.
-          # git push origin main
+          git push origin main
