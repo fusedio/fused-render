@@ -84,7 +84,14 @@ jobs:
           AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
         run: |
           set -euo pipefail
-          command -v aws >/dev/null || brew install awscli
+          # Not `brew install awscli`: GH's macos-14 image doesn't have the
+          # `aws/tap` cask pre-trusted, and Homebrew's tap-trust gate fails
+          # the install outright. Apple's own .pkg installer sidesteps
+          # Homebrew (and its taps) entirely.
+          if ! command -v aws >/dev/null; then
+            curl -fsSL "https://awscli.amazonaws.com/AWSCLIV2.pkg" -o "$RUNNER_TEMP/AWSCLIV2.pkg"
+            sudo installer -pkg "$RUNNER_TEMP/AWSCLIV2.pkg" -target /
+          fi
           DMG_PATH="$(ls dist/*.dmg)"
           DMG_SHA256="$(shasum -a 256 "$DMG_PATH" | cut -d' ' -f1)"
           echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
