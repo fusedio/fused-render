@@ -235,12 +235,21 @@ def _http_connection():
     # Versioned stash key: bumping it (settings change) simply strands the old
     # connection for GC and builds a fresh one — no stale-config connection can
     # outlive a code update in a long-running server.
-    key = "_fused_render_http_con_v2"
+    key = "_fused_render_http_con_v3"
     con = getattr(duckdb, key, None)
     if con is None:
         con = duckdb.connect(":memory:")
         con.execute("LOAD httpfs")  # raises if unavailable -> caller falls back
         con.execute("PRAGMA enable_object_cache=true")
+        # The object cache alone revalidates cached parquet metadata against
+        # the remote's etag/last-modified — and presigned store URLs are
+        # GET-signed, so the validation HEAD 403s and every run re-fetches
+        # and re-parses the footer (~700KB, several ranged reads). This
+        # setting caches metadata by URL with no revalidation, which fits
+        # this connection's traffic: mount-backed objects are effectively
+        # immutable, and the URLs themselves rotate (presigned links are
+        # re-minted every ~30min), naturally bounding staleness.
+        con.execute("SET parquet_metadata_cache=true")
         # Remote scans block worker threads in HTTP reads, and the default
         # pool (one per core) lets a single fat-column query starve every
         # concurrent one — the grid's parallel per-column loads would all
