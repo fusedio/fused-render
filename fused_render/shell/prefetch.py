@@ -33,6 +33,7 @@ import logging
 import os
 import threading
 import time
+import urllib.error
 import urllib.request
 
 logger = logging.getLogger(__name__)
@@ -105,6 +106,18 @@ def _finish(path: str, status_: str) -> None:
             job["at"] = time.monotonic()
 
 
+def _release(exc: BaseException) -> None:
+    """Close the response an HTTPError carries. Raised before the `with`
+    block takes ownership, it would otherwise hold its serve connection
+    open for as long as the exception stays referenced — which in the
+    retry loop below spans the whole backoff sleep."""
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            exc.close()
+        except Exception:
+            pass
+
+
 def _head_size(url: str) -> int | None:
     req = urllib.request.Request(url, method="HEAD")
     with urllib.request.urlopen(req, timeout=30) as r:
@@ -127,7 +140,8 @@ def _prefetch(path: str, url: str) -> None:
     with _worker_slot:
         try:
             size = _head_size(url)
-        except Exception:
+        except Exception as exc:
+            _release(exc)
             _finish(path, "failed")
             return
         if size is None or size > MAX_BYTES:
@@ -155,7 +169,8 @@ def _prefetch(path: str, url: str) -> None:
                             if path in _jobs:
                                 _jobs[path]["done"] = off
                 errors = 0
-            except Exception:
+            except Exception as exc:
+                _release(exc)
                 errors += 1
                 if errors > MAX_CONSECUTIVE_ERRORS:
                     logger.warning("prefetch of %r gave up at %d/%d bytes",
