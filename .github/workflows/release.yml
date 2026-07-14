@@ -14,6 +14,10 @@ jobs:
       KEYCHAIN_PATH: ${{ github.workspace }}/ci-signing.keychain-db
       NOTARY_PROFILE: ci-notary
       AWS_DEFAULT_REGION: us-west-2
+      # Team ID embedded in the "Developer ID Application: Fused Labs, Inc.
+      # (L5CL3594R4)" identity — not sensitive, ships inside every signed
+      # binary already, so no need to route it through a secret.
+      NOTARY_TEAM_ID: L5CL3594R4
     steps:
       - uses: actions/checkout@v4
 
@@ -29,16 +33,13 @@ jobs:
           CODESIGN_CERT_P12: ${{ secrets.CODESIGN_CERT_P12 }}
           CODESIGN_CERT_PASSWORD: ${{ secrets.CODESIGN_CERT_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
-          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
-          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_APP_SPECIFIC_PASSWORD: ${{ secrets.NOTARY_APP_SPECIFIC_PASSWORD }}
         run: |
           set -euo pipefail
 
           CERT_PATH="$RUNNER_TEMP/codesign-cert.p12"
-          NOTARY_KEY_PATH="$RUNNER_TEMP/notary-key.p8"
           echo "$CODESIGN_CERT_P12" | base64 --decode -o "$CERT_PATH"
-          echo "$NOTARY_KEY_P8" | base64 --decode -o "$NOTARY_KEY_PATH"
 
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 3600 "$KEYCHAIN_PATH"
@@ -51,11 +52,16 @@ jobs:
 
           # notarytool profiles live in a keychain too; store into the same
           # ephemeral one so it's gone with the runner, nothing persists.
+          # apple-id + app-specific-password (not an App Store Connect API
+          # key): that key type needs an org Account Holder to flip on API
+          # access first, which app-specific passwords sidestep entirely —
+          # switch to a --key/--key-id/--issuer API key later if that access
+          # gets granted, it's the more idiomatic CI credential long-term.
           xcrun notarytool store-credentials "$NOTARY_PROFILE" \
-            --key "$NOTARY_KEY_PATH" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" \
+            --apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_APP_SPECIFIC_PASSWORD" \
             --keychain "$KEYCHAIN_PATH"
 
-          rm -f "$CERT_PATH" "$NOTARY_KEY_PATH"
+          rm -f "$CERT_PATH"
 
       - name: Build, sign, notarize, staple DMG
         env:
