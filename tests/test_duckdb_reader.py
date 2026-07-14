@@ -226,6 +226,36 @@ def test_parquet_filter_sort_positions_via_file_row_number(parquet_file):
     assert "file_row_number" not in out["columns"]  # pseudo-column not leaked
 
 
+def test_sorted_page_sql_appends_position_tiebreaker(parquet_file, csv_file):
+    # A user sort with tied values would otherwise make the LIMIT/OFFSET window
+    # itself nondeterministic — fatal for the parallel per-column batches,
+    # which are separate queries that must resolve the same page to the same
+    # rows (a batch's unmatched ids merge to nothing and render as fake NULLs).
+    order = ' ORDER BY "name" ASC'
+    psql = reader._page_sql(parquet_file, reader.relation_for(parquet_file), "", order)
+    assert f'{order}, file_row_number LIMIT' in psql
+    csql = reader._page_sql(csv_file, reader.relation_for(csv_file), "", order)
+    assert f'{order}, {reader._POS} LIMIT' in csql
+    # No sort needs no tiebreaker: the unordered window is already
+    # deterministic under DuckDB's default preserve_insertion_order.
+    assert "ORDER BY" not in reader._page_sql(
+        parquet_file, reader.relation_for(parquet_file), "", "")
+
+
+def test_sorted_ties_resolve_to_same_rows_across_column_batches(tmp_path):
+    # Regression for the batched-load window: every row shares one sort value,
+    # so the whole page is one big tie group. Two batch calls projecting
+    # different columns must land on identical ids.
+    p = _make(tmp_path, "t.parquet",
+              "SELECT range AS id, 0 AS tie, 'n'||range AS name FROM range(250)")
+    a = reader.main(p, mode="page", columns=["id"],
+                    sort={"column": "tie", "dir": "asc"}, offset=100, limit=50)
+    b = reader.main(p, mode="page", columns=["name"],
+                    sort={"column": "tie", "dir": "asc"}, offset=100, limit=50)
+    assert a["ids"] == b["ids"] == list(range(100, 150))
+    assert b["rows"][0]["name"] == "n100"
+
+
 # --------------------------------------------------- deferred count (mode)
 
 def test_page_mode_defers_count(parquet_file):

@@ -226,15 +226,25 @@ def _page_sql(scan: str, relation: str, where: str, order: str,
     operator that sits between the filter and the scan, defeating both
     pushdowns and forcing DuckDB to read row groups that provably hold no
     match. CSV/JSON have no such pseudo-column and can't prune anyway, so they
-    keep the streaming window (LIMIT still pushes through it)."""
+    keep the streaming window (LIMIT still pushes through it).
+
+    A user sort always gets the physical position appended as a tiebreaker.
+    Without it, ties at a page boundary make the LIMIT/OFFSET window itself
+    nondeterministic under parallel execution — and the grid's per-column
+    batches are *separate queries*, so two batches could resolve the same page
+    to different row sets, leaving id-merged cells unfilled (rendered as fake
+    NULLs). No sort needs none: DuckDB's default preserve_insertion_order
+    already makes the unordered window deterministic."""
     if _logical_ext(scan) == ".parquet":
         rel = relation_for(scan, file_row_number=True)
         proj = "* EXCLUDE (file_row_number)" if projection == "*" else projection
+        tie = f"{order}, file_row_number" if order else ""
         return (f"SELECT file_row_number AS {_POS}, {proj} "
-                f"FROM {rel}{where}{order} LIMIT ? OFFSET ?")
+                f"FROM {rel}{where}{tie} LIMIT ? OFFSET ?")
     proj = "*" if projection == "*" else f"{_POS}, {projection}"
+    tie = f"{order}, {_POS}" if order else ""
     return (f"SELECT {proj} FROM (SELECT (row_number() OVER () - 1) AS {_POS}, * "
-            f"FROM {relation}){where}{order} LIMIT ? OFFSET ?")
+            f"FROM {relation}){where}{tie} LIMIT ? OFFSET ?")
 
 
 def _db_tables(con):

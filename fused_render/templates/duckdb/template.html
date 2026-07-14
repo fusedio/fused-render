@@ -809,8 +809,11 @@
 
     // One batch of the parallel remote-parquet load arrived (d) or failed
     // (null). The first successful batch defines the page's rows (their ids —
-    // physical file positions — key everything); later batches merge by id, so
-    // a nondeterministic tie in ORDER BY between calls can't misalign cells.
+    // physical file positions — key everything); later batches merge by id.
+    // Id-keying alone only guards against attributing a value to the wrong
+    // row — batches resolving the same page to different row sets would still
+    // leave cells silently unfilled, which is why reader.py's paging SQL pins
+    // the window with a file-position ORDER BY tiebreaker.
     function applyBatch(seq, cols, d) {
       if (seq !== loadSeq) return;
       if (d && !state.ids.length && d.ids.length) {
