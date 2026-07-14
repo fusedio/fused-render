@@ -283,6 +283,68 @@ def test_positions_mode_pins_ties(tmp_path):
     assert pos["positions"] == list(range(100, 150))
 
 
+# ------------------------------------------- row-group pruning (positions)
+
+@pytest.fixture
+def grouped_parquet(tmp_path):
+    """5 row groups of 2048 rows (DuckDB clamps ROW_GROUP_SIZE below 2048 up,
+    so this is the smallest multi-group file it writes). `seq` correlates
+    with file order (footer stats prune it); `scat` is hash-scattered so
+    every group spans the whole value range (provably unprunable); `seq_n`
+    is seq with a NULL tail."""
+    p = tmp_path / "g.parquet"
+    con = duckdb.connect()
+    con.execute(
+        "COPY (SELECT range AS seq, (range * 37) % 10000 AS scat, "
+        "CASE WHEN range >= 9000 THEN NULL ELSE range END AS seq_n "
+        f"FROM range(10000)) TO '{p}' (FORMAT parquet, ROW_GROUP_SIZE 2048)")
+    con.close()
+    return str(p)
+
+
+def _unpruned_positions(path, col, d, offset, limit):
+    con = duckdb.connect()
+    rows = con.execute(
+        f"SELECT file_row_number FROM read_parquet('{path}', "
+        f"file_row_number=true) ORDER BY {col} {d}, file_row_number "
+        f"LIMIT {limit} OFFSET {offset}").fetchall()
+    con.close()
+    return [r[0] for r in rows]
+
+
+def test_pruned_positions_match_full_scan(grouped_parquet):
+    for col in ("seq", "scat", "seq_n"):
+        for d in ("asc", "desc"):
+            for offset in (0, 2500, 9500):
+                got = reader.main(grouped_parquet, mode="positions",
+                                  sort={"column": col, "dir": d},
+                                  offset=offset, limit=50)["positions"]
+                assert got == _unpruned_positions(
+                    grouped_parquet, col, d, offset, 50), (col, d, offset)
+
+
+def test_prune_restricts_correlated_column(grouped_parquet):
+    con = duckdb.connect()
+    types = {r[0]: r[1] for r in con.execute(
+        f"DESCRIBE SELECT * FROM read_parquet('{grouped_parquet}')").fetchall()}
+    clause = reader._rowgroup_prune(
+        con, grouped_parquet, {"column": "seq", "dir": "desc"}, types, 100)
+    # top 100 of a file-ordered column live in exactly the last group
+    assert clause == " WHERE (file_row_number BETWEEN 8192 AND 9999)"
+
+
+def test_prune_bails_on_scattered_and_null_tail(grouped_parquet):
+    con = duckdb.connect()
+    types = {r[0]: r[1] for r in con.execute(
+        f"DESCRIBE SELECT * FROM read_parquet('{grouped_parquet}')").fetchall()}
+    # scattered: every group's [min,max] covers the range -> nothing provable
+    assert reader._rowgroup_prune(
+        con, grouped_parquet, {"column": "scat", "dir": "desc"}, types, 100) == ""
+    # window deep enough to reach the NULL tail (9000 non-null rows)
+    assert reader._rowgroup_prune(
+        con, grouped_parquet, {"column": "seq_n", "dir": "asc"}, types, 9500) == ""
+
+
 def test_page_with_positions_fetches_exactly_those_rows(parquet_file):
     # Phase two: a column batch hands the resolved positions back and gets
     # exactly those rows — sort/filters/offset/limit are ignored alongside

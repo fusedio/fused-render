@@ -26,13 +26,14 @@ import time
 import traceback
 import urllib.error
 import urllib.request
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlsplit
 
 from fastapi import Body, FastAPI, Header, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
     JSONResponse,
+    RedirectResponse,
     Response,
     StreamingResponse,
 )
@@ -1452,6 +1453,30 @@ def create_app(start_dir: str) -> FastAPI:
             # touch) its background whole-file prefetch. Cheap no-op after
             # the first call; templates stay mount-agnostic (prefetch.py).
             shell_prefetch.schedule(path, upstream)
+            # Cold ranged reads go straight to the store: the serve's VFS
+            # layer serializes concurrent uncached range reads of one file
+            # (an analytical scan pays ~0.25s per seek), while the store
+            # answers the same GETs in parallel. Once the prefetch has
+            # landed the whole file in the serve cache, the serve replays
+            # ranges from local disk and wins again. A 307 rather than a
+            # proxied fetch: the client (duckdb httpfs) re-issues each
+            # ranged GET against the store itself with its own pooled
+            # parallel connections — proxying here paid a fresh TLS
+            # handshake per range read (measured 2x on the point-read
+            # phase) and streamed every byte through this process twice.
+            # GET+Range only: presigned links are minted for GET (a HEAD
+            # fails their signature), and a whole-file GET through the
+            # serve is effectively the prefetch itself. Native clients
+            # only: a browser fetch would follow the redirect cross-origin
+            # and die on CORS — browsers always send Sec-Fetch-Mode,
+            # duckdb's httpfs never does, so its absence is the gate.
+            if (request.method == "GET" and request.headers.get("range")
+                    and "sec-fetch-mode" not in request.headers
+                    and not shell_prefetch.is_done(path)):
+                direct = await asyncio.to_thread(
+                    shell_mounts.upstream_url_for, path)
+                if direct:
+                    return RedirectResponse(direct, status_code=307)
             resp = await asyncio.to_thread(_proxy_raw, upstream, request)
             if resp is not None:
                 return resp  # upstream unreachable -> plain file read below
@@ -1568,6 +1593,33 @@ def create_app(start_dir: str) -> FastAPI:
         py = body.get("py")
         html = body.get("html")
         params = body.get("params") or {}
+
+        # Cold mount-backed reads: swap the raw-proxy source_url for the
+        # store's own URL before the reader sees it. The /api/fs/raw 307
+        # already sends cold ranged GETs to the store, but a redirect
+        # defeats httpfs connection pooling — duckdb re-follows it per
+        # range read and opens a fresh TLS connection to the store each
+        # time (measured ~3x on a cold open: schema 8.5s vs 3.4s, a
+        # 9-column page 14.5s vs 3.8s). Handing the reader the direct URL
+        # up front lets httpfs pool its store connections normally. Done
+        # here in the server, not in templates: pages keep sending the raw
+        # URL and stay mount-agnostic. Warm files (prefetch landed) keep
+        # the raw URL so the serve replays ranges from local disk; the
+        # explicit schedule() below matters because a direct-reading run
+        # never touches /api/fs/raw, which is otherwise the only place the
+        # prefetch learns a file is in use.
+        src = params.get("source_url")
+        if isinstance(src, str):
+            parts = urlsplit(src)
+            fpath = dict(parse_qsl(parts.query)).get("path")
+            if parts.path.endswith("/api/fs/raw") and fpath:
+                upstream = shell_mounts.serve_url_for(fpath)
+                if upstream is not None and not shell_prefetch.is_done(fpath):
+                    shell_prefetch.schedule(fpath, upstream)
+                    direct = await asyncio.to_thread(
+                        shell_mounts.upstream_url_for, fpath)
+                    if direct:
+                        params = dict(params, source_url=direct)
 
         if not py:
             return _error("request body must include 'py': a path to a Python file")

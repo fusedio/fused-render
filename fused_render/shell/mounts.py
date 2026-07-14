@@ -356,6 +356,111 @@ def serve_url_for(path: str) -> str | None:
     return None
 
 
+# ------------------------------------------------------- direct upstream URLs
+# Cold ranged reads through the serve are latency-bound: its VFS layer
+# serializes concurrent uncached reads of one file (~0.25s/seek — a cold
+# sorted parquet scan of 256 row groups took 63s), while the same range GETs
+# issued straight at the store run in parallel (same scan direct to S3: 6s).
+# So /api/fs/raw routes ranged reads to the store's own URL until the file's
+# background prefetch has landed it in the serve cache, then back to the
+# serve for local-disk replays. The URL is a presigned link minted by the
+# running rcd (operations/publiclink — S3/GCS/B2/Azure; credentials never
+# leave rclone, the link never leaves this server) or, for anonymous S3
+# remotes (which can't sign — "unsupported signer type noAuth"), the plain
+# public object URL. Anything else resolves to None and stays on the serve.
+
+# Presigned links default to a 1h expiry; reuse them for well under that so
+# a link handed to a proxied read is never near expiry.
+_LINK_TTL_S = 30 * 60.0
+_upstream_lock = threading.Lock()
+_upstream_links: dict = {}  # (fs, rel) -> (url, monotonic expiry)
+_upstream_mode: dict = {}   # fs -> "link" | "public" | "none"
+
+
+def _mount_for(path: str) -> tuple[dict | None, str]:
+    """(mount record, remote-relative path) for a path under a mountpoint."""
+    p = os.path.abspath(path)
+    for m in list_mounts():
+        mp = mountpoint(m)
+        if p == mp or p.startswith(mp + os.sep):
+            return m, os.path.relpath(p, mp).replace(os.sep, "/")
+    return None, ""
+
+
+def _public_object_url(fs: str, rel: str) -> str | None:
+    """Plain https URL for an object on an ANONYMOUS AWS S3 remote — the one
+    backend class that can't presign but doesn't need to. Credentialed or
+    non-AWS remotes return None (their objects aren't reachable unsigned)."""
+    name, _, root = fs.partition(":")
+    port = _live_rcd_port()
+    if port is None:
+        return None
+    try:
+        cfg = _rc(port, "config/get", {"name": name}, timeout=10)
+    except RuntimeError:
+        return None
+    if (not isinstance(cfg, dict) or cfg.get("type") != "s3"
+            or str(cfg.get("env_auth", "")).lower() == "true"
+            or cfg.get("access_key_id") or cfg.get("endpoint")):
+        return None
+    bucket, _, prefix = root.partition("/")
+    if not bucket:
+        return None
+    key = (prefix.rstrip("/") + "/" if prefix else "") + rel
+    region = cfg.get("region") or "us-east-1"
+    return f"https://{bucket}.s3.{region}.amazonaws.com/" + urllib.parse.quote(key)
+
+
+def upstream_url_for(path: str) -> str | None:
+    """Direct store URL for a mount-backed file, or None when the backend has
+    no reachable one (the caller then stays on the serve). Never raises —
+    this sits on the raw-proxy hot path."""
+    try:
+        return _upstream_url_for(path)
+    except Exception:
+        logger.warning("upstream url for %r failed", path, exc_info=True)
+        return None
+
+
+def _upstream_url_for(path: str) -> str | None:
+    m, rel = _mount_for(path)
+    if m is None:
+        return None
+    fs = m["remote"]
+    now = time.monotonic()
+    with _upstream_lock:
+        hit = _upstream_links.get((fs, rel))
+        if hit is not None and hit[1] > now:
+            return hit[0]
+        mode = _upstream_mode.get(fs)
+    if mode == "none":
+        return None
+    url = None
+    if mode in (None, "link"):
+        port = _live_rcd_port()
+        if port is None:
+            return None
+        try:
+            url = _rc(port, "operations/publiclink",
+                      {"fs": fs, "remote": rel, "expire": "1h"},
+                      timeout=10).get("url") or None
+        except RuntimeError:
+            url = None
+        if url is None and mode == "link":
+            return None  # transient failure on a known-linkable remote
+        if url is not None:
+            mode = "link"
+    if url is None:
+        url = _public_object_url(fs, rel)
+        mode = "public" if url else "none"
+    with _upstream_lock:
+        _upstream_mode[fs] = mode
+        if url is not None:
+            ttl = _LINK_TTL_S if mode == "link" else 3600.0
+            _upstream_links[(fs, rel)] = (url, now + ttl)
+    return url
+
+
 def sync_serves() -> None:
     """Reconcile rcd's HTTP serves with the stored mounts — one serve per
     mount record, stop serves whose record is gone — and write the resulting

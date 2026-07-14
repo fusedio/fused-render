@@ -67,6 +67,16 @@ def status() -> dict:
         return {p: dict(j) for p, j in _jobs.items()}
 
 
+def is_done(path: str) -> bool:
+    """True once `path` has been fully streamed into the serve's cache this
+    server run. The raw proxy uses this to route cold ranged reads straight
+    to the store (mounts.upstream_url_for) and warm ones to the caching
+    serve, whose sparse cache replays them from disk."""
+    with _lock:
+        job = _jobs.get(path)
+        return bool(job and job["status"] == "done")
+
+
 def schedule(path: str, url: str) -> None:
     """Note that `path` (served at `url`) is being read; start a background
     prefetch unless one already ran. Called on the raw-proxy hot path:
