@@ -87,7 +87,7 @@ VFS_OPT = {
 # vfs_cache_mode). An unknown `vfsOpt` key is silently ignored — the serve
 # then runs with the cache OFF and every read, warm or not, goes to the
 # store (measured: 1MB re-read 4.4s uncached vs 2ms cached).
-SERVE_VFS_OPT = {"vfs_cache_mode": "full", "vfs_cache_max_size": "5Gi"}
+SERVE_VFS_OPT = {"vfs_cache_mode": "full", "vfs_cache_max_size": "20Gi"}
 
 # Tile-server daemon state files — the two parallel implementations that can
 # hold files open under a mount (geotiff, and the grid server shared by

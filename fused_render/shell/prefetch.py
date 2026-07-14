@@ -38,7 +38,7 @@ import urllib.request
 
 logger = logging.getLogger(__name__)
 
-# Skip files larger than this: the serve cache is LRU-capped at 5Gi
+# Skip files larger than this: the serve cache is LRU-capped at 20Gi
 # (SERVE_VFS_OPT) and one giant file would evict everything else. Beyond
 # the cap the on-demand path still works exactly as before.
 MAX_BYTES = int(os.environ.get("FUSED_RENDER_PREFETCH_MAX_BYTES",
