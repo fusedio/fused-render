@@ -1,0 +1,109 @@
+name: release dmg
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-sign-notarize-release:
+    runs-on: macos-14
+    permissions:
+      contents: read
+    env:
+      KEYCHAIN_PATH: ${{ github.workspace }}/ci-signing.keychain-db
+      NOTARY_PROFILE: ci-notary
+      AWS_DEFAULT_REGION: us-west-2
+    steps:
+      - uses: actions/checkout@v4
+
+      # build_dmg.sh's own version check needs `str | None` syntax (py>=3.10);
+      # macOS runners' default `python3` can resolve to an older CLT/system
+      # python that chokes on this (hit locally with Xcode's bundled 3.9).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Import signing cert + notary credentials into ephemeral keychain
+        env:
+          CODESIGN_CERT_P12: ${{ secrets.CODESIGN_CERT_P12 }}
+          CODESIGN_CERT_PASSWORD: ${{ secrets.CODESIGN_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+
+          CERT_PATH="$RUNNER_TEMP/codesign-cert.p12"
+          NOTARY_KEY_PATH="$RUNNER_TEMP/notary-key.p8"
+          echo "$CODESIGN_CERT_P12" | base64 --decode -o "$CERT_PATH"
+          echo "$NOTARY_KEY_P8" | base64 --decode -o "$NOTARY_KEY_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$CODESIGN_CERT_PASSWORD" -T /usr/bin/codesign
+          # Without this, codesign blocks on a keychain-access UI prompt that
+          # can never be answered in CI (see docs/signing.md's CI notes).
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+          # notarytool profiles live in a keychain too; store into the same
+          # ephemeral one so it's gone with the runner, nothing persists.
+          xcrun notarytool store-credentials "$NOTARY_PROFILE" \
+            --key "$NOTARY_KEY_PATH" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" \
+            --keychain "$KEYCHAIN_PATH"
+
+          rm -f "$CERT_PATH" "$NOTARY_KEY_PATH"
+
+      - name: Build, sign, notarize, staple DMG
+        env:
+          FUSED_RENDER_CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
+          FUSED_RENDER_CODESIGN_KEYCHAIN: ${{ env.KEYCHAIN_PATH }}
+          FUSED_RENDER_NOTARY_PROFILE: ${{ env.NOTARY_PROFILE }}
+        run: bash scripts/build_dmg.sh
+
+      - name: Delete ephemeral keychain
+        if: always()
+        run: security delete-keychain "$KEYCHAIN_PATH" || true
+
+      - name: Upload DMG to S3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          command -v aws >/dev/null || brew install awscli
+          DMG_PATH="$(ls dist/*.dmg)"
+          DMG_SHA256="$(shasum -a 256 "$DMG_PATH" | cut -d' ' -f1)"
+          echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
+          echo "DMG_SHA256=$DMG_SHA256" >> "$GITHUB_ENV"
+          aws s3 cp "$DMG_PATH" "s3://fused-magic/fused-render-dmgs/$(basename "$DMG_PATH")"
+
+      - name: Bump homebrew-tap cask
+        env:
+          TAP_PUSH_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Version comes from the DMG that was actually built+uploaded+hashed
+          # above, not the git tag — keeps cask version/sha256 tied to one
+          # artifact even if a tag is pushed before pyproject.toml is bumped.
+          VERSION="$(basename "$DMG_PATH" .dmg | sed 's/^FusedRender-//')"
+
+          git clone --depth 1 "https://x-access-token:${TAP_PUSH_TOKEN}@github.com/fusedio/homebrew-tap.git" /tmp/homebrew-tap
+          cd /tmp/homebrew-tap
+
+          sed -i '' \
+            -e "s/^  version \".*\"/  version \"${VERSION}\"/" \
+            -e "s/^  sha256 \".*\"/  sha256 \"${DMG_SHA256}\"/" \
+            Casks/fused-render.rb
+
+          git config user.name "fused-render-ci"
+          git config user.email "ci@fused.io"
+          git add Casks/fused-render.rb
+          git commit -m "fused-render ${VERSION}"
+
+          # Commented out for CI testing (per request) — uncomment to actually
+          # publish the cask bump once the pipeline is verified end-to-end.
+          # git push origin main
