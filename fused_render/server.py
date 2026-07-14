@@ -1254,6 +1254,7 @@ def create_app(start_dir: str) -> FastAPI:
     # (shell/mounts.py). startup() remounts every mount in a background
     # thread; mounts deliberately survive server restarts.
     from fused_render.shell import mounts as shell_mounts
+    from fused_render.shell import prefetch as shell_prefetch
 
     app.include_router(shell_mounts.router)
     shell_mounts.startup()
@@ -1446,6 +1447,11 @@ def create_app(start_dir: str) -> FastAPI:
         # would run the full upstream GET just to drop the body.
         upstream = shell_mounts.serve_url_for(path)
         if upstream is not None:
+            # Every remote read flows through here, so this is where the
+            # shell learns a mounted file is in use: kick off (or just
+            # touch) its background whole-file prefetch. Cheap no-op after
+            # the first call; templates stay mount-agnostic (prefetch.py).
+            shell_prefetch.schedule(path, upstream)
             resp = await asyncio.to_thread(_proxy_raw, upstream, request)
             if resp is not None:
                 return resp  # upstream unreachable -> plain file read below
