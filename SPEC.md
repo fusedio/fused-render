@@ -1384,3 +1384,67 @@ SPEC DM-7); the CLI/browser experience is unchanged.
   alive. If `menubar_pin` fails to import or construct (e.g. missing WebKit
   framework), the menu is attached as before — the app is never left
   unquittable.
+
+## 27. Collaborative Annotation — `annotate-live` (D104)
+
+A sibling of the `annotate` view template (§17) where several people comment on
+the same opened file at once, synced through Liveblocks. It is a byte-copy of
+annotate plus ONE fenced live-layer script; anchors, resolvers, the eviction
+budget, legacy import, and the "Send to Claude" hand-off are untouched. The URL
+`comments` param stays the LOCAL MIRROR (refresh-proof, budget-evicted,
+sidecar-logged exactly like annotate); the shared truth is a Liveblocks
+`LiveMap("comments")` keyed by comment id. Registry-bound as an extra
+non-default mode: `"annotate-live"` is spliced immediately after every
+`"annotate"`, so it never changes a file type's default (its first) mode.
+
+- **AL-1** Files: `fused_render/templates/annotate-live/{template.html,
+  annotate_live.py, icon.svg}`. `annotate_live.py` is a parity copy of
+  `annotate.py` — the record/tombstone sidecar contract is identical and stays
+  per-machine (so its sidecar tests mirror annotate's); only the docstring
+  differs.
+- **AL-2** Connection: Liveblocks client loaded via CDN ESM **dynamic import**
+  (same `createClient` / `enterRoom` / storage-subscribe / `getOthers` wiring
+  as the collab-canvas `liveblocksTransport`). Public key is the shared
+  `pk_prod…` const. Room comes from the `room` URL param — generated and pinned
+  if absent. `?transport=off` disables sync entirely: the CDN is never imported
+  and the page behaves exactly like `annotate` (pure-local fallback + test
+  hook).
+- **AL-3** Shared state: `LiveMap("comments")`, key = comment id, value = the
+  full comment JSON plus `author`, `updatedAt` (epoch-ms), and — for deletes —
+  `deleted: true` tombstone entries. Tombstones persist forever (never
+  removed), so a late joiner cannot resurrect a deleted comment.
+- **AL-4** Merge rule (applied both directions, per id): a `deleted:true` entry
+  ALWAYS wins; otherwise the higher `updatedAt` wins; a missing `updatedAt` is
+  treated as 0. Every local mutation (create / resolve / reopen / assign /
+  delete) stamps `updatedAt = Date.now()`.
+- **AL-5** Outbound: annotate's `save(arr, deletedIds)` funnel gains one step —
+  upsert changed/new ids into the LiveMap and write tombstone entries for
+  `deletedIds`. Change detection compares each id's canonical serialization to a
+  `lastSynced` snapshot map, so an unchanged value is never re-published (echo
+  guard).
+- **AL-6** Inbound: a LiveMap subscribe merges remote entries into the local
+  array by id (AL-4), records them in `lastSynced`, and — inside a boolean
+  echo-guard flag — calls `save()` so the merge lands in the URL mirror + the
+  sidecar and re-renders. A pure echo (our own write bouncing back) is detected
+  and skipped. The subscribe never re-publishes what it just applied.
+- **AL-7** Late join: on the initial storage load a full BOTH-WAY merge runs —
+  remote comments pull down AND local URL comments a peer took offline get
+  pushed up (their ids aren't in `lastSynced`, so the outbound step publishes
+  them).
+- **AL-8** Identity: an `author` field on every comment. The name is remembered
+  in `localStorage["fused.annotateLive.author"]`; the composer shows a small
+  inline name input on the first comment only (blank ⇒ `"anon"`). Author is
+  display-only trust (prototype posture, single-user D3 server). Author chips
+  render on cards.
+- **AL-9** Presence: Liveblocks presence `{name}`; the header shows a compact
+  strip of initials circles (full name in the tooltip) plus a person count,
+  updated on every roster change. The initial roster is read explicitly with
+  `getOthers()` (the `others` subscription only fires on changes). No live
+  cursors — comments anchor to content, not pixels.
+- **AL-10** Feature-B hook only: each unresolved card gets a "→ Claude" button
+  that sets `assigned:"claude"` (+ `updatedAt`) on the comment — it syncs like
+  any edit and renders an "assigned to Claude" badge. No worker runs in this PR
+  (the "Send to Claude cloud" worker is a separate later feature).
+- **AL-11** Sidecar caveat: because record is per-machine, a remote-authored
+  comment is logged into whichever peer's sidecar recorded it (documented,
+  acceptable — the sidecar is history, not the live store).

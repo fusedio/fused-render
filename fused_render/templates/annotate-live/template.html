@@ -1,0 +1,1535 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Annotate — Live</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex;
+    flex-direction: column;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    color: #e8eaed;
+    background: #131417;
+  }
+  #bar {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 12px;
+    border-bottom: 1px solid #2a2d33;
+    background: #1b1d21;
+    color: #9aa0a6;
+  }
+  #bar select {
+    font: inherit;
+    padding: 3px 8px;
+    border: 1px solid #2a2d33;
+    border-radius: 6px;
+    background: #131417;
+    color: #e8eaed;
+  }
+  #main { flex: 1 1 auto; display: flex; min-height: 0; }
+  /* Stage: the file's ordinary view rendered live in a same-origin iframe;
+     the pin layer sits over it in stage coordinates. */
+  #stage { position: relative; flex: 1 1 auto; min-width: 0; }
+  #page { width: 100%; height: 100%; border: none; display: block; }
+  #pins { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+  .pin {
+    position: absolute; pointer-events: auto;
+    transform: translate(-50%, -50%);
+    width: 22px; height: 22px;
+    border-radius: 50% 50% 50% 2px;
+    background: #E5FF44; color: #10131a;
+    border: 1.5px solid #131417;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700; cursor: pointer;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.4); user-select: none;
+  }
+  .pin.resolved { opacity: 0.55; }
+  .pin.active {
+    transform: translate(-50%, -50%) scale(1.35);
+    box-shadow: 0 0 0 3px rgba(229, 255, 68, 0.35), 0 1px 6px rgba(0,0,0,0.5);
+    z-index: 5;
+  }
+  #hl {
+    position: absolute; pointer-events: none; display: none;
+    border: 1.5px solid #E5FF44;
+    background: rgba(229, 255, 68, 0.08);
+    border-radius: 3px;
+  }
+  /* Point ghost: hover affordance on pixel surfaces (image/video/PDF page
+     canvas) — a small ring at the cursor instead of a whole-element box, so
+     "this comment lands on a POINT" is legible before the click. */
+  #ghost {
+    position: absolute; pointer-events: none; display: none;
+    width: 18px; height: 18px; border-radius: 50%;
+    border: 2px solid #E5FF44;
+    background: rgba(229, 255, 68, 0.18);
+    transform: translate(-50%, -50%);
+    box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.35);
+  }
+  #ghost::after {
+    content: ""; position: absolute; left: 50%; top: 50%;
+    width: 3px; height: 3px; border-radius: 50%;
+    background: #E5FF44; transform: translate(-50%, -50%);
+  }
+  /* Composer popover, stage coordinates. */
+  #pop {
+    position: absolute; display: none; z-index: 10;
+    width: 280px; padding: 10px;
+    background: #1b1d21; border: 1px solid #2a2d33; border-radius: 10px;
+    box-shadow: 0 8px 28px rgba(0,0,0,0.5);
+  }
+  #pop textarea {
+    width: 100%; min-height: 56px; resize: vertical;
+    font: inherit; color: #e8eaed;
+    background: #131417; border: 1px solid #2a2d33; border-radius: 6px;
+    padding: 7px 9px; outline: none;
+  }
+  #pop textarea:focus { border-color: #E5FF44; }
+  #pop .hint { color: #9aa0a6; font-size: 11px; margin-top: 6px; }
+  /* Comments sidebar — this template owns it entirely. */
+  #side {
+    flex: 0 0 300px;
+    border-left: 1px solid #2a2d33;
+    background: #1b1d21;
+    display: flex; flex-direction: column;
+  }
+  #side h1 {
+    margin: 0; padding: 12px 16px;
+    font-size: 14px; font-weight: 600;
+    border-bottom: 1px solid #2a2d33;
+  }
+  #list { flex: 1 1 auto; overflow-y: auto; }
+  .card {
+    padding: 12px 16px;
+    border-bottom: 1px solid #2a2d33;
+    cursor: pointer;
+  }
+  .card:hover { background: #131417; }
+  .card .when { color: #9aa0a6; font-size: 11px; margin-bottom: 4px; display: flex; gap: 8px; align-items: center; }
+  .card .body { white-space: pre-wrap; word-break: break-word; }
+  .card .acts { margin-top: 8px; display: flex; gap: 6px; }
+  .card button {
+    font: inherit; font-size: 11px; cursor: pointer;
+    color: #e8eaed; background: #131417;
+    border: 1px solid #2a2d33; border-radius: 6px; padding: 3px 8px;
+  }
+  .card button:hover { border-color: #E5FF44; }
+  .card.resolved { opacity: 0.6; }
+  .card.active { background: #131417; border-left: 3px solid #E5FF44; padding-left: 13px; }
+  .card .lbl {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 18px; height: 18px; padding: 0 3px;
+    border-radius: 50% 50% 50% 2px;
+    background: #E5FF44; color: #10131a;
+    font-size: 11px; font-weight: 700;
+  }
+  #empty { padding: 40px 20px; color: #9aa0a6; text-align: center; }
+  #sidefoot {
+    flex: 0 0 auto;
+    padding: 10px 16px;
+    border-top: 1px solid #2a2d33;
+  }
+  #sidefoot button {
+    width: 100%;
+    font: inherit; font-weight: 600; cursor: pointer;
+    color: #10131a; background: #E5FF44;
+    border: none; border-radius: 8px; padding: 8px 0;
+  }
+  #sidefoot button:hover { filter: brightness(1.06); }
+  #sidefoot button:disabled { opacity: 0.4; cursor: default; }
+  #status { padding: 24px; color: #9aa0a6; }
+  #status.error { color: #ff6b6b; }
+  /* ===================== annotate-live additions ===================== */
+  /* Presence strip: compact stack of initials circles (name in tooltip). */
+  #presence { display: flex; align-items: center; gap: 4px; }
+  #presence .who {
+    width: 20px; height: 20px; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: 700; color: #10131a;
+    background: #4ade80; border: 1.5px solid #131417;
+    box-shadow: 0 0 0 1px #2a2d33; cursor: default; user-select: none;
+  }
+  #presence .who.me { background: #E5FF44; }
+  #presence .who.more { background: #23262b; color: #9aa0a6; font-size: 9px; }
+  #presence .lbl { color: #9aa0a6; margin-left: 2px; font-size: 11px; }
+  #livestatus { color: #9aa0a6; font-size: 11px; }
+  #livestatus.warn { color: #ffb64d; }
+  /* Composer author input (first comment only; then remembered). */
+  #pop input.author {
+    width: 100%; margin-bottom: 6px; font: inherit; color: #e8eaed;
+    background: #131417; border: 1px solid #2a2d33; border-radius: 6px;
+    padding: 5px 9px; outline: none;
+  }
+  #pop input.author:focus { border-color: #E5FF44; }
+  /* Author chip + Claude-assignment badge on cards. */
+  .card .author {
+    color: #9aa0a6; border: 1px solid #2a2d33; border-radius: 4px;
+    padding: 0 5px; font-size: 11px;
+  }
+  .card .asg {
+    color: #10131a; background: #E5FF44; border-radius: 4px;
+    padding: 0 5px; font-size: 11px; font-weight: 600;
+  }
+  .card button[data-a="claude"] { border-color: #E5FF44; }
+</style>
+</head>
+<body>
+  <div id="bar">
+    <span>Annotating (live)</span>
+    <select id="viewsel" title="Which view to annotate"></select>
+    <span id="budgetnote" style="color:#ffb64d"></span>
+    <span id="presence" title="People in this room"></span>
+    <span id="livestatus"></span>
+    <span style="margin-left:auto">comments sync to everyone in this room — share the URL</span>
+    <span id="ro" hidden></span>
+  </div>
+  <div id="main">
+    <div id="stage">
+      <iframe id="page"></iframe>
+      <div id="hl"></div>
+      <div id="ghost"></div>
+      <div id="pins"></div>
+      <div id="pop">
+        <input id="authorInput" class="author" type="text" placeholder="Your name (shown on comments)" />
+        <textarea placeholder="Add a comment…"></textarea>
+        <div class="hint">Enter to save · Shift+Enter for newline · Esc to cancel</div>
+      </div>
+    </div>
+    <div id="side">
+      <h1>Comments</h1>
+      <div id="list"></div>
+      <div id="sidefoot">
+        <button id="toclaude">Send to Claude</button>
+      </div>
+    </div>
+  </div>
+  <script src="/template-shared/ro-badge.js"></script>
+
+  <!-- ========================================================================= -->
+  <!-- === annotate-live LIVE LAYER (the ONLY delta from templates/annotate) === -->
+  <!-- Syncs the id-keyed comment map across peers over Liveblocks. Knows        -->
+  <!-- nothing about pins/anchors/DOM: the annotate view drives it through       -->
+  <!-- attach({load, save, render, onPresence}). The URL `comments` param stays  -->
+  <!-- the local mirror (refresh-proof, budget-evicted, sidecar-logged); the     -->
+  <!-- Liveblocks LiveMap("comments") is the shared truth. transport=off never   -->
+  <!-- imports the CDN and the page behaves exactly like annotate.               -->
+  <!-- Connection wiring (CDN ESM import + createClient + enterRoom + storage    -->
+  <!-- subscribe + getOthers roster) is lifted from the collab-canvas            -->
+  <!-- liveblocksTransport; the comment-map merge is purpose-built per spec.     -->
+  <!-- ========================================================================= -->
+  <script>
+  window.AnnotateLive = (function () {
+    "use strict";
+
+    const LIVEBLOCKS_PUBLIC_KEY =
+      "pk_prod_uztICbT3vBg7TSMBX_u-57MkCG87KtkiB6xJyBcz-vX2XhEnNKxVcNhzYUIeHSAa";
+    const LIVEBLOCKS_ESM = "https://cdn.jsdelivr.net/npm/@liveblocks/client/+esm";
+    const AUTHOR_KEY = "fused.annotateLive.author"; // localStorage identity
+
+    let hooks = null;              // { load, save, render, onPresence }
+    let map = null, lbRoom = null; // LiveMap("comments") + the entered room
+    let applyingRemote = false;    // echo guard: true while WE apply/publish
+    const lastSynced = new Map();  // id -> canonical serial last seen/sent
+
+    // ---- identity ----------------------------------------------------------
+    function authorName() {
+      return (localStorage.getItem(AUTHOR_KEY) || "").trim() || "anon";
+    }
+    function hasAuthorName() {
+      return !!(localStorage.getItem(AUTHOR_KEY) || "").trim();
+    }
+    function setAuthorName(v) {
+      localStorage.setItem(AUTHOR_KEY, (v || "").trim() || "anon");
+      if (lbRoom) { try { lbRoom.updatePresence({ name: authorName() }); } catch (e) {} }
+    }
+
+    // ---- merge rule --------------------------------------------------------
+    // Canonical (sorted-key) JSON so equality is key-order independent — a
+    // remote value re-stringified must compare equal to the local one.
+    function serial(o) {
+      if (o == null || typeof o !== "object") return JSON.stringify(o);
+      const flat = {};
+      for (const k of Object.keys(o).sort()) flat[k] = o[k];
+      return JSON.stringify(flat);
+    }
+    // Per id: a deleted:true tombstone ALWAYS wins (late joiners can't
+    // resurrect); otherwise the higher updatedAt wins; a missing updatedAt is 0.
+    function pickWinner(a, b) {
+      if (!a) return b;
+      if (!b) return a;
+      const ad = a.deleted === true, bd = b.deleted === true;
+      if (ad !== bd) return ad ? a : b;
+      return (Number(a.updatedAt) || 0) >= (Number(b.updatedAt) || 0) ? a : b;
+    }
+    // Merge the LiveMap entries into the local URL array. Tombstoned ids drop
+    // out of the (live-only) URL mirror but persist in the LiveMap.
+    function mergeInto(localArr, entries) {
+      const byId = new Map();
+      for (const c of localArr) if (c && typeof c.id === "string") byId.set(c.id, c);
+      for (const [id, remote] of entries) byId.set(id, pickWinner(byId.get(id), remote));
+      const out = [];
+      for (const c of byId.values()) {
+        if (!c || c.deleted === true) continue; // tombstone -> not in the mirror
+        out.push(c);
+      }
+      return out;
+    }
+    function idSerials(arr) {
+      const m = {};
+      for (const c of arr) if (c && typeof c.id === "string") m[c.id] = serial(c);
+      return m;
+    }
+    const sameSet = (a, b) => serial(idSerials(a)) === serial(idSerials(b));
+
+    function readMap() {
+      const out = [];
+      if (map) map.forEach((v, k) => out.push([k, v]));
+      return out;
+    }
+
+    // ---- inbound: LiveMap -> local (both-way at connect, pull-down after) ---
+    // pushLocal=true only for the late-join full merge, so local URL comments a
+    // peer took offline get published up. Ongoing remote changes never re-push
+    // (each local mutation already publishes through the template's save()).
+    function ingest(pushLocal) {
+      if (!hooks || applyingRemote) return; // guard our own publish re-entrancy
+      applyingRemote = true;
+      try {
+        const entries = readMap();
+        for (const [id, e] of entries) lastSynced.set(id, serial(e)); // echo guard
+        const local = hooks.load();
+        const merged = mergeInto(local, entries);
+        // A pure echo (our own write bouncing back) is a no-op — skip save so we
+        // don't re-record the sidecar / re-render for nothing. The late-join
+        // pass always saves so local-only comments get published upward.
+        if (!pushLocal && sameSet(local, merged)) return;
+        hooks.save(merged); // sets URL + records sidecar + republishes + renders
+      } finally {
+        applyingRemote = false;
+      }
+    }
+
+    // ---- outbound: local -> LiveMap (called from the template's save()) -----
+    // Skips any id whose serialized value equals lastSynced (echo guard) so an
+    // inbound apply never bounces back out. deletedIds become permanent
+    // tombstone entries (deleted:true) that survive reloads and late joins.
+    function publish(arr, deletedIds) {
+      if (!map) return; // transport=off (never connected) — pure local mode
+      for (const c of arr || []) {
+        if (!c || typeof c.id !== "string") continue;
+        const clean = JSON.parse(JSON.stringify(c)); // drop undefined -> valid LSON
+        const s = serial(clean);
+        if (lastSynced.get(c.id) === s) continue;     // unchanged since last sync
+        map.set(c.id, clean);
+        lastSynced.set(c.id, s);
+      }
+      for (const id of deletedIds || []) {
+        if (typeof id !== "string") continue;
+        const existing = map.get(id);
+        if (existing && existing.deleted === true) continue; // already tombstoned
+        const tomb = { id, deleted: true, updatedAt: Date.now() };
+        map.set(id, tomb);
+        lastSynced.set(id, serial(tomb));
+      }
+    }
+
+    // ---- presence ----------------------------------------------------------
+    function readOthers(others) {
+      const names = [];
+      others.forEach((o) => {
+        const nm = o && o.presence && o.presence.name;
+        names.push(typeof nm === "string" && nm ? nm : "anon");
+      });
+      return names;
+    }
+
+    // ---- connection (lifted from collab-canvas liveblocksTransport) ---------
+    async function connect(room) {
+      const mod = await import(LIVEBLOCKS_ESM);
+      const client = mod.createClient({ publicApiKey: LIVEBLOCKS_PUBLIC_KEY });
+      const entered = client.enterRoom(room, {
+        initialStorage: { comments: new mod.LiveMap() },
+        initialPresence: { name: authorName() },
+      });
+      lbRoom = entered.room;
+      const storage = await lbRoom.getStorage();
+      map = storage.root.get("comments");
+      lbRoom.subscribe(map, () => ingest(false)); // remote edits pull down
+      ingest(true);                                // late join: full both-way merge
+      if (hooks && hooks.onPresence) {
+        const report = (others) => hooks.onPresence(readOthers(others));
+        lbRoom.subscribe("others", report);
+        // "others" only fires on CHANGES — report the initial roster explicitly
+        // (a late joiner would otherwise show nobody until someone moves).
+        report(lbRoom.getOthers());
+      }
+    }
+
+    return {
+      attach(h) { hooks = h; },
+      connect,
+      publish,
+      authorName,
+      hasAuthorName,
+      setAuthorName,
+    };
+  })();
+  </script>
+
+  <script>
+    // =========================================================================
+    // Annotate — a VIEW TEMPLATE of its own (same pattern as templates/claude/):
+    // registry-bound mode, self-contained template.html, nothing injected into
+    // other views and nothing shipped in the shell. It renders the file's
+    // ordinary view in a same-origin iframe and implements the entire
+    // annotation experience itself — hover highlight, pins, composer, sidebar.
+    //
+    // Storage: `comments` template param (ordinary visible param, synced to
+    // the shell URL by the runtime — bookmarkable/shareable) — JSON array of
+    //   { id, content, author, createdAt, updatedAt, resolved?, assigned?, anchorPath }
+    // annotate-live keeps this URL param as the LOCAL MIRROR (refresh-proof,
+    // budget-evicted, sidecar-logged exactly like annotate); the shared truth
+    // is a Liveblocks LiveMap("comments") keyed by id (see the LIVE LAYER block
+    // above). `updatedAt` (ms epoch, stamped on every local mutation) drives
+    // the last-writer-wins merge; `author` is display-only identity.
+    // anchorPath = tag:nth-of-type chain inside the framed document. The path
+    // model works for ANY view (everything the iframe shows is DOM); the
+    // `view` param picks WHICH of the file's modes is being annotated, and
+    // anchors are per-view (a code-view path means nothing in table view, so
+    // pins simply don't resolve there — cards mark them "other view").
+    // =========================================================================
+    const file = fused.params.get("_file");
+    const frame = document.getElementById("page");
+    const stage = document.getElementById("stage");
+    const pinsEl = document.getElementById("pins");
+    const hl = document.getElementById("hl");
+    const ghost = document.getElementById("ghost");
+    const pop = document.getElementById("pop");
+    const ta = pop.querySelector("textarea");
+    const authorInput = document.getElementById("authorInput");
+    const list = document.getElementById("list");
+    const viewSel = document.getElementById("viewsel");
+
+    // This template's own registry name (folder name from its /render URL) —
+    // excluded from the view picker: annotating the annotate view recurses.
+    const OWN_NAME = (() => {
+      const p = (new URLSearchParams(location.search).get("path") || "").replace(/\\/g, "/").split("/");
+      return p.length >= 2 ? p[p.length - 2] : "annotate";
+    })();
+
+    let activeView = null; // {mode, path} currently framed
+    let defaultViewMode = null; // views[0] — home for unstamped comments
+
+    if (!file) {
+      document.body.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
+      throw new Error("no _file");
+    }
+
+    // Sidecar writability probe: commenting always works (the URL is the live
+    // store), but when the `<file>.json` history log can't be written, say so
+    // instead of losing history silently. Probe failure itself stays silent —
+    // same best-effort posture as the record call below.
+    fused.runPython("./annotate_live.py", { action: "status", file }).then((st) => {
+      if (st && st.writable === false) {
+        fusedRoBadge.update(document.getElementById("ro"), "History not saved",
+          "The file's sidecar (" + file.split("/").pop() + ".json) isn't " +
+          "writable, so this review lives only in this URL and won't be " +
+          "recorded to comment history.");
+      }
+    }).catch(() => {});
+
+    // --- data ---------------------------------------------------------------
+    // Legacy import: the removed built-in stored comments in the RESERVED
+    // `_comments` shell param, which fused.params doesn't expose. If this
+    // page has no `comments` param but the shell URL carries `_comments`,
+    // convert once (same-origin parent): content/timestamps/status/view map
+    // directly; anchorId/anchorPath carry over (selection anchors have no
+    // native equivalent — they surface as detached, content preserved).
+    // The shell URL's `_layout=(…)` span (panel/tab mode) contains literal
+    // `&`, so it must be excised via a balanced-paren scan before the rest is
+    // handed to URLSearchParams — same rule as runtime.js splitSearch.
+    function withoutLayoutSpan(search) {
+      const s = (search || "").replace(/^\?/, "");
+      const m = /(^|&)_layout=\(/.exec(s);
+      if (!m) return s;
+      const start = m.index + m[1].length;
+      let i = start + "_layout=(".length;
+      let depth = 1;
+      while (i < s.length && depth > 0) {
+        if (s[i] === "(") depth++;
+        else if (s[i] === ")") depth--;
+        i++;
+      }
+      return (s.slice(0, m.index) + s.slice(i)).replace(/^&|&$/g, "");
+    }
+    function legacyComments() {
+      try {
+        const raw = new URLSearchParams(withoutLayoutSpan(window.parent.location.search)).get("_comments");
+        if (!raw) return null;
+        const arr = JSON.parse(raw);
+        if (!Array.isArray(arr)) return null;
+        return arr.map((t) => {
+          // The native schema has no reply threads — fold legacy replies into
+          // the content so nothing is silently dropped on the first save.
+          let content = typeof t.content === "string" ? t.content : "";
+          if (Array.isArray(t.replies)) {
+            for (const r of t.replies) {
+              if (r && typeof r.content === "string" && r.content) {
+                content += "\n↳ " + r.content;
+              }
+            }
+          }
+          return {
+            id: typeof t.id === "string" ? t.id : crypto.randomUUID(),
+            content,
+            createdAt: Number(t.createdAt) || Date.now(),
+            resolved: t.status === "resolved" || undefined,
+            anchorPath: typeof t.anchorPath === "string" ? t.anchorPath : undefined,
+            anchorId: typeof t.anchorId === "string" ? t.anchorId : undefined,
+            // Free pins (document coords, no element anchor) carry over too.
+            x: typeof t.x === "number" ? t.x : undefined,
+            y: typeof t.y === "number" ? t.y : undefined,
+            // Pixel + timestamp refinements survive the import.
+            iu: typeof t.iu === "number" ? t.iu : undefined,
+            iv: typeof t.iv === "number" ? t.iv : undefined,
+            t: typeof t.t === "number" ? t.t : undefined,
+            // Unstamped legacy threads infer their view from anchor shape
+            // (selection ↔ editor, everything else ↔ preview) — leaving view
+            // unset would resolve them against WHATEVER view is framed.
+            view:
+              typeof t.mode === "string"
+                ? t.mode
+                : t.selFrom && t.selTo
+                  ? "code"
+                  : "_render",
+          };
+        });
+      } catch (e) {
+        return null;
+      }
+    }
+    function load() {
+      try {
+        const raw = fused.params.get("comments");
+        if (raw) {
+          const arr = JSON.parse(raw);
+          return Array.isArray(arr) ? arr : [];
+        }
+        return legacyComments() || [];
+      } catch (e) {
+        return [];
+      }
+    }
+    // The URL is the store, so it has a budget (~6 KB, matching the removed
+    // overlay): over it, evict oldest RESOLVED threads first — open comments
+    // are never dropped silently; if still over, keep the write (a long URL
+    // beats lost data) and say so in the bar.
+    const BUDGET = 6000;
+    // Measure what actually lands on the URL — the encoded form (quotes and
+    // braces percent-encode, roughly tripling), not the raw JSON.
+    const urlSize = (arr) => encodeURIComponent(JSON.stringify(arr)).length;
+    function save(arr, deletedIds) {
+      let dropped = 0;
+      while (urlSize(arr) > BUDGET) {
+        const resolved = arr.filter((c) => c.resolved);
+        if (!resolved.length) break;
+        const oldest = resolved.reduce((a, b) => (a.createdAt <= b.createdAt ? a : b));
+        arr = arr.filter((c) => c.id !== oldest.id);
+        dropped++;
+      }
+      const over = urlSize(arr) > BUDGET;
+      const note = document.getElementById("budgetnote");
+      note.textContent = dropped
+        ? `${dropped} oldest resolved comment${dropped === 1 ? "" : "s"} removed — URL size limit`
+        : over
+          ? "comment list exceeds the URL budget — resolve or delete some"
+          : "";
+      // Always a string — the runtime's set() rejects non-strings (there is
+      // no delete API), so an emptied list persists as "[]".
+      fused.params.set("comments", JSON.stringify(arr));
+      // Mirror the review into the target file's `<file>.json` sidecar as a
+      // write-only history log (upsert-by-id; absence never deletes) — the same
+      // sidecar the claude chat (agent.py) and bookmark history use. An
+      // explicit delete rides the SAME call as deleted_ids, so upsert and
+      // tombstone land in one atomic sidecar write (a separate delete call
+      // could race this record and lose the tombstone). The URL stays the sole
+      // live store; this is pure history, so it is fire-and-forget: a failed
+      // record must never block or throw into the review UI.
+      fused.runPython("./annotate_live.py", {
+        action: "record", comments: arr, file,
+        deleted_ids: deletedIds && deletedIds.length ? deletedIds : undefined,
+      }).catch(() => {});
+      // Live layer: upsert changed/new ids into the shared LiveMap and write
+      // tombstones for deletedIds. No-op when transport=off (never connected)
+      // or when a value is unchanged since the last sync (echo guard).
+      AnnotateLive.publish(arr, deletedIds);
+      render();
+    }
+
+    // --- anchors (tag:nth-of-type path inside the framed doc) ---------------
+    function pathOf(el, doc) {
+      const segs = [];
+      let node = el;
+      while (node && node !== doc.body && node.nodeType === 1) {
+        let n = 1, sib = node.previousElementSibling;
+        while (sib) { if (sib.tagName === node.tagName) n++; sib = sib.previousElementSibling; }
+        segs.unshift(node.tagName.toLowerCase() + ":nth-of-type(" + n + ")");
+        node = node.parentElement;
+      }
+      return node === doc.body ? segs.join(">") : null;
+    }
+    // Container element of an anchor (id > structural path) — used both as
+    // the anchor itself and as the search scope for quote ranges.
+    function containerOf(c, doc) {
+      if (c.anchorId && doc) {
+        const el = doc.getElementById(c.anchorId);
+        if (el) return el;
+      }
+      return resolvePath(c.anchorPath, doc);
+    }
+
+    // Text-selection anchors (quote model, AN-42 lineage): the qn-th
+    // occurrence of the quote inside the container, as a live Range.
+    function textRangeFor(c, doc) {
+      const el = containerOf(c, doc);
+      if (!el || !c.quote) return null;
+      const walker = doc.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      const nodes = [];
+      let full = "";
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        nodes.push({ node: n, start: full.length });
+        full += n.nodeValue;
+      }
+      let idx = -1;
+      for (let occ = 0; occ <= (c.qn || 0); occ++) {
+        idx = full.indexOf(c.quote, idx + 1);
+        if (idx === -1) return null;
+      }
+      const end = idx + c.quote.length;
+      const locate = (off, isEnd) => {
+        for (let i = nodes.length - 1; i >= 0; i--) {
+          if (off > nodes[i].start || (!isEnd && off === nodes[i].start) || i === 0) {
+            return { node: nodes[i].node, off: Math.min(off - nodes[i].start, nodes[i].node.nodeValue.length) };
+          }
+        }
+        return null;
+      };
+      const a = locate(idx, false), b = locate(end, true);
+      if (!a || !b) return null;
+      const range = doc.createRange();
+      try { range.setStart(a.node, a.off); range.setEnd(b.node, b.off); } catch (e) { return null; }
+      return range;
+    }
+
+    // CM selection anchors: the visible slice of lines line..lineEnd.
+    function cmRangeFor(c, doc) {
+      const recs = cmVisibleLines(doc).filter((r) => r.line >= c.line && r.line <= (c.lineEnd || c.line));
+      if (!recs.length) return null;
+      const range = doc.createRange();
+      try {
+        range.setStartBefore(recs[0].el.firstChild || recs[0].el);
+        range.setEndAfter(recs[recs.length - 1].el.lastChild || recs[recs.length - 1].el);
+      } catch (e) { return null; }
+      return range;
+    }
+
+    // A comment's live Range, when it is range-shaped (text or CM selection).
+    function rangeFor(c, doc) {
+      if (!doc) return null;
+      if (c.line != null && c.quote) return isCmDoc(doc) ? cmRangeFor(c, doc) : null;
+      if (c.quote && c.line == null) return textRangeFor(c, doc);
+      return null;
+    }
+    const isRangeAnchor = (c) => !!c.quote;
+
+    // Off-page anchor resolvers. Paged views (table, xlsx, capped PDF) render
+    // stable element ids that encode an absolute address (__fr_r<row>_c<col>,
+    // __fr_s<sheet>_r<row>_c<col>, __fr_page_<n>); when such an id isn't
+    // mounted right now it's merely on another page/sheet — navigable, not
+    // detached. ALL of that knowledge lives here, in the annotate template:
+    // the views themselves carry no annotation code, just the ids. reveal()
+    // writes the ordinary offset/sheet params — the same shell-URL params the
+    // paged view already watches, so it reloads itself onto the right page.
+    const PAGE_LIMIT = 100; // stock table/xlsx page size
+    const pageOf = (row) => String(Math.floor(row / PAGE_LIMIT) * PAGE_LIMIT);
+    const sheetName = (doc, idx) => {
+      const opts = doc ? doc.querySelectorAll("#sheet option") : null;
+      return opts && opts[idx] ? opts[idx].value : null;
+    };
+    const ID_RESOLVERS = [
+      { // PDF page canvas past the render cap: nameable but not navigable.
+        re: /^__fr_page_(\d+)$/,
+        label: (m) => "page " + m[1],
+        reveal: null,
+      },
+      { // xlsx cell: sheet index + absolute row.
+        re: /^__fr_s(\d+)_r(\d+)_c(\d+)$/,
+        label(m, doc) {
+          const row = "row " + (parseInt(m[2], 10) + 1).toLocaleString();
+          const name = sheetName(doc, parseInt(m[1], 10));
+          return name ? name + " · " + row : row;
+        },
+        reveal(m, doc) {
+          // Offset first, sheet second — mirrors the sheet selector's own
+          // ordering (each set fires onChange; the last decides the load).
+          fused.params.set("offset", pageOf(parseInt(m[2], 10)));
+          const name = sheetName(doc, parseInt(m[1], 10));
+          if (name) fused.params.set("sheet", name);
+        },
+      },
+      { // table cell: absolute row.
+        re: /^__fr_r(\d+)_c(\d+)$/,
+        label: (m) => "row " + (parseInt(m[1], 10) + 1).toLocaleString(),
+        reveal: (m) => fused.params.set("offset", pageOf(parseInt(m[1], 10))),
+      },
+    ];
+    function resolverMatch(anchorId) {
+      for (const r of ID_RESOLVERS) {
+        const m = r.re.exec(anchorId);
+        if (m) return { r, m };
+      }
+      return null;
+    }
+
+    function resolveAnchor(c, doc) {
+      // Code-line anchors resolve through the gutter (virtualized editor).
+      if (c.line != null && doc && isCmDoc(doc)) return cmResolve(doc, c.line);
+      // Element-id anchors (legacy imports carry them) win over paths.
+      if (c.anchorId && doc) {
+        const el = doc.getElementById(c.anchorId);
+        if (el) return el;
+      }
+      return resolvePath(c.anchorPath, doc);
+    }
+    function resolvePath(path, doc) {
+      if (!path || !doc || !doc.body) return null;
+      let node = doc.body;
+      for (const seg of path.split(">")) {
+        const m = /^([a-z0-9-]+):nth-of-type\((\d+)\)$/i.exec(seg);
+        if (!m) return null;
+        let count = 0, found = null;
+        for (const child of node.children) {
+          if (child.tagName === m[1].toUpperCase() && ++count === parseInt(m[2], 10)) { found = child; break; }
+        }
+        if (!found) return null;
+        node = found;
+      }
+      return node === doc.body ? null : node;
+    }
+
+    // --- pixel surfaces (AN-24 lineage): a click on an image/video/canvas
+    // records iu/iv — fractions of the PAINTED content box — so the pin marks
+    // the exact spot, stable across resizes. object-fit contain/cover aware.
+    function intrinsic(el) {
+      if (!el || !el.tagName) return null;
+      if (el.tagName === "IMG" && el.naturalWidth > 0) return { w: el.naturalWidth, h: el.naturalHeight };
+      if (el.tagName === "VIDEO" && el.videoWidth > 0) return { w: el.videoWidth, h: el.videoHeight };
+      if (el.tagName === "CANVAS" && el.width > 0) return { w: el.width, h: el.height };
+      return null;
+    }
+    function contentBox(el) {
+      const r = el.getBoundingClientRect();
+      const nat = intrinsic(el);
+      if (!nat || !r.width || !r.height) return r;
+      const fit = (el.ownerDocument.defaultView.getComputedStyle(el).objectFit || "fill");
+      if (fit !== "contain" && fit !== "cover" && fit !== "scale-down") return r;
+      let s = fit === "cover" ? Math.max(r.width / nat.w, r.height / nat.h) : Math.min(r.width / nat.w, r.height / nat.h);
+      if (fit === "scale-down") s = Math.min(s, 1);
+      const w = nat.w * s, h = nat.h * s;
+      return { left: r.left + (r.width - w) / 2, top: r.top + (r.height - h) / 2, width: w, height: h };
+    }
+
+    // --- code view (CM6): structural paths are useless inside a virtualized
+    // editor (lines mount/unmount on scroll), so code anchors store the LINE
+    // NUMBER (read from the gutter) + the line's text as a quote. Resolution
+    // finds the visible .cm-line for that gutter number; a scrolled-away line
+    // simply has no pin until it scrolls back in (never "detached").
+    // Pair gutter numbers to .cm-line nodes by VERTICAL POSITION, not index —
+    // the lineNumbers gutter carries a measuring spacer whose text is also
+    // numeric, so index pairing drifts by one.
+    function cmVisibleLines(doc) {
+      const out = [];
+      const lines = [...doc.querySelectorAll(".cm-content .cm-line")];
+      const gutters = [...doc.querySelectorAll(".cm-lineNumbers .cm-gutterElement")];
+      for (const line of lines) {
+        const r = line.getBoundingClientRect();
+        const mid = r.top + r.height / 2;
+        const g = gutters.find((x) => {
+          const gr = x.getBoundingClientRect();
+          return gr.height > 0 && mid >= gr.top && mid <= gr.bottom && /^\d+$/.test(x.textContent.trim());
+        });
+        if (g) out.push({ line: parseInt(g.textContent, 10), el: line });
+      }
+      return out;
+    }
+    function cmLineAt(doc, clientY) {
+      for (const rec of cmVisibleLines(doc)) {
+        const r = rec.el.getBoundingClientRect();
+        if (clientY >= r.top && clientY <= r.bottom) return rec;
+      }
+      return null;
+    }
+    function cmResolve(doc, lineNo) {
+      for (const rec of cmVisibleLines(doc)) {
+        if (rec.line === lineNo) return rec.el;
+      }
+      return null;
+    }
+    const isCmDoc = (doc) => !!doc.querySelector(".cm-editor");
+
+    // Stage coords of an element inside the iframe = iframe offset + element
+    // viewport rect within the frame (rects already account for frame scroll).
+    function stagePoint(el, c) {
+      const fr = frame.getBoundingClientRect();
+      const st = stage.getBoundingClientRect();
+      // Pixel-anchored (iu/iv): pin at the exact stored fraction of the
+      // painted content box instead of the element's top-right corner.
+      if (c && c.iu != null && c.iv != null && intrinsic(el)) {
+        const b = contentBox(el);
+        return { x: fr.left - st.left + b.left + c.iu * b.width, y: fr.top - st.top + b.top + c.iv * b.height };
+      }
+      const r = el.getBoundingClientRect();
+      return { x: fr.left - st.left + r.right, y: fr.top - st.top + r.top };
+    }
+    function stageRect(el) {
+      const fr = frame.getBoundingClientRect();
+      const st = stage.getBoundingClientRect();
+      const r = el.getBoundingClientRect();
+      return { left: fr.left - st.left + r.left, top: fr.top - st.top + r.top, width: r.width, height: r.height };
+    }
+
+    // --- pins + sidebar ------------------------------------------------------
+    // Comment labels: A, B, C … by creation order — the pin and its sidebar
+    // card wear the same letter, so "which comment is which" reads instantly.
+    function labelFor(i) {
+      let s = "";
+      i = i + 1;
+      while (i > 0) { s = String.fromCharCode(65 + ((i - 1) % 26)) + s; i = Math.floor((i - 1) / 26); }
+      return s;
+    }
+    let activeId = null; // the comment lit up on both sides (pin ⇄ card)
+    function setActive(id) {
+      activeId = id;
+      render();
+      const card = list.querySelector(`[data-id="${id}"]`);
+      if (card) card.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+
+    function render() {
+      if (!activeView) return; // still booting — no framed view to resolve against
+      const doc = frame.contentDocument;
+      const frameWin = frame.contentWindow;
+      const comments = load();
+      pinsEl.innerHTML = "";
+      list.innerHTML = "";
+      if (!comments.length) {
+        list.innerHTML = `<div id="empty">No comments yet.<br>Click or select anything on the page.</div>`;
+      }
+      const selRanges = [];
+      const activeRanges = [];
+      const byCreation = comments.slice().sort((a, b) => a.createdAt - b.createdAt);
+      const labels = new Map(byCreation.map((c, i) => [c.id, labelFor(i)]));
+      for (const c of comments) {
+        const label = labels.get(c.id);
+        // Anchors are per-view: only resolve/pin comments made on the view
+        // that's currently framed; others are listed with their view's tag.
+        // A missing stamp (hand-edited URL) belongs to the DEFAULT view — a
+        // wildcard would resolve against whatever happens to be framed.
+        const ownView = (c.view || defaultViewMode) === activeView.mode;
+        const range = ownView && doc && isRangeAnchor(c) ? rangeFor(c, doc) : null;
+        const el = ownView && doc && !isRangeAnchor(c) ? resolveAnchor(c, doc) : null;
+        if (range) {
+          selRanges.push(range);
+          if (c.id === activeId) activeRanges.push(range);
+        }
+        // Free pins (legacy imports): document coords inside the framed page
+        // → stage coords via frame offset minus the frame's own scroll.
+        let free = null;
+        if (!el && !range && ownView && doc && typeof c.x === "number" && typeof c.y === "number") {
+          const fr = frame.getBoundingClientRect();
+          const st = stage.getBoundingClientRect();
+          free = {
+            x: fr.left - st.left + c.x - (frameWin ? frameWin.scrollX : 0),
+            y: fr.top - st.top + c.y - (frameWin ? frameWin.scrollY : 0),
+          };
+        }
+        if (el || free || range) {
+          let p;
+          if (range) {
+            const rects = range.getClientRects();
+            const last = rects.length ? rects[rects.length - 1] : range.getBoundingClientRect();
+            const fr = frame.getBoundingClientRect();
+            const st = stage.getBoundingClientRect();
+            p = { x: fr.left - st.left + last.right, y: fr.top - st.top + last.top + last.height / 2 };
+          } else {
+            p = el ? stagePoint(el, c) : free;
+          }
+          // Anchor scrolled out of the framed viewport: no pin this frame —
+          // clamping instead would pile stale pins along the stage edge. The
+          // card stays in the sidebar; scrolling back re-renders the pin.
+          if (p.y >= 0 && p.y <= stage.clientHeight && p.x >= 0) {
+            const pin = document.createElement("div");
+            pin.className = "pin" + (c.resolved ? " resolved" : "") + (c.id === activeId ? " active" : "");
+            pin.style.left = Math.min(stage.clientWidth - 14, Math.max(14, p.x)) + "px";
+            pin.style.top = Math.max(14, p.y) + "px";
+            pin.textContent = c.resolved ? "✓" : label;
+            pin.title = label + " — " + c.content;
+            pin.onclick = () => setActive(c.id);
+            pinsEl.appendChild(pin);
+          }
+        }
+        const resolvedHere = el || free || range;
+        const chip = (t) => `<span style="color:#9aa0a6;border:1px solid #2a2d33;border-radius:4px;padding:0 5px">${t}</span>`;
+        // Off-page, not broken: a recognized paged-view id (see ID_RESOLVERS)
+        // whose row/page just isn't mounted right now.
+        const off = !resolvedHere && ownView && c.anchorId ? resolverMatch(c.anchorId) : null;
+        const tag = !ownView
+          ? chip(c.view === "_render" ? "preview" : c.view)
+          : resolvedHere
+            ? c.t != null
+              ? chip(Math.floor(c.t / 60) + ":" + String(Math.floor(c.t % 60)).padStart(2, "0"))
+              : ""
+            : c.line != null && doc && isCmDoc(doc)
+              ? chip("line " + c.line) // scrolled out of the virtualized viewport, not broken
+              : off
+                ? chip(off.r.label(off.m, doc) || "off-page")
+                : "<span style='color:#ff6b6b'>detached</span>";
+        const card = document.createElement("div");
+        card.className = "card" + (c.resolved ? " resolved" : "") + (c.id === activeId ? " active" : "");
+        card.setAttribute("data-id", c.id);
+        const assigned = c.assigned === "claude";
+        card.innerHTML = `
+          <div class="when"><span class="lbl">${label}</span> <span class="author"></span> ${new Date(c.createdAt).toLocaleString()} ${tag} ${assigned ? '<span class="asg">assigned to Claude</span>' : ""}</div>
+          <div class="body"></div>
+          <div class="acts">
+            <button data-a="resolve">${c.resolved ? "Reopen" : "Resolve"}</button>
+            ${!c.resolved && !assigned ? '<button data-a="claude" title="Assign this comment to Claude (Feature B)">→ Claude</button>' : ""}
+            <button data-a="delete">Delete</button>
+          </div>`;
+        // Author is user input — set via textContent so it can never inject markup.
+        card.querySelector(".author").textContent = c.author || "anon";
+        card.querySelector(".body").textContent = c.content;
+        card.onclick = (e) => {
+          if (e.target.closest("button")) return;
+          if (!ownView && c.view) {
+            switchView(c.view); // jump to its view
+          } else {
+            activeId = c.id; // light up the pin/range before scrolling to it
+            reveal(c);
+            render();
+          }
+        };
+        card.querySelector('[data-a="resolve"]').onclick = () => {
+          c.resolved = !c.resolved;
+          c.updatedAt = Date.now(); // stamp so the resolve/reopen wins the merge
+          save(comments);
+        };
+        const claudeBtn = card.querySelector('[data-a="claude"]');
+        if (claudeBtn) claudeBtn.onclick = () => {
+          // Feature-B hook only: flag the comment for the (future) Claude cloud
+          // worker. Syncs like any edit; no worker runs in this PR.
+          c.assigned = "claude";
+          c.updatedAt = Date.now();
+          save(comments);
+        };
+        card.querySelector('[data-a="delete"]').onclick = () => {
+          // Local delete is just absence from the URL array; the id also rides
+          // save()'s record call as a deleted_id, so the sidecar log stamps its
+          // tombstone in the SAME write (a separate delete call could race the
+          // record and lose it) and history shows it struck-through. Absence
+          // alone never deletes there (per-URL subsets) — deleted_ids is the
+          // one signal that says "deleted on purpose", and the stamp is
+          // permanent: a stale URL re-recording the id can't undo the delete.
+          save(comments.filter((x) => x.id !== c.id), [c.id]);
+        };
+        list.appendChild(card);
+      }
+      paintHighlights(selRanges, activeRanges);
+    }
+
+    // Selection tints paint via the framed window's Custom Highlight API —
+    // zero DOM mutation of the viewed page. Styles are injected into the
+    // framed head once per load (see frame load handler).
+    function paintHighlights(selRanges, activeRanges) {
+      const w = frame.contentWindow;
+      if (!w || !w.Highlight || !w.CSS || !w.CSS.highlights) return;
+      const set = (name, ranges) => {
+        if (ranges.length) w.CSS.highlights.set(name, new w.Highlight(...ranges));
+        else w.CSS.highlights.delete(name);
+      };
+      set("fa_sel", selRanges);
+      set("fa_active", activeRanges);
+    }
+
+    function reveal(c) {
+      const doc = frame.contentDocument;
+      // Range anchors (text/code selections): scroll the range into view —
+      // the active-highlight tint (painted by render) marks the exact span.
+      if (isRangeAnchor(c) && doc) {
+        const range = rangeFor(c, doc);
+        if (range) {
+          const host = range.startContainer.nodeType === 1 ? range.startContainer : range.startContainer.parentElement;
+          if (host) host.scrollIntoView({ block: "center", behavior: "smooth" });
+          return;
+        }
+        // CM selection whose lines are scrolled out: jump the scroller there.
+        if (c.line != null && isCmDoc(doc)) {
+          const scroller = doc.querySelector(".cm-scroller");
+          const anyLine = doc.querySelector(".cm-content .cm-line");
+          if (scroller && anyLine) {
+            const lh = anyLine.getBoundingClientRect().height || 18;
+            scroller.scrollTo({ top: Math.max(0, (c.line - 1) * lh - scroller.clientHeight / 2), behavior: "smooth" });
+          }
+        }
+        return;
+      }
+      const el = doc ? resolveAnchor(c, doc) : null;
+      // Video: land on the exact commented moment, paused.
+      if (el && el.tagName === "VIDEO" && c.t != null) {
+        el.pause();
+        el.currentTime = c.t;
+      }
+      if (!el) {
+        // Off-screen code line: scroll the editor's scroller to it (line
+        // height estimated from any visible line) — the MutationObserver
+        // re-renders and the pin appears once the line mounts.
+        if (c.line != null && doc && isCmDoc(doc)) {
+          const scroller = doc.querySelector(".cm-scroller");
+          const anyLine = doc.querySelector(".cm-content .cm-line");
+          if (scroller && anyLine) {
+            const lh = anyLine.getBoundingClientRect().height || 18;
+            scroller.scrollTo({ top: Math.max(0, (c.line - 1) * lh - scroller.clientHeight / 2), behavior: "smooth" });
+          }
+          return;
+        }
+        // Off-page element anchor (paged table / capped PDF): navigate the
+        // framed view to it via its ordinary params — the MutationObserver
+        // re-renders the pin once the right page mounts.
+        if (c.anchorId) {
+          const off = resolverMatch(c.anchorId);
+          if (off) {
+            if (off.r.reveal) off.r.reveal(off.m, doc);
+            return;
+          }
+        }
+        // Free pin: center its stored document coords in the framed view.
+        if (doc && typeof c.y === "number" && frame.contentWindow) {
+          frame.contentWindow.scrollTo({
+            top: Math.max(0, c.y - frame.clientHeight / 2),
+            behavior: "smooth",
+          });
+        }
+        return;
+      }
+      // Pixel-anchored surface (image / video / PDF page canvas): center the
+      // PIN's spot, not the element — a page canvas is taller than the
+      // viewport, so element-centering can leave the commented spot offscreen.
+      if (c.iu != null && c.iv != null && intrinsic(el) && frame.contentWindow) {
+        const w = frame.contentWindow;
+        const b = contentBox(el);
+        w.scrollTo({
+          top: Math.max(0, w.scrollY + b.top + c.iv * b.height - frame.clientHeight / 2),
+          behavior: "smooth",
+        });
+        return;
+      }
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+      setTimeout(() => {
+        const r = stageRect(el);
+        hl.style.display = "block";
+        hl.style.left = r.left + "px";
+        hl.style.top = r.top + "px";
+        hl.style.width = r.width + "px";
+        hl.style.height = r.height + "px";
+        setTimeout(() => (hl.style.display = "none"), 1200);
+      }, 350);
+    }
+
+    // history → annotate deep link: focus the comment named by the `comment`
+    // param (id-only, mirroring the claude session_id resume contract — the id
+    // is the whole contract and is never cleared after use). Runs once per
+    // page-load, after the initial render, so the card/pin exist to light up.
+    let deepLinkDone = false;
+    async function focusFromParam() {
+      if (deepLinkDone) return;
+      deepLinkDone = true;
+      const wanted = fused.params.get("comment");
+      if (!wanted) return;
+      let comments = load();
+      let c = comments.find((x) => x.id === wanted);
+      if (!c) {
+        // Not in the live URL store: one-shot FULL-STATE hydration from the
+        // sidecar. The id arrived from the timeline, so `<file>.json`'s
+        // upsert-by-id log is the authoritative history. Import EVERY live log
+        // entry (those without a `deleted_at` tombstone), stripping the server
+        // stamps. A tombstoned wanted id gets no special pass — deleted stays
+        // deleted (owner call 2026-07-10); hydrate the live set, skip the
+        // focus. Merge into the live array, live entries winning by id; save
+        // once (re-records — a harmless upsert no-op). If the wanted id isn't
+        // logged at all, import nothing and skip silently.
+        try {
+          const sidecar = JSON.parse(await fused.readFile(file + ".json"));
+          const log = Array.isArray(sidecar.comments) ? sidecar.comments : [];
+          const wantedEntry = log.find((x) => x && x.id === wanted);
+          if (wantedEntry && !wantedEntry.deleted_at) {
+            const strip = ({ recorded_at, updated_at, deleted_at, ...rest }) => rest;
+            const byId = new Map();
+            for (const e of log) {
+              if (e && typeof e.id === "string" && !e.deleted_at) byId.set(e.id, strip(e));
+            }
+            for (const live of comments) byId.set(live.id, live); // live wins by id
+            save([...byId.values()]); // re-records to the sidecar — a harmless upsert no-op
+            // Re-read what actually persisted: save() evicts oldest RESOLVED
+            // comments when the URL budget overflows, so the wanted id may not
+            // have survived — focusing a card that isn't rendered lights nothing.
+            comments = load();
+            c = comments.find((x) => x.id === wanted);
+          }
+        } catch (e) {
+          // sidecar unreadable / unparseable / id missing: no focus, no error UI.
+        }
+      }
+      if (!c) return;
+      // Same cross-view behavior as a card click: jump to the comment's own
+      // view first (that reloads the template — the param survives, so this
+      // resolver re-runs there and lands the focus), else light it up here.
+      const ownView = (c.view || defaultViewMode) === activeView.mode;
+      if (!ownView && c.view) {
+        // A refused/failed switch (unsaved-edits flush) means the reload this
+        // focus is staked on never comes — re-arm the one-shot guard so the
+        // next frame load (e.g. the user switching views by hand) retries.
+        if (!(await switchView(c.view))) deepLinkDone = false;
+      } else {
+        setActive(c.id);
+        reveal(c);
+      }
+    }
+
+    // Switching the annotated view reloads this template — an editor framed
+    // inside with unsaved edits must be flushed FIRST (same contract as the
+    // shell's own mode switch); refuse the switch when it can't be made safe.
+    let switchingView = false;
+    // Resolves true only when the switch actually landed (the `view` param was
+    // written); false on refusal/failure so a caller staking work on the
+    // reload (the deep-link resolver) knows it never comes.
+    async function switchView(mode) {
+      if (switchingView || (activeView && mode === activeView.mode)) return false;
+      switchingView = true;
+      try {
+        const inner = frame.contentWindow && frame.contentWindow.__fusedFlushEdits;
+        if (typeof inner === "function") {
+          const res = await Promise.race([
+            inner(),
+            new Promise((r) => setTimeout(() => r({ ok: false }), 10000)),
+          ]);
+          if (res && res.ok === false) {
+            if (activeView) viewSel.value = activeView.mode; // snap the picker back
+            return false;
+          }
+        }
+        fused.params.set("view", mode); // inside the lock — param write is part of the switch
+        return true;
+      } catch (e) {
+        // Flush rejected / frame torn down: the switch did NOT happen — the
+        // picker must not claim otherwise.
+        if (activeView) viewSel.value = activeView.mode;
+        return false;
+      } finally {
+        switchingView = false;
+      }
+    }
+
+    // --- create flow ---------------------------------------------------------
+    let draftAnchor = null; // { anchorId? , anchorPath? }
+    function openComposer(x, y, anchor) {
+      draftAnchor = anchor;
+      pop.style.display = "block";
+      pop.style.left = Math.min(stage.clientWidth - 292, Math.max(0, x + 10)) + "px";
+      pop.style.top = Math.min(stage.clientHeight - 130, Math.max(0, y + 10)) + "px";
+      // Ask for a name only until one is remembered; then hide the input.
+      const needName = !AnnotateLive.hasAuthorName();
+      authorInput.style.display = needName ? "block" : "none";
+      authorInput.value = "";
+      ta.value = "";
+      (needName ? authorInput : ta).focus();
+    }
+    // Enter in the name field advances to the comment body (Esc still cancels).
+    authorInput.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeComposer();
+      if (e.key === "Enter") { e.preventDefault(); ta.focus(); }
+    });
+    function closeComposer() {
+      pop.style.display = "none";
+      draftAnchor = null;
+    }
+    ta.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeComposer();
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        const content = ta.value.trim();
+        if (content && draftAnchor) {
+          // Identity: persist the name from the inline input on the FIRST
+          // comment (default "anon" if blank), then remember it per spec.
+          if (!AnnotateLive.hasAuthorName()) {
+            AnnotateLive.setAuthorName(authorInput.value);
+          }
+          const comments = load();
+          comments.push({
+            id: crypto.randomUUID(),
+            content,
+            author: AnnotateLive.authorName(),
+            createdAt: Date.now(),
+            updatedAt: Date.now(), // stamped on every local mutation (LWW merge)
+            ...draftAnchor, // anchorId/anchorPath/line/lineEnd/quote/qn/iu/iv/t
+            view: activeView ? activeView.mode : undefined,
+          });
+          save(comments);
+        }
+        closeComposer();
+      }
+    });
+
+    // Wire the framed document once it loads: hover highlight + click-to-comment.
+    frame.addEventListener("load", () => {
+      const doc = frame.contentDocument;
+      if (!doc) return;
+      // Highlight-API tint styles for selection anchors, injected into the
+      // framed page (the API paints there, so the styles must live there).
+      const hlStyle = doc.createElement("style");
+      hlStyle.textContent =
+        "::highlight(fa_sel){background-color:rgba(229,255,68,0.28)}" +
+        "::highlight(fa_active){background-color:rgba(229,255,68,0.55);color:#10131a}";
+      (doc.head || doc.documentElement).appendChild(hlStyle);
+      // An event target can be a TEXT node (Safari, SVG oddities) — anchor
+      // math needs its owning element.
+      const elementOf = (t) => (t && t.nodeType === 1 ? t : t && t.parentElement);
+      // Interactive controls are passthrough (see the click handler): no hover
+      // ghost over them either, so the cursor doesn't promise a comment there.
+      const INTERACTIVE = "button, a[href], input, select, textarea, summary, [role=button]";
+      doc.addEventListener("mousemove", (e) => {
+        const el = elementOf(e.target);
+        if (!el || el === doc.body || el === doc.documentElement || el.closest(INTERACTIVE)) {
+          hl.style.display = "none";
+          ghost.style.display = "none";
+          return;
+        }
+        // Pixel surface (image/video/PDF page canvas): the comment targets a
+        // POINT, so a full-element box reads as "commenting on this whole
+        // thing" — show a point ghost at the cursor instead.
+        if (el.tagName === "VIDEO" || intrinsic(el)) {
+          const fr = frame.getBoundingClientRect();
+          const st = stage.getBoundingClientRect();
+          hl.style.display = "none";
+          ghost.style.display = "block";
+          ghost.style.left = fr.left - st.left + e.clientX + "px";
+          ghost.style.top = fr.top - st.top + e.clientY + "px";
+          return;
+        }
+        ghost.style.display = "none";
+        const r = stageRect(el);
+        hl.style.display = "block";
+        hl.style.left = r.left + "px";
+        hl.style.top = r.top + "px";
+        hl.style.width = r.width + "px";
+        hl.style.height = r.height + "px";
+      });
+      // Drag-selecting TEXT is a first-class anchor (markdown prose, code
+      // ranges): the selection becomes a quote-anchored comment with a real
+      // highlight, instead of a whole-element pin.
+      doc.addEventListener("mouseup", () => {
+        setTimeout(() => {
+          const sel = doc.getSelection();
+          if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
+          const text = sel.toString();
+          if (!text.trim()) return;
+          const selRange = sel.getRangeAt(0);
+          let anchor = null;
+          if (isCmDoc(doc)) {
+            // Editor: line-span anchor (structural offsets are useless in a
+            // virtualized viewport; the gutter names the lines).
+            const rects = selRange.getClientRects();
+            if (!rects.length) return;
+            const start = cmLineAt(doc, rects[0].top + rects[0].height / 2);
+            const end = cmLineAt(doc, rects[rects.length - 1].top + rects[rects.length - 1].height / 2);
+            if (!start) return;
+            anchor = { line: start.line, lineEnd: end && end.line !== start.line ? end.line : undefined, quote: text.slice(0, 120) };
+          } else {
+            let cont = selRange.commonAncestorContainer;
+            if (cont.nodeType !== 1) cont = cont.parentElement;
+            if (!cont) return;
+            const base = cont.id ? { anchorId: cont.id } : { anchorPath: pathOf(cont, doc) };
+            if (!base.anchorId && !base.anchorPath) return;
+            // Occurrence index: how many times the quote appears before the
+            // selection inside the container.
+            const capped = text.slice(0, 120);
+            let qn = 0;
+            try {
+              const pre = doc.createRange();
+              pre.selectNodeContents(containerOf(base, doc) || cont);
+              pre.setEnd(selRange.startContainer, selRange.startOffset);
+              const before = pre.toString();
+              for (let at = before.indexOf(capped); at !== -1; at = before.indexOf(capped, at + 1)) qn++;
+            } catch (err) {}
+            anchor = { ...base, quote: capped, qn: qn || undefined };
+          }
+          const rects = selRange.getClientRects();
+          const last = rects.length ? rects[rects.length - 1] : selRange.getBoundingClientRect();
+          const fr = frame.getBoundingClientRect();
+          const st = stage.getBoundingClientRect();
+          sel.removeAllRanges(); // composer takes over; render paints the tint
+          openComposer(fr.left - st.left + last.right, fr.top - st.top + last.bottom, anchor);
+        }, 0);
+      });
+
+      doc.addEventListener("click", (e) => {
+        // A drag-selection's trailing click must not also open an element
+        // draft — the mouseup handler above owns selection gestures.
+        const s = doc.getSelection();
+        if (s && !s.isCollapsed) { e.preventDefault(); e.stopPropagation(); return; }
+        const el = elementOf(e.target);
+        if (!el) return;
+        // Native interactive controls keep working (a table's pagination
+        // buttons, links, form fields): their clicks pass through untouched
+        // instead of drafting a comment — same rationale as the video control
+        // strip below.
+        if (el.closest(INTERACTIVE)) return;
+        let anchor = null;
+        // Video: keep the native controls usable — clicks in the bottom
+        // control strip pass through untouched; frame clicks capture the
+        // pixel (iu/iv) AND the moment (t), pausing on the frame under
+        // discussion.
+        if (el.tagName === "VIDEO") {
+          const r = el.getBoundingClientRect();
+          if (e.clientY > r.bottom - 44) return; // control strip — don't swallow
+          e.preventDefault();
+          e.stopPropagation();
+          const b = contentBox(el);
+          anchor = el.id ? { anchorId: el.id } : { anchorPath: pathOf(el, doc) };
+          if (b.width > 0) {
+            anchor.iu = Math.round(Math.min(1, Math.max(0, (e.clientX - b.left) / b.width)) * 1000) / 1000;
+            anchor.iv = Math.round(Math.min(1, Math.max(0, (e.clientY - b.top) / b.height)) * 1000) / 1000;
+          }
+          if (isFinite(el.currentTime)) anchor.t = Math.round(el.currentTime * 10) / 10;
+          el.pause();
+        } else if (intrinsic(el)) {
+          // Image/canvas: exact pixel via content-box fractions.
+          e.preventDefault();
+          e.stopPropagation();
+          const b = contentBox(el);
+          anchor = el.id ? { anchorId: el.id } : { anchorPath: pathOf(el, doc) };
+          if (b.width > 0) {
+            anchor.iu = Math.round(Math.min(1, Math.max(0, (e.clientX - b.left) / b.width)) * 1000) / 1000;
+            anchor.iv = Math.round(Math.min(1, Math.max(0, (e.clientY - b.top) / b.height)) * 1000) / 1000;
+          }
+        } else if (isCmDoc(doc)) {
+          // Code editor: line-number anchor via the gutter (structural paths
+          // are meaningless in a virtualized viewport).
+          e.preventDefault();
+          e.stopPropagation();
+          const hit = cmLineAt(doc, e.clientY);
+          if (!hit) return;
+          anchor = { line: hit.line };
+        } else {
+          e.preventDefault();
+          e.stopPropagation();
+          // Element ids are stabler anchors than structural paths — prefer them.
+          anchor = el.id ? { anchorId: el.id } : { anchorPath: pathOf(el, doc) };
+        }
+        if (!anchor || (!anchor.anchorId && !anchor.anchorPath && anchor.line == null)) return;
+        const fr = frame.getBoundingClientRect();
+        const st = stage.getBoundingClientRect();
+        openComposer(fr.left - st.left + e.clientX, fr.top - st.top + e.clientY, anchor);
+      }, true);
+      // Capture-phase scroll catches nested scrolling containers (a code
+      // editor's scroller, a table wrapper), not just the document. Scroll
+      // and mutation storms coalesce to one render per frame — an editor
+      // mutates on every keystroke, and unthrottled full rebuilds jank.
+      let renderQueued = false;
+      const queueRender = () => {
+        if (renderQueued) return;
+        renderQueued = true;
+        requestAnimationFrame(() => {
+          renderQueued = false;
+          render();
+        });
+      };
+      doc.addEventListener("scroll", queueRender, { capture: true, passive: true });
+      // Async views (tables, editors) build their DOM after load — re-resolve
+      // anchors when the framed document mutates.
+      new MutationObserver(queueRender).observe(doc.body || doc.documentElement, { childList: true, subtree: true });
+      render();
+      focusFromParam(); // consume a `comment` deep link once the frame is wired
+    });
+    // Send to Claude: hand the whole review to the claude chat mode. Copies
+    // the current comments verbatim into a `claudeComments` param and flips
+    // the BROWSER URL (window.top — the address bar, not this iframe) to
+    // _mode=claude. `comments` stays untouched, so switching back to annotate
+    // shows the same review. The framed editor is flushed first (same contract
+    // as every other mode switch), and the `_layout=(…)` span — whose `&` is
+    // literal — is excised before URLSearchParams touches the query, then
+    // reattached last, byte-for-byte.
+    document.getElementById("toclaude").addEventListener("click", async () => {
+      const flush = window.__fusedFlushEdits;
+      try {
+        const res = await Promise.race([
+          flush(),
+          new Promise((r) => setTimeout(() => r({ ok: false }), 10000)),
+        ]);
+        if (res && res.ok === false) return; // unsaved buffer — don't discard
+      } catch (e) {
+        return;
+      }
+      const top = window.top.location;
+      const full = (top.search || "").replace(/^\?/, "");
+      const rest = withoutLayoutSpan(top.search);
+      // Recover the raw span (the part withoutLayoutSpan removed).
+      const m = /(^|&)_layout=\(/.exec(full);
+      let span = null;
+      if (m) {
+        const start = m.index + m[1].length;
+        let i = start + "_layout=(".length, depth = 1;
+        while (i < full.length && depth > 0) {
+          if (full[i] === "(") depth++;
+          else if (full[i] === ")") depth--;
+          i++;
+        }
+        span = full.slice(start, i);
+      }
+      const params = new URLSearchParams(rest);
+      params.set("_mode", "claude");
+      params.set("claudeComments", JSON.stringify(load()));
+      let search = params.toString();
+      if (span) search += (search ? "&" : "") + span;
+      window.top.location.href = top.pathname + (search ? "?" + search : "");
+    });
+
+    window.addEventListener("resize", () => render());
+
+    // Remount-safety relay: the shell flushes __fusedFlushEdits on the TOP
+    // preview iframe before a mode switch — but in annotate mode the live
+    // editor (if the framed view is the code template) sits one iframe
+    // deeper. Delegate so leaving annotate can't discard unsaved edits.
+    window.__fusedFlushEdits = async () => {
+      try {
+        const inner = frame.contentWindow && frame.contentWindow.__fusedFlushEdits;
+        if (typeof inner === "function") return await inner();
+      } catch (e) {
+        /* cross-origin or torn-down frame — nothing to flush */
+      }
+      return { ok: true };
+    };
+    fused.params.onChange(() => {
+      // A view change reframes the stage; a comments change just re-renders.
+      const v = fused.params.get("view") || "";
+      if (activeView && v && v !== activeView.mode) location.reload();
+      else render();
+    });
+
+    // --- boot: pick which of the file's views to annotate --------------------
+    (async () => {
+      let stat;
+      try {
+        stat = await fused.stat(file);
+      } catch (e) {
+        document.body.innerHTML = `<div id="status" class="error">Cannot stat file.</div>`;
+        return;
+      }
+      // Send to Claude only where the claude mode actually exists for this
+      // file type — elsewhere the click would just fall back to the default
+      // view and the review would appear to vanish. The chat view itself is
+      // not an annotation surface, so it's excluded from the picker too.
+      const all = stat.templates || [];
+      if (!all.some((t) => t.mode === "claude")) {
+        document.getElementById("sidefoot").style.display = "none";
+      }
+      const views = all.filter((t) => t.mode !== OWN_NAME && t.mode !== "claude");
+      if (!views.length) {
+        document.body.innerHTML = `<div id="status" class="error">No annotatable view for this file.</div>`;
+        return;
+      }
+      defaultViewMode = views[0].mode;
+      const saved = fused.params.get("view");
+      activeView = views.find((v) => v.mode === saved) || views[0];
+      viewSel.innerHTML = views
+        .map((v) => `<option value="${v.mode}"${v.mode === activeView.mode ? " selected" : ""}>${v.mode === "_render" ? "preview" : v.mode}</option>`)
+        .join("");
+      viewSel.hidden = views.length <= 1;
+      viewSel.addEventListener("change", () => switchView(viewSel.value));
+      frame.src =
+        activeView.mode === "_render"
+          ? "/render?path=" + encodeURIComponent(file)
+          : "/render?path=" + encodeURIComponent(activeView.path) + "&_file=" + encodeURIComponent(file);
+    })();
+
+    // --- live layer wiring ---------------------------------------------------
+    // Compact presence strip: an initials circle per person (full name in the
+    // tooltip), re-rendered whenever the room roster changes.
+    function initialsOf(name) {
+      const parts = (name || "anon").trim().split(/\s+/).filter(Boolean);
+      if (!parts.length) return "?";
+      return (parts.length === 1
+        ? parts[0].slice(0, 2)
+        : parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    }
+    function renderPresence(others) {
+      const el = document.getElementById("presence");
+      el.innerHTML = "";
+      const me = document.createElement("span");
+      me.className = "who me";
+      me.textContent = initialsOf(AnnotateLive.authorName());
+      me.title = AnnotateLive.authorName() + " (you)";
+      el.appendChild(me);
+      const shown = others.slice(0, 4);
+      for (const nm of shown) {
+        const w = document.createElement("span");
+        w.className = "who";
+        w.textContent = initialsOf(nm);
+        w.title = nm;
+        el.appendChild(w);
+      }
+      if (others.length > shown.length) {
+        const more = document.createElement("span");
+        more.className = "who more";
+        more.textContent = "+" + (others.length - shown.length);
+        more.title = others.slice(shown.length).join(", ");
+        el.appendChild(more);
+      }
+      const lbl = document.createElement("span");
+      lbl.className = "lbl";
+      const n = others.length + 1;
+      lbl.textContent = n + (n === 1 ? " person" : " people") + " here";
+      el.appendChild(lbl);
+    }
+
+    // The annotate view drives the live layer; the live layer never reaches
+    // into the DOM itself.
+    AnnotateLive.attach({ load, save, render, onPresence: renderPresence });
+
+    // transport=off never imports the CDN — the page is then pure-local
+    // annotate. Otherwise pin a room (generated if absent) and connect.
+    if (fused.params.get("transport") !== "off") {
+      let room = fused.params.get("room");
+      if (!room) {
+        room = Math.random().toString(36).slice(2, 10);
+        fused.params.set("room", room); // pin so the URL is shareable
+      }
+      const live = document.getElementById("livestatus");
+      renderPresence([]); // show "you" immediately, before the roster arrives
+      AnnotateLive.connect(room)
+        .then(() => { if (live) { live.textContent = ""; live.className = ""; } })
+        .catch((err) => {
+          // Sync unavailable (offline / CDN blocked): keep working locally.
+          if (live) { live.textContent = "live sync unavailable — local only"; live.className = "warn"; }
+          console.warn("annotate-live: connect failed", err);
+        });
+    }
+  </script>
+</body>
+</html>

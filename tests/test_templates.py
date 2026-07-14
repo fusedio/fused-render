@@ -64,7 +64,7 @@ def test_builtin_registry_parses_and_all_names_resolve():
 def test_builtin_html_default_is_render_sentinel():
     entries, error = server._templates_for("/x/page.html", False)
     assert error is None
-    assert [e["mode"] for e in entries] == ["_render", "code", "claude", "annotate", "history"]
+    assert [e["mode"] for e in entries] == ["_render", "code", "claude", "annotate", "annotate-live", "history"]
     assert entries[0]["path"] is None and entries[0]["icon"] is None
     assert entries[1]["path"].endswith("code/template.html")
     assert entries[2]["path"].endswith("claude/template.html")
@@ -74,7 +74,7 @@ def test_builtin_parquet_default_is_duckdb():
     # `history` (HV-2) is bound here too — not `.html`-only.
     entries, error = server._templates_for("/x/data.parquet", False)
     assert error is None
-    assert [e["mode"] for e in entries] == ["duckdb", "structure", "h3", "claude", "annotate", "history"]
+    assert [e["mode"] for e in entries] == ["duckdb", "structure", "h3", "claude", "annotate", "annotate-live", "history"]
     assert entries[0]["path"].endswith("duckdb/template.html")
 
 
@@ -241,7 +241,7 @@ def test_user_wildcard_key(user_dir):
     user_dir.template("geo")
     user_dir.registry({".*.json": "geo"})
     assert modes("/x/a.tiles.json") == (["geo"], None)
-    assert modes("/x/a.json")[0] == ["tree", "code", "duckdb", "annotate"]  # builtin still applies
+    assert modes("/x/a.json")[0] == ["tree", "code", "duckdb", "annotate", "annotate-live"]  # builtin still applies
 
 
 def test_user_directory_binding(user_dir):
@@ -312,7 +312,7 @@ def test_unknown_sentinel_dropped_with_error(user_dir):
 def test_unresolvable_user_value_falls_back_to_builtin(user_dir):
     user_dir.registry({".csv": "no-such-template"})
     m, error = modes("/x/a.csv")
-    assert m == ["duckdb", "csv", "code", "annotate"]
+    assert m == ["duckdb", "csv", "code", "annotate", "annotate-live"]
     assert "no-such-template" in error
 
 
@@ -321,21 +321,21 @@ def test_all_dangling_names_fall_back(user_dir):
     # dangling names resolves to nothing -> built-in fallback, error names one.
     user_dir.registry({".csv": ["...", "..."]})
     m, error = modes("/x/a.csv")
-    assert m == ["duckdb", "csv", "code", "annotate"]
+    assert m == ["duckdb", "csv", "code", "annotate", "annotate-live"]
     assert "..." in error
 
 
 def test_bad_value_type_falls_back(user_dir):
     user_dir.registry({".csv": 42})
     m, error = modes("/x/a.csv")
-    assert m == ["duckdb", "csv", "code", "annotate"]
+    assert m == ["duckdb", "csv", "code", "annotate", "annotate-live"]
     assert "must be a list" in error
 
 
 def test_unreadable_user_registry_reports_and_falls_back(user_dir):
     (user_dir.path / "registry.json").write_text("{not json")
     m, error = modes("/x/a.csv")
-    assert m == ["duckdb", "csv", "code", "annotate"]
+    assert m == ["duckdb", "csv", "code", "annotate", "annotate-live"]
     assert "cannot read registry.json" in error
 
 
