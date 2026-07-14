@@ -678,11 +678,11 @@
       const file = fused.params.get("_file");
       const offset = currentOffset();
       const table = fused.params.get("table") || "";
-      // A re-load of the same remote file (page/filter/sort change) keeps the
-      // current grid on screen instead of wiping to "Loading…": with the
+      // A re-load of the same parquet file (page/filter/sort change) keeps
+      // the current grid on screen instead of wiping to "Loading…": with the
       // schema cached and the DuckDB file cache warm the new rows usually land
       // in well under a repaint-worth of time, and the wipe → skeleton → rows
-      // sequence reads as flicker. Cold or non-remote loads keep the wipe.
+      // sequence reads as flicker. Cold and non-parquet loads keep the wipe.
       const keepGrid = schemaCache && schemaCache.key === file + "\n" + table
         && wrap.querySelector("tbody tr[data-id]");
       if (!keepGrid) wrap.innerHTML = `<div id="status">Loading…</div>`;
@@ -716,14 +716,18 @@
         })
         .catch(() => {}); // a failed count just leaves the total "…"; the page still works
       try {
-        // Remote parquet: over a slow link the page's cost is per-column bytes,
-        // so fetch the schema alone (footer-only, fast), then load the columns
-        // through parallel size-batched page calls. The first one to land
-        // renders the rows with shimmer skeletons in the still-loading columns;
-        // each later arrival fills its cells in place. Local files (and
-        // CSV/JSON, which can't scan column-selectively anyway) keep the
-        // single page call.
-        if (args.source_url && /\.parquet$/i.test(file)) {
+        // Parquet, local or mounted: fetch the schema alone (footer-only,
+        // fast), then load the columns through parallel size-batched page
+        // calls. The first one to land renders the rows with shimmer
+        // skeletons in the still-loading columns; each later arrival fills
+        // its cells in place. The batching exists for remote files (the
+        // page's cost is per-column bytes over a slow link), but local
+        // parquet shares the branch for parity: same skeletons, same
+        // per-column ⚠ on failure, same schema-cached flicker-free reloads —
+        // and on a local file the columns usually pack into one batch, so it
+        // degrades to the single page call it replaced. CSV/JSON (which
+        // can't scan column-selectively anyway) keep the single call.
+        if (/\.parquet$/i.test(file)) {
           // Awaiting the schema is the one serial step, and it only carries
           // new information the first time: on a re-load of the same file
           // (filter/sort/page change) reuse the last schema and fan out
