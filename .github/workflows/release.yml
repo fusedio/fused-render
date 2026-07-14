@@ -20,6 +20,11 @@ jobs:
       NOTARY_TEAM_ID: L5CL3594R4
     steps:
       - uses: actions/checkout@v4
+        with:
+          # release notes generation below needs every tag reachable, not
+          # just the one that triggered this run (default fetch-depth: 1
+          # only grabs the tagged commit itself)
+          fetch-depth: 0
 
       # build_dmg.sh's own version check needs `str | None` syntax (py>=3.10);
       # macOS runners' default `python3` can resolve to an older CLT/system
@@ -98,12 +103,27 @@ jobs:
           echo "DMG_SHA256=$DMG_SHA256" >> "$GITHUB_ENV"
           aws s3 cp "$DMG_PATH" "s3://fused-magic/fused-render-dmgs/$(basename "$DMG_PATH")"
 
+      - name: Find previous tag
+        id: prev_tag
+        run: |
+          set -euo pipefail
+          # GitHub's own previous-tag auto-detection has proven unreliable
+          # here (past releases each listed the full PR history instead of
+          # just what changed since the prior release) — pin it explicitly.
+          # grep exits 1 (failing the pipeline under pipefail) when there's
+          # no other tag yet, e.g. on the very first release — that's a
+          # legitimate case, not an error, so tolerate it and leave PREV_TAG
+          # empty; the release action falls back to its own auto-detection.
+          PREV_TAG="$(git tag --sort=-v:refname | grep -v "^${GITHUB_REF_NAME}$" | head -n1 || true)"
+          echo "tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.DMG_PATH }}
           name: FusedRender ${{ github.ref_name }}
           generate_release_notes: true
+          previous_tag: ${{ steps.prev_tag.outputs.tag }}
 
       - name: Bump homebrew-tap cask
         env:
