@@ -14,6 +14,7 @@ import {
   deleteMount,
   detachMount,
   getMounts,
+  reconnectMount,
 } from "../lib/api";
 import type { Mount, MountsResult, RemoteSuggestion } from "../lib/api";
 import { navigate } from "../lib/router";
@@ -85,21 +86,38 @@ function MountRow({
     }
   };
 
+  // "disconnected": a mount is (or was) there but its rclone daemon no longer
+  // serves it — listings show stale/empty data and a plain unmount fails.
+  // Reconnect force-clears the dead mountpoint and mounts fresh.
+  const dot = {
+    mounted: { color: "#3fb950", label: "Mounted" },
+    disconnected: { color: "#d29922", label: "Disconnected — remote data is not flowing" },
+    unmounted: { color: "#8b949e", label: "Not mounted" },
+  }[conn.state];
+
   return (
     <div className="mount-card">
       <div className="mount-card-main">
         <span
-          title={conn.mounted ? "Mounted" : "Not mounted"}
+          title={dot.label}
           style={{
             width: 8,
             height: 8,
             borderRadius: "50%",
-            background: conn.mounted ? "#3fb950" : "#8b949e",
+            background: dot.color,
             flexShrink: 0,
           }}
         />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 600 }}>{conn.name}</div>
+          <div style={{ fontWeight: 600 }}>
+            {conn.name}
+            {conn.state === "disconnected" && (
+              <span style={{ color: "#d29922", fontWeight: 400, fontSize: "0.85em" }}>
+                {" "}
+                — disconnected
+              </span>
+            )}
+          </div>
           <div
             className="deploy-muted"
             style={{
@@ -114,7 +132,7 @@ function MountRow({
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          {conn.mounted ? (
+          {conn.state === "mounted" && (
             <>
               <button type="button" disabled={busy} onClick={() => navigate(conn.mountpoint)}>
                 Open
@@ -123,7 +141,26 @@ function MountRow({
                 Unmount
               </button>
             </>
-          ) : (
+          )}
+          {conn.state === "disconnected" && (
+            <>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => act(() => reconnectMount(conn.id))}
+              >
+                {busy ? "Reconnecting…" : "Reconnect"}
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => act(() => detachMount(conn.id, true))}
+              >
+                Unmount
+              </button>
+            </>
+          )}
+          {conn.state === "unmounted" && (
             <button type="button" disabled={busy} onClick={() => act(() => attachMount(conn.id))}>
               Mount
             </button>

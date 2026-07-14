@@ -33,6 +33,9 @@ class StubRcd:
             "mount/mount": {},
             "mount/unmount": {},
             "mount/listmounts": {"mountPoints": []},
+            "serve/list": {"list": []},
+            "serve/start": {"addr": "127.0.0.1:59999", "id": "http-stub"},
+            "serve/stop": {},
         }
         stub = self
 
@@ -150,13 +153,18 @@ def test_unmount_calls_rc(home, rcd):
     assert body["mountPoint"] == mounts_mod.mountpoint(c)
 
 
-def test_mounted_paths_merges_listmounts(home, rcd):
+def test_mounted_paths_merges_listmounts(home, rcd, monkeypatch):
+    import os
+
     c = mounts_mod.add_mount("data", "remote:bucket")
     mp = mounts_mod.mountpoint(c)
+    os.makedirs(mp)
     rcd.responses["mount/listmounts"] = {"mountPoints": [{"Fs": c["remote"], "MountPoint": mp}]}
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
     assert mp in mounts_mod.mounted_paths()
     view = mounts_mod.mount_view(c)
     assert view["mounted"] is True and view["mountpoint"] == mp
+    assert view["state"] == "mounted"
 
 
 def test_mount_rejects_mountpoint_serving_other_remote(home, rcd, monkeypatch):
@@ -247,7 +255,7 @@ def test_mount_view_has_no_automount_field(client, rcd):
         headers=FUSED).json()
     # automount is implicit for every mount now — the field is gone.
     assert "automount" not in m
-    assert set(m) == {"id", "name", "remote", "mountpoint", "mounted"}
+    assert set(m) == {"id", "name", "remote", "mountpoint", "mounted", "state"}
 
 
 def test_delete_unmounts_and_removes(client, rcd):
@@ -511,6 +519,172 @@ def test_delete_blocked_while_still_mounted(client, rcd, tile_daemon, monkeypatc
     assert len(client.get("/api/mounts").json()["mounts"]) == 1
 
 
+# -- health detection + reconnect (dead/wedged mounts) ----------------------------
+#
+# The failure these cover: the rclone daemon (or its NFS serve) dies while the
+# kernel mount entry survives. os.path.ismount() still says True, listings
+# return stale/empty data, and a plain unmount fails. The mount must report
+# "disconnected" (not a green "mounted") and reconnect must force-clear the
+# mountpoint before remounting.
+
+import os as _os
+
+
+def _make_mount(home, rcd, name="data", remote="remote:bucket", served=True):
+    c = mounts_mod.add_mount(name, remote)
+    mp = mounts_mod.mountpoint(c)
+    _os.makedirs(mp, exist_ok=True)
+    if served:
+        rcd.responses["mount/listmounts"] = {
+            "mountPoints": [{"Fs": remote, "MountPoint": mp}]}
+    return c, mp
+
+
+def test_state_mounted_when_served_and_listable(home, rcd, monkeypatch):
+    c, mp = _make_mount(home, rcd)
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "mounted"
+
+
+def test_state_disconnected_when_kernel_mount_has_no_daemon(home, rcd, monkeypatch):
+    # ismount True but rcd doesn't list it: the daemon that served it is gone.
+    c, mp = _make_mount(home, rcd, served=False)
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "disconnected"
+
+
+def test_state_disconnected_when_rcd_tracks_a_dropped_kernel_mount(home, rcd):
+    # rcd still lists the mount but the kernel mount is gone: the mountpoint
+    # is a plain local dir masquerading as remote data.
+    c, mp = _make_mount(home, rcd)
+    assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "disconnected"
+
+
+def test_state_disconnected_when_listing_hangs(home, rcd, monkeypatch):
+    # A wedged NFS mount blocks listdir forever; the probe times out instead.
+    c, mp = _make_mount(home, rcd)
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    ev = threading.Event()
+
+    def hang(p):
+        ev.wait(5)
+        return []
+
+    monkeypatch.setattr(mounts_mod.os, "listdir", hang)
+    try:
+        state = mounts_mod.mount_state(c, mounts_mod.mounted_paths(), timeout=0.2)
+    finally:
+        ev.set()  # release the probe thread
+    assert state == "disconnected"
+
+
+def test_state_unmounted_when_nothing_there(home, rcd):
+    c, mp = _make_mount(home, rcd, served=False)
+    assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "unmounted"
+
+
+def test_reconnect_force_unmounts_dead_mount_then_remounts(home, rcd, monkeypatch):
+    # rcd's own unmount fails (the wedged-NFS case) -> force umount -> remount.
+    c, mp = _make_mount(home, rcd, served=False)
+    rcd.responses["mount/unmount"] = (500, {"error": "failed to umount the NFS volume"})
+    still_mounted = {"v": True}
+    monkeypatch.setattr(mounts_mod.os.path, "ismount",
+                        lambda p: p == mp and still_mounted["v"])
+    forced = []
+
+    def fake_run(cmd, **kw):
+        forced.append(cmd)
+        still_mounted["v"] = False  # umount succeeded
+
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return R()
+
+    monkeypatch.setattr(mounts_mod.subprocess, "run", fake_run)
+    assert mounts_mod.reconnect_mount(c) is None
+    assert forced and forced[0][:1] == ["umount"]
+    assert any(m == "mount/mount" for m, _ in rcd.calls)
+
+
+def test_reconnect_reports_force_unmount_failure(home, rcd, monkeypatch):
+    c, mp = _make_mount(home, rcd, served=False)
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+
+    def fake_run(cmd, **kw):
+        class R:
+            returncode = 1
+            stdout = ""
+            stderr = "umount: busy"
+
+        return R()
+
+    monkeypatch.setattr(mounts_mod.subprocess, "run", fake_run)
+    err = mounts_mod.reconnect_mount(c)
+    assert err is not None and "force unmount" in err
+    assert not any(m == "mount/mount" for m, _ in rcd.calls)
+
+
+def test_forced_detach_escalates_on_rc_failure(home, rcd, monkeypatch):
+    c, mp = _make_mount(home, rcd, served=False)
+    rcd.responses["mount/unmount"] = (500, {"error": "failed to umount the NFS volume"})
+    still_mounted = {"v": True}
+    monkeypatch.setattr(mounts_mod.os.path, "ismount",
+                        lambda p: p == mp and still_mounted["v"])
+
+    def fake_run(cmd, **kw):
+        still_mounted["v"] = False
+
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return R()
+
+    monkeypatch.setattr(mounts_mod.subprocess, "run", fake_run)
+    assert mounts_mod.detach_mount(c, force=True) is None
+    # unforced stays loud: same rc failure, no force fallback
+    still_mounted["v"] = True
+    err = mounts_mod.detach_mount(c)
+    assert err is not None and "unmount failed" in err
+
+
+def test_reconnect_endpoint(client, rcd, monkeypatch):
+    m = client.post("/api/mounts", json={"name": "data", "remote": "r:bucket"},
+                    headers=FUSED).json()
+    assert client.post(f"/api/mounts/{m['id']}/reconnect").status_code == 403
+    r = client.post(f"/api/mounts/{m['id']}/reconnect", headers=FUSED)
+    assert r.status_code == 200
+    assert client.post("/api/mounts/nope/reconnect", headers=FUSED).status_code == 404
+
+
+def test_fs_list_errors_for_dead_mount_instead_of_empty(client, rcd, home):
+    # The user-visible bug: a dead mount leaves a plain empty dir at the
+    # mountpoint, and the folder view rendered it as an ordinary empty
+    # folder. It must 503 with a pointer to the Mounts page instead.
+    m = client.post("/api/mounts", json={"name": "data", "remote": "r:bucket"},
+                    headers=FUSED).json()
+    mp = m["mountpoint"]
+    _os.makedirs(mp, exist_ok=True)
+    # rcd tracks the mount (create succeeded) but nothing is kernel-mounted:
+    # state != "mounted" -> the empty listing is not trustworthy.
+    rcd.responses["mount/listmounts"] = {
+        "mountPoints": [{"Fs": "r:bucket", "MountPoint": mp}]}
+    r = client.get("/api/fs/list", params={"path": mp})
+    assert r.status_code == 503
+    assert "Mounts page" in r.json()["error"]
+
+
+def test_fs_list_normal_empty_dir_still_lists(client, home, tmp_path):
+    d = tmp_path / "plain-empty"
+    d.mkdir()
+    r = client.get("/api/fs/list", params={"path": str(d)})
+    assert r.status_code == 200 and r.json()["entries"] == []
+
+
 # -- automount at startup --------------------------------------------------------
 
 
@@ -529,3 +703,216 @@ def test_run_automount_skips_already_mounted(home, rcd):
         "mountPoints": [{"Fs": "r:one", "MountPoint": mounts_mod.mountpoint(c)}]}
     mounts_mod.run_automount()
     assert not any(m == "mount/mount" for m, _ in rcd.calls)
+
+
+# -- http serves (the duckdb reader's mounted-parquet fast path) -----------------
+
+
+def test_attach_starts_http_serve_and_writes_map(home, rcd):
+    c = mounts_mod.add_mount("data", "remote:bucket/prefix")
+    assert mounts_mod.attach_mount(c) is None
+    [(_, body)] = [x for x in rcd.calls if x[0] == "serve/start"]
+    assert body["type"] == "http"
+    assert body["fs"] == "remote:bucket/prefix"
+    # Serve-side vfs cache is a capped on-disk range cache: unlike DuckDB's
+    # in-RAM external file cache it survives reconnects and server restarts.
+    assert body["vfsOpt"] == mounts_mod.SERVE_VFS_OPT
+    assert body["vfsOpt"]["CacheMode"] == "full"
+    assert body["vfsOpt"]["CacheMaxSize"] == "5Gi"
+    serves = json.load(open(mounts_mod.serves_path()))
+    assert serves == {mounts_mod.mountpoint(c): "http://127.0.0.1:59999"}
+
+
+def test_attach_syncs_serves_when_already_mounted(home, rcd, monkeypatch):
+    # The already-a-kernel-mount early return must still reconcile serves:
+    # without one, /api/fs/raw falls back to reads through the kernel mount.
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    monkeypatch.setattr(mounts_mod.os.path, "ismount",
+                        lambda p: p == mounts_mod.mountpoint(c))
+    assert mounts_mod.attach_mount(c) is None
+    assert not any(m == "mount/mount" for m, _ in rcd.calls)
+    [(_, body)] = [x for x in rcd.calls if x[0] == "serve/start"]
+    assert body["fs"] == "remote:bucket"
+    serves = json.load(open(mounts_mod.serves_path()))
+    assert serves == {mounts_mod.mountpoint(c): "http://127.0.0.1:59999"}
+
+
+def test_sync_serves_reuses_existing_serve(home, rcd):
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    rcd.responses["serve/list"] = {"list": [{
+        "id": "http-live", "addr": "127.0.0.1:41000",
+        "params": {"type": "http", "fs": "remote:bucket",
+                   "vfsOpt": dict(mounts_mod.SERVE_VFS_OPT)}}]}
+    mounts_mod.sync_serves()
+    assert not any(m == "serve/start" for m, _ in rcd.calls)
+    serves = json.load(open(mounts_mod.serves_path()))
+    assert serves == {mounts_mod.mountpoint(c): "http://127.0.0.1:41000"}
+
+
+def test_sync_serves_restarts_serve_with_stale_vfs_opts(home, rcd):
+    # Serves outlive server runs, so a SERVE_VFS_OPT change would never reach
+    # an adopted serve unless the sync notices the drift and restarts it.
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    rcd.responses["serve/list"] = {"list": [{
+        "id": "http-stale", "addr": "127.0.0.1:41000",
+        "params": {"type": "http", "fs": "remote:bucket",
+                   "vfsOpt": {"CacheMode": "off"}}}]}
+    mounts_mod.sync_serves()
+    [(_, stop)] = [x for x in rcd.calls if x[0] == "serve/stop"]
+    assert stop == {"id": "http-stale"}
+    [(_, start)] = [x for x in rcd.calls if x[0] == "serve/start"]
+    assert start["vfsOpt"] == mounts_mod.SERVE_VFS_OPT
+    serves = json.load(open(mounts_mod.serves_path()))
+    assert serves == {mounts_mod.mountpoint(c): "http://127.0.0.1:59999"}
+
+
+def test_sync_serves_stops_orphaned_serve(home, rcd):
+    # A serve whose mount record is gone (deleted mount) gets stopped.
+    rcd.responses["serve/list"] = {"list": [{
+        "id": "http-orphan", "addr": "127.0.0.1:41001",
+        "params": {"type": "http", "fs": "remote:deleted"}}]}
+    mounts_mod.sync_serves()
+    [(_, body)] = [x for x in rcd.calls if x[0] == "serve/stop"]
+    assert body == {"id": "http-orphan"}
+    assert json.load(open(mounts_mod.serves_path())) == {}
+
+
+def test_sync_serves_without_daemon_clears_map(home):
+    # No rcd: nothing can be served, so a stale map must not send the duckdb
+    # reader to dead URLs (it would fall back, but why leave the trap).
+    mounts_mod.add_mount("data", "remote:bucket")
+    mounts_mod.sync_serves()
+    assert json.load(open(mounts_mod.serves_path())) == {}
+
+
+def test_sync_serves_survives_serve_start_failure(home, rcd):
+    c = mounts_mod.add_mount("a", "remote:a")
+    c2 = mounts_mod.add_mount("b", "remote:b")
+    rcd.responses["serve/start"] = [
+        (500, {"error": "boom"}),
+        {"addr": "127.0.0.1:42000", "id": "http-b"},
+    ]
+    mounts_mod.sync_serves()
+    serves = json.load(open(mounts_mod.serves_path()))
+    # The failed remote is just absent; the other one still gets served.
+    assert list(serves.values()) == ["http://127.0.0.1:42000"]
+
+
+def test_serve_url_for_maps_and_quotes(home, rcd):
+    import os
+
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mounts_mod.sync_serves()  # stub serve at 127.0.0.1:59999
+    mp = mounts_mod.mountpoint(c)
+    url = mounts_mod.serve_url_for(os.path.join(mp, "year=2022", "a b.parquet"))
+    assert url == "http://127.0.0.1:59999/year%3D2022/a%20b.parquet"
+    assert mounts_mod.serve_url_for("/somewhere/else.parquet") is None
+
+
+def test_stat_marks_mount_backed_files_remote(client, home):
+    import os
+
+    mp = os.path.join(mounts_mod.mounts_dir(), "data")
+    os.makedirs(mp)
+    f = os.path.join(mp, "x.parquet")
+    open(f, "wb").write(b"pq")
+    assert client.get("/api/fs/stat", params={"path": f}).json()["remote"] is True
+    plain = os.path.join(str(home), "y.parquet")
+    open(plain, "wb").write(b"pq")
+    assert client.get("/api/fs/stat", params={"path": plain}).json()["remote"] is False
+
+
+def test_fs_raw_proxies_range_from_mount_serve(client, home):
+    """/api/fs/raw for a mount-backed path streams from the mount's HTTP
+    serve (Range and HEAD forwarded), not from the local filesystem."""
+    import functools
+    import http.server
+    import os
+
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    os.makedirs(mp)
+    f = os.path.join(mp, "x.bin")
+    open(f, "wb").write(b"LOCAL-BYTES")  # what a (dead-mount) local read would see
+
+    served = home / "served"
+    served.mkdir()
+    (served / "x.bin").write_bytes(b"REMOTE-BYTES")
+
+    class H(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0), functools.partial(H, directory=str(served)))
+    import threading
+
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        import fused_render.shell.storage as storage
+        storage.write_json(mounts_mod.serves_path(),
+                           {mp: f"http://127.0.0.1:{srv.server_address[1]}"})
+        r = client.get("/api/fs/raw", params={"path": f})
+        assert r.status_code == 200 and r.content == b"REMOTE-BYTES"
+        r = client.head("/api/fs/raw", params={"path": f})
+        assert r.status_code == 200
+        assert r.headers["content-length"] == str(len(b"REMOTE-BYTES"))
+        assert r.content == b""
+    finally:
+        srv.shutdown()
+
+
+def test_fs_raw_falls_back_to_file_when_serve_dead(client, home):
+    import os
+    import socket
+
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    os.makedirs(mp)
+    f = os.path.join(mp, "x.bin")
+    open(f, "wb").write(b"LOCAL-BYTES")
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        dead = s.getsockname()[1]
+    import fused_render.shell.storage as storage
+    storage.write_json(mounts_mod.serves_path(), {mp: f"http://127.0.0.1:{dead}"})
+    r = client.get("/api/fs/raw", params={"path": f})
+    assert r.status_code == 200 and r.content == b"LOCAL-BYTES"
+
+
+def test_fs_raw_proxy_error_keeps_range_headers(client, home):
+    """An HTTP error from a live serve passes through WITH its protocol
+    headers — a 416's `Content-Range: bytes */<size>` is how a range client
+    (DuckDB httpfs) learns the file length."""
+    import http.server
+    import os
+    import threading
+
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    os.makedirs(mp)
+    f = os.path.join(mp, "x.bin")
+    open(f, "wb").write(b"LOCAL-BYTES")
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(416)
+            self.send_header("Content-Range", "bytes */12345")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        import fused_render.shell.storage as storage
+        storage.write_json(mounts_mod.serves_path(),
+                           {mp: f"http://127.0.0.1:{srv.server_address[1]}"})
+        r = client.get("/api/fs/raw", params={"path": f},
+                       headers={"Range": "bytes=99999999-"})
+        assert r.status_code == 416
+        assert r.headers["content-range"] == "bytes */12345"
+    finally:
+        srv.shutdown()
