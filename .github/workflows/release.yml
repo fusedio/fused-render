@@ -42,7 +42,7 @@ jobs:
           echo "$CODESIGN_CERT_P12" | base64 --decode -o "$CERT_PATH"
 
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 3600 "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 14400 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$CODESIGN_CERT_PASSWORD" -T /usr/bin/codesign
           # Without this, codesign blocks on a keychain-access UI prompt that
