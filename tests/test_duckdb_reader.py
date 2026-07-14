@@ -256,6 +256,79 @@ def test_sorted_ties_resolve_to_same_rows_across_column_batches(tmp_path):
     assert b["rows"][0]["name"] == "n100"
 
 
+# ----------------------------------------- two-phase load (positions mode)
+
+def test_positions_mode_resolves_sorted_filtered_window(parquet_file):
+    # Phase one: the page window as file positions, with sort + filter + offset
+    # applied exactly as a direct page call would.
+    pos = reader.main(parquet_file, mode="positions",
+                      sort={"column": "id", "dir": "desc"},
+                      filters=[{"column": "id", "op": "<", "value": 200}],
+                      offset=10, limit=5)
+    assert pos == {"positions": [189, 188, 187, 186, 185]}
+    page = reader.main(parquet_file, mode="page",
+                       sort={"column": "id", "dir": "desc"},
+                       filters=[{"column": "id", "op": "<", "value": 200}],
+                       offset=10, limit=5)
+    assert pos["positions"] == page["ids"]
+
+
+def test_positions_mode_pins_ties(tmp_path):
+    # All rows tie on the sort value; the position tiebreaker must make the
+    # window deterministic (same guarantee the one-phase page SQL gives).
+    p = _make(tmp_path, "t.parquet",
+              "SELECT range AS id, 0 AS tie FROM range(250)")
+    pos = reader.main(p, mode="positions",
+                      sort={"column": "tie", "dir": "asc"}, offset=100, limit=50)
+    assert pos["positions"] == list(range(100, 150))
+
+
+def test_page_with_positions_fetches_exactly_those_rows(parquet_file):
+    # Phase two: a column batch hands the resolved positions back and gets
+    # exactly those rows — sort/filters/offset/limit are ignored alongside
+    # them (positions are authoritative; re-filtering could drop rows the
+    # window already committed to).
+    out = reader.main(parquet_file, mode="page", columns=["name"],
+                      positions=[42, 7, 199],
+                      filters=[{"column": "id", "op": "<", "value": 5}],
+                      offset=90, limit=2)
+    assert sorted(out["ids"]) == [7, 42, 199]
+    by_id = dict(zip(out["ids"], out["rows"]))
+    assert by_id[42] == {"name": "n42"}
+    assert out["columns"] == ["name"]
+
+
+def test_page_with_empty_positions_is_empty(parquet_file):
+    # A filter that matches nothing resolves to zero positions; the batch
+    # calls still answer cleanly with an empty page.
+    out = reader.main(parquet_file, mode="page", columns=["name"], positions=[])
+    assert out["ids"] == [] and out["rows"] == []
+
+
+def test_two_phase_equals_single_sorted_page(parquet_file):
+    # End-to-end equivalence: positions + per-batch fetch reassembles the very
+    # rows the one-query sorted page returns.
+    kw = dict(sort={"column": "name", "dir": "asc"}, offset=20, limit=10)
+    direct = reader.main(parquet_file, mode="page", **kw)
+    pos = reader.main(parquet_file, mode="positions", **kw)["positions"]
+    merged = {}
+    for cols in (["id"], ["name"]):
+        batch = reader.main(parquet_file, mode="page", columns=cols,
+                            positions=pos)
+        for rid, row in zip(batch["ids"], batch["rows"]):
+            merged.setdefault(rid, {}).update(row)
+    assert [merged[p] for p in pos] == direct["rows"]
+
+
+def test_positions_requires_parquet(csv_file):
+    # CSV/JSON pages are a single call — no batches, so no two-phase. The
+    # numbered-window subquery has no prunable position column anyway.
+    with pytest.raises(ValueError):
+        reader.main(csv_file, mode="positions", sort={"column": "id", "dir": "asc"})
+    with pytest.raises(ValueError):
+        reader.main(csv_file, mode="page", positions=[1, 2])
+
+
 # --------------------------------------------------- deferred count (mode)
 
 def test_page_mode_defers_count(parquet_file):

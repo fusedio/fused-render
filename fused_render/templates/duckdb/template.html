@@ -759,8 +759,35 @@
           } else {
             renderAll(); // full-skeleton grid immediately — header + shimmer rows
           }
+          // Sorted/filtered pages resolve their row positions ONCE before the
+          // batches fan out (two-phase): each batch then point-reads exactly
+          // those rows instead of re-running the sort/filter itself, and all
+          // batches provably share one row set. Pre-seeding the ids also
+          // means no batch "defines" the rows — they only fill cells in.
+          // A failed positions call falls back to per-batch windows (the
+          // tiebreaker in reader.py keeps those consistent too). Unsorted,
+          // unfiltered pages skip the extra hop: their LIMIT/OFFSET window
+          // is already deterministic and cheap.
+          let positions = null;
+          if (args.sort || args.filters.length) {
+            try {
+              const p = await fused.runPython("./reader.py", { ...args, mode: "positions" });
+              if (seq !== loadSeq) return;
+              if (p && Array.isArray(p.positions)) {
+                positions = p.positions;
+                state.ids = positions;
+                state.rows = positions.map(() => ({}));
+                positions.forEach((id, i) => {
+                  idIndex.set(id, state.rows[i]);
+                  state.idsByAttr.set(String(id), id);
+                });
+              }
+            } catch (_) { /* fall back to per-batch windows */ }
+          }
           for (const cols of packColumns(schema.columns, schema.col_sizes || {})) {
-            fused.runPython("./reader.py", { ...args, mode: "page", columns: cols })
+            const batchArgs = { ...args, mode: "page", columns: cols };
+            if (positions) batchArgs.positions = positions;
+            fused.runPython("./reader.py", batchArgs)
               .then((d) => applyBatch(seq, cols, d), () => applyBatch(seq, cols, null));
           }
           return;
@@ -808,12 +835,15 @@
     }
 
     // One batch of the parallel remote-parquet load arrived (d) or failed
-    // (null). The first successful batch defines the page's rows (their ids —
-    // physical file positions — key everything); later batches merge by id.
-    // Id-keying alone only guards against attributing a value to the wrong
-    // row — batches resolving the same page to different row sets would still
-    // leave cells silently unfilled, which is why reader.py's paging SQL pins
-    // the window with a file-position ORDER BY tiebreaker.
+    // (null). Sorted/filtered loads pre-seed the ids from the positions
+    // phase, so every batch just fills cells in by id. Otherwise (unsorted
+    // pages, or the positions call failed) the first successful batch defines
+    // the page's rows (their ids — physical file positions — key everything)
+    // and later batches merge by id. Id-keying alone only guards against
+    // attributing a value to the wrong row — batches resolving the same page
+    // to different row sets would still leave cells silently unfilled, which
+    // is why reader.py's paging SQL pins the fallback window with a
+    // file-position ORDER BY tiebreaker.
     function applyBatch(seq, cols, d) {
       if (seq !== loadSeq) return;
       if (d && !state.ids.length && d.ids.length) {

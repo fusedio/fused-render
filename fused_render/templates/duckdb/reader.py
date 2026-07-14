@@ -342,7 +342,8 @@ def _fs_gate(file, out):
 def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
          sort: "dict | None" = None, filters: "list | None" = None,
          mode: str = "full", source_url: str = "",
-         columns: "list | None" = None) -> dict:
+         columns: "list | None" = None,
+         positions: "list | None" = None) -> dict:
     # Clamp so a hostile/negative limit can't turn LIMIT ? into an unbounded
     # fetch, and a negative offset can't error out mid-query.
     limit = max(1, min(int(limit), MAX_LIMIT))
@@ -364,7 +365,7 @@ def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
         if cur is not None:
             try:
                 return _read_flat(file, source_url, cur, ext, offset, limit,
-                                  sort, filters, mode, columns)
+                                  sort, filters, mode, columns, positions)
             except duckdb.Error:
                 pass
             finally:
@@ -378,16 +379,24 @@ def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
         # sys.modules — so this only saves within a single reader run.
         con.execute("PRAGMA enable_object_cache=true")
         return _read_flat(file, file, con, ext, offset, limit, sort, filters,
-                          mode, columns)
+                          mode, columns, positions)
     finally:
         con.close()
 
 
 def _read_flat(file: str, scan: str, con, ext: str, offset: int, limit: int,
-               sort, filters, mode: str, columns: "list | None" = None) -> dict:
+               sort, filters, mode: str, columns: "list | None" = None,
+               positions: "list | None" = None) -> dict:
     """Page a flat file on an open connection/cursor. `scan` is what DuckDB
     reads (the file path, or its http URL on the mounted fast path); `file`
-    stays the real path for the FS-level editability gate."""
+    stays the real path for the FS-level editability gate.
+
+    Sorted/filtered pages over parquet load in two phases: mode="positions"
+    resolves the page window to file positions (one query pays the sort/filter
+    scan), then each of the grid's parallel column batches passes those back
+    as `positions` and becomes a row-group-pruned point read — no per-batch
+    re-sort, and every batch provably resolves the same row set. `positions`
+    is authoritative: sort/filters/offset/limit are ignored alongside it."""
     relation = relation_for(scan)
     # Column types (BIGINT, VARCHAR, DOUBLE, …) so the grid can label each
     # header. DESCRIBE reports the relation's schema without scanning rows,
@@ -434,6 +443,20 @@ def _read_flat(file: str, scan: str, con, ext: str, offset: int, limit: int,
             f"SELECT COUNT(*) FROM {relation}{where}", wbinds).fetchone()[0]
         return {"total_rows": total}
     order = _build_order(sort, types)
+
+    # Phase one of the two-phase load: just the page window's file positions,
+    # ordered. Scans only the sort/filter columns (Top-N late-materializes),
+    # with the position tiebreaker keeping ties deterministic.
+    if mode == "positions":
+        if ext != ".parquet":
+            raise ValueError("positions mode requires a parquet file")
+        rel = relation_for(scan, file_row_number=True)
+        tie = f"{order}, file_row_number" if order else ""
+        cur = con.execute(
+            f"SELECT file_row_number FROM {rel}{where}{tie} LIMIT ? OFFSET ?",
+            wbinds + [limit, offset])
+        return {"positions": [r[0] for r in cur.fetchall()]}
+
     total_rows = con.execute(
         f"SELECT COUNT(*) FROM {relation}{where}", wbinds).fetchone()[0] \
         if mode == "full" else None
@@ -444,8 +467,22 @@ def _read_flat(file: str, scan: str, con, ext: str, offset: int, limit: int,
     wanted = [c for c in (columns or []) if c in types]
     projection = ", ".join(_quote_ident(c) for c in wanted) if wanted else "*"
 
-    cur = con.execute(_page_sql(scan, relation, where, order, projection),
-                      wbinds + [limit, offset])
+    if positions is not None:
+        # Phase two: fetch this batch's columns for exactly those rows. The
+        # IN list prunes to the row groups holding them; int() keeps a hostile
+        # positions payload from reaching the SQL, and IN (-1) is the legal
+        # spelling of "no rows" (positions are never negative).
+        if ext != ".parquet":
+            raise ValueError("positions require a parquet file")
+        rel = relation_for(scan, file_row_number=True)
+        proj = ("* EXCLUDE (file_row_number)" if projection == "*"
+                else projection)
+        in_list = ",".join(str(int(p)) for p in positions[:MAX_LIMIT]) or "-1"
+        cur = con.execute(f"SELECT file_row_number AS {_POS}, {proj} "
+                          f"FROM {rel} WHERE file_row_number IN ({in_list})")
+    else:
+        cur = con.execute(_page_sql(scan, relation, where, order, projection),
+                          wbinds + [limit, offset])
     desc = [d[0] for d in cur.description] if cur.description else []
     columns = desc[1:]                      # drop the leading _POS column
     rows, ids = [], []
