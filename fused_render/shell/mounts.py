@@ -70,10 +70,18 @@ VFS_OPT = {
 # declares the server dead — "server connections interrupted" — and drops the
 # whole mount. Over HTTP, DuckDB's range GETs go straight to rclone with no
 # kernel filesystem in between, so a slow read is just slow, never fatal.
-# The serve's own vfs cache stays OFF: DuckDB requests exactly the byte ranges
-# it needs and caches them itself (external file cache), while `full` would
-# amplify every small range into 8M chunk downloads (measured 73s vs 32s cold).
-SERVE_VFS_OPT = {"CacheMode": "off"}
+# The serve keeps a `full` vfs cache: a sparse on-disk copy of every byte
+# range read (rclone's cache dir), so re-reads survive DuckDB reconnects AND
+# server restarts — DuckDB's own external file cache is RAM, per database
+# instance. Measured on the 350MB Ookla file: cold open 45s->26s (rclone's
+# sequential chunk streaming beats many scattered range GETs) and a
+# post-restart reopen 65s->0.2s. The cost is that readahead caches roughly
+# the whole of every touched file, hence the LRU size cap (soft — checked
+# every poll interval, open files never evicted). Fingerprints (size+modtime,
+# with --use-server-modtime from rcd) invalidate cached files that change
+# in the store. sync_serves restarts any serve whose vfsOpt drifts from
+# this, so edits here roll out to serves adopted from an older server.
+SERVE_VFS_OPT = {"CacheMode": "full", "CacheMaxSize": "5Gi"}
 
 # Tile-server daemon state files — the two parallel implementations that can
 # hold files open under a mount (geotiff, and the grid server shared by
@@ -290,7 +298,8 @@ def _http_serves(port: int) -> dict:
     except RuntimeError:
         return {}
     return {
-        s["params"]["fs"]: {"addr": s.get("addr", ""), "id": s.get("id", "")}
+        s["params"]["fs"]: {"addr": s.get("addr", ""), "id": s.get("id", ""),
+                            "vfsOpt": s["params"].get("vfsOpt")}
         for s in listed
         if isinstance(s, dict) and s.get("params", {}).get("type") == "http"
         and s.get("params", {}).get("fs")
@@ -350,6 +359,15 @@ def _sync_serves_locked() -> None:
     for m in mounts:
         fs = m["remote"]
         serve = serves.get(fs)
+        if serve is not None and serve["vfsOpt"] != SERVE_VFS_OPT:
+            # Stale cache options (serves outlive server runs, so a config
+            # change here never reaches an already-running serve otherwise).
+            if serve["id"]:
+                try:
+                    _rc(port, "serve/stop", {"id": serve["id"]})
+                except RuntimeError:
+                    pass
+            serve = None
         if serve is None:
             try:
                 addr = _rc(port, "serve/start", {
