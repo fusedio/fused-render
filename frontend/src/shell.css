@@ -2479,8 +2479,10 @@ body.embed .preview-browse-chip:hover {
   gap: 6px;
   align-items: flex-start;
   align-content: flex-start;
-  /* Truncate at ~3 chip rows (~24px each) + 2 row gaps (6px); typing filters
-     the list, so hidden extensions are still reachable. */
+  /* Truncate at exactly 3 chip rows: chips are pinned to 24px tall below, so
+     rows start every 30px (24px + 6px gap) and the 4th row begins at 90px —
+     fully past this cutoff, no partial row peeking. Typing filters the list,
+     so hidden extensions are still reachable. */
   max-height: 84px;
   overflow: hidden;
 }
@@ -2489,6 +2491,10 @@ body.embed .preview-browse-chip:hover {
   font: inherit;
   cursor: pointer;
   color: var(--fg);
+  /* Fixed height keeps suggestion rows on the 30px grid the container's
+     max-height counts on. */
+  height: 24px;
+  box-sizing: border-box;
 }
 
 .templates-ext-suggestion:hover:not(:disabled) {
