@@ -387,6 +387,10 @@ def _serve():
             except (TypeError, ValueError):
                 # mmap dropped by a concurrent late-src upgrade; the reader is
                 # always attached before the mmap goes away, so it's there now.
+                # A torn read is not possible: CPython slices an mmap in one
+                # GIL-held C call (validity check + copy), so close() can't
+                # interleave mid-copy — a racing slice either completes with
+                # the old bytes or lands here.
                 raw = f["reader"].read(off, cnt)
         return _decode_chunk(f, li, ci, raw)
 
