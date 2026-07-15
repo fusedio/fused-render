@@ -1154,7 +1154,9 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   that resolves to neither). Names travel as **repeated `names=` params** (not
   comma-joined) so a folder name containing a comma round-trips. Each
   template's folder contents land at its own top level in the zip. **No
-  `registry.json` in the zip** — folders only.
+  `registry.json` in the zip** — template content is folders only; the one
+  root-level file is the `recommendation.json` binding-recommendation sidecar
+  (TV-22, D107), which carries *suggestions*, never registry rows.
 - **TV-8** `POST /api/templates/import` **(D90)** — step 1 of 2, multipart
   (`file` field, the `.zip`), stages without committing: unpacks to
   `home_dir()/.import-staging/<importId>/` (`importId` = `secrets.token_hex`).
@@ -1218,6 +1220,56 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   (`tell application "Terminal" to do script "cd <folder> && <claude>"` +
   `activate`), paths `shlex.quote`d for the shell then escaped for the
   AppleScript literal. Returns `{ok: true}`.
+- **TV-22** **Export recommendation sidecar (D107):** the TV-7 zip **always**
+  contains a root-level **`recommendation.json`** — `{"version": 1,
+  "recommendations": {"<template name>": ["<registry key>", …]}}` — recording
+  each exported template's bindings *at export time*. Built by **reverse
+  lookup over the MERGED registry** (user shadows core per key, TV-2): a
+  template maps to every key whose effective ordered list contains its name.
+  The shape is **template → keys**, deliberately *not* registry-key →
+  ordered-list slices (D107) — the sidecar names *which* keys suggest a
+  template, never *where in the list* it sits, so applying it can never
+  clobber the importer's own mode ordering. Templates with zero bindings are
+  **omitted** from the map; the file is written even when the map is empty
+  (deterministic zip layout). Template names and each key list are sorted.
+- **TV-23** **Import staging reads the sidecar (D107):** TV-8 parses a root
+  `recommendation.json` and excludes it from the "ignored top-level file"
+  warnings. Robustness is strictly non-fatal — recommendations are never
+  worth failing a stage over: malformed JSON or a wrong shape → a warning and
+  the recommendations are dropped (folders stage normally); `version != 1` →
+  **silently ignored** (a future exporter's sidecar, not an error);
+  individual keys failing the CT-3 grammar are filtered **at staging** with a
+  per-key warning, so commit never has to reject a recommendation the user
+  merely ticked. Each valid staged item then carries **`recommendedKeys:
+  [{key, status}]`** (omitted when none) — `status` ∈ `new` (would bind) |
+  `already-bound` (name already in the key's effective list) | `disabled`
+  (the key has a user `null`/`[]` override; applying would re-enable it).
+- **TV-24** **Commit applies accepted bindings (D108):** TV-9's body gains an
+  optional **`bindings: {originalStagedName: [keys]}`**. The whole map is
+  validated (CT-3 grammar, same as TV-5) **before any folder move** — a 400
+  leaves the stage fully intact (retryable); a corrupt user registry is
+  likewise refused up front (never rewritten blind). Bindings apply **after**
+  the moves, against **FINAL names**: a skipped/invalid template's bindings
+  are silently ignored; a keep-both rename binds the **new** name
+  (rename-follows-bindings); an already-bound key is a no-op. Application is
+  **append-only** (the TV-20 posture): a key existing only in core gets a
+  user entry created as the **full core list + the appended name** (never a
+  shorter shadow over core); a user-disabled key is re-enabled — as core's
+  list + the name — **only when a binding for it was explicitly requested**;
+  appends always land at the **END** of the list, never reordering the user's
+  existing bindings. Response gains `bindingsApplied: [{key, template}]`.
+- **TV-25** **Import wizard — recommendations UI (D108):** step 2 (TV-17)
+  gains a master toggle **"Apply author's recommended bindings"** plus a
+  per-template **chip strip** of its `recommendedKeys`. Chip defaults: **ON**
+  for `new`; **OFF** for `disabled` (amber "disabled by you" badge + an
+  inline warn line when toggled on — re-enabling is explicit opt-in);
+  `already-bound` chips are **inert** (green badge, never sent — the server
+  would no-op anyway). A **"+ add"** chip lets the user type a custom key
+  (client-validated, server authoritative). Resolving an item to *skip*
+  greys its strip; a keep-both resolution shows a "will bind as `<renamed>`"
+  note. The commit button surfaces the pending binding count; step 3 lists
+  `bindingsApplied`. A zip without `recommendation.json` leaves the wizard
+  exactly as it was — the whole surface is additive.
 
 ### 23.3 Frontend — Templates view (`/view/_templates`)
 
@@ -1240,7 +1292,8 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   the TV-7 GET url for an `<a download>` click), `importTemplates(file)`
   (TV-8 — the app's first `FormData` multipart call; `X-Fused: 1` header
   set, `Content-Type` left for the browser to fill in with the multipart
-  boundary), `commitImport(importId, resolutions)` (TV-9).
+  boundary), `commitImport(importId, resolutions, bindings?)` (TV-9/TV-24 —
+  the optional bindings map is omitted from the body when empty).
 - **TV-14** **Bindings table** (one row per registry key): extension/key,
   ordered template chips (first badged "default"), a source chip
   (Core/User), a "● Modified" marker when `overridesCore`, a "Disabled" pill
@@ -1294,9 +1347,12 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
 - Editing template file contents (`template.html`, `reader.py`, css, icons)
   in this UI — use the file explorer + the existing `/api/fs/write` (D88).
 - A real third source (org/project) — TV-1 only models for it.
-- Registry bindings inside export zips, or merging/writing registry entries
-  from an import — exports are folders only (D89); imported templates are
-  inert (CT-7) until bound via the row editor.
+- ~~Registry bindings inside export zips, or merging/writing registry entries
+  from an import~~ — **revised (D107/D108):** exports now carry a
+  `recommendation.json` *suggestion* sidecar (TV-22) and commit can apply
+  user-accepted bindings append-only (TV-24). D89's core stands: no registry
+  slices in the zip, nothing auto-merged — an imported template stays inert
+  (CT-7) unless the user opts in per key in the wizard (TV-25).
 - Persisting a per-file "last selected mode" — unrelated, not part of this
   feature.
 ## 24. History View — Sidecar Inspector Template (D96)
