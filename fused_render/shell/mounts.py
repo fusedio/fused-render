@@ -580,6 +580,39 @@ _LINK_TTL_S = 30 * 60.0
 _upstream_lock = threading.Lock()
 _upstream_links: dict = {}  # (fs, rel) -> (url, monotonic expiry)
 _upstream_mode: dict = {}   # fs -> "link" | "public" | "none"
+_upstream_cfg: dict = {}    # remote name -> config/get dict (successes only)
+
+
+def _remote_config(name: str) -> dict | None:
+    """config/get for a remote, memoized. Public-URL minting consults the
+    config per OBJECT (a zarr store touches thousands), and remote configs
+    only change through this process (add_remote restarts nothing that would
+    invalidate them) — so one rc round trip per remote, then pure lookups.
+    Failures aren't cached: rcd may simply not be up yet."""
+    with _upstream_lock:
+        cfg = _upstream_cfg.get(name)
+    if cfg is not None:
+        return cfg
+    port = _live_rcd_port()
+    if port is None:
+        return None
+    try:
+        cfg = _rc(port, "config/get", {"name": name}, timeout=10)
+    except RuntimeError:
+        return None
+    if not isinstance(cfg, dict):
+        return None
+    with _upstream_lock:
+        _upstream_cfg[name] = cfg
+    return cfg
+
+
+def _anonymous_s3(cfg: dict | None) -> bool:
+    """True when the remote is plain AWS S3 with no credentials — the one
+    backend class whose objects are reachable by unsigned public URL and
+    which can never presign ("unsupported signer type noAuth")."""
+    return (cfg is not None and _s3_without_credentials(cfg)
+            and not cfg.get("endpoint"))
 
 
 def _mount_for(path: str) -> tuple[dict | None, str]:
@@ -613,18 +646,14 @@ def _fix_dotted_bucket_url(url: str) -> str | None:
 def _public_object_url(fs: str, rel: str) -> str | None:
     """Plain https URL for an object on an ANONYMOUS AWS S3 remote — the one
     backend class that can't presign but doesn't need to. Credentialed or
-    non-AWS remotes return None (their objects aren't reachable unsigned)."""
+    non-AWS remotes return None (their objects aren't reachable unsigned).
+    Pure string building once _remote_config has memoized the config — no rc
+    round trip per object."""
     name, _, root = fs.partition(":")
-    port = _live_rcd_port()
-    if port is None:
+    cfg = _remote_config(name)
+    if not _anonymous_s3(cfg):
         return None
-    try:
-        cfg = _rc(port, "config/get", {"name": name}, timeout=10)
-    except RuntimeError:
-        return None
-    if (not isinstance(cfg, dict) or not _s3_without_credentials(cfg)
-            or cfg.get("endpoint")):
-        return None
+    assert cfg is not None
     bucket, _, prefix = root.partition("/")
     if not bucket:
         return None
@@ -664,6 +693,10 @@ def _upstream_url_for(path: str) -> str | None:
         mode = _upstream_mode.get(fs)
     if mode == "none":
         return None
+    if mode is None and _anonymous_s3(_remote_config(fs.partition(":")[0])):
+        # Anonymous S3 can never presign — don't burn an rc call per remote
+        # learning that from publiclink's "unsupported signer type" error.
+        mode = "public"
     url = None
     if mode in (None, "link"):
         port = _live_rcd_port()

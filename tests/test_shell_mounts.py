@@ -1016,13 +1016,15 @@ def test_fs_raw_proxy_error_keeps_range_headers(client, home):
 
 @pytest.fixture()
 def fresh_upstream():
-    """The bypass memoizes per-remote capability and per-object links in
-    module globals; clear around each test so results don't leak."""
+    """The bypass memoizes per-remote capability, config and per-object
+    links in module globals; clear around each test so results don't leak."""
     mounts_mod._upstream_links.clear()
     mounts_mod._upstream_mode.clear()
+    mounts_mod._upstream_cfg.clear()
     yield
     mounts_mod._upstream_links.clear()
     mounts_mod._upstream_mode.clear()
+    mounts_mod._upstream_cfg.clear()
 
 
 def test_upstream_url_prefers_presigned_link(home, rcd, fresh_upstream):
@@ -1043,7 +1045,10 @@ def test_upstream_url_public_s3_when_link_unsupported(home, rcd, fresh_upstream)
     import os
 
     # Anonymous S3 remotes can't presign ("unsupported signer type noAuth")
-    # but don't need to — the plain public object URL works.
+    # but don't need to — the plain public object URL works. The config makes
+    # that knowable up front, so publiclink is never even attempted, and the
+    # config is memoized: minting URLs for later objects on the same remote
+    # (a zarr store touches thousands) is pure string building, no rc call.
     rcd.responses["operations/publiclink"] = (
         500, {"error": 'unsupported signer type "smithy.api#noAuth"'})
     rcd.responses["config/get"] = {
@@ -1053,6 +1058,11 @@ def test_upstream_url_public_s3_when_link_unsupported(home, rcd, fresh_upstream)
     f = os.path.join(mounts_mod.mountpoint(c), "k ey.parquet")
     assert mounts_mod.upstream_url_for(f) == (
         "https://bucket.s3.us-west-2.amazonaws.com/pre%20fix/k%20ey.parquet")
+    f2 = os.path.join(mounts_mod.mountpoint(c), "other.parquet")
+    assert mounts_mod.upstream_url_for(f2) == (
+        "https://bucket.s3.us-west-2.amazonaws.com/pre%20fix/other.parquet")
+    assert [x for x in rcd.calls if x[0] == "operations/publiclink"] == []
+    assert len([x for x in rcd.calls if x[0] == "config/get"]) == 1
 
 
 def test_upstream_url_none_is_remembered(home, rcd, fresh_upstream):
@@ -1074,10 +1084,13 @@ def test_upstream_url_none_outside_mounts(home, rcd, fresh_upstream):
 
 
 def test_fs_raw_redirects_cold_native_range_reads(client, home, rcd, fresh_upstream):
-    """A ranged GET from a native client (no Sec-Fetch-Mode) on a cold
-    mount-backed file 307s to the store's direct URL; browser requests and
-    HEADs keep today's serve proxy (a redirect would die on CORS / fail a
-    GET-signed link)."""
+    """A GET from a native client (no Sec-Fetch-Mode) on a cold mount-backed
+    file 307s to the store's direct URL — ranged or whole-file alike (zarr
+    reads its many tiny metadata files whole); browser requests and HEADs
+    keep today's serve proxy (a redirect would die on CORS / fail a
+    GET-signed link). No stat gates the redirect: a getattr on a never-listed
+    mount object is a full remote round trip, and the store 404s a missing
+    object itself."""
     import os
 
     import fused_render.shell.storage as storage
@@ -1097,12 +1110,26 @@ def test_fs_raw_redirects_cold_native_range_reads(client, home, rcd, fresh_upstr
     assert r.status_code == 307
     assert r.headers["location"] == "https://signed.example/x"
 
+    # Whole-file native GET: redirected too, and without any local stat —
+    # a path that doesn't exist under the (fake) mount still redirects, so
+    # the daemon's read never pays the VFS getattr round trip.
+    r = client.get("/api/fs/raw", params={"path": f}, follow_redirects=False)
+    assert r.status_code == 307
+    ghost = os.path.join(mp, "not-listed-yet.bin")
+    r = client.get("/api/fs/raw", params={"path": ghost},
+                   follow_redirects=False)
+    assert r.status_code == 307
+
     r = client.get("/api/fs/raw", params={"path": f},
                    headers={"Range": "bytes=0-3", "Sec-Fetch-Mode": "cors"},
                    follow_redirects=False)
     assert r.status_code != 307
     r = client.head("/api/fs/raw", params={"path": f}, follow_redirects=False)
     assert r.status_code != 307
+    # HEAD still answers from the stat: missing files 404 locally.
+    r = client.head("/api/fs/raw", params={"path": ghost},
+                    follow_redirects=False)
+    assert r.status_code == 404
 
 
 def test_api_run_rewrites_raw_source_url_to_direct(
