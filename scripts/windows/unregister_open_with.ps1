@@ -1,5 +1,5 @@
-# Reverses register_open_with.ps1: removes the ProgID, all-files verb, the
-# Applications key, and only the FusedRender.file OpenWithProgids values.
+# Removes the fused-render "Open with" associations (HKCU only). Reverses
+# register_open_with.ps1.
 param(
     [string]$Python
 )
