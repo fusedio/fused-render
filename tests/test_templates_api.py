@@ -827,6 +827,47 @@ def test_new_template_binding_reachable_via_registry_view(ctx):
     assert entry["templates"][0]["exists"] is True
 
 
+def test_new_template_draft_ignores_corrupt_registry(ctx):
+    # A no-extensions draft create never touches the registry, so a pre-existing
+    # corrupt registry.json must not block it.
+    ctx.udir.mkdir(parents=True, exist_ok=True)
+    (ctx.udir / "registry.json").write_text("{not json")
+    resp = ctx.client.post(
+        "/api/templates/new", json={"name": "draft", "extensions": []}, headers=FUSED
+    )
+    assert resp.status_code == 200
+    assert (ctx.udir / "draft" / "template.html").is_file()
+
+
+def test_new_template_with_extensions_rejects_corrupt_registry(ctx):
+    # Once a binding is requested the registry must actually be read and
+    # rewritten, so a corrupt file is refused up front and nothing is created.
+    ctx.udir.mkdir(parents=True, exist_ok=True)
+    (ctx.udir / "registry.json").write_text("{not json")
+    resp = ctx.client.post(
+        "/api/templates/new", json={"name": "draft", "extensions": [".x"]}, headers=FUSED
+    )
+    assert resp.status_code == 400
+    assert "refusing to overwrite the user registry" in resp.json()["error"]
+    assert not (ctx.udir / "draft").exists()
+
+
+def test_new_template_registry_write_failure_cleans_up(ctx, monkeypatch):
+    # A folder that scaffolded fine but whose registry write blew up must not
+    # linger — otherwise every retry 409s on a template that was never bound.
+    def boom(path, data):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(templates_api.storage, "write_json", boom)
+    resp = ctx.client.post(
+        "/api/templates/new", json={"name": "half", "extensions": [".x"]}, headers=FUSED
+    )
+    assert resp.status_code == 400
+    assert "failed to bind template" in resp.json()["error"]
+    assert not (ctx.udir / "half").exists()
+    assert not (ctx.udir / "registry.json").exists()
+
+
 def test_new_template_duplicate_conflicts_409(ctx):
     ctx.make_template("taken")
     resp = ctx.client.post(

@@ -823,25 +823,29 @@ _REPO_SKILLS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "ski
 
 def _ensure_starter_skills(dest: str) -> None:
     """Make sure a freshly-scaffolded template `dest` has the authoring skills
-    under .claude/skills/. In a wheel install the build hook already copied them
-    into the starter kit, so the copytree that created `dest` brought them along
-    — nothing to do. In an editable/dev install the starter's .claude/skills/ is
-    gitignored and absent, so copy the two folders straight from the repo
-    skills/ dir. If neither source exists, proceed without skills — a missing
-    skill must never fail template creation (D106).
+    under .claude/skills/, refreshed from the live repo skills/ dir whenever
+    it's resolvable (editable/dev installs — this always wins, since the
+    starter kit's own .claude/skills/ is gitignored and may be a stale copy
+    left over from a previous local wheel build). Only a true wheel install,
+    where the repo skills/ dir isn't reachable at all, relies on whatever
+    copytree already brought in from the packaged starter kit. If neither
+    source exists, proceed without skills — a missing skill must never fail
+    template creation (D106).
     """
     skills_dir = os.path.join(dest, ".claude", "skills")
     for name in _STARTER_SKILLS:
         target = os.path.join(skills_dir, name)
+        src = os.path.join(_REPO_SKILLS_DIR, name)
+        if os.path.isdir(src):
+            try:
+                shutil.rmtree(target, ignore_errors=True)
+                shutil.copytree(src, target)
+            except OSError:
+                pass  # best-effort; the template is still usable without the skill
+            continue
         if os.path.isdir(target):
             continue  # wheel install: copytree already brought the packaged skill
-        src = os.path.join(_REPO_SKILLS_DIR, name)
-        if not os.path.isdir(src):
-            continue  # neither packaged nor resolvable from source — skip, don't fail
-        try:
-            shutil.copytree(src, target)
-        except OSError:
-            pass  # best-effort; the template is still usable without the skill
+        # neither packaged nor resolvable from source — skip, don't fail
 
 
 def _template_name_error(name) -> str | None:
@@ -893,14 +897,18 @@ def api_new_template(body: dict = Body(...), x_fused: str | None = Header(defaul
         return _error(f"a user template named {name!r} already exists", status=409)
 
     # Refuse to touch a corrupt user registry (a rewrite would drop every other
-    # binding) BEFORE creating the folder, so a failure leaves nothing behind.
-    reg, err = server._load_registry(server.USER_REGISTRY, "registry.json")
-    if err:
-        return _error(
-            f"refusing to overwrite the user registry: {err}. Move "
-            f"{server.USER_REGISTRY} aside and retry.",
-        )
-    reg = reg if isinstance(reg, dict) else {}
+    # binding) BEFORE creating the folder — but only when a write will actually
+    # happen; a no-extensions draft create must not be blocked by a registry
+    # problem it never touches.
+    reg = {}
+    if keys:
+        reg, err = server._load_registry(server.USER_REGISTRY, "registry.json")
+        if err:
+            return _error(
+                f"refusing to overwrite the user registry: {err}. Move "
+                f"{server.USER_REGISTRY} aside and retry.",
+            )
+        reg = reg if isinstance(reg, dict) else {}
 
     os.makedirs(server.USER_TEMPLATES_DIR, exist_ok=True)
     try:
@@ -918,10 +926,17 @@ def api_new_template(body: dict = Body(...), x_fused: str | None = Header(defaul
     # from the repo skills/ dir so the scaffolded folder still carries guidance.
     _ensure_starter_skills(dest)
 
-    for key in keys:
-        _apply_binding(reg, key, [name])
     if keys:
-        storage.write_json(server.USER_REGISTRY, reg)
+        for key in keys:
+            _apply_binding(reg, key, [name])
+        try:
+            storage.write_json(server.USER_REGISTRY, reg)
+        except Exception as exc:
+            # The folder is otherwise complete and usable, but leaving it
+            # behind after a reported failure means a retry always 409s. Clean
+            # up so the error is honest: nothing was created.
+            shutil.rmtree(dest, ignore_errors=True)
+            return _error(f"failed to bind template {name!r}: {exc}")
 
     return {"ok": True, "name": name, "path": dest, "bindings": keys}
 

@@ -47,8 +47,13 @@ export function NewTemplateModal({
     return v.startsWith(".") ? v : "." + v;
   };
 
+  // Case-insensitive: the registry can't hold both ".csv" and ".CSV" (D87 RMW
+  // drops the case-colliding key), so picking both here would silently lose
+  // one server-side while this chip list still showed two.
   const addExt = (ext: string) =>
-    setExtensions((prev) => (prev.includes(ext) ? prev : [...prev, ext]));
+    setExtensions((prev) =>
+      prev.some((e) => e.toLowerCase() === ext.toLowerCase()) ? prev : [...prev, ext],
+    );
 
   const addExtension = () => {
     const ext = normalizeExt(extDraft);
@@ -62,20 +67,25 @@ export function NewTemplateModal({
   // Registry extensions not already picked, matching the current draft as a
   // filter — a quick-pick list on top of free typing.
   const draftNorm = extDraft.trim().toLowerCase().replace(/^\.+/, "");
+  const pickedLower = new Set(extensions.map((e) => e.toLowerCase()));
   const suggestions = knownExtensions.filter(
-    (ext) => !extensions.includes(ext) && (!draftNorm || ext.slice(1).includes(draftNorm)),
+    (ext) =>
+      !pickedLower.has(ext.toLowerCase()) && (!draftNorm || ext.slice(1).toLowerCase().includes(draftNorm)),
   );
 
   const trimmedName = name.trim();
-  // Mirror the backend's name rules client-side so obvious rejects give an
-  // instant inline hint instead of a server roundtrip.
+  // Mirror _template_name_error (templates_api.py) exactly, so obvious rejects
+  // give an instant inline hint instead of a server roundtrip: one plain path
+  // segment, no "/", "\", or "." anywhere, and no leading "_".
   const nameError = trimmedName.includes("/")
     ? 'Name cannot contain "/".'
-    : trimmedName === "." || trimmedName === ".."
-      ? 'Name cannot be "." or "..".'
-      : trimmedName.startsWith("_")
-        ? 'Name cannot start with "_".'
-        : null;
+    : trimmedName.includes("\\")
+      ? 'Name cannot contain "\\".'
+      : trimmedName.includes(".")
+        ? 'Name cannot contain ".".'
+        : trimmedName.startsWith("_")
+          ? 'Name cannot start with "_".'
+          : null;
   const canCreate = trimmedName.length > 0 && !nameError && !busy;
 
   // Cmd/Ctrl+Enter submits from any field when the name is valid.
@@ -252,7 +262,7 @@ export function NewTemplateModal({
                 {suggestions.length > 0 && (
                   <div className="templates-ext-suggest-wrap">
                     <span className="deploy-muted templates-field-hint">From your bindings:</span>
-                    {/* Capped to ~3 rows tall; the rest scroll. */}
+                    {/* Truncated to ~3 rows; typing narrows the list to surface the rest. */}
                     <div className="templates-ext-suggestions">
                       {suggestions.map((ext) => (
                         <button
