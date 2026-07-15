@@ -16,6 +16,7 @@ import { useUrlVersion, useBookmarksVersion, notifyBookmarksChanged } from "../l
 import { encodePaneSegment, splitShellSearch } from "../lib/layout-codec";
 import { panelUrl } from "../views/Panel";
 import { SplitRightIcon, SplitDownIcon } from "./SplitIcons";
+import { FinderIcon } from "./FinderIcon";
 
 // True when two query strings carry the same decoded `_layout` and the same
 // key/value multiset of remaining params, ignoring encoding and ordering
@@ -86,19 +87,6 @@ function revealInFileManager(path: string): void {
 }
 
 const FILE_MANAGER = navigator.userAgent.includes("Windows") ? "File Explorer" : "Finder";
-
-// Finder glyph (streamline-logos:mac-finder-logo, MIT-licensed line version).
-function FinderIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24">
-      <g fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M12.5 1.5c-.833 2-2.5 7.2-2.5 12h3c0 2.537.2 6.6 1 9m-7.5-15v2m10-2v2" />
-        <path d="M5.5 15.5c.667 1 2.9 3 6.5 3s5.667-2 6.5-3" />
-        <path d="M1.5 18.5v-13a4 4 0 0 1 4-4h13a4 4 0 0 1 4 4v13a4 4 0 0 1-4 4h-13a4 4 0 0 1-4-4" />
-      </g>
-    </svg>
-  );
-}
 
 function RevealButton({ fsPath }: { fsPath: string }) {
   return (

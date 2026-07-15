@@ -430,6 +430,53 @@ export function revealPath(fsPath: string): Promise<void> {
   return postJson<unknown>("/api/fs/reveal", { path: fsPath }).then(() => undefined);
 }
 
+// -- Filesystem mutations (fused_render/server.py; X-Fused write-guard) -------
+// Create / delete / rename / copy entries, driven by the explorer's context
+// menu. All share /api/fs/write's error contract, surfaced as the thrown
+// Error's message: 400 (bad/relative path), 403 ("readonly" target), 404
+// (missing src), 409 ("conflict" — destination exists, or a non-empty dir
+// deleted without recursive).
+
+// Create (or overwrite) a plain file. Used for "New File…" with empty content;
+// the parent directory must already exist (the server does not mkdir -p).
+export function writeFile(path: string, content = ""): Promise<StatResult> {
+  return postJson<StatResult>("/api/fs/write", { path, content });
+}
+
+// Create a single directory (no mkdir -p — a missing parent is a 400).
+export function mkdir(path: string): Promise<StatResult> {
+  return postJson<StatResult>("/api/fs/mkdir", { path });
+}
+
+// Remove a file or directory. A non-empty directory needs recursive=true (the
+// context menu passes it only after the confirm dialog spells that out).
+// With trash=true the entry is moved to the user's Trash instead (macOS only);
+// where that's unsupported the server replies 501 "trash unsupported" and the
+// caller falls back to a hard delete.
+export function deleteEntry(
+  path: string,
+  recursive = false,
+  trash = false
+): Promise<{ deleted: string; trashed?: boolean }> {
+  return postJson<{ deleted: string; trashed?: boolean }>("/api/fs/delete", {
+    path,
+    recursive,
+    trash,
+  });
+}
+
+// Move/rename src -> dst (also the paste-of-a-cut move). An existing dst is a
+// 409 unless overwrite=true.
+export function renameEntry(src: string, dst: string, overwrite = false): Promise<StatResult> {
+  return postJson<StatResult>("/api/fs/rename", { src, dst, overwrite });
+}
+
+// Copy src -> dst (paste-of-a-copy, and Duplicate). Same 409-on-existing-dst
+// rule as rename; a directory copied into itself/a descendant is a 400.
+export function copyEntry(src: string, dst: string, overwrite = false): Promise<StatResult> {
+  return postJson<StatResult>("/api/fs/copy", { src, dst, overwrite });
+}
+
 // -- Mounts (shell/mounts.py) ------------------------------------------
 // Remote storage mounted as local paths via rclone rcd. Credentials live in
 // rclone's config; mounts survive server restarts and are adopted on start.
