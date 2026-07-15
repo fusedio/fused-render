@@ -296,13 +296,15 @@ export default function Account() {
       // keeps the orgs view it already has; the probe re-runs only when
       // missing (initial load, or right after a sign-in) or when the caller
       // forces it (reprobe — e.g. setup may have created a workspace). The
-      // cache is only valid while logged_in held CONTINUOUSLY: across a
-      // sign-out (even one observed mid-refresh) it must drop, or a re-login
-      // — possibly as a different account — would show the previous
-      // session's orgs.
+      // cache is valid only while logged_in held CONTINUOUSLY *and* the
+      // credentials fingerprint is unchanged: a sign-out (even one observed
+      // mid-refresh) OR a credential swap — a re-login as a different account
+      // that never flipped logged_in false here — must drop it, or the
+      // summary and workspace picker would show the previous account's orgs.
       const prev = statusRef.current;
+      const sameCreds = prev != null && prev.creds_stamp === fast.creds_stamp;
       const keptProbe =
-        background && !reprobe && fast.logged_in && prev?.logged_in
+        background && !reprobe && fast.logged_in && prev?.logged_in && sameCreds
           ? (prev.probe ?? null)
           : null;
       setStatus(keptProbe ? { ...fast, probe: keptProbe } : fast);

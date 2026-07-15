@@ -76,6 +76,7 @@ from fused_render.fusedcli import (
     all_envs,
     child_env,
     cli_error,
+    credentials_stamp,
     envs_file,
     fused_cli,
     fused_cloud_logged_in,
@@ -451,6 +452,12 @@ def status_payload(probe: bool) -> dict:
         "cli": cli,
         "logged_in": logged_in,
         "login_in_flight": login is not None,
+        # A fingerprint of the credentials file (its mtime): lets the client
+        # drop a cached `cloud orgs` probe when the credentials CHANGE — a
+        # re-login as a different account, even one that never flips
+        # logged_in false in this tab — rather than showing the prior
+        # account's orgs (AC-8).
+        "creds_stamp": credentials_stamp(),
         # The raw env store view for the management table (all backends, each
         # flagged hosted, plus the store's own default pointer). The deploy
         # picker's derived view stays deploy's own (GET /api/deploy/config).

@@ -1617,7 +1617,9 @@ provisioning stays a documented terminal flow.
   focus/visibility regain, errors keeping the last-known value.
 - **AC-2** `GET /api/account/status` composes: `cli` (DP-4's `cli_status`
   shape), `logged_in` (DP-2b's presence signal), `login_in_flight` (a login
-  child is live), `envs_file`, `store` (the RAW env store: every backend,
+  child is live), `creds_stamp` (the credentials file's mtime, or null — a
+  cheap fingerprint the client uses to invalidate its cached probe across a
+  credential change, see AC-8), `envs_file`, `store` (the RAW env store: every backend,
   each entry flagged `hosted`, plus the store's own `default` pointer —
   distinct from DP-6's derivation; the deploy picker's derived view stays on
   `GET /api/deploy/config`), and `probe` (null unless requested). The plain
@@ -1726,10 +1728,12 @@ provisioning stays a documented terminal flow.
   behind an "Add managed environment" toggle. The deep probe is CACHED:
   focus/visibility refreshes re-read only the cheap presence status and
   keep the orgs view they have, re-probing only when it is missing (initial
-  load, right after a sign-in) or forced (setup completion — self-serve may
-  have created the workspace); all return-to-tab refreshes ride the shared
-  `useRefreshOnReturn` hook (lib/hooks.ts), which coalesces the double
-  focus+visibilitychange firing.
+  load, right after a sign-in), forced (setup completion — self-serve may
+  have created the workspace), or when `creds_stamp` changed since the cached
+  probe (a re-login as a different account that never flipped `logged_in`
+  false in this tab — the cache must not show the prior account's orgs). All
+  return-to-tab refreshes ride the shared `useRefreshOnReturn` hook
+  (lib/hooks.ts), which coalesces the double focus+visibilitychange firing.
 - **AC-11** The page also hosts the **Deployments** section — the env-wide
   `fused share list` view with per-mount Revoke that PF-6 previously placed
   on Preferences (semantics unchanged: `/api/deploy/shares` joined to local

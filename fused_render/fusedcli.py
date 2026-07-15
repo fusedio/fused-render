@@ -162,6 +162,20 @@ def fused_cloud_logged_in() -> bool:
     return os.path.isfile(credentials_path())
 
 
+def credentials_stamp() -> float | None:
+    """A cheap fingerprint of the credentials file — its mtime, or None when
+    absent. The account page caches its `cloud orgs` probe to avoid a
+    control-plane call on every refresh; comparing this stamp lets it drop
+    that cache when the credentials CHANGE (a re-login as a different account,
+    or a token refresh — the CLI rewrites the file both times) even if
+    `logged_in` never flips false in between. Same account, untouched file →
+    stable stamp → cache kept."""
+    try:
+        return os.path.getmtime(credentials_path())
+    except OSError:
+        return None
+
+
 def envs_file() -> str:
     # The same override the fused CLI itself honors (environments.py), so a
     # relocated store stays consistent between the CLI and this reader.

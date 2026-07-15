@@ -263,6 +263,7 @@ def test_status_logged_out(tmp_path, monkeypatch):
     assert status["cli"]["found"] is True
     assert status["envs_file"].endswith("envs.json")
     assert status["probe"] is None
+    assert status["creds_stamp"] is None  # no credentials file yet
     # `store` is the raw env store: every backend, hosted-flagged, with the
     # store's own default pointer.
     assert status["store"]["default"] == "cloud"
@@ -279,7 +280,11 @@ def test_status_logged_out(tmp_path, monkeypatch):
 def test_status_logged_in_via_credentials_presence(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
     h.creds.write_text("{}", encoding="utf-8")
-    assert h.status()["logged_in"] is True
+    status = h.status()
+    assert status["logged_in"] is True
+    # The creds fingerprint (mtime) is present and tracks the file — the
+    # client uses a change here to invalidate its cached orgs probe (AC-8).
+    assert status["creds_stamp"] == pytest.approx(h.creds.stat().st_mtime)
 
 
 def test_status_probe_skipped_when_logged_out(tmp_path, monkeypatch):

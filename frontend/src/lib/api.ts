@@ -455,6 +455,10 @@ export interface AccountStatus {
   logged_in: boolean;
   // A `fused cloud login` child is currently waiting on its browser round-trip.
   login_in_flight: boolean;
+  // Fingerprint of the credentials file (mtime, or null when absent). The
+  // account page drops its cached orgs probe when this changes — a re-login
+  // as a different account that never flips logged_in false in this tab.
+  creds_stamp: number | null;
   envs_file: string;
   // The raw env store for the management table: every backend, plus the
   // store's own default pointer. (The deploy picker's derived view lives on
