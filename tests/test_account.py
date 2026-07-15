@@ -632,3 +632,27 @@ def test_setup_rejects_unverifiable_signin(tmp_path, monkeypatch):
     verbs = [c["argv"][:2] for c in h.calls()]
     assert ["cloud", "setup"] not in verbs  # never spawned the doomed job
     assert h.setup_status()["state"] == "idle"
+
+
+def test_logout_cancels_a_running_setup_job(tmp_path, monkeypatch):
+    # Signing out mid-setup must kill the account-scoped child AND unblock the
+    # job slot — a `running` record would otherwise 409 every new setup until
+    # the 900s backstop, and the child would keep provisioning with revoked
+    # credentials. The watcher reports the cancellation, not the CLI's last
+    # progress line.
+    h = _harness(tmp_path, monkeypatch)
+    h.creds.write_text("{}", encoding="utf-8")
+    h.set_scenario({"orgs": {"admitted": True, "orgs": []}})
+    monkeypatch.setenv("FUSED_STUB_SETUP_MODE", "hang")
+    assert h.client.post("/api/account/setup", json={}, headers=FUSED).status_code == 202
+    assert h.setup_status()["state"] == "running"
+
+    assert h.client.post("/api/account/logout", headers=FUSED).status_code == 200
+    job = h.wait_setup(lambda j: j["state"] == "failed")
+    assert "canceled by signing out" in job["detail"]
+
+    # Sign back in; the slot is free — a new setup starts instead of 409ing.
+    h.creds.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("FUSED_STUB_SETUP_MODE", "ok")
+    assert h.client.post("/api/account/setup", json={}, headers=FUSED).status_code == 202
+    h.wait_setup(lambda j: j["state"] == "done")

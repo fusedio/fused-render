@@ -285,6 +285,9 @@ class _SetupJob:
     )
     state: str = "running"
     error: str | None = None
+    # Set before the child is killed on sign-out, so the watcher reports the
+    # cancellation instead of a confusing mid-progress CLI line.
+    canceled: bool = False
 
 
 _SETUP_LOCK = threading.Lock()
@@ -310,11 +313,33 @@ def _watch_setup(job: _SetupJob, pump: threading.Thread) -> None:
         job.state = "failed"
         return
     pump.join(2.0)  # let the pipe drain to EOF so the tail is complete
-    if job.proc.returncode == 0:
+    if job.canceled:
+        job.error = "environment setup was canceled by signing out"
+        job.state = "failed"
+    elif job.proc.returncode == 0:
         job.state = "done"
     else:
         job.error = cli_error("\n".join(job.tail), "fused cloud setup failed")
         job.state = "failed"
+
+
+def _cancel_setup_job() -> bool:
+    """Kill a running setup job, if any; True when one was live.
+
+    Sign-out cancels account-scoped work: a setup child left running would
+    keep provisioning/minting with credentials the user just revoked, and its
+    `running` record would 409 every new setup until the 900s backstop. The
+    watcher reports the cancellation (job.canceled) instead of the CLI's last
+    mid-progress line.
+    """
+    with _SETUP_LOCK:
+        job = _setup
+    if job is None or job.state != "running" or job.proc.poll() is not None:
+        return False
+    job.canceled = True
+    job.proc.terminate()
+    threading.Thread(target=_ensure_dead, args=(job.proc,), daemon=True).start()
+    return True
 
 
 def _default_env_name(env: str | None) -> str:
@@ -657,8 +682,12 @@ def api_account_logout(
             "from here (credentials live in the CLI's own store)"
         )
     # Kill any in-flight login BEFORE deleting credentials, and wait for it:
-    # a completed-after-logout child would otherwise re-write the JWT.
+    # a completed-after-logout child would otherwise re-write the JWT. A
+    # running setup job is account-scoped work too — cancel it (no wait
+    # needed: it can't resurrect the JWT, only finish minting a key the user
+    # no longer wants).
     _cancel_active_login(wait=KILL_GRACE)
+    _cancel_setup_job()
     args = [*cli.command, "cloud", "logout", "--no-browser"]
     if env_name:
         # Also drop that managed env's stored data-plane API key (a full

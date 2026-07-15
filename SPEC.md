@@ -1666,7 +1666,10 @@ provisioning stays a documented terminal flow.
   `fused cloud logout --no-browser` — a login child outliving the credential
   delete could complete its callback later and silently re-write the JWT.
   Optional `{env}` forwards `--env NAME` (also drops that env's stored
-  data-plane key — the CLI's full-signout semantics). Returns fresh status.
+  data-plane key — the CLI's full-signout semantics). A RUNNING setup job is
+  canceled too (account-scoped work; its record reports "canceled by signing
+  out" and frees the single job slot) — no wait needed there, a setup child
+  can't resurrect the JWT. Returns fresh status.
 
 ### 27.3 Environment setup & management
 

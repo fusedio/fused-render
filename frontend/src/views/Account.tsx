@@ -383,6 +383,10 @@ export default function Account() {
     try {
       const fresh = await accountLogout();
       if (!alive.current) return;
+      // Invalidate any in-flight background load: one started BEFORE the
+      // sign-out could resolve after this and resurrect the signed-in view
+      // (stale logged_in + cached probe) over the logout.
+      loadSeq.current++;
       setStatus(fresh);
       wasLoggedIn.current = fresh.logged_in; // keep the flip detector honest
       notifyAccountChanged(); // the sidebar dot must drop without a refocus
@@ -404,7 +408,12 @@ export default function Account() {
       // The env endpoints answer probe-less — keep the orgs view we already
       // have (make-default/forget don't change org membership), or the
       // signed-in summary and workspace picker would vanish on every click.
-      if (alive.current) setStatus((prev) => (prev?.probe ? { ...fresh, probe: prev.probe } : fresh));
+      // Bump the load sequence too: an in-flight pre-action load must not
+      // land its stale store over the post-action one.
+      if (alive.current) {
+        loadSeq.current++;
+        setStatus((prev) => (prev?.probe ? { ...fresh, probe: prev.probe } : fresh));
+      }
     } catch (e) {
       if (alive.current) setEnvError((e as Error).message);
     } finally {
