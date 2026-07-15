@@ -261,6 +261,13 @@ def _view_url(port: int, path: str | None) -> str:
     return f"http://127.0.0.1:{port}/view/" + "/".join(segments)
 
 
+def _clone_url(port: int, raw_url: str) -> str:
+    """URL of the /clone confirm page for an OS-delivered fused-render://
+    deep link (SPEC §26, D110). Parsing/validation is server-side
+    (deeplink.py); this only ferries the raw string as ?src=."""
+    return f"http://127.0.0.1:{port}/clone?src=" + quote(raw_url, safe="")
+
+
 def _report(msg: str) -> None:
     # sys.stdout is None under the gui-scripts launcher; use a message box there.
     if sys.stdout is not None:
@@ -377,6 +384,18 @@ def _register(port: int | None) -> None:
     app_cmd_key = winreg.CreateKeyEx(app_key, r"shell\open\command")
     winreg.SetValueEx(app_cmd_key, "", 0, winreg.REG_SZ, command)
 
+    # fused-render:// URL protocol (SPEC §26, D110): browsers hand the whole
+    # URL over as %1; _open detects the scheme prefix and routes it to the
+    # /clone confirm page instead of /view. The empty "URL Protocol" value is
+    # what marks the class as a scheme handler rather than a file type.
+    proto_key = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, r"Software\Classes\fused-render")
+    winreg.SetValueEx(proto_key, "", 0, winreg.REG_SZ, "URL:fused-render")
+    winreg.SetValueEx(proto_key, "URL Protocol", 0, winreg.REG_SZ, "")
+    proto_icon_key = winreg.CreateKeyEx(proto_key, "DefaultIcon")
+    winreg.SetValueEx(proto_icon_key, "", 0, winreg.REG_SZ, f'"{_ICON_PATH}",0')
+    proto_cmd_key = winreg.CreateKeyEx(proto_key, r"shell\open\command")
+    winreg.SetValueEx(proto_cmd_key, "", 0, winreg.REG_SZ, command)
+
     verb_key = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, r"Software\Classes\*\shell\FusedRender")
     winreg.SetValueEx(verb_key, "", 0, winreg.REG_SZ, "Open with fused-render")
     winreg.SetValueEx(verb_key, "Icon", 0, winreg.REG_SZ, f'"{_ICON_PATH}"')
@@ -395,6 +414,7 @@ def _unregister() -> None:
 
     _delete_tree(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{_LEGACY_PROGID}")
     _delete_tree(winreg.HKEY_CURRENT_USER, r"Software\Classes\Applications\fused-render-open.exe")
+    _delete_tree(winreg.HKEY_CURRENT_USER, r"Software\Classes\fused-render")
     _delete_tree(winreg.HKEY_CURRENT_USER, r"Software\Classes\*\shell\FusedRender")
 
     for ext in extensions():
@@ -410,9 +430,14 @@ def _open(path: str | None, requested_port: int | None) -> None:
     os.makedirs(APP_SUPPORT_DIR, exist_ok=True)
     setup_logging()
     logger.info("winopen starting (pid %s, path=%r, port=%r)", os.getpid(), path, requested_port)
-    if path and not os.path.exists(path):
-        raise RuntimeError(f"file not found: {path}")
-    url = _view_url(_ensure_server(requested_port), path)
+    if path and path.lower().startswith("fused-render:"):
+        # Deep link (SPEC §26, D110): the URL-protocol registration hands the
+        # whole fused-render:// URL over as %1 — not a filesystem path.
+        url = _clone_url(_ensure_server(requested_port), path)
+    else:
+        if path and not os.path.exists(path):
+            raise RuntimeError(f"file not found: {path}")
+        url = _view_url(_ensure_server(requested_port), path)
     logger.info("opening %s", url)
     webbrowser.open(url)
 

@@ -172,6 +172,16 @@ OPTIONS = {
         # No LSUIElement (D34): regular app, Dock icon + menu bar item both.
         # Finder "Open with FusedRender" (SPEC DM-8):
         "CFBundleDocumentTypes": DOCUMENT_TYPES,
+        # fused-render:// deep links (SPEC §26, D110): delivered to
+        # application:openURLs: in app.py. Scheme deliberately NOT
+        # branch-suffixed (same rationale as the bookmark UTI below): every
+        # build speaks the same links, LaunchServices picks one handler.
+        "CFBundleURLTypes": [
+            {
+                "CFBundleURLName": "io.fused.render.deeplink",
+                "CFBundleURLSchemes": ["fused-render"],
+            }
+        ],
         # No other app defines `.bookmark`, so export the UTI ourselves —
         # without this, LaunchServices treats the extension as dynamic data
         # and the Owner rank above binds unreliably. Identifier deliberately

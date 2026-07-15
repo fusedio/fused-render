@@ -57,6 +57,16 @@ def view_url_path(fs_path: str) -> str:
     return "/view" + quote(fs_path)
 
 
+def clone_url_path(raw_url: str) -> str:
+    """Shell URL path for an OS-delivered `fused-render://` deep link (SPEC
+    §26, D110): the /clone confirm page with the raw link as ?src=. Parsing
+    and validation happen server-side (deeplink.py); this only ferries the
+    string. Module-level (not a closure) so it is testable without AppKit."""
+    from urllib.parse import quote
+
+    return "/clone?src=" + quote(raw_url, safe="")
+
+
 def _is_process_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -209,6 +219,26 @@ def main() -> None:
             open_file_view(name)
 
     rumps.rumps.NSApp.application_openFiles_ = application_openFiles_
+
+    # ---- fused-render:// deep links (SPEC §26, D110) -------------------------
+    # AppKit delivers URL-scheme opens (CFBundleURLTypes in the py2app plist)
+    # to application:openURLs:. Same delegate-patch mechanism as openFiles
+    # above; the /clone confirm page does all parsing and asks before any
+    # clone, so this handler only ferries the raw URL to the server.
+    def application_openURLs_(self, _app, urls):
+        raws = [str(u.absoluteString()) for u in urls]
+        logger.info("deep-link open-URLs event: %s", raws)
+        state["docs"] = True  # a deep-link launch shouldn't also open the home tab
+        for raw in raws:
+            target = f"http://127.0.0.1:{port}" + clone_url_path(raw)
+            if state["ready"]:
+                logger.info("opening clone page: %s", target)
+                webbrowser.open(target)
+            else:
+                logger.info("queuing clone page until server is ready: %s", target)
+                state["pending"].append(target)
+
+    rumps.rumps.NSApp.application_openURLs_ = application_openURLs_
 
     # ---- Dock icon click on the running app ---------------------------------
     # AppKit sends applicationShouldHandleReopen:hasVisibleWindows: when the

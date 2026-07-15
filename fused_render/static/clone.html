@@ -1,0 +1,151 @@
+<!doctype html>
+<!-- Deep-link clone confirm page (SPEC §26, D110). Served by GET /clone; fully
+     self-contained (no shell, no external assets — the product has no network
+     at runtime beyond git itself). Reads ?src= client-side, previews via
+     GET /api/clone/info, and clones only on the explicit button click via the
+     X-Fused-guarded POST /api/clone. The trust boundary lives HERE: after a
+     confirm, content from the repository renders same-origin and can run
+     Python through /api/run — the warning text below must keep saying so. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clone repository — fused-render</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --fg: #1a1d21; --bg: #f6f7f8; --card: #ffffff; --muted: #6b7280;
+    --line: #e3e5e8; --accent: #2563eb; --accent-fg: #ffffff;
+    --warn-bg: #fef3c7; --warn-fg: #92400e; --err: #b91c1c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fg: #e6e8eb; --bg: #16181c; --card: #1f2228; --muted: #9aa1ab;
+      --line: #33373e; --accent: #3b82f6; --accent-fg: #ffffff;
+      --warn-bg: #3a2f12; --warn-fg: #fbbf24; --err: #f87171;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    display: flex; justify-content: center; padding: 48px 16px;
+  }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 28px; max-width: 560px; width: 100%;
+  }
+  h1 { font-size: 18px; margin: 0 0 16px; }
+  dl { margin: 0 0 16px; display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; }
+  dt { color: var(--muted); white-space: nowrap; }
+  dd { margin: 0; word-break: break-all; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+  .warn {
+    background: var(--warn-bg); color: var(--warn-fg); border-radius: 8px;
+    padding: 10px 14px; font-size: 13.5px; margin: 0 0 20px;
+  }
+  .row { display: flex; gap: 10px; align-items: center; }
+  button {
+    font: inherit; border-radius: 8px; padding: 8px 18px; cursor: pointer;
+    border: 1px solid var(--line); background: transparent; color: var(--fg);
+  }
+  button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+  button:disabled { opacity: 0.55; cursor: default; }
+  .status { color: var(--muted); font-size: 13.5px; }
+  .error { color: var(--err); white-space: pre-wrap; font-size: 13px; margin-top: 14px;
+           font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1 id="title">Clone repository</h1>
+  <dl id="details" class="hidden">
+    <dt>Repository</dt><dd id="d-repo"></dd>
+    <dt id="d-sub-label">Subdirectory</dt><dd id="d-sub"></dd>
+    <dt>Ref</dt><dd id="d-ref"></dd>
+    <dt>Into</dt><dd id="d-dest"></dd>
+  </dl>
+  <p class="warn" id="warn" hidden>
+    Once opened, files from this repository render inside fused-render and can
+    <strong>run Python code on this machine</strong>. Only continue if you
+    trust the repository.
+  </p>
+  <div class="row">
+    <button class="primary" id="go" disabled>Clone</button>
+    <span class="status" id="status">Loading…</span>
+  </div>
+  <div class="error hidden" id="error"></div>
+</div>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const src = new URLSearchParams(location.search).get("src") || "";
+
+  function fail(msg) {
+    $("status").textContent = "";
+    $("go").disabled = true;
+    $("error").textContent = msg;
+    $("error").classList.remove("hidden");
+  }
+
+  async function load() {
+    if (!src) return fail("Missing ?src= parameter — nothing to clone.");
+    let resp, data;
+    try {
+      resp = await fetch("/api/clone/info?src=" + encodeURIComponent(src));
+      data = await resp.json();
+    } catch (e) {
+      return fail("Could not reach the fused-render server: " + e);
+    }
+    if (!resp.ok) return fail(data.error || "Invalid link.");
+    $("d-repo").textContent = data.owner + "/" + data.repo;
+    if (data.subpath) {
+      $("d-sub").textContent = data.subpath;
+    } else {
+      $("d-sub-label").classList.add("hidden");
+      $("d-sub").classList.add("hidden");
+    }
+    $("d-ref").textContent = data.ref || "(default branch)";
+    $("d-dest").textContent = data.dest;
+    $("details").classList.remove("hidden");
+    $("warn").hidden = false;
+    const update = data.exists;
+    $("title").textContent = update ? "Update clone" : "Clone repository";
+    $("go").textContent = update ? "Update & open" : "Clone & open";
+    $("go").disabled = false;
+    $("status").textContent = update
+      ? "Already cloned — this pulls the latest changes."
+      : "";
+    $("go").onclick = () => run(update);
+  }
+
+  async function run(update) {
+    $("go").disabled = true;
+    $("error").classList.add("hidden");
+    $("status").textContent = update ? "Pulling…" : "Cloning… (first clone can take a moment)";
+    let resp, data;
+    try {
+      resp = await fetch("/api/clone", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Fused": "1" },
+        body: JSON.stringify({ src }),
+      });
+      data = await resp.json();
+    } catch (e) {
+      $("go").disabled = false;
+      return fail("Clone request failed: " + e);
+    }
+    if (!resp.ok) {
+      $("go").disabled = false;
+      $("status").textContent = "";
+      $("error").textContent = data.error || "Clone failed.";
+      $("error").classList.remove("hidden");
+      return;
+    }
+    $("status").textContent = "Opening…";
+    location.href = data.view;
+  }
+
+  load();
+</script>
+</body>
+</html>

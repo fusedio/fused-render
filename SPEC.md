@@ -1483,3 +1483,49 @@ SPEC DM-7); the CLI/browser experience is unchanged.
   alive. If `menubar_pin` fails to import or construct (e.g. missing WebKit
   framework), the menu is attached as before — the app is never left
   unquittable.
+
+## 26. GitHub Deep Links — fused-render:// (M17)
+
+A shareable link that lands a GitHub repository subdirectory in fused-render:
+`fused-render://open/https://github.com/{owner}/{repo}/tree/{ref}/{subpath}`
+— the original GitHub tree URL, verbatim, behind the scheme prefix (a link
+author copies the GitHub URL and prefixes it). Clicking it launches (or
+reuses) the app, shows a confirm page, sparse-clones the subdirectory into
+`~/Documents/Fused/<subpath basename>`, and opens the folder's `index.html`
+when one exists, else the folder itself.
+
+- **DL-1** Link shape: `fused-render://open/<github URL>`. Accepted GitHub
+  shapes: repo root (`/{owner}/{repo}`), `/tree/{ref}`, and
+  `/tree/{ref}/{subpath}`; a `.git` suffix on the repo is tolerated; the
+  embedded URL may be percent-encoded. `/blob/` (single files) and non-github
+  hosts are rejected with a clear error. The first segment after `/tree/` is
+  the ref — single-segment refs only (the URL grammar cannot delimit a
+  slashed branch name from the subpath; same assumption most tooling makes).
+- **DL-2** OS registration: macOS via `CFBundleURLTypes` in the py2app plist
+  (scheme deliberately not branch-suffixed, like the bookmark UTI — every
+  build speaks the same links), delivered to `application:openURLs:` in
+  app.py; Windows via an HKCU `Software\Classes\fused-render` URL-protocol
+  class written by the same `--register` as the Open-With keys, delivered as
+  `%1` to `fused-render-open`. Linux deferred. Both handlers reuse a live
+  server or spawn one (the winopen/app dance), then open the browser at the
+  confirm page — they never parse or clone themselves.
+- **DL-3** Confirm gate (`GET /clone?src=…`): a self-contained server-served
+  page (`static/clone.html`, no shell, no external assets). Nothing touches
+  disk until its button is clicked. The page previews repo / subdirectory /
+  ref / destination via read-only `GET /api/clone/info` and states the trust
+  boundary in plain words: once opened, content from the repository renders
+  same-origin and can run Python on this machine (trust-on-confirm, D110).
+- **DL-4** Clone (`POST /api/clone`, X-Fused-guarded like every mutating
+  route): `git clone --filter=blob:none --sparse` + `sparse-checkout set
+  <subpath>` (plain filtered clone for repo-root links) using the user's own
+  git — public repos clone anonymously, private repos ride the user's
+  existing credentials. Destination is `~/Documents/Fused/<subpath basename>`
+  (repo name for root links); the repo root, `.git` included, lives at the
+  destination, so the opened view is the nested `<dest>/<subpath>` path. A
+  failed clone removes the partial destination (retryable).
+- **DL-5** Re-click = update: an existing destination whose `origin` matches
+  the link's repo is `git pull --ff-only`'d; a dirty or diverged tree
+  surfaces git's own error and local edits are never clobbered. A destination
+  that exists but is not a clone of that repo is refused, never overwritten.
+- **DL-6** Open target: `<dest>/<subpath>/index.html` when present, else the
+  subdirectory itself, via the standard `/view/` URL codec.
