@@ -23,6 +23,7 @@ import {
   revokeDeployment,
 } from "../lib/api";
 import type { DeployConfig, DeployPreview, Deployment } from "../lib/api";
+import { useFusedLogin } from "../lib/account";
 import { basename } from "../lib/format";
 
 interface DeployModalProps {
@@ -190,6 +191,11 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fsPath]);
+
+  // In-app sign-in for the managed backend (docs/PLAN-fused-account.md M18a):
+  // replaces the old "run `fused cloud login` in a terminal" guidance. On
+  // completion, a background reload flips config.fused_logged_in.
+  const signin = useFusedLogin(() => void load(true));
 
   // Latest-ref pattern: `load` and `busy` are captured fresh every render, so
   // the focus effect below (which subscribes once) always calls the current
@@ -484,9 +490,31 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
         )}
         {env?.backend === "fused" && !config.fused_logged_in && (
           <div className="deploy-note">
-            You don't appear to be signed in to Fused — deploying to <b>{env.name}</b> will
-            fail until you run <code>{config.setup_cli} cloud login</code> in a terminal (a
-            one-time browser sign-in).
+            <div>
+              You aren't signed in to Fused — deploying to <b>{env.name}</b> needs a
+              one-time browser sign-in.
+            </div>
+            {signin.connecting ? (
+              <div className="deploy-form-row">
+                <span className="deploy-muted">
+                  Waiting for the browser sign-in… finish signing in in the tab that just
+                  opened.
+                </span>
+                <button type="button" onClick={() => void signin.cancel()}>
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="deploy-primary"
+                onClick={() => void signin.begin()}
+                disabled={busy !== null}
+              >
+                Sign in to Fused
+              </button>
+            )}
+            {signin.error && <div className="deploy-error">{signin.error}</div>}
           </div>
         )}
         <div className="deploy-note deploy-muted">

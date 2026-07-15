@@ -849,6 +849,25 @@ export default function Sidebar({ config }: SidebarProps) {
           </span>
           <span className="prefs-label">Mounts</span>
         </button>
+        {/* Fused account entry — in-app sign-in/out, /view/_account
+            (docs/PLAN-fused-account.md M18a). */}
+        <button
+          type="button"
+          title="Fused account"
+          aria-label="Fused account"
+          className={
+            "sidebar-item prefs-link" + (location.pathname === "/view/_account" ? " active" : "")
+          }
+          onClick={() => navigateUrl("/view/_account")}
+        >
+          <span className="icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+              <circle cx="12" cy="7" r="4" />
+            </svg>
+          </span>
+          <span className="prefs-label">Fused account</span>
+        </button>
         <button
           type="button"
           title="Preferences"

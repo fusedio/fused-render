@@ -40,6 +40,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 
 from fused_render import __version__
+from fused_render.account import router as account_router
 from fused_render.core_templates import ensure_core_templates
 from fused_render.deploy import router as deploy_router
 from fused_render.executor import run_python
@@ -1278,6 +1279,9 @@ def create_app(start_dir: str) -> FastAPI:
     # Deploy (hosted publish through the fused CLI) — export + `fused share`
     # orchestration and the per-page deployment pointer store (deploy.py).
     app.include_router(deploy_router)
+    # Fused account (in-app `fused cloud login/logout`, account.py) — the
+    # sign-in the managed-env deploys need, without a terminal.
+    app.include_router(account_router)
     # Template management (templates_api.py) — the Templates view backend:
     # inventory across sources, registry bindings edit, import/export. It owns
     # GET /api/templates/registry (the extended §2.2 shape). Imported here

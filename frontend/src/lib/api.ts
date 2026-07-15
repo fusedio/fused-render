@@ -395,6 +395,62 @@ export function revokeMount(env: string, token: string): Promise<void> {
   return postJson<unknown>("/api/deploy/revoke", { env, token }).then(() => undefined);
 }
 
+// -- Fused account (account.py; docs/PLAN-fused-account.md M18a) ---------------
+
+// One org/env the signed-in account can target (`fused cloud orgs`).
+export interface AccountOrg {
+  org: string | null;
+  env: string | null;
+  provision_state: string | null;
+  role: string | null;
+}
+
+// The deeper signed-in check (`fused cloud orgs`), run only with ?probe=1:
+// unlike the presence-only logged_in flag it exercises the token, so a stale
+// credential shows up here as ok=false with the CLI's own message.
+export interface AccountProbe {
+  ok: boolean;
+  admitted: boolean | null;
+  orgs: AccountOrg[];
+  error: string | null;
+}
+
+export interface AccountStatus {
+  cli: DeployCli;
+  setup_cli: string;
+  // Presence of the CLI's credentials file — cheap and optimistic (the CLI
+  // refreshes an expired token itself); `probe` is the authoritative check.
+  logged_in: boolean;
+  // A `fused cloud login` child is currently waiting on its browser round-trip.
+  login_in_flight: boolean;
+  envs: DeployEnv[];
+  default_env: string | null;
+  envs_file: string;
+  probe: AccountProbe | null;
+}
+
+export function getAccountStatus(probe = false): Promise<AccountStatus> {
+  return getJson<AccountStatus>("/api/account/status" + (probe ? "?probe=1" : ""));
+}
+
+// Start (or join — one login at a time) the CLI's browser sign-in and return
+// the authorize URL; OPENING it is the caller's job (window.open — the server
+// never drives a browser). returnUrl must be a loopback URL (normally
+// location.href): the post-login callback 302s the browser back to it.
+export function startAccountLogin(returnUrl: string): Promise<{ authorize_url: string }> {
+  return postJson<{ authorize_url: string }>("/api/account/login", { return_url: returnUrl });
+}
+
+export function cancelAccountLogin(): Promise<void> {
+  return postJson<unknown>("/api/account/login/cancel", {}).then(() => undefined);
+}
+
+// Sign out (killing any in-flight sign-in first, server-side) and return the
+// fresh status.
+export function accountLogout(): Promise<AccountStatus> {
+  return postJson<AccountStatus>("/api/account/logout", {});
+}
+
 // -- Preferences (shell/prefs.py; SPEC §20) -----------------------------------
 
 export interface EnginePrefs {

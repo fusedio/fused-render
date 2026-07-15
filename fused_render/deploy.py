@@ -8,15 +8,14 @@ still hosts nothing and mints nothing — every mutation is a `fused share …`
 child process, exactly the pattern the flow app uses for project deploys
 (flow repo, spec/app/deploy-project.md). What this module owns:
 
-  * **The fused CLI seam.** Deploying needs the `fused` package, which may not
-    be installed in the venv running this server. `fused_cli()` resolves it
-    from exactly two sources: an explicit FUSED_RENDER_FUSED_BIN override, or
-    — the ONE autodetected source — the `fused` package importable in this
-    interpreter, run via the `_fused_cli.py` shim under sys.executable (which
-    is what the packaged macOS app uses: its bundle bakes the package in and
-    has no console scripts). `POST /api/deploy/install` pip-installs the
-    wheel pinned by `PINNED_FUSED_REQUIREMENT` into the server's interpreter
-    when it is missing (Python 3.11+ with pip).
+  * **The one-click install.** Deploying needs the `fused` package, which may
+    not be installed in the venv running this server; the resolution seam
+    itself (`fused_cli()` — an explicit FUSED_RENDER_FUSED_BIN override, or
+    the ONE autodetected source, the `fused` package importable in this
+    interpreter via the `_fused_cli.py` shim) lives in fusedcli.py, shared
+    with the account surface (account.py). `POST /api/deploy/install`
+    pip-installs the wheel pinned by `PINNED_FUSED_REQUIREMENT` into the
+    server's interpreter when it is missing (Python 3.11+ with pip).
   * **Export to a temporary bundle.** Each deploy re-exports the page into a
     fresh temp directory (`export.export_page`) and hands that bundle to
     `share create`/`repoint`; the bundle is deleted afterwards — nothing to
@@ -48,7 +47,6 @@ X-Fused guard is duplicated locally like shell/bookmarks.py does.
 """
 from __future__ import annotations
 
-import dataclasses
 import importlib
 import importlib.util
 import json
@@ -64,14 +62,22 @@ from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
 from fused_render.export import ExportError, export_page, plan_export
+
+# The fused CLI seam (resolution, child-env hygiene, error mapping, the CLI's
+# own on-disk state) is shared with account.py — it lives in fusedcli.py.
+# Private aliases keep this module's historical names (and test patch targets)
+# stable.
+from fused_render.fusedcli import (
+    child_env as _child_env,
+    cli_error as _cli_error,
+    eligible_envs,
+    fused_cli,
+    fused_cloud_logged_in,
+    setup_cli_hint as _setup_cli_hint,
+)
 from fused_render.shell import storage
 
 router = APIRouter()
-
-# Backends that can answer a served URL (flow's HOSTED_BACKENDS): the managed
-# Fused control plane, or an AWS env whose serving plane `fused infra serve`
-# provisioned. `local` has no serving plane and is never eligible.
-HOSTED_BACKENDS = ("fused", "aws")
 
 # create/repoint upload the bundle (inline base64 on the fused backend) — give
 # them the same generous budget flow uses; list is a cheap read.
@@ -105,52 +111,7 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-# -- the fused CLI seam -------------------------------------------------------
-
-
-@dataclasses.dataclass(frozen=True)
-class FusedCli:
-    """The resolved fused CLI: the command vector, and whether it is an
-    EXTERNAL interpreter (a FUSED_RENDER_FUSED_BIN override) — external
-    children get PYTHONHOME/PYTHONPATH scrubbed so the packaged app's
-    bundle-scoped interpreter env can't poison them (see _child_env)."""
-
-    command: list[str]
-    external: bool
-
-
-def fused_cli() -> FusedCli | None:
-    """Resolve the fused CLI, or None when there is none.
-
-    Exactly TWO sources — one explicit, one autodetected — and nothing else
-    (no venv-bin scan, no PATH lookup, no well-known-location guessing; a CLI
-    this server didn't get from its own interpreter runs only because the
-    user explicitly configured it):
-
-      1. FUSED_RENDER_FUSED_BIN — trusted verbatim, split on whitespace so a
-         compound command works (e.g. "uv run fused"). Mirrors the flow app's
-         OPENFUSED_BIN seam; also how tests substitute a stub CLI.
-      2. the `fused` package importable in THIS interpreter — run as
-         ``[sys.executable, _fused_cli.py]`` (the shim sets argv[0] and calls
-         fused._cli.main). Covers a venv server that pip-installed the
-         [fused] extra (including via POST /api/deploy/install) AND the
-         packaged macOS app, whose py2app bundle has no console scripts but
-         bakes the fused package in (build_dmg.sh) and whose sys.executable
-         is a real re-invokable interpreter (the executor's _child.py spawn
-         pattern).
-    """
-    override = os.environ.get("FUSED_RENDER_FUSED_BIN")
-    if override:
-        parts = override.split()
-        return FusedCli(command=parts, external=True) if parts else None
-    try:
-        importable = importlib.util.find_spec("fused") is not None
-    except (ImportError, ValueError):
-        importable = False
-    if importable:
-        shim = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_fused_cli.py")
-        return FusedCli(command=[sys.executable, shim], external=False)
-    return None
+# -- the one-click install (the CLI seam itself is fusedcli.py) ---------------
 
 
 # The fused wheel the one-click install lands (POST /api/deploy/install) —
@@ -262,54 +223,7 @@ def install_fused() -> dict:
     return {"ok": True, "requirement": requirement}
 
 
-# -- environments (the fused CLI's own store) ---------------------------------
-
-
-def _envs_file() -> str:
-    # The same override the fused CLI itself honors (environments.py), so a
-    # relocated store stays consistent between the CLI and this reader.
-    return os.environ.get("OPENFUSED_ENVS_FILE") or os.path.expanduser("~/.openfused/envs.json")
-
-
-def eligible_envs() -> dict:
-    """Hosted envs from the fused store + the picker's default.
-
-    Reads ~/.openfused/envs.json directly (like the flow app's readEnvs) so
-    the picker renders even when the CLI is not installed yet. Default pick:
-    OPENFUSED_ENV when it names an eligible env (explicit intent for this
-    process), else the first `fused`-backend env — preferring the store's own
-    default when that is one — else the store default, else the first eligible.
-    """
-    data = storage.read_json(_envs_file())
-    raw_envs = data.get("envs") if isinstance(data, dict) else None
-    envs = []
-    if isinstance(raw_envs, dict):
-        for entry in raw_envs.values():
-            if not isinstance(entry, dict):
-                continue
-            name, backend = entry.get("name"), entry.get("backend")
-            if isinstance(name, str) and backend in HOSTED_BACKENDS:
-                envs.append({"name": name, "backend": backend})
-    envs.sort(key=lambda e: e["name"])
-
-    by_name = {e["name"]: e for e in envs}
-    store_default = data.get("default") if isinstance(data, dict) else None
-    fused_backed = [e["name"] for e in envs if e["backend"] == "fused"]
-
-    default = None
-    ambient = os.environ.get("OPENFUSED_ENV")
-    if ambient in by_name:
-        default = ambient
-    elif store_default in by_name and by_name[store_default]["backend"] == "fused":
-        default = store_default
-    elif fused_backed:
-        default = fused_backed[0]
-    elif store_default in by_name:
-        default = store_default
-    elif envs:
-        default = envs[0]["name"]
-
-    return {"envs": envs, "default_env": default, "envs_file": _envs_file()}
+# -- environments (store reads live in fusedcli.py) ---------------------------
 
 
 def _backend_of(env_name: str) -> str | None:
@@ -319,60 +233,7 @@ def _backend_of(env_name: str) -> str | None:
     return None
 
 
-def fused_cloud_logged_in() -> bool:
-    """Whether the fused CLI's control-plane credentials exist on disk.
-
-    Presence of the credentials file the CLI itself reads/writes
-    (`fused cloud login` → ~/.openfused/fused-cloud-credentials.json, same
-    env override). Presence-only, deliberately: an expired-but-refreshable
-    token still works (the CLI refreshes silently), and validating deeper
-    would duplicate the CLI's own logic — this signal exists so the modal can
-    warn BEFORE a deploy click when a managed env is targeted with no login
-    at all; the CLI stays the authority at action time.
-    """
-    path = os.environ.get("OPENFUSED_FUSED_CLOUD_CREDENTIALS") or os.path.expanduser(
-        "~/.openfused/fused-cloud-credentials.json"
-    )
-    return os.path.isfile(path)
-
-
 # -- `fused share …` execution -------------------------------------------------
-
-
-def _cli_error(stderr: str, fallback: str) -> str:
-    """Last non-empty stderr line with click's `Error: ` prefix stripped — the
-    CLI's messages already name the fix, so they reach the modal verbatim.
-
-    One adjustment: login errors say `fused cloud login`, which doesn't
-    resolve inside the packaged app (no `fused` on PATH) — when the bundled
-    wrapper is the setup CLI, its real path is appended so the instruction is
-    runnable as printed.
-    """
-    lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
-    message = lines[-1] if lines else fallback
-    message = message.removeprefix("Error: ")
-    setup_cli = _setup_cli_hint()
-    if setup_cli != "fused" and "fused cloud login" in message:
-        message += f" (in this app: {setup_cli} cloud login)"
-    return message
-
-
-def _child_env(cli: FusedCli, env_name: str) -> dict[str, str]:
-    """The child environment for a fused CLI run.
-
-    OPENFUSED_ENV targets the chosen env (the CLI's own override channel).
-    For an EXTERNAL cli (FUSED_RENDER_FUSED_BIN), interpreter-scoped vars are
-    scrubbed: inside the packaged macOS app the process carries PYTHONHOME/
-    PYTHONPATH pointing into the bundle, which would break any other Python's
-    interpreter (same scrub the las template does for its external spawns).
-    The in-interpreter shim keeps them — they are what make sys.executable
-    work in the bundle.
-    """
-    child = {**os.environ, "OPENFUSED_ENV": env_name}
-    if cli.external:
-        for var in ("PYTHONHOME", "PYTHONPATH"):
-            child.pop(var, None)
-    return child
 
 
 def _run_share(env_name: str, args: list[str], timeout: float = SHARE_TIMEOUT):
@@ -821,27 +682,6 @@ def list_shares(env_name: str) -> dict:
 
 
 # -- routes --------------------------------------------------------------------
-
-
-def _setup_cli_hint() -> str:
-    """The command users type in a terminal for one-time CLI setup
-    (`fused env create`, `fused cloud setup`, `fused cloud login`).
-
-    Inside the packaged macOS app (py2app sets sys.frozen) there is no
-    user-facing `fused` on PATH — but the bundle ships a terminal wrapper
-    that runs the same baked-in CLI the Deploy button uses, at
-    ``Contents/Resources/bin/fused`` (build_dmg.sh §4c — under Resources, not
-    MacOS, because a shell script in a code directory breaks the codesign
-    bundle seal). sys.executable is ``…/Contents/MacOS/python``; the wrapper
-    is resolved relative to it. Point guidance at it so a .app user never
-    needs a separate fused install.
-    """
-    if getattr(sys, "frozen", None) == "macosx_app":
-        contents = os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))
-        wrapper = os.path.join(contents, "Resources", "bin", "fused")
-        if os.path.isfile(wrapper):
-            return wrapper
-    return "fused"
 
 
 @router.get("/api/deploy/config")
