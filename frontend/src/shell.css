@@ -2465,13 +2465,23 @@ body.embed .preview-browse-chip:hover {
   font-size: 12px;
 }
 
-/* Quick-pick extensions already in the registry: a wrapped row of chip buttons
-   under the tag input. */
+/* Quick-pick extensions already in the registry: chip buttons under the tag
+   input, capped to ~3 rows with the overflow scrolling. */
+.templates-ext-suggest-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .templates-ext-suggestions {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  align-items: center;
+  align-items: flex-start;
+  align-content: flex-start;
+  /* 3 chip rows (~24px each) + 2 row gaps (6px). */
+  max-height: 84px;
+  overflow-y: auto;
 }
 
 .templates-ext-suggestion {

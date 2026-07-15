@@ -250,26 +250,29 @@ export function NewTemplateModal({
                   />
                 </div>
                 {suggestions.length > 0 && (
-                  <div className="templates-ext-suggestions">
+                  <div className="templates-ext-suggest-wrap">
                     <span className="deploy-muted templates-field-hint">From your bindings:</span>
-                    {suggestions.map((ext) => (
-                      <button
-                        key={ext}
-                        type="button"
-                        className="templates-chip small templates-ext-suggestion"
-                        disabled={busy}
-                        // preventDefault on mousedown so the input's onBlur (which
-                        // would commit the draft) doesn't fire before this click.
-                        onMouseDown={(e) => e.preventDefault()}
-                        onClick={() => {
-                          addExt(ext);
-                          setExtDraft("");
-                          extInputRef.current?.focus();
-                        }}
-                      >
-                        + {ext}
-                      </button>
-                    ))}
+                    {/* Capped to ~3 rows tall; the rest scroll. */}
+                    <div className="templates-ext-suggestions">
+                      {suggestions.map((ext) => (
+                        <button
+                          key={ext}
+                          type="button"
+                          className="templates-chip small templates-ext-suggestion"
+                          disabled={busy}
+                          // preventDefault on mousedown so the input's onBlur (which
+                          // would commit the draft) doesn't fire before this click.
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => {
+                            addExt(ext);
+                            setExtDraft("");
+                            extInputRef.current?.focus();
+                          }}
+                        >
+                          + {ext}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
                 <span className="deploy-muted templates-field-hint">
