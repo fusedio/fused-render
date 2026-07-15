@@ -38,8 +38,18 @@ command -v npm >/dev/null || { echo "npm not found — the dev loop needs Node 2
   exit 1
 }
 
+# Install deps when they're missing OR stale. `node_modules/.package-lock.json`
+# is npm's own record of the last install; if the real package-lock.json is
+# newer than it (a dependency bump, or a branch switch that changed the lock),
+# node_modules no longer matches the manifest and the build fails on a missing
+# module — reinstall to reconcile. `-nt` also fires when the marker is absent
+# entirely (never installed, or a non-npm install left no marker), so a
+# markerless node_modules self-heals on the next run.
 if [[ ! -d "$FRONTEND/node_modules" ]]; then
   echo "==> npm install (first run)"
+  (cd "$FRONTEND" && npm install --no-audit --no-fund)
+elif [[ "$FRONTEND/package-lock.json" -nt "$FRONTEND/node_modules/.package-lock.json" ]]; then
+  echo "==> npm install (package-lock.json changed since last install)"
   (cd "$FRONTEND" && npm install --no-audit --no-fund)
 fi
 

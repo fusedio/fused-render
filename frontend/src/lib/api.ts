@@ -317,6 +317,12 @@ export interface Deployment {
   url: string | null;
   status: "active" | "revoked";
   entrypoints: string[];
+  // The file selection this deployment was published with (persisted on the
+  // record, not a sidecar): extra files bundled beyond the auto-scan, and files
+  // dropped from it. Reopening the modal reloads these so the selection sticks.
+  // Optional — records written before this feature omit them (read as []).
+  include?: string[];
+  exclude?: string[];
   updated_at: string;
 }
 
@@ -351,7 +357,15 @@ export interface DeployPreview {
   page: string;
   entrypoints: { path: string; name: string }[];
   assets: { path: string; name: string }[];
+  // The auto-detected default set (literal runPython/rawUrl/readFile paths, before
+  // include/exclude). Lets the modal distinguish an auto file (removing → exclude,
+  // shown under "Excluded" with restore) from a manual include (removing → just drop).
+  auto: string[];
   errors: string[];
+  // Advisory, non-blocking: a computed rawUrl/readFile path (bundle its target
+  // via include), or an exclude that drops a file the page references. Distinct
+  // from `errors`, which disable Deploy.
+  warnings: string[];
 }
 
 export interface SharesResult {
@@ -369,12 +383,23 @@ export function getDeployStatus(fsPath: string, reconcile: boolean): Promise<Dep
   return getJson<DeployStatusResult>(url);
 }
 
-export function getDeployPreview(fsPath: string): Promise<DeployPreview> {
-  return getJson<DeployPreview>("/api/deploy/preview?path=" + encodeURIComponent(fsPath));
+export function getDeployPreview(
+  fsPath: string,
+  include: string[],
+  exclude: string[],
+): Promise<DeployPreview> {
+  // POST (not GET) so the include/exclude selection travels in the body — arrays
+  // don't fit a query string cleanly. Read-only server-side (no files written).
+  return postJson<DeployPreview>("/api/deploy/preview", { path: fsPath, include, exclude });
 }
 
-export function deployPage(fsPath: string, env: string): Promise<Deployment> {
-  return postJson<Deployment>("/api/deploy", { page: fsPath, env });
+export function deployPage(
+  fsPath: string,
+  env: string,
+  include: string[],
+  exclude: string[],
+): Promise<Deployment> {
+  return postJson<Deployment>("/api/deploy", { page: fsPath, env, include, exclude });
 }
 
 export function revokeDeployment(fsPath: string): Promise<Deployment> {
