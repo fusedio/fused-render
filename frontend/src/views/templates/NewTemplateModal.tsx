@@ -7,9 +7,11 @@ import type { NewTemplateResult } from "../../lib/api";
 // fine (bindings can be added later from the File bindings tab). On success the
 // panel refreshes and this offers "Open in Claude" to start editing the folder.
 export function NewTemplateModal({
+  knownExtensions,
   onClose,
   onCreated,
 }: {
+  knownExtensions: string[]; // extensions already bound in the registry, offered one-click
   onClose: () => void;
   onCreated: () => void;
 }) {
@@ -39,16 +41,30 @@ export function NewTemplateModal({
   }, [onClose, busy]);
 
   // Normalize "csv" / " .CSV " → ".csv"; dedupe against existing chips.
-  const addExtension = () => {
-    const raw = extDraft.trim().toLowerCase();
-    if (!raw) return;
-    const ext = raw.startsWith(".") ? raw : "." + raw;
+  const normalizeExt = (raw: string) => {
+    const v = raw.trim().toLowerCase();
+    if (!v) return null;
+    return v.startsWith(".") ? v : "." + v;
+  };
+
+  const addExt = (ext: string) =>
     setExtensions((prev) => (prev.includes(ext) ? prev : [...prev, ext]));
+
+  const addExtension = () => {
+    const ext = normalizeExt(extDraft);
+    if (ext) addExt(ext);
     setExtDraft("");
   };
 
   const removeExtension = (ext: string) =>
     setExtensions((prev) => prev.filter((e) => e !== ext));
+
+  // Registry extensions not already picked, matching the current draft as a
+  // filter — a quick-pick list on top of free typing.
+  const draftNorm = extDraft.trim().toLowerCase().replace(/^\.+/, "");
+  const suggestions = knownExtensions.filter(
+    (ext) => !extensions.includes(ext) && (!draftNorm || ext.slice(1).includes(draftNorm)),
+  );
 
   const trimmedName = name.trim();
   // Mirror the backend's name rules client-side so obvious rejects give an
@@ -233,8 +249,32 @@ export function NewTemplateModal({
                     onBlur={addExtension}
                   />
                 </div>
+                {suggestions.length > 0 && (
+                  <div className="templates-ext-suggestions">
+                    <span className="deploy-muted templates-field-hint">From your bindings:</span>
+                    {suggestions.map((ext) => (
+                      <button
+                        key={ext}
+                        type="button"
+                        className="templates-chip small templates-ext-suggestion"
+                        disabled={busy}
+                        // preventDefault on mousedown so the input's onBlur (which
+                        // would commit the draft) doesn't fire before this click.
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => {
+                          addExt(ext);
+                          setExtDraft("");
+                          extInputRef.current?.focus();
+                        }}
+                      >
+                        + {ext}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <span className="deploy-muted templates-field-hint">
-                  Type an extension and press Enter. The leading dot is added for you.
+                  Pick a known extension above, or type your own and press Enter (the leading dot is
+                  added for you).
                 </span>
               </div>
               {error && <div className="deploy-error">{error}</div>}

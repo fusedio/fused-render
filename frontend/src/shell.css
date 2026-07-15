@@ -2465,6 +2465,30 @@ body.embed .preview-browse-chip:hover {
   font-size: 12px;
 }
 
+/* Quick-pick extensions already in the registry: a wrapped row of chip buttons
+   under the tag input. */
+.templates-ext-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.templates-ext-suggestion {
+  font: inherit;
+  cursor: pointer;
+  color: var(--fg);
+}
+
+.templates-ext-suggestion:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.templates-ext-suggestion:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* Tag-style extension input: chips + a borderless draft field inside one box
    that reads as a single text input (matches .templates-search framing). */
 .templates-chip-input {

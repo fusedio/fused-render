@@ -14,10 +14,12 @@ type UseFilter = "all" | "used" | "unused";
 
 export function InventoryPanel({
   inventory,
+  knownExtensions,
   onImport,
   onChanged,
 }: {
   inventory: TemplateInventory;
+  knownExtensions: string[]; // literal-extension registry keys, for New template suggestions
   onImport: () => void;
   onChanged: () => void;
 }) {
@@ -215,6 +217,7 @@ export function InventoryPanel({
       )}
       {creating && (
         <NewTemplateModal
+          knownExtensions={knownExtensions}
           onClose={() => setCreating(false)}
           // Refresh inventory + bindings (onChanged === parent load) so the new
           // folder and any bindings it created appear. The modal stays open on

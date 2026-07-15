@@ -104,7 +104,21 @@ export default function Templates() {
         />
       )}
       {inventory && registry && tab === "library" && (
-        <InventoryPanel inventory={inventory} onImport={() => setImporting(true)} onChanged={load} />
+        <InventoryPanel
+          inventory={inventory}
+          // Literal-extension keys already in the registry (simple + compound;
+          // wildcard/directory shapes aren't plain extensions), offered as
+          // one-click suggestions in the New template modal.
+          knownExtensions={Array.from(
+            new Set(
+              registry.entries
+                .filter((e) => e.keyKind === "simple" || e.keyKind === "compound")
+                .map((e) => e.key),
+            ),
+          ).sort()}
+          onImport={() => setImporting(true)}
+          onChanged={load}
+        />
       )}
 
       {editor && inventory && registry && (
