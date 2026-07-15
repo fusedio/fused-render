@@ -250,6 +250,32 @@ def _apply_binding(reg: dict, key: str, value) -> None:
     reg[key] = value
 
 
+def _sweep_registry_name(reg: dict, name: str) -> list:
+    """Drop every reference to template `name` from the USER registry `reg` in
+    place; returns the keys that changed (D109). A list value loses the name; a
+    bare-string value equal to it matches too. A key whose value the sweep
+    EMPTIES is removed entirely (revert to core) — leaving `[]` would mean
+    *disabled* (D95), silently converting a prune into a disable the user never
+    picked. Matching is exact: names are folder identities, not lowercased like
+    keys. null/`[]`/non-referencing values are left byte-for-byte as-is."""
+    cleaned = []
+    for key in list(reg):
+        value = reg[key]
+        if isinstance(value, str):
+            if value == name:
+                del reg[key]
+                cleaned.append(key)
+        elif isinstance(value, list):
+            kept = [n for n in value if n != name]
+            if len(kept) != len(value):
+                if kept:
+                    reg[key] = kept
+                else:
+                    del reg[key]
+                cleaned.append(key)
+    return cleaned
+
+
 # -- template folder inventory ------------------------------------------------
 
 
@@ -524,10 +550,11 @@ def api_export_templates(names: list[str] = Query(default=[])):
 
 @router.post("/api/templates/delete")
 def api_delete_template(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    # SPEC §2.8: delete ONE user template folder. Only USER_TEMPLATES_DIR is
-    # touched — **core templates are read-only and never deletable**. Registry
-    # bindings that referenced the name are left as-is (they resolve broken
-    # until rebound), matching export/import being folder-only.
+    # SPEC §2.8 / TV-19: delete ONE user template folder. Only USER_TEMPLATES_DIR
+    # is touched — **core templates are read-only and never deletable**. With
+    # `cleanRegistry: true` (D109) the USER registry is also swept of bindings
+    # that referenced the name; without it they are left as-is (they resolve
+    # broken until rebound), matching export/import being folder-only.
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -537,6 +564,7 @@ def api_delete_template(body: dict = Body(...), x_fused: str | None = Header(def
         return _error("'name' must be a non-empty string")
     if "/" in name or "\\" in name or name in (".", ".."):
         return _error("invalid template name")
+    clean_registry = body.get("cleanRegistry") is True
 
     folder = os.path.join(server.USER_TEMPLATES_DIR, name)
     # Reject symlinks (never follow one out of the user dir) and anything that
@@ -545,8 +573,35 @@ def api_delete_template(body: dict = Body(...), x_fused: str | None = Header(def
     if os.path.islink(folder) or not os.path.isdir(folder):
         return _error(f"no user template named {name!r} to delete", status=404)
 
+    if clean_registry:
+        # Refuse a corrupt user registry BEFORE the destructive rmtree (same
+        # posture as PUT) — a refusal must leave the folder intact so the user
+        # can fix the registry and retry the whole gesture.
+        _, err = server._load_registry(server.USER_REGISTRY, "registry.json")
+        if err:
+            return _error(
+                f"refusing to overwrite the user registry: {err}. Move "
+                f"{server.USER_REGISTRY} aside and retry.",
+            )
+
     shutil.rmtree(folder)
-    return {"deleted": name}
+    if not clean_registry:
+        return {"deleted": name}
+
+    # Re-read AFTER the rmtree so the sweep rewrites the registry as it is
+    # now, not the pre-check's snapshot — a binding edited concurrently while
+    # the gesture was in flight must survive the write below.
+    reg, err = server._load_registry(server.USER_REGISTRY, "registry.json")
+    if err:
+        # The folder is already gone; nothing destructive left to refuse. Skip
+        # the sweep rather than overwrite a registry we can no longer parse.
+        return {"deleted": name, "registryKeysCleaned": [], "registryError": err}
+    reg = reg if isinstance(reg, dict) else {}
+
+    cleaned = _sweep_registry_name(reg, name)
+    if cleaned:
+        storage.write_json(server.USER_REGISTRY, reg)
+    return {"deleted": name, "registryKeysCleaned": cleaned}
 
 
 # -- routes: import (stage -> commit) -----------------------------------------
