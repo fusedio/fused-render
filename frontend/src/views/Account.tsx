@@ -34,7 +34,19 @@ import { useRefreshOnReturn } from "../lib/hooks";
 // and stream the CLI's own progress lines while it provisions. The panel also
 // ADOPTS a job already running server-side (page reopened mid-setup) so the
 // progress view survives navigation.
-function SetupPanel({ status, onChanged }: { status: AccountStatus; onChanged: () => void }) {
+function SetupPanel({
+  status,
+  probing,
+  onChanged,
+}: {
+  status: AccountStatus;
+  // The deep org probe is still in flight — the panel must not offer the
+  // action yet: with probe null the workspace list is unknown, and a fast
+  // click would run setup without --org/--env even for an account that has
+  // several workspaces to choose from.
+  probing: boolean;
+  onChanged: () => void;
+}) {
   const probe = status.probe;
   const orgs = probe?.ok ? probe.orgs.filter((o) => o.org && o.env) : [];
   const [pick, setPick] = useState(0);
@@ -139,6 +151,17 @@ function SetupPanel({ status, onChanged }: { status: AccountStatus; onChanged: (
     );
   }
 
+  if (probing && !probe) {
+    // Workspace list still unknown — hold the action. Offering it now would
+    // let a click run setup un-targeted before the picker can even render.
+    return (
+      <div className="deploy-form-row">
+        <span className="deploy-spinner" />
+        <span className="deploy-muted">Checking your Fused account for existing environments…</span>
+      </div>
+    );
+  }
+
   // An account that already has a workspace doesn't get anything "created" —
   // `cloud setup --org --env` CONNECTS the existing environment (mints its
   // access key, registers it locally). Say so, and show WHICH one, even when
@@ -156,7 +179,9 @@ function SetupPanel({ status, onChanged }: { status: AccountStatus; onChanged: (
         {orgs.length === 0 &&
           probe?.ok &&
           " No workspace was found for this account, so setting up creates your personal one."}
-        {probe && !probe.ok && " (Workspace discovery failed — setup will discover it itself.)"}
+        {!probing &&
+          (!probe || !probe.ok) &&
+          " (Workspace discovery failed — setup will discover it itself.)"}
       </p>
       <div className="deploy-form-row">
         {orgs.length > 1 ? (
@@ -640,6 +665,7 @@ export default function Account() {
           ) : (
             <SetupPanel
               status={status}
+              probing={probing}
               onChanged={() => {
                 // Pin the panel open BEFORE the refresh: the env landing
                 // flips hasManaged, which would otherwise collapse the panel
