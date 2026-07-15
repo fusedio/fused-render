@@ -19,9 +19,10 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
+from contextlib import contextmanager
 from urllib.parse import quote
 
-from fused_render._branch import branch_port, branch_ref
+from fused_render._branch import branch_port, branch_ref, branch_suffix
 from fused_render.logs import setup_logging
 
 logger = logging.getLogger("fused_render")
@@ -100,20 +101,6 @@ def _read_int(path: str) -> int | None:
         return None
 
 
-def _pid_alive(pid: int) -> bool:
-    """Whether pid is a running process, tested without signalling it —
-    os.kill(pid, 0) calls TerminateProcess on Windows, so probe by handle."""
-    kernel32 = ctypes.windll.kernel32
-    kernel32.OpenProcess.restype = ctypes.c_void_p
-    handle = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
-    if not handle:
-        return False
-    try:
-        return kernel32.WaitForSingleObject(ctypes.c_void_p(handle), 0) == 0x102  # WAIT_TIMEOUT
-    finally:
-        kernel32.CloseHandle(ctypes.c_void_p(handle))
-
-
 def _fused_server(port: int) -> bool:
     """True when a native fused-render answers on port: /api/config parses and
     its home has a drive letter (a WSL server mirrored onto localhost has none)."""
@@ -127,33 +114,43 @@ def _fused_server(port: int) -> bool:
     return isinstance(cfg, dict) and bool(os.path.splitdrive(cfg.get("home", ""))[0])
 
 
-def _settle(port: int) -> bool:
-    """Like _fused_server, but a bound-yet-silent port — usually a peer
-    opener's server still booting — gets the spawn grace period."""
-    if _fused_server(port):
-        return True
-    if not _port_in_use(port):
-        return False
-    return _wait_until_ready(port)
-
-
 def find_running_server() -> int | None:
-    """Port of a live native instance, or None. Probes by HTTP; a manual
-    `fused-render serve` writes no portfile, so the default range is scanned
-    too. The recorded port only earns the boot grace period while its server
-    is still alive — a stale portfile (server gone, port now another app's)
-    must not block _wait_until_ready for the full timeout."""
+    """Port of a live native instance answering right now, or None. Discovery
+    never waits — a still-booting server is the spawn lock's problem, and its
+    holder releases only once the server is ready. A manual `fused-render
+    serve` writes no portfile, so the default range is scanned too."""
     filed = _read_int(PORTFILE)
     if filed is not None and _fused_server(filed):
-        return filed
-    pid = _read_int(PIDFILE)
-    if (filed is not None and pid is not None and _pid_alive(pid)
-            and _port_in_use(filed) and _wait_until_ready(filed)):
         return filed
     for port in range(DEFAULT_PORT, MAX_PORT + 1):
         if port != filed and _fused_server(port):
             return port
     return None
+
+
+@contextmanager
+def _spawn_lock():
+    """Serialize server startup across racing double-clicks: the winner holds
+    a named mutex while its server boots, the rest wait here and then
+    rediscover the ready server instead of double-spawning. Best-effort — on
+    timeout or mutex failure the caller proceeds unlocked."""
+    if sys.platform != "win32":
+        yield
+        return
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    handle = kernel32.CreateMutexW(None, False, "Local\\fused-render-open" + branch_suffix())
+    if not handle:
+        yield
+        return
+    # 0 = WAIT_OBJECT_0, 0x80 = WAIT_ABANDONED (previous holder died: ours now)
+    acquired = kernel32.WaitForSingleObject(ctypes.c_void_p(handle), 20_000) in (0, 0x80)
+    try:
+        yield
+    finally:
+        if acquired:
+            kernel32.ReleaseMutex(ctypes.c_void_p(handle))
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
 
 
 def _port_in_use(port: int) -> bool:
@@ -212,31 +209,41 @@ def _spawn(port: int) -> int:
     )
     log_file.close()
     logger.info("starting server (pid %s, port %s)", proc.pid, port)
-    # pidfile precedes readiness so racing peers _settle instead of double-spawning
-    _write_pidfile(proc.pid, port)
+    _write_pidfile(proc.pid, port)  # port = next opener's fast path, pid = diagnostics
     if _wait_until_ready(port):
         return port
-    proc.kill()
+    if proc.poll() is None:  # a child that already died during boot needs no kill
+        proc.kill()
     _remove_pidfile()
     raise RuntimeError(f"server did not start on port {port}; see log: {SERVER_LOG}")
 
 
-def _ensure_server(requested: int | None) -> int:
-    """Return the port of a ready native server, starting one when needed."""
+def _probe(requested: int | None) -> int | None:
     if requested is not None:
-        if _settle(requested):
-            return requested
-        if _port_in_use(requested):
-            raise RuntimeError(f"port {requested} is in use by another application")
-        return _spawn(requested)
+        return requested if _fused_server(requested) else None
+    return find_running_server()
 
-    port = find_running_server()
+
+def _ensure_server(requested: int | None) -> int:
+    """Return the port of a ready native server, starting one when needed.
+    Probing never blocks; anything slow (a boot, a race) happens under
+    _spawn_lock, so waiting peers re-probe once the winner is done."""
+    port = _probe(requested)
     if port is not None:
         return port
-    port = pick_port()
-    if _settle(port):  # a racing double-click may have bound this port, still booting
-        return port
-    return _spawn(port)
+    with _spawn_lock():
+        port = _probe(requested)  # the lock's previous holder may have booted it
+        if port is not None:
+            return port
+        if requested is not None:
+            if _port_in_use(requested):
+                # bound but silent: a just-started manual `fused-render --port N`
+                # gets a moment to come up before we call the port foreign
+                if _wait_until_ready(requested, timeout=3):
+                    return requested
+                raise RuntimeError(f"port {requested} is in use by another application")
+            return _spawn(requested)
+        return _spawn(pick_port())
 
 
 _DRIVE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
