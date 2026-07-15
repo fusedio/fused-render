@@ -297,7 +297,15 @@ export default function Account() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const signin = useFusedLogin(() => void load(true));
+  const signin = useFusedLogin((fresh) => {
+    // Apply the status the poll already fetched — flipping to the signed-in
+    // layout must not depend on one more fetch that could fail. The
+    // background load then fills the probe in (fresh carries probe: null,
+    // so load's cache check re-probes).
+    setStatus(fresh);
+    wasLoggedIn.current = fresh.logged_in;
+    void load(true);
+  });
 
   // Freshness on return: re-read when the tab regains focus/visibility (the
   // deploy-dot pattern) — this is also what flips the page after the sign-in

@@ -10,6 +10,7 @@
 // logged_in) and surfaces that instead of spinning forever.
 import { useEffect, useRef, useState } from "react";
 import { cancelAccountLogin, getAccountStatus, startAccountLogin } from "./api";
+import type { AccountStatus } from "./api";
 import { useRefreshOnReturn } from "./hooks";
 
 const POLL_MS = 2000;
@@ -53,7 +54,11 @@ export function useAccountLoggedIn(): boolean {
   return loggedIn;
 }
 
-export function useFusedLogin(onLoggedIn: () => void) {
+// onLoggedIn receives the fresh status the poll ALREADY fetched, so callers
+// can flip their signed-in UI synchronously — success must never hinge on
+// one more fetch that could transiently fail and strand a signed-in user on
+// a signed-out view.
+export function useFusedLogin(onLoggedIn: (status: AccountStatus) => void) {
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const timer = useRef<number | null>(null);
@@ -99,7 +104,7 @@ export function useFusedLogin(onLoggedIn: () => void) {
       if (status.logged_in) {
         finish(null);
         notifyAccountChanged(); // e.g. the sidebar's signed-in dot
-        onLoggedInRef.current();
+        onLoggedInRef.current(status);
       } else if (!status.login_in_flight) {
         finish("Sign-in was not completed — the browser sign-in was closed or timed out. Try again.");
       }
@@ -120,7 +125,7 @@ export function useFusedLogin(onLoggedIn: () => void) {
       const status = await getAccountStatus();
       if (status.logged_in) {
         notifyAccountChanged();
-        onLoggedInRef.current();
+        onLoggedInRef.current(status);
       }
     } catch {
       // Unreachable server — the callers' own refresh paths converge later.

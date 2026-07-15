@@ -195,9 +195,14 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   }, [fsPath]);
 
   // In-app sign-in for the managed backend (docs/PLAN-fused-account.md M18a):
-  // replaces the old "run `fused cloud login` in a terminal" guidance. On
-  // completion, a background reload flips config.fused_logged_in.
-  const signin = useFusedLogin(() => void load(true));
+  // replaces the old "run `fused cloud login` in a terminal" guidance. The
+  // warning flips off immediately on the poll's own confirmation — the
+  // background reload just refreshes the rest, and its failure self-heals on
+  // the next focus refresh instead of stranding a signed-in user behind it.
+  const signin = useFusedLogin(() => {
+    setConfig((prev) => (prev ? { ...prev, fused_logged_in: true } : prev));
+    void load(true);
+  });
 
   // Latest-ref pattern: `load` and `busy` are captured fresh every render, so
   // the focus effect below (which subscribes once) always calls the current
