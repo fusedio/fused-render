@@ -86,6 +86,7 @@ function FileSelection({
   setExclude: (v: string[]) => void;
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
   const [dirFiles, setDirFiles] = useState<WalkEntry[] | null>(null);
   const [dirTruncated, setDirTruncated] = useState(false);
   const [walkBusy, setWalkBusy] = useState(false);
@@ -102,12 +103,20 @@ function FileSelection({
     [preview],
   );
 
-  // × on a row → add to exclude. Exclude is applied last server-side and drops a
-  // file by key whether it was auto-detected OR manually included, so this always
-  // takes the file out of the bundle; "Restore" (remove from exclude) brings an
-  // auto/included file back. include is left untouched so a restore is lossless.
+  // × on a row. A manually-added file (in `include`) is simply dropped from
+  // `include` — it was never part of the default set, so it just goes away with
+  // no "Excluded" tombstone. An auto-detected file (a runPython entrypoint or a
+  // literally-referenced asset — the default publish set) is instead moved to
+  // `exclude`, which suppresses it AND surfaces it under "Excluded" with a
+  // Restore. So "Excluded" only ever lists files the page would publish by
+  // default, never the noise of add-all extras the user then removed.
   const removeRow = (path: string) => {
-    if (!exclude.some((e) => relKey(e) === relKey(path))) setExclude([...exclude, path]);
+    const key = relKey(path);
+    if (includeKeys.has(key)) {
+      setInclude(include.filter((i) => relKey(i) !== key));
+    } else if (!exclude.some((e) => relKey(e) === key)) {
+      setExclude([...exclude, path]);
+    }
   };
   const restore = (path: string) => setExclude(exclude.filter((e) => relKey(e) !== relKey(path)));
   // Adding files (picker / add-all): append to include and clear any exclusion of
@@ -180,7 +189,7 @@ function FileSelection({
       path: e.path,
       label: relKey(e.path),
       title: `fused.runPython(${JSON.stringify(e.path)}) → route “${e.name}”`,
-      kind: "run" as const,
+      tag: "run" as const,
     })),
     ...preview.assets.map((a) => ({
       path: a.path,
@@ -188,108 +197,139 @@ function FileSelection({
       title: includeKeys.has(relKey(a.path))
         ? `included file — ${a.path}`
         : `asset “${a.name}” (fused.rawUrl/readFile) — ${a.path}`,
-      kind: includeKeys.has(relKey(a.path)) ? ("added" as const) : ("asset" as const),
+      tag: includeKeys.has(relKey(a.path)) ? ("added" as const) : (null as null),
     })),
   ];
 
-  return (
-    <div className="deploy-preview">
-      <div className="deploy-preview-head">
-        <span className="deploy-muted">Will publish:</span>
-        <div className="deploy-preview-actions">
-          <button type="button" onClick={openPicker} disabled={disabled}>
-            Add files…
-          </button>
-          <button type="button" onClick={() => void addAllInFolder()} disabled={disabled || walkBusy}>
-            {walkBusy ? "Scanning…" : "Add all in folder"}
-          </button>
-          {(include.length > 0 || exclude.length > 0) && (
-            <button type="button" onClick={reset} disabled={disabled}>
-              Reset to default
-            </button>
-          )}
-        </div>
-      </div>
+  const publishCount = rows.length + 1; // + the page itself
+  const summary =
+    `${publishCount} file${publishCount === 1 ? "" : "s"}` +
+    (exclude.length ? ` · ${exclude.length} excluded` : "");
 
-      <ul className="deploy-file-list">
-        <li className="deploy-file page">
-          <code title={preview.page}>{relKey(preview.page)}</code>
-          <span className="deploy-file-tag">page</span>
-        </li>
-        {rows.map((r) => (
-          <li key={r.kind + r.path} className="deploy-file">
-            <code title={r.title}>{r.label}</code>
-            {r.kind === "run" && <span className="deploy-file-tag">run</span>}
-            {r.kind === "added" && <span className="deploy-file-tag added">added</span>}
+  return (
+    <div className="deploy-files">
+      <button
+        type="button"
+        className="deploy-files-head"
+        aria-expanded={!collapsed}
+        onClick={() => setCollapsed((c) => !c)}
+      >
+        <span className="deploy-files-chevron" aria-hidden="true">
+          {collapsed ? "▸" : "▾"}
+        </span>
+        <span className="deploy-files-title">Will publish</span>
+        <span className="deploy-files-count">{summary}</span>
+      </button>
+
+      {!collapsed && (
+        <div className="deploy-files-body">
+          <div className="deploy-preview-actions">
+            <button type="button" onClick={openPicker} disabled={disabled}>
+              Add files…
+            </button>
             <button
               type="button"
-              className="deploy-file-remove"
-              title="Remove from the bundle"
-              onClick={() => removeRow(r.path)}
-              disabled={disabled}
+              onClick={() => void addAllInFolder()}
+              disabled={disabled || walkBusy}
             >
-              ✕
+              {walkBusy ? "Scanning…" : "Add all in folder"}
             </button>
-          </li>
-        ))}
-        {rows.length === 0 && (
-          <li className="deploy-muted">(the page only — no runPython/rawUrl targets)</li>
-        )}
-      </ul>
+            {(include.length > 0 || exclude.length > 0) && (
+              <button type="button" onClick={reset} disabled={disabled}>
+                Reset to default
+              </button>
+            )}
+          </div>
 
-      {exclude.length > 0 && (
-        <div className="deploy-excluded">
-          <span className="deploy-muted">Excluded (won't be bundled):</span>
           <ul className="deploy-file-list">
-            {exclude.map((p) => (
-              <li key={p} className="deploy-file excluded">
-                <code title={p}>{relKey(p)}</code>
+            <li className="deploy-file">
+              <code title={preview.page}>{relKey(preview.page)}</code>
+              <span className="deploy-file-tag">page</span>
+              <span className="deploy-file-action" />
+            </li>
+            {rows.map((r) => (
+              <li key={(r.tag ?? "asset") + r.path} className="deploy-file">
+                <code title={r.title}>{r.label}</code>
+                <span className={"deploy-file-tag" + (r.tag ? " " + r.tag : " none")}>
+                  {r.tag ?? ""}
+                </span>
                 <button
                   type="button"
-                  className="deploy-file-restore"
-                  title="Add back to the bundle"
-                  onClick={() => restore(p)}
+                  className="deploy-file-action deploy-file-remove"
+                  title="Remove from the bundle"
+                  onClick={() => removeRow(r.path)}
                   disabled={disabled}
                 >
-                  Restore
+                  ✕
                 </button>
               </li>
             ))}
+            {rows.length === 0 && (
+              <li className="deploy-muted deploy-file-empty">
+                (the page only — no runPython/rawUrl targets)
+              </li>
+            )}
           </ul>
-        </div>
-      )}
 
-      {pickerOpen && (
-        <div className="deploy-picker">
-          <div className="deploy-picker-head">
-            <span className="deploy-muted">Add files from this page's folder</span>
-            <button type="button" onClick={() => setPickerOpen(false)}>
-              Done
-            </button>
-          </div>
-          {walkBusy && <div className="deploy-muted">Scanning folder…</div>}
-          {walkError && <div className="deploy-error">{walkError}</div>}
-          {dirTruncated && (
-            <div className="deploy-note deploy-muted">
-              This folder is large — some files were omitted from the scan.
+          {exclude.length > 0 && (
+            <div className="deploy-excluded">
+              <span className="deploy-muted">Excluded (won't be bundled):</span>
+              <ul className="deploy-file-list">
+                {exclude.map((p) => (
+                  <li key={p} className="deploy-file excluded">
+                    <code title={p}>{relKey(p)}</code>
+                    <span className="deploy-file-tag none" />
+                    <button
+                      type="button"
+                      className="deploy-file-action deploy-file-restore"
+                      title="Add back to the bundle"
+                      onClick={() => restore(p)}
+                      disabled={disabled}
+                    >
+                      Restore
+                    </button>
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
-          {dirFiles !== null && !walkBusy && available.length === 0 && (
-            <div className="deploy-muted">
-              No other files to add — everything in the folder is already listed.
+
+          {pickerOpen && (
+            <div className="deploy-picker">
+              <div className="deploy-picker-head">
+                <span className="deploy-muted">Add files from this page's folder</span>
+                <button type="button" onClick={() => setPickerOpen(false)}>
+                  Done
+                </button>
+              </div>
+              {walkBusy && <div className="deploy-muted">Scanning folder…</div>}
+              {walkError && <div className="deploy-error">{walkError}</div>}
+              {dirTruncated && (
+                <div className="deploy-note deploy-muted">
+                  This folder is large — some files were omitted from the scan.
+                </div>
+              )}
+              {dirFiles !== null && !walkBusy && available.length === 0 && (
+                <div className="deploy-muted">
+                  No other files to add — everything in the folder is already listed.
+                </div>
+              )}
+              {available.length > 0 && (
+                <ul className="deploy-picker-list">
+                  {available.map((f) => (
+                    <li key={f.rel}>
+                      <button type="button" onClick={() => addFiles([f.rel])} disabled={disabled}>
+                        <span className="deploy-picker-add" aria-hidden="true">
+                          +
+                        </span>
+                        <code>{f.rel}</code>
+                        <span className="deploy-muted">{formatSize(f.size)}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
-          )}
-          {available.length > 0 && (
-            <ul className="deploy-picker-list">
-              {available.map((f) => (
-                <li key={f.rel}>
-                  <button type="button" onClick={() => addFiles([f.rel])} disabled={disabled}>
-                    + <code>{f.rel}</code>
-                    <span className="deploy-muted">{formatSize(f.size)}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
           )}
         </div>
       )}
@@ -699,11 +739,17 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             type="button"
             className="deploy-primary"
             onClick={onDeploy}
-            disabled={busy !== null || env === null || (preview !== null && preview.errors.length > 0)}
+            // preview === null: the "will publish" resolution is still in flight
+            // (or was just cleared on a page switch), so we don't yet know the
+            // file set or whether there are export blockers — block Deploy until
+            // it lands rather than shipping blind.
+            disabled={busy !== null || env === null || preview === null || preview.errors.length > 0}
             title={
-              preview !== null && preview.errors.length > 0
-                ? "Fix the export problems listed above first"
-                : undefined
+              preview === null
+                ? "Preparing the publish preview…"
+                : preview.errors.length > 0
+                  ? "Fix the export problems listed above first"
+                  : undefined
             }
           >
             {busy === "deploy" && <span className="deploy-spinner" />}

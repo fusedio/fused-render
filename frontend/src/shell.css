@@ -1745,20 +1745,56 @@ body.embed .preview-browse-chip:hover {
   }
 }
 
-/* "Will publish:" preview — the page + each bundled runPython/rawUrl target,
-   plus the user's include/exclude edits (add files, remove, restore, reset). */
-.deploy-preview {
+/* "Will publish" — a bordered, collapsible card holding the page + each bundled
+   runPython/rawUrl target plus the user's include/exclude edits (add files,
+   remove, restore, reset). Every row shares one 3-column grid — filename |
+   tag | action — so tags and the ✕/Restore buttons line up in fixed columns
+   regardless of which cells a given row fills. */
+.deploy-files {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Collapse toggle: a full-width header that reads as a section label, not a
+   button (no chrome), with the chevron + count inline. */
+.deploy-files-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  font: inherit;
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+}
+
+.deploy-files-chevron {
+  flex: 0 0 auto;
+  width: 12px;
+  color: var(--fg-muted);
+  font-size: 10px;
+}
+
+.deploy-files-title {
+  font-weight: 600;
+}
+
+.deploy-files-count {
+  margin-left: auto;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.deploy-files-body {
   display: flex;
   flex-direction: column;
   gap: 8px;
-}
-
-.deploy-preview-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  flex-wrap: wrap;
+  padding: 0 12px 12px;
 }
 
 .deploy-preview-actions {
@@ -1779,15 +1815,18 @@ body.embed .preview-browse-chip:hover {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  max-height: 200px;
+  max-height: 220px;
   overflow-y: auto;
 }
 
+/* filename (flex-fills) | tag (fixed) | action (fixed) — shared by every row so
+   columns align across the publish and excluded lists. */
 .deploy-file {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr 56px 72px;
   align-items: center;
-  gap: 8px;
-  padding: 3px 6px;
+  column-gap: 8px;
+  padding: 2px 4px;
   border-radius: 6px;
 }
 
@@ -1796,27 +1835,41 @@ body.embed .preview-browse-chip:hover {
 }
 
 .deploy-file code {
-  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
 }
 
 .deploy-file.excluded code {
   text-decoration: line-through;
   color: var(--fg-muted);
+  background: none;
+}
+
+.deploy-file-empty {
+  padding: 4px;
 }
 
 .deploy-file-tag {
-  flex: 0 0 auto;
+  justify-self: center;
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--fg-muted);
   border: 1px solid var(--border);
   border-radius: 999px;
-  padding: 0 6px;
+  padding: 1px 8px;
+}
+
+/* An empty tag cell keeps the column width without drawing a pill. */
+.deploy-file-tag.none {
+  border-color: transparent;
+  padding: 0;
 }
 
 .deploy-file-tag.added {
@@ -1824,11 +1877,13 @@ body.embed .preview-browse-chip:hover {
   border-color: var(--accent);
 }
 
-.deploy-file-remove,
-.deploy-file-restore {
-  flex: 0 0 auto;
+/* The action column: ✕ is centered, Restore fills it — both sit in the same
+   fixed column so they align down the list. */
+.deploy-file-action {
+  justify-self: stretch;
   font-size: 12px;
-  padding: 2px 6px;
+  padding: 3px 6px;
+  min-height: 24px;
 }
 
 .deploy-file-remove {
@@ -1837,6 +1892,7 @@ body.embed .preview-browse-chip:hover {
 
 .deploy-file-remove:hover:not(:disabled) {
   color: var(--error);
+  border-color: var(--error);
 }
 
 .deploy-excluded {
@@ -1889,6 +1945,12 @@ body.embed .preview-browse-chip:hover {
 
 .deploy-picker-list button:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.06);
+}
+
+.deploy-picker-add {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .deploy-picker-list code {
