@@ -573,22 +573,30 @@ def api_delete_template(body: dict = Body(...), x_fused: str | None = Header(def
     if os.path.islink(folder) or not os.path.isdir(folder):
         return _error(f"no user template named {name!r} to delete", status=404)
 
-    reg = {}
     if clean_registry:
         # Refuse a corrupt user registry BEFORE the destructive rmtree (same
         # posture as PUT) — a refusal must leave the folder intact so the user
         # can fix the registry and retry the whole gesture.
-        reg, err = server._load_registry(server.USER_REGISTRY, "registry.json")
+        _, err = server._load_registry(server.USER_REGISTRY, "registry.json")
         if err:
             return _error(
                 f"refusing to overwrite the user registry: {err}. Move "
                 f"{server.USER_REGISTRY} aside and retry.",
             )
-        reg = reg if isinstance(reg, dict) else {}
 
     shutil.rmtree(folder)
     if not clean_registry:
         return {"deleted": name}
+
+    # Re-read AFTER the rmtree so the sweep rewrites the registry as it is
+    # now, not the pre-check's snapshot — a binding edited concurrently while
+    # the gesture was in flight must survive the write below.
+    reg, err = server._load_registry(server.USER_REGISTRY, "registry.json")
+    if err:
+        # The folder is already gone; nothing destructive left to refuse. Skip
+        # the sweep rather than overwrite a registry we can no longer parse.
+        return {"deleted": name, "registryKeysCleaned": [], "registryError": err}
+    reg = reg if isinstance(reg, dict) else {}
 
     cleaned = _sweep_registry_name(reg, name)
     if cleaned:

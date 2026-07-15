@@ -544,6 +544,58 @@ def test_delete_clean_registry_corrupt_registry_refused(ctx):
     assert (ctx.udir / "mine").is_dir()  # untouched
 
 
+def test_delete_clean_registry_sweeps_fresh_snapshot(ctx, monkeypatch):
+    # The sweep must rewrite the registry as it is AFTER the rmtree, not the
+    # pre-check's snapshot — a binding edited concurrently while the delete is
+    # in flight has to survive the write. Simulate the race by mutating the
+    # registry file from inside rmtree.
+    import shutil as _shutil
+
+    ctx.make_template("mine")
+    ctx.registry({".a": ["mine"]})
+    real_rmtree = _shutil.rmtree
+
+    def racing_rmtree(path, *args, **kwargs):
+        ctx.registry({".a": ["mine"], ".b": ["late"]})  # concurrent edit
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr("fused_render.templates_api.shutil.rmtree", racing_rmtree)
+    resp = ctx.client.post(
+        "/api/templates/delete", json={"name": "mine", "cleanRegistry": True}, headers=FUSED
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"deleted": "mine", "registryKeysCleaned": [".a"]}
+    assert ctx.read_registry() == {".b": ["late"]}  # the late edit survived
+
+
+def test_delete_clean_registry_corrupted_after_rmtree_skips_sweep(ctx, monkeypatch):
+    # If the registry turns corrupt between the pre-check and the post-rmtree
+    # re-read, the folder is already gone — report the delete, skip the sweep,
+    # and surface the parse error instead of overwriting an unparseable file.
+    import shutil as _shutil
+
+    ctx.make_template("mine")
+    ctx.registry({".a": ["mine"]})
+    real_rmtree = _shutil.rmtree
+
+    def corrupting_rmtree(path, *args, **kwargs):
+        (ctx.udir / "registry.json").write_text("{not json", encoding="utf-8")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr("fused_render.templates_api.shutil.rmtree", corrupting_rmtree)
+    resp = ctx.client.post(
+        "/api/templates/delete", json={"name": "mine", "cleanRegistry": True}, headers=FUSED
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["deleted"] == "mine"
+    assert data["registryKeysCleaned"] == []
+    assert data["registryError"]
+    assert not (ctx.udir / "mine").exists()
+    # unparseable file left byte-for-byte for the user to fix
+    assert (ctx.udir / "registry.json").read_text(encoding="utf-8") == "{not json"
+
+
 def test_export_allows_core_template(ctx):
     # 'code' is a core template — core templates are exportable too (SPEC
     # §2.5 update): resolve via core dir since there's no user shadow.
