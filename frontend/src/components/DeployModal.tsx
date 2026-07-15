@@ -367,6 +367,10 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   // sent back on Deploy. Both empty = the auto-detected default.
   const [include, setInclude] = useState<string[]>([]);
   const [exclude, setExclude] = useState<string[]>([]);
+  // True while a preview fetch is in flight — the shown "Will publish" list may
+  // not yet reflect the latest include/exclude edit, so Deploy is held until it
+  // catches up (keeps the click WYSIWYG: never deploy a set the list doesn't show).
+  const [previewPending, setPreviewPending] = useState(true);
 
   // The modal can be closed while an action is still running (#12): guard the
   // modal's own post-action setState so a deploy/revoke/install that resolves
@@ -401,6 +405,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   const previewSeq = useRef(0);
   const refreshPreview = async (inc: string[], exc: string[]) => {
     const seq = ++previewSeq.current;
+    if (alive.current) setPreviewPending(true);
     const prev = await getDeployPreview(fsPath, inc, exc).catch(
       (e): DeployPreview => ({
         page: basename(fsPath),
@@ -410,7 +415,13 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
         warnings: [],
       }),
     );
-    if (seq === previewSeq.current && alive.current) setPreview(prev);
+    // Only the latest request settles the view: a superseded fetch leaves both
+    // `preview` and `previewPending` for the newer one to resolve, so Deploy
+    // stays held until what's shown matches the current selection.
+    if (seq === previewSeq.current && alive.current) {
+      setPreview(prev);
+      setPreviewPending(false);
+    }
   };
 
   const load = async (background = false) => {
@@ -739,13 +750,20 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             type="button"
             className="deploy-primary"
             onClick={onDeploy}
-            // preview === null: the "will publish" resolution is still in flight
-            // (or was just cleared on a page switch), so we don't yet know the
-            // file set or whether there are export blockers — block Deploy until
-            // it lands rather than shipping blind.
-            disabled={busy !== null || env === null || preview === null || preview.errors.length > 0}
+            // Hold Deploy until the shown "Will publish" list matches the current
+            // selection: preview === null (still resolving, or cleared on a page
+            // switch) or previewPending (a refresh is in flight after an edit) both
+            // mean the list on screen may not reflect what a click would ship, so
+            // we don't deploy blind; preview.errors are hard export blockers.
+            disabled={
+              busy !== null ||
+              env === null ||
+              preview === null ||
+              previewPending ||
+              preview.errors.length > 0
+            }
             title={
-              preview === null
+              preview === null || previewPending
                 ? "Preparing the publish preview…"
                 : preview.errors.length > 0
                   ? "Fix the export problems listed above first"
