@@ -12,8 +12,8 @@
 //   4. the form — env picker (default: the managed fused-backend env),
 //      current deployment card (URL + copy/open), Deploy/Redeploy, Revoke.
 // The env-wide share list (every mount on an env, with revoke) lives on the
-// Preferences page's Deployments section, not here — this modal is scoped to
-// the current page.
+// Fused account page's Deployments section (SPEC AC-11), not here — this
+// modal is scoped to the current page.
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   deployPage,

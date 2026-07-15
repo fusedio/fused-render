@@ -160,9 +160,9 @@ The modal handles the whole flow:
   URL shown with copy/open actions. Redeploying the same page republishes to
   the **same URL**; Revoke takes it down (deploying again restores the link).
 - **What's deployed.** A per-page pointer (`~/.fused-render/deployments.json`)
-  marks deployed files in the preview header, and the modal's share list
-  (`fused share list`) shows every mount on the chosen environment, joined back
-  to the local pages that deployed them.
+  marks deployed files in the preview header, and the Fused account page's
+  Deployments section (`fused share list`) shows every mount on the chosen
+  environment, joined back to the local pages that deployed them.
 
 Whether a given backend accepts a *page bundle* is the installed `fused` CLI's
 contract (its `spec/serve/fused-render.md`): AWS serving planes build the
@@ -188,6 +188,9 @@ copying CLI commands into a terminal (a green dot on the icon = signed in):
 - **Environments** lists the CLI's environment store — make one the default,
   or *forget* an entry (removes only the local pointer; cloud resources are
   untouched).
+- **Deployments** lists every mount on a chosen hosted environment
+  (`fused share list`), with per-mount **Revoke** — including mounts not
+  created from this app.
 - **Sign out** removes the CLI's stored sign-in on this machine.
 
 Self-hosted AWS environments (`fused env create`, `fused infra serve`) remain
@@ -203,9 +206,8 @@ The gear at the sidebar's bottom-left opens **Preferences** (`/view/_prefs`):
   and applied to the next run, no restart; a set `FUSED_RENDER_ENGINE`
   pins the engine for the whole process and locks the switch.
 - **Logs** — this run's log file path, with an "Open logs location" action.
-- **Deployments** — every mount on a chosen hosted environment
-  (`fused share list`), with per-mount **Revoke**, including mounts not
-  created from this app.
+- **Deployments** — the opt-in toggle for the preview header's Deploy button
+  (the per-environment share list lives on the **Fused account** page).
 - **Template registry** — the merged extension → templates bindings (built-in
   plus your `~/.fused-render/templates/registry.json` overrides), read-only.
 

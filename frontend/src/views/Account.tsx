@@ -28,6 +28,7 @@ import {
 import type { AccountSetupStatus, AccountStatus } from "../lib/api";
 import { notifyAccountChanged, useFusedLogin } from "../lib/account";
 import { useRefreshOnReturn } from "../lib/hooks";
+import DeploymentsList from "../components/DeploymentsList";
 
 // The managed-env setup panel: pick the workspace (when the account has more
 // than one), name the env, run `fused cloud setup` as a tracked server job,
@@ -497,8 +498,89 @@ export default function Account() {
       );
     }
 
+    // Environments and Deployments render in BOTH auth states: managing the
+    // env store and an AWS env's share list need the CLI, not a managed-Fused
+    // sign-in — an AWS-only user must not be forced through one to revoke a
+    // link (SPEC AC-11). Only the managed-specific sections (account summary,
+    // setup panel) gate on the sign-in.
+    const envsSection = (
+      <section className="prefs-section">
+          <h2>Environments</h2>
+          {status.store.envs.length === 0 ? (
+            <p className="deploy-muted">
+              The fused CLI's environment store (<code>{status.envs_file}</code>) is empty
+              {status.logged_in
+                ? " — connect or set up the managed environment below."
+                : " — sign in to connect or set up the managed environment."}
+            </p>
+          ) : (
+            <>
+              <p className="deploy-muted">
+                From the fused CLI's environment store (<code>{status.envs_file}</code>).
+                Hosted environments are deploy targets; “Forget” removes only the local
+                entry.
+              </p>
+              <table className="deploy-shares-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Backend</th>
+                    <th></th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {status.store.envs.map((e) => (
+                    <tr key={e.name}>
+                      <td>{e.name}</td>
+                      <td>
+                        {e.backend === "fused" ? "fused — managed" : e.backend}
+                        {!e.hosted && <span className="deploy-muted"> (not a deploy target)</span>}
+                      </td>
+                      <td className="deploy-muted">
+                        {e.name === status.store.default ? "default" : ""}
+                      </td>
+                      <td>
+                        {e.name !== status.store.default && (
+                          <button
+                            type="button"
+                            className="deploy-muted"
+                            onClick={() => void onMakeDefault(e.name)}
+                            disabled={envBusy !== null}
+                            title="Make this the fused CLI's default environment"
+                          >
+                            {envBusy === "default:" + e.name ? "Setting…" : "Make default"}
+                          </button>
+                        )}{" "}
+                        <button
+                          type="button"
+                          className="deploy-danger"
+                          onClick={() => onDeleteEnv(e.name)}
+                          disabled={envBusy !== null}
+                          title="Remove the local entry only — cloud resources are not touched"
+                        >
+                          {envBusy === "delete:" + e.name ? "Forgetting…" : "Forget"}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
+          {envError && <div className="deploy-error">{envError}</div>}
+        </section>
+    );
+    const deploymentsSection = (
+      <section className="prefs-section">
+        <h2>Deployments</h2>
+        <DeploymentsList />
+      </section>
+    );
+
     if (!status.logged_in) {
       return (
+        <>
         <section className="prefs-section">
           <h2>Fused account</h2>
           <p className="deploy-muted">
@@ -533,6 +615,9 @@ export default function Account() {
           {signin.error && <div className="deploy-error">{signin.error}</div>}
           {actionError && <div className="deploy-error">{actionError}</div>}
         </section>
+          {envsSection}
+          {deploymentsSection}
+        </>
       );
     }
 
@@ -595,70 +680,8 @@ export default function Account() {
           </div>
           {actionError && <div className="deploy-error">{actionError}</div>}
         </section>
-        <section className="prefs-section">
-          <h2>Environments</h2>
-          {status.store.envs.length === 0 ? (
-            <p className="deploy-muted">
-              The fused CLI's environment store (<code>{status.envs_file}</code>) is empty —
-              connect or set up the managed environment below.
-            </p>
-          ) : (
-            <>
-              <p className="deploy-muted">
-                From the fused CLI's environment store (<code>{status.envs_file}</code>).
-                Hosted environments are deploy targets; “Forget” removes only the local
-                entry.
-              </p>
-              <table className="deploy-shares-table">
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>Backend</th>
-                    <th></th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {status.store.envs.map((e) => (
-                    <tr key={e.name}>
-                      <td>{e.name}</td>
-                      <td>
-                        {e.backend === "fused" ? "fused — managed" : e.backend}
-                        {!e.hosted && <span className="deploy-muted"> (not a deploy target)</span>}
-                      </td>
-                      <td className="deploy-muted">
-                        {e.name === status.store.default ? "default" : ""}
-                      </td>
-                      <td>
-                        {e.name !== status.store.default && (
-                          <button
-                            type="button"
-                            className="deploy-muted"
-                            onClick={() => void onMakeDefault(e.name)}
-                            disabled={envBusy !== null}
-                            title="Make this the fused CLI's default environment"
-                          >
-                            {envBusy === "default:" + e.name ? "Setting…" : "Make default"}
-                          </button>
-                        )}{" "}
-                        <button
-                          type="button"
-                          className="deploy-danger"
-                          onClick={() => onDeleteEnv(e.name)}
-                          disabled={envBusy !== null}
-                          title="Remove the local entry only — cloud resources are not touched"
-                        >
-                          {envBusy === "delete:" + e.name ? "Forgetting…" : "Forget"}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </>
-          )}
-          {envError && <div className="deploy-error">{envError}</div>}
-        </section>
+        {envsSection}
+        {deploymentsSection}
         <section className="prefs-section">
           <h2>
             {hasManaged

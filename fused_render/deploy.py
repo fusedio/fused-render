@@ -592,7 +592,7 @@ def revoke_deployment(page: str) -> dict:
 
 
 def revoke_mount(env_name: str, token: str) -> dict:
-    """`share revoke` a mount by token — the Preferences page's revoke, which
+    """`share revoke` a mount by token — the account page's revoke, which
     also covers mounts with no local pointer (deployed by the CLI, another
     app, or another machine; the CLI's owner-binding still applies and its
     refusal surfaces verbatim). Any local pointer recording this mount flips
@@ -804,7 +804,7 @@ def api_deploy_revoke(body: dict = Body(...), x_fused: str | None = Header(defau
     if guard is not None:
         return guard
     # Two addressing modes: by page (the Deploy modal — the page's own
-    # pointer) or by env+token (the Preferences page's share list, which
+    # pointer) or by env+token (the account page's share list, which
     # also covers mounts with no local pointer).
     page = body.get("page")
     env_name, token = body.get("env"), body.get("token")

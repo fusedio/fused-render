@@ -644,7 +644,8 @@ the product gains network access.
   current-deployment card (status chip, URL with copy/open), a **"Will
   publish" preview** (DP-2a), Deploy/Redeploy, and Revoke. The modal is scoped
   to the current page; the **env-wide** deployment list (DP-13) lives on the
-  Preferences page's Deployments section (PF-6), not in the modal.
+  Fused account page's Deployments section (AC-11, moved from Preferences
+  when the account surface landed), not in the modal.
 - **DP-2a** Before the click, the modal shows exactly what a deploy would
   publish (`POST /api/deploy/preview` → `preview_deploy`, the same pure
   `plan_export` scan the real export runs, resolved fresh with the current
@@ -835,8 +836,8 @@ the product gains network access.
   env" view: every mount from `share list --all`, joined back to the local
   page that deployed it via the pointer store (`page: null`, rendered "not
   from this app"), local pages first, live before revoked. Its consumer is the
-  **Preferences page's Deployments section** (PF-6) — a single env-wide list
-  with Revoke — not the per-page Deploy modal. `share list` returns no URLs on
+  **Fused account page's Deployments section** (AC-11; formerly Preferences'
+  PF-6) — a single env-wide list with Revoke — not the per-page Deploy modal. `share list` returns no URLs on
   either backend; each mount's URL is the pointer's recorded one, else
   **derived from the env's base URL**: every mount on one env serves as
   `<base>/<token>` (share-links.md §6), so any recorded absolute URL whose path
@@ -929,14 +930,10 @@ never imports server).
   their X-Fused guard); the preview re-reads the pref on focus/visibility so a
   toggle shows through without a reload. Any non-`true` stored value reads as
   off.
-- **PF-6** A per-env view of `fused share list` (the same joined
-  `/api/deploy/shares` data as the Deploy modal's list, same copy: rows with
-  a file name were deployed from this app) with a **Revoke** action per
-  non-revoked mount. Revocation is by **env + token** (`POST
-  /api/deploy/revoke {env, token}` → `deploy.revoke_mount`), so it also
-  covers mounts with no local pointer — the CLI's owner-binding still
-  applies and its refusal surfaces verbatim. Any local pointer recording the
-  revoked mount flips to revoked, keeping the page's Deploy button honest.
+- **PF-6** *(moved by M18/§27 — see AC-11)* The per-env share list lived
+  here before the account surface existed; Preferences keeps only the PF-8
+  Deploy-button toggle plus a link to the Fused account page, where the list
+  now renders beside the environments table.
 
 ### 20.5 Template registry view
 
@@ -1733,6 +1730,14 @@ provisioning stays a documented terminal flow.
   have created the workspace); all return-to-tab refreshes ride the shared
   `useRefreshOnReturn` hook (lib/hooks.ts), which coalesces the double
   focus+visibilitychange firing.
+- **AC-11** The page also hosts the **Deployments** section — the env-wide
+  `fused share list` view with per-mount Revoke that PF-6 previously placed
+  on Preferences (semantics unchanged: `/api/deploy/shares` joined to local
+  pages, revoke by env+token via `deploy.revoke_mount`). Environments and
+  Deployments render in BOTH auth states: the env store and an AWS env's
+  share list need the CLI, not a managed-Fused sign-in — an AWS-only user
+  must not pass through an irrelevant sign-in to revoke a link. Only the
+  account summary and the setup panel gate on `logged_in`.
 - **AC-9** The Deploy modal never dead-ends into a terminal for the managed
   path: its signed-out warning carries the working sign-in button (DP-2b as
   amended), and its no-envs state signs in in place or routes to the account
