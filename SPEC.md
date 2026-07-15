@@ -1721,9 +1721,8 @@ provisioning stays a documented terminal flow.
   --org --env` connects the existing environment; nothing is created) and
   as create-your-workspace when it has none: workspace picker when >1
   org/env, the single workspace shown read-only when exactly one (the
-  user must see WHICH environment will be connected), tier hint on the
-  none-found copy (an existing env may live on another
-  OPENFUSED_FUSED_TIER), prefilled editable env name, live progress log; prominent while no managed env exists, else collapsed
+  user must see WHICH environment will be connected), prefilled editable
+  env name, live progress log; prominent while no managed env exists, else collapsed
   behind an "Add managed environment" toggle. The deep probe is CACHED:
   focus/visibility refreshes re-read only the cheap presence status and
   keep the orgs view they have, re-probing only when it is missing (initial

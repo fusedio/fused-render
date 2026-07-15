@@ -155,9 +155,7 @@ function SetupPanel({ status, onChanged }: { status: AccountStatus; onChanged: (
             "with the fused CLI, and registers it as a deploy target."}
         {orgs.length === 0 &&
           probe?.ok &&
-          " No workspace was found for this account, so setting up creates your personal " +
-            "one. (Expecting an existing environment? It may live on another service tier " +
-            "— the fused CLI's OPENFUSED_FUSED_TIER.)"}
+          " No workspace was found for this account, so setting up creates your personal one."}
         {probe && !probe.ok && " (Workspace discovery failed — setup will discover it itself.)"}
       </p>
       <div className="deploy-form-row">
