@@ -59,14 +59,17 @@ export function ImportWizard({
       setResolutions(init);
       // Seed binding chips from the author's recommendations: "new" keys are
       // accepted by default, "disabled" keys are off (the user turned that
-      // extension off locally), "already-bound" keys are informational only.
+      // extension off locally). "already-bound" keys render inert and are
+      // never sent — EXCEPT under keep-both, where the import lands under a
+      // new name so "already bound" no longer holds; they seed ON so they
+      // default to binding when that resolution unlocks them.
       const chipInit: Record<string, BindingChip[]> = {};
       for (const it of res.items) {
         if (it.valid && it.recommendedKeys && it.recommendedKeys.length > 0) {
           chipInit[it.name] = it.recommendedKeys.map((r) => ({
             key: r.key,
             status: r.status,
-            on: r.status === "new",
+            on: r.status !== "disabled",
           }));
         }
       }
@@ -83,15 +86,21 @@ export function ImportWizard({
   const isSkipped = (it: ImportItem) =>
     it.conflictsExisting && (resolutions[it.name] ?? "skip") === "skip";
 
+  const isKeepBoth = (it: ImportItem) =>
+    it.conflictsExisting && resolutions[it.name] === "keep-both";
+
   // Keys to bind, per ORIGINAL staged name: ON chips of non-skipped templates.
-  // "already-bound" chips are excluded (a no-op server-side anyway).
+  // "already-bound" chips are excluded (a no-op server-side anyway) UNLESS the
+  // item resolves keep-both — the renamed copy isn't bound yet, so those keys
+  // become real, sendable bindings.
   const activeBindings = (): Record<string, string[]> => {
     const out: Record<string, string[]> = {};
     if (!staged || !applyRecs) return out;
     for (const it of staged.items) {
       if (!it.valid || isSkipped(it)) continue;
+      const keepBoth = isKeepBoth(it);
       const keys = (chips[it.name] ?? [])
-        .filter((c) => c.on && c.status !== "already-bound")
+        .filter((c) => c.on && (keepBoth || c.status !== "already-bound"))
         .map((c) => c.key);
       if (keys.length > 0) out[it.name] = keys;
     }
@@ -240,9 +249,7 @@ export function ImportWizard({
                             chips={chips[it.name]}
                             enabled={applyRecs}
                             skipped={isSkipped(it)}
-                            keepBoth={
-                              it.conflictsExisting && resolutions[it.name] === "keep-both"
-                            }
+                            keepBoth={isKeepBoth(it)}
                             onToggle={(key) => toggleChip(it.name, key)}
                             onAdd={(key) => addChip(it.name, key)}
                           />
@@ -376,7 +383,7 @@ function ChipStrip({
   };
 
   const reEnabled = chips.filter((c) => c.status === "disabled" && c.on);
-  const anyOn = chips.some((c) => c.on && c.status !== "already-bound");
+  const anyOn = chips.some((c) => c.on && (keepBoth || c.status !== "already-bound"));
 
   return (
     <tr className={"templates-rec-strip" + (inert ? " inert" : "")}>
@@ -384,7 +391,10 @@ function ChipStrip({
         <div className="templates-rec-row">
           <span className="templates-rec-label">Recommended for:</span>
           {chips.map((c) =>
-            c.status === "already-bound" ? (
+            // "already bound" only holds for the ORIGINAL name — under
+            // keep-both the copy lands renamed and unbound, so these chips
+            // become normal toggles (default ON, badge dropped).
+            c.status === "already-bound" && !keepBoth ? (
               <span key={c.key} className="templates-rec-chip bound">
                 <span className="templates-rec-key">{c.key}</span>
                 <span className="templates-rec-badge bound">already bound</span>

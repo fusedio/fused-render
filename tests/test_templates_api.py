@@ -899,6 +899,40 @@ def test_commit_bindings_follow_keep_both_rename(ctx):
     assert ctx.read_registry()[".xyz"] == ["brandcard-2"]
 
 
+def test_commit_keep_both_binds_rename_even_when_original_already_bound(ctx):
+    # Regression (owner 2026-07-15): 'test-template' is ALREADY bound to .pdf;
+    # importing a zip that recommends .pdf for it with keep-both must still
+    # bind the RENAMED copy — "already-bound" describes the original name, not
+    # the keep-both rename, so the append must not be skipped as a no-op.
+    ctx.make_template("test-template")
+    ctx.registry({".pdf": ["pdf", "pdf_studio", "annotate", "test-template"]})
+    iid = _stage(
+        ctx,
+        {
+            "test-template/template.html": "<html>",
+            "recommendation.json": _rec_json({"test-template": [".pdf"]}),
+        },
+    )
+    body = ctx.client.post(
+        f"/api/templates/import/{iid}/commit",
+        json={
+            "resolutions": {"test-template": "keep-both"},
+            "bindings": {"test-template": [".pdf"]},
+        },
+        headers=FUSED,
+    ).json()
+    assert body["renamed"] == {"test-template": "test-template-2"}
+    assert body["bindingsApplied"] == [{"key": ".pdf", "template": "test-template-2"}]
+    # Appended to the END of the existing list — core/user merge preserved.
+    assert ctx.read_registry()[".pdf"] == [
+        "pdf",
+        "pdf_studio",
+        "annotate",
+        "test-template",
+        "test-template-2",
+    ]
+
+
 def test_commit_bindings_for_skipped_template_ignored(ctx):
     iid = _stage(ctx, {"fresh/template.html": "<html>"})
     body = ctx.client.post(
