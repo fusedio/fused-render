@@ -185,8 +185,13 @@ def list_mounts() -> list:
     return data if isinstance(data, list) else []
 
 
+_mounts_generation = 0  # bumped on every _write; see _read_only_mountpoints
+
+
 def _write(mounts: list) -> None:
+    global _mounts_generation
     storage.write_json(_path(), mounts)
+    _mounts_generation += 1
 
 
 # mounts.json writers are all read-modify-write of the whole list, and they
@@ -419,24 +424,25 @@ def _http_serves(port: int) -> dict:
 _serves_lock = threading.Lock()
 
 
-# Read-only mountpoints, cached on mounts.json's mtime: mount_read_only sits
+# Read-only mountpoints, cached on _mounts_generation: mount_read_only sits
 # on the stat/write hot path (server._writable runs on every /api/fs/stat),
 # so it must not re-read and re-parse the store per call the way
-# list_mounts() does. One os.stat per call in the steady state.
+# list_mounts() does. Keyed on the in-process write counter rather than
+# mounts.json's mtime — add_mount and attach-time _update_mount can each
+# write within the same mtime tick (whatever the filesystem's resolution),
+# which would leave a stale cache silently in place; the counter can't
+# collide since every writer holds _store_lock while bumping it.
 _ro_cache_lock = threading.Lock()
-_ro_cache: tuple | None = None  # (mounts.json mtime, [abs read-only mountpoints])
+_ro_cache: tuple | None = None  # (_mounts_generation, [abs read-only mountpoints])
 
 
 def _read_only_mountpoints() -> list:
     global _ro_cache
-    try:
-        mt = os.path.getmtime(_path())
-    except OSError:
-        return []
+    gen = _mounts_generation
     with _ro_cache_lock:
-        if _ro_cache is None or _ro_cache[0] != mt:
-            _ro_cache = (mt, [os.path.abspath(mountpoint(c))
-                              for c in list_mounts() if c.get("read_only")])
+        if _ro_cache is None or _ro_cache[0] != gen:
+            _ro_cache = (gen, [os.path.abspath(mountpoint(c))
+                               for c in list_mounts() if c.get("read_only")])
         return _ro_cache[1]
 
 
@@ -972,6 +978,11 @@ def run_automount() -> None:
     live = mounted_paths()
     for m in mounts:
         if mountpoint(m) in live or os.path.ismount(mountpoint(m)):
+            # Survived the restart, so attach_mount (and its read-only
+            # detection) never runs for it below — re-detect here instead,
+            # otherwise a legacy record without the flag stays "writable"
+            # forever once the kernel mount is already live.
+            _refresh_read_only_flag(m)
             continue
         err = attach_mount(m)
         if err:
