@@ -3,9 +3,10 @@ import { createTemplate, openTemplateInClaude } from "../../lib/api";
 import type { NewTemplateResult } from "../../lib/api";
 
 // Scaffold a new user template. Name is required (nonempty, no "/"); extensions
-// are optional dot-keys bound to the new template as their default — zero is
-// fine (bindings can be added later from the File bindings tab). On success the
-// panel refreshes and this offers "Open in Claude" to start editing the folder.
+// are optional dot-keys the new template gets appended to — additive only, it
+// never replaces an existing binding's mode list — zero is fine (bindings can
+// be added later from the File bindings tab). On success the panel refreshes
+// and this offers "Open in Claude" to start editing the folder.
 export function NewTemplateModal({
   knownExtensions,
   onClose,
@@ -180,7 +181,7 @@ export function NewTemplateModal({
                 </div>
                 {result.bindings.length > 0 && (
                   <div className="templates-result-line">
-                    <span className="deploy-muted">Bound as default for:</span>{" "}
+                    <span className="deploy-muted">Added as a mode for:</span>{" "}
                     {result.bindings.map((b) => (
                       <code key={b} className="templates-usedby-chip">
                         {b}
@@ -211,8 +212,9 @@ export function NewTemplateModal({
           ) : (
             <>
               <p className="deploy-muted templates-field-hint">
-                Scaffold a new user template. Bind it to file extensions now, or leave that empty
-                and add bindings later from the File bindings tab.
+                Scaffold a new user template. Add it as a mode for file extensions now — it's
+                appended to any existing bindings, never replacing them — or leave that empty and
+                add bindings later from the File bindings tab.
               </p>
               <div className="templates-field">
                 <label htmlFor="new-template-name">Name</label>

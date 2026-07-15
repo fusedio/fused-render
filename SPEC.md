@@ -1191,8 +1191,11 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   starter kit (`fused_render/template_starter/` — shipped in the wheel but
   deliberately **outside** `templates/`, so it is never itself resolvable or
   listed in the inventory) into `USER_TEMPLATES_DIR/<name>`, then binds each
-  extension to `[name]` (a single-mode list) via the **same per-key
-  read-modify-write** as TV-5 (`_apply_binding`, never a whole-file rewrite).
+  extension via the **same per-key read-modify-write** as TV-5
+  (`_apply_binding`, never a whole-file rewrite). The bind is **additive**:
+  `name` is appended to whatever list the key currently resolves to (its user
+  override, or the core default if there is no override yet) — an existing
+  multi-mode binding is never replaced with just the new template.
   `name` must be a safe template folder segment (no `/`, `\`, `.`; not
   `_`-prefixed — CT-6, so the folder always resolves by PT-6); each extension
   is validated against the **CT-3 key grammar** exactly like TV-5. All

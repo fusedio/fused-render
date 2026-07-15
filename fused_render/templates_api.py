@@ -927,8 +927,20 @@ def api_new_template(body: dict = Body(...), x_fused: str | None = Header(defaul
     _ensure_starter_skills(dest)
 
     if keys:
+        # Additive only: append the new template to whatever list a key
+        # already resolves to (its user override, or the core default if the
+        # user has no override yet) — never replace an existing multi-mode
+        # binding with just this one name.
+        builtin_reg, _builtin_err = server._load_registry(
+            server.BUILTIN_REGISTRY, "built-in registry.json"
+        )
+        builtin_reg = builtin_reg if isinstance(builtin_reg, dict) else {}
+        builtin_by_lower = {str(k).lower(): k for k in builtin_reg}
         for key in keys:
-            _apply_binding(reg, key, [name])
+            user_by_lower = {str(k).lower(): k for k in reg}
+            entry = _compute_entry(key, builtin_reg, reg, builtin_by_lower, user_by_lower)
+            current_names = [t["name"] for t in entry["templates"]]
+            _apply_binding(reg, key, current_names + [name])
         try:
             storage.write_json(server.USER_REGISTRY, reg)
         except Exception as exc:

@@ -798,10 +798,36 @@ def test_new_template_scaffolds_and_binds(ctx):
     skills = folder / ".claude" / "skills"
     assert (skills / "fused-render-authoring" / "SKILL.md").is_file()
     assert (skills / "fused-render-custom-templates" / "SKILL.md").is_file()
-    # Both extensions bound to the new template as single-mode lists.
+    # Both extensions are brand new keys (no core or user binding yet), so the
+    # new template is the whole list — appending onto nothing.
     reg = ctx.read_registry()
     assert reg[".myext"] == ["myview"]
     assert reg[".foo.bar"] == ["myview"]
+
+
+def test_new_template_appends_to_existing_core_default(ctx):
+    # Additive only (owner ask): binding a new template to a key that already
+    # has a core default must append to that list, never replace it — an
+    # existing multi-mode viewer (e.g. .csv -> duckdb/csv/code/annotate) keeps
+    # every prior mode plus the new one at the end.
+    resp = ctx.client.post(
+        "/api/templates/new", json={"name": "mycsv", "extensions": [".csv"]}, headers=FUSED
+    )
+    assert resp.status_code == 200
+    reg = ctx.read_registry()
+    assert reg[".csv"] == ["duckdb", "csv", "code", "annotate", "mycsv"]
+
+
+def test_new_template_appends_to_existing_user_override(ctx):
+    # Same additive rule when the key already has a user override (not just a
+    # core default): the new template lands at the end, prior names untouched.
+    ctx.registry({".myext": ["alpha", "beta"]})
+    resp = ctx.client.post(
+        "/api/templates/new", json={"name": "gamma", "extensions": [".myext"]}, headers=FUSED
+    )
+    assert resp.status_code == 200
+    reg = ctx.read_registry()
+    assert reg[".myext"] == ["alpha", "beta", "gamma"]
 
 
 def test_new_template_no_extensions_creates_no_registry(ctx):
