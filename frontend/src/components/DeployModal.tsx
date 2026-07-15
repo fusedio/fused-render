@@ -378,6 +378,13 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     if (!background) {
       setLoadError(null);
       setConfig(null);
+      // Drop the previous page's preview too (not just config): a fresh open —
+      // including an fsPath switch with the modal still mounted — must not leave
+      // last page's "Will publish" list on screen while the new fetch is in
+      // flight. FileSelection only renders when BOTH config and preview are set,
+      // so clearing preview keeps it hidden until the new page's preview lands —
+      // no stale rows, and no × / restore edit that could target the wrong page.
+      setPreview(null);
     }
     try {
       const [cfg, status] = await Promise.all([
