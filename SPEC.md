@@ -1692,10 +1692,14 @@ provisioning stays a documented terminal flow.
   started elsewhere — Deploy modal, another tab — is adopted read-only with
   its own Cancel); signed in → account summary (probe orgs/roles table,
   not-admitted note), the environments management table (default marker,
-  make-default, forget-with-confirm), and the setup panel — workspace
-  picker only when the account has >1 org/env, self-serve
-  personal-workspace copy when it has none, prefilled editable env name,
-  live progress log; prominent while no managed env exists, else collapsed
+  make-default, forget-with-confirm), and the setup panel — presented
+  as CONNECT when the account already has a workspace (`cloud setup
+  --org --env` connects the existing environment; nothing is created) and
+  as create-your-workspace when it has none: workspace picker when >1
+  org/env, the single workspace shown read-only when exactly one (the
+  user must see WHICH environment will be connected), tier hint on the
+  none-found copy (an existing env may live on another
+  OPENFUSED_FUSED_TIER), prefilled editable env name, live progress log; prominent while no managed env exists, else collapsed
   behind an "Add managed environment" toggle. The deep probe is CACHED:
   focus/visibility refreshes re-read only the cheap presence status and
   keep the orgs view they have, re-probing only when it is missing (initial

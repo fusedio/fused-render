@@ -139,18 +139,29 @@ function SetupPanel({ status, onChanged }: { status: AccountStatus; onChanged: (
     );
   }
 
+  // An account that already has a workspace doesn't get anything "created" —
+  // `cloud setup --org --env` CONNECTS the existing environment (mints its
+  // access key, registers it locally). Say so, and show WHICH one, even when
+  // there is exactly one and no picker is needed.
+  const hasWorkspace = chosen !== null;
   return (
     <>
       <p className="deploy-muted">
-        One-time setup: creates the managed Fused environment, stores its access key with
-        the fused CLI, and registers it as a deploy target.
+        {hasWorkspace
+          ? "Your account already has a hosted environment — connecting stores its access " +
+            "key with the fused CLI on this machine and registers it as a deploy target. " +
+            "Nothing new is created."
+          : "One-time setup: creates the managed Fused environment, stores its access key " +
+            "with the fused CLI, and registers it as a deploy target."}
         {orgs.length === 0 &&
           probe?.ok &&
-          " Your account has no workspace yet — setting up creates your personal one."}
+          " No workspace was found for this account, so setting up creates your personal " +
+            "one. (Expecting an existing environment? It may live on another service tier " +
+            "— the fused CLI's OPENFUSED_FUSED_TIER.)"}
         {probe && !probe.ok && " (Workspace discovery failed — setup will discover it itself.)"}
       </p>
       <div className="deploy-form-row">
-        {orgs.length > 1 && (
+        {orgs.length > 1 ? (
           <select
             aria-label="Workspace"
             value={pick}
@@ -168,7 +179,14 @@ function SetupPanel({ status, onChanged }: { status: AccountStatus; onChanged: (
               </option>
             ))}
           </select>
-        )}
+        ) : chosen ? (
+          <span className="deploy-muted">
+            Workspace:{" "}
+            <code>
+              {chosen.org} / {chosen.env}
+            </code>
+          </span>
+        ) : null}
         <label htmlFor="account-env-name" className="deploy-muted">
           Environment name
         </label>
@@ -180,7 +198,11 @@ function SetupPanel({ status, onChanged }: { status: AccountStatus; onChanged: (
           size={14}
         />
         <button type="button" className="deploy-primary" onClick={begin} disabled={starting}>
-          {starting ? "Starting…" : "Set up hosted environment"}
+          {starting
+            ? "Starting…"
+            : hasWorkspace
+              ? "Connect environment"
+              : "Set up hosted environment"}
         </button>
       </div>
       {doneName && (
@@ -461,6 +483,9 @@ export default function Account() {
 
     const probe = status.probe;
     const hasManaged = status.store.envs.some((e) => e.backend === "fused");
+    // A remote workspace already exists → the panel CONNECTS it rather than
+    // creating anything; the header should say so.
+    const hasWorkspace = probe?.ok === true && probe.orgs.some((o) => o.org && o.env);
     return (
       <>
         <section className="prefs-section">
@@ -520,7 +545,7 @@ export default function Account() {
           {status.store.envs.length === 0 ? (
             <p className="deploy-muted">
               The fused CLI's environment store (<code>{status.envs_file}</code>) is empty —
-              set up the managed environment below.
+              connect or set up the managed environment below.
             </p>
           ) : (
             <>
@@ -580,7 +605,13 @@ export default function Account() {
           {envError && <div className="deploy-error">{envError}</div>}
         </section>
         <section className="prefs-section">
-          <h2>{hasManaged ? "Add managed environment" : "Set up hosted environment"}</h2>
+          <h2>
+            {hasManaged
+              ? "Add managed environment"
+              : hasWorkspace
+                ? "Connect hosted environment"
+                : "Set up hosted environment"}
+          </h2>
           {hasManaged && !showSetup ? (
             <button type="button" onClick={() => setShowSetup(true)}>
               Set up another managed environment
