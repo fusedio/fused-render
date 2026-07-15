@@ -100,6 +100,20 @@ def _read_int(path: str) -> int | None:
         return None
 
 
+def _pid_alive(pid: int) -> bool:
+    """Whether pid is a running process, tested without signalling it —
+    os.kill(pid, 0) calls TerminateProcess on Windows, so probe by handle."""
+    kernel32 = ctypes.windll.kernel32
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    handle = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+    if not handle:
+        return False
+    try:
+        return kernel32.WaitForSingleObject(ctypes.c_void_p(handle), 0) == 0x102  # WAIT_TIMEOUT
+    finally:
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+
+
 def _fused_server(port: int) -> bool:
     """True when a native fused-render answers on port: /api/config parses and
     its home has a drive letter (a WSL server mirrored onto localhost has none)."""
@@ -124,11 +138,17 @@ def _settle(port: int) -> bool:
 
 
 def find_running_server() -> int | None:
-    """Port of a live native instance, or None. Probes by HTTP, never by pid
-    (os.kill(pid, 0) kills on Windows); a manual `fused-render serve` writes
-    no portfile, so the default range is scanned too."""
+    """Port of a live native instance, or None. Probes by HTTP; a manual
+    `fused-render serve` writes no portfile, so the default range is scanned
+    too. The recorded port only earns the boot grace period while its server
+    is still alive — a stale portfile (server gone, port now another app's)
+    must not block _wait_until_ready for the full timeout."""
     filed = _read_int(PORTFILE)
-    if filed is not None and _settle(filed):
+    if filed is not None and _fused_server(filed):
+        return filed
+    pid = _read_int(PIDFILE)
+    if (filed is not None and pid is not None and _pid_alive(pid)
+            and _port_in_use(filed) and _wait_until_ready(filed)):
         return filed
     for port in range(DEFAULT_PORT, MAX_PORT + 1):
         if port != filed and _fused_server(port):
@@ -214,7 +234,7 @@ def _ensure_server(requested: int | None) -> int:
     if port is not None:
         return port
     port = pick_port()
-    if _fused_server(port):  # a racing double-click may have spawned here first
+    if _settle(port):  # a racing double-click may have bound this port, still booting
         return port
     return _spawn(port)
 
