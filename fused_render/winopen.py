@@ -183,7 +183,6 @@ def _spawn(port: int) -> int:
         stdin=subprocess.DEVNULL,
         stdout=log_file,
         stderr=log_file,
-        close_fds=True,
         creationflags=(
             subprocess.DETACHED_PROCESS
             | subprocess.CREATE_NO_WINDOW
