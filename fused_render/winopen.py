@@ -240,11 +240,12 @@ def _report(msg: str) -> None:
 def extensions() -> list[str]:
     with open(_REGISTRY_JSON, encoding="utf-8") as f:
         registry = json.load(f)
-    # skip directory sentinels ("/", ".zarr/") and zarr member files
+    # skip directory sentinels ("/", ".zarr/"), zarr member files, and glob
+    # patterns like ".*.json" (not real extensions Explorer can register)
     return sorted(
         ext
         for ext in registry
-        if ext.startswith(".") and "/" not in ext and ext not in _NOT_EXTENSIONS
+        if ext.startswith(".") and "/" not in ext and "*" not in ext and ext not in _NOT_EXTENSIONS
     )
 
 
