@@ -814,6 +814,35 @@ def api_commit_import(
 # POST /api/templates/new.
 _STARTER_KIT_DIR = os.path.join(os.path.dirname(__file__), "template_starter")
 
+# The two canonical authoring skills copied into every new template's
+# .claude/skills/ so a scaffolded (or later exported) folder carries its own
+# guidance. Single source is the repo-level skills/<name>/ (D106).
+_STARTER_SKILLS = ("fused-render-authoring", "fused-render-custom-templates")
+_REPO_SKILLS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "skills")
+
+
+def _ensure_starter_skills(dest: str) -> None:
+    """Make sure a freshly-scaffolded template `dest` has the authoring skills
+    under .claude/skills/. In a wheel install the build hook already copied them
+    into the starter kit, so the copytree that created `dest` brought them along
+    — nothing to do. In an editable/dev install the starter's .claude/skills/ is
+    gitignored and absent, so copy the two folders straight from the repo
+    skills/ dir. If neither source exists, proceed without skills — a missing
+    skill must never fail template creation (D106).
+    """
+    skills_dir = os.path.join(dest, ".claude", "skills")
+    for name in _STARTER_SKILLS:
+        target = os.path.join(skills_dir, name)
+        if os.path.isdir(target):
+            continue  # wheel install: copytree already brought the packaged skill
+        src = os.path.join(_REPO_SKILLS_DIR, name)
+        if not os.path.isdir(src):
+            continue  # neither packaged nor resolvable from source — skip, don't fail
+        try:
+            shutil.copytree(src, target)
+        except OSError:
+            pass  # best-effort; the template is still usable without the skill
+
 
 def _template_name_error(name) -> str | None:
     """Why `name` is not usable as a template folder/name, or None if it is.
@@ -884,6 +913,10 @@ def api_new_template(body: dict = Body(...), x_fused: str | None = Header(defaul
         # retry sees a clean slate and the exists-check stays meaningful.
         shutil.rmtree(dest, ignore_errors=True)
         return _error(f"failed to create template {name!r}: {exc}")
+
+    # Editable installs have no packaged skills in the starter kit; resolve them
+    # from the repo skills/ dir so the scaffolded folder still carries guidance.
+    _ensure_starter_skills(dest)
 
     for key in keys:
         _apply_binding(reg, key, [name])

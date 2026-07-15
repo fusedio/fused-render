@@ -789,12 +789,15 @@ def test_new_template_scaffolds_and_binds(ctx):
     assert body["path"] == os.path.join(os.path.abspath(server.USER_TEMPLATES_DIR), "myview")
     assert body["bindings"] == [".myext", ".foo.bar"]
     # Starter kit was copied in — the required file plus the optional reader,
-    # authoring guide, and self-contained skill.
+    # authoring guide, and the two canonical skills (resolved from the repo
+    # skills/ dir here, since tests run from an editable/source checkout).
     folder = ctx.udir / "myview"
     assert (folder / "template.html").is_file()
     assert (folder / "reader.py").is_file()
     assert (folder / "CLAUDE.md").is_file()
-    assert (folder / ".claude" / "skills" / "template-authoring" / "SKILL.md").is_file()
+    skills = folder / ".claude" / "skills"
+    assert (skills / "fused-render-authoring" / "SKILL.md").is_file()
+    assert (skills / "fused-render-custom-templates" / "SKILL.md").is_file()
     # Both extensions bound to the new template as single-mode lists.
     reg = ctx.read_registry()
     assert reg[".myext"] == ["myview"]
