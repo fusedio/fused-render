@@ -309,10 +309,13 @@ def _watch_setup(job: _SetupJob, pump: threading.Thread) -> None:
         job.proc.kill()
         job.proc.wait()
         pump.join(2.0)
-        job.error = f"`fused cloud setup` timed out after {int(SETUP_JOB_TIMEOUT)}s"
-        job.state = "failed"
+        if job.state == "running":  # a concurrent cancel already wrote failed
+            job.error = f"`fused cloud setup` timed out after {int(SETUP_JOB_TIMEOUT)}s"
+            job.state = "failed"
         return
     pump.join(2.0)  # let the pipe drain to EOF so the tail is complete
+    if job.state != "running":
+        return  # canceled — _cancel_setup_job already wrote the terminal state
     if job.canceled:
         job.error = "environment setup was canceled by signing out"
         job.state = "failed"
@@ -337,6 +340,12 @@ def _cancel_setup_job() -> bool:
     if job is None or job.state != "running" or job.proc.poll() is not None:
         return False
     job.canceled = True
+    # Write the terminal state HERE, not in the watcher: the watcher only
+    # observes the death after SIGTERM grace + pipe drain (seconds), and a
+    # `running` corpse would 409 a new setup started right after sign-out.
+    # The watcher skips jobs already terminal.
+    job.error = "environment setup was canceled by signing out"
+    job.state = "failed"
     job.proc.terminate()
     threading.Thread(target=_ensure_dead, args=(job.proc,), daemon=True).start()
     return True

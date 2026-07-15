@@ -648,10 +648,13 @@ def test_logout_cancels_a_running_setup_job(tmp_path, monkeypatch):
     assert h.setup_status()["state"] == "running"
 
     assert h.client.post("/api/account/logout", headers=FUSED).status_code == 200
-    job = h.wait_setup(lambda j: j["state"] == "failed")
+    # The slot frees SYNCHRONOUSLY at cancel — no waiting on the watcher to
+    # observe the death (a `running` corpse would 409 an immediate retry).
+    job = h.setup_status()
+    assert job["state"] == "failed"
     assert "canceled by signing out" in job["detail"]
 
-    # Sign back in; the slot is free — a new setup starts instead of 409ing.
+    # Sign back in; a new setup starts immediately instead of 409ing.
     h.creds.write_text("{}", encoding="utf-8")
     monkeypatch.setenv("FUSED_STUB_SETUP_MODE", "ok")
     assert h.client.post("/api/account/setup", json={}, headers=FUSED).status_code == 202
