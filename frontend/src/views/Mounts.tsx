@@ -87,54 +87,33 @@ function MountRow({
   // "disconnected": a mount is (or was) there but its rclone daemon no longer
   // serves it — listings show stale/empty data and a plain unmount fails.
   // Reconnect force-clears the dead mountpoint and mounts fresh.
-  const dot = {
-    mounted: { color: "#3fb950", label: "Mounted" },
-    disconnected: { color: "#d29922", label: "Disconnected — remote data is not flowing" },
-    unmounted: { color: "#8b949e", label: "Not mounted" },
+  const dotLabel = {
+    mounted: "Mounted",
+    disconnected: "Disconnected — remote data is not flowing",
+    unmounted: "Not mounted",
   }[conn.state];
 
   return (
     <div className="mount-card">
       <div className="mount-card-main">
-        <span
-          title={dot.label}
-          style={{
-            width: 8,
-            height: 8,
-            borderRadius: "50%",
-            background: dot.color,
-            flexShrink: 0,
-          }}
-        />
+        <span className={`mount-dot ${conn.state}`} role="img" aria-label={dotLabel} title={dotLabel} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 600 }}>
             {conn.name}
             {conn.read_only && (
-              <span
-                title="This remote rejects writes — files open read-only"
-                style={{ color: "#8b949e", fontWeight: 400, fontSize: "0.85em" }}
-              >
+              <span className="mount-hint" title="This remote rejects writes — files open read-only">
                 {" "}
                 — read-only
               </span>
             )}
             {conn.state === "disconnected" && (
-              <span style={{ color: "#d29922", fontWeight: 400, fontSize: "0.85em" }}>
+              <span className="mount-hint warn">
                 {" "}
                 — disconnected
               </span>
             )}
           </div>
-          <div
-            className="deploy-muted"
-            style={{
-              fontSize: "0.8em",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-            title={conn.mountpoint}
-          >
+          <div className="deploy-muted mount-remote" title={conn.mountpoint}>
             {conn.remote}
           </div>
         </div>
@@ -175,15 +154,27 @@ function MountRow({
 }
 
 // A labelled form control: a small uppercase caption above the input, so the
-// Add-mount row reads as named fields instead of a row of bare placeholders.
-function Field({ label, children }: { label: string; children: ReactNode }) {
+// Add-mount row and the custom-remote modal read as named fields instead of a
+// row of bare placeholders. `required` shows an accent marker.
+function Field({
+  label,
+  required,
+  children,
+}: {
+  label: string;
+  required?: boolean;
+  children: ReactNode;
+}) {
   return (
-    <label style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-      <span
-        className="deploy-muted"
-        style={{ fontSize: "0.7em", textTransform: "uppercase", letterSpacing: "0.04em" }}
-      >
+    <label className="mount-field">
+      <span>
         {label}
+        {required && (
+          <span className="req" title="required" aria-hidden="true">
+            {" "}
+            *
+          </span>
+        )}
       </span>
       {children}
     </label>
@@ -204,6 +195,30 @@ function AddMount({
   const [subpath, setSubpath] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Until the user edits Name themselves, it follows the last path segment
+  // (the "slug tracks title" pattern) — the mount name and its bucket/prefix
+  // are usually the same, so typing the path twice is pure friction.
+  const [nameTouched, setNameTouched] = useState(false);
+
+  // add_mount() rejects names containing / \ : or a leading dot; mirror that
+  // when deriving so the auto-filled value is always accepted.
+  const folderSafe = (s: string) => s.replace(/[/\\:]/g, "").replace(/^\.+/, "");
+
+  const onPathChange = (v: string) => {
+    setSubpath(v);
+    if (!nameTouched) {
+      const seg = v.replace(/\/+$/, "").split("/").filter(Boolean).pop() ?? "";
+      setName(folderSafe(seg));
+    }
+  };
+
+  // The rclone spec the Add button will mount, previewed live so it matches
+  // what the mounted card then shows. A "suggest:<id>" selection resolves to
+  // its real remote name at submit; use the suggestion's name for the preview.
+  const resolvedBase = remote.startsWith("suggest:")
+    ? `${suggested.find((s) => `suggest:${s.id}` === remote)?.remote_name ?? ""}:`
+    : remote;
+  const spec = resolvedBase && resolvedBase !== ":" ? resolvedBase + subpath : "";
 
   const add = async () => {
     setBusy(true);
@@ -220,6 +235,7 @@ function AddMount({
       setName("");
       setSubpath("");
       setRemote("");
+      setNameTouched(false);
       onChanged();
     } catch (e) {
       setError((e as Error).message);
@@ -237,14 +253,17 @@ function AddMount({
         <b>Public buckets</b> for anonymous access to open data (no credentials needed).
       </p>
       <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
-        <Field label="Name">
+        <Field label="Name" required>
           <input
             placeholder="e.g. sensor-data"
             value={name}
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => {
+              setName(e.target.value);
+              setNameTouched(true);
+            }}
           />
         </Field>
-        <Field label="Remote">
+        <Field label="Remote" required>
           <select value={remote} onChange={(e) => setRemote(e.target.value)}>
             <option value="">— remote —</option>
             {remotes.length > 0 && (
@@ -285,7 +304,7 @@ function AddMount({
             placeholder="bucket/prefix"
             style={{ minWidth: 200 }}
             value={subpath}
-            onChange={(e) => setSubpath(e.target.value)}
+            onChange={(e) => onPathChange(e.target.value)}
           />
         </Field>
         {/* Blank caption reserves the label row's height so the button
@@ -296,6 +315,11 @@ function AddMount({
           </button>
         </Field>
       </div>
+      {spec && (
+        <p className="deploy-muted mount-spec">
+          Mounts <code>{spec}</code> as folder <code>{name || "…"}</code>
+        </p>
+      )}
       <p className="deploy-muted" style={{ fontSize: "0.8em", margin: 0 }}>
         Tip: mount a specific <b>bucket/prefix</b>, not a whole bucket — narrow mounts browse and
         search much faster.
@@ -344,25 +368,38 @@ function AddRemote({ onChanged }: { onChanged: () => void }) {
         and for <b>Google Drive</b> or other sign-in backends run <code>rclone config</code> in a
         terminal — either then appears in the remote dropdown on reload.
       </p>
-      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-        <input placeholder="remote name" value={name} onChange={(e) => setName(e.target.value)} />
-        <input
-          placeholder="endpoint (blank for AWS S3)"
-          style={{ minWidth: 260 }}
-          value={endpoint}
-          onChange={(e) => setEndpoint(e.target.value)}
-        />
-        <input placeholder="region (optional)" value={region} onChange={(e) => setRegion(e.target.value)} />
-        <input placeholder="access key id" value={accessKey} onChange={(e) => setAccessKey(e.target.value)} />
-        <input
-          placeholder="secret access key"
-          type="password"
-          value={secretKey}
-          onChange={(e) => setSecretKey(e.target.value)}
-        />
-        <button type="button" disabled={busy || !name} onClick={add}>
-          {busy ? "Creating…" : "Create remote"}
-        </button>
+      <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
+        <Field label="Remote name" required>
+          <input placeholder="e.g. r2" value={name} onChange={(e) => setName(e.target.value)} />
+        </Field>
+        <Field label="Endpoint">
+          <input
+            placeholder="blank for AWS S3"
+            style={{ minWidth: 240 }}
+            value={endpoint}
+            onChange={(e) => setEndpoint(e.target.value)}
+          />
+        </Field>
+        <Field label="Region">
+          <input placeholder="optional" value={region} onChange={(e) => setRegion(e.target.value)} />
+        </Field>
+        <Field label="Access key ID" required>
+          <input value={accessKey} onChange={(e) => setAccessKey(e.target.value)} />
+        </Field>
+        <Field label="Secret access key" required>
+          <input type="password" value={secretKey} onChange={(e) => setSecretKey(e.target.value)} />
+        </Field>
+        {/* Blank caption reserves the label row's height so the button aligns
+            with the inputs, not the captions above them. */}
+        <Field label={" "}>
+          <button
+            type="button"
+            disabled={busy || !name || !accessKey || !secretKey}
+            onClick={add}
+          >
+            {busy ? "Creating…" : "Create remote"}
+          </button>
+        </Field>
       </div>
       {error && <div className="deploy-error">{error}</div>}
     </div>
@@ -418,14 +455,18 @@ export default function Mounts() {
         a local cache and are fast. Mounts stay up automatically, including across restarts;
         if one stops responding, use <b>Reconnect</b>.
       </p>
-      {state.mounts.length === 0 ? (
-        <p className="deploy-muted">No mounts yet.</p>
-      ) : (
+      {state.mounts.length > 0 ? (
         <div className="mount-list">
           {state.mounts.map((c) => (
             <MountRow key={c.id} conn={c} onChanged={reload} />
           ))}
         </div>
+      ) : (
+        state.rclone.available && (
+          <div className="mount-empty">
+            No mounts yet — add one below to browse remote storage as local folders.
+          </div>
+        )
       )}
       {state.rclone.available && (
         <>
@@ -434,20 +475,7 @@ export default function Mounts() {
             suggested={state.rclone.suggested ?? []}
             onChanged={reload}
           />
-          <button
-            type="button"
-            className="deploy-muted"
-            onClick={() => setShowAddRemote(true)}
-            style={{
-              alignSelf: "flex-start",
-              border: "none",
-              background: "none",
-              cursor: "pointer",
-              padding: 0,
-              fontSize: "0.85em",
-              textDecoration: "underline",
-            }}
-          >
+          <button type="button" className="mount-link" onClick={() => setShowAddRemote(true)}>
             Add a custom S3 remote (R2, MinIO, …)
           </button>
           {showAddRemote && (

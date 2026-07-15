@@ -8,6 +8,8 @@
   --sel: #2b3a52;
   --accent: #E5FF44;
   --error: #ff6b6b;
+  --success: #3fb950;
+  --warning: #d29922;
 }
 
 * {
@@ -2016,6 +2018,89 @@ body.embed .preview-browse-chip:hover {
   color: var(--error);
   border-color: var(--error);
   background: rgba(255, 107, 107, 0.12);
+}
+
+/* Health dot — color tracks state via a modifier class, off the shared
+   tokens (never a hardcoded hex) so it stays theme-correct. */
+.mount-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--fg-muted);
+}
+.mount-dot.mounted {
+  background: var(--success);
+}
+.mount-dot.disconnected {
+  background: var(--warning);
+}
+
+/* Inline qualifier after a mount name ("— read-only", "— disconnected"). */
+.mount-hint {
+  font-weight: 400;
+  font-size: 0.85em;
+  color: var(--fg-muted);
+}
+.mount-hint.warn {
+  color: var(--warning);
+}
+
+/* The remote spec shown under a mount name, clipped to one line. */
+.mount-remote {
+  font-size: 0.8em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Labeled form field: a small uppercase caption over a native control, so
+   the add-mount row and the custom-remote modal read as named fields rather
+   than a line of bare placeholders. */
+.mount-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.mount-field > span {
+  font-size: 0.7em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+}
+.mount-field .req {
+  color: var(--accent);
+}
+
+/* Live preview of the rclone spec the Add button will mount. */
+.mount-spec {
+  font-size: 0.8em;
+  margin: 0;
+}
+
+/* Empty state — a quiet dashed panel pointing at the Add-mount form. */
+.mount-empty {
+  padding: 16px 18px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  text-align: center;
+  color: var(--fg-muted);
+}
+
+/* "Add a custom S3 remote …" — a quiet inline link-button. */
+.mount-link {
+  align-self: flex-start;
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+  font-size: 0.85em;
+  color: var(--fg-muted);
+  text-decoration: underline;
+}
+.mount-link:hover {
+  color: var(--fg);
 }
 
 .prefs-radio {
