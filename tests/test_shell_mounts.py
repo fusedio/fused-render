@@ -909,8 +909,13 @@ def test_stat_marks_mount_backed_files_remote(client, home):
 
 
 def test_fs_raw_proxies_range_from_mount_serve(client, home):
-    """/api/fs/raw for a mount-backed path streams from the mount's HTTP
-    serve (Range and HEAD forwarded), not from the local filesystem."""
+    """/api/fs/raw for a mount-backed path streams GETs from the mount's
+    HTTP serve, not from the local filesystem. HEAD is the exception: it is
+    answered from the mount's own stat — ranged clients (duckdb httpfs,
+    fsspec/zarr) probe the length before every read, and proxying that probe
+    costs a full remote round trip for headers the VFS getattr already
+    knows; on a real mount the stat and the serve read the same remote, so
+    the sizes agree (here they intentionally differ to prove the source)."""
     import functools
     import http.server
     import os
@@ -942,7 +947,9 @@ def test_fs_raw_proxies_range_from_mount_serve(client, home):
         assert r.status_code == 200 and r.content == b"REMOTE-BYTES"
         r = client.head("/api/fs/raw", params={"path": f})
         assert r.status_code == 200
-        assert r.headers["content-length"] == str(len(b"REMOTE-BYTES"))
+        assert r.headers["content-length"] == str(len(b"LOCAL-BYTES"))
+        assert r.headers["accept-ranges"] == "bytes"
+        assert "last-modified" in r.headers
         assert r.content == b""
     finally:
         srv.shutdown()
@@ -1259,3 +1266,22 @@ def test_mount_view_exposes_read_only(home):
     assert mounts_mod.mount_view(m, rcd_mounts=set())["read_only"] is True
     m2 = mounts_mod.add_mount("data", "aws:bucket")
     assert mounts_mod.mount_view(m2, rcd_mounts=set())["read_only"] is False
+
+
+def test_fix_dotted_bucket_url():
+    fix = mounts_mod._fix_dotted_bucket_url
+    # dotted bucket in the TLS hostname can never pass the wildcard cert:
+    # unsigned URLs are rewritten to path-style
+    assert fix("https://us-west-2.opendata.source.coop.s3.us-west-2"
+               ".amazonaws.com/mindearth/a%20b/zarr.json") == \
+        ("https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop"
+         "/mindearth/a%20b/zarr.json")
+    # a signed one can't be (SigV4 covers Host) — dropped, caller stays on
+    # the serve proxy
+    assert fix("https://buck.et.s3.us-east-1.amazonaws.com/k"
+               "?X-Amz-Signature=abc") is None
+    # dot-free buckets and non-AWS hosts pass through untouched
+    for u in ("https://plain.s3.us-west-2.amazonaws.com/key",
+              "https://plain.s3.us-west-2.amazonaws.com/key?X-Amz-Sig=x",
+              "https://minio.example.com/bucket/key"):
+        assert fix(u) == u

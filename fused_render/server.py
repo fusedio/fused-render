@@ -13,6 +13,7 @@ at startup if missing) to opt in to the local compute backend (`engine.py`).
 """
 import asyncio
 import codecs
+import email.utils
 import json
 import logging
 from collections import deque
@@ -1453,7 +1454,11 @@ def create_app(start_dir: str) -> FastAPI:
 
     @app.api_route("/api/fs/raw", methods=["GET", "HEAD"])
     async def api_fs_raw(path: str, request: Request):
-        if not os.path.isfile(path):
+        try:
+            st = os.stat(path)
+        except OSError:
+            st = None
+        if st is None or not stat_mod.S_ISREG(st.st_mode):
             return _error(f"no such file: {path}", status=404)
         # Mount-backed file with a live HTTP serve: proxy the bytes from
         # rclone instead of reading through the kernel mount. Concurrent
@@ -1469,6 +1474,20 @@ def create_app(start_dir: str) -> FastAPI:
             # touch) its background whole-file prefetch. Cheap no-op after
             # the first call; templates stay mount-agnostic (prefetch.py).
             shell_prefetch.schedule(path, upstream)
+            # HEAD answered from the stat this route already took: ranged
+            # clients (duckdb httpfs, fsspec/zarr, geotiff) probe the length
+            # before reading, and proxying that probe is a full remote round
+            # trip (~1s cold) for headers the VFS getattr already knows. The
+            # serve reads the same rclone remote, so the sizes agree.
+            if request.method == "HEAD":
+                media_type, _ = mimetypes.guess_type(path)
+                return Response(status_code=200, headers={
+                    "content-length": str(st.st_size),
+                    "content-type": media_type or "application/octet-stream",
+                    "accept-ranges": "bytes",
+                    "last-modified": email.utils.formatdate(
+                        st.st_mtime, usegmt=True),
+                })
             # Cold ranged reads go straight to the store: the serve's VFS
             # layer serializes concurrent uncached range reads of one file
             # (an analytical scan pays ~0.25s per seek), while the store

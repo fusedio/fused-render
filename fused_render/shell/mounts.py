@@ -592,6 +592,24 @@ def _mount_for(path: str) -> tuple[dict | None, str]:
     return None, ""
 
 
+def _fix_dotted_bucket_url(url: str) -> str | None:
+    """Virtual-hosted S3 URLs put the bucket in the TLS hostname, and
+    *.s3.<region>.amazonaws.com can't match a bucket with dots in its name
+    (e.g. us-west-2.opendata.source.coop) — every client fails the handshake.
+    Rewrite an unsigned dotted-bucket URL to path-style; a SIGNED one can't be
+    rewritten (SigV4 covers the Host header), so drop it — the caller then
+    stays on the serve proxy, which is slow but works."""
+    p = urllib.parse.urlsplit(url)
+    m = re.match(r"^(.+)\.s3[.-]([a-z0-9-]+)\.amazonaws\.com$",
+                 p.hostname or "")
+    if not m or "." not in m.group(1):
+        return url
+    if p.query:
+        return None
+    bucket, region = m.group(1), m.group(2)
+    return f"https://s3.{region}.amazonaws.com/{bucket}{p.path}"
+
+
 def _public_object_url(fs: str, rel: str) -> str | None:
     """Plain https URL for an object on an ANONYMOUS AWS S3 remote — the one
     backend class that can't presign but doesn't need to. Credentialed or
@@ -612,6 +630,13 @@ def _public_object_url(fs: str, rel: str) -> str | None:
         return None
     key = (prefix.rstrip("/") + "/" if prefix else "") + rel
     region = cfg.get("region") or "us-east-1"
+    # Path-style for dotted buckets: virtual-hosted style puts the bucket in
+    # the TLS hostname, and *.s3.<region>.amazonaws.com can't match the extra
+    # dots (e.g. us-west-2.opendata.source.coop) — every client fails the
+    # handshake on the redirect.
+    if "." in bucket:
+        return (f"https://s3.{region}.amazonaws.com/{bucket}/"
+                + urllib.parse.quote(key))
     return f"https://{bucket}.s3.{region}.amazonaws.com/" + urllib.parse.quote(key)
 
 
@@ -650,6 +675,8 @@ def _upstream_url_for(path: str) -> str | None:
                       timeout=10).get("url") or None
         except RuntimeError:
             url = None
+        if url is not None:
+            url = _fix_dotted_bucket_url(url)
         if url is None and mode == "link":
             return None  # transient failure on a known-linkable remote
         if url is not None:
