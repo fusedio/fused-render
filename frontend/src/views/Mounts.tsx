@@ -223,6 +223,13 @@ function AddMount({
     : remote;
   const spec = resolvedBase && resolvedBase !== ":" ? resolvedBase + subpath : "";
 
+  // Whether the typed Name is one add_mount() will accept — non-empty after
+  // trimming, and no / \ : or leading dot. Gating the button and the preview
+  // on this keeps the preview from ever describing a folder the server rejects
+  // (auto-derived names are already folderSafe; this catches manual edits).
+  const trimmedName = name.trim();
+  const nameValid = trimmedName !== "" && !/[/\\:]/.test(trimmedName) && !trimmedName.startsWith(".");
+
   const add = async () => {
     setBusy(true);
     setError(null);
@@ -313,14 +320,30 @@ function AddMount({
         {/* Blank caption reserves the label row's height so the button
             aligns with the input boxes, not the labels above them. */}
         <Field label={" "}>
-          <button type="button" disabled={busy || !name.trim() || !remote} onClick={add}>
+          <button type="button" disabled={busy || !nameValid || !remote} onClick={add}>
             {busy ? "Mounting…" : "Add & mount"}
           </button>
         </Field>
       </div>
       {spec && (
         <p className="deploy-muted mount-spec">
-          Mounts <code>{spec}</code> as folder <code>{name || "…"}</code>
+          Mounts <code>{spec}</code>
+          {nameValid ? (
+            <>
+              {" "}
+              as folder <code>{trimmedName}</code>
+            </>
+          ) : trimmedName ? (
+            <span className="warn">
+              {" "}
+              — name can’t contain / \ : or start with “.”
+            </span>
+          ) : (
+            <>
+              {" "}
+              as folder <code>…</code>
+            </>
+          )}
         </p>
       )}
       <p className="deploy-muted" style={{ fontSize: "0.8em", margin: 0 }}>

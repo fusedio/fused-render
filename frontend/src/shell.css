@@ -2332,6 +2332,9 @@ body.embed .preview-browse-chip:hover {
   font-size: 0.8em;
   margin: 0;
 }
+.mount-spec .warn {
+  color: var(--warning);
+}
 
 /* Empty state — a quiet dashed panel pointing at the Add-mount form. */
 .mount-empty {
