@@ -341,6 +341,9 @@ def test_status_probe_surfaces_cli_failure(tmp_path, monkeypatch):
 
 def test_login_returns_authorize_url_then_polling_sees_completion(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
+    # An ambient env target in the SERVER's environment must not leak into an
+    # account-scoped child (child_env clears it when no env is passed).
+    monkeypatch.setenv("OPENFUSED_ENV", "stray-deploy-env")
     return_url = "http://127.0.0.1:1777/view/_account"
     resp = h.client.post("/api/account/login", json={"return_url": return_url}, headers=FUSED)
     assert resp.status_code == 200, resp.text

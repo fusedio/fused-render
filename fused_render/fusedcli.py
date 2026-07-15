@@ -76,8 +76,12 @@ def child_env(cli: FusedCli, env_name: str | None = None) -> dict[str, str]:
     """The child environment for a fused CLI run.
 
     OPENFUSED_ENV targets the chosen env when one is given (the CLI's own
-    override channel) — deploy runs are env-targeted; account runs
-    (`cloud login/logout/orgs`) are account-scoped and pass None.
+    override channel) — deploy runs are env-targeted. Account runs
+    (`cloud login/logout/orgs/setup`, `env default/delete`) pass None and get
+    the variable CLEARED instead of inherited: today's `fused cloud` commands
+    never read it, but an ambient value in the server's own environment
+    (common when testing deploys) must not leak an env target into a child
+    whose scope is the account.
     For an EXTERNAL cli (FUSED_RENDER_FUSED_BIN), interpreter-scoped vars are
     scrubbed: inside the packaged macOS app the process carries PYTHONHOME/
     PYTHONPATH pointing into the bundle, which would break any other Python's
@@ -88,6 +92,8 @@ def child_env(cli: FusedCli, env_name: str | None = None) -> dict[str, str]:
     child = dict(os.environ)
     if env_name is not None:
         child["OPENFUSED_ENV"] = env_name
+    else:
+        child.pop("OPENFUSED_ENV", None)
     if cli.external:
         for var in ("PYTHONHOME", "PYTHONPATH"):
             child.pop(var, None)
