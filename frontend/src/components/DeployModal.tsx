@@ -925,8 +925,11 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
         )}
         {samePointerEnv && mountAbsent && (
           <div className="deploy-note">
-            The recorded mount no longer exists on <b>{deployment!.env}</b> (e.g. after
-            an infra teardown) — deploying mints a fresh link with a <b>new URL</b>.
+            The recorded deployment no longer exists on <b>{deployment!.env}</b>
+            {/* Why it vanished is backend-specific: an AWS serving plane can be
+                torn down wholesale; a managed mount was removed on the server. */}
+            {env?.backend === "aws" ? " (e.g. after an infra teardown)" : ""} — deploying
+            mints a fresh link with a <b>new URL</b>.
           </div>
         )}
         {env?.backend === "fused" && !config.fused_logged_in && (

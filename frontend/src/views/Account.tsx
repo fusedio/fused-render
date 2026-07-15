@@ -209,7 +209,22 @@ function SetupPanel({ status, onChanged }: { status: AccountStatus; onChanged: (
           preview header's Deploy button.
         </div>
       )}
-      {error && <div className="deploy-error">{error}</div>}
+      {error && (
+        <div className="deploy-error">
+          {error}
+          {/* The one setup failure with a known local remedy: macOS denies the
+              key write when the "openfused" keychain item was created by a
+              DIFFERENT fused install (or a previous ad-hoc-signed app build). */}
+          {/keychain/i.test(error) && (
+            <div className="deploy-muted">
+              This usually means the key was first stored by a different fused install.
+              Open Keychain Access, search for “openfused”, and either delete the item
+              (connecting again recreates it) or set its Access Control to allow this
+              app — then retry.
+            </div>
+          )}
+        </div>
+      )}
     </>
   );
 }
