@@ -380,6 +380,12 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   // not yet reflect the latest include/exclude edit, so Deploy is held until it
   // catches up (keeps the click WYSIWYG: never deploy a set the list doesn't show).
   const [previewPending, setPreviewPending] = useState(true);
+  // False until `load` has seeded include/exclude from the deployment record on
+  // open. The preview effect is gated on this so we NEVER issue a preview for the
+  // initial empty selection (which would race the seeded request and could commit
+  // the default bundle after state already holds the persisted selection). The
+  // first — and only correct — preview request fires once the selection is known.
+  const [selectionReady, setSelectionReady] = useState(false);
   // Latest-ref mirrors of the selection. A background reconcile (load(true)) is
   // async: it must refresh the preview with the selection current at COMPLETION,
   // not the value captured when its closure was created — otherwise a focus/
@@ -447,6 +453,9 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     if (!background) {
       setLoadError(null);
       setConfig(null);
+      // Re-gate the preview until this load seeds the selection, so an fsPath
+      // switch can't issue/commit a preview for the old-or-empty selection.
+      setSelectionReady(false);
       // Drop the previous page's preview too (not just config): a fresh open —
       // including an fsPath switch with the modal still mounted — must not leave
       // last page's "Will publish" list on screen while the new fetch is in
@@ -474,6 +483,9 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       if (!background) {
         setInclude(status.deployment?.include ?? []);
         setExclude(status.deployment?.exclude ?? []);
+        // Selection is now known — open the gate; this (with the seeded include/
+        // exclude) triggers the effect to fetch the first, correct preview.
+        setSelectionReady(true);
       } else {
         // Refs, not the closure's include/exclude: this runs after the await, so
         // read the selection as it stands now (an edit may have landed meanwhile).
@@ -503,12 +515,14 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fsPath]);
 
-  // Re-resolve the "will publish" preview whenever the page or the selection
-  // changes (covers the initial seed from load, and every include/exclude edit).
+  // Re-resolve the "will publish" preview whenever the selection changes — but
+  // only once `load` has seeded it (selectionReady), so the initial empty
+  // selection never issues a preview that could race the seeded one.
   useEffect(() => {
+    if (!selectionReady) return;
     void refreshPreview(include, exclude);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fsPath, include, exclude]);
+  }, [fsPath, include, exclude, selectionReady]);
 
   // Latest-ref pattern: `load` and `busy` are captured fresh every render, so
   // the focus effect below (which subscribes once) always calls the current
