@@ -1485,3 +1485,77 @@ SPEC DM-7); the CLI/browser experience is unchanged.
   alive. If `menubar_pin` fails to import or construct (e.g. missing WebKit
   framework), the menu is attached as before — the app is never left
   unquittable.
+
+## 26. GitHub Deep Links — fused-render://open?git= (M17)
+
+A shareable link that lands a GitHub repository subdirectory in fused-render:
+`fused-render://open?git=https://github.com/{owner}/{repo}/tree/{ref}/{subpath}`
+— the original GitHub tree URL, verbatim, as the `git` query param (a link
+author copies the GitHub URL and prefixes it). Clicking it launches (or
+reuses) the app, shows a confirm page, sparse-clones the subdirectory into
+`~/Documents/Fused/<subpath basename>`, and opens the folder's `index.html`
+when one exists, else the folder itself.
+
+- **DL-1** Link shape: `fused-render://open?git=<github URL>`. The action
+  sits in host position (`open`) and payloads are query params, so future
+  payload kinds (a hosted page, a single file, …) become new params on the
+  same action instead of new grammar; the `git` value is taken verbatim to
+  end-of-string (an unencoded URL with `&`/`+` survives). Accepted GitHub
+  shapes: repo root (`/{owner}/{repo}`), `/tree/{ref}`, and
+  `/tree/{ref}/{subpath}`; a `.git` suffix on the repo is tolerated; the
+  embedded URL may be percent-encoded. `/blob/` (single files) and non-github
+  hosts are rejected with a clear error. The first segment after `/tree/` is
+  the ref — single-segment refs only (the URL grammar cannot delimit a
+  slashed branch name from the subpath; same assumption most tooling makes).
+  Refs must start alphanumeric (git forbids leading `-` too), and every
+  URL-derived value reaching git sits behind a `--` separator — a crafted
+  link cannot smuggle options (`-f`, `--stdin`) into checkout/sparse-checkout.
+- **DL-2** OS registration: macOS via `CFBundleURLTypes` in the py2app plist
+  (scheme deliberately not branch-suffixed, like the bookmark UTI — every
+  build speaks the same links), delivered to `application:openURLs:` in
+  app.py; Windows via an HKCU `Software\Classes\fused-render` URL-protocol
+  class written by the same `--register` as the Open-With keys, delivered as
+  `%1` to `fused-render-open`. Linux deferred. Both handlers reuse a live
+  server or spawn one (the winopen/app dance), then open the browser at the
+  confirm page — they never parse or clone themselves.
+- **DL-3** Confirm gate (`GET /clone?src=…`): a self-contained server-served
+  page (`static/clone.html`, no shell, no external assets). Nothing touches
+  disk until its button is clicked. The page previews repo / subdirectory /
+  ref / destination via read-only `GET /api/clone/info` and states the trust
+  boundary in plain words: once opened, content from the repository renders
+  same-origin and can run Python on this machine (trust-on-confirm, D110).
+  The preview matches what POST will do: an occupied destination that is not
+  a matching clone (non-git folder, other repo) is reported as blocked up
+  front (`conflict`), never offered as an Update that can only fail.
+- **DL-4** Clone (`POST /api/clone`, X-Fused-guarded like every mutating
+  route): `git clone --filter=blob:none --sparse` + `sparse-checkout set
+  <subpath>` (plain filtered clone for repo-root links) using the user's own
+  git — public repos clone anonymously, private repos ride the user's
+  existing credentials. Destination is `~/Documents/Fused/<subpath basename>`
+  (repo name for root links); the repo root, `.git` included, lives at the
+  destination, so the opened view is the nested `<dest>/<subpath>` path. A
+  failed clone removes the partial destination (retryable). Git runs
+  prompt-free (`GIT_TERMINAL_PROMPT=0`, ssh BatchMode — the server has no
+  TTY) with a PATH widened to the usual helper locations (a Finder-launched
+  .app gets `/usr/bin:/bin`, which silently breaks `gh`-style credential
+  helpers); an https auth failure retries once over `git@github.com:` before
+  reporting both errors with a how-to-authenticate hint.
+- **DL-5** Re-click = update: for an existing destination whose `origin`
+  matches the link's repo — `fetch --tags`, check out the LINK's ref (a link
+  naming a different branch/tag than what's on disk lands on that ref, not a
+  silent pull of the old one; refs check out after a `--no-checkout` clone,
+  never via `--branch`, so commit SHAs work), then `pull --ff-only` iff that
+  left HEAD on a branch (a tag/SHA is detached: SHA no-op, moved tag lands
+  on its new target). A ref-less link onto a detached clone checks out the
+  remote's default branch (origin/HEAD) — "no ref" means the default branch,
+  never a silent stay-put. A same-repo link whose subdir shares the basename
+  widens the sparse cone additively (`sparse-checkout add`) so its path
+  materializes without unchecking earlier links' paths. A dirty or diverged
+  tree surfaces git's own error and local edits are never clobbered. The
+  link's subdirectory is verified against the target ref's tree (`ls-tree`)
+  BEFORE any mutation — a link that would fail its target check leaves the
+  existing clone exactly as it was (a fresh clone rolls back via rmtree; an
+  update must be equally side-effect-free on failure). A destination that
+  exists but is not a clone of that repo is refused, never overwritten.
+- **DL-6** Open target: `<dest>/<subpath>/index.html` when present, else the
+  subdirectory itself, via the standard `/view/` URL codec.

@@ -1269,6 +1269,12 @@ def create_app(start_dir: str) -> FastAPI:
 
     app.include_router(shell_mounts.router)
     shell_mounts.startup()
+    # GitHub deep links (SPEC §26, D110): GET /clone confirm page +
+    # POST /api/clone sparse-clone into ~/Documents/Fused. deeplink.py never
+    # imports server, so the include stays acyclic like shell/*.
+    from fused_render.deeplink import router as deeplink_router
+
+    app.include_router(deeplink_router)
     # Deploy (hosted publish through the fused CLI) — export + `fused share`
     # orchestration and the per-page deployment pointer store (deploy.py).
     app.include_router(deploy_router)
