@@ -200,14 +200,17 @@ function AddMount({
   // are usually the same, so typing the path twice is pure friction.
   const [nameTouched, setNameTouched] = useState(false);
 
-  // add_mount() rejects names containing / \ : or a leading dot; mirror that
-  // when deriving so the auto-filled value is always accepted.
-  const folderSafe = (s: string) => s.replace(/[/\\:]/g, "").replace(/^\.+/, "");
+  // add_mount() strips the name and rejects it empty or containing / \ : or a
+  // leading dot; mirror that when deriving so the auto-filled value always
+  // passes server validation (or is empty, which disables the button below).
+  const folderSafe = (s: string) => s.trim().replace(/[/\\:]/g, "").replace(/^\.+/, "");
 
   const onPathChange = (v: string) => {
     setSubpath(v);
     if (!nameTouched) {
-      const seg = v.replace(/\/+$/, "").split("/").filter(Boolean).pop() ?? "";
+      // Last non-blank segment: trim first so a trailing "/" or a whitespace
+      // tail ("bucket/  ") derives the real segment, never a spaces-only name.
+      const seg = v.split("/").map((s) => s.trim()).filter(Boolean).pop() ?? "";
       setName(folderSafe(seg));
     }
   };
@@ -310,7 +313,7 @@ function AddMount({
         {/* Blank caption reserves the label row's height so the button
             aligns with the input boxes, not the labels above them. */}
         <Field label={" "}>
-          <button type="button" disabled={busy || !name || !remote} onClick={add}>
+          <button type="button" disabled={busy || !name.trim() || !remote} onClick={add}>
             {busy ? "Mounting…" : "Add & mount"}
           </button>
         </Field>
