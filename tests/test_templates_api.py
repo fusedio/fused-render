@@ -771,3 +771,138 @@ def test_import_sweeps_stale_staging(ctx, monkeypatch):
     os.utime(stale, (old, old))
     _post_import(ctx, _make_zip({"fresh/template.html": "<html>"}))
     assert not stale.exists()
+
+
+# ----------------------------------------------------- new template (scaffold)
+
+
+def test_new_template_scaffolds_and_binds(ctx):
+    resp = ctx.client.post(
+        "/api/templates/new",
+        json={"name": "myview", "extensions": [".myext", ".foo.bar"]},
+        headers=FUSED,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["name"] == "myview"
+    assert body["path"] == os.path.join(os.path.abspath(server.USER_TEMPLATES_DIR), "myview")
+    assert body["bindings"] == [".myext", ".foo.bar"]
+    # Starter kit was copied in — the required file plus the optional reader,
+    # authoring guide, and self-contained skill.
+    folder = ctx.udir / "myview"
+    assert (folder / "template.html").is_file()
+    assert (folder / "reader.py").is_file()
+    assert (folder / "CLAUDE.md").is_file()
+    assert (folder / ".claude" / "skills" / "template-authoring" / "SKILL.md").is_file()
+    # Both extensions bound to the new template as single-mode lists.
+    reg = ctx.read_registry()
+    assert reg[".myext"] == ["myview"]
+    assert reg[".foo.bar"] == ["myview"]
+
+
+def test_new_template_no_extensions_creates_no_registry(ctx):
+    resp = ctx.client.post(
+        "/api/templates/new", json={"name": "draft", "extensions": []}, headers=FUSED
+    )
+    assert resp.status_code == 200
+    assert resp.json()["bindings"] == []
+    assert (ctx.udir / "draft" / "template.html").is_file()
+    # No bindings requested -> the registry file is not created.
+    assert not (ctx.udir / "registry.json").exists()
+
+
+def test_new_template_binding_reachable_via_registry_view(ctx):
+    ctx.client.post(
+        "/api/templates/new", json={"name": "myview", "extensions": [".myext"]}, headers=FUSED
+    )
+    by_key = {e["key"]: e for e in ctx.client.get("/api/templates/registry").json()["entries"]}
+    entry = by_key[".myext"]
+    assert entry["resolvedSource"] == "user"
+    assert _names(entry) == ["myview"]
+    # The scaffolded template.html resolves, so the bound name is not broken.
+    assert entry["templates"][0]["exists"] is True
+
+
+def test_new_template_duplicate_conflicts_409(ctx):
+    ctx.make_template("taken")
+    resp = ctx.client.post(
+        "/api/templates/new", json={"name": "taken", "extensions": [".x"]}, headers=FUSED
+    )
+    assert resp.status_code == 409
+    assert "already exists" in resp.json()["error"]
+
+
+def test_new_template_rejects_bad_name(ctx):
+    for bad in ("has/slash", "has.dot", "_leading", ""):
+        resp = ctx.client.post(
+            "/api/templates/new", json={"name": bad, "extensions": []}, headers=FUSED
+        )
+        assert resp.status_code == 400, bad
+
+
+def test_new_template_invalid_extension_creates_nothing(ctx):
+    resp = ctx.client.post(
+        "/api/templates/new",
+        json={"name": "myview", "extensions": [".ok", ".geo*.json"]},
+        headers=FUSED,
+    )
+    assert resp.status_code == 400
+    assert "invalid registry key" in resp.json()["error"]
+    # Rejected up front — no folder created, no registry written.
+    assert not (ctx.udir / "myview").exists()
+    assert not (ctx.udir / "registry.json").exists()
+
+
+def test_new_template_requires_fused_header(ctx):
+    resp = ctx.client.post("/api/templates/new", json={"name": "myview", "extensions": []})
+    assert resp.status_code == 403
+    assert not (ctx.udir / "myview").exists()
+
+
+# --------------------------------------------------------- open in Claude (macOS)
+
+
+def test_open_in_claude_success(ctx, monkeypatch):
+    ctx.make_template("myview")
+    monkeypatch.setattr(templates_api.sys, "platform", "darwin")
+    monkeypatch.setattr(templates_api.shutil, "which", lambda _c: "/fake/bin/claude")
+    calls = []
+    monkeypatch.setattr(templates_api.subprocess, "run", lambda *a, **k: calls.append((a, k)))
+    resp = ctx.client.post("/api/templates/open-in-claude", json={"name": "myview"}, headers=FUSED)
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True}
+    # osascript invoked with a `do script` that cd's into the template folder
+    # and runs the located claude binary.
+    (argv,), _kw = calls[0]
+    assert argv[0] == "osascript"
+    joined = " ".join(argv)
+    assert str(ctx.udir / "myview") in joined
+    assert "/fake/bin/claude" in joined
+
+
+def test_open_in_claude_non_darwin_errors(ctx, monkeypatch):
+    ctx.make_template("myview")
+    monkeypatch.setattr(templates_api.sys, "platform", "linux")
+    resp = ctx.client.post("/api/templates/open-in-claude", json={"name": "myview"}, headers=FUSED)
+    assert resp.status_code == 400
+    assert "macOS" in resp.json()["error"]
+
+
+def test_open_in_claude_missing_template_404(ctx, monkeypatch):
+    monkeypatch.setattr(templates_api.sys, "platform", "darwin")
+    resp = ctx.client.post("/api/templates/open-in-claude", json={"name": "nope"}, headers=FUSED)
+    assert resp.status_code == 404
+
+
+def test_open_in_claude_core_template_refused(ctx, monkeypatch):
+    # 'code' is a core template (no user folder) -> 404, core folder untouched.
+    monkeypatch.setattr(templates_api.sys, "platform", "darwin")
+    resp = ctx.client.post("/api/templates/open-in-claude", json={"name": "code"}, headers=FUSED)
+    assert resp.status_code == 404
+
+
+def test_open_in_claude_requires_fused_header(ctx):
+    ctx.make_template("myview")
+    resp = ctx.client.post("/api/templates/open-in-claude", json={"name": "myview"})
+    assert resp.status_code == 403

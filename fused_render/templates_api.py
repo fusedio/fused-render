@@ -27,8 +27,11 @@ import io
 import os
 import re
 import secrets
+import shlex
 import shutil
 import stat as stat_mod
+import subprocess
+import sys
 import time
 import zipfile
 
@@ -234,6 +237,18 @@ def _single_entry(key) -> dict | None:
     return _compute_entry(display_key, builtin_reg, user_reg, builtin_by_lower, user_by_lower)
 
 
+def _apply_binding(reg: dict, key: str, value) -> None:
+    """Set one user-registry key on `reg` in place (the per-key RMW body shared
+    by PUT /api/templates/registry and POST /api/templates/new). Drops any
+    case-colliding key first so the registry never holds both ".csv" and ".CSV"
+    (resolution is case-insensitive; two rows would be ambiguous), then assigns.
+    The caller owns loading `reg` and persisting it with storage.write_json."""
+    for k in list(reg):
+        if k != key and str(k).lower() == key.lower():
+            del reg[k]
+    reg[key] = value
+
+
 # -- template folder inventory ------------------------------------------------
 
 
@@ -379,12 +394,7 @@ def api_put_registry(body: dict = Body(...), x_fused: str | None = Header(defaul
             f"{server.USER_REGISTRY} aside and retry.",
         )
     reg = reg if isinstance(reg, dict) else {}
-    # Drop any case-colliding key so the registry never holds both ".csv" and
-    # ".CSV" (resolution is case-insensitive; two rows would be ambiguous).
-    for k in list(reg):
-        if k != key and str(k).lower() == key.lower():
-            del reg[k]
-    reg[key] = value
+    _apply_binding(reg, key, value)
     storage.write_json(server.USER_REGISTRY, reg)
 
     return _single_entry(key)
@@ -794,3 +804,148 @@ def api_commit_import(
         "overwritten": overwritten,
         "renamed": renamed,
     }
+
+
+# -- routes: new template (scaffold + bind) + open in Claude ------------------
+
+# The starter kit ships inside the package but DELIBERATELY OUTSIDE
+# fused_render/templates/, so it never resolves as a template or shows up in the
+# inventory (SPEC §23) — it is a scaffold source, copied into a user folder by
+# POST /api/templates/new.
+_STARTER_KIT_DIR = os.path.join(os.path.dirname(__file__), "template_starter")
+
+
+def _template_name_error(name) -> str | None:
+    """Why `name` is not usable as a template folder/name, or None if it is.
+    Matches server._resolve_name's rule (SPEC CT-6): one plain path segment, no
+    '/', '\\', or '.', and no leading '_' (reserved for shell sentinels) — so a
+    created template's name always resolves by the PT-6 rule."""
+    if not isinstance(name, str) or not name:
+        return "'name' must be a non-empty string"
+    if "/" in name or "\\" in name or "." in name:
+        return "invalid template name: use a single folder segment with no '/', '\\' or '.'"
+    if name.startswith("_"):
+        return "invalid template name: the '_' prefix is reserved for shell sentinel modes"
+    return None
+
+
+@router.post("/api/templates/new")
+def api_new_template(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    # Scaffold a new user template from the starter kit and bind the given
+    # extensions to it (D87 per-key RMW, reused via _apply_binding). Validate
+    # everything up front so a bad request never leaves a half-created folder.
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    name = body.get("name")
+    name_err = _template_name_error(name)
+    if name_err is not None:
+        return _error(name_err)
+
+    extensions = body.get("extensions", [])
+    if not isinstance(extensions, list):
+        return _error("'extensions' must be an array of registry keys")
+    # Validate every extension key against the CT-3 grammar (the same check PUT
+    # applies) before creating anything.
+    keys: list[str] = []
+    for ext in extensions:
+        if not isinstance(ext, str) or not ext:
+            return _error("each extension must be a non-empty registry key string")
+        if server._key_segments(ext, ext.endswith("/")) is None:
+            return _error(
+                f"invalid registry key {ext!r}: must be a dot-anchored suffix pattern "
+                "(e.g. '.csv', '.xyz.json', '.*.json', or a directory key '.zarr/')"
+            )
+        keys.append(ext)
+
+    dest = os.path.join(server.USER_TEMPLATES_DIR, name)
+    if os.path.exists(dest):
+        return _error(f"a user template named {name!r} already exists", status=409)
+
+    # Refuse to touch a corrupt user registry (a rewrite would drop every other
+    # binding) BEFORE creating the folder, so a failure leaves nothing behind.
+    reg, err = server._load_registry(server.USER_REGISTRY, "registry.json")
+    if err:
+        return _error(
+            f"refusing to overwrite the user registry: {err}. Move "
+            f"{server.USER_REGISTRY} aside and retry.",
+        )
+    reg = reg if isinstance(reg, dict) else {}
+
+    os.makedirs(server.USER_TEMPLATES_DIR, exist_ok=True)
+    shutil.copytree(_STARTER_KIT_DIR, dest)
+
+    for key in keys:
+        _apply_binding(reg, key, [name])
+    if keys:
+        storage.write_json(server.USER_REGISTRY, reg)
+
+    return {"ok": True, "name": name, "path": dest, "bindings": keys}
+
+
+def _claude_bin() -> str:
+    """Locate the `claude` CLI. Mirrors templates/claude/agent.py:_claude_bin —
+    replicated here rather than imported, since a template folder is not an
+    import root (and templates_api must not depend on a template's internals)."""
+    found = shutil.which("claude")
+    if found:
+        return found
+    for candidate in ("~/.local/bin/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude"):
+        candidate = os.path.expanduser(candidate)
+        if os.path.exists(candidate):
+            return candidate
+    raise FileNotFoundError(
+        "claude CLI not found — install Claude Code or put `claude` on the PATH "
+        "of the environment that launched fused-render"
+    )
+
+
+def _applescript_str(s: str) -> str:
+    """Quote a Python string as an AppleScript double-quoted literal (escape
+    backslash then double-quote)."""
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+@router.post("/api/templates/open-in-claude")
+def api_open_in_claude(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    # Open Terminal.app in a user template's folder and start `claude` there so
+    # the author can iterate on the template with the CLI. macOS-only for now.
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    if sys.platform != "darwin":
+        return _error(
+            "Open in Claude is only supported on macOS (it spawns Terminal.app).",
+            status=400,
+        )
+
+    name = body.get("name")
+    if not isinstance(name, str) or not name:
+        return _error("'name' must be a non-empty string")
+    if "/" in name or "\\" in name or name in (".", ".."):
+        return _error("invalid template name")
+
+    # User templates only — a core-only name resolves to no user folder and 404s
+    # (core folders live in the package, never opened for editing here).
+    folder = os.path.join(server.USER_TEMPLATES_DIR, name)
+    if os.path.islink(folder) or not os.path.isdir(folder):
+        return _error(f"no user template named {name!r}", status=404)
+
+    try:
+        claude_bin = _claude_bin()
+    except FileNotFoundError as exc:
+        return _error(str(exc))
+
+    # shlex.quote makes the paths safe for the shell that `do script` runs;
+    # _applescript_str then escapes that command for the AppleScript literal.
+    shell_cmd = f"cd {shlex.quote(folder)} && {shlex.quote(claude_bin)}"
+    open_script = 'tell application "Terminal" to do script ' + _applescript_str(shell_cmd)
+    activate_script = 'tell application "Terminal" to activate'
+    try:
+        subprocess.run(["osascript", "-e", open_script, "-e", activate_script], check=True)
+    except (subprocess.CalledProcessError, OSError) as exc:
+        return _error(f"failed to open Terminal: {exc}", status=500)
+
+    return {"ok": True}

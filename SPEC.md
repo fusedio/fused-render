@@ -1186,6 +1186,35 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   bindings are **not** rewritten — a binding that referenced the name resolves
   broken (`exists:false`) until rebound, matching export/import being
   folder-only. Returns `{deleted: name}`.
+- **TV-20** `POST /api/templates/new` **(D105)** — body `{name, extensions}`,
+  `X-Fused` guarded; **scaffolds a new user template and binds it**. Copies the
+  starter kit (`fused_render/template_starter/` — shipped in the wheel but
+  deliberately **outside** `templates/`, so it is never itself resolvable or
+  listed in the inventory) into `USER_TEMPLATES_DIR/<name>`, then binds each
+  extension to `[name]` (a single-mode list) via the **same per-key
+  read-modify-write** as TV-5 (`_apply_binding`, never a whole-file rewrite).
+  `name` must be a safe template folder segment (no `/`, `\`, `.`; not
+  `_`-prefixed — CT-6, so the folder always resolves by PT-6); each extension
+  is validated against the **CT-3 key grammar** exactly like TV-5. All
+  validation runs **up front**, so a bad name/extension (400) or an existing
+  `USER_TEMPLATES_DIR/<name>` (**409**) leaves nothing created and the registry
+  untouched. `extensions` may be empty (scaffold a draft, bind nothing — no
+  registry file written). Returns `{ok, name, path, bindings:[keys]}`. Editing
+  the scaffolded files afterwards happens in the file explorer (D88), and the
+  extensions are re-editable through the ordinary Row editor (TV-15).
+- **TV-21** `POST /api/templates/open-in-claude` **(D105)** — body `{name}`,
+  `X-Fused` guarded; opens **Terminal.app** in a user template's folder and
+  starts the `claude` CLI there, so the author can iterate on the template with
+  Claude Code. **macOS only** for now (`sys.platform != "darwin"` → a clear
+  error, no other platform spawns a terminal yet). User templates only — a
+  core-only name resolves to no user folder and 404s; unsafe names → 400,
+  symlinks rejected (same guards as TV-19). The `claude` binary is located by
+  the same PATH/`~/.local/bin`/homebrew search as `templates/claude/agent.py`
+  (replicated, not imported — a template folder is not an import root); a
+  missing binary is a clear error. The terminal is spawned via `osascript`
+  (`tell application "Terminal" to do script "cd <folder> && <claude>"` +
+  `activate`), paths `shlex.quote`d for the shell then escaped for the
+  AppleScript literal. Returns `{ok: true}`.
 
 ### 23.3 Frontend — Templates view (`/view/_templates`)
 

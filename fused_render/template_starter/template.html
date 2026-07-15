@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Custom template</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    color: #e8eaed;
+    background: #131417;
+  }
+  header {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    padding: 10px 16px;
+    border-bottom: 1px solid #2a2d33;
+    background: #1b1d21;
+  }
+  header .name { font-weight: 600; }
+  header .meta { color: #9aa0a6; }
+  pre {
+    margin: 0;
+    padding: 16px;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  #status { padding: 24px; color: #9aa0a6; }
+  #status.error { color: #ff6b6b; }
+  #status a { color: #E5FF44; }
+</style>
+</head>
+<body>
+  <!-- Everything below is a starting point — reshape the markup, styling, and
+       reader contract to fit whatever file type this template previews. The
+       shell injects the `fused` runtime; no <script src> or network needed. -->
+  <div id="root"><div id="status">Loading…</div></div>
+  <script>
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    async function load() {
+      const root = document.getElementById("root");
+      // The target file arrives as the reserved `_file` param on this page's URL.
+      const file = fused.params.get("_file");
+      if (!file) {
+        root.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
+        return;
+      }
+      try {
+        // Relative path resolves against this template's folder — ./reader.py
+        // runs server-side and its return value comes back here as `data`.
+        const data = await fused.runPython("./reader.py", { file });
+        const meta = `${data.size.toLocaleString()} bytes${data.truncated ? " · preview truncated" : ""}`;
+        root.innerHTML =
+          `<header><span class="name">${escapeHtml(data.name)}</span>` +
+          `<span class="meta">${escapeHtml(meta)}</span></header>` +
+          `<pre>${escapeHtml(data.preview)}</pre>`;
+      } catch (err) {
+        root.innerHTML =
+          `<div id="status" class="error"><strong>${escapeHtml(err.type || "Error")}</strong>: ` +
+          `${escapeHtml(err.message || "")}</div>`;
+      }
+    }
+
+    // Re-run whenever a param this template reads changes (e.g. paging state you
+    // add later); on first load it renders once.
+    fused.params.onChange(load);
+    load();
+  </script>
+</body>
+</html>
