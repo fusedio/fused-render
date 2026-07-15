@@ -24,7 +24,7 @@ from fused_render.server import create_app
 FUSED = {"X-Fused": "1"}
 
 TREE_URL = "https://github.com/fusedlabs/sandbox/tree/main/Max/how_it_works"
-DEEPLINK = "fused-render://open/" + TREE_URL
+DEEPLINK = "fused-render://open?git=" + TREE_URL
 
 
 # ---- parsing -----------------------------------------------------------------
@@ -66,8 +66,13 @@ def test_parse_accepts_deeplink_prefix():
 def test_parse_accepts_percent_encoded_deeplink():
     from urllib.parse import quote
 
-    raw = "fused-render://open/" + quote(TREE_URL, safe="")
+    raw = "fused-render://open?git=" + quote(TREE_URL, safe="")
     assert parse_github_url(raw)["subpath"] == "Max/how_it_works"
+
+
+def test_parse_rejects_unknown_deeplink_action():
+    with pytest.raises(DeeplinkError, match="expected fused-render://open"):
+        parse_github_url("fused-render://frobnicate?git=" + TREE_URL)
 
 
 def test_github_url_from_passthrough():

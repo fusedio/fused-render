@@ -1484,17 +1484,21 @@ SPEC DM-7); the CLI/browser experience is unchanged.
   framework), the menu is attached as before — the app is never left
   unquittable.
 
-## 26. GitHub Deep Links — fused-render:// (M17)
+## 26. GitHub Deep Links — fused-render://open?git= (M17)
 
 A shareable link that lands a GitHub repository subdirectory in fused-render:
-`fused-render://open/https://github.com/{owner}/{repo}/tree/{ref}/{subpath}`
-— the original GitHub tree URL, verbatim, behind the scheme prefix (a link
+`fused-render://open?git=https://github.com/{owner}/{repo}/tree/{ref}/{subpath}`
+— the original GitHub tree URL, verbatim, as the `git` query param (a link
 author copies the GitHub URL and prefixes it). Clicking it launches (or
 reuses) the app, shows a confirm page, sparse-clones the subdirectory into
 `~/Documents/Fused/<subpath basename>`, and opens the folder's `index.html`
 when one exists, else the folder itself.
 
-- **DL-1** Link shape: `fused-render://open/<github URL>`. Accepted GitHub
+- **DL-1** Link shape: `fused-render://open?git=<github URL>`. The action
+  sits in host position (`open`) and payloads are query params, so future
+  payload kinds (a hosted page, a single file, …) become new params on the
+  same action instead of new grammar; the `git` value is taken verbatim to
+  end-of-string (an unencoded URL with `&`/`+` survives). Accepted GitHub
   shapes: repo root (`/{owner}/{repo}`), `/tree/{ref}`, and
   `/tree/{ref}/{subpath}`; a `.git` suffix on the repo is tolerated; the
   embedded URL may be percent-encoded. `/blob/` (single files) and non-github

@@ -1,6 +1,6 @@
-"""GitHub deep links (SPEC §26, D110): fused-render://open/<github tree URL>.
+"""GitHub deep links (SPEC §26, D110): fused-render://open?git=<github URL>.
 
-A `fused-render://open/https://github.com/{owner}/{repo}/tree/{ref}/{subpath}`
+A `fused-render://open?git=https://github.com/{owner}/{repo}/tree/{ref}/{subpath}`
 link, caught by the OS protocol registration (macOS CFBundleURLTypes /
 Windows HKCU `fused-render` URL-protocol class), lands the browser on
 `GET /clone?src=…` — a server-served confirm page. Nothing touches disk until
@@ -39,7 +39,10 @@ logger = logging.getLogger("fused_render")
 
 router = APIRouter()
 
-SCHEME_PREFIX = "fused-render://open/"
+# The action is host-position ("open"), payloads are query params — `?git=`
+# today; future payload kinds (a hosted page, a single file, …) become new
+# params on the same action instead of new grammar (owner call, D110).
+_OPEN_PREFIXES = ("fused-render://open?git=", "fused-render://open/?git=")
 
 _CLONE_PAGE = os.path.join(os.path.dirname(__file__), "static", "clone.html")
 
@@ -67,11 +70,24 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
 
 
 def github_url_from(src: str) -> str:
-    """Accept either a raw deep link (`fused-render://open/<github url>`) or a
-    bare GitHub URL, percent-encoded or not, and return the GitHub URL."""
+    """Accept either a raw deep link (`fused-render://open?git=<github url>`)
+    or a bare GitHub URL, percent-encoded or not, and return the GitHub URL.
+
+    The ?git= value is taken verbatim to end-of-string (not parse_qsl'd): the
+    embedded URL is usually unencoded, and `+`/`&` inside it must survive.
+    When more `?open` params exist, git= stays last-wins-the-rest by contract.
+    """
     src = (src or "").strip()
-    if src.lower().startswith(SCHEME_PREFIX):
-        src = src[len(SCHEME_PREFIX):]
+    low = src.lower()
+    for prefix in _OPEN_PREFIXES:
+        if low.startswith(prefix):
+            src = src[len(prefix):]
+            break
+    else:
+        if low.startswith("fused-render:"):
+            raise DeeplinkError(
+                f"unsupported fused-render link (expected fused-render://open?git=…): {src}"
+            )
     if not src.lower().startswith(("https://", "http://")) and "%" in src:
         # Some carriers (browser address bars, chat apps) percent-encode the
         # embedded URL; one decode pass recovers it.
