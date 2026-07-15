@@ -252,16 +252,15 @@ def _serve():
         return lv
 
     def _attach_reader(f, src, path):
-        """Route f's chunk reads over HTTP and drop its mmap (releases the
-        EBUSY pin; get_chunk tolerates catching the mmap mid-drop). The caller
-        spawns _prefetch_overviews once f is visible to other threads."""
+        """Route f's chunk reads over HTTP and drop its mmap reference
+        (releases the EBUSY pin once the caller closes it; get_chunk
+        tolerates catching the mmap mid-drop). Only swaps dict fields — no
+        I/O — so it's safe to call under files_lock. The caller closes the
+        returned old buffer outside the lock and spawns _prefetch_overviews
+        once f is visible to other threads."""
         f["reader"] = _RangeReader(_server_url(src, "/api/fs/raw", path))
         old, f["buf"] = f["buf"], None
-        try:
-            if old is not None:
-                old.close()
-        except Exception:  # noqa: BLE001
-            pass
+        return old
 
     def open_file(path, src=None):
         path = os.path.abspath(os.path.expanduser(path))
@@ -277,6 +276,7 @@ def _serve():
             # from the mmap as before.
             if (src and f["reader"] is None and f.get("remote") is None
                     and f["stat_lock"].acquire(blocking=False)):
+                old_buf = None
                 try:
                     remote = _stat_remote(src, path)
                     upgrade = False
@@ -284,10 +284,15 @@ def _serve():
                         if remote is not None:
                             f["remote"] = remote
                         if remote and f["reader"] is None:
-                            _attach_reader(f, src, path)
+                            old_buf = _attach_reader(f, src, path)
                             upgrade = True
                 finally:
                     f["stat_lock"].release()
+                if old_buf is not None:
+                    try:
+                        old_buf.close()
+                    except Exception:  # noqa: BLE001
+                        pass
                 if upgrade:
                     threading.Thread(target=_prefetch_overviews, args=(f,),
                                      daemon=True).start()
@@ -325,7 +330,12 @@ def _serve():
             # Mount-backed: header parse above (single-threaded, brief) can ride
             # the mmap, but the CONCURRENT chunk reads must not — route them over
             # HTTP so nothing page-faults the NFS mount.
-            _attach_reader(f, src, path)
+            old_buf = _attach_reader(f, src, path)
+            try:
+                if old_buf is not None:
+                    old_buf.close()
+            except Exception:  # noqa: BLE001
+                pass
         with files_lock:
             files[path] = f
         if f["reader"] is not None:
