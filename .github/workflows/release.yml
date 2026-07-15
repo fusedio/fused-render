@@ -6,6 +6,64 @@ on:
       - "v*"
 
 jobs:
+  build-windows-installer:
+    # Foundation only, unsigned: SmartScreen shows the "unrecognized app"
+    # prompt until code signing is added (see docs/WINDOWS_INSTALLER_PLAN.md).
+    runs-on: windows-latest
+    permissions:
+      contents: write # attach the installer to the GitHub Release
+      id-token: write # assume the AWS role via OIDC
+    env:
+      AWS_DEFAULT_REGION: us-west-2
+    steps:
+      - uses: actions/checkout@v4
+
+      # The hatch build hook builds the Vite frontend at wheel-build time.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: astral-sh/setup-uv@v4
+
+      - name: Install Inno Setup
+        # Pinned: the .iss targets 6.x directives (e.g. ArchitecturesAllowed=x64),
+        # validated locally against 6.0.5.
+        run: choco install innosetup --version=6.2.2 -y --no-progress
+
+      - name: Build installer
+        shell: pwsh
+        run: scripts/build_windows_installer.ps1
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::926411091187:role/github_fused_render_role
+          role-session-name: GithubFusedRenderWindows
+          aws-region: us-west-2
+
+      - name: Upload installer to S3 + attach to release
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem dist/*-setup.exe | Select-Object -First 1
+          $name = $exe.Name
+          $sha = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Path "dist/$name.sha256" -Value "$sha  $name"
+          aws s3 cp $exe.FullName "s3://fused-magic/fused-render-windows/$name"
+          aws s3 cp "dist/$name.sha256" "s3://fused-magic/fused-render-windows/$name.sha256"
+          # Append to the release the macOS job creates (same tag). Both jobs
+          # run in parallel, so wait for the release to exist rather than
+          # ordering the whole pipeline behind the mac job; S3 above is the
+          # durable copy regardless.
+          for ($i = 0; $i -lt 20; $i++) {
+            if (gh release view $env:GITHUB_REF_NAME 2>$null) {
+              gh release upload $env:GITHUB_REF_NAME $exe.FullName --clobber
+              exit 0
+            }
+            Start-Sleep 30
+          }
+          Write-Host "release not created yet; installer is in S3 at fused-render-windows/$name"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   build-sign-notarize-release:
     runs-on: macos-14
     permissions:
