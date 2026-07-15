@@ -135,7 +135,7 @@ function StatErrorView({
 // Stat-backed views (listing/preview): breadcrumb + content under one hook
 // component so useStat only runs when the pathname is a real fs path, not a
 // sentinel.
-function StatView({ fsPath, epoch }: { fsPath: string; epoch: number }) {
+function StatView({ fsPath, epoch, home }: { fsPath: string; epoch: number; home: string }) {
   // Bumped by StatErrorView to re-stat in place after reconnecting a mount.
   const [reloadKey, setReloadKey] = useState(0);
   const stat = useStat(fsPath, epoch, reloadKey);
@@ -182,7 +182,7 @@ function StatView({ fsPath, epoch }: { fsPath: string; epoch: number }) {
   return (
     <>
       <div id="breadcrumb">
-        <Breadcrumb fsPath={fsPath} />
+        <Breadcrumb fsPath={fsPath} home={home} />
       </div>
       <div id="content">{content}</div>
     </>
@@ -329,7 +329,7 @@ export default function App({ config }: { config: Config }) {
       </>
     );
   } else {
-    main = <StatView key={epoch + ":" + fsPath} fsPath={fsPath} epoch={epoch} />;
+    main = <StatView key={epoch + ":" + fsPath} fsPath={fsPath} epoch={epoch} home={config.home} />;
   }
 
   return (
