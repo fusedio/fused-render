@@ -234,8 +234,16 @@ export default function Account() {
       // re-issue it on every focus/visibility refresh. A background refresh
       // keeps the orgs view it already has; the probe re-runs only when
       // missing (initial load, or right after a sign-in) or when the caller
-      // forces it (reprobe — e.g. setup may have created a workspace).
-      const keptProbe = background && !reprobe ? (statusRef.current?.probe ?? null) : null;
+      // forces it (reprobe — e.g. setup may have created a workspace). The
+      // cache is only valid while logged_in held CONTINUOUSLY: across a
+      // sign-out (even one observed mid-refresh) it must drop, or a re-login
+      // — possibly as a different account — would show the previous
+      // session's orgs.
+      const prev = statusRef.current;
+      const keptProbe =
+        background && !reprobe && fast.logged_in && prev?.logged_in
+          ? (prev.probe ?? null)
+          : null;
       setStatus(keptProbe ? { ...fast, probe: keptProbe } : fast);
       setLoadError(null);
       // Same-tab sidebar dot: announce sign-in state flips observed here —

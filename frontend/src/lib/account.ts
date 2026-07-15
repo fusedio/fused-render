@@ -113,6 +113,18 @@ export function useFusedLogin(onLoggedIn: () => void) {
     } catch {
       // Best-effort: the child self-terminates on its own timeout anyway.
     }
+    // The sign-in may have COMPLETED in the gap before the cancel landed
+    // (credentials written, child already gone) — reconcile once instead of
+    // leaving a signed-in user on a signed-out view until the next refocus.
+    try {
+      const status = await getAccountStatus();
+      if (status.logged_in) {
+        notifyAccountChanged();
+        onLoggedInRef.current();
+      }
+    } catch {
+      // Unreachable server — the callers' own refresh paths converge later.
+    }
   };
 
   return { connecting, error, begin, cancel };
