@@ -1180,14 +1180,22 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
 - **TV-10** Reveal and "open in explorer" add **no new endpoints**:
   inventory's Reveal action reuses `POST /api/fs/reveal`; "open in explorer"
   is a plain shell navigation to `USER_TEMPLATES_DIR/<name>`.
-- **TV-19** `POST /api/templates/delete` **(D93)** — body `{name}`, `X-Fused`
-  guarded; deletes **one user template folder** under `USER_TEMPLATES_DIR`.
-  **Core templates are read-only and never deletable** — a core-only name
-  resolves to no user folder and 404s (the core folder is untouched); unsafe
-  names (path separators, `.`/`..`) → 400; symlinks are rejected. Registry
-  bindings are **not** rewritten — a binding that referenced the name resolves
-  broken (`exists:false`) until rebound, matching export/import being
-  folder-only. Returns `{deleted: name}`.
+- **TV-19** `POST /api/templates/delete` **(D93, D109)** — body
+  `{name, cleanRegistry?}`, `X-Fused` guarded; deletes **one user template
+  folder** under `USER_TEMPLATES_DIR`. **Core templates are read-only and
+  never deletable** — a core-only name resolves to no user folder and 404s
+  (the core folder is untouched); unsafe names (path separators, `.`/`..`) →
+  400; symlinks are rejected. With `cleanRegistry: true` (D109, default
+  false) the **user** registry is swept after the folder delete: every user
+  key whose value references the name drops it (exact match — names are not
+  lowercased like keys), and a key whose value is **emptied** by the sweep is
+  **removed entirely** (revert to core) — never left as `[]`, which means
+  *disabled* (D95). The user registry is loaded — and a corrupt file refused
+  with 400 — **before** the rmtree, so a refusal leaves the folder intact;
+  the core registry is never touched. Without the flag, bindings are left
+  as-is — a binding that referenced the name resolves broken (`exists:false`)
+  until rebound, matching export/import being folder-only. Returns
+  `{deleted: name}`, plus `registryKeysCleaned: [keys]` when the flag was set.
 - **TV-20** `POST /api/templates/new` **(D105)** — body `{name, extensions}`,
   `X-Fused` guarded; **scaffolds a new user template and binds it**. Copies the
   starter kit (`fused_render/template_starter/` — shipped in the wheel but
@@ -1324,10 +1332,13 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   — checkbox multi-select spans any rows (core or user) and drives the export
   download (`downloadTemplatesExport`, which surfaces server errors rather
   than saving a 400 body as a zip). **User** rows also get a **Delete** action
-  (never core — the source is read-only); it opens a confirm modal offering
-  "Export & delete" (downloads a recovery zip first via `downloadTemplatesExport`,
-  then deletes only if that resolves), "Delete without export", or Cancel,
-  calling `deleteTemplate` (TV-19) and refreshing on success.
+  (never core — the source is read-only); it opens a confirm modal (D109)
+  with two default-checked checkboxes — "Export zip before deleting"
+  (downloads a recovery zip first via `downloadTemplatesExport`; the delete
+  proceeds only if that resolves, keeping D92's export-first guarantee) and
+  "Remove registry bindings for this template" (sent as TV-19's
+  `cleanRegistry`) — and exactly two buttons, **Delete** (danger) and
+  **Cancel**, calling `deleteTemplate` (TV-19) and refreshing on success.
 - **TV-17** **Import wizard modal**, three steps: (1) file chooser
   (`accept=".zip"`) → `importTemplates(file)` (TV-8); (2) manifest — a
   table of staged items with a per-conflicting-item resolution selector
