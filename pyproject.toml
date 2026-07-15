@@ -65,6 +65,12 @@ app = [
     # Pinned view (SPEC §25, D97): WKWebView inside the status-item popover.
     "pyobjc-framework-WebKit",
 ]
+# System-tray controller for the Windows installer (fused_render/wintray.py) —
+# the analog of the macOS `app` extra. Only the Windows bundle installs it
+# (scripts/build_windows_installer.ps1); Pillow comes from `bundled`.
+windows = [
+    "pystray",
+]
 # Optional execution engine (D69): when installed, /api/run runs code through
 # the fused local compute backend; absent, the built-in executor runs. Pinned
 # to the same wheel `openfused_server` serves hosted pages from, so local and

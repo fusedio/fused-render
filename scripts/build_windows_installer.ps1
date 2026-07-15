@@ -96,9 +96,20 @@ if (-not (Test-Path $bundlePyw)) { Die "bundle pythonw.exe missing at $bundlePyw
 $marker = Join-Path $PyRoot "Lib\EXTERNALLY-MANAGED"
 if (Test-Path $marker) { Remove-Item -Force $marker }
 
+# Isolate the interpreter: a pythonNN._pth makes CPython ignore PYTHONPATH,
+# PYTHONHOME, and per-user site-packages, and pins sys.path to the bundle. A
+# user's global PYTHONPATH (or a foreign C:\PythonXX) otherwise leaks in — and
+# can mix another version's stdlib into this one. `import site` keeps .pth
+# processing (pywin32 etc.). Applies to the internal sys.executable re-spawns
+# (server, executor child) too, since they run this same interpreter.
+$pth = Join-Path $PyRoot "python312._pth"
+Set-Content -Path $pth -Encoding ascii -Value @(
+    "python312.zip", "DLLs", "Lib", ".", "Lib\site-packages", "import site"
+)
+
 # --- 3. install the wheel + extras into the bundle ---------------------------
-Step "installing $($wheel.Name)[bundled,fused] into the bundle"
-& uv pip install --python $bundlePy "$wheelPath[bundled,fused]"
+Step "installing $($wheel.Name)[bundled,fused,windows] into the bundle"
+& uv pip install --python $bundlePy "$wheelPath[bundled,fused,windows]"
 if ($LASTEXITCODE -ne 0) { Die "uv pip install failed" }
 # Force a fresh reinstall of fused-render itself so a reused bundle picks up
 # this build's _baked_branch.py (same reasoning as build_dmg.sh).

@@ -65,9 +65,10 @@ Source: "{#BundleDir}\python\*"; DestDir: "{app}\python"; Flags: recursesubdirs 
 Type: filesandordirs; Name: "{app}\python"
 
 [Icons]
-; Windowless launch (pythonw) so the Start Menu entry never flashes a console;
-; no file arg = open the home directory.
-Name: "{group}\{#AppName}"; Filename: "{app}\python\pythonw.exe"; Parameters: "-m fused_render.winopen"; IconFilename: "{#IconFile}"
+; Windowless launch (pythonw) so the Start Menu entry never flashes a console.
+; The tray starts (or reuses) the server, opens the browser, and offers a
+; Stop-and-quit; the file associations still use winopen directly.
+Name: "{group}\{#AppName}"; Filename: "{app}\python\pythonw.exe"; Parameters: "-m fused_render.wintray"; IconFilename: "{#IconFile}"
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 
 [Run]
@@ -82,5 +83,9 @@ Filename: "{app}\python\python.exe"; Parameters: "-m fused_render.winopen --regi
 Filename: "{app}\python\python.exe"; Parameters: "-m fused_render.winopen --unregister"; Flags: runhidden; RunOnceId: "UnregisterFusedRender"
 
 [UninstallDelete]
+; Inno only removes files it installed; the bundled interpreter writes .pyc
+; caches under {app}\python at runtime that aren't in the log. Sweep the whole
+; install tree so uninstall leaves nothing behind.
+Type: filesandordirs; Name: "{app}"
 ; Runtime-created state Inno's uninstall log doesn't track (pidfiles, logs).
 Type: filesandordirs; Name: "{localappdata}\fused-render"
