@@ -61,10 +61,20 @@ def _within(root, target):
     return target == root or target.startswith(root + os.sep)
 
 
-def _extract_one(zf, info, dest_root):
+def _extract_one(zf, info, dest_root, readonly=False):
     """Write one member under dest_root, preserving its in-archive relative path.
     Returns the written file's absolute path, or None for a directory member.
-    Refuses any member whose resolved path would escape dest_root."""
+    Refuses any member whose resolved path would escape dest_root.
+
+    `readonly` is the preview mode: the copy lands 0444 (a preview copy is a
+    throwaway — an edit "saved" to it never reaches the archive, so the
+    permission bit routes it through the app's read-only contract). It is
+    written to a unique temp file and os.replace'd into place, so a stale
+    read-only copy from an earlier preview is swapped out without an unlink
+    window and a concurrent preview of the same member never observes a
+    half-written or permission-flapping file. Plain extraction keeps the
+    original open("wb") semantics — including failing loudly (EACCES) on a
+    write-protected existing file rather than silently replacing it."""
     # ZIP names should use "/", but some tools emit "\"; normalize and split so
     # such members nest into real subdirectories (and so a leading "/" or empty
     # segment can't smuggle a path). getinfo/open still use the original info.
@@ -76,12 +86,22 @@ def _extract_one(zf, info, dest_root):
         os.makedirs(target, exist_ok=True)
         return None
     os.makedirs(os.path.dirname(target) or dest_root, exist_ok=True)
-    # A previous preview of this member left a read-only copy (see _preview);
-    # open("wb") on it would fail with EACCES, so replace it instead.
-    if os.path.exists(target) and not os.access(target, os.W_OK):
-        os.unlink(target)
-    with zf.open(info) as src, open(target, "wb") as dst:
-        shutil.copyfileobj(src, dst)
+    if not readonly:
+        with zf.open(info) as src, open(target, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        return os.path.realpath(target)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(target) or dest_root)
+    try:
+        with zf.open(info) as src, os.fdopen(fd, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        os.chmod(tmp, 0o444)
+        os.replace(tmp, target)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     return os.path.realpath(target)
 
 
@@ -106,14 +126,7 @@ def _preview(zf, file, entry):
     info = _getinfo(zf, entry)
     if info.is_dir():
         return {"is_dir": True}
-    target = _extract_one(zf, info, _preview_root(file))
-    # The copy is a throwaway — an edit "saved" to it never reaches the
-    # archive — so mark it read-only. The whole editability contract (SPEC
-    # 13.5) keys off the permission bit: stat.writable goes false, templates
-    # open in read-only mode, /api/fs/write refuses. Deliberate extract/
-    # extract_all output stays writable.
-    if target is not None:
-        os.chmod(target, 0o444)
+    target = _extract_one(zf, info, _preview_root(file), readonly=True)
     return {"path": target, "size": info.file_size}
 
 

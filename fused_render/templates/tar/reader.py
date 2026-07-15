@@ -112,7 +112,38 @@ def _list_single(file):
 
 # --- extraction helpers ----------------------------------------------------
 
-def _extract_member(tf, member, dest_root):
+def _write_target(src, target, dest_root, readonly):
+    """Stream `src` to `target` and return the real path.
+
+    `readonly` is the preview mode: the copy lands 0444 (a preview copy is a
+    throwaway — an edit "saved" to it never reaches the archive, so the
+    permission bit routes it through the app's read-only contract). It is
+    written to a unique temp file and os.replace'd into place, so a stale
+    read-only copy from an earlier preview is swapped out without an unlink
+    window and a concurrent preview of the same member never observes a
+    half-written or permission-flapping file. Plain extraction keeps the
+    original open("wb") semantics — including failing loudly (EACCES) on a
+    write-protected existing file rather than silently replacing it."""
+    if not readonly:
+        with src, open(target, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        return os.path.realpath(target)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(target) or dest_root)
+    try:
+        with src, os.fdopen(fd, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        os.chmod(tmp, 0o444)
+        os.replace(tmp, target)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return os.path.realpath(target)
+
+
+def _extract_member(tf, member, dest_root, readonly=False):
     """Write one tar member under dest_root, preserving its relative path.
     Returns the written file's absolute path, or None for a directory or a
     skipped non-regular member. Refuses any member that escapes dest_root."""
@@ -130,21 +161,18 @@ def _extract_member(tf, member, dest_root):
     src = tf.extractfile(member)
     if src is None:
         return None
-    with src, open(target, "wb") as dst:
-        shutil.copyfileobj(src, dst)
-    return os.path.realpath(target)
+    return _write_target(src, target, dest_root, readonly)
 
 
-def _extract_single(file, dest_root):
+def _extract_single(file, dest_root, readonly=False):
     """Decompress a plain compressed file into dest_root under its inner name."""
     name = _single_name(file)
     target = os.path.join(dest_root, name)
     if not _within(dest_root, target):
         raise ValueError(f"unsafe path in archive (path traversal): {name!r}")
     os.makedirs(os.path.dirname(target) or dest_root, exist_ok=True)
-    with _single_opener(file)(file, "rb") as src, open(target, "wb") as dst:
-        shutil.copyfileobj(src, dst)
-    return os.path.realpath(target)
+    return _write_target(_single_opener(file)(file, "rb"), target, dest_root,
+                         readonly)
 
 
 def _preview_root(file):
@@ -183,13 +211,13 @@ def _member(tf, entry):
 def _preview(file, entry):
     tf = _open_tar(file)
     if tf is None:
-        target = _extract_single(file, _preview_root(file))
+        target = _extract_single(file, _preview_root(file), readonly=True)
         return {"path": target, "size": os.path.getsize(target)}
     with tf:
         member = _member(tf, entry)
         if member.isdir():
             return {"is_dir": True}
-        target = _extract_member(tf, member, _preview_root(file))
+        target = _extract_member(tf, member, _preview_root(file), readonly=True)
         if target is None:
             raise ValueError(f"cannot preview non-file member: {entry}")
         return {"path": target, "size": member.size}

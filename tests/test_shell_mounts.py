@@ -1023,7 +1023,7 @@ def test_upstream_url_prefers_presigned_link(home, rcd, fresh_upstream):
 
     rcd.responses["operations/publiclink"] = {"url": "https://signed.example/x?sig=1"}
     c = mounts_mod.add_mount("data", "remote:bucket")
-    f = _os.path.join(mounts_mod.mountpoint(c), "a", "b.parquet")
+    f = os.path.join(mounts_mod.mountpoint(c), "a", "b.parquet")
     assert mounts_mod.upstream_url_for(f) == "https://signed.example/x?sig=1"
     [(_, body)] = [x for x in rcd.calls if x[0] == "operations/publiclink"]
     assert body["fs"] == "remote:bucket" and body["remote"] == "a/b.parquet"
@@ -1043,7 +1043,7 @@ def test_upstream_url_public_s3_when_link_unsupported(home, rcd, fresh_upstream)
         "type": "s3", "provider": "AWS", "env_auth": "false",
         "region": "us-west-2"}
     c = mounts_mod.add_mount("data", "aws-open:bucket/pre fix")
-    f = _os.path.join(mounts_mod.mountpoint(c), "k ey.parquet")
+    f = os.path.join(mounts_mod.mountpoint(c), "k ey.parquet")
     assert mounts_mod.upstream_url_for(f) == (
         "https://bucket.s3.us-west-2.amazonaws.com/pre%20fix/k%20ey.parquet")
 
@@ -1056,7 +1056,7 @@ def test_upstream_url_none_is_remembered(home, rcd, fresh_upstream):
     rcd.responses["operations/publiclink"] = (500, {"error": "boom"})
     rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
     c = mounts_mod.add_mount("data", "corp:bucket")
-    f = _os.path.join(mounts_mod.mountpoint(c), "x.parquet")
+    f = os.path.join(mounts_mod.mountpoint(c), "x.parquet")
     assert mounts_mod.upstream_url_for(f) is None
     assert mounts_mod.upstream_url_for(f) is None
     assert len([x for x in rcd.calls if x[0] == "operations/publiclink"]) == 1
@@ -1155,10 +1155,11 @@ def test_api_run_rewrites_raw_source_url_to_direct(
 # A mount's writability is a property of the REMOTE (anonymous S3 can never
 # take a write; an :http: backend has no write verbs at all), but the kernel
 # mount can't say so: with CacheMode=full a write "succeeds" into the local
-# VFS cache and only fails at async upload. So attach_mount detects
-# read-onlyness once, non-mutatingly, via rc (fsinfo features + remote
-# config) and persists it on the mount record; server._writable consults it
-# through mount_read_only().
+# VFS cache and only fails at async upload. So every attach re-detects
+# read-onlyness non-mutatingly via rc (fsinfo features + remote config) and
+# persists it on the mount record — unless the user chose the flag at create
+# (read_only_user), which detection never overrides. Inconclusive probes
+# persist nothing. server._writable consults the flag via mount_read_only().
 
 FSINFO_RW = {"Features": {"Put": True, "PutStream": True, "Copy": True}}
 FSINFO_RO = {"Features": {"Put": False, "PutStream": False, "Copy": False}}
@@ -1192,18 +1193,52 @@ def test_attach_marks_putless_backend_read_only(home, rcd):
     assert _attached("web", "web:")["read_only"] is True
 
 
-def test_attach_defaults_writable_when_undetectable(home, rcd):
-    # Neither probe answers (stub 404s both) — stay rw, the pre-detection
-    # behavior, rather than locking a healthy credentialed mount.
-    assert _attached("data", "remote:bucket")["read_only"] is False
+def test_attach_persists_nothing_when_probe_inconclusive(home, rcd):
+    # Neither probe answers (stub 404s both) — persist NO verdict: the mount
+    # stays rw (the pre-flag behavior) and the next attach re-probes, so a
+    # transient rcd hiccup at first attach can't freeze a wrong answer.
+    m = _attached("data", "remote:bucket")
+    assert "read_only" not in m
+    # The probes come back — the same mount converges on the next attach.
+    rcd.responses["operations/fsinfo"] = FSINFO_RO
+    rcd.responses["config/get"] = {"type": "http"}
+    assert mounts_mod.attach_mount(m) is None
+    assert mounts_mod.get_mount(m["id"])["read_only"] is True
 
 
-def test_explicit_read_only_flag_skips_detection(home, rcd):
+def test_attach_treats_missing_features_as_inconclusive(home, rcd):
+    # fsinfo answering WITHOUT a Features map is version skew, not evidence
+    # of read-onlyness — a writable remote must not get locked by it.
+    rcd.responses["operations/fsinfo"] = {"Name": "remote"}
+    rcd.responses["config/get"] = (404, {"error": "config not found"})
+    assert "read_only" not in _attached("data", "remote:bucket")
+
+
+def test_reattach_redetects_when_credentials_change(home, rcd):
+    # Detected (not user-set) flags follow the remote: an anonymous S3 mount
+    # flagged read-only flips back once credentials appear in its config.
+    rcd.responses["operations/fsinfo"] = FSINFO_RW
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "false"}
+    m = _attached("pub", "aws-open:bucket")
+    assert m["read_only"] is True
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
+    assert mounts_mod.attach_mount(m) is None
+    assert mounts_mod.get_mount(m["id"])["read_only"] is False
+
+
+def test_explicit_read_only_flag_never_redetected(home, rcd):
     rcd.responses["operations/fsinfo"] = FSINFO_RO  # would detect read-only
     rcd.responses["config/get"] = {"type": "http"}
     m = mounts_mod.add_mount("web", "web:", read_only=False)
     assert mounts_mod.attach_mount(m) is None
     assert mounts_mod.get_mount(m["id"])["read_only"] is False
+
+
+def test_add_mount_rejects_non_bool_read_only(home):
+    # Straight off a JSON body: bool("false") is True, so anything but a real
+    # boolean (or None) must be refused, not coerced.
+    with pytest.raises(ValueError):
+        mounts_mod.add_mount("pub", "aws-open:bucket", read_only="false")
 
 
 def test_mount_read_only_path_lookup(home):

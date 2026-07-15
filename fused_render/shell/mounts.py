@@ -189,6 +189,14 @@ def _write(mounts: list) -> None:
     storage.write_json(_path(), mounts)
 
 
+# mounts.json writers are all read-modify-write of the whole list, and they
+# now run on two threads: the HTTP handlers (create/delete) and the startup
+# automount daemon thread (attach_mount persisting a detected read_only
+# flag). Unserialized, one writer's stale snapshot silently drops the
+# other's record.
+_store_lock = threading.Lock()
+
+
 def mountpoint(m: dict) -> str:
     return os.path.join(mounts_dir(), m["name"])
 
@@ -200,8 +208,9 @@ def add_mount(name: str, remote: str, read_only: bool | None = None) -> dict:
     per-mount opt-in.
 
     `read_only` marks the remote as rejecting writes (stat.writable goes
-    false for everything under the mountpoint — see server._writable). Leave
-    it None to have attach_mount detect it from the remote's config."""
+    false for everything under the mountpoint — see server._writable). An
+    explicit value is the user's call and is never overwritten by detection;
+    leave it None to have attach_mount detect it from the remote's config."""
     name = (name or "").strip()
     remote = (remote or "").strip()
     if not name or any(ch in name for ch in "/\\:") or name.startswith("."):
@@ -210,22 +219,32 @@ def add_mount(name: str, remote: str, read_only: bool | None = None) -> dict:
         raise ValueError(
             "remote must be an rclone spec like 'gdrive:' or 's3remote:bucket/prefix'"
         )
-    mounts = list_mounts()
-    if any(c["name"] == name for c in mounts):
-        raise ValueError(f"a mount named '{name}' already exists")
-    if any(c["remote"] == remote for c in mounts):
-        raise ValueError(f"'{remote}' is already connected")
-    m: dict = {"id": uuid.uuid4().hex[:12], "name": name, "remote": remote}
-    if read_only is not None:
-        m["read_only"] = bool(read_only)
-    mounts.append(m)
-    _write(mounts)
+    # Strict bool, not truthiness: this comes straight off a JSON body, and
+    # bool("false") is True — a client sending the string would lock a
+    # writable mount read-only AND suppress detection forever.
+    if read_only is not None and not isinstance(read_only, bool):
+        raise ValueError("read_only must be a boolean")
+    with _store_lock:
+        mounts = list_mounts()
+        if any(c["name"] == name for c in mounts):
+            raise ValueError(f"a mount named '{name}' already exists")
+        if any(c["remote"] == remote for c in mounts):
+            raise ValueError(f"'{remote}' is already connected")
+        m: dict = {"id": uuid.uuid4().hex[:12], "name": name, "remote": remote}
+        if read_only is not None:
+            m["read_only"] = read_only
+            # Marks the flag as user-chosen so attach-time re-detection
+            # leaves it alone (mount_view never exposes this field).
+            m["read_only_user"] = True
+        mounts.append(m)
+        _write(mounts)
     return m
 
 
 def _update_mount(m: dict) -> None:
     """Persist changed fields of an existing mount record (matched by id)."""
-    _write([m if c["id"] == m["id"] else c for c in list_mounts()])
+    with _store_lock:
+        _write([m if c["id"] == m["id"] else c for c in list_mounts()])
 
 
 def get_mount(cid: str) -> dict | None:
@@ -233,7 +252,8 @@ def get_mount(cid: str) -> dict | None:
 
 
 def remove_mount(cid: str) -> None:
-    _write([c for c in list_mounts() if c["id"] != cid])
+    with _store_lock:
+        _write([c for c in list_mounts() if c["id"] != cid])
 
 
 # -------------------------------------------------------------- rcd client
@@ -399,66 +419,115 @@ def _http_serves(port: int) -> dict:
 _serves_lock = threading.Lock()
 
 
+# Read-only mountpoints, cached on mounts.json's mtime: mount_read_only sits
+# on the stat/write hot path (server._writable runs on every /api/fs/stat),
+# so it must not re-read and re-parse the store per call the way
+# list_mounts() does. One os.stat per call in the steady state.
+_ro_cache_lock = threading.Lock()
+_ro_cache: tuple | None = None  # (mounts.json mtime, [abs read-only mountpoints])
+
+
+def _read_only_mountpoints() -> list:
+    global _ro_cache
+    try:
+        mt = os.path.getmtime(_path())
+    except OSError:
+        return []
+    with _ro_cache_lock:
+        if _ro_cache is None or _ro_cache[0] != mt:
+            _ro_cache = (mt, [os.path.abspath(mountpoint(c))
+                              for c in list_mounts() if c.get("read_only")])
+        return _ro_cache[1]
+
+
 def mount_read_only(path: str) -> bool:
     """True when `path` sits under a mount whose remote rejects writes (the
-    persisted `read_only` flag, detected at attach or set at create). The
+    persisted `read_only` flag: detected at attach, or set at create). The
     kernel mount can't answer this itself: with CacheMode=full a write
     "succeeds" into the local VFS cache and only fails at the async upload,
     so os.access(W_OK) reports writable on a remote that will never take the
     bytes. server._writable folds this in, which flips stat.writable and the
     /api/fs/write guard together (SPEC RO-1). A record without the flag
-    (legacy, or detection unavailable) stays rw — the pre-flag behavior."""
+    (legacy, or detection still inconclusive) stays rw — the pre-flag
+    behavior. Deliberately ignores whether the mount is currently attached:
+    a file written into a detached read-only mountpoint would be shadowed by
+    the next attach, so refusing the write is right either way."""
     if not is_mount_backed(path):
         return False
-    m, _ = _mount_for(path)
-    return bool(m and m.get("read_only"))
+    p = os.path.abspath(path)
+    return any(p == mp or p.startswith(mp + os.sep)
+               for mp in _read_only_mountpoints())
 
 
-def _detect_read_only(port: int, fs: str) -> bool:
+def _s3_without_credentials(cfg: dict) -> bool:
+    """An S3 remote config carrying no way to sign requests — rclone sends
+    them unsigned, which S3 accepts for public-bucket reads only (the
+    built-in aws-open suggestion is exactly this shape). Shared predicate:
+    _public_object_url decides "public URL is reachable unsigned" with it
+    and _detect_read_only decides "writes can never be accepted"; keep the
+    definition single so the two can't drift."""
+    return (cfg.get("type") == "s3"
+            and str(cfg.get("env_auth", "")).lower() != "true"
+            and not (cfg.get("access_key_id") or cfg.get("profile")
+                     or cfg.get("shared_credentials_file")
+                     or cfg.get("session_token")))
+
+
+def _detect_read_only(port: int, fs: str) -> bool | None:
     """Best-effort, NON-MUTATING read-onlyness probe for a remote. Never
     writes a probe object into the user's store; instead:
       - operations/fsinfo: a backend advertising no write feature at all
         (Put/PutStream/Copy — e.g. http) can never take a write.
-      - config/get: an anonymous S3 remote (no keys, no env_auth, no
-        profile — the built-in aws-open public-buckets suggestion) sends
-        unsigned requests, which S3 accepts for reads only.
-    Everything else — including credentials that an IAM policy limits to
-    read — reports writable; only a real write could tell, and probing with
-    one would drop junk objects into user buckets."""
+      - config/get: an anonymous S3 remote (see _s3_without_credentials).
+    Returns None when the probe is INCONCLUSIVE — an rc call failed, or the
+    reply didn't carry the expected shape (absence of a Features map is
+    version skew, not evidence of read-onlyness) — so the caller persists
+    nothing and the next attach tries again. Credentials an IAM policy
+    limits to read still report writable: only a real write could tell, and
+    probing with one would drop junk objects into user buckets."""
     try:
         feats = (_rc(port, "operations/fsinfo", {"fs": fs}, timeout=10)
-                 or {}).get("Features") or {}
-        if not any(feats.get(k) for k in ("Put", "PutStream", "Copy")):
-            return True
+                 or {}).get("Features")
     except RuntimeError:
-        pass
+        return None
+    if not isinstance(feats, dict) or not feats:
+        return None
+    if not any(feats.get(k) for k in ("Put", "PutStream", "Copy")):
+        return True
     try:
         cfg = _rc(port, "config/get", {"name": fs.partition(":")[0]}, timeout=10)
     except RuntimeError:
-        return False
-    if not isinstance(cfg, dict) or cfg.get("type") != "s3":
-        return False
-    has_creds = (str(cfg.get("env_auth", "")).lower() == "true"
-                 or cfg.get("access_key_id") or cfg.get("profile")
-                 or cfg.get("shared_credentials_file")
-                 or cfg.get("session_token"))
-    return not has_creds
+        return None
+    if not isinstance(cfg, dict):
+        return None
+    return _s3_without_credentials(cfg)
 
 
-def _ensure_read_only_flag(m: dict, port: int | None) -> None:
-    """Detect and persist `read_only` for a mount that doesn't carry the flag
-    yet (fresh create without an explicit choice, or a legacy record).
-    Best-effort: with no live rcd or a failing probe the record stays
-    unflagged and gets another chance at the next attach."""
-    if "read_only" in m or port is None:
-        return
+def _refresh_read_only_flag(m: dict, port: int | None = None) -> None:
+    """(Re-)detect and persist `read_only` on every attach, so a remote whose
+    credentials changed since the last detection (keys added to an
+    anonymous remote, or removed) converges without deleting the mount. A
+    user-set flag (read_only_user, add_mount) is never overwritten, and an
+    inconclusive probe (None) keeps whatever is recorded. Never raises —
+    attach_mount's "error string or None" contract must hold even when
+    persisting the flag fails."""
     try:
-        m["read_only"] = _detect_read_only(port, m["remote"])
+        if m.get("read_only_user"):
+            return
+        if port is None:
+            # Resolved only past the user-flag check: this is an rc probe
+            # with a timeout, not worth paying when the answer is fixed.
+            port = _live_rcd_port()
+        if port is None:
+            return
+        ro = _detect_read_only(port, m["remote"])
+        if ro is None or ro == m.get("read_only"):
+            return
+        m["read_only"] = ro
+        _update_mount(m)
     except Exception:
-        logger.warning("read-only detection for %r failed", m["name"],
+        logger.warning("read-only detection for %r failed", m.get("name"),
                        exc_info=True)
-        return
-    _update_mount(m)
 
 
 def is_mount_backed(path: str) -> bool:
@@ -529,9 +598,8 @@ def _public_object_url(fs: str, rel: str) -> str | None:
         cfg = _rc(port, "config/get", {"name": name}, timeout=10)
     except RuntimeError:
         return None
-    if (not isinstance(cfg, dict) or cfg.get("type") != "s3"
-            or str(cfg.get("env_auth", "")).lower() == "true"
-            or cfg.get("access_key_id") or cfg.get("endpoint")):
+    if (not isinstance(cfg, dict) or not _s3_without_credentials(cfg)
+            or cfg.get("endpoint")):
         return None
     bucket, _, prefix = root.partition("/")
     if not bucket:
@@ -668,7 +736,7 @@ def attach_mount(m: dict) -> str | None:
         # without one, /api/fs/raw silently falls back to reads through the
         # wedge-prone kernel mount.
         sync_serves()
-        _ensure_read_only_flag(m, _live_rcd_port())
+        _refresh_read_only_flag(m)
         return None
     try:
         port = ensure_rcd()
@@ -688,7 +756,7 @@ def attach_mount(m: dict) -> str | None:
     except RuntimeError as e:
         return str(e)
     sync_serves()
-    _ensure_read_only_flag(m, port)
+    _refresh_read_only_flag(m, port)
     return None
 
 
@@ -1088,9 +1156,9 @@ def create_mount(body: dict = Body(...), x_fused: str | None = Header(default=No
     try:
         # An explicit read_only in the body wins over attach-time detection —
         # the caller knows their credentials better than the probe does.
-        ro = body.get("read_only")
+        # add_mount validates it (strict bool or absent).
         m = add_mount(body.get("name") or "", body.get("remote") or "",
-                      read_only=None if ro is None else bool(ro))
+                      read_only=body.get("read_only"))
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     err = attach_mount(m)
