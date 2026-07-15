@@ -224,6 +224,24 @@ def _view_url_path(fs_path: str) -> str:
     return "/view/" + "/".join(segments)
 
 
+def _default_branch(dest: str) -> str:
+    """The remote's default branch name ('main'), from the origin/HEAD symref
+    a clone records; `remote set-head --auto` repairs a clone missing it."""
+    try:
+        short = _git(["-C", dest, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+    except DeeplinkError:
+        _git(["-C", dest, "remote", "set-head", "origin", "--auto"])
+        short = _git(["-C", dest, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+    return short.strip().split("/", 1)[1]
+
+
+def _is_sparse(dest: str) -> bool:
+    try:
+        return _git(["-C", dest, "config", "--get", "core.sparseCheckout"]).strip() == "true"
+    except DeeplinkError:
+        return False
+
+
 def _on_branch(dest: str) -> bool:
     """True when HEAD is a symbolic ref (a checked-out branch); False for the
     detached HEAD a tag or commit-SHA ref leaves behind."""
@@ -330,6 +348,16 @@ def clone_or_pull(spec: dict) -> dict:
         _git(["-C", dest, "fetch", "--tags", "origin"])
         if spec["ref"]:
             _git(["-C", dest, "checkout", spec["ref"], "--"])
+        elif not _on_branch(dest):
+            # Ref-less link onto a detached clone (a prior tag/SHA link left
+            # it there): "no ref" means the default branch, not "stay put" —
+            # a silent fetch-only would report updated while changing nothing.
+            _git(["-C", dest, "checkout", _default_branch(dest), "--"])
+        if spec["subpath"] and _is_sparse(dest):
+            # Same repo, different subdir sharing this basename: widen the
+            # sparse cone additively so the link's path materializes; earlier
+            # links' paths stay checked out (add, never a replacing `set`).
+            _git(["-C", dest, "sparse-checkout", "add", "--", spec["subpath"]])
         if _on_branch(dest):
             _git(["-C", dest, "pull", "--ff-only"])
         updated = True

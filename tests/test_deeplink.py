@@ -254,6 +254,36 @@ def test_update_switches_to_link_ref(env, source_repo):
     assert (env / "how_it_works" / "Max" / "how_it_works" / "feature.txt").is_file()
 
 
+def test_root_link_after_tag_link_returns_to_default_branch(env, source_repo):
+    _git("tag", "v1", cwd=source_repo)
+    # tag link without subpath -> dest name is the repo, detached HEAD
+    clone_or_pull(parse_github_url("https://github.com/fusedlabs/sandbox/tree/v1"))
+    (source_repo / "later.txt").write_text("post-tag")
+    _git("add", "-A", cwd=source_repo)
+    _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "later", cwd=source_repo)
+    # ref-less root link must land on the default branch tip, not stay detached
+    result = clone_or_pull(parse_github_url("https://github.com/fusedlabs/sandbox"))
+    assert result["updated"] is True
+    assert (env / "sandbox" / "later.txt").is_file()
+
+
+def test_update_widens_sparse_cone_for_new_subpath(env, source_repo):
+    other = source_repo / "Other" / "how_it_works"
+    other.mkdir(parents=True)
+    (other / "other.txt").write_text("o")
+    _git("add", "-A", cwd=source_repo)
+    _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "other", cwd=source_repo)
+    clone_or_pull(parse_github_url(TREE_URL))
+    # same repo + same basename, different subdir -> same dest; cone must widen
+    result = clone_or_pull(
+        parse_github_url("https://github.com/fusedlabs/sandbox/tree/main/Other/how_it_works")
+    )
+    assert result["target"].endswith(os.path.join("Other", "how_it_works"))
+    assert (env / "how_it_works" / "Other" / "how_it_works" / "other.txt").is_file()
+    # the first link's path stays materialized (add, not a replacing set)
+    assert (env / "how_it_works" / "Max" / "how_it_works" / "index.html").is_file()
+
+
 def test_repo_slug_matches_https_and_ssh_forms():
     from fused_render.deeplink import _repo_slug
 

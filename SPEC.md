@@ -1544,8 +1544,13 @@ when one exists, else the folder itself.
   silent pull of the old one; refs check out after a `--no-checkout` clone,
   never via `--branch`, so commit SHAs work), then `pull --ff-only` iff that
   left HEAD on a branch (a tag/SHA is detached: SHA no-op, moved tag lands
-  on its new target). A dirty or diverged tree
-  surfaces git's own error and local edits are never clobbered. A destination
-  that exists but is not a clone of that repo is refused, never overwritten.
+  on its new target). A ref-less link onto a detached clone checks out the
+  remote's default branch (origin/HEAD) — "no ref" means the default branch,
+  never a silent stay-put. A same-repo link whose subdir shares the basename
+  widens the sparse cone additively (`sparse-checkout add`) so its path
+  materializes without unchecking earlier links' paths. A dirty or diverged
+  tree surfaces git's own error and local edits are never clobbered. A
+  destination that exists but is not a clone of that repo is refused, never
+  overwritten.
 - **DL-6** Open target: `<dest>/<subpath>/index.html` when present, else the
   subdirectory itself, via the standard `/view/` URL codec.
