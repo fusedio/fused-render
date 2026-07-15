@@ -310,7 +310,7 @@ export default function App({ config }: { config: Config }) {
       </>
     );
   } else if (isAccount) {
-    // Fused account (docs/PLAN-fused-account.md M18a): in-app sign-in/out for
+    // Fused account (SPEC §27, AC-1): in-app sign-in/out for
     // the fused CLI — same sentinel pattern as _prefs. /view only.
     main = (
       <>

@@ -853,7 +853,7 @@ export default function Sidebar({ config }: SidebarProps) {
           <span className="prefs-label">Mounts</span>
         </button>
         {/* Fused account entry — in-app sign-in/out, /view/_account
-            (docs/PLAN-fused-account.md, SPEC AC-1). The green dot is the
+            (SPEC AC-1). The green dot is the
             signed-in signal, same affordance as the preview header's
             deploy dot. */}
         <button

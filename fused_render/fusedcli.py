@@ -7,9 +7,9 @@ error mapping) and "what does the fused CLI's own on-disk state say?"
 orchestration of its own — deploy.py runs `fused share …`, account.py runs
 `fused cloud …`; both build their child processes from these primitives.
 
-Split out of deploy.py when the account surface landed (see
-docs/PLAN-fused-account.md): the two routers must stay mutually acyclic,
-and neither may import server.py (server includes both routers).
+Split out of deploy.py when the account surface landed (SPEC §27, DECISIONS
+D112): the two routers must stay mutually acyclic, and neither may import
+server.py (server includes both routers).
 """
 from __future__ import annotations
 

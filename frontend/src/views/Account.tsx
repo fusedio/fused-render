@@ -1,5 +1,5 @@
 // Fused account page — the `/view/_account` sentinel route, entered from the
-// sidebar footer (docs/PLAN-fused-account.md M18a). The in-app home of the
+// sidebar footer (SPEC §27, AC-1). The in-app home of the
 // one-time `fused cloud login` the Deploy surface needs, plus sign-out — no
 // more copying CLI commands into a terminal. Everything real happens
 // server-side (fused_render/account.py drives the fused CLI; credentials

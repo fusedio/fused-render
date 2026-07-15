@@ -1,5 +1,5 @@
 // The in-app Fused sign-in flow, shared by the Account page and the Deploy
-// modal (account.py; docs/PLAN-fused-account.md M18a).
+// modal (account.py; SPEC §27, AC-3/AC-4).
 //
 // begin() asks the server to spawn `fused cloud login --no-browser`, opens
 // the returned authorize URL in a new tab (the browser side is always the

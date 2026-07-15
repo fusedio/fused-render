@@ -1602,9 +1602,9 @@ Goal: remove §19's remaining copy-a-terminal-command dead ends. Sign-in
 §1 non-goals stand — this surface manages the **fused CLI's own** credentials
 on the user's machine for deploy targets, and every mutation is a
 `fused cloud …` / `fused env …` child process through the DP-3 seam
-(fusedcli.py). Design and prior-art mapping: `docs/PLAN-fused-account.md`;
-the mechanics port the flow app's connect-fused surface (flow repo,
-`spec/app/connect-fused.md`). Scope line (deliberate, same as flow's): the
+(fusedcli.py). The mechanics port the flow app's connect-fused surface (flow
+repo, `spec/app/connect-fused.md`); the design rationale is in DECISIONS.md
+(D111/D112). Scope line (deliberate, same as flow's): the
 in-app path covers the **managed `fused` backend** only — self-hosted AWS
 provisioning stays a documented terminal flow.
 

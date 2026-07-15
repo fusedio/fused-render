@@ -4,7 +4,8 @@ The Deploy surface (deploy.py) needs a signed-in Fused account before a
 managed-env publish can work; until now the app punted the one-time
 `fused cloud login` to a terminal. This router does it in place, porting the
 flow app's proven mechanics (flow repo, app/src/server/cloud.ts + spec
-spec/app/connect-fused.md — see docs/PLAN-fused-account.md):
+spec/app/connect-fused.md). The normative contract is SPEC §27 (AC-1…AC-11),
+with the design rationale in DECISIONS.md D111/D112:
 
   * **Login is the CLI's own browser flow, embedded.** POST /api/account/login
     spawns `fused cloud login --no-browser` (Auth0 Authorization-Code + PKCE;

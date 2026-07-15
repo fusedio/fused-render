@@ -560,7 +560,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fsPath]);
 
-  // In-app sign-in for the managed backend (docs/PLAN-fused-account.md M18a):
+  // In-app sign-in for the managed backend (SPEC §27, AC-9):
   // replaces the old "run `fused cloud login` in a terminal" guidance. The
   // warning flips off immediately on the poll's own confirmation — the
   // background reload just refreshes the rest, and its failure self-heals on

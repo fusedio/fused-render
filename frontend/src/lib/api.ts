@@ -420,7 +420,7 @@ export function revokeMount(env: string, token: string): Promise<void> {
   return postJson<unknown>("/api/deploy/revoke", { env, token }).then(() => undefined);
 }
 
-// -- Fused account (account.py; docs/PLAN-fused-account.md M18a) ---------------
+// -- Fused account (account.py; SPEC §27) -------------------------------------
 
 // One org/env the signed-in account can target (`fused cloud orgs`).
 export interface AccountOrg {
