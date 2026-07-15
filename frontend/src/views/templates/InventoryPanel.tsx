@@ -8,19 +8,18 @@ import {
 } from "../../lib/api";
 import type { InventoryTemplate, TemplateInventory } from "../../lib/api";
 import { navigate } from "../../lib/router";
-import { NewTemplateModal } from "./NewTemplateModal";
 
 type UseFilter = "all" | "used" | "unused";
 
 export function InventoryPanel({
   inventory,
-  knownExtensions,
   onImport,
+  onNewTemplate,
   onChanged,
 }: {
   inventory: TemplateInventory;
-  knownExtensions: string[]; // literal-extension registry keys, for New template suggestions
   onImport: () => void;
+  onNewTemplate: () => void;
   onChanged: () => void;
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -29,7 +28,6 @@ export function InventoryPanel({
   const [sourceFilter, setSourceFilter] = useState<string>("all");
   const [useFilter, setUseFilter] = useState<UseFilter>("all");
   const [deleting, setDeleting] = useState<InventoryTemplate | null>(null);
-  const [creating, setCreating] = useState(false);
 
   const toggle = (name: string) =>
     setSelected((prev) => {
@@ -135,7 +133,7 @@ export function InventoryPanel({
           ))}
         </select>
         <div className="templates-toolbar-actions">
-          <button type="button" className="templates-btn-secondary" onClick={() => setCreating(true)}>
+          <button type="button" className="templates-btn-secondary" onClick={onNewTemplate}>
             New template
           </button>
           <button type="button" className="templates-btn-secondary" onClick={onImport}>
@@ -213,16 +211,6 @@ export function InventoryPanel({
             setDeleting(null);
             onChanged();
           }}
-        />
-      )}
-      {creating && (
-        <NewTemplateModal
-          knownExtensions={knownExtensions}
-          onClose={() => setCreating(false)}
-          // Refresh inventory + bindings (onChanged === parent load) so the new
-          // folder and any bindings it created appear. The modal stays open on
-          // its success screen to offer "Open in Claude".
-          onCreated={onChanged}
         />
       )}
     </section>
