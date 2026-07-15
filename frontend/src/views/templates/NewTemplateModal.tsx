@@ -25,6 +25,7 @@ export function NewTemplateModal({
   const [openError, setOpenError] = useState<string | null>(null);
 
   const alive = useRef(true);
+  const extInputRef = useRef<HTMLInputElement>(null);
   useEffect(() => () => {
     alive.current = false;
   }, []);
@@ -49,8 +50,38 @@ export function NewTemplateModal({
   const removeExtension = (ext: string) =>
     setExtensions((prev) => prev.filter((e) => e !== ext));
 
+  const trimmedName = name.trim();
+  // Mirror the backend's name rules client-side so obvious rejects give an
+  // instant inline hint instead of a server roundtrip.
+  const nameError = trimmedName.includes("/")
+    ? 'Name cannot contain "/".'
+    : trimmedName === "." || trimmedName === ".."
+      ? 'Name cannot be "." or "..".'
+      : trimmedName.startsWith("_")
+        ? 'Name cannot start with "_".'
+        : null;
+  const canCreate = trimmedName.length > 0 && !nameError && !busy;
+
+  // Cmd/Ctrl+Enter submits from any field when the name is valid.
+  const isSubmitChord = (e: React.KeyboardEvent) => e.key === "Enter" && (e.metaKey || e.ctrlKey);
+
+  const onNameKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    if (isSubmitChord(e)) {
+      if (canCreate) create();
+    } else if (canCreate) {
+      // Plain Enter with a valid name jumps to the extensions field rather than
+      // submitting blind, so bindings can be added in the same keyboard flow.
+      extInputRef.current?.focus();
+    }
+  };
+
   const onExtKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter") {
+    if (isSubmitChord(e)) {
+      e.preventDefault();
+      if (canCreate) create();
+    } else if (e.key === "Enter") {
       e.preventDefault();
       addExtension();
     } else if (e.key === "Backspace" && extDraft === "" && extensions.length > 0) {
@@ -58,10 +89,6 @@ export function NewTemplateModal({
       removeExtension(extensions[extensions.length - 1]);
     }
   };
-
-  const trimmedName = name.trim();
-  const nameError = trimmedName.includes("/") ? 'Name cannot contain "/".' : null;
-  const canCreate = trimmedName.length > 0 && !nameError && !busy;
 
   const create = async () => {
     if (!canCreate) return;
@@ -157,7 +184,7 @@ export function NewTemplateModal({
             </>
           ) : (
             <>
-              <p className="deploy-muted">
+              <p className="deploy-muted templates-field-hint">
                 Scaffold a new user template. Bind it to file extensions now, or leave that empty
                 and add bindings later from the File bindings tab.
               </p>
@@ -172,9 +199,7 @@ export function NewTemplateModal({
                   autoFocus
                   disabled={busy}
                   onChange={(e) => setName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && canCreate) create();
-                  }}
+                  onKeyDown={onNameKey}
                 />
                 {nameError && <div className="templates-key-error">{nameError}</div>}
               </div>
@@ -197,6 +222,7 @@ export function NewTemplateModal({
                   ))}
                   <input
                     id="new-template-ext"
+                    ref={extInputRef}
                     type="text"
                     className="templates-chip-draft"
                     placeholder={extensions.length === 0 ? ".csv" : ""}
@@ -207,7 +233,7 @@ export function NewTemplateModal({
                     onBlur={addExtension}
                   />
                 </div>
-                <span className="deploy-muted">
+                <span className="deploy-muted templates-field-hint">
                   Type an extension and press Enter. The leading dot is added for you.
                 </span>
               </div>

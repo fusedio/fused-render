@@ -2142,6 +2142,17 @@ body.embed .preview-browse-chip:hover {
   margin-left: auto;
 }
 
+/* Right-aligned action cluster: keeps New template / Import / Export grouped so
+   they wrap as one unit under the search+filters instead of a lone button
+   floating onto its own row (margin-left:auto on a single wrapped flex item). */
+.templates-toolbar-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: stretch;
+  margin-left: auto;
+}
+
 .templates-search {
   font: inherit;
   font-size: 13px;
@@ -2439,6 +2450,19 @@ body.embed .preview-browse-chip:hover {
 .templates-import .deploy-body,
 .templates-new .deploy-body {
   gap: 16px;
+}
+
+/* The name field reuses .templates-search's visual, but that class is authored
+   for the toolbar's flex ROW (flex:1 1 200px). Inside .templates-field (a flex
+   COLUMN) that flex-basis lands on the block axis and grows the input into a
+   tall box — pin it back to a single-line control. */
+.templates-field .templates-search {
+  flex: none;
+  width: 100%;
+}
+
+.templates-field-hint {
+  font-size: 12px;
 }
 
 /* Tag-style extension input: chips + a borderless draft field inside one box

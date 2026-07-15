@@ -132,25 +132,27 @@ export function InventoryPanel({
             </option>
           ))}
         </select>
-        <button type="button" className="templates-btn-secondary" onClick={() => setCreating(true)}>
-          New template
-        </button>
-        <button type="button" className="templates-btn-secondary" onClick={onImport}>
-          Import zip
-        </button>
-        <button
-          type="button"
-          className="templates-btn-primary templates-toolbar-push"
-          disabled={selectedNames.length === 0}
-          onClick={() => runExport(selectedNames)}
-          title={
-            selectedNames.length === 0
-              ? "Select one or more templates to export"
-              : "Export the selected templates as a zip"
-          }
-        >
-          Export selected{selectedNames.length > 0 ? ` (${selectedNames.length})` : ""}
-        </button>
+        <div className="templates-toolbar-actions">
+          <button type="button" className="templates-btn-secondary" onClick={() => setCreating(true)}>
+            New template
+          </button>
+          <button type="button" className="templates-btn-secondary" onClick={onImport}>
+            Import zip
+          </button>
+          <button
+            type="button"
+            className="templates-btn-primary"
+            disabled={selectedNames.length === 0}
+            onClick={() => runExport(selectedNames)}
+            title={
+              selectedNames.length === 0
+                ? "Select one or more templates to export"
+                : "Export the selected templates as a zip"
+            }
+          >
+            Export selected{selectedNames.length > 0 ? ` (${selectedNames.length})` : ""}
+          </button>
+        </div>
       </div>
       {error && <div className="deploy-error">{error}</div>}
       {groups.length === 0 ? (
