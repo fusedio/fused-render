@@ -156,7 +156,7 @@ def test_registry_rich_shape(ctx):
     assert csv["overridesCore"] is False
     assert "userValue" not in csv  # omitted when no user key
     assert csv["templates"][0] == {
-        "name": "csv",
+        "name": "duckdb",
         "source": "core",
         "exists": True,
         "hasIcon": True,
@@ -346,7 +346,7 @@ def test_reset_removes_user_override_reverts_to_core(ctx):
     entry = resp.json()
     assert entry["resolvedSource"] == "core"
     assert entry["overridesCore"] is False
-    assert _names(entry)[0] == "csv"  # the builtin default
+    assert _names(entry)[0] == "duckdb"  # the builtin default
     assert ".csv" not in ctx.read_registry()
 
 
@@ -451,6 +451,96 @@ def test_delete_requires_fused_header(ctx):
     ctx.make_template("mine")
     resp = ctx.client.post("/api/templates/delete", json={"name": "mine"})
     assert resp.status_code == 403
+    assert (ctx.udir / "mine").is_dir()  # untouched
+
+
+def test_delete_without_flag_leaves_registry(ctx):
+    # The pre-D109 default: no cleanRegistry -> bindings untouched, no
+    # registryKeysCleaned in the response.
+    ctx.make_template("mine")
+    ctx.registry({".a": ["mine"]})
+    resp = ctx.client.post("/api/templates/delete", json={"name": "mine"}, headers=FUSED)
+    assert resp.status_code == 200
+    assert resp.json() == {"deleted": "mine"}
+    assert ctx.read_registry() == {".a": ["mine"]}
+
+
+def test_delete_clean_registry_prunes_lists(ctx):
+    # cleanRegistry drops the name from every referencing user key; keys that
+    # never referenced it are untouched (D109).
+    ctx.make_template("mine")
+    ctx.registry({".a": ["mine", "other"], ".b": ["other"]})
+    resp = ctx.client.post(
+        "/api/templates/delete", json={"name": "mine", "cleanRegistry": True}, headers=FUSED
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"deleted": "mine", "registryKeysCleaned": [".a"]}
+    assert ctx.read_registry() == {".a": ["other"], ".b": ["other"]}
+
+
+def test_delete_clean_registry_emptied_key_removed(ctx):
+    # A key whose list the sweep empties is REMOVED (revert to core), never
+    # left as [] — which would mean disabled per D95. A null (disabled) value
+    # never references the name, so it survives byte-for-byte.
+    ctx.make_template("mine")
+    ctx.registry({".a": ["mine"], ".b": None})
+    resp = ctx.client.post(
+        "/api/templates/delete", json={"name": "mine", "cleanRegistry": True}, headers=FUSED
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"deleted": "mine", "registryKeysCleaned": [".a"]}
+    assert ctx.read_registry() == {".b": None}
+
+
+def test_delete_clean_registry_string_value_removes_key(ctx):
+    # A bare-string value equal to the name counts as a reference; matching it
+    # empties the value, so the key is removed entirely.
+    ctx.make_template("mine")
+    ctx.registry({".a": "mine"})
+    resp = ctx.client.post(
+        "/api/templates/delete", json={"name": "mine", "cleanRegistry": True}, headers=FUSED
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"deleted": "mine", "registryKeysCleaned": [".a"]}
+    assert ctx.read_registry() == {}
+
+
+def test_delete_clean_registry_name_match_is_exact(ctx):
+    # Names are folder identities — unlike keys they are NOT lowercased, so a
+    # differently-cased entry is a different name and stays bound.
+    ctx.make_template("mine")
+    ctx.registry({".a": ["Mine", "mine"]})
+    resp = ctx.client.post(
+        "/api/templates/delete", json={"name": "mine", "cleanRegistry": True}, headers=FUSED
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"deleted": "mine", "registryKeysCleaned": [".a"]}
+    assert ctx.read_registry() == {".a": ["Mine"]}
+
+
+def test_delete_clean_registry_no_references(ctx):
+    # Nothing referenced the name: the sweep is a no-op, the registry file is
+    # not rewritten, and registryKeysCleaned reports [].
+    ctx.make_template("mine")
+    ctx.registry({".a": ["other"]})
+    resp = ctx.client.post(
+        "/api/templates/delete", json={"name": "mine", "cleanRegistry": True}, headers=FUSED
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"deleted": "mine", "registryKeysCleaned": []}
+    assert ctx.read_registry() == {".a": ["other"]}
+
+
+def test_delete_clean_registry_corrupt_registry_refused(ctx):
+    # A corrupt user registry is refused BEFORE the rmtree — the folder must
+    # survive so the user can fix the registry and retry the whole gesture.
+    ctx.make_template("mine")
+    (ctx.udir / "registry.json").write_text("{not json", encoding="utf-8")
+    resp = ctx.client.post(
+        "/api/templates/delete", json={"name": "mine", "cleanRegistry": True}, headers=FUSED
+    )
+    assert resp.status_code == 400
+    assert "refusing to overwrite the user registry" in resp.json()["error"]
     assert (ctx.udir / "mine").is_dir()  # untouched
 
 
