@@ -329,7 +329,10 @@ export default function App({ config }: { config: Config }) {
       </>
     );
   } else {
-    main = <StatView key={epoch + ":" + fsPath} fsPath={fsPath} epoch={epoch} home={config.home} />;
+    // Windows expanduser returns backslashes; fsPath is always forward-slash.
+    main = (
+      <StatView key={epoch + ":" + fsPath} fsPath={fsPath} epoch={epoch} home={config.home.replace(/\\/g, "/")} />
+    );
   }
 
   return (
