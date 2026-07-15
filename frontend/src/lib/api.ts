@@ -660,9 +660,18 @@ export async function downloadTemplatesExport(names: string[]): Promise<void> {
 }
 
 // Delete one USER template folder (core templates are read-only, 404 here).
-// Registry bindings are left untouched — they resolve broken until rebound.
-export function deleteTemplate(name: string): Promise<{ deleted: string }> {
-  return postJson<{ deleted: string }>("/api/templates/delete", { name });
+// With cleanRegistry the USER registry is also swept of bindings referencing
+// the name (a user key whose value is emptied by the sweep is removed — revert
+// to core, never left as [] which means disabled, D109); without it bindings
+// are left untouched and resolve broken until rebound.
+export function deleteTemplate(
+  name: string,
+  cleanRegistry: boolean,
+): Promise<{ deleted: string; registryKeysCleaned?: string[] }> {
+  return postJson<{ deleted: string; registryKeysCleaned?: string[] }>("/api/templates/delete", {
+    name,
+    cleanRegistry,
+  });
 }
 
 // Author-recommended binding key for a staged template (from the bundle's

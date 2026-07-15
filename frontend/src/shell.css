@@ -2266,26 +2266,20 @@ body.embed .preview-browse-chip:hover {
   cursor: default;
 }
 
-.templates-danger-text {
-  font: inherit;
-  font-size: 12px;
-  padding: 6px 4px;
-  margin-right: auto;
-  background: none;
-  border: none;
-  color: var(--error);
+/* Delete-confirm modal options (D109): the two default-checked checkboxes. */
+.templates-delete-opts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 2px 0 10px;
+}
+
+.templates-delete-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
   cursor: pointer;
-  opacity: 0.85;
-}
-
-.templates-danger-text:hover:not(:disabled) {
-  opacity: 1;
-  text-decoration: underline;
-}
-
-.templates-danger-text:disabled {
-  opacity: 0.4;
-  cursor: default;
 }
 
 .templates-add-btn {
@@ -3058,20 +3052,6 @@ body.embed .preview-browse-chip:hover {
 
 .deploy-body .templates-seg-btn.danger.active {
   color: var(--error);
-}
-
-.deploy-body .templates-danger-text {
-  border: none;
-  background: none;
-  padding: 6px 4px;
-  font-size: 12px;
-  color: var(--error);
-  margin-right: auto;
-}
-
-.deploy-body .templates-danger-text:hover:not(:disabled) {
-  background: none;
-  border-color: transparent;
 }
 
 .deploy-body .templates-btn-primary {

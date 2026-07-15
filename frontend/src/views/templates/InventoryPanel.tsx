@@ -195,8 +195,8 @@ export function InventoryPanel({
         <DeleteConfirm
           t={deleting}
           // Pass the THROWING export (not runExport, which swallows errors into
-          // panel state) so "Export & delete" only deletes when the recovery
-          // zip actually downloaded (TV-16/D92 export-first guarantee).
+          // panel state) so an export-first delete only proceeds when the
+          // recovery zip actually downloaded (TV-16/D92 export-first guarantee).
           onExport={() => downloadTemplatesExport([deleting.name])}
           onClose={() => setDeleting(null)}
           onDeleted={() => {
@@ -217,9 +217,11 @@ export function InventoryPanel({
   );
 }
 
-// Confirm modal for deleting a user template. Offers a "download an export
-// first" path (TV-16 / SPEC §2.8) so the folder can be recovered later — the
-// delete only proceeds after the export download resolves. Core templates
+// Confirm modal for deleting a user template (TV-16 / SPEC §2.8, D109): two
+// default-checked checkboxes — export a recovery zip first (the delete only
+// proceeds after the export download resolves, D92's export-first guarantee)
+// and sweep the user registry of bindings referencing the name (TV-19's
+// cleanRegistry) — plus exactly two buttons, Delete and Cancel. Core templates
 // never reach here (no Delete action rendered for a read-only source).
 function DeleteConfirm({
   t,
@@ -232,6 +234,8 @@ function DeleteConfirm({
   onClose: () => void;
   onDeleted: () => void;
 }) {
+  const [exportFirst, setExportFirst] = useState(true);
+  const [cleanBindings, setCleanBindings] = useState(true);
   const [busy, setBusy] = useState<"export" | "delete" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const alive = useRef(true);
@@ -242,30 +246,16 @@ function DeleteConfirm({
     [],
   );
 
-  const del = async () => {
-    await deleteTemplate(t.name);
-    onDeleted();
-  };
-
-  const exportThenDelete = async () => {
-    setBusy("export");
+  const run = async () => {
     setError(null);
     try {
-      await onExport(); // must succeed before we destroy the folder
-      await del();
-    } catch (e) {
-      if (alive.current) {
-        setError((e as Error).message);
-        setBusy(null);
+      if (exportFirst) {
+        setBusy("export");
+        await onExport(); // must succeed before we destroy the folder
       }
-    }
-  };
-
-  const deleteOnly = async () => {
-    setBusy("delete");
-    setError(null);
-    try {
-      await del();
+      setBusy("delete");
+      await deleteTemplate(t.name, cleanBindings);
+      onDeleted();
     } catch (e) {
       if (alive.current) {
         setError((e as Error).message);
@@ -295,20 +285,32 @@ function DeleteConfirm({
         </div>
         <div className="deploy-body">
           <p className="deploy-muted">
-            This removes the user template folder for <code>{t.name}</code>. Bindings that use it
-            keep the name and show as broken until you rebind or remove them. Download an export
-            first if you might want it back.
+            This removes the user template folder for <code>{t.name}</code>. Without a bindings
+            cleanup, bindings that use it keep the name and show as broken until you rebind or
+            remove them.
           </p>
+          <div className="templates-delete-opts">
+            <label className="templates-delete-opt">
+              <input
+                type="checkbox"
+                checked={exportFirst}
+                disabled={busy !== null}
+                onChange={(e) => setExportFirst(e.target.checked)}
+              />
+              <span>Export zip before deleting</span>
+            </label>
+            <label className="templates-delete-opt">
+              <input
+                type="checkbox"
+                checked={cleanBindings}
+                disabled={busy !== null}
+                onChange={(e) => setCleanBindings(e.target.checked)}
+              />
+              <span>Remove registry bindings for this template</span>
+            </label>
+          </div>
           {error && <div className="deploy-error">{error}</div>}
           <div className="templates-actions">
-            <button
-              type="button"
-              className="templates-danger-text"
-              onClick={deleteOnly}
-              disabled={busy !== null}
-            >
-              {busy === "delete" ? "Deleting…" : "Delete without export"}
-            </button>
             <button
               type="button"
               className="templates-btn-secondary"
@@ -317,13 +319,8 @@ function DeleteConfirm({
             >
               Cancel
             </button>
-            <button
-              type="button"
-              className="templates-btn-primary"
-              onClick={exportThenDelete}
-              disabled={busy !== null}
-            >
-              {busy === "export" ? "Exporting…" : "Export & delete"}
+            <button type="button" className="deploy-danger" onClick={run} disabled={busy !== null}>
+              {busy === "export" ? "Exporting…" : busy === "delete" ? "Deleting…" : "Delete"}
             </button>
           </div>
         </div>
