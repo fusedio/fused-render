@@ -163,7 +163,7 @@ def fused_cli() -> FusedCli | None:
 # install button exactly when it mattered. The constant ships in the same
 # file as the code that uses it, so it is always as current as the server.
 PINNED_FUSED_REQUIREMENT = (
-    "fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post1-py3-none-any.whl"
+    "fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post2-py3-none-any.whl"
 )
 # The wheel's own environment marker (python_version >= "3.11"), enforced here
 # because pip is handed the marker-free requirement above.
