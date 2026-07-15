@@ -394,6 +394,7 @@ def test_export_zip_contains_folders_only(ctx):
         "alpha/icon.svg",
         "alpha/reader.py",
         "beta/template.html",
+        "recommendation.json",  # bindings sidecar at the zip root
     }
     assert not any("registry.json" in n for n in names)
 
@@ -405,7 +406,7 @@ def test_export_handles_comma_in_template_name(ctx):
     resp = ctx.client.get("/api/templates/export", params={"names": ["a,b"]})
     assert resp.status_code == 200
     with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
-        assert set(zf.namelist()) == {"a,b/template.html"}
+        assert set(zf.namelist()) == {"a,b/template.html", "recommendation.json"}
 
 
 def test_delete_user_template(ctx):
@@ -460,7 +461,7 @@ def test_export_allows_core_template(ctx):
     assert resp.status_code == 200
     with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
         names = set(zf.namelist())
-    assert names == {"code/template.html", "code/icon.svg"}
+    assert names == {"code/template.html", "code/icon.svg", "recommendation.json"}
 
 
 def test_export_user_shadow_wins_over_core(ctx):
@@ -471,7 +472,7 @@ def test_export_user_shadow_wins_over_core(ctx):
     with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
         names = set(zf.namelist())
         marker = zf.read("code/marker.txt")
-    assert names == {"code/template.html", "code/marker.txt"}
+    assert names == {"code/template.html", "code/marker.txt", "recommendation.json"}
     assert marker == b"USER"
 
 
@@ -488,6 +489,39 @@ def test_export_rejects_traversal_name(ctx):
 
 def test_export_requires_names(ctx):
     assert ctx.client.get("/api/templates/export").status_code == 400
+
+
+def _export_recommendations(ctx, names):
+    resp = ctx.client.get("/api/templates/export", params={"names": names})
+    assert resp.status_code == 200
+    zf = zipfile.ZipFile(io.BytesIO(resp.content))
+    return json.loads(zf.read("recommendation.json"))
+
+
+def test_export_writes_recommendation_sidecar(ctx):
+    ctx.make_template("alpha")
+    ctx.make_template("beta")
+    ctx.make_template("gamma")  # bound to nothing -> omitted
+    ctx.registry({".foo": ["alpha"], ".bar": ["alpha", "beta"], ".baz/": ["alpha"]})
+    body = _export_recommendations(ctx, ["gamma", "beta", "alpha"])
+    assert body["version"] == 1
+    # Keys sorted per template; unbound gamma omitted entirely.
+    assert body["recommendations"] == {
+        "alpha": [".bar", ".baz/", ".foo"],
+        "beta": [".bar"],
+    }
+
+
+def test_export_recommendations_use_merged_registry(ctx):
+    # A user override of ".csv" replaces core's list — 'duckdb' (in core's
+    # ".csv") is no longer effectively bound to it, 'alpha' is.
+    ctx.make_template("alpha")
+    ctx.registry({".csv": ["alpha"]})
+    recs = _export_recommendations(ctx, ["alpha", "duckdb"])["recommendations"]
+    assert ".csv" in recs["alpha"]
+    assert ".csv" not in recs.get("duckdb", [])
+    # duckdb keeps its OTHER core bindings (e.g. ".parquet").
+    assert ".parquet" in recs["duckdb"]
 
 
 # --------------------------------------------------- import: security (2.6)
@@ -771,6 +805,157 @@ def test_import_sweeps_stale_staging(ctx, monkeypatch):
     os.utime(stale, (old, old))
     _post_import(ctx, _make_zip({"fresh/template.html": "<html>"}))
     assert not stale.exists()
+
+
+# ------------------------------------- import: binding recommendations
+
+
+def _rec_json(recs, version=1):
+    return json.dumps({"version": version, "recommendations": recs})
+
+
+def test_import_stage_parses_recommendations_with_statuses(ctx):
+    ctx.registry({".abc": ["fresh"], ".dis": None})
+    zb = _make_zip(
+        {
+            "fresh/template.html": "<html>",
+            "recommendation.json": _rec_json({"fresh": [".abc", ".dis", ".csv", "nodot"]}),
+        }
+    )
+    body = _post_import(ctx, zb).json()
+    items = {i["name"]: i for i in body["items"]}
+    # The sidecar is metadata, never warned as a stray top-level file; only
+    # the ungrammatical key drew a warning and was dropped.
+    assert body["warnings"] == ["recommendation.json: ignored invalid registry key 'nodot' for 'fresh'"]
+    assert items["fresh"]["recommendedKeys"] == [
+        {"key": ".abc", "status": "already-bound"},
+        {"key": ".dis", "status": "disabled"},
+        {"key": ".csv", "status": "new"},  # core-bound, but not to 'fresh'
+    ]
+
+
+def test_import_stage_recommendations_only_on_valid_items(ctx):
+    zb = _make_zip(
+        {
+            "notemplate/readme.txt": "hi",
+            "fresh/template.html": "<html>",
+            "recommendation.json": _rec_json({"notemplate": [".foo"], "other": [".foo"]}),
+        }
+    )
+    items = {i["name"]: i for i in _post_import(ctx, zb).json()["items"]}
+    assert "recommendedKeys" not in items["notemplate"]  # invalid item
+    assert "recommendedKeys" not in items["fresh"]  # no recs for it
+
+
+def test_import_stage_recommendation_bad_json_warns_nonfatal(ctx):
+    zb = _make_zip({"fresh/template.html": "<html>", "recommendation.json": "not json"})
+    resp = _post_import(ctx, zb)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert any("not valid JSON" in w for w in body["warnings"])
+    assert "recommendedKeys" not in body["items"][0]
+
+
+def test_import_stage_recommendation_future_version_silently_ignored(ctx):
+    zb = _make_zip(
+        {
+            "fresh/template.html": "<html>",
+            "recommendation.json": _rec_json({"fresh": [".foo"]}, version=2),
+        }
+    )
+    body = _post_import(ctx, zb).json()
+    assert body["warnings"] == []
+    assert "recommendedKeys" not in body["items"][0]
+
+
+def test_commit_applies_bindings_appending_to_core_list(ctx):
+    # Binding to a core-only key copies core's FULL list into the user entry
+    # before appending — never a shorter shadow.
+    iid = _stage(ctx, {"fresh/template.html": "<html>"})
+    body = ctx.client.post(
+        f"/api/templates/import/{iid}/commit",
+        json={"resolutions": {"fresh": "overwrite"}, "bindings": {"fresh": [".csv", ".myext"]}},
+        headers=FUSED,
+    ).json()
+    assert body["bindingsApplied"] == [
+        {"key": ".csv", "template": "fresh"},
+        {"key": ".myext", "template": "fresh"},
+    ]
+    reg = ctx.read_registry()
+    assert reg[".csv"] == ["duckdb", "csv", "code", "annotate", "fresh"]
+    assert reg[".myext"] == ["fresh"]
+
+
+def test_commit_bindings_follow_keep_both_rename(ctx):
+    ctx.make_template("brandcard")
+    iid = _stage(ctx, {"brandcard/template.html": "<html>"})
+    body = ctx.client.post(
+        f"/api/templates/import/{iid}/commit",
+        json={"resolutions": {"brandcard": "keep-both"}, "bindings": {"brandcard": [".xyz"]}},
+        headers=FUSED,
+    ).json()
+    assert body["renamed"] == {"brandcard": "brandcard-2"}
+    assert body["bindingsApplied"] == [{"key": ".xyz", "template": "brandcard-2"}]
+    assert ctx.read_registry()[".xyz"] == ["brandcard-2"]
+
+
+def test_commit_bindings_for_skipped_template_ignored(ctx):
+    iid = _stage(ctx, {"fresh/template.html": "<html>"})
+    body = ctx.client.post(
+        f"/api/templates/import/{iid}/commit",
+        json={"resolutions": {}, "bindings": {"fresh": [".xyz"]}},  # defaults to skip
+        headers=FUSED,
+    ).json()
+    assert body["bindingsApplied"] == []
+    assert not (ctx.udir / "registry.json").exists()  # nothing written
+
+
+def test_commit_binding_reenables_disabled_key_with_core_list(ctx):
+    ctx.registry({".csv": None})
+    iid = _stage(ctx, {"fresh/template.html": "<html>"})
+    body = ctx.client.post(
+        f"/api/templates/import/{iid}/commit",
+        json={"resolutions": {"fresh": "overwrite"}, "bindings": {"fresh": [".csv"]}},
+        headers=FUSED,
+    ).json()
+    assert body["bindingsApplied"] == [{"key": ".csv", "template": "fresh"}]
+    assert ctx.read_registry()[".csv"] == ["duckdb", "csv", "code", "annotate", "fresh"]
+
+
+def test_commit_binding_already_bound_is_noop(ctx):
+    ctx.registry({".foo": ["fresh"]})
+    iid = _stage(ctx, {"fresh/template.html": "<html>"})
+    body = ctx.client.post(
+        f"/api/templates/import/{iid}/commit",
+        json={"resolutions": {"fresh": "overwrite"}, "bindings": {"fresh": [".foo"]}},
+        headers=FUSED,
+    ).json()
+    assert body["bindingsApplied"] == []
+    assert ctx.read_registry() == {".foo": ["fresh"]}
+
+
+def test_commit_rejects_invalid_binding_key_before_moving(ctx):
+    iid = _stage(ctx, {"fresh/template.html": "<html>"})
+    resp = ctx.client.post(
+        f"/api/templates/import/{iid}/commit",
+        json={"resolutions": {"fresh": "overwrite"}, "bindings": {"fresh": ["nodot"]}},
+        headers=FUSED,
+    )
+    assert resp.status_code == 400
+    assert "invalid registry key" in resp.json()["error"]
+    # Nothing moved and the stage survives, so a corrected retry can commit.
+    assert not (ctx.udir / "fresh").exists()
+    assert (ctx.home / ".import-staging" / iid).is_dir()
+
+
+def test_commit_without_bindings_reports_empty_applied(ctx):
+    iid = _stage(ctx, {"fresh/template.html": "<html>"})
+    body = ctx.client.post(
+        f"/api/templates/import/{iid}/commit",
+        json={"resolutions": {"fresh": "overwrite"}},
+        headers=FUSED,
+    ).json()
+    assert body["bindingsApplied"] == []
 
 
 # ----------------------------------------------------- new template (scaffold)
