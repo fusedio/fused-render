@@ -89,6 +89,8 @@ def test_github_url_from_passthrough():
         "https://github.com/o/r/blob/main/file.py",  # blob URLs unsupported (v1)
         "https://github.com/o/r/tree",  # missing ref
         "https://github.com/o/r/tree/main/../../etc",  # escapes the repo
+        "https://github.com/o/r/tree/-f/sub",  # option-injection ref
+        "https://github.com/o/r/tree/--stdin",  # option-injection ref
         "https://github.com/o/r/tree/main/.hidden",  # dot destination name
         "https://github.com/../r",
     ],
@@ -227,6 +229,31 @@ def test_commit_sha_ref_clones(env, source_repo):
     assert clone_or_pull(spec)["updated"] is True
 
 
+def test_subpath_segment_with_leading_dash_is_not_an_option(env, source_repo):
+    dash = source_repo / "Max" / "-dash"
+    dash.mkdir()
+    (dash / "index.html").write_text("dash")
+    _git("add", "-A", cwd=source_repo)
+    _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "dash", cwd=source_repo)
+    spec = parse_github_url("https://github.com/fusedlabs/sandbox/tree/main/Max/-dash")
+    result = clone_or_pull(spec)
+    assert result["view"].endswith("/index.html")
+
+
+def test_update_switches_to_link_ref(env, source_repo):
+    clone_or_pull(parse_github_url(TREE_URL))
+    _git("checkout", "-q", "-b", "feature", cwd=source_repo)
+    (source_repo / "Max" / "how_it_works" / "feature.txt").write_text("f")
+    _git("add", "-A", cwd=source_repo)
+    _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "feat", cwd=source_repo)
+    _git("checkout", "-q", "main", cwd=source_repo)
+    result = clone_or_pull(
+        parse_github_url("https://github.com/fusedlabs/sandbox/tree/feature/Max/how_it_works")
+    )
+    assert result["updated"] is True
+    assert (env / "how_it_works" / "Max" / "how_it_works" / "feature.txt").is_file()
+
+
 def test_repo_slug_matches_https_and_ssh_forms():
     from fused_render.deeplink import _repo_slug
 
@@ -343,6 +370,27 @@ def test_api_clone_info(tmp_path, monkeypatch):
     assert data["owner"] == "fusedlabs"
     assert data["dest"] == str(fdir / "how_it_works")
     assert data["exists"] is False
+    assert data["updatable"] is False
+    assert data["conflict"] is None
+
+
+def test_api_clone_info_reports_conflict_for_non_git_dir(tmp_path, monkeypatch):
+    fdir = tmp_path / "Fused"
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(fdir))
+    (fdir / "how_it_works").mkdir(parents=True)  # e.g. the seeded example
+    resp = _client(tmp_path).get("/api/clone/info", params={"src": DEEPLINK})
+    data = resp.json()
+    assert data["exists"] is True
+    assert data["updatable"] is False
+    assert "not a git clone" in data["conflict"]
+
+
+def test_api_clone_info_updatable_for_matching_clone(tmp_path, env):
+    clone_or_pull(parse_github_url(TREE_URL))
+    resp = _client(tmp_path).get("/api/clone/info", params={"src": DEEPLINK})
+    data = resp.json()
+    assert data["updatable"] is True
+    assert data["conflict"] is None
 
 
 def test_api_clone_info_rejects_bad_url(tmp_path):

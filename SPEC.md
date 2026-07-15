@@ -1505,6 +1505,9 @@ when one exists, else the folder itself.
   hosts are rejected with a clear error. The first segment after `/tree/` is
   the ref — single-segment refs only (the URL grammar cannot delimit a
   slashed branch name from the subpath; same assumption most tooling makes).
+  Refs must start alphanumeric (git forbids leading `-` too), and every
+  URL-derived value reaching git sits behind a `--` separator — a crafted
+  link cannot smuggle options (`-f`, `--stdin`) into checkout/sparse-checkout.
 - **DL-2** OS registration: macOS via `CFBundleURLTypes` in the py2app plist
   (scheme deliberately not branch-suffixed, like the bookmark UTI — every
   build speaks the same links), delivered to `application:openURLs:` in
@@ -1519,6 +1522,9 @@ when one exists, else the folder itself.
   ref / destination via read-only `GET /api/clone/info` and states the trust
   boundary in plain words: once opened, content from the repository renders
   same-origin and can run Python on this machine (trust-on-confirm, D110).
+  The preview matches what POST will do: an occupied destination that is not
+  a matching clone (non-git folder, other repo) is reported as blocked up
+  front (`conflict`), never offered as an Update that can only fail.
 - **DL-4** Clone (`POST /api/clone`, X-Fused-guarded like every mutating
   route): `git clone --filter=blob:none --sparse` + `sparse-checkout set
   <subpath>` (plain filtered clone for repo-root links) using the user's own
@@ -1532,12 +1538,13 @@ when one exists, else the folder itself.
   .app gets `/usr/bin:/bin`, which silently breaks `gh`-style credential
   helpers); an https auth failure retries once over `git@github.com:` before
   reporting both errors with a how-to-authenticate hint.
-- **DL-5** Re-click = update: an existing destination whose `origin` matches
-  the link's repo is `git pull --ff-only`'d when HEAD is on a branch; a
-  detached HEAD (the link's ref was a tag or commit SHA — the clone checks
-  refs out after a `--no-checkout` clone, never via `--branch`, so SHAs work)
-  is updated by `fetch --tags` + re-checkout of the ref instead (SHA: no-op;
-  moved tag: lands on the new target). A dirty or diverged tree
+- **DL-5** Re-click = update: for an existing destination whose `origin`
+  matches the link's repo — `fetch --tags`, check out the LINK's ref (a link
+  naming a different branch/tag than what's on disk lands on that ref, not a
+  silent pull of the old one; refs check out after a `--no-checkout` clone,
+  never via `--branch`, so commit SHAs work), then `pull --ff-only` iff that
+  left HEAD on a branch (a tag/SHA is detached: SHA no-op, moved tag lands
+  on its new target). A dirty or diverged tree
   surfaces git's own error and local edits are never clobbered. A destination
   that exists but is not a clone of that repo is refused, never overwritten.
 - **DL-6** Open target: `<dest>/<subpath>/index.html` when present, else the

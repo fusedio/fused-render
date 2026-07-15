@@ -107,8 +107,14 @@
     $("d-ref").textContent = data.ref || "(default branch)";
     $("d-dest").textContent = data.dest;
     $("details").classList.remove("hidden");
+    if (data.conflict) {
+      // Destination is occupied by something POST /api/clone would refuse
+      // (non-git folder, clone of another repo) — say so instead of offering
+      // a button that can only fail.
+      return fail(data.conflict);
+    }
     $("warn").hidden = false;
-    const update = data.exists;
+    const update = data.updatable;
     $("title").textContent = update ? "Update clone" : "Clone repository";
     $("go").textContent = update ? "Update & open" : "Clone & open";
     $("go").disabled = false;

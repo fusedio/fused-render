@@ -50,6 +50,9 @@ _CLONE_PAGE = os.path.join(os.path.dirname(__file__), "static", "clone.html")
 # path tricks into the remote URL or the destination dir name.
 _OWNER_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$")
 _REPO_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+# Leading alnum: a ref can never start with '-' (git forbids it too), so a
+# crafted link can't smuggle options ('-f', '--stdin') into `git checkout`.
+_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 class DeeplinkError(Exception):
@@ -132,6 +135,8 @@ def parse_github_url(src: str) -> dict:
         if len(segments) < 4:
             raise DeeplinkError(f"/tree/ URL is missing a ref: {url}")
         ref = segments[3]
+        if not _REF_RE.match(ref):
+            raise DeeplinkError(f"unsupported ref {ref!r} in URL: {url}")
         subpath = "/".join(segments[4:])
     if subpath:
         # Normalize and refuse anything that walks out of the repo; a clean
@@ -275,9 +280,13 @@ def _clone_into(spec: dict, remote: str, dest: str) -> None:
     try:
         _git(args)
         if spec["subpath"]:
-            _git(["-C", dest, "sparse-checkout", "set", spec["subpath"]])
+            # `--` everywhere a URL-derived value reaches git: a subpath
+            # segment may legitimately start with '-' and must never be
+            # parsed as an option (the ref is regex-blocked from leading '-',
+            # the `--` on checkout is belt-and-braces).
+            _git(["-C", dest, "sparse-checkout", "set", "--", spec["subpath"]])
         if spec["ref"]:
-            _git(["-C", dest, "checkout", spec["ref"]])
+            _git(["-C", dest, "checkout", spec["ref"], "--"])
         target = os.path.join(dest, *spec["subpath"].split("/")) if spec["subpath"] else dest
         if not os.path.isdir(target):
             raise DeeplinkError(
@@ -312,15 +321,17 @@ def clone_or_pull(spec: dict) -> dict:
                 f"{dest} is a clone of a different repository; move it aside and retry"
             )
         logger.info("deeplink: updating existing clone at %s", dest)
+        # Fetch, land on the LINK's ref (a link naming a different branch/tag
+        # than what's checked out must show that ref, not silently pull the
+        # old one), then pull iff that left us on a branch — a tag/SHA ref is
+        # detached and has nothing to pull onto (SHA: no-op, moved tag: the
+        # checkout landed on its new target). A dirty tree makes the checkout
+        # or pull fail with git's own message; local edits never clobbered.
+        _git(["-C", dest, "fetch", "--tags", "origin"])
+        if spec["ref"]:
+            _git(["-C", dest, "checkout", spec["ref"], "--"])
         if _on_branch(dest):
             _git(["-C", dest, "pull", "--ff-only"])
-        else:
-            # Detached HEAD: the link's ref was a tag or a commit SHA, so there
-            # is nothing to pull onto. Fetch and re-resolve the ref instead
-            # (a SHA is a no-op, a moved tag lands on its new target).
-            _git(["-C", dest, "fetch", "--tags", "origin"])
-            if spec["ref"]:
-                _git(["-C", dest, "checkout", spec["ref"]])
         updated = True
     else:
         try:
@@ -385,11 +396,25 @@ def api_clone_info(src: str):
     except DeeplinkError as exc:
         return _error(str(exc))
     dest = destination(spec)
+    remote = _remote_url(spec)
+    exists = os.path.isdir(dest)
+    # The page's clone-vs-update-vs-blocked messaging must match what POST
+    # /api/clone will actually do: an existing dir only means "update" when
+    # it is a clone of this repo; anything else there is refused, so say so
+    # up front instead of offering an Update that can only 400.
+    conflict = None
+    if exists:
+        if not os.path.isdir(os.path.join(dest, ".git")):
+            conflict = f"{dest} already exists and is not a git clone; move it aside and retry"
+        elif not _origin_matches(dest, remote):
+            conflict = f"{dest} is a clone of a different repository; move it aside and retry"
     return {
         **spec,
         "dest": dest,
-        "exists": os.path.isdir(dest),
-        "remote": _remote_url(spec),
+        "exists": exists,
+        "updatable": exists and conflict is None,
+        "conflict": conflict,
+        "remote": remote,
     }
 
 
