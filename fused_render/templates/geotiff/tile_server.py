@@ -216,9 +216,21 @@ def _serve():
 
     def open_file(path, src=None):
         path = os.path.abspath(os.path.expanduser(path))
+        upgrade = False
         with files_lock:
             f = files.get(path)
+            if f is not None and src and f["reader"] is None:
+                # Opened mmap-backed before any request carried src (e.g. a
+                # stale client): attach the reader so chunk reads stop fanning
+                # out over the NFS mount. The mmap stays open — a thread that
+                # already sampled reader=None may still be slicing it — but
+                # get_chunk prefers the reader, so it goes quiet from here on.
+                f["reader"] = _RangeReader(src)
+                upgrade = True
         if f:
+            if upgrade:
+                threading.Thread(target=_prefetch_overviews, args=(f,),
+                                 daemon=True).start()
             return f
         buf, en, t0, next_off = T.parse_header(path)
         meta = T.header_meta(path, buf, en, t0, next_off)
@@ -365,10 +377,13 @@ def _serve():
 
         def do_run(run):
             start, end, members = run
-            raw = rd.read(start, end - start)
-            for ci, off, cnt in members:
-                if (li, ci) not in f["chunks"]:
-                    _decode_chunk(f, li, ci, raw[off - start:off - start + cnt])
+            try:
+                raw = rd.read(start, end - start)
+                for ci, off, cnt in members:
+                    if (li, ci) not in f["chunks"]:
+                        _decode_chunk(f, li, ci, raw[off - start:off - start + cnt])
+            except Exception:  # noqa: BLE001
+                pass  # warming is best-effort; get_chunk refetches per-chunk
 
         with ThreadPoolExecutor(max_workers=min(16, len(runs))) as ex:
             list(ex.map(do_run, runs))

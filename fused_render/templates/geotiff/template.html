@@ -300,6 +300,7 @@ async function refreshHist(){
   const bbox = viewportMercBbox().join(',');
   const q = new URLSearchParams({file: P.file(), mode: P.mode(), band: P.band(),
     r: P.r(), g: P.g(), b: P.b(), bins: '60', bbox});
+  if (REMOTE) q.set('src', rawURL(P.file()));
   try {
     if (histAbort) histAbort.abort();
     histAbort = new AbortController();
@@ -415,6 +416,7 @@ map.on('mousemove', async e => {
   if (!tileMode || !daemon || now - hoverT < 120) return;
   hoverT = now;
   const q = new URLSearchParams({file: P.file(), lon: e.lngLat.lng, lat: e.lngLat.lat});
+  if (REMOTE) q.set('src', rawURL(P.file()));
   try {
     const r = await (await fetch(dURL('/value?' + q))).json();
     const vs = r.values || [];
