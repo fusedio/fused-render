@@ -589,15 +589,27 @@ nothing. Full detail: `docs/EXPORT.md`.
 
 ### 18.3 Static resolution & fail-loud
 
-- **EX-4** Every `runPython`/`rawUrl`/`readFile` path must be a **string literal**
-  resolvable at build time. A computed path, an unsupported API call, an absolute or
-  `..`-escaping path, or a missing target is a **blocking error** — export writes
-  nothing and reports all problems at once, rather than shipping a page whose calls
-  404 when hosted.
+- **EX-4** Blocking errors — export writes nothing and reports all problems at once,
+  rather than shipping a page whose calls 404 when hosted: a **computed `runPython`
+  path** (its served route name is derived from the literal, so it can't be routed),
+  an **unsupported API call** (`writeFile`/`stat`), an **absolute or `..`-escaping**
+  path (including a symlink resolving outside the page dir), or a **missing target**
+  (a referenced file, or an `include` file, not on disk).
+- **EX-4a** Warnings — advisory, never blocking: a **computed `rawUrl`/`readFile`
+  path** (the exporter can't resolve it, but the author can bundle its target via
+  `include` — EX-6 — and the served `_asset` route resolves it by key at request
+  time), and an **`exclude` that drops a literally-referenced file** (honored, but
+  that call 404s when hosted).
 - **EX-5** Route names derive from the `.py` stem (`sine.py` → `sine`), are prefixed
   `run-` when they'd collide with a reserved serve route (`data`, `health`, the
   `_`-prefixed control/shell/asset routes), and are suffixed `-2`, `-3`, … on
   duplicate stems — so the map is always valid and injective.
+- **EX-6** The auto-detected set can be adjusted by an optional selection on
+  `/api/export` (and the Deploy modal, §19): `include` — extra page-relative files
+  bundled as assets beyond the literal scan (for a computed-path target or data a
+  bundled `.py` reads at runtime), each validated like a scanned asset and deduped by
+  key; and `exclude` — files dropped from the final set by literal path or bundle
+  key. Both default empty (auto-only).
 
 ## 19. Deploy — Hosted Publish through the fused CLI (M11)
 
@@ -634,15 +646,27 @@ the product gains network access.
   to the current page; the **env-wide** deployment list (DP-13) lives on the
   Preferences page's Deployments section (PF-6), not in the modal.
 - **DP-2a** Before the click, the modal shows exactly what a deploy would
-  publish (`GET /api/deploy/preview` → `preview_deploy`, the same pure
-  `plan_export` scan the real export runs, resolved fresh, no files written):
-  the page plus each `runPython` target (and its served route name) and each
-  `rawUrl`/`readFile` asset. Export blockers come back in the same response
-  and **disable Deploy** with the full list — an unexportable page reads as
-  "fix these" up front, never as a failed deploy. A preview *fetch* failure
-  (unexportable type, file deleted since the header rendered) degrades to a
-  blocker entry the same way — the dialog still renders its form; it never
-  dead-ends on the preview call.
+  publish (`POST /api/deploy/preview` → `preview_deploy`, the same pure
+  `plan_export` scan the real export runs, resolved fresh with the current
+  selection, no files written): the page plus each `runPython` target (and its
+  served route name) and each `rawUrl`/`readFile` or included asset. Export
+  blockers (EX-4) come back in the same response and **disable Deploy** with the
+  full list — an unexportable page reads as "fix these" up front, never as a
+  failed deploy; warnings (EX-4a) show alongside but never block. A preview
+  *fetch* failure (unexportable type, file deleted since the header rendered)
+  degrades to a blocker entry the same way — the dialog still renders its form; it
+  never dead-ends on the preview call. (Preview is `POST`, not `GET`: it carries
+  the include/exclude selection, which doesn't fit a query string; it stays
+  read-only and unguarded.)
+- **DP-2c** The "will publish" list is **editable** — the user layers a file
+  selection (EX-6) on the auto-detected set: remove a listed file (× → `exclude`),
+  restore an excluded one, add extra files via a picker over the page's folder
+  (`walkDir`, gitignore-aware), "Add all in folder", or "Reset to default"
+  (clear both lists). The selection is sent on Deploy and **persisted on the
+  deployment record** (`include`/`exclude`, beside `entrypoints` — no separate
+  sidecar), so a reopened modal reloads exactly what was last published. This is
+  how a page whose data is fetched by a computed path deploys at all (EX-4a): the
+  author bundles those files explicitly.
 - **DP-2b** Login state, before and after the click (amended by §27/M18: the
   warning is now an *action*, not guidance).
   `GET /api/deploy/config` carries `fused_logged_in` — presence of the fused

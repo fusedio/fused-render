@@ -383,6 +383,30 @@ def test_deploy_creates_public_share_and_stores_pointer(tmp_path, monkeypatch):
     assert h.pointer()["token"] == "abc123"
 
 
+def test_deploy_bundles_included_file_and_persists_selection(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    (tmp_path / "data.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    h.set_scenario(
+        {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
+    )
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "include": ["data.csv"], "exclude": []},
+        headers=FUSED,
+    )
+    assert resp.status_code == 200, resp.text
+    record = resp.json()
+    # The selection is persisted on the record itself (no sidecar), so a reopened
+    # modal reloads it.
+    assert record["include"] == ["data.csv"]
+    assert record["exclude"] == []
+    assert h.pointer()["include"] == ["data.csv"]
+
+    # The included file was actually bundled as an asset alongside the auto scan.
+    (call,) = h.calls()
+    assert call["bundle_files"] == ["assets", "code", "manifest.json", "page.html"]
+
+
 def test_redeploy_active_mount_repoints_same_token(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
     h.set_scenario(
@@ -809,14 +833,36 @@ def test_shares_urls_stay_null_with_no_recorded_link_to_derive_from(tmp_path, mo
 
 def test_preview_lists_what_would_be_published(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
-    resp = h.client.get("/api/deploy/preview", params={"path": str(h.page)})
+    resp = h.client.post("/api/deploy/preview", json={"path": str(h.page)})
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["page"] == "view.html"
     assert body["entrypoints"] == [{"path": "./sine.py", "name": "sine"}]
     assert body["assets"] == []
+    assert body["auto"] == ["./sine.py"]  # the default set, before any selection
     assert body["errors"] == []
+    assert body["warnings"] == []
     assert h.calls() == []  # a preview is a pure local scan — no CLI, no files
+
+
+def test_preview_applies_include_and_exclude(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    (tmp_path / "data.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    # Include a file the scan can't see; exclude the auto-detected entrypoint.
+    resp = h.client.post(
+        "/api/deploy/preview",
+        json={"path": str(h.page), "include": ["data.csv"], "exclude": ["./sine.py"]},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["entrypoints"] == []  # sine.py excluded
+    assert [a["path"] for a in body["assets"]] == ["data.csv"]  # include added
+    # `auto` is the default set and ignores the selection — sine.py stays listed
+    # so the UI knows excluding it (not data.csv) belongs in "Excluded".
+    assert body["auto"] == ["./sine.py"]
+    assert body["errors"] == []
+    # excluding a literally-referenced target warns (its call will fail when hosted)
+    assert any("sine.py" in w for w in body["warnings"])
 
 
 def test_preview_reports_export_blockers(tmp_path, monkeypatch):
@@ -825,14 +871,14 @@ def test_preview_reports_export_blockers(tmp_path, monkeypatch):
         "<html><body><script>fused.writeFile('/x', 'y');</script></body></html>",
         encoding="utf-8",
     )
-    body = h.client.get("/api/deploy/preview", params={"path": str(h.page)}).json()
+    body = h.client.post("/api/deploy/preview", json={"path": str(h.page)}).json()
     assert len(body["errors"]) == 1
     assert "writeFile" in body["errors"][0]
 
 
 def test_preview_rejects_non_html(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
-    resp = h.client.get("/api/deploy/preview", params={"path": str(tmp_path / "sine.py")})
+    resp = h.client.post("/api/deploy/preview", json={"path": str(tmp_path / "sine.py")})
     assert resp.status_code == 400
 
 

@@ -185,6 +185,7 @@ def _empty_git_dir():
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
             )
             _EMPTY_GIT_DIR = os.path.join(root, ".git")
         except (OSError, subprocess.SubprocessError):
@@ -235,6 +236,7 @@ class _IgnoreOracle:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 env=env,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
             )
         except OSError:
             self.proc = None
@@ -302,6 +304,7 @@ def _repo_toplevel(path):
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -454,6 +457,7 @@ def _git_ignored(cwd: str, rel_names: list[str]) -> set[str]:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
     except (OSError, subprocess.SubprocessError):
         return set()
@@ -1688,8 +1692,16 @@ def create_app(start_dir: str) -> FastAPI:
         if not out or not os.path.isabs(out):
             return _error("'out' must be an absolute path to the output directory")
 
+        # Optional file selection (same as the Deploy modal): extra files to bundle
+        # beyond the literal-call scan, and files to drop from it. Absent -> auto-only.
+        include = body.get("include") or []
+        exclude = body.get("exclude") or []
+        for name, value in (("include", include), ("exclude", exclude)):
+            if not isinstance(value, list) or any(not isinstance(v, str) for v in value):
+                return _error(f"'{name}' must be an array of relative file paths")
+
         try:
-            plan = export_page(page, out)
+            plan = export_page(page, out, include=include, exclude=exclude)
         except ExportError as e:
             return _error(str(e))
 
@@ -1697,6 +1709,7 @@ def create_app(start_dir: str) -> FastAPI:
             "out": os.path.abspath(out),
             "entrypoints": [{"path": e.path, "name": e.name, "file": e.file} for e in plan.entrypoints],
             "assets": [{"path": a.path, "name": a.name, "file": a.file} for a in plan.assets],
+            "warnings": plan.warnings,
         }
 
     return app
