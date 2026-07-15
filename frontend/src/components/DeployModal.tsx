@@ -171,16 +171,33 @@ function FileSelection({
       f.rel !== pageBase && !publishedKeys.has(relKey(f.rel)) && !excludeKeys.has(relKey(f.rel)),
   );
 
-  if (preview.errors.length > 0) {
-    // Blocking problems: no editable list — show the fix-it list. (The selection
-    // controls stay hidden until the page exports cleanly.)
-    return (
-      <div className="deploy-error">
-        This page can't be deployed yet:
-        {preview.errors.map((e, i) => (
-          <div key={i}>• {e}</div>
+  // Advisory (non-blocking) notes — shown whether or not there are blockers, since
+  // the backend can return both at once (SPEC DP-2a: warnings appear alongside).
+  const warningsBlock =
+    preview.warnings.length > 0 ? (
+      <div className="deploy-warnings">
+        {preview.warnings.map((w, i) => (
+          <div key={i} className="deploy-warning">
+            ⚠ {w}
+          </div>
         ))}
       </div>
+    ) : null;
+
+  if (preview.errors.length > 0) {
+    // Blocking problems: no editable list — show the fix-it list, plus any
+    // advisory warnings beneath it. (The selection controls stay hidden until the
+    // page exports cleanly.)
+    return (
+      <>
+        <div className="deploy-error">
+          This page can't be deployed yet:
+          {preview.errors.map((e, i) => (
+            <div key={i}>• {e}</div>
+          ))}
+        </div>
+        {warningsBlock}
+      </>
     );
   }
 
@@ -334,15 +351,7 @@ function FileSelection({
         </div>
       )}
 
-      {preview.warnings.length > 0 && (
-        <div className="deploy-warnings">
-          {preview.warnings.map((w, i) => (
-            <div key={i} className="deploy-warning">
-              ⚠ {w}
-            </div>
-          ))}
-        </div>
-      )}
+      {warningsBlock}
     </div>
   );
 }
