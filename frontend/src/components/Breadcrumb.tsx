@@ -203,7 +203,8 @@ function navigatePreservingMode(target: string): void {
 }
 
 export function Breadcrumb({ fsPath, home }: { fsPath: string; home?: string }) {
-  const underHome = home !== undefined && (fsPath === home || fsPath.startsWith(home + "/"));
+  // Strictly below home only — home itself shows its full path, not a lone "~".
+  const underHome = home !== undefined && fsPath.startsWith(home + "/");
   const rest = underHome ? fsPath.slice(home.length) : fsPath;
   const parts = rest.split("/").filter((s) => s.length > 0);
   const pieces: React.ReactNode[] = [
