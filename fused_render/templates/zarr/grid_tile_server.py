@@ -798,13 +798,18 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
                 total, files, capped = 0, 0, False
                 for dp, _, fs in os.walk(path):
                     for f in fs:
+                        files += 1
+                        # Check per file, not per directory: a flat store can
+                        # hold all its chunks in one dir, and a per-dir check
+                        # would stat every one before the cap could fire.
+                        if time.time() > deadline or files > 20000:
+                            capped = True
+                            break
                         try:
                             total += os.path.getsize(os.path.join(dp, f))
                         except OSError:
                             pass
-                        files += 1
-                    if time.time() > deadline or files > 20000:
-                        capped = True
+                    if capped:
                         break
                 dir_sizes[path] = None if capped else total
                 out["file_size"] = dir_sizes[path]

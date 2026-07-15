@@ -560,7 +560,11 @@ def _codec_name(c):
 def _comp_of(a):
     try:
         cs = getattr(a, "compressors", None)
-        if cs: return ",".join(_codec_name(c) for c in cs)
+        # v3 exposes .compressors (an empty tuple means uncompressed, not
+        # "unknown"); only fall back to the v2 .compressor when the attr is
+        # absent, since reading .compressor RAISES on a v3 array.
+        if cs is not None:
+            return ",".join(_codec_name(c) for c in cs) if cs else "none"
         c = a.compressor
         return _codec_name(c) if c else "none"
     except Exception:

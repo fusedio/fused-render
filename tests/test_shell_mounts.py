@@ -955,6 +955,46 @@ def test_fs_raw_proxies_range_from_mount_serve(client, home):
         srv.shutdown()
 
 
+def test_fs_raw_directory_404s_not_listing(client, home):
+    """A directory path under a served mount 404s on GET and HEAD. The serve
+    (like rclone serve http) answers a directory with a 200 HTML listing, so
+    without a guard the proxy would hand that listing back as raw bytes; a
+    directory has no bytes to serve, so both verbs must 404."""
+    import functools
+    import http.server
+    import os
+    import threading
+
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    os.makedirs(mp)
+    d = os.path.join(mp, "subdir")
+    os.makedirs(d)
+    open(os.path.join(d, "x.bin"), "wb").write(b"CHUNK")
+
+    class H(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0), functools.partial(H, directory=str(mp)))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        import fused_render.shell.storage as storage
+        storage.write_json(mounts_mod.serves_path(),
+                           {mp: f"http://127.0.0.1:{srv.server_address[1]}"})
+        # Browser-style request (Sec-Fetch-Mode present) skips the redirect
+        # branch and reaches the proxy path, which is where a directory would
+        # otherwise leak a 200 listing.
+        h = {"sec-fetch-mode": "navigate"}
+        r = client.get("/api/fs/raw", params={"path": d}, headers=h)
+        assert r.status_code == 404
+        r = client.head("/api/fs/raw", params={"path": d}, headers=h)
+        assert r.status_code == 404
+    finally:
+        srv.shutdown()
+
+
 def test_fs_raw_falls_back_to_file_when_serve_dead(client, home):
     import os
     import socket

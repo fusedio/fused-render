@@ -1479,7 +1479,7 @@ def create_app(start_dir: str) -> FastAPI:
         # passes error statuses through), so existence falls out of the
         # read. Only HEAD (answered from st_size) and the local-file
         # fallback below still stat.
-        upstream = shell_mounts.serve_url_for(path)
+        upstream = await asyncio.to_thread(shell_mounts.serve_url_for, path)
         if upstream is not None:
             # Every remote read flows through here, so this is where the
             # shell learns a mounted file is in use: kick off (or just
@@ -1529,6 +1529,14 @@ def create_app(start_dir: str) -> FastAPI:
                     shell_mounts.upstream_url_for, path)
                 if direct:
                     return RedirectResponse(direct, status_code=307)
+            # Not redirected (browser, warm read, or no direct URL): proxy the
+            # bytes. Guard non-files here — the cold redirect path above is the
+            # never-listed-object hot path and stays stat-free, but a directory
+            # proxied through rclone serve comes back as a 200 HTML listing, so
+            # stat before serving (warm getattr is cheap; a directory 404s).
+            st = await asyncio.to_thread(_stat_or_none, path)
+            if st is None:
+                return _error(f"no such file: {path}", status=404)
             resp = await asyncio.to_thread(_proxy_raw, upstream, request)
             if resp is not None:
                 return resp  # upstream unreachable -> plain file read below
