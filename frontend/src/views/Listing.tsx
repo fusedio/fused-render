@@ -13,16 +13,24 @@ import { navigate, navigateUrl, urlForFsPath } from "../lib/router";
 import {
   listDir,
   walkDirStream,
-  statPath,
-  resolveConditions,
   revealPath,
   writeFile,
   mkdir,
   deleteEntry,
   renameEntry,
   copyEntry,
+  statPath,
 } from "../lib/api";
 import type { FsEntry, WalkEntry } from "../lib/api";
+import {
+  dirname,
+  freeDuplicatePath,
+  copyToClipboard,
+  clearClipboardIfDeleted,
+  trashEntry,
+  resolveOpenWithModes,
+  buildOpenWithItems,
+} from "../lib/fs-actions";
 import { formatSize, formatMtime, basename } from "../lib/format";
 import { fuzzyMatch, highlightSegments } from "../lib/fuzzy";
 import { iconForEntry } from "../components/FileIcons";
@@ -31,25 +39,7 @@ import { getClipboard, setClipboard, useClipboard } from "../lib/fs-clipboard";
 import ContextMenu, { type MenuEntry, type MenuItem } from "../components/ContextMenu";
 import { MenuIcons } from "../components/MenuIcons";
 import { PromptDialog, ConfirmDialog, nameError } from "../components/FsDialogs";
-import { KNOWN_SENTINEL_MODES, modeTitle, templateModeIcon } from "../components/ModeSwitcher";
-
-// Parent directory of an absolute path, in the shell's canonical forward-slash
-// form. Root's parent is root.
-function dirname(p: string): string {
-  const norm = p.replace(/\/+$/, "");
-  const i = norm.lastIndexOf("/");
-  return i <= 0 ? "/" : norm.slice(0, i);
-}
-
-// Finder-style duplicate name: "report.csv" -> "report copy.csv" ->
-// "report copy 2.csv". Directories (and extension-less / dotfile names) keep
-// the whole name and just gain the " copy" suffix.
-function duplicateName(name: string, counter: number, isDir: boolean): string {
-  const suffix = counter <= 1 ? " copy" : ` copy ${counter}`;
-  const dot = name.lastIndexOf(".");
-  if (!isDir && dot > 0) return name.slice(0, dot) + suffix + name.slice(dot);
-  return name + suffix;
-}
+import Toast from "../components/Toast";
 
 // A right-clicked row, normalized so both listing rows (name relative to the
 // listed folder) and search-result rows (a `rel` path into a subtree) drive the
@@ -702,18 +692,41 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   //   • A still-present selection just refreshes its remembered slot index.
   //   • A vanished selection (deleted / trashed / moved) clamps to the nearest
   //     surviving row (or clears when the folder is now empty).
+  // The pending wait is BOUNDED, not open-ended: it only holds while the current
+  // selection is itself a live row. Renaming a search hit whose new path isn't a
+  // search match leaves the pending target absent from navRows forever while the
+  // old selected path also disappears — waiting unconditionally there would
+  // strand the selection on a dead row (broken Enter). So once the old selection
+  // is gone too, the pending target is abandoned and the normal clamp runs. The
+  // pending path still lands the moment it does appear (e.g. search results
+  // refetching to include the renamed file), so the happy path is unchanged.
   useEffect(() => {
     const rows = navRows;
     const pend = pendingSelectRef.current;
+    let clampFallback = false;
     if (pend !== null) {
       const pi = rows.indexOf(pend);
-      if (pi === -1) return; // target not in this listing yet — keep waiting
+      if (pi !== -1) {
+        pendingSelectRef.current = null;
+        lastSelIndexRef.current = pi;
+        if (selectedPath !== pend) setSelectedPath(pend);
+        return;
+      }
+      // Target not here yet. Keep waiting ONLY while the current selection is
+      // still a real row (nothing's broken, the target may still arrive). If it
+      // has also vanished, give up on the pending target and clamp below.
+      if (selectedPath !== null && rows.indexOf(selectedPath) !== -1) return;
       pendingSelectRef.current = null;
-      lastSelIndexRef.current = pi;
-      if (selectedPath !== pend) setSelectedPath(pend);
+      clampFallback = true;
+    }
+    if (selectedPath === null) {
+      // No selection to reconcile. Only force one when a pending target was just
+      // abandoned (so selection never stays dead); otherwise leave it unset.
+      if (!clampFallback || rows.length === 0) return;
+      const clamped = Math.min(Math.max(lastSelIndexRef.current, 0), rows.length - 1);
+      setSelectedPath(rows[clamped]);
       return;
     }
-    if (selectedPath === null) return;
     const i = rows.indexOf(selectedPath);
     if (i !== -1) {
       lastSelIndexRef.current = i; // selection still valid; remember its slot
@@ -784,17 +797,6 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     return err !== null;
   };
 
-  // After a successful delete/trash, drop the module clipboard if it points at
-  // the removed entry — either the exact path, or something inside it when a
-  // directory was deleted (prefix + separator). Otherwise a later Paste of that
-  // cut/copy would target a source that no longer exists.
-  const clearClipboardIfDeleted = (deleted: string) => {
-    const clip = getClipboard();
-    if (clip && (clip.path === deleted || clip.path.startsWith(deleted + "/"))) {
-      setClipboard(null);
-    }
-  };
-
   // Guards a paste that's still running so a second Paste gesture (a rapid
   // Cmd+V×2) can't fire a parallel op on the same source — for a cut that
   // second call would renameEntry an already-moved src and 404 with a jarring
@@ -810,6 +812,27 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     if (!clip || pasteInFlight.current) return;
     const { path: src, op } = clip;
     const dst = dir + "/" + basename(src);
+    // Same-folder paste (dst would collide with the source), matching Finder:
+    //   • CUT into its own folder is a no-op — the backend rename would 409 on
+    //     dst === src, so just drop the cut clipboard (nothing to move).
+    //   • COPY into its own folder makes a deduped "… copy" instead of colliding
+    //     (freeDuplicatePath, same as Duplicate), and re-anchors onto the copy.
+    if (dst === src) {
+      if (op === "cut") {
+        setClipboard(null);
+        return;
+      }
+      pasteInFlight.current = true;
+      run(async () => {
+        const { is_dir } = await statPath(src);
+        const copyDst = await freeDuplicatePath(dir, basename(src), is_dir);
+        await copyEntry(src, copyDst);
+        pendingSelectRef.current = copyDst; // move selection onto the new copy
+      }).finally(() => {
+        pasteInFlight.current = false;
+      });
+      return;
+    }
     if (op === "cut") setClipboard(null); // consume atomically, before any await
     pasteInFlight.current = true;
     run(async () => {
@@ -832,15 +855,11 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   };
 
   // Duplicate into the same folder, picking the first free "… copy[/ n]" name
-  // by listing the folder first (so the copy never 409s on an existing name).
+  // (freeDuplicatePath lists the folder so the copy never 409s on an existing
+  // name).
   const doDuplicate = (row: RowCtx) => {
     run(async () => {
-      const { entries } = await listDir(row.parentDir);
-      const taken = new Set(entries.map((e) => e.name));
-      let i = 1;
-      let candidate = duplicateName(row.name, i, row.isDir);
-      while (taken.has(candidate)) candidate = duplicateName(row.name, ++i, row.isDir);
-      const dst = row.parentDir + "/" + candidate;
+      const dst = await freeDuplicatePath(row.parentDir, row.name, row.isDir);
       await copyEntry(row.path, dst);
       pendingSelectRef.current = dst; // move selection onto the new copy
     });
@@ -853,12 +872,10 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   const doCopyPath = (path: string) => {
     // Confirm with a non-error "info" toast; a failure (clipboard unavailable
     // or permission denied) stays silent — the path is still reachable via
-    // Reveal in Finder. The `?.` short-circuits the whole chain when the
-    // Clipboard API is missing, so neither callback runs.
-    navigator.clipboard?.writeText(path).then(
-      () => setToast({ msg: "Path copied", tone: "info" }),
-      () => {}
-    );
+    // Reveal in Finder.
+    copyToClipboard(path).then((ok) => {
+      if (ok) setToast({ msg: "Path copied", tone: "info" });
+    });
   };
 
   const startNewFile = (dir: string) =>
@@ -925,49 +942,33 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     });
 
   // Move to Bin: a recoverable delete (macOS Trash), so no confirm dialog.
-  // Where the server can't trash (non-macOS → 501 "trash unsupported") this
-  // falls back to the existing confirm-then-hard-delete flow, which IS
-  // irreversible and so keeps its warning. Success shows a low-key info toast.
+  // Where the server can't trash (non-macOS → "unsupported") this falls back to
+  // the existing confirm-then-hard-delete flow, which IS irreversible and so
+  // keeps its warning. Success shows a low-key info toast.
   const doTrash = (row: RowCtx) => {
-    deleteEntry(row.path, row.isDir, true).then(
-      () => {
+    trashEntry(row.path, row.isDir).then((r) => {
+      if (r.status === "trashed") {
         setToast({ msg: "Moved to Bin", tone: "info" });
         clearClipboardIfDeleted(row.path);
         refetch();
-      },
-      (e: Error) => {
-        if (e.message.includes("trash unsupported")) startDelete(row);
-        else setToast({ msg: e.message, tone: "error" });
+      } else if (r.status === "unsupported") {
+        startDelete(row);
+      } else {
+        setToast({ msg: r.message, tone: "error" });
       }
-    );
+    });
   };
 
   // Lazy loader for the Open With submenu: resolves the entry's template modes
-  // (mirrors PaneModeMenu's filter + condition-gate handling). Selecting a mode
-  // navigates to the entry with `_mode` set; the default mode deletes the param.
+  // (resolveOpenWithModes mirrors Preview's filter + condition-gate handling).
+  // Selecting a mode navigates to the entry with `_mode` set; the default mode
+  // deletes the param.
   const loadOpenWith = (path: string) => async (): Promise<MenuItem[]> => {
-    const s = await statPath(path);
-    let filtered = s.templates.filter((t) => t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode));
-    if (filtered.some((t) => t.conditional)) {
-      try {
-        const r = await resolveConditions(path);
-        filtered = filtered.filter((t) => !t.conditional || r.conditions[t.mode] === true);
-      } catch {
-        filtered = filtered.filter((t) => !t.conditional); // fail closed, like a broken gate
-      }
-    }
-    if (filtered.length === 0) return [{ label: "No views available", disabled: true }];
-    const def = filtered.find((t) => !t.conditional) || filtered[0];
-    return filtered.map((t) => ({
-      label: modeTitle(t.mode),
-      // Same template-mode glyph the pane mode menu uses, so submenu rows fill
-      // the reserved icon column instead of leaving a bare gap before the name.
-      icon: templateModeIcon(t),
-      onClick: () => {
-        const search = t.mode === def.mode ? "" : "?_mode=" + encodeURIComponent(t.mode);
-        navigateUrl(urlForFsPath(path, search));
-      },
-    }));
+    const modes = await resolveOpenWithModes(path);
+    return buildOpenWithItems(modes, (mode, isDefault) => {
+      const search = isDefault ? "" : "?_mode=" + encodeURIComponent(mode);
+      navigateUrl(urlForFsPath(path, search));
+    });
   };
 
   // Menu for a right-clicked row (file or dir), in macOS Finder order. Paste
@@ -1321,22 +1322,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
         />
       )}
 
-      {toast && (
-        <div
-          className={"listing-toast" + (toast.tone === "info" ? " listing-toast-info" : "")}
-          role={toast.tone === "info" ? "status" : "alert"}
-        >
-          <span className="listing-toast-msg">{toast.msg}</span>
-          <button
-            type="button"
-            className="listing-toast-close"
-            onClick={() => setToast(null)}
-            aria-label="Dismiss"
-          >
-            ✕
-          </button>
-        </div>
-      )}
+      {toast && <Toast msg={toast.msg} tone={toast.tone} onClose={() => setToast(null)} />}
     </div>
   );
 }
