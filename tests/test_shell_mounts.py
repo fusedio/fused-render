@@ -315,7 +315,8 @@ def test_mount_view_has_no_automount_field(client, rcd):
         headers=FUSED).json()
     # automount is implicit for every mount now — the field is gone.
     assert "automount" not in m
-    assert set(m) == {"id", "name", "remote", "mountpoint", "mounted", "state"}
+    assert set(m) == {"id", "name", "remote", "mountpoint", "mounted", "state",
+                      "read_only"}
 
 
 def test_delete_unmounts_and_removes(client, rcd):
@@ -1148,3 +1149,113 @@ def test_api_run_rewrites_raw_source_url_to_direct(
     assert run(unmounted) == unmounted
     assert run("https://elsewhere.example/data.parquet") == \
         "https://elsewhere.example/data.parquet"
+
+
+# -- read-only remotes -----------------------------------------------------
+# A mount's writability is a property of the REMOTE (anonymous S3 can never
+# take a write; an :http: backend has no write verbs at all), but the kernel
+# mount can't say so: with CacheMode=full a write "succeeds" into the local
+# VFS cache and only fails at async upload. So every attach re-detects
+# read-onlyness non-mutatingly via rc (fsinfo features + remote config) and
+# persists it on the mount record — unless the user chose the flag at create
+# (read_only_user), which detection never overrides. Inconclusive probes
+# persist nothing. server._writable consults the flag via mount_read_only().
+
+FSINFO_RW = {"Features": {"Put": True, "PutStream": True, "Copy": True}}
+FSINFO_RO = {"Features": {"Put": False, "PutStream": False, "Copy": False}}
+
+
+def _attached(name, remote):
+    m = mounts_mod.add_mount(name, remote)
+    assert mounts_mod.attach_mount(m) is None
+    return mounts_mod.get_mount(m["id"])
+
+
+def test_attach_marks_anonymous_s3_read_only(home, rcd):
+    rcd.responses["operations/fsinfo"] = FSINFO_RW
+    rcd.responses["config/get"] = {"type": "s3", "provider": "AWS",
+                                   "env_auth": "false"}
+    assert _attached("pub", "aws-open:bucket")["read_only"] is True
+
+
+def test_attach_marks_credentialed_s3_writable(home, rcd):
+    rcd.responses["operations/fsinfo"] = FSINFO_RW
+    rcd.responses["config/get"] = {"type": "s3", "provider": "AWS",
+                                   "env_auth": "true", "profile": "default"}
+    assert _attached("data", "aws:bucket")["read_only"] is False
+
+
+def test_attach_marks_putless_backend_read_only(home, rcd):
+    # An :http:-style backend advertises no write features at all — read-only
+    # regardless of its config.
+    rcd.responses["operations/fsinfo"] = FSINFO_RO
+    rcd.responses["config/get"] = {"type": "http"}
+    assert _attached("web", "web:")["read_only"] is True
+
+
+def test_attach_persists_nothing_when_probe_inconclusive(home, rcd):
+    # Neither probe answers (stub 404s both) — persist NO verdict: the mount
+    # stays rw (the pre-flag behavior) and the next attach re-probes, so a
+    # transient rcd hiccup at first attach can't freeze a wrong answer.
+    m = _attached("data", "remote:bucket")
+    assert "read_only" not in m
+    # The probes come back — the same mount converges on the next attach.
+    rcd.responses["operations/fsinfo"] = FSINFO_RO
+    rcd.responses["config/get"] = {"type": "http"}
+    assert mounts_mod.attach_mount(m) is None
+    assert mounts_mod.get_mount(m["id"])["read_only"] is True
+
+
+def test_attach_treats_missing_features_as_inconclusive(home, rcd):
+    # fsinfo answering WITHOUT a Features map is version skew, not evidence
+    # of read-onlyness — a writable remote must not get locked by it.
+    rcd.responses["operations/fsinfo"] = {"Name": "remote"}
+    rcd.responses["config/get"] = (404, {"error": "config not found"})
+    assert "read_only" not in _attached("data", "remote:bucket")
+
+
+def test_reattach_redetects_when_credentials_change(home, rcd):
+    # Detected (not user-set) flags follow the remote: an anonymous S3 mount
+    # flagged read-only flips back once credentials appear in its config.
+    rcd.responses["operations/fsinfo"] = FSINFO_RW
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "false"}
+    m = _attached("pub", "aws-open:bucket")
+    assert m["read_only"] is True
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
+    assert mounts_mod.attach_mount(m) is None
+    assert mounts_mod.get_mount(m["id"])["read_only"] is False
+
+
+def test_explicit_read_only_flag_never_redetected(home, rcd):
+    rcd.responses["operations/fsinfo"] = FSINFO_RO  # would detect read-only
+    rcd.responses["config/get"] = {"type": "http"}
+    m = mounts_mod.add_mount("web", "web:", read_only=False)
+    assert mounts_mod.attach_mount(m) is None
+    assert mounts_mod.get_mount(m["id"])["read_only"] is False
+
+
+def test_add_mount_rejects_non_bool_read_only(home):
+    # Straight off a JSON body: bool("false") is True, so anything but a real
+    # boolean (or None) must be refused, not coerced.
+    with pytest.raises(ValueError):
+        mounts_mod.add_mount("pub", "aws-open:bucket", read_only="false")
+
+
+def test_mount_read_only_path_lookup(home):
+    ro = mounts_mod.add_mount("pub", "aws-open:bucket", read_only=True)
+    rw = mounts_mod.add_mount("data", "aws:bucket", read_only=False)
+    legacy = mounts_mod.add_mount("old", "old:bucket")  # pre-flag record
+    assert mounts_mod.mount_read_only(
+        _os.path.join(mounts_mod.mountpoint(ro), "f.parquet")) is True
+    assert mounts_mod.mount_read_only(
+        _os.path.join(mounts_mod.mountpoint(rw), "f.parquet")) is False
+    assert mounts_mod.mount_read_only(
+        _os.path.join(mounts_mod.mountpoint(legacy), "f.parquet")) is False
+    assert mounts_mod.mount_read_only("/somewhere/else.parquet") is False
+
+
+def test_mount_view_exposes_read_only(home):
+    m = mounts_mod.add_mount("pub", "aws-open:bucket", read_only=True)
+    assert mounts_mod.mount_view(m, rcd_mounts=set())["read_only"] is True
+    m2 = mounts_mod.add_mount("data", "aws:bucket")
+    assert mounts_mod.mount_view(m2, rcd_mounts=set())["read_only"] is False

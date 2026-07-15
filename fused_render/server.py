@@ -974,7 +974,17 @@ def _writable(path: str) -> bool:
     W_OK on itself — the atomic os.replace would otherwise bypass a read-only
     bit via the parent directory — and a new file needs W_OK on its parent.
     Templates read this off the stat payload to render read-only mode up
-    front; keep the two in agreement."""
+    front; keep the two in agreement.
+
+    Paths under a read-only mount are never writable, whatever the permission
+    bits say: the rclone VFS (CacheMode=full) takes any write into its local
+    cache and only fails at the async upload, so W_OK is a lie there."""
+    # Local import, like _stat_payload's: server -> shell.mounts only,
+    # keeping shell ↛ server acyclic.
+    from fused_render.shell.mounts import mount_read_only
+
+    if mount_read_only(path):
+        return False
     if os.path.exists(path):
         return os.access(path, os.W_OK)
     return os.access(os.path.dirname(path) or ".", os.W_OK)
