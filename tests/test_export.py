@@ -65,6 +65,17 @@ def test_include_missing_or_unsafe_file_is_an_error(tmp_path):
     assert any("absolute" in e for e in plan.errors)
 
 
+def test_include_of_runpython_target_is_not_duplicated(tmp_path):
+    # A persisted include that names a file the page ALSO runs via runPython must
+    # not bundle it twice (once as code/<name>.py, once as assets/<key>).
+    html = "<script>fused.runPython('./sine.py', {});</script>"
+    _write(tmp_path, "sine.py", "def main():\n    return 1\n")
+    plan = plan_export(html, str(tmp_path), include=["sine.py"])
+    assert not plan.errors
+    assert [e.path for e in plan.entrypoints] == ["./sine.py"]
+    assert plan.assets == []  # not also added as an asset
+
+
 def test_include_of_referenced_file_dedups(tmp_path):
     html = "<script>fused.rawUrl('./logo.png');</script>"
     _write(tmp_path, "logo.png", "PNG")

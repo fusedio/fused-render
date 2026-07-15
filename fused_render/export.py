@@ -315,11 +315,15 @@ def plan_export(
             plan.assets.append(Asset(path=path, name=key, file=f"assets/{key}"))
 
     # Manual includes: extra files bundled as assets, keyed the same way. A file already
-    # brought in by the literal scan (same key) is skipped — bundled once. An unsafe or
-    # missing include is a blocking error, like a scanned asset that doesn't exist.
+    # brought in by the literal scan (same key) is skipped — bundled once. A file already
+    # bundled as a runPython ENTRYPOINT is skipped too (compare by asset key): it is
+    # served as a route from code/<name>.py, so also copying it under assets/ would ship
+    # the bytes twice and list it as both an entrypoint and an asset. An unsafe or missing
+    # include is a blocking error, like a scanned asset that doesn't exist.
+    entrypoint_keys = {_asset_key(e.path) for e in plan.entrypoints}
     for path in include:
         key = _asset_key(path)
-        if key in seen_asset_keys:
+        if key in seen_asset_keys or key in entrypoint_keys:
             continue
         if not _reject_unsafe_rel(path, "included file", plan.errors):
             continue
