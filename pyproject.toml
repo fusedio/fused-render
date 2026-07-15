@@ -53,6 +53,7 @@ bundled = [
     "usd-core>=24.5",
     "msgpack>=1.0",
     "rasterio",
+    "zarr",
     "pymupdf>=1.25",
     "pikepdf>=9",
     "drain3>=0.9.11",

@@ -187,12 +187,16 @@ def _chunk_stats(store, name, za):
 
 
 def _store_summary(store):
-    """Total bytes + file count on disk (capped walk so huge stores stay fast)."""
+    """Total bytes + file count on disk (walk capped by count AND wall time:
+    on a remote mount every listing/stat is a network round-trip, so a large
+    store would otherwise stall for minutes long before any file-count cap)."""
+    import time
     size = files = 0
+    deadline = time.time() + 2.0
     for dirpath, _, names in os.walk(store):
         for n in names:
             files += 1
-            if files > 50000:
+            if files > 50000 or time.time() > deadline:
                 return {"size": size, "files": files, "approx": True}
             try:
                 size += os.path.getsize(os.path.join(dirpath, n))
@@ -292,9 +296,20 @@ def _read_pure(store, var, index, bins, max_cells):
 
     def kind(n):
         return np.dtype(arrays[n]["zarray"]["dtype"]).kind
-    chosen = var if var in band_names else max(
-        band_names, key=lambda n: (kind(n) == "f", len(arrays[n]["zarray"]["shape"]),
-                                   int(np.prod(arrays[n]["zarray"]["shape"]))))
+
+    def slice_cells(n):
+        shp = arrays[n]["zarray"]["shape"]
+        return int(np.prod(shp[-2:] if len(shp) >= 2 else shp))
+    if var in band_names:
+        chosen = var
+    else:
+        fit = [n for n in band_names if slice_cells(n) <= 32_000_000]
+        chosen = max(fit, key=lambda n: (kind(n) == "f", len(arrays[n]["zarray"]["shape"]),
+                                         int(np.prod(arrays[n]["zarray"]["shape"])))) \
+            if fit else min(band_names, key=slice_cells)
+    if slice_cells(chosen) > 256_000_000:
+        return {"error": f"slice of '{chosen}' is {slice_cells(chosen) // 1000000}M "
+                         "cells - too large to load; pick a smaller variable"}
 
     info = arrays[chosen]
     za = info["zarray"]
@@ -408,6 +423,9 @@ def _system_python():
     cands = []
     if os.environ.get("GEO_PYTHON"):
         cands.append(os.environ["GEO_PYTHON"])
+    # when running inside the grid daemon its venv ships zarr (DAEMON_DEPS),
+    # so the current interpreter is normally the one found here
+    cands.append(sys.executable)
     home = os.path.expanduser("~")
     cands += [os.path.join(home, p) for p in
               ("miniforge3/bin/python", "miniconda3/bin/python", "anaconda3/bin/python")]
@@ -418,14 +436,17 @@ def _system_python():
     env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
     seen = set()
     for c in cands:
+        # dedup on the resolved target but RUN the original path: a venv's
+        # bin/python is a symlink to the base interpreter, and resolving it
+        # before exec would escape the venv (losing its site-packages)
         rc = os.path.realpath(c)
         if rc in seen or not os.path.exists(rc):
             continue
         seen.add(rc)
         try:
-            r = subprocess.run([rc, "-c", "import zarr"], capture_output=True, timeout=15, env=env)
+            r = subprocess.run([c, "-c", "import zarr"], capture_output=True, timeout=15, env=env)
             if r.returncode == 0:
-                return rc
+                return c
         except Exception:
             continue
     return None
@@ -439,6 +460,27 @@ import _grid_common as G
 
 p = json.loads(sys.stdin.read())
 root = zarr.open(p["store"], mode="r")
+BUDGET = 32_000_000     # target cells for an auto-picked 2D slice
+HARD_CAP = 256_000_000  # refuse (error, don't OOM) above this
+# Multiscale stores: pick the finest pyramid level that fits the budget from
+# the root attrs alone and walk ONLY that subgroup — walking every level costs
+# a metadata round-trip per node (slow on remote mounts) and pick-by-size
+# would grab the native-resolution level (can be trillions of cells).
+asset = None
+ms = dict(getattr(root, "attrs", {})).get("multiscales")
+if isinstance(ms, dict) and isinstance(ms.get("layout"), list):
+    levels = []
+    for e in ms["layout"]:
+        sh = e.get("spatial:shape") or []
+        if isinstance(e.get("asset"), str) and len(sh) == 2:
+            levels.append((str(e["asset"]), int(sh[0]) * int(sh[1])))
+    if levels:
+        want = p["var"].split("/", 1)[0] if p["var"] else None
+        if any(nm == want for nm, _ in levels):
+            asset = want
+        else:
+            fit = [t for t in levels if t[1] <= BUDGET]
+            asset = max(fit, key=lambda t: t[1])[0] if fit else min(levels, key=lambda t: t[1])[0]
 arrays = {}
 def walk(node, prefix=""):
     try:
@@ -446,15 +488,31 @@ def walk(node, prefix=""):
         for k, v in node.groups(): walk(v, prefix + k + "/")
     except AttributeError:
         arrays[prefix.rstrip("/") or node.basename or "array"] = node
-walk(root)
+if asset is not None: walk(root[asset], asset + "/")
+else: walk(root)
 SY={"lat","latitude","y"}; SX={"lon","longitude","x"}
-def dims_of(a): return list(a.attrs.get("_ARRAY_DIMENSIONS", [f"dim{i}" for i in range(a.ndim)]))
+def dims_of(a):
+    d = a.attrs.get("_ARRAY_DIMENSIONS")
+    if not d:
+        d = getattr(getattr(a, "metadata", None), "dimension_names", None)
+        if d and not all(d): d = None
+    return list(d) if d else [f"dim{i}" for i in range(a.ndim)]
 dim_sizes={}
 for n,a in arrays.items():
     for d,s in zip(dims_of(a), a.shape): dim_sizes[d]=int(s)
 coord_names=[n for n,a in arrays.items() if (n in dim_sizes or n.split("/")[-1] in dim_sizes) and a.ndim<=1]
 band_names=[n for n in arrays if n not in coord_names] or list(arrays)
-chosen = p["var"] if p["var"] in band_names else max(band_names, key=lambda n:(arrays[n].dtype.kind=="f", arrays[n].ndim, arrays[n].size))
+def slice_cells(n):
+    a = arrays[n]
+    return int(np.prod(a.shape[-2:])) if a.ndim >= 2 else int(np.prod(a.shape))
+if p["var"] in band_names:
+    chosen = p["var"]
+else:
+    fit = [n for n in band_names if slice_cells(n) <= BUDGET]
+    chosen = max(fit, key=lambda n:(arrays[n].dtype.kind=="f", arrays[n].ndim, arrays[n].size)) \
+        if fit else min(band_names, key=slice_cells)
+if slice_cells(chosen) > HARD_CAP:
+    print(json.dumps({"error": "slice of '%s' is %dM cells - too large to load; pick a coarser overview level or smaller variable" % (chosen, slice_cells(chosen) // 1000000)})); sys.exit(0)
 a=arrays[chosen]; dims=dims_of(a)
 ydim=next((d for d in dims if d.split("/")[-1].lower() in SY), None)
 xdim=next((d for d in dims if d.split("/")[-1].lower() in SX), None)
@@ -474,10 +532,17 @@ for d in extra:
     ca=coord_for(d); vals=None
     if ca and arrays[ca].size<=200: vals=[G.clean(x) for x in arrays[ca][:]]
     extra_dims.append({"name":d,"size":int(size),"values":vals,"index": idx if d==extra[0] else 0})
-arr=np.asarray(a[tuple(sl)], dtype="float64")
+# data + coords live in separate files: overlap the reads (remote mounts pay
+# a network round-trip per file, so serial reads add up)
+from concurrent.futures import ThreadPoolExecutor
+def _coordvals(dim):
+    ca = coord_for(dim)
+    return [G.clean(x) for x in arrays[ca][:]] if ca else None
+with ThreadPoolExecutor(3) as _ex:
+    _fd = _ex.submit(lambda: np.asarray(a[tuple(sl)], dtype="float64"))
+    _fy = _ex.submit(_coordvals, ydim); _fx = _ex.submit(_coordvals, xdim)
+    arr = _fd.result(); lats = _fy.result(); lons = _fx.result()
 if ypos>xpos: arr=arr.T
-lats=[G.clean(x) for x in arrays[coord_for(ydim)][:]] if coord_for(ydim) else None
-lons=[G.clean(x) for x in arrays[coord_for(xdim)][:]] if coord_for(xdim) else None
 payload=G.present(arr, lats, lons, p["bins"], p["max_cells"])
 coords_meta=[]
 for n in coord_names:
@@ -487,16 +552,39 @@ for n in coord_names:
         "max":G.clean(np.nanmax(v)) if v is not None and v.size else None,
         "values":[G.clean(x) for x in v] if (v is not None and v.size<=200) else None,
         "attrs":{k:G.clean(vv) for k,vv in dict(c.attrs).items() if k!="_ARRAY_DIMENSIONS"}})
+# zarr-python 3: Array.compressor RAISES for v3 arrays (use .compressors),
+# filters codecs have no codec_id, and nchunks_initialized lists the whole
+# store (deadly over a remote mount) — read all of these defensively.
+def _codec_name(c):
+    return str(getattr(c, "codec_id", None) or type(c).__name__)
+def _comp_of(a):
+    try:
+        cs = getattr(a, "compressors", None)
+        if cs: return ",".join(_codec_name(c) for c in cs)
+        c = a.compressor
+        return _codec_name(c) if c else "none"
+    except Exception:
+        return "unknown"
+def _filt_of(a):
+    try:
+        return [_codec_name(f) for f in (a.filters or [])]
+    except Exception:
+        return []
+def _stored_of(a):
+    try:
+        return int(a.nchunks_initialized) if int(a.nchunks) <= 1024 else -1
+    except Exception:
+        return -1
 vars_meta=[{"name":n,"dims":dims_of(arrays[n]),"shape":[int(s) for s in arrays[n].shape],
     "dtype":str(arrays[n].dtype),
     "attrs":{k:G.clean(vv) for k,vv in dict(arrays[n].attrs).items() if k!="_ARRAY_DIMENSIONS"},
-    "compressor": (arrays[n].compressor.codec_id if arrays[n].compressor else "none"),
+    "compressor": _comp_of(arrays[n]),
     "chunks": [int(c) for c in (arrays[n].chunks or [])],
-    "chunks_stored": int(getattr(arrays[n], "nchunks_initialized", 0)),
+    "chunks_stored": _stored_of(arrays[n]),
     "chunks_total": int(getattr(arrays[n], "nchunks", 0)),
     "fill_value": G.clean(arrays[n].fill_value),
     "order": str(getattr(arrays[n], "order", "C")),
-    "filters": [f.codec_id for f in (arrays[n].filters or [])]} for n in band_names]
+    "filters": _filt_of(arrays[n])} for n in band_names]
 def mm(v):
     vv=[x for x in (v or []) if x is not None]
     return (min(vv),max(vv)) if vv else (None,None)

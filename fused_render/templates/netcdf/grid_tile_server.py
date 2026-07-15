@@ -28,7 +28,7 @@ This file is kept BYTE-IDENTICAL in netcdf/ and zarr/ (the daemon
 version is a content hash, so both copies share one daemon).
 """
 # /// script
-# dependencies = ["numpy", "scipy"]
+# dependencies = ["numpy", "scipy", "zarr"]
 # ///
 
 import hashlib
@@ -40,8 +40,12 @@ import threading
 import time
 
 STATE = os.path.expanduser("~/.cache/fused-render-gridv2/daemon.json")
-DAEMON_VENV = os.path.expanduser("~/.cache/fused-render-gridv2/venv")
-DAEMON_DEPS = ["numpy", "scipy"]
+DAEMON_DEPS = ["numpy", "scipy", "zarr"]
+# venv dir is keyed by the dep set: growing DAEMON_DEPS must provision a fresh
+# venv, not reuse an existing one that lacks the new package
+DAEMON_VENV = os.path.expanduser(
+    "~/.cache/fused-render-gridv2/venv-"
+    + hashlib.sha256(",".join(DAEMON_DEPS).encode()).hexdigest()[:8])
 IDLE_EXIT_S = 30 * 60
 TILE = 256
 MERC_R = 6378137.0
@@ -200,6 +204,9 @@ def _serve():
         cands = []
         if os.environ.get("GEO_PYTHON"):
             cands.append(os.environ["GEO_PYTHON"])
+        # the daemon venv itself ships zarr (DAEMON_DEPS), so it is normally
+        # the interpreter found here — no host python needed
+        cands.append(sys.executable)
         home = os.path.expanduser("~")
         cands += [os.path.join(home, p) for p in
                   ("miniforge3/bin/python", "miniconda3/bin/python", "anaconda3/bin/python")]
@@ -210,15 +217,18 @@ def _serve():
         env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
         seen = set()
         for c in cands:
+            # dedup on the resolved target but RUN the original path: a venv's
+            # bin/python is a symlink to the base interpreter, and resolving it
+            # before exec would escape the venv (losing its site-packages)
             rc = os.path.realpath(c)
             if rc in seen or not os.path.exists(rc):
                 continue
             seen.add(rc)
             try:
-                r = subprocess.run([rc, "-c", f"import {module}"],
+                r = subprocess.run([c, "-c", f"import {module}"],
                                    capture_output=True, timeout=15, env=env)
                 if r.returncode == 0:
-                    return rc
+                    return c
             except Exception:
                 continue
         return None
@@ -282,13 +292,39 @@ p = json.loads(sys.stdin.read())
 SY = {"lat","latitude","y","yc","rlat","nav_lat"}
 SX = {"lon","longitude","x","xc","rlon","nav_lon"}
 g = zarr.open_group(p["file"], mode="r")
+BUDGET = 32_000_000     # target cells for an auto-picked 2D slice
+HARD_CAP = 256_000_000  # refuse (error, don't OOM) above this
+# Multiscale stores (zarr-conventions "multiscales"): the root attrs list every
+# pyramid level with its shape, so pick the finest level that fits the budget
+# up front and walk ONLY that subgroup — walking all levels costs a metadata
+# round-trip per node (slow on remote mounts) and auto-pick-by-size would grab
+# the native-resolution level (trillions of cells).
+asset = None
+ms = dict(g.attrs).get("multiscales")
+if isinstance(ms, dict) and isinstance(ms.get("layout"), list):
+    levels = []
+    for e in ms["layout"]:
+        sh = e.get("spatial:shape") or []
+        if isinstance(e.get("asset"), str) and len(sh) == 2:
+            levels.append((str(e["asset"]), int(sh[0]) * int(sh[1])))
+    if levels:
+        want = p["var"].split("/", 1)[0] if p["var"] else None
+        if any(nm == want for nm, _ in levels):
+            asset = want
+        else:
+            fit = [t for t in levels if t[1] <= BUDGET]
+            asset = max(fit, key=lambda t: t[1])[0] if fit else min(levels, key=lambda t: t[1])[0]
 arrays = {}
 def walk(node, prefix=""):
     for k, v in node.arrays(): arrays[prefix + k] = v
     for k, v in node.groups(): walk(v, prefix + k + "/")
-walk(g)
+if asset is not None: walk(g[asset], asset + "/")
+else: walk(g)
 def dims_of(a, n):
     d = a.attrs.get("_ARRAY_DIMENSIONS")
+    if not d:
+        d = getattr(getattr(a, "metadata", None), "dimension_names", None)
+        if d and not all(d): d = None
     return list(d) if d else [f"dim{i}" for i in range(a.ndim)]
 dimnames = set()
 for n, a in arrays.items():
@@ -300,9 +336,18 @@ for n, a in arrays.items():
         coords.append(n)
     else: bands.append(n)
 if not bands: bands = list(arrays)
+def slice_cells(n):
+    a = arrays[n]
+    return int(np.prod(a.shape[-2:])) if a.ndim >= 2 else int(np.prod(a.shape))
 def score(n):
     a = arrays[n]; return (a.dtype.kind == "f", a.ndim, int(np.prod(a.shape)))
-chosen = p["var"] if p["var"] in bands else max(bands, key=score)
+if p["var"] in bands:
+    chosen = p["var"]
+else:
+    fit = [n for n in bands if slice_cells(n) <= BUDGET]
+    chosen = max(fit, key=score) if fit else min(bands, key=slice_cells)
+if slice_cells(chosen) > HARD_CAP:
+    print(json.dumps({"error": "slice of '%s' is %dM cells - too large to load; pick a coarser overview level or smaller variable" % (chosen, slice_cells(chosen) // 1000000)})); sys.exit(0)
 a = arrays[chosen]; dims = dims_of(a, chosen)
 ydim = next((d for d in dims if d.split("/")[-1].lower() in SY), None)
 xdim = next((d for d in dims if d.split("/")[-1].lower() in SX), None)
@@ -321,16 +366,21 @@ for i, d in enumerate(extra):
     ca = coord_arr(d); vals = None
     if ca is not None and ca.size <= 500: vals = [str(x) for x in np.asarray(ca[:]).ravel()]
     extra_dims.append({"name": d, "size": int(n0), "values": vals})
-data = np.squeeze(np.asarray(a[tuple(sl)], dtype="float64"))
-if data.ndim != 2: data = np.atleast_2d(data)
-ypos, xpos = dims.index(ydim), dims.index(xdim)
-if ypos > xpos: data = data.T
 def cvals(d):
     ca = coord_arr(d)
     if ca is not None and np.issubdtype(ca.dtype, np.number):
         return np.asarray(ca[:], dtype="float64").ravel()
     return None
-lats = cvals(ydim); lons = cvals(xdim)
+# data + coords live in separate files: overlap the reads (remote mounts pay
+# a network round-trip per file, so serial reads add up)
+from concurrent.futures import ThreadPoolExecutor
+with ThreadPoolExecutor(3) as _ex:
+    _fd = _ex.submit(lambda: np.asarray(a[tuple(sl)], dtype="float64"))
+    _fy = _ex.submit(cvals, ydim); _fx = _ex.submit(cvals, xdim)
+    data = np.squeeze(_fd.result()); lats = _fy.result(); lons = _fx.result()
+if data.ndim != 2: data = np.atleast_2d(data)
+ypos, xpos = dims.index(ydim), dims.index(xdim)
+if ypos > xpos: data = data.T
 tmp = tempfile.NamedTemporaryFile(suffix=".npz", delete=False)
 np.savez(tmp.name, vals=data,
          lats=(lats if lats is not None else np.zeros(0)),
@@ -473,10 +523,21 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
 
         def kind(n):
             return np.dtype(arrays[n]["zarray"]["dtype"]).kind
-        chosen = var if var in band_names else max(
-            band_names, key=lambda n: (kind(n) == "f",
-                                       len(arrays[n]["zarray"]["shape"]),
-                                       int(np.prod(arrays[n]["zarray"]["shape"]))))
+
+        def slice_cells(n):
+            shape = arrays[n]["zarray"]["shape"]
+            return int(np.prod(shape[-2:] if len(shape) >= 2 else shape))
+        if var in band_names:
+            chosen = var
+        else:
+            fit = [n for n in band_names if slice_cells(n) <= 32_000_000]
+            chosen = max(fit, key=lambda n: (kind(n) == "f",
+                                             len(arrays[n]["zarray"]["shape"]),
+                                             int(np.prod(arrays[n]["zarray"]["shape"])))) \
+                if fit else min(band_names, key=slice_cells)
+        if slice_cells(chosen) > 256_000_000:
+            raise RuntimeError(f"slice of '{chosen}' is {slice_cells(chosen) // 1000000}M "
+                               "cells - too large to load; pick a smaller variable")
         info = arrays[chosen]
         za = info["zarray"]
         dims = Z._dims_of(chosen, info)
@@ -709,6 +770,8 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
         vals = sample_bbox(s, mx0, my0, mx1, my1, TILE, TILE)
         return 200, encode_png(np.ascontiguousarray(colorize(q, s, vals))), "image/png"
 
+    dir_sizes = {}     # store path -> capped-walk size (None when capped)
+
     def do_meta(q):
         path = os.path.abspath(os.path.expanduser(q1(q, "file")))
         s = slice_of(q)
@@ -722,9 +785,29 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
                "shape": [rows, cols],
                "lonlat_bounds": (g["bounds"] if g else None)}
         try:
-            out["file_size"] = (os.path.getsize(path) if os.path.isfile(path)
-                                else sum(os.path.getsize(os.path.join(dp, f))
-                                         for dp, _, fs in os.walk(path) for f in fs))
+            if os.path.isfile(path):
+                out["file_size"] = os.path.getsize(path)
+            elif path in dir_sizes:
+                out["file_size"] = dir_sizes[path]
+            else:
+                # capped walk: a store can hold millions of chunk files and on
+                # a remote mount every listing/stat is a network round-trip —
+                # give up after a short deadline instead of stalling /meta,
+                # and cache the answer so only the first /meta per store pays
+                deadline = time.time() + 2.0
+                total, files, capped = 0, 0, False
+                for dp, _, fs in os.walk(path):
+                    for f in fs:
+                        try:
+                            total += os.path.getsize(os.path.join(dp, f))
+                        except OSError:
+                            pass
+                        files += 1
+                    if time.time() > deadline or files > 20000:
+                        capped = True
+                        break
+                dir_sizes[path] = None if capped else total
+                out["file_size"] = dir_sizes[path]
         except OSError:
             out["file_size"] = None
         return 200, json.dumps(out, default=str).encode(), "application/json"
