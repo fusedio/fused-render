@@ -67,6 +67,23 @@ Builds a standalone `FusedRender.app` via py2app and packages it as
 FUSED_RENDER_NOTARY_PROFILE=FUSED_RENDER_NOTARY bash scripts/build_dmg.sh
 ```
 
+### Windows installer (EXE)
+
+```
+scripts/build_windows_installer.ps1
+```
+
+Builds `dist/FusedRender-<version>-setup.exe` — a per-user (no-admin) Inno Setup
+installer bundling a relocatable CPython 3.12 with the `[bundled,fused]` stack,
+the analog of the DMG. Double-clicking it installs into
+`%LOCALAPPDATA%\Programs\FusedRender`, registers the Explorer "Open with"
+associations, and adds a Start Menu entry; uninstall removes them. Needs Node
+(frontend build), [uv](https://docs.astral.sh/uv/), and
+[Inno Setup](https://jrsoftware.org/isinfo.php) (`iscc`). Currently unsigned —
+SmartScreen shows an "unrecognized app" prompt (More info → Run anyway); see
+[docs/WINDOWS_INSTALLER_PLAN.md](docs/WINDOWS_INSTALLER_PLAN.md) for the signing
+plan.
+
 ## Run
 
 ```
