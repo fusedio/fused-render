@@ -189,6 +189,103 @@ def test_reclick_pulls_updates(env, source_repo):
     assert (env / "how_it_works" / "Max" / "how_it_works" / "new.txt").is_file()
 
 
+def test_view_url_path_normalizes_windows_drive_paths():
+    from fused_render.deeplink import _view_url_path
+
+    assert (
+        _view_url_path("C:\\Users\\v\\Documents\\Fused\\x\\index.html")
+        == "/view/C%3A/Users/v/Documents/Fused/x/index.html"
+    )
+    assert _view_url_path("/Users/v/a b/index.html") == "/view/Users/v/a%20b/index.html"
+
+
+def _rev(source_repo, ref="HEAD"):
+    out = subprocess.run(
+        ["git", "rev-parse", ref], cwd=source_repo, check=True,
+        stdout=subprocess.PIPE, text=True,
+    )
+    return out.stdout.strip()
+
+
+def test_tag_ref_clones_detached_and_updates(env, source_repo):
+    _git("tag", "v1", cwd=source_repo)
+    spec = parse_github_url("https://github.com/fusedlabs/sandbox/tree/v1/Max/how_it_works")
+    result = clone_or_pull(spec)
+    assert result["updated"] is False
+    assert (env / "how_it_works" / "Max" / "how_it_works" / "index.html").is_file()
+    # re-click on a detached (tag) checkout must not try to pull
+    result = clone_or_pull(spec)
+    assert result["updated"] is True
+
+
+def test_commit_sha_ref_clones(env, source_repo):
+    sha = _rev(source_repo)
+    spec = parse_github_url(f"https://github.com/fusedlabs/sandbox/tree/{sha}/Max/how_it_works")
+    result = clone_or_pull(spec)
+    assert result["view"].endswith("/index.html")
+    # re-click: fetch + re-checkout of the same SHA is a no-op, not a failure
+    assert clone_or_pull(spec)["updated"] is True
+
+
+def test_repo_slug_matches_https_and_ssh_forms():
+    from fused_render.deeplink import _repo_slug
+
+    forms = [
+        "https://github.com/O/R.git",
+        "https://www.github.com/o/r/",
+        "git@github.com:o/r.git",
+        "ssh://git@github.com/o/r",
+    ]
+    assert {_repo_slug(f) for f in forms} == {"o/r"}
+
+
+def test_https_auth_failure_falls_back_to_ssh(env, monkeypatch):
+    spec = parse_github_url(TREE_URL)
+    monkeypatch.setattr(deeplink, "_remote_url", lambda s: "https://github.com/fusedlabs/sandbox.git")
+    attempts = []
+
+    def fake_clone(spec_, remote, dest):
+        attempts.append(remote)
+        if remote.startswith("https://"):
+            raise DeeplinkError(
+                "git clone failed:\nfatal: could not read Username for "
+                "'https://github.com': Device not configured"
+            )
+        os.makedirs(os.path.join(dest, "Max", "how_it_works"))
+        open(os.path.join(dest, "Max", "how_it_works", "index.html"), "w").close()
+
+    monkeypatch.setattr(deeplink, "_clone_into", fake_clone)
+    result = clone_or_pull(spec)
+    assert attempts == [
+        "https://github.com/fusedlabs/sandbox.git",
+        "git@github.com:fusedlabs/sandbox.git",
+    ]
+    assert result["view"].endswith("/index.html")
+
+
+def test_https_and_ssh_both_failing_reports_both(env, monkeypatch):
+    spec = parse_github_url(TREE_URL)
+    monkeypatch.setattr(deeplink, "_remote_url", lambda s: "https://github.com/fusedlabs/sandbox.git")
+
+    def fake_clone(spec_, remote, dest):
+        if remote.startswith("https://"):
+            raise DeeplinkError("fatal: Authentication failed for https remote")
+        raise DeeplinkError("git@github.com: Permission denied (publickey).")
+
+    monkeypatch.setattr(deeplink, "_clone_into", fake_clone)
+    with pytest.raises(DeeplinkError, match="both\\s+https and ssh"):
+        clone_or_pull(spec)
+
+
+def test_git_env_disables_prompts():
+    from fused_render.deeplink import _git_env
+
+    env = _git_env()
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+    assert "BatchMode=yes" in env["GIT_SSH_COMMAND"]
+    assert "/opt/homebrew/bin" in env["PATH"]
+
+
 def test_existing_non_git_dir_refused(env):
     dest = env / "how_it_works"
     dest.mkdir(parents=True)

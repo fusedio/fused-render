@@ -1526,9 +1526,18 @@ when one exists, else the folder itself.
   existing credentials. Destination is `~/Documents/Fused/<subpath basename>`
   (repo name for root links); the repo root, `.git` included, lives at the
   destination, so the opened view is the nested `<dest>/<subpath>` path. A
-  failed clone removes the partial destination (retryable).
+  failed clone removes the partial destination (retryable). Git runs
+  prompt-free (`GIT_TERMINAL_PROMPT=0`, ssh BatchMode — the server has no
+  TTY) with a PATH widened to the usual helper locations (a Finder-launched
+  .app gets `/usr/bin:/bin`, which silently breaks `gh`-style credential
+  helpers); an https auth failure retries once over `git@github.com:` before
+  reporting both errors with a how-to-authenticate hint.
 - **DL-5** Re-click = update: an existing destination whose `origin` matches
-  the link's repo is `git pull --ff-only`'d; a dirty or diverged tree
+  the link's repo is `git pull --ff-only`'d when HEAD is on a branch; a
+  detached HEAD (the link's ref was a tag or commit SHA — the clone checks
+  refs out after a `--no-checkout` clone, never via `--branch`, so SHAs work)
+  is updated by `fetch --tags` + re-checkout of the ref instead (SHA: no-op;
+  moved tag: lands on the new target). A dirty or diverged tree
   surfaces git's own error and local edits are never clobbered. A destination
   that exists but is not a clone of that repo is refused, never overwritten.
 - **DL-6** Open target: `<dest>/<subpath>/index.html` when present, else the

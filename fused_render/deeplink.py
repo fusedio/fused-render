@@ -28,12 +28,12 @@ import posixpath
 import re
 import shutil
 import subprocess
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import FileResponse, JSONResponse
 
-from fused_render.shell.seed import _view_url, fused_dir
+from fused_render.shell.seed import fused_dir
 
 logger = logging.getLogger("fused_render")
 
@@ -151,6 +151,38 @@ def _remote_url(spec: dict) -> str:
     return f"https://github.com/{spec['owner']}/{spec['repo']}.git"
 
 
+def _ssh_remote_url(spec: dict) -> str:
+    return f"git@github.com:{spec['owner']}/{spec['repo']}.git"
+
+
+# stderr fragments that mean "https auth didn't happen", the cue to retry the
+# clone over ssh (many dev machines authenticate to GitHub by ssh key only).
+_AUTH_FAILURE_MARKERS = (
+    "could not read username",
+    "authentication failed",
+    "repository not found",
+    "terminal prompts disabled",
+)
+
+
+def _git_env() -> dict:
+    env = dict(os.environ)
+    # Never prompt: the server has no TTY — an unanswered credential prompt
+    # otherwise dies as "could not read Username …: Device not configured".
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    # No interactive ssh prompts either (passphrase, unknown host key).
+    env.setdefault("GIT_SSH_COMMAND", "ssh -oBatchMode=yes")
+    # A Finder-launched .app gets a minimal PATH (/usr/bin:/bin); credential
+    # helpers configured as PATH commands (gh's `!gh auth git-credential`,
+    # a Homebrew git-credential-manager) silently fail there and https auth
+    # never happens. Widen with the usual install locations.
+    extra = ["/opt/homebrew/bin", "/usr/local/bin", os.path.expanduser("~/.local/bin")]
+    path = env.get("PATH", "")
+    parts = path.split(os.pathsep) if path else []
+    env["PATH"] = os.pathsep.join(parts + [p for p in extra if p not in parts])
+    return env
+
+
 def _git(args: list[str], cwd: str | None = None, timeout: int = 300) -> str:
     """Run git, raise DeeplinkError carrying git's stderr on failure."""
     try:
@@ -161,6 +193,7 @@ def _git(args: list[str], cwd: str | None = None, timeout: int = 300) -> str:
             stderr=subprocess.PIPE,
             timeout=timeout,
             text=True,
+            env=_git_env(),
         )
     except FileNotFoundError:
         raise DeeplinkError("git is not installed (the deep-link clone runs your own git)")
@@ -172,16 +205,88 @@ def _git(args: list[str], cwd: str | None = None, timeout: int = 300) -> str:
     return proc.stdout
 
 
+_DRIVE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _view_url_path(fs_path: str) -> str:
+    """/view URL for an absolute fs path, matching the frontend codec
+    (router.ts urlForFsPath) like seed._view_url — but Windows-aware the way
+    winopen._view_url is: a drive-letter path gets its backslashes normalized
+    to '/' before segmenting, so 'C:\\Users\\x' doesn't collapse into one
+    percent-encoded segment."""
+    norm = fs_path.replace("\\", "/") if _DRIVE_PATH.match(fs_path) else fs_path
+    segments = [quote(seg, safe="!*'()") for seg in norm.lstrip("/").split("/") if seg]
+    return "/view/" + "/".join(segments)
+
+
+def _on_branch(dest: str) -> bool:
+    """True when HEAD is a symbolic ref (a checked-out branch); False for the
+    detached HEAD a tag or commit-SHA ref leaves behind."""
+    try:
+        _git(["-C", dest, "symbolic-ref", "-q", "HEAD"])
+        return True
+    except DeeplinkError:
+        return False
+
+
+def _repo_slug(url: str) -> str:
+    """Comparison key for 'same repository': owner/repo for any GitHub remote
+    form (https, ssh scp-like, www., .git suffix); other URLs compare whole."""
+    url = url.strip().rstrip("/")
+    if url.endswith(".git"):
+        url = url[: -len(".git")]
+    m = re.match(r"^git@github\.com:(.+)$", url, re.IGNORECASE)
+    if m:
+        return m.group(1).lower()
+    m = re.match(r"^(?:https?|ssh)://(?:git@)?(?:www\.)?github\.com/(.+)$", url, re.IGNORECASE)
+    if m:
+        return m.group(1).lower()
+    return url.lower()
+
+
 def _origin_matches(dest: str, remote: str) -> bool:
     try:
         current = _git(["-C", dest, "remote", "get-url", "origin"]).strip()
     except DeeplinkError:
         return False
-    return current.rstrip("/").removesuffix(".git") == remote.rstrip("/").removesuffix(".git")
+    return _repo_slug(current) == _repo_slug(remote)
 
 
 def destination(spec: dict) -> str:
     return os.path.join(fused_dir(), spec["name"])
+
+
+def _clone_into(spec: dict, remote: str, dest: str) -> None:
+    """One clone attempt against one remote; removes the half-clone on any
+    failure so a retry (other remote, next click) never hits an 'exists and
+    is not a git clone' dead end."""
+    logger.info("deeplink: cloning %s (ref=%s, subpath=%r) -> %s",
+                remote, spec["ref"], spec["subpath"], dest)
+    args = ["clone", "--filter=blob:none"]
+    if spec["subpath"]:
+        args.append("--sparse")
+    if spec["ref"]:
+        # NOT `--branch <ref>`: that rejects commit SHAs outright. Clone
+        # bare-worktree'd and check the ref out afterwards — a branch name
+        # DWIMs into a local tracking branch (pullable later), a tag or
+        # SHA lands detached (updated via fetch+re-checkout in clone_or_pull).
+        args.append("--no-checkout")
+    args += [remote, dest]
+    try:
+        _git(args)
+        if spec["subpath"]:
+            _git(["-C", dest, "sparse-checkout", "set", spec["subpath"]])
+        if spec["ref"]:
+            _git(["-C", dest, "checkout", spec["ref"]])
+        target = os.path.join(dest, *spec["subpath"].split("/")) if spec["subpath"] else dest
+        if not os.path.isdir(target):
+            raise DeeplinkError(
+                f"path '{spec['subpath']}' does not exist in "
+                f"{spec['owner']}/{spec['repo']} at ref {spec['ref'] or 'HEAD'}"
+            )
+    except DeeplinkError:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise
 
 
 def clone_or_pull(spec: dict) -> dict:
@@ -207,32 +312,42 @@ def clone_or_pull(spec: dict) -> dict:
                 f"{dest} is a clone of a different repository; move it aside and retry"
             )
         logger.info("deeplink: updating existing clone at %s", dest)
-        _git(["-C", dest, "pull", "--ff-only"])
+        if _on_branch(dest):
+            _git(["-C", dest, "pull", "--ff-only"])
+        else:
+            # Detached HEAD: the link's ref was a tag or a commit SHA, so there
+            # is nothing to pull onto. Fetch and re-resolve the ref instead
+            # (a SHA is a no-op, a moved tag lands on its new target).
+            _git(["-C", dest, "fetch", "--tags", "origin"])
+            if spec["ref"]:
+                _git(["-C", dest, "checkout", spec["ref"]])
         updated = True
     else:
-        logger.info("deeplink: cloning %s (ref=%s, subpath=%r) -> %s",
-                    remote, spec["ref"], spec["subpath"], dest)
-        args = ["clone", "--filter=blob:none"]
-        if spec["subpath"]:
-            args.append("--sparse")
-        if spec["ref"]:
-            args += ["--branch", spec["ref"]]
-        args += [remote, dest]
         try:
-            _git(args)
-            if spec["subpath"]:
-                _git(["-C", dest, "sparse-checkout", "set", spec["subpath"]])
-            target = os.path.join(dest, *spec["subpath"].split("/")) if spec["subpath"] else dest
-            if not os.path.isdir(target):
+            _clone_into(spec, remote, dest)
+        except DeeplinkError as https_exc:
+            ssh_remote = _ssh_remote_url(spec)
+            wants_ssh = (
+                remote != ssh_remote
+                and remote.startswith("https://github.com/")
+                and any(m in str(https_exc).lower() for m in _AUTH_FAILURE_MARKERS)
+            )
+            if not wants_ssh:
+                raise
+            # https auth never happened (no TTY, no working credential
+            # helper) or GitHub hid a private repo as "not found" — a machine
+            # authenticating by ssh key gets its second chance here.
+            logger.info("deeplink: https clone failed auth, retrying over ssh")
+            try:
+                _clone_into(spec, ssh_remote, dest)
+            except DeeplinkError as ssh_exc:
                 raise DeeplinkError(
-                    f"path '{spec['subpath']}' does not exist in "
-                    f"{spec['owner']}/{spec['repo']} at ref {spec['ref'] or 'HEAD'}"
+                    f"cloning {spec['owner']}/{spec['repo']} failed over both "
+                    "https and ssh. If the repository is private, give git "
+                    "credentials (`gh auth login`, an osxkeychain token, or an "
+                    "ssh key for github.com); if it is public, check the URL.\n\n"
+                    f"https: {https_exc}\n\nssh: {ssh_exc}"
                 )
-        except DeeplinkError:
-            # Leave no half-clone behind: a failed attempt must be retryable
-            # without a "already exists and is not a git clone" dead end.
-            shutil.rmtree(dest, ignore_errors=True)
-            raise
         updated = False
 
     target = os.path.join(dest, *spec["subpath"].split("/")) if spec["subpath"] else dest
@@ -245,7 +360,7 @@ def clone_or_pull(spec: dict) -> dict:
     return {
         "dest": dest,
         "target": target,
-        "view": _view_url(os.path.abspath(open_path)),
+        "view": _view_url_path(os.path.abspath(open_path)),
         "updated": updated,
     }
 
