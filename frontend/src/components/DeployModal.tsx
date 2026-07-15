@@ -371,6 +371,15 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   // not yet reflect the latest include/exclude edit, so Deploy is held until it
   // catches up (keeps the click WYSIWYG: never deploy a set the list doesn't show).
   const [previewPending, setPreviewPending] = useState(true);
+  // Latest-ref mirrors of the selection. A background reconcile (load(true)) is
+  // async: it must refresh the preview with the selection current at COMPLETION,
+  // not the value captured when its closure was created — otherwise a focus/
+  // visibility reconcile finishing after an edit overwrites the list (and, being
+  // the newest fetch, wins the seq race) with a preview for the stale selection.
+  const includeRef = useRef(include);
+  includeRef.current = include;
+  const excludeRef = useRef(exclude);
+  excludeRef.current = exclude;
 
   // The modal can be closed while an action is still running (#12): guard the
   // modal's own post-action setState so a deploy/revoke/install that resolves
@@ -457,7 +466,9 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
         setInclude(status.deployment?.include ?? []);
         setExclude(status.deployment?.exclude ?? []);
       } else {
-        void refreshPreview(include, exclude);
+        // Refs, not the closure's include/exclude: this runs after the await, so
+        // read the selection as it stands now (an edit may have landed meanwhile).
+        void refreshPreview(includeRef.current, excludeRef.current);
       }
       // Preselect the deployment's env (or the default) — but only if it is
       // actually in the picker; an env removed from envs.json since deploy
