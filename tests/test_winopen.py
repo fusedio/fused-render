@@ -53,3 +53,24 @@ def test_ensure_server_spawns_when_alone(monkeypatch):
     monkeypatch.setattr(winopen, "pick_port", lambda *a, **k: 1778)
     monkeypatch.setattr(winopen, "_spawn", lambda port: port)
     assert winopen._ensure_server(None) == 1778
+
+
+def test_build_command_prefers_windowless_python_without_launcher(monkeypatch, tmp_path):
+    # bundle install: pip launcher exes pruned -> fall back to pythonw.exe -m
+    monkeypatch.setattr(winopen.sysconfig, "get_path", lambda name: str(tmp_path))
+    pythonw = tmp_path / "pythonw.exe"
+    pythonw.write_bytes(b"")
+    monkeypatch.setattr(winopen.sys, "executable", str(tmp_path / "python.exe"))
+    cmd = winopen._build_command(8766)
+    assert str(pythonw) in cmd
+    assert "-m fused_render.winopen" in cmd
+    assert cmd.endswith('--port 8766 "%1"')
+
+
+def test_build_command_uses_launcher_when_present(monkeypatch, tmp_path):
+    launcher = tmp_path / "fused-render-open.exe"
+    launcher.write_bytes(b"")
+    monkeypatch.setattr(winopen.sysconfig, "get_path", lambda name: str(tmp_path))
+    cmd = winopen._build_command(None)
+    assert str(launcher) in cmd
+    assert "-m fused_render.winopen" not in cmd

@@ -300,12 +300,21 @@ def _icon_for_ext(ext: str) -> str:
     return icon if os.path.exists(icon) else _ICON_PATH
 
 
+def _windowless_python() -> str:
+    """pythonw.exe (no console) beside the running interpreter, else the
+    interpreter itself. The bundled installer prunes the pip launcher exes
+    (they bake the build machine's python path), so registration falls back to
+    `python -m` — and a bare python.exe would flash a console on every open."""
+    pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+    return pythonw if os.path.exists(pythonw) else sys.executable
+
+
 def _build_command(port: int | None) -> str:
     launcher = os.path.join(sysconfig.get_path("scripts"), "fused-render-open.exe")
     if os.path.exists(launcher):
         parts = [f'"{launcher}"']
     else:
-        parts = [f'"{sys.executable}"', "-m", "fused_render.winopen"]
+        parts = [f'"{_windowless_python()}"', "-m", "fused_render.winopen"]
     if port is not None:
         parts += ["--port", str(port)]
     parts.append('"%1"')
