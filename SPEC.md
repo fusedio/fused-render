@@ -24,6 +24,10 @@ The differentiating feature is the **renderable HTML** system: HTML files can ca
 ### Non-Goals
 
 - Cloud or remote deployment, multi-user access, authentication/user accounts.
+  (Unchanged by §19/§27: deploying delegates to the separately-installed fused
+  CLI, and the §27 "Fused account" surface manages the *fused CLI's own*
+  credentials for those deploys — fused-render itself still has no accounts,
+  no tokens, and no server-side users.)
 - File editing (v1 is read/preview oriented; editing is a possible v2).
 - Sandboxing Python for safety against the *user's own* code — the user's code is trusted. (Protecting against *other websites* driving the server is in scope; see §9.)
 
@@ -639,20 +643,25 @@ the product gains network access.
   (unexportable type, file deleted since the header rendered) degrades to a
   blocker entry the same way — the dialog still renders its form; it never
   dead-ends on the preview call.
-- **DP-2b** Login guidance, before and after the click.
+- **DP-2b** Login state, before and after the click (amended by §27/M18: the
+  warning is now an *action*, not guidance).
   `GET /api/deploy/config` carries `fused_logged_in` — presence of the fused
   CLI's own control-plane credentials file
   (`~/.openfused/fused-cloud-credentials.json`,
   `OPENFUSED_FUSED_CLOUD_CREDENTIALS` honored). Presence-only by design: an
   expired-but-refreshable token still works (the CLI refreshes silently), so
   the CLI stays the authority at action time. With a managed `fused` env
-  selected and no credentials on disk, the modal warns **before** the click,
-  naming `<setup_cli> cloud login` (a one-time browser sign-in). After a
-  failed action, CLI errors that name `fused cloud login` are suffixed with
-  the packaged app's real wrapper path (`_cli_error` + `_setup_cli_hint`) —
-  plain `fused` doesn't resolve inside the .app, so the instruction must be
-  runnable as printed. The no-envs guidance states that `cloud setup` opens
-  a browser sign-in first.
+  selected and no credentials on disk, the modal warns **before** the click
+  and offers a working **Sign in to Fused** button — the AC-3/AC-4 in-app
+  flow via the shared client hook, with a background config reload flipping
+  the warning away on completion (AC-9). Likewise the no-envs state signs in
+  in place or routes to the account page's setup panel; no modal state
+  instructs a terminal command for the managed path anymore. After a failed
+  action, CLI errors that name `fused cloud login` are still suffixed with
+  the packaged app's real wrapper path (fusedcli.py's `cli_error` +
+  `setup_cli_hint`) — plain `fused` doesn't resolve inside the .app, and the
+  CLI's error text must stay runnable as printed even though the app now
+  offers the in-app path first.
 
 ### 19.2 The fused CLI seam
 
@@ -696,17 +705,19 @@ the product gains network access.
   always present and the install panel never appears in the .app (its sealed,
   notarized bundle could not be pip-installed into anyway). The build also
   ships a terminal wrapper, `Contents/Resources/bin/fused` (bundled python +
-  the DP-3 shim), for the one-time interactive setup a modal can't do —
-  `fused cloud setup` / `cloud login` / `env create` — and smoke-tests real
-  CLI verbs through the shim before signing, so a py2app packaging gap fails
-  the build rather than the user's first deploy. The wrapper lives under
-  `Resources`, not `MacOS`: everything in a bundle's `MacOS/` is nested code
-  to codesign, and a shell script there cannot carry a code signature — the
-  bundle seal fails ("code object is not signed at all"); a script under
-  `Resources` is sealed by the resource rules instead. `GET /api/deploy/config`
-  carries `setup_cli` — the wrapper's absolute path when frozen
-  (`sys.frozen == "macosx_app"`), else `"fused"` — and the modal's
-  no-envs guidance names it.
+  the DP-3 shim), and smoke-tests real CLI verbs through the shim before
+  signing, so a py2app packaging gap fails the build rather than the user's
+  first deploy. Since §27/M18 the wrapper is a **power-user escape hatch**,
+  not the setup path: sign-in and managed-env setup happen in-app (AC-3/AC-6),
+  and the wrapper remains for what stays terminal-scoped — self-hosted AWS
+  provisioning (`fused env create` / `fused infra serve`) and ad-hoc CLI use.
+  The wrapper lives under `Resources`, not `MacOS`: everything in a bundle's
+  `MacOS/` is nested code to codesign, and a shell script there cannot carry
+  a code signature — the bundle seal fails ("code object is not signed at
+  all"); a script under `Resources` is sealed by the resource rules instead.
+  `GET /api/deploy/config` carries `setup_cli` — the wrapper's absolute path
+  when frozen (`sys.frozen == "macosx_app"`), else `"fused"` — and CLI error
+  suffixes plus the remaining AWS guidance name it.
 
 ### 19.3 Environments
 
@@ -1559,3 +1570,131 @@ when one exists, else the folder itself.
   exists but is not a clone of that repo is refused, never overwritten.
 - **DL-6** Open target: `<dest>/<subpath>/index.html` when present, else the
   subdirectory itself, via the standard `/view/` URL codec.
+
+---
+
+## 27. Fused Account — In-App Login & Setup (M18)
+
+Goal: remove §19's remaining copy-a-terminal-command dead ends. Sign-in
+(`fused cloud login`), first-time managed-environment setup
+(`fused cloud setup`), and day-two env management happen in the app; the
+§1 non-goals stand — this surface manages the **fused CLI's own** credentials
+on the user's machine for deploy targets, and every mutation is a
+`fused cloud …` / `fused env …` child process through the DP-3 seam
+(fusedcli.py). Design and prior-art mapping: `docs/PLAN-fused-account.md`;
+the mechanics port the flow app's connect-fused surface (flow repo,
+`spec/app/connect-fused.md`). Scope line (deliberate, same as flow's): the
+in-app path covers the **managed `fused` backend** only — self-hosted AWS
+provisioning stays a documented terminal flow.
+
+### 27.1 Surface
+
+- **AC-1** `/view/_account` is a sentinel pathname like `_prefs` (no embed
+  variant), entered from a sidebar-footer entry between Mounts and
+  Preferences. The entry's icon carries a green **signed-in dot** (the
+  deploy-dot affordance): the presence-only `logged_in` signal, re-read on
+  focus/visibility regain, errors keeping the last-known value.
+- **AC-2** `GET /api/account/status` composes: `cli` (DP-4's `cli_status`
+  shape), `setup_cli` (DP-16), `logged_in` (DP-2b's presence signal),
+  `login_in_flight` (a login child is live), the DP-5/DP-6 deploy view
+  (`envs`/`default_env`/`envs_file`), `store` (the RAW env store: every
+  backend, each entry flagged `hosted`, plus the store's own `default`
+  pointer — distinct from DP-6's derivation), and `probe` (null unless
+  requested). `?probe=1` — only when logged in and a CLI exists — shells
+  `fused cloud orgs` (the authoritative check: it exercises/refreshes the
+  token): `{ok, admitted, orgs: [{org, env, provision_state, role}], error}`;
+  a probe failure degrades to `ok: false` with the CLI's message via the
+  DP-2b error mapping, never an HTTP error (the page renders from the
+  presence signal first and fills the probe in).
+
+### 27.2 Login
+
+- **AC-3** `POST /api/account/login {return_url}` spawns
+  `fused cloud login --no-browser` and returns `{authorize_url}` — the first
+  `http(s)://` URL captured from the child's output; **opening it is the
+  client's job** (`window.open`; the server never drives a browser). Child
+  env carries `PYTHONUNBUFFERED=1` (Python block-buffers piped stdout — the
+  URL line would otherwise sit past the capture window) and
+  `OPENFUSED_LOGIN_RETURN_URL=<return_url>` so the CLI's post-login callback
+  302s the browser back into the app. `return_url` must be an http(s) URL on
+  a loopback host (400 otherwise — mirrors the CLI's own rule; this server is
+  loopback-only, D2/D3). **Single-flight**: a concurrent POST joins the live
+  child (same URL back; its return_url is ignored) — never a second callback
+  server. The capture window is 30s (a COLD external CLI compiles bytecode on
+  first run; observed >15s); a child that exits **without** a URL fails the
+  request immediately (an exit watcher wakes waiters — no burning the
+  window), 502 carrying the CLI's last line via the DP-2b mapping.
+- **AC-4** Completion is **polled, not pushed**: the client polls status
+  (~2s) until `logged_in` flips; the CLI child owns the OAuth round-trip
+  (localhost callback, self-terminating after ~5min). A child that exits
+  signed-out (abandoned browser tab, timeout) surfaces as a retryable
+  message, detected as `login_in_flight` dropping without `logged_in`.
+- **AC-5** `POST /api/account/login/cancel` terminates the child.
+  `POST /api/account/logout` terminates **and waits out** (SIGTERM →
+  SIGKILL escalation) any in-flight login BEFORE running
+  `fused cloud logout --no-browser` — a login child outliving the credential
+  delete could complete its callback later and silently re-write the JWT.
+  Optional `{env}` forwards `--env NAME` (also drops that env's stored
+  data-plane key — the CLI's full-signout semantics). Returns fresh status.
+
+### 27.3 Environment setup & management
+
+- **AC-6** `POST /api/account/setup {org?, env?, env_name?}` runs
+  `fused cloud setup --no-browser [--org O --env E] --env-name NAME` as
+  **the one tracked background job**: 202 `{job_id, env_name}`; 409 when a
+  job is already running, and 409 when signed out — the interactive login
+  flow lives in ONE place (AC-3); a setup child silently waiting on a
+  sign-in URL nobody sees would just burn its timeout. `org`/`env` go
+  together (both or neither — omitting them lets the CLI discover the
+  account's workspace, self-creating a personal org for an admitted org-less
+  account); `env_name` is validated as a single safe token and defaults to
+  flow's convention (`fused` for the default managed env, `fused-<env>`
+  otherwise). The child's stdout+stderr are merged into one pipe (progress
+  goes to stderr, the final line to stdout — one pipe keeps terminal order)
+  and pumped into a bounded tail; `PYTHONUNBUFFERED=1` again; a 900s
+  backstop kills a wedged child. The CLI does everything real: waits for
+  provisioning, mints the data-plane key into the local secrets store,
+  writes the env into `envs.json` — the app never touches a secret.
+- **AC-6a** `GET /api/account/setup` reports
+  `{state: idle|running|done|failed, job_id, env_name, detail}` — `detail`
+  is the CLI's own lines (mapped error when failed; keyring-less Linux
+  hosts get the CLI's error naming the `fused[local]` remedy verbatim). The
+  client polls (~1.5s), **matches job_id** (a stale job's terminal state
+  must not complete a newer attempt), and **adopts** a running job on mount
+  (the page reopened mid-setup shows live progress; one-job-at-a-time makes
+  it unambiguous).
+- **AC-7** `POST /api/account/envs/default {name}` →
+  `fused env default NAME`; `POST /api/account/envs/delete {name}` →
+  `fused env delete NAME --yes` — the CLI's **local-pointer-only** delete
+  (no cloud teardown, no key revocation), stated in the confirm dialog and
+  the table copy. Both return fresh status so the client updates in one
+  round-trip.
+
+### 27.4 Page & Deploy-modal behavior
+
+- **AC-8** The account page's states, in checking order (the DP-2 pattern):
+  CLI missing → the DP-4 install panel (same one-click/manual split);
+  signed out → sign-in (waiting + Cancel while connecting; a sign-in
+  started elsewhere — Deploy modal, another tab — is adopted read-only with
+  its own Cancel); signed in → account summary (probe orgs/roles table,
+  not-admitted note), the environments management table (default marker,
+  make-default, forget-with-confirm), and the setup panel — workspace
+  picker only when the account has >1 org/env, self-serve
+  personal-workspace copy when it has none, prefilled editable env name,
+  live progress log; prominent while no managed env exists, else collapsed
+  behind an "Add managed environment" toggle.
+- **AC-9** The Deploy modal never dead-ends into a terminal for the managed
+  path: its signed-out warning carries the working sign-in button (DP-2b as
+  amended), and its no-envs state signs in in place or routes to the account
+  page's setup panel. AWS env creation keeps naming
+  `<setup_cli> env create` — out of scope by the §27 scope line.
+
+### 27.5 Trust & credentials
+
+- **AC-10** No credential ever touches fused-render: the CLI owns the JWT
+  (`~/.openfused/fused-cloud-credentials.json`) and the data-plane keys
+  (the CLI's local secrets store); this surface reads *presence/status* and
+  runs the CLI, and persists nothing of its own under `~/.fused-render`.
+  All mutating endpoints carry the D36 X-Fused guard; `return_url` is
+  loopback-constrained (AC-3). The D3 stance is unchanged — this is not
+  authentication *of* fused-render, and the §1 non-goal stands as annotated.

@@ -1,6 +1,11 @@
 # Plan: In-App Fused Login & Setup ("Fused account", M18)
 
-**Status:** proposal — nothing here is implemented yet.
+**Status:** implemented. M18a (login/logout core), M18b (env setup +
+management), and M18c (docs/spec/polish) all shipped; the normative contract
+now lives in **SPEC.md §27 (AC-1…AC-10)** with decisions **D111/D112** — this
+file remains as the design rationale and the flow/fused-CLI research record.
+One follow-up outstanding: a manual DMG smoke of the login round-trip on
+macOS (the packaged-app path can't be exercised from CI/Linux).
 **Goal:** a user can sign in to Fused, complete first-time environment setup, and
 sign out **without ever copying a CLI command out of the app**. Today the Deploy
 modal tells the user to run `fused cloud setup` / `fused cloud login` /

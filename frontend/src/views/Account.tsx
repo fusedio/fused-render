@@ -26,7 +26,7 @@ import {
   startAccountSetup,
 } from "../lib/api";
 import type { AccountSetupStatus, AccountStatus } from "../lib/api";
-import { useFusedLogin } from "../lib/account";
+import { notifyAccountChanged, useFusedLogin } from "../lib/account";
 
 // The managed-env setup panel: pick the workspace (when the account has more
 // than one), name the env, run `fused cloud setup` as a tracked server job,
@@ -300,6 +300,7 @@ export default function Account() {
       const fresh = await accountLogout();
       if (!alive.current) return;
       setStatus(fresh);
+      notifyAccountChanged(); // the sidebar dot must drop without a refocus
     } catch (e) {
       if (alive.current) {
         setActionError((e as Error).message);
@@ -565,7 +566,16 @@ export default function Account() {
               Set up another managed environment
             </button>
           ) : (
-            <SetupPanel status={status} onChanged={() => void load(true)} />
+            <SetupPanel
+              status={status}
+              onChanged={() => {
+                // Pin the panel open BEFORE the refresh: the env landing
+                // flips hasManaged, which would otherwise collapse the panel
+                // and destroy its success note the moment setup finishes.
+                setShowSetup(true);
+                void load(true);
+              }}
+            />
           )}
         </section>
       </>

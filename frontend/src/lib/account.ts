@@ -13,6 +13,47 @@ import { cancelAccountLogin, getAccountStatus, startAccountLogin } from "./api";
 
 const POLL_MS = 2000;
 
+// Cross-component "auth state changed" signal (the notifyBookmarksChanged
+// pattern): a same-tab sign-in/sign-out gets no focus/visibility event, so
+// the actor announces it and the sidebar dot re-reads immediately.
+const ACCOUNT_EVENT = "fused:accountchange";
+
+export function notifyAccountChanged() {
+  window.dispatchEvent(new Event(ACCOUNT_EVENT));
+}
+
+// The sidebar's signed-in signal: the cheap presence-only `logged_in` flag,
+// re-read on focus/visibility regain (the deploy-dot cadence) and on the
+// notifyAccountChanged signal, so a sign-in or sign-out — in this tab or any
+// other — shows through without a remount. Errors leave the last-known value
+// (a blip must not flicker the dot).
+export function useAccountLoggedIn(): boolean {
+  const [loggedIn, setLoggedIn] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const refresh = () => {
+      if (document.visibilityState !== "visible") return;
+      getAccountStatus().then(
+        (s) => {
+          if (alive) setLoggedIn(s.logged_in);
+        },
+        () => {}
+      );
+    };
+    refresh();
+    window.addEventListener("focus", refresh);
+    window.addEventListener(ACCOUNT_EVENT, refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      alive = false;
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener(ACCOUNT_EVENT, refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, []);
+  return loggedIn;
+}
+
 export function useFusedLogin(onLoggedIn: () => void) {
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -58,6 +99,7 @@ export function useFusedLogin(onLoggedIn: () => void) {
       if (timer.current === null) return; // canceled while the fetch was in flight
       if (status.logged_in) {
         finish(null);
+        notifyAccountChanged(); // e.g. the sidebar's signed-in dot
         onLoggedInRef.current();
       } else if (!status.login_in_flight) {
         finish("Sign-in was not completed — the browser sign-in was closed or timed out. Try again.");

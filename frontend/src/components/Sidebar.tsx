@@ -30,6 +30,7 @@ import type { Config } from "../lib/api";
 import { splitShellSearch } from "../lib/layout-codec";
 import { fuzzyMatch, highlightSegments } from "../lib/fuzzy";
 import type { FuzzyResult } from "../lib/fuzzy";
+import { useAccountLoggedIn } from "../lib/account";
 
 // The fs path a bookmark targets, decoded from its /view/ url (same rule as
 // the hover card). Used for search matching and the tooltip.
@@ -284,6 +285,8 @@ export default function Sidebar({ config }: SidebarProps) {
   // of the store it renders).
   useUrlVersion();
   useBookmarksVersion();
+  // Signed-in dot on the footer's Fused-account entry (SPEC AC-1).
+  const accountLoggedIn = useAccountLoggedIn();
 
   const [renamingId, setRenamingId] = useState<string | null>(null);
   // Bookmark just exported to disk: its save button shows ✓ for a moment.
@@ -850,10 +853,12 @@ export default function Sidebar({ config }: SidebarProps) {
           <span className="prefs-label">Mounts</span>
         </button>
         {/* Fused account entry — in-app sign-in/out, /view/_account
-            (docs/PLAN-fused-account.md M18a). */}
+            (docs/PLAN-fused-account.md, SPEC AC-1). The green dot is the
+            signed-in signal, same affordance as the preview header's
+            deploy dot. */}
         <button
           type="button"
-          title="Fused account"
+          title={accountLoggedIn ? "Fused account (signed in)" : "Fused account"}
           aria-label="Fused account"
           className={
             "sidebar-item prefs-link" + (location.pathname === "/view/_account" ? " active" : "")
@@ -865,6 +870,7 @@ export default function Sidebar({ config }: SidebarProps) {
               <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
               <circle cx="12" cy="7" r="4" />
             </svg>
+            {accountLoggedIn && <span className="account-signedin-dot" />}
           </span>
           <span className="prefs-label">Fused account</span>
         </button>
