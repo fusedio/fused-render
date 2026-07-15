@@ -83,6 +83,18 @@ fused-render --start-dir ~/data --port 9000 --no-browser
 `--start-dir` only sets the initial location — the whole filesystem stays
 browsable from there.
 
+### Windows: Explorer "Open with"
+
+```
+fused-render-open --register
+```
+
+Registers fused-render into Explorer's right-click "Open with" menu (HKCU
+only, no admin) for every format it previews — double-clicking a file, or
+picking "fused-render" from Open With, reuses a running server or starts one
+detached, then opens the file's `/view` URL. `fused-render-open --unregister`
+removes the associations.
+
 ### Execution engine
 
 Python files run in a fresh subprocess per call, through the built-in runner
