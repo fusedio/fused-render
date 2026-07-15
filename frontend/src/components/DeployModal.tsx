@@ -7,12 +7,13 @@
 //   1. loading  — config + (reconciled) status fetch in flight
 //   2. fused CLI missing — install panel (one-click when the server can pip
 //      install the pinned [fused] extra, else the manual hint)
-//   3. no hosted envs — guidance to create one (`fused env create`)
+//   3. no hosted envs — sign in / route to the account page's setup panel
+//      (AWS env creation stays a named terminal flow, SPEC AC-9)
 //   4. the form — env picker (default: the managed fused-backend env),
 //      current deployment card (URL + copy/open), Deploy/Redeploy, Revoke.
 // The env-wide share list (every mount on an env, with revoke) lives on the
-// Preferences page's Deployments section, not here — this modal is scoped to
-// the current page.
+// Fused account page's Deployments section (SPEC AC-11), not here — this
+// modal is scoped to the current page.
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   deployPage,
@@ -24,7 +25,10 @@ import {
   walkDir,
 } from "../lib/api";
 import type { DeployConfig, DeployPreview, Deployment, WalkEntry } from "../lib/api";
+import { useFusedLogin } from "../lib/account";
 import { basename, dirname, formatSize } from "../lib/format";
+import { useRefreshOnReturn } from "../lib/hooks";
+import { navigateUrl } from "../lib/router";
 
 // A path's bundle key: what dedup/exclude match on. Mirrors the server's
 // _asset_key (export.py) for the common case — strip a leading "./"; the exact
@@ -556,6 +560,16 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fsPath]);
 
+  // In-app sign-in for the managed backend (SPEC §27, AC-9):
+  // replaces the old "run `fused cloud login` in a terminal" guidance. The
+  // warning flips off immediately on the poll's own confirmation — the
+  // background reload just refreshes the rest, and its failure self-heals on
+  // the next focus refresh instead of stranding a signed-in user behind it.
+  const signin = useFusedLogin(() => {
+    setConfig((prev) => (prev ? { ...prev, fused_logged_in: true } : prev));
+    void load(true);
+  });
+
   // Re-resolve the "will publish" preview whenever the selection changes — but
   // only once `load` has seeded it (selectionReady), so the initial empty
   // selection never issues a preview that could race the seeded one.
@@ -580,21 +594,10 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   // (which re-reads on focus) and the open modal would contradict each other
   // (#5). A *background* refresh: it updates in place without flashing the
   // form to "Loading…" or replacing it with an error. loadSeq keeps a focus
-  // load from racing the mount load. Subscribed once — freshness comes from
-  // the refs, not the dep array.
-  useEffect(() => {
-    const refresh = () => {
-      if (busyRef.current === null && document.visibilityState === "visible") {
-        void loadRef.current(true);
-      }
-    };
-    window.addEventListener("focus", refresh);
-    document.addEventListener("visibilitychange", refresh);
-    return () => {
-      window.removeEventListener("focus", refresh);
-      document.removeEventListener("visibilitychange", refresh);
-    };
-  }, []);
+  // load from racing the mount load; freshness comes from the refs.
+  useRefreshOnReturn(() => {
+    if (busyRef.current === null) void loadRef.current(true);
+  });
 
   // Escape closes. Allowed even mid-action (#12): the action continues
   // server-side and onChange still updates the header dot, so the user is
@@ -743,6 +746,8 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     }
 
     if (envs.length === 0) {
+      // The setup flow itself lives on the Fused account page (M18b) — this
+      // block routes there, handling the sign-in prerequisite in place.
       return (
         <div className="deploy-section">
           <p>
@@ -750,11 +755,52 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             <code>fused</code> environment or an <code>aws</code> environment with a
             provisioned serving plane.
           </p>
+          {!config.fused_logged_in ? (
+            <>
+              <p className="deploy-muted">
+                Setting up the managed environment starts with a one-time browser sign-in
+                to Fused.
+              </p>
+              {signin.connecting ? (
+                <div className="deploy-form-row">
+                  <span className="deploy-muted">
+                    Waiting for the browser sign-in… finish signing in in the tab that just
+                    opened.
+                  </span>
+                  <button type="button" onClick={() => void signin.cancel()}>
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="deploy-primary"
+                  onClick={() => void signin.begin()}
+                >
+                  Sign in to Fused
+                </button>
+              )}
+              {signin.error && <div className="deploy-error">{signin.error}</div>}
+            </>
+          ) : (
+            <div className="deploy-form-row">
+              <button
+                type="button"
+                className="deploy-primary"
+                onClick={() => navigateUrl("/view/_account")}
+              >
+                Set up hosted environment
+              </button>
+              <span className="deploy-muted">opens the Fused account page</span>
+            </div>
+          )}
+          {/* Unconditional: an AWS-only user who is signed out must still be
+              told how to create their env without an irrelevant managed-cloud
+              sign-in. */}
           <p className="deploy-muted">
-            Create one in a terminal with <code>{config.setup_cli} cloud setup</code> — it opens
-            a browser sign-in to Fused first, then creates the managed environment (or use{" "}
-            <code>{config.setup_cli} env create</code> for a self-hosted AWS one). Environments
-            are read from <code>{config.envs_file}</code>.
+            Self-hosted AWS environments are created in a terminal with{" "}
+            <code>{config.setup_cli} env create</code>. Environments are read from{" "}
+            <code>{config.envs_file}</code>.
           </p>
           <button type="button" onClick={() => load()}>
             Re-check
@@ -879,15 +925,40 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
         )}
         {samePointerEnv && mountAbsent && (
           <div className="deploy-note">
-            The recorded mount no longer exists on <b>{deployment!.env}</b> (e.g. after
-            an infra teardown) — deploying mints a fresh link with a <b>new URL</b>.
+            The recorded deployment no longer exists on <b>{deployment!.env}</b>
+            {/* Why it vanished is backend-specific: an AWS serving plane can be
+                torn down wholesale; a managed mount was removed on the server. */}
+            {env?.backend === "aws" ? " (e.g. after an infra teardown)" : ""} — deploying
+            mints a fresh link with a <b>new URL</b>.
           </div>
         )}
         {env?.backend === "fused" && !config.fused_logged_in && (
           <div className="deploy-note">
-            You don't appear to be signed in to Fused — deploying to <b>{env.name}</b> will
-            fail until you run <code>{config.setup_cli} cloud login</code> in a terminal (a
-            one-time browser sign-in).
+            <div>
+              You aren't signed in to Fused — deploying to <b>{env.name}</b> needs a
+              one-time browser sign-in.
+            </div>
+            {signin.connecting ? (
+              <div className="deploy-form-row">
+                <span className="deploy-muted">
+                  Waiting for the browser sign-in… finish signing in in the tab that just
+                  opened.
+                </span>
+                <button type="button" onClick={() => void signin.cancel()}>
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="deploy-primary"
+                onClick={() => void signin.begin()}
+                disabled={busy !== null}
+              >
+                Sign in to Fused
+              </button>
+            )}
+            {signin.error && <div className="deploy-error">{signin.error}</div>}
           </div>
         )}
         <div className="deploy-note deploy-muted">

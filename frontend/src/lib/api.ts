@@ -65,8 +65,8 @@ export interface StatResult {
   template_error?: string;
 }
 
-async function getJson<T>(url: string): Promise<T> {
-  const res = await fetch(url);
+async function getJson<T>(url: string, headers?: Record<string, string>): Promise<T> {
+  const res = await fetch(url, headers ? { headers } : undefined);
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data as T;
@@ -418,6 +418,117 @@ export function listShares(env: string): Promise<SharesResult> {
 // mounts with no local pointer too; the CLI's owner-binding still applies).
 export function revokeMount(env: string, token: string): Promise<void> {
   return postJson<unknown>("/api/deploy/revoke", { env, token }).then(() => undefined);
+}
+
+// -- Fused account (account.py; SPEC §27) -------------------------------------
+
+// One org/env the signed-in account can target (`fused cloud orgs`).
+export interface AccountOrg {
+  org: string | null;
+  env: string | null;
+  provision_state: string | null;
+  role: string | null;
+}
+
+// The deeper signed-in check (`fused cloud orgs`), run only with ?probe=1:
+// unlike the presence-only logged_in flag it exercises the token, so a stale
+// credential shows up here as ok=false with the CLI's own message.
+export interface AccountProbe {
+  ok: boolean;
+  admitted: boolean | null;
+  orgs: AccountOrg[];
+  error: string | null;
+}
+
+// One env from the raw store view (any backend; `hosted` = can be a deploy
+// target). Distinct from DeployEnv, which is the hosted-only picker list.
+export interface StoreEnv {
+  name: string;
+  backend: string;
+  hosted: boolean;
+}
+
+export interface AccountStatus {
+  cli: DeployCli;
+  // Presence of the CLI's credentials file — cheap and optimistic (the CLI
+  // refreshes an expired token itself); `probe` is the authoritative check.
+  logged_in: boolean;
+  // A `fused cloud login` child is currently waiting on its browser round-trip.
+  login_in_flight: boolean;
+  // Fingerprint of the credentials file (mtime, or null when absent). The
+  // account page drops its cached orgs probe when this changes — a re-login
+  // as a different account that never flips logged_in false in this tab.
+  creds_stamp: number | null;
+  envs_file: string;
+  // The raw env store for the management table: every backend, plus the
+  // store's own default pointer. (The deploy picker's derived view lives on
+  // DeployConfig, not here.)
+  store: { envs: StoreEnv[]; default: string | null };
+  probe: AccountProbe | null;
+}
+
+// The one tracked `fused cloud setup` job (account.py). `detail` carries the
+// CLI's own progress lines while running, its final line when done, and the
+// mapped error message when failed.
+export interface AccountSetupStatus {
+  state: "idle" | "running" | "done" | "failed";
+  job_id: string | null;
+  env_name: string | null;
+  detail: string | null;
+}
+
+export function getAccountStatus(probe = false): Promise<AccountStatus> {
+  // probe=1 EXECUTES server-side (spawns a `fused cloud orgs` control-plane
+  // call), so unlike the plain status read it carries the D36 guard header.
+  return probe
+    ? getJson<AccountStatus>("/api/account/status?probe=1", { "X-Fused": "1" })
+    : getJson<AccountStatus>("/api/account/status");
+}
+
+// Start (or join — one login at a time) the CLI's browser sign-in and return
+// the authorize URL; OPENING it is the caller's job (window.open — the server
+// never drives a browser). returnUrl must be a loopback URL (normally
+// location.href): the post-login callback 302s the browser back to it.
+export function startAccountLogin(returnUrl: string): Promise<{ authorize_url: string }> {
+  return postJson<{ authorize_url: string }>("/api/account/login", { return_url: returnUrl });
+}
+
+export function cancelAccountLogin(): Promise<void> {
+  return postJson<unknown>("/api/account/login/cancel", {}).then(() => undefined);
+}
+
+// Sign out (killing any in-flight sign-in first, server-side) and return the
+// fresh status.
+export function accountLogout(): Promise<AccountStatus> {
+  return postJson<AccountStatus>("/api/account/logout", {});
+}
+
+// Start the one-shot managed-env setup (`fused cloud setup`) as a tracked
+// background job — 202 with the job to poll via getAccountSetup. org/env go
+// together (a specific workspace); omitting both lets the CLI discover the
+// account's org (or self-create a personal one). env_name defaults
+// server-side to flow's convention (`fused` / `fused-<env>`).
+export function startAccountSetup(opts: {
+  org?: string;
+  env?: string;
+  env_name?: string;
+}): Promise<{ job_id: string; env_name: string }> {
+  return postJson<{ job_id: string; env_name: string }>("/api/account/setup", opts);
+}
+
+export function getAccountSetup(): Promise<AccountSetupStatus> {
+  return getJson<AccountSetupStatus>("/api/account/setup");
+}
+
+// `fused env default NAME` — the store's global default pointer.
+export function setDefaultEnv(name: string): Promise<AccountStatus> {
+  return postJson<AccountStatus>("/api/account/envs/default", { name });
+}
+
+// `fused env delete NAME --yes` — forgets the LOCAL pointer only; cloud
+// resources and stored keys are untouched (the CLI's semantics).
+export function deleteStoreEnv(name: string): Promise<AccountStatus> {
+  return postJson<AccountStatus>("/api/account/envs/delete", { name });
 }
 
 // -- Preferences (shell/prefs.py; SPEC §20) -----------------------------------

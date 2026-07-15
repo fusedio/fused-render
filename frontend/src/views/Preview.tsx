@@ -7,6 +7,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { getDeployStatus, getPrefs, rawUrl, resolveConditions } from "../lib/api";
 import type { Deployment, StatResult, TemplateEntry } from "../lib/api";
 import { formatSize, formatMtime } from "../lib/format";
+import { useRefreshOnReturn } from "../lib/hooks";
 import ModeSwitcher, { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "../components/ModeSwitcher";
 import DeployModal from "../components/DeployModal";
 import Listing from "./Listing";
@@ -94,29 +95,22 @@ function DeployButton({ fsPath }: { fsPath: string }) {
   // The pointer can change without this view remounting — a revoke from the
   // Preferences page in ANOTHER tab, or any out-of-band /api/deploy/revoke
   // (same-tab navigation remounts the view via the nav epoch, so it needs no
-  // handling). Re-read on focus/visibility regain: a cheap local JSON read,
-  // the bookmarks-poll freshness posture (D77) without a timer.
-  useEffect(() => {
-    let alive = true;
-    const refresh = () => {
-      getDeployStatus(fsPath, false)
-        .then((r) => {
-          if (alive) setDeployment(r.deployment);
-        })
-        .catch(() => {});
-    };
-    refresh();
-    const onVisible = () => {
-      if (document.visibilityState === "visible") refresh();
-    };
-    window.addEventListener("focus", refresh);
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      alive = false;
-      window.removeEventListener("focus", refresh);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [fsPath]);
+  // handling). Re-read on focus/visibility regain (useRefreshOnReturn): a
+  // cheap local JSON read, the bookmarks-poll freshness posture (D77)
+  // without a timer.
+  const aliveDot = useRef(true);
+  useEffect(() => () => {
+    aliveDot.current = false;
+  }, []);
+  const refreshDot = () => {
+    getDeployStatus(fsPath, false)
+      .then((r) => {
+        if (aliveDot.current) setDeployment(r.deployment);
+      })
+      .catch(() => {});
+  };
+  useEffect(refreshDot, [fsPath]); // initial read (and per-file)
+  useRefreshOnReturn(refreshDot);
 
   const live = deployment?.status === "active";
   return (
@@ -145,27 +139,19 @@ function DeployButton({ fsPath }: { fsPath: string }) {
 // through without a reload (same cheap-local-read posture as the deploy dot).
 function useDeployEnabled(): boolean {
   const [enabled, setEnabled] = useState(false);
-  useEffect(() => {
-    let alive = true;
-    const refresh = () => {
-      getPrefs()
-        .then((p) => {
-          if (alive) setEnabled(p.deploy.enabled);
-        })
-        .catch(() => {});
-    };
-    refresh();
-    const onVisible = () => {
-      if (document.visibilityState === "visible") refresh();
-    };
-    window.addEventListener("focus", refresh);
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      alive = false;
-      window.removeEventListener("focus", refresh);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
+  const alive = useRef(true);
+  useEffect(() => () => {
+    alive.current = false;
   }, []);
+  const refresh = () => {
+    getPrefs()
+      .then((p) => {
+        if (alive.current) setEnabled(p.deploy.enabled);
+      })
+      .catch(() => {});
+  };
+  useEffect(refresh, []); // initial read
+  useRefreshOnReturn(refresh);
   return enabled;
 }
 

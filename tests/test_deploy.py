@@ -16,6 +16,7 @@ import sys
 from fastapi.testclient import TestClient
 
 import fused_render.deploy as deploy_mod
+import fused_render.fusedcli as fusedcli_mod
 from fused_render.server import create_app
 
 
@@ -337,7 +338,8 @@ def test_cli_login_errors_name_the_bundled_wrapper(tmp_path, monkeypatch):
     # The CLI's login errors say `fused cloud login`, which doesn't resolve
     # inside the packaged app — the wrapper's real path is appended so the
     # instruction is runnable as printed. Non-login errors stay untouched.
-    monkeypatch.setattr(deploy_mod, "_setup_cli_hint", lambda: "/App/Contents/Resources/bin/fused")
+    # _cli_error lives in fusedcli.py now — patch the hint where it resolves it.
+    monkeypatch.setattr(fusedcli_mod, "setup_cli_hint", lambda: "/App/Contents/Resources/bin/fused")
     message = deploy_mod._cli_error(
         "Error: Not logged in to Fused. Run `fused cloud login` first.\n", "fallback"
     )
