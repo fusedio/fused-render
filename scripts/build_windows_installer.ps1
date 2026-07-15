@@ -29,7 +29,11 @@ param(
     [string]$Iscc = ""
 )
 
-$ErrorActionPreference = "Stop"
+# Native tools (uv, iscc, the bundle python) write progress to stderr; under
+# `Stop` in Windows PowerShell 5.1 that stderr is wrapped as a terminating
+# error even on exit 0. Every native call below is followed by an explicit
+# $LASTEXITCODE check, so keep the preference non-fatal and rely on those.
+$ErrorActionPreference = "Continue"
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $BuildDir = Join-Path $RepoRoot "build"
 $DistDir  = Join-Path $RepoRoot "dist"
@@ -87,6 +91,11 @@ $bundlePyw = Join-Path $PyRoot "pythonw.exe"
 if (-not (Test-Path $bundlePy))  { Die "bundle python.exe missing at $bundlePy" }
 if (-not (Test-Path $bundlePyw)) { Die "bundle pythonw.exe missing at $bundlePyw" }
 
+# uv-managed pythons ship Lib\EXTERNALLY-MANAGED, which makes `uv pip install`
+# refuse. The bundle is a private tree we own, so drop the marker.
+$marker = Join-Path $PyRoot "Lib\EXTERNALLY-MANAGED"
+if (Test-Path $marker) { Remove-Item -Force $marker }
+
 # --- 3. install the wheel + extras into the bundle ---------------------------
 Step "installing $($wheel.Name)[bundled,fused] into the bundle"
 & uv pip install --python $bundlePy "$wheelPath[bundled,fused]"
@@ -109,11 +118,24 @@ if (Test-Path $scripts) {
 }
 
 # --- 5. smoke tests through the BUNDLE interpreter (mirror build_dmg.sh) ------
-Step "smoke: import + duckdb via _child.py + server boot"
-& $bundlePy -c "import fused_render, fused_render.winopen, fused_render.executor, fused_render._child; print('imports ok')"
+Step "smoke: imports + winopen + duckdb through the executor child"
+& $bundlePy -c "import fused_render, fused_render.winopen, fused_render.executor, fused_render.cli; print('imports ok')"
 if ($LASTEXITCODE -ne 0) { Die "bundle import smoke failed" }
-& $bundlePy -c "import duckdb; assert duckdb.sql('select 42').fetchall()[0][0] == 42; print('duckdb ok')"
-if ($LASTEXITCODE -ne 0) { Die "duckdb smoke failed" }
+& $bundlePy -m fused_render.winopen --help | Out-Null
+if ($LASTEXITCODE -ne 0) { Die "winopen entry smoke failed" }
+# Exercise the real user-code path: _child.py runs a target .py's main() in a
+# subprocess. A duckdb import there proves the C-extension loads the way an
+# actual preview would drive it.
+$probe = Join-Path $env:TEMP "fr_probe_$PID.py"
+Set-Content -Path $probe -Encoding ascii -Value "import duckdb`ndef main():`n    return {'n': duckdb.sql('select 42').fetchall()[0][0]}"
+$req = Join-Path $env:TEMP "fr_req_$PID.json"
+Set-Content -Path $req -Encoding ascii -NoNewline -Value ('{"path": ' + ($probe | ConvertTo-Json) + ', "params": {}}')
+$child = Join-Path $PyRoot "Lib\site-packages\fused_render\_child.py"
+# PowerShell can't feed a native exe's stdin reliably; cmd's < redirect can.
+$out = cmd /c "`"$bundlePy`" `"$child`" < `"$req`""
+Remove-Item -Force $probe, $req
+if ($out -notmatch '"n":\s*42') { Die "duckdb-via-child smoke failed: $out" }
+Step "smoke ok"
 $sizeGB = [math]::Round((Get-ChildItem -Path $PyRoot -Recurse -File | Measure-Object Length -Sum).Sum / 1GB, 2)
 Step "bundle staged: $sizeGB GB at $PyRoot"
 
