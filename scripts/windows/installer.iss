@@ -22,9 +22,14 @@
 #ifndef OutputBaseName
   #define OutputBaseName "FusedRender-setup"
 #endif
+; Build-machine path, used only for SetupIconFile (embedded into the setup.exe
+; at compile time).
 #ifndef IconFile
   #define IconFile BundleDir + "\python\Lib\site-packages\fused_render\assets\fused-render.ico"
 #endif
+; The SAME icon at its post-install location. Shortcuts / Add-Remove resolve
+; their icon on the customer's machine, so they must NOT use the build path.
+#define InstalledIcon "{app}\python\Lib\site-packages\fused_render\assets\fused-render.ico"
 
 #define AppName "FusedRender" + AppNameSuffix
 ; A stable per-name GUID so upgrades replace in place; the suffix keeps
@@ -46,7 +51,7 @@ ArchitecturesInstallIn64BitMode=x64
 OutputDir={#OutputDir}
 OutputBaseFilename={#OutputBaseName}
 SetupIconFile={#IconFile}
-UninstallDisplayIcon={app}\python\pythonw.exe
+UninstallDisplayIcon={#InstalledIcon}
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -68,7 +73,7 @@ Type: filesandordirs; Name: "{app}\python"
 ; Windowless launch (pythonw) so the Start Menu entry never flashes a console.
 ; The tray starts (or reuses) the server, opens the browser, and offers a
 ; Stop-and-quit; the file associations still use winopen directly.
-Name: "{group}\{#AppName}"; Filename: "{app}\python\pythonw.exe"; Parameters: "-m fused_render.wintray"; IconFilename: "{#IconFile}"
+Name: "{group}\{#AppName}"; Filename: "{app}\python\pythonw.exe"; Parameters: "-m fused_render.wintray"; IconFilename: "{#InstalledIcon}"
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 
 [Run]

@@ -10,6 +10,11 @@ jobs:
     # Foundation only, unsigned: SmartScreen shows the "unrecognized app"
     # prompt until code signing is added (see docs/WINDOWS_INSTALLER_PLAN.md).
     runs-on: windows-latest
+    # Depend on the macOS job so the GitHub Release already exists when we
+    # attach the installer — no race, no arbitrary wait, and the attach can
+    # hard-fail instead of tolerating a missing release. If macOS fails the
+    # release is broken anyway, so skipping the Windows attach is correct.
+    needs: build-sign-notarize-release
     permissions:
       contents: write # attach the installer to the GitHub Release
       id-token: write # assume the AWS role via OIDC
@@ -43,24 +48,22 @@ jobs:
       - name: Upload installer to S3 + attach to release
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+          # Make a nonzero exit from aws/gh throw so a failed upload fails the
+          # job — without this, pwsh ignores native exit codes and a broken
+          # release would still report success.
+          $PSNativeCommandUseErrorActionPreference = $true
+
           $exe = Get-ChildItem dist/*-setup.exe | Select-Object -First 1
+          if (-not $exe) { throw "no *-setup.exe in dist/" }
           $name = $exe.Name
           $sha = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLower()
           Set-Content -Path "dist/$name.sha256" -Value "$sha  $name"
+
           aws s3 cp $exe.FullName "s3://fused-magic/fused-render-windows/$name"
           aws s3 cp "dist/$name.sha256" "s3://fused-magic/fused-render-windows/$name.sha256"
-          # Append to the release the macOS job creates (same tag). Both jobs
-          # run in parallel, so wait for the release to exist rather than
-          # ordering the whole pipeline behind the mac job; S3 above is the
-          # durable copy regardless.
-          for ($i = 0; $i -lt 20; $i++) {
-            if (gh release view $env:GITHUB_REF_NAME 2>$null) {
-              gh release upload $env:GITHUB_REF_NAME $exe.FullName --clobber
-              exit 0
-            }
-            Start-Sleep 30
-          }
-          Write-Host "release not created yet; installer is in S3 at fused-render-windows/$name"
+          # The macOS job (a `needs` dependency) already created the release.
+          gh release upload $env:GITHUB_REF_NAME $exe.FullName --clobber
         env:
           GH_TOKEN: ${{ github.token }}
 
