@@ -101,6 +101,19 @@ def _error(message: str, status: int = 400) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status)
 
 
+def _str_list(body: dict, key: str) -> list[str] | None:
+    """A JSON body field that must be a list of strings (absent/None -> []).
+
+    Returns None when the field is present but malformed (not a list, or holds a
+    non-string) so the caller can 400 rather than pass junk to the exporter."""
+    value = body.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, list) or any(not isinstance(v, str) for v in value):
+        return None
+    return value
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -520,7 +533,8 @@ def set_deployment(page: str, record: dict) -> None:
 
 
 def _record_from(raw: dict, *, page: str, env_name: str, backend: str,
-                 entrypoints: list[str], fallback: dict | None) -> dict:
+                 entrypoints: list[str], include: list[str], exclude: list[str],
+                 fallback: dict | None) -> dict:
     token = raw.get("token") or raw.get("id") or (fallback or {}).get("token")
     if not isinstance(token, str) or not token:
         raise DeployError("the fused CLI did not return a mount token")
@@ -542,18 +556,28 @@ def _record_from(raw: dict, *, page: str, env_name: str, backend: str,
         "url": url if isinstance(url, str) else None,
         "status": "active",
         "entrypoints": entrypoints,
+        # The file-selection the user deployed with, persisted here (not a separate
+        # sidecar) so reopening the modal reloads exactly what was published: extra
+        # files bundled beyond the auto-scan, and files dropped from it.
+        "include": include,
+        "exclude": exclude,
         "updated_at": _now_iso(),
     }
 
 
-def preview_deploy(page: str) -> dict:
+def preview_deploy(
+    page: str,
+    include: list[str] | None = None,
+    exclude: list[str] | None = None,
+) -> dict:
     """What a deploy of `page` would publish, resolved fresh — no files written.
 
     The modal shows this BEFORE the Deploy click (the flow app's
     DeployPreview precedent): the page itself, each runPython target and the
-    route it becomes, each rawUrl/readFile asset — and any export blockers,
-    so an unexportable page reads as "fix these" up front instead of a failed
-    deploy. Same scan the real export runs (export.plan_export).
+    route it becomes, each rawUrl/readFile asset (plus the user's `include`,
+    minus `exclude`) — plus any export blockers and advisory warnings, so an
+    unexportable page reads as "fix these" up front instead of a failed deploy.
+    Same scan the real export runs (export.plan_export), with the same selection.
     """
     if not os.path.isfile(page):
         raise DeployError(f"no such file: {page}")
@@ -564,18 +588,30 @@ def preview_deploy(page: str) -> dict:
             html = f.read()
     except OSError as e:
         raise DeployError(f"cannot read {page}: {e}") from None
-    plan = plan_export(html, os.path.dirname(os.path.abspath(page)))
+    plan = plan_export(
+        html, os.path.dirname(os.path.abspath(page)), include=include, exclude=exclude
+    )
     return {
         "page": os.path.basename(page),
         "entrypoints": [{"path": e.path, "name": e.name} for e in plan.entrypoints],
         "assets": [{"path": a.path, "name": a.name} for a in plan.assets],
         "errors": plan.errors,
+        "warnings": plan.warnings,
     }
 
 
-def deploy_page(page: str, env_name: str) -> dict:
+def deploy_page(
+    page: str,
+    env_name: str,
+    include: list[str] | None = None,
+    exclude: list[str] | None = None,
+) -> dict:
     """Export `page` to a temp bundle and publish it on `env_name`; returns the
     stored deployment record (token, URL when the backend returned one).
+
+    `include`/`exclude` are the user's file selection (see export.plan_export):
+    extra files bundled beyond the auto-scan, and files dropped from it. They are
+    persisted on the record so a reopened modal reloads the same selection.
 
     First deploy (or a pointer on a different env): `share create --public` —
     a fresh opaque capability URL. Redeploy on the same env keeps the URL:
@@ -583,6 +619,8 @@ def deploy_page(page: str, env_name: str) -> dict:
     recreate --same-token` then repoint (same URL comes back); token absent
     from `share list` entirely -> fresh create (nothing left to revive).
     """
+    include = include or []
+    exclude = exclude or []
     # Canonicalize up front so the direct locked store.get below, the record's
     # `page` field, and set_deployment all key on the same path as get_deployment
     # / deployment_status (all via _page_key) — one file, one pointer.
@@ -617,7 +655,7 @@ def deploy_page(page: str, env_name: str) -> dict:
 
     bundle = tempfile.mkdtemp(prefix="fused-render-deploy-")
     try:
-        plan = export_page(page, bundle)
+        plan = export_page(page, bundle, include=include, exclude=exclude)
         entrypoints = [e.name for e in plan.entrypoints]
 
         same_env = pointer if pointer and pointer.get("env") == env_name else None
@@ -666,7 +704,7 @@ def deploy_page(page: str, env_name: str) -> dict:
 
         record = _record_from(
             raw, page=page, env_name=env_name, backend=backend,
-            entrypoints=entrypoints, fallback=same_env,
+            entrypoints=entrypoints, include=include, exclude=exclude, fallback=same_env,
         )
         set_deployment(page, record)
         return record
@@ -863,12 +901,20 @@ def api_deploy_status(path: str, reconcile: str = "0"):
     return deployment_status(path, reconcile == "1")
 
 
-@router.get("/api/deploy/preview")
-def api_deploy_preview(path: str):
-    if not os.path.isabs(path):
+@router.post("/api/deploy/preview")
+def api_deploy_preview(body: dict = Body(...)):
+    # POST (not GET) because it carries the include/exclude selection — arrays
+    # don't fit a query string cleanly. Read-only (no files written), so no
+    # X-Fused guard, matching the former GET.
+    path = body.get("path")
+    if not isinstance(path, str) or not path or not os.path.isabs(path):
         return _error("'path' must be an absolute filesystem path")
+    include = _str_list(body, "include")
+    exclude = _str_list(body, "exclude")
+    if include is None or exclude is None:
+        return _error("'include'/'exclude' must be arrays of relative file paths")
     try:
-        return preview_deploy(path)
+        return preview_deploy(path, include, exclude)
     except DeployError as e:
         return _error(str(e))
 
@@ -894,8 +940,12 @@ def api_deploy(body: dict = Body(...), x_fused: str | None = Header(default=None
         return _error("'page' must be an absolute path to the .html page")
     if not env_name or not isinstance(env_name, str):
         return _error("'env' must name a hosted environment")
+    include = _str_list(body, "include")
+    exclude = _str_list(body, "exclude")
+    if include is None or exclude is None:
+        return _error("'include'/'exclude' must be arrays of relative file paths")
     try:
-        return deploy_page(page, env_name)
+        return deploy_page(page, env_name, include, exclude)
     except ExportError as e:
         return _error(str(e))
     except DeployError as e:

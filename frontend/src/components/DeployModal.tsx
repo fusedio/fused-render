@@ -21,9 +21,15 @@ import {
   getDeployStatus,
   installFused,
   revokeDeployment,
+  walkDir,
 } from "../lib/api";
-import type { DeployConfig, DeployPreview, Deployment } from "../lib/api";
-import { basename } from "../lib/format";
+import type { DeployConfig, DeployPreview, Deployment, WalkEntry } from "../lib/api";
+import { basename, dirname, formatSize } from "../lib/format";
+
+// A path's bundle key: what dedup/exclude match on. Mirrors the server's
+// _asset_key (export.py) for the common case — strip a leading "./"; the exact
+// literal is preserved elsewhere for display/tooltips.
+const relKey = (p: string) => p.replace(/^\.\//, "");
 
 interface DeployModalProps {
   fsPath: string;
@@ -56,11 +62,109 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-// What deploying would publish, resolved fresh from the page's on-disk state
-// (GET /api/deploy/preview) — shown BEFORE the click, and export blockers
-// disable Deploy with the exact list instead of a post-click failure.
-function PreviewSection({ preview }: { preview: DeployPreview }) {
+// What deploying would publish, resolved fresh from on-disk state
+// (POST /api/deploy/preview) with the user's include/exclude selection applied —
+// shown BEFORE the click. Export blockers disable Deploy with the exact list;
+// warnings are advisory. The list is editable: drop a file (× → exclude),
+// restore it, add extra files (a folder picker), add everything, or reset to the
+// auto-detected default.
+function FileSelection({
+  fsPath,
+  preview,
+  include,
+  exclude,
+  disabled,
+  setInclude,
+  setExclude,
+}: {
+  fsPath: string;
+  preview: DeployPreview;
+  include: string[];
+  exclude: string[];
+  disabled: boolean;
+  setInclude: (v: string[]) => void;
+  setExclude: (v: string[]) => void;
+}) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [dirFiles, setDirFiles] = useState<WalkEntry[] | null>(null);
+  const [dirTruncated, setDirTruncated] = useState(false);
+  const [walkBusy, setWalkBusy] = useState(false);
+  const [walkError, setWalkError] = useState<string | null>(null);
+
+  const pageBase = basename(fsPath);
+  const includeKeys = useMemo(() => new Set(include.map(relKey)), [include]);
+  const publishedKeys = useMemo(
+    () =>
+      new Set([
+        ...preview.entrypoints.map((e) => relKey(e.path)),
+        ...preview.assets.map((a) => relKey(a.path)),
+      ]),
+    [preview],
+  );
+
+  // × on a row → add to exclude. Exclude is applied last server-side and drops a
+  // file by key whether it was auto-detected OR manually included, so this always
+  // takes the file out of the bundle; "Restore" (remove from exclude) brings an
+  // auto/included file back. include is left untouched so a restore is lossless.
+  const removeRow = (path: string) => {
+    if (!exclude.some((e) => relKey(e) === relKey(path))) setExclude([...exclude, path]);
+  };
+  const restore = (path: string) => setExclude(exclude.filter((e) => relKey(e) !== relKey(path)));
+  // Adding files (picker / add-all): append to include and clear any exclusion of
+  // the same paths, so a previously-dropped file comes back.
+  const addFiles = (paths: string[]) => {
+    const fresh = paths.filter((p) => !includeKeys.has(relKey(p)));
+    if (fresh.length) setInclude([...include, ...fresh]);
+    const addedKeys = new Set(paths.map(relKey));
+    if (paths.some((p) => exclude.some((e) => relKey(e) === relKey(p))))
+      setExclude(exclude.filter((e) => !addedKeys.has(relKey(e))));
+  };
+  const reset = () => {
+    setInclude([]);
+    setExclude([]);
+  };
+
+  const loadDir = async (): Promise<WalkEntry[]> => {
+    setWalkBusy(true);
+    setWalkError(null);
+    try {
+      const r = await walkDir(dirname(fsPath));
+      const files = r.entries.filter((e) => !e.is_dir);
+      setDirFiles(files);
+      setDirTruncated(r.truncated);
+      return files;
+    } catch (e) {
+      setWalkError((e as Error).message);
+      return [];
+    } finally {
+      setWalkBusy(false);
+    }
+  };
+
+  const openPicker = () => {
+    setPickerOpen(true);
+    if (dirFiles === null) void loadDir();
+  };
+  const addAllInFolder = async () => {
+    const files = dirFiles ?? (await loadDir());
+    addFiles(
+      files
+        .map((f) => f.rel)
+        .filter((rel) => rel !== pageBase && !publishedKeys.has(relKey(rel))),
+    );
+  };
+
+  // Files on disk that aren't already published and aren't excluded — the picker's
+  // candidates. Excluded files live in their own "Excluded" list (with Restore).
+  const excludeKeys = useMemo(() => new Set(exclude.map(relKey)), [exclude]);
+  const available = (dirFiles ?? []).filter(
+    (f) =>
+      f.rel !== pageBase && !publishedKeys.has(relKey(f.rel)) && !excludeKeys.has(relKey(f.rel)),
+  );
+
   if (preview.errors.length > 0) {
+    // Blocking problems: no editable list — show the fix-it list. (The selection
+    // controls stay hidden until the page exports cleanly.)
     return (
       <div className="deploy-error">
         This page can't be deployed yet:
@@ -70,28 +174,134 @@ function PreviewSection({ preview }: { preview: DeployPreview }) {
       </div>
     );
   }
-  // Display each file as a plain relative name. The backend gives the page as a
-  // bare basename but entrypoints/assets as their literal fused.runPython/rawUrl
-  // argument, which usually carries a leading "./" — so the list mixed "sine.html"
-  // with "./sine.py". Strip a leading "./" for the shown text (one consistent root);
-  // the exact literal stays in the title tooltip so nothing is lost.
-  const rel = (p: string) => p.replace(/^\.\//, "");
+
+  const rows = [
+    ...preview.entrypoints.map((e) => ({
+      path: e.path,
+      label: relKey(e.path),
+      title: `fused.runPython(${JSON.stringify(e.path)}) → route “${e.name}”`,
+      kind: "run" as const,
+    })),
+    ...preview.assets.map((a) => ({
+      path: a.path,
+      label: relKey(a.path),
+      title: includeKeys.has(relKey(a.path))
+        ? `included file — ${a.path}`
+        : `asset “${a.name}” (fused.rawUrl/readFile) — ${a.path}`,
+      kind: includeKeys.has(relKey(a.path)) ? ("added" as const) : ("asset" as const),
+    })),
+  ];
+
   return (
     <div className="deploy-preview">
-      <span className="deploy-muted">Will publish:</span>
-      <code>{rel(preview.page)}</code>
-      {preview.entrypoints.map((e) => (
-        <code key={"e" + e.path} title={`fused.runPython(${JSON.stringify(e.path)}) → route “${e.name}”`}>
-          {rel(e.path)}
-        </code>
-      ))}
-      {preview.assets.map((a) => (
-        <code key={"a" + a.path} title={`asset “${a.name}” (fused.rawUrl/readFile) — ${a.path}`}>
-          {rel(a.path)}
-        </code>
-      ))}
-      {preview.entrypoints.length === 0 && preview.assets.length === 0 && (
-        <span className="deploy-muted">(the page only — no runPython/rawUrl targets)</span>
+      <div className="deploy-preview-head">
+        <span className="deploy-muted">Will publish:</span>
+        <div className="deploy-preview-actions">
+          <button type="button" onClick={openPicker} disabled={disabled}>
+            Add files…
+          </button>
+          <button type="button" onClick={() => void addAllInFolder()} disabled={disabled || walkBusy}>
+            {walkBusy ? "Scanning…" : "Add all in folder"}
+          </button>
+          {(include.length > 0 || exclude.length > 0) && (
+            <button type="button" onClick={reset} disabled={disabled}>
+              Reset to default
+            </button>
+          )}
+        </div>
+      </div>
+
+      <ul className="deploy-file-list">
+        <li className="deploy-file page">
+          <code title={preview.page}>{relKey(preview.page)}</code>
+          <span className="deploy-file-tag">page</span>
+        </li>
+        {rows.map((r) => (
+          <li key={r.kind + r.path} className="deploy-file">
+            <code title={r.title}>{r.label}</code>
+            {r.kind === "run" && <span className="deploy-file-tag">run</span>}
+            {r.kind === "added" && <span className="deploy-file-tag added">added</span>}
+            <button
+              type="button"
+              className="deploy-file-remove"
+              title="Remove from the bundle"
+              onClick={() => removeRow(r.path)}
+              disabled={disabled}
+            >
+              ✕
+            </button>
+          </li>
+        ))}
+        {rows.length === 0 && (
+          <li className="deploy-muted">(the page only — no runPython/rawUrl targets)</li>
+        )}
+      </ul>
+
+      {exclude.length > 0 && (
+        <div className="deploy-excluded">
+          <span className="deploy-muted">Excluded (won't be bundled):</span>
+          <ul className="deploy-file-list">
+            {exclude.map((p) => (
+              <li key={p} className="deploy-file excluded">
+                <code title={p}>{relKey(p)}</code>
+                <button
+                  type="button"
+                  className="deploy-file-restore"
+                  title="Add back to the bundle"
+                  onClick={() => restore(p)}
+                  disabled={disabled}
+                >
+                  Restore
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {pickerOpen && (
+        <div className="deploy-picker">
+          <div className="deploy-picker-head">
+            <span className="deploy-muted">Add files from this page's folder</span>
+            <button type="button" onClick={() => setPickerOpen(false)}>
+              Done
+            </button>
+          </div>
+          {walkBusy && <div className="deploy-muted">Scanning folder…</div>}
+          {walkError && <div className="deploy-error">{walkError}</div>}
+          {dirTruncated && (
+            <div className="deploy-note deploy-muted">
+              This folder is large — some files were omitted from the scan.
+            </div>
+          )}
+          {dirFiles !== null && !walkBusy && available.length === 0 && (
+            <div className="deploy-muted">
+              No other files to add — everything in the folder is already listed.
+            </div>
+          )}
+          {available.length > 0 && (
+            <ul className="deploy-picker-list">
+              {available.map((f) => (
+                <li key={f.rel}>
+                  <button type="button" onClick={() => addFiles([f.rel])} disabled={disabled}>
+                    + <code>{f.rel}</code>
+                    <span className="deploy-muted">{formatSize(f.size)}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {preview.warnings.length > 0 && (
+        <div className="deploy-warnings">
+          {preview.warnings.map((w, i) => (
+            <div key={i} className="deploy-warning">
+              ⚠ {w}
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
@@ -111,6 +321,12 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   const [selectedEnv, setSelectedEnv] = useState<string | null>(null);
   const [busy, setBusy] = useState<"deploy" | "revoke" | "install" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  // The user's file selection, layered on the auto-detected set: `include` adds
+  // extra files (as assets), `exclude` drops files. Seeded on open from the
+  // stored deployment record (so it reloads the last-published selection) and
+  // sent back on Deploy. Both empty = the auto-detected default.
+  const [include, setInclude] = useState<string[]>([]);
+  const [exclude, setExclude] = useState<string[]>([]);
 
   // The modal can be closed while an action is still running (#12): guard the
   // modal's own post-action setState so a deploy/revoke/install that resolves
@@ -137,6 +353,26 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   // failure, leaves the current view intact instead of replacing it with an
   // error. The initial mount load (background=false) still shows "Loading…"
   // and surfaces a load error, since there is nothing to preserve yet.
+  // Preview (the "will publish" set) is a function of the page's on-disk state
+  // AND the current include/exclude — so it lives in its own seq-guarded fetch,
+  // re-run whenever fsPath or the selection changes (effect below) and on a
+  // background reconcile (to pick up on-disk edits). A fetch failure degrades to
+  // an export blocker so the form still renders with Deploy disabled.
+  const previewSeq = useRef(0);
+  const refreshPreview = async (inc: string[], exc: string[]) => {
+    const seq = ++previewSeq.current;
+    const prev = await getDeployPreview(fsPath, inc, exc).catch(
+      (e): DeployPreview => ({
+        page: basename(fsPath),
+        entrypoints: [],
+        assets: [],
+        errors: [(e as Error).message],
+        warnings: [],
+      }),
+    );
+    if (seq === previewSeq.current && alive.current) setPreview(prev);
+  };
+
   const load = async (background = false) => {
     const seq = ++loadSeq.current;
     if (!background) {
@@ -144,29 +380,27 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       setConfig(null);
     }
     try {
-      const [cfg, status, prev] = await Promise.all([
+      const [cfg, status] = await Promise.all([
         getDeployConfig(),
         getDeployStatus(fsPath, true),
-        // A preview failure (unexportable file type, file deleted since the
-        // header rendered, …) must not kill the whole dialog — degrade it to
-        // an export blocker: the form renders, the reason shows in the
-        // blocker list, and Deploy stays disabled.
-        getDeployPreview(fsPath).catch(
-          (e): DeployPreview => ({
-            page: basename(fsPath),
-            entrypoints: [],
-            assets: [],
-            errors: [(e as Error).message],
-          }),
-        ),
       ]);
       if (seq !== loadSeq.current) return;
       setLoadError(null);
       setConfig(cfg);
-      setPreview(prev);
       applyDeployment(status.deployment);
       setReconciled(status.reconciled);
       setLive(status.live ?? null);
+      // Seed the selection from the stored record on a fresh open (never on a
+      // background refresh — that would clobber the user's in-progress edits).
+      // Setting the state triggers the preview effect; a background load instead
+      // refreshes the preview explicitly (its inputs didn't change but the page
+      // on disk may have).
+      if (!background) {
+        setInclude(status.deployment?.include ?? []);
+        setExclude(status.deployment?.exclude ?? []);
+      } else {
+        void refreshPreview(include, exclude);
+      }
       // Preselect the deployment's env (or the default) — but only if it is
       // actually in the picker; an env removed from envs.json since deploy
       // must fall back to a selectable one, or the <select> renders blank
@@ -190,6 +424,13 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fsPath]);
+
+  // Re-resolve the "will publish" preview whenever the page or the selection
+  // changes (covers the initial seed from load, and every include/exclude edit).
+  useEffect(() => {
+    void refreshPreview(include, exclude);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fsPath, include, exclude]);
 
   // Latest-ref pattern: `load` and `busy` are captured fresh every render, so
   // the focus effect below (which subscribes once) always calls the current
@@ -247,11 +488,15 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     setBusy("deploy");
     setActionError(null);
     try {
-      const record = await deployPage(fsPath, env.name);
+      const record = await deployPage(fsPath, env.name, include, exclude);
       applyDeployment(record);
       if (!alive.current) return;
       setReconciled(true);
       setLive("active");
+      // Re-seed from what was actually persisted, so the list reflects the
+      // stored record (e.g. server-side dedup) rather than the raw local lists.
+      setInclude(record.include ?? include);
+      setExclude(record.exclude ?? exclude);
     } catch (e) {
       // A deploy can fail AFTER the server mutated the pointer — the
       // failed-revive compensation path (deploy.py) persists status active or
@@ -418,7 +663,17 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
           </div>
         )}
 
-        {preview && <PreviewSection preview={preview} />}
+        {preview && (
+          <FileSelection
+            fsPath={fsPath}
+            preview={preview}
+            include={include}
+            exclude={exclude}
+            disabled={busy !== null}
+            setInclude={setInclude}
+            setExclude={setExclude}
+          />
+        )}
         <div className="deploy-form-row">
           <label htmlFor="deploy-env-select">Deploy to</label>
           <select

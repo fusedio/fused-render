@@ -1745,13 +1745,171 @@ body.embed .preview-browse-chip:hover {
   }
 }
 
-/* "Will publish:" preview — the page + each bundled runPython/rawUrl target
-   as compact chips. */
+/* "Will publish:" preview — the page + each bundled runPython/rawUrl target,
+   plus the user's include/exclude edits (add files, remove, restore, reset). */
 .deploy-preview {
   display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.deploy-preview-head {
+  display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   flex-wrap: wrap;
+}
+
+.deploy-preview-actions {
+  display: flex;
   gap: 6px;
+  flex-wrap: wrap;
+}
+
+.deploy-preview-actions button {
+  font-size: 12px;
+  padding: 3px 8px;
+}
+
+.deploy-file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.deploy-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: 6px;
+}
+
+.deploy-file:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.deploy-file code {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deploy-file.excluded code {
+  text-decoration: line-through;
+  color: var(--fg-muted);
+}
+
+.deploy-file-tag {
+  flex: 0 0 auto;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+
+.deploy-file-tag.added {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.deploy-file-remove,
+.deploy-file-restore {
+  flex: 0 0 auto;
+  font-size: 12px;
+  padding: 2px 6px;
+}
+
+.deploy-file-remove {
+  color: var(--fg-muted);
+}
+
+.deploy-file-remove:hover:not(:disabled) {
+  color: var(--error);
+}
+
+.deploy-excluded {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.deploy-picker {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.deploy-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.deploy-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.deploy-picker-list button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  background: none;
+  border: none;
+  color: var(--fg);
+  cursor: pointer;
+  padding: 3px 6px;
+  border-radius: 6px;
+}
+
+.deploy-picker-list button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.deploy-picker-list code {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deploy-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.deploy-warning {
+  color: var(--warning, #d9a441);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* ---- Preferences page (SPEC §20) ------------------------------------------ */

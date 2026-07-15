@@ -103,11 +103,19 @@ class Asset:
 
 @dataclass
 class ExportPlan:
-    """What an export will bundle, plus any blocking problems found while scanning."""
+    """What an export will bundle, plus any problems found while scanning.
+
+    ``errors`` are blocking (``export_page`` raises; Deploy is disabled). ``warnings``
+    are advisory and never block — a computed ``rawUrl``/``readFile`` path (whose target
+    the user can bundle via an explicit include) or an ``exclude`` that drops a
+    literally-referenced file (which will 404 when hosted). The user chose to ship it;
+    the note explains the consequence.
+    """
 
     entrypoints: list[Entrypoint] = field(default_factory=list)
     assets: list[Asset] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
 
 def _slugify(stem: str) -> str:
@@ -140,6 +148,17 @@ def _route_name(rel_path: str, taken: set[str]) -> str:
         n += 1
     taken.add(name)
     return name
+
+
+def _asset_key(path: str) -> str:
+    """The bundle-relative asset key for a page-relative ``path``.
+
+    ``removeprefix``, NOT ``lstrip``: ``lstrip("./")`` strips any leading run of
+    ``.``/``/`` chars, mangling dotfiles (``./.env`` -> ``env``). ``normpath`` already
+    collapses ``./x`` to ``x``; this only guards a residual ``./``. Shared by the
+    ``rawUrl``/``readFile`` scan and the manual-include loop so a file reachable both
+    ways lands on the same key (and is bundled once)."""
+    return os.path.normpath(path).replace(os.sep, "/").removeprefix("./")
 
 
 def _literal_paths(html: str, method: str) -> list[str]:
@@ -192,14 +211,39 @@ def _within_page_dir(page_dir: str, target: str) -> bool:
     return real == root or real.startswith(root + os.sep)
 
 
-def plan_export(html: str, page_dir: str) -> ExportPlan:
+def plan_export(
+    html: str,
+    page_dir: str,
+    *,
+    include: list[str] | None = None,
+    exclude: list[str] | None = None,
+) -> ExportPlan:
     """Scan a page's HTML and build an :class:`ExportPlan` (pure — no files written).
 
     Resolves each literal ``runPython``/``rawUrl``/``readFile`` path against ``page_dir``,
-    recording blocking problems (dynamic paths, unsupported API, unsafe/missing files) in
-    ``plan.errors`` rather than raising — so a caller can report them all at once.
+    recording blocking problems (dynamic ``runPython`` paths, unsupported API,
+    unsafe/missing files) in ``plan.errors`` rather than raising — so a caller can report
+    them all at once.
+
+    The auto-detected set is then adjusted by the user's selection:
+
+      * ``include`` — extra page-relative files to bundle as read-only assets (beyond
+        the literal ``rawUrl``/``readFile`` scan). Each goes through the same safety
+        gauntlet as a scanned asset; a bad one is a blocking error. This is how a file
+        reached by a *computed* path (a warning, below) or read at runtime by a bundled
+        ``.py`` actually gets into the bundle.
+      * ``exclude`` — page-relative paths (or their bundle key) to drop from the final
+        set. Dropping a literally-referenced target is honored but warned (that call
+        404s when hosted).
+
+    A computed (non-literal) ``rawUrl``/``readFile`` path is a **warning**, not an error:
+    the exporter can't discover the target, but the user can bundle it via ``include``.
+    A computed ``runPython`` path stays a hard error (its served route name is derived
+    from the literal path — there is nothing to route a computed call to).
     """
     plan = ExportPlan()
+    include = include or []
+    exclude = exclude or []
 
     for m in _UNSUPPORTED.finditer(html):
         api = m.group(1)
@@ -208,13 +252,20 @@ def plan_export(html: str, page_dir: str) -> ExportPlan:
             "immutable and has no filesystem); remove it before exporting"
         )
 
-    for method in ("runPython", "rawUrl", "readFile"):
-        dyn = _dynamic_call_count(html, method)
-        if dyn > 0:
-            plan.errors.append(
-                f"{dyn} fused.{method}() call(s) use a non-literal (computed) path; the "
-                "exporter can only bundle string-literal paths known at build time"
-            )
+    dyn_run = _dynamic_call_count(html, "runPython")
+    if dyn_run > 0:
+        plan.errors.append(
+            f"{dyn_run} fused.runPython() call(s) use a non-literal (computed) path; a "
+            "hosted entrypoint's route name is derived from its literal path, so a "
+            "computed runPython target cannot be bundled or routed"
+        )
+    dyn_asset = sum(_dynamic_call_count(html, method) for method in ("rawUrl", "readFile"))
+    if dyn_asset > 0:
+        plan.warnings.append(
+            f"{dyn_asset} fused.rawUrl()/readFile() call(s) use a computed path the "
+            "exporter can't resolve — add the files those calls fetch under \"Include "
+            "files\" (or \"Add all in folder\") so they are bundled and served"
+        )
 
     taken_names: set[str] = set()
     for path in _literal_paths(html, "runPython"):
@@ -241,6 +292,7 @@ def plan_export(html: str, page_dir: str) -> ExportPlan:
     # runtime — which looks up by the exact string the page passed — never 404s. They
     # share one key/file, so the bundle stores the bytes once.
     seen_asset_paths: set[str] = set()
+    seen_asset_keys: set[str] = set()
     for method in ("rawUrl", "readFile"):
         for path in _literal_paths(html, method):
             if path in seen_asset_paths:
@@ -257,12 +309,66 @@ def plan_export(html: str, page_dir: str) -> ExportPlan:
             if not os.path.isfile(src):
                 plan.errors.append(f"{method} target {path!r} not found next to the page ({src})")
                 continue
-            # removeprefix, NOT lstrip: lstrip("./") strips any leading run of
-            # '.'/'/' chars, mangling dotfiles ("./.env" -> "env"). normpath
-            # already collapses "./x" to "x"; this only guards a residual "./".
-            key = os.path.normpath(path).replace(os.sep, "/").removeprefix("./")
+            key = _asset_key(path)
             seen_asset_paths.add(path)
+            seen_asset_keys.add(key)
             plan.assets.append(Asset(path=path, name=key, file=f"assets/{key}"))
+
+    # Manual includes: extra files bundled as assets, keyed the same way. A file already
+    # brought in by the literal scan (same key) is skipped — bundled once. An unsafe or
+    # missing include is a blocking error, like a scanned asset that doesn't exist.
+    for path in include:
+        key = _asset_key(path)
+        if key in seen_asset_keys:
+            continue
+        if not _reject_unsafe_rel(path, "included file", plan.errors):
+            continue
+        src = os.path.join(page_dir, path)
+        if not _within_page_dir(page_dir, src):
+            plan.errors.append(
+                f"included file {path!r} resolves outside the page directory "
+                "(a symlink escaping the bundle); only files under the page can be bundled"
+            )
+            continue
+        if not os.path.isfile(src):
+            plan.errors.append(f"included file {path!r} not found next to the page ({src})")
+            continue
+        seen_asset_keys.add(key)
+        plan.assets.append(Asset(path=path, name=key, file=f"assets/{key}"))
+
+    # Excludes drop matching entrypoints/assets by their literal path OR bundle key.
+    # Dropping something the page literally references is the user's call, but warned —
+    # the served page's call to it will 404. Manually-included files (not referenced)
+    # drop silently.
+    if exclude:
+        drop_keys = {_asset_key(p) for p in exclude}
+        drop_raw = set(exclude)
+
+        def _excluded(path: str) -> bool:
+            return path in drop_raw or _asset_key(path) in drop_keys
+
+        kept_entrypoints = []
+        for e in plan.entrypoints:
+            if _excluded(e.path):
+                plan.warnings.append(
+                    f"excluding {e.path!r}, which the page runs via fused.runPython() — "
+                    "that call will fail on the hosted page"
+                )
+            else:
+                kept_entrypoints.append(e)
+        plan.entrypoints = kept_entrypoints
+
+        kept_assets = []
+        for a in plan.assets:
+            if _excluded(a.path):
+                if a.path in seen_asset_paths:  # a literally-referenced asset, not just an include
+                    plan.warnings.append(
+                        f"excluding {a.path!r}, which the page fetches via "
+                        "fused.rawUrl()/readFile() — that fetch will 404 on the hosted page"
+                    )
+            else:
+                kept_assets.append(a)
+        plan.assets = kept_assets
 
     return plan
 
@@ -285,13 +391,21 @@ def _manifest(plan: ExportPlan, page_file: str) -> dict:
     }
 
 
-def export_page(html_path: str, out_dir: str) -> ExportPlan:
+def export_page(
+    html_path: str,
+    out_dir: str,
+    *,
+    include: list[str] | None = None,
+    exclude: list[str] | None = None,
+) -> ExportPlan:
     """Export the page at ``html_path`` into a portable bundle at ``out_dir``.
 
     Writes ``page.html``, ``manifest.json``, ``code/<name>.py`` per ``runPython`` target,
-    and ``assets/<key>`` per ``rawUrl``/``readFile`` target. Raises :class:`ExportError`
-    on any blocking problem (dynamic path, unsupported API, unsafe/missing file) with all
-    problems listed at once. Returns the realized :class:`ExportPlan` on success.
+    and ``assets/<key>`` per ``rawUrl``/``readFile`` target (plus any ``include`` files,
+    minus any ``exclude`` — see :func:`plan_export`). Raises :class:`ExportError` on any
+    blocking problem (dynamic runPython path, unsupported API, unsafe/missing file) with
+    all problems listed at once; advisory ``plan.warnings`` never block. Returns the
+    realized :class:`ExportPlan` on success.
     """
     import json
 
@@ -306,7 +420,7 @@ def export_page(html_path: str, out_dir: str) -> ExportPlan:
         html = f.read()
     page_dir = os.path.dirname(html_path)
 
-    plan = plan_export(html, page_dir)
+    plan = plan_export(html, page_dir, include=include, exclude=exclude)
     if plan.errors:
         raise ExportError(
             "cannot export "
