@@ -10,6 +10,7 @@ import ctypes
 import json
 import logging
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -218,13 +219,18 @@ def _ensure_server(requested: int | None) -> int:
     return _spawn(port)
 
 
+_DRIVE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
+
+
 def _view_url(port: int, path: str | None) -> str:
-    """Build the /view URL the frontend codec (router.ts urlForFsPath) decodes:
-    forward slashes, each segment percent-encoded on its own ("C:" -> "C%3A")."""
+    """Encode an fs path into a /view URL the way the frontend codec
+    (router.ts urlForFsPath) decodes it: only drive-letter paths get their
+    backslashes normalized, so a UNC path stays one percent-encoded segment."""
     if not path:
         return f"http://127.0.0.1:{port}/"
-    fs_path = os.path.abspath(path).replace("\\", "/")
-    segments = [quote(seg, safe="") for seg in fs_path.split("/") if seg]
+    fs_path = os.path.abspath(path)
+    norm = fs_path.replace("\\", "/") if _DRIVE_PATH.match(fs_path) else fs_path
+    segments = [quote(seg, safe="") for seg in norm.lstrip("/").split("/") if seg]
     return f"http://127.0.0.1:{port}/view/" + "/".join(segments)
 
 
@@ -237,15 +243,17 @@ def _report(msg: str) -> None:
 
 
 def extensions() -> list[str]:
+    """Distinct extensions to register, each reduced to its final suffix —
+    Explorer keys on the last one, so ".csv.zst" becomes ".zst" and the glob
+    ".*.json" becomes ".json". Directory sentinels and zarr members drop out."""
     with open(_REGISTRY_JSON, encoding="utf-8") as f:
         registry = json.load(f)
-    # skip directory sentinels ("/", ".zarr/"), zarr member files, and glob
-    # patterns like ".*.json" (not real extensions Explorer can register)
-    return sorted(
-        ext
-        for ext in registry
-        if ext.startswith(".") and "/" not in ext and "*" not in ext and ext not in _NOT_EXTENSIONS
-    )
+    exts = set()
+    for key in registry:
+        if not key.startswith(".") or "/" in key or key in _NOT_EXTENSIONS:
+            continue
+        exts.add("." + key.rsplit(".", 1)[-1])
+    return sorted(exts)
 
 
 def _progid(ext: str) -> str:
