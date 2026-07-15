@@ -1549,8 +1549,11 @@ when one exists, else the folder itself.
   never a silent stay-put. A same-repo link whose subdir shares the basename
   widens the sparse cone additively (`sparse-checkout add`) so its path
   materializes without unchecking earlier links' paths. A dirty or diverged
-  tree surfaces git's own error and local edits are never clobbered. A
-  destination that exists but is not a clone of that repo is refused, never
-  overwritten.
+  tree surfaces git's own error and local edits are never clobbered. The
+  link's subdirectory is verified against the target ref's tree (`ls-tree`)
+  BEFORE any mutation — a link that would fail its target check leaves the
+  existing clone exactly as it was (a fresh clone rolls back via rmtree; an
+  update must be equally side-effect-free on failure). A destination that
+  exists but is not a clone of that repo is refused, never overwritten.
 - **DL-6** Open target: `<dest>/<subpath>/index.html` when present, else the
   subdirectory itself, via the standard `/view/` URL codec.

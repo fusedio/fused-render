@@ -284,6 +284,34 @@ def test_update_widens_sparse_cone_for_new_subpath(env, source_repo):
     assert (env / "how_it_works" / "Max" / "how_it_works" / "index.html").is_file()
 
 
+def test_failed_update_leaves_existing_clone_untouched(env, source_repo):
+    clone_or_pull(parse_github_url(TREE_URL))
+    dest = env / "how_it_works"
+    head_before = _rev(dest)
+    # same repo + same basename, but the subdir doesn't exist at the ref:
+    # must fail BEFORE mutating the clone (no ref switch, no cone widening)
+    bad = parse_github_url("https://github.com/fusedlabs/sandbox/tree/main/Nope/how_it_works")
+    with pytest.raises(DeeplinkError, match="does not exist"):
+        clone_or_pull(bad)
+    assert _rev(dest) == head_before
+    assert (dest / "Max" / "how_it_works" / "index.html").is_file()
+    sparse = subprocess.run(
+        ["git", "sparse-checkout", "list"], cwd=dest, check=True,
+        stdout=subprocess.PIPE, text=True,
+    ).stdout
+    assert "Nope" not in sparse
+
+
+def test_update_with_nonexistent_ref_fails_cleanly(env, source_repo):
+    clone_or_pull(parse_github_url(TREE_URL))
+    dest = env / "how_it_works"
+    head_before = _rev(dest)
+    bad = parse_github_url("https://github.com/fusedlabs/sandbox/tree/nope/Max/how_it_works")
+    with pytest.raises(DeeplinkError, match="does not exist"):
+        clone_or_pull(bad)
+    assert _rev(dest) == head_before
+
+
 def test_repo_slug_matches_https_and_ssh_forms():
     from fused_render.deeplink import _repo_slug
 

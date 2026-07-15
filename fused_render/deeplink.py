@@ -242,6 +242,28 @@ def _is_sparse(dest: str) -> bool:
         return False
 
 
+def _resolve_commitish(dest: str, ref: str | None) -> str:
+    """Commit-ish naming what an update would land on: the fetched remote tip
+    for a branch ref (origin/<ref>), the ref itself for a tag/SHA, and the
+    remote default branch tip for a ref-less link."""
+    candidates = [f"origin/{ref}", ref] if ref else ["origin/HEAD", "HEAD"]
+    for cand in candidates:
+        try:
+            _git(["-C", dest, "rev-parse", "--verify", "--quiet", f"{cand}^{{commit}}"])
+            return cand
+        except DeeplinkError:
+            continue
+    raise DeeplinkError(f"ref {ref or 'HEAD'} does not exist in the repository")
+
+
+def _tree_has_dir(dest: str, commitish: str, subpath: str) -> bool:
+    try:
+        out = _git(["-C", dest, "ls-tree", "-d", commitish, "--", subpath])
+    except DeeplinkError:
+        return False
+    return bool(out.strip())
+
+
 def _on_branch(dest: str) -> bool:
     """True when HEAD is a symbolic ref (a checked-out branch); False for the
     detached HEAD a tag or commit-SHA ref leaves behind."""
@@ -346,6 +368,17 @@ def clone_or_pull(spec: dict) -> dict:
         # checkout landed on its new target). A dirty tree makes the checkout
         # or pull fail with git's own message; local edits never clobbered.
         _git(["-C", dest, "fetch", "--tags", "origin"])
+        # Verify the link's subdirectory exists at the ref it names BEFORE
+        # mutating anything: a fresh clone rolls a failure back via rmtree,
+        # but an existing clone must not be left on a new ref / widened cone
+        # by a link that was going to fail its target check anyway.
+        if spec["subpath"] and not _tree_has_dir(
+            dest, _resolve_commitish(dest, spec["ref"]), spec["subpath"]
+        ):
+            raise DeeplinkError(
+                f"path '{spec['subpath']}' does not exist in "
+                f"{spec['owner']}/{spec['repo']} at ref {spec['ref'] or 'HEAD'}"
+            )
         if spec["ref"]:
             _git(["-C", dest, "checkout", spec["ref"], "--"])
         elif not _on_branch(dest):
