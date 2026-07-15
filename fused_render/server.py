@@ -40,6 +40,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 
 from fused_render import __version__
+from fused_render.account import router as account_router
 from fused_render.core_templates import ensure_core_templates
 from fused_render.deploy import router as deploy_router
 from fused_render.executor import run_python
@@ -1282,6 +1283,9 @@ def create_app(start_dir: str) -> FastAPI:
     # Deploy (hosted publish through the fused CLI) — export + `fused share`
     # orchestration and the per-page deployment pointer store (deploy.py).
     app.include_router(deploy_router)
+    # Fused account (in-app `fused cloud login/logout`, account.py) — the
+    # sign-in the managed-env deploys need, without a terminal.
+    app.include_router(account_router)
     # Template management (templates_api.py) — the Templates view backend:
     # inventory across sources, registry bindings edit, import/export. It owns
     # GET /api/templates/registry (the extended §2.2 shape). Imported here
@@ -1688,8 +1692,16 @@ def create_app(start_dir: str) -> FastAPI:
         if not out or not os.path.isabs(out):
             return _error("'out' must be an absolute path to the output directory")
 
+        # Optional file selection (same as the Deploy modal): extra files to bundle
+        # beyond the literal-call scan, and files to drop from it. Absent -> auto-only.
+        include = body.get("include") or []
+        exclude = body.get("exclude") or []
+        for name, value in (("include", include), ("exclude", exclude)):
+            if not isinstance(value, list) or any(not isinstance(v, str) for v in value):
+                return _error(f"'{name}' must be an array of relative file paths")
+
         try:
-            plan = export_page(page, out)
+            plan = export_page(page, out, include=include, exclude=exclude)
         except ExportError as e:
             return _error(str(e))
 
@@ -1697,6 +1709,7 @@ def create_app(start_dir: str) -> FastAPI:
             "out": os.path.abspath(out),
             "entrypoints": [{"path": e.path, "name": e.name, "file": e.file} for e in plan.entrypoints],
             "assets": [{"path": a.path, "name": a.name, "file": a.file} for a in plan.assets],
+            "warnings": plan.warnings,
         }
 
     return app

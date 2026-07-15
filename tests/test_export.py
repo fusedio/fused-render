@@ -39,6 +39,80 @@ def test_dynamic_path_is_an_error(tmp_path):
     assert any("non-literal" in e for e in plan.errors)
 
 
+def test_dynamic_asset_path_is_a_warning_not_an_error(tmp_path):
+    # A computed rawUrl/readFile path can't be resolved, but the user can bundle
+    # its target via include — so it warns rather than blocking the deploy.
+    html = "<script>const z = 2; fused.rawUrl(`./tiles/${z}.png`); fused.readFile(u);</script>"
+    plan = plan_export(html, str(tmp_path))
+    assert not plan.errors
+    assert any("computed path" in w for w in plan.warnings)
+
+
+def test_include_bundles_an_unreferenced_file(tmp_path):
+    html = "<script>fused.runPython('./sine.py', {});</script>"
+    _write(tmp_path, "sine.py", "def main():\n    return 1\n")
+    _write(tmp_path, "data/points.csv", "a,b\n1,2\n")
+    plan = plan_export(html, str(tmp_path), include=["data/points.csv"])
+    assert not plan.errors
+    assert [(a.path, a.name, a.file) for a in plan.assets] == [
+        ("data/points.csv", "data/points.csv", "assets/data/points.csv")
+    ]
+
+
+def test_include_missing_or_unsafe_file_is_an_error(tmp_path):
+    plan = plan_export("<html></html>", str(tmp_path), include=["nope.csv", "/etc/passwd"])
+    assert any("not found" in e for e in plan.errors)
+    assert any("absolute" in e for e in plan.errors)
+
+
+def test_include_of_runpython_target_is_not_duplicated(tmp_path):
+    # A persisted include that names a file the page ALSO runs via runPython must
+    # not bundle it twice (once as code/<name>.py, once as assets/<key>).
+    html = "<script>fused.runPython('./sine.py', {});</script>"
+    _write(tmp_path, "sine.py", "def main():\n    return 1\n")
+    plan = plan_export(html, str(tmp_path), include=["sine.py"])
+    assert not plan.errors
+    assert [e.path for e in plan.entrypoints] == ["./sine.py"]
+    assert plan.assets == []  # not also added as an asset
+
+
+def test_include_of_referenced_file_dedups(tmp_path):
+    html = "<script>fused.rawUrl('./logo.png');</script>"
+    _write(tmp_path, "logo.png", "PNG")
+    # Same file reached by both the scan and an include (spelled without "./").
+    plan = plan_export(html, str(tmp_path), include=["logo.png"])
+    assert not plan.errors
+    assert [a.name for a in plan.assets] == ["logo.png"]  # bundled once
+
+
+def test_exclude_drops_asset_and_warns_when_referenced(tmp_path):
+    html = "<script>fused.rawUrl('./logo.png'); fused.rawUrl('./keep.png');</script>"
+    _write(tmp_path, "logo.png", "PNG")
+    _write(tmp_path, "keep.png", "PNG")
+    plan = plan_export(html, str(tmp_path), exclude=["./logo.png"])
+    assert not plan.errors
+    assert [a.name for a in plan.assets] == ["keep.png"]
+    assert any("logo.png" in w for w in plan.warnings)
+
+
+def test_exclude_drops_entrypoint_and_warns(tmp_path):
+    html = "<script>fused.runPython('./sine.py', {});</script>"
+    _write(tmp_path, "sine.py", "def main():\n    return 1\n")
+    plan = plan_export(html, str(tmp_path), exclude=["./sine.py"])
+    assert plan.entrypoints == []
+    assert any("sine.py" in w and "runPython" in w for w in plan.warnings)
+
+
+def test_exclude_drops_manual_include_silently(tmp_path):
+    _write(tmp_path, "data.csv", "a,b\n1,2\n")
+    plan = plan_export(
+        "<html></html>", str(tmp_path), include=["data.csv"], exclude=["data.csv"]
+    )
+    assert not plan.errors
+    assert plan.assets == []
+    assert plan.warnings == []  # dropping an unreferenced include is not warned
+
+
 def test_unsupported_api_is_an_error(tmp_path):
     html = "<script>fused.writeFile('./x.txt', 'hi'); fused.stat('./y');</script>"
     plan = plan_export(html, str(tmp_path))
@@ -201,8 +275,6 @@ def test_dotfile_asset_key_not_mangled(tmp_path):
 
 
 def test_symlink_escaping_page_dir_rejected(tmp_path):
-    import os
-
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "secret.py").write_text("def main():\n    return 'leak'\n")

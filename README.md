@@ -142,26 +142,59 @@ The modal handles the whole flow:
   offers a one-click install of the wheel pinned by this package's `[fused]`
   extra into the server's environment (Python 3.11+ with pip), or names the
   manual command: `pip install "fused-render[fused]"`. The packaged macOS app
-  ships the CLI built in — no setup — plus a terminal wrapper at
-  `FusedRender.app/Contents/Resources/bin/fused` for the one-time
-  `fused cloud setup` / `fused env create` steps.
+  ships the CLI built in — no setup. (It also bundles a terminal wrapper at
+  `FusedRender.app/Contents/Resources/bin/fused` for power users and
+  self-hosted AWS provisioning; everyday sign-in and setup no longer need it —
+  see **Fused account** below.)
+- **Signing in & first-time setup.** Both happen in the app (see **Fused
+  account** below): the modal's signed-out warning is a working *Sign in to
+  Fused* button, and its no-environments state routes to the account page's
+  one-click managed-environment setup. No terminal required for the managed
+  path.
 - **Environment choice.** Deploy targets are the *hosted* environments from the
   fused CLI's own store (`~/.openfused/envs.json`): a managed `fused` env (the
-  default) or an `aws` env whose serving plane `fused infra serve` provisioned.
+  default — created in-app from the account page) or an `aws` env whose
+  serving plane `fused infra serve` provisioned (still a terminal flow).
   `local` envs have no serving plane and are never offered.
 - **The URL.** Deploys mint a **public share link** — an opaque, unguessable
   URL shown with copy/open actions. Redeploying the same page republishes to
   the **same URL**; Revoke takes it down (deploying again restores the link).
 - **What's deployed.** A per-page pointer (`~/.fused-render/deployments.json`)
-  marks deployed files in the preview header, and the modal's share list
-  (`fused share list`) shows every mount on the chosen environment, joined back
-  to the local pages that deployed them.
+  marks deployed files in the preview header, and the Fused account page's
+  Deployments section (`fused share list`) shows every mount on the chosen
+  environment, joined back to the local pages that deployed them.
 
 Whether a given backend accepts a *page bundle* is the installed `fused` CLI's
 contract (its `spec/serve/fused-render.md`): AWS serving planes build the
 hosted-page artifact today; the managed backend's inline-upload bundle
 classification is an upstream follow-up — until then its CLI error shows in the
 modal verbatim.
+
+## Fused account
+
+The person icon at the sidebar's bottom-left opens **Fused account**
+(`/view/_account`) — sign-in and environment setup for deploys, without
+copying CLI commands into a terminal (a green dot on the icon = signed in):
+
+- **Sign in** opens a one-time browser sign-in to Fused and lands you back in
+  the app when it completes. Credentials are stored by the fused CLI on your
+  machine (`~/.openfused/`) — never by fused-render, which only runs the CLI
+  and reads status.
+- **Set up hosted environment** runs the CLI's one-shot managed-environment
+  setup (`fused cloud setup`) as a background job with live progress: it
+  provisions the managed environment, stores its access key with the CLI, and
+  registers it as a deploy target. Accounts with several workspaces get a
+  picker; accounts with none get a personal workspace created.
+- **Environments** lists the CLI's environment store — make one the default,
+  or *forget* an entry (removes only the local pointer; cloud resources are
+  untouched).
+- **Deployments** lists every mount on a chosen hosted environment
+  (`fused share list`), with per-mount **Revoke** — including mounts not
+  created from this app.
+- **Sign out** removes the CLI's stored sign-in on this machine.
+
+Self-hosted AWS environments (`fused env create`, `fused infra serve`) remain
+a terminal flow — the packaged app's bundled wrapper covers that.
 
 ## Preferences
 
@@ -173,9 +206,8 @@ The gear at the sidebar's bottom-left opens **Preferences** (`/view/_prefs`):
   and applied to the next run, no restart; a set `FUSED_RENDER_ENGINE`
   pins the engine for the whole process and locks the switch.
 - **Logs** — this run's log file path, with an "Open logs location" action.
-- **Deployments** — every mount on a chosen hosted environment
-  (`fused share list`), with per-mount **Revoke**, including mounts not
-  created from this app.
+- **Deployments** — the opt-in toggle for the preview header's Deploy button
+  (the per-environment share list lives on the **Fused account** page).
 - **Template registry** — the merged extension → templates bindings (built-in
   plus your `~/.fused-render/templates/registry.json` overrides), read-only.
 

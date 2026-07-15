@@ -1592,6 +1592,39 @@ body.embed .preview-browse-chip:hover {
   padding-left: 10px;
 }
 
+/* Signed-in dot on the sidebar's Fused-account entry — same green as the
+   preview header's deploy dot. The footer icon span anchors it. */
+.sidebar-footer .icon {
+  position: relative;
+}
+
+.account-signedin-dot {
+  position: absolute;
+  top: -2px;
+  right: -3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #3fca6b;
+  border: 1px solid var(--bg-alt);
+}
+
+/* The account page's `fused cloud setup` progress log — the CLI's own lines,
+   streamed while the managed environment provisions. */
+.account-setup-log {
+  color: var(--fg-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
 /* Current-deployment card: status chip + URL row. */
 .deploy-current {
   border: 1px solid var(--border);
@@ -1747,13 +1780,233 @@ body.embed .preview-browse-chip:hover {
   }
 }
 
-/* "Will publish:" preview — the page + each bundled runPython/rawUrl target
-   as compact chips. */
-.deploy-preview {
+/* "Will publish" — a bordered, collapsible card holding the page + each bundled
+   runPython/rawUrl target plus the user's include/exclude edits (add files,
+   remove, restore, reset). Every row shares one 3-column grid — filename |
+   tag | action — so tags and the ✕/Restore buttons line up in fixed columns
+   regardless of which cells a given row fills. */
+.deploy-files {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Collapse toggle: a full-width header that reads as a section label, not a
+   button (no chrome), with the chevron + count inline. */
+.deploy-files-head {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  font: inherit;
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+}
+
+.deploy-files-chevron {
+  flex: 0 0 auto;
+  width: 12px;
+  color: var(--fg-muted);
+  font-size: 10px;
+}
+
+.deploy-files-title {
+  font-weight: 600;
+}
+
+.deploy-files-count {
+  margin-left: auto;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.deploy-files-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 12px 12px;
+}
+
+.deploy-preview-actions {
+  display: flex;
   gap: 6px;
+  flex-wrap: wrap;
+}
+
+.deploy-preview-actions button {
+  font-size: 12px;
+  padding: 3px 8px;
+}
+
+.deploy-file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+/* filename (flex-fills) | tag (fixed) | action (fixed) — shared by every row so
+   columns align across the publish and excluded lists. */
+.deploy-file {
+  display: grid;
+  grid-template-columns: 1fr 56px 72px;
+  align-items: center;
+  column-gap: 8px;
+  padding: 2px 4px;
+  border-radius: 6px;
+}
+
+.deploy-file:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.deploy-file code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+.deploy-file.excluded code {
+  text-decoration: line-through;
+  color: var(--fg-muted);
+  background: none;
+}
+
+.deploy-file-empty {
+  padding: 4px;
+}
+
+.deploy-file-tag {
+  justify-self: center;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+/* An empty tag cell keeps the column width without drawing a pill. */
+.deploy-file-tag.none {
+  border-color: transparent;
+  padding: 0;
+}
+
+.deploy-file-tag.added {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* The action column: ✕ is centered, Restore fills it — both sit in the same
+   fixed column so they align down the list. */
+.deploy-file-action {
+  justify-self: stretch;
+  font-size: 12px;
+  padding: 3px 6px;
+  min-height: 24px;
+}
+
+.deploy-file-remove {
+  color: var(--fg-muted);
+}
+
+.deploy-file-remove:hover:not(:disabled) {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.deploy-excluded {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.deploy-picker {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.deploy-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.deploy-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.deploy-picker-list button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  background: none;
+  border: none;
+  color: var(--fg);
+  cursor: pointer;
+  padding: 3px 6px;
+  border-radius: 6px;
+}
+
+.deploy-picker-list button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.deploy-picker-add {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.deploy-picker-list code {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deploy-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.deploy-warning {
+  color: var(--warning, #d9a441);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* ---- Preferences page (SPEC §20) ------------------------------------------ */
@@ -1767,8 +2020,10 @@ body.embed .preview-browse-chip:hover {
   padding: 6px;
   border-top: 1px solid var(--border);
   flex: 0 0 auto;
-  display: flex;
-  align-items: stretch;
+  /* Four entries no longer fit one row of the ~220px sidebar without
+     truncating every label — a 2×2 grid keeps the labels readable. */
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 4px;
 }
 
