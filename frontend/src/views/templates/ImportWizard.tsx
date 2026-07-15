@@ -456,7 +456,7 @@ function ChipStrip({
         ))}
         {!inert && keepBoth && anyOn && (
           <div className="templates-rec-warn">
-            Will bind as {item.name}-2 — added after your existing templates on these extensions.
+            Will bind under the renamed copy — added after your existing templates on these extensions.
           </div>
         )}
       </td>
