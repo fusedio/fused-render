@@ -2431,9 +2431,45 @@ body.embed .preview-browse-chip:hover {
   width: min(640px, 100%);
 }
 
+.templates-new {
+  width: min(520px, 100%);
+}
+
 .templates-editor .deploy-body,
-.templates-import .deploy-body {
+.templates-import .deploy-body,
+.templates-new .deploy-body {
   gap: 16px;
+}
+
+/* Tag-style extension input: chips + a borderless draft field inside one box
+   that reads as a single text input (matches .templates-search framing). */
+.templates-chip-input {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-alt);
+}
+
+.templates-chip-input:focus-within {
+  border-color: var(--accent);
+}
+
+.templates-chip-draft {
+  flex: 1 1 80px;
+  min-width: 80px;
+  font: inherit;
+  border: none;
+  background: none;
+  color: var(--fg);
+  padding: 2px 0;
+}
+
+.templates-chip-draft:focus {
+  outline: none;
 }
 
 /* The row editor hosts the "Add template" popover, which is absolutely

@@ -718,3 +718,24 @@ export function commitImport(
     { resolutions },
   );
 }
+
+// -- New template (POST /api/templates/new) ----------------------------------
+// Scaffold a new USER template folder and, for each extension, bind it as the
+// default for that key. `bindings` lists the registry keys that were bound.
+export interface NewTemplateResult {
+  ok: true;
+  name: string;
+  path: string;
+  bindings: string[];
+}
+
+// Extensions are dot-prefixed (e.g. ".csv"); [] scaffolds the folder with no
+// bindings (add them later via the bindings UI).
+export function createTemplate(name: string, extensions: string[]): Promise<NewTemplateResult> {
+  return postJson<NewTemplateResult>("/api/templates/new", { name, extensions });
+}
+
+// Open Claude Code in Terminal.app in a user template's folder (macOS only).
+export function openTemplateInClaude(name: string): Promise<{ ok: true }> {
+  return postJson<{ ok: true }>("/api/templates/open-in-claude", { name });
+}

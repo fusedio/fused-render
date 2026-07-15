@@ -1,7 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { deleteTemplate, downloadTemplatesExport, rawUrl, revealPath } from "../../lib/api";
+import {
+  deleteTemplate,
+  downloadTemplatesExport,
+  openTemplateInClaude,
+  rawUrl,
+  revealPath,
+} from "../../lib/api";
 import type { InventoryTemplate, TemplateInventory } from "../../lib/api";
 import { navigate } from "../../lib/router";
+import { NewTemplateModal } from "./NewTemplateModal";
 
 type UseFilter = "all" | "used" | "unused";
 
@@ -20,6 +27,7 @@ export function InventoryPanel({
   const [sourceFilter, setSourceFilter] = useState<string>("all");
   const [useFilter, setUseFilter] = useState<UseFilter>("all");
   const [deleting, setDeleting] = useState<InventoryTemplate | null>(null);
+  const [creating, setCreating] = useState(false);
 
   const toggle = (name: string) =>
     setSelected((prev) => {
@@ -48,6 +56,14 @@ export function InventoryPanel({
     setError(null);
     try {
       await downloadTemplatesExport(names);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+  const openClaude = async (name: string) => {
+    setError(null);
+    try {
+      await openTemplateInClaude(name);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -116,6 +132,9 @@ export function InventoryPanel({
             </option>
           ))}
         </select>
+        <button type="button" className="templates-btn-secondary" onClick={() => setCreating(true)}>
+          New template
+        </button>
         <button type="button" className="templates-btn-secondary" onClick={onImport}>
           Import zip
         </button>
@@ -155,6 +174,7 @@ export function InventoryPanel({
                     onExport={() => runExport([t.name])}
                     onReveal={() => reveal(t.path)}
                     onOpen={() => open(t.path)}
+                    onOpenInClaude={g.source.editable ? () => openClaude(t.name) : undefined}
                     onDelete={g.source.editable ? () => setDeleting(t) : undefined}
                   />
                 ))}
@@ -189,6 +209,15 @@ export function InventoryPanel({
             setDeleting(null);
             onChanged();
           }}
+        />
+      )}
+      {creating && (
+        <NewTemplateModal
+          onClose={() => setCreating(false)}
+          // Refresh inventory + bindings (onChanged === parent load) so the new
+          // folder and any bindings it created appear. The modal stays open on
+          // its success screen to offer "Open in Claude".
+          onCreated={onChanged}
         />
       )}
     </section>
@@ -333,6 +362,7 @@ function InventoryRow({
   onExport,
   onReveal,
   onOpen,
+  onOpenInClaude,
   onDelete,
 }: {
   t: InventoryTemplate;
@@ -341,6 +371,7 @@ function InventoryRow({
   onExport: () => void;
   onReveal: () => void;
   onOpen: () => void;
+  onOpenInClaude?: () => void; // only for editable (user) sources; core is read-only
   onDelete?: () => void; // only for editable (user) sources; core is undeletable
 }) {
   return (
@@ -386,6 +417,16 @@ function InventoryRow({
         <button type="button" className="templates-ghost-btn" onClick={onOpen} title="Open the folder in the file explorer">
           Open
         </button>
+        {onOpenInClaude && (
+          <button
+            type="button"
+            className="templates-ghost-btn"
+            onClick={onOpenInClaude}
+            title="Open Claude Code in this template's folder (Terminal, macOS only)"
+          >
+            Open in Claude
+          </button>
+        )}
         {onDelete && (
           <button
             type="button"
