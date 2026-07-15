@@ -415,6 +415,14 @@ export interface AccountProbe {
   error: string | null;
 }
 
+// One env from the raw store view (any backend; `hosted` = can be a deploy
+// target). Distinct from DeployEnv, which is the hosted-only picker list.
+export interface StoreEnv {
+  name: string;
+  backend: string;
+  hosted: boolean;
+}
+
 export interface AccountStatus {
   cli: DeployCli;
   setup_cli: string;
@@ -426,7 +434,21 @@ export interface AccountStatus {
   envs: DeployEnv[];
   default_env: string | null;
   envs_file: string;
+  // The raw env store for the management table: every backend, plus the
+  // store's own default pointer (default_env above is the deploy-picker
+  // derivation, a different thing).
+  store: { envs: StoreEnv[]; default: string | null };
   probe: AccountProbe | null;
+}
+
+// The one tracked `fused cloud setup` job (account.py). `detail` carries the
+// CLI's own progress lines while running, its final line when done, and the
+// mapped error message when failed.
+export interface AccountSetupStatus {
+  state: "idle" | "running" | "done" | "failed";
+  job_id: string | null;
+  env_name: string | null;
+  detail: string | null;
 }
 
 export function getAccountStatus(probe = false): Promise<AccountStatus> {
@@ -449,6 +471,34 @@ export function cancelAccountLogin(): Promise<void> {
 // fresh status.
 export function accountLogout(): Promise<AccountStatus> {
   return postJson<AccountStatus>("/api/account/logout", {});
+}
+
+// Start the one-shot managed-env setup (`fused cloud setup`) as a tracked
+// background job — 202 with the job to poll via getAccountSetup. org/env go
+// together (a specific workspace); omitting both lets the CLI discover the
+// account's org (or self-create a personal one). env_name defaults
+// server-side to flow's convention (`fused` / `fused-<env>`).
+export function startAccountSetup(opts: {
+  org?: string;
+  env?: string;
+  env_name?: string;
+}): Promise<{ job_id: string; env_name: string }> {
+  return postJson<{ job_id: string; env_name: string }>("/api/account/setup", opts);
+}
+
+export function getAccountSetup(): Promise<AccountSetupStatus> {
+  return getJson<AccountSetupStatus>("/api/account/setup");
+}
+
+// `fused env default NAME` — the store's global default pointer.
+export function setDefaultEnv(name: string): Promise<AccountStatus> {
+  return postJson<AccountStatus>("/api/account/envs/default", { name });
+}
+
+// `fused env delete NAME --yes` — forgets the LOCAL pointer only; cloud
+// resources and stored keys are untouched (the CLI's semantics).
+export function deleteStoreEnv(name: string): Promise<AccountStatus> {
+  return postJson<AccountStatus>("/api/account/envs/delete", { name });
 }
 
 // -- Preferences (shell/prefs.py; SPEC §20) -----------------------------------

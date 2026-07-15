@@ -1590,6 +1590,22 @@ body.embed .preview-browse-chip:hover {
   padding-left: 10px;
 }
 
+/* The account page's `fused cloud setup` progress log — the CLI's own lines,
+   streamed while the managed environment provisions. */
+.account-setup-log {
+  color: var(--fg-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
 /* Current-deployment card: status chip + URL row. */
 .deploy-current {
   border: 1px solid var(--border);

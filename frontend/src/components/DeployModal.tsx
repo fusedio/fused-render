@@ -25,6 +25,7 @@ import {
 import type { DeployConfig, DeployPreview, Deployment } from "../lib/api";
 import { useFusedLogin } from "../lib/account";
 import { basename } from "../lib/format";
+import { navigateUrl } from "../lib/router";
 
 interface DeployModalProps {
   fsPath: string;
@@ -371,6 +372,8 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     }
 
     if (envs.length === 0) {
+      // The setup flow itself lives on the Fused account page (M18b) — this
+      // block routes there, handling the sign-in prerequisite in place.
       return (
         <div className="deploy-section">
           <p>
@@ -378,11 +381,50 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             <code>fused</code> environment or an <code>aws</code> environment with a
             provisioned serving plane.
           </p>
+          {!config.fused_logged_in ? (
+            <>
+              <p className="deploy-muted">
+                Setting up the managed environment starts with a one-time browser sign-in
+                to Fused.
+              </p>
+              {signin.connecting ? (
+                <div className="deploy-form-row">
+                  <span className="deploy-muted">
+                    Waiting for the browser sign-in… finish signing in in the tab that just
+                    opened.
+                  </span>
+                  <button type="button" onClick={() => void signin.cancel()}>
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="deploy-primary"
+                  onClick={() => void signin.begin()}
+                >
+                  Sign in to Fused
+                </button>
+              )}
+              {signin.error && <div className="deploy-error">{signin.error}</div>}
+            </>
+          ) : (
+            <div className="deploy-form-row">
+              <button
+                type="button"
+                className="deploy-primary"
+                onClick={() => navigateUrl("/view/_account")}
+              >
+                Set up hosted environment
+              </button>
+              <span className="deploy-muted">
+                opens the Fused account page (self-hosted AWS still goes through{" "}
+                <code>{config.setup_cli} env create</code> in a terminal)
+              </span>
+            </div>
+          )}
           <p className="deploy-muted">
-            Create one in a terminal with <code>{config.setup_cli} cloud setup</code> — it opens
-            a browser sign-in to Fused first, then creates the managed environment (or use{" "}
-            <code>{config.setup_cli} env create</code> for a self-hosted AWS one). Environments
-            are read from <code>{config.envs_file}</code>.
+            Environments are read from <code>{config.envs_file}</code>.
           </p>
           <button type="button" onClick={() => load()}>
             Re-check

@@ -28,6 +28,21 @@ spec/app/connect-fused.md — see docs/PLAN-fused-account.md):
   * **Logout kills any in-flight login FIRST** (and waits for it to die), so
     a late browser callback can't silently re-write a JWT after
     `fused cloud logout` deleted it — then runs the CLI logout.
+  * **Environment setup is one CLI command, run as a tracked job.**
+    POST /api/account/setup spawns `fused cloud setup --no-browser
+    [--org O --env E] --env-name NAME` — the CLI does everything (waits for
+    the managed env to provision, mints the data-plane API key into the
+    local secrets store, writes the env into envs.json) — and returns a
+    job_id; GET /api/account/setup reports {state, job_id, env_name, detail}
+    with the CLI's own progress lines, and the client polls it (flow's job
+    model). Gated on logged_in (409) so the interactive login flow stays in
+    ONE place — /api/account/login — instead of setup silently starting its
+    own. One job at a time; env-name defaults follow flow's convention
+    (`fused` for the default managed env, `fused-<env>` otherwise).
+  * **Env management is the CLI's own env group.** POST /api/account/envs/
+    default|delete shell `fused env default NAME` / `fused env delete NAME
+    --yes` — delete forgets the LOCAL pointer only (the CLI's semantics; no
+    cloud teardown), and the UI copy says so.
   * **No credential ever touches this app.** The CLI owns the JWT
     (~/.openfused/fused-cloud-credentials.json) and the data-plane keys; this
     module only reads *status* and runs the CLI. Nothing is persisted under
@@ -47,12 +62,14 @@ import re
 import subprocess
 import threading
 import urllib.parse
+import uuid
 
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
 from fused_render.deploy import cli_status
 from fused_render.fusedcli import (
+    all_envs,
     child_env,
     cli_error,
     eligible_envs,
@@ -77,6 +94,12 @@ ORGS_TIMEOUT = 20.0
 # Grace for a terminated login child to exit before it is SIGKILLed (logout
 # blocks on this so the dead child can't resurrect credentials).
 KILL_GRACE = 3.0
+# Backstop on the whole setup job. The CLI's own provisioning wait defaults to
+# 300s; this only catches a wedged child (e.g. credentials expired mid-flight
+# and the CLI dropped into an interactive login wait it can never finish).
+SETUP_JOB_TIMEOUT = 900.0
+# `fused env default/delete` are local envs.json edits — no network.
+ENV_CMD_TIMEOUT = 30.0
 
 _URL_RE = re.compile(r"https?://\S+")
 
@@ -216,6 +239,94 @@ def _is_loopback_url(url: str) -> bool:
     return parsed.scheme in ("http", "https") and host in ("localhost", "127.0.0.1", "::1")
 
 
+# -- the one environment-setup job ------------------------------------------------
+
+
+@dataclasses.dataclass
+class _SetupJob:
+    """The single tracked `fused cloud setup` child.
+
+    `state` moves running → done|failed exactly once, written by the watcher
+    thread AFTER `error` (plain attribute writes; the GIL makes each one
+    atomic and readers only act on state, so the ordering suffices). `tail`
+    is the merged stdout+stderr stream — the CLI writes progress to stderr
+    and the final line to stdout, and interleaving them in one pipe keeps
+    the order the user would see in a terminal.
+    """
+
+    job_id: str
+    env_name: str
+    proc: subprocess.Popen
+    tail: collections.deque = dataclasses.field(
+        default_factory=lambda: collections.deque(maxlen=80)
+    )
+    state: str = "running"
+    error: str | None = None
+
+
+_SETUP_LOCK = threading.Lock()
+_setup: _SetupJob | None = None
+
+
+def _pump_tail(stream, job: _SetupJob) -> None:
+    for raw in stream:
+        line = raw.rstrip("\n")
+        if line.strip():
+            job.tail.append(line)
+    stream.close()
+
+
+def _watch_setup(job: _SetupJob, pump: threading.Thread) -> None:
+    try:
+        job.proc.wait(SETUP_JOB_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        job.proc.kill()
+        job.proc.wait()
+        pump.join(2.0)
+        job.error = f"`fused cloud setup` timed out after {int(SETUP_JOB_TIMEOUT)}s"
+        job.state = "failed"
+        return
+    pump.join(2.0)  # let the pipe drain to EOF so the tail is complete
+    if job.proc.returncode == 0:
+        job.state = "done"
+    else:
+        job.error = cli_error("\n".join(job.tail), "fused cloud setup failed")
+        job.state = "failed"
+
+
+def _default_env_name(env: str | None) -> str:
+    # Flow's convention (cloud.ts): plain `fused` for the default managed
+    # env, `fused-<env>` otherwise.
+    if not env or env == "default":
+        return "fused"
+    return f"fused-{env}"
+
+
+def _run_env_cmd(args: list[str]) -> JSONResponse | None:
+    """Run `fused env <args>`; None on success, else the error response."""
+    cli = fused_cli()
+    if cli is None:
+        return _error(
+            "the fused CLI is not available: install it from the account page or set "
+            "FUSED_RENDER_FUSED_BIN"
+        )
+    try:
+        proc = subprocess.run(
+            [*cli.command, "env", *args],
+            capture_output=True,
+            text=True,
+            timeout=ENV_CMD_TIMEOUT,
+            env=child_env(cli),
+        )
+    except subprocess.TimeoutExpired:
+        return _error(f"`fused env {args[0]}` timed out after {int(ENV_CMD_TIMEOUT)}s")
+    except OSError as e:
+        return _error(f"could not run the fused CLI ({cli.command[0]}): {e}")
+    if proc.returncode != 0:
+        return _error(cli_error(proc.stderr, f"fused env {args[0]} failed"))
+    return None
+
+
 # -- status ----------------------------------------------------------------------
 
 
@@ -282,7 +393,11 @@ def status_payload(probe: bool) -> dict:
         "setup_cli": setup_cli_hint(),
         "logged_in": logged_in,
         "login_in_flight": login is not None,
+        # envs/default_env (from eligible_envs) stay the deploy-oriented view;
+        # `store` is the raw env store for the management table (all backends,
+        # each flagged hosted, plus the store's own default pointer).
         **eligible_envs(),
+        "store": all_envs(),
         "probe": None,
     }
     # The probe is pointless without credentials (it would just fail with
@@ -356,6 +471,110 @@ def api_account_login_cancel(x_fused: str | None = Header(default=None)):
     if guard is not None:
         return guard
     return {"ok": True, "canceled": _cancel_active_login()}
+
+
+@router.post("/api/account/setup")
+def api_account_setup(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    org, env, env_name = body.get("org"), body.get("env"), body.get("env_name")
+    if (org is None) != (env is None):
+        return _error("'org' and 'env' go together — give both or neither")
+    for field_name, value in (("org", org), ("env", env)):
+        if value is not None and (not isinstance(value, str) or not value):
+            return _error(f"'{field_name}' must be a non-empty string when given")
+    if env_name is None:
+        env_name = _default_env_name(env)
+    if not isinstance(env_name, str) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", env_name
+    ):
+        return _error("'env_name' must be a short name (letters, digits, . _ -)")
+    cli = fused_cli()
+    if cli is None:
+        return _error(
+            "the fused CLI is not available: install it from this page or set "
+            "FUSED_RENDER_FUSED_BIN"
+        )
+    # Gate on login instead of letting `cloud setup` auto-run its own — the
+    # interactive browser flow lives in ONE place (POST /api/account/login);
+    # a setup child silently waiting on a sign-in URL nobody sees would just
+    # burn its timeout.
+    if not fused_cloud_logged_in():
+        return _error("sign in to Fused first — environment setup needs a signed-in account", 409)
+
+    global _setup
+    with _SETUP_LOCK:
+        if _setup is not None and _setup.state == "running":
+            return _error(
+                f"an environment setup is already running (job {_setup.job_id})", 409
+            )
+        args = [*cli.command, "cloud", "setup", "--no-browser"]
+        if org and env:
+            args += ["--org", org, "--env", env]
+        args += ["--env-name", env_name]
+        child = child_env(cli)
+        # Progress must stream into `detail` while the job runs, not arrive in
+        # one buffered lump at exit (same reason as login's URL capture).
+        child["PYTHONUNBUFFERED"] = "1"
+        try:
+            proc = subprocess.Popen(
+                args,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                env=child,
+            )
+        except OSError as e:
+            return _error(f"could not run the fused CLI ({cli.command[0]}): {e}")
+        job = _SetupJob(job_id=uuid.uuid4().hex[:12], env_name=env_name, proc=proc)
+        pump = threading.Thread(target=_pump_tail, args=(proc.stdout, job), daemon=True)
+        pump.start()
+        threading.Thread(target=_watch_setup, args=(job, pump), daemon=True).start()
+        _setup = job
+    return JSONResponse({"job_id": job.job_id, "env_name": env_name}, status_code=202)
+
+
+@router.get("/api/account/setup")
+def api_account_setup_status():
+    with _SETUP_LOCK:
+        job = _setup
+    if job is None:
+        return {"state": "idle", "job_id": None, "env_name": None, "detail": None}
+    detail = job.error if job.state == "failed" else "\n".join(job.tail) or None
+    return {"state": job.state, "job_id": job.job_id, "env_name": job.env_name, "detail": detail}
+
+
+@router.post("/api/account/envs/default")
+def api_account_env_default(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    name = body.get("name")
+    if not isinstance(name, str) or not name:
+        return _error("'name' must be an environment name")
+    err = _run_env_cmd(["default", name])
+    if err is not None:
+        return err
+    return status_payload(probe=False)
+
+
+@router.post("/api/account/envs/delete")
+def api_account_env_delete(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    name = body.get("name")
+    if not isinstance(name, str) or not name:
+        return _error("'name' must be an environment name")
+    # `fused env delete --yes` forgets the LOCAL pointer only — no cloud
+    # teardown, no key revocation (the CLI's own semantics; the UI copy and
+    # the confirm dialog say so).
+    err = _run_env_cmd(["delete", name, "--yes"])
+    if err is not None:
+        return err
+    return status_payload(probe=False)
 
 
 @router.post("/api/account/logout")

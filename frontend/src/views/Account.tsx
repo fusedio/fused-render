@@ -11,12 +11,187 @@
 //                     install the pinned [fused] extra, else the manual hint)
 //   3. signed out   — Sign in (spawns the CLI's browser flow; lib/account.ts)
 //   4. signed in    — account summary (orgs/roles via the ?probe=1 deep
-//                     check), hosted environments (read-only — in-app env
-//                     setup lands with M18b), Sign out
+//                     check), environment management (set default / forget the
+//                     local pointer), the managed-env setup panel (M18b: the
+//                     one-shot `fused cloud setup` as a polled job), Sign out
 import { useEffect, useRef, useState } from "react";
-import { accountLogout, cancelAccountLogin, getAccountStatus, installFused } from "../lib/api";
-import type { AccountStatus } from "../lib/api";
+import {
+  accountLogout,
+  cancelAccountLogin,
+  deleteStoreEnv,
+  getAccountSetup,
+  getAccountStatus,
+  installFused,
+  setDefaultEnv,
+  startAccountSetup,
+} from "../lib/api";
+import type { AccountSetupStatus, AccountStatus } from "../lib/api";
 import { useFusedLogin } from "../lib/account";
+
+// The managed-env setup panel: pick the workspace (when the account has more
+// than one), name the env, run `fused cloud setup` as a tracked server job,
+// and stream the CLI's own progress lines while it provisions. The panel also
+// ADOPTS a job already running server-side (page reopened mid-setup) so the
+// progress view survives navigation.
+function SetupPanel({ status, onChanged }: { status: AccountStatus; onChanged: () => void }) {
+  const probe = status.probe;
+  const orgs = probe?.ok ? probe.orgs.filter((o) => o.org && o.env) : [];
+  const [pick, setPick] = useState(0);
+  const [nameOverride, setNameOverride] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [job, setJob] = useState<{ job_id: string; env_name: string } | null>(null);
+  const [progress, setProgress] = useState<AccountSetupStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [doneName, setDoneName] = useState<string | null>(null);
+
+  const chosen = orgs.length > 0 ? orgs[Math.min(pick, orgs.length - 1)] : null;
+  // Mirror the server's default-name rule (flow's convention) so the field
+  // shows what an untouched setup will create; the override wins when edited.
+  const derived = !chosen || chosen.env === "default" ? "fused" : `fused-${chosen.env}`;
+  const envName = nameOverride ?? derived;
+
+  const onChangedRef = useRef(onChanged);
+  onChangedRef.current = onChanged;
+
+  // Adopt a server-side job already in flight (one job at a time, so it is
+  // unambiguously "the" setup regardless of which page started it).
+  useEffect(() => {
+    let alive = true;
+    getAccountSetup().then(
+      (s) => {
+        if (alive && s.state === "running" && s.job_id && s.env_name) {
+          setJob({ job_id: s.job_id, env_name: s.env_name });
+        }
+      },
+      () => {}
+    );
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Poll the running job (flow's cadence). job_id matching keeps a stale
+  // job's terminal state from completing a newer attempt.
+  useEffect(() => {
+    if (!job) return;
+    const id = window.setInterval(async () => {
+      let s: AccountSetupStatus;
+      try {
+        s = await getAccountSetup();
+      } catch {
+        return; // transient — keep polling
+      }
+      if (s.job_id !== job.job_id) return;
+      setProgress(s);
+      if (s.state === "done") {
+        setJob(null);
+        setDoneName(job.env_name);
+        onChangedRef.current();
+      } else if (s.state === "failed") {
+        setJob(null);
+        setError(s.detail ?? "environment setup failed");
+      }
+    }, 1500);
+    return () => window.clearInterval(id);
+  }, [job]);
+
+  const begin = async () => {
+    setError(null);
+    setDoneName(null);
+    setStarting(true);
+    try {
+      const started = await startAccountSetup(
+        chosen
+          ? { org: chosen.org!, env: chosen.env!, env_name: envName }
+          : { env_name: envName }
+      );
+      setProgress(null);
+      setJob(started);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  if (probe && probe.ok && probe.admitted === false) {
+    return (
+      <p className="deploy-muted">
+        Environment setup needs an admitted account — this account isn't admitted to Fused
+        yet.
+      </p>
+    );
+  }
+
+  if (job) {
+    return (
+      <>
+        <div className="deploy-form-row">
+          <span className="deploy-spinner" />
+          <span className="deploy-muted">
+            Setting up <code>{job.env_name}</code>… this provisions the managed environment
+            and can take a few minutes.
+          </span>
+        </div>
+        {progress?.detail && <pre className="account-setup-log">{progress.detail}</pre>}
+      </>
+    );
+  }
+
+  return (
+    <>
+      <p className="deploy-muted">
+        One-time setup: creates the managed Fused environment, stores its access key with
+        the fused CLI, and registers it as a deploy target.
+        {orgs.length === 0 &&
+          probe?.ok &&
+          " Your account has no workspace yet — setting up creates your personal one."}
+        {probe && !probe.ok && " (Workspace discovery failed — setup will discover it itself.)"}
+      </p>
+      <div className="deploy-form-row">
+        {orgs.length > 1 && (
+          <select
+            aria-label="Workspace"
+            value={pick}
+            onChange={(e) => {
+              setPick(Number(e.target.value));
+              setNameOverride(null); // re-derive the name for the new workspace
+            }}
+          >
+            {orgs.map((o, i) => (
+              <option key={i} value={i}>
+                {o.org} / {o.env}
+                {o.provision_state && o.provision_state !== "ready"
+                  ? ` (${o.provision_state})`
+                  : ""}
+              </option>
+            ))}
+          </select>
+        )}
+        <label htmlFor="account-env-name" className="deploy-muted">
+          Environment name
+        </label>
+        <input
+          id="account-env-name"
+          type="text"
+          value={envName}
+          onChange={(e) => setNameOverride(e.target.value)}
+          size={14}
+        />
+        <button type="button" className="deploy-primary" onClick={begin} disabled={starting}>
+          {starting ? "Starting…" : "Set up hosted environment"}
+        </button>
+      </div>
+      {doneName && (
+        <div className="deploy-note">
+          Environment <b>{doneName}</b> is ready — pages can now deploy to it from the
+          preview header's Deploy button.
+        </div>
+      )}
+      {error && <div className="deploy-error">{error}</div>}
+    </>
+  );
+}
 
 export default function Account() {
   const [status, setStatus] = useState<AccountStatus | null>(null);
@@ -26,6 +201,13 @@ export default function Account() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState<"install" | "logout" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  // Env-row action in flight ("default:NAME" / "delete:NAME") — disables the
+  // row buttons without blocking the rest of the page.
+  const [envBusy, setEnvBusy] = useState<string | null>(null);
+  const [envError, setEnvError] = useState<string | null>(null);
+  // The setup panel is prominent while no managed env exists; afterwards it
+  // collapses behind an "Add managed environment" toggle.
+  const [showSetup, setShowSetup] = useState(false);
 
   const alive = useRef(true);
   useEffect(() => () => {
@@ -128,6 +310,36 @@ export default function Account() {
     }
   };
 
+  const runEnvAction = async (key: string, action: () => Promise<AccountStatus>) => {
+    setEnvBusy(key);
+    setEnvError(null);
+    try {
+      const fresh = await action();
+      if (alive.current) setStatus(fresh);
+    } catch (e) {
+      if (alive.current) setEnvError((e as Error).message);
+    } finally {
+      if (alive.current) setEnvBusy(null);
+    }
+  };
+
+  const onMakeDefault = (name: string) =>
+    runEnvAction("default:" + name, () => setDefaultEnv(name));
+
+  const onDeleteEnv = (name: string) => {
+    // Local-pointer semantics, stated up front: nothing in the cloud is
+    // touched, so this is reversible by re-running setup / env create.
+    if (
+      !window.confirm(
+        `Forget environment “${name}”? This only removes the local entry from the fused ` +
+          `CLI's environment store — cloud resources and stored keys are not touched.`
+      )
+    ) {
+      return;
+    }
+    void runEnvAction("delete:" + name, () => deleteStoreEnv(name));
+  };
+
   const onCancelElsewhere = async () => {
     setActionError(null);
     try {
@@ -227,6 +439,7 @@ export default function Account() {
     }
 
     const probe = status.probe;
+    const hasManaged = status.store.envs.some((e) => e.backend === "fused");
     return (
       <>
         <section className="prefs-section">
@@ -282,18 +495,18 @@ export default function Account() {
           {actionError && <div className="deploy-error">{actionError}</div>}
         </section>
         <section className="prefs-section">
-          <h2>Hosted environments</h2>
-          {status.envs.length === 0 ? (
+          <h2>Environments</h2>
+          {status.store.envs.length === 0 ? (
             <p className="deploy-muted">
-              No hosted environments yet. In-app environment setup is coming; for now, create
-              the managed one in a terminal with <code>{status.setup_cli} cloud setup</code>{" "}
-              (environments are read from <code>{status.envs_file}</code>).
+              The fused CLI's environment store (<code>{status.envs_file}</code>) is empty —
+              set up the managed environment below.
             </p>
           ) : (
             <>
               <p className="deploy-muted">
-                Deploy targets from the fused CLI's environment store (
-                <code>{status.envs_file}</code>).
+                From the fused CLI's environment store (<code>{status.envs_file}</code>).
+                Hosted environments are deploy targets; “Forget” removes only the local
+                entry.
               </p>
               <table className="deploy-shares-table">
                 <thead>
@@ -301,21 +514,58 @@ export default function Account() {
                     <th>Name</th>
                     <th>Backend</th>
                     <th></th>
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {status.envs.map((e) => (
+                  {status.store.envs.map((e) => (
                     <tr key={e.name}>
                       <td>{e.name}</td>
-                      <td>{e.backend === "fused" ? "fused — managed" : e.backend}</td>
+                      <td>
+                        {e.backend === "fused" ? "fused — managed" : e.backend}
+                        {!e.hosted && <span className="deploy-muted"> (not a deploy target)</span>}
+                      </td>
                       <td className="deploy-muted">
-                        {e.name === status.default_env ? "default" : ""}
+                        {e.name === status.store.default ? "default" : ""}
+                      </td>
+                      <td>
+                        {e.name !== status.store.default && (
+                          <button
+                            type="button"
+                            className="deploy-muted"
+                            onClick={() => void onMakeDefault(e.name)}
+                            disabled={envBusy !== null}
+                            title="Make this the fused CLI's default environment"
+                          >
+                            {envBusy === "default:" + e.name ? "Setting…" : "Make default"}
+                          </button>
+                        )}{" "}
+                        <button
+                          type="button"
+                          className="deploy-danger"
+                          onClick={() => onDeleteEnv(e.name)}
+                          disabled={envBusy !== null}
+                          title="Remove the local entry only — cloud resources are not touched"
+                        >
+                          {envBusy === "delete:" + e.name ? "Forgetting…" : "Forget"}
+                        </button>
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </>
+          )}
+          {envError && <div className="deploy-error">{envError}</div>}
+        </section>
+        <section className="prefs-section">
+          <h2>{hasManaged ? "Add managed environment" : "Set up hosted environment"}</h2>
+          {hasManaged && !showSetup ? (
+            <button type="button" onClick={() => setShowSetup(true)}>
+              Set up another managed environment
+            </button>
+          ) : (
+            <SetupPanel status={status} onChanged={() => void load(true)} />
           )}
         </section>
       </>

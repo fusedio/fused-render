@@ -162,6 +162,31 @@ def envs_file() -> str:
     return os.environ.get("OPENFUSED_ENVS_FILE") or os.path.expanduser("~/.openfused/envs.json")
 
 
+def all_envs() -> dict:
+    """Every env in the store (any backend) + the store's own default pointer.
+
+    The account page's management view: unlike eligible_envs (the deploy
+    picker, hosted-only, with a deploy-oriented default derivation) this is
+    the raw store — local envs included, each flagged with whether it can be
+    a deploy target, and `default` exactly as the store records it.
+    """
+    data = storage.read_json(envs_file())
+    raw_envs = data.get("envs") if isinstance(data, dict) else None
+    envs = []
+    if isinstance(raw_envs, dict):
+        for entry in raw_envs.values():
+            if not isinstance(entry, dict):
+                continue
+            name, backend = entry.get("name"), entry.get("backend")
+            if isinstance(name, str) and isinstance(backend, str):
+                envs.append(
+                    {"name": name, "backend": backend, "hosted": backend in HOSTED_BACKENDS}
+                )
+    envs.sort(key=lambda e: e["name"])
+    default = data.get("default") if isinstance(data, dict) else None
+    return {"envs": envs, "default": default if isinstance(default, str) else None}
+
+
 def eligible_envs() -> dict:
     """Hosted envs from the fused store + the picker's default.
 
