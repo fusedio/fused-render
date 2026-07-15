@@ -2479,9 +2479,10 @@ body.embed .preview-browse-chip:hover {
   gap: 6px;
   align-items: flex-start;
   align-content: flex-start;
-  /* 3 chip rows (~24px each) + 2 row gaps (6px). */
+  /* Truncate at ~3 chip rows (~24px each) + 2 row gaps (6px); typing filters
+     the list, so hidden extensions are still reachable. */
   max-height: 84px;
-  overflow-y: auto;
+  overflow: hidden;
 }
 
 .templates-ext-suggestion {
