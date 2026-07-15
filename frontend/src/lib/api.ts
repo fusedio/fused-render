@@ -357,6 +357,10 @@ export interface DeployPreview {
   page: string;
   entrypoints: { path: string; name: string }[];
   assets: { path: string; name: string }[];
+  // The auto-detected default set (literal runPython/rawUrl/readFile paths, before
+  // include/exclude). Lets the modal distinguish an auto file (removing → exclude,
+  // shown under "Excluded" with restore) from a manual include (removing → just drop).
+  auto: string[];
   errors: string[];
   // Advisory, non-blocking: a computed rawUrl/readFile path (bundle its target
   // via include), or an exclude that drops a file the page references. Distinct

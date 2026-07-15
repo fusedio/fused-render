@@ -588,13 +588,19 @@ def preview_deploy(
             html = f.read()
     except OSError as e:
         raise DeployError(f"cannot read {page}: {e}") from None
-    plan = plan_export(
-        html, os.path.dirname(os.path.abspath(page)), include=include, exclude=exclude
-    )
+    page_dir = os.path.dirname(os.path.abspath(page))
+    plan = plan_export(html, page_dir, include=include, exclude=exclude)
+    # The auto-detected set (the literal runPython/rawUrl/readFile scan, before any
+    # include/exclude) — what the page publishes by DEFAULT. The modal uses it to
+    # tell an auto-detected file (removing it means excluding it, and it belongs in
+    # "Excluded" with a restore) from a purely manual include (removing it just
+    # drops it). Cheap: a second pure regex scan over the same HTML.
+    auto = plan_export(html, page_dir)
     return {
         "page": os.path.basename(page),
         "entrypoints": [{"path": e.path, "name": e.name} for e in plan.entrypoints],
         "assets": [{"path": a.path, "name": a.name} for a in plan.assets],
+        "auto": [e.path for e in auto.entrypoints] + [a.path for a in auto.assets],
         "errors": plan.errors,
         "warnings": plan.warnings,
     }

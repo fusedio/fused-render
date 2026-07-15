@@ -94,39 +94,36 @@ function FileSelection({
 
   const pageBase = basename(fsPath);
   const includeKeys = useMemo(() => new Set(include.map(relKey)), [include]);
-  const publishedKeys = useMemo(
-    () =>
-      new Set([
-        ...preview.entrypoints.map((e) => relKey(e.path)),
-        ...preview.assets.map((a) => relKey(a.path)),
-      ]),
-    [preview],
-  );
+  const excludeKeys = useMemo(() => new Set(exclude.map(relKey)), [exclude]);
+  // The page's default publish set (runPython/rawUrl/readFile literals), from the
+  // server — the authority on whether a file is auto-detected vs a manual include.
+  const autoKeys = useMemo(() => new Set(preview.auto.map(relKey)), [preview.auto]);
 
-  // × on a row. A manually-added file (in `include`) is simply dropped from
-  // `include` — it was never part of the default set, so it just goes away with
-  // no "Excluded" tombstone. An auto-detected file (a runPython entrypoint or a
-  // literally-referenced asset — the default publish set) is instead moved to
-  // `exclude`, which suppresses it AND surfaces it under "Excluded" with a
-  // Restore. So "Excluded" only ever lists files the page would publish by
-  // default, never the noise of add-all extras the user then removed.
+  // × on a row. Branch on whether the file is auto-detected (in the default set):
+  //  - auto → move to `exclude` (suppresses it even if it's ALSO in `include`, and
+  //    surfaces it under "Excluded" with a Restore); drop any stale include entry
+  //    so the lists stay clean. Excluding is the only way to remove an auto file,
+  //    since the page still references it.
+  //  - purely manual (in include, not auto) → just drop it from `include`; it was
+  //    never a default, so no "Excluded" tombstone.
   const removeRow = (path: string) => {
     const key = relKey(path);
-    if (includeKeys.has(key)) {
+    if (autoKeys.has(key)) {
+      if (includeKeys.has(key)) setInclude(include.filter((i) => relKey(i) !== key));
+      if (!excludeKeys.has(key)) setExclude([...exclude, path]);
+    } else {
       setInclude(include.filter((i) => relKey(i) !== key));
-    } else if (!exclude.some((e) => relKey(e) === key)) {
-      setExclude([...exclude, path]);
     }
   };
   const restore = (path: string) => setExclude(exclude.filter((e) => relKey(e) !== relKey(path)));
-  // Adding files (picker / add-all): append to include and clear any exclusion of
-  // the same paths, so a previously-dropped file comes back.
+  // Adding files (picker / add-all): append to `include` only. It never touches
+  // `exclude` — a deliberate exclusion must not be silently cleared by an add — so
+  // re-including an excluded file goes through Restore. Callers only ever pass
+  // candidates that are neither auto, already included, nor excluded (see
+  // `available`), so there's nothing to un-exclude here anyway.
   const addFiles = (paths: string[]) => {
     const fresh = paths.filter((p) => !includeKeys.has(relKey(p)));
     if (fresh.length) setInclude([...include, ...fresh]);
-    const addedKeys = new Set(paths.map(relKey));
-    if (paths.some((p) => exclude.some((e) => relKey(e) === relKey(p))))
-      setExclude(exclude.filter((e) => !addedKeys.has(relKey(e))));
   };
   const reset = () => {
     setInclude([]);
@@ -150,26 +147,27 @@ function FileSelection({
     }
   };
 
+  // A file on disk is a candidate to add when it isn't the page, isn't already in
+  // the default set, isn't already manually included, and isn't excluded (excluded
+  // files live in the "Excluded" list with Restore). Shared by the picker and
+  // "Add all in folder", so the two never re-add or un-exclude the same files.
+  const isCandidate = (rel: string) => {
+    const key = relKey(rel);
+    return (
+      rel !== pageBase && !autoKeys.has(key) && !includeKeys.has(key) && !excludeKeys.has(key)
+    );
+  };
+
   const openPicker = () => {
     setPickerOpen(true);
     if (dirFiles === null) void loadDir();
   };
   const addAllInFolder = async () => {
     const files = dirFiles ?? (await loadDir());
-    addFiles(
-      files
-        .map((f) => f.rel)
-        .filter((rel) => rel !== pageBase && !publishedKeys.has(relKey(rel))),
-    );
+    addFiles(files.map((f) => f.rel).filter(isCandidate));
   };
 
-  // Files on disk that aren't already published and aren't excluded — the picker's
-  // candidates. Excluded files live in their own "Excluded" list (with Restore).
-  const excludeKeys = useMemo(() => new Set(exclude.map(relKey)), [exclude]);
-  const available = (dirFiles ?? []).filter(
-    (f) =>
-      f.rel !== pageBase && !publishedKeys.has(relKey(f.rel)) && !excludeKeys.has(relKey(f.rel)),
-  );
+  const available = (dirFiles ?? []).filter((f) => isCandidate(f.rel));
 
   // Advisory (non-blocking) notes — shown whether or not there are blockers, since
   // the backend can return both at once (SPEC DP-2a: warnings appear alongside).
@@ -208,14 +206,21 @@ function FileSelection({
       title: `fused.runPython(${JSON.stringify(e.path)}) → route “${e.name}”`,
       tag: "run" as const,
     })),
-    ...preview.assets.map((a) => ({
-      path: a.path,
-      label: relKey(a.path),
-      title: includeKeys.has(relKey(a.path))
-        ? `included file — ${a.path}`
-        : `asset “${a.name}” (fused.rawUrl/readFile) — ${a.path}`,
-      tag: includeKeys.has(relKey(a.path)) ? ("added" as const) : (null as null),
-    })),
+    ...preview.assets.map((a) => {
+      // "added" iff the file is NOT in the auto-detected set — a purely manual
+      // include. A file that's both referenced AND included reads as a normal
+      // asset (removing it must exclude, which the "added" affordance wouldn't
+      // convey), so auto-ness wins the label.
+      const manual = !autoKeys.has(relKey(a.path));
+      return {
+        path: a.path,
+        label: relKey(a.path),
+        title: manual
+          ? `included file — ${a.path}`
+          : `asset “${a.name}” (fused.rawUrl/readFile) — ${a.path}`,
+        tag: manual ? ("added" as const) : (null as null),
+      };
+    }),
   ];
 
   const publishCount = rows.length + 1; // + the page itself
@@ -435,6 +440,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
         page: basename(fsPath),
         entrypoints: [],
         assets: [],
+        auto: [],
         errors: [(e as Error).message],
         warnings: [],
       }),

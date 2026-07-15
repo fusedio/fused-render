@@ -837,6 +837,7 @@ def test_preview_lists_what_would_be_published(tmp_path, monkeypatch):
     assert body["page"] == "view.html"
     assert body["entrypoints"] == [{"path": "./sine.py", "name": "sine"}]
     assert body["assets"] == []
+    assert body["auto"] == ["./sine.py"]  # the default set, before any selection
     assert body["errors"] == []
     assert body["warnings"] == []
     assert h.calls() == []  # a preview is a pure local scan — no CLI, no files
@@ -854,6 +855,9 @@ def test_preview_applies_include_and_exclude(tmp_path, monkeypatch):
     body = resp.json()
     assert body["entrypoints"] == []  # sine.py excluded
     assert [a["path"] for a in body["assets"]] == ["data.csv"]  # include added
+    # `auto` is the default set and ignores the selection — sine.py stays listed
+    # so the UI knows excluding it (not data.csv) belongs in "Excluded".
+    assert body["auto"] == ["./sine.py"]
     assert body["errors"] == []
     # excluding a literally-referenced target warns (its call will fail when hosted)
     assert any("sine.py" in w for w in body["warnings"])
