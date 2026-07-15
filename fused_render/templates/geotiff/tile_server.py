@@ -63,7 +63,32 @@ class _RangeReader:
         req = urllib.request.Request(
             self.url, headers={"Range": f"bytes={off}-{off + count - 1}"})
         with urllib.request.urlopen(req, timeout=120) as r:
-            return r.read()
+            body = r.read()
+            status = r.status
+        if status != 206:
+            # Server ignored Range and sent the whole object: slice our window.
+            body = body[off:off + count]
+        if len(body) != count:
+            raise OSError(
+                f"range read: wanted {count}B at {off}, got {len(body)}B")
+        return body
+
+
+def _stat_remote(src, path):
+    """Whether `path` is mount-backed, per the server's /api/fs/stat — the one
+    place that knows the mounts (the template passes `src` for every file and
+    stays mount-agnostic). True/False from stat, None when it can't be reached
+    (caller falls back to mmap and may retry on a later request)."""
+    import urllib.parse
+    import urllib.request
+    try:
+        u = urllib.parse.urlsplit(src)
+        stat = (f"{u.scheme}://{u.netloc}/api/fs/stat?path="
+                + urllib.parse.quote(path))
+        with urllib.request.urlopen(stat, timeout=10) as r:
+            return bool(json.load(r).get("remote"))
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _me():
@@ -216,22 +241,36 @@ def _serve():
 
     def open_file(path, src=None):
         path = os.path.abspath(os.path.expanduser(path))
-        upgrade = False
         with files_lock:
             f = files.get(path)
-            if f is not None and src and f["reader"] is None:
-                # Opened mmap-backed before any request carried src (e.g. a
-                # stale client): attach the reader so chunk reads stop fanning
-                # out over the NFS mount. The mmap stays open — a thread that
-                # already sampled reader=None may still be slicing it — but
-                # get_chunk prefers the reader, so it goes quiet from here on.
-                f["reader"] = _RangeReader(src)
-                upgrade = True
-        if f:
-            if upgrade:
-                threading.Thread(target=_prefetch_overviews, args=(f,),
-                                 daemon=True).start()
+        if f is not None:
+            if src and f["reader"] is None and f.get("remote") is None:
+                # Opened mmap-backed while remote-ness was unknown (stat was
+                # unreachable, or a stale client sent no src): re-ask, and for
+                # a mount-backed file attach the reader + drop the mmap so
+                # chunk reads stop page-faulting the NFS mount (and the EBUSY
+                # pin is released). get_chunk tolerates the closed mmap.
+                remote = _stat_remote(src, path)
+                old_buf, upgrade = None, False
+                with files_lock:
+                    if remote is not None:
+                        f["remote"] = remote
+                    if remote and f["reader"] is None:
+                        f["reader"] = _RangeReader(src)
+                        old_buf, f["buf"] = f["buf"], None
+                        upgrade = True
+                if upgrade:
+                    try:
+                        if old_buf is not None:
+                            old_buf.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    threading.Thread(target=_prefetch_overviews, args=(f,),
+                                     daemon=True).start()
             return f
+        # No src -> remote-ness UNKNOWN (not False): a later request that does
+        # carry src can still stat + upgrade a mount-backed file off the mmap.
+        remote = _stat_remote(src, path) if src else None
         buf, en, t0, next_off = T.parse_header(path)
         meta = T.header_meta(path, buf, en, t0, next_off)
         levels = [_parse_level(buf, en, t0)]
@@ -256,7 +295,9 @@ def _serve():
              "supported": bool(supported and epsg and meta.get("transform")),
              "lock": threading.Lock(), "chunks": {}, "chunk_order": [],
              "stretch": {}}
-        if src:
+        if remote is not None:
+            f["remote"] = remote
+        if remote:
             # Mount-backed: header parse above (single-threaded, brief) can ride
             # the mmap, but the CONCURRENT chunk reads must not — route them over
             # HTTP and drop the mmap so nothing page-faults the NFS mount (also
@@ -317,6 +358,11 @@ def _serve():
             a = np.frombuffer(data, dtype=lv["dtype"])[: h * w * spp].reshape(h, w, spp)
             a = T._unpredict(a, lv["predictor"])
         with f["lock"]:
+            # A prefetch and an on-demand read can race to decode the same
+            # chunk; keep the first, or duplicate chunk_order keys would make
+            # LRU eviction drop live entries early.
+            if (li, ci) in f["chunks"]:
+                return f["chunks"][(li, ci)]
             f["chunks"][(li, ci)] = a
             f["chunk_order"].append((li, ci))
             while len(f["chunk_order"]) > MAX_CACHE_CHUNKS:
@@ -333,7 +379,15 @@ def _serve():
                 return a
         off, cnt = lv["offs"][ci], lv["counts"][ci]
         rd = f["reader"]
-        raw = rd.read(off, cnt) if rd is not None else f["buf"][off:off + cnt]
+        if rd is not None:
+            raw = rd.read(off, cnt)
+        else:
+            try:
+                raw = f["buf"][off:off + cnt]
+            except (TypeError, ValueError):
+                # mmap dropped by a concurrent late-src upgrade; the reader is
+                # always attached before the mmap goes away, so it's there now.
+                raw = f["reader"].read(off, cnt)
         return _decode_chunk(f, li, ci, raw)
 
     def _nchunks_y(lv):

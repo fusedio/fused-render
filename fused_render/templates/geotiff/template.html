@@ -170,11 +170,11 @@ async function ensureDaemon(){
 }
 const dURL = p => `http://127.0.0.1:${daemon.port}${p}`;
 
-// Mount-backed file (shell sets _remote=1): hand the daemon a range-capable
-// /api/fs/raw locator so it reads chunks over HTTP instead of mmap'ing the
-// kernel NFS mount, whose concurrent page faults stall and drop the mount
-// under a screenful of tiles. Local files pass no src -> daemon mmaps as before.
-const REMOTE = new URLSearchParams(location.search).get('_remote') === '1';
+// Every request hands the daemon a range-capable /api/fs/raw locator; the
+// daemon asks the server (/api/fs/stat) whether the file is mount-backed and
+// only then reads chunks over HTTP instead of mmap'ing the kernel NFS mount,
+// whose concurrent page faults stall and drop the mount under a screenful of
+// tiles. Local files stay on mmap. The template carries no mount knowledge.
 const rawURL = f => `${location.origin}/api/fs/raw?path=${encodeURIComponent(f)}`;
 
 function renderQuery(){
@@ -182,7 +182,7 @@ function renderQuery(){
     r: P.r(), g: P.g(), b: P.b(), cmap: P.cmap() });
   if (P.stretch()) q.set('stretch', P.stretch());
   if (P.vlo() !== '' && P.vhi() !== ''){ q.set('vlo', P.vlo()); q.set('vhi', P.vhi()); }
-  if (REMOTE) q.set('src', rawURL(P.file()));
+  q.set('src', rawURL(P.file()));
   return q.toString();
 }
 
@@ -300,7 +300,7 @@ async function refreshHist(){
   const bbox = viewportMercBbox().join(',');
   const q = new URLSearchParams({file: P.file(), mode: P.mode(), band: P.band(),
     r: P.r(), g: P.g(), b: P.b(), bins: '60', bbox});
-  if (REMOTE) q.set('src', rawURL(P.file()));
+  q.set('src', rawURL(P.file()));
   try {
     if (histAbort) histAbort.abort();
     histAbort = new AbortController();
@@ -416,7 +416,7 @@ map.on('mousemove', async e => {
   if (!tileMode || !daemon || now - hoverT < 120) return;
   hoverT = now;
   const q = new URLSearchParams({file: P.file(), lon: e.lngLat.lng, lat: e.lngLat.lat});
-  if (REMOTE) q.set('src', rawURL(P.file()));
+  q.set('src', rawURL(P.file()));
   try {
     const r = await (await fetch(dURL('/value?' + q))).json();
     const vs = r.values || [];
@@ -606,7 +606,7 @@ async function loadFile(){
   if (d && d.port){
     try {
       let murl = '/meta?file=' + encodeURIComponent(file);
-      if (REMOTE) murl += '&src=' + encodeURIComponent(rawURL(file));
+      murl += '&src=' + encodeURIComponent(rawURL(file));
       meta = await (await fetch(dURL(murl))).json();
       tileMode = !!meta.supported;
     } catch (e) { meta = null; }
