@@ -15,6 +15,7 @@ import type { RegistryEntry, RegistryResult, TemplateInventory } from "../lib/ap
 import { BindingsTable } from "./templates/BindingsTable";
 import { ImportWizard } from "./templates/ImportWizard";
 import { InventoryPanel } from "./templates/InventoryPanel";
+import { NewTemplateModal } from "./templates/NewTemplateModal";
 import { RowEditorModal } from "./templates/RowEditorModal";
 import { navigateUrl } from "../lib/router";
 
@@ -28,6 +29,7 @@ export default function Templates() {
     null,
   );
   const [importing, setImporting] = useState(false);
+  const [creatingNew, setCreatingNew] = useState(false);
   const loadSeq = useRef(0);
 
   // The active tab lives in the URL (`?tab=library`) so browser back/forward
@@ -104,7 +106,12 @@ export default function Templates() {
         />
       )}
       {inventory && registry && tab === "library" && (
-        <InventoryPanel inventory={inventory} onImport={() => setImporting(true)} onChanged={load} />
+        <InventoryPanel
+          inventory={inventory}
+          onImport={() => setImporting(true)}
+          onNewTemplate={() => setCreatingNew(true)}
+          onChanged={load}
+        />
       )}
 
       {editor && inventory && registry && (
@@ -119,6 +126,33 @@ export default function Templates() {
       )}
       {importing && (
         <ImportWizard onClose={() => setImporting(false)} onImported={load} />
+      )}
+      {creatingNew && (
+        <NewTemplateModal
+          // Literal-extension keys already in the registry (simple + compound;
+          // wildcard/directory shapes aren't plain extensions), offered as
+          // one-click suggestions. registry can be null here (e.g. a prior
+          // load failed) — an empty suggestion list is fine, free typing still
+          // works.
+          knownExtensions={
+            registry
+              ? Array.from(
+                  new Set(
+                    registry.entries
+                      .filter((e) => e.keyKind === "simple" || e.keyKind === "compound")
+                      .map((e) => e.key),
+                  ),
+                ).sort()
+              : []
+          }
+          onClose={() => setCreatingNew(false)}
+          // Mounted at this level (not inside InventoryPanel, D-precedent:
+          // ImportWizard above) so a failed onCreated refresh — which fail-
+          // closes inventory/registry to null and would otherwise unmount
+          // InventoryPanel — can't take the modal down with it. The success
+          // screen and "Open in Claude" CTA stay visible regardless.
+          onCreated={load}
+        />
       )}
     </div>
   );

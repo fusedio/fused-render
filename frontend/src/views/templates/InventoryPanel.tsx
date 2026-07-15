@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { deleteTemplate, downloadTemplatesExport, rawUrl, revealPath } from "../../lib/api";
+import {
+  deleteTemplate,
+  downloadTemplatesExport,
+  openTemplateInClaude,
+  rawUrl,
+  revealPath,
+} from "../../lib/api";
 import type { InventoryTemplate, TemplateInventory } from "../../lib/api";
 import { navigate } from "../../lib/router";
 
@@ -8,10 +14,12 @@ type UseFilter = "all" | "used" | "unused";
 export function InventoryPanel({
   inventory,
   onImport,
+  onNewTemplate,
   onChanged,
 }: {
   inventory: TemplateInventory;
   onImport: () => void;
+  onNewTemplate: () => void;
   onChanged: () => void;
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -48,6 +56,14 @@ export function InventoryPanel({
     setError(null);
     try {
       await downloadTemplatesExport(names);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+  const openClaude = async (name: string) => {
+    setError(null);
+    try {
+      await openTemplateInClaude(name);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -116,22 +132,27 @@ export function InventoryPanel({
             </option>
           ))}
         </select>
-        <button type="button" className="templates-btn-secondary" onClick={onImport}>
-          Import zip
-        </button>
-        <button
-          type="button"
-          className="templates-btn-primary templates-toolbar-push"
-          disabled={selectedNames.length === 0}
-          onClick={() => runExport(selectedNames)}
-          title={
-            selectedNames.length === 0
-              ? "Select one or more templates to export"
-              : "Export the selected templates as a zip"
-          }
-        >
-          Export selected{selectedNames.length > 0 ? ` (${selectedNames.length})` : ""}
-        </button>
+        <div className="templates-toolbar-actions">
+          <button type="button" className="templates-btn-secondary" onClick={onNewTemplate}>
+            New template
+          </button>
+          <button type="button" className="templates-btn-secondary" onClick={onImport}>
+            Import zip
+          </button>
+          <button
+            type="button"
+            className="templates-btn-primary"
+            disabled={selectedNames.length === 0}
+            onClick={() => runExport(selectedNames)}
+            title={
+              selectedNames.length === 0
+                ? "Select one or more templates to export"
+                : "Export the selected templates as a zip"
+            }
+          >
+            Export selected{selectedNames.length > 0 ? ` (${selectedNames.length})` : ""}
+          </button>
+        </div>
       </div>
       {error && <div className="deploy-error">{error}</div>}
       {groups.length === 0 ? (
@@ -155,6 +176,7 @@ export function InventoryPanel({
                     onExport={() => runExport([t.name])}
                     onReveal={() => reveal(t.path)}
                     onOpen={() => open(t.path)}
+                    onOpenInClaude={g.source.editable ? () => openClaude(t.name) : undefined}
                     onDelete={g.source.editable ? () => setDeleting(t) : undefined}
                   />
                 ))}
@@ -333,6 +355,7 @@ function InventoryRow({
   onExport,
   onReveal,
   onOpen,
+  onOpenInClaude,
   onDelete,
 }: {
   t: InventoryTemplate;
@@ -341,6 +364,7 @@ function InventoryRow({
   onExport: () => void;
   onReveal: () => void;
   onOpen: () => void;
+  onOpenInClaude?: () => void; // only for editable (user) sources; core is read-only
   onDelete?: () => void; // only for editable (user) sources; core is undeletable
 }) {
   return (
@@ -386,6 +410,16 @@ function InventoryRow({
         <button type="button" className="templates-ghost-btn" onClick={onOpen} title="Open the folder in the file explorer">
           Open
         </button>
+        {onOpenInClaude && (
+          <button
+            type="button"
+            className="templates-ghost-btn"
+            onClick={onOpenInClaude}
+            title="Open Claude Code in this template's folder (Terminal, macOS only)"
+          >
+            Open in Claude
+          </button>
+        )}
         {onDelete && (
           <button
             type="button"

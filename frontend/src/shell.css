@@ -2144,6 +2144,17 @@ body.embed .preview-browse-chip:hover {
   margin-left: auto;
 }
 
+/* Right-aligned action cluster: keeps New template / Import / Export grouped so
+   they wrap as one unit under the search+filters instead of a lone button
+   floating onto its own row (margin-left:auto on a single wrapped flex item). */
+.templates-toolbar-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: stretch;
+  margin-left: auto;
+}
+
 .templates-search {
   font: inherit;
   font-size: 13px;
@@ -2433,9 +2444,99 @@ body.embed .preview-browse-chip:hover {
   width: min(640px, 100%);
 }
 
+.templates-new {
+  width: min(520px, 100%);
+}
+
 .templates-editor .deploy-body,
-.templates-import .deploy-body {
+.templates-import .deploy-body,
+.templates-new .deploy-body {
   gap: 16px;
+}
+
+/* The name field reuses .templates-search's visual, but that class is authored
+   for the toolbar's flex ROW (flex:1 1 200px). Inside .templates-field (a flex
+   COLUMN) that flex-basis lands on the block axis and grows the input into a
+   tall box — pin it back to a single-line control. */
+.templates-field .templates-search {
+  flex: none;
+  width: 100%;
+}
+
+.templates-field-hint {
+  font-size: 12px;
+}
+
+/* Quick-pick extensions already in the registry: chip buttons under the tag
+   input, capped to ~3 rows with the overflow scrolling. */
+.templates-ext-suggest-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.templates-ext-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: flex-start;
+  align-content: flex-start;
+  /* Truncate at exactly 3 chip rows: chips are pinned to 24px tall below, so
+     rows start every 30px (24px + 6px gap) and the 4th row begins at 90px —
+     fully past this cutoff, no partial row peeking. Typing filters the list,
+     so hidden extensions are still reachable. */
+  max-height: 84px;
+  overflow: hidden;
+}
+
+.templates-ext-suggestion {
+  font: inherit;
+  cursor: pointer;
+  color: var(--fg);
+  /* Fixed height keeps suggestion rows on the 30px grid the container's
+     max-height counts on. */
+  height: 24px;
+  box-sizing: border-box;
+}
+
+.templates-ext-suggestion:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.templates-ext-suggestion:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Tag-style extension input: chips + a borderless draft field inside one box
+   that reads as a single text input (matches .templates-search framing). */
+.templates-chip-input {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-alt);
+}
+
+.templates-chip-input:focus-within {
+  border-color: var(--accent);
+}
+
+.templates-chip-draft {
+  flex: 1 1 80px;
+  min-width: 80px;
+  font: inherit;
+  border: none;
+  background: none;
+  color: var(--fg);
+  padding: 2px 0;
+}
+
+.templates-chip-draft:focus {
+  outline: none;
 }
 
 /* The row editor hosts the "Add template" popover, which is absolutely

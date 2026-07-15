@@ -15,5 +15,8 @@ scripts/vendor-three/node_modules/
 .claude/worktrees/
 frontend/node_modules/
 fused_render/static/shell-dist/
+# Starter-kit authoring skills are build-time copies of the canonical skills/
+# (D106, same pattern as shell-dist); never committed, shipped via `artifacts`.
+fused_render/template_starter/.claude/skills/
 uv.lock
 fused_render/_baked_branch.py

@@ -771,3 +771,226 @@ def test_import_sweeps_stale_staging(ctx, monkeypatch):
     os.utime(stale, (old, old))
     _post_import(ctx, _make_zip({"fresh/template.html": "<html>"}))
     assert not stale.exists()
+
+
+# ----------------------------------------------------- new template (scaffold)
+
+
+def test_new_template_scaffolds_and_binds(ctx):
+    resp = ctx.client.post(
+        "/api/templates/new",
+        json={"name": "myview", "extensions": [".myext", ".foo.bar"]},
+        headers=FUSED,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["name"] == "myview"
+    assert body["path"] == os.path.join(os.path.abspath(server.USER_TEMPLATES_DIR), "myview")
+    assert body["bindings"] == [".myext", ".foo.bar"]
+    # Starter kit was copied in — the required file plus the optional reader,
+    # authoring guide, and the two canonical skills (resolved from the repo
+    # skills/ dir here, since tests run from an editable/source checkout).
+    folder = ctx.udir / "myview"
+    assert (folder / "template.html").is_file()
+    assert (folder / "reader.py").is_file()
+    assert (folder / "CLAUDE.md").is_file()
+    skills = folder / ".claude" / "skills"
+    assert (skills / "fused-render-authoring" / "SKILL.md").is_file()
+    assert (skills / "fused-render-custom-templates" / "SKILL.md").is_file()
+    # Both extensions are brand new keys (no core or user binding yet), so the
+    # new template is the whole list — appending onto nothing.
+    reg = ctx.read_registry()
+    assert reg[".myext"] == ["myview"]
+    assert reg[".foo.bar"] == ["myview"]
+
+
+def test_new_template_appends_to_existing_core_default(ctx):
+    # Additive only (owner ask): binding a new template to a key that already
+    # has a core default must append to that list, never replace it — an
+    # existing multi-mode viewer (e.g. .csv -> duckdb/csv/code/annotate) keeps
+    # every prior mode plus the new one at the end.
+    resp = ctx.client.post(
+        "/api/templates/new", json={"name": "mycsv", "extensions": [".csv"]}, headers=FUSED
+    )
+    assert resp.status_code == 200
+    reg = ctx.read_registry()
+    assert reg[".csv"] == ["duckdb", "csv", "code", "annotate", "mycsv"]
+
+
+def test_new_template_appends_to_existing_user_override(ctx):
+    # Same additive rule when the key already has a user override (not just a
+    # core default): the new template lands at the end, prior names untouched.
+    ctx.registry({".myext": ["alpha", "beta"]})
+    resp = ctx.client.post(
+        "/api/templates/new", json={"name": "gamma", "extensions": [".myext"]}, headers=FUSED
+    )
+    assert resp.status_code == 200
+    reg = ctx.read_registry()
+    assert reg[".myext"] == ["alpha", "beta", "gamma"]
+
+
+def test_new_template_no_extensions_creates_no_registry(ctx):
+    resp = ctx.client.post(
+        "/api/templates/new", json={"name": "draft", "extensions": []}, headers=FUSED
+    )
+    assert resp.status_code == 200
+    assert resp.json()["bindings"] == []
+    assert (ctx.udir / "draft" / "template.html").is_file()
+    # No bindings requested -> the registry file is not created.
+    assert not (ctx.udir / "registry.json").exists()
+
+
+def test_new_template_binding_reachable_via_registry_view(ctx):
+    ctx.client.post(
+        "/api/templates/new", json={"name": "myview", "extensions": [".myext"]}, headers=FUSED
+    )
+    by_key = {e["key"]: e for e in ctx.client.get("/api/templates/registry").json()["entries"]}
+    entry = by_key[".myext"]
+    assert entry["resolvedSource"] == "user"
+    assert _names(entry) == ["myview"]
+    # The scaffolded template.html resolves, so the bound name is not broken.
+    assert entry["templates"][0]["exists"] is True
+
+
+def test_new_template_draft_ignores_corrupt_registry(ctx):
+    # A no-extensions draft create never touches the registry, so a pre-existing
+    # corrupt registry.json must not block it.
+    ctx.udir.mkdir(parents=True, exist_ok=True)
+    (ctx.udir / "registry.json").write_text("{not json")
+    resp = ctx.client.post(
+        "/api/templates/new", json={"name": "draft", "extensions": []}, headers=FUSED
+    )
+    assert resp.status_code == 200
+    assert (ctx.udir / "draft" / "template.html").is_file()
+
+
+def test_new_template_with_extensions_rejects_corrupt_registry(ctx):
+    # Once a binding is requested the registry must actually be read and
+    # rewritten, so a corrupt file is refused up front and nothing is created.
+    ctx.udir.mkdir(parents=True, exist_ok=True)
+    (ctx.udir / "registry.json").write_text("{not json")
+    resp = ctx.client.post(
+        "/api/templates/new", json={"name": "draft", "extensions": [".x"]}, headers=FUSED
+    )
+    assert resp.status_code == 400
+    assert "refusing to overwrite the user registry" in resp.json()["error"]
+    assert not (ctx.udir / "draft").exists()
+
+
+def test_new_template_registry_write_failure_cleans_up(ctx, monkeypatch):
+    # A folder that scaffolded fine but whose registry write blew up must not
+    # linger — otherwise every retry 409s on a template that was never bound.
+    def boom(path, data):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(templates_api.storage, "write_json", boom)
+    resp = ctx.client.post(
+        "/api/templates/new", json={"name": "half", "extensions": [".x"]}, headers=FUSED
+    )
+    assert resp.status_code == 400
+    assert "failed to bind template" in resp.json()["error"]
+    assert not (ctx.udir / "half").exists()
+    assert not (ctx.udir / "registry.json").exists()
+
+
+def test_new_template_duplicate_conflicts_409(ctx):
+    ctx.make_template("taken")
+    resp = ctx.client.post(
+        "/api/templates/new", json={"name": "taken", "extensions": [".x"]}, headers=FUSED
+    )
+    assert resp.status_code == 409
+    assert "already exists" in resp.json()["error"]
+
+
+def test_new_template_copytree_failure_cleans_up(ctx, monkeypatch):
+    # A mid-copy failure must not leave a half-created folder behind, and the
+    # caller gets a clean error rather than an unhandled 500 traceback.
+    def boom(src, dst, *args, **kwargs):
+        os.makedirs(dst, exist_ok=True)  # partial folder, as a real copy would
+        raise OSError("disk full")
+
+    monkeypatch.setattr(templates_api.shutil, "copytree", boom)
+    resp = ctx.client.post(
+        "/api/templates/new", json={"name": "doomed", "extensions": [".x"]}, headers=FUSED
+    )
+    assert resp.status_code == 400
+    assert "failed to create template" in resp.json()["error"]
+    # The half-created folder was removed and no binding was written.
+    assert not (ctx.udir / "doomed").exists()
+    assert not (ctx.udir / "registry.json").exists()
+
+
+def test_new_template_rejects_bad_name(ctx):
+    for bad in ("has/slash", "has.dot", "_leading", ""):
+        resp = ctx.client.post(
+            "/api/templates/new", json={"name": bad, "extensions": []}, headers=FUSED
+        )
+        assert resp.status_code == 400, bad
+
+
+def test_new_template_invalid_extension_creates_nothing(ctx):
+    resp = ctx.client.post(
+        "/api/templates/new",
+        json={"name": "myview", "extensions": [".ok", ".geo*.json"]},
+        headers=FUSED,
+    )
+    assert resp.status_code == 400
+    assert "invalid registry key" in resp.json()["error"]
+    # Rejected up front — no folder created, no registry written.
+    assert not (ctx.udir / "myview").exists()
+    assert not (ctx.udir / "registry.json").exists()
+
+
+def test_new_template_requires_fused_header(ctx):
+    resp = ctx.client.post("/api/templates/new", json={"name": "myview", "extensions": []})
+    assert resp.status_code == 403
+    assert not (ctx.udir / "myview").exists()
+
+
+# --------------------------------------------------------- open in Claude (macOS)
+
+
+def test_open_in_claude_success(ctx, monkeypatch):
+    ctx.make_template("myview")
+    monkeypatch.setattr(templates_api.sys, "platform", "darwin")
+    monkeypatch.setattr(templates_api.shutil, "which", lambda _c: "/fake/bin/claude")
+    calls = []
+    monkeypatch.setattr(templates_api.subprocess, "run", lambda *a, **k: calls.append((a, k)))
+    resp = ctx.client.post("/api/templates/open-in-claude", json={"name": "myview"}, headers=FUSED)
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True}
+    # osascript invoked with a `do script` that cd's into the template folder
+    # and runs the located claude binary.
+    (argv,), _kw = calls[0]
+    assert argv[0] == "osascript"
+    joined = " ".join(argv)
+    assert str(ctx.udir / "myview") in joined
+    assert "/fake/bin/claude" in joined
+
+
+def test_open_in_claude_non_darwin_errors(ctx, monkeypatch):
+    ctx.make_template("myview")
+    monkeypatch.setattr(templates_api.sys, "platform", "linux")
+    resp = ctx.client.post("/api/templates/open-in-claude", json={"name": "myview"}, headers=FUSED)
+    assert resp.status_code == 400
+    assert "macOS" in resp.json()["error"]
+
+
+def test_open_in_claude_missing_template_404(ctx, monkeypatch):
+    monkeypatch.setattr(templates_api.sys, "platform", "darwin")
+    resp = ctx.client.post("/api/templates/open-in-claude", json={"name": "nope"}, headers=FUSED)
+    assert resp.status_code == 404
+
+
+def test_open_in_claude_core_template_refused(ctx, monkeypatch):
+    # 'code' is a core template (no user folder) -> 404, core folder untouched.
+    monkeypatch.setattr(templates_api.sys, "platform", "darwin")
+    resp = ctx.client.post("/api/templates/open-in-claude", json={"name": "code"}, headers=FUSED)
+    assert resp.status_code == 404
+
+
+def test_open_in_claude_requires_fused_header(ctx):
+    ctx.make_template("myview")
+    resp = ctx.client.post("/api/templates/open-in-claude", json={"name": "myview"})
+    assert resp.status_code == 403
