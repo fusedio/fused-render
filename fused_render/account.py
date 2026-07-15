@@ -37,8 +37,11 @@ spec/app/connect-fused.md — see docs/PLAN-fused-account.md):
     with the CLI's own progress lines, and the client polls it (flow's job
     model). Gated on logged_in (409) so the interactive login flow stays in
     ONE place — /api/account/login — instead of setup silently starting its
-    own. One job at a time; env-name defaults follow flow's convention
-    (`fused` for the default managed env, `fused-<env>` otherwise).
+    own; and because presence isn't proof, the sign-in is VERIFIED with one
+    `cloud orgs` probe before spawning (an expired credential would
+    otherwise buy ~5 minutes of doomed spinner). One job at a time;
+    env-name defaults follow flow's convention (`fused` for the default
+    managed env, `fused-<env>` otherwise).
   * **Env management is the CLI's own env group.** POST /api/account/envs/
     default|delete shell `fused env default NAME` / `fused env delete NAME
     --yes` — delete forgets the LOCAL pointer only (the CLI's semantics; no
@@ -72,10 +75,9 @@ from fused_render.fusedcli import (
     all_envs,
     child_env,
     cli_error,
-    eligible_envs,
+    envs_file,
     fused_cli,
     fused_cloud_logged_in,
-    setup_cli_hint,
 )
 
 router = APIRouter()
@@ -202,28 +204,49 @@ def _start_login(cli, return_url: str | None) -> _ActiveLogin:
     return login
 
 
+def _ensure_dead(proc: subprocess.Popen) -> None:
+    """Escalate a terminated child to SIGKILL if it ignores SIGTERM.
+
+    Every kill path must go through this (synchronously or on a daemon
+    thread): a login child left merely SIGTERM'd could survive, keep its
+    loopback callback server alive, and complete a late Auth0 round-trip —
+    re-writing credentials after a logout, or racing a retried login.
+    """
+    try:
+        proc.wait(KILL_GRACE)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(KILL_GRACE)
+        except subprocess.TimeoutExpired:
+            pass  # unkillable child; the caller proceeds — poll shows it live
+
+
+def _terminate_login(login: _ActiveLogin, wait: bool) -> None:
+    """SIGTERM the login child, then confirm death — inline when `wait`
+    (logout must not proceed past a live child), else on a daemon thread
+    (request paths shouldn't block on the grace period)."""
+    login.proc.terminate()
+    if wait:
+        _ensure_dead(login.proc)
+    else:
+        threading.Thread(target=_ensure_dead, args=(login.proc,), daemon=True).start()
+
+
 def _cancel_active_login(wait: float = 0.0) -> bool:
     """Terminate the in-flight login child, if any; True when one was live.
 
-    With `wait` > 0, block up to that long for it to actually die (escalating
-    to SIGKILL) — logout passes KILL_GRACE so a late Auth0 callback can't
-    land in a child that outlives the credential delete and re-write a JWT.
+    With `wait` > 0, block until it is actually dead — logout passes
+    KILL_GRACE so a late Auth0 callback can't land in a child that outlives
+    the credential delete and re-write a JWT. With wait 0 the kill is
+    confirmed on a background thread instead.
     """
     global _active
     with _LOCK:
         login, _active = _active, None
     if login is None or login.proc.poll() is not None:
         return False
-    login.proc.terminate()
-    if wait:
-        try:
-            login.proc.wait(wait)
-        except subprocess.TimeoutExpired:
-            login.proc.kill()
-            try:
-                login.proc.wait(KILL_GRACE)
-            except subprocess.TimeoutExpired:
-                pass  # unkillable child; logout proceeds — poll shows it live
+    _terminate_login(login, wait=bool(wait))
     return True
 
 
@@ -334,13 +357,14 @@ def _probe_failure(message: str) -> dict:
     return {"ok": False, "admitted": None, "orgs": [], "error": message}
 
 
-def _probe_orgs() -> dict:
+def _probe_orgs(cli) -> dict:
     """`fused cloud orgs` — the authoritative signed-in view: whether the
     account is admitted and which org/envs it can target. Unlike the
     presence-only `logged_in` signal this exercises the token (refreshing it
     if needed), so a stale credentials file surfaces here as ok=False with
-    the CLI's own message."""
-    cli = fused_cli()
+    the CLI's own message. Takes the already-resolved CLI so one request
+    resolves it exactly once (and a mid-request resolution flip can't NoneType
+    this path)."""
     try:
         proc = subprocess.run(
             [*cli.command, "cloud", "orgs"],
@@ -390,20 +414,24 @@ def status_payload(probe: bool) -> dict:
     logged_in = fused_cloud_logged_in()
     payload = {
         "cli": cli,
-        "setup_cli": setup_cli_hint(),
         "logged_in": logged_in,
         "login_in_flight": login is not None,
-        # envs/default_env (from eligible_envs) stay the deploy-oriented view;
-        # `store` is the raw env store for the management table (all backends,
-        # each flagged hosted, plus the store's own default pointer).
-        **eligible_envs(),
+        # The raw env store view for the management table (all backends, each
+        # flagged hosted, plus the store's own default pointer). The deploy
+        # picker's derived view stays deploy's own (GET /api/deploy/config).
         "store": all_envs(),
+        "envs_file": envs_file(),
         "probe": None,
     }
     # The probe is pointless without credentials (it would just fail with
     # "not logged in") or without a CLI to run it.
     if probe and logged_in and cli["found"]:
-        payload["probe"] = _probe_orgs()
+        resolved = fused_cli()
+        payload["probe"] = (
+            _probe_orgs(resolved)
+            if resolved is not None
+            else _probe_failure("the fused CLI is no longer available")
+        )
     return payload
 
 
@@ -411,7 +439,16 @@ def status_payload(probe: bool) -> dict:
 
 
 @router.get("/api/account/status")
-def api_account_status(probe: str = "0"):
+def api_account_status(probe: str = "0", x_fused: str | None = Header(default=None)):
+    # The plain status is a cheap local read (files + find_spec) and stays an
+    # open GET like deploy's config. probe=1 EXECUTES — it spawns a
+    # `fused cloud orgs` child making a real control-plane call — so it takes
+    # the D36 guard: without it, any foreign page could loop no-preflight
+    # cross-origin GETs and turn this server into a subprocess/network spammer.
+    if probe == "1":
+        guard = _require_fused(x_fused)
+        if guard is not None:
+            return guard
     return status_payload(probe == "1")
 
 
@@ -456,7 +493,9 @@ def api_account_login(body: dict = Body(...), x_fused: str | None = Header(defau
             # most actionable message (cli_error also appends the packaged
             # app's wrapper path to `fused cloud login` instructions).
             return _error(cli_error(tail, "fused cloud login failed"), 502)
-        login.proc.terminate()
+        # Kill-and-confirm (daemon thread): a merely-SIGTERM'd child could
+        # keep its callback server alive and race a retried login.
+        _terminate_login(login, wait=False)
         return _error(
             f"`fused cloud login` did not print a sign-in URL within "
             f"{int(URL_CAPTURE_TIMEOUT)}s" + (f"; last output: {tail!r}" if tail else ""),
@@ -502,6 +541,18 @@ def api_account_setup(body: dict = Body(...), x_fused: str | None = Header(defau
     # burn its timeout.
     if not fused_cloud_logged_in():
         return _error("sign in to Fused first — environment setup needs a signed-in account", 409)
+    # Presence isn't proof: an expired credential with a dead refresh token
+    # passes the file check, and `cloud setup` would then drop into its own
+    # invisible login wait (~5 min of spinner for a guaranteed failure). One
+    # `cloud orgs` probe up front converts that into an immediate,
+    # actionable 409.
+    verified = _probe_orgs(cli)
+    if not verified["ok"]:
+        return _error(
+            "your Fused sign-in could not be verified — sign in again before setting "
+            f"up an environment ({verified['error']})",
+            409,
+        )
 
     global _setup
     with _SETUP_LOCK:
@@ -546,14 +597,26 @@ def api_account_setup_status():
     return {"state": job.state, "job_id": job.job_id, "env_name": job.env_name, "detail": detail}
 
 
+def _env_name_arg(body: dict) -> str | JSONResponse:
+    """The validated env name from an envs/* body, or the 400 to return.
+
+    Rejects flag-shaped names: the name lands in `fused env <verb> <name>`
+    argv, where "--help" would be parsed as an option (click prints help and
+    exits 0 — a silent no-op this endpoint would report as success)."""
+    name = body.get("name")
+    if not isinstance(name, str) or not name or name.startswith("-"):
+        return _error("'name' must be an environment name (it cannot start with '-')")
+    return name
+
+
 @router.post("/api/account/envs/default")
 def api_account_env_default(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    name = body.get("name")
-    if not isinstance(name, str) or not name:
-        return _error("'name' must be an environment name")
+    name = _env_name_arg(body)
+    if isinstance(name, JSONResponse):
+        return name
     err = _run_env_cmd(["default", name])
     if err is not None:
         return err
@@ -565,9 +628,9 @@ def api_account_env_delete(body: dict = Body(...), x_fused: str | None = Header(
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    name = body.get("name")
-    if not isinstance(name, str) or not name:
-        return _error("'name' must be an environment name")
+    name = _env_name_arg(body)
+    if isinstance(name, JSONResponse):
+        return name
     # `fused env delete --yes` forgets the LOCAL pointer only — no cloud
     # teardown, no key revocation (the CLI's own semantics; the UI copy and
     # the confirm dialog say so).

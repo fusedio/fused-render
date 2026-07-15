@@ -203,7 +203,8 @@ class Harness:
 
     def status(self, probe: bool = False) -> dict:
         url = "/api/account/status" + ("?probe=1" if probe else "")
-        resp = self.client.get(url)
+        # probe=1 executes (spawns `cloud orgs`) so it takes the D36 guard.
+        resp = self.client.get(url, headers=FUSED if probe else None)
         assert resp.status_code == 200, resp.text
         return resp.json()
 
@@ -260,9 +261,7 @@ def test_status_logged_out(tmp_path, monkeypatch):
     assert status["logged_in"] is False
     assert status["login_in_flight"] is False
     assert status["cli"]["found"] is True
-    assert status["setup_cli"] == "fused"
-    assert [e["name"] for e in status["envs"]] == ["cloud"]  # hosted only
-    assert status["default_env"] == "cloud"
+    assert status["envs_file"].endswith("envs.json")
     assert status["probe"] is None
     # `store` is the raw env store: every backend, hosted-flagged, with the
     # store's own default pointer.
@@ -271,6 +270,10 @@ def test_status_logged_out(tmp_path, monkeypatch):
         {"name": "cloud", "backend": "fused", "hosted": True},
         {"name": "dev", "backend": "local", "hosted": False},
     ]
+    # The deploy-oriented view (envs/default_env/setup_cli) belongs to
+    # GET /api/deploy/config, not here — no client read it from this payload.
+    for dead in ("envs", "default_env", "setup_cli"):
+        assert dead not in status
 
 
 def test_status_logged_in_via_credentials_presence(tmp_path, monkeypatch):
@@ -283,6 +286,17 @@ def test_status_probe_skipped_when_logged_out(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
     assert h.status(probe=True)["probe"] is None
     assert h.calls() == []  # no pointless `cloud orgs` child
+
+
+def test_status_probe_requires_guard_header(tmp_path, monkeypatch):
+    # probe=1 executes (a `cloud orgs` child with a control-plane call) — a
+    # foreign page must not be able to trigger it with a blind cross-origin
+    # GET. The plain status read stays open.
+    h = _harness(tmp_path, monkeypatch)
+    h.creds.write_text("{}", encoding="utf-8")
+    assert h.client.get("/api/account/status?probe=1").status_code == 403
+    assert h.client.get("/api/account/status").status_code == 200
+    assert h.calls() == []  # the guarded probe never spawned a child
 
 
 def test_status_probe_parses_orgs(tmp_path, monkeypatch):
@@ -472,6 +486,7 @@ def test_setup_requires_login(tmp_path, monkeypatch):
 def test_setup_happy_path_runs_cli_and_lands_the_env(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
     h.creds.write_text("{}", encoding="utf-8")
+    h.set_scenario({"orgs": {"admitted": True, "orgs": []}})
     resp = h.client.post("/api/account/setup", json={}, headers=FUSED)
     assert resp.status_code == 202, resp.text
     started = resp.json()
@@ -487,15 +502,16 @@ def test_setup_happy_path_runs_cli_and_lands_the_env(tmp_path, monkeypatch):
     assert job["env_name"] == "fused"
     assert "ready" in (job["detail"] or "")  # the CLI's own lines, in order
 
-    # The env the CLI wrote into envs.json shows through on the next status.
+    # The env the CLI wrote into envs.json shows through on the next status —
+    # hosted, i.e. deploy-eligible (the deploy picker reads the same store).
     status = h.status()
     assert {"name": "fused", "backend": "fused", "hosted": True} in status["store"]["envs"]
-    assert "fused" in [e["name"] for e in status["envs"]]
 
 
 def test_setup_org_env_and_name_derivation(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
     h.creds.write_text("{}", encoding="utf-8")
+    h.set_scenario({"orgs": {"admitted": True, "orgs": []}})
     resp = h.client.post(
         "/api/account/setup", json={"org": "acme", "env": "staging"}, headers=FUSED
     )
@@ -526,6 +542,7 @@ def test_setup_validation(tmp_path, monkeypatch):
 def test_setup_is_single_job(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
     h.creds.write_text("{}", encoding="utf-8")
+    h.set_scenario({"orgs": {"admitted": True, "orgs": []}})
     monkeypatch.setenv("FUSED_STUB_SETUP_MODE", "hang")
     first = h.client.post("/api/account/setup", json={}, headers=FUSED)
     assert first.status_code == 202
@@ -541,6 +558,7 @@ def test_setup_is_single_job(tmp_path, monkeypatch):
 def test_setup_failure_surfaces_cli_detail(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
     h.creds.write_text("{}", encoding="utf-8")
+    h.set_scenario({"orgs": {"admitted": True, "orgs": []}})
     monkeypatch.setenv("FUSED_STUB_SETUP_MODE", "fail")
     assert h.client.post("/api/account/setup", json={}, headers=FUSED).status_code == 202
     job = h.wait_setup(lambda j: j["state"] == "failed")
@@ -550,6 +568,7 @@ def test_setup_failure_surfaces_cli_detail(tmp_path, monkeypatch):
 def test_setup_allowed_again_after_a_finished_job(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
     h.creds.write_text("{}", encoding="utf-8")
+    h.set_scenario({"orgs": {"admitted": True, "orgs": []}})
     assert h.client.post("/api/account/setup", json={}, headers=FUSED).status_code == 202
     h.wait_setup(lambda j: j["state"] == "done")
     # A finished job doesn't block the next one (setup is idempotent CLI-side).
@@ -588,6 +607,25 @@ def test_env_delete_forgets_the_local_pointer(tmp_path, monkeypatch):
 def test_env_actions_validate_name(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
     for url in ("/api/account/envs/default", "/api/account/envs/delete"):
-        for bad in ({}, {"name": ""}, {"name": 7}):
+        # "--help" would be parsed as a click option (`fused env default
+        # --help` exits 0) — a silent no-op the endpoint would report as
+        # success; flag-shaped names must be rejected up front.
+        for bad in ({}, {"name": ""}, {"name": 7}, {"name": "--help"}, {"name": "-x"}):
             assert h.client.post(url, json=bad, headers=FUSED).status_code == 400, (url, bad)
     assert h.calls() == []
+
+
+def test_setup_rejects_unverifiable_signin(tmp_path, monkeypatch):
+    # Presence isn't proof: expired-with-dead-refresh credentials pass the
+    # file check, and `cloud setup` would then hang ~5 min on an invisible
+    # login wait. The up-front `cloud orgs` verification converts that into
+    # an immediate 409 naming the fix.
+    h = _harness(tmp_path, monkeypatch)
+    h.creds.write_text("{}", encoding="utf-8")  # present but unverifiable
+    # scenario has no "orgs" -> the stub's `cloud orgs` exits 1
+    resp = h.client.post("/api/account/setup", json={}, headers=FUSED)
+    assert resp.status_code == 409
+    assert "sign in again" in resp.json()["error"]
+    verbs = [c["argv"][:2] for c in h.calls()]
+    assert ["cloud", "setup"] not in verbs  # never spawned the doomed job
+    assert h.setup_status()["state"] == "idle"

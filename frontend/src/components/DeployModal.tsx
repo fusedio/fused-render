@@ -25,6 +25,7 @@ import {
 import type { DeployConfig, DeployPreview, Deployment } from "../lib/api";
 import { useFusedLogin } from "../lib/account";
 import { basename } from "../lib/format";
+import { useRefreshOnReturn } from "../lib/hooks";
 import { navigateUrl } from "../lib/router";
 
 interface DeployModalProps {
@@ -213,21 +214,10 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   // (which re-reads on focus) and the open modal would contradict each other
   // (#5). A *background* refresh: it updates in place without flashing the
   // form to "Loading…" or replacing it with an error. loadSeq keeps a focus
-  // load from racing the mount load. Subscribed once — freshness comes from
-  // the refs, not the dep array.
-  useEffect(() => {
-    const refresh = () => {
-      if (busyRef.current === null && document.visibilityState === "visible") {
-        void loadRef.current(true);
-      }
-    };
-    window.addEventListener("focus", refresh);
-    document.addEventListener("visibilitychange", refresh);
-    return () => {
-      window.removeEventListener("focus", refresh);
-      document.removeEventListener("visibilitychange", refresh);
-    };
-  }, []);
+  // load from racing the mount load; freshness comes from the refs.
+  useRefreshOnReturn(() => {
+    if (busyRef.current === null) void loadRef.current(true);
+  });
 
   // Escape closes. Allowed even mid-action (#12): the action continues
   // server-side and onChange still updates the header dot, so the user is
@@ -417,14 +407,16 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
               >
                 Set up hosted environment
               </button>
-              <span className="deploy-muted">
-                opens the Fused account page (self-hosted AWS still goes through{" "}
-                <code>{config.setup_cli} env create</code> in a terminal)
-              </span>
+              <span className="deploy-muted">opens the Fused account page</span>
             </div>
           )}
+          {/* Unconditional: an AWS-only user who is signed out must still be
+              told how to create their env without an irrelevant managed-cloud
+              sign-in. */}
           <p className="deploy-muted">
-            Environments are read from <code>{config.envs_file}</code>.
+            Self-hosted AWS environments are created in a terminal with{" "}
+            <code>{config.setup_cli} env create</code>. Environments are read from{" "}
+            <code>{config.envs_file}</code>.
           </p>
           <button type="button" onClick={() => load()}>
             Re-check

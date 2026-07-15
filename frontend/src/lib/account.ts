@@ -10,6 +10,7 @@
 // logged_in) and surfaces that instead of spinning forever.
 import { useEffect, useRef, useState } from "react";
 import { cancelAccountLogin, getAccountStatus, startAccountLogin } from "./api";
+import { useRefreshOnReturn } from "./hooks";
 
 const POLL_MS = 2000;
 
@@ -23,33 +24,31 @@ export function notifyAccountChanged() {
 }
 
 // The sidebar's signed-in signal: the cheap presence-only `logged_in` flag,
-// re-read on focus/visibility regain (the deploy-dot cadence) and on the
-// notifyAccountChanged signal, so a sign-in or sign-out — in this tab or any
-// other — shows through without a remount. Errors leave the last-known value
-// (a blip must not flicker the dot).
+// re-read on focus/visibility regain (useRefreshOnReturn — the deploy-dot
+// cadence) and on the notifyAccountChanged signal, so a sign-in or sign-out
+// — in this tab or any other — shows through without a remount. Errors leave
+// the last-known value (a blip must not flicker the dot).
 export function useAccountLoggedIn(): boolean {
   const [loggedIn, setLoggedIn] = useState(false);
+  const alive = useRef(true);
+  useEffect(() => () => {
+    alive.current = false;
+  }, []);
+  const refresh = () => {
+    getAccountStatus().then(
+      (s) => {
+        if (alive.current) setLoggedIn(s.logged_in);
+      },
+      () => {}
+    );
+  };
+  useRefreshOnReturn(refresh);
   useEffect(() => {
-    let alive = true;
-    const refresh = () => {
-      if (document.visibilityState !== "visible") return;
-      getAccountStatus().then(
-        (s) => {
-          if (alive) setLoggedIn(s.logged_in);
-        },
-        () => {}
-      );
-    };
-    refresh();
-    window.addEventListener("focus", refresh);
-    window.addEventListener(ACCOUNT_EVENT, refresh);
-    document.addEventListener("visibilitychange", refresh);
-    return () => {
-      alive = false;
-      window.removeEventListener("focus", refresh);
-      window.removeEventListener(ACCOUNT_EVENT, refresh);
-      document.removeEventListener("visibilitychange", refresh);
-    };
+    refresh(); // initial read
+    const onChange = () => refresh();
+    window.addEventListener(ACCOUNT_EVENT, onChange);
+    return () => window.removeEventListener(ACCOUNT_EVENT, onChange);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   return loggedIn;
 }

@@ -27,6 +27,7 @@ import {
 } from "../lib/api";
 import type { AccountSetupStatus, AccountStatus } from "../lib/api";
 import { notifyAccountChanged, useFusedLogin } from "../lib/account";
+import { useRefreshOnReturn } from "../lib/hooks";
 
 // The managed-env setup panel: pick the workspace (when the account has more
 // than one), name the env, run `fused cloud setup` as a tracked server job,
@@ -218,15 +219,32 @@ export default function Account() {
   // refresh racing a slow probe) must not land its stale response over a
   // newer one.
   const loadSeq = useRef(0);
-  const load = async (background = false) => {
+  // Latest status for load()'s probe-caching decision (state reads inside an
+  // async fn would be stale), and the last-seen logged_in for flip detection.
+  const statusRef = useRef<AccountStatus | null>(null);
+  statusRef.current = status;
+  const wasLoggedIn = useRef<boolean | null>(null);
+  const load = async (background = false, reprobe = false) => {
     const seq = ++loadSeq.current;
     if (!background) setLoadError(null);
     try {
       const fast = await getAccountStatus();
       if (!alive.current || seq !== loadSeq.current) return;
-      setStatus(fast);
+      // The deep probe (`fused cloud orgs`) is a control-plane call — don't
+      // re-issue it on every focus/visibility refresh. A background refresh
+      // keeps the orgs view it already has; the probe re-runs only when
+      // missing (initial load, or right after a sign-in) or when the caller
+      // forces it (reprobe — e.g. setup may have created a workspace).
+      const keptProbe = background && !reprobe ? (statusRef.current?.probe ?? null) : null;
+      setStatus(keptProbe ? { ...fast, probe: keptProbe } : fast);
       setLoadError(null);
-      if (fast.logged_in && fast.cli.found) {
+      // Same-tab sidebar dot: announce sign-in state flips observed here —
+      // a login completed from another page/tab has no other channel to it.
+      if (wasLoggedIn.current !== null && wasLoggedIn.current !== fast.logged_in) {
+        notifyAccountChanged();
+      }
+      wasLoggedIn.current = fast.logged_in;
+      if (fast.logged_in && fast.cli.found && !keptProbe) {
         setProbing(true);
         try {
           const full = await getAccountStatus(true);
@@ -256,17 +274,7 @@ export default function Account() {
   // round-trip lands in ANOTHER tab and the user comes back to this one.
   const loadRef = useRef(load);
   loadRef.current = load;
-  useEffect(() => {
-    const refresh = () => {
-      if (document.visibilityState === "visible") void loadRef.current(true);
-    };
-    window.addEventListener("focus", refresh);
-    document.addEventListener("visibilitychange", refresh);
-    return () => {
-      window.removeEventListener("focus", refresh);
-      document.removeEventListener("visibilitychange", refresh);
-    };
-  }, []);
+  useRefreshOnReturn(() => void loadRef.current(true));
 
   // A sign-in can be in flight without this page having started it (the
   // Deploy modal, or another tab): poll until it resolves either way. The
@@ -300,6 +308,7 @@ export default function Account() {
       const fresh = await accountLogout();
       if (!alive.current) return;
       setStatus(fresh);
+      wasLoggedIn.current = fresh.logged_in; // keep the flip detector honest
       notifyAccountChanged(); // the sidebar dot must drop without a refocus
     } catch (e) {
       if (alive.current) {
@@ -316,7 +325,10 @@ export default function Account() {
     setEnvError(null);
     try {
       const fresh = await action();
-      if (alive.current) setStatus(fresh);
+      // The env endpoints answer probe-less — keep the orgs view we already
+      // have (make-default/forget don't change org membership), or the
+      // signed-in summary and workspace picker would vanish on every click.
+      if (alive.current) setStatus((prev) => (prev?.probe ? { ...fresh, probe: prev.probe } : fresh));
     } catch (e) {
       if (alive.current) setEnvError((e as Error).message);
     } finally {
@@ -572,8 +584,10 @@ export default function Account() {
                 // Pin the panel open BEFORE the refresh: the env landing
                 // flips hasManaged, which would otherwise collapse the panel
                 // and destroy its success note the moment setup finishes.
+                // reprobe: a self-serve setup may have just created the
+                // personal workspace the orgs table shows.
                 setShowSetup(true);
-                void load(true);
+                void load(true, true);
               }}
             />
           )}

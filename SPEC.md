@@ -1595,12 +1595,16 @@ provisioning stays a documented terminal flow.
   deploy-dot affordance): the presence-only `logged_in` signal, re-read on
   focus/visibility regain, errors keeping the last-known value.
 - **AC-2** `GET /api/account/status` composes: `cli` (DP-4's `cli_status`
-  shape), `setup_cli` (DP-16), `logged_in` (DP-2b's presence signal),
-  `login_in_flight` (a login child is live), the DP-5/DP-6 deploy view
-  (`envs`/`default_env`/`envs_file`), `store` (the RAW env store: every
-  backend, each entry flagged `hosted`, plus the store's own `default`
-  pointer — distinct from DP-6's derivation), and `probe` (null unless
-  requested). `?probe=1` — only when logged in and a CLI exists — shells
+  shape), `logged_in` (DP-2b's presence signal), `login_in_flight` (a login
+  child is live), `envs_file`, `store` (the RAW env store: every backend,
+  each entry flagged `hosted`, plus the store's own `default` pointer —
+  distinct from DP-6's derivation; the deploy picker's derived view stays on
+  `GET /api/deploy/config`), and `probe` (null unless requested). The plain
+  read is an open GET like deploy's config; `?probe=1` EXECUTES (it spawns a
+  control-plane child) and therefore carries the D36 X-Fused guard — a
+  foreign page must not be able to trigger subprocess/network work with
+  blind cross-origin GETs. `?probe=1` — only when logged in and a CLI
+  exists — shells
   `fused cloud orgs` (the authoritative check: it exercises/refreshes the
   token): `{ok, admitted, orgs: [{org, env, provision_state, role}], error}`;
   a probe failure degrades to `ok: false` with the CLI's message via the
@@ -1623,7 +1627,10 @@ provisioning stays a documented terminal flow.
   server. The capture window is 30s (a COLD external CLI compiles bytecode on
   first run; observed >15s); a child that exits **without** a URL fails the
   request immediately (an exit watcher wakes waiters — no burning the
-  window), 502 carrying the CLI's last line via the DP-2b mapping.
+  window), 502 carrying the CLI's last line via the DP-2b mapping. Every
+  kill path confirms death (SIGTERM → SIGKILL escalation, inline or on a
+  daemon thread): a merely-SIGTERM'd child could keep its callback server
+  alive and complete a late round-trip against a retried login.
 - **AC-4** Completion is **polled, not pushed**: the client polls status
   (~2s) until `logged_in` flips; the CLI child owns the OAuth round-trip
   (localhost callback, self-terminating after ~5min). A child that exits
@@ -1644,7 +1651,10 @@ provisioning stays a documented terminal flow.
   **the one tracked background job**: 202 `{job_id, env_name}`; 409 when a
   job is already running, and 409 when signed out — the interactive login
   flow lives in ONE place (AC-3); a setup child silently waiting on a
-  sign-in URL nobody sees would just burn its timeout. `org`/`env` go
+  sign-in URL nobody sees would just burn its timeout. Presence isn't
+  proof: before spawning, the sign-in is VERIFIED with one `cloud orgs`
+  probe, so an expired credential with a dead refresh token gets an
+  immediate actionable 409 instead of ~5 minutes of doomed spinner. `org`/`env` go
   together (both or neither — omitting them lets the CLI discover the
   account's workspace, self-creating a personal org for an admitted org-less
   account); `env_name` is validated as a single safe token and defaults to
@@ -1667,8 +1677,12 @@ provisioning stays a documented terminal flow.
   `fused env default NAME`; `POST /api/account/envs/delete {name}` →
   `fused env delete NAME --yes` — the CLI's **local-pointer-only** delete
   (no cloud teardown, no key revocation), stated in the confirm dialog and
-  the table copy. Both return fresh status so the client updates in one
-  round-trip.
+  the table copy. Names are rejected when flag-shaped (leading `-`): the
+  name lands in argv, where `--help` would be parsed as a click option that
+  exits 0 — a silent no-op the endpoint would report as success. Both
+  return fresh status so the client updates in one round-trip; the client
+  merges it over its cached probe (env actions don't change org
+  membership), so the signed-in summary never flickers away.
 
 ### 27.4 Page & Deploy-modal behavior
 
@@ -1682,12 +1696,20 @@ provisioning stays a documented terminal flow.
   picker only when the account has >1 org/env, self-serve
   personal-workspace copy when it has none, prefilled editable env name,
   live progress log; prominent while no managed env exists, else collapsed
-  behind an "Add managed environment" toggle.
+  behind an "Add managed environment" toggle. The deep probe is CACHED:
+  focus/visibility refreshes re-read only the cheap presence status and
+  keep the orgs view they have, re-probing only when it is missing (initial
+  load, right after a sign-in) or forced (setup completion — self-serve may
+  have created the workspace); all return-to-tab refreshes ride the shared
+  `useRefreshOnReturn` hook (lib/hooks.ts), which coalesces the double
+  focus+visibilitychange firing.
 - **AC-9** The Deploy modal never dead-ends into a terminal for the managed
   path: its signed-out warning carries the working sign-in button (DP-2b as
   amended), and its no-envs state signs in in place or routes to the account
   page's setup panel. AWS env creation keeps naming
-  `<setup_cli> env create` — out of scope by the §27 scope line.
+  `<setup_cli> env create` — out of scope by the §27 scope line — and that
+  hint renders in BOTH branches: an AWS-only user who is signed out must
+  not be funneled into an irrelevant managed-cloud sign-in to learn it.
 
 ### 27.5 Trust & credentials
 

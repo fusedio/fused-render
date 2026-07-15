@@ -190,26 +190,18 @@ def all_envs() -> dict:
 def eligible_envs() -> dict:
     """Hosted envs from the fused store + the picker's default.
 
-    Reads ~/.openfused/envs.json directly (like the flow app's readEnvs) so
-    the picker renders even when the CLI is not installed yet. Default pick:
-    OPENFUSED_ENV when it names an eligible env (explicit intent for this
-    process), else the first `fused`-backend env — preferring the store's own
-    default when that is one — else the store default, else the first eligible.
+    The deploy-picker view over one all_envs() read (a direct store read,
+    like the flow app's readEnvs, so the picker renders even when the CLI is
+    not installed yet). Default pick: OPENFUSED_ENV when it names an eligible
+    env (explicit intent for this process), else the first `fused`-backend
+    env — preferring the store's own default when that is one — else the
+    store default, else the first eligible.
     """
-    data = storage.read_json(envs_file())
-    raw_envs = data.get("envs") if isinstance(data, dict) else None
-    envs = []
-    if isinstance(raw_envs, dict):
-        for entry in raw_envs.values():
-            if not isinstance(entry, dict):
-                continue
-            name, backend = entry.get("name"), entry.get("backend")
-            if isinstance(name, str) and backend in HOSTED_BACKENDS:
-                envs.append({"name": name, "backend": backend})
-    envs.sort(key=lambda e: e["name"])
+    store = all_envs()
+    envs = [{"name": e["name"], "backend": e["backend"]} for e in store["envs"] if e["hosted"]]
 
     by_name = {e["name"]: e for e in envs}
-    store_default = data.get("default") if isinstance(data, dict) else None
+    store_default = store["default"]
     fused_backed = [e["name"] for e in envs if e["backend"] == "fused"]
 
     default = None

@@ -65,8 +65,8 @@ export interface StatResult {
   template_error?: string;
 }
 
-async function getJson<T>(url: string): Promise<T> {
-  const res = await fetch(url);
+async function getJson<T>(url: string, headers?: Record<string, string>): Promise<T> {
+  const res = await fetch(url, headers ? { headers } : undefined);
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data as T;
@@ -425,18 +425,15 @@ export interface StoreEnv {
 
 export interface AccountStatus {
   cli: DeployCli;
-  setup_cli: string;
   // Presence of the CLI's credentials file — cheap and optimistic (the CLI
   // refreshes an expired token itself); `probe` is the authoritative check.
   logged_in: boolean;
   // A `fused cloud login` child is currently waiting on its browser round-trip.
   login_in_flight: boolean;
-  envs: DeployEnv[];
-  default_env: string | null;
   envs_file: string;
   // The raw env store for the management table: every backend, plus the
-  // store's own default pointer (default_env above is the deploy-picker
-  // derivation, a different thing).
+  // store's own default pointer. (The deploy picker's derived view lives on
+  // DeployConfig, not here.)
   store: { envs: StoreEnv[]; default: string | null };
   probe: AccountProbe | null;
 }
@@ -452,7 +449,11 @@ export interface AccountSetupStatus {
 }
 
 export function getAccountStatus(probe = false): Promise<AccountStatus> {
-  return getJson<AccountStatus>("/api/account/status" + (probe ? "?probe=1" : ""));
+  // probe=1 EXECUTES server-side (spawns a `fused cloud orgs` control-plane
+  // call), so unlike the plain status read it carries the D36 guard header.
+  return probe
+    ? getJson<AccountStatus>("/api/account/status?probe=1", { "X-Fused": "1" })
+    : getJson<AccountStatus>("/api/account/status");
 }
 
 // Start (or join — one login at a time) the CLI's browser sign-in and return
