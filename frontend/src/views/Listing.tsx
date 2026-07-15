@@ -30,7 +30,7 @@ import { getViewState, setViewState } from "../lib/viewstate";
 import { getClipboard, setClipboard, useClipboard } from "../lib/fs-clipboard";
 import ContextMenu, { type MenuEntry, type MenuItem } from "../components/ContextMenu";
 import { MenuIcons } from "../components/MenuIcons";
-import { PromptDialog, ConfirmDialog } from "../components/FsDialogs";
+import { PromptDialog, ConfirmDialog, nameError } from "../components/FsDialogs";
 import { KNOWN_SENTINEL_MODES, modeTitle, templateModeIcon } from "../components/ModeSwitcher";
 
 // Parent directory of an absolute path, in the shell's canonical forward-slash
@@ -774,6 +774,27 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     }
   };
 
+  // Belt-and-braces name guard for the New File / New Folder / Rename handlers:
+  // the dialog already blocks invalid names, but re-check here (and toast) before
+  // building a path so a "." / ".." / separator can never escape the folder.
+  // Returns true when the name is rejected (caller should bail).
+  const rejectName = (name: string): boolean => {
+    const err = nameError(name);
+    if (err) setToast({ msg: err, tone: "error" });
+    return err !== null;
+  };
+
+  // After a successful delete/trash, drop the module clipboard if it points at
+  // the removed entry — either the exact path, or something inside it when a
+  // directory was deleted (prefix + separator). Otherwise a later Paste of that
+  // cut/copy would target a source that no longer exists.
+  const clearClipboardIfDeleted = (deleted: string) => {
+    const clip = getClipboard();
+    if (clip && (clip.path === deleted || clip.path.startsWith(deleted + "/"))) {
+      setClipboard(null);
+    }
+  };
+
   // Guards a paste that's still running so a second Paste gesture (a rapid
   // Cmd+V×2) can't fire a parallel op on the same source — for a cut that
   // second call would renameEntry an already-moved src and 404 with a jarring
@@ -792,8 +813,19 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     if (op === "cut") setClipboard(null); // consume atomically, before any await
     pasteInFlight.current = true;
     run(async () => {
-      if (op === "cut") await renameEntry(src, dst);
-      else await copyEntry(src, dst);
+      if (op === "cut") {
+        try {
+          await renameEntry(src, dst);
+        } catch (e) {
+          // The move was rejected (e.g. a 409/403); the pre-clear above dropped
+          // the clipboard, so re-set it to the same cut and let run() toast the
+          // error. Without this the user would have to re-cut before retrying.
+          setClipboard({ path: src, op: "cut" });
+          throw e;
+        }
+      } else {
+        await copyEntry(src, dst);
+      }
     }).finally(() => {
       pasteInFlight.current = false;
     });
@@ -835,7 +867,12 @@ export default function Listing({ fsPath }: { fsPath: string }) {
       title: "New File",
       initial: "untitled.txt",
       confirmLabel: "Create",
-      onConfirm: (name) => run(() => writeFile(dir + "/" + name, "")),
+      onConfirm: (name) => {
+        if (rejectName(name)) return;
+        // create=true: refuse (409 "conflict", surfaced as an error toast) if a
+        // file with this name already exists, so New File never clobbers it.
+        run(() => writeFile(dir + "/" + name, "", true));
+      },
     });
 
   const startNewFolder = (dir: string) =>
@@ -844,7 +881,10 @@ export default function Listing({ fsPath }: { fsPath: string }) {
       title: "New Folder",
       initial: "untitled folder",
       confirmLabel: "Create",
-      onConfirm: (name) => run(() => mkdir(dir + "/" + name)),
+      onConfirm: (name) => {
+        if (rejectName(name)) return;
+        run(() => mkdir(dir + "/" + name));
+      },
     });
 
   const startRename = (row: RowCtx) =>
@@ -856,6 +896,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
       selectStem: true,
       onConfirm: (name) => {
         if (name === row.name) return;
+        if (rejectName(name)) return;
         const dst = row.parentDir + "/" + name;
         run(async () => {
           await renameEntry(row.path, dst);
@@ -876,7 +917,11 @@ export default function Listing({ fsPath }: { fsPath: string }) {
       confirmLabel: "Delete",
       danger: true,
       // recursive=true for a directory (its contents were named in the message).
-      onConfirm: () => run(() => deleteEntry(row.path, row.isDir)),
+      onConfirm: () =>
+        run(async () => {
+          await deleteEntry(row.path, row.isDir);
+          clearClipboardIfDeleted(row.path);
+        }),
     });
 
   // Move to Bin: a recoverable delete (macOS Trash), so no confirm dialog.
@@ -887,6 +932,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     deleteEntry(row.path, row.isDir, true).then(
       () => {
         setToast({ msg: "Moved to Bin", tone: "info" });
+        clearClipboardIfDeleted(row.path);
         refetch();
       },
       (e: Error) => {

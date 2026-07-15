@@ -439,8 +439,10 @@ export function revealPath(fsPath: string): Promise<void> {
 
 // Create (or overwrite) a plain file. Used for "New File…" with empty content;
 // the parent directory must already exist (the server does not mkdir -p).
-export function writeFile(path: string, content = ""): Promise<StatResult> {
-  return postJson<StatResult>("/api/fs/write", { path, content });
+// With create=true the write refuses (409 "conflict") when the path already
+// exists, so "New File" can't silently clobber an existing file.
+export function writeFile(path: string, content = "", create = false): Promise<StatResult> {
+  return postJson<StatResult>("/api/fs/write", { path, content, create });
 }
 
 // Create a single directory (no mkdir -p — a missing parent is a 400).

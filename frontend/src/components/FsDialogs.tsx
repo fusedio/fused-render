@@ -8,6 +8,21 @@
 //     non-empty directory is spelled out in the message the caller passes).
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
+// Validate a single path SEGMENT (a file/folder name, never a path). Returns an
+// inline error message or null when the (already-trimmed) name is usable. Beyond
+// empty and "/", it rejects "." and ".." (which would resolve to the folder or
+// its parent — a directory escape), a backslash (a path separator on the server's
+// OS, and confusing everywhere), and any embedded null char. Shared with
+// Listing.tsx so its handlers guard before building a path.
+export function nameError(trimmed: string): string | null {
+  if (trimmed === "") return "Name can't be empty";
+  if (trimmed === "." || trimmed === "..") return 'Name can\'t be "." or ".."';
+  if (trimmed.includes("/")) return 'Name can\'t contain "/"';
+  if (trimmed.includes("\\")) return "Name can't contain \"\\\"";
+  if (trimmed.includes("\0")) return "Name can't contain a null character";
+  return null;
+}
+
 function Overlay({ onCancel, children }: { onCancel: () => void; children: ReactNode }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -73,7 +88,7 @@ export function PromptDialog({
   }, [initialValue, selectStem]);
 
   const trimmed = value.trim();
-  const error = trimmed === "" ? "Name can't be empty" : trimmed.includes("/") ? 'Name can\'t contain "/"' : null;
+  const error = nameError(trimmed);
 
   const submit = () => {
     if (error) return;

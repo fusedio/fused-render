@@ -92,3 +92,19 @@ def test_write_creates_new_file_in_writable_dir(tmp_path):
     out = _data(_write(f, "hello"))
     assert f.read_text() == "hello"
     assert out["writable"] is True
+
+
+# ----------------------------------------------------- create guard (New File)
+
+def test_write_create_conflicts_on_existing_file(target):
+    resp = _write(target, "clobbered", create=True)
+    assert _status(resp) == 409
+    assert _data(resp)["error"] == "conflict"
+    assert target.read_text() == "original"  # bytes untouched
+
+
+def test_write_create_ok_for_new_file(tmp_path):
+    f = tmp_path / "fresh.txt"
+    out = _data(_write(f, "hi", create=True))
+    assert f.read_text() == "hi"
+    assert out["writable"] is True

@@ -1076,6 +1076,10 @@ def _fs_write(body: dict, x_fused: str | None):
     path = body.get("path")
     content = body.get("content")
     expected_mtime = body.get("expected_mtime")
+    # New File / "must not clobber" callers set create=true: an existing path
+    # is a 409 conflict (same wire string as rename/copy/mkdir) instead of a
+    # silent overwrite.
+    create = bool(body.get("create"))
 
     if not path or not os.path.isabs(path):
         return _error("'path' must be an absolute filesystem path")
@@ -1100,6 +1104,8 @@ def _fs_write(body: dict, x_fused: str | None):
     # clobber someone else's write. Compare against the raw st_mtime float
     # that /api/fs/stat returns, with a tolerance for float round-tripping.
     exists = os.path.exists(path)
+    if create and exists:
+        return JSONResponse({"error": "conflict"}, status_code=409)
     if expected_mtime is not None:
         if not exists:
             return JSONResponse({"error": "conflict", "mtime": None}, status_code=409)
