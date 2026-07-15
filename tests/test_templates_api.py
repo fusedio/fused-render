@@ -833,6 +833,24 @@ def test_new_template_duplicate_conflicts_409(ctx):
     assert "already exists" in resp.json()["error"]
 
 
+def test_new_template_copytree_failure_cleans_up(ctx, monkeypatch):
+    # A mid-copy failure must not leave a half-created folder behind, and the
+    # caller gets a clean error rather than an unhandled 500 traceback.
+    def boom(src, dst, *args, **kwargs):
+        os.makedirs(dst, exist_ok=True)  # partial folder, as a real copy would
+        raise OSError("disk full")
+
+    monkeypatch.setattr(templates_api.shutil, "copytree", boom)
+    resp = ctx.client.post(
+        "/api/templates/new", json={"name": "doomed", "extensions": [".x"]}, headers=FUSED
+    )
+    assert resp.status_code == 400
+    assert "failed to create template" in resp.json()["error"]
+    # The half-created folder was removed and no binding was written.
+    assert not (ctx.udir / "doomed").exists()
+    assert not (ctx.udir / "registry.json").exists()
+
+
 def test_new_template_rejects_bad_name(ctx):
     for bad in ("has/slash", "has.dot", "_leading", ""):
         resp = ctx.client.post(

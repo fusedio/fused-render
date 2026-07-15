@@ -874,7 +874,16 @@ def api_new_template(body: dict = Body(...), x_fused: str | None = Header(defaul
     reg = reg if isinstance(reg, dict) else {}
 
     os.makedirs(server.USER_TEMPLATES_DIR, exist_ok=True)
-    shutil.copytree(_STARTER_KIT_DIR, dest)
+    try:
+        shutil.copytree(_STARTER_KIT_DIR, dest)
+    except FileExistsError:
+        # TOCTOU: dest was created between the exists-check above and here.
+        return _error(f"a user template named {name!r} already exists", status=409)
+    except Exception as exc:
+        # A partial copy leaves a half-created folder behind; remove it so a
+        # retry sees a clean slate and the exists-check stays meaningful.
+        shutil.rmtree(dest, ignore_errors=True)
+        return _error(f"failed to create template {name!r}: {exc}")
 
     for key in keys:
         _apply_binding(reg, key, [name])
