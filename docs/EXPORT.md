@@ -120,3 +120,25 @@ add files from the page's folder, add everything, remove a file, or reset to the
 auto-detected default — and persists the selection on the deployment record so a
 reopened modal reloads it. `/api/export` exposes the same two fields for driving a
 bundle by hand.
+
+### Reading a bundled file from a `runPython` entrypoint
+
+Included data is not placed beside your `.py` at the top level of the served
+runtime — the hosting layer materializes every bundled asset under an `assets/`
+prefix in the entrypoint's working directory (keyed by the manifest `name`, the
+same key `fused.rawUrl`/`readFile` use). So from entrypoint Python, a bare
+`open("data.csv")` will **not** find it. Read it via the injected `openfused`
+helper, which anchors an absolute path at the runtime's project root:
+
+```python
+import openfused
+
+def main():
+    return open(openfused.asset_path("data.csv")).read()   # <root>/assets/data.csv
+    # a nested include works the same: openfused.asset_path("tiles", "0.png")
+```
+
+`open("assets/data.csv")` (relative to the working directory) also resolves, but
+`asset_path(...)` is the stable form and matches how the `_asset` route serves the
+same bytes to the browser. This `assets/` location is set by the hosting layer's
+resource scheme, not by where the bundle physically stores the file.
