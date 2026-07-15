@@ -2856,6 +2856,143 @@ body.embed .preview-browse-chip:hover {
   font-size: 12px;
 }
 
+/* Recommended-binding chips (import wizard step 2). */
+.templates-recs-toggle {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.templates-recs-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.templates-recs-subline {
+  font-size: 12px;
+}
+
+/* The strip visually belongs to the manifest row above it: dashed separator
+   instead of the table's solid row border. */
+.templates-import-table tr.templates-rec-strip td {
+  border-top: 1px dashed var(--border);
+  padding: 5px 0 8px;
+}
+
+.templates-rec-strip.inert .templates-rec-row,
+.templates-rec-strip.inert .templates-rec-warn {
+  opacity: 0.45;
+}
+
+.templates-rec-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.templates-rec-label {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+/* Chips fight the generic .deploy-body button skin (see note below) — match
+   its specificity and re-assert the pill look for both <button> and <span>. */
+.deploy-body .templates-rec-chip,
+.templates-rec-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  padding: 2px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: none;
+  color: var(--fg-muted);
+  align-self: auto;
+}
+
+.deploy-body button.templates-rec-chip {
+  cursor: pointer;
+}
+
+.deploy-body button.templates-rec-chip:hover:not(:disabled) {
+  background: none;
+  border-color: var(--fg-muted);
+}
+
+.deploy-body button.templates-rec-chip.on {
+  border-color: rgba(229, 255, 68, 0.5);
+  background: rgba(229, 255, 68, 0.07);
+  color: var(--accent);
+}
+
+.deploy-body button.templates-rec-chip.on:hover:not(:disabled) {
+  background: rgba(229, 255, 68, 0.12);
+  border-color: var(--accent);
+}
+
+.templates-rec-chip.off .templates-rec-key {
+  text-decoration: line-through;
+}
+
+.deploy-body button.templates-rec-chip.add {
+  border-style: dashed;
+}
+
+.templates-rec-badge {
+  display: inline-block;
+  font-family: system-ui, sans-serif;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.templates-rec-badge.bound {
+  color: #86d786;
+}
+
+.templates-rec-badge.disabled {
+  color: #dfb054;
+}
+
+.deploy-body .templates-rec-add-input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  width: 90px;
+  padding: 2px 9px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--bg-alt);
+  color: var(--fg);
+}
+
+.deploy-body .templates-rec-add-input:focus {
+  outline: none;
+}
+
+.deploy-body .templates-rec-add-input.err {
+  border-color: var(--error);
+}
+
+.templates-rec-warn {
+  margin-top: 5px;
+  font-size: 11px;
+  color: #dfb054;
+}
+
+.templates-result-bindings {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
 .templates-result {
   display: flex;
   flex-direction: column;

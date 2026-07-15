@@ -665,6 +665,18 @@ export function deleteTemplate(name: string): Promise<{ deleted: string }> {
   return postJson<{ deleted: string }>("/api/templates/delete", { name });
 }
 
+// Author-recommended binding key for a staged template (from the bundle's
+// recommendation.json). Status reflects this machine's registry:
+//   new           — key not bound here yet (accepted by default)
+//   already-bound — this template is already on that key (no-op, informational)
+//   disabled      — the user disabled this key locally (off by default)
+export type RecommendedKeyStatus = "new" | "already-bound" | "disabled";
+
+export interface RecommendedKey {
+  key: string;
+  status: RecommendedKeyStatus;
+}
+
 // One candidate template found in an uploaded zip (a top-level directory).
 export interface ImportItem {
   name: string;
@@ -672,6 +684,7 @@ export interface ImportItem {
   hasTemplateHtml: boolean;
   conflictsExisting: boolean; // a user folder of this name already exists
   fileCount: number;
+  recommendedKeys?: RecommendedKey[];
 }
 
 // Step 1 of import: staged, not yet committed.
@@ -690,6 +703,9 @@ export interface ImportCommitResult {
   skipped: string[];
   overwritten: string[];
   renamed: Record<string, string>;
+  // Bindings the commit applied (key → FINAL template name, after any
+  // keep-both rename). Absent/empty when no bindings were requested.
+  bindingsApplied?: { key: string; template: string }[];
 }
 
 // Stage an import zip (step 1). Multipart — the browser sets the multipart
@@ -709,13 +725,16 @@ export async function importTemplates(file: File): Promise<ImportStageResult> {
 }
 
 // Commit a staged import (step 2): resolve conflicts and move into place.
+// `bindings` maps ORIGINAL staged names (even for keep-both renames — the
+// server maps to the final name) to the registry keys to bind.
 export function commitImport(
   importId: string,
   resolutions: Record<string, ImportResolution>,
+  bindings?: Record<string, string[]>,
 ): Promise<ImportCommitResult> {
   return postJson<ImportCommitResult>(
     "/api/templates/import/" + encodeURIComponent(importId) + "/commit",
-    { resolutions },
+    bindings ? { resolutions, bindings } : { resolutions },
   );
 }
 

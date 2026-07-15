@@ -24,6 +24,7 @@ value from the highest-precedence source that defines it (user beats core).
 from __future__ import annotations
 
 import io
+import json
 import os
 import re
 import secrets
@@ -435,6 +436,25 @@ def api_reset_registry(body: dict = Body(...), x_fused: str | None = Header(defa
 
 # -- routes: export -----------------------------------------------------------
 
+# Name of the sidecar written at the zip root by export and read back by import
+# staging: the exported templates' registry bindings, carried as
+# RECOMMENDATIONS (the importer chooses which to apply at commit) — never as
+# registry rows to merge blindly.
+_REC_FILENAME = "recommendation.json"
+
+
+def _recommendations_for(names: list) -> dict:
+    """template name -> sorted registry keys whose EFFECTIVE (merged,
+    user-over-core) binding list contains it. Names with zero bindings are
+    omitted; both levels are sorted so the sidecar is deterministic."""
+    bindings = _effective_bindings()
+    recs = {}
+    for name in sorted(names):
+        keys = sorted(k for k, ns in bindings.items() if name in ns)
+        if keys:
+            recs[name] = keys
+    return recs
+
 
 def _resolve_export_folder(name: str) -> str | None:
     """Resolve `name` to its template folder for export (SPEC §2.5): user
@@ -485,6 +505,12 @@ def api_export_templates(names: list[str] = Query(default=[])):
                         continue
                     rel = os.path.relpath(full, folder).replace(os.sep, "/")
                     zf.write(full, arcname=f"{name}/{rel}")
+        # Sidecar at the zip root: each exported template's current merged
+        # bindings, so an import elsewhere can OFFER them (never auto-apply).
+        zf.writestr(
+            _REC_FILENAME,
+            json.dumps({"version": 1, "recommendations": _recommendations_for(requested)}, indent=2),
+        )
     buf.seek(0)
     return StreamingResponse(
         buf,
@@ -585,6 +611,61 @@ def _reject_reason(info: zipfile.ZipInfo, staging_dir: str) -> str | None:
     return None
 
 
+def _parse_recommendations(staging_dir: str, warnings: list) -> dict:
+    """Read the staged root recommendation.json → {template: [keys]}. A missing
+    file is a clean no-op ({}); a broken one (bad JSON, wrong shape) is a
+    NON-FATAL warning — the import proceeds without recommendations, they are
+    never worth failing a stage over. An unknown version is ignored silently
+    (a future exporter's sidecar, not an error). Keys that fail the CT-3
+    grammar are dropped per-key with a warning so commit never has to reject
+    a recommendation the user only ticked."""
+    path = os.path.join(staging_dir, _REC_FILENAME)
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        warnings.append(f"{_REC_FILENAME} is not valid JSON; ignoring recommendations")
+        return {}
+    if not isinstance(data, dict):
+        warnings.append(f"{_REC_FILENAME} must be a JSON object; ignoring recommendations")
+        return {}
+    if data.get("version") != 1:
+        return {}
+    recs = data.get("recommendations")
+    if not isinstance(recs, dict):
+        warnings.append(f"{_REC_FILENAME} has no 'recommendations' object; ignoring recommendations")
+        return {}
+    out = {}
+    for name, keys in recs.items():
+        if not isinstance(keys, list) or any(not isinstance(k, str) or not k for k in keys):
+            warnings.append(f"{_REC_FILENAME}: recommendations for {name!r} must be an array of registry keys; ignored")
+            continue
+        kept = []
+        for key in keys:
+            if server._key_segments(key, key.endswith("/")) is None:
+                warnings.append(f"{_REC_FILENAME}: ignored invalid registry key {key!r} for {name!r}")
+                continue
+            kept.append(key)
+        if kept:
+            out[str(name)] = kept
+    return out
+
+
+def _recommended_key_status(key, name, builtin_reg, user_reg, builtin_by_lower, user_by_lower) -> str:
+    """How a recommended key -> name binding relates to the CURRENT merged
+    registry: "already-bound" (name already in the key's effective list — a
+    no-op if applied), "disabled" (the user explicitly disabled the key with
+    null/[]; applying would re-enable it, so the UI must warn), else "new"."""
+    entry = _compute_entry(key, builtin_reg, user_reg, builtin_by_lower, user_by_lower)
+    if any(t["name"] == name for t in entry["templates"]):
+        return "already-bound"
+    if entry["disabled"] and "userValue" in entry:
+        return "disabled"
+    return "new"
+
+
 @router.post("/api/templates/import")
 async def api_import_templates(
     file: UploadFile = File(...), x_fused: str | None = Header(default=None)
@@ -662,27 +743,47 @@ async def api_import_templates(
         return _error(f"could not unpack the zip: {e}")
 
     # A candidate template = a top-level directory; valid iff it holds a
-    # template.html. Top-level files are ignored (warned).
+    # template.html. Top-level files are ignored (warned) — except the
+    # recommendation.json sidecar, which is export metadata, not content.
     items = []
     warnings = []
+    recommendations = _parse_recommendations(staging_dir, warnings)
+    builtin_reg, user_reg, _be, _ue = _load_registries()
+    builtin_by_lower = {str(k).lower(): k for k in builtin_reg}
+    user_by_lower = {str(k).lower(): k for k in user_reg}
     for name in sorted(os.listdir(staging_dir)):
         path = os.path.join(staging_dir, name)
         if os.path.isfile(path):
+            if name == _REC_FILENAME:
+                continue  # parsed above; never a "not a template folder" warning
             warnings.append(f"ignored top-level file {name!r} (not a template folder)")
             continue
         if not os.path.isdir(path):
             continue
         has_html = os.path.isfile(os.path.join(path, "template.html"))
         file_count = sum(len(files) for _r, _d, files in os.walk(path))
-        items.append(
-            {
-                "name": name,
-                "valid": has_html,
-                "hasTemplateHtml": has_html,
-                "conflictsExisting": os.path.isdir(os.path.join(server.USER_TEMPLATES_DIR, name)),
-                "fileCount": file_count,
-            }
-        )
+        item = {
+            "name": name,
+            "valid": has_html,
+            "hasTemplateHtml": has_html,
+            "conflictsExisting": os.path.isdir(os.path.join(server.USER_TEMPLATES_DIR, name)),
+            "fileCount": file_count,
+        }
+        rec_keys = recommendations.get(name)
+        # Only valid items carry recommendations (an invalid folder can never
+        # be committed); items without any omit the field (SPEC §2.2:
+        # undefined-as-omitted).
+        if has_html and rec_keys:
+            item["recommendedKeys"] = [
+                {
+                    "key": key,
+                    "status": _recommended_key_status(
+                        key, name, builtin_reg, user_reg, builtin_by_lower, user_by_lower
+                    ),
+                }
+                for key in rec_keys
+            ]
+        items.append(item)
 
     return {
         "importId": import_id,
@@ -728,9 +829,36 @@ def api_commit_import(
     resolutions = body.get("resolutions") if isinstance(body, dict) else None
     resolutions = resolutions if isinstance(resolutions, dict) else {}
 
+    # Optional bindings to apply after the moves: ORIGINAL staged name ->
+    # registry keys. Validate the whole map up front (same CT-3 grammar as
+    # PUT /api/templates/registry) so a bad request never half-applies moves.
+    bindings = body.get("bindings") if isinstance(body, dict) else None
+    bindings = bindings if isinstance(bindings, dict) else {}
+    for orig, keys in bindings.items():
+        if not isinstance(keys, list) or any(not isinstance(k, str) or not k for k in keys):
+            return _error(f"'bindings' for {orig!r} must be an array of registry keys")
+        for key in keys:
+            if server._key_segments(key, key.endswith("/")) is None:
+                return _error(
+                    f"invalid registry key {key!r}: must be a dot-anchored suffix pattern "
+                    "(e.g. '.csv', '.xyz.json', '.*.json', or a directory key '.zarr/')"
+                )
+    user_reg = {}
+    if any(bindings.values()):
+        # Refuse to touch a corrupt user registry (a rewrite would drop every
+        # other binding) BEFORE moving anything — same posture as PUT.
+        user_reg, reg_err = server._load_registry(server.USER_REGISTRY, "registry.json")
+        if reg_err:
+            return _error(
+                f"refusing to overwrite the user registry: {reg_err}. Move "
+                f"{server.USER_REGISTRY} aside and retry.",
+            )
+        user_reg = user_reg if isinstance(user_reg, dict) else {}
+
     os.makedirs(server.USER_TEMPLATES_DIR, exist_ok=True)
 
     imported, skipped, overwritten, renamed = [], [], [], {}
+    landed = {}  # ORIGINAL staged name -> final folder name, for bindings below
     # Make the commit all-or-nothing over USER_TEMPLATES_DIR: track every applied
     # move (and every displaced original) so that if a later os.rename raises we
     # can undo the earlier ones instead of returning 500 with a half-applied
@@ -767,6 +895,7 @@ def api_commit_import(
                     os.rename(staged, target)
                     applied.append((target, staged))
                 imported.append(name)
+                landed[name] = name
             else:  # keep-both
                 final = _unique_name(name)
                 dest = os.path.join(server.USER_TEMPLATES_DIR, final)
@@ -775,6 +904,7 @@ def api_commit_import(
                 if final != name:
                     renamed[name] = final
                 imported.append(final)
+                landed[name] = final
     except OSError as exc:
         # Undo in reverse: move committed folders back to staging, then restore
         # any displaced originals. Staging is dropped either way.
@@ -798,11 +928,51 @@ def api_commit_import(
     for backup, _ in backups:
         shutil.rmtree(backup, ignore_errors=True)
     shutil.rmtree(staging_dir, ignore_errors=True)
+
+    # Apply the requested bindings, keyed by ORIGINAL staged name: a skipped
+    # (or invalid) template's bindings are dropped, a keep-both rename binds
+    # the FINAL name. Same additive posture as POST /api/templates/new —
+    # append to whatever a key already resolves to, never replace it.
+    bindings_applied = []
+    if bindings:
+        builtin_reg, _builtin_err = server._load_registry(
+            server.BUILTIN_REGISTRY, "built-in registry.json"
+        )
+        builtin_reg = builtin_reg if isinstance(builtin_reg, dict) else {}
+        builtin_by_lower = {str(k).lower(): k for k in builtin_reg}
+        for orig in sorted(bindings):
+            final = landed.get(orig)
+            if final is None:
+                continue  # skipped / dropped-invalid / unknown -> bindings ignored
+            for key in bindings[orig]:
+                user_by_lower = {str(k).lower(): k for k in user_reg}
+                entry = _compute_entry(key, builtin_reg, user_reg, builtin_by_lower, user_by_lower)
+                current_names = [t["name"] for t in entry["templates"]]
+                if final in current_names:
+                    continue  # already effectively bound -> no-op
+                if entry["disabled"]:
+                    # The user disabled the key (null/[]); a requested binding
+                    # re-enables it as core's list + the new name (the frontend
+                    # warned the user before sending this).
+                    base = entry["coreTemplates"] or []
+                else:
+                    # Includes the key-only-in-core case: current_names IS the
+                    # full core list, so the new user entry starts as a copy of
+                    # it — never a shorter shadow over core.
+                    base = current_names
+                # Re-enabling a disabled key whose core list already holds the
+                # name must not duplicate it.
+                _apply_binding(user_reg, key, base if final in base else base + [final])
+                bindings_applied.append({"key": key, "template": final})
+        if bindings_applied:
+            storage.write_json(server.USER_REGISTRY, user_reg)
+
     return {
         "imported": imported,
         "skipped": skipped,
         "overwritten": overwritten,
         "renamed": renamed,
+        "bindingsApplied": bindings_applied,
     }
 
 
