@@ -594,7 +594,7 @@ def _icon_for(template_path: str):
 def _condition_file(template_path: str):
     """The template folder's `condition.py` path, or None when it has no gate.
 
-    A template folder may ship a `condition.py` defining `def method(path):
+    A template folder may ship a `condition.py` defining `def main(path):
     bool` — the gate that decides whether the template shows for a given file
     (SPEC CT-12). No file -> the template is unconditional (the common case).
     Split from evaluation so `_apply_conditions` can cheaply tell which entries
@@ -605,14 +605,14 @@ def _condition_file(template_path: str):
 
 
 def _run_condition(condition_file: str, target_path: str):
-    """Load+exec a `condition.py` and call `method(target_path)`. Returns
+    """Load+exec a `condition.py` and call `main(target_path)`. Returns
     (allowed: bool, error: str|None).
 
     The module is loaded fresh per call (like the registries, so an edit applies
     on the next stat with no restart) and never inserted into `sys.modules` — so
     concurrent calls with the fixed spec name get independent module objects and
     are safe to run in parallel (same rationale as executor._run_in_process). A
-    broken condition — no callable `method`, or any raised exception — drops the
+    broken condition — no callable `main`, or any raised exception — drops the
     template and surfaces the reason as `template_error`, mirroring how an
     unresolvable name is dropped (SPEC CT-6): a template gated by code that
     can't decide is not silently shown.
@@ -625,9 +625,9 @@ def _run_condition(condition_file: str, target_path: str):
         )
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        fn = getattr(mod, "method", None)
+        fn = getattr(mod, "main", None)
         if not callable(fn):
-            return False, f"{condition_file}: does not define a callable 'method'"
+            return False, f"{condition_file}: does not define a callable 'main'"
         return bool(fn(target_path)), None
     except BaseException as e:  # never let a bad condition tear down the stat
         return False, f"{condition_file}: {e}"

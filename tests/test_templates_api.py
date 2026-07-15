@@ -118,7 +118,7 @@ def test_inventory_user_template_and_used_by(ctx):
 
 def test_inventory_reports_condition(ctx):
     # A folder with a condition.py is flagged hasCondition; a plain one is not.
-    ctx.make_template("gated", extra={"condition.py": "def method(path):\n    return True\n"})
+    ctx.make_template("gated", extra={"condition.py": "def main(path):\n    return True\n"})
     ctx.make_template("plain")
     by_name = {t["name"]: t for t in ctx.client.get("/api/templates/inventory").json()["templates"]}
     assert by_name["gated"]["hasCondition"] is True
