@@ -52,12 +52,20 @@ router = APIRouter()
 # across N connections — unlike read-ahead it fetches no extra bytes (so it
 # doesn't hurt the random-access COG/parquet case), it just saturates the link
 # on the big-file cold read that one serial S3 range GET leaves idle.
+# CacheMaxSize is the soft LRU cap on the on-disk cache (open files never
+# evicted); it lives here — not only on the serve — because the mount and the
+# serve share ONE VFS (see SERVE_VFS_OPT), so both must carry the same cap or
+# the option sets diverge and rcd splits them into two VFS instances.
+#
+# This is the CANONICAL option set: SERVE_VFS_OPT is derived from it below so
+# the two can never drift out of sync (drift is what split the VFS in two).
 VFS_OPT = {
     "CacheMode": "full",
     "ChunkSize": "8M",
     "ChunkSizeLimit": "64M",
     "ChunkStreams": 4,
     "CacheMaxAge": "24h",
+    "CacheMaxSize": "20Gi",
     "FastFingerprint": True,
     "DirCacheTime": "30s",
 }
@@ -87,7 +95,52 @@ VFS_OPT = {
 # vfs_cache_mode). An unknown `vfsOpt` key is silently ignored — the serve
 # then runs with the cache OFF and every read, warm or not, goes to the
 # store (measured: 1MB re-read 4.4s uncached vs 2ms cached).
-SERVE_VFS_OPT = {"vfs_cache_mode": "full", "vfs_cache_max_size": "20Gi"}
+#
+# The serve and the mount MUST be given the same vfs option set: rcd keeps one
+# VFS per (fs, options) and reuses it across mount/mount and serve/start only
+# when the options match EXACTLY (verified — matching options yield a single
+# entry in vfs/list, and a range cached via the serve then reads in ~0.00s
+# through the mount path; mismatched options give two VFS instances that share
+# the on-disk cache dir but not their in-memory range state, so a serve-warmed
+# range costs a fresh ~0.8s S3 fetch when read through the mount). So the flat
+# serve params are DERIVED from VFS_OPT, not hand-written — the two literals
+# silently drifting is precisely the bug. Values are stringified because
+# serve/list echoes params back as strings (bool -> "true", int -> "4"), and
+# sync_serves' drift check compares SERVE_VFS_OPT against that echo.
+_VFS_OPT_TO_SERVE_PARAM = {
+    "CacheMode": "vfs_cache_mode",
+    "ChunkSize": "vfs_read_chunk_size",
+    "ChunkSizeLimit": "vfs_read_chunk_size_limit",
+    "ChunkStreams": "vfs_read_chunk_streams",
+    "CacheMaxAge": "vfs_cache_max_age",
+    "CacheMaxSize": "vfs_cache_max_size",
+    "FastFingerprint": "vfs_fast_fingerprint",
+    "DirCacheTime": "dir_cache_time",
+}
+# KeyError here on import is deliberate: a VFS_OPT key with no serve mapping
+# must not silently fall out of the serve's option set (that would re-split
+# the VFS) — add the mapping instead.
+SERVE_VFS_OPT = {
+    _VFS_OPT_TO_SERVE_PARAM[k]: ("true" if v else "false") if isinstance(v, bool) else str(v)
+    for k, v in VFS_OPT.items()
+}
+
+# macOS mounts rclone's nfsmount through the loopback NFS client, whose
+# request timeout defaults aggressively low — a single slow 8M chunk fetch
+# overruns it and the kernel drops the WHOLE mount ("server connections
+# interrupted"; this is the failure the HTTP serve was added to route
+# analytical reads around). `timeo` is in DECISECONDS on macOS/BSD, so
+# timeo=600 raises the per-request ceiling to 60s (vs the ~1s default), and
+# retrans allows a couple of tries before the mount is declared dead — enough
+# that a genuinely slow read is merely slow, not fatal, for the local-path
+# readers that can't go through the serve (the geotiff/grid tile daemons,
+# rasterio/PIL/laspy). A truly dead mount still fails, and the health probe
+# (mount_state) runs timeout-isolated in its own thread, so a high ceiling
+# never blocks a request. Passed via mountOpt.ExtraOptions, which rclone
+# forwards verbatim as `-o` flags to the macOS `mount` command (verified in
+# the rcd -vv log). nfsmount only — the Linux path uses FUSE `mount`, which
+# ignores these NFS options.
+NFS_MOUNT_OPT = {"ExtraOptions": ["timeo=600", "retrans=2"]}
 
 # Tile-server daemon state files — the two parallel implementations that can
 # hold files open under a mount (geotiff, and the grid server shared by
@@ -311,7 +364,11 @@ def serves_path() -> str:
 
 def _http_serves(port: int) -> dict:
     """{fs: {"addr", "id", "vfs"}} for every live rc HTTP serve. "vfs" is the
-    flat vfs_* params the serve was started with (drift check input)."""
+    vfs option params the serve was started with (every param except the
+    type/fs/addr infra keys — i.e. the vfs_* flags AND dir_cache_time, which
+    has no vfs_ prefix but is part of the shared option set). This is the
+    drift-check input, compared against SERVE_VFS_OPT; capturing only vfs_*
+    keys would drop dir_cache_time and make the check always report drift."""
     try:
         listed = _rc(port, "serve/list").get("list", [])
     except RuntimeError:
@@ -319,7 +376,7 @@ def _http_serves(port: int) -> dict:
     return {
         s["params"]["fs"]: {"addr": s.get("addr", ""), "id": s.get("id", ""),
                             "vfs": {k: v for k, v in s["params"].items()
-                                    if k.startswith("vfs_")}}
+                                    if k not in ("type", "fs", "addr")}}
         for s in listed
         if isinstance(s, dict) and s.get("params", {}).get("type") == "http"
         and s.get("params", {}).get("fs")
@@ -541,12 +598,19 @@ def attach_mount(m: dict) -> str | None:
         return None
     try:
         port = ensure_rcd()
-        _rc(port, "mount/mount", {
+        params = {
             "fs": m["remote"],
             "mountPoint": mp,
             "mountType": "nfsmount" if sys.platform == "darwin" else "mount",
             "vfsOpt": VFS_OPT,
-        }, timeout=60)
+        }
+        # macOS only: raise the loopback NFS client's timeout (see NFS_MOUNT_OPT).
+        # mountOpt is the NFS transport layer, not a vfs option, so it does NOT
+        # affect the (fs, vfsOpt) VFS-reuse key — the mount still shares its VFS
+        # with the serve.
+        if sys.platform == "darwin":
+            params["mountOpt"] = NFS_MOUNT_OPT
+        _rc(port, "mount/mount", params, timeout=60)
     except RuntimeError as e:
         return str(e)
     sync_serves()
@@ -634,6 +698,22 @@ def detach_mount(m: dict, force: bool = False) -> str | None:
         return f"unmount failed (a preview may still hold a file open): {e}"
 
 
+def _stop_serve_for(port: int, fs: str) -> None:
+    """Stop the HTTP serve for `fs`, if one is live. Used by reconnect: rcd
+    shares ONE VFS between a mount and its serve, and `mount/unmount` shuts
+    that VFS down regardless of the serve's reference to it — verified: after
+    unmounting, the serve still replays disk-cached ranges but hangs on any
+    uncached read (vfs/list drops to 0). Dropping the serve here lets the
+    following sync_serves start a fresh one that re-binds to the remounted
+    VFS. Best-effort: a missing serve or a failed stop is fine."""
+    serve = _http_serves(port).get(fs)
+    if serve and serve["id"]:
+        try:
+            _rc(port, "serve/stop", {"id": serve["id"]})
+        except RuntimeError:
+            pass
+
+
 def reconnect_mount(m: dict) -> str | None:
     """Repair a disconnected mount: clear whatever is wedged at the
     mountpoint, then mount fresh. Returns an error string or None.
@@ -642,7 +722,10 @@ def reconnect_mount(m: dict) -> str | None:
     lists the mount), force-unmount whatever kernel mount remains (a dead
     NFS mount rejects plain umount — the state this whole path exists for),
     ask rcd once more so a force-cleared mount doesn't linger in its
-    listmounts and block the remount, then attach as usual."""
+    listmounts and block the remount, drop the HTTP serve (it shares the
+    mount's VFS, which the unmount just tore down — see _stop_serve_for),
+    then attach as usual (attach_mount's sync_serves starts a fresh serve
+    that re-binds to the remounted VFS)."""
     mp = mountpoint(m)
     port = _live_rcd_port()
     if port is not None:
@@ -659,6 +742,8 @@ def reconnect_mount(m: dict) -> str | None:
                 _rc(port, "mount/unmount", {"mountPoint": mp})
             except RuntimeError:
                 pass  # "mount not found" once the kernel mount is gone — fine
+    if port is not None:
+        _stop_serve_for(port, m["remote"])
     return attach_mount(m)
 
 
