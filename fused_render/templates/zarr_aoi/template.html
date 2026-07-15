@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Hosted Zarr — AOI streaming preview</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js"></script>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: #e8eaed; background: #131417; font-size: 13px; }
+  #map { position: absolute; inset: 0; }
+  .panel { position: absolute; background: rgba(19,20,23,.92); border: 1px solid #2a2d33;
+    border-radius: 10px; padding: 10px 12px; backdrop-filter: blur(6px); z-index: 10; }
+  #topbar { top: 10px; left: 10px; right: 10px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  #topbar label { color: #9aa0a6; margin: 0 2px 0 6px; }
+  input[type=text], select { font: inherit; color: #e8eaed; background: #1b1d21;
+    border: 1px solid #2a2d33; border-radius: 6px; padding: 4px 8px; }
+  #path { flex: 1; min-width: 200px; }
+  input.num { width: 58px; font: inherit; color: #e8eaed; background: #1b1d21;
+    border: 1px solid #2a2d33; border-radius: 6px; padding: 4px 6px; }
+  button { font: inherit; color: #e8eaed; background: #2b5fd9; border: 1px solid #2b5fd9;
+    border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+  button:hover { background: #3a6ee8; }
+  button.ghost { background: transparent; border-color: #2a2d33; color: #9aa0a6; }
+  button.ghost:hover { color: #e8eaed; border-color: #4a4d55; }
+  #status { position: absolute; left: 50%; top: 64px; transform: translateX(-50%);
+    background: rgba(19,20,23,.9); border: 1px solid #2a2d33; border-radius: 999px;
+    padding: 4px 14px; color: #9aa0a6; z-index: 20; display: none; }
+  #status.err { color: #ff7b72; display: block; }
+  #metaPanel { left: 10px; top: 58px; width: 380px; max-height: 65vh; overflow: auto; display: none; }
+  #metaPanel table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  #metaPanel td { padding: 3px 6px; border-bottom: 1px solid #23262c; vertical-align: top; word-break: break-all; }
+  #metaPanel td:first-child { color: #9aa0a6; white-space: nowrap; }
+  #metaPanel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: #9aa0a6; margin: 0 0 6px; display: flex; justify-content: space-between; }
+  #explorer { left: 10px; top: 58px; width: 420px; max-height: 65vh; display: none; z-index: 30; }
+  #crumbs { font-size: 12px; margin-bottom: 8px; color: #9aa0a6; }
+  #crumbs a { color: #8ab4ff; cursor: pointer; }
+  #explorerList { max-height: 48vh; overflow: auto; border: 1px solid #23262c; border-radius: 6px; }
+  .row { display: flex; align-items: center; gap: 8px; padding: 5px 10px; cursor: pointer;
+    font-size: 13px; border-bottom: 1px solid #1e2025; }
+  .row:hover { background: #23262c; }
+  .row .ic { width: 18px; text-align: center; }
+  .row .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .sz { color: #6b7178; font-size: 11px; }
+  input[type=range] { vertical-align: middle; }
+  #readout { left: 10px; bottom: 26px; font-size: 12px; font-variant-numeric: tabular-nums;
+    color: #cdd0d4; max-width: 520px; }
+  #readout b { color: #8ab4ff; }
+  #readout .cost { color: #7ee787; }
+
+  /* --- streaming panel (the point of this template) --- */
+  #streamPanel { right: 10px; top: 58px; width: 360px; font-variant-numeric: tabular-nums; }
+  #streamPanel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: #9aa0a6; margin: 0 0 8px; display: flex; justify-content: space-between; align-items: center; }
+  #streamPanel h2 button { font-size: 10px; padding: 1px 7px; }
+  .bignum { font-size: 22px; font-weight: 600; color: #7ee787; line-height: 1.1; }
+  .bigsub { color: #9aa0a6; font-size: 11.5px; margin: 2px 0 10px; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: 12px; margin-bottom: 8px; }
+  .kv .k { color: #9aa0a6; white-space: nowrap; }
+  .kv .v { color: #e8eaed; text-align: right; }
+  #dsFacts { border-bottom: 1px solid #23262c; padding-bottom: 8px; margin-bottom: 8px;
+    color: #cdd0d4; font-size: 12px; line-height: 1.45; }
+  #dsFacts b { color: #ffcf70; }
+  #opLog { max-height: 24vh; overflow: auto; font-size: 11px; color: #9aa0a6;
+    border-top: 1px solid #23262c; padding-top: 6px; }
+  #opLog .op { display: flex; gap: 6px; padding: 1.5px 0; white-space: nowrap; }
+  #opLog .op .knd { color: #8ab4ff; width: 78px; }
+  #opLog .op .net { color: #7ee787; }
+  #opLog .op .cch { color: #6b7178; }
+  #levelLine { font-size: 11.5px; color: #9aa0a6; margin-bottom: 8px; }
+  #levelLine b { color: #e8eaed; }
+</style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div class="panel" id="topbar">
+    <button id="browse" class="ghost">📁</button>
+    <input type="text" id="path" placeholder="/path/to/store.zarr — or s3://bucket/store.zarr" />
+    <button id="load">Load</button>
+    <span><label for="var">variable</label><select id="var"></select></span>
+    <span id="idxRow" style="display:none"><label id="idxName">index</label>
+      <input type="range" id="idxRange" min="0" max="0" value="0" />
+      <span id="idxLabel"></span></span>
+    <span><label for="cmap">cmap</label>
+      <select id="cmap"><option>viridis</option><option>magma</option><option>turbo</option><option value="rdbu">RdBu</option><option value="grays">grays</option></select></span>
+    <span><label>stretch</label>
+      <input class="num" id="vLo" placeholder="lo" /><input class="num" id="vHi" placeholder="hi" />
+      <button id="stretchAuto" class="ghost" title="2–98th percentile of the current viewport">auto</button></span>
+    <span><label for="nofill" title="Render the fill value as transparent">hide fill</label>
+      <input type="checkbox" id="nofill" checked /></span>
+    <span><label for="opacity">opacity</label><input type="range" id="opacity" min="0" max="100" value="90" style="width:80px" /></span>
+    <span><label for="basemap">basemap</label><input type="checkbox" id="basemap" checked /></span>
+    <button id="metaBtn" class="ghost">info</button>
+    <button id="statsBtn" class="ghost" title="Streaming stats for nerds">📊 stats</button>
+    <button id="fitBtn" class="ghost">⤢ fit</button>
+  </div>
+
+  <div id="status"></div>
+  <div id="tileSpin" style="display:none; position:absolute; left:50%; top:64px; transform:translateX(-50%);
+    background:rgba(19,20,23,.92); border:1px solid #2a2d33; border-radius:999px; padding:4px 14px;
+    color:#8ab4ff; z-index:20; font-variant-numeric:tabular-nums"></div>
+  <div class="panel" id="zoomHint" style="display:none; left:50%; transform:translateX(-50%);
+    bottom:60px; color:#ffcf70; font-size:12.5px; z-index:15; text-align:center"></div>
+
+  <div class="panel" id="explorer">
+    <div id="crumbs"></div>
+    <div id="explorerList"></div>
+    <label style="display:block;margin-top:8px;color:#9aa0a6;font-size:12px">
+      <input type="checkbox" id="showAll" /> show all files</label>
+  </div>
+
+  <div class="panel" id="metaPanel"><h2>Dataset info <a id="metaClose" style="cursor:pointer;color:#8ab4ff">×</a></h2><div id="metaBody"></div></div>
+
+  <div class="panel" id="readout">click the map to probe a native-resolution pixel</div>
+
+  <div class="panel" id="streamPanel" style="display:none">
+    <h2>Streaming <span><button id="resetStats" class="ghost">reset</button>
+      <button id="statsClose" class="ghost">×</button></span></h2>
+    <div id="dsFacts">…</div>
+    <div class="bignum" id="netBig">0 B</div>
+    <div class="bigsub" id="netSub">streamed this session</div>
+    <div id="levelLine">…</div>
+    <div class="kv" id="counters"></div>
+    <div id="opLog"></div>
+  </div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const els = ['path','load','var','idxRow','idxName','idxRange','idxLabel','cmap','vLo','vHi','stretchAuto',
+  'nofill','opacity','basemap','metaBtn','metaPanel','metaBody','metaClose','fitBtn','status','readout',
+  'browse','explorer','crumbs','explorerList','showAll','streamPanel','dsFacts','netBig','netSub',
+  'levelLine','counters','opLog','resetStats','statsBtn','statsClose','zoomHint','tileSpin']
+  .reduce((o, k) => (o[k] = $(k), o), {});
+
+const EXTS = '.zgroup,.zattrs,.zmetadata';
+const DEFAULT_FILE = "s3://us-west-2.opendata.source.coop/mindearth/wsf/World_WSF_20160701-20260101.zarr";
+function storeRoot(p){
+  return p.replace(/\/(\.zgroup|\.zattrs|\.zmetadata|zarr\.json)$/, '');
+}
+
+const P = {
+  file:  () => storeRoot(fused.params.get('file') || fused.params.get('_file') || DEFAULT_FILE),
+  vr:    () => fused.params.get('var') || '',
+  index: () => fused.params.get('index') || '0',
+  cmap:  () => fused.params.get('cmap') || 'viridis',
+  stretch: () => fused.params.get('stretch') || '',
+  nofill:() => (fused.params.get('nofill') ?? '1') === '1',
+  stats: () => fused.params.get('stats') === '1',   // nerd panel, off by default
+  dir:   () => fused.params.get('dir') || P.file().replace(/\/[^/]*$/, '') || '~',
+  showAll:() => fused.params.get('showall') === '1',
+};
+const fmt = (x, d) => (x === null || x === undefined || !isFinite(x)) ? '—'
+  : Math.abs(x) >= 1000 ? Number(x).toLocaleString('en-US', {maximumFractionDigits: 0})
+  : Number(x).toFixed(d === undefined ? (Math.abs(x) >= 10 ? 1 : 3) : d);
+const human = n => n === null || n === undefined ? '—'
+  : n >= 1e12 ? (n/1e12).toFixed(2)+' TB' : n >= 1e9 ? (n/1e9).toFixed(2)+' GB'
+  : n >= 1e6 ? (n/1e6).toFixed(1)+' MB' : n >= 1e3 ? (n/1e3).toFixed(1)+' KB' : Math.round(n)+' B';
+function status(msg, err){ els.status.textContent = msg || ''; els.status.style.display = msg ? 'block' : 'none'; els.status.className = err ? 'err' : ''; }
+
+// ---------------- map ----------------
+const DARK = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
+// deep-linkable view: ?ll=lon,lat&z=6 (written back on every move)
+const ll0 = (fused.params.get('ll') || '').split(',').map(Number);
+const z0 = parseFloat(fused.params.get('z'));
+const hadView = ll0.length === 2 && ll0.every(isFinite) && isFinite(z0);
+const map = new maplibregl.Map({ container: 'map', style: DARK,
+  center: hadView ? ll0 : [0, 25], zoom: hadView ? z0 : 1.4,
+  attributionControl: {compact: true}, fadeDuration: 80 });
+map.addControl(new maplibregl.NavigationControl({showCompass: false}), 'bottom-right');
+map.addControl(new maplibregl.ScaleControl({unit: 'metric'}), 'bottom-right');
+async function styleReady(){
+  map.resize();
+  for (let i = 0; i < 200 && !map.isStyleLoaded(); i++)
+    await new Promise(r => setTimeout(r, 50));
+  map.resize();
+}
+
+// ---------------- daemon + state ----------------
+let daemon = null, meta = null;
+
+async function ensureDaemon(){
+  if (daemon && daemon.port) return daemon;
+  status('Starting streaming daemon (first run installs zarr — may take a minute)…');
+  const r = await fused.runPython('./tile_server.py', {}).catch(() => null);
+  if (r && r.port) daemon = r;
+  return daemon;
+}
+const dURL = p => `http://127.0.0.1:${daemon.port}${p}`;
+
+function sliceQuery(){
+  return new URLSearchParams({ file: P.file(), var: P.vr(), index: P.index() });
+}
+function renderQuery(){
+  const q = sliceQuery();
+  q.set('cmap', P.cmap());
+  if (P.stretch()) q.set('stretch', P.stretch());
+  q.set('nofill', P.nofill() ? '1' : '0');
+  return q.toString();
+}
+
+function nativeZoom(){
+  if (!meta || !meta.levels || !meta.levels[0].res_deg) return 14;
+  return Math.ceil(Math.log2(360 / (256 * meta.levels[0].res_deg)));
+}
+function levelForZoom(z){
+  if (!meta) return null;
+  const dpp = 360 / (256 * Math.pow(2, z));
+  const cands = meta.levels.map((lv, i) => [i, lv.res_deg]).filter(t => t[1]);
+  const ok = cands.filter(t => t[1] <= dpp * 1.4);
+  if (ok.length) return ok.reduce((a, b) => (b[1] > a[1] ? b : a))[0];
+  return cands.reduce((a, b) => (b[1] < a[1] ? b : a))[0];
+}
+
+function setRasterTiles(){
+  const url = dURL(`/tile/{z}/{x}/{y}.png?${renderQuery()}`);
+  const src = map.getSource('raster');
+  if (src){ src.setTiles([url]); return; }
+  const lb = meta.lonlat_bounds;
+  map.addSource('raster', { type: 'raster', tiles: [url], tileSize: 256, minzoom: 0,
+    maxzoom: Math.min(nativeZoom(), 18), bounds: [lb.west, lb.south, lb.east, lb.north] });
+  map.addLayer({ id: 'raster', type: 'raster', source: 'raster',
+    paint: { 'raster-opacity': +els.opacity.value / 100, 'raster-fade-duration': 80,
+             'raster-resampling': 'nearest' } });
+}
+
+function fitToData(instant){
+  const lb = meta && meta.lonlat_bounds;
+  if (!lb) return;
+  map.fitBounds([[lb.west, lb.south], [lb.east, lb.north]],
+    {padding: 60, duration: instant === false ? 400 : 0, maxZoom: 10});
+}
+
+// ---------------- streaming panel ----------------
+let statsTimer = null, statsBusyUntil = 0;
+
+function renderFacts(){
+  if (!meta) return;
+  const sh = meta.shape || [];
+  const npx = sh.length >= 2 ? sh[sh.length-1] * sh[sh.length-2] : 0;
+  const parts = [];
+  parts.push(`<b>${human(meta.logical_bytes)}</b> logical · ${meta.dtype} · zarr v${meta.zarr_format}`);
+  parts.push(`${sh.map(x => fmt(x, 0)).join(' × ')} px (${(npx/1e12).toFixed(1)} Tpx)`);
+  let ck = `chunks ${(meta.chunks||[]).join('×')}`;
+  if (meta.inner_chunks) ck = `shards ${(meta.chunks||[]).join('×')} → chunks ${meta.inner_chunks.join('×')}`;
+  parts.push(`${ck} · ${(meta.codecs||[]).join('+') || 'raw'}`);
+  if ((meta.chunk_logical_bytes || 0) > 32e6)
+    parts.push(`<b>⚠ ${human(meta.chunk_logical_bytes)} per chunk</b> — every uncached slice read fetches whole chunks`);
+  parts.push(`${meta.n_levels} pyramid level${meta.n_levels>1?'s':''} · ${meta.source}`);
+  els.dsFacts.innerHTML = parts.map(p => `<div>${p}</div>`).join('');
+}
+
+function renderStats(s){
+  if (!meta || !s) return;
+  const frac = meta.logical_bytes ? s.net_bytes / meta.logical_bytes : 0;
+  els.netBig.textContent = human(s.net_bytes);
+  els.netSub.innerHTML = frac > 0
+    ? `streamed this session — <b style="color:#7ee787">${(frac*100).toPrecision(2)}%</b> of ${human(meta.logical_bytes)} (1 : ${fmt(1/Math.max(frac,1e-15),0)})`
+    : 'streamed this session';
+  const avg = s.requests ? s.net_ms / s.requests : 0;
+  els.counters.innerHTML = [
+    ['HTTP range requests', fmt(s.requests, 0)],
+    ['avg request', avg ? avg.toFixed(0) + ' ms' : '—'],
+    ['missing chunks (skipped)', fmt(s.missing, 0)],
+    ['cache hits', `${fmt(s.cache_hits, 0)} · saved ${human(s.cache_saved)}`],
+    ['cache in RAM', human(s.cache_bytes)],
+  ].map(([k, v]) => `<span class="k">${k}</span><span class="v">${v}</span>`).join('');
+  els.opLog.innerHTML = (s.ops || []).slice(0, 14).map(op => {
+    const what = op.kind === 'tile' ? `tile z${op.z} L${op.level}` :
+                 op.kind === 'tile-skipped' ? `skip z${op.z}` :
+                 op.kind === 'probe' ? 'probe L0' :
+                 op.kind === 'hist' ? `hist L${op.level}` : op.kind;
+    const win = op.window ? `${op.window[0]}×${op.window[1]}px` : (op.lonlat ? op.lonlat.join(',') : '');
+    const net = op.net_bytes !== undefined ? `${op.approx ? '≈' : ''}${human(op.net_bytes)} · ${op.requests} req` : (op.note || '');
+    const cch = op.cache_hits ? ` +${op.cache_hits}⚡` : '';
+    return `<div class="op"><span class="knd">${what}</span><span class="nm" style="flex:1">${win}</span>` +
+           `<span class="net">${net}</span><span class="cch">${cch}${op.ms !== undefined ? ' ' + op.ms + 'ms' : ''}</span></div>`;
+  }).join('');
+}
+
+async function pollStats(){
+  if (!daemon || !meta || !P.stats()) return;
+  try {
+    const r = await fetch(dURL('/stats?' + new URLSearchParams({file: P.file()})));
+    renderStats(await r.json());
+  } catch (e) {}
+}
+function statsActive(ms){
+  if (!P.stats()) return;
+  statsBusyUntil = Math.max(statsBusyUntil, performance.now() + (ms || 3000));
+  if (statsTimer) return;
+  statsTimer = setInterval(() => {
+    pollStats();
+    if (performance.now() > statsBusyUntil){ clearInterval(statsTimer); statsTimer = null; }
+  }, 800);
+}
+function syncStatsPanel(){
+  const on = P.stats();
+  els.streamPanel.style.display = on ? 'block' : 'none';
+  els.statsBtn.style.color = on ? '#7ee787' : '';
+  if (!on) return;
+  if (meta){ renderFacts(); renderLevelLine(); pollStats(); statsActive(2000); }
+  else els.dsFacts.textContent = 'waiting for the store to open…';
+}
+
+function zoomHintUpdate(){
+  // single-level giant stores can't stream a world view — say so
+  if (!meta || !meta.geographic || meta.n_levels > 1 || !meta.levels[0].res_deg){
+    els.zoomHint.style.display = 'none'; return;
+  }
+  const zmin = Math.ceil(Math.log2(360 / (meta.levels[0].res_deg * 2048)));
+  if (zmin > 0 && map.getZoom() < zmin - 0.2){
+    els.zoomHint.style.display = 'block';
+    els.zoomHint.innerHTML = `⚠ this store has no overview pyramid — a view this wide would stream ` +
+      `far too much data (hatched tiles are skipped).<br>Zoom in to about <b>z${zmin}</b> to start streaming native pixels.`;
+  } else els.zoomHint.style.display = 'none';
+}
+els.statsBtn.onclick = () => fused.params.set('stats', P.stats() ? '0' : '1');
+els.statsClose.onclick = () => fused.params.set('stats', '0');
+els.resetStats.onclick = async () => {
+  if (!daemon) return;
+  await fetch(dURL('/stats?' + new URLSearchParams({file: P.file(), reset: '1'})));
+  pollStats();
+};
+
+function renderLevelLine(){
+  if (!meta) return;
+  const z = map.getZoom();
+  const li = levelForZoom(z);
+  const lv = li !== null ? meta.levels[li] : null;
+  const m = lv && lv.res_deg ? lv.res_deg * 111320 : null;
+  els.levelLine.innerHTML = lv
+    ? `viewport reads <b>level ${lv.asset || li}</b> of ${meta.n_levels - 1} · ` +
+      `${lv.shape.map(x => fmt(x,0)).join('×')} px · ~${m < 1000 ? m.toFixed(0) + ' m' : (m/1000).toFixed(0) + ' km'}/px`
+    : '';
+}
+
+// ---------------- viewport hist (feeds auto-stretch) ----------------
+function viewportMercBbox(){
+  const b = map.getBounds();
+  const R = 6378137, l2m = (lon, lat) => [lon * Math.PI / 180 * R,
+    Math.log(Math.tan(Math.PI / 4 + Math.min(85, Math.max(-85, lat)) * Math.PI / 360)) * R];
+  const [w, s] = l2m(b.getWest(), b.getSouth()), [e, n] = l2m(b.getEast(), b.getNorth());
+  return [w, s, e, n];
+}
+els.stretchAuto.onclick = async () => {
+  if (!daemon || !meta) return;
+  const q = sliceQuery();
+  q.set('bbox', viewportMercBbox().join(','));
+  status('Sampling viewport…');
+  try {
+    const h = await (await fetch(dURL('/hist?' + q))).json();
+    if (h && h.p2 !== undefined && h.p98 > h.p2)
+      fused.params.set('stretch', `${h.p2},${h.p98}`);
+    else if (h && h.min !== undefined)
+      fused.params.set('stretch', `${h.min},${h.max + (h.max === h.min ? 1 : 0)}`);
+    statsActive();
+  } catch (e) {}
+  status('');
+};
+els.vLo.onchange = els.vHi.onchange = () => {
+  const lo = parseFloat(els.vLo.value), hi = parseFloat(els.vHi.value);
+  if (isFinite(lo) && isFinite(hi) && hi > lo) fused.params.set('stretch', `${lo},${hi}`);
+};
+
+// ---------------- click probe ----------------
+let probeTimer = null;
+map.on('dblclick', () => { clearTimeout(probeTimer); });
+map.on('click', e => {
+  clearTimeout(probeTimer);
+  probeTimer = setTimeout(() => runProbe(e), 300);   // let dblclick-zoom win
+});
+async function runProbe(e){
+  if (!daemon || !meta || !meta.geographic) return;
+  const q = sliceQuery();
+  q.set('lon', e.lngLat.lng); q.set('lat', e.lngLat.lat);
+  els.readout.innerHTML = 'probing native pixel…';
+  try {
+    const r = await (await fetch(dURL('/probe?' + q))).json();
+    if (!r.inside){ els.readout.innerHTML = 'outside dataset extent'; return; }
+    const c = r.cost || {};
+    els.readout.innerHTML =
+      `<b>${meta.selected}</b> = ${r.value === null ? 'fill / nodata' : fmt(r.value)}${r.units ? ' ' + r.units : ''} at native px ` +
+      `(row ${fmt(r.row,0)}, col ${fmt(r.col,0)})` +
+      (r.inner_chunk ? ` · shard [${r.shard}] chunk [${r.inner_chunk}]` : '') +
+      ` — <span class="cost">cost: ${c.requests || 0} req · ${human(c.net_bytes || 0)}` +
+      `${c.cache_hits ? ` (+${c.cache_hits} cached)` : ''} · ${c.ms} ms</span>`;
+    statsActive(1500);
+  } catch (err) { els.readout.innerHTML = 'probe failed'; }
+}
+
+// ---------------- metadata panel ----------------
+function renderMeta(){
+  if (!meta) return;
+  const rows = [
+    ['store', P.file().split('/').pop()],
+    ['source', meta.source],
+    ['variable', meta.selected],
+    ['dtype', meta.dtype], ['fill value', meta.fill_value],
+    ['logical size', human(meta.logical_bytes)],
+    ['zarr format', 'v' + meta.zarr_format],
+    ['codecs', (meta.codecs || []).join(', ')],
+  ];
+  if (meta.lonlat_bounds){
+    const lb = meta.lonlat_bounds;
+    rows.push(['extent', `${lb.west.toFixed(3)}, ${lb.south.toFixed(3)} → ${lb.east.toFixed(3)}, ${lb.north.toFixed(3)}`]);
+  }
+  for (const [k, v] of Object.entries(meta.attrs || {}).slice(0, 10)) rows.push(['attr: ' + k, String(v).slice(0, 200)]);
+  els.metaBody.innerHTML = '<table>' + rows.map(([k, v]) =>
+    `<tr><td>${k}</td><td>${v ?? '—'}</td></tr>`).join('') + '</table>' +
+    '<h2 style="margin-top:10px">Pyramid levels</h2><table>' +
+    (meta.levels || []).map((lv, i) => `<tr><td>level ${lv.asset || i}</td><td>${lv.shape.map(x => fmt(x,0)).join(' × ')}` +
+      `${lv.res_deg ? ' — ' + (lv.res_deg*111320 < 1000 ? (lv.res_deg*111320).toFixed(0)+' m' : (lv.res_deg*111.32).toFixed(0)+' km')+'/px' : ''}</td></tr>`).join('') + '</table>';
+}
+els.metaBtn.onclick = () => { els.metaPanel.style.display = els.metaPanel.style.display === 'block' ? 'none' : 'block'; };
+els.metaClose.onclick = () => els.metaPanel.style.display = 'none';
+els.fitBtn.onclick = () => fitToData(false);
+
+// ---------------- controls ----------------
+function syncControls(){
+  els.path.value = P.file();
+  els.cmap.value = P.cmap();
+  els.nofill.checked = P.nofill();
+  const st = P.stretch().split(',');
+  if (st.length === 2){ els.vLo.value = st[0]; els.vHi.value = st[1]; }
+  if (!meta) return;
+  els.var.innerHTML = (meta.vars || []).map(v =>
+    `<option value="${v}" ${v === meta.selected ? 'selected' : ''}>${v}</option>`).join('');
+  const ed = (meta.extra_dims || [])[0];
+  if (ed && ed.size > 1){
+    els.idxRow.style.display = '';
+    els.idxName.textContent = ed.name;
+    els.idxRange.max = ed.size - 1;
+    els.idxRange.value = meta.index;
+    els.idxLabel.textContent = `${meta.index} / ${ed.size - 1}`;
+  } else {
+    els.idxRow.style.display = 'none';
+  }
+}
+els.load.onclick = () => fused.params.set('file', els.path.value.trim());
+els.path.addEventListener('keydown', e => { if (e.key === 'Enter') els.load.click(); });
+els.var.onchange = () => { fused.params.set('var', els.var.value); fused.params.set('index', '0'); };
+let idxTimer = null;
+els.idxRange.oninput = () => {
+  els.idxLabel.textContent = `${els.idxRange.value} / ${els.idxRange.max}`;
+  clearTimeout(idxTimer);
+  idxTimer = setTimeout(() => fused.params.set('index', els.idxRange.value), 200);
+};
+els.cmap.onchange = () => fused.params.set('cmap', els.cmap.value);
+els.nofill.onchange = () => fused.params.set('nofill', els.nofill.checked ? '1' : '0');
+els.opacity.oninput = () => {
+  if (map.getLayer('raster')) map.setPaintProperty('raster', 'raster-opacity', +els.opacity.value / 100);
+};
+els.basemap.onchange = () => {
+  const show = els.basemap.checked ? 'visible' : 'none';
+  for (const l of map.getStyle().layers)
+    if (l.id !== 'raster') map.setLayoutProperty(l.id, 'visibility', show);
+};
+
+// ---------------- explorer ----------------
+els.browse.onclick = async () => {
+  const open = els.explorer.style.display === 'block';
+  els.explorer.style.display = open ? 'none' : 'block';
+  if (!open) refreshExplorer();
+};
+els.showAll.onchange = () => { fused.params.set('showall', els.showAll.checked ? '1' : ''); refreshExplorer(); };
+async function refreshExplorer(dir){
+  dir = dir || P.dir();
+  const r = await fused.runPython('./browse.py', { dir, exts: EXTS, show_all: P.showAll() ? 'true' : 'false' }).catch(() => null);
+  if (!r || r.error) return;
+  els.crumbs.innerHTML = r.crumbs.map(c =>
+    `<a data-p="${c.path}">${c.label || '/'}</a>`).join('<span style="color:#4b5058"> / </span>');
+  els.crumbs.querySelectorAll('a').forEach(a => a.onclick = () => refreshExplorer(a.dataset.p));
+  const entries = [...(r.dirs || []), ...(r.files || [])];
+  els.explorerList.innerHTML = entries.map(e =>
+    `<div class="row" data-p="${e.path}" data-d="${e.is_dir ? 1 : 0}">
+       <span class="ic">${e.is_dir ? (e.name.endsWith('.zarr') ? '🧊' : '📁') : '🌐'}</span><span class="nm">${e.name}</span>
+       <span class="sz">${e.size ? human(e.size) : ''}</span></div>`).join('') || '<div class="row" style="color:#6b7178">empty</div>';
+  els.explorerList.querySelectorAll('.row[data-p]').forEach(row => row.onclick = () => {
+    const p = row.dataset.p;
+    if (row.dataset.d === '1' && !p.endsWith('.zarr')) refreshExplorer(p);
+    else { fused.params.set('dir', p.replace(/\/[^/]*$/, '')); fused.params.set('var', ''); fused.params.set('index', '0');
+           fused.params.set('stretch', ''); fused.params.set('file', p); els.explorer.style.display = 'none'; }
+  });
+}
+
+// ---------------- load orchestration ----------------
+let loadedSlice = null, loadedQuery = null, loading = false, wantReload = false;
+
+async function loadSlice(){
+  if (loading){ wantReload = true; return; }   // never stampede the daemon
+  loading = true;
+  try { await loadSliceInner(); } finally {
+    loading = false;
+    if (wantReload){
+      wantReload = false;
+      if (sliceQuery().toString() !== loadedSlice) loadSlice();
+    }
+  }
+}
+
+async function loadSliceInner(){
+  if (!P.file()){ status('no store — use Browse or enter a path'); return; }
+  const sq = sliceQuery().toString();
+  status('Opening store — reads metadata + samples one chunk for stats (large chunks can take a minute)…');
+  await styleReady();
+  const d = await ensureDaemon();
+  if (!d || !d.port){ status('daemon failed to start', true); return; }
+  let m;
+  try {
+    m = await (await fetch(dURL('/meta?' + sq))).json();
+  } catch (e) { status('daemon unreachable', true); return; }
+  if (m.error){ status(m.error, true); return; }
+  const firstFile = !meta || meta.file !== m.file;
+  meta = m;
+  syncControls();
+  renderMeta();
+  if (m.geographic){
+    if (map.getLayer('raster') && firstFile){ map.removeLayer('raster'); map.removeSource('raster'); }
+    setRasterTiles();
+    if (firstFile && !hadView) fitToData();
+  } else {
+    status('store has no geo transform — switch to the classic Zarr template (mode picker)', true);
+  }
+  loadedSlice = sq;
+  loadedQuery = renderQuery();
+  if (m.geographic) status('');
+  syncStatsPanel();
+  zoomHintUpdate();
+  // warm the next time-chunk in the background so scrubbing forward is instant
+  if ((m.extra_dims || []).length) fetch(dURL('/prefetch?' + sq)).catch(() => {});
+}
+
+function onParamsChanged(){
+  syncStatsPanel();          // panel toggles instantly, even mid-load
+  const sq = sliceQuery().toString();
+  if (sq !== loadedSlice){ loadSlice(); return; }
+  syncControls();
+  const q = renderQuery();
+  if (q !== loadedQuery){
+    loadedQuery = q;
+    setRasterTiles();
+    statsActive();
+  }
+}
+fused.params.onChange(onParamsChanged);
+
+map.on('moveend', () => {
+  renderLevelLine(); zoomHintUpdate(); statsActive(2500);
+  const c = map.getCenter();
+  fused.params.set('ll', `${c.lng.toFixed(4)},${c.lat.toFixed(4)}`);
+  fused.params.set('z', map.getZoom().toFixed(2));
+});
+map.on('zoom', () => { renderLevelLine(); zoomHintUpdate(); });
+map.on('sourcedata', e => {
+  if (e.sourceId !== 'raster') return;
+  statsActive(1200);
+  map.triggerRepaint();     // background-tab loads can miss the first paint
+});
+
+// visible feedback while tiles stream — a cold chunk can take a minute and
+// MapLibre is otherwise silent about it
+let tilesBusySince = 0;
+const spinGlyphs = ['◐','◓','◑','◒'];
+setInterval(() => {
+  const busy = meta && map.getSource('raster') && !map.areTilesLoaded();
+  if (busy){
+    if (!tilesBusySince) tilesBusySince = performance.now();
+    const secs = (performance.now() - tilesBusySince) / 1000;
+    const g = spinGlyphs[Math.floor(secs * 2.5) % 4];
+    const chunky = (meta.chunk_logical_bytes || 0) > 32e6;
+    els.tileSpin.textContent = `${g} streaming tiles… ${secs.toFixed(0)}s` +
+      (chunky && secs > 2 ? ` — fetching a whole ${human(meta.chunk_logical_bytes)} chunk, hang tight` : '');
+    els.tileSpin.style.display = 'block';
+    statsActive(1500);
+  } else {
+    tilesBusySince = 0;
+    els.tileSpin.style.display = 'none';
+  }
+}, 400);
+
+loadSlice();
+</script>
+</body>
+</html>
