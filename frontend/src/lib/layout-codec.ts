@@ -9,7 +9,7 @@
 //
 // Panes/tabs are /embed/<path> iframes (D39): a full chrome-free shell, so each
 // can browse dirs, open previews and use templates for free.
-import { EMBED_PREFIX } from "./router";
+import { EMBED_PREFIX, rootedFsPath } from "./router";
 
 // --- Tree codec (`_layout` param) -----------------------------------------
 // `,` = row (side by side), `;` = column (stacked), `(…)` groups for nesting.
@@ -296,13 +296,16 @@ export function readEmbedLoc(iframe: HTMLIFrameElement): EmbedLoc | null {
     const p = loc.pathname;
     if (p && p.startsWith(EMBED_PREFIX)) {
       const rest = p.slice(EMBED_PREFIX.length);
-      const path =
-        "/" +
+      // rootedFsPath keeps the shell's canonical form: leading slash for
+      // POSIX, none for Windows drive paths ("C:/…") — a bare "/"-prefixed
+      // drive path would never prefix-match home or other fs paths.
+      const path = rootedFsPath(
         rest
           .split("/")
           .filter((s) => s.length > 0)
           .map(decodeURIComponent)
-          .join("/");
+          .join("/")
+      );
       return { path, query: loc.search || "" };
     }
   } catch {
