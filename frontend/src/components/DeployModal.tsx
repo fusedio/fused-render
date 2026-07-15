@@ -183,9 +183,13 @@ function FileSelection({
     ) : null;
 
   if (preview.errors.length > 0) {
-    // Blocking problems: no editable list — show the fix-it list, plus any
-    // advisory warnings beneath it. (The selection controls stay hidden until the
-    // page exports cleanly.)
+    // Blocking problems: show the fix-it list. The full editable preview is
+    // unavailable (the scan failed), but a bad selection can BE the cause — a
+    // persisted `include` for a file that no longer exists fails the preview
+    // even when the page is fine. So still offer a recovery path: list the
+    // manually-included files with a remove, plus Reset — otherwise the modal
+    // traps the user with no way to clear the offending selection. (Only
+    // `include` can error; `exclude` just filters, so it's not shown here.)
     return (
       <>
         <div className="deploy-error">
@@ -194,6 +198,37 @@ function FileSelection({
             <div key={i}>• {e}</div>
           ))}
         </div>
+        {include.length > 0 && (
+          <div className="deploy-files">
+            <div className="deploy-files-body">
+              <span className="deploy-muted">
+                Files you added (remove one that no longer exists, or reset):
+              </span>
+              <ul className="deploy-file-list">
+                {include.map((p) => (
+                  <li key={p} className="deploy-file">
+                    <code title={p}>{relKey(p)}</code>
+                    <span className="deploy-file-tag added">added</span>
+                    <button
+                      type="button"
+                      className="deploy-file-action deploy-file-remove"
+                      title="Remove from the bundle"
+                      onClick={() => removeRow(p)}
+                      disabled={disabled}
+                    >
+                      ✕
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              <div className="deploy-preview-actions">
+                <button type="button" onClick={reset} disabled={disabled}>
+                  Reset to default
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         {warningsBlock}
       </>
     );
