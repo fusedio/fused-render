@@ -684,19 +684,21 @@ def api_account_logout(
     env_name = (body or {}).get("env")
     if env_name is not None and (not isinstance(env_name, str) or not env_name):
         return _error("'env' must be an environment name when given")
-    cli = fused_cli()
-    if cli is None:
-        return _error(
-            "the fused CLI is not available, so there is nothing to sign out of "
-            "from here (credentials live in the CLI's own store)"
-        )
     # Kill any in-flight login BEFORE deleting credentials, and wait for it:
     # a completed-after-logout child would otherwise re-write the JWT. A
     # running setup job is account-scoped work too — cancel it (no wait
     # needed: it can't resurrect the JWT, only finish minting a key the user
-    # no longer wants).
+    # no longer wants). This runs BEFORE the CLI check: killing our own
+    # children needs no CLI, and a sign-out attempt must never leave them
+    # alive on any early-return path.
     _cancel_active_login(wait=KILL_GRACE)
     _cancel_setup_job()
+    cli = fused_cli()
+    if cli is None:
+        return _error(
+            "the fused CLI is not available, so its stored credentials can't be "
+            "cleared from here (they live in the CLI's own store)"
+        )
     args = [*cli.command, "cloud", "logout", "--no-browser"]
     if env_name:
         # Also drop that managed env's stored data-plane API key (a full

@@ -659,3 +659,19 @@ def test_logout_cancels_a_running_setup_job(tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_STUB_SETUP_MODE", "ok")
     assert h.client.post("/api/account/setup", json={}, headers=FUSED).status_code == 202
     h.wait_setup(lambda j: j["state"] == "done")
+
+
+def test_logout_kills_children_even_without_a_cli(tmp_path, monkeypatch):
+    # A sign-out attempt must never leave our own children alive on an
+    # early-return path: even when CLI resolution fails, the in-flight login
+    # is killed before the 400 (killing local subprocesses needs no CLI).
+    h = _harness(tmp_path, monkeypatch)
+    monkeypatch.setenv("FUSED_STUB_LOGIN_MODE", "hang")
+    assert h.client.post("/api/account/login", json={}, headers=FUSED).status_code == 200
+    assert h.status()["login_in_flight"] is True
+
+    monkeypatch.setattr(account_mod, "fused_cli", lambda: None)
+    resp = h.client.post("/api/account/logout", headers=FUSED)
+    assert resp.status_code == 400
+    monkeypatch.undo()  # restore fused_cli for the status probe below
+    assert h.wait_status(lambda s: not s["login_in_flight"])
