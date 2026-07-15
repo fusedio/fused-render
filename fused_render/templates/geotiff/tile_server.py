@@ -74,18 +74,26 @@ class _RangeReader:
         return body
 
 
+def _server_url(src, endpoint, path):
+    """Server URL built from `src`'s origin and the daemon's own normalized
+    `path`. src is trusted only for the origin: its ?path= carries the
+    browser's raw file param (possibly ~-prefixed or relative), and the
+    server's fs endpoints do no expansion — mixing the two identities would
+    judge remote-ness on one path string and range-read another (404s)."""
+    import urllib.parse
+    u = urllib.parse.urlsplit(src)
+    return f"{u.scheme}://{u.netloc}{endpoint}?path=" + urllib.parse.quote(path)
+
+
 def _stat_remote(src, path):
     """Whether `path` is mount-backed, per the server's /api/fs/stat — the one
     place that knows the mounts (the template passes `src` for every file and
     stays mount-agnostic). True/False from stat, None when it can't be reached
     (caller falls back to mmap and may retry on a later request)."""
-    import urllib.parse
     import urllib.request
     try:
-        u = urllib.parse.urlsplit(src)
-        stat = (f"{u.scheme}://{u.netloc}/api/fs/stat?path="
-                + urllib.parse.quote(path))
-        with urllib.request.urlopen(stat, timeout=10) as r:
+        with urllib.request.urlopen(_server_url(src, "/api/fs/stat", path),
+                                    timeout=10) as r:
             return bool(json.load(r).get("remote"))
     except Exception:  # noqa: BLE001
         return None
@@ -214,6 +222,10 @@ def _serve():
     # ---------------- file cache: parsed pyramid per path ----------------
     files = {}          # path -> dict(levels, meta, lock, stretch cache)
     files_lock = threading.Lock()
+    # Shared pool for coalesced warm reads: _warm_chunks runs on every cold
+    # multi-miss request; a per-call executor would spawn+join up to 16 OS
+    # threads per tile. do_run never re-enters the pool, so no deadlock.
+    warm_pool = ThreadPoolExecutor(max_workers=16)
 
     def _parse_level(buf, en, t):
         jt = T._v(t, 347)      # JPEGTables (shared quant/huffman tables)
@@ -239,32 +251,44 @@ def _serve():
         # decode 1 chunk up-front to verify decodability
         return lv
 
+    def _attach_reader(f, src, path):
+        """Route f's chunk reads over HTTP and drop its mmap (releases the
+        EBUSY pin; get_chunk tolerates catching the mmap mid-drop). The caller
+        spawns _prefetch_overviews once f is visible to other threads."""
+        f["reader"] = _RangeReader(_server_url(src, "/api/fs/raw", path))
+        old, f["buf"] = f["buf"], None
+        try:
+            if old is not None:
+                old.close()
+        except Exception:  # noqa: BLE001
+            pass
+
     def open_file(path, src=None):
         path = os.path.abspath(os.path.expanduser(path))
         with files_lock:
             f = files.get(path)
         if f is not None:
-            if src and f["reader"] is None and f.get("remote") is None:
-                # Opened mmap-backed while remote-ness was unknown (stat was
-                # unreachable, or a stale client sent no src): re-ask, and for
-                # a mount-backed file attach the reader + drop the mmap so
-                # chunk reads stop page-faulting the NFS mount (and the EBUSY
-                # pin is released). get_chunk tolerates the closed mmap.
-                remote = _stat_remote(src, path)
-                old_buf, upgrade = None, False
-                with files_lock:
-                    if remote is not None:
-                        f["remote"] = remote
-                    if remote and f["reader"] is None:
-                        f["reader"] = _RangeReader(src)
-                        old_buf, f["buf"] = f["buf"], None
-                        upgrade = True
+            # Opened mmap-backed while remote-ness was unknown (stat was
+            # unreachable, or a stale client sent no src): re-ask, and for a
+            # mount-backed file attach the reader + drop the mmap so chunk
+            # reads stop page-faulting the NFS mount. The non-blocking
+            # stat_lock keeps a screenful of concurrent requests from each
+            # firing its own blocking stat; losers just serve this request
+            # from the mmap as before.
+            if (src and f["reader"] is None and f.get("remote") is None
+                    and f["stat_lock"].acquire(blocking=False)):
+                try:
+                    remote = _stat_remote(src, path)
+                    upgrade = False
+                    with files_lock:
+                        if remote is not None:
+                            f["remote"] = remote
+                        if remote and f["reader"] is None:
+                            _attach_reader(f, src, path)
+                            upgrade = True
+                finally:
+                    f["stat_lock"].release()
                 if upgrade:
-                    try:
-                        if old_buf is not None:
-                            old_buf.close()
-                    except Exception:  # noqa: BLE001
-                        pass
                     threading.Thread(target=_prefetch_overviews, args=(f,),
                                      daemon=True).start()
             return f
@@ -293,21 +317,15 @@ def _serve():
              "meta": meta, "epsg": epsg, "reader": None,
              "transform": meta.get("transform"), "bounds": meta.get("bounds"),
              "supported": bool(supported and epsg and meta.get("transform")),
-             "lock": threading.Lock(), "chunks": {}, "chunk_order": [],
-             "stretch": {}}
+             "lock": threading.Lock(), "stat_lock": threading.Lock(),
+             "chunks": {}, "chunk_order": [], "stretch": {}}
         if remote is not None:
             f["remote"] = remote
         if remote:
             # Mount-backed: header parse above (single-threaded, brief) can ride
             # the mmap, but the CONCURRENT chunk reads must not — route them over
-            # HTTP and drop the mmap so nothing page-faults the NFS mount (also
-            # releases the EBUSY pin that would block unmounting the file).
-            f["reader"] = _RangeReader(src)
-            try:
-                buf.close()
-            except Exception:  # noqa: BLE001
-                pass
-            f["buf"] = None
+            # HTTP so nothing page-faults the NFS mount.
+            _attach_reader(f, src, path)
         with files_lock:
             files[path] = f
         if f["reader"] is not None:
@@ -443,8 +461,7 @@ def _serve():
             except Exception:  # noqa: BLE001
                 pass  # warming is best-effort; get_chunk refetches per-chunk
 
-        with ThreadPoolExecutor(max_workers=min(16, len(runs))) as ex:
-            list(ex.map(do_run, runs))
+        list(warm_pool.map(do_run, runs))
 
     def _prefetch_overviews(f):
         """Background bulk-fetch of every reduced-resolution level (remote
@@ -781,7 +798,13 @@ def _serve():
         if f["supported"]:
             want_rgb = f["levels"][0]["spp"] >= 3
             idx = [0, 1, 2] if want_rgb else [0]
-            m["stretch"] = get_stretch(f, idx, True)
+            try:
+                m["stretch"] = get_stretch(f, idx, True)
+            except Exception:  # noqa: BLE001
+                # One transient remote-read failure must not 500 /meta — the
+                # client would silently drop to the slow fallback engine for
+                # the whole session. Tiles recompute the stretch on demand.
+                pass
         m["levels"] = [[l["W"], l["H"]] for l in f["levels"]]
         try:
             m = _deep_meta(f, m)
