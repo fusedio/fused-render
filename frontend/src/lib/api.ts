@@ -444,6 +444,10 @@ export interface Mount {
   // empty data. Repaired via reconnectMount (force unmount + fresh mount).
   state: "mounted" | "disconnected" | "unmounted";
   mounted: boolean; // state === "mounted"
+  // The remote rejects writes (anonymous S3, an http backend, …), detected at
+  // attach time. Files under the mountpoint stat as writable:false, so
+  // templates open them read-only.
+  read_only: boolean;
 }
 
 // A remote we can offer from credentials already present in the user's

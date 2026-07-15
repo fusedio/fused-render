@@ -76,6 +76,10 @@ def _extract_one(zf, info, dest_root):
         os.makedirs(target, exist_ok=True)
         return None
     os.makedirs(os.path.dirname(target) or dest_root, exist_ok=True)
+    # A previous preview of this member left a read-only copy (see _preview);
+    # open("wb") on it would fail with EACCES, so replace it instead.
+    if os.path.exists(target) and not os.access(target, os.W_OK):
+        os.unlink(target)
     with zf.open(info) as src, open(target, "wb") as dst:
         shutil.copyfileobj(src, dst)
     return os.path.realpath(target)
@@ -103,6 +107,13 @@ def _preview(zf, file, entry):
     if info.is_dir():
         return {"is_dir": True}
     target = _extract_one(zf, info, _preview_root(file))
+    # The copy is a throwaway — an edit "saved" to it never reaches the
+    # archive — so mark it read-only. The whole editability contract (SPEC
+    # 13.5) keys off the permission bit: stat.writable goes false, templates
+    # open in read-only mode, /api/fs/write refuses. Deliberate extract/
+    # extract_all output stays writable.
+    if target is not None:
+        os.chmod(target, 0o444)
     return {"path": target, "size": info.file_size}
 
 

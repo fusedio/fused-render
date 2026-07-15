@@ -109,6 +109,15 @@ function MountRow({
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 600 }}>
             {conn.name}
+            {conn.read_only && (
+              <span
+                title="This remote rejects writes — files open read-only"
+                style={{ color: "#8b949e", fontWeight: 400, fontSize: "0.85em" }}
+              >
+                {" "}
+                — read-only
+              </span>
+            )}
             {conn.state === "disconnected" && (
               <span style={{ color: "#d29922", fontWeight: 400, fontSize: "0.85em" }}>
                 {" "}

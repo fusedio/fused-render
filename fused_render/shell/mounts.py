@@ -193,11 +193,15 @@ def mountpoint(m: dict) -> str:
     return os.path.join(mounts_dir(), m["name"])
 
 
-def add_mount(name: str, remote: str) -> dict:
+def add_mount(name: str, remote: str, read_only: bool | None = None) -> dict:
     """Validate and persist a new mount; raises ValueError on bad input.
     Does NOT mount — the endpoint decides whether create implies mount.
     Every mount is remounted at startup (see run_automount); there is no
-    per-mount opt-in."""
+    per-mount opt-in.
+
+    `read_only` marks the remote as rejecting writes (stat.writable goes
+    false for everything under the mountpoint — see server._writable). Leave
+    it None to have attach_mount detect it from the remote's config."""
     name = (name or "").strip()
     remote = (remote or "").strip()
     if not name or any(ch in name for ch in "/\\:") or name.startswith("."):
@@ -211,10 +215,17 @@ def add_mount(name: str, remote: str) -> dict:
         raise ValueError(f"a mount named '{name}' already exists")
     if any(c["remote"] == remote for c in mounts):
         raise ValueError(f"'{remote}' is already connected")
-    m = {"id": uuid.uuid4().hex[:12], "name": name, "remote": remote}
+    m: dict = {"id": uuid.uuid4().hex[:12], "name": name, "remote": remote}
+    if read_only is not None:
+        m["read_only"] = bool(read_only)
     mounts.append(m)
     _write(mounts)
     return m
+
+
+def _update_mount(m: dict) -> None:
+    """Persist changed fields of an existing mount record (matched by id)."""
+    _write([m if c["id"] == m["id"] else c for c in list_mounts()])
 
 
 def get_mount(cid: str) -> dict | None:
@@ -386,6 +397,68 @@ def _http_serves(port: int) -> dict:
 # serve/list-then-serve/start isn't atomic; concurrent syncs (automount thread
 # vs a user mount request) would each start a serve for the same remote.
 _serves_lock = threading.Lock()
+
+
+def mount_read_only(path: str) -> bool:
+    """True when `path` sits under a mount whose remote rejects writes (the
+    persisted `read_only` flag, detected at attach or set at create). The
+    kernel mount can't answer this itself: with CacheMode=full a write
+    "succeeds" into the local VFS cache and only fails at the async upload,
+    so os.access(W_OK) reports writable on a remote that will never take the
+    bytes. server._writable folds this in, which flips stat.writable and the
+    /api/fs/write guard together (SPEC RO-1). A record without the flag
+    (legacy, or detection unavailable) stays rw — the pre-flag behavior."""
+    if not is_mount_backed(path):
+        return False
+    m, _ = _mount_for(path)
+    return bool(m and m.get("read_only"))
+
+
+def _detect_read_only(port: int, fs: str) -> bool:
+    """Best-effort, NON-MUTATING read-onlyness probe for a remote. Never
+    writes a probe object into the user's store; instead:
+      - operations/fsinfo: a backend advertising no write feature at all
+        (Put/PutStream/Copy — e.g. http) can never take a write.
+      - config/get: an anonymous S3 remote (no keys, no env_auth, no
+        profile — the built-in aws-open public-buckets suggestion) sends
+        unsigned requests, which S3 accepts for reads only.
+    Everything else — including credentials that an IAM policy limits to
+    read — reports writable; only a real write could tell, and probing with
+    one would drop junk objects into user buckets."""
+    try:
+        feats = (_rc(port, "operations/fsinfo", {"fs": fs}, timeout=10)
+                 or {}).get("Features") or {}
+        if not any(feats.get(k) for k in ("Put", "PutStream", "Copy")):
+            return True
+    except RuntimeError:
+        pass
+    try:
+        cfg = _rc(port, "config/get", {"name": fs.partition(":")[0]}, timeout=10)
+    except RuntimeError:
+        return False
+    if not isinstance(cfg, dict) or cfg.get("type") != "s3":
+        return False
+    has_creds = (str(cfg.get("env_auth", "")).lower() == "true"
+                 or cfg.get("access_key_id") or cfg.get("profile")
+                 or cfg.get("shared_credentials_file")
+                 or cfg.get("session_token"))
+    return not has_creds
+
+
+def _ensure_read_only_flag(m: dict, port: int | None) -> None:
+    """Detect and persist `read_only` for a mount that doesn't carry the flag
+    yet (fresh create without an explicit choice, or a legacy record).
+    Best-effort: with no live rcd or a failing probe the record stays
+    unflagged and gets another chance at the next attach."""
+    if "read_only" in m or port is None:
+        return
+    try:
+        m["read_only"] = _detect_read_only(port, m["remote"])
+    except Exception:
+        logger.warning("read-only detection for %r failed", m["name"],
+                       exc_info=True)
+        return
+    _update_mount(m)
 
 
 def is_mount_backed(path: str) -> bool:
@@ -595,6 +668,7 @@ def attach_mount(m: dict) -> str | None:
         # without one, /api/fs/raw silently falls back to reads through the
         # wedge-prone kernel mount.
         sync_serves()
+        _ensure_read_only_flag(m, _live_rcd_port())
         return None
     try:
         port = ensure_rcd()
@@ -614,6 +688,7 @@ def attach_mount(m: dict) -> str | None:
     except RuntimeError as e:
         return str(e)
     sync_serves()
+    _ensure_read_only_flag(m, port)
     return None
 
 
@@ -808,6 +883,9 @@ def mount_view(m: dict, rcd_mounts: set | None = None, state: str | None = None)
         "state": state,
         # Healthy only — a disconnected mount must not read as mounted.
         "mounted": state == "mounted",
+        # Remote rejects writes (see mount_read_only); unflagged legacy
+        # records read as rw, the pre-flag behavior.
+        "read_only": bool(m.get("read_only")),
     }
 
 
@@ -1008,7 +1086,11 @@ def create_mount(body: dict = Body(...), x_fused: str | None = Header(default=No
     if guard is not None:
         return guard
     try:
-        m = add_mount(body.get("name") or "", body.get("remote") or "")
+        # An explicit read_only in the body wins over attach-time detection —
+        # the caller knows their credentials better than the probe does.
+        ro = body.get("read_only")
+        m = add_mount(body.get("name") or "", body.get("remote") or "",
+                      read_only=None if ro is None else bool(ro))
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     err = attach_mount(m)

@@ -315,7 +315,8 @@ def test_mount_view_has_no_automount_field(client, rcd):
         headers=FUSED).json()
     # automount is implicit for every mount now — the field is gone.
     assert "automount" not in m
-    assert set(m) == {"id", "name", "remote", "mountpoint", "mounted", "state"}
+    assert set(m) == {"id", "name", "remote", "mountpoint", "mounted", "state",
+                      "read_only"}
 
 
 def test_delete_unmounts_and_removes(client, rcd):
@@ -1022,7 +1023,7 @@ def test_upstream_url_prefers_presigned_link(home, rcd, fresh_upstream):
 
     rcd.responses["operations/publiclink"] = {"url": "https://signed.example/x?sig=1"}
     c = mounts_mod.add_mount("data", "remote:bucket")
-    f = os.path.join(mounts_mod.mountpoint(c), "a", "b.parquet")
+    f = _os.path.join(mounts_mod.mountpoint(c), "a", "b.parquet")
     assert mounts_mod.upstream_url_for(f) == "https://signed.example/x?sig=1"
     [(_, body)] = [x for x in rcd.calls if x[0] == "operations/publiclink"]
     assert body["fs"] == "remote:bucket" and body["remote"] == "a/b.parquet"
@@ -1042,7 +1043,7 @@ def test_upstream_url_public_s3_when_link_unsupported(home, rcd, fresh_upstream)
         "type": "s3", "provider": "AWS", "env_auth": "false",
         "region": "us-west-2"}
     c = mounts_mod.add_mount("data", "aws-open:bucket/pre fix")
-    f = os.path.join(mounts_mod.mountpoint(c), "k ey.parquet")
+    f = _os.path.join(mounts_mod.mountpoint(c), "k ey.parquet")
     assert mounts_mod.upstream_url_for(f) == (
         "https://bucket.s3.us-west-2.amazonaws.com/pre%20fix/k%20ey.parquet")
 
@@ -1055,7 +1056,7 @@ def test_upstream_url_none_is_remembered(home, rcd, fresh_upstream):
     rcd.responses["operations/publiclink"] = (500, {"error": "boom"})
     rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
     c = mounts_mod.add_mount("data", "corp:bucket")
-    f = os.path.join(mounts_mod.mountpoint(c), "x.parquet")
+    f = _os.path.join(mounts_mod.mountpoint(c), "x.parquet")
     assert mounts_mod.upstream_url_for(f) is None
     assert mounts_mod.upstream_url_for(f) is None
     assert len([x for x in rcd.calls if x[0] == "operations/publiclink"]) == 1
@@ -1148,3 +1149,78 @@ def test_api_run_rewrites_raw_source_url_to_direct(
     assert run(unmounted) == unmounted
     assert run("https://elsewhere.example/data.parquet") == \
         "https://elsewhere.example/data.parquet"
+
+
+# -- read-only remotes -----------------------------------------------------
+# A mount's writability is a property of the REMOTE (anonymous S3 can never
+# take a write; an :http: backend has no write verbs at all), but the kernel
+# mount can't say so: with CacheMode=full a write "succeeds" into the local
+# VFS cache and only fails at async upload. So attach_mount detects
+# read-onlyness once, non-mutatingly, via rc (fsinfo features + remote
+# config) and persists it on the mount record; server._writable consults it
+# through mount_read_only().
+
+FSINFO_RW = {"Features": {"Put": True, "PutStream": True, "Copy": True}}
+FSINFO_RO = {"Features": {"Put": False, "PutStream": False, "Copy": False}}
+
+
+def _attached(name, remote):
+    m = mounts_mod.add_mount(name, remote)
+    assert mounts_mod.attach_mount(m) is None
+    return mounts_mod.get_mount(m["id"])
+
+
+def test_attach_marks_anonymous_s3_read_only(home, rcd):
+    rcd.responses["operations/fsinfo"] = FSINFO_RW
+    rcd.responses["config/get"] = {"type": "s3", "provider": "AWS",
+                                   "env_auth": "false"}
+    assert _attached("pub", "aws-open:bucket")["read_only"] is True
+
+
+def test_attach_marks_credentialed_s3_writable(home, rcd):
+    rcd.responses["operations/fsinfo"] = FSINFO_RW
+    rcd.responses["config/get"] = {"type": "s3", "provider": "AWS",
+                                   "env_auth": "true", "profile": "default"}
+    assert _attached("data", "aws:bucket")["read_only"] is False
+
+
+def test_attach_marks_putless_backend_read_only(home, rcd):
+    # An :http:-style backend advertises no write features at all — read-only
+    # regardless of its config.
+    rcd.responses["operations/fsinfo"] = FSINFO_RO
+    rcd.responses["config/get"] = {"type": "http"}
+    assert _attached("web", "web:")["read_only"] is True
+
+
+def test_attach_defaults_writable_when_undetectable(home, rcd):
+    # Neither probe answers (stub 404s both) — stay rw, the pre-detection
+    # behavior, rather than locking a healthy credentialed mount.
+    assert _attached("data", "remote:bucket")["read_only"] is False
+
+
+def test_explicit_read_only_flag_skips_detection(home, rcd):
+    rcd.responses["operations/fsinfo"] = FSINFO_RO  # would detect read-only
+    rcd.responses["config/get"] = {"type": "http"}
+    m = mounts_mod.add_mount("web", "web:", read_only=False)
+    assert mounts_mod.attach_mount(m) is None
+    assert mounts_mod.get_mount(m["id"])["read_only"] is False
+
+
+def test_mount_read_only_path_lookup(home):
+    ro = mounts_mod.add_mount("pub", "aws-open:bucket", read_only=True)
+    rw = mounts_mod.add_mount("data", "aws:bucket", read_only=False)
+    legacy = mounts_mod.add_mount("old", "old:bucket")  # pre-flag record
+    assert mounts_mod.mount_read_only(
+        _os.path.join(mounts_mod.mountpoint(ro), "f.parquet")) is True
+    assert mounts_mod.mount_read_only(
+        _os.path.join(mounts_mod.mountpoint(rw), "f.parquet")) is False
+    assert mounts_mod.mount_read_only(
+        _os.path.join(mounts_mod.mountpoint(legacy), "f.parquet")) is False
+    assert mounts_mod.mount_read_only("/somewhere/else.parquet") is False
+
+
+def test_mount_view_exposes_read_only(home):
+    m = mounts_mod.add_mount("pub", "aws-open:bucket", read_only=True)
+    assert mounts_mod.mount_view(m, rcd_mounts=set())["read_only"] is True
+    m2 = mounts_mod.add_mount("data", "aws:bucket")
+    assert mounts_mod.mount_view(m2, rcd_mounts=set())["read_only"] is False
