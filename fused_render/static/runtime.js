@@ -412,6 +412,19 @@
   let resubscribeTimer = null;
   let reloadTimer = null;
 
+  // Root of the mounts dir, fetched once from /api/config at start. Paths under
+  // it are mount-backed: their bytes come from a read-only remote bucket that
+  // never changes, so watching them for auto-reload buys nothing while every
+  // poll is remote traffic. That traffic is exactly what killed a mount in the
+  // fs/events stat-storm incident (a preview pane watching its mounted data
+  // file, plus a huge .zarr). We drop those from the watch set entirely; the
+  // template/py code that CAN change is always local and stays watched.
+  // Kept mount-agnostic in the template: the server hands us the prefix.
+  let mountsRoot = null;
+  function isMountBacked(p) {
+    return !!(mountsRoot && p && p.indexOf(mountsRoot + "/") === 0);
+  }
+
   function resubscribe() {
     // A reconnect timer may be pending (onclose below); a direct call must
     // cancel it or the stale timer would close and reopen the fresh socket.
@@ -456,6 +469,9 @@
 
   function watchPath(p) {
     if (!p || watched.has(p)) return;
+    // Never watch mount-backed data files (see mountsRoot): read-only remote
+    // bytes don't change, and the poll traffic is the mount-killing hazard.
+    if (isMountBacked(p)) return;
     watched.add(p);
     if (!autoReloadEnabled || !started) return; // before start, paths just accumulate
     // Debounce resubscribe so a page firing several runPython calls on load
@@ -480,13 +496,32 @@
 
   function startAutoReload() {
     started = true;
-    // Union of: this page's own rendered file, _file if present (LR-1).
-    const params = new URLSearchParams(window.location.search);
-    const own = params.get("path");
-    if (own) watched.add(own);
-    const file = params.get("_file");
-    if (file) watched.add(file);
-    if (autoReloadEnabled) resubscribe();
+    // Learn the mounts root before opening any socket, so a mount-backed
+    // _file is never watched even for the first subscribe. The `path` template
+    // and any `_file` are added here (LR-1); watchPath callers (runPython's
+    // resolved_py, template code) come later and are always local, so they're
+    // safe even if this fetch is still in flight. On fetch failure we keep the
+    // prior behavior (watch everything) — the server-side registry (items 1-4)
+    // already makes a mount stat non-fatal, so this is defense in depth.
+    const begin = () => {
+      // Drop anything mount-backed that accumulated before we knew the root.
+      for (const p of [...watched]) {
+        if (isMountBacked(p)) watched.delete(p);
+      }
+      const params = new URLSearchParams(window.location.search);
+      const own = params.get("path");
+      if (own && !isMountBacked(own)) watched.add(own);
+      const file = params.get("_file");
+      if (file && !isMountBacked(file)) watched.add(file);
+      if (autoReloadEnabled) resubscribe();
+    };
+    fetch("/api/config")
+      .then((res) => res.json())
+      .then((cfg) => {
+        if (cfg && typeof cfg.mounts_root === "string") mountsRoot = cfg.mounts_root;
+      })
+      .catch(() => {})
+      .then(begin);
   }
 
   window.fused = {
