@@ -13,6 +13,7 @@ at startup if missing) to opt in to the local compute backend (`engine.py`).
 """
 import asyncio
 import codecs
+import email.utils
 import json
 import logging
 from collections import deque
@@ -1042,6 +1043,16 @@ def _proxy_raw(upstream: str, request: Request):
     return StreamingResponse(body(), status_code=r.status, headers=out)
 
 
+def _stat_or_none(path: str) -> os.stat_result | None:
+    """stat() for /api/fs/raw's 404 gate: None for missing paths and
+    non-regular files alike (a directory has no raw bytes to serve)."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return st if stat_mod.S_ISREG(st.st_mode) else None
+
+
 def _stat_payload(path: str, is_dir: bool, st: os.stat_result | None = None) -> dict:
     """The /api/fs/stat shape. /api/fs/write returns it too, so the editor can
     re-arm its optimistic lock from a save response. Pass a pre-fetched `st` to
@@ -1461,8 +1472,6 @@ def create_app(start_dir: str) -> FastAPI:
 
     @app.api_route("/api/fs/raw", methods=["GET", "HEAD"])
     async def api_fs_raw(path: str, request: Request):
-        if not os.path.isfile(path):
-            return _error(f"no such file: {path}", status=404)
         # Mount-backed file with a live HTTP serve: proxy the bytes from
         # rclone instead of reading through the kernel mount. Concurrent
         # ranged reads (duckdb's httpfs) through the NFS mount stall its 1s
@@ -1470,40 +1479,78 @@ def create_app(start_dir: str) -> FastAPI:
         # over HTTP are merely slow. Explicit HEAD support matters: httpfs
         # HEADs for the length first, and Starlette's implicit HEAD-on-GET
         # would run the full upstream GET just to drop the body.
-        upstream = shell_mounts.serve_url_for(path)
+        #
+        # No stat() before a serve-backed GET: on a mount that's a VFS
+        # getattr — a full remote round trip (~1s cold), paid serially
+        # before the read even starts, per never-listed object. The serve
+        # and the store both 404 a missing object themselves (_proxy_raw
+        # passes error statuses through), so existence falls out of the
+        # read. Only HEAD (answered from st_size) and the local-file
+        # fallback below still stat.
+        upstream = await asyncio.to_thread(shell_mounts.serve_url_for, path)
         if upstream is not None:
             # Every remote read flows through here, so this is where the
             # shell learns a mounted file is in use: kick off (or just
             # touch) its background whole-file prefetch. Cheap no-op after
             # the first call; templates stay mount-agnostic (prefetch.py).
             shell_prefetch.schedule(path, upstream)
-            # Cold ranged reads go straight to the store: the serve's VFS
-            # layer serializes concurrent uncached range reads of one file
-            # (an analytical scan pays ~0.25s per seek), while the store
-            # answers the same GETs in parallel. Once the prefetch has
-            # landed the whole file in the serve cache, the serve replays
-            # ranges from local disk and wins again. A 307 rather than a
-            # proxied fetch: the client (duckdb httpfs) re-issues each
-            # ranged GET against the store itself with its own pooled
-            # parallel connections — proxying here paid a fresh TLS
+            # HEAD answered from a VFS getattr rather than proxied: ranged
+            # clients (duckdb httpfs, fsspec/zarr, geotiff) probe the length
+            # before reading, and proxying that probe is a full remote round
+            # trip for headers the getattr already knows. The serve reads
+            # the same rclone remote, so the sizes agree. In a thread — a
+            # cold getattr would otherwise stall the event loop.
+            if request.method == "HEAD":
+                st = await asyncio.to_thread(_stat_or_none, path)
+                if st is None:
+                    return _error(f"no such file: {path}", status=404)
+                media_type, _ = mimetypes.guess_type(path)
+                return Response(status_code=200, headers={
+                    "content-length": str(st.st_size),
+                    "content-type": media_type or "application/octet-stream",
+                    "accept-ranges": "bytes",
+                    "last-modified": email.utils.formatdate(
+                        st.st_mtime, usegmt=True),
+                })
+            # Cold reads go straight to the store: the serve's VFS layer
+            # serializes concurrent uncached range reads of one file (an
+            # analytical scan pays ~0.25s per seek) and its per-file open
+            # ceremony dwarfs a small metadata fetch (zarr.json), while the
+            # store answers the same GETs in parallel. Once the prefetch
+            # has landed the whole file in the serve cache, the serve
+            # replays ranges from local disk and wins again. A 307 rather
+            # than a proxied fetch: the client (duckdb httpfs, fsspec)
+            # re-issues each GET against the store itself with its own
+            # pooled parallel connections — proxying here paid a fresh TLS
             # handshake per range read (measured 2x on the point-read
             # phase) and streamed every byte through this process twice.
-            # GET+Range only: presigned links are minted for GET (a HEAD
-            # fails their signature), and a whole-file GET through the
-            # serve is effectively the prefetch itself. Native clients
-            # only: a browser fetch would follow the redirect cross-origin
-            # and die on CORS — browsers always send Sec-Fetch-Mode,
-            # duckdb's httpfs never does, so its absence is the gate.
-            if (request.method == "GET" and request.headers.get("range")
-                    and "sec-fetch-mode" not in request.headers
+            # Whole-file GETs redirect too (zarr stores read many tiny
+            # metadata files whole; schedule() above warms the serve cache
+            # regardless). GET only: presigned links are minted for GET (a
+            # HEAD fails their signature). Native clients only: a browser
+            # fetch would follow the redirect cross-origin and die on CORS
+            # — browsers always send Sec-Fetch-Mode, duckdb's httpfs never
+            # does, so its absence is the gate.
+            if ("sec-fetch-mode" not in request.headers
                     and not shell_prefetch.is_done(path)):
                 direct = await asyncio.to_thread(
                     shell_mounts.upstream_url_for, path)
                 if direct:
                     return RedirectResponse(direct, status_code=307)
+            # Not redirected (browser, warm read, or no direct URL): proxy the
+            # bytes. Guard non-files here — the cold redirect path above is the
+            # never-listed-object hot path and stays stat-free, but a directory
+            # proxied through rclone serve comes back as a 200 HTML listing, so
+            # stat before serving (warm getattr is cheap; a directory 404s).
+            st = await asyncio.to_thread(_stat_or_none, path)
+            if st is None:
+                return _error(f"no such file: {path}", status=404)
             resp = await asyncio.to_thread(_proxy_raw, upstream, request)
             if resp is not None:
                 return resp  # upstream unreachable -> plain file read below
+        st = await asyncio.to_thread(_stat_or_none, path)
+        if st is None:
+            return _error(f"no such file: {path}", status=404)
         media_type, _ = mimetypes.guess_type(path)
         return FileResponse(path, media_type=media_type or "application/octet-stream")
 

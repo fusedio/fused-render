@@ -580,6 +580,39 @@ _LINK_TTL_S = 30 * 60.0
 _upstream_lock = threading.Lock()
 _upstream_links: dict = {}  # (fs, rel) -> (url, monotonic expiry)
 _upstream_mode: dict = {}   # fs -> "link" | "public" | "none"
+_upstream_cfg: dict = {}    # remote name -> config/get dict (successes only)
+
+
+def _remote_config(name: str) -> dict | None:
+    """config/get for a remote, memoized. Public-URL minting consults the
+    config per OBJECT (a zarr store touches thousands), and remote configs
+    only change through this process (add_remote restarts nothing that would
+    invalidate them) — so one rc round trip per remote, then pure lookups.
+    Failures aren't cached: rcd may simply not be up yet."""
+    with _upstream_lock:
+        cfg = _upstream_cfg.get(name)
+    if cfg is not None:
+        return cfg
+    port = _live_rcd_port()
+    if port is None:
+        return None
+    try:
+        cfg = _rc(port, "config/get", {"name": name}, timeout=10)
+    except RuntimeError:
+        return None
+    if not isinstance(cfg, dict):
+        return None
+    with _upstream_lock:
+        _upstream_cfg[name] = cfg
+    return cfg
+
+
+def _anonymous_s3(cfg: dict | None) -> bool:
+    """True when the remote is plain AWS S3 with no credentials — the one
+    backend class whose objects are reachable by unsigned public URL and
+    which can never presign ("unsupported signer type noAuth")."""
+    return (cfg is not None and _s3_without_credentials(cfg)
+            and not cfg.get("endpoint"))
 
 
 def _mount_for(path: str) -> tuple[dict | None, str]:
@@ -592,26 +625,47 @@ def _mount_for(path: str) -> tuple[dict | None, str]:
     return None, ""
 
 
+def _fix_dotted_bucket_url(url: str) -> str | None:
+    """Virtual-hosted S3 URLs put the bucket in the TLS hostname, and
+    *.s3.<region>.amazonaws.com can't match a bucket with dots in its name
+    (e.g. us-west-2.opendata.source.coop) — every client fails the handshake.
+    Rewrite an unsigned dotted-bucket URL to path-style; a SIGNED one can't be
+    rewritten (SigV4 covers the Host header), so drop it — the caller then
+    stays on the serve proxy, which is slow but works."""
+    p = urllib.parse.urlsplit(url)
+    m = re.match(r"^(.+)\.s3[.-]([a-z0-9-]+)\.amazonaws\.com$",
+                 p.hostname or "")
+    if not m or "." not in m.group(1):
+        return url
+    if p.query:
+        return None
+    bucket, region = m.group(1), m.group(2)
+    return f"https://s3.{region}.amazonaws.com/{bucket}{p.path}"
+
+
 def _public_object_url(fs: str, rel: str) -> str | None:
     """Plain https URL for an object on an ANONYMOUS AWS S3 remote — the one
     backend class that can't presign but doesn't need to. Credentialed or
-    non-AWS remotes return None (their objects aren't reachable unsigned)."""
+    non-AWS remotes return None (their objects aren't reachable unsigned).
+    Pure string building once _remote_config has memoized the config — no rc
+    round trip per object."""
     name, _, root = fs.partition(":")
-    port = _live_rcd_port()
-    if port is None:
+    cfg = _remote_config(name)
+    if not _anonymous_s3(cfg):
         return None
-    try:
-        cfg = _rc(port, "config/get", {"name": name}, timeout=10)
-    except RuntimeError:
-        return None
-    if (not isinstance(cfg, dict) or not _s3_without_credentials(cfg)
-            or cfg.get("endpoint")):
-        return None
+    assert cfg is not None
     bucket, _, prefix = root.partition("/")
     if not bucket:
         return None
     key = (prefix.rstrip("/") + "/" if prefix else "") + rel
     region = cfg.get("region") or "us-east-1"
+    # Path-style for dotted buckets: virtual-hosted style puts the bucket in
+    # the TLS hostname, and *.s3.<region>.amazonaws.com can't match the extra
+    # dots (e.g. us-west-2.opendata.source.coop) — every client fails the
+    # handshake on the redirect.
+    if "." in bucket:
+        return (f"https://s3.{region}.amazonaws.com/{bucket}/"
+                + urllib.parse.quote(key))
     return f"https://{bucket}.s3.{region}.amazonaws.com/" + urllib.parse.quote(key)
 
 
@@ -639,6 +693,10 @@ def _upstream_url_for(path: str) -> str | None:
         mode = _upstream_mode.get(fs)
     if mode == "none":
         return None
+    if mode is None and _anonymous_s3(_remote_config(fs.partition(":")[0])):
+        # Anonymous S3 can never presign — don't burn an rc call per remote
+        # learning that from publiclink's "unsupported signer type" error.
+        mode = "public"
     url = None
     if mode in (None, "link"):
         port = _live_rcd_port()
@@ -650,6 +708,8 @@ def _upstream_url_for(path: str) -> str | None:
                       timeout=10).get("url") or None
         except RuntimeError:
             url = None
+        if url is not None:
+            url = _fix_dotted_bucket_url(url)
         if url is None and mode == "link":
             return None  # transient failure on a known-linkable remote
         if url is not None:

@@ -99,9 +99,10 @@ def test_duckdb_database_files_route_to_duckdb():
 
 
 def test_builtin_zarr_directory_key():
-    # zarr dir carries the map preview plus the raw member listing as a peer
-    # mode (D81 — replaces the old `?listing=1` escape hatch)
-    assert modes("/x/store.zarr", is_dir=True) == (["zarr", "_listing"], None)
+    # zarr dir carries the AOI streamer, the map preview, and the raw member
+    # listing as peer modes (D81 — replaces the old `?listing=1` escape hatch)
+    assert modes("/x/store.zarr", is_dir=True) == (
+        ["zarr_aoi", "zarr", "_listing"], None)
     # a *file* named .zarr does not match the directory key
     assert modes("/x/store.zarr", is_dir=False) == ([], None)
 

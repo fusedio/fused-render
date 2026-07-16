@@ -909,8 +909,13 @@ def test_stat_marks_mount_backed_files_remote(client, home):
 
 
 def test_fs_raw_proxies_range_from_mount_serve(client, home):
-    """/api/fs/raw for a mount-backed path streams from the mount's HTTP
-    serve (Range and HEAD forwarded), not from the local filesystem."""
+    """/api/fs/raw for a mount-backed path streams GETs from the mount's
+    HTTP serve, not from the local filesystem. HEAD is the exception: it is
+    answered from the mount's own stat — ranged clients (duckdb httpfs,
+    fsspec/zarr) probe the length before every read, and proxying that probe
+    costs a full remote round trip for headers the VFS getattr already
+    knows; on a real mount the stat and the serve read the same remote, so
+    the sizes agree (here they intentionally differ to prove the source)."""
     import functools
     import http.server
     import os
@@ -942,8 +947,50 @@ def test_fs_raw_proxies_range_from_mount_serve(client, home):
         assert r.status_code == 200 and r.content == b"REMOTE-BYTES"
         r = client.head("/api/fs/raw", params={"path": f})
         assert r.status_code == 200
-        assert r.headers["content-length"] == str(len(b"REMOTE-BYTES"))
+        assert r.headers["content-length"] == str(len(b"LOCAL-BYTES"))
+        assert r.headers["accept-ranges"] == "bytes"
+        assert "last-modified" in r.headers
         assert r.content == b""
+    finally:
+        srv.shutdown()
+
+
+def test_fs_raw_directory_404s_not_listing(client, home):
+    """A directory path under a served mount 404s on GET and HEAD. The serve
+    (like rclone serve http) answers a directory with a 200 HTML listing, so
+    without a guard the proxy would hand that listing back as raw bytes; a
+    directory has no bytes to serve, so both verbs must 404."""
+    import functools
+    import http.server
+    import os
+    import threading
+
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    os.makedirs(mp)
+    d = os.path.join(mp, "subdir")
+    os.makedirs(d)
+    open(os.path.join(d, "x.bin"), "wb").write(b"CHUNK")
+
+    class H(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0), functools.partial(H, directory=str(mp)))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        import fused_render.shell.storage as storage
+        storage.write_json(mounts_mod.serves_path(),
+                           {mp: f"http://127.0.0.1:{srv.server_address[1]}"})
+        # Browser-style request (Sec-Fetch-Mode present) skips the redirect
+        # branch and reaches the proxy path, which is where a directory would
+        # otherwise leak a 200 listing.
+        h = {"sec-fetch-mode": "navigate"}
+        r = client.get("/api/fs/raw", params={"path": d}, headers=h)
+        assert r.status_code == 404
+        r = client.head("/api/fs/raw", params={"path": d}, headers=h)
+        assert r.status_code == 404
     finally:
         srv.shutdown()
 
@@ -1009,13 +1056,15 @@ def test_fs_raw_proxy_error_keeps_range_headers(client, home):
 
 @pytest.fixture()
 def fresh_upstream():
-    """The bypass memoizes per-remote capability and per-object links in
-    module globals; clear around each test so results don't leak."""
+    """The bypass memoizes per-remote capability, config and per-object
+    links in module globals; clear around each test so results don't leak."""
     mounts_mod._upstream_links.clear()
     mounts_mod._upstream_mode.clear()
+    mounts_mod._upstream_cfg.clear()
     yield
     mounts_mod._upstream_links.clear()
     mounts_mod._upstream_mode.clear()
+    mounts_mod._upstream_cfg.clear()
 
 
 def test_upstream_url_prefers_presigned_link(home, rcd, fresh_upstream):
@@ -1036,7 +1085,10 @@ def test_upstream_url_public_s3_when_link_unsupported(home, rcd, fresh_upstream)
     import os
 
     # Anonymous S3 remotes can't presign ("unsupported signer type noAuth")
-    # but don't need to — the plain public object URL works.
+    # but don't need to — the plain public object URL works. The config makes
+    # that knowable up front, so publiclink is never even attempted, and the
+    # config is memoized: minting URLs for later objects on the same remote
+    # (a zarr store touches thousands) is pure string building, no rc call.
     rcd.responses["operations/publiclink"] = (
         500, {"error": 'unsupported signer type "smithy.api#noAuth"'})
     rcd.responses["config/get"] = {
@@ -1046,6 +1098,11 @@ def test_upstream_url_public_s3_when_link_unsupported(home, rcd, fresh_upstream)
     f = os.path.join(mounts_mod.mountpoint(c), "k ey.parquet")
     assert mounts_mod.upstream_url_for(f) == (
         "https://bucket.s3.us-west-2.amazonaws.com/pre%20fix/k%20ey.parquet")
+    f2 = os.path.join(mounts_mod.mountpoint(c), "other.parquet")
+    assert mounts_mod.upstream_url_for(f2) == (
+        "https://bucket.s3.us-west-2.amazonaws.com/pre%20fix/other.parquet")
+    assert [x for x in rcd.calls if x[0] == "operations/publiclink"] == []
+    assert len([x for x in rcd.calls if x[0] == "config/get"]) == 1
 
 
 def test_upstream_url_none_is_remembered(home, rcd, fresh_upstream):
@@ -1067,10 +1124,13 @@ def test_upstream_url_none_outside_mounts(home, rcd, fresh_upstream):
 
 
 def test_fs_raw_redirects_cold_native_range_reads(client, home, rcd, fresh_upstream):
-    """A ranged GET from a native client (no Sec-Fetch-Mode) on a cold
-    mount-backed file 307s to the store's direct URL; browser requests and
-    HEADs keep today's serve proxy (a redirect would die on CORS / fail a
-    GET-signed link)."""
+    """A GET from a native client (no Sec-Fetch-Mode) on a cold mount-backed
+    file 307s to the store's direct URL — ranged or whole-file alike (zarr
+    reads its many tiny metadata files whole); browser requests and HEADs
+    keep today's serve proxy (a redirect would die on CORS / fail a
+    GET-signed link). No stat gates the redirect: a getattr on a never-listed
+    mount object is a full remote round trip, and the store 404s a missing
+    object itself."""
     import os
 
     import fused_render.shell.storage as storage
@@ -1090,12 +1150,26 @@ def test_fs_raw_redirects_cold_native_range_reads(client, home, rcd, fresh_upstr
     assert r.status_code == 307
     assert r.headers["location"] == "https://signed.example/x"
 
+    # Whole-file native GET: redirected too, and without any local stat —
+    # a path that doesn't exist under the (fake) mount still redirects, so
+    # the daemon's read never pays the VFS getattr round trip.
+    r = client.get("/api/fs/raw", params={"path": f}, follow_redirects=False)
+    assert r.status_code == 307
+    ghost = os.path.join(mp, "not-listed-yet.bin")
+    r = client.get("/api/fs/raw", params={"path": ghost},
+                   follow_redirects=False)
+    assert r.status_code == 307
+
     r = client.get("/api/fs/raw", params={"path": f},
                    headers={"Range": "bytes=0-3", "Sec-Fetch-Mode": "cors"},
                    follow_redirects=False)
     assert r.status_code != 307
     r = client.head("/api/fs/raw", params={"path": f}, follow_redirects=False)
     assert r.status_code != 307
+    # HEAD still answers from the stat: missing files 404 locally.
+    r = client.head("/api/fs/raw", params={"path": ghost},
+                    follow_redirects=False)
+    assert r.status_code == 404
 
 
 def test_api_run_rewrites_raw_source_url_to_direct(
@@ -1259,3 +1333,22 @@ def test_mount_view_exposes_read_only(home):
     assert mounts_mod.mount_view(m, rcd_mounts=set())["read_only"] is True
     m2 = mounts_mod.add_mount("data", "aws:bucket")
     assert mounts_mod.mount_view(m2, rcd_mounts=set())["read_only"] is False
+
+
+def test_fix_dotted_bucket_url():
+    fix = mounts_mod._fix_dotted_bucket_url
+    # dotted bucket in the TLS hostname can never pass the wildcard cert:
+    # unsigned URLs are rewritten to path-style
+    assert fix("https://us-west-2.opendata.source.coop.s3.us-west-2"
+               ".amazonaws.com/mindearth/a%20b/zarr.json") == \
+        ("https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop"
+         "/mindearth/a%20b/zarr.json")
+    # a signed one can't be (SigV4 covers Host) — dropped, caller stays on
+    # the serve proxy
+    assert fix("https://buck.et.s3.us-east-1.amazonaws.com/k"
+               "?X-Amz-Signature=abc") is None
+    # dot-free buckets and non-AWS hosts pass through untouched
+    for u in ("https://plain.s3.us-west-2.amazonaws.com/key",
+              "https://plain.s3.us-west-2.amazonaws.com/key?X-Amz-Sig=x",
+              "https://minio.example.com/bucket/key"):
+        assert fix(u) == u

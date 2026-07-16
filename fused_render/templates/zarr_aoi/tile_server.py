@@ -118,9 +118,22 @@ def main(action: str = "ensure"):
         pass
     os.makedirs(os.path.dirname(STATE), exist_ok=True)
     log = os.path.join(os.path.dirname(STATE), "daemon.log")
+    env = dict(os.environ)
+    if "FUSED_RENDER_ORIGIN" not in env:
+        # The daemon reads store bytes through the server's /api/fs/raw
+        # (resolve_source), so it needs the server's origin. main() runs
+        # inside the server, where the port module is importable; the
+        # daemon's own venv has no fused_render, so pass it via env. The
+        # 1777 fallback matches _branch._BASE_PORT (baseline, no branch
+        # isolation).
+        try:
+            from fused_render._branch import branch_port
+            env["FUSED_RENDER_ORIGIN"] = f"http://127.0.0.1:{branch_port()}"
+        except ImportError:
+            pass
     with open(log, "ab") as lf:
         subprocess.Popen([_daemon_python(), _me(), "--serve"],
-                         stdout=lf, stderr=lf,
+                         stdout=lf, stderr=lf, env=env,
                          start_new_session=True, cwd=os.path.dirname(_me()))
     for _ in range(600):               # venv build on first run can take a while
         time.sleep(0.1)
@@ -231,6 +244,33 @@ def _serve():
                     return None
                 except Exception:
                     pass    # fall through to the plain single GET
+            # suffix reads (shard indexes) on an http store: fsspec's
+            # HTTPFileSystem emulates "last N bytes" with a HEAD size probe
+            # first — one extra remote round trip per shard object. HTTP
+            # servers (/api/fs/raw, S3 behind its redirect) accept the native
+            # `Range: bytes=-N` form, so send it directly.
+            try:
+                from zarr.abc.store import SuffixByteRequest
+                fs = getattr(self._store, "fs", None)
+                root = getattr(self._store, "path", None)
+                proto = getattr(fs, "protocol", None)
+                proto = proto if isinstance(proto, (tuple, list)) else (proto,)
+                if (isinstance(byte_range, SuffixByteRequest) and root
+                        and "http" in proto):
+                    n = int(byte_range.suffix)
+                    session = await fs.set_session()
+                    async with session.get(
+                            f"{root}/{key}",
+                            headers={"Range": f"bytes=-{n}"}) as r:
+                        if r.status == 404:
+                            return None
+                        r.raise_for_status()
+                        data = await r.read()
+                    if len(data) > n:   # server ignored the Range header
+                        data = data[-n:]
+                    return prototype.buffer.from_bytes(data)
+            except Exception:
+                pass    # fall through to fsspec's emulated suffix read
             return await super().get(key, prototype, byte_range)
 
         async def get_partial_values(self, prototype, key_ranges):
@@ -283,6 +323,21 @@ def _serve():
         path = os.path.abspath(os.path.expanduser(path))
         mroot = os.path.expanduser("~/.fused-render/mounts") + os.sep
         if path.startswith(mroot):
+            # Default transport: the server's own ranged-read API. The server
+            # decides how the bytes move (rclone-serve proxy, presigned 307,
+            # local file) and holds the credentials, so private buckets work
+            # and this template never has to know what a mount is.
+            # ZARRAOI_TRANSPORT=s3 keeps the old rclone.conf back-resolution
+            # (anonymous buckets only) for A/B comparison.
+            if os.environ.get("ZARRAOI_TRANSPORT", "raw") != "s3":
+                from urllib.parse import quote
+                origin = os.environ.get("FUSED_RENDER_ORIGIN",
+                                        "http://127.0.0.1:1777")
+                return {"kind": "http",
+                        "url": origin + "/api/fs/raw?path="
+                        + quote(path, safe="/"),
+                        "storage_options": {},
+                        "label": path + " (server raw API)"}
             rel = path[len(mroot):]
             name, _, rest = rel.partition(os.sep)
             try:
@@ -742,8 +797,12 @@ def _serve():
         a0 = get_array(ds, 0, var)
         ci = chunk_info(a0)
         itemsize = np.dtype(a0.dtype).itemsize
-        logical = sum(int(np.prod(get_array(ds, i, var).shape)) * itemsize
-                      for i in range(len(ds["levels"])))
+        # spatial shapes come from the multiscales attrs — opening every
+        # level's array instead costs 2 serial GETs per level on stores
+        # without consolidated metadata
+        extra_cells = int(np.prod(a0.shape[:-2])) if a0.ndim > 2 else 1
+        logical = sum(int(np.prod(lv["shape"])) * extra_cells * itemsize
+                      for lv in ds["levels"])
         extra = []
         if a0.ndim > 2:
             dims = dims_of(a0)
