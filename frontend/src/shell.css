@@ -1485,6 +1485,9 @@ body.embed .preview-browse-chip:hover {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  /* Own its text alignment so it never inherits `text-align` from the element
+     it's mounted under (e.g. the right-aligned .row-actions-cell). */
+  text-align: left;
   min-width: 220px;
   padding: 5px;
   background: var(--bg-alt);
@@ -2011,6 +2014,62 @@ body.embed .preview-browse-chip:hover {
 }
 
 .deploy-shares-table a:hover {
+  text-decoration: underline;
+}
+
+/* Row overflow ("⋯") trigger and its cell — one quiet control per table row
+   that opens the shared ContextMenu with that row's actions, replacing the
+   always-visible per-row button pairs on the Fused account page. Right-aligned
+   so the triggers line up in a single narrow column. Scoped under
+   .prefs-section to win over the generic `.prefs-section button` rules. */
+.row-actions-cell {
+  text-align: right;
+  white-space: nowrap;
+  width: 1%;
+}
+
+.prefs-section .row-actions-btn {
+  font: inherit;
+  line-height: 1;
+  font-size: 18px;
+  letter-spacing: 0.06em;
+  padding: 0 8px;
+  min-height: 24px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.prefs-section .row-actions-btn:hover:not(:disabled) {
+  background: var(--bg-alt);
+  border-color: var(--border);
+  color: var(--fg);
+}
+
+.prefs-section .row-actions-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Inline text-link button (e.g. the setup panel's "Edit name") — no button
+   chrome, accent underline on hover. Scoped under .prefs-section to override
+   the generic `.prefs-section button` box styling. */
+.prefs-section .link-button {
+  font: inherit;
+  display: inline;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.prefs-section .link-button:hover:not(:disabled) {
+  background: none;
+  border: none;
   text-decoration: underline;
 }
 
