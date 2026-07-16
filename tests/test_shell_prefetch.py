@@ -73,6 +73,8 @@ def fast(monkeypatch):
     monkeypatch.setattr(prefetch_mod, "IDLE_WAIT_S", 0.0)
     monkeypatch.setattr(prefetch_mod, "MAX_IDLE_HOLD_S", 0.0)
     monkeypatch.setattr(prefetch_mod, "CHUNK_BYTES", 1024)
+    # Tests use tiny payloads; drop the size floor so they aren't skipped.
+    monkeypatch.setattr(prefetch_mod, "MIN_BYTES", 0)
     monkeypatch.setattr(prefetch_mod, "ENABLED", True)
 
 
@@ -107,6 +109,32 @@ def test_size_gate_skips_large_files(fast, monkeypatch):
         prefetch_mod.schedule("/m/big.bin", stub.url)
         wait_status("/m/big.bin", "skipped")
         assert not any(r[0] == "GET" for r in stub.requests)
+    finally:
+        stub.close()
+
+
+def test_size_gate_skips_small_files(fast, monkeypatch):
+    # A zarr chunk / tiny metadata object: below the floor, never streamed.
+    monkeypatch.setattr(prefetch_mod, "MIN_BYTES", 1000)
+    stub = StubServe(b"x" * 100)
+    try:
+        prefetch_mod.schedule("/m/chunk.bin", stub.url)
+        wait_status("/m/chunk.bin", "skipped")
+        assert not any(r[0] == "GET" for r in stub.requests)
+    finally:
+        stub.close()
+
+
+def test_evicts_oldest_terminal_jobs_over_cap(fast, monkeypatch):
+    # Thousands of chunks would otherwise mint a permanent entry each; the
+    # map stays bounded by evicting oldest terminal jobs.
+    monkeypatch.setattr(prefetch_mod, "MAX_TRACKED", 2)
+    stub = StubServe(b"a" * 50)
+    try:
+        for i in range(5):
+            prefetch_mod.schedule(f"/m/f{i}.bin", stub.url)
+            wait_status(f"/m/f{i}.bin", "done")
+        assert len(prefetch_mod.status()) <= 2
     finally:
         stub.close()
 

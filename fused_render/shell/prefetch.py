@@ -43,6 +43,20 @@ logger = logging.getLogger(__name__)
 # the cap the on-demand path still works exactly as before.
 MAX_BYTES = int(os.environ.get("FUSED_RENDER_PREFETCH_MAX_BYTES",
                                1024 * 1024 * 1024))
+# Skip files smaller than this. Prefetch only pays off for large,
+# latency-bound files whose scattered reads dominate (see the module
+# docstring): a zarr chunk or a tiny metadata object is read once, whole,
+# and fast on-demand — streaming it through the serve to warm a cache the
+# redirected client never reads back is pure waste, and one tracked job
+# per chunk is how the maps below blow up on a store with thousands of
+# them. Below the floor the on-demand path is already quick.
+MIN_BYTES = int(os.environ.get("FUSED_RENDER_PREFETCH_MIN_BYTES",
+                               16 * 1024 * 1024))
+# Bound the in-memory maps: a store with thousands of tiny objects would
+# otherwise mint a permanent entry per object for the life of the process.
+# Only terminal jobs are evicted (oldest first); the MIN_BYTES floor keeps
+# most chunk churn out of the maps entirely, so this is a backstop.
+MAX_TRACKED = int(os.environ.get("FUSED_RENDER_PREFETCH_MAX_TRACKED", 2048))
 ENABLED = os.environ.get("FUSED_RENDER_PREFETCH", "1") != "0"
 
 CHUNK_BYTES = 32 * 1024 * 1024
@@ -65,6 +79,24 @@ def status() -> dict:
     """Snapshot of all jobs (introspection/tests)."""
     with _lock:
         return {p: dict(j) for p, j in _jobs.items()}
+
+
+def _evict_locked() -> None:
+    """Drop oldest terminal jobs (and their touch times) once the maps
+    exceed MAX_TRACKED. Caller must hold `_lock`. Queued/running jobs are
+    never evicted — losing one would strand an in-flight download's
+    status; a completed job only means a slightly slower next read (it
+    re-prefetches from the local cache in seconds, see docstring)."""
+    if len(_jobs) <= MAX_TRACKED:
+        return
+    terminal = sorted(
+        (j["at"], p) for p, j in _jobs.items()
+        if j["status"] in ("done", "skipped", "failed"))
+    for _, p in terminal:
+        if len(_jobs) <= MAX_TRACKED:
+            break
+        _jobs.pop(p, None)
+        _touched.pop(p, None)
 
 
 def is_done(path: str) -> bool:
@@ -95,6 +127,7 @@ def schedule(path: str, url: str) -> None:
                     return
             _jobs[path] = {"status": "queued", "size": None, "done": 0,
                            "at": now}
+            _evict_locked()
         threading.Thread(target=_run, args=(path, url), daemon=True).start()
     except Exception:                                  # pragma: no cover
         logger.warning("prefetch schedule failed for %r", path, exc_info=True)
@@ -154,7 +187,7 @@ def _prefetch(path: str, url: str) -> None:
             _release(exc)
             _finish(path, "failed")
             return
-        if size is None or size > MAX_BYTES:
+        if size is None or not (MIN_BYTES <= size <= MAX_BYTES):
             _finish(path, "skipped")
             return
         with _lock:
