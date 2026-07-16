@@ -166,6 +166,37 @@ def test_mount_calls_rc_with_vfs_options(home, rcd):
     assert body["mountPoint"] == mounts_mod.mountpoint(c)
     assert body["vfsOpt"]["CacheMode"] == "full"
     assert body["vfsOpt"]["CacheMaxAge"] == "24h"
+    # The mount carries the same on-disk cache cap as the serve — both must
+    # hold every vfs option or rcd splits them into two VFS instances.
+    assert body["vfsOpt"]["CacheMaxSize"] == "20Gi"
+
+
+def test_serve_vfs_opt_derived_from_mount_vfs_opt():
+    # The mount (vfsOpt object) and the serve (flat vfs_* params) must describe
+    # the SAME option set or rcd builds two independent VFS instances that don't
+    # share cached ranges — the whole reason this bug existed. SERVE_VFS_OPT is
+    # DERIVED from VFS_OPT to guarantee it; assert every key maps and the values
+    # agree (bools -> "true"/"false", ints -> str, as serve/list echoes them).
+    assert set(mounts_mod._VFS_OPT_TO_SERVE_PARAM) == set(mounts_mod.VFS_OPT)
+    for obj_key, flat_key in mounts_mod._VFS_OPT_TO_SERVE_PARAM.items():
+        v = mounts_mod.VFS_OPT[obj_key]
+        expected = ("true" if v else "false") if isinstance(v, bool) else str(v)
+        assert mounts_mod.SERVE_VFS_OPT[flat_key] == expected
+
+
+@pytest.mark.skipif(mounts_mod.sys.platform != "darwin",
+                    reason="nfsmount timeo override is macOS-only")
+def test_mount_raises_nfs_timeout_on_macos(home, rcd):
+    # The loopback NFS client's low default timeout drops the whole mount on a
+    # slow chunk fetch; attach must pass a raised timeo so local-path reads are
+    # slow, not fatal. mountOpt is NFS transport, not a vfs option, so it does
+    # not affect VFS sharing with the serve.
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    assert mounts_mod.attach_mount(c) is None
+    [(_, body)] = [x for x in rcd.calls if x[0] == "mount/mount"]
+    assert body["mountType"] == "nfsmount"
+    assert body["mountOpt"]["ExtraOptions"] == mounts_mod.NFS_MOUNT_OPT["ExtraOptions"]
+    assert any(o.startswith("timeo=") for o in body["mountOpt"]["ExtraOptions"])
 
 
 def test_mount_surfaces_rc_error(home, rcd):
@@ -284,7 +315,8 @@ def test_mount_view_has_no_automount_field(client, rcd):
         headers=FUSED).json()
     # automount is implicit for every mount now — the field is gone.
     assert "automount" not in m
-    assert set(m) == {"id", "name", "remote", "mountpoint", "mounted", "state"}
+    assert set(m) == {"id", "name", "remote", "mountpoint", "mounted", "state",
+                      "read_only"}
 
 
 def test_delete_unmounts_and_removes(client, rcd):
@@ -638,6 +670,22 @@ def test_reconnect_force_unmounts_dead_mount_then_remounts(home, rcd, monkeypatc
     assert any(m == "mount/mount" for m, _ in rcd.calls)
 
 
+def test_reconnect_stops_serve_so_it_rebinds_to_fresh_vfs(home, rcd):
+    # rcd shares one VFS between a mount and its serve; unmounting tears that
+    # VFS down and leaves the serve wedged on uncached reads (verified against
+    # real rclone). Reconnect must stop the serve so the following sync_serves
+    # starts a fresh one bound to the remounted VFS. The serve's options match
+    # SERVE_VFS_OPT, so the ONLY serve/stop here is reconnect's, not a drift.
+    c, mp = _make_mount(home, rcd, served=False)
+    rcd.responses["serve/list"] = {"list": [{
+        "id": "http-live", "addr": "127.0.0.1:41000",
+        "params": {"type": "http", "fs": "remote:bucket",
+                   **mounts_mod.SERVE_VFS_OPT}}]}
+    assert mounts_mod.reconnect_mount(c) is None
+    assert ("serve/stop", {"id": "http-live"}) in rcd.calls
+    assert any(m == "mount/mount" for m, _ in rcd.calls)
+
+
 def test_reconnect_reports_force_unmount_failure(home, rcd, monkeypatch):
     c, mp = _make_mount(home, rcd, served=False)
     monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
@@ -749,7 +797,11 @@ def test_attach_starts_http_serve_and_writes_map(home, rcd):
     # object is mount/mount-only and gets silently ignored (cache stays off).
     assert "vfsOpt" not in body
     assert body["vfs_cache_mode"] == "full"
-    assert body["vfs_cache_max_size"] == "5Gi"
+    assert body["vfs_cache_max_size"] == "20Gi"
+    # The serve is started with the FULL derived option set (not just cache
+    # mode/size) so it shares the mount's VFS — every SERVE_VFS_OPT key present.
+    for k, v in mounts_mod.SERVE_VFS_OPT.items():
+        assert body[k] == v
     serves = json.load(open(mounts_mod.serves_path()))
     assert serves == {mounts_mod.mountpoint(c): "http://127.0.0.1:59999"}
 
@@ -795,7 +847,7 @@ def test_sync_serves_restarts_serve_with_stale_vfs_opts(home, rcd):
     assert stop == {"id": "http-stale"}
     [(_, start)] = [x for x in rcd.calls if x[0] == "serve/start"]
     assert start["vfs_cache_mode"] == "full"
-    assert start["vfs_cache_max_size"] == "5Gi"
+    assert start["vfs_cache_max_size"] == "20Gi"
     serves = json.load(open(mounts_mod.serves_path()))
     assert serves == {mounts_mod.mountpoint(c): "http://127.0.0.1:59999"}
 
@@ -1097,3 +1149,113 @@ def test_api_run_rewrites_raw_source_url_to_direct(
     assert run(unmounted) == unmounted
     assert run("https://elsewhere.example/data.parquet") == \
         "https://elsewhere.example/data.parquet"
+
+
+# -- read-only remotes -----------------------------------------------------
+# A mount's writability is a property of the REMOTE (anonymous S3 can never
+# take a write; an :http: backend has no write verbs at all), but the kernel
+# mount can't say so: with CacheMode=full a write "succeeds" into the local
+# VFS cache and only fails at async upload. So every attach re-detects
+# read-onlyness non-mutatingly via rc (fsinfo features + remote config) and
+# persists it on the mount record — unless the user chose the flag at create
+# (read_only_user), which detection never overrides. Inconclusive probes
+# persist nothing. server._writable consults the flag via mount_read_only().
+
+FSINFO_RW = {"Features": {"Put": True, "PutStream": True, "Copy": True}}
+FSINFO_RO = {"Features": {"Put": False, "PutStream": False, "Copy": False}}
+
+
+def _attached(name, remote):
+    m = mounts_mod.add_mount(name, remote)
+    assert mounts_mod.attach_mount(m) is None
+    return mounts_mod.get_mount(m["id"])
+
+
+def test_attach_marks_anonymous_s3_read_only(home, rcd):
+    rcd.responses["operations/fsinfo"] = FSINFO_RW
+    rcd.responses["config/get"] = {"type": "s3", "provider": "AWS",
+                                   "env_auth": "false"}
+    assert _attached("pub", "aws-open:bucket")["read_only"] is True
+
+
+def test_attach_marks_credentialed_s3_writable(home, rcd):
+    rcd.responses["operations/fsinfo"] = FSINFO_RW
+    rcd.responses["config/get"] = {"type": "s3", "provider": "AWS",
+                                   "env_auth": "true", "profile": "default"}
+    assert _attached("data", "aws:bucket")["read_only"] is False
+
+
+def test_attach_marks_putless_backend_read_only(home, rcd):
+    # An :http:-style backend advertises no write features at all — read-only
+    # regardless of its config.
+    rcd.responses["operations/fsinfo"] = FSINFO_RO
+    rcd.responses["config/get"] = {"type": "http"}
+    assert _attached("web", "web:")["read_only"] is True
+
+
+def test_attach_persists_nothing_when_probe_inconclusive(home, rcd):
+    # Neither probe answers (stub 404s both) — persist NO verdict: the mount
+    # stays rw (the pre-flag behavior) and the next attach re-probes, so a
+    # transient rcd hiccup at first attach can't freeze a wrong answer.
+    m = _attached("data", "remote:bucket")
+    assert "read_only" not in m
+    # The probes come back — the same mount converges on the next attach.
+    rcd.responses["operations/fsinfo"] = FSINFO_RO
+    rcd.responses["config/get"] = {"type": "http"}
+    assert mounts_mod.attach_mount(m) is None
+    assert mounts_mod.get_mount(m["id"])["read_only"] is True
+
+
+def test_attach_treats_missing_features_as_inconclusive(home, rcd):
+    # fsinfo answering WITHOUT a Features map is version skew, not evidence
+    # of read-onlyness — a writable remote must not get locked by it.
+    rcd.responses["operations/fsinfo"] = {"Name": "remote"}
+    rcd.responses["config/get"] = (404, {"error": "config not found"})
+    assert "read_only" not in _attached("data", "remote:bucket")
+
+
+def test_reattach_redetects_when_credentials_change(home, rcd):
+    # Detected (not user-set) flags follow the remote: an anonymous S3 mount
+    # flagged read-only flips back once credentials appear in its config.
+    rcd.responses["operations/fsinfo"] = FSINFO_RW
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "false"}
+    m = _attached("pub", "aws-open:bucket")
+    assert m["read_only"] is True
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
+    assert mounts_mod.attach_mount(m) is None
+    assert mounts_mod.get_mount(m["id"])["read_only"] is False
+
+
+def test_explicit_read_only_flag_never_redetected(home, rcd):
+    rcd.responses["operations/fsinfo"] = FSINFO_RO  # would detect read-only
+    rcd.responses["config/get"] = {"type": "http"}
+    m = mounts_mod.add_mount("web", "web:", read_only=False)
+    assert mounts_mod.attach_mount(m) is None
+    assert mounts_mod.get_mount(m["id"])["read_only"] is False
+
+
+def test_add_mount_rejects_non_bool_read_only(home):
+    # Straight off a JSON body: bool("false") is True, so anything but a real
+    # boolean (or None) must be refused, not coerced.
+    with pytest.raises(ValueError):
+        mounts_mod.add_mount("pub", "aws-open:bucket", read_only="false")
+
+
+def test_mount_read_only_path_lookup(home):
+    ro = mounts_mod.add_mount("pub", "aws-open:bucket", read_only=True)
+    rw = mounts_mod.add_mount("data", "aws:bucket", read_only=False)
+    legacy = mounts_mod.add_mount("old", "old:bucket")  # pre-flag record
+    assert mounts_mod.mount_read_only(
+        _os.path.join(mounts_mod.mountpoint(ro), "f.parquet")) is True
+    assert mounts_mod.mount_read_only(
+        _os.path.join(mounts_mod.mountpoint(rw), "f.parquet")) is False
+    assert mounts_mod.mount_read_only(
+        _os.path.join(mounts_mod.mountpoint(legacy), "f.parquet")) is False
+    assert mounts_mod.mount_read_only("/somewhere/else.parquet") is False
+
+
+def test_mount_view_exposes_read_only(home):
+    m = mounts_mod.add_mount("pub", "aws-open:bucket", read_only=True)
+    assert mounts_mod.mount_view(m, rcd_mounts=set())["read_only"] is True
+    m2 = mounts_mod.add_mount("data", "aws:bucket")
+    assert mounts_mod.mount_view(m2, rcd_mounts=set())["read_only"] is False

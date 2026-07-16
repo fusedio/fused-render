@@ -24,11 +24,15 @@ value from the highest-precedence source that defines it (user beats core).
 from __future__ import annotations
 
 import io
+import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import stat as stat_mod
+import subprocess
+import sys
 import time
 import zipfile
 
@@ -234,6 +238,44 @@ def _single_entry(key) -> dict | None:
     return _compute_entry(display_key, builtin_reg, user_reg, builtin_by_lower, user_by_lower)
 
 
+def _apply_binding(reg: dict, key: str, value) -> None:
+    """Set one user-registry key on `reg` in place (the per-key RMW body shared
+    by PUT /api/templates/registry and POST /api/templates/new). Drops any
+    case-colliding key first so the registry never holds both ".csv" and ".CSV"
+    (resolution is case-insensitive; two rows would be ambiguous), then assigns.
+    The caller owns loading `reg` and persisting it with storage.write_json."""
+    for k in list(reg):
+        if k != key and str(k).lower() == key.lower():
+            del reg[k]
+    reg[key] = value
+
+
+def _sweep_registry_name(reg: dict, name: str) -> list:
+    """Drop every reference to template `name` from the USER registry `reg` in
+    place; returns the keys that changed (D109). A list value loses the name; a
+    bare-string value equal to it matches too. A key whose value the sweep
+    EMPTIES is removed entirely (revert to core) — leaving `[]` would mean
+    *disabled* (D95), silently converting a prune into a disable the user never
+    picked. Matching is exact: names are folder identities, not lowercased like
+    keys. null/`[]`/non-referencing values are left byte-for-byte as-is."""
+    cleaned = []
+    for key in list(reg):
+        value = reg[key]
+        if isinstance(value, str):
+            if value == name:
+                del reg[key]
+                cleaned.append(key)
+        elif isinstance(value, list):
+            kept = [n for n in value if n != name]
+            if len(kept) != len(value):
+                if kept:
+                    reg[key] = kept
+                else:
+                    del reg[key]
+                cleaned.append(key)
+    return cleaned
+
+
 # -- template folder inventory ------------------------------------------------
 
 
@@ -379,12 +421,7 @@ def api_put_registry(body: dict = Body(...), x_fused: str | None = Header(defaul
             f"{server.USER_REGISTRY} aside and retry.",
         )
     reg = reg if isinstance(reg, dict) else {}
-    # Drop any case-colliding key so the registry never holds both ".csv" and
-    # ".CSV" (resolution is case-insensitive; two rows would be ambiguous).
-    for k in list(reg):
-        if k != key and str(k).lower() == key.lower():
-            del reg[k]
-    reg[key] = value
+    _apply_binding(reg, key, value)
     storage.write_json(server.USER_REGISTRY, reg)
 
     return _single_entry(key)
@@ -424,6 +461,25 @@ def api_reset_registry(body: dict = Body(...), x_fused: str | None = Header(defa
 
 
 # -- routes: export -----------------------------------------------------------
+
+# Name of the sidecar written at the zip root by export and read back by import
+# staging: the exported templates' registry bindings, carried as
+# RECOMMENDATIONS (the importer chooses which to apply at commit) — never as
+# registry rows to merge blindly.
+_REC_FILENAME = "recommendation.json"
+
+
+def _recommendations_for(names: list) -> dict:
+    """template name -> sorted registry keys whose EFFECTIVE (merged,
+    user-over-core) binding list contains it. Names with zero bindings are
+    omitted; both levels are sorted so the sidecar is deterministic."""
+    bindings = _effective_bindings()
+    recs = {}
+    for name in sorted(names):
+        keys = sorted(k for k, ns in bindings.items() if name in ns)
+        if keys:
+            recs[name] = keys
+    return recs
 
 
 def _resolve_export_folder(name: str) -> str | None:
@@ -475,6 +531,12 @@ def api_export_templates(names: list[str] = Query(default=[])):
                         continue
                     rel = os.path.relpath(full, folder).replace(os.sep, "/")
                     zf.write(full, arcname=f"{name}/{rel}")
+        # Sidecar at the zip root: each exported template's current merged
+        # bindings, so an import elsewhere can OFFER them (never auto-apply).
+        zf.writestr(
+            _REC_FILENAME,
+            json.dumps({"version": 1, "recommendations": _recommendations_for(requested)}, indent=2),
+        )
     buf.seek(0)
     return StreamingResponse(
         buf,
@@ -488,10 +550,11 @@ def api_export_templates(names: list[str] = Query(default=[])):
 
 @router.post("/api/templates/delete")
 def api_delete_template(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    # SPEC §2.8: delete ONE user template folder. Only USER_TEMPLATES_DIR is
-    # touched — **core templates are read-only and never deletable**. Registry
-    # bindings that referenced the name are left as-is (they resolve broken
-    # until rebound), matching export/import being folder-only.
+    # SPEC §2.8 / TV-19: delete ONE user template folder. Only USER_TEMPLATES_DIR
+    # is touched — **core templates are read-only and never deletable**. With
+    # `cleanRegistry: true` (D109) the USER registry is also swept of bindings
+    # that referenced the name; without it they are left as-is (they resolve
+    # broken until rebound), matching export/import being folder-only.
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -501,6 +564,7 @@ def api_delete_template(body: dict = Body(...), x_fused: str | None = Header(def
         return _error("'name' must be a non-empty string")
     if "/" in name or "\\" in name or name in (".", ".."):
         return _error("invalid template name")
+    clean_registry = body.get("cleanRegistry") is True
 
     folder = os.path.join(server.USER_TEMPLATES_DIR, name)
     # Reject symlinks (never follow one out of the user dir) and anything that
@@ -509,8 +573,35 @@ def api_delete_template(body: dict = Body(...), x_fused: str | None = Header(def
     if os.path.islink(folder) or not os.path.isdir(folder):
         return _error(f"no user template named {name!r} to delete", status=404)
 
+    if clean_registry:
+        # Refuse a corrupt user registry BEFORE the destructive rmtree (same
+        # posture as PUT) — a refusal must leave the folder intact so the user
+        # can fix the registry and retry the whole gesture.
+        _, err = server._load_registry(server.USER_REGISTRY, "registry.json")
+        if err:
+            return _error(
+                f"refusing to overwrite the user registry: {err}. Move "
+                f"{server.USER_REGISTRY} aside and retry.",
+            )
+
     shutil.rmtree(folder)
-    return {"deleted": name}
+    if not clean_registry:
+        return {"deleted": name}
+
+    # Re-read AFTER the rmtree so the sweep rewrites the registry as it is
+    # now, not the pre-check's snapshot — a binding edited concurrently while
+    # the gesture was in flight must survive the write below.
+    reg, err = server._load_registry(server.USER_REGISTRY, "registry.json")
+    if err:
+        # The folder is already gone; nothing destructive left to refuse. Skip
+        # the sweep rather than overwrite a registry we can no longer parse.
+        return {"deleted": name, "registryKeysCleaned": [], "registryError": err}
+    reg = reg if isinstance(reg, dict) else {}
+
+    cleaned = _sweep_registry_name(reg, name)
+    if cleaned:
+        storage.write_json(server.USER_REGISTRY, reg)
+    return {"deleted": name, "registryKeysCleaned": cleaned}
 
 
 # -- routes: import (stage -> commit) -----------------------------------------
@@ -573,6 +664,61 @@ def _reject_reason(info: zipfile.ZipInfo, staging_dir: str) -> str | None:
     if target != root and not target.startswith(root + os.sep):
         return f"path escapes the staging directory: {name!r}"
     return None
+
+
+def _parse_recommendations(staging_dir: str, warnings: list) -> dict:
+    """Read the staged root recommendation.json → {template: [keys]}. A missing
+    file is a clean no-op ({}); a broken one (bad JSON, wrong shape) is a
+    NON-FATAL warning — the import proceeds without recommendations, they are
+    never worth failing a stage over. An unknown version is ignored silently
+    (a future exporter's sidecar, not an error). Keys that fail the CT-3
+    grammar are dropped per-key with a warning so commit never has to reject
+    a recommendation the user only ticked."""
+    path = os.path.join(staging_dir, _REC_FILENAME)
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        warnings.append(f"{_REC_FILENAME} is not valid JSON; ignoring recommendations")
+        return {}
+    if not isinstance(data, dict):
+        warnings.append(f"{_REC_FILENAME} must be a JSON object; ignoring recommendations")
+        return {}
+    if data.get("version") != 1:
+        return {}
+    recs = data.get("recommendations")
+    if not isinstance(recs, dict):
+        warnings.append(f"{_REC_FILENAME} has no 'recommendations' object; ignoring recommendations")
+        return {}
+    out = {}
+    for name, keys in recs.items():
+        if not isinstance(keys, list) or any(not isinstance(k, str) or not k for k in keys):
+            warnings.append(f"{_REC_FILENAME}: recommendations for {name!r} must be an array of registry keys; ignored")
+            continue
+        kept = []
+        for key in keys:
+            if server._key_segments(key, key.endswith("/")) is None:
+                warnings.append(f"{_REC_FILENAME}: ignored invalid registry key {key!r} for {name!r}")
+                continue
+            kept.append(key)
+        if kept:
+            out[str(name)] = kept
+    return out
+
+
+def _recommended_key_status(key, name, builtin_reg, user_reg, builtin_by_lower, user_by_lower) -> str:
+    """How a recommended key -> name binding relates to the CURRENT merged
+    registry: "already-bound" (name already in the key's effective list — a
+    no-op if applied), "disabled" (the user explicitly disabled the key with
+    null/[]; applying would re-enable it, so the UI must warn), else "new"."""
+    entry = _compute_entry(key, builtin_reg, user_reg, builtin_by_lower, user_by_lower)
+    if any(t["name"] == name for t in entry["templates"]):
+        return "already-bound"
+    if entry["disabled"] and "userValue" in entry:
+        return "disabled"
+    return "new"
 
 
 @router.post("/api/templates/import")
@@ -652,27 +798,47 @@ async def api_import_templates(
         return _error(f"could not unpack the zip: {e}")
 
     # A candidate template = a top-level directory; valid iff it holds a
-    # template.html. Top-level files are ignored (warned).
+    # template.html. Top-level files are ignored (warned) — except the
+    # recommendation.json sidecar, which is export metadata, not content.
     items = []
     warnings = []
+    recommendations = _parse_recommendations(staging_dir, warnings)
+    builtin_reg, user_reg, _be, _ue = _load_registries()
+    builtin_by_lower = {str(k).lower(): k for k in builtin_reg}
+    user_by_lower = {str(k).lower(): k for k in user_reg}
     for name in sorted(os.listdir(staging_dir)):
         path = os.path.join(staging_dir, name)
         if os.path.isfile(path):
+            if name == _REC_FILENAME:
+                continue  # parsed above; never a "not a template folder" warning
             warnings.append(f"ignored top-level file {name!r} (not a template folder)")
             continue
         if not os.path.isdir(path):
             continue
         has_html = os.path.isfile(os.path.join(path, "template.html"))
         file_count = sum(len(files) for _r, _d, files in os.walk(path))
-        items.append(
-            {
-                "name": name,
-                "valid": has_html,
-                "hasTemplateHtml": has_html,
-                "conflictsExisting": os.path.isdir(os.path.join(server.USER_TEMPLATES_DIR, name)),
-                "fileCount": file_count,
-            }
-        )
+        item = {
+            "name": name,
+            "valid": has_html,
+            "hasTemplateHtml": has_html,
+            "conflictsExisting": os.path.isdir(os.path.join(server.USER_TEMPLATES_DIR, name)),
+            "fileCount": file_count,
+        }
+        rec_keys = recommendations.get(name)
+        # Only valid items carry recommendations (an invalid folder can never
+        # be committed); items without any omit the field (SPEC §2.2:
+        # undefined-as-omitted).
+        if has_html and rec_keys:
+            item["recommendedKeys"] = [
+                {
+                    "key": key,
+                    "status": _recommended_key_status(
+                        key, name, builtin_reg, user_reg, builtin_by_lower, user_by_lower
+                    ),
+                }
+                for key in rec_keys
+            ]
+        items.append(item)
 
     return {
         "importId": import_id,
@@ -718,9 +884,36 @@ def api_commit_import(
     resolutions = body.get("resolutions") if isinstance(body, dict) else None
     resolutions = resolutions if isinstance(resolutions, dict) else {}
 
+    # Optional bindings to apply after the moves: ORIGINAL staged name ->
+    # registry keys. Validate the whole map up front (same CT-3 grammar as
+    # PUT /api/templates/registry) so a bad request never half-applies moves.
+    bindings = body.get("bindings") if isinstance(body, dict) else None
+    bindings = bindings if isinstance(bindings, dict) else {}
+    for orig, keys in bindings.items():
+        if not isinstance(keys, list) or any(not isinstance(k, str) or not k for k in keys):
+            return _error(f"'bindings' for {orig!r} must be an array of registry keys")
+        for key in keys:
+            if server._key_segments(key, key.endswith("/")) is None:
+                return _error(
+                    f"invalid registry key {key!r}: must be a dot-anchored suffix pattern "
+                    "(e.g. '.csv', '.xyz.json', '.*.json', or a directory key '.zarr/')"
+                )
+    user_reg = {}
+    if any(bindings.values()):
+        # Refuse to touch a corrupt user registry (a rewrite would drop every
+        # other binding) BEFORE moving anything — same posture as PUT.
+        user_reg, reg_err = server._load_registry(server.USER_REGISTRY, "registry.json")
+        if reg_err:
+            return _error(
+                f"refusing to overwrite the user registry: {reg_err}. Move "
+                f"{server.USER_REGISTRY} aside and retry.",
+            )
+        user_reg = user_reg if isinstance(user_reg, dict) else {}
+
     os.makedirs(server.USER_TEMPLATES_DIR, exist_ok=True)
 
     imported, skipped, overwritten, renamed = [], [], [], {}
+    landed = {}  # ORIGINAL staged name -> final folder name, for bindings below
     # Make the commit all-or-nothing over USER_TEMPLATES_DIR: track every applied
     # move (and every displaced original) so that if a later os.rename raises we
     # can undo the earlier ones instead of returning 500 with a half-applied
@@ -757,6 +950,7 @@ def api_commit_import(
                     os.rename(staged, target)
                     applied.append((target, staged))
                 imported.append(name)
+                landed[name] = name
             else:  # keep-both
                 final = _unique_name(name)
                 dest = os.path.join(server.USER_TEMPLATES_DIR, final)
@@ -765,6 +959,7 @@ def api_commit_import(
                 if final != name:
                     renamed[name] = final
                 imported.append(final)
+                landed[name] = final
     except OSError as exc:
         # Undo in reverse: move committed folders back to staging, then restore
         # any displaced originals. Staging is dropped either way.
@@ -788,9 +983,263 @@ def api_commit_import(
     for backup, _ in backups:
         shutil.rmtree(backup, ignore_errors=True)
     shutil.rmtree(staging_dir, ignore_errors=True)
+
+    # Apply the requested bindings, keyed by ORIGINAL staged name: a skipped
+    # (or invalid) template's bindings are dropped, a keep-both rename binds
+    # the FINAL name. Same additive posture as POST /api/templates/new —
+    # append to whatever a key already resolves to, never replace it.
+    bindings_applied = []
+    if bindings:
+        builtin_reg, _builtin_err = server._load_registry(
+            server.BUILTIN_REGISTRY, "built-in registry.json"
+        )
+        builtin_reg = builtin_reg if isinstance(builtin_reg, dict) else {}
+        builtin_by_lower = {str(k).lower(): k for k in builtin_reg}
+        for orig in sorted(bindings):
+            final = landed.get(orig)
+            if final is None:
+                continue  # skipped / dropped-invalid / unknown -> bindings ignored
+            for key in bindings[orig]:
+                user_by_lower = {str(k).lower(): k for k in user_reg}
+                entry = _compute_entry(key, builtin_reg, user_reg, builtin_by_lower, user_by_lower)
+                current_names = [t["name"] for t in entry["templates"]]
+                if final in current_names:
+                    continue  # already effectively bound -> no-op
+                if entry["disabled"]:
+                    # The user disabled the key (null/[]); a requested binding
+                    # re-enables it as core's list + the new name (the frontend
+                    # warned the user before sending this).
+                    base = entry["coreTemplates"] or []
+                else:
+                    # Includes the key-only-in-core case: current_names IS the
+                    # full core list, so the new user entry starts as a copy of
+                    # it — never a shorter shadow over core.
+                    base = current_names
+                # Re-enabling a disabled key whose core list already holds the
+                # name must not duplicate it.
+                _apply_binding(user_reg, key, base if final in base else base + [final])
+                bindings_applied.append({"key": key, "template": final})
+        if bindings_applied:
+            storage.write_json(server.USER_REGISTRY, user_reg)
+
     return {
         "imported": imported,
         "skipped": skipped,
         "overwritten": overwritten,
         "renamed": renamed,
+        "bindingsApplied": bindings_applied,
     }
+
+
+# -- routes: new template (scaffold + bind) + open in Claude ------------------
+
+# The starter kit ships inside the package but DELIBERATELY OUTSIDE
+# fused_render/templates/, so it never resolves as a template or shows up in the
+# inventory (SPEC §23) — it is a scaffold source, copied into a user folder by
+# POST /api/templates/new.
+_STARTER_KIT_DIR = os.path.join(os.path.dirname(__file__), "template_starter")
+
+# The two canonical authoring skills copied into every new template's
+# .claude/skills/ so a scaffolded (or later exported) folder carries its own
+# guidance. Single source is the repo-level skills/<name>/ (D106).
+_STARTER_SKILLS = ("fused-render-authoring", "fused-render-custom-templates")
+_REPO_SKILLS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "skills")
+
+
+def _ensure_starter_skills(dest: str) -> None:
+    """Make sure a freshly-scaffolded template `dest` has the authoring skills
+    under .claude/skills/, refreshed from the live repo skills/ dir whenever
+    it's resolvable (editable/dev installs — this always wins, since the
+    starter kit's own .claude/skills/ is gitignored and may be a stale copy
+    left over from a previous local wheel build). Only a true wheel install,
+    where the repo skills/ dir isn't reachable at all, relies on whatever
+    copytree already brought in from the packaged starter kit. If neither
+    source exists, proceed without skills — a missing skill must never fail
+    template creation (D106).
+    """
+    skills_dir = os.path.join(dest, ".claude", "skills")
+    for name in _STARTER_SKILLS:
+        target = os.path.join(skills_dir, name)
+        src = os.path.join(_REPO_SKILLS_DIR, name)
+        if os.path.isdir(src):
+            try:
+                shutil.rmtree(target, ignore_errors=True)
+                shutil.copytree(src, target)
+            except OSError:
+                pass  # best-effort; the template is still usable without the skill
+            continue
+        if os.path.isdir(target):
+            continue  # wheel install: copytree already brought the packaged skill
+        # neither packaged nor resolvable from source — skip, don't fail
+
+
+def _template_name_error(name) -> str | None:
+    """Why `name` is not usable as a template folder/name, or None if it is.
+    Matches server._resolve_name's rule (SPEC CT-6): one plain path segment, no
+    '/', '\\', or '.', and no leading '_' (reserved for shell sentinels) — so a
+    created template's name always resolves by the PT-6 rule."""
+    if not isinstance(name, str) or not name:
+        return "'name' must be a non-empty string"
+    if "/" in name or "\\" in name or "." in name:
+        return "invalid template name: use a single folder segment with no '/', '\\' or '.'"
+    if name.startswith("_"):
+        return "invalid template name: the '_' prefix is reserved for shell sentinel modes"
+    return None
+
+
+@router.post("/api/templates/new")
+def api_new_template(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    # Scaffold a new user template from the starter kit and bind the given
+    # extensions to it (D87 per-key RMW, reused via _apply_binding). Validate
+    # everything up front so a bad request never leaves a half-created folder.
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    name = body.get("name")
+    name_err = _template_name_error(name)
+    if name_err is not None:
+        return _error(name_err)
+
+    extensions = body.get("extensions", [])
+    if not isinstance(extensions, list):
+        return _error("'extensions' must be an array of registry keys")
+    # Validate every extension key against the CT-3 grammar (the same check PUT
+    # applies) before creating anything.
+    keys: list[str] = []
+    for ext in extensions:
+        if not isinstance(ext, str) or not ext:
+            return _error("each extension must be a non-empty registry key string")
+        if server._key_segments(ext, ext.endswith("/")) is None:
+            return _error(
+                f"invalid registry key {ext!r}: must be a dot-anchored suffix pattern "
+                "(e.g. '.csv', '.xyz.json', '.*.json', or a directory key '.zarr/')"
+            )
+        keys.append(ext)
+
+    dest = os.path.join(server.USER_TEMPLATES_DIR, name)
+    if os.path.exists(dest):
+        return _error(f"a user template named {name!r} already exists", status=409)
+
+    # Refuse to touch a corrupt user registry (a rewrite would drop every other
+    # binding) BEFORE creating the folder — but only when a write will actually
+    # happen; a no-extensions draft create must not be blocked by a registry
+    # problem it never touches.
+    reg = {}
+    if keys:
+        reg, err = server._load_registry(server.USER_REGISTRY, "registry.json")
+        if err:
+            return _error(
+                f"refusing to overwrite the user registry: {err}. Move "
+                f"{server.USER_REGISTRY} aside and retry.",
+            )
+        reg = reg if isinstance(reg, dict) else {}
+
+    os.makedirs(server.USER_TEMPLATES_DIR, exist_ok=True)
+    try:
+        shutil.copytree(_STARTER_KIT_DIR, dest)
+    except FileExistsError:
+        # TOCTOU: dest was created between the exists-check above and here.
+        return _error(f"a user template named {name!r} already exists", status=409)
+    except Exception as exc:
+        # A partial copy leaves a half-created folder behind; remove it so a
+        # retry sees a clean slate and the exists-check stays meaningful.
+        shutil.rmtree(dest, ignore_errors=True)
+        return _error(f"failed to create template {name!r}: {exc}")
+
+    # Editable installs have no packaged skills in the starter kit; resolve them
+    # from the repo skills/ dir so the scaffolded folder still carries guidance.
+    _ensure_starter_skills(dest)
+
+    if keys:
+        # Additive only: append the new template to whatever list a key
+        # already resolves to (its user override, or the core default if the
+        # user has no override yet) — never replace an existing multi-mode
+        # binding with just this one name.
+        builtin_reg, _builtin_err = server._load_registry(
+            server.BUILTIN_REGISTRY, "built-in registry.json"
+        )
+        builtin_reg = builtin_reg if isinstance(builtin_reg, dict) else {}
+        builtin_by_lower = {str(k).lower(): k for k in builtin_reg}
+        for key in keys:
+            user_by_lower = {str(k).lower(): k for k in reg}
+            entry = _compute_entry(key, builtin_reg, reg, builtin_by_lower, user_by_lower)
+            current_names = [t["name"] for t in entry["templates"]]
+            _apply_binding(reg, key, current_names + [name])
+        try:
+            storage.write_json(server.USER_REGISTRY, reg)
+        except Exception as exc:
+            # The folder is otherwise complete and usable, but leaving it
+            # behind after a reported failure means a retry always 409s. Clean
+            # up so the error is honest: nothing was created.
+            shutil.rmtree(dest, ignore_errors=True)
+            return _error(f"failed to bind template {name!r}: {exc}")
+
+    return {"ok": True, "name": name, "path": dest, "bindings": keys}
+
+
+def _claude_bin() -> str:
+    """Locate the `claude` CLI. Mirrors templates/claude/agent.py:_claude_bin —
+    replicated here rather than imported, since a template folder is not an
+    import root (and templates_api must not depend on a template's internals)."""
+    found = shutil.which("claude")
+    if found:
+        return found
+    for candidate in ("~/.local/bin/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude"):
+        candidate = os.path.expanduser(candidate)
+        if os.path.exists(candidate):
+            return candidate
+    raise FileNotFoundError(
+        "claude CLI not found — install Claude Code or put `claude` on the PATH "
+        "of the environment that launched fused-render"
+    )
+
+
+def _applescript_str(s: str) -> str:
+    """Quote a Python string as an AppleScript double-quoted literal (escape
+    backslash then double-quote)."""
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+@router.post("/api/templates/open-in-claude")
+def api_open_in_claude(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    # Open Terminal.app in a user template's folder and start `claude` there so
+    # the author can iterate on the template with the CLI. macOS-only for now.
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    if sys.platform != "darwin":
+        return _error(
+            "Open in Claude is only supported on macOS (it spawns Terminal.app).",
+            status=400,
+        )
+
+    name = body.get("name")
+    if not isinstance(name, str) or not name:
+        return _error("'name' must be a non-empty string")
+    if "/" in name or "\\" in name or name in (".", ".."):
+        return _error("invalid template name")
+
+    # User templates only — a core-only name resolves to no user folder and 404s
+    # (core folders live in the package, never opened for editing here).
+    folder = os.path.join(server.USER_TEMPLATES_DIR, name)
+    if os.path.islink(folder) or not os.path.isdir(folder):
+        return _error(f"no user template named {name!r}", status=404)
+
+    try:
+        claude_bin = _claude_bin()
+    except FileNotFoundError as exc:
+        return _error(str(exc))
+
+    # shlex.quote makes the paths safe for the shell that `do script` runs;
+    # _applescript_str then escapes that command for the AppleScript literal.
+    shell_cmd = f"cd {shlex.quote(folder)} && {shlex.quote(claude_bin)}"
+    open_script = 'tell application "Terminal" to do script ' + _applescript_str(shell_cmd)
+    activate_script = 'tell application "Terminal" to activate'
+    try:
+        subprocess.run(["osascript", "-e", open_script, "-e", activate_script], check=True)
+    except (subprocess.CalledProcessError, OSError) as exc:
+        return _error(f"failed to open Terminal: {exc}", status=500)
+
+    return {"ok": True}

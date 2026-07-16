@@ -178,6 +178,9 @@ def _run_python(path: str, params: dict, timeout: float) -> dict:
             capture_output=True,
             text=True,
             timeout=timeout,
+            # a windowless server (Explorer-opener spawn) must not flash a
+            # console window per run
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
     except subprocess.TimeoutExpired:
         return _error("TimeoutError", f"execution exceeded {timeout:g}s and was killed")

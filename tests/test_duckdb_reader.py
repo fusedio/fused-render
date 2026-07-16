@@ -751,12 +751,52 @@ def test_source_url_ignored_unless_http(parquet_file):
     assert len(out["rows"]) == 3
 
 
-def test_source_url_ignored_for_csv(csv_file):
-    # The fast path is parquet-only; CSV keeps reading the file even when a
-    # URL is offered (its streaming scan can't prune and sniffing over HTTP
-    # would read the whole file anyway).
-    out = reader.main(csv_file, limit=3, source_url="http://127.0.0.1:1/s.csv")
+def test_source_url_reads_csv_over_http(csv_file):
+    # CSV/TSV/JSON take the URL too, not just parquet: a mount-backed file is
+    # scanned over the serve where hammering the NFS mount with the scan risks
+    # dropping the whole mount. Reading the whole file over HTTP is slow-but-
+    # safe (and the serve's shared VFS cache makes the repeat reads cheap).
+    srv, hits = _serve_dir(os.path.dirname(csv_file))
+    try:
+        url = f"http://127.0.0.1:{srv.server_address[1]}/s.csv"
+        try:
+            out = reader.main(csv_file, limit=3, source_url=url)
+        except Exception:
+            pytest.skip("duckdb httpfs extension unavailable")
+        assert out["rows"][0]["zip"] == "00000"   # all-varchar preserved
+        assert any("s.csv" in h for h in hits), "reader never hit the URL"
+    finally:
+        srv.shutdown()
+
+
+def test_source_url_reads_json_over_http(tmp_path):
+    p = _make(tmp_path, "s.json",
+              "SELECT range AS id, 'n'||range AS name FROM range(5)")
+    srv, hits = _serve_dir(os.path.dirname(p))
+    try:
+        url = f"http://127.0.0.1:{srv.server_address[1]}/s.json"
+        try:
+            out = reader.main(p, limit=3, source_url=url)
+        except Exception:
+            pytest.skip("duckdb httpfs extension unavailable")
+        assert [r["id"] for r in out["rows"]] == [0, 1, 2]
+        assert out["editable"] is False           # JSON stays view-only
+        assert any("s.json" in h for h in hits), "reader never hit the URL"
+    finally:
+        srv.shutdown()
+
+
+def test_source_url_csv_falls_back_when_dead(csv_file):
+    # A dead serve URL must not error the CSV read — fall back to the path.
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        dead = s.getsockname()[1]
+    out = reader.main(csv_file, limit=3,
+                      source_url=f"http://127.0.0.1:{dead}/s.csv")
     assert out["rows"][0]["zip"] == "00000"
+    assert out["total_rows"] == 250
 
 
 # ------------------------------------- schema mode / per-column projection

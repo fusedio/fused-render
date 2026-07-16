@@ -57,8 +57,47 @@ def test_export_success(tmp_path):
     data = resp.json()
     assert data["out"] == os.path.abspath(str(out_dir))
     assert [e["path"] for e in data["entrypoints"]] == ["./sine.py"]
+    assert data["warnings"] == []
     assert (out_dir / "page.html").is_file()
     assert (out_dir / "manifest.json").is_file()
+
+
+def test_export_honors_include_and_exclude(tmp_path):
+    html = "<script>fused.runPython('./sine.py', {});</script>"
+    _write(tmp_path, "page.html", html)
+    _write(tmp_path, "sine.py", "def main():\n    return 1\n")
+    _write(tmp_path, "data.csv", "a,b\n1,2\n")
+    out_dir = tmp_path / "bundle"
+
+    client = _client(tmp_path)
+    resp = client.post(
+        "/api/export",
+        json={
+            "page": str(tmp_path / "page.html"),
+            "out": str(out_dir),
+            "include": ["data.csv"],
+            "exclude": ["./sine.py"],
+        },
+        headers={"X-Fused": "1"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["entrypoints"] == []  # sine.py excluded
+    assert [a["path"] for a in data["assets"]] == ["data.csv"]  # include bundled
+    assert (out_dir / "assets" / "data.csv").is_file()
+    assert any("sine.py" in w for w in data["warnings"])
+
+
+def test_export_rejects_bad_include_type(tmp_path):
+    _write(tmp_path, "page.html", "<html></html>")
+    client = _client(tmp_path)
+    resp = client.post(
+        "/api/export",
+        json={"page": str(tmp_path / "page.html"), "out": str(tmp_path / "out"), "include": "x"},
+        headers={"X-Fused": "1"},
+    )
+    assert resp.status_code == 400
+    assert "include" in resp.json()["error"]
 
 
 def test_export_error_is_400(tmp_path):

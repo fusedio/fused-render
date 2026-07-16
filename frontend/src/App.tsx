@@ -22,6 +22,7 @@ import Tabs from "./views/Tabs";
 import Preferences from "./views/Preferences";
 import Templates from "./views/Templates";
 import Mounts from "./views/Mounts";
+import Account from "./views/Account";
 import BookmarkOpen from "./views/BookmarkOpen";
 
 type StatState =
@@ -135,7 +136,7 @@ function StatErrorView({
 // Stat-backed views (listing/preview): breadcrumb + content under one hook
 // component so useStat only runs when the pathname is a real fs path, not a
 // sentinel.
-function StatView({ fsPath, epoch }: { fsPath: string; epoch: number }) {
+function StatView({ fsPath, epoch, home }: { fsPath: string; epoch: number; home: string }) {
   // Bumped by StatErrorView to re-stat in place after reconnecting a mount.
   const [reloadKey, setReloadKey] = useState(0);
   const stat = useStat(fsPath, epoch, reloadKey);
@@ -182,7 +183,7 @@ function StatView({ fsPath, epoch }: { fsPath: string; epoch: number }) {
   return (
     <>
       <div id="breadcrumb">
-        <Breadcrumb fsPath={fsPath} />
+        <Breadcrumb fsPath={fsPath} home={home} />
       </div>
       <div id="content">{content}</div>
     </>
@@ -215,9 +216,10 @@ export default function App({ config }: { config: Config }) {
   const isTemplates = pathname === "/view/_templates";
   // PROTOTYPE: mounts sentinel (see views/Mounts.tsx).
   const isMounts = pathname === "/view/_mounts";
+  const isAccount = pathname === "/view/_account";
   const isBookmark = pathname === "/view/_bookmark";
   const fsPath =
-    isPanel || isTabs || isPrefs || isTemplates || isMounts || isBookmark
+    isPanel || isTabs || isPrefs || isTemplates || isMounts || isAccount || isBookmark
       ? null
       : fsPathFromLocation();
   // Browsing to a `.bookmark` file in the explorer opens it like a Finder
@@ -236,11 +238,13 @@ export default function App({ config }: { config: Config }) {
             ? "Templates"
             : isMounts
               ? "Mounts"
-              : isBookmark || bookmarkFile
-                ? "Bookmark"
-              : fsPath
-                ? undefined
-                : null
+              : isAccount
+                ? "Fused account"
+                : isBookmark || bookmarkFile
+                  ? "Bookmark"
+                : fsPath
+                  ? undefined
+                  : null
   );
 
   let main;
@@ -305,6 +309,19 @@ export default function App({ config }: { config: Config }) {
         </div>
       </>
     );
+  } else if (isAccount) {
+    // Fused account (SPEC §27, AC-1): in-app sign-in/out for
+    // the fused CLI — same sentinel pattern as _prefs. /view only.
+    main = (
+      <>
+        <div id="breadcrumb">
+          <StaticBreadcrumb label="Fused account" />
+        </div>
+        <div id="content">
+          <Account key={epoch} />
+        </div>
+      </>
+    );
   } else if (isBookmark || bookmarkFile) {
     // `.bookmark` open flow (SB-9, D99): Finder double-click lands on the
     // `/view/_bookmark?file=` sentinel; browsing to the file in the explorer
@@ -329,7 +346,10 @@ export default function App({ config }: { config: Config }) {
       </>
     );
   } else {
-    main = <StatView key={epoch + ":" + fsPath} fsPath={fsPath} epoch={epoch} />;
+    // Windows expanduser returns backslashes; fsPath is always forward-slash.
+    main = (
+      <StatView key={epoch + ":" + fsPath} fsPath={fsPath} epoch={epoch} home={config.home.replace(/\\/g, "/")} />
+    );
   }
 
   return (

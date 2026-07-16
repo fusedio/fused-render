@@ -7,12 +7,10 @@
 // follow views/Preferences.tsx.
 import { useEffect, useState, type ReactNode } from "react";
 import {
-  attachMount,
   createDetectedRemote,
   createMount,
   createRemote,
   deleteMount,
-  detachMount,
   getMounts,
   reconnectMount,
 } from "../lib/api";
@@ -111,6 +109,15 @@ function MountRow({
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 600 }}>
             {conn.name}
+            {conn.read_only && (
+              <span
+                title="This remote rejects writes — files open read-only"
+                style={{ color: "#8b949e", fontWeight: 400, fontSize: "0.85em" }}
+              >
+                {" "}
+                — read-only
+              </span>
+            )}
             {conn.state === "disconnected" && (
               <span style={{ color: "#d29922", fontWeight: 400, fontSize: "0.85em" }}>
                 {" "}
@@ -132,37 +139,22 @@ function MountRow({
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          {conn.state === "mounted" && (
-            <>
-              <button type="button" disabled={busy} onClick={() => navigate(conn.mountpoint)}>
-                Open
-              </button>
-              <button type="button" disabled={busy} onClick={() => act(() => detachMount(conn.id))}>
-                Unmount
-              </button>
-            </>
-          )}
-          {conn.state === "disconnected" && (
-            <>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => act(() => reconnectMount(conn.id))}
-              >
-                {busy ? "Reconnecting…" : "Reconnect"}
-              </button>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => act(() => detachMount(conn.id, true))}
-              >
-                Unmount
-              </button>
-            </>
-          )}
-          {conn.state === "unmounted" && (
-            <button type="button" disabled={busy} onClick={() => act(() => attachMount(conn.id))}>
-              Mount
+          {conn.state === "mounted" ? (
+            <button type="button" disabled={busy} onClick={() => navigate(conn.mountpoint)}>
+              Open
+            </button>
+          ) : (
+            // Both "disconnected" and "unmounted" recover the same way: there is
+            // no unmount action (mounts automount and stay up), so Reconnect is
+            // the single "something's wrong" repair — it force-clears any dead
+            // mountpoint and mounts fresh (reconnect_mount also handles the
+            // never-mounted case, where it just attaches).
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => act(() => reconnectMount(conn.id))}
+            >
+              {busy ? "Reconnecting…" : "Reconnect"}
             </button>
           )}
         </div>
@@ -423,8 +415,8 @@ export default function Mounts() {
         Remote storage mounted as local folders
         {state.rclone.version ? ` (${state.rclone.version})` : ""}. The <b>first</b> open of a
         large remote file downloads what it needs and can be slow; repeat opens are served from
-        a local cache and are fast. Mounts stay up until you unmount them — including across
-        restarts.
+        a local cache and are fast. Mounts stay up automatically, including across restarts;
+        if one stops responding, use <b>Reconnect</b>.
       </p>
       {state.mounts.length === 0 ? (
         <p className="deploy-muted">No mounts yet.</p>

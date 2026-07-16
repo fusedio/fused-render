@@ -65,8 +65,8 @@ export interface StatResult {
   template_error?: string;
 }
 
-async function getJson<T>(url: string): Promise<T> {
-  const res = await fetch(url);
+async function getJson<T>(url: string, headers?: Record<string, string>): Promise<T> {
+  const res = await fetch(url, headers ? { headers } : undefined);
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data as T;
@@ -317,6 +317,12 @@ export interface Deployment {
   url: string | null;
   status: "active" | "revoked";
   entrypoints: string[];
+  // The file selection this deployment was published with (persisted on the
+  // record, not a sidecar): extra files bundled beyond the auto-scan, and files
+  // dropped from it. Reopening the modal reloads these so the selection sticks.
+  // Optional — records written before this feature omit them (read as []).
+  include?: string[];
+  exclude?: string[];
   updated_at: string;
 }
 
@@ -351,7 +357,15 @@ export interface DeployPreview {
   page: string;
   entrypoints: { path: string; name: string }[];
   assets: { path: string; name: string }[];
+  // The auto-detected default set (literal runPython/rawUrl/readFile paths, before
+  // include/exclude). Lets the modal distinguish an auto file (removing → exclude,
+  // shown under "Excluded" with restore) from a manual include (removing → just drop).
+  auto: string[];
   errors: string[];
+  // Advisory, non-blocking: a computed rawUrl/readFile path (bundle its target
+  // via include), or an exclude that drops a file the page references. Distinct
+  // from `errors`, which disable Deploy.
+  warnings: string[];
 }
 
 export interface SharesResult {
@@ -369,12 +383,23 @@ export function getDeployStatus(fsPath: string, reconcile: boolean): Promise<Dep
   return getJson<DeployStatusResult>(url);
 }
 
-export function getDeployPreview(fsPath: string): Promise<DeployPreview> {
-  return getJson<DeployPreview>("/api/deploy/preview?path=" + encodeURIComponent(fsPath));
+export function getDeployPreview(
+  fsPath: string,
+  include: string[],
+  exclude: string[],
+): Promise<DeployPreview> {
+  // POST (not GET) so the include/exclude selection travels in the body — arrays
+  // don't fit a query string cleanly. Read-only server-side (no files written).
+  return postJson<DeployPreview>("/api/deploy/preview", { path: fsPath, include, exclude });
 }
 
-export function deployPage(fsPath: string, env: string): Promise<Deployment> {
-  return postJson<Deployment>("/api/deploy", { page: fsPath, env });
+export function deployPage(
+  fsPath: string,
+  env: string,
+  include: string[],
+  exclude: string[],
+): Promise<Deployment> {
+  return postJson<Deployment>("/api/deploy", { page: fsPath, env, include, exclude });
 }
 
 export function revokeDeployment(fsPath: string): Promise<Deployment> {
@@ -393,6 +418,117 @@ export function listShares(env: string): Promise<SharesResult> {
 // mounts with no local pointer too; the CLI's owner-binding still applies).
 export function revokeMount(env: string, token: string): Promise<void> {
   return postJson<unknown>("/api/deploy/revoke", { env, token }).then(() => undefined);
+}
+
+// -- Fused account (account.py; SPEC §27) -------------------------------------
+
+// One org/env the signed-in account can target (`fused cloud orgs`).
+export interface AccountOrg {
+  org: string | null;
+  env: string | null;
+  provision_state: string | null;
+  role: string | null;
+}
+
+// The deeper signed-in check (`fused cloud orgs`), run only with ?probe=1:
+// unlike the presence-only logged_in flag it exercises the token, so a stale
+// credential shows up here as ok=false with the CLI's own message.
+export interface AccountProbe {
+  ok: boolean;
+  admitted: boolean | null;
+  orgs: AccountOrg[];
+  error: string | null;
+}
+
+// One env from the raw store view (any backend; `hosted` = can be a deploy
+// target). Distinct from DeployEnv, which is the hosted-only picker list.
+export interface StoreEnv {
+  name: string;
+  backend: string;
+  hosted: boolean;
+}
+
+export interface AccountStatus {
+  cli: DeployCli;
+  // Presence of the CLI's credentials file — cheap and optimistic (the CLI
+  // refreshes an expired token itself); `probe` is the authoritative check.
+  logged_in: boolean;
+  // A `fused cloud login` child is currently waiting on its browser round-trip.
+  login_in_flight: boolean;
+  // Fingerprint of the credentials file (mtime, or null when absent). The
+  // account page drops its cached orgs probe when this changes — a re-login
+  // as a different account that never flips logged_in false in this tab.
+  creds_stamp: number | null;
+  envs_file: string;
+  // The raw env store for the management table: every backend, plus the
+  // store's own default pointer. (The deploy picker's derived view lives on
+  // DeployConfig, not here.)
+  store: { envs: StoreEnv[]; default: string | null };
+  probe: AccountProbe | null;
+}
+
+// The one tracked `fused cloud setup` job (account.py). `detail` carries the
+// CLI's own progress lines while running, its final line when done, and the
+// mapped error message when failed.
+export interface AccountSetupStatus {
+  state: "idle" | "running" | "done" | "failed";
+  job_id: string | null;
+  env_name: string | null;
+  detail: string | null;
+}
+
+export function getAccountStatus(probe = false): Promise<AccountStatus> {
+  // probe=1 EXECUTES server-side (spawns a `fused cloud orgs` control-plane
+  // call), so unlike the plain status read it carries the D36 guard header.
+  return probe
+    ? getJson<AccountStatus>("/api/account/status?probe=1", { "X-Fused": "1" })
+    : getJson<AccountStatus>("/api/account/status");
+}
+
+// Start (or join — one login at a time) the CLI's browser sign-in and return
+// the authorize URL; OPENING it is the caller's job (window.open — the server
+// never drives a browser). returnUrl must be a loopback URL (normally
+// location.href): the post-login callback 302s the browser back to it.
+export function startAccountLogin(returnUrl: string): Promise<{ authorize_url: string }> {
+  return postJson<{ authorize_url: string }>("/api/account/login", { return_url: returnUrl });
+}
+
+export function cancelAccountLogin(): Promise<void> {
+  return postJson<unknown>("/api/account/login/cancel", {}).then(() => undefined);
+}
+
+// Sign out (killing any in-flight sign-in first, server-side) and return the
+// fresh status.
+export function accountLogout(): Promise<AccountStatus> {
+  return postJson<AccountStatus>("/api/account/logout", {});
+}
+
+// Start the one-shot managed-env setup (`fused cloud setup`) as a tracked
+// background job — 202 with the job to poll via getAccountSetup. org/env go
+// together (a specific workspace); omitting both lets the CLI discover the
+// account's org (or self-create a personal one). env_name defaults
+// server-side to flow's convention (`fused` / `fused-<env>`).
+export function startAccountSetup(opts: {
+  org?: string;
+  env?: string;
+  env_name?: string;
+}): Promise<{ job_id: string; env_name: string }> {
+  return postJson<{ job_id: string; env_name: string }>("/api/account/setup", opts);
+}
+
+export function getAccountSetup(): Promise<AccountSetupStatus> {
+  return getJson<AccountSetupStatus>("/api/account/setup");
+}
+
+// `fused env default NAME` — the store's global default pointer.
+export function setDefaultEnv(name: string): Promise<AccountStatus> {
+  return postJson<AccountStatus>("/api/account/envs/default", { name });
+}
+
+// `fused env delete NAME --yes` — forgets the LOCAL pointer only; cloud
+// resources and stored keys are untouched (the CLI's semantics).
+export function deleteStoreEnv(name: string): Promise<AccountStatus> {
+  return postJson<AccountStatus>("/api/account/envs/delete", { name });
 }
 
 // -- Preferences (shell/prefs.py; SPEC §20) -----------------------------------
@@ -493,6 +629,10 @@ export interface Mount {
   // empty data. Repaired via reconnectMount (force unmount + fresh mount).
   state: "mounted" | "disconnected" | "unmounted";
   mounted: boolean; // state === "mounted"
+  // The remote rejects writes (anonymous S3, an http backend, …), detected at
+  // attach time. Files under the mountpoint stat as writable:false, so
+  // templates open them read-only.
+  read_only: boolean;
 }
 
 // A remote we can offer from credentials already present in the user's
@@ -709,9 +849,30 @@ export async function downloadTemplatesExport(names: string[]): Promise<void> {
 }
 
 // Delete one USER template folder (core templates are read-only, 404 here).
-// Registry bindings are left untouched — they resolve broken until rebound.
-export function deleteTemplate(name: string): Promise<{ deleted: string }> {
-  return postJson<{ deleted: string }>("/api/templates/delete", { name });
+// With cleanRegistry the USER registry is also swept of bindings referencing
+// the name (a user key whose value is emptied by the sweep is removed — revert
+// to core, never left as [] which means disabled, D109); without it bindings
+// are left untouched and resolve broken until rebound.
+export function deleteTemplate(
+  name: string,
+  cleanRegistry: boolean,
+): Promise<{ deleted: string; registryKeysCleaned?: string[] }> {
+  return postJson<{ deleted: string; registryKeysCleaned?: string[] }>("/api/templates/delete", {
+    name,
+    cleanRegistry,
+  });
+}
+
+// Author-recommended binding key for a staged template (from the bundle's
+// recommendation.json). Status reflects this machine's registry:
+//   new           — key not bound here yet (accepted by default)
+//   already-bound — this template is already on that key (no-op, informational)
+//   disabled      — the user disabled this key locally (off by default)
+export type RecommendedKeyStatus = "new" | "already-bound" | "disabled";
+
+export interface RecommendedKey {
+  key: string;
+  status: RecommendedKeyStatus;
 }
 
 // One candidate template found in an uploaded zip (a top-level directory).
@@ -721,6 +882,7 @@ export interface ImportItem {
   hasTemplateHtml: boolean;
   conflictsExisting: boolean; // a user folder of this name already exists
   fileCount: number;
+  recommendedKeys?: RecommendedKey[];
 }
 
 // Step 1 of import: staged, not yet committed.
@@ -739,6 +901,9 @@ export interface ImportCommitResult {
   skipped: string[];
   overwritten: string[];
   renamed: Record<string, string>;
+  // Bindings the commit applied (key → FINAL template name, after any
+  // keep-both rename). Absent/empty when no bindings were requested.
+  bindingsApplied?: { key: string; template: string }[];
 }
 
 // Stage an import zip (step 1). Multipart — the browser sets the multipart
@@ -758,12 +923,36 @@ export async function importTemplates(file: File): Promise<ImportStageResult> {
 }
 
 // Commit a staged import (step 2): resolve conflicts and move into place.
+// `bindings` maps ORIGINAL staged names (even for keep-both renames — the
+// server maps to the final name) to the registry keys to bind.
 export function commitImport(
   importId: string,
   resolutions: Record<string, ImportResolution>,
+  bindings?: Record<string, string[]>,
 ): Promise<ImportCommitResult> {
   return postJson<ImportCommitResult>(
     "/api/templates/import/" + encodeURIComponent(importId) + "/commit",
-    { resolutions },
+    bindings ? { resolutions, bindings } : { resolutions },
   );
+}
+
+// -- New template (POST /api/templates/new) ----------------------------------
+// Scaffold a new USER template folder and, for each extension, bind it as the
+// default for that key. `bindings` lists the registry keys that were bound.
+export interface NewTemplateResult {
+  ok: true;
+  name: string;
+  path: string;
+  bindings: string[];
+}
+
+// Extensions are dot-prefixed (e.g. ".csv"); [] scaffolds the folder with no
+// bindings (add them later via the bindings UI).
+export function createTemplate(name: string, extensions: string[]): Promise<NewTemplateResult> {
+  return postJson<NewTemplateResult>("/api/templates/new", { name, extensions });
+}
+
+// Open Claude Code in Terminal.app in a user template's folder (macOS only).
+export function openTemplateInClaude(name: string): Promise<{ ok: true }> {
+  return postJson<{ ok: true }>("/api/templates/open-in-claude", { name });
 }

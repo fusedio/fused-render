@@ -41,6 +41,64 @@ MERC_R = 6378137.0
 MERC_MAX = math.pi * MERC_R
 
 
+class _RangeReader:
+    """Byte source for a MOUNT-backed TIFF: pooled HTTP range reads against the
+    server's /api/fs/raw instead of mmap page faults over the kernel NFS mount.
+
+    The daemon serves tiles from a ThreadingHTTPServer and decodes chunks
+    OUTSIDE the per-file lock, so a screenful of cold tiles fans out that many
+    simultaneous byte reads. Over the kernel NFS mount those concurrent page
+    faults stall its RPC timeout and get the whole mount dropped (measured:
+    hard timeouts + 17–30s tail at z13/z14). /api/fs/raw turns each read into an
+    ordinary HTTP GET — the server proxies rclone's shared VFS (and 307s cold
+    ranged reads to the store for parallel fetches while a whole-file prefetch
+    lands), so the same fan-out is merely parallel HTTP, never a mount wedge.
+    `url` already carries the server origin + ?path= (built by the template)."""
+
+    def __init__(self, url):
+        self.url = url
+
+    def read(self, off, count):
+        import urllib.request
+        req = urllib.request.Request(
+            self.url, headers={"Range": f"bytes={off}-{off + count - 1}"})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            body = r.read()
+            status = r.status
+        if status != 206:
+            # Server ignored Range and sent the whole object: slice our window.
+            body = body[off:off + count]
+        if len(body) != count:
+            raise OSError(
+                f"range read: wanted {count}B at {off}, got {len(body)}B")
+        return body
+
+
+def _server_url(src, endpoint, path):
+    """Server URL built from `src`'s origin and the daemon's own normalized
+    `path`. src is trusted only for the origin: its ?path= carries the
+    browser's raw file param (possibly ~-prefixed or relative), and the
+    server's fs endpoints do no expansion — mixing the two identities would
+    judge remote-ness on one path string and range-read another (404s)."""
+    import urllib.parse
+    u = urllib.parse.urlsplit(src)
+    return f"{u.scheme}://{u.netloc}{endpoint}?path=" + urllib.parse.quote(path)
+
+
+def _stat_remote(src, path):
+    """Whether `path` is mount-backed, per the server's /api/fs/stat — the one
+    place that knows the mounts (the template passes `src` for every file and
+    stays mount-agnostic). True/False from stat, None when it can't be reached
+    (caller falls back to mmap and may retry on a later request)."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(_server_url(src, "/api/fs/stat", path),
+                                    timeout=10) as r:
+            return bool(json.load(r).get("remote"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _me():
     if "__file__" in globals():
         return os.path.abspath(__file__)
@@ -141,6 +199,7 @@ except ImportError:
 # ================================================================ daemon
 def _serve():
     import numpy as np
+    from concurrent.futures import ThreadPoolExecutor
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from urllib.parse import urlparse, parse_qs
 
@@ -163,6 +222,10 @@ def _serve():
     # ---------------- file cache: parsed pyramid per path ----------------
     files = {}          # path -> dict(levels, meta, lock, stretch cache)
     files_lock = threading.Lock()
+    # Shared pool for coalesced warm reads: _warm_chunks runs on every cold
+    # multi-miss request; a per-call executor would spawn+join up to 16 OS
+    # threads per tile. do_run never re-enters the pool, so no deadlock.
+    warm_pool = ThreadPoolExecutor(max_workers=16)
 
     def _parse_level(buf, en, t):
         jt = T._v(t, 347)      # JPEGTables (shared quant/huffman tables)
@@ -188,12 +251,55 @@ def _serve():
         # decode 1 chunk up-front to verify decodability
         return lv
 
-    def open_file(path):
+    def _attach_reader(f, src, path):
+        """Route f's chunk reads over HTTP and drop its mmap reference
+        (releases the EBUSY pin once the caller closes it; get_chunk
+        tolerates catching the mmap mid-drop). Only swaps dict fields — no
+        I/O — so it's safe to call under files_lock. The caller closes the
+        returned old buffer outside the lock and spawns _prefetch_overviews
+        once f is visible to other threads."""
+        f["reader"] = _RangeReader(_server_url(src, "/api/fs/raw", path))
+        old, f["buf"] = f["buf"], None
+        return old
+
+    def open_file(path, src=None):
         path = os.path.abspath(os.path.expanduser(path))
         with files_lock:
             f = files.get(path)
-        if f:
+        if f is not None:
+            # Opened mmap-backed while remote-ness was unknown (stat was
+            # unreachable, or a stale client sent no src): re-ask, and for a
+            # mount-backed file attach the reader + drop the mmap so chunk
+            # reads stop page-faulting the NFS mount. The non-blocking
+            # stat_lock keeps a screenful of concurrent requests from each
+            # firing its own blocking stat; losers just serve this request
+            # from the mmap as before.
+            if (src and f["reader"] is None and f.get("remote") is None
+                    and f["stat_lock"].acquire(blocking=False)):
+                old_buf = None
+                try:
+                    remote = _stat_remote(src, path)
+                    upgrade = False
+                    with files_lock:
+                        if remote is not None:
+                            f["remote"] = remote
+                        if remote and f["reader"] is None:
+                            old_buf = _attach_reader(f, src, path)
+                            upgrade = True
+                finally:
+                    f["stat_lock"].release()
+                if old_buf is not None:
+                    try:
+                        old_buf.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                if upgrade:
+                    threading.Thread(target=_prefetch_overviews, args=(f,),
+                                     daemon=True).start()
             return f
+        # No src -> remote-ness UNKNOWN (not False): a later request that does
+        # carry src can still stat + upgrade a mount-backed file off the mmap.
+        remote = _stat_remote(src, path) if src else None
         buf, en, t0, next_off = T.parse_header(path)
         meta = T.header_meta(path, buf, en, t0, next_off)
         levels = [_parse_level(buf, en, t0)]
@@ -213,27 +319,40 @@ def _serve():
         supported = all(l["comp"] in SUPPORTED_COMPS for l in levels)
         epsg = (meta.get("crs") or {}).get("epsg")
         f = {"path": path, "buf": buf, "en": en, "levels": levels,
-             "meta": meta, "epsg": epsg,
+             "meta": meta, "epsg": epsg, "reader": None,
              "transform": meta.get("transform"), "bounds": meta.get("bounds"),
              "supported": bool(supported and epsg and meta.get("transform")),
-             "lock": threading.Lock(), "chunks": {}, "chunk_order": [],
-             "stretch": {}}
+             "lock": threading.Lock(), "stat_lock": threading.Lock(),
+             "chunks": {}, "chunk_order": [], "stretch": {}}
+        if remote is not None:
+            f["remote"] = remote
+        if remote:
+            # Mount-backed: header parse above (single-threaded, brief) can ride
+            # the mmap, but the CONCURRENT chunk reads must not — route them over
+            # HTTP so nothing page-faults the NFS mount.
+            old_buf = _attach_reader(f, src, path)
+            try:
+                if old_buf is not None:
+                    old_buf.close()
+            except Exception:  # noqa: BLE001
+                pass
         with files_lock:
             files[path] = f
+        if f["reader"] is not None:
+            # Warm the overviews off-thread so /meta returns immediately and the
+            # bulk fetch overlaps the client's first tile requests.
+            threading.Thread(target=_prefetch_overviews, args=(f,),
+                             daemon=True).start()
         return f
 
     # ---------------- chunk-granular decode with LRU ----------------
     MAX_CACHE_CHUNKS = 4096
 
-    def get_chunk(f, li, ci):
-        """Decode one TIFF tile/strip of level li -> (h, w, spp) ndarray."""
-        key = (li, ci)
+    def _decode_chunk(f, li, ci, raw):
+        """Decode already-fetched raw bytes of chunk ci -> (h, w, spp) ndarray,
+        cache under the file lock, return it. Split out from get_chunk so a
+        coalesced multi-chunk range read can decode each member from one buffer."""
         lv = f["levels"][li]
-        with f["lock"]:
-            a = f["chunks"].get(key)
-            if a is not None:
-                return a
-        raw = f["buf"][lv["offs"][ci]:lv["offs"][ci] + lv["counts"][ci]]
         spp = lv["spp"] if lv["planar"] == 1 else 1
         if lv["tiled"]:
             h, w = lv["th"], lv["tw"]
@@ -267,17 +386,107 @@ def _serve():
             a = np.frombuffer(data, dtype=lv["dtype"])[: h * w * spp].reshape(h, w, spp)
             a = T._unpredict(a, lv["predictor"])
         with f["lock"]:
-            f["chunks"][key] = a
-            f["chunk_order"].append(key)
+            # A prefetch and an on-demand read can race to decode the same
+            # chunk; keep the first, or duplicate chunk_order keys would make
+            # LRU eviction drop live entries early.
+            if (li, ci) in f["chunks"]:
+                return f["chunks"][(li, ci)]
+            f["chunks"][(li, ci)] = a
+            f["chunk_order"].append((li, ci))
             while len(f["chunk_order"]) > MAX_CACHE_CHUNKS:
                 old = f["chunk_order"].pop(0)
                 f["chunks"].pop(old, None)
         return a
 
+    def get_chunk(f, li, ci):
+        """Decode one TIFF tile/strip of level li -> (h, w, spp) ndarray."""
+        lv = f["levels"][li]
+        with f["lock"]:
+            a = f["chunks"].get((li, ci))
+            if a is not None:
+                return a
+        off, cnt = lv["offs"][ci], lv["counts"][ci]
+        rd = f["reader"]
+        if rd is not None:
+            raw = rd.read(off, cnt)
+        else:
+            try:
+                raw = f["buf"][off:off + cnt]
+            except (TypeError, ValueError):
+                # mmap dropped by a concurrent late-src upgrade; the reader is
+                # always attached before the mmap goes away, so it's there now.
+                # A torn read is not possible: CPython slices an mmap in one
+                # GIL-held C call (validity check + copy), so close() can't
+                # interleave mid-copy — a racing slice either completes with
+                # the old bytes or lands here.
+                raw = f["reader"].read(off, cnt)
+        return _decode_chunk(f, li, ci, raw)
+
     def _nchunks_y(lv):
         if lv["tiled"]:
             return (lv["H"] + lv["th"] - 1) // lv["th"]
         return (lv["H"] + lv["rps"] - 1) // lv["rps"]
+
+    def _warm_chunks(f, li, cis):
+        """Prefetch the chunks a window needs (remote reader only). The file
+        fetching happens HERE, daemon-side — it is NOT bound by the browser's
+        ~6-connection cap on tile requests — so we both fan out AND coalesce.
+        Each HTTP range read pays a full ~round-trip of latency; reading chunks
+        one at a time (as the assembly loop would) stalls latency×N. COG tiles
+        are stored contiguously, so we merge adjacent chunks into a single range
+        read (the whole get_stretch overview scan collapses to one GET), decode
+        each member from that one buffer, and run the runs concurrently. This is
+        what rclone/kernel readahead did for the mmap path — the reason it was
+        fast cold — done explicitly over HTTP instead."""
+        rd = f["reader"]
+        if rd is None:
+            return
+        lv = f["levels"][li]
+        seen, items = set(), []
+        for ci in cis:
+            if ci in seen:
+                continue
+            seen.add(ci)
+            if (li, ci) not in f["chunks"]:
+                items.append((lv["offs"][ci], lv["counts"][ci], ci))
+        if len(items) <= 1:
+            return  # single miss: the assembly loop's own get_chunk suffices
+        items.sort()
+        GAP = 512 * 1024   # bridge small inter-tile gaps; don't read big holes
+        runs = []          # [start, end, [(ci, off, cnt), ...]]
+        for off, cnt, ci in items:
+            if runs and off - runs[-1][1] <= GAP:
+                runs[-1][1] = max(runs[-1][1], off + cnt)
+                runs[-1][2].append((ci, off, cnt))
+            else:
+                runs.append([off, off + cnt, [(ci, off, cnt)]])
+
+        def do_run(run):
+            start, end, members = run
+            try:
+                raw = rd.read(start, end - start)
+                for ci, off, cnt in members:
+                    if (li, ci) not in f["chunks"]:
+                        _decode_chunk(f, li, ci, raw[off - start:off - start + cnt])
+            except Exception:  # noqa: BLE001
+                pass  # warming is best-effort; get_chunk refetches per-chunk
+
+        list(warm_pool.map(do_run, runs))
+
+    def _prefetch_overviews(f):
+        """Background bulk-fetch of every reduced-resolution level (remote
+        reader only), skipping the full-res base. A screenful of tiles arrives
+        as that many separate browser requests — the daemon would read one
+        chunk per request, latency-bound, never seeing them as a batch. Here,
+        server-side and off the browser's connection budget, we warm each whole
+        overview level up front; _warm_chunks coalesces its contiguous chunks
+        into ~one bandwidth-bound GET, so pan/zoom then hits the cache. The base
+        level stays on-demand — deep zoom only ever views a small part of it."""
+        for li in range(1, len(f["levels"])):
+            try:
+                _warm_chunks(f, li, list(range(len(f["levels"][li]["offs"]))))
+            except Exception:  # noqa: BLE001
+                pass  # best-effort warmth; real reads still fall back to get_chunk
 
     def read_window(f, li, x0, y0, x1, y1, band_idx):
         """(len(band_idx), y1-y0, x1-x0) float32 from level li, NaN nodata."""
@@ -294,6 +503,11 @@ def _serve():
             across = (W + tw - 1) // tw
             down = (H + th - 1) // th
             per_plane = across * down
+            _warm_chunks(f, li, [
+                (bk * per_plane if planar == 2 else 0) + ty * across + tx
+                for ty in range(y0 // th, (y1 - 1) // th + 1)
+                for tx in range(x0 // tw, (x1 - 1) // tw + 1)
+                for bk in band_idx])
             for ty in range(y0 // th, (y1 - 1) // th + 1):
                 for tx in range(x0 // tw, (x1 - 1) // tw + 1):
                     for oi, bk in enumerate(band_idx):
@@ -308,6 +522,10 @@ def _serve():
         else:
             rps = lv["rps"]
             nsy = _nchunks_y(lv)
+            _warm_chunks(f, li, [
+                (bk * nsy if planar == 2 else 0) + si
+                for si in range(y0 // rps, (y1 - 1) // rps + 1)
+                for bk in band_idx])
             for si in range(y0 // rps, (y1 - 1) // rps + 1):
                 for oi, bk in enumerate(band_idx):
                     ci = (bk * nsy if planar == 2 else 0) + si
@@ -453,7 +671,7 @@ def _serve():
         return get_stretch(f, idx, robust)
 
     def do_tile(q, z, x, y):
-        f = open_file(q1(q, "file"))
+        f = open_file(q1(q, "file"), q1(q, "src"))
         if not f["supported"]:
             return 404, b"unsupported", "text/plain"
         want_rgb, idx = render_params(q, f)
@@ -576,7 +794,7 @@ def _serve():
         return m
 
     def do_meta(q):
-        f = open_file(q1(q, "file"))
+        f = open_file(q1(q, "file"), q1(q, "src"))
         m = dict(f["meta"])
         m["supported"] = f["supported"]
         m["crs_name"] = T._crs_name(m.get("crs"))
@@ -590,7 +808,13 @@ def _serve():
         if f["supported"]:
             want_rgb = f["levels"][0]["spp"] >= 3
             idx = [0, 1, 2] if want_rgb else [0]
-            m["stretch"] = get_stretch(f, idx, True)
+            try:
+                m["stretch"] = get_stretch(f, idx, True)
+            except Exception:  # noqa: BLE001
+                # One transient remote-read failure must not 500 /meta — the
+                # client would silently drop to the slow fallback engine for
+                # the whole session. Tiles recompute the stretch on demand.
+                pass
         m["levels"] = [[l["W"], l["H"]] for l in f["levels"]]
         try:
             m = _deep_meta(f, m)
@@ -599,7 +823,7 @@ def _serve():
         return 200, json.dumps(m, default=str).encode(), "application/json"
 
     def do_hist(q):
-        f = open_file(q1(q, "file"))
+        f = open_file(q1(q, "file"), q1(q, "src"))
         if not f["supported"]:
             return 404, b"{}", "application/json"
         want_rgb, idx = render_params(q, f)
@@ -633,7 +857,7 @@ def _serve():
         return 200, json.dumps(out).encode(), "application/json"
 
     def do_value(q):
-        f = open_file(q1(q, "file"))
+        f = open_file(q1(q, "file"), q1(q, "src"))
         if not f["supported"]:
             return 404, b"{}", "application/json"
         lon, lat = float(q1(q, "lon")), float(q1(q, "lat"))

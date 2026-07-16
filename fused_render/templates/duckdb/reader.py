@@ -431,9 +431,15 @@ def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
         return out if mode == "count" else _fs_gate(file, out)
 
     # Remote fast path: scan the URL the page handed us on the shared
-    # connection. Any failure — httpfs unavailable, the URL gone stale, a
-    # network-level error mid-query — falls back to reading the path itself.
-    if ext == ".parquet" and source_url.startswith(("http://", "https://")):
+    # connection, for every flat format (.duckdb/.ddb already returned above).
+    # Reading a mount-backed file over the serve — parquet, CSV/TSV or JSON —
+    # keeps DuckDB's concurrent range reads off the NFS mount, whose 1s RPC
+    # timeout drops the whole mount under an analytical scan. CSV/JSON can't
+    # prune like parquet and re-scan the file per page, but the serve's shared
+    # VFS cache (mounts.SERVE_VFS_OPT) makes the repeat reads local-disk-cheap,
+    # so slow-but-safe beats fast-but-fatal. Any failure — httpfs unavailable,
+    # the URL gone stale, a network error mid-query — falls back to the path.
+    if source_url.startswith(("http://", "https://")):
         try:
             cur = _http_connection()
         except Exception:

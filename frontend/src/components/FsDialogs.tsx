@@ -171,10 +171,13 @@ export function ConfirmDialog({
         className="deploy-body"
         onKeyDown={(e) => {
           if (e.key === "Enter") {
-            e.preventDefault();
-            // Contain the confirming Enter so it can't also reach the listing's
-            // document-level nav handler (mirrors PromptDialog).
+            // Contain the Enter so it can't reach the listing's document-level
+            // nav handler (mirrors PromptDialog). When a button is focused its
+            // own default activation decides Cancel vs Confirm — calling
+            // onConfirm here too would double-fire (or override Cancel).
             e.stopPropagation();
+            if (e.target instanceof HTMLButtonElement) return;
+            e.preventDefault();
             onConfirm();
           }
         }}

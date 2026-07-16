@@ -190,8 +190,11 @@ function navigatePreservingMode(target: string): void {
   else navigate(target);
 }
 
-export function Breadcrumb({ fsPath }: { fsPath: string }) {
-  const parts = fsPath.split("/").filter((s) => s.length > 0);
+export function Breadcrumb({ fsPath, home }: { fsPath: string; home?: string }) {
+  // Strictly below home only — home itself shows its full path, not a lone "~".
+  const underHome = home !== undefined && fsPath.startsWith(home + "/");
+  const rest = underHome ? fsPath.slice(home.length) : fsPath;
+  const parts = rest.split("/").filter((s) => s.length > 0);
   const pieces: React.ReactNode[] = [
     <a
       key="root"
@@ -199,17 +202,17 @@ export function Breadcrumb({ fsPath }: { fsPath: string }) {
       className={"path-crumb" + (parts.length === 0 ? " last" : "")}
       onClick={(e) => {
         e.preventDefault();
-        navigatePreservingMode("/");
+        navigatePreservingMode(underHome ? home : "/");
       }}
     >
-      /
+      {underHome ? "~" : "/"}
     </a>,
   ];
   // A Windows path's first segment is the drive ("C:"); its crumb must target
   // "C:/" (bare "C:" is cwd-relative to os.stat) and later segments append
   // without re-rooting at "/".
-  const isDrive = /^[A-Za-z]:$/.test(parts[0] || "");
-  let acc = "";
+  const isDrive = !underHome && /^[A-Za-z]:$/.test(parts[0] || "");
+  let acc = underHome ? home : "";
   parts.forEach((part, i) => {
     if (i === 0 && isDrive) acc = part + "/";
     else acc = acc + (acc.endsWith("/") ? "" : "/") + part;
@@ -217,7 +220,8 @@ export function Breadcrumb({ fsPath }: { fsPath: string }) {
     const isLast = i === parts.length - 1;
     // Separator only between segments (root already carries the leading
     // slash) — matches the panel path bar's tight `/Users/name/...` format.
-    if (i > 0) pieces.push(<span key={"sep" + i} className="path-crumb-sep">/</span>);
+    // The "~" crumb carries no slash, so its first segment needs one too.
+    if (i > 0 || underHome) pieces.push(<span key={"sep" + i} className="path-crumb-sep">/</span>);
     if (isLast) {
       pieces.push(
         <span key={target} className="path-crumb last">

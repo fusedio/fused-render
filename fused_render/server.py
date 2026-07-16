@@ -42,6 +42,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 
 from fused_render import __version__
+from fused_render.account import router as account_router
 from fused_render.core_templates import ensure_core_templates
 from fused_render.deploy import router as deploy_router
 from fused_render.executor import run_python
@@ -186,6 +187,7 @@ def _empty_git_dir():
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
             )
             _EMPTY_GIT_DIR = os.path.join(root, ".git")
         except (OSError, subprocess.SubprocessError):
@@ -236,6 +238,7 @@ class _IgnoreOracle:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 env=env,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
             )
         except OSError:
             self.proc = None
@@ -303,6 +306,7 @@ def _repo_toplevel(path):
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -455,6 +459,7 @@ def _git_ignored(cwd: str, rel_names: list[str]) -> set[str]:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
     except (OSError, subprocess.SubprocessError):
         return set()
@@ -596,7 +601,7 @@ def _icon_for(template_path: str):
 def _condition_file(template_path: str):
     """The template folder's `condition.py` path, or None when it has no gate.
 
-    A template folder may ship a `condition.py` defining `def method(path):
+    A template folder may ship a `condition.py` defining `def main(path):
     bool` — the gate that decides whether the template shows for a given file
     (SPEC CT-12). No file -> the template is unconditional (the common case).
     Split from evaluation so `_apply_conditions` can cheaply tell which entries
@@ -607,14 +612,14 @@ def _condition_file(template_path: str):
 
 
 def _run_condition(condition_file: str, target_path: str):
-    """Load+exec a `condition.py` and call `method(target_path)`. Returns
+    """Load+exec a `condition.py` and call `main(target_path)`. Returns
     (allowed: bool, error: str|None).
 
     The module is loaded fresh per call (like the registries, so an edit applies
     on the next stat with no restart) and never inserted into `sys.modules` — so
     concurrent calls with the fixed spec name get independent module objects and
     are safe to run in parallel (same rationale as executor._run_in_process). A
-    broken condition — no callable `method`, or any raised exception — drops the
+    broken condition — no callable `main`, or any raised exception — drops the
     template and surfaces the reason as `template_error`, mirroring how an
     unresolvable name is dropped (SPEC CT-6): a template gated by code that
     can't decide is not silently shown.
@@ -627,9 +632,9 @@ def _run_condition(condition_file: str, target_path: str):
         )
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        fn = getattr(mod, "method", None)
+        fn = getattr(mod, "main", None)
         if not callable(fn):
-            return False, f"{condition_file}: does not define a callable 'method'"
+            return False, f"{condition_file}: does not define a callable 'main'"
         return bool(fn(target_path)), None
     except BaseException as e:  # never let a bad condition tear down the stat
         return False, f"{condition_file}: {e}"
@@ -976,7 +981,17 @@ def _writable(path: str) -> bool:
     W_OK on itself — the atomic os.replace would otherwise bypass a read-only
     bit via the parent directory — and a new file needs W_OK on its parent.
     Templates read this off the stat payload to render read-only mode up
-    front; keep the two in agreement."""
+    front; keep the two in agreement.
+
+    Paths under a read-only mount are never writable, whatever the permission
+    bits say: the rclone VFS (CacheMode=full) takes any write into its local
+    cache and only fails at the async upload, so W_OK is a lie there."""
+    # Local import, like _stat_payload's: server -> shell.mounts only,
+    # keeping shell ↛ server acyclic.
+    from fused_render.shell.mounts import mount_read_only
+
+    if mount_read_only(path):
+        return False
     if os.path.exists(path):
         return os.access(path, os.W_OK)
     return os.access(os.path.dirname(path) or ".", os.W_OK)
@@ -1507,9 +1522,18 @@ def create_app(start_dir: str) -> FastAPI:
 
     app.include_router(shell_mounts.router)
     shell_mounts.startup()
+    # GitHub deep links (SPEC §26, D110): GET /clone confirm page +
+    # POST /api/clone sparse-clone into ~/Documents/Fused. deeplink.py never
+    # imports server, so the include stays acyclic like shell/*.
+    from fused_render.deeplink import router as deeplink_router
+
+    app.include_router(deeplink_router)
     # Deploy (hosted publish through the fused CLI) — export + `fused share`
     # orchestration and the per-page deployment pointer store (deploy.py).
     app.include_router(deploy_router)
+    # Fused account (in-app `fused cloud login/logout`, account.py) — the
+    # sign-in the managed-env deploys need, without a terminal.
+    app.include_router(account_router)
     # Template management (templates_api.py) — the Templates view backend:
     # inventory across sources, registry bindings edit, import/export. It owns
     # GET /api/templates/registry (the extended §2.2 shape). Imported here
@@ -1932,8 +1956,16 @@ def create_app(start_dir: str) -> FastAPI:
         if not out or not os.path.isabs(out):
             return _error("'out' must be an absolute path to the output directory")
 
+        # Optional file selection (same as the Deploy modal): extra files to bundle
+        # beyond the literal-call scan, and files to drop from it. Absent -> auto-only.
+        include = body.get("include") or []
+        exclude = body.get("exclude") or []
+        for name, value in (("include", include), ("exclude", exclude)):
+            if not isinstance(value, list) or any(not isinstance(v, str) for v in value):
+                return _error(f"'{name}' must be an array of relative file paths")
+
         try:
-            plan = export_page(page, out)
+            plan = export_page(page, out, include=include, exclude=exclude)
         except ExportError as e:
             return _error(str(e))
 
@@ -1941,6 +1973,7 @@ def create_app(start_dir: str) -> FastAPI:
             "out": os.path.abspath(out),
             "entrypoints": [{"path": e.path, "name": e.name, "file": e.file} for e in plan.entrypoints],
             "assets": [{"path": a.path, "name": a.name, "file": a.file} for a in plan.assets],
+            "warnings": plan.warnings,
         }
 
     return app

@@ -1,6 +1,6 @@
 """Gate for the H3 template (SPEC CT-12).
 
-`method(path)` returns True only when the parquet actually carries an H3
+`main(path)` returns True only when the parquet actually carries an H3
 cell-index column, so the template stops showing for every parquet
 unconditionally. The detection mirrors `h3_reader.py` — a name match against
 the known H3 column names, else a uint64/hex-string bit-pattern sniff — so the
@@ -51,7 +51,7 @@ def _looks_h3_str(v):
         return False
 
 
-def method(path: str) -> bool:
+def main(path: str) -> bool:
     import os
 
     path = os.path.abspath(os.path.expanduser(path or ""))
