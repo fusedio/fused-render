@@ -73,14 +73,10 @@
       slider.value = String(freq);
       freqValueEl.textContent = freq.toFixed(1);
 
-      // key: "sine" makes each slider move supersede the previous request —
-      // scrubbing fast cancels the stale in-flight runs, so only the value the
-      // slider landed on is computed and drawn.
-      const { points } = await fused.runPython(
-        "./sine.py",
-        { n: "160", freq: String(freq) },
-        { key: "sine" }
-      );
+      // Stale-request cancellation is on by default (keyed by the .py path), so
+      // scrubbing the slider fast cancels the runs it moved past — only the value
+      // the slider landed on is computed and drawn. No extra wiring needed.
+      const { points } = await fused.runPython("./sine.py", { n: "160", freq: String(freq) });
 
       const axis = `<line x1="${PAD}" y1="${H / 2}" x2="${W - PAD}" y2="${H / 2}" stroke="#3a3d44" />`;
       const line = `<polyline points="${pointsToPolyline(points)}" fill="none" stroke="#5b9dff" stroke-width="2" />`;

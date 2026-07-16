@@ -2,9 +2,11 @@
  * Injected into every rendered HTML file (see server.py `/render`).
  * Provides `window.fused`:
  *   fused.runPython(pyPath, params, opts?) -> Promise<result>
- *     opts.key    — a latest-wins request channel: a newer call on the same key
- *                   aborts the prior in-flight one (D113 — cancel stale scrubs).
- *     opts.signal — a caller AbortSignal; composes with the channel abort.
+ *     Stale-request cancellation is ON by default (D114): a new call for a .py
+ *     supersedes (aborts) the prior in-flight call for that same file — cancels
+ *     stale slider scrubs with no author effort. opts.key regroups the channel;
+ *     opts.key:null opts out (fully concurrent); opts.signal is a caller
+ *     AbortSignal that composes.
  *   fused.params.get(key) / getAll() / set(key, value) / onChange(cb) -> unsubscribe
  *
  * Same-origin iframe model: this script talks to an ancestor window's URL
@@ -315,30 +317,41 @@
     }
   });
 
-  // ---- stale-request cancellation (D113) ------------------------------------
-  // Requests sharing an `opts.key` form a latest-wins channel: firing a newer
-  // call on a key ABORTS the prior in-flight call on that same key. This is the
-  // slider primitive — scrubbing through many values leaves only the last
-  // value's request alive; each superseded fetch is cancelled, freeing the
-  // browser connection and letting the server abandon the now-irrelevant
-  // subprocess once it notices the dropped socket. RH-4 is preserved: with NO
-  // key, calls never cancel each other, so unrelated concurrent fetches and
-  // same-file polling loops are untouched. An author-supplied `opts.signal`
-  // composes — the fetch aborts on whichever fires first. A superseded/aborted
-  // call rejects with a standard AbortError (DOMException, name "AbortError");
-  // the unhandledrejection handler below treats that as benign, so a
-  // fire-and-forget re-render that loses the race neither shows the traceback
-  // overlay nor logs an "uncaught (in promise)" to the console.
+  // ---- stale-request cancellation (RH-9 / D114) -----------------------------
+  // Every runPython call belongs to a "latest-wins channel". By DEFAULT the
+  // channel is the .py path, so firing a new call for a file ABORTS the prior
+  // in-flight call for that same file — the slider primitive, on by default:
+  // scrubbing through values leaves only the last one's request alive (each
+  // superseded fetch is cancelled, freeing the browser connection and letting
+  // the server drop the now-irrelevant subprocess when it sees the closed
+  // socket). Callers that genuinely need several concurrent calls to the SAME
+  // file — polling loops, per-tile fetches, writes that must finish — pass
+  // `opts.key: null` to opt OUT (fully concurrent, D113's old default), or a
+  // distinct `opts.key` string to group differently. `opts.signal` (a standard
+  // AbortSignal) composes — the fetch aborts on whichever fires first.
+  //
+  // A call SUPERSEDED by a newer same-channel call is stale by definition: its
+  // result would only be overwritten, so its promise NEVER settles and the
+  // caller's continuation (its await / .then — even inside a try/catch) simply
+  // stops, drawing nothing. That keeps a scrub silent for every page shape: no
+  // AbortError surfaces through the page's own catch (which would otherwise
+  // flash a stale error while the latest value is still computing). An abort
+  // from the caller's OWN signal instead rejects with a standard AbortError,
+  // which the unhandledrejection handler below treats as benign.
   const inflightByKey = new Map();
 
   function runPython(pyPath, params, opts) {
     opts = opts || {};
-    const key = opts.key;
-    const keyed = key !== undefined && key !== null;
+    // Default channel = the .py path; opts.key === null opts out, a string regroups.
+    const key = opts.key === undefined ? pyPath : opts.key;
+    const keyed = key !== null;
     const controller = new AbortController();
     if (keyed) {
       const prev = inflightByKey.get(key);
-      if (prev) prev.abort(); // supersede the now-stale request on this channel
+      if (prev) {
+        prev._supersededByKey = true; // its impending abort is supersession, not an error
+        prev.abort();
+      }
       inflightByKey.set(key, controller);
     }
     let detachSignal = null;
@@ -350,10 +363,10 @@
         detachSignal = () => opts.signal.removeEventListener("abort", onAbort);
       }
     }
-    // On settle: detach the caller's abort listener (reusing one long-lived
-    // signal across many calls must not accumulate listeners / pin controllers)
-    // and free the channel slot — the latter only if it is still ours (a newer
-    // same-key call may have already replaced us in the map).
+    // Detach the caller's abort listener (reusing one long-lived signal across
+    // many calls must not accumulate listeners / pin controllers) and free the
+    // channel slot — the latter only if it is still ours (a newer same-key call
+    // may have already replaced us in the map).
     const cleanup = () => {
       if (detachSignal) detachSignal();
       if (keyed && inflightByKey.get(key) === controller) inflightByKey.delete(key);
@@ -385,7 +398,20 @@
         }
         return data.result;
       })
-      .finally(cleanup);
+      .then(
+        (result) => {
+          cleanup();
+          return result;
+        },
+        (err) => {
+          cleanup();
+          // Superseded by a newer same-channel call: hang forever so the stale
+          // continuation never runs (see above). Everything else — a real error,
+          // or an abort from the caller's own signal — propagates.
+          if (controller._supersededByKey) return new Promise(() => {});
+          throw err;
+        }
+      );
   }
 
   // Synchronous URL of the raw-bytes endpoint for a file — for <img>/<embed>
