@@ -434,7 +434,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
       CM.autocompletion({ override: [latexCompletions] }),
       CM.keymap.of([
         { key: "Mod-s", preventDefault: true, run: () => { saveNow(); return true; } },
-        { key: "Mod-Enter", preventDefault: true, run: () => { compile(); return true; } },
+        { key: "Mod-Enter", preventDefault: true, run: () => { compile(true); return true; } },
         ...CM.closeBracketsKeymap, ...CM.defaultKeymap, ...CM.historyKeymap,
         ...CM.searchKeymap, ...CM.completionKeymap, ...CM.foldKeymap, CM.indentWithTab,
       ]),
@@ -507,18 +507,18 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     $("drawer").classList.toggle("collapsed", collapsed);
     fused.params.set("drawer", collapsed ? "collapsed" : "open");
   }
-  async function compile() {
+  async function compile(force) {
     if (S.compiling) { S.pendingCompile = true; return; }   // coalesce: one in flight
     S.compiling = true; setStatus("busy", "compiling…");
     try {
       if (S.dirty) await saveNow();
-      const r = await py({ action: "compile", path: S.mainAbs });
+      const r = await py({ action: "compile", path: S.mainAbs, force: force ? 1 : 0 });
       if (r.missing_tectonic) { setStatus("err", "no compiler"); renderMissingTectonic(); return; }
       if (r.error) { setStatus("err", "error"); renderDiags([{ severity:"error", message:r.error, line:0, file:"" }], ""); return; }
       renderDiags(r.errors || [], r.log_tail || "");
       const hardErrors = (r.errors || []).filter(e => e.severity === "error");
       if (r.ok && r.pdf) {
-        setStatus("ok", `✓ ${r.seconds}s`);
+        setStatus("ok", r.cached ? "✓ up to date" : `✓ ${r.seconds}s`);
         await renderPdf(r.pdf);
         S.lastPdf = r.pdf;
         refreshIndex();                    // outline + bib may have changed
@@ -930,7 +930,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     if (S.lastPdf) setTimeout(() => renderPdf(S.lastPdf), 60);   // reflow at new width
   }
   $("modeSeg").querySelectorAll("button").forEach(b => b.addEventListener("click", () => setMode(b.dataset.mode)));
-  $("compileBtn").addEventListener("click", () => compile());
+  $("compileBtn").addEventListener("click", () => compile(true));
   $("zoomIn").addEventListener("click", () => setZoom(S.scale + 0.15));
   $("zoomOut").addEventListener("click", () => setZoom(S.scale - 0.15));
   $("addFileBtn").addEventListener("click", openFileBrowser);

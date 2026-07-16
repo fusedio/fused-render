@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PDF Studio</title>
+<link rel="modulepreload" href="/template-assets/pdfjs.bundle.mjs">
+<link rel="modulepreload" href="/template-assets/pdfjs.worker.bundle.mjs">
 <style>
   /* ---- Light Airtable-flavored design system (shared with latex/docs) ---- */
   :root {
@@ -532,88 +534,104 @@ function pageWidth() {
   return Math.min(860, Math.max(320, avail)) * state.zoom / 100;
 }
 
+// Bumped per render so stale in-flight page/thumb loops cancel themselves.
+let renderGen = 0;
+
+async function renderPage(pdf, n, gen) {
+  const page = await pdf.getPage(n);
+  const base = page.getViewport({ scale: 1 });
+  const scale = pageWidth() / base.width;
+  const vp = page.getViewport({ scale });
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  if (gen !== renderGen) return;
+  const wrap = document.createElement("div");
+  wrap.className = "pdf-page";
+  wrap.id = `__fr_page_${n}`;
+  wrap.dataset.page = n;
+  wrap.dataset.scale = scale;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.floor(vp.width * dpr);
+  canvas.height = Math.floor(vp.height * dpr);
+  canvas.style.width = vp.width + "px";
+  canvas.style.height = vp.height + "px";
+  wrap.appendChild(canvas);
+  wrap.style.setProperty("--scale-factor", scale);
+  const textLayer = document.createElement("div");
+  textLayer.className = "textLayer";
+  wrap.appendChild(textLayer);
+  const overlay = document.createElement("div");
+  overlay.className = "overlay";
+  wrap.appendChild(overlay);
+  wrap.insertAdjacentHTML("beforeend", `<div class="qa">
+    <button title="Rotate left" data-qa="rotL">${icoRotL}</button>
+    <button title="Rotate right" data-qa="rotR">${icoRotR}</button>
+    <button title="Extract this page" data-qa="extract">${icoExtract}</button>
+    <button title="Delete page" data-qa="del" class="danger">${icoTrash}</button>
+  </div>`);
+  $("pages").appendChild(wrap);
+  pageWatcher.observe(wrap);
+  await page.render({
+    canvasContext: canvas.getContext("2d"), viewport: vp,
+    transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined,
+  }).promise;
+  await new pdfjs.TextLayer({
+    textContentSource: page.streamTextContent(), container: textLayer, viewport: vp,
+  }).render();
+}
+
+async function renderThumb(pdf, n, gen) {
+  const page = await pdf.getPage(n);
+  const base = page.getViewport({ scale: 1 });
+  const vp = page.getViewport({ scale: 132 / base.width });
+  if (gen !== renderGen) return;
+  const div = document.createElement("div");
+  div.className = "thumb" + (n === state.curPage ? " on" : "");
+  div.dataset.page = n;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.floor(vp.width);
+  canvas.height = Math.floor(vp.height);
+  div.appendChild(canvas);
+  div.insertAdjacentHTML("beforeend", `<span class="pn">${n}</span><div class="qa">
+    <button title="Rotate left" data-qa="rotL">${icoRotL}</button>
+    <button title="Rotate right" data-qa="rotR">${icoRotR}</button>
+    <button title="Delete page" data-qa="del" class="danger">${icoTrash}</button>
+  </div>`);
+  $("thumbs").appendChild(div);
+  await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+}
+
+// Resolves once page 1 is on screen; the remaining pages and the thumbnail
+// rail keep rendering in the background.
 async function renderAll() {
   cancelEdit();
   state.spans = {};
+  const gen = ++renderGen;
   if (state.pdf) { state.pdf.destroy(); state.pdf = null; }
   const data = await loadPdfBytes();
-  state.pdf = await pdfjs.getDocument({ data }).promise;
-  const shown = Math.min(state.pdf.numPages, MAX_PAGES);
+  const pdf = await pdfjs.getDocument({ data }).promise;
+  if (gen !== renderGen) { pdf.destroy(); return; }
+  state.pdf = pdf;
+  const shown = Math.min(pdf.numPages, MAX_PAGES);
   const note = $("pagesNote");
-  note.classList.toggle("hidden", state.pdf.numPages <= MAX_PAGES);
-  if (state.pdf.numPages > MAX_PAGES)
-    note.textContent = `Showing ${shown} of ${state.pdf.numPages} pages`;
-  $("docPages").textContent = `${state.pdf.numPages} ${state.pdf.numPages === 1 ? "page" : "pages"}`;
-
-  const pagesEl = $("pages");
-  pagesEl.innerHTML = "";
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const cssW = pageWidth();
-  for (let n = 1; n <= shown; n++) {
-    const page = await state.pdf.getPage(n);
-    const base = page.getViewport({ scale: 1 });
-    const scale = cssW / base.width;
-    const vp = page.getViewport({ scale });
-    const wrap = document.createElement("div");
-    wrap.className = "pdf-page";
-    wrap.id = `__fr_page_${n}`;
-    wrap.dataset.page = n;
-    wrap.dataset.scale = scale;
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.floor(vp.width * dpr);
-    canvas.height = Math.floor(vp.height * dpr);
-    canvas.style.width = vp.width + "px";
-    canvas.style.height = vp.height + "px";
-    wrap.appendChild(canvas);
-    wrap.style.setProperty("--scale-factor", scale);
-    const textLayer = document.createElement("div");
-    textLayer.className = "textLayer";
-    wrap.appendChild(textLayer);
-    const overlay = document.createElement("div");
-    overlay.className = "overlay";
-    wrap.appendChild(overlay);
-    wrap.insertAdjacentHTML("beforeend", `<div class="qa">
-      <button title="Rotate left" data-qa="rotL">${icoRotL}</button>
-      <button title="Rotate right" data-qa="rotR">${icoRotR}</button>
-      <button title="Extract this page" data-qa="extract">${icoExtract}</button>
-      <button title="Delete page" data-qa="del" class="danger">${icoTrash}</button>
-    </div>`);
-    pagesEl.appendChild(wrap);
-    await page.render({
-      canvasContext: canvas.getContext("2d"), viewport: vp,
-      transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined,
-    }).promise;
-    await new pdfjs.TextLayer({
-      textContentSource: page.streamTextContent(), container: textLayer, viewport: vp,
-    }).render();
-  }
-  renderThumbs(shown);
+  note.classList.toggle("hidden", pdf.numPages <= MAX_PAGES);
+  if (pdf.numPages > MAX_PAGES)
+    note.textContent = `Showing ${shown} of ${pdf.numPages} pages`;
+  $("docPages").textContent = `${pdf.numPages} ${pdf.numPages === 1 ? "page" : "pages"}`;
+  $("pages").innerHTML = "";
+  $("thumbs").innerHTML = "";
   watchPages();
+  await renderPage(pdf, 1, gen);
   if (document.body.classList.contains("mode-edit")) primeOverlays();
-}
-
-async function renderThumbs(shown) {
-  const rail = $("thumbs");
-  rail.innerHTML = "";
-  for (let n = 1; n <= shown; n++) {
-    const page = await state.pdf.getPage(n);
-    const base = page.getViewport({ scale: 1 });
-    const vp = page.getViewport({ scale: 132 / base.width });
-    const div = document.createElement("div");
-    div.className = "thumb" + (n === state.curPage ? " on" : "");
-    div.dataset.page = n;
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.floor(vp.width);
-    canvas.height = Math.floor(vp.height);
-    div.appendChild(canvas);
-    div.insertAdjacentHTML("beforeend", `<span class="pn">${n}</span><div class="qa">
-      <button title="Rotate left" data-qa="rotL">${icoRotL}</button>
-      <button title="Rotate right" data-qa="rotR">${icoRotR}</button>
-      <button title="Delete page" data-qa="del" class="danger">${icoTrash}</button>
-    </div>`);
-    rail.appendChild(div);
-    await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
-  }
+  (async () => {
+    for (let n = 2; n <= shown; n++) {
+      if (gen !== renderGen) return;
+      await renderPage(pdf, n, gen);
+    }
+    for (let n = 1; n <= shown; n++) {
+      if (gen !== renderGen) return;
+      await renderThumb(pdf, n, gen);
+    }
+  })().catch((err) => { if (gen === renderGen) toast(err?.message || String(err), true); });
 }
 
 let pageWatcher = null;
@@ -799,6 +817,7 @@ async function openDoc(path) {
 
 function clearOpenDoc() {
   cancelEdit();
+  renderGen++;
   state.doc = ""; state.pdf?.destroy(); state.pdf = null;
   $("pages").innerHTML = ""; $("thumbs").innerHTML = "";
   $("docName").textContent = ""; $("docPages").textContent = "";
@@ -1267,17 +1286,21 @@ document.addEventListener("keydown", (e) => {
 
 // ---------- boot ----------
 async function bootDoc(path) {
-  await py({ action: "add_to_library", src: path });
-  await refreshLib();
+  if (!state.docs.some((d) => d.path === path)) {
+    await py({ action: "add_to_library", src: path });
+    await refreshLib();
+  }
   await openDoc(path);
 }
 
 async function boot() {
   try {
+    const libP = refreshLib();
     let health;
     try { health = await py({ action: "health" }); }
     catch { health = await py({ action: "health" }); }   // one retry: engine warm-up
     if (!health.ok) {
+      libP.catch(() => {});
       $("boot").innerHTML = "";
       const msg = document.createElement("div");
       msg.innerHTML = `<b>PDF Studio needs its Python engines.</b><br>
@@ -1289,22 +1312,22 @@ async function boot() {
     }
     state.zoom = +(fused.params.get("zoom") || 100) || 100;
     if (fused.params.get("panel") === "0") document.body.classList.add("panel-off");
-    await refreshLib();
-    const wanted = fused.params.get("doc") || fused.params.get("_file") || "";
-    let opened = false;
-    if (wanted && wanted.toLowerCase().endsWith(".pdf")) {
-      try { await bootDoc(wanted); opened = true; }
-      catch (err) { console.error(err); toast(`Could not open ${wanted.split("/").pop()}: ${err?.message || err}`, true); }
-    }
-    if (!opened && state.docs.length) {
-      try { await openDoc(state.docs[0].path); }
-      catch (err) { console.error(err); }
-    }
+    await libP;
     setMode(fused.params.get("mode") === "edit" ? "edit" : "view");
     $("boot").remove();
   } catch (err) {
     console.error(err);
     $("boot").textContent = `PDF Studio failed to start: ${err?.message || err}`;
+    return;
+  }
+  const wanted = fused.params.get("doc") || fused.params.get("_file") || "";
+  if (wanted && wanted.toLowerCase().endsWith(".pdf")) {
+    try { await bootDoc(wanted); return; }
+    catch (err) { console.error(err); toast(`Could not open ${wanted.split("/").pop()}: ${err?.message || err}`, true); }
+  }
+  if (state.docs.length) {
+    try { await openDoc(state.docs[0].path); }
+    catch (err) { console.error(err); }
   }
 }
 boot();
