@@ -871,7 +871,8 @@ export default function Listing({ fsPath }: { fsPath: string }) {
           // The move was rejected (e.g. a 409/403); the pre-clear above dropped
           // the clipboard, so re-set it to the same cut and let run() toast the
           // error. Without this the user would have to re-cut before retrying.
-          setClipboard({ path: src, op: "cut" });
+          // Skip the restore if the user cut/copied something newer mid-flight.
+          if (getClipboard() === null) setClipboard({ path: src, op: "cut" });
           throw e;
         }
       } else {
