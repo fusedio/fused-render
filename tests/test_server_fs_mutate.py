@@ -258,6 +258,16 @@ def test_rename_relative_dst_400(tmp_path):
     assert _status(RENAME({"src": str(src), "dst": "rel"}, x_fused="1")) == 400
 
 
+def test_rename_dir_into_itself_400(tmp_path):
+    d = tmp_path / "d"
+    (d / "sub").mkdir(parents=True)
+    for dst in (d / "d", d / "sub" / "d"):
+        resp = RENAME({"src": str(d), "dst": str(dst)}, x_fused="1")
+        assert _status(resp) == 400
+        assert "into itself" in _data(resp)["error"]
+    assert (d / "sub").is_dir()  # tree untouched
+
+
 def test_rename_readonly_src_403(tmp_path):
     # A move deletes the source, so a readonly source must refuse the same way
     # delete does — otherwise rename lifts entries off a read-only location.

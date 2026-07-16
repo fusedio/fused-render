@@ -1314,6 +1314,14 @@ def _fs_rename(body: dict, x_fused: str | None):
         return _error(f"parent directory does not exist: {dst_parent}")
     if not os.path.exists(src):
         return _error(f"no such file or directory: {src}", status=404)
+    if os.path.isdir(src):
+        # Same self/descendant guard as copy: moving a directory into itself
+        # (or a child) would build the destination inside the source.
+        s = os.path.abspath(src)
+        d = os.path.abspath(dst)
+        if d == s or d.startswith(s + os.sep):
+            return _error("cannot move a directory into itself or a descendant")
+
     dst_exists = os.path.exists(dst)
     if dst_exists and not overwrite:
         return JSONResponse({"error": "conflict"}, status_code=409)
