@@ -341,13 +341,21 @@
       if (prev) prev.abort(); // supersede the now-stale request on this channel
       inflightByKey.set(key, controller);
     }
+    let detachSignal = null;
     if (opts.signal) {
       if (opts.signal.aborted) controller.abort();
-      else opts.signal.addEventListener("abort", () => controller.abort(), { once: true });
+      else {
+        const onAbort = () => controller.abort();
+        opts.signal.addEventListener("abort", onAbort);
+        detachSignal = () => opts.signal.removeEventListener("abort", onAbort);
+      }
     }
-    // Free the channel slot when this call settles — but only if it is still
-    // ours (a newer same-key call may have already replaced us in the map).
-    const clearSlot = () => {
+    // On settle: detach the caller's abort listener (reusing one long-lived
+    // signal across many calls must not accumulate listeners / pin controllers)
+    // and free the channel slot — the latter only if it is still ours (a newer
+    // same-key call may have already replaced us in the map).
+    const cleanup = () => {
+      if (detachSignal) detachSignal();
       if (keyed && inflightByKey.get(key) === controller) inflightByKey.delete(key);
     };
     const ownPath = new URLSearchParams(window.location.search).get("path");
@@ -377,7 +385,7 @@
         }
         return data.result;
       })
-      .finally(clearSlot);
+      .finally(cleanup);
   }
 
   // Synchronous URL of the raw-bytes endpoint for a file — for <img>/<embed>
