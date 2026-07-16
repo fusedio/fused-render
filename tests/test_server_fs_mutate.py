@@ -202,6 +202,24 @@ def test_delete_trash_unsupported_returns_501(tmp_path, monkeypatch):
     assert f.exists()  # untouched — caller falls back
 
 
+def test_delete_trash_failure_is_500_not_501(tmp_path, monkeypatch):
+    # A FAILED trash on a supported platform must not reuse the 501
+    # "unsupported" signal — that would route the client into the irreversible
+    # hard-delete confirm as the follow-up to a recoverable-delete attempt.
+    monkeypatch.setattr(server, "_trash_supported", lambda: True)
+
+    def boom(path):
+        raise OSError("disk sulking")
+
+    monkeypatch.setattr(server, "_move_to_trash", boom)
+    f = tmp_path / "f.txt"
+    f.write_text("x")
+    resp = DELETE({"path": str(f), "trash": True}, x_fused="1")
+    assert _status(resp) == 500
+    assert "cannot move to Trash" in _data(resp)["error"]
+    assert f.exists()
+
+
 # -------------------------------------------------------------------- rename
 
 def test_rename_file(tmp_path):

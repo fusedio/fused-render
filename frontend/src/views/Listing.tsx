@@ -867,25 +867,22 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     if (op === "cut") setClipboard(null); // consume atomically, before any await
     pasteInFlight.current = true;
     run(async () => {
-      if (op === "cut") {
-        try {
-          await renameEntry(src, dst);
-          pendingSelectRef.current = dst; // re-anchor if dst lands in this view
-        } catch (e) {
-          // The move was rejected (e.g. a 409/403); the pre-clear above dropped
-          // the clipboard, so re-set it to the same cut and let run() toast the
-          // error. Without this the user would have to re-cut before retrying.
-          // Skip the restore if the user cut/copied something newer mid-flight.
-          if (getClipboard() === null) setClipboard({ path: src, op: "cut" });
-          throw e;
-        }
-      } else {
-        // Cross-folder copy: keep the name when free, dedupe to "… copy" when
-        // taken (Finder keep-both), instead of surfacing a 409.
+      try {
+        // Both ops keep the name when free and dedupe to "… copy" when taken
+        // (Finder keep-both), instead of surfacing a 409.
         const { is_dir } = await statPath(src);
-        const copyDst = await freePastePath(target, basename(src), is_dir);
-        await copyEntry(src, copyDst);
-        pendingSelectRef.current = copyDst;
+        const pasteDst = await freePastePath(target, basename(src), is_dir);
+        if (op === "cut") await renameEntry(src, pasteDst);
+        else await copyEntry(src, pasteDst);
+        pendingSelectRef.current = pasteDst; // re-anchor if dst lands in this view
+      } catch (e) {
+        // The paste failed (e.g. a 403, or the source vanished); for a cut the
+        // pre-clear above dropped the clipboard, so re-set the same cut and
+        // let run() toast the error — without this the user would have to
+        // re-cut before retrying. Skip the restore if the user cut/copied
+        // something newer mid-flight.
+        if (op === "cut" && getClipboard() === null) setClipboard({ path: src, op: "cut" });
+        throw e;
       }
     }).finally(() => {
       pasteInFlight.current = false;

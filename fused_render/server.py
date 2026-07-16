@@ -1261,9 +1261,11 @@ def _fs_delete(body: dict, x_fused: str | None):
         try:
             _move_to_trash(path)
         except Exception as e:  # noqa: BLE001 — rename OSError or osascript failure
-            return JSONResponse(
-                {"error": "trash unsupported", "message": str(e)}, status_code=501
-            )
+            # A FAILED trash on a supported platform is a plain error, not the
+            # 501 "unsupported" signal — that one routes the client into the
+            # irreversible hard-delete fallback, which must never be the
+            # response to a recoverable-delete attempt that merely failed.
+            return _error(f"cannot move to Trash: {e}", status=500)
         return {"deleted": path, "trashed": True}
 
     try:
