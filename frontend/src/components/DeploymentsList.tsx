@@ -9,6 +9,8 @@ import { useEffect, useRef, useState } from "react";
 import { getDeployConfig, listShares, revokeMount } from "../lib/api";
 import type { DeployConfig, ShareMount } from "../lib/api";
 import { basename } from "../lib/format";
+import RowActionsMenu from "./RowActionsMenu";
+import type { MenuEntry } from "./ContextMenu";
 
 export default function DeploymentsList() {
   const [config, setConfig] = useState<DeployConfig | null>(null);
@@ -111,46 +113,62 @@ export default function DeploymentsList() {
       {mounts && mounts.length > 0 && (
         <table className="deploy-shares-table">
           <tbody>
-            {mounts.map((m) => (
-              <tr key={m.token}>
-                <td className="share-page" title={m.page ?? "Deployed by the CLI, another app, or another machine"}>
-                  {m.page ? basename(m.page) : <span className="deploy-muted">not from this app</span>}
-                </td>
-                <td className="share-token" title={m.token}>
-                  {m.token}
-                </td>
-                <td>
-                  <span className={"share-status " + m.status}>{m.status}</span>
-                </td>
-                <td>
-                  {m.url ? (
-                    <a href={m.url} target="_blank" rel="noreferrer">
-                      Open ↗
-                    </a>
-                  ) : (
-                    <span
-                      className="deploy-muted"
-                      title="`fused share list` doesn't report URLs; a link shows once this app has recorded (or can derive) one for this environment"
-                    >
-                      —
-                    </span>
-                  )}
-                </td>
-                <td>
-                  {m.status !== "revoked" && (
-                    <button
-                      type="button"
-                      className="deploy-danger"
-                      onClick={() => onRevoke(m.token)}
-                      disabled={revoking !== null || loading}
-                      title="Take this link down"
-                    >
-                      {revoking === m.token ? "Revoking…" : "Revoke"}
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
+            {mounts.map((m) => {
+              // One "⋯" per row instead of a separate Open link and Revoke
+              // button: Open/Copy first, the destructive Revoke tucked behind a
+              // separator. A revoked row with no URL has no entries, so the menu
+              // renders a muted "—" (nothing to do).
+              const url = m.url;
+              const items: MenuEntry[] = [];
+              if (url) {
+                items.push({
+                  label: "Open ↗",
+                  onClick: () => window.open(url, "_blank", "noopener,noreferrer"),
+                });
+                items.push({
+                  label: "Copy link",
+                  onClick: () => {
+                    void navigator.clipboard?.writeText(url);
+                  },
+                });
+              } else {
+                // Preserves the old "—" tooltip's explanation, now inside the menu.
+                items.push({ label: "No link reported yet", disabled: true });
+              }
+              if (m.status !== "revoked") {
+                items.push("separator");
+                items.push({
+                  label: "Revoke",
+                  danger: true,
+                  onClick: () => void onRevoke(m.token),
+                });
+              }
+              const rowLabel = m.page ? basename(m.page) : m.token;
+              return (
+                <tr key={m.token}>
+                  <td className="share-page" title={m.page ?? "Deployed by the CLI, another app, or another machine"}>
+                    {m.page ? basename(m.page) : <span className="deploy-muted">not from this app</span>}
+                  </td>
+                  <td className="share-token" title={m.token}>
+                    {m.token}
+                  </td>
+                  <td>
+                    <span className={"share-status " + m.status}>{m.status}</span>
+                  </td>
+                  <td className="row-actions-cell">
+                    {revoking === m.token ? (
+                      <span className="deploy-muted">Revoking…</span>
+                    ) : (
+                      <RowActionsMenu
+                        items={items}
+                        disabled={revoking !== null || loading}
+                        label={`Actions for ${rowLabel}`}
+                      />
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}

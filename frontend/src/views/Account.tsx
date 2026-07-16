@@ -29,6 +29,8 @@ import type { AccountSetupStatus, AccountStatus } from "../lib/api";
 import { notifyAccountChanged, useFusedLogin } from "../lib/account";
 import { useRefreshOnReturn } from "../lib/hooks";
 import DeploymentsList from "../components/DeploymentsList";
+import RowActionsMenu from "../components/RowActionsMenu";
+import type { MenuEntry } from "../components/ContextMenu";
 
 // The managed-env setup panel: pick the workspace (when the account has more
 // than one), name the env, run `fused cloud setup` as a tracked server job,
@@ -532,40 +534,47 @@ export default function Account() {
                   </tr>
                 </thead>
                 <tbody>
-                  {status.store.envs.map((e) => (
-                    <tr key={e.name}>
-                      <td>{e.name}</td>
-                      <td>
-                        {e.backend === "fused" ? "fused — managed" : e.backend}
-                        {!e.hosted && <span className="deploy-muted"> (not a deploy target)</span>}
-                      </td>
-                      <td className="deploy-muted">
-                        {e.name === status.store.default ? "default" : ""}
-                      </td>
-                      <td>
-                        {e.name !== status.store.default && (
-                          <button
-                            type="button"
-                            className="deploy-muted"
-                            onClick={() => void onMakeDefault(e.name)}
-                            disabled={envBusy !== null}
-                            title="Make this the fused CLI's default environment"
-                          >
-                            {envBusy === "default:" + e.name ? "Setting…" : "Make default"}
-                          </button>
-                        )}{" "}
-                        <button
-                          type="button"
-                          className="deploy-danger"
-                          onClick={() => onDeleteEnv(e.name)}
-                          disabled={envBusy !== null}
-                          title="Remove the local entry only — cloud resources are not touched"
-                        >
-                          {envBusy === "delete:" + e.name ? "Forgetting…" : "Forget"}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  {status.store.envs.map((e) => {
+                    // Collapse Make default + Forget into one "⋯" per row —
+                    // fewer buttons on screen, destructive Forget behind an
+                    // intentional click (it still shows its own confirm).
+                    const isDefault = e.name === status.store.default;
+                    const items: MenuEntry[] = [];
+                    if (!isDefault) {
+                      items.push({
+                        label: "Make default",
+                        onClick: () => void onMakeDefault(e.name),
+                      });
+                    }
+                    items.push({
+                      label: "Forget…",
+                      danger: true,
+                      onClick: () => onDeleteEnv(e.name),
+                    });
+                    return (
+                      <tr key={e.name}>
+                        <td>{e.name}</td>
+                        <td>
+                          {e.backend === "fused" ? "fused — managed" : e.backend}
+                          {!e.hosted && <span className="deploy-muted"> (not a deploy target)</span>}
+                        </td>
+                        <td className="deploy-muted">{isDefault ? "default" : ""}</td>
+                        <td className="row-actions-cell">
+                          {envBusy === "default:" + e.name ? (
+                            <span className="deploy-muted">Setting…</span>
+                          ) : envBusy === "delete:" + e.name ? (
+                            <span className="deploy-muted">Forgetting…</span>
+                          ) : (
+                            <RowActionsMenu
+                              items={items}
+                              disabled={envBusy !== null}
+                              label={`Actions for ${e.name}`}
+                            />
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </>

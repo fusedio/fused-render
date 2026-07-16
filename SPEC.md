@@ -1721,7 +1721,9 @@ provisioning stays a documented terminal flow.
   started elsewhere — Deploy modal, another tab — is adopted read-only with
   its own Cancel); signed in → account summary (probe orgs/roles table,
   not-admitted note), the environments management table (default marker,
-  make-default, forget-with-confirm), and the setup panel — presented
+  with make-default and forget-with-confirm behind a per-row overflow
+  ("⋯") menu — one quiet control per row instead of a button pair), and
+  the setup panel — presented
   as CONNECT when the account already has a workspace (`cloud setup
   --org --env` connects the existing environment; nothing is created) and
   as create-your-workspace when it has none: workspace picker when >1
@@ -1740,7 +1742,11 @@ provisioning stays a documented terminal flow.
 - **AC-11** The page also hosts the **Deployments** section — the env-wide
   `fused share list` view with per-mount Revoke that PF-6 previously placed
   on Preferences (semantics unchanged: `/api/deploy/shares` joined to local
-  pages, revoke by env+token via `deploy.revoke_mount`). Environments and
+  pages, revoke by env+token via `deploy.revoke_mount`). Each row's actions
+  (Open ↗ / Copy link, and the destructive Revoke behind a separator) live in
+  the same per-row overflow ("⋯") menu as the environments table, so the
+  section shows one control per row rather than an Open link + Revoke button
+  pair; a row with no link and nothing to revoke shows a muted "—". Environments and
   Deployments render in BOTH auth states: the env store and an AWS env's
   share list need the CLI, not a managed-Fused sign-in — an AWS-only user
   must not pass through an irrelevant sign-in to revoke a link. Only the
