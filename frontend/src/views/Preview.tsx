@@ -3,12 +3,39 @@
 //   2. else                      -> fallback metadata card
 // No file-type checks live in the shell — html arrives through stat.templates
 // like everything else, via the "_render" sentinel (SPEC PT-12).
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { getDeployStatus, getPrefs, rawUrl, resolveConditions } from "../lib/api";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import {
+  getDeployStatus,
+  getPrefs,
+  rawUrl,
+  resolveConditions,
+  renameEntry,
+  copyEntry,
+  revealPath,
+  deleteEntry,
+} from "../lib/api";
 import type { Deployment, StatResult, TemplateEntry } from "../lib/api";
-import { formatSize, formatMtime } from "../lib/format";
+import { navigate, navigateUrl, urlForFsPath } from "../lib/router";
+import { formatSize, formatMtime, basename } from "../lib/format";
 import { useRefreshOnReturn } from "../lib/hooks";
+import {
+  dirname,
+  join,
+  freeDuplicatePath,
+  copyToClipboard,
+  clearClipboardIfDeleted,
+  remapClipboardPath,
+  trashEntry,
+  buildOpenWithItems,
+  friendlyFsError,
+} from "../lib/fs-actions";
+import { acquireOverlay, releaseOverlay } from "../lib/ui-overlay";
+import { setClipboard } from "../lib/fs-clipboard";
 import ModeSwitcher, { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "../components/ModeSwitcher";
+import ContextMenu, { type MenuEntry, type MenuItem } from "../components/ContextMenu";
+import { MenuIcons } from "../components/MenuIcons";
+import { PromptDialog, ConfirmDialog, nameError } from "../components/FsDialogs";
+import Toast, { type ToastTone } from "../components/Toast";
 import DeployModal from "../components/DeployModal";
 import Listing from "./Listing";
 
@@ -16,15 +43,223 @@ interface HeaderProps {
   fsPath: string;
   stat: StatResult;
   children?: ReactNode;
+  // Right-click on the header chrome opens the file context menu for the open
+  // file (views hosting a real preview wire this; transient resolving/loading
+  // headers leave it undefined).
+  onContextMenu?: (e: React.MouseEvent) => void;
 }
 
-function Header({ fsPath, stat, children }: HeaderProps) {
+function Header({ fsPath, stat, children, onContextMenu }: HeaderProps) {
   return (
-    <div className="preview-header">
+    <div className="preview-header" onContextMenu={onContextMenu}>
       <h1 title={fsPath}>{stat.name}</h1>
       <div className="preview-actions">{children}</div>
     </div>
   );
+}
+
+// One open modal for the preview file menu: a Rename prompt or a Delete confirm
+// (the trash-unsupported fallback). Mirrors Listing's DialogState, kept local
+// so the two views don't couple through a shared dialog type.
+type PreviewDialog =
+  | { kind: "prompt"; title: string; initial: string; confirmLabel: string; selectStem?: boolean; onConfirm: (value: string) => void }
+  | { kind: "confirm"; title: string; message: ReactNode; confirmLabel: string; danger?: boolean; onConfirm: () => void };
+
+// The file context menu for the CURRENTLY OPEN preview file. Owns its own
+// menu/dialog/toast state and, unlike Listing (which refetches + re-anchors its
+// selection), reacts to mutations by NAVIGATING: a rename moves to the renamed
+// path (preserving the current query, i.e. `_mode`/params), a trash/delete
+// moves to the parent folder listing — so neither leaves a dead URL. Action
+// bodies come from lib/fs-actions, shared with Listing. `loadOpenWith` is
+// supplied by the caller since the two preview variants resolve modes
+// differently (TemplatePreview already knows its templates; FallbackPreview
+// re-stats).
+function usePreviewFileMenu(
+  fsPath: string,
+  stat: StatResult,
+  loadOpenWith: () => Promise<MenuItem[]>
+) {
+  const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
+  const [dialog, setDialog] = useState<PreviewDialog | null>(null);
+  const [toast, setToast] = useState<{ msg: string; tone: ToastTone } | null>(null);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 6000);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  // Publish this header menu's overlay state to the shared registry (lib/
+  // ui-overlay). A directory opened in Preview embeds a Listing whose own
+  // document-level keyboard handlers would otherwise fire (Cmd+Backspace,
+  // Cmd+X, …) on a row behind this preview menu/dialog — the embedded Listing
+  // can't see this view's local state, so the shared count is what makes it
+  // back off. Release on close and on unmount so no held count leaks.
+  const overlayOpen = menu !== null || dialog !== null;
+  // Layout effect: registers before paint, so a keydown on the very tick the
+  // menu opens already sees isOverlayOpen() (a plain effect leaves one frame
+  // where the embedded listing's shortcuts still fire).
+  useLayoutEffect(() => {
+    if (!overlayOpen) return;
+    acquireOverlay();
+    return () => releaseOverlay();
+  }, [overlayOpen]);
+
+  const parent = dirname(fsPath);
+
+  // In-flight guard (same as Listing's): a rapid double-invoke would race both
+  // calls to the same free "… copy" name and 409 the second.
+  const duplicateInFlight = useRef(false);
+  const doDuplicate = () => {
+    if (duplicateInFlight.current) return;
+    duplicateInFlight.current = true;
+    (async () => {
+      try {
+        const dst = await freeDuplicatePath(parent, stat.name, stat.is_dir);
+        await copyEntry(fsPath, dst);
+        setToast({ msg: `Duplicated as ${basename(dst)}`, tone: "info" });
+      } catch (e) {
+        setToast({ msg: friendlyFsError(e, { verb: "duplicate", name: stat.name }), tone: "error" });
+      } finally {
+        duplicateInFlight.current = false;
+      }
+    })();
+  };
+
+  // Hard delete (irreversible) — only reached when the server can't trash.
+  const startDelete = () =>
+    setDialog({
+      kind: "confirm",
+      title: "Delete",
+      message: stat.is_dir
+        ? `Delete the folder "${stat.name}" and everything inside it? This can't be undone.`
+        : `Delete "${stat.name}"? This can't be undone.`,
+      confirmLabel: "Delete",
+      danger: true,
+      onConfirm: () => {
+        deleteEntry(fsPath, stat.is_dir).then(
+          () => {
+            clearClipboardIfDeleted(fsPath);
+            navigate(parent); // the open file is gone — leave for the parent listing
+          },
+          (e: Error) => setToast({ msg: friendlyFsError(e, { verb: "delete", name: stat.name }), tone: "error" })
+        );
+      },
+    });
+
+  const doTrash = () => {
+    trashEntry(fsPath, stat.is_dir).then((r) => {
+      if (r.status === "trashed") {
+        clearClipboardIfDeleted(fsPath);
+        navigate(parent);
+      } else if (r.status === "unsupported") {
+        startDelete();
+      } else {
+        setToast({ msg: friendlyFsError(r.message, { verb: "move to Bin", name: stat.name }), tone: "error" });
+      }
+    });
+  };
+
+  const startRename = () =>
+    setDialog({
+      kind: "prompt",
+      title: "Rename",
+      initial: stat.name,
+      confirmLabel: "Rename",
+      selectStem: true,
+      onConfirm: (name) => {
+        if (name === stat.name) return;
+        const err = nameError(name);
+        if (err) {
+          setToast({ msg: err, tone: "error" });
+          return;
+        }
+        const dst = join(parent, name);
+        renameEntry(fsPath, dst).then(
+          () => {
+            // The clipboard may still be pointing at the old path (or inside
+            // it, if this was a renamed folder holding the cut/copied entry)
+            // — repoint it so a later Paste doesn't target a gone source.
+            remapClipboardPath(fsPath, dst);
+            // Navigate to the renamed file, preserving the current query
+            // (`_mode`/params) so the same view stays open on the new path.
+            navigateUrl(urlForFsPath(dst, location.search));
+          },
+          (e: Error) => setToast({ msg: friendlyFsError(e, { verb: "rename", name: stat.name }), tone: "error" })
+        );
+      },
+    });
+
+  const doCopyPath = () => {
+    copyToClipboard(fsPath).then((ok) => {
+      if (ok) setToast({ msg: "Path copied", tone: "info" });
+    });
+  };
+
+  const doReveal = () => {
+    revealPath(fsPath).catch((e) =>
+      setToast({ msg: friendlyFsError(e, { verb: "reveal", name: stat.name }), tone: "error" })
+    );
+  };
+
+  // Menu for the open file, macOS Finder order. No Open (already viewing it),
+  // no Paste/New/Refresh/Download (nothing to paste INTO from a single file).
+  const buildMenu = (): MenuEntry[] => [
+    { label: "Open With", icon: MenuIcons.openWith, submenu: loadOpenWith },
+    "separator",
+    { label: "Move to Bin", icon: MenuIcons.trash, onClick: doTrash },
+    "separator",
+    { label: "Rename…", icon: MenuIcons.rename, onClick: startRename },
+    { label: "Duplicate", icon: MenuIcons.duplicate, onClick: doDuplicate },
+    "separator",
+    { label: "Cut", icon: MenuIcons.cut, onClick: () => setClipboard({ path: fsPath, op: "cut" }) },
+    { label: "Copy", icon: MenuIcons.copy, onClick: () => setClipboard({ path: fsPath, op: "copy" }) },
+    "separator",
+    { label: "Copy Path", icon: MenuIcons.copyPath, onClick: doCopyPath },
+    { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: doReveal },
+  ];
+
+  const onContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setMenu({ x: e.clientX, y: e.clientY, items: buildMenu() });
+  };
+
+  const overlays = (
+    <>
+      {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
+      {dialog?.kind === "prompt" && (
+        <PromptDialog
+          title={dialog.title}
+          initialValue={dialog.initial}
+          confirmLabel={dialog.confirmLabel}
+          selectStem={dialog.selectStem}
+          onConfirm={(v) => {
+            const { onConfirm } = dialog;
+            setDialog(null);
+            onConfirm(v);
+          }}
+          onCancel={() => setDialog(null)}
+        />
+      )}
+      {dialog?.kind === "confirm" && (
+        <ConfirmDialog
+          title={dialog.title}
+          message={dialog.message}
+          confirmLabel={dialog.confirmLabel}
+          danger={dialog.danger}
+          onConfirm={() => {
+            const { onConfirm } = dialog;
+            setDialog(null);
+            onConfirm();
+          }}
+          onCancel={() => setDialog(null)}
+        />
+      )}
+      {toast && <Toast msg={toast.msg} tone={toast.tone} onClose={() => setToast(null)} />}
+    </>
+  );
+
+  return { onContextMenu, overlays };
 }
 
 // `_mode` (shell URL) selects among stat.templates by name (SPEC PT-9): absent
@@ -270,9 +505,17 @@ function TemplatePreview({
       ? () => setMode(isListing ? (counterpart as string) : "_listing")
       : null;
 
+  // Preview already knows its resolved templates, so Open With switches mode
+  // IN PLACE (setMode does the editor-flush + `_mode` replaceState) rather than
+  // re-navigating to the same path — no re-stat, no iframe teardown/rebuild
+  // beyond the mode change the switcher would make anyway.
+  const loadOpenWith = () =>
+    Promise.resolve(buildOpenWithItems(templates, (m) => void setMode(m)));
+  const fileMenu = usePreviewFileMenu(fsPath, stat, loadOpenWith);
+
   return (
     <>
-      <Header fsPath={fsPath} stat={stat}>
+      <Header fsPath={fsPath} stat={stat} onContextMenu={fileMenu.onContextMenu}>
         {/* Deployable = the mode list carries the "_render" sentinel AND the
             file is .html/.htm — the exporter's actual contract. The extension
             check matters because a registry rebind can put "_render" on any
@@ -317,14 +560,19 @@ function TemplatePreview({
           </button>
         )}
       </div>
+      {fileMenu.overlays}
     </>
   );
 }
 
 function FallbackPreview({ fsPath, stat }: { fsPath: string; stat: StatResult }) {
+  // No renderable views back this file (that's why it's the fallback), so Open
+  // With resolves to the empty "No views available" list without a re-stat.
+  const loadOpenWith = () => Promise.resolve(buildOpenWithItems([], () => {}));
+  const fileMenu = usePreviewFileMenu(fsPath, stat, loadOpenWith);
   return (
     <>
-      <Header fsPath={fsPath} stat={stat} />
+      <Header fsPath={fsPath} stat={stat} onContextMenu={fileMenu.onContextMenu} />
       <div className="preview-body">
         <div className="metadata-card">
           <dl>
@@ -342,6 +590,7 @@ function FallbackPreview({ fsPath, stat }: { fsPath: string; stat: StatResult })
           </a>
         </div>
       </div>
+      {fileMenu.overlays}
     </>
   );
 }

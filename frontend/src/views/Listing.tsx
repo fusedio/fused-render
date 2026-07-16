@@ -8,14 +8,79 @@
 // arriving, so feedback is instant even on huge trees. The walk starts lazily
 // on first focus (or a URL-seeded query) and is cached until the dir watch
 // fires.
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { navigate } from "../lib/router";
-import { listDir, walkDirStream } from "../lib/api";
+import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { navigate, navigateUrl, urlForFsPath } from "../lib/router";
+import {
+  listDir,
+  walkDirStream,
+  revealPath,
+  writeFile,
+  mkdir,
+  deleteEntry,
+  renameEntry,
+  copyEntry,
+  statPath,
+} from "../lib/api";
 import type { FsEntry, WalkEntry } from "../lib/api";
-import { formatSize, formatMtime } from "../lib/format";
+import {
+  dirname,
+  normDir,
+  join,
+  freeDuplicatePath,
+  freePastePath,
+  copyToClipboard,
+  clearClipboardIfDeleted,
+  remapClipboardPath,
+  trashEntry,
+  resolveOpenWithModes,
+  buildOpenWithItems,
+  friendlyFsError,
+} from "../lib/fs-actions";
+import { acquireOverlay, releaseOverlay, isOverlayOpen } from "../lib/ui-overlay";
+import { formatSize, formatMtime, basename } from "../lib/format";
 import { fuzzyMatch, highlightSegments } from "../lib/fuzzy";
 import { iconForEntry } from "../components/FileIcons";
 import { getViewState, setViewState } from "../lib/viewstate";
+import { getClipboard, setClipboard, useClipboard } from "../lib/fs-clipboard";
+import ContextMenu, { type MenuEntry, type MenuItem } from "../components/ContextMenu";
+import { MenuIcons } from "../components/MenuIcons";
+import { PromptDialog, ConfirmDialog, nameError } from "../components/FsDialogs";
+import Toast from "../components/Toast";
+
+// A right-clicked row, normalized so both listing rows (name relative to the
+// listed folder) and search-result rows (a `rel` path into a subtree) drive the
+// same menu. `parentDir` is the containing folder; `path` is the entry itself.
+interface RowCtx {
+  path: string;
+  name: string;
+  isDir: boolean;
+  parentDir: string;
+}
+
+// The target folder for a New File / Paste against a row: INTO a directory row,
+// or the PARENT of a file row (Finder's behaviour).
+function targetDirOf(row: RowCtx): string {
+  return normDir(row.isDir ? row.path : row.parentDir);
+}
+
+// One open modal: a text prompt (New File/Folder, Rename) or a confirm (Delete).
+type DialogState =
+  | {
+      kind: "prompt";
+      title: string;
+      initial: string;
+      confirmLabel: string;
+      selectStem?: boolean;
+      onConfirm: (value: string) => void;
+    }
+  | {
+      kind: "confirm";
+      title: string;
+      message: React.ReactNode;
+      confirmLabel: string;
+      danger?: boolean;
+      onConfirm: () => void;
+    };
 
 const SORT_KEYS = { name: "Name", size: "Size", mtime: "Modified" };
 type SortKey = keyof typeof SORT_KEYS;
@@ -228,6 +293,23 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   // Path of the keyboard-selected row (arrow-key navigation); null = none.
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
 
+  // --- Context-menu / file-operation state ----------------------------------
+  // The open context menu (position + items), the open modal, and a transient
+  // toast (error, or a non-red "info" confirmation). All local to this folder
+  // view. The cut/copy clipboard is a module-level store (lib/fs-clipboard) so
+  // it survives this component's per-folder remount (see there).
+  const clipboard = useClipboard();
+  const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
+  const [dialog, setDialog] = useState<DialogState | null>(null);
+  const [toast, setToast] = useState<{ msg: string; tone: "error" | "info" } | null>(null);
+
+  // Auto-dismiss the toast so it doesn't linger; a new toast resets it.
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 6000);
+    return () => clearTimeout(t);
+  }, [toast]);
+
   // Search input, so a keystroke anywhere in the listing can focus it.
   const searchInputRef = useRef<HTMLInputElement>(null);
   // Latest ordered list of navigable row paths + the current selection, read by
@@ -235,6 +317,33 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   const navRowsRef = useRef<string[]>([]);
   const selectedPathRef = useRef<string | null>(null);
   selectedPathRef.current = selectedPath;
+  // True while a context menu or a modal dialog is open. The document-level nav
+  // and shortcut handlers (registered once, reading refs) hard-guard on this so
+  // an open overlay owns the keyboard — a stray Enter can't navigate a row and
+  // Cmd+Backspace can't trash one behind the dialog, regardless of where focus
+  // sits (the dialog's own containment covers focus; this covers the rest).
+  const overlayOpenRef = useRef(false);
+  overlayOpenRef.current = menu !== null || dialog !== null;
+  // Also publish this view's overlay state to the shared registry (lib/
+  // ui-overlay) so OTHER views back off. When a directory is opened in Preview,
+  // that Preview's header menu/dialogs live in separate state; this embedded
+  // Listing's document-level handlers must not fire behind them (and vice
+  // versa). acquire on open, release on close — and on unmount, so a nav-away
+  // while the menu is open can't leak a held count.
+  // Layout effect so the hold registers before paint — no one-frame window
+  // where another view's handlers still see isOverlayOpen() === false.
+  useLayoutEffect(() => {
+    if (!overlayOpenRef.current) return;
+    acquireOverlay();
+    return () => releaseOverlay();
+  }, [menu, dialog]);
+  // A path the selection should jump to once it appears in the reloaded rows
+  // (a rename/duplicate target — its row doesn't exist until the refetch lands).
+  const pendingSelectRef = useRef<string | null>(null);
+  // Last known index of the selection within navRows. When the selected path
+  // vanishes (delete / move to bin / rename with no re-anchor) the reconcile
+  // effect clamps to this slot so selection lands on the nearest surviving row.
+  const lastSelIndexRef = useRef<number>(-1);
 
   // Keyboard navigation for the listing, whether focus is in the search box or
   // nowhere in particular:
@@ -248,6 +357,11 @@ export default function Listing({ fsPath }: { fsPath: string }) {
       // While an IME is composing, Enter confirms a candidate and the arrows
       // move through the candidate list — never repurpose them for navigation.
       if (e.isComposing) return;
+      // An open context menu / dialog owns the keyboard: don't let Enter open a
+      // row behind it (the dialog handles its own Enter/Escape). isOverlayOpen()
+      // also covers an overlay owned by a HOSTING view (Preview's header menu
+      // when this Listing is embedded), which overlayOpenRef alone can't see.
+      if (overlayOpenRef.current || isOverlayOpen()) return;
       const el = document.activeElement as HTMLElement | null;
       const inSearch = el === searchInputRef.current;
       // Only drive navigation from the search box or when nothing in particular
@@ -600,6 +714,418 @@ export default function Listing({ fsPath }: { fsPath: string }) {
       ?.scrollIntoView({ block: "nearest" });
   }, [selectedPath, navRows]);
 
+  // Re-anchor the selection by PATH whenever the rows change (a refetch after
+  // rename / duplicate / delete / move-to-bin) or the selection moves. Without
+  // this the selected index kept pointing at the OLD name after a rename, so
+  // pressing Enter opened a path that no longer existed.
+  //   • A pending re-anchor (rename/duplicate target) is adopted the moment its
+  //     row appears in the reloaded listing.
+  //   • A still-present selection just refreshes its remembered slot index.
+  //   • A vanished selection (deleted / trashed / moved) clamps to the nearest
+  //     surviving row (or clears when the folder is now empty).
+  // The pending wait is BOUNDED, not open-ended: it only holds while the current
+  // selection is itself a live row. Renaming a search hit whose new path isn't a
+  // search match leaves the pending target absent from navRows forever while the
+  // old selected path also disappears — waiting unconditionally there would
+  // strand the selection on a dead row (broken Enter). So once the old selection
+  // is gone too, the pending target is abandoned and the normal clamp runs. The
+  // pending path still lands the moment it does appear (e.g. search results
+  // refetching to include the renamed file), so the happy path is unchanged.
+  useEffect(() => {
+    const rows = navRows;
+    const pend = pendingSelectRef.current;
+    let clampFallback = false;
+    if (pend !== null) {
+      const pi = rows.indexOf(pend);
+      if (pi !== -1) {
+        pendingSelectRef.current = null;
+        lastSelIndexRef.current = pi;
+        if (selectedPath !== pend) setSelectedPath(pend);
+        return;
+      }
+      // Target not here yet. Keep waiting ONLY while the current selection is
+      // still a real row (nothing's broken, the target may still arrive). If it
+      // has also vanished, give up on the pending target and clamp below.
+      if (selectedPath !== null && rows.indexOf(selectedPath) !== -1) return;
+      pendingSelectRef.current = null;
+      clampFallback = true;
+    }
+    if (selectedPath === null) {
+      // No selection to reconcile. Only force one when a pending target was just
+      // abandoned (so selection never stays dead); otherwise leave it unset.
+      if (!clampFallback || rows.length === 0) return;
+      const clamped = Math.min(Math.max(lastSelIndexRef.current, 0), rows.length - 1);
+      setSelectedPath(rows[clamped]);
+      return;
+    }
+    const i = rows.indexOf(selectedPath);
+    if (i !== -1) {
+      lastSelIndexRef.current = i; // selection still valid; remember its slot
+      return;
+    }
+    if (rows.length === 0) {
+      setSelectedPath(null);
+      return;
+    }
+    const clamped = Math.min(Math.max(lastSelIndexRef.current, 0), rows.length - 1);
+    setSelectedPath(rows[clamped]);
+  }, [navRows, selectedPath]);
+
+  // --- file operations ------------------------------------------------------
+
+  // Which visible entry (if any) is the cut source — dimmed in the table.
+  const cutPath = clipboard?.op === "cut" ? clipboard.path : null;
+
+  // Map every rendered row's path to its RowCtx, so a keyboard shortcut can
+  // resolve the selected path back to a full row (is_dir etc.) the same way a
+  // right-click does. Keyed off the arrays the table renders.
+  const rowCtxByPath = useMemo(() => {
+    const m = new Map<string, RowCtx>();
+    if (searching) {
+      for (const { entry } of visibleHits) {
+        const path = base + "/" + entry.rel;
+        m.set(path, {
+          path,
+          name: entry.rel.split("/").pop() ?? entry.rel,
+          isDir: entry.is_dir,
+          parentDir: dirname(path),
+        });
+      }
+    } else {
+      for (const entry of sortedEntries) {
+        m.set(base + "/" + entry.name, {
+          path: base + "/" + entry.name,
+          name: entry.name,
+          isDir: entry.is_dir,
+          parentDir: base,
+        });
+      }
+    }
+    return m;
+  }, [searching, visibleHits, sortedEntries, base]);
+
+  const refetch = () => setRefresh((n) => n + 1);
+
+  // Run a mutating fs call, then refetch on success or surface its error as a
+  // toast. The dir-watch socket also refetches, but that lags 300 ms and only
+  // fires for the listed dir — an explicit refetch keeps the UI immediate.
+  // `ctx` ({verb, name}) is optional but supplied by every menu action, so the
+  // caught wire string is humanized (friendlyFsError) instead of leaking bare.
+  const run = async (fn: () => Promise<unknown>, ctx?: { verb: string; name: string }) => {
+    try {
+      await fn();
+      refetch();
+    } catch (e) {
+      setToast({ msg: ctx ? friendlyFsError(e, ctx) : (e as Error).message, tone: "error" });
+    }
+  };
+
+  // Belt-and-braces name guard for the New File / New Folder / Rename handlers:
+  // the dialog already blocks invalid names, but re-check here (and toast) before
+  // building a path so a "." / ".." / separator can never escape the folder.
+  // Returns true when the name is rejected (caller should bail).
+  const rejectName = (name: string): boolean => {
+    const err = nameError(name);
+    if (err) setToast({ msg: err, tone: "error" });
+    return err !== null;
+  };
+
+  // Guards a paste that's still running so a second Paste gesture (a rapid
+  // Cmd+V×2) can't fire a parallel op on the same source — for a cut that
+  // second call would renameEntry an already-moved src and 404 with a jarring
+  // toast. Reset in the flight's .finally, so sequential copy-pastes stay fine.
+  const pasteInFlight = useRef(false);
+
+  // Paste into `dir`: a cut moves (rename) and clears the clipboard; a copy
+  // duplicates and keeps it. Same basename in the target folder either way.
+  // Reads the clipboard synchronously (getClipboard) and consumes a cut BEFORE
+  // the await, so re-entry sees an empty clipboard and no-ops.
+  const doPaste = (dir: string) => {
+    const clip = getClipboard();
+    if (!clip || pasteInFlight.current) return;
+    const target = normDir(dir); // "" (root) → "/", and join avoids "//name"
+    const { path: src, op } = clip;
+    const dst = join(target, basename(src));
+    // Same-folder paste (dst would collide with the source), matching Finder:
+    //   • CUT into its own folder is a no-op — the backend rename would 409 on
+    //     dst === src, so just drop the cut clipboard (nothing to move).
+    //   • COPY into its own folder makes a deduped "… copy" instead of colliding
+    //     (freeDuplicatePath, same as Duplicate), and re-anchors onto the copy.
+    if (dst === src) {
+      if (op === "cut") {
+        setClipboard(null);
+        return;
+      }
+      pasteInFlight.current = true;
+      run(async () => {
+        const { is_dir } = await statPath(src);
+        const copyDst = await freeDuplicatePath(target, basename(src), is_dir);
+        await copyEntry(src, copyDst);
+        pendingSelectRef.current = copyDst; // move selection onto the new copy
+      }, { verb: "paste", name: basename(src) }).finally(() => {
+        pasteInFlight.current = false;
+      });
+      return;
+    }
+    if (op === "cut") setClipboard(null); // consume atomically, before any await
+    pasteInFlight.current = true;
+    run(async () => {
+      try {
+        // Both ops keep the name when free and dedupe to "… copy" when taken
+        // (Finder keep-both), instead of surfacing a 409.
+        const { is_dir } = await statPath(src);
+        const pasteDst = await freePastePath(target, basename(src), is_dir);
+        if (op === "cut") await renameEntry(src, pasteDst);
+        else await copyEntry(src, pasteDst);
+        pendingSelectRef.current = pasteDst; // re-anchor if dst lands in this view
+      } catch (e) {
+        // The paste failed (e.g. a 403, or the source vanished); for a cut the
+        // pre-clear above dropped the clipboard, so re-set the same cut and
+        // let run() toast the error — without this the user would have to
+        // re-cut before retrying. Skip the restore if the user cut/copied
+        // something newer mid-flight.
+        if (op === "cut" && getClipboard() === null) setClipboard({ path: src, op: "cut" });
+        throw e;
+      }
+    }, { verb: "paste", name: basename(src) }).finally(() => {
+      pasteInFlight.current = false;
+    });
+  };
+
+  // Duplicate into the same folder, picking the first free "… copy[/ n]" name
+  // (freeDuplicatePath lists the folder so the copy never 409s on an existing
+  // name).
+  // In-flight guard, same idea as pasteInFlight: a rapid double Cmd+D would
+  // race both calls to the same free "… copy" name and 409 the second.
+  const duplicateInFlight = useRef(false);
+  const doDuplicate = (row: RowCtx) => {
+    if (duplicateInFlight.current) return;
+    duplicateInFlight.current = true;
+    run(async () => {
+      const dst = await freeDuplicatePath(row.parentDir, row.name, row.isDir);
+      await copyEntry(row.path, dst);
+      pendingSelectRef.current = dst; // move selection onto the new copy
+    }, { verb: "duplicate", name: row.name }).finally(() => {
+      duplicateInFlight.current = false;
+    });
+  };
+
+  const doReveal = (path: string) => {
+    revealPath(path).catch((e) =>
+      setToast({ msg: friendlyFsError(e, { verb: "reveal", name: basename(path) }), tone: "error" })
+    );
+  };
+
+  const doCopyPath = (path: string) => {
+    // Confirm with a non-error "info" toast; a failure (clipboard unavailable
+    // or permission denied) stays silent — the path is still reachable via
+    // Reveal in Finder.
+    copyToClipboard(path).then((ok) => {
+      if (ok) setToast({ msg: "Path copied", tone: "info" });
+    });
+  };
+
+  const startNewFile = (dir: string) =>
+    setDialog({
+      kind: "prompt",
+      title: "New File",
+      initial: "untitled.txt",
+      confirmLabel: "Create",
+      onConfirm: (name) => {
+        if (rejectName(name)) return;
+        // create=true: refuse (409 "conflict", surfaced as an error toast) if a
+        // file with this name already exists, so New File never clobbers it.
+        run(() => writeFile(join(normDir(dir), name), "", true), { verb: "create", name });
+      },
+    });
+
+  const startNewFolder = (dir: string) =>
+    setDialog({
+      kind: "prompt",
+      title: "New Folder",
+      initial: "untitled folder",
+      confirmLabel: "Create",
+      onConfirm: (name) => {
+        if (rejectName(name)) return;
+        run(() => mkdir(join(normDir(dir), name)), { verb: "create", name });
+      },
+    });
+
+  const startRename = (row: RowCtx) =>
+    setDialog({
+      kind: "prompt",
+      title: "Rename",
+      initial: row.name,
+      confirmLabel: "Rename",
+      selectStem: true,
+      onConfirm: (name) => {
+        if (name === row.name) return;
+        if (rejectName(name)) return;
+        const dst = join(normDir(row.parentDir), name);
+        run(async () => {
+          await renameEntry(row.path, dst);
+          // Re-anchor onto the new name so the reloaded listing keeps this row
+          // selected (and Enter opens the renamed file, not the dead old path).
+          pendingSelectRef.current = dst;
+          // The clipboard may still be pointing at the old path (or inside it,
+          // if a renamed folder held the cut/copied entry) — repoint it so a
+          // later Paste doesn't target a source that's now gone.
+          remapClipboardPath(row.path, dst);
+        }, { verb: "rename", name: row.name });
+      },
+    });
+
+  const startDelete = (row: RowCtx) =>
+    setDialog({
+      kind: "confirm",
+      title: "Delete",
+      message: row.isDir
+        ? `Delete the folder "${row.name}" and everything inside it? This can't be undone.`
+        : `Delete "${row.name}"? This can't be undone.`,
+      confirmLabel: "Delete",
+      danger: true,
+      // recursive=true for a directory (its contents were named in the message).
+      onConfirm: () =>
+        run(async () => {
+          await deleteEntry(row.path, row.isDir);
+          clearClipboardIfDeleted(row.path);
+        }, { verb: "delete", name: row.name }),
+    });
+
+  // Move to Bin: a recoverable delete (macOS Trash), so no confirm dialog.
+  // Where the server can't trash (non-macOS → "unsupported") this falls back to
+  // the existing confirm-then-hard-delete flow, which IS irreversible and so
+  // keeps its warning. Success shows a low-key info toast.
+  const doTrash = (row: RowCtx) => {
+    trashEntry(row.path, row.isDir).then((r) => {
+      if (r.status === "trashed") {
+        setToast({ msg: "Moved to Bin", tone: "info" });
+        clearClipboardIfDeleted(row.path);
+        refetch();
+      } else if (r.status === "unsupported") {
+        startDelete(row);
+      } else {
+        setToast({ msg: friendlyFsError(r.message, { verb: "move to Bin", name: row.name }), tone: "error" });
+      }
+    });
+  };
+
+  // Lazy loader for the Open With submenu: resolves the entry's template modes
+  // (resolveOpenWithModes mirrors Preview's filter + condition-gate handling).
+  // Selecting a mode navigates to the entry with `_mode` set; the default mode
+  // deletes the param.
+  const loadOpenWith = (path: string) => async (): Promise<MenuItem[]> => {
+    const modes = await resolveOpenWithModes(path);
+    return buildOpenWithItems(modes, (mode, isDefault) => {
+      const search = isDefault ? "" : "?_mode=" + encodeURIComponent(mode);
+      navigateUrl(urlForFsPath(path, search));
+    });
+  };
+
+  // Menu for a right-clicked row (file or dir), in macOS Finder order. Paste
+  // target follows Finder: into a dir, or the parent of a file. New File/Folder
+  // live only on the background menu (Finder shows them there, not on a row).
+  const rowMenu = (row: RowCtx): MenuEntry[] => {
+    const dir = targetDirOf(row);
+    return [
+      { label: "Open", icon: MenuIcons.open, onClick: () => navigate(row.path) },
+      { label: "Open With", icon: MenuIcons.openWith, submenu: loadOpenWith(row.path) },
+      "separator",
+      { label: "Move to Bin", icon: MenuIcons.trash, onClick: () => doTrash(row) },
+      "separator",
+      { label: "Rename…", icon: MenuIcons.rename, onClick: () => startRename(row) },
+      { label: "Duplicate", icon: MenuIcons.duplicate, onClick: () => doDuplicate(row) },
+      "separator",
+      { label: "Cut", icon: MenuIcons.cut, onClick: () => setClipboard({ path: row.path, op: "cut" }) },
+      { label: "Copy", icon: MenuIcons.copy, onClick: () => setClipboard({ path: row.path, op: "copy" }) },
+      { label: "Paste", icon: MenuIcons.paste, disabled: !clipboard, onClick: () => doPaste(dir) },
+      "separator",
+      { label: "Copy Path", icon: MenuIcons.copyPath, onClick: () => doCopyPath(row.path) },
+      { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: () => doReveal(row.path) },
+    ];
+  };
+
+  // Menu for the empty listing background — operates on the current folder.
+  // Finder order: New Folder before New File.
+  const backgroundMenu = (): MenuEntry[] => [
+    { label: "New Folder…", icon: MenuIcons.newFolder, onClick: () => startNewFolder(base) },
+    { label: "New File…", icon: MenuIcons.newFile, onClick: () => startNewFile(base) },
+    "separator",
+    { label: "Paste", icon: MenuIcons.paste, disabled: !clipboard, onClick: () => doPaste(base) },
+    "separator",
+    { label: "Refresh", icon: MenuIcons.refresh, onClick: refetch },
+    { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: () => doReveal(normDir(base)) },
+  ];
+
+  const openRowMenu = (e: React.MouseEvent, row: RowCtx) => {
+    e.preventDefault();
+    e.stopPropagation(); // don't also open the background menu
+    setSelectedPath(row.path);
+    setMenu({ x: e.clientX, y: e.clientY, items: rowMenu(row) });
+  };
+
+  // Fires only for the listing background (rows stopPropagation above).
+  const openBackgroundMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setMenu({ x: e.clientX, y: e.clientY, items: backgroundMenu() });
+  };
+
+  // Keyboard shortcuts scoped to the listing, active only with a row selected.
+  // Registered once (empty deps); the handler is re-assigned each render so it
+  // always reads fresh state/closures. Separate from the nav handler above —
+  // these carry a modifier (or F2), which that handler explicitly ignores, so
+  // there's no clash.
+  const shortcutRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  shortcutRef.current = (e: KeyboardEvent) => {
+    if (e.isComposing) return;
+    // Same hard guard as the nav handler: while a context menu or dialog is
+    // open (in this view OR a hosting one, e.g. Preview's header menu with this
+    // Listing embedded), file-op shortcuts (Cmd+Backspace trash, Cmd+X cut, …)
+    // must not fire on the row behind it.
+    if (overlayOpenRef.current || isOverlayOpen()) return;
+    const el = document.activeElement as HTMLElement | null;
+    const inSearch = el === searchInputRef.current;
+    const navActive = inSearch || !el || el === document.body || el === document.documentElement;
+    if (!navActive) return;
+    const sel = selectedPathRef.current;
+    const row = sel ? rowCtxByPath.get(sel) : undefined;
+    const mod = e.metaKey || e.ctrlKey;
+    const key = e.key.toLowerCase();
+    // With focus in the search box, Cmd+C/X/V must keep their native text
+    // clipboard meaning — only the non-text shortcuts stay live there.
+    if (inSearch && mod && (key === "c" || key === "x" || key === "v")) return;
+    if (mod && key === "c") {
+      if (!row) return;
+      e.preventDefault();
+      setClipboard({ path: row.path, op: "copy" });
+    } else if (mod && key === "x") {
+      if (!row) return;
+      e.preventDefault();
+      setClipboard({ path: row.path, op: "cut" });
+    } else if (mod && key === "v") {
+      if (!clipboard) return;
+      e.preventDefault();
+      doPaste(row ? targetDirOf(row) : base);
+    } else if (mod && key === "d") {
+      if (!row) return;
+      e.preventDefault();
+      doDuplicate(row);
+    } else if (mod && e.key === "Backspace") {
+      if (!row) return;
+      e.preventDefault();
+      doTrash(row);
+    } else if (e.key === "F2") {
+      if (!row) return;
+      e.preventDefault();
+      startRename(row);
+    }
+  };
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => shortcutRef.current(e);
+    document.addEventListener("keydown", h);
+    return () => document.removeEventListener("keydown", h);
+  }, []);
+
   // --- table body -----------------------------------------------------------
 
   let body: React.ReactNode;
@@ -621,8 +1147,20 @@ export default function Listing({ fsPath }: { fsPath: string }) {
               return (
                 <tr
                   key={entry.rel}
-                  className={childPath === selectedPath ? "row selected" : "row"}
+                  className={
+                    "row" +
+                    (childPath === selectedPath ? " selected" : "") +
+                    (childPath === cutPath ? " cut" : "")
+                  }
                   onClick={() => navigate(childPath)}
+                  onContextMenu={(e) =>
+                    openRowMenu(e, {
+                      path: childPath,
+                      name: entry.rel.split("/").pop() ?? entry.rel,
+                      isDir: entry.is_dir,
+                      parentDir: dirname(childPath),
+                    })
+                  }
                 >
                   <td className="name">
                     <span className="icon">{iconForEntry(entry.rel.split("/").pop() ?? entry.rel, entry.is_dir)}</span>
@@ -694,9 +1232,18 @@ export default function Listing({ fsPath }: { fsPath: string }) {
           key={entry.name}
           className={
             (entry.ignored ? "row ignored" : "row") +
-            (childPath === selectedPath ? " selected" : "")
+            (childPath === selectedPath ? " selected" : "") +
+            (childPath === cutPath ? " cut" : "")
           }
           onClick={() => navigate(childPath)}
+          onContextMenu={(e) =>
+            openRowMenu(e, {
+              path: childPath,
+              name: entry.name,
+              isDir: entry.is_dir,
+              parentDir: base,
+            })
+          }
         >
           <td className="name">
             <span className="icon">{iconForEntry(entry.name, entry.is_dir)}</span>
@@ -763,7 +1310,10 @@ export default function Listing({ fsPath }: { fsPath: string }) {
           </span>
         )}
       </div>
-      <div className={"listing-scroll" + (isStale ? " listing-stale" : "")}>
+      <div
+        className={"listing-scroll" + (isStale ? " listing-stale" : "")}
+        onContextMenu={openBackgroundMenu}
+      >
         <table className="listing-table">
           <thead>
             <tr>
@@ -797,6 +1347,41 @@ export default function Listing({ fsPath }: { fsPath: string }) {
           <tbody>{body}</tbody>
         </table>
       </div>
+
+      {menu && (
+        <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />
+      )}
+
+      {dialog?.kind === "prompt" && (
+        <PromptDialog
+          title={dialog.title}
+          initialValue={dialog.initial}
+          confirmLabel={dialog.confirmLabel}
+          selectStem={dialog.selectStem}
+          onConfirm={(v) => {
+            const { onConfirm } = dialog;
+            setDialog(null);
+            onConfirm(v);
+          }}
+          onCancel={() => setDialog(null)}
+        />
+      )}
+      {dialog?.kind === "confirm" && (
+        <ConfirmDialog
+          title={dialog.title}
+          message={dialog.message}
+          confirmLabel={dialog.confirmLabel}
+          danger={dialog.danger}
+          onConfirm={() => {
+            const { onConfirm } = dialog;
+            setDialog(null);
+            onConfirm();
+          }}
+          onCancel={() => setDialog(null)}
+        />
+      )}
+
+      {toast && <Toast msg={toast.msg} tone={toast.tone} onClose={() => setToast(null)} />}
     </div>
   );
 }

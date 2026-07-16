@@ -8,6 +8,8 @@
   --sel: #2b3a52;
   --accent: #E5FF44;
   --error: #ff6b6b;
+  --success: #3fb950;
+  --warning: #d29922;
 }
 
 * {
@@ -615,6 +617,8 @@ a.bookmark-name::after {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  /* Positioning context for the error toast pinned to the listing's bottom. */
+  position: relative;
 }
 
 .listing-scroll {
@@ -799,6 +803,15 @@ table.listing-table tr.row:hover {
    selected .ignored row is still readable. */
 table.listing-table tr.row.selected {
   background: var(--sel);
+  opacity: 1;
+}
+
+/* A row whose entry is on the in-app clipboard as a CUT: dimmed until it's
+   pasted (moved), like Finder's faded cut icon. Stays fully readable on hover. */
+table.listing-table tr.row.cut {
+  opacity: 0.45;
+}
+table.listing-table tr.row.cut:hover {
   opacity: 1;
 }
 
@@ -1393,6 +1406,196 @@ body.embed .preview-browse-chip:hover {
 }
 
 .pane-mode-item.active {
+  color: var(--fg);
+}
+
+/* ---- File-explorer context menu (components/ContextMenu.tsx) -------------- */
+/* Same surface as .pane-mode-dropdown; sits above everything, position:fixed at
+   the cursor (clamped to the viewport in JS). */
+.context-menu {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 220px;
+  padding: 5px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+  user-select: none;
+}
+
+/* Wrapper for an item + its (absolutely positioned) submenu. */
+.context-menu-row {
+  position: relative;
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 28px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--fg);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.context-menu-item:hover:not(.disabled),
+.context-menu-item.open {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.context-menu-item.disabled {
+  color: var(--fg-muted);
+  opacity: 0.5;
+  cursor: default;
+}
+
+.context-menu-item.danger {
+  color: var(--error);
+}
+
+.context-menu-item.dimmed .context-menu-label {
+  opacity: 0.5;
+}
+
+/* Fixed-width icon column so labels align even for iconless rows (e.g. a
+   submenu's mode entries). The glyph inherits the row's colour. */
+.context-menu-icon {
+  flex: 0 0 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+}
+
+.context-menu-item:hover:not(.disabled) .context-menu-icon,
+.context-menu-item.open .context-menu-icon,
+.context-menu-item.danger .context-menu-icon {
+  color: inherit;
+}
+
+.context-menu-label {
+  flex: 1 1 auto;
+}
+
+.context-menu-arrow {
+  font-size: 14px;
+  line-height: 1;
+  color: var(--fg-muted);
+  margin-left: 12px;
+}
+
+.context-menu-item.open .context-menu-arrow {
+  color: inherit;
+}
+
+.context-menu-sep {
+  height: 1px;
+  margin: 5px 10px;
+  background: var(--border);
+}
+
+/* Submenu opens to the item's right by default, or its left near the viewport
+   edge (the `.left` modifier is set in JS). The small negative top aligns the
+   first submenu row with its parent row. */
+.context-submenu {
+  position: absolute;
+  top: -5px;
+  left: 100%;
+  margin-left: 2px;
+}
+
+.context-submenu.left {
+  left: auto;
+  right: 100%;
+  margin-left: 0;
+  margin-right: 2px;
+}
+
+/* ---- File-operation dialogs (components/FsDialogs.tsx) -------------------- */
+/* Reuses .deploy-overlay/.deploy-dialog/.deploy-body; these tune the compact
+   prompt/confirm shape (narrower than the deploy modal) and its controls. */
+.fs-dialog {
+  width: min(420px, 100%);
+}
+
+.fs-dialog-input {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+}
+
+.fs-dialog-input:focus {
+  outline: none;
+  border-color: var(--fg-muted);
+}
+
+.fs-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Override .deploy-body button's align-self:flex-start so the action row's
+   buttons sit on one line, right-aligned. */
+.fs-dialog-actions button {
+  align-self: auto;
+}
+
+/* ---- Transient toast (bottom of the listing) ----------------------------- */
+/* Default is the error variant (red border); .listing-toast-info is the
+   neutral confirmation variant (e.g. "Path copied"). */
+.listing-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(520px, calc(100% - 32px));
+  padding: 8px 10px 8px 12px;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--bg-alt);
+  border: 1px solid var(--error);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+}
+
+.listing-toast-info {
+  border-color: var(--border);
+}
+
+.listing-toast-msg {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.listing-toast-close {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.listing-toast-close:hover {
   color: var(--fg);
 }
 
@@ -2271,6 +2474,93 @@ body.embed .preview-browse-chip:hover {
   color: var(--error);
   border-color: var(--error);
   background: rgba(255, 107, 107, 0.12);
+}
+
+/* Health dot — color tracks state via a modifier class, off the shared
+   tokens (never a hardcoded hex) so it stays theme-correct. */
+.mount-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--fg-muted);
+}
+.mount-dot.mounted {
+  background: var(--success);
+}
+.mount-dot.disconnected,
+.mount-dot.stale {
+  background: var(--warning);
+}
+
+/* Inline qualifier after a mount name ("— read-only", "— disconnected"). */
+.mount-hint {
+  font-weight: 400;
+  font-size: 0.85em;
+  color: var(--fg-muted);
+}
+.mount-hint.warn {
+  color: var(--warning);
+}
+
+/* The remote spec shown under a mount name, clipped to one line. */
+.mount-remote {
+  font-size: 0.8em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Labeled form field: a small uppercase caption over a native control, so
+   the add-mount row and the custom-remote modal read as named fields rather
+   than a line of bare placeholders. */
+.mount-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.mount-field > span {
+  font-size: 0.7em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+}
+.mount-field .req {
+  color: var(--accent);
+}
+
+/* Live preview of the rclone spec the Add button will mount. */
+.mount-spec {
+  font-size: 0.8em;
+  margin: 0;
+}
+.mount-spec .warn {
+  color: var(--warning);
+}
+
+/* Empty state — a quiet dashed panel pointing at the Add-mount form. */
+.mount-empty {
+  padding: 16px 18px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  text-align: center;
+  color: var(--fg-muted);
+}
+
+/* "Add a custom S3 remote …" — a quiet inline link-button. */
+.mount-link {
+  align-self: flex-start;
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+  font-size: 0.85em;
+  color: var(--fg-muted);
+  text-decoration: underline;
+}
+.mount-link:hover {
+  color: var(--fg);
 }
 
 .prefs-radio {

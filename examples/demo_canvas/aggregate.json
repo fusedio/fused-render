@@ -1,0 +1,5 @@
+{
+  "type": "sql-table",
+  "title": "Aggregate",
+  "query": "SELECT category, sum(value) AS total FROM aggregate GROUP BY 1"
+}

@@ -1,0 +1,7 @@
+# A non-canvas TOML file — the canvas gate must NOT claim it.
+[tool.black]
+line-length = 88
+
+[tool.ruff]
+select = ["E", "F"]
+ignore = ["E501"]

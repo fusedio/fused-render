@@ -109,6 +109,7 @@ The server serves the HTML with a small runtime `<script>` injected (or the ifra
 ```js
 // Execute main() of a Python file
 const result = await fused.runPython(pathToPy, paramsObject);
+const result = await fused.runPython(pathToPy, paramsObject, { key: "chan" }); // latest-wins (RH-9)
 
 // Params (see §6)
 fused.params.get(name)
@@ -122,8 +123,9 @@ fused.params.onChange(callback)   // fires whenever params change; author re-run
 - **RH-1** **DECIDED:** `path` may be **relative to the HTML file's own location** or **absolute** (anywhere on the machine — whole filesystem is in scope, consistent with FS-3).
 - **RH-2** `params` is a flat JSON object; keys map to the Python function's keyword arguments (§5.2).
 - **RH-3** Returns a Promise. Resolves with the deserialized return value; rejects with a structured error `{ type, message, traceback }` on Python exception, missing file, missing `main` function, or timeout.
-- **RH-4** Concurrent calls are allowed (e.g. a page fires 3 data fetches on load). Server may queue or parallelize; ordering is not guaranteed.
+- **RH-4** Concurrent calls are allowed (e.g. a page fires 3 data fetches on load). Server may queue or parallelize; ordering is not guaranteed. Opt-in supersession (RH-9) is the only thing that cancels a call — by default no call ever cancels another.
 - **RH-5** Calls have a configurable timeout (default e.g. 30 s), after which the worker is killed and the promise rejects.
+- **RH-9** **DECIDED (D113):** an optional third argument `opts` carries **stale-request cancellation**. `opts.key` (a string) names a **latest-wins channel**: firing a new `runPython` on a key **aborts** the prior in-flight call on that same key, so a slider scrubbed through many values leaves only the last value's request alive — the superseded fetches are cancelled (browser connection freed; the server abandons the now-irrelevant subprocess when it sees the dropped socket). Without a key, calls are independent (RH-4 unchanged) — same-file polling loops and unrelated concurrent fetches are never auto-cancelled, so keying is a deliberate author choice. `opts.signal` (a standard `AbortSignal`) composes with the channel: the fetch aborts on whichever fires first. A superseded/aborted call rejects with a standard **AbortError** (`DOMException`, `name === "AbortError"`); the runtime's unhandledrejection handler treats that as benign — no traceback overlay (RH-3/D17), no console noise — so a fire-and-forget `onChange` re-render that loses the race needs no try/catch. Applies identically to the hosted/exported runtime (§18).
 
 ### 4.3 Isolation — DESCOPED (v1)
 
@@ -582,10 +584,11 @@ nothing. Full detail: `docs/EXPORT.md`.
 ### 18.2 Portable subset
 
 - **EX-3** Only the transport-agnostic part of the injected `window.fused` API is
-  portable: `runPython` (→ a served route the page posts to), `rawUrl`/`readFile`
-  (→ read-only bundled assets), and `params` (pure client-side URL state, unchanged).
-  `writeFile`, `stat`, and SSE live-reload are **unsupported** — a hosted artifact is
-  immutable and has no filesystem behind it.
+  portable: `runPython` (→ a served route the page posts to, including its RH-9
+  `opts.key`/`opts.signal` cancellation), `rawUrl`/`readFile` (→ read-only bundled
+  assets), and `params` (pure client-side URL state, unchanged). `writeFile`, `stat`,
+  and SSE live-reload are **unsupported** — a hosted artifact is immutable and has no
+  filesystem behind it.
 
 ### 18.3 Static resolution & fail-loud
 
@@ -1759,3 +1762,71 @@ provisioning stays a documented terminal flow.
   All mutating endpoints carry the D36 X-Fused guard; `return_url` is
   loopback-constrained (AC-3). The D3 stance is unchanged — this is not
   authentication *of* fused-render, and the §1 non-goal stands as annotated.
+## 28. Canvas View — Conditional Layout Viewer for `canvas.toml` (D114)
+
+A `canvas` view template renders a Fused **canvas definition** (`canvas.toml`,
+v2) as a read-only **layout viewer**: nodes drawn as positioned boxes, folder
+groups behind them, edges wired between node borders, honoring the stored
+viewport. It is the **first consumer of the conditional-template mechanism**
+(CT-12): listed first for `.toml` but gated so only genuine canvas files ever
+offer it — a plain `.toml` never shows the mode at all.
+
+- **CV-1** Files (`fused_render/templates/canvas/`): `template.html` (the
+  viewer), `reader.py` (the toml→JSON parser), `condition.py` (the gate),
+  `icon.svg`. Registry binding: `".toml": ["canvas", "code", "annotate"]` —
+  canvas listed first. Under deferred CT-12 the immediate default is the first
+  *unconditional* entry (`code`); `canvas` resolves in the background and joins
+  the switcher when its verdict allows (or disappears when it doesn't).
+- **CV-2** **Condition gate (CT-12, deferred).** Stat only *marks* the canvas
+  entry `conditional`; `condition.py` is evaluated via
+  `GET /api/fs/conditions` in the background (PT-8/CT-12). The gate itself is
+  cheap and fail-closed: a **basename pre-check** (`canvas.toml`, no I/O)
+  before any open, a **2 MB size guard**, then a `tomllib` parse asserting
+  top-level `type == "canvas"` (the content sniff, D114). Any exception →
+  False; the mode is denied and `code` stays. No `template_error` on a fail —
+  an ordinary toml is not an error.
+- **CV-3** **Reader (`reader.py`, `@fused.udf`-registered).** One `tomllib`
+  pass → `{name, version, previewImageUrl, nodes, folders, edges, viewport,
+  viewportBounds, siblings}`. `type == "udf-folder"` entries go to `folders`
+  (folderName, folderColor, childUdfOrder, isLocked); the rest to `nodes`
+  (title defaults to udfName, visible defaults true — the §28 defaults). Edges
+  are `[src, dst]` name pairs; malformed nodes/edges are **skipped, never
+  fatal**. `siblings` maps each node's udfName → the sibling file extensions
+  (`.py`/`.json`/`.md`/`.html`) present next to the toml, from one
+  `os.listdir`. **Engine isolation:** the whole body — helpers and imports —
+  lives inside `main()`; nothing but the entrypoint and its registration shim
+  is at module level.
+- **CV-4** **Viewer (`template.html`).** A single full-viewport `<canvas>` in
+  world space (toml coordinates), visually replicating the Flow app canvas
+  (its widget.css tokens: #070a0f bg with a 50-gap dot grid, #0d1219 node
+  cards with a #11171f header bar, bezier edges at 22% text tone with a
+  bg-colored legibility outline and target arrowhead, folder regions as a
+  color wash with a solid title pill above; folderColor `series-N`/`chart-N`
+  keys map into the series palette, default purple). Draw order matches Flow's
+  zIndex layering: folder regions → edges → node cards (title header,
+  description/udfName body, sibling-extension chips; `visible:false` ghosted
+  at 40% alpha) → folder title pills. Geometry, text, and borders are drawn in
+  **world units** so everything scales with zoom exactly like ReactFlow's
+  transformed DOM; only edge strokes are screen-constant (`min(5, 1.5/zoom)`).
+  Hovering a node brightens its border and shows a title/description tooltip.
+  Empty canvas → a centered "empty canvas" note; a reader error surfaces
+  through the runtime's traceback overlay (the header still renders first).
+- **CV-5** **Camera & URL sync.** Start from `[canvas.viewport]` (x/y/zoom)
+  when present, else **fit-to-bounds** of all nodes with a 10% margin (fit
+  clamps zoom to ≤1; interactive zoom clamps to [0.1, 2], Flow's min/max).
+  Wheel zooms to the cursor, drag pans; a bottom-right glass cluster offers
+  zoom in/out and an animated **Fit** (600 ms cubic ease-out, instant under
+  `prefers-reduced-motion`). Camera
+  state mirrors to URL params `cx`/`cy`/`z` (translate + zoom) on interaction
+  (150 ms debounce) and is read on load, where it **overrides** the toml
+  viewport — so refresh/share restores the exact camera. Params are strings
+  (`set` throws otherwise); parsed at the boundary. The template's own writes
+  are echo-guarded in `onChange`; a `_file` change reloads.
+- **CV-6** **Detail panel.** Clicking a node opens a footer panel: title,
+  udfName, description, size, and sibling files as links that open
+  `/view/<abs sibling path>` in a **new tab** (no in-shell navigation, v0).
+  Clicking a folder shows its name and child list; clicking empty space clears.
+- **CV-7** Dark theme matching the explorer, no external assets, ES2020, and —
+  like every template — no runtime script tag (`window.fused` is injected).
+  Out of scope (v0): editing/writing the toml, rendering widget contents inside
+  nodes, executing UDFs, in-shell sibling navigation, non-v2 canvas versions.

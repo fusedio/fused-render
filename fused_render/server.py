@@ -19,6 +19,7 @@ import logging
 from collections import deque
 import mimetypes
 import os
+import shutil
 import stat as stat_mod
 import subprocess
 import sys
@@ -27,6 +28,7 @@ import time
 import traceback
 import urllib.error
 import urllib.request
+from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
 from fastapi import Body, FastAPI, Header, Request, WebSocket, WebSocketDisconnect
@@ -1100,6 +1102,10 @@ def _fs_write(body: dict, x_fused: str | None):
     path = body.get("path")
     content = body.get("content")
     expected_mtime = body.get("expected_mtime")
+    # New File / "must not clobber" callers set create=true: an existing path
+    # is a 409 conflict (same wire string as rename/copy/mkdir) instead of a
+    # silent overwrite.
+    create = bool(body.get("create"))
 
     if not path or not os.path.isabs(path):
         return _error("'path' must be an absolute filesystem path")
@@ -1124,6 +1130,8 @@ def _fs_write(body: dict, x_fused: str | None):
     # clobber someone else's write. Compare against the raw st_mtime float
     # that /api/fs/stat returns, with a tolerance for float round-tripping.
     exists = os.path.exists(path)
+    if create and exists:
+        return JSONResponse({"error": "conflict"}, status_code=409)
     if expected_mtime is not None:
         if not exists:
             return JSONResponse({"error": "conflict", "mtime": None}, status_code=409)
@@ -1297,6 +1305,258 @@ class _WatchRegistry:
 
 
 _WATCH_REGISTRY = _WatchRegistry()
+
+
+def _fs_mkdir(body: dict, x_fused: str | None):
+    # Create a single directory. Parents are NOT auto-created (no mkdir -p):
+    # a missing parent is a 400 so a typo'd path can't silently spawn a deep
+    # tree. Mirrors _fs_write's guard order — X-Fused, absolute path, then
+    # the filesystem-shape checks — and returns the /api/fs/stat payload so
+    # the client can render the new folder without a follow-up stat.
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    path = body.get("path")
+    if not path or not os.path.isabs(path):
+        return _error("'path' must be an absolute filesystem path")
+    parent = os.path.dirname(path)
+    if not os.path.isdir(parent):
+        return _error(f"parent directory does not exist: {parent}")
+    if os.path.exists(path):
+        return JSONResponse({"error": "conflict"}, status_code=409)
+    # Read-only guard: the "readonly" wire string matches _fs_write's — the
+    # parent must accept a new entry (_writable falls back to the parent's
+    # W_OK for a path that does not yet exist).
+    if not _writable(path):
+        return JSONResponse({"error": "readonly"}, status_code=403)
+
+    try:
+        os.mkdir(path)
+    except OSError as e:
+        return _error(f"cannot create directory {path}: {e}")
+    return _stat_payload(path, True)
+
+
+def _trash_supported() -> bool:
+    # Move-to-Trash is macOS-only (a ~/.Trash + Finder concept). Isolated so
+    # tests can force it on/off without touching the global sys.platform.
+    return sys.platform == "darwin"
+
+
+def _trash_dest_name(name: str, counter: int) -> str:
+    # Finder-style dedupe for a name already present in ~/.Trash: the first
+    # occurrence keeps its name, later ones gain a " N" suffix before the
+    # extension ("report.csv" -> "report 2.csv"); dirs / extensionless /
+    # dotfile names take the suffix at the end ("folder" -> "folder 2").
+    if counter <= 1:
+        return name
+    dot = name.rfind(".")
+    if dot > 0:
+        return f"{name[:dot]} {counter}{name[dot:]}"
+    return f"{name} {counter}"
+
+
+def _move_to_trash(path: str) -> None:
+    # Move `path` into the user's ~/.Trash (macOS). A plain os.rename into
+    # ~/.Trash is the fast path, with a " N" dedupe suffix when a name is
+    # already there. A rename ACROSS devices (or any other OSError) can't be
+    # done by rename, so it falls back to Finder via osascript, which copies +
+    # removes itself. Raises on total failure so the caller reports it and the
+    # frontend can fall back to a hard delete.
+    trash = Path.home() / ".Trash"
+    name = os.path.basename(path.rstrip("/"))
+    try:
+        trash.mkdir(parents=True, exist_ok=True)
+        counter = 1
+        dest = trash / _trash_dest_name(name, counter)
+        while dest.exists():
+            counter += 1
+            dest = trash / _trash_dest_name(name, counter)
+        os.rename(path, dest)
+    except OSError:
+        subprocess.run(
+            [
+                "osascript",
+                "-e",
+                f"tell application \"Finder\" to delete POSIX file {json.dumps(path)}",
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+
+def _fs_delete(body: dict, x_fused: str | None):
+    # Remove a file or directory. With trash=true the target is moved to the
+    # user's Trash instead of being erased (recoverable, macOS only). Otherwise
+    # a hard delete: a directory needs recursive=true unless it is empty (an
+    # empty dir is a plain os.rmdir); a non-empty dir without the flag is a 409
+    # so a stray click can't wipe a subtree. Read-only targets are refused with
+    # the same "readonly" contract as _fs_write.
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    path = body.get("path")
+    recursive = bool(body.get("recursive", False))
+    trash = bool(body.get("trash", False))
+    if not path or not os.path.isabs(path):
+        return _error("'path' must be an absolute filesystem path")
+    if not os.path.exists(path):
+        return _error(f"no such file or directory: {path}", status=404)
+    if not _writable(path):
+        return JSONResponse({"error": "readonly"}, status_code=403)
+
+    if trash:
+        # Non-darwin (or Trash otherwise unavailable) → a distinct 501 so the
+        # frontend can fall back to the confirm-then-hard-delete flow.
+        if not _trash_supported():
+            return JSONResponse({"error": "trash unsupported"}, status_code=501)
+        try:
+            _move_to_trash(path)
+        except Exception as e:  # noqa: BLE001 — rename OSError or osascript failure
+            # A FAILED trash on a supported platform is a plain error, not the
+            # 501 "unsupported" signal — that one routes the client into the
+            # irreversible hard-delete fallback, which must never be the
+            # response to a recoverable-delete attempt that merely failed.
+            return _error(f"cannot move to Trash: {e}", status=500)
+        return {"deleted": path, "trashed": True}
+
+    try:
+        # A symlink is removed as the link itself, never followed: rmtree on a
+        # symlink-to-dir raises, and following it would delete the TARGET's
+        # contents. Mirrors the `not os.path.islink` guard _fs_rename/_fs_copy
+        # apply before their own rmtree.
+        if os.path.isdir(path) and not os.path.islink(path):
+            if recursive:
+                shutil.rmtree(path)
+            elif os.listdir(path):
+                return JSONResponse(
+                    {"error": "conflict", "message": "directory not empty"},
+                    status_code=409,
+                )
+            else:
+                os.rmdir(path)
+        else:
+            os.remove(path)
+    except OSError as e:
+        return _error(f"cannot delete {path}: {e}")
+    return {"deleted": path, "trashed": False}
+
+
+def _fs_rename(body: dict, x_fused: str | None):
+    # Move/rename src -> dst. dst must be absolute and its parent writable
+    # (same "outside"/readonly guards as elsewhere). An existing dst is a 409
+    # unless overwrite=true; a missing src is a 404. shutil.move handles the
+    # cross-device case os.replace can't; overwrite removes dst first so a
+    # dir-over-dir move can't nest into it.
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    src = body.get("src")
+    dst = body.get("dst")
+    overwrite = bool(body.get("overwrite", False))
+    if not src or not os.path.isabs(src):
+        return _error("'src' must be an absolute filesystem path")
+    if not dst or not os.path.isabs(dst):
+        return _error("'dst' must be an absolute filesystem path")
+    # dst's parent must already exist — a rename never creates intermediate
+    # dirs. Without this, a missing parent falls through to _writable (which
+    # walks up to the nearest existing ancestor) and surfaces a misleading
+    # "readonly" 403; a 400 is the honest error, same as _fs_write/_fs_mkdir.
+    dst_parent = os.path.dirname(dst)
+    if not os.path.isdir(dst_parent):
+        return _error(f"parent directory does not exist: {dst_parent}")
+    if not os.path.exists(src):
+        return _error(f"no such file or directory: {src}", status=404)
+    if os.path.isdir(src):
+        # Same self/descendant guard as copy: moving a directory into itself
+        # (or a child) would build the destination inside the source.
+        s = os.path.abspath(src)
+        d = os.path.abspath(dst)
+        if d == s or d.startswith(s + os.sep):
+            return _error("cannot move a directory into itself or a descendant")
+
+    dst_exists = os.path.exists(dst)
+    if dst_exists and not overwrite:
+        return JSONResponse({"error": "conflict"}, status_code=409)
+    # A move deletes the source, so the source must be writable too — otherwise
+    # a rename could lift entries off a read-only mount (delete/write refuse).
+    if not _writable(src) or not _writable(dst):
+        return JSONResponse({"error": "readonly"}, status_code=403)
+
+    try:
+        if dst_exists:
+            if os.path.isdir(dst) and not os.path.islink(dst):
+                shutil.rmtree(dst)
+            else:
+                os.remove(dst)
+        shutil.move(src, dst)
+    except OSError as e:
+        return _error(f"cannot rename {src} -> {dst}: {e}")
+    return _stat_payload(dst, os.path.isdir(dst))
+
+
+def _fs_copy(body: dict, x_fused: str | None):
+    # Copy src -> dst. File via copy2 (preserves metadata), dir via copytree.
+    # Same error contract as rename (400 relative, 404 missing src, 409 dst
+    # exists w/o overwrite, 403 readonly dst). Copying a directory into itself
+    # or a descendant is refused (400) — copytree would otherwise recurse into
+    # the destination it is still writing.
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    src = body.get("src")
+    dst = body.get("dst")
+    overwrite = bool(body.get("overwrite", False))
+    if not src or not os.path.isabs(src):
+        return _error("'src' must be an absolute filesystem path")
+    if not dst or not os.path.isabs(dst):
+        return _error("'dst' must be an absolute filesystem path")
+    # dst's parent must already exist — a copy never creates intermediate dirs.
+    # Without this, a missing parent falls through to _writable (which walks up
+    # to the nearest existing ancestor) and surfaces a misleading "readonly"
+    # 403; a 400 is the honest error, same as _fs_write/_fs_mkdir.
+    dst_parent = os.path.dirname(dst)
+    if not os.path.isdir(dst_parent):
+        return _error(f"parent directory does not exist: {dst_parent}")
+    if not os.path.exists(src):
+        return _error(f"no such file or directory: {src}", status=404)
+
+    src_is_dir = os.path.isdir(src)
+    if src_is_dir:
+        # Normalize both ends so "self/descendant" catches ./ and trailing
+        # slashes; the sep suffix stops /a/b matching /a/bc.
+        s = os.path.abspath(src)
+        d = os.path.abspath(dst)
+        if d == s or d.startswith(s + os.sep):
+            return _error("cannot copy a directory into itself or a descendant")
+
+    dst_exists = os.path.exists(dst)
+    if dst_exists and not overwrite:
+        return JSONResponse({"error": "conflict"}, status_code=409)
+    if not _writable(dst):
+        return JSONResponse({"error": "readonly"}, status_code=403)
+
+    try:
+        if src_is_dir:
+            if dst_exists:
+                if os.path.isdir(dst) and not os.path.islink(dst):
+                    shutil.rmtree(dst)
+                else:
+                    os.remove(dst)
+            shutil.copytree(src, dst)
+        else:
+            # copy2 onto an existing dir would drop the file inside it; a
+            # dir dst must be replaced wholesale to mean "become this file".
+            if dst_exists and os.path.isdir(dst) and not os.path.islink(dst):
+                shutil.rmtree(dst)
+            shutil.copy2(src, dst)
+    except OSError as e:
+        return _error(f"cannot copy {src} -> {dst}: {e}")
+    return _stat_payload(dst, os.path.isdir(dst))
 
 
 def create_app(start_dir: str) -> FastAPI:
@@ -1788,6 +2048,22 @@ def create_app(start_dir: str) -> FastAPI:
     @app.post("/api/fs/write")
     def api_fs_write(body: dict = Body(...), x_fused: str | None = Header(default=None)):
         return _fs_write(body, x_fused)
+
+    @app.post("/api/fs/mkdir")
+    def api_fs_mkdir(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+        return _fs_mkdir(body, x_fused)
+
+    @app.post("/api/fs/delete")
+    def api_fs_delete(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+        return _fs_delete(body, x_fused)
+
+    @app.post("/api/fs/rename")
+    def api_fs_rename(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+        return _fs_rename(body, x_fused)
+
+    @app.post("/api/fs/copy")
+    def api_fs_copy(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+        return _fs_copy(body, x_fused)
 
     @app.get("/render")
     def render(path: str):

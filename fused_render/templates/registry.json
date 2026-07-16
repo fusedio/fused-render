@@ -299,6 +299,7 @@
     "annotate"
   ],
   ".toml": [
+    "canvas",
     "code",
     "annotate"
   ],
