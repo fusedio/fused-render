@@ -103,6 +103,34 @@ def test_list_mount_root_normalizes_rel_to_empty(home, rcd, tmp_path):
     assert body["remote"] == ""  # "." normalized to the fs root
 
 
+def test_list_mounts_root_enumerates_records_not_rc(home, tmp_path, monkeypatch):
+    # The mounts CONTAINER (the parent that holds every mountpoint as a subdir)
+    # is is_mount_backed too — is_mount_backed's `ap == root` clause keeps it off
+    # the kernel — but it sits under no single mount record, so the rc/S3 routes
+    # would 503 ("cannot list directory") on it. It must instead be listed by
+    # enumerating the mount records directly: 200, each mount as a dir entry,
+    # sorted, with zero rc I/O and no sidecar files (mounts.json, per-mount
+    # *.json) leaking in from a raw readdir. No rcd needed — the record
+    # enumeration precedes any remote call.
+    mounts_mod.add_mount("zebra", "remote:z")
+    mounts_mod.add_mount("alpha", "remote:a")
+    root = mounts_mod.mounts_dir()
+    # A stray sidecar file in the container must NOT appear in the listing.
+    with open(os.path.join(root, "alpha.json"), "w", encoding="utf-8") as f:
+        f.write("{}")
+    called = []
+    monkeypatch.setattr(mounts_mod, "rc_list_dir",
+                        lambda *a, **k: called.append(1) or [])
+    resp = _client(tmp_path).get("/api/fs/list", params={"path": root})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert [e["name"] for e in data["entries"]] == ["alpha", "zebra"]  # sorted
+    assert all(e["is_dir"] is True and e["size"] is None
+               for e in data["entries"])
+    assert data["truncated"] is False and data["cursor"] is None
+    assert called == []  # never fell through to the rc listing route
+
+
 def test_list_mount_file_is_not_a_directory(home, rcd, tmp_path, monkeypatch):
     # The mount is HEALTHY but operations/list errors on a file remote (stub
     # 404s the unset method) -> 400, the mount-safe stand-in for os.path.isdir.

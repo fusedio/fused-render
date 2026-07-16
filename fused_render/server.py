@@ -2079,6 +2079,20 @@ def create_app(start_dir: str) -> FastAPI:
         # `cursor` (an opaque resume token, non-None only on the S3-direct route
         # — rclone and a local scandir can't resume). Fallback ladder for a
         # mount path: S3-direct -> rc -> 503.
+        if shell_mounts.is_mounts_root(path):
+            # The mounts container is a LOCAL directory whose children are the
+            # mountpoints. is_mount_backed is true for it (so no kernel readdir
+            # touches it), yet it sits under no single mount record, so the
+            # rc/S3 routes below have nothing to list and 503 ("cannot list
+            # directory"). Enumerate the mount records directly instead — the
+            # authoritative mount list, with zero kernel or remote I/O and no
+            # sidecar files (mounts.json, per-mount *.json) leaking in.
+            entries = _sort_entries([
+                {"name": m["name"], "is_dir": True, "size": None,
+                 "mtime": None, "ignored": False}
+                for m in shell_mounts.list_mounts() if m.get("name")
+            ])
+            return _list_response(path, entries, False, None)
         if shell_mounts.is_mount_backed(path):
             # S3-direct fast path: for anonymous plain AWS S3 — the backend that
             # dominates our mounts — page S3's own ListObjectsV2 (rclone can't
