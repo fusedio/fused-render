@@ -51,7 +51,7 @@ MAX_BYTES = int(os.environ.get("FUSED_RENDER_PREFETCH_MAX_BYTES",
 # per chunk is how the maps below blow up on a store with thousands of
 # them. Below the floor the on-demand path is already quick.
 MIN_BYTES = int(os.environ.get("FUSED_RENDER_PREFETCH_MIN_BYTES",
-                               16 * 1024 * 1024))
+                               8 * 1024 * 1024))
 # Bound the in-memory maps: a store with thousands of tiny objects would
 # otherwise mint a permanent entry per object for the life of the process.
 # Only terminal jobs are evicted (oldest first); the MIN_BYTES floor keeps
