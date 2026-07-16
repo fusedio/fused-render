@@ -23,6 +23,7 @@ fused-render/
 │       │   ├── api.ts          # fetch wrappers (config/list/stat/rawUrl)
 │       │   ├── format.ts       # formatSize/formatMtime/basename (pure)
 │       │   ├── bookmarks.ts    # bookmark store: sync in-memory cache + async PUT (pure data, no DOM)
+│       │   ├── recents.ts      # recents store + useRecentsTracking (server file ~/.fused-render/recents.json, D115)
 │       │   ├── layout-codec.ts # shared _layout codec + embed helpers (M5/M6)
 │       │   └── hooks.ts        # useNavEpoch/useUrlVersion/useBookmarksVersion signals
 │       ├── components/
@@ -229,6 +230,25 @@ Layout: `#app` becomes two-column flex — fixed sidebar (~220px, `--bg-alt`, ri
 - **Bookmark row:** name ellipsized, rendered as a real `<a href="<url>">` (verbatim URL per D20; href kept for middle-click/copy-link). Plain click is intercepted: it **arms** the bookmark for update tracking and routes in-shell via `navigateUrl(url)` (pushState that preserves the query string, unlike `navigate()`). Hover shows a floating card beside the sidebar: decoded target path + saved params as a key/value grid ("no params" when none); card hides during rename/delete. Hover also reveals ✎ rename (inline `<input>`, Enter/blur commits, Escape cancels) and ✕ delete (no confirm). Active bookmark (url == current URL) is highlighted.
 - Order: creation time. Duplicates allowed.
 - **Bookmark updating (D38):** the armed bookmark `{id, url}` lives in sessionStorage `fused.armedBookmark` (survives refresh, not new tabs). `breadcrumb.js` renders a hidden "Update bookmark" button left of "+ Bookmark"; `syncUpdateButton()` shows it iff armed, same pathname, and `location.search` differs from the armed url's search. Clicking it overwrites the bookmark's url with the current one and re-arms against it. A pathname change disarms permanently; deleting the armed bookmark disarms. Param changes are observed by `main.js` wrapping `history.replaceState` (the iframe runtime writes params through the parent's replaceState, which fires no native event) to dispatch a `fused:urlchange` window event; sidebar delete also dispatches it instead of importing breadcrumb (one-way deps, D28).
+
+### 6.6 Recents (D115, SPEC §29)
+
+Sidebar section listing the last 3 files opened, each with the params they last
+had. Backend `shell/recents.py` (beside bookmarks/prefs): `~/.fused-render/recents.json`
+holds `{collapsed, entries: [{url, openedAt}]}` — urls verbatim incl. query
+(D20 posture), newest first, deduped by target fs path, capped at 20; `GET
+/api/recents` filters entries whose file no longer exists (without deleting
+them), `POST /api/recents/open {url}` records (file-view `/view/` urls only —
+directories and `_`-sentinels no-op), `PUT /api/recents/collapsed` persists the
+fold with the data (D44 posture). Frontend `lib/recents.ts` mirrors
+`bookmarks.ts` (sync cache, serial queue, `notifyRecentsChanged` signal); its
+`useRecentsTracking(fsPath, isDir)` is mounted in `App.tsx`'s StatView beside
+the session hooks — records the open once the stat confirms a file, then
+re-records the current url on every `fused:urlchange`/`popstate` (500 ms
+debounce), so the entry tracks live param changes. Sidebar rows are basename
+labels (D22); click = `navigateUrl` (query-preserving), arms nothing; the
+heading toggles the fold (count pill as the collapsed signal, no chevron — D44
+visual language); the section is hidden while empty.
 
 ---
 
