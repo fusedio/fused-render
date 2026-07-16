@@ -1762,7 +1762,7 @@ provisioning stays a documented terminal flow.
   All mutating endpoints carry the D36 X-Fused guard; `return_url` is
   loopback-constrained (AC-3). The D3 stance is unchanged — this is not
   authentication *of* fused-render, and the §1 non-goal stands as annotated.
-## 28. Canvas View — Conditional Layout Viewer for `canvas.toml` (D105)
+## 28. Canvas View — Conditional Layout Viewer for `canvas.toml` (D114)
 
 A `canvas` view template renders a Fused **canvas definition** (`canvas.toml`,
 v2) as a read-only **layout viewer**: nodes drawn as positioned boxes, folder
@@ -1782,7 +1782,7 @@ offer it — a plain `.toml` never shows the mode at all.
   `GET /api/fs/conditions` in the background (PT-8/CT-12). The gate itself is
   cheap and fail-closed: a **basename pre-check** (`canvas.toml`, no I/O)
   before any open, a **2 MB size guard**, then a `tomllib` parse asserting
-  top-level `type == "canvas"` (the content sniff, D105). Any exception →
+  top-level `type == "canvas"` (the content sniff, D114). Any exception →
   False; the mode is denied and `code` stays. No `template_error` on a fail —
   an ordinary toml is not an error.
 - **CV-3** **Reader (`reader.py`, `@fused.udf`-registered).** One `tomllib`

@@ -7,9 +7,9 @@ gate is meant to *deny* the mode, and returning False is how we do that
 (`server._run_condition` also catches, but we fail closed here explicitly,
 SPEC CT-12/§28).
 
-`method(target_path)` is True only when the file is a genuine Fused canvas
+`main(target_path)` is True only when the file is a genuine Fused canvas
 definition: basename `canvas.toml` (the cheap pre-check, done before any I/O)
-AND the parsed TOML declares `type = "canvas"` (the content sniff, D105). A
+AND the parsed TOML declares `type = "canvas"` (the content sniff, D114). A
 plain `.toml`, a `canvas.toml` that isn't actually a canvas, an oversized file,
 or anything that fails to parse → False, so the `canvas` mode never shows for
 ordinary toml.
@@ -23,7 +23,7 @@ import tomllib
 MAX_BYTES = 2 * 1024 * 1024
 
 
-def method(target_path) -> bool:
+def main(target_path) -> bool:
     try:
         # Cheap pre-check first: only a file literally named canvas.toml can be
         # a canvas, so a plain .toml never pays the open/parse cost (SPEC §28).

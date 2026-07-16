@@ -1,4 +1,4 @@
-"""Tests for the `canvas` conditional preview template (SPEC §28, D105).
+"""Tests for the `canvas` conditional preview template (SPEC §28, D114).
 
 Two surfaces:
 
@@ -160,14 +160,14 @@ def test_oversized_canvas_toml_skipped(tmp_path):
     assert allowed is False
 
 
-def test_condition_module_method_directly(tmp_path):
+def test_condition_module_main_directly(tmp_path):
     # The condition runs in the server process (plain module, stdlib) — exercise
-    # `method` directly to prove it never raises on odd input.
+    # `main` (the CT-12 entrypoint) directly to prove it never raises on odd input.
     cond = _load_module("condition.py")
-    assert cond.method(str(_write_canvas(tmp_path / "ok"))) is True
-    assert cond.method(str(tmp_path / "does-not-exist" / "canvas.toml")) is False
-    assert cond.method("") is False
-    assert cond.method(None) is False
+    assert cond.main(str(_write_canvas(tmp_path / "ok"))) is True
+    assert cond.main(str(tmp_path / "does-not-exist" / "canvas.toml")) is False
+    assert cond.main("") is False
+    assert cond.main(None) is False
 
 
 # --------------------------------------------------------------- template files
