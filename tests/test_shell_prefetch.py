@@ -153,6 +153,28 @@ def test_evicts_oldest_terminal_jobs_over_cap(fast, monkeypatch):
         stub.close()
 
 
+def test_eviction_is_lru_by_access_not_completion(fast, monkeypatch):
+    # A done file still being read must survive; the least-recently-read
+    # one is dropped first. Otherwise is_done routing flaps and an in-use
+    # file gets re-prefetched.
+    monkeypatch.setattr(prefetch_mod, "MAX_TRACKED", 2)
+    stub = StubServe(b"a" * 50)
+    try:
+        for p in ("/m/old.bin", "/m/mid.bin"):
+            prefetch_mod.schedule(p, stub.url)
+            wait_status(p, "done")
+        # Re-read old.bin: touches it even though it completed first.
+        prefetch_mod.schedule("/m/old.bin", stub.url)   # done -> touch only
+        # New file trips the cap; least-recently-read (mid.bin) is evicted.
+        prefetch_mod.schedule("/m/new.bin", stub.url)
+        wait_status("/m/new.bin", "done")
+        st = prefetch_mod.status()
+        assert "/m/old.bin" in st       # recently re-read -> survives
+        assert "/m/mid.bin" not in st   # least-recently-read -> evicted
+    finally:
+        stub.close()
+
+
 def test_schedule_is_idempotent(fast):
     stub = StubServe(b"y" * 500)
     try:

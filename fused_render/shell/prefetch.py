@@ -106,15 +106,21 @@ def status() -> dict:
 
 
 def _evict_locked() -> None:
-    """Drop oldest terminal jobs (and their touch times) once the maps
-    exceed MAX_TRACKED. Caller must hold `_lock`. Queued/running jobs are
-    never evicted — losing one would strand an in-flight download's
-    status; a completed job only means a slightly slower next read (it
-    re-prefetches from the local cache in seconds, see docstring)."""
+    """Evict terminal jobs least-recently-*read* once the maps exceed
+    MAX_TRACKED. Caller must hold `_lock`. Queued/running jobs are never
+    evicted — losing one would strand an in-flight download's status.
+
+    Ordered by `_touched` (last interactive access), NOT completion time:
+    `schedule` refreshes `_touched` on every read, so a `done` file still
+    being read stays warm and keeps its `is_done` routing. Evicting a hot
+    `done` entry would flip `is_done` false for a file still in use, send
+    its next read back down the cold redirect path, and re-trigger a
+    whole-file prefetch. A genuinely stale entry only costs a slightly
+    slower next read (it re-prefetches from the local cache in seconds)."""
     if len(_jobs) <= MAX_TRACKED:
         return
     terminal = sorted(
-        (j["at"], p) for p, j in _jobs.items()
+        (_touched.get(p, j["at"]), p) for p, j in _jobs.items()
         if j["status"] in ("done", "skipped", "failed"))
     for _, p in terminal:
         if len(_jobs) <= MAX_TRACKED:
