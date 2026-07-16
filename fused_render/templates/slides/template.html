@@ -445,7 +445,9 @@
 
   fused.autoReload(false); // editor must not reload out from under the cursor — own autosave changes mtime; external edits are the conflict lock's job (SPEC LR-5)
   const PY="./slides.py";
-  const py=(params)=>fused.runPython(PY,params);
+  // key:null — every slides.py action (save/export/chunked upload/read) shares
+  // this helper; default per-file cancellation would abort in-flight writes (D114).
+  const py=(params)=>fused.runPython(PY,params,{key:null});
   const PT2PX=96/72;
   const FILE=fused.params.get("_file")||"";
   const DEFAULT_TITLE=FILE?FILE.split(/[\\/]/).pop().replace(/\.pptx$/i,""):"Untitled";

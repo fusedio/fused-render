@@ -546,7 +546,10 @@ function renderSelCard() {
 }
 
 /* ============================================================ python bridge */
-const py = params => fused.runPython("./geometry_io.py", params);
+// key:null — geometry_io.py serves both load (read) and export (writes
+// GeoParquet); default per-file cancellation would let a load abort an
+// in-flight export on the shared channel (D114).
+const py = params => fused.runPython("./geometry_io.py", params, { key: null });
 const errMsg = e => (e && e.message) ? e.message : String(e);
 
 async function loadFile(path) {

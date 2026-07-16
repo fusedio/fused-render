@@ -371,6 +371,10 @@
 "use strict";
 fused.autoReload(false); // editor must not reload out from under the cursor — own autosave changes mtime; external edits are the conflict lock's job (SPEC LR-5)
 const PY = "./reader.py";
+// key:null — reader.py serves save/export/save_as writes and arbitrary user
+// scripts alongside reads on one channel; the default per-file cancellation
+// (D114) would abort an in-flight write. Route every call through this.
+const pyRun = (params) => fused.runPython(PY, params, { key: null });
 const $ = (id) => document.getElementById(id);
 const RENDER_CAP = 1000, MIN_ROWS = 100, MIN_COLS = 26, MAX_UNDO = 60, LOAD_BATCH = 2000;
 
@@ -1289,7 +1293,7 @@ async function fetchRows(reset) {
   const seq = sh._seq;
   updateMoreBar();
   try {
-    const res = await fused.runPython(PY, {
+    const res = await pyRun( {
       action: "rows", file: currentFile(), sheet: sh.name,
       offset: String(reset ? 0 : sh.loaded.length), limit: String(LOAD_BATCH),
       sort: sh.sort ? JSON.stringify(sh.sort) : "",
@@ -1577,7 +1581,7 @@ async function load() {
   const seq = ++loadSeq;
   setStatus("Loading…");
   try {
-    const res = await fused.runPython(PY, { action: "load", file });
+    const res = await pyRun( { action: "load", file });
     if (seq !== loadSeq) return;
     normalizeLoaded(res);
     mtime = res.mtime;
@@ -1627,7 +1631,7 @@ async function save(force) {
   commitEdit();
   setStatus("Saving…");
   try {
-    const res = await fused.runPython(PY, {
+    const res = await pyRun( {
       action: "save", file,
       data: JSON.stringify(serializeSheets()),
       expected_mtime: force ? "" : String(mtime ?? ""),
@@ -1691,7 +1695,7 @@ async function download(kind) {
   }
   setStatus("Exporting…");
   try {
-    const res = await fused.runPython(PY, {
+    const res = await pyRun( {
       action: "export", kind, name: base + (kind === "xlsx" && !sh.big ? "" : "-" + sh.name), data: JSON.stringify(data),
     });
     const a = document.createElement("a");
@@ -1772,7 +1776,7 @@ async function runPy(code, out) {
   }
   try {
     const payload = { sheets: smalls.map((sh) => ({ name: sh.name, rows: trimGrid(sh.rows) })) };
-    const res = await fused.runPython(PY, { action: "run_script", script: code, data: JSON.stringify(payload) });
+    const res = await pyRun( { action: "run_script", script: code, data: JSON.stringify(payload) });
     pushUndo();
     const byName = new Map(book.sheets.map((sh) => [sh.name, sh]));
     const bigs = book.sheets.filter((sh) => sh.big);
@@ -1948,7 +1952,7 @@ async function saveAsDialog() {
   async function show(path) {
     $("flist").textContent = "Loading…";
     try {
-      const res = await fused.runPython(PY, { action: "listdir", file: path });
+      const res = await pyRun( { action: "listdir", file: path });
       if (res.error) { $("flist").textContent = res.error; return; }
       dir = res.path;
       $("crumbs").innerHTML = crumbHtml(res.path);
@@ -1973,7 +1977,7 @@ async function saveAsDialog() {
     closeModal();
     setStatus("Saving…");
     try {
-      const res = await fused.runPython(PY, {
+      const res = await pyRun( {
         action: "save_as", file: currentFile(), directory: dir, name: nm,
         data: JSON.stringify(serializeSheets()),
       });

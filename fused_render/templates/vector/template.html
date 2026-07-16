@@ -276,7 +276,8 @@ els.convertBtn.onclick = async () => {
   if (!P.file()) return;
   els.convertBtn.disabled = true;
   status('Converting to GeoParquet…');
-  const r = await fused.runPython('./convert_parquet.py', {file: P.file()})
+  // key:null — convert_parquet.py writes GeoParquet; never cancel it mid-write (D114).
+  const r = await fused.runPython('./convert_parquet.py', {file: P.file()}, { key: null })
     .catch(e => ({error: String(e.message || e)}));
   els.convertBtn.disabled = false;
   if (!r || r.error){ status('Convert failed: ' + ((r && r.error) || '?'), true); return; }

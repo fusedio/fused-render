@@ -316,7 +316,10 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
 
   // ---- shorthands
   const $ = (id) => document.getElementById(id);
-  const py = (params) => fused.runPython("./engine.py", params);
+  // key:null — every engine.py action (compile/export writes, detached install,
+  // status poll, concurrent outline+bib) shares this helper; the default per-file
+  // cancellation would abort in-flight work or stall the poll loop (D114).
+  const py = (params) => fused.runPython("./engine.py", params, { key: null });
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
   const fmtSize = (n) => n < 1024 ? n+" B" : n < 1048576 ? (n/1024).toFixed(0)+" KB" : (n/1048576).toFixed(1)+" MB";
   const baseName = (p) => p.slice(Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\")) + 1);
