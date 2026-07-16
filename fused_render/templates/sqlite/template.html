@@ -662,7 +662,11 @@
         const data = await fused.runPython("./reader.py", {
           file, table, offset: String(offset), limit: String(LIMIT),
           sort: currentSort(), filters: currentFilters(),
-        });
+          // key:null — save() awaits load(); the default per-file cancellation
+          // (D114) would let a concurrent onChange load supersede this read (never
+          // settling), hanging save() and leaving Save disabled. The loadSeq guard
+          // already handles staleness here. (matches duckdb)
+        }, { key: null });
         clearTimeout(slowTimer);
         if (seq !== loadSeq) return;
         lastGridKey = file + "\n" + table;

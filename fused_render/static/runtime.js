@@ -401,13 +401,21 @@
       .then(
         (result) => {
           cleanup();
+          // A newer same-channel call superseded us after the response arrived
+          // but before this ran — honor never-settle so the stale continuation
+          // still doesn't run.
+          if (controller._supersededByKey) return new Promise(() => {});
           return result;
         },
         (err) => {
           cleanup();
-          // Superseded by a newer same-channel call: hang forever so the stale
-          // continuation never runs (see above). Everything else — a real error,
-          // or an abort from the caller's own signal — propagates.
+          // The caller's OWN signal aborting takes precedence: they asked to
+          // cancel, so reject with the standard AbortError (their catch/finally
+          // must run) — even in the common abort-then-new-call idiom where a
+          // newer same-channel call also marked us superseded.
+          if (opts.signal && opts.signal.aborted) throw err;
+          // Otherwise, superseded by a newer same-channel call → hang forever so
+          // the stale continuation never runs. Real errors propagate.
           if (controller._supersededByKey) return new Promise(() => {});
           throw err;
         }
