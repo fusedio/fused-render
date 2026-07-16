@@ -3,7 +3,7 @@
 //   2. else                      -> fallback metadata card
 // No file-type checks live in the shell — html arrives through stat.templates
 // like everything else, via the "_render" sentinel (SPEC PT-12).
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   getDeployStatus,
   getPrefs,
@@ -95,7 +95,10 @@ function usePreviewFileMenu(
   // can't see this view's local state, so the shared count is what makes it
   // back off. Release on close and on unmount so no held count leaks.
   const overlayOpen = menu !== null || dialog !== null;
-  useEffect(() => {
+  // Layout effect: registers before paint, so a keydown on the very tick the
+  // menu opens already sees isOverlayOpen() (a plain effect leaves one frame
+  // where the embedded listing's shortcuts still fire).
+  useLayoutEffect(() => {
     if (!overlayOpen) return;
     acquireOverlay();
     return () => releaseOverlay();

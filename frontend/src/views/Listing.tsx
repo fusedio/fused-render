@@ -8,7 +8,7 @@
 // arriving, so feedback is instant even on huge trees. The walk starts lazily
 // on first focus (or a URL-seeded query) and is cached until the dir watch
 // fires.
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { navigate, navigateUrl, urlForFsPath } from "../lib/router";
 import {
   listDir,
@@ -329,7 +329,9 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   // Listing's document-level handlers must not fire behind them (and vice
   // versa). acquire on open, release on close — and on unmount, so a nav-away
   // while the menu is open can't leak a held count.
-  useEffect(() => {
+  // Layout effect so the hold registers before paint — no one-frame window
+  // where another view's handlers still see isOverlayOpen() === false.
+  useLayoutEffect(() => {
     if (!overlayOpenRef.current) return;
     acquireOverlay();
     return () => releaseOverlay();
