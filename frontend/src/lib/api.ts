@@ -18,6 +18,14 @@ export interface FsEntry {
 export interface ListResult {
   path: string;
   entries: FsEntry[];
+  // The listing is a partial page: the directory has more entries than the
+  // server's LIST_MAX_ENTRIES cap (or the remote listing was capped). Older
+  // servers omit these two fields, so both are optional.
+  truncated?: boolean;
+  // Opaque continuation token for the next page — non-null only on the
+  // resumable S3-direct route (rclone and a local scandir can't resume). Pass
+  // it back to listDir to fetch the next page.
+  cursor?: string | null;
 }
 
 // One entry from GET /api/fs/walk. `rel` is a posix path relative to the
@@ -107,8 +115,10 @@ export function getConfig(): Promise<Config> {
   return getJson<Config>("/api/config");
 }
 
-export function listDir(fsPath: string): Promise<ListResult> {
-  return getJson<ListResult>("/api/fs/list?path=" + encodeURIComponent(fsPath));
+export function listDir(fsPath: string, cursor?: string | null): Promise<ListResult> {
+  let url = "/api/fs/list?path=" + encodeURIComponent(fsPath);
+  if (cursor) url += "&cursor=" + encodeURIComponent(cursor);
+  return getJson<ListResult>(url);
 }
 
 export function walkDir(fsPath: string, opts?: { hidden?: boolean }): Promise<WalkResult> {

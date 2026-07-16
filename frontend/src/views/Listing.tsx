@@ -226,7 +226,12 @@ function renderHighlight(text: string, positions: number[]) {
 
 type ListingState =
   | { status: "loading" }
-  | { status: "ok"; entries: FsEntry[] }
+  // `truncated`: the directory has more entries than the server cap, so this
+  // listing is a partial page. `cursor`: an opaque continuation token to fetch
+  // the next page (non-null only on the resumable S3-direct route); null means
+  // "no more can be fetched" — the banner then just states the listing is
+  // partial without a Load more button.
+  | { status: "ok"; entries: FsEntry[]; truncated: boolean; cursor: string | null }
   | { status: "error"; message: string };
 
 // Streamed walk state. `entries` is one append-only array shared across the
@@ -292,6 +297,8 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   // Path of the keyboard-selected row (arrow-key navigation); null = none.
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  // A Load more fetch (next page of a truncated listing) is in flight.
+  const [loadingMore, setLoadingMore] = useState(false);
 
   // --- Context-menu / file-operation state ----------------------------------
   // The open context menu (position + items), the open modal, and a transient
@@ -422,14 +429,56 @@ export default function Listing({ fsPath }: { fsPath: string }) {
 
   useEffect(() => {
     let alive = true;
+    // A fresh fetch (navigation or dir-watch refresh) resets any accumulated
+    // Load more pages: the new listing replaces the array wholesale.
+    setLoadingMore(false);
     listDir(fsPath).then(
-      (data) => alive && setState({ status: "ok", entries: data.entries }),
+      (data) =>
+        alive &&
+        setState({
+          status: "ok",
+          entries: data.entries,
+          truncated: !!data.truncated,
+          cursor: data.cursor ?? null,
+        }),
       (err: Error) => alive && setState({ status: "error", message: err.message })
     );
     return () => {
       alive = false;
     };
   }, [fsPath, refresh]);
+
+  // Fetch the next page of a truncated S3-direct listing and APPEND it (dedupe
+  // by name). The accumulated set is still sorted by the active column below —
+  // honest because the banner states the listing is partial; a global sort over
+  // the WHOLE directory is impossible (we only ever hold fetched pages).
+  const loadMore = () => {
+    if (state.status !== "ok" || !state.cursor || loadingMore) return;
+    const cursor = state.cursor;
+    setLoadingMore(true);
+    listDir(fsPath, cursor).then(
+      (data) => {
+        setLoadingMore(false);
+        setState((prev) => {
+          if (prev.status !== "ok") return prev;
+          const seen = new Set(prev.entries.map((e) => e.name));
+          const merged = prev.entries.concat(
+            data.entries.filter((e) => !seen.has(e.name))
+          );
+          return {
+            status: "ok",
+            entries: merged,
+            truncated: !!data.truncated,
+            cursor: data.cursor ?? null,
+          };
+        });
+      },
+      (err: Error) => {
+        setLoadingMore(false);
+        setToast({ msg: err.message, tone: "error" });
+      }
+    );
+  };
 
   // WebSocket watch on the listed directory (LS-1); WS not SSE per D74 (SSE
   // pinned one of Chrome's 6 HTTP/1.1 sockets per view). A directory's mtime
@@ -1254,15 +1303,40 @@ export default function Listing({ fsPath }: { fsPath: string }) {
         </tr>
       );
     });
-    body = rows.length ? (
-      rows
-    ) : (
-      <tr>
+    // A truncated listing gets a slim banner row after the entries: the
+    // directory has more than the server cap. On the resumable S3-direct route
+    // (cursor non-null) it carries a Load more button that appends the next
+    // page; otherwise it just states the listing is partial.
+    const banner = state.truncated ? (
+      <tr key="__truncated__" className="listing-truncated">
         <td colSpan={3} className="status-message">
-          Empty directory
+          Showing first {sortedEntries.length} entries — directory listing is partial.
+          {state.cursor && (
+            <button
+              type="button"
+              className="listing-load-more"
+              disabled={loadingMore}
+              onClick={loadMore}
+            >
+              {loadingMore ? "Loading…" : "Load more"}
+            </button>
+          )}
         </td>
       </tr>
-    );
+    ) : null;
+    body =
+      rows.length || banner ? (
+        <>
+          {rows}
+          {banner}
+        </>
+      ) : (
+        <tr>
+          <td colSpan={3} className="status-message">
+            Empty directory
+          </td>
+        </tr>
+      );
   }
 
   // --- search match count (inline in the search row) ------------------------
