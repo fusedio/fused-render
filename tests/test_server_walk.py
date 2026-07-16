@@ -387,20 +387,10 @@ def test_walk_standalone_gitignore_cascades_to_subdirs(tmp_path):
 #
 # A walk under a mount mountpoint turns every directory into a remote LIST
 # call, so it gets a much smaller entry cap than a local walk. The clamp keys
-# off the mounts dir (home_dir()/mounts), which follows
-# FUSED_RENDER_HOME.
-
-
-def test_walk_clamped_under_mount_dir(tmp_path, monkeypatch):
-    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
-    mount = tmp_path / "home" / "mounts" / "bucket"
-    mount.mkdir(parents=True)
-    for i in range(10):
-        (mount / f"f{i}.txt").write_text("x", encoding="utf-8")
-    monkeypatch.setattr(server, "WALK_MAX_ENTRIES_REMOTE", 3)
-    data = _client(tmp_path).get("/api/fs/walk", params={"path": str(mount)}).json()
-    assert data["truncated"] is True
-    assert len(data["entries"]) == 3
+# off the mounts dir (home_dir()/mounts), which follows FUSED_RENDER_HOME.
+# The mount-backed side of the clamp (listing via the rc API) lives in
+# test_server_fs_list_mount.py, which has the rcd stub; this only pins that a
+# path OUTSIDE the mounts dir keeps the big local cap.
 
 
 def test_walk_outside_mounts_keeps_big_cap(tmp_path, monkeypatch):

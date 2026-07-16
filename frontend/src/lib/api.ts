@@ -18,6 +18,14 @@ export interface FsEntry {
 export interface ListResult {
   path: string;
   entries: FsEntry[];
+  // The listing is a partial page: the directory has more entries than the
+  // server's LIST_MAX_ENTRIES cap (or the remote listing was capped). Older
+  // servers omit these two fields, so both are optional.
+  truncated?: boolean;
+  // Opaque continuation token for the next page — non-null only on the
+  // resumable S3-direct route (rclone and a local scandir can't resume). Pass
+  // it back to listDir to fetch the next page.
+  cursor?: string | null;
 }
 
 // One entry from GET /api/fs/walk. `rel` is a posix path relative to the
@@ -107,8 +115,10 @@ export function getConfig(): Promise<Config> {
   return getJson<Config>("/api/config");
 }
 
-export function listDir(fsPath: string): Promise<ListResult> {
-  return getJson<ListResult>("/api/fs/list?path=" + encodeURIComponent(fsPath));
+export function listDir(fsPath: string, cursor?: string | null): Promise<ListResult> {
+  let url = "/api/fs/list?path=" + encodeURIComponent(fsPath);
+  if (cursor) url += "&cursor=" + encodeURIComponent(cursor);
+  return getJson<ListResult>(url);
 }
 
 export function walkDir(fsPath: string, opts?: { hidden?: boolean }): Promise<WalkResult> {
@@ -665,10 +675,14 @@ export interface Mount {
   name: string;
   remote: string;
   mountpoint: string;
-  // Health, not just presence: "disconnected" = a kernel mount is (or was)
-  // there but its rclone daemon no longer serves it — listings show stale or
-  // empty data. Repaired via reconnectMount (force unmount + fresh mount).
-  state: "mounted" | "disconnected" | "unmounted";
+  // Health, not just presence:
+  //  - "disconnected" = a kernel mount is (or was) there but its rclone daemon
+  //    no longer serves it — listings show stale or empty data.
+  //  - "stale" = the split-brain from the 2026-07-16 incident: rclone still
+  //    lists the mount but the kernel dropped it (e.g. the user hit
+  //    "Disconnect" on the macOS "Server connections interrupted" dialog).
+  // Both are repaired via reconnectMount (force unmount + fresh mount).
+  state: "mounted" | "stale" | "disconnected" | "unmounted";
   mounted: boolean; // state === "mounted"
   // The remote rejects writes (anonymous S3, an http backend, …), detected at
   // attach time. Files under the mountpoint stat as writable:false, so

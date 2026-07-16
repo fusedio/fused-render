@@ -86,12 +86,19 @@ function MountRow({
 
   // "disconnected": a mount is (or was) there but its rclone daemon no longer
   // serves it — listings show stale/empty data and a plain unmount fails.
-  // Reconnect force-clears the dead mountpoint and mounts fresh.
+  // "stale": the 2026-07-16 split-brain — rclone still lists the mount but the
+  // kernel dropped it (e.g. the macOS "Server connections interrupted" dialog's
+  // Disconnect). Both are unhealthy and both recover the same way: Reconnect
+  // force-clears the dead mountpoint and mounts fresh.
   const dotLabel = {
     mounted: "Mounted",
     disconnected: "Disconnected — remote data is not flowing",
+    stale: "Disconnected — the mount dropped; reconnect to restore it",
     unmounted: "Not mounted",
   }[conn.state];
+  // Both broken states show the same "disconnected" badge and Reconnect remedy;
+  // "stale" is a distinct backend state (for logs/diagnosis) but the same fix.
+  const broken = conn.state === "disconnected" || conn.state === "stale";
 
   return (
     <div className="mount-card">
@@ -106,8 +113,11 @@ function MountRow({
                 — read-only
               </span>
             )}
-            {conn.state === "disconnected" && (
-              <span className="mount-hint warn">
+            {broken && (
+              <span
+                className="mount-hint warn"
+                title="The mount stopped responding — remote data is not flowing. Use Reconnect to restore it."
+              >
                 {" "}
                 — disconnected
               </span>
@@ -123,7 +133,7 @@ function MountRow({
               Open
             </button>
           ) : (
-            // Both "disconnected" and "unmounted" recover the same way: there is
+            // "disconnected", "stale" and "unmounted" all recover the same way: there is
             // no unmount action (mounts automount and stay up), so Reconnect is
             // the single "something's wrong" repair — it force-clears any dead
             // mountpoint and mounts fresh (reconnect_mount also handles the

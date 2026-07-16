@@ -34,6 +34,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import xml.etree.ElementTree as ElementTree
+from datetime import datetime
 
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
@@ -116,14 +118,34 @@ _VFS_OPT_TO_SERVE_PARAM = {
     "CacheMaxSize": "vfs_cache_max_size",
     "FastFingerprint": "vfs_fast_fingerprint",
     "DirCacheTime": "dir_cache_time",
+    # The per-mount ReadOnly (added by _vfs_opt_for) maps to the serve's
+    # --read-only flag (NOT --vfs-read-only, which rcd silently ignores — see
+    # _serve_vfs_opt_for's history). Listed here so _serve_params derives it
+    # rather than any caller hand-writing "read_only".
+    "ReadOnly": "read_only",
 }
-# KeyError here on import is deliberate: a VFS_OPT key with no serve mapping
-# must not silently fall out of the serve's option set (that would re-split
-# the VFS) — add the mapping instead.
-SERVE_VFS_OPT = {
-    _VFS_OPT_TO_SERVE_PARAM[k]: ("true" if v else "false") if isinstance(v, bool) else str(v)
-    for k, v in VFS_OPT.items()
-}
+
+
+def _serve_params(vfs_opt: dict) -> dict:
+    """Map a mount/mount vfsOpt dict to the HTTP serve's flat rc params, via the
+    single _VFS_OPT_TO_SERVE_PARAM table. Values are stringified because
+    serve/list echoes them back as strings (bool -> "true"/"false", int -> "4")
+    and sync_serves' drift check compares against that echo.
+
+    A KeyError here is deliberate: a vfsOpt key with no serve mapping must not
+    silently fall out of the serve's option set (that would re-split the VFS
+    into a second instance) — add the mapping to _VFS_OPT_TO_SERVE_PARAM
+    instead. The guard now covers the per-mount ReadOnly key too, not just the
+    canonical VFS_OPT set."""
+    return {
+        _VFS_OPT_TO_SERVE_PARAM[k]: ("true" if v else "false") if isinstance(v, bool) else str(v)
+        for k, v in vfs_opt.items()
+    }
+
+
+# The canonical serve params for the shared VFS options (no per-mount ReadOnly);
+# _serve_vfs_opt_for layers each mount's read_only on via _serve_params below.
+SERVE_VFS_OPT = _serve_params(VFS_OPT)
 
 # macOS mounts rclone's nfsmount through the loopback NFS client, whose
 # request timeout defaults aggressively low — a single slow 8M chunk fetch
@@ -141,6 +163,66 @@ SERVE_VFS_OPT = {
 # the rcd -vv log). nfsmount only — the Linux path uses FUSE `mount`, which
 # ignores these NFS options.
 NFS_MOUNT_OPT = {"ExtraOptions": ["timeo=600", "retrans=2"]}
+
+
+# INCIDENT (2026-07-16): a mount recorded read_only=true in mounts.json still
+# mounted WRITABLE at the rclone layer — vfs/stats reported ReadOnly:false and
+# the kernel NFS mount was not rdonly. With CacheMode=full a write (macOS's
+# .DS_Store) is accepted into the VFS cache and then retried forever against
+# the store, which answers PutObject 403 AccessDenied — 6642 accumulated
+# errors before the mount wedged ("Server connections interrupted"). The
+# read_only flag was purely an app-level guard (mount_read_only ->
+# server._writable): it flipped stat.writable and blocked /api/fs/write, but
+# nothing stopped rclone itself, or a non-app writer (Finder), from queuing
+# doomed uploads. These helpers push read_only DOWN into the two layers that
+# actually accept the bytes, so a read-only remote rejects the write before it
+# is ever cached:
+#   - the VFS (ReadOnly), shared by the mount's vfsOpt and the HTTP serve's
+#     flat params — both must set it identically or rcd splits the VFS in two
+#     (see SERVE_VFS_OPT), so the serve carries read_only too;
+#   - the macOS kernel NFS mount (rdonly), so even Finder can't write.
+# read_write mounts get the explicit falses / no rdonly — the pre-incident
+# behavior, stated rather than left to defaults.
+
+
+def _vfs_opt_for(m: dict) -> dict:
+    """The mount's vfsOpt: the canonical VFS_OPT plus ReadOnly driven by the
+    record's read_only flag. Explicit False (not omission) so a read_write
+    mount reads back ReadOnly:false in vfs/stats and matches its serve's
+    read_only=false — the two option sets must agree exactly for the mount
+    and serve to share one VFS."""
+    return {**VFS_OPT, "ReadOnly": bool(m.get("read_only"))}
+
+
+def _serve_vfs_opt_for(m: dict) -> dict:
+    """The HTTP serve's flat vfs params for this mount: SERVE_VFS_OPT plus
+    read_only, the serve-side spelling of the mount's vfsOpt.ReadOnly (the CLI
+    flag is --read-only, NOT --vfs-read-only — an unknown rc param is silently
+    ignored, and an ignored one here leaves the serve's VFS at ReadOnly:false,
+    which both defeats the write guard AND splits the mount/serve VFS in two;
+    verified live against rcd: read_only joins the mount's VFS, vfs_read_only
+    forked a second instance per remote). Stringified like the rest of
+    SERVE_VFS_OPT because serve/list echoes params back as strings, and
+    sync_serves' drift check compares against that echo.
+
+    Derived from _vfs_opt_for through _serve_params — NOT hand-written — so the
+    mount's vfsOpt and the serve's flat params can never drift (drift is what
+    split the VFS in two; the module's derive-don't-hand-write rule)."""
+    return _serve_params(_vfs_opt_for(m))
+
+
+def _nfs_mount_opt(m: dict) -> dict:
+    """macOS-only mountOpt for this mount: the NFS transport tuning plus, for a
+    read_only record, "rdonly" so the kernel mount itself rejects writes (a
+    belt-and-suspenders companion to the VFS ReadOnly above — the VFS stops the
+    app and rclone, rdonly stops anything that reaches the kernel mount, e.g.
+    Finder dropping a .DS_Store). Same nfsmount-only gating as the timeo/retrans
+    options: the Linux FUSE path takes different mount flags and ignores these,
+    so this is only ever passed on darwin (see attach_mount)."""
+    extra = list(NFS_MOUNT_OPT["ExtraOptions"])
+    if m.get("read_only"):
+        extra.append("rdonly")
+    return {"ExtraOptions": extra}
 
 # Tile-server daemon state files — the two parallel implementations that can
 # hold files open under a mount (geotiff, and the grid server shared by
@@ -268,8 +350,69 @@ def _rcd_state_path() -> str:
     return os.path.join(storage.home_dir(), "rcd.json")
 
 
-def write_rcd_state(port: int, pid: int) -> None:
-    storage.write_json(_rcd_state_path(), {"port": port, "pid": pid})
+def _rcd_log_path() -> str:
+    return os.path.join(storage.home_dir(), "rcd.log")
+
+
+# rclone's --log-file has no built-in rotation, so cap it ourselves.
+RCD_LOG_MAX_BYTES = 10 * 1024 * 1024
+
+
+def _rotate_rcd_log() -> str:
+    """Before spawning rcd, roll the log if it has grown past the cap:
+    rcd.log -> rcd.log.1 (overwriting any previous .1). One generation is
+    enough — this is diagnostic breadcrumbs, not an audit trail. Returns the
+    (current) log path to hand to --log-file.
+
+    INCIDENT 2026-07-16: rcd ran with NO --log-file, so when a read-only mount
+    wedged under load there was zero rclone-side evidence to diagnose with (no
+    record of the 403 PutObject loop). Best-effort: a stat/rename failure just
+    means we append to whatever is there."""
+    log = _rcd_log_path()
+    try:
+        if os.path.getsize(log) > RCD_LOG_MAX_BYTES:
+            os.replace(log, log + ".1")
+    except OSError:
+        pass
+    return log
+
+
+def _copytruncate_rcd_log() -> None:
+    """Enforce the log cap against a LIVE daemon (server startup path).
+
+    _rotate_rcd_log's os.replace only rolls the file when THIS process spawns a
+    new rcd, but the daemon is detached and outlives server restarts — so a
+    long-lived rcd's log grows unbounded, its cap never re-checked. os.replace
+    can't rotate under it either: rclone holds the inode open in append mode and
+    would keep writing to the renamed file. Copytruncate instead — copy the
+    current contents to rcd.log.1, then truncate the live file in place (its fd
+    keeps appending past offset 0, which is safe for O_APPEND writers). Fully
+    best-effort: any failure (missing file, permissions) must never block
+    startup, so it's swallowed."""
+    log = _rcd_log_path()
+    try:
+        if os.path.getsize(log) <= RCD_LOG_MAX_BYTES:
+            return
+    except OSError:
+        return
+    try:
+        with open(log, "r+b") as f:
+            data = f.read()
+            with open(log + ".1", "wb") as backup:
+                backup.write(data)
+            f.seek(0)
+            f.truncate(0)
+    except OSError:
+        logger.warning("rcd log copytruncate failed", exc_info=True)
+
+
+def write_rcd_state(port: int, pid: int, log_path: str | None = None) -> None:
+    # Record the log path alongside port/pid so tooling (and a human tailing
+    # the daemon) can find it without reconstructing home_dir() (INCIDENT).
+    storage.write_json(
+        _rcd_state_path(),
+        {"port": port, "pid": pid, "log": log_path or _rcd_log_path()},
+    )
 
 
 def _rc(port: int, method: str, params: dict | None = None, timeout: float = 30):
@@ -295,15 +438,41 @@ def _rc(port: int, method: str, params: dict | None = None, timeout: float = 30)
         raise RuntimeError(f"rclone rc {method}: {e}") from e
 
 
+# A live-port probe (core/pid over the loopback rc port, timeout=3) runs on
+# EVERY rc-routed call — rc_list_dir, rc_mtime_for, _remote_config, the S3
+# capability check. A single fs/walk fans that probe out across every directory
+# it lists, so an un-memoized probe is up to ~3s of pure overhead per dir. Cache
+# the verified port for a short TTL, keyed on the recorded (port, pid): a new
+# daemon writes a new state (different key) and is picked up at once, while a
+# burst of calls within the window shares one probe. Only a SUCCESSFUL probe is
+# cached — "rcd down" always re-probes (a refused connection is cheap), so the
+# daemon coming up is never masked. The short TTL keeps liveness detection: a
+# daemon that dies is noticed within _LIVE_PORT_TTL_S.
+_LIVE_PORT_TTL_S = 1.0
+_live_port_lock = threading.Lock()
+_live_port_cache: tuple | None = None  # ((port, pid), port, monotonic expiry)
+
+
 def _live_rcd_port() -> int | None:
-    """The recorded daemon's port iff it answers core/pid; never spawns."""
+    """The recorded daemon's port iff it answers core/pid; never spawns.
+    Memoized for _LIVE_PORT_TTL_S per recorded (port, pid) so a walk over many
+    directories doesn't re-probe core/pid for every listing."""
+    global _live_port_cache
     state = storage.read_json(_rcd_state_path())
     if not isinstance(state, dict) or not state.get("port"):
         return None
+    key = (state.get("port"), state.get("pid"))
+    now = time.monotonic()
+    with _live_port_lock:
+        c = _live_port_cache
+        if c is not None and c[0] == key and c[2] > now:
+            return c[1]
     try:
         _rc(state["port"], "core/pid", timeout=3)
     except RuntimeError:
         return None
+    with _live_port_lock:
+        _live_port_cache = (key, state["port"], now + _LIVE_PORT_TTL_S)
     return state["port"]
 
 
@@ -355,9 +524,17 @@ def _ensure_rcd_locked() -> int:
     # mount: measured ~300ms/object, turning a 264-file sentinel-cogs subtree
     # into a ~78s walk vs ~1.5s with the LIST mtime. We don't need upload-time
     # precision to browse, so trade it for the 50x faster listing.
+    # --log-file/--log-level: give the detached daemon a durable log so a mount
+    # that wedges under load leaves rclone-side evidence (INCIDENT 2026-07-16 —
+    # the daemon had none, so the read-only PutObject 403 loop was invisible).
+    # Rotate first since rclone won't cap the file itself. stdout/stderr stay
+    # DEVNULL: --log-file captures everything, and a detached daemon has no
+    # console to write to anyway.
+    log_path = _rotate_rcd_log()
     subprocess.Popen(
         [bin_, "rcd", "--rc-no-auth", "--use-server-modtime",
-         f"--rc-addr=127.0.0.1:{port}"],
+         f"--rc-addr=127.0.0.1:{port}",
+         f"--log-file={log_path}", "--log-level", "INFO"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,  # outlives this server on purpose
@@ -366,7 +543,7 @@ def _ensure_rcd_locked() -> int:
     while time.time() < deadline:
         try:
             pid = _rc(port, "core/pid", timeout=2).get("pid", 0)
-            write_rcd_state(port, pid)
+            write_rcd_state(port, pid, log_path)
             return port
         except RuntimeError:
             time.sleep(0.2)
@@ -538,9 +715,184 @@ def _refresh_read_only_flag(m: dict, port: int | None = None) -> None:
 
 def is_mount_backed(path: str) -> bool:
     """True when `path` sits under the mounts dir — i.e. its bytes come from a
-    remote. Pure prefix check (no probe, no rc), cheap enough for every stat."""
+    remote. Cheap enough for every stat: the fast abspath prefix check settles
+    the common case with no I/O.
+
+    A symlink whose TARGET is inside the mounts dir would slip past a pure string
+    check and be classified LOCAL — landing on the 200ms kernel os.stat ticker,
+    the exact GETATTR storm the mount routing avoids. So a path that does NOT
+    look mount-backed by string is re-checked through os.path.realpath (which
+    resolves the symlink). A genuine mount path already matches on abspath and
+    never reaches realpath, so no kernel I/O / mount traversal is added to the
+    hot path; only local-looking paths pay one realpath."""
     root = os.path.abspath(mounts_dir())
-    return os.path.abspath(path).startswith(root + os.sep)
+    ap = os.path.abspath(path)
+    if ap == root or ap.startswith(root + os.sep):
+        return True
+    real_root = os.path.realpath(mounts_dir())
+    rp = os.path.realpath(path)
+    return rp == real_root or rp.startswith(real_root + os.sep)
+
+
+def rc_mtime_for(path: str) -> str | None:
+    """ModTime of a mount-backed file, answered by the rclone rcd rc API
+    (operations/stat) instead of the kernel NFS mount.
+
+    Background — the fs/events stat storm incident: a read-only S3-backed
+    rclone NFS mount died with the macOS "Server connections interrupted"
+    dialog. The /api/fs/events poller was calling os.stat() on every watched
+    path every 200ms, and each of those is a kernel NFS GETATTR. When the
+    attribute cache expires, that GETATTR forces rclone to re-list the
+    directory on S3; for a world-scale .zarr on a slow bucket the re-list
+    exceeds the macOS NFS client's timeo*retrans ceiling (~2min) and the
+    kernel declares the mount dead. Several open preview panes plus the
+    Listing view held ~5 such stat loops at once.
+
+    Asking the rcd directly over its loopback rc port removes the kernel from
+    the loop entirely: a slow answer here is just a slow HTTP response, never
+    a wedged mount. The remote (`fs`) and remote-relative path come from the
+    same _mount_for() translation the raw-proxy hot path uses.
+
+    Returns the RFC3339 ModTime string, or None when it cannot be determined
+    (path not under a mount, rcd unreachable, rc error/timeout, or missing
+    item). Callers MUST treat None as "unchanged" and MUST NOT fall back to
+    os.stat — that fallback is the exact GETATTR that killed the mount."""
+    m, rel = _mount_for(path)
+    if m is None:
+        return None
+    port = _live_rcd_port()
+    if port is None:
+        return None
+    # _mount_for returns "." for the mountpoint itself; operations/stat wants ""
+    # for the fs root (remote "." returns {"item": null}, so the mount-ROOT
+    # watch would never prime — same quirk operations/list has, normalized in
+    # rc_list_dir).
+    remote = "" if rel == "." else rel
+    try:
+        resp = _rc(port, "operations/stat",
+                   {"fs": m["remote"], "remote": remote}, timeout=10)
+    except RuntimeError:
+        return None
+    item = resp.get("item") if isinstance(resp, dict) else None
+    if not isinstance(item, dict):
+        return None
+    return item.get("ModTime") or None
+
+
+# operations/list can't be paginated at any rclone layer (verified: `rclone lsf
+# <dir> | head` takes as long as the full listing), so a directory with millions
+# of keys takes minutes to enumerate. A hard timeout turns that "dead mount"
+# outcome into a plain "listing failed" HTTP error: the request fails, the mount
+# lives. 20s is generous for a healthy directory yet well under the macOS NFS
+# deadman that a kernel readdir would otherwise trip.
+RC_LIST_TIMEOUT_S = 20.0
+
+
+class RcListError(Exception):
+    """The rcd answered but rejected an operations/list — the remote path is
+    not a listable directory (a file, or missing). The caller maps this to the
+    400 "not a directory" response, the mount-safe equivalent of the
+    os.path.isdir guard a local listing runs before scandir."""
+
+
+class RcListUnavailable(RcListError):
+    """The rcd itself is unreachable (not running, or the path resolves to no
+    known mount record) — indistinguishable here from a broken mount, so the
+    caller consults broken_mount_error and returns 503."""
+
+
+class RcListTimeout(RcListError):
+    """operations/list did not finish within the hard timeout — a directory too
+    large to enumerate. The caller surfaces a 503 "too many entries" rather
+    than letting a kernel readdir wedge the mount."""
+
+
+def _rc_timed_out(e: BaseException) -> bool:
+    """Whether an _rc RuntimeError was caused by the request timing out. _rc
+    wraps every transport failure (OSError, including the socket read timeout)
+    into a RuntimeError, so the original timeout survives only on the
+    exception's __cause__ chain."""
+    cause = e.__cause__
+    if isinstance(cause, TimeoutError):  # socket.timeout is an alias since 3.10
+        return True
+    return (isinstance(cause, urllib.error.URLError)
+            and isinstance(getattr(cause, "reason", None), TimeoutError))
+
+
+def rc_list_dir(path: str, timeout: float | None = None) -> list:
+    """Directory listing of a mount-backed path, answered by the rclone rcd rc
+    API (operations/list) instead of a kernel os.scandir.
+
+    Background — the mur-sst listing incident: a kernel READDIR on an rclone
+    NFS mount forces rclone's VFS to enumerate the ENTIRE remote directory
+    before the kernel gets its first entry. On a flat S3 prefix with millions
+    of keys (aws-open:mur-sst/zarr-v1 -> analysed_sst/) that runs for minutes,
+    blows past the macOS NFS deadman, and the OS kills the mount ("Server
+    connections interrupted"). rclone can't paginate a listing at any layer, so
+    Phase 1's goal is SAFETY, not speed: ask the rcd directly over its loopback
+    rc port, bounded by a hard timeout, so a too-huge directory becomes a failed
+    request instead of a wedged mount.
+
+    Returns the raw operations/list array (dicts with Name, Size, IsDir,
+    ModTime, ...). Does ZERO kernel I/O on the mount path — no os.stat,
+    os.scandir, or os.path.isdir of `path`. The (fs, remote) translation is the
+    same _mount_for() one rc_mtime_for and the raw proxy use.
+
+    Raises RcListTimeout when the listing exceeds `timeout`, RcListUnavailable
+    when the rcd is unreachable / the path is under no known mount, and
+    RcListError when the rcd rejects the listing (the path is a file, not a
+    directory)."""
+    if timeout is None:
+        timeout = RC_LIST_TIMEOUT_S
+    m, rel = _mount_for(path)
+    if m is None:
+        raise RcListUnavailable(f"{path} is under no known mount")
+    port = _live_rcd_port()
+    if port is None:
+        raise RcListUnavailable("rclone rcd is not running")
+    # _mount_for returns "." for the mountpoint itself; operations/list wants
+    # "" for the fs root ("." yields {"list": null}/nonsense, same quirk
+    # operations/stat has).
+    remote = "" if rel == "." else rel
+    try:
+        resp = _rc(port, "operations/list",
+                   {"fs": m["remote"], "remote": remote,
+                    "opt": {"noMimeType": True}}, timeout=timeout)
+    except RuntimeError as e:
+        if _rc_timed_out(e):
+            raise RcListTimeout(f"listing {path} timed out after {timeout:g}s") from e
+        raise RcListError(str(e)) from e
+    listed = resp.get("list") if isinstance(resp, dict) else None
+    return listed if isinstance(listed, list) else []
+
+
+def rc_modtime_epoch(modtime: str | None) -> float | None:
+    """RFC3339 ModTime from an rc listing entry -> epoch seconds (float), or
+    None when absent/unparseable. rclone emits e.g. "2024-01-02T03:04:05.12Z"
+    or with a numeric offset, up to nanosecond precision; datetime parses only
+    microseconds, so trailing sub-microsecond digits are trimmed. rclone
+    reports a constant sentinel (2000-01-01) for synthetic S3 directories —
+    parsed and passed through like any other timestamp."""
+    if not modtime:
+        return None
+    s = modtime.strip()
+    # datetime.fromisoformat only accepts 'Z' on 3.11+; normalize to +00:00 so
+    # any interpreter agrees.
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    # Normalize the fractional part to EXACTLY 6 digits. rclone emits anywhere
+    # from 1-9 fractional digits, but py3.10's fromisoformat accepts only 3 or 6
+    # (7+ never parse on any version); an off-count silently returned None and
+    # dropped the mtime. Pad short fractions with zeros and trim long ones to
+    # microseconds, preserving any trailing timezone offset.
+    m = re.match(r"^(.*?)\.(\d+)(.*)$", s)
+    if m:
+        frac = (m.group(2) + "000000")[:6]
+        s = f"{m.group(1)}.{frac}{m.group(3)}"
+    try:
+        return datetime.fromisoformat(s).timestamp()
+    except ValueError:
+        return None
 
 
 def serve_url_for(path: str) -> str | None:
@@ -625,6 +977,19 @@ def _mount_for(path: str) -> tuple[dict | None, str]:
     return None, ""
 
 
+def _s3_base_url(bucket: str, region: str) -> str:
+    """Base https URL addressing a bucket, applying the dotted-bucket rule once.
+    Virtual-hosted style puts the bucket in the TLS hostname, but
+    *.s3.<region>.amazonaws.com can't match a bucket whose name contains dots
+    (e.g. us-west-2.opendata.source.coop) — every client fails the handshake —
+    so a dotted bucket goes path-style instead. Single source of this rule;
+    _public_object_url (object URLs), s3_list_page (list query URLs), and
+    _fix_dotted_bucket_url (the rewrite case) all route through it."""
+    if "." in bucket:
+        return f"https://s3.{region}.amazonaws.com/{bucket}"
+    return f"https://{bucket}.s3.{region}.amazonaws.com"
+
+
 def _fix_dotted_bucket_url(url: str) -> str | None:
     """Virtual-hosted S3 URLs put the bucket in the TLS hostname, and
     *.s3.<region>.amazonaws.com can't match a bucket with dots in its name
@@ -640,7 +1005,21 @@ def _fix_dotted_bucket_url(url: str) -> str | None:
     if p.query:
         return None
     bucket, region = m.group(1), m.group(2)
-    return f"https://s3.{region}.amazonaws.com/{bucket}{p.path}"
+    return _s3_base_url(bucket, region) + p.path
+
+
+def _s3_bucket_prefix_region(fs: str, cfg: dict) -> tuple[str, str, str] | None:
+    """(bucket, key prefix, region) for an AWS S3 remote's fs string
+    (e.g. "aws-open:mur-sst/zarr-v1" -> ("mur-sst", "zarr-v1", "us-east-1")).
+    The key prefix is stripped of any trailing slash; region defaults to
+    us-east-1. None when the fs carries no bucket. Shared by _public_object_url
+    (per-object URLs) and s3_list_page (ListObjectsV2 prefixes) so the two can't
+    derive the bucket/region differently."""
+    _, _, root = fs.partition(":")
+    bucket, _, prefix = root.partition("/")
+    if not bucket:
+        return None
+    return bucket, prefix.rstrip("/"), cfg.get("region") or "us-east-1"
 
 
 def _public_object_url(fs: str, rel: str) -> str | None:
@@ -649,24 +1028,145 @@ def _public_object_url(fs: str, rel: str) -> str | None:
     non-AWS remotes return None (their objects aren't reachable unsigned).
     Pure string building once _remote_config has memoized the config — no rc
     round trip per object."""
-    name, _, root = fs.partition(":")
-    cfg = _remote_config(name)
+    cfg = _remote_config(fs.partition(":")[0])
     if not _anonymous_s3(cfg):
         return None
     assert cfg is not None
-    bucket, _, prefix = root.partition("/")
-    if not bucket:
+    derived = _s3_bucket_prefix_region(fs, cfg)
+    if derived is None:
         return None
-    key = (prefix.rstrip("/") + "/" if prefix else "") + rel
-    region = cfg.get("region") or "us-east-1"
-    # Path-style for dotted buckets: virtual-hosted style puts the bucket in
-    # the TLS hostname, and *.s3.<region>.amazonaws.com can't match the extra
-    # dots (e.g. us-west-2.opendata.source.coop) — every client fails the
-    # handshake on the redirect.
-    if "." in bucket:
-        return (f"https://s3.{region}.amazonaws.com/{bucket}/"
-                + urllib.parse.quote(key))
-    return f"https://{bucket}.s3.{region}.amazonaws.com/" + urllib.parse.quote(key)
+    bucket, prefix, region = derived
+    key = (prefix + "/" if prefix else "") + rel
+    # _s3_base_url applies the dotted-bucket path-style rule (see there).
+    return _s3_base_url(bucket, region) + "/" + urllib.parse.quote(key)
+
+
+# ------------------------------------------------------- direct S3 pagination
+# rclone can't paginate operations/list at any layer (see rc_list_dir), so a
+# flat S3 prefix with millions of keys (aws-open:mur-sst/zarr-v1 ->
+# analysed_sst/) times out and the user sees nothing. But S3's own
+# ListObjectsV2 paginates fine (~300ms per 1000-key page), so for the one
+# backend class that dominates our mounts — anonymous plain AWS S3
+# (_anonymous_s3) — fetch a single page at a time straight from S3, unsigned.
+# Credentialed / custom-endpoint remotes can't be listed unsigned and stay on
+# the Phase 1 rc path.
+S3_LIST_TIMEOUT_S = 15.0
+_S3_XMLNS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
+
+
+class S3ListError(Exception):
+    """A direct ListObjectsV2 page failed — an HTTP status (403 needs auth, 301
+    wrong region), a network error, or unparseable XML. The caller falls back
+    to rc_list_dir; kept distinct from the RcList* family so the fallback ladder
+    (S3-direct -> rc -> 503) reads cleanly."""
+
+
+def s3_direct_capable(path: str) -> bool:
+    """True when `path` is mount-backed by an anonymous plain-AWS-S3 remote —
+    the one backend class s3_list_page can enumerate unsigned. Lets the server
+    pick the fast path without re-deriving the _anonymous_s3 test."""
+    m, _ = _mount_for(path)
+    if m is None:
+        return False
+    return _anonymous_s3(_remote_config(m["remote"].partition(":")[0]))
+
+
+def _s3_listing_prefix(store_prefix: str, rel: str) -> str:
+    """ListObjectsV2 prefix for a mount-relative directory: <store prefix>/<rel>,
+    no leading slash and exactly one trailing slash (with delimiter=/, that
+    groups the directory's immediate children). The mountpoint itself (rel ".")
+    lists the store prefix's children; a bucket-root mountpoint (no store
+    prefix) yields "" — the whole bucket."""
+    if rel == ".":
+        joined = store_prefix
+    elif store_prefix:
+        joined = store_prefix + "/" + rel
+    else:
+        joined = rel
+    joined = joined.strip("/")
+    return joined + "/" if joined else ""
+
+
+def s3_list_page(path: str, *, max_keys: int, continuation: str | None = None,
+                 timeout: float | None = None) -> tuple[list, str | None]:
+    """One ListObjectsV2 page for a mount-backed directory on an anonymous AWS
+    S3 remote, fetched by a plain unsigned HTTPS GET — no kernel I/O on the
+    mount, no rclone, no boto3.
+
+    Returns (entries, next_token): entries shaped exactly like rc_list_dir
+    output (Name/Size/IsDir/ModTime dicts) so downstream mapping is shared, and
+    next_token the S3 continuation token when the listing is truncated, else
+    None. CommonPrefixes become synthetic directories (Size/ModTime None);
+    Contents become files; the zero-byte placeholder object whose key IS the
+    prefix (an S3-console "directory" marker) is skipped.
+
+    Raises S3ListError on any HTTP/network/XML failure so the caller can fall
+    back to rc_list_dir; a 403/301 (needs auth / wrong region) raises too,
+    never crashes."""
+    if timeout is None:
+        timeout = S3_LIST_TIMEOUT_S
+    m, rel = _mount_for(path)
+    if m is None:
+        raise S3ListError(f"{path} is under no known mount")
+    fs = m["remote"]
+    cfg = _remote_config(fs.partition(":")[0])
+    if not _anonymous_s3(cfg):
+        raise S3ListError(f"{path}: remote {fs!r} is not anonymous AWS S3")
+    assert cfg is not None
+    derived = _s3_bucket_prefix_region(fs, cfg)
+    if derived is None:
+        raise S3ListError(f"{path}: remote {fs!r} carries no bucket")
+    bucket, store_prefix, region = derived
+    prefix = _s3_listing_prefix(store_prefix, rel)
+    params = {"list-type": "2", "delimiter": "/", "prefix": prefix,
+              "max-keys": str(max_keys)}
+    if continuation:
+        params["continuation-token"] = continuation
+    query = urllib.parse.urlencode(params)
+    # _s3_base_url applies the dotted-bucket path-style rule. Path-style
+    # addresses the bucket in the path already; virtual-hosted style needs the
+    # root "/" before the query string.
+    base = _s3_base_url(bucket, region)
+    url = f"{base}?{query}" if "." in bucket else f"{base}/?{query}"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            body = resp.read()
+    except urllib.error.HTTPError as e:
+        raise S3ListError(f"S3 list {path}: HTTP {e.code}") from e
+    except (urllib.error.URLError, OSError) as e:
+        raise S3ListError(f"S3 list {path}: {e}") from e
+    try:
+        root_el = ElementTree.fromstring(body)
+    except ElementTree.ParseError as e:
+        raise S3ListError(f"S3 list {path}: unparseable XML") from e
+    entries: list = []
+    for cp in root_el.findall(f"{_S3_XMLNS}CommonPrefixes"):
+        p = cp.findtext(f"{_S3_XMLNS}Prefix") or ""
+        name = p[len(prefix):].rstrip("/")
+        if name:
+            entries.append({"Name": name, "Size": None, "IsDir": True,
+                            "ModTime": None})
+    for obj in root_el.findall(f"{_S3_XMLNS}Contents"):
+        key = obj.findtext(f"{_S3_XMLNS}Key") or ""
+        # The zero-byte object whose key IS the prefix is the directory
+        # placeholder S3 consoles create — it's this directory, not an entry.
+        if key == prefix:
+            continue
+        name = key[len(prefix):]
+        if not name:
+            continue
+        size_txt = obj.findtext(f"{_S3_XMLNS}Size")
+        entries.append({
+            "Name": name,
+            "Size": int(size_txt) if size_txt and size_txt.isdigit() else None,
+            "IsDir": False,
+            # RFC3339 already; the mapping site runs rc_modtime_epoch on it.
+            "ModTime": obj.findtext(f"{_S3_XMLNS}LastModified"),
+        })
+    next_token = None
+    if (root_el.findtext(f"{_S3_XMLNS}IsTruncated") or "").lower() == "true":
+        next_token = root_el.findtext(f"{_S3_XMLNS}NextContinuationToken") or None
+    return entries, next_token
 
 
 def upstream_url_for(path: str) -> str | None:
@@ -747,10 +1247,14 @@ def _sync_serves_locked() -> None:
     out = {}
     for m in mounts:
         fs = m["remote"]
+        want_vfs = _serve_vfs_opt_for(m)
         serve = serves.get(fs)
-        if serve is not None and serve["vfs"] != SERVE_VFS_OPT:
+        if serve is not None and serve["vfs"] != want_vfs:
             # Stale cache options (serves outlive server runs, so a config
             # change here never reaches an already-running serve otherwise).
+            # This now also fires when a mount's read_only flips: the serve's
+            # read_only must track the mount's vfsOpt.ReadOnly or the two
+            # stop sharing one VFS (INCIDENT 2026-07-16).
             if serve["id"]:
                 try:
                     _rc(port, "serve/stop", {"id": serve["id"]})
@@ -763,7 +1267,7 @@ def _sync_serves_locked() -> None:
                     "type": "http",
                     "fs": fs,
                     "addr": "127.0.0.1:0",
-                    **SERVE_VFS_OPT,
+                    **want_vfs,
                 }, timeout=30).get("addr", "")
             except RuntimeError as e:
                 logger.warning("http serve for %r failed: %s", m["name"], e)
@@ -796,33 +1300,67 @@ def attach_mount(m: dict) -> str | None:
         if fs is not None and fs != m["remote"]:
             return (f"mountpoint already serves '{fs}' — unmount it before "
                     f"mounting '{m['remote']}'")
+        # Refresh read_only BEFORE reconciling serves: sync_serves derives the
+        # serve's read_only param from this record, so refreshing afterwards
+        # would leave the serve on the stale flag (disagreeing with the mount
+        # and splitting the shared VFS) until some later sync.
+        _refresh_read_only_flag(m)
+        # An adopted rcd mount keeps whatever vfsOpt it was created with —
+        # mount options only apply at mount/mount, and listmounts doesn't echo
+        # them — so a mount created before read_only was known (legacy record,
+        # or detection just flipped the flag) still has a WRITABLE VFS no
+        # matter what the record now says: the doomed-upload retry loop the
+        # flag exists to prevent. mounted_read_only records what was actually
+        # baked in at mount time; on mismatch, remount to apply. Only for
+        # rcd-known mounts (fs set) — a foreign kernel mount is adopted as-is.
+        if fs is not None and bool(m.get("read_only")) != bool(
+            m.get("mounted_read_only")
+        ):
+            return reconnect_mount(m)  # unmounts first, so no recursion here
         # Already mounted (double-click, adopted foreign mount) — but the
         # HTTP serve may still be missing (a prior serve/start failed, or the
         # mount predates the serve layer), so reconcile serves here too:
         # without one, /api/fs/raw silently falls back to reads through the
         # wedge-prone kernel mount.
         sync_serves()
-        _refresh_read_only_flag(m)
         return None
     try:
         port = ensure_rcd()
+        # Detect and persist read_only BEFORE mounting (INCIDENT 2026-07-16):
+        # ReadOnly/rdonly have to be baked into the vfsOpt/mountOpt of the very
+        # mount/mount call, so read-onlyness must be settled first. Previously
+        # this ran AFTER the mount, so an auto-detected read-only remote mounted
+        # WRITABLE on its first attach and only became read-only after a
+        # restart — long enough to accumulate the doomed-upload loop. A
+        # user-set flag short-circuits detection, and an inconclusive probe
+        # leaves whatever is recorded, so this never blocks the mount.
+        _refresh_read_only_flag(m, port)
         params = {
             "fs": m["remote"],
             "mountPoint": mp,
             "mountType": "nfsmount" if sys.platform == "darwin" else "mount",
-            "vfsOpt": VFS_OPT,
+            # Per-mount vfsOpt: VFS_OPT plus ReadOnly from the record, so a
+            # read-only remote's VFS rejects writes instead of caching them for
+            # a forever-retried upload (see _vfs_opt_for).
+            "vfsOpt": _vfs_opt_for(m),
         }
-        # macOS only: raise the loopback NFS client's timeout (see NFS_MOUNT_OPT).
-        # mountOpt is the NFS transport layer, not a vfs option, so it does NOT
-        # affect the (fs, vfsOpt) VFS-reuse key — the mount still shares its VFS
-        # with the serve.
+        # macOS only: raise the loopback NFS client's timeout, and add "rdonly"
+        # for a read-only mount (see NFS_MOUNT_OPT / _nfs_mount_opt). mountOpt is
+        # the NFS transport layer, not a vfs option, so it does NOT affect the
+        # (fs, vfsOpt) VFS-reuse key — the mount still shares its VFS with the
+        # serve (whose read_only matches the vfsOpt.ReadOnly here).
         if sys.platform == "darwin":
-            params["mountOpt"] = NFS_MOUNT_OPT
+            params["mountOpt"] = _nfs_mount_opt(m)
         _rc(port, "mount/mount", params, timeout=60)
     except RuntimeError as e:
         return str(e)
+    # Record what was actually baked into this mount's vfsOpt: rcd never
+    # echoes mount options back, so this is the only way the adopt path above
+    # can tell a live VFS predates a read_only change and must be remounted.
+    if bool(m.get("mounted_read_only")) != bool(m.get("read_only")):
+        m["mounted_read_only"] = bool(m.get("read_only"))
+        _update_mount(m)
     sync_serves()
-    _refresh_read_only_flag(m, port)
     return None
 
 
@@ -934,7 +1472,12 @@ def reconnect_mount(m: dict) -> str | None:
     listmounts and block the remount, drop the HTTP serve (it shares the
     mount's VFS, which the unmount just tore down — see _stop_serve_for),
     then attach as usual (attach_mount's sync_serves starts a fresh serve
-    that re-binds to the remounted VFS)."""
+    that re-binds to the remounted VFS).
+
+    The leading mount/unmount is also what heals the "stale" split-brain
+    (INCIDENT 2026-07-16): rcd lists a mountpoint the kernel already dropped,
+    and would refuse to remount over its own stale entry — clearing it first
+    lets attach_mount's mount/mount start clean."""
     mp = mountpoint(m)
     port = _live_rcd_port()
     if port is not None:
@@ -964,15 +1507,30 @@ PROBE_TIMEOUT = 3.0
 
 
 def mount_state(m: dict, rcd_mounts: set, timeout: float = PROBE_TIMEOUT) -> str:
-    """Health of one mount: "mounted" | "disconnected" | "unmounted".
+    """Health of one mount: "mounted" | "stale" | "disconnected" | "unmounted".
 
     "mounted" requires both that a live rcd serves the mountpoint AND that the
-    filesystem actually answers a listdir. The failure this catches: the rclone
-    daemon (or its NFS serve) dies while the kernel mount entry survives —
-    os.path.ismount() still says True, listings return stale/empty data, and
-    a plain unmount fails ("failed to umount the NFS volume"). That state is
-    "disconnected", which the UI repairs via /reconnect (force unmount +
-    remount) instead of showing a green dot over an empty folder.
+    filesystem actually answers a listdir. The failures this catches are the
+    two ways the kernel mount table and rcd's mount/listmounts disagree:
+
+      - kernel says mounted, rcd does NOT list it: the rclone daemon (or its
+        NFS serve) died while the kernel mount entry survives —
+        os.path.ismount() still says True, listings return stale/empty data,
+        and a plain unmount fails ("failed to umount the NFS volume"). Reported
+        "disconnected".
+
+      - rcd lists the mount, kernel does NOT (os.path.ismount False): the
+        split-brain from INCIDENT 2026-07-16 — the user hit "Disconnect" on the
+        macOS "Server connections interrupted" dialog, the kernel unmounted,
+        but mount/listmounts still showed the mount (inUse:2). The mountpoint
+        is now a plain local dir masquerading as remote data and rcd will
+        refuse to remount over its own stale entry. Reported "stale" — a
+        distinct state so the cause is diagnosable in logs/UI, though reconnect
+        heals both the same way (its leading mount/unmount clears rcd's stale
+        entry before remounting; see reconnect_mount).
+
+    Either mismatch means remote data isn't flowing; the UI repairs both via
+    /reconnect instead of showing a green dot over an empty folder.
     """
     mp = mountpoint(m)
     out: dict = {}
@@ -983,12 +1541,12 @@ def mount_state(m: dict, rcd_mounts: set, timeout: float = PROBE_TIMEOUT) -> str
             served = mp in rcd_mounts
             if not is_mnt and not served:
                 out["state"] = "unmounted"
-            elif is_mnt != served:
-                # Kernel and daemon disagree: either a kernel mount whose rcd
-                # is gone (or a foreign mount we can't health-check), or rcd
-                # still tracking a mount the kernel dropped — the mountpoint
-                # is a plain dir masquerading as remote data. Either way,
-                # remote data isn't flowing.
+            elif served and not is_mnt:
+                # rcd tracks a mount the kernel dropped (INCIDENT split-brain).
+                out["state"] = "stale"
+            elif is_mnt and not served:
+                # Kernel mount whose rcd is gone (or a foreign mount we can't
+                # health-check).
                 out["state"] = "disconnected"
             else:
                 os.listdir(mp)  # the actual I/O health check
@@ -1037,13 +1595,17 @@ def run_automount() -> None:
         return
     live = mounted_paths()
     for m in mounts:
-        if mountpoint(m) in live or os.path.ismount(mountpoint(m)):
-            # Survived the restart, so attach_mount (and its read-only
-            # detection) never runs for it below — re-detect here instead,
-            # otherwise a legacy record without the flag stays "writable"
-            # forever once the kernel mount is already live.
-            _refresh_read_only_flag(m)
+        mp = mountpoint(m)
+        if mp in live and not os.path.ismount(mp):
+            # Split-brain: rcd lists the mount but the kernel dropped it.
+            # mount/mount over rcd's own stale entry would fail — leave it
+            # for mount_state to surface as "stale" and Reconnect to heal.
             continue
+        # A mount that survived the restart takes attach_mount's
+        # already-mounted branch, which re-runs read-only detection and
+        # remounts if the live VFS was created before the current
+        # read_only flag (adopted mounts keep their original vfsOpt) —
+        # otherwise a legacy writable VFS would outlive the flag forever.
         err = attach_mount(m)
         if err:
             logger.warning("automount of %r failed: %s", m["name"], err)
@@ -1055,6 +1617,10 @@ def run_automount() -> None:
 def startup() -> None:
     """Called from create_app: automount in a daemon thread so a slow or
     missing rclone never delays server start."""
+    # Enforce the rcd log cap here too, not only on respawn: the daemon outlives
+    # server restarts, so this is the one reliable moment to cap a log a
+    # long-lived rcd has grown past it (see _copytruncate_rcd_log).
+    _copytruncate_rcd_log()
     threading.Thread(target=run_automount, daemon=True, name="mounts-automount").start()
 
 
@@ -1179,17 +1745,25 @@ def broken_mount_error(path: str) -> str | None:
     trusting an empty or failed listing: a dead mount leaves a plain (empty)
     local dir or a wedged NFS mount behind, which would otherwise render as
     an ordinary empty folder with no hint the remote data ever existed."""
-    root = mounts_dir()
-    if not path.startswith(root + os.sep):
+    # abspath (NOT realpath) the input before the prefix check, consistent with
+    # is_mount_backed: a raw request path carrying ".." or a missing leading
+    # slash would otherwise fail the prefix match and misclassify a broken mount
+    # as a plain 400 instead of the 503 "reconnect" it deserves.
+    root = os.path.abspath(mounts_dir())
+    p = os.path.abspath(path)
+    if not p.startswith(root + os.sep):
         return None
-    name = path[len(root) + 1:].split(os.sep, 1)[0]
+    name = p[len(root) + 1:].split(os.sep, 1)[0]
     m = next((c for c in list_mounts() if c["name"] == name), None)
     if m is None:
         return None
     state = mount_state(m, mounted_paths())
     if state == "mounted":
         return None
-    reason = "disconnected" if state == "disconnected" else "not mounted"
+    # "stale" (the INCIDENT split-brain) and "disconnected" both mean a mount
+    # that was there and stopped flowing — same user-facing wording; only a
+    # never-mounted mount reads as "not mounted".
+    reason = "not mounted" if state == "unmounted" else "disconnected"
     return (f"mount '{name}' is {reason} — reconnect it from the Mounts page "
             f"in the sidebar")
 

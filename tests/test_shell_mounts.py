@@ -7,6 +7,7 @@ FUSED_RENDER_HOME is redirected per test so no test touches the real
 """
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -28,6 +29,7 @@ class StubRcd:
 
     def __init__(self):
         self.calls = []
+        self.delay = {}  # method -> seconds to sleep before responding (timeouts)
         self.responses = {
             "core/pid": {"pid": 4242},
             "mount/mount": {},
@@ -48,6 +50,8 @@ class StubRcd:
                 body = json.loads(self.rfile.read(length) or b"{}")
                 method = self.path.lstrip("/")
                 stub.calls.append((method, body))
+                if method in stub.delay:
+                    time.sleep(stub.delay[method])
                 resp = stub.responses.get(method)
                 if isinstance(resp, list):  # per-call sequence; last repeats
                     resp = resp.pop(0) if len(resp) > 1 else resp[0]
@@ -177,11 +181,21 @@ def test_serve_vfs_opt_derived_from_mount_vfs_opt():
     # share cached ranges — the whole reason this bug existed. SERVE_VFS_OPT is
     # DERIVED from VFS_OPT to guarantee it; assert every key maps and the values
     # agree (bools -> "true"/"false", ints -> str, as serve/list echoes them).
-    assert set(mounts_mod._VFS_OPT_TO_SERVE_PARAM) == set(mounts_mod.VFS_OPT)
-    for obj_key, flat_key in mounts_mod._VFS_OPT_TO_SERVE_PARAM.items():
+    # The map also carries the per-mount ReadOnly key (added by _vfs_opt_for and
+    # layered on by _serve_vfs_opt_for), so VFS_OPT's keys are a SUBSET of it.
+    assert set(mounts_mod.VFS_OPT) <= set(mounts_mod._VFS_OPT_TO_SERVE_PARAM)
+    assert set(mounts_mod._VFS_OPT_TO_SERVE_PARAM) - set(mounts_mod.VFS_OPT) == {"ReadOnly"}
+    for obj_key in mounts_mod.VFS_OPT:
+        flat_key = mounts_mod._VFS_OPT_TO_SERVE_PARAM[obj_key]
         v = mounts_mod.VFS_OPT[obj_key]
         expected = ("true" if v else "false") if isinstance(v, bool) else str(v)
         assert mounts_mod.SERVE_VFS_OPT[flat_key] == expected
+
+    # _serve_vfs_opt_for is derived (not hand-written): it layers each mount's
+    # read_only onto the shared serve params via the same table.
+    assert mounts_mod._serve_vfs_opt_for({"read_only": True})["read_only"] == "true"
+    assert mounts_mod._serve_vfs_opt_for({"read_only": False})["read_only"] == "false"
+    assert mounts_mod._serve_vfs_opt_for({})["read_only"] == "false"
 
 
 @pytest.mark.skipif(mounts_mod.sys.platform != "darwin",
@@ -211,6 +225,198 @@ def test_unmount_calls_rc(home, rcd):
     assert mounts_mod.detach_mount(c) is None
     [(_, body)] = [x for x in rcd.calls if x[0] == "mount/unmount"]
     assert body["mountPoint"] == mounts_mod.mountpoint(c)
+
+
+def test_rc_mtime_for_answers_from_rc_api_not_kernel(home, rcd, monkeypatch):
+    # The fs/events poller must learn a mount-backed file's mtime from the rcd
+    # rc API (operations/stat), never a kernel os.stat — that GETATTR is what
+    # killed a mount in the stat-storm incident. Verify it calls operations/stat
+    # with the mount's remote + relative path, returns ModTime, and never stats.
+    c = mounts_mod.add_mount("data", "remote:bucket/prefix")
+    mp = mounts_mod.mountpoint(c)
+    rcd.responses["operations/stat"] = {"item": {"ModTime": "2024-01-02T03:04:05Z"}}
+
+    import os as _os
+    calls = []
+    real = _os.stat
+    monkeypatch.setattr(mounts_mod.os, "stat",
+                        lambda p, *a, **k: (calls.append(_os.fspath(p)), real(p, *a, **k))[1])
+
+    path = _os.path.join(mp, "sub", "world.zarr")
+    assert mounts_mod.rc_mtime_for(path) == "2024-01-02T03:04:05Z"
+    [(_, body)] = [x for x in rcd.calls if x[0] == "operations/stat"]
+    assert body == {"fs": "remote:bucket/prefix", "remote": "sub/world.zarr"}
+    assert path not in calls
+
+
+def test_rc_mtime_for_normalizes_mountpoint_root_to_empty_remote(home, rcd):
+    # The mount ROOT watch (Listing on the mountpoint itself) must send remote
+    # "" to operations/stat: _mount_for returns "." for the mountpoint, and
+    # remote "." returns {"item": null} so the root watch would never prime.
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    rcd.responses["operations/stat"] = {"item": {"ModTime": "2024-01-02T03:04:05Z"}}
+    assert mounts_mod.rc_mtime_for(mounts_mod.mountpoint(c)) == "2024-01-02T03:04:05Z"
+    [(_, body)] = [x for x in rcd.calls if x[0] == "operations/stat"]
+    assert body["remote"] == ""  # "." normalized to the fs root
+
+
+def test_rc_mtime_for_none_when_rcd_down(home):
+    # rcd unreachable -> None ("unchanged"). Callers MUST NOT fall back to
+    # os.stat here (that reintroduces the mount-killing hazard).
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    path = mounts_mod.mountpoint(c) + "/f.parquet"
+    assert mounts_mod.rc_mtime_for(path) is None
+
+
+def test_rc_mtime_for_none_on_rc_error_or_missing(home, rcd):
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    path = mounts_mod.mountpoint(c) + "/f.parquet"
+    # rc error (stub returns 404 for unset methods) -> None.
+    assert mounts_mod.rc_mtime_for(path) is None
+    # item present but no ModTime, or item null -> None.
+    rcd.responses["operations/stat"] = {"item": {"Size": 1}}
+    assert mounts_mod.rc_mtime_for(path) is None
+    rcd.responses["operations/stat"] = {"item": None}
+    assert mounts_mod.rc_mtime_for(path) is None
+
+
+def test_rc_mtime_for_none_outside_any_mount(home, rcd):
+    assert mounts_mod.rc_mtime_for("/tmp/not/a/mount/f.parquet") is None
+
+
+def test_is_mount_backed_follows_symlink_into_mounts(home, tmp_path):
+    # A symlink whose target is inside the mounts dir must classify as
+    # mount-backed (else it lands on the kernel os.stat ticker — the GETATTR
+    # storm). A pure abspath string check misses it; realpath resolution catches
+    # it. Direct mount paths and genuine local paths keep classifying by string.
+    import os as _os
+    mounts_root = mounts_mod.mounts_dir()
+    _os.makedirs(_os.path.join(mounts_root, "s3demo"), exist_ok=True)
+    real_target = _os.path.join(mounts_root, "s3demo", "world.zarr")
+    _os.makedirs(real_target, exist_ok=True)
+
+    local_dir = tmp_path / "local"
+    local_dir.mkdir()
+    link = local_dir / "shortcut"
+    _os.symlink(real_target, link)
+
+    assert mounts_mod.is_mount_backed(str(link)) is True          # symlink -> mount
+    assert mounts_mod.is_mount_backed(real_target) is True        # direct mount path
+    assert mounts_mod.is_mount_backed(str(local_dir)) is False    # genuine local dir
+
+
+def test_broken_mount_error_normalizes_non_abspath_input(home, rcd, monkeypatch):
+    # A request path carrying ".." must be abspath-normalized before the
+    # mounts-root prefix check, or a broken mount misclassifies as a plain 400
+    # instead of the 503 "reconnect".
+    c = mounts_mod.add_mount("s3demo", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    # Mount is recorded but not actually mounted -> broken.
+    messy = _os.path.join(mp, "sub", "..", "data")  # normalizes to <mp>/data
+    err = mounts_mod.broken_mount_error(messy)
+    assert err is not None and "reconnect" in err.lower()
+
+
+# -- rc_list_dir -----------------------------------------------------------
+#
+# A mount-backed directory listing must come from the rcd rc API
+# (operations/list), never a kernel os.scandir: a READDIR on a flat S3 prefix
+# with millions of keys forces rclone's VFS to enumerate the whole directory
+# before the kernel gets a single entry, blowing past the macOS NFS deadman
+# and killing the mount (the mur-sst incident).
+
+
+def test_rc_list_dir_calls_operations_list_with_fs_and_remote(home, rcd, monkeypatch):
+    import os as _os
+
+    c = mounts_mod.add_mount("data", "remote:bucket/prefix")
+    mp = mounts_mod.mountpoint(c)
+    rcd.responses["operations/list"] = {"list": [
+        {"Name": "a", "IsDir": True, "Size": -1, "ModTime": "2024-01-02T03:04:05Z"},
+        {"Name": "b.txt", "IsDir": False, "Size": 7, "ModTime": "2024-01-02T03:04:05Z"},
+    ]}
+    # Never touch the mount path through the kernel.
+    monkeypatch.setattr(mounts_mod.os, "scandir",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("scandir!")))
+
+    entries = mounts_mod.rc_list_dir(_os.path.join(mp, "sub"))
+    assert [e["Name"] for e in entries] == ["a", "b.txt"]
+    [(_, body)] = [x for x in rcd.calls if x[0] == "operations/list"]
+    assert body == {"fs": "remote:bucket/prefix", "remote": "sub",
+                    "opt": {"noMimeType": True}}
+
+
+def test_rc_list_dir_normalizes_mountpoint_root_to_empty_remote(home, rcd):
+    # _mount_for returns "." for the mountpoint itself; operations/list wants
+    # "" for the fs root ("." yields a nonsense result).
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    rcd.responses["operations/list"] = {"list": []}
+    mounts_mod.rc_list_dir(mounts_mod.mountpoint(c))
+    [(_, body)] = [x for x in rcd.calls if x[0] == "operations/list"]
+    assert body["remote"] == ""
+
+
+def test_rc_list_dir_unavailable_when_rcd_down(home):
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    with pytest.raises(mounts_mod.RcListUnavailable):
+        mounts_mod.rc_list_dir(mounts_mod.mountpoint(c) + "/sub")
+
+
+def test_rc_list_dir_unavailable_outside_any_mount(home, rcd):
+    with pytest.raises(mounts_mod.RcListUnavailable):
+        mounts_mod.rc_list_dir("/tmp/not/a/mount")
+
+
+def test_rc_list_dir_error_when_rcd_rejects_listing(home, rcd):
+    # rcd is up but operations/list errors (stub 404s the unset method): the
+    # remote path is not a listable directory (it's a file). Distinct from a
+    # timeout / a down rcd so the caller can answer 400 "not a directory".
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    with pytest.raises(mounts_mod.RcListError) as exc:
+        mounts_mod.rc_list_dir(mounts_mod.mountpoint(c) + "/file.parquet")
+    assert not isinstance(exc.value, (mounts_mod.RcListTimeout,
+                                      mounts_mod.RcListUnavailable))
+
+
+def test_rc_list_dir_timeout_raises_rc_list_timeout(home, rcd):
+    # A directory too large to enumerate hits the hard timeout; the request
+    # fails rather than the kernel readdir wedging the mount.
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    rcd.responses["operations/list"] = {"list": []}
+    rcd.delay["operations/list"] = 1.0
+    with pytest.raises(mounts_mod.RcListTimeout):
+        mounts_mod.rc_list_dir(mounts_mod.mountpoint(c) + "/huge", timeout=0.2)
+
+
+def test_rc_modtime_epoch_parses_rfc3339_and_passes_sentinel():
+    import datetime as _dt
+
+    # 'Z', fractional seconds, and sub-microsecond precision all parse.
+    assert mounts_mod.rc_modtime_epoch("1970-01-01T00:00:01Z") == 1.0
+    assert mounts_mod.rc_modtime_epoch(
+        "1970-01-01T00:00:01.123456789Z") == pytest.approx(1.123456, abs=1e-6)
+    # The synthetic-dir sentinel (2000-01-01) is passed through like any stamp.
+    sentinel = _dt.datetime(2000, 1, 1, tzinfo=_dt.timezone.utc).timestamp()
+    assert mounts_mod.rc_modtime_epoch("2000-01-01T00:00:00Z") == sentinel
+    assert mounts_mod.rc_modtime_epoch(None) is None
+    assert mounts_mod.rc_modtime_epoch("not-a-date") is None
+
+
+def test_rc_modtime_epoch_normalizes_any_fractional_digit_count():
+    # rclone emits 1-9 fractional digits, but py3.10's fromisoformat accepts
+    # only 3 or 6 (7+ never parse anywhere); an off count used to silently drop
+    # the mtime. Every digit count must now parse, on 'Z' and on a numeric
+    # offset alike. Base instant is 2024-01-02T03:04:05 UTC.
+    import datetime as _dt
+    base = _dt.datetime(2024, 1, 2, 3, 4, 5, tzinfo=_dt.timezone.utc).timestamp()
+    for n in range(1, 10):
+        digits = "123456789"[:n]
+        # The value the parser should see is 0.<digits> truncated to microseconds.
+        expected_frac = float("0." + digits)
+        got_z = mounts_mod.rc_modtime_epoch(f"2024-01-02T03:04:05.{digits}Z")
+        assert got_z == pytest.approx(base + expected_frac, abs=1e-6), n
+        got_off = mounts_mod.rc_modtime_epoch(f"2024-01-02T03:04:05.{digits}+00:00")
+        assert got_off == pytest.approx(base + expected_frac, abs=1e-6), n
 
 
 def test_mounted_paths_merges_listmounts(home, rcd, monkeypatch):
@@ -614,11 +820,14 @@ def test_state_disconnected_when_kernel_mount_has_no_daemon(home, rcd, monkeypat
     assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "disconnected"
 
 
-def test_state_disconnected_when_rcd_tracks_a_dropped_kernel_mount(home, rcd):
+def test_state_stale_when_rcd_tracks_a_dropped_kernel_mount(home, rcd):
     # rcd still lists the mount but the kernel mount is gone: the mountpoint
-    # is a plain local dir masquerading as remote data.
+    # is a plain local dir masquerading as remote data. This is the 2026-07-16
+    # split-brain (user hit "Disconnect" on the macOS dialog; kernel unmounted
+    # but mount/listmounts still showed the mount) — reported as the distinct
+    # "stale" state, not "disconnected".
     c, mp = _make_mount(home, rcd)
-    assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "disconnected"
+    assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "stale"
 
 
 def test_state_disconnected_when_listing_hangs(home, rcd, monkeypatch):
@@ -806,6 +1015,206 @@ def test_attach_starts_http_serve_and_writes_map(home, rcd):
     assert serves == {mounts_mod.mountpoint(c): "http://127.0.0.1:59999"}
 
 
+# -- read-only enforcement at the rclone layer (INCIDENT 2026-07-16) -------------
+#
+# read_only was purely an app-level guard; the rclone VFS still cached writes
+# and looped forever on S3 PutObject 403s. These assert the flag now reaches
+# both layers that accept bytes: the VFS (mount vfsOpt.ReadOnly + serve
+# read_only, which must agree or the shared VFS splits) and, on macOS, the
+# kernel NFS mount ("rdonly" ExtraOption).
+
+
+def test_read_only_mount_sets_vfs_readonly_and_serve_flag(home, rcd):
+    c = mounts_mod.add_mount("ro", "remote:bucket", read_only=True)
+    assert mounts_mod.attach_mount(c) is None
+    [(_, body)] = [x for x in rcd.calls if x[0] == "mount/mount"]
+    assert body["vfsOpt"]["ReadOnly"] is True
+    # The serve carries the matching flat flag so mount and serve share one VFS.
+    [(_, serve)] = [x for x in rcd.calls if x[0] == "serve/start"]
+    assert serve["read_only"] == "true"
+
+
+def test_read_write_mount_has_readonly_false_and_no_serve_flag(home, rcd):
+    c = mounts_mod.add_mount("rw", "remote:bucket", read_only=False)
+    assert mounts_mod.attach_mount(c) is None
+    [(_, body)] = [x for x in rcd.calls if x[0] == "mount/mount"]
+    # Explicit False, not omission, so it reads back matching the serve.
+    assert body["vfsOpt"]["ReadOnly"] is False
+    [(_, serve)] = [x for x in rcd.calls if x[0] == "serve/start"]
+    assert serve["read_only"] == "false"
+
+
+@pytest.mark.skipif(mounts_mod.sys.platform != "darwin",
+                    reason="rdonly rides macOS nfsmount ExtraOptions; Linux FUSE differs")
+def test_read_only_mount_adds_rdonly_extraoption_on_macos(home, rcd):
+    c = mounts_mod.add_mount("ro", "remote:bucket", read_only=True)
+    assert mounts_mod.attach_mount(c) is None
+    [(_, body)] = [x for x in rcd.calls if x[0] == "mount/mount"]
+    assert "rdonly" in body["mountOpt"]["ExtraOptions"]
+    # The transport tuning is still there — rdonly is additive.
+    assert "timeo=600" in body["mountOpt"]["ExtraOptions"]
+
+
+@pytest.mark.skipif(mounts_mod.sys.platform != "darwin",
+                    reason="rdonly rides macOS nfsmount ExtraOptions; Linux FUSE differs")
+def test_read_write_mount_has_no_rdonly_on_macos(home, rcd):
+    c = mounts_mod.add_mount("rw", "remote:bucket", read_only=False)
+    assert mounts_mod.attach_mount(c) is None
+    [(_, body)] = [x for x in rcd.calls if x[0] == "mount/mount"]
+    assert "rdonly" not in body["mountOpt"]["ExtraOptions"]
+
+
+# rcd never echoes a live mount's vfsOpt back, so the only way to notice that
+# an adopted mount predates a read_only change is to record what was baked in
+# (mounted_read_only) and remount on mismatch — otherwise a legacy writable
+# VFS survives every restart no matter what the record says (Bugbot, PR #157).
+
+
+def test_attach_records_mounted_read_only(home, rcd):
+    c = mounts_mod.add_mount("ro", "remote:bucket", read_only=True)
+    assert mounts_mod.attach_mount(c) is None
+    assert mounts_mod.get_mount(c["id"])["mounted_read_only"] is True
+
+
+def test_adopted_mount_remounts_when_vfs_predates_read_only(home, rcd, monkeypatch):
+    c = mounts_mod.add_mount("ro", "remote:bucket", read_only=True)
+    # Live rcd mount, but the record has no mounted_read_only: it was created
+    # before the flag reached the rclone layer, so its VFS is writable.
+    mp = mounts_mod.mountpoint(c)
+    rcd.responses["mount/listmounts"] = {
+        "mountPoints": [{"Fs": "remote:bucket", "MountPoint": mp}]}
+    # Kernel mount is up for the adopt check, gone once reconnect unmounts.
+    seq = iter([True])
+    monkeypatch.setattr(mounts_mod.os.path, "ismount",
+                        lambda p: next(seq, False))
+    assert mounts_mod.attach_mount(c) is None
+    methods = [m for m, _ in rcd.calls]
+    assert methods.index("mount/unmount") < methods.index("mount/mount")
+    [(_, body)] = [x for x in rcd.calls if x[0] == "mount/mount"]
+    assert body["vfsOpt"]["ReadOnly"] is True
+    assert mounts_mod.get_mount(c["id"])["mounted_read_only"] is True
+
+
+def test_adopted_mount_left_alone_when_vfs_matches_flag(home, rcd, monkeypatch):
+    c = mounts_mod.add_mount("ro", "remote:bucket", read_only=True)
+    c["mounted_read_only"] = True
+    mounts_mod._update_mount(c)
+    mp = mounts_mod.mountpoint(c)
+    rcd.responses["mount/listmounts"] = {
+        "mountPoints": [{"Fs": "remote:bucket", "MountPoint": mp}]}
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    assert mounts_mod.attach_mount(c) is None
+    assert not any(m in ("mount/mount", "mount/unmount") for m, _ in rcd.calls)
+
+
+def test_run_automount_reapplies_read_only_to_adopted_mounts(home, rcd, monkeypatch):
+    # The startup adopt path must go through attach_mount's already-mounted
+    # branch, or a mount that survived the restart keeps its pre-flag
+    # writable VFS forever (the incident's doomed-upload loop, reborn).
+    c = mounts_mod.add_mount("ro", "remote:bucket", read_only=True)
+    mp = mounts_mod.mountpoint(c)
+    rcd.responses["mount/listmounts"] = {
+        "mountPoints": [{"Fs": "remote:bucket", "MountPoint": mp}]}
+    seq = iter([True, True])  # live for automount + adopt checks, then unmounted
+    monkeypatch.setattr(mounts_mod.os.path, "ismount",
+                        lambda p: next(seq, False))
+    mounts_mod.run_automount()
+    [(_, body)] = [x for x in rcd.calls if x[0] == "mount/mount"]
+    assert body["vfsOpt"]["ReadOnly"] is True
+
+
+# -- split-brain (stale) detection + reconnect healing (INCIDENT 2026-07-16) -----
+
+
+def test_reconnect_stale_unmounts_rcd_entry_before_remounting(home, rcd, monkeypatch):
+    # Split-brain: rcd lists the mount, the kernel has already dropped it. rcd
+    # would refuse to remount over its stale entry, so reconnect must issue
+    # mount/unmount (clearing the entry) BEFORE mount/mount.
+    c, mp = _make_mount(home, rcd)  # served=True
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: False)
+    assert mounts_mod.reconnect_mount(c) is None
+    methods = [m for m, _ in rcd.calls]
+    assert "mount/unmount" in methods and "mount/mount" in methods
+    assert methods.index("mount/unmount") < methods.index("mount/mount")
+
+
+# -- rcd log file + rotation (INCIDENT 2026-07-16: daemon had no --log-file) -----
+
+
+def test_ensure_rcd_spawn_has_log_file_and_records_path(home, monkeypatch):
+    monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: "/usr/bin/rclone")
+    monkeypatch.setattr(mounts_mod, "_live_rcd_port", lambda: None)  # force a spawn
+    argvs = []
+
+    class FakePopen:
+        def __init__(self, argv, **kw):
+            argvs.append(argv)
+
+    monkeypatch.setattr(mounts_mod.subprocess, "Popen", FakePopen)
+    # Stand in for the post-spawn core/pid poll so no real rclone is needed.
+    monkeypatch.setattr(mounts_mod, "_rc", lambda *a, **k: {"pid": 999})
+
+    mounts_mod.ensure_rcd()
+    [argv] = argvs
+    log_flags = [a for a in argv if a.startswith("--log-file=")]
+    assert log_flags and log_flags[0].endswith("rcd.log")
+    assert "--log-level" in argv
+    assert argv[argv.index("--log-level") + 1] == "INFO"
+    # The log path is recorded in rcd.json alongside port/pid.
+    state = json.load(open(mounts_mod._rcd_state_path()))
+    assert state["log"] == mounts_mod._rcd_log_path()
+
+
+def test_rcd_log_rotates_past_cap(home):
+    log = mounts_mod._rcd_log_path()
+    _os.makedirs(_os.path.dirname(log), exist_ok=True)
+    with open(log, "wb") as f:
+        f.write(b"x" * (mounts_mod.RCD_LOG_MAX_BYTES + 1))
+    assert mounts_mod._rotate_rcd_log() == log
+    assert _os.path.exists(log + ".1")  # rolled aside
+    assert not _os.path.exists(log)     # rclone will recreate it fresh
+
+
+def test_rcd_log_not_rotated_below_cap(home):
+    log = mounts_mod._rcd_log_path()
+    _os.makedirs(_os.path.dirname(log), exist_ok=True)
+    with open(log, "wb") as f:
+        f.write(b"small")
+    mounts_mod._rotate_rcd_log()
+    assert not _os.path.exists(log + ".1")
+
+
+def test_copytruncate_rcd_log_caps_a_live_daemons_log(home):
+    # The detached rcd outlives server restarts and holds the log inode open, so
+    # os.replace can't rotate it — copytruncate copies the contents aside and
+    # truncates the live file IN PLACE (same inode, so rclone keeps appending).
+    log = mounts_mod._rcd_log_path()
+    _os.makedirs(_os.path.dirname(log), exist_ok=True)
+    with open(log, "wb") as f:
+        f.write(b"y" * (mounts_mod.RCD_LOG_MAX_BYTES + 1))
+    ino_before = _os.stat(log).st_ino
+    mounts_mod._copytruncate_rcd_log()
+    assert _os.path.exists(log)                       # live file kept in place
+    assert _os.stat(log).st_ino == ino_before         # SAME inode (truncated, not replaced)
+    assert _os.path.getsize(log) == 0                 # emptied
+    assert _os.path.getsize(log + ".1") == mounts_mod.RCD_LOG_MAX_BYTES + 1  # contents saved
+
+
+def test_copytruncate_rcd_log_noop_below_cap(home):
+    log = mounts_mod._rcd_log_path()
+    _os.makedirs(_os.path.dirname(log), exist_ok=True)
+    with open(log, "wb") as f:
+        f.write(b"small")
+    mounts_mod._copytruncate_rcd_log()
+    assert not _os.path.exists(log + ".1")
+    assert _os.path.getsize(log) == len(b"small")
+
+
+def test_copytruncate_rcd_log_swallows_errors(home):
+    # Best-effort: a missing log (or any OSError) must never raise into startup.
+    mounts_mod._copytruncate_rcd_log()  # no log file at all -> no exception
+
+
 def test_attach_syncs_serves_when_already_mounted(home, rcd, monkeypatch):
     # The already-a-kernel-mount early return must still reconcile serves:
     # without one, /api/fs/raw falls back to reads through the kernel mount.
@@ -822,10 +1231,14 @@ def test_attach_syncs_serves_when_already_mounted(home, rcd, monkeypatch):
 
 def test_sync_serves_reuses_existing_serve(home, rcd):
     c = mounts_mod.add_mount("data", "remote:bucket")
+    # A serve whose flat params exactly match this (read_write) mount's expected
+    # option set — SERVE_VFS_OPT plus read_only=false — is reused, not
+    # restarted. (An adopted serve missing read_only reads as drift and is
+    # restarted; that rollout is covered by the stale-opts test below.)
     rcd.responses["serve/list"] = {"list": [{
         "id": "http-live", "addr": "127.0.0.1:41000",
         "params": {"type": "http", "fs": "remote:bucket",
-                   **mounts_mod.SERVE_VFS_OPT}}]}
+                   **mounts_mod._serve_vfs_opt_for(c)}}]}
     mounts_mod.sync_serves()
     assert not any(m == "serve/start" for m, _ in rcd.calls)
     serves = json.load(open(mounts_mod.serves_path()))
@@ -1352,3 +1765,202 @@ def test_fix_dotted_bucket_url():
               "https://plain.s3.us-west-2.amazonaws.com/key?X-Amz-Sig=x",
               "https://minio.example.com/bucket/key"):
         assert fix(u) == u
+
+
+# -- s3_list_page / s3_direct_capable ---------------------------------------
+#
+# rclone can't paginate a listing at any layer (see rc_list_dir), so a flat S3
+# prefix with millions of keys times out. For anonymous plain AWS S3 — the
+# backend class that dominates our mounts — a single ListObjectsV2 page is
+# fetched straight from S3 unsigned, off the kernel mount. Real S3 is never
+# hit: urllib.request.urlopen is monkeypatched with canned XML.
+
+_ANON_S3_CFG = {"type": "s3", "provider": "AWS", "env_auth": "false"}
+
+
+def _s3_list_xml(*, prefixes=(), contents=(), truncated=False, next_token=None):
+    """A ListObjectsV2 response body. `contents` are (key, size, lastmod)."""
+    ns = "http://s3.amazonaws.com/doc/2006-03-01/"
+    parts = [f'<?xml version="1.0" encoding="UTF-8"?>',
+             f'<ListBucketResult xmlns="{ns}">',
+             f'<IsTruncated>{"true" if truncated else "false"}</IsTruncated>']
+    if next_token:
+        parts.append(f'<NextContinuationToken>{next_token}</NextContinuationToken>')
+    for key, size, lastmod in contents:
+        parts.append(f'<Contents><Key>{key}</Key><Size>{size}</Size>'
+                     f'<LastModified>{lastmod}</LastModified></Contents>')
+    for p in prefixes:
+        parts.append(f'<CommonPrefixes><Prefix>{p}</Prefix></CommonPrefixes>')
+    parts.append('</ListBucketResult>')
+    return "".join(parts).encode()
+
+
+class _FakeS3Resp:
+    def __init__(self, body):
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+@pytest.fixture()
+def s3_urlopen(monkeypatch):
+    """Capture the ListObjectsV2 URL and hand back canned XML. `box["body"]`
+    is the reply; set `box["raise"]` to an exception to fail the GET."""
+    calls = []
+    box = {"body": _s3_list_xml()}
+    real = mounts_mod.urllib.request.urlopen
+
+    def fake(url, timeout=None):
+        # rc calls (config/get etc.) go to the loopback stub rcd over http —
+        # only intercept the S3 ListObjectsV2 GET, delegate the rest.
+        target = url if isinstance(url, str) else url.get_full_url()
+        if "amazonaws.com" not in target:
+            return real(url, timeout=timeout)
+        calls.append((target, timeout))
+        if box.get("raise") is not None:
+            raise box["raise"]
+        return _FakeS3Resp(box["body"])
+
+    monkeypatch.setattr(mounts_mod.urllib.request, "urlopen", fake)
+    return calls, box
+
+
+def test_s3_direct_capable_true_for_anonymous_s3(home, rcd, fresh_upstream):
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    assert mounts_mod.s3_direct_capable(mounts_mod.mountpoint(c) + "/analysed_sst")
+
+
+def test_s3_direct_capable_false_for_credentialed(home, rcd, fresh_upstream):
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
+    c = mounts_mod.add_mount("corp", "corp:bucket")
+    assert not mounts_mod.s3_direct_capable(mounts_mod.mountpoint(c) + "/x")
+
+
+def test_s3_direct_capable_false_for_custom_endpoint(home, rcd, fresh_upstream):
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "false",
+                                   "endpoint": "https://r2.example.com"}
+    c = mounts_mod.add_mount("r2", "r2:bucket")
+    assert not mounts_mod.s3_direct_capable(mounts_mod.mountpoint(c) + "/x")
+
+
+def test_s3_direct_capable_false_outside_mount(home, rcd, fresh_upstream):
+    assert not mounts_mod.s3_direct_capable("/tmp/not/a/mount")
+
+
+def test_s3_list_page_url_and_query_nested_dir(home, rcd, fresh_upstream, s3_urlopen):
+    import urllib.parse as up
+
+    calls, _box = s3_urlopen
+    rcd.responses["config/get"] = {**_ANON_S3_CFG, "region": "us-west-2"}
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    mounts_mod.s3_list_page(
+        mounts_mod.mountpoint(c) + "/analysed_sst", max_keys=1000)
+    [(url, timeout)] = calls
+    assert url.startswith("https://mur-sst.s3.us-west-2.amazonaws.com/?")
+    q = up.parse_qs(up.urlsplit(url).query)
+    assert q["list-type"] == ["2"]
+    assert q["delimiter"] == ["/"]
+    assert q["prefix"] == ["zarr-v1/analysed_sst/"]
+    assert q["max-keys"] == ["1000"]
+    assert "continuation-token" not in q
+    assert timeout == mounts_mod.S3_LIST_TIMEOUT_S
+
+
+def test_s3_list_page_mountpoint_uses_store_prefix(home, rcd, fresh_upstream, s3_urlopen):
+    import urllib.parse as up
+
+    calls, _box = s3_urlopen
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    mounts_mod.s3_list_page(mounts_mod.mountpoint(c), max_keys=500)
+    q = up.parse_qs(up.urlsplit(calls[0][0]).query)
+    assert q["prefix"] == ["zarr-v1/"]
+
+
+def test_s3_list_page_bucket_root_mountpoint_empty_prefix(home, rcd, fresh_upstream, s3_urlopen):
+    import urllib.parse as up
+
+    calls, _box = s3_urlopen
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst")
+    mounts_mod.s3_list_page(mounts_mod.mountpoint(c), max_keys=500)
+    q = up.parse_qs(up.urlsplit(calls[0][0]).query, keep_blank_values=True)
+    assert q["prefix"] == [""]
+
+
+def test_s3_list_page_continuation_token_urlencoded(home, rcd, fresh_upstream, s3_urlopen):
+    import urllib.parse as up
+
+    calls, _box = s3_urlopen
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    mounts_mod.s3_list_page(mounts_mod.mountpoint(c), max_keys=1000,
+                            continuation="a b/c+d=")
+    q = up.parse_qs(up.urlsplit(calls[0][0]).query)
+    assert q["continuation-token"] == ["a b/c+d="]
+
+
+def test_s3_list_page_dotted_bucket_path_style(home, rcd, fresh_upstream, s3_urlopen):
+    calls, _box = s3_urlopen
+    rcd.responses["config/get"] = {**_ANON_S3_CFG, "region": "us-west-2"}
+    c = mounts_mod.add_mount("open", "aws-open:us-west-2.opendata.source.coop/foo")
+    mounts_mod.s3_list_page(mounts_mod.mountpoint(c), max_keys=1000)
+    assert calls[0][0].startswith(
+        "https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop?")
+
+
+def test_s3_list_page_parses_prefixes_files_and_token(home, rcd, fresh_upstream, s3_urlopen):
+    calls, box = s3_urlopen
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    box["body"] = _s3_list_xml(
+        prefixes=["zarr-v1/analysed_sst/2020/", "zarr-v1/analysed_sst/2021/"],
+        contents=[
+            # placeholder object whose key IS the prefix -> skipped
+            ("zarr-v1/analysed_sst/", 0, "2000-01-01T00:00:00.000Z"),
+            ("zarr-v1/analysed_sst/.zattrs", 42, "2024-01-02T03:04:05.000Z"),
+        ],
+        truncated=True, next_token="TOKEN123")
+    entries, token = mounts_mod.s3_list_page(
+        mounts_mod.mountpoint(c) + "/analysed_sst", max_keys=1000)
+    by = {e["Name"]: e for e in entries}
+    assert set(by) == {"2020", "2021", ".zattrs"}
+    assert by["2020"]["IsDir"] is True and by["2020"]["Size"] is None
+    assert by["2020"]["ModTime"] is None
+    assert by[".zattrs"]["IsDir"] is False and by[".zattrs"]["Size"] == 42
+    assert by[".zattrs"]["ModTime"] == "2024-01-02T03:04:05.000Z"
+    assert token == "TOKEN123"
+
+
+def test_s3_list_page_not_truncated_returns_none_token(home, rcd, fresh_upstream, s3_urlopen):
+    calls, box = s3_urlopen
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    box["body"] = _s3_list_xml(contents=[("zarr-v1/f.txt", 1, "2024-01-02T03:04:05Z")])
+    _entries, token = mounts_mod.s3_list_page(mounts_mod.mountpoint(c), max_keys=1000)
+    assert token is None
+
+
+def test_s3_list_page_http_403_raises_s3listerror(home, rcd, fresh_upstream, s3_urlopen):
+    calls, box = s3_urlopen
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    box["raise"] = mounts_mod.urllib.error.HTTPError(
+        "https://x", 403, "Forbidden", {}, None)
+    with pytest.raises(mounts_mod.S3ListError):
+        mounts_mod.s3_list_page(mounts_mod.mountpoint(c), max_keys=1000)
+
+
+def test_s3_list_page_non_anonymous_raises_s3listerror(home, rcd, fresh_upstream, s3_urlopen):
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
+    c = mounts_mod.add_mount("corp", "corp:bucket/pre")
+    with pytest.raises(mounts_mod.S3ListError):
+        mounts_mod.s3_list_page(mounts_mod.mountpoint(c), max_keys=1000)
