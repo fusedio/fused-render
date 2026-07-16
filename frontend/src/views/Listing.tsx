@@ -34,6 +34,7 @@ import {
   trashEntry,
   resolveOpenWithModes,
   buildOpenWithItems,
+  friendlyFsError,
 } from "../lib/fs-actions";
 import { acquireOverlay, releaseOverlay, isOverlayOpen } from "../lib/ui-overlay";
 import { formatSize, formatMtime, basename } from "../lib/format";
@@ -808,12 +809,14 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   // Run a mutating fs call, then refetch on success or surface its error as a
   // toast. The dir-watch socket also refetches, but that lags 300 ms and only
   // fires for the listed dir — an explicit refetch keeps the UI immediate.
-  const run = async (fn: () => Promise<unknown>) => {
+  // `ctx` ({verb, name}) is optional but supplied by every menu action, so the
+  // caught wire string is humanized (friendlyFsError) instead of leaking bare.
+  const run = async (fn: () => Promise<unknown>, ctx?: { verb: string; name: string }) => {
     try {
       await fn();
       refetch();
     } catch (e) {
-      setToast({ msg: (e as Error).message, tone: "error" });
+      setToast({ msg: ctx ? friendlyFsError(e, ctx) : (e as Error).message, tone: "error" });
     }
   };
 
@@ -859,7 +862,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
         const copyDst = await freeDuplicatePath(target, basename(src), is_dir);
         await copyEntry(src, copyDst);
         pendingSelectRef.current = copyDst; // move selection onto the new copy
-      }).finally(() => {
+      }, { verb: "paste", name: basename(src) }).finally(() => {
         pasteInFlight.current = false;
       });
       return;
@@ -884,7 +887,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
         if (op === "cut" && getClipboard() === null) setClipboard({ path: src, op: "cut" });
         throw e;
       }
-    }).finally(() => {
+    }, { verb: "paste", name: basename(src) }).finally(() => {
       pasteInFlight.current = false;
     });
   };
@@ -897,11 +900,13 @@ export default function Listing({ fsPath }: { fsPath: string }) {
       const dst = await freeDuplicatePath(row.parentDir, row.name, row.isDir);
       await copyEntry(row.path, dst);
       pendingSelectRef.current = dst; // move selection onto the new copy
-    });
+    }, { verb: "duplicate", name: row.name });
   };
 
   const doReveal = (path: string) => {
-    revealPath(path).catch((e) => setToast({ msg: (e as Error).message, tone: "error" }));
+    revealPath(path).catch((e) =>
+      setToast({ msg: friendlyFsError(e, { verb: "reveal", name: basename(path) }), tone: "error" })
+    );
   };
 
   const doCopyPath = (path: string) => {
@@ -923,7 +928,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
         if (rejectName(name)) return;
         // create=true: refuse (409 "conflict", surfaced as an error toast) if a
         // file with this name already exists, so New File never clobbers it.
-        run(() => writeFile(join(normDir(dir), name), "", true));
+        run(() => writeFile(join(normDir(dir), name), "", true), { verb: "create", name });
       },
     });
 
@@ -935,7 +940,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
       confirmLabel: "Create",
       onConfirm: (name) => {
         if (rejectName(name)) return;
-        run(() => mkdir(join(normDir(dir), name)));
+        run(() => mkdir(join(normDir(dir), name)), { verb: "create", name });
       },
     });
 
@@ -959,7 +964,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
           // if a renamed folder held the cut/copied entry) — repoint it so a
           // later Paste doesn't target a source that's now gone.
           remapClipboardPath(row.path, dst);
-        });
+        }, { verb: "rename", name: row.name });
       },
     });
 
@@ -977,7 +982,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
         run(async () => {
           await deleteEntry(row.path, row.isDir);
           clearClipboardIfDeleted(row.path);
-        }),
+        }, { verb: "delete", name: row.name }),
     });
 
   // Move to Bin: a recoverable delete (macOS Trash), so no confirm dialog.
@@ -993,7 +998,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
       } else if (r.status === "unsupported") {
         startDelete(row);
       } else {
-        setToast({ msg: r.message, tone: "error" });
+        setToast({ msg: friendlyFsError(r.message, { verb: "move to Bin", name: row.name }), tone: "error" });
       }
     });
   };

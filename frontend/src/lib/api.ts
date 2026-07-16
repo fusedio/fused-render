@@ -65,10 +65,24 @@ export interface StatResult {
   template_error?: string;
 }
 
+// Error thrown by the shared fetch helpers, carrying the HTTP status alongside
+// the server's message. `.message` is exactly what it was before (the server's
+// `error` string, else `HTTP <status>`), so callers that only read `.message`
+// are unaffected; the extra `.status` lets client-side humanizers (lib/
+// fs-actions friendlyFsError) branch on e.g. 404 without re-parsing the text.
+export interface HttpError extends Error {
+  status?: number;
+}
+function httpError(data: { error?: string } | null, status: number): HttpError {
+  const err = new Error((data && data.error) || `HTTP ${status}`) as HttpError;
+  err.status = status;
+  return err;
+}
+
 async function getJson<T>(url: string, headers?: Record<string, string>): Promise<T> {
   const res = await fetch(url, headers ? { headers } : undefined);
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (!res.ok) throw httpError(data, res.status);
   return data as T;
 }
 
@@ -82,7 +96,7 @@ async function mutateJson<T>(method: "PUT" | "POST", url: string, body: unknown)
     body: JSON.stringify(body),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (!res.ok) throw httpError(data, res.status);
   return data as T;
 }
 

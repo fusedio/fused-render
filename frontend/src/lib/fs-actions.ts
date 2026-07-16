@@ -132,6 +132,49 @@ export function remapClipboardPath(oldPath: string, newPath: string): void {
   }
 }
 
+// Turn a raw fs-action failure into a human sentence for the toast. The server
+// speaks in terse wire strings ("conflict", "readonly", …) the QA screenshots
+// caught leaking straight to users; every one of those is mapped here (never
+// server-side — tests and the API contract pin the wire strings). `ctx.verb`
+// is the past-tense-friendly action word ("rename", "paste", "create") and
+// `ctx.name` the entry it acted on, so the sentence reads naturally. Anything
+// unrecognized (a network blip, an unexpected 500) keeps its original text so
+// nothing is silently swallowed.
+export function friendlyFsError(err: unknown, ctx: { verb: string; name: string }): string {
+  const { verb, name } = ctx;
+  const raw = err instanceof Error ? err.message : String(err);
+  const msg = raw.toLowerCase();
+  const status = err && typeof err === "object" ? (err as { status?: number }).status : undefined;
+
+  // Read-only target (403). The server's bare "readonly" for both write and
+  // delete/rename/copy guards.
+  if (msg.includes("readonly")) return `"${name}" is read-only — ${verb} isn't allowed here.`;
+
+  // 409 "conflict". For a delete it can only mean a non-empty directory (its
+  // contents block the removal — the server's "directory not empty" case);
+  // every other verb's conflict is a destination name that's already taken.
+  if (msg.includes("conflict")) {
+    return verb === "delete"
+      ? `"${name}" isn't empty — delete its contents first.`
+      : `Couldn't ${verb} "${name}" — something with that name already exists.`;
+  }
+
+  // The containing folder was removed out from under the action.
+  if (msg.includes("parent directory does not exist")) return "That folder no longer exists.";
+
+  // Source gone (404 / "no such file or directory").
+  if (msg.includes("no such file") || status === 404)
+    return `"${name}" no longer exists — it may have been moved or deleted.`;
+
+  // Trash move failed after we'd already committed to the recoverable path —
+  // reassure that nothing was hard-deleted.
+  if (msg.includes("cannot move to trash"))
+    return `Couldn't move "${name}" to the Bin. Nothing was deleted.`;
+
+  // Network / unknown: keep the original message so it isn't hidden.
+  return `Couldn't ${verb} "${name}". ${raw}`;
+}
+
 // Outcome of a Move to Bin attempt. "unsupported" is the non-macOS 501 case
 // where the caller should fall back to a hard-delete confirm; "error" is any
 // other failure (surface it as a toast).

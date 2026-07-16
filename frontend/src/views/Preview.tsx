@@ -27,6 +27,7 @@ import {
   remapClipboardPath,
   trashEntry,
   buildOpenWithItems,
+  friendlyFsError,
 } from "../lib/fs-actions";
 import { acquireOverlay, releaseOverlay } from "../lib/ui-overlay";
 import { setClipboard } from "../lib/fs-clipboard";
@@ -113,7 +114,7 @@ function usePreviewFileMenu(
         await copyEntry(fsPath, dst);
         setToast({ msg: `Duplicated as ${basename(dst)}`, tone: "info" });
       } catch (e) {
-        setToast({ msg: (e as Error).message, tone: "error" });
+        setToast({ msg: friendlyFsError(e, { verb: "duplicate", name: stat.name }), tone: "error" });
       }
     })();
   };
@@ -134,7 +135,7 @@ function usePreviewFileMenu(
             clearClipboardIfDeleted(fsPath);
             navigate(parent); // the open file is gone — leave for the parent listing
           },
-          (e: Error) => setToast({ msg: e.message, tone: "error" })
+          (e: Error) => setToast({ msg: friendlyFsError(e, { verb: "delete", name: stat.name }), tone: "error" })
         );
       },
     });
@@ -147,7 +148,7 @@ function usePreviewFileMenu(
       } else if (r.status === "unsupported") {
         startDelete();
       } else {
-        setToast({ msg: r.message, tone: "error" });
+        setToast({ msg: friendlyFsError(r.message, { verb: "move to Bin", name: stat.name }), tone: "error" });
       }
     });
   };
@@ -177,7 +178,7 @@ function usePreviewFileMenu(
             // (`_mode`/params) so the same view stays open on the new path.
             navigateUrl(urlForFsPath(dst, location.search));
           },
-          (e: Error) => setToast({ msg: e.message, tone: "error" })
+          (e: Error) => setToast({ msg: friendlyFsError(e, { verb: "rename", name: stat.name }), tone: "error" })
         );
       },
     });
@@ -189,7 +190,9 @@ function usePreviewFileMenu(
   };
 
   const doReveal = () => {
-    revealPath(fsPath).catch((e) => setToast({ msg: (e as Error).message, tone: "error" }));
+    revealPath(fsPath).catch((e) =>
+      setToast({ msg: friendlyFsError(e, { verb: "reveal", name: stat.name }), tone: "error" })
+    );
   };
 
   // Menu for the open file, macOS Finder order. No Open (already viewing it),
