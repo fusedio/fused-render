@@ -614,11 +614,14 @@ def test_state_disconnected_when_kernel_mount_has_no_daemon(home, rcd, monkeypat
     assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "disconnected"
 
 
-def test_state_disconnected_when_rcd_tracks_a_dropped_kernel_mount(home, rcd):
+def test_state_stale_when_rcd_tracks_a_dropped_kernel_mount(home, rcd):
     # rcd still lists the mount but the kernel mount is gone: the mountpoint
-    # is a plain local dir masquerading as remote data.
+    # is a plain local dir masquerading as remote data. This is the 2026-07-16
+    # split-brain (user hit "Disconnect" on the macOS dialog; kernel unmounted
+    # but mount/listmounts still showed the mount) — reported as the distinct
+    # "stale" state, not "disconnected".
     c, mp = _make_mount(home, rcd)
-    assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "disconnected"
+    assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "stale"
 
 
 def test_state_disconnected_when_listing_hangs(home, rcd, monkeypatch):
@@ -806,6 +809,116 @@ def test_attach_starts_http_serve_and_writes_map(home, rcd):
     assert serves == {mounts_mod.mountpoint(c): "http://127.0.0.1:59999"}
 
 
+# -- read-only enforcement at the rclone layer (INCIDENT 2026-07-16) -------------
+#
+# read_only was purely an app-level guard; the rclone VFS still cached writes
+# and looped forever on S3 PutObject 403s. These assert the flag now reaches
+# both layers that accept bytes: the VFS (mount vfsOpt.ReadOnly + serve
+# vfs_read_only, which must agree or the shared VFS splits) and, on macOS, the
+# kernel NFS mount ("rdonly" ExtraOption).
+
+
+def test_read_only_mount_sets_vfs_readonly_and_serve_flag(home, rcd):
+    c = mounts_mod.add_mount("ro", "remote:bucket", read_only=True)
+    assert mounts_mod.attach_mount(c) is None
+    [(_, body)] = [x for x in rcd.calls if x[0] == "mount/mount"]
+    assert body["vfsOpt"]["ReadOnly"] is True
+    # The serve carries the matching flat flag so mount and serve share one VFS.
+    [(_, serve)] = [x for x in rcd.calls if x[0] == "serve/start"]
+    assert serve["vfs_read_only"] == "true"
+
+
+def test_read_write_mount_has_readonly_false_and_no_serve_flag(home, rcd):
+    c = mounts_mod.add_mount("rw", "remote:bucket", read_only=False)
+    assert mounts_mod.attach_mount(c) is None
+    [(_, body)] = [x for x in rcd.calls if x[0] == "mount/mount"]
+    # Explicit False, not omission, so it reads back matching the serve.
+    assert body["vfsOpt"]["ReadOnly"] is False
+    [(_, serve)] = [x for x in rcd.calls if x[0] == "serve/start"]
+    assert serve["vfs_read_only"] == "false"
+
+
+@pytest.mark.skipif(mounts_mod.sys.platform != "darwin",
+                    reason="rdonly rides macOS nfsmount ExtraOptions; Linux FUSE differs")
+def test_read_only_mount_adds_rdonly_extraoption_on_macos(home, rcd):
+    c = mounts_mod.add_mount("ro", "remote:bucket", read_only=True)
+    assert mounts_mod.attach_mount(c) is None
+    [(_, body)] = [x for x in rcd.calls if x[0] == "mount/mount"]
+    assert "rdonly" in body["mountOpt"]["ExtraOptions"]
+    # The transport tuning is still there — rdonly is additive.
+    assert "timeo=600" in body["mountOpt"]["ExtraOptions"]
+
+
+@pytest.mark.skipif(mounts_mod.sys.platform != "darwin",
+                    reason="rdonly rides macOS nfsmount ExtraOptions; Linux FUSE differs")
+def test_read_write_mount_has_no_rdonly_on_macos(home, rcd):
+    c = mounts_mod.add_mount("rw", "remote:bucket", read_only=False)
+    assert mounts_mod.attach_mount(c) is None
+    [(_, body)] = [x for x in rcd.calls if x[0] == "mount/mount"]
+    assert "rdonly" not in body["mountOpt"]["ExtraOptions"]
+
+
+# -- split-brain (stale) detection + reconnect healing (INCIDENT 2026-07-16) -----
+
+
+def test_reconnect_stale_unmounts_rcd_entry_before_remounting(home, rcd, monkeypatch):
+    # Split-brain: rcd lists the mount, the kernel has already dropped it. rcd
+    # would refuse to remount over its stale entry, so reconnect must issue
+    # mount/unmount (clearing the entry) BEFORE mount/mount.
+    c, mp = _make_mount(home, rcd)  # served=True
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: False)
+    assert mounts_mod.reconnect_mount(c) is None
+    methods = [m for m, _ in rcd.calls]
+    assert "mount/unmount" in methods and "mount/mount" in methods
+    assert methods.index("mount/unmount") < methods.index("mount/mount")
+
+
+# -- rcd log file + rotation (INCIDENT 2026-07-16: daemon had no --log-file) -----
+
+
+def test_ensure_rcd_spawn_has_log_file_and_records_path(home, monkeypatch):
+    monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: "/usr/bin/rclone")
+    monkeypatch.setattr(mounts_mod, "_live_rcd_port", lambda: None)  # force a spawn
+    argvs = []
+
+    class FakePopen:
+        def __init__(self, argv, **kw):
+            argvs.append(argv)
+
+    monkeypatch.setattr(mounts_mod.subprocess, "Popen", FakePopen)
+    # Stand in for the post-spawn core/pid poll so no real rclone is needed.
+    monkeypatch.setattr(mounts_mod, "_rc", lambda *a, **k: {"pid": 999})
+
+    mounts_mod.ensure_rcd()
+    [argv] = argvs
+    log_flags = [a for a in argv if a.startswith("--log-file=")]
+    assert log_flags and log_flags[0].endswith("rcd.log")
+    assert "--log-level" in argv
+    assert argv[argv.index("--log-level") + 1] == "INFO"
+    # The log path is recorded in rcd.json alongside port/pid.
+    state = json.load(open(mounts_mod._rcd_state_path()))
+    assert state["log"] == mounts_mod._rcd_log_path()
+
+
+def test_rcd_log_rotates_past_cap(home):
+    log = mounts_mod._rcd_log_path()
+    _os.makedirs(_os.path.dirname(log), exist_ok=True)
+    with open(log, "wb") as f:
+        f.write(b"x" * (mounts_mod.RCD_LOG_MAX_BYTES + 1))
+    assert mounts_mod._rotate_rcd_log() == log
+    assert _os.path.exists(log + ".1")  # rolled aside
+    assert not _os.path.exists(log)     # rclone will recreate it fresh
+
+
+def test_rcd_log_not_rotated_below_cap(home):
+    log = mounts_mod._rcd_log_path()
+    _os.makedirs(_os.path.dirname(log), exist_ok=True)
+    with open(log, "wb") as f:
+        f.write(b"small")
+    mounts_mod._rotate_rcd_log()
+    assert not _os.path.exists(log + ".1")
+
+
 def test_attach_syncs_serves_when_already_mounted(home, rcd, monkeypatch):
     # The already-a-kernel-mount early return must still reconcile serves:
     # without one, /api/fs/raw falls back to reads through the kernel mount.
@@ -822,10 +935,14 @@ def test_attach_syncs_serves_when_already_mounted(home, rcd, monkeypatch):
 
 def test_sync_serves_reuses_existing_serve(home, rcd):
     c = mounts_mod.add_mount("data", "remote:bucket")
+    # A serve whose flat params exactly match this (read_write) mount's expected
+    # option set — SERVE_VFS_OPT plus vfs_read_only=false — is reused, not
+    # restarted. (An adopted serve missing vfs_read_only reads as drift and is
+    # restarted; that rollout is covered by the stale-opts test below.)
     rcd.responses["serve/list"] = {"list": [{
         "id": "http-live", "addr": "127.0.0.1:41000",
         "params": {"type": "http", "fs": "remote:bucket",
-                   **mounts_mod.SERVE_VFS_OPT}}]}
+                   **mounts_mod._serve_vfs_opt_for(c)}}]}
     mounts_mod.sync_serves()
     assert not any(m == "serve/start" for m, _ in rcd.calls)
     serves = json.load(open(mounts_mod.serves_path()))
