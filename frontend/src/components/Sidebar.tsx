@@ -25,7 +25,14 @@ import { exportBookmarkFile } from "../lib/api";
 import IconPicker from "./IconPicker";
 import { FolderIcon } from "./FileIcons";
 import type { Bookmark, BookmarkFolder } from "../lib/bookmarks";
-import { useUrlVersion, useBookmarksVersion, notifyBookmarksChanged } from "../lib/hooks";
+import { loadRecents, displayRecents, setRecentsCollapsed } from "../lib/recents";
+import { basename } from "../lib/format";
+import {
+  useUrlVersion,
+  useBookmarksVersion,
+  notifyBookmarksChanged,
+  useRecentsVersion,
+} from "../lib/hooks";
 import type { Config } from "../lib/api";
 import { splitShellSearch } from "../lib/layout-codec";
 import { fuzzyMatch, highlightSegments } from "../lib/fuzzy";
@@ -285,6 +292,7 @@ export default function Sidebar({ config }: SidebarProps) {
   // of the store it renders).
   useUrlVersion();
   useBookmarksVersion();
+  useRecentsVersion();
   // Signed-in dot on the footer's Fused-account entry (SPEC AC-1).
   const accountLoggedIn = useAccountLoggedIn();
 
@@ -307,6 +315,26 @@ export default function Sidebar({ config }: SidebarProps) {
   // imperative classList toggling below).
   const draggedIdRef = useRef<string | null>(null);
   const draggedIsFolderRef = useRef(false);
+
+  // Recents (SPEC §29): last files opened. Display order is stable-slot
+  // (RC-11) — a shown file keeps its row for the session, only a genuinely
+  // new open moves anything — while the store underneath stays strict MRU.
+  const { collapsed: recentsCollapsed } = loadRecents();
+  const recents = displayRecents();
+
+  const onRecentsHeadingClick = () => {
+    // Persisted with the data itself (recents.json), like D44's folder
+    // collapse; the store notifies, so no explicit re-render call here.
+    void setRecentsCollapsed(!recentsCollapsed);
+  };
+
+  const onRecentClick = (e: React.MouseEvent<HTMLAnchorElement>, url: string) => {
+    // Plain navigation to the stored url verbatim — query preserved
+    // (navigateUrl, not navigate). href kept for middle-click/copy-link.
+    // Opening a recent arms nothing — it is not a bookmark.
+    e.preventDefault();
+    navigateUrl(url);
+  };
 
   const items = loadBookmarks(); // top-level items: bookmarks and folders
   const folderById = new Map<string, BookmarkFolder>(items.filter(isFolder).map((f) => [f.id, f]));
@@ -812,6 +840,51 @@ export default function Sidebar({ config }: SidebarProps) {
           </>
         )}
       </div>
+      {/* Recents (SPEC §29) — below the bookmark tree, above the pinned
+          footer. Rows reuse the bookmark row classes so the section reads as
+          a native sibling: same height, padding, glyph slot, ellipsis and
+          hover treatment. Heading click toggles the fold; the count pill
+          carries the collapsed signal (no chevron — D44). */}
+      {recents.length > 0 && (
+        <div className="sidebar-section sidebar-recents">
+          <div
+            className="sidebar-heading recents-heading"
+            title={recentsCollapsed ? "Show recents" : "Hide recents"}
+            onClick={onRecentsHeadingClick}
+          >
+            Recents
+            {recentsCollapsed && <span className="recents-count">{recents.length}</span>}
+          </div>
+          {!recentsCollapsed &&
+            recents.map((r) => {
+              const fsPath = bookmarkFsPath(r.url);
+              return (
+                <a
+                  // Keyed by fs path, not url: the url mutates on every live
+                  // param write, and a key change would remount (flash) the row.
+                  key={fsPath}
+                  // No active/selected state on recents rows (owner call —
+                  // unlike bookmark rows): the section is a jump list, not a
+                  // location indicator.
+                  className="bookmark-row recent-row"
+                  href={r.url}
+                  title={fsPath}
+                  onClick={(e) => onRecentClick(e, r.url)}
+                >
+                  <span className="bookmark-glyph recent-glyph" aria-hidden="true">
+                    {/* Clock in the star-glyph slot, inline so it follows
+                        currentColor like the folder icon. */}
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+                      <circle cx="8" cy="8" r="6.2" />
+                      <path d="M8 4.8V8l2.3 1.6" />
+                    </svg>
+                  </span>
+                  <span className="bookmark-name">{basename(fsPath)}</span>
+                </a>
+              );
+            })}
+        </div>
+      )}
       {/* Preferences entry (SPEC §20) — pinned to the sidebar's bottom edge
           (margin-top: auto), deliberately unobtrusive: a muted gear row that
           navigates to the /view/_prefs sentinel. */}

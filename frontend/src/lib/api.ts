@@ -286,6 +286,33 @@ export function putSession(fsPath: string, search: string): Promise<void> {
   return putJson<unknown>("/api/session", { path: fsPath, search }).then(() => undefined);
 }
 
+// Recently opened files (fused_render/shell/recents.py). `url` is the shell
+// /view/ url verbatim including its query string (D20 posture); entries whose
+// file has since been deleted are already filtered out server-side.
+export interface RecentEntry {
+  url: string;
+  openedAt: string;
+}
+
+export interface RecentsResult {
+  collapsed: boolean;
+  entries: RecentEntry[];
+}
+
+export function getRecents(): Promise<RecentsResult> {
+  return getJson<RecentsResult>("/api/recents");
+}
+
+// Server no-ops (recorded: false) for directory/sentinel/missing-file urls,
+// so callers need not pre-classify the target.
+export function postRecentOpen(url: string): Promise<{ recorded: boolean }> {
+  return postJson<{ recorded: boolean }>("/api/recents/open", { url });
+}
+
+export function putRecentsCollapsed(collapsed: boolean): Promise<void> {
+  return putJson<unknown>("/api/recents/collapsed", { collapsed }).then(() => undefined);
+}
+
 // -- Deploy (hosted publish through the fused CLI; fused_render/deploy.py) ----
 
 // Availability of the fused CLI in the server's environment, and whether the

@@ -9,6 +9,7 @@
 import { useEffect, useState } from "react";
 import { IS_EMBED, fsPathFromLocation, urlForFsPath } from "./lib/router";
 import { useSessionRestore, useSessionTracking } from "./lib/session";
+import { useRecentsTracking } from "./lib/recents";
 import { statPath, getMounts, reconnectMount, type Config, type Mount, type StatResult } from "./lib/api";
 import { useNavEpoch, useDocumentTitle } from "./lib/hooks";
 import { basename } from "./lib/format";
@@ -150,6 +151,9 @@ function StatView({ fsPath, epoch, home }: { fsPath: string; epoch: number; home
   // already on the shell URL (no param flash from defaults -> restored).
   const ready = useSessionRestore(fsPath, isDir);
   useSessionTracking(fsPath, isDir);
+  // Sidebar "Recents": record the open, then keep the entry's url live as
+  // params change (same confirmed-file gate as session tracking).
+  useRecentsTracking(fsPath, isDir);
   useDocumentTitle(fsPath === "/" ? null : basename(fsPath));
   let content = null;
   if (stat.status === "error") {

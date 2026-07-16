@@ -124,6 +124,47 @@ body {
   font-size: 12px;
 }
 
+/* Recents (SPEC §29): sits between the bookmark tree and the pinned footer.
+   Rows reuse .bookmark-row/.bookmark-name/.bookmark-glyph for identical
+   metrics; heading click toggles the fold; the count pill carries the
+   collapsed signal — no chevron, matching D44's folder rows. */
+.sidebar-recents {
+  flex: 0 0 auto;
+  /* The bookmarks section above already ends in its own 8px padding — start
+     at 0 so the two sections sit one section-gap apart, not two. */
+  padding-top: 0;
+}
+
+.recents-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.recents-count {
+  font-size: 10.5px;
+  line-height: 1;
+  color: var(--fg-muted);
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  padding: 3px 6px;
+  letter-spacing: normal;
+}
+
+.recent-row {
+  text-decoration: none;
+}
+
+.recent-row .recent-glyph {
+  /* The glyph slot is inert here (bookmarks use it as the icon-picker
+     button); keep the width so names align with bookmark rows. */
+  cursor: inherit;
+  display: inline-flex;
+  justify-content: center;
+}
+
 .bookmark-row {
   position: relative;
   display: flex;

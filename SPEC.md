@@ -1830,3 +1830,57 @@ offer it — a plain `.toml` never shows the mode at all.
   like every template — no runtime script tag (`window.fused` is injected).
   Out of scope (v0): editing/writing the toml, rendering widget contents inside
   nodes, executing UDFs, in-shell sibling navigation, non-v2 canvas versions.
+## 29. Recents — Sidebar Last-Opened Files (D115)
+
+Goal: getting back to what you were just working on is one click — the sidebar
+lists the last files opened in the app, each carrying the params it last had.
+
+- **RC-1** A collapsible **Recents** section in the shell sidebar shows the
+  last **3** files opened (display order per RC-11). Row label = basename of
+  the file (D22 naming); the full decoded path is the tooltip. Recents rows
+  carry **no active/selected state** (owner call — the section is a jump
+  list, not a location indicator; bookmark rows keep theirs).
+- **RC-2** An entry stores the exact shell url **verbatim including the query
+  string** (D20 posture — the URL is the whole state). Click = plain
+  query-preserving navigation (`navigateUrl`); opening a recent arms no
+  bookmark.
+- **RC-3** Entries update **live**: while a file is open, every param write
+  re-records the entry's url (500 ms debounce against slider churn) — a recent
+  reopens with the file's latest params, not the snapshot at open time. The
+  currently-open file IS listed.
+- **RC-4** Files only. Directory navigation and sentinel routes (any
+  `_`-prefixed top-level view — `_panel`, `_prefs`, `_templates`, ...) are
+  never recorded; embed panes neither (layout modes own pane state, D72).
+- **RC-5** Store: `~/.fused-render/recents.json` —
+  `{collapsed, entries: [{url, openedAt}]}` — via the shell/storage atomic
+  helpers (last-write-wins, no locking, D3). `collapsed` is persisted with the
+  data itself, like D44's folder collapse.
+- **RC-6** Dedupe by target fs path: recording an already-listed file moves it
+  to the top and replaces its url. The store caps at **20** entries — a buffer
+  so 3 valid rows survive RC-7 filtering.
+- **RC-7** Entries whose file no longer exists are **hidden silently** from
+  the GET response — never deleted from disk (the file may come back).
+- **RC-8** API (`fused_render/shell/recents.py`): `GET /api/recents`
+  (unguarded read, filtered per RC-7), `POST /api/recents/open {url}` and
+  `PUT /api/recents/collapsed {collapsed}` (both X-Fused-guarded, D36). The
+  POST validates the url is an existing file's `/view/` url and no-ops
+  otherwise (`recorded: false`) — the client stays dumb about the target's
+  kind.
+- **RC-9** Recording is fire-and-forget (a recents failure never affects the
+  view being opened); the recording hook rides the StatView seam beside
+  session tracking (same confirmed-file gate, LSN-6 posture).
+- **RC-10** The section is hidden entirely while there are no entries.
+- **RC-11** **Data is MRU, display is stable slots.** The store stays strict
+  MRU (RC-6), but the visible top-3 must never move under the user's own
+  interaction: a displayed file keeps its slot for the page session — a
+  re-open or live param update (RC-3) changes its row **in place**, never its
+  position (so clicking a recents row moves nothing). The only movement is a
+  file NOT currently displayed entering at the top (a real navigation to a
+  new file), pushing the bottom row out. A displayed file that vanishes
+  (RC-7) leaves its slot and the next MRU entry fills in at the bottom —
+  surviving rows never reshuffle. The slot order is session view state, not
+  persisted: on boot the display seeds from server MRU order. Rows are keyed
+  by fs path (not url) so a param write never remounts a row; a url update
+  DOES notify (hrefs/click targets must stay fresh per RC-3) but re-renders
+  the row's attributes in place — zero movement — and a refresh that changes
+  nothing visible triggers no re-render at all.
