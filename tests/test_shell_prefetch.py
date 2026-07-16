@@ -68,7 +68,6 @@ def fast(monkeypatch):
     in milliseconds; shrink the chunk so multi-chunk paths are exercised."""
     monkeypatch.setattr(prefetch_mod, "_jobs", {})
     monkeypatch.setattr(prefetch_mod, "_touched", {})
-    monkeypatch.setattr(prefetch_mod, "_worker_slot", threading.Semaphore(1))
     monkeypatch.setattr(prefetch_mod, "START_DELAY_S", 0.0)
     monkeypatch.setattr(prefetch_mod, "IDLE_WAIT_S", 0.0)
     monkeypatch.setattr(prefetch_mod, "MAX_IDLE_HOLD_S", 0.0)
@@ -120,6 +119,21 @@ def test_size_gate_skips_small_files(fast, monkeypatch):
     try:
         prefetch_mod.schedule("/m/chunk.bin", stub.url)
         wait_status("/m/chunk.bin", "skipped")
+        assert not any(r[0] == "GET" for r in stub.requests)
+    finally:
+        stub.close()
+
+
+def test_size_gate_decides_without_start_delay(fast, monkeypatch):
+    # The gate HEAD runs before START_DELAY (delay applies to the download
+    # phase only), so a sub-floor file is dismissed immediately even with a
+    # long delay configured — no 5s wait to decide not to prefetch.
+    monkeypatch.setattr(prefetch_mod, "START_DELAY_S", 30.0)
+    monkeypatch.setattr(prefetch_mod, "MIN_BYTES", 1000)
+    stub = StubServe(b"x" * 100)
+    try:
+        prefetch_mod.schedule("/m/chunk.bin", stub.url)
+        wait_status("/m/chunk.bin", "skipped", timeout=5.0)   # << 30s delay
         assert not any(r[0] == "GET" for r in stub.requests)
     finally:
         stub.close()

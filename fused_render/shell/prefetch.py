@@ -18,9 +18,21 @@ rclone's fingerprint check invalidates it if the object changes upstream.
 
 Triggered from the /api/fs/raw proxy (the one path every remote byte
 already flows through — templates stay mount-agnostic), so scheduling
-must be cheap, non-blocking, and never raise. Everything slow (the HEAD
-for the size gate, the download) happens on a daemon worker thread; a
-process-wide semaphore keeps at most one file prefetching at a time.
+must be cheap, non-blocking, and never raise. `schedule()` just records
+the job and submits a coroutine to a single dedicated prefetch event loop
+(one background thread for the whole process, not one thread per file —
+a zarr store's thousands of chunk reads would otherwise mint thousands of
+threads). The blocking urllib calls run via asyncio.to_thread on that
+loop's bounded shared executor.
+
+Two phases with very different cost profiles, kept separate:
+  1. Decide — a HEAD for the size gate. Cheap; runs immediately and
+     concurrently for every scheduled file, so a sub-MIN_BYTES chunk is
+     dismissed in one round trip without waiting behind anything.
+  2. Stream — the whole-file download. Expensive; serialized by an
+     asyncio semaphore (one file at a time: two big streams would evict
+     each other from the LRU serve cache) and delayed by START_DELAY_S so
+     the interactive read that triggered us wins its first cold seeks.
 
 The serve surfaces transient store errors as HTTP 500s mid-stream
 (observed on S3), so the worker fetches in ranged chunks and resumes with
@@ -29,6 +41,7 @@ costs nothing. A completed file is remembered for this server run only;
 re-prefetching after a restart re-streams from the local cache in
 seconds without touching the store.
 """
+import asyncio
 import logging
 import os
 import threading
@@ -60,7 +73,10 @@ MAX_TRACKED = int(os.environ.get("FUSED_RENDER_PREFETCH_MAX_TRACKED", 2048))
 ENABLED = os.environ.get("FUSED_RENDER_PREFETCH", "1") != "0"
 
 CHUNK_BYTES = 32 * 1024 * 1024
-# Let the interactive load that triggered us win the first cold seeks.
+# Applies to the DOWNLOAD phase only, not the size-gate HEAD: once a file
+# clears the gate, let the interactive load that triggered us win its
+# first cold seeks before the whole-file stream starts competing for the
+# store's bandwidth.
 START_DELAY_S = 5.0
 # Between chunks, hold off while the file is being read interactively —
 # but never indefinitely: prefetching IS the fix for those slow reads.
@@ -72,7 +88,15 @@ FAILED_RETRY_COOLDOWN_S = 60.0
 _lock = threading.Lock()
 _jobs: dict = {}     # path -> {"status", "size", "done", "at"}
 _touched: dict = {}  # path -> monotonic time of last interactive access
-_worker_slot = threading.Semaphore(1)
+
+# Single dedicated event loop for all prefetch work, spun up lazily on the
+# first schedule() and run on one daemon thread. Keeps schedule() a plain
+# sync call usable from anywhere (request handlers, tests) while the actual
+# I/O runs as coroutines off the caller's thread.
+_loop_lock = threading.Lock()
+_loop: "asyncio.AbstractEventLoop | None" = None
+# Serializes the download phase (created on the loop; see _acquire_slot).
+_download_slot: "asyncio.Semaphore | None" = None
 
 
 def status() -> dict:
@@ -109,6 +133,20 @@ def is_done(path: str) -> bool:
         return bool(job and job["status"] == "done")
 
 
+def _ensure_loop() -> "asyncio.AbstractEventLoop":
+    """Start (once) the background prefetch event loop and return it."""
+    global _loop
+    if _loop is not None:
+        return _loop
+    with _loop_lock:
+        if _loop is None:
+            loop = asyncio.new_event_loop()
+            threading.Thread(target=loop.run_forever, daemon=True,
+                             name="prefetch-loop").start()
+            _loop = loop
+    return _loop
+
+
 def schedule(path: str, url: str) -> None:
     """Note that `path` (served at `url`) is being read; start a background
     prefetch unless one already ran. Called on the raw-proxy hot path:
@@ -128,17 +166,9 @@ def schedule(path: str, url: str) -> None:
             _jobs[path] = {"status": "queued", "size": None, "done": 0,
                            "at": now}
             _evict_locked()
-        threading.Thread(target=_run, args=(path, url), daemon=True).start()
+        asyncio.run_coroutine_threadsafe(_prefetch(path, url), _ensure_loop())
     except Exception:                                  # pragma: no cover
         logger.warning("prefetch schedule failed for %r", path, exc_info=True)
-
-
-def _run(path: str, url: str) -> None:
-    try:
-        _prefetch(path, url)
-    except Exception:
-        logger.warning("prefetch of %r died", path, exc_info=True)
-        _finish(path, "failed")
 
 
 def _finish(path: str, status_: str) -> None:
@@ -168,21 +198,50 @@ def _head_size(url: str) -> int | None:
         return int(cl) if cl is not None else None
 
 
-def _wait_for_lull(path: str) -> None:
+def _fetch_chunk(url: str, off: int, end: int, path: str) -> int:
+    """Fetch bytes [off, end] through the serve and discard them (the point
+    is the serve's cache side effect); update the job's progress as bytes
+    land. Returns the new offset. Blocking — run via asyncio.to_thread."""
+    req = urllib.request.Request(url)
+    req.add_header("Range", f"bytes={off}-{end}")
+    with urllib.request.urlopen(req, timeout=120) as r:
+        while True:
+            b = r.read(1024 * 1024)
+            if not b:
+                break
+            off += len(b)
+            with _lock:
+                if path in _jobs:
+                    _jobs[path]["done"] = off
+    return off
+
+
+async def _acquire_slot() -> "asyncio.Semaphore":
+    """The download semaphore, created lazily on the loop thread (so it
+    binds to this loop). Runs single-threaded here, so no lock needed."""
+    global _download_slot
+    if _download_slot is None:
+        _download_slot = asyncio.Semaphore(1)
+    return _download_slot
+
+
+async def _wait_for_lull(path: str) -> None:
     start = time.monotonic()
     while time.monotonic() - start < MAX_IDLE_HOLD_S:
         with _lock:
             last = _touched.get(path, 0.0)
         if time.monotonic() - last >= IDLE_WAIT_S:
             return
-        time.sleep(0.5)
+        await asyncio.sleep(0.5)
 
 
-def _prefetch(path: str, url: str) -> None:
-    time.sleep(START_DELAY_S)
-    with _worker_slot:
+async def _prefetch(path: str, url: str) -> None:
+    try:
+        # Phase 1 — decide. No delay, no download slot: the HEAD is cheap
+        # and gates whether we bother at all, so it runs immediately and
+        # concurrently with every other scheduled file's HEAD.
         try:
-            size = _head_size(url)
+            size = await asyncio.to_thread(_head_size, url)
         except Exception as exc:
             _release(exc)
             _finish(path, "failed")
@@ -195,34 +254,33 @@ def _prefetch(path: str, url: str) -> None:
             if job is not None:
                 job.update(status="running", size=size)
 
-        off, errors = 0, 0
-        while off < size:
-            _wait_for_lull(path)
-            end = min(off + CHUNK_BYTES, size) - 1
-            try:
-                req = urllib.request.Request(url)
-                req.add_header("Range", f"bytes={off}-{end}")
-                with urllib.request.urlopen(req, timeout=120) as r:
-                    while True:
-                        b = r.read(1024 * 1024)
-                        if not b:
-                            break
-                        off += len(b)
-                        with _lock:
-                            if path in _jobs:
-                                _jobs[path]["done"] = off
-                errors = 0
-            except Exception as exc:
-                _release(exc)
-                errors += 1
-                if errors > MAX_CONSECUTIVE_ERRORS:
-                    logger.warning("prefetch of %r gave up at %d/%d bytes",
-                                   path, off, size)
-                    _finish(path, "failed")
-                    return
-                # Resume at `off`: everything fetched so far is already in
-                # the serve's cache, so a re-request of it replays locally.
-                time.sleep(min(2.0 * errors, 30.0))
-        _finish(path, "done")
-        logger.info("prefetched %r (%d bytes) into the serve cache",
-                    path, size)
+        # Phase 2 — stream. Expensive, so one file at a time, and only
+        # after START_DELAY_S so the triggering interactive read gets ahead.
+        await asyncio.sleep(START_DELAY_S)
+        async with await _acquire_slot():
+            off, errors = 0, 0
+            while off < size:
+                await _wait_for_lull(path)
+                end = min(off + CHUNK_BYTES, size) - 1
+                try:
+                    off = await asyncio.to_thread(
+                        _fetch_chunk, url, off, end, path)
+                    errors = 0
+                except Exception as exc:
+                    _release(exc)
+                    errors += 1
+                    if errors > MAX_CONSECUTIVE_ERRORS:
+                        logger.warning("prefetch of %r gave up at %d/%d bytes",
+                                       path, off, size)
+                        _finish(path, "failed")
+                        return
+                    # Resume at `off`: everything fetched so far is already
+                    # in the serve's cache, so re-requesting it replays
+                    # locally.
+                    await asyncio.sleep(min(2.0 * errors, 30.0))
+            _finish(path, "done")
+            logger.info("prefetched %r (%d bytes) into the serve cache",
+                        path, size)
+    except Exception:
+        logger.warning("prefetch of %r died", path, exc_info=True)
+        _finish(path, "failed")
