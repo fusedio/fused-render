@@ -1762,3 +1762,71 @@ provisioning stays a documented terminal flow.
   All mutating endpoints carry the D36 X-Fused guard; `return_url` is
   loopback-constrained (AC-3). The D3 stance is unchanged — this is not
   authentication *of* fused-render, and the §1 non-goal stands as annotated.
+## 28. Canvas View — Conditional Layout Viewer for `canvas.toml` (D114)
+
+A `canvas` view template renders a Fused **canvas definition** (`canvas.toml`,
+v2) as a read-only **layout viewer**: nodes drawn as positioned boxes, folder
+groups behind them, edges wired between node borders, honoring the stored
+viewport. It is the **first consumer of the conditional-template mechanism**
+(CT-12): listed first for `.toml` but gated so only genuine canvas files ever
+offer it — a plain `.toml` never shows the mode at all.
+
+- **CV-1** Files (`fused_render/templates/canvas/`): `template.html` (the
+  viewer), `reader.py` (the toml→JSON parser), `condition.py` (the gate),
+  `icon.svg`. Registry binding: `".toml": ["canvas", "code", "annotate"]` —
+  canvas listed first. Under deferred CT-12 the immediate default is the first
+  *unconditional* entry (`code`); `canvas` resolves in the background and joins
+  the switcher when its verdict allows (or disappears when it doesn't).
+- **CV-2** **Condition gate (CT-12, deferred).** Stat only *marks* the canvas
+  entry `conditional`; `condition.py` is evaluated via
+  `GET /api/fs/conditions` in the background (PT-8/CT-12). The gate itself is
+  cheap and fail-closed: a **basename pre-check** (`canvas.toml`, no I/O)
+  before any open, a **2 MB size guard**, then a `tomllib` parse asserting
+  top-level `type == "canvas"` (the content sniff, D114). Any exception →
+  False; the mode is denied and `code` stays. No `template_error` on a fail —
+  an ordinary toml is not an error.
+- **CV-3** **Reader (`reader.py`, `@fused.udf`-registered).** One `tomllib`
+  pass → `{name, version, previewImageUrl, nodes, folders, edges, viewport,
+  viewportBounds, siblings}`. `type == "udf-folder"` entries go to `folders`
+  (folderName, folderColor, childUdfOrder, isLocked); the rest to `nodes`
+  (title defaults to udfName, visible defaults true — the §28 defaults). Edges
+  are `[src, dst]` name pairs; malformed nodes/edges are **skipped, never
+  fatal**. `siblings` maps each node's udfName → the sibling file extensions
+  (`.py`/`.json`/`.md`/`.html`) present next to the toml, from one
+  `os.listdir`. **Engine isolation:** the whole body — helpers and imports —
+  lives inside `main()`; nothing but the entrypoint and its registration shim
+  is at module level.
+- **CV-4** **Viewer (`template.html`).** A single full-viewport `<canvas>` in
+  world space (toml coordinates), visually replicating the Flow app canvas
+  (its widget.css tokens: #070a0f bg with a 50-gap dot grid, #0d1219 node
+  cards with a #11171f header bar, bezier edges at 22% text tone with a
+  bg-colored legibility outline and target arrowhead, folder regions as a
+  color wash with a solid title pill above; folderColor `series-N`/`chart-N`
+  keys map into the series palette, default purple). Draw order matches Flow's
+  zIndex layering: folder regions → edges → node cards (title header,
+  description/udfName body, sibling-extension chips; `visible:false` ghosted
+  at 40% alpha) → folder title pills. Geometry, text, and borders are drawn in
+  **world units** so everything scales with zoom exactly like ReactFlow's
+  transformed DOM; only edge strokes are screen-constant (`min(5, 1.5/zoom)`).
+  Hovering a node brightens its border and shows a title/description tooltip.
+  Empty canvas → a centered "empty canvas" note; a reader error surfaces
+  through the runtime's traceback overlay (the header still renders first).
+- **CV-5** **Camera & URL sync.** Start from `[canvas.viewport]` (x/y/zoom)
+  when present, else **fit-to-bounds** of all nodes with a 10% margin (fit
+  clamps zoom to ≤1; interactive zoom clamps to [0.1, 2], Flow's min/max).
+  Wheel zooms to the cursor, drag pans; a bottom-right glass cluster offers
+  zoom in/out and an animated **Fit** (600 ms cubic ease-out, instant under
+  `prefers-reduced-motion`). Camera
+  state mirrors to URL params `cx`/`cy`/`z` (translate + zoom) on interaction
+  (150 ms debounce) and is read on load, where it **overrides** the toml
+  viewport — so refresh/share restores the exact camera. Params are strings
+  (`set` throws otherwise); parsed at the boundary. The template's own writes
+  are echo-guarded in `onChange`; a `_file` change reloads.
+- **CV-6** **Detail panel.** Clicking a node opens a footer panel: title,
+  udfName, description, size, and sibling files as links that open
+  `/view/<abs sibling path>` in a **new tab** (no in-shell navigation, v0).
+  Clicking a folder shows its name and child list; clicking empty space clears.
+- **CV-7** Dark theme matching the explorer, no external assets, ES2020, and —
+  like every template — no runtime script tag (`window.fused` is injected).
+  Out of scope (v0): editing/writing the toml, rendering widget contents inside
+  nodes, executing UDFs, in-shell sibling navigation, non-v2 canvas versions.
