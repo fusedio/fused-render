@@ -67,7 +67,7 @@ runtime API is portable:
 
 | API | Hosted? | Notes |
 |---|---|---|
-| `fused.runPython(pyPath, params)` | ✅ | `pyPath` is bundled and served as a route the page posts to. |
+| `fused.runPython(pyPath, params, opts?)` | ✅ | `pyPath` is bundled and served as a route the page posts to. The `opts.key`/`opts.signal` stale-request cancellation (SPEC RH-9) works identically on the hosted page. |
 | `fused.rawUrl(path)` | ✅ | `path` is bundled as a read-only asset. |
 | `fused.readFile(path)` | ✅ | same bundling as `rawUrl`. |
 | `fused.params.*` | ✅ | pure client-side URL state — unchanged. |

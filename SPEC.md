@@ -109,6 +109,7 @@ The server serves the HTML with a small runtime `<script>` injected (or the ifra
 ```js
 // Execute main() of a Python file
 const result = await fused.runPython(pathToPy, paramsObject);
+const result = await fused.runPython(pathToPy, paramsObject, { key: "chan" }); // latest-wins (RH-9)
 
 // Params (see §6)
 fused.params.get(name)
@@ -122,8 +123,9 @@ fused.params.onChange(callback)   // fires whenever params change; author re-run
 - **RH-1** **DECIDED:** `path` may be **relative to the HTML file's own location** or **absolute** (anywhere on the machine — whole filesystem is in scope, consistent with FS-3).
 - **RH-2** `params` is a flat JSON object; keys map to the Python function's keyword arguments (§5.2).
 - **RH-3** Returns a Promise. Resolves with the deserialized return value; rejects with a structured error `{ type, message, traceback }` on Python exception, missing file, missing `main` function, or timeout.
-- **RH-4** Concurrent calls are allowed (e.g. a page fires 3 data fetches on load). Server may queue or parallelize; ordering is not guaranteed.
+- **RH-4** Concurrent calls are allowed (e.g. a page fires 3 data fetches on load). Server may queue or parallelize; ordering is not guaranteed. Opt-in supersession (RH-9) is the only thing that cancels a call — by default no call ever cancels another.
 - **RH-5** Calls have a configurable timeout (default e.g. 30 s), after which the worker is killed and the promise rejects.
+- **RH-9** **DECIDED (D113):** an optional third argument `opts` carries **stale-request cancellation**. `opts.key` (a string) names a **latest-wins channel**: firing a new `runPython` on a key **aborts** the prior in-flight call on that same key, so a slider scrubbed through many values leaves only the last value's request alive — the superseded fetches are cancelled (browser connection freed; the server abandons the now-irrelevant subprocess when it sees the dropped socket). Without a key, calls are independent (RH-4 unchanged) — same-file polling loops and unrelated concurrent fetches are never auto-cancelled, so keying is a deliberate author choice. `opts.signal` (a standard `AbortSignal`) composes with the channel: the fetch aborts on whichever fires first. A superseded/aborted call rejects with a standard **AbortError** (`DOMException`, `name === "AbortError"`); the runtime's unhandledrejection handler treats that as benign — no traceback overlay (RH-3/D17), no console noise — so a fire-and-forget `onChange` re-render that loses the race needs no try/catch. Applies identically to the hosted/exported runtime (§18).
 
 ### 4.3 Isolation — DESCOPED (v1)
 
@@ -582,10 +584,11 @@ nothing. Full detail: `docs/EXPORT.md`.
 ### 18.2 Portable subset
 
 - **EX-3** Only the transport-agnostic part of the injected `window.fused` API is
-  portable: `runPython` (→ a served route the page posts to), `rawUrl`/`readFile`
-  (→ read-only bundled assets), and `params` (pure client-side URL state, unchanged).
-  `writeFile`, `stat`, and SSE live-reload are **unsupported** — a hosted artifact is
-  immutable and has no filesystem behind it.
+  portable: `runPython` (→ a served route the page posts to, including its RH-9
+  `opts.key`/`opts.signal` cancellation), `rawUrl`/`readFile` (→ read-only bundled
+  assets), and `params` (pure client-side URL state, unchanged). `writeFile`, `stat`,
+  and SSE live-reload are **unsupported** — a hosted artifact is immutable and has no
+  filesystem behind it.
 
 ### 18.3 Static resolution & fail-loud
 

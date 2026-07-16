@@ -1,7 +1,10 @@
 /*
  * Injected into every rendered HTML file (see server.py `/render`).
  * Provides `window.fused`:
- *   fused.runPython(pyPath, params) -> Promise<result>
+ *   fused.runPython(pyPath, params, opts?) -> Promise<result>
+ *     opts.key    — a latest-wins request channel: a newer call on the same key
+ *                   aborts the prior in-flight one (D113 — cancel stale scrubs).
+ *     opts.signal — a caller AbortSignal; composes with the channel abort.
  *   fused.params.get(key) / getAll() / set(key, value) / onChange(cb) -> unsubscribe
  *
  * Same-origin iframe model: this script talks to an ancestor window's URL
@@ -312,7 +315,41 @@
     }
   });
 
-  function runPython(pyPath, params) {
+  // ---- stale-request cancellation (D113) ------------------------------------
+  // Requests sharing an `opts.key` form a latest-wins channel: firing a newer
+  // call on a key ABORTS the prior in-flight call on that same key. This is the
+  // slider primitive — scrubbing through many values leaves only the last
+  // value's request alive; each superseded fetch is cancelled, freeing the
+  // browser connection and letting the server abandon the now-irrelevant
+  // subprocess once it notices the dropped socket. RH-4 is preserved: with NO
+  // key, calls never cancel each other, so unrelated concurrent fetches and
+  // same-file polling loops are untouched. An author-supplied `opts.signal`
+  // composes — the fetch aborts on whichever fires first. A superseded/aborted
+  // call rejects with a standard AbortError (DOMException, name "AbortError");
+  // the unhandledrejection handler below treats that as benign, so a
+  // fire-and-forget re-render that loses the race neither shows the traceback
+  // overlay nor logs an "uncaught (in promise)" to the console.
+  const inflightByKey = new Map();
+
+  function runPython(pyPath, params, opts) {
+    opts = opts || {};
+    const key = opts.key;
+    const keyed = key !== undefined && key !== null;
+    const controller = new AbortController();
+    if (keyed) {
+      const prev = inflightByKey.get(key);
+      if (prev) prev.abort(); // supersede the now-stale request on this channel
+      inflightByKey.set(key, controller);
+    }
+    if (opts.signal) {
+      if (opts.signal.aborted) controller.abort();
+      else opts.signal.addEventListener("abort", () => controller.abort(), { once: true });
+    }
+    // Free the channel slot when this call settles — but only if it is still
+    // ours (a newer same-key call may have already replaced us in the map).
+    const clearSlot = () => {
+      if (keyed && inflightByKey.get(key) === controller) inflightByKey.delete(key);
+    };
     const ownPath = new URLSearchParams(window.location.search).get("path");
     return fetch("/api/run", {
       method: "POST",
@@ -320,6 +357,7 @@
       // execute endpoint blind (see server.py _require_fused).
       headers: { "Content-Type": "application/json", "X-Fused": "1" },
       body: JSON.stringify({ py: pyPath, html: ownPath, params: params || {} }),
+      signal: controller.signal,
     })
       .then((res) => res.json())
       .then((data) => {
@@ -338,7 +376,8 @@
           throw err;
         }
         return data.result;
-      });
+      })
+      .finally(clearSlot);
   }
 
   // Synchronous URL of the raw-bytes endpoint for a file — for <img>/<embed>
@@ -524,6 +563,13 @@
 
   window.addEventListener("unhandledrejection", (event) => {
     const err = event.reason;
+    // A superseded/aborted runPython (D113) rejects with a benign AbortError:
+    // swallow it so a fire-and-forget re-render that lost the race neither shows
+    // the overlay nor logs an "uncaught (in promise)" to the console.
+    if (err && err.name === "AbortError") {
+      event.preventDefault();
+      return;
+    }
     if (err && err.traceback) {
       showOverlay(err);
     }
