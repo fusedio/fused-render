@@ -48,6 +48,26 @@ impl DesktopPaths {
         Ok(())
     }
 
+    /// Best-effort append to `logs/supervisor.log`, shared by main.rs's fatal-
+    /// error handler and by subsystems (tray) that must warn without ever
+    /// treating the warning as fatal to the Job-owned Python server.
+    pub fn log(&self, message: &str) {
+        if std::fs::create_dir_all(&self.logs).is_err() {
+            return;
+        }
+        let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.logs.join("supervisor.log"))
+        else {
+            return;
+        };
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs());
+        let _ = io::Write::write_all(&mut file, format!("{timestamp}: {message}\n").as_bytes());
+    }
+
     pub fn child_environment(
         &self,
         instance_id: &str,

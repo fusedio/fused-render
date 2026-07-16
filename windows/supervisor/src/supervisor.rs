@@ -50,7 +50,13 @@ pub fn run(initial: Command) -> io::Result<()> {
             let token = launch_token()?;
             let (job, process, port) = start_ready_server(&paths, &token)?;
             open_command(port, initial)?;
-            let tray = tray::start(port, startup::enabled()?)?;
+            let login_enabled = startup::enabled().unwrap_or_else(|error| {
+                paths.log(&format!(
+                    "could not read sign-in setting, defaulting to off: {error}"
+                ));
+                false
+            });
+            let tray = tray::start(port, login_enabled, paths.clone());
             let (sender, receiver) = mpsc::channel();
             let mut pipe = Some(instance.serve(sender));
             let mut stop_pipe_locally = false;

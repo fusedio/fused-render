@@ -1,4 +1,3 @@
-use std::io;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Duration;
@@ -8,6 +7,8 @@ use tray_icon::{Icon, TrayIconBuilder, TrayIconEvent};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage,
 };
+
+use crate::paths::DesktopPaths;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayAction {
@@ -19,26 +20,50 @@ pub enum TrayAction {
     Exit,
 }
 
-pub fn start(port: u16, login_enabled: bool) -> io::Result<Receiver<TrayAction>> {
+const RETRY_START: Duration = Duration::from_millis(500);
+const RETRY_CAP: Duration = Duration::from_secs(30);
+const LOG_AFTER_ATTEMPTS: u32 = 10;
+
+/// Spawns the tray on its own thread and returns immediately — this cannot
+/// fail from the caller's side, by construction: the Job/Python lifecycle
+/// must never depend on tray success. If the shell's notification area isn't
+/// ready yet (the real case: launched from the sign-in Run key before
+/// Explorer's tray infrastructure is up), the thread retries with backoff
+/// until it succeeds — the icon shows up late, never "not at all," and no
+/// restart or re-login is ever required. A panic inside a single attempt is
+/// also just another attempt to retry, not a reason for the icon to vanish
+/// for the rest of the session.
+pub fn start(port: u16, login_enabled: bool, paths: DesktopPaths) -> Receiver<TrayAction> {
     let (actions, receiver) = mpsc::channel();
-    let (ready, started) = mpsc::sync_channel(1);
     thread::spawn(move || {
-        if let Err(error) = run(port, login_enabled, actions, &ready) {
-            let _ = ready.send(Err(error.to_string()));
+        let mut delay = RETRY_START;
+        for attempt in 1u32.. {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run(port, login_enabled, actions.clone())
+            }));
+            match outcome {
+                Ok(Ok(())) => return, // consumer hung up: supervisor is shutting down
+                Ok(Err(error)) if attempt == LOG_AFTER_ATTEMPTS => paths.log(&format!(
+                    "tray icon still not up after {attempt} attempts, retrying: {error}"
+                )),
+                Ok(Err(_)) => {}
+                Err(_) => {
+                    paths.log(&format!(
+                        "tray thread panicked on attempt {attempt}, retrying"
+                    ));
+                }
+            }
+            thread::sleep(delay);
+            delay = (delay * 2).min(RETRY_CAP);
         }
     });
-    match started.recv_timeout(Duration::from_secs(5)) {
-        Ok(Ok(())) => Ok(receiver),
-        Ok(Err(error)) => Err(io::Error::other(error)),
-        Err(_) => Err(io::Error::other("tray did not start")),
-    }
+    receiver
 }
 
 fn run(
     port: u16,
     login_enabled: bool,
     actions: mpsc::Sender<TrayAction>,
-    ready: &mpsc::SyncSender<Result<(), String>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let menu = Menu::new();
     let open = MenuItem::new("Open FusedRender", true, None);
@@ -72,7 +97,6 @@ fn run(
         .with_menu(Box::new(menu))
         .with_icon(icon)
         .build()?;
-    let _ = ready.send(Ok(()));
 
     loop {
         let mut message = MSG::default();

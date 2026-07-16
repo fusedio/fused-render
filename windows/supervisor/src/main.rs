@@ -1,10 +1,7 @@
 #![windows_subsystem = "windows"]
 
 use std::ffi::OsStr;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::os::windows::ffi::OsStrExt;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use fused_render_windows_supervisor::paths::DesktopPaths;
 use fused_render_windows_supervisor::protocol::parse_args;
@@ -35,23 +32,9 @@ fn main() {
 }
 
 fn log_error(error: &dyn std::fmt::Display) {
-    let Ok(paths) = DesktopPaths::discover() else {
-        return;
-    };
-    if std::fs::create_dir_all(&paths.logs).is_err() {
-        return;
+    if let Ok(paths) = DesktopPaths::discover() {
+        paths.log(&error.to_string());
     }
-    let Ok(mut log) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(paths.logs.join("supervisor.log"))
-    else {
-        return;
-    };
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs());
-    let _ = writeln!(log, "{timestamp}: {error}");
 }
 
 fn set_app_user_model_id() -> std::io::Result<()> {
