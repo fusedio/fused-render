@@ -142,6 +142,57 @@ SERVE_VFS_OPT = {
 # ignores these NFS options.
 NFS_MOUNT_OPT = {"ExtraOptions": ["timeo=600", "retrans=2"]}
 
+
+# INCIDENT (2026-07-16): a mount recorded read_only=true in mounts.json still
+# mounted WRITABLE at the rclone layer — vfs/stats reported ReadOnly:false and
+# the kernel NFS mount was not rdonly. With CacheMode=full a write (macOS's
+# .DS_Store) is accepted into the VFS cache and then retried forever against
+# the store, which answers PutObject 403 AccessDenied — 6642 accumulated
+# errors before the mount wedged ("Server connections interrupted"). The
+# read_only flag was purely an app-level guard (mount_read_only ->
+# server._writable): it flipped stat.writable and blocked /api/fs/write, but
+# nothing stopped rclone itself, or a non-app writer (Finder), from queuing
+# doomed uploads. These helpers push read_only DOWN into the two layers that
+# actually accept the bytes, so a read-only remote rejects the write before it
+# is ever cached:
+#   - the VFS (ReadOnly), shared by the mount's vfsOpt and the HTTP serve's
+#     flat params — both must set it identically or rcd splits the VFS in two
+#     (see SERVE_VFS_OPT), so the serve carries vfs_read_only too;
+#   - the macOS kernel NFS mount (rdonly), so even Finder can't write.
+# read_write mounts get the explicit falses / no rdonly — the pre-incident
+# behavior, stated rather than left to defaults.
+
+
+def _vfs_opt_for(m: dict) -> dict:
+    """The mount's vfsOpt: the canonical VFS_OPT plus ReadOnly driven by the
+    record's read_only flag. Explicit False (not omission) so a read_write
+    mount reads back ReadOnly:false in vfs/stats and matches its serve's
+    vfs_read_only=false — the two option sets must agree exactly for the mount
+    and serve to share one VFS."""
+    return {**VFS_OPT, "ReadOnly": bool(m.get("read_only"))}
+
+
+def _serve_vfs_opt_for(m: dict) -> dict:
+    """The HTTP serve's flat vfs params for this mount: SERVE_VFS_OPT plus
+    vfs_read_only, the serve-side spelling of the mount's vfsOpt.ReadOnly.
+    Stringified like the rest of SERVE_VFS_OPT because serve/list echoes params
+    back as strings, and sync_serves' drift check compares against that echo."""
+    return {**SERVE_VFS_OPT, "vfs_read_only": "true" if m.get("read_only") else "false"}
+
+
+def _nfs_mount_opt(m: dict) -> dict:
+    """macOS-only mountOpt for this mount: the NFS transport tuning plus, for a
+    read_only record, "rdonly" so the kernel mount itself rejects writes (a
+    belt-and-suspenders companion to the VFS ReadOnly above — the VFS stops the
+    app and rclone, rdonly stops anything that reaches the kernel mount, e.g.
+    Finder dropping a .DS_Store). Same nfsmount-only gating as the timeo/retrans
+    options: the Linux FUSE path takes different mount flags and ignores these,
+    so this is only ever passed on darwin (see attach_mount)."""
+    extra = list(NFS_MOUNT_OPT["ExtraOptions"])
+    if m.get("read_only"):
+        extra.append("rdonly")
+    return {"ExtraOptions": extra}
+
 # Tile-server daemon state files — the two parallel implementations that can
 # hold files open under a mount (geotiff, and the grid server shared by
 # zarr + netcdf). Unmount asks each to /quit before retrying (EBUSY fix).
@@ -268,8 +319,40 @@ def _rcd_state_path() -> str:
     return os.path.join(storage.home_dir(), "rcd.json")
 
 
-def write_rcd_state(port: int, pid: int) -> None:
-    storage.write_json(_rcd_state_path(), {"port": port, "pid": pid})
+def _rcd_log_path() -> str:
+    return os.path.join(storage.home_dir(), "rcd.log")
+
+
+# rclone's --log-file has no built-in rotation, so cap it ourselves.
+RCD_LOG_MAX_BYTES = 10 * 1024 * 1024
+
+
+def _rotate_rcd_log() -> str:
+    """Before spawning rcd, roll the log if it has grown past the cap:
+    rcd.log -> rcd.log.1 (overwriting any previous .1). One generation is
+    enough — this is diagnostic breadcrumbs, not an audit trail. Returns the
+    (current) log path to hand to --log-file.
+
+    INCIDENT 2026-07-16: rcd ran with NO --log-file, so when a read-only mount
+    wedged under load there was zero rclone-side evidence to diagnose with (no
+    record of the 403 PutObject loop). Best-effort: a stat/rename failure just
+    means we append to whatever is there."""
+    log = _rcd_log_path()
+    try:
+        if os.path.getsize(log) > RCD_LOG_MAX_BYTES:
+            os.replace(log, log + ".1")
+    except OSError:
+        pass
+    return log
+
+
+def write_rcd_state(port: int, pid: int, log_path: str | None = None) -> None:
+    # Record the log path alongside port/pid so tooling (and a human tailing
+    # the daemon) can find it without reconstructing home_dir() (INCIDENT).
+    storage.write_json(
+        _rcd_state_path(),
+        {"port": port, "pid": pid, "log": log_path or _rcd_log_path()},
+    )
 
 
 def _rc(port: int, method: str, params: dict | None = None, timeout: float = 30):
@@ -355,9 +438,17 @@ def _ensure_rcd_locked() -> int:
     # mount: measured ~300ms/object, turning a 264-file sentinel-cogs subtree
     # into a ~78s walk vs ~1.5s with the LIST mtime. We don't need upload-time
     # precision to browse, so trade it for the 50x faster listing.
+    # --log-file/--log-level: give the detached daemon a durable log so a mount
+    # that wedges under load leaves rclone-side evidence (INCIDENT 2026-07-16 —
+    # the daemon had none, so the read-only PutObject 403 loop was invisible).
+    # Rotate first since rclone won't cap the file itself. stdout/stderr stay
+    # DEVNULL: --log-file captures everything, and a detached daemon has no
+    # console to write to anyway.
+    log_path = _rotate_rcd_log()
     subprocess.Popen(
         [bin_, "rcd", "--rc-no-auth", "--use-server-modtime",
-         f"--rc-addr=127.0.0.1:{port}"],
+         f"--rc-addr=127.0.0.1:{port}",
+         f"--log-file={log_path}", "--log-level", "INFO"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,  # outlives this server on purpose
@@ -366,7 +457,7 @@ def _ensure_rcd_locked() -> int:
     while time.time() < deadline:
         try:
             pid = _rc(port, "core/pid", timeout=2).get("pid", 0)
-            write_rcd_state(port, pid)
+            write_rcd_state(port, pid, log_path)
             return port
         except RuntimeError:
             time.sleep(0.2)
@@ -747,10 +838,14 @@ def _sync_serves_locked() -> None:
     out = {}
     for m in mounts:
         fs = m["remote"]
+        want_vfs = _serve_vfs_opt_for(m)
         serve = serves.get(fs)
-        if serve is not None and serve["vfs"] != SERVE_VFS_OPT:
+        if serve is not None and serve["vfs"] != want_vfs:
             # Stale cache options (serves outlive server runs, so a config
             # change here never reaches an already-running serve otherwise).
+            # This now also fires when a mount's read_only flips: the serve's
+            # vfs_read_only must track the mount's vfsOpt.ReadOnly or the two
+            # stop sharing one VFS (INCIDENT 2026-07-16).
             if serve["id"]:
                 try:
                     _rc(port, "serve/stop", {"id": serve["id"]})
@@ -763,7 +858,7 @@ def _sync_serves_locked() -> None:
                     "type": "http",
                     "fs": fs,
                     "addr": "127.0.0.1:0",
-                    **SERVE_VFS_OPT,
+                    **want_vfs,
                 }, timeout=30).get("addr", "")
             except RuntimeError as e:
                 logger.warning("http serve for %r failed: %s", m["name"], e)
@@ -806,23 +901,35 @@ def attach_mount(m: dict) -> str | None:
         return None
     try:
         port = ensure_rcd()
+        # Detect and persist read_only BEFORE mounting (INCIDENT 2026-07-16):
+        # ReadOnly/rdonly have to be baked into the vfsOpt/mountOpt of the very
+        # mount/mount call, so read-onlyness must be settled first. Previously
+        # this ran AFTER the mount, so an auto-detected read-only remote mounted
+        # WRITABLE on its first attach and only became read-only after a
+        # restart — long enough to accumulate the doomed-upload loop. A
+        # user-set flag short-circuits detection, and an inconclusive probe
+        # leaves whatever is recorded, so this never blocks the mount.
+        _refresh_read_only_flag(m, port)
         params = {
             "fs": m["remote"],
             "mountPoint": mp,
             "mountType": "nfsmount" if sys.platform == "darwin" else "mount",
-            "vfsOpt": VFS_OPT,
+            # Per-mount vfsOpt: VFS_OPT plus ReadOnly from the record, so a
+            # read-only remote's VFS rejects writes instead of caching them for
+            # a forever-retried upload (see _vfs_opt_for).
+            "vfsOpt": _vfs_opt_for(m),
         }
-        # macOS only: raise the loopback NFS client's timeout (see NFS_MOUNT_OPT).
-        # mountOpt is the NFS transport layer, not a vfs option, so it does NOT
-        # affect the (fs, vfsOpt) VFS-reuse key — the mount still shares its VFS
-        # with the serve.
+        # macOS only: raise the loopback NFS client's timeout, and add "rdonly"
+        # for a read-only mount (see NFS_MOUNT_OPT / _nfs_mount_opt). mountOpt is
+        # the NFS transport layer, not a vfs option, so it does NOT affect the
+        # (fs, vfsOpt) VFS-reuse key — the mount still shares its VFS with the
+        # serve (whose vfs_read_only matches the vfsOpt.ReadOnly here).
         if sys.platform == "darwin":
-            params["mountOpt"] = NFS_MOUNT_OPT
+            params["mountOpt"] = _nfs_mount_opt(m)
         _rc(port, "mount/mount", params, timeout=60)
     except RuntimeError as e:
         return str(e)
     sync_serves()
-    _refresh_read_only_flag(m, port)
     return None
 
 
@@ -934,7 +1041,12 @@ def reconnect_mount(m: dict) -> str | None:
     listmounts and block the remount, drop the HTTP serve (it shares the
     mount's VFS, which the unmount just tore down — see _stop_serve_for),
     then attach as usual (attach_mount's sync_serves starts a fresh serve
-    that re-binds to the remounted VFS)."""
+    that re-binds to the remounted VFS).
+
+    The leading mount/unmount is also what heals the "stale" split-brain
+    (INCIDENT 2026-07-16): rcd lists a mountpoint the kernel already dropped,
+    and would refuse to remount over its own stale entry — clearing it first
+    lets attach_mount's mount/mount start clean."""
     mp = mountpoint(m)
     port = _live_rcd_port()
     if port is not None:
@@ -964,15 +1076,30 @@ PROBE_TIMEOUT = 3.0
 
 
 def mount_state(m: dict, rcd_mounts: set, timeout: float = PROBE_TIMEOUT) -> str:
-    """Health of one mount: "mounted" | "disconnected" | "unmounted".
+    """Health of one mount: "mounted" | "stale" | "disconnected" | "unmounted".
 
     "mounted" requires both that a live rcd serves the mountpoint AND that the
-    filesystem actually answers a listdir. The failure this catches: the rclone
-    daemon (or its NFS serve) dies while the kernel mount entry survives —
-    os.path.ismount() still says True, listings return stale/empty data, and
-    a plain unmount fails ("failed to umount the NFS volume"). That state is
-    "disconnected", which the UI repairs via /reconnect (force unmount +
-    remount) instead of showing a green dot over an empty folder.
+    filesystem actually answers a listdir. The failures this catches are the
+    two ways the kernel mount table and rcd's mount/listmounts disagree:
+
+      - kernel says mounted, rcd does NOT list it: the rclone daemon (or its
+        NFS serve) died while the kernel mount entry survives —
+        os.path.ismount() still says True, listings return stale/empty data,
+        and a plain unmount fails ("failed to umount the NFS volume"). Reported
+        "disconnected".
+
+      - rcd lists the mount, kernel does NOT (os.path.ismount False): the
+        split-brain from INCIDENT 2026-07-16 — the user hit "Disconnect" on the
+        macOS "Server connections interrupted" dialog, the kernel unmounted,
+        but mount/listmounts still showed the mount (inUse:2). The mountpoint
+        is now a plain local dir masquerading as remote data and rcd will
+        refuse to remount over its own stale entry. Reported "stale" — a
+        distinct state so the cause is diagnosable in logs/UI, though reconnect
+        heals both the same way (its leading mount/unmount clears rcd's stale
+        entry before remounting; see reconnect_mount).
+
+    Either mismatch means remote data isn't flowing; the UI repairs both via
+    /reconnect instead of showing a green dot over an empty folder.
     """
     mp = mountpoint(m)
     out: dict = {}
@@ -983,12 +1110,12 @@ def mount_state(m: dict, rcd_mounts: set, timeout: float = PROBE_TIMEOUT) -> str
             served = mp in rcd_mounts
             if not is_mnt and not served:
                 out["state"] = "unmounted"
-            elif is_mnt != served:
-                # Kernel and daemon disagree: either a kernel mount whose rcd
-                # is gone (or a foreign mount we can't health-check), or rcd
-                # still tracking a mount the kernel dropped — the mountpoint
-                # is a plain dir masquerading as remote data. Either way,
-                # remote data isn't flowing.
+            elif served and not is_mnt:
+                # rcd tracks a mount the kernel dropped (INCIDENT split-brain).
+                out["state"] = "stale"
+            elif is_mnt and not served:
+                # Kernel mount whose rcd is gone (or a foreign mount we can't
+                # health-check).
                 out["state"] = "disconnected"
             else:
                 os.listdir(mp)  # the actual I/O health check
@@ -1189,7 +1316,10 @@ def broken_mount_error(path: str) -> str | None:
     state = mount_state(m, mounted_paths())
     if state == "mounted":
         return None
-    reason = "disconnected" if state == "disconnected" else "not mounted"
+    # "stale" (the INCIDENT split-brain) and "disconnected" both mean a mount
+    # that was there and stopped flowing — same user-facing wording; only a
+    # never-mounted mount reads as "not mounted".
+    reason = "not mounted" if state == "unmounted" else "disconnected"
     return (f"mount '{name}' is {reason} — reconnect it from the Mounts page "
             f"in the sidebar")
 
