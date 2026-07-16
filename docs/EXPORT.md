@@ -71,9 +71,15 @@ runtime API is portable:
 | `fused.rawUrl(path)` | ✅ | `path` is bundled as a read-only asset. |
 | `fused.readFile(path)` | ✅ | same bundling as `rawUrl`. |
 | `fused.params.*` | ✅ | pure client-side URL state — unchanged. |
+| `fused.env` | ✅ | runtime identity — `"local"` in the fused-render app, `"hosted"` here. Branch on it to gate local-only paths when deployed. |
 | `fused.writeFile(...)` | ❌ | a hosted artifact is immutable. |
 | `fused.stat(...)` | ❌ | no filesystem to stat. |
 | SSE live-reload | ❌ | the artifact does not change under the page. |
+
+`fused.env` is the recommended way to tell the two environments apart: it is a
+**positive** signal present in both runtimes (`"local"` vs `"hosted"`), not the
+absence of a method — `writeFile`/`stat` exist in the hosted runtime too (they
+throw), so sniffing for them misidentifies a hosted page as local.
 
 ## Rules the exporter enforces
 
