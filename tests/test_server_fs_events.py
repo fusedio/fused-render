@@ -12,6 +12,7 @@ mount-backed path through the kernel (rc API instead), never blocking the event
 loop on a stat, coalescing duplicate watchers onto one ticker, and polling
 mounts slowly.
 """
+import asyncio
 import os
 import threading
 import time
@@ -21,6 +22,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import fused_render.server as server
+import fused_render.shell.mounts as mounts_mod
 from fused_render.server import create_app
 
 
@@ -142,6 +144,87 @@ def test_mount_paths_tick_slowly_local_paths_tick_fast(home, tmp_path):
     assert mount_entry.interval == server._MOUNT_POLL_S == 5.0
     assert local_entry.is_mount is False
     assert local_entry.interval == server._LOCAL_POLL_S == 0.2
+
+
+def test_mount_dir_signal_hashes_listing_and_detects_change(home, monkeypatch):
+    # (3.2) A mount-backed DIRECTORY watch can't use the dir's ModTime (a
+    # constant S3 sentinel), so its change signal is a hash of a bounded shallow
+    # listing — which moves when a child is created/deleted/resized.
+    entry = server._WatchEntry(str(home / "mounts" / "s3demo" / "dir"))
+    assert entry.is_mount is True
+    monkeypatch.setattr(mounts_mod, "s3_direct_capable", lambda p: False)
+    listing = [{"Name": "a", "Size": 1, "ModTime": "t1"}]
+    monkeypatch.setattr(mounts_mod, "rc_list_dir", lambda p, timeout=None: list(listing))
+
+    sig1 = entry._mount_signal()
+    assert isinstance(sig1, str) and sig1.startswith("L")
+    assert entry._mount_signal() == sig1          # unchanged listing -> same signal
+    listing.append({"Name": "b", "Size": 2, "ModTime": "t2"})
+    assert entry._mount_signal() != sig1          # new child -> different signal
+
+
+def test_mount_dir_signal_uses_s3_page_when_capable(home, monkeypatch):
+    # (3.2) An anonymous-S3 mount dir hashes ONE ListObjectsV2 page, not rc.
+    entry = server._WatchEntry(str(home / "mounts" / "open" / "dir"))
+    monkeypatch.setattr(mounts_mod, "s3_direct_capable", lambda p: True)
+    calls = []
+
+    def fake_page(path, *, max_keys, continuation=None, timeout=None):
+        calls.append(max_keys)
+        return ([{"Name": "x", "Size": 1, "ModTime": "t"}], None)
+
+    monkeypatch.setattr(mounts_mod, "s3_list_page", fake_page)
+    monkeypatch.setattr(mounts_mod, "rc_list_dir",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("rc used")))
+    sig = entry._mount_signal()
+    assert sig.startswith("L") and calls == [1000]
+
+
+def test_mount_file_signal_falls_back_to_modtime(home, monkeypatch):
+    # (3.2) A FILE (rc rejects the listing as not-a-directory) keeps using
+    # operations/stat ModTime.
+    entry = server._WatchEntry(str(home / "mounts" / "s3demo" / "f.parquet"))
+    monkeypatch.setattr(mounts_mod, "s3_direct_capable", lambda p: False)
+    monkeypatch.setattr(mounts_mod, "rc_list_dir",
+                        lambda p, timeout=None: (_ for _ in ()).throw(
+                            mounts_mod.RcListError("not a directory")))
+    monkeypatch.setattr(mounts_mod, "rc_mtime_for", lambda p: "2024-01-02T03:04:05Z")
+    assert entry._mount_signal() == "2024-01-02T03:04:05Z"
+
+
+def test_mount_dir_signal_unchanged_on_failure(home, monkeypatch):
+    # (3.2) A down/timed-out listing returns _UNCHANGED — never an error storm.
+    entry = server._WatchEntry(str(home / "mounts" / "s3demo" / "dir"))
+    monkeypatch.setattr(mounts_mod, "s3_direct_capable", lambda p: False)
+    monkeypatch.setattr(mounts_mod, "rc_list_dir",
+                        lambda p, timeout=None: (_ for _ in ()).throw(
+                            mounts_mod.RcListUnavailable("rcd down")))
+    assert entry._mount_signal() is server._UNCHANGED
+
+
+def test_read_consumes_a_completed_slow_stat(tmp_path, monkeypatch):
+    # (3.3) A stat that outlives its wait_for keeps running; the NEXT tick must
+    # CONSUME its finished result rather than discard the done future and start
+    # over — else a path whose stat always exceeds the timeout never primes.
+    entry = server._WatchEntry(str(tmp_path / "f.html"))
+    monkeypatch.setattr(server, "_STAT_TIMEOUT_S", 0.02)
+
+    async def slow():
+        await asyncio.sleep(0.1)
+        return 123.0
+
+    entry._stat_signal = slow
+
+    async def scenario():
+        first = await entry._read()
+        assert first is server._UNCHANGED         # timed out; future left running
+        assert entry._inflight is not None
+        await asyncio.sleep(0.15)                  # let the slow stat finish
+        second = await entry._read()
+        assert second == 123.0                     # consumed, not discarded
+        assert entry._inflight is None
+
+    asyncio.run(scenario())
 
 
 def test_local_change_is_reported(home, tmp_path):

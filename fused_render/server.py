@@ -14,6 +14,7 @@ at startup if missing) to opt in to the local compute backend (`engine.py`).
 import asyncio
 import codecs
 import email.utils
+import hashlib
 import itertools
 import json
 import logging
@@ -1435,6 +1436,18 @@ def _mtime_or_none(path: str):
         return None
 
 
+def _hash_listing(listed) -> str:
+    """A stable change signal for a mount-backed DIRECTORY watch: a hash of its
+    shallow (Name, Size, ModTime) tuples. Unlike a directory's own ModTime — a
+    constant sentinel for synthetic S3 dirs — this moves whenever a child is
+    created, deleted, renamed, or resized. The "L" prefix keeps it disjoint from
+    a file watch's numeric/str ModTime signal."""
+    h = hashlib.sha1()
+    for e in listed:
+        h.update(repr((e.get("Name"), e.get("Size"), e.get("ModTime"))).encode())
+    return "L" + h.hexdigest()
+
+
 class _WatchEntry:
     """One coalesced stat ticker for a single path, fanning changes out to
     every subscribed socket. Classified once at creation as local or
@@ -1458,33 +1471,67 @@ class _WatchEntry:
         try:
             if self.is_mount:
                 # rc API, NOT the kernel — a slow answer here can't kill the
-                # mount. None (rcd down / error / missing) means "unchanged";
-                # we deliberately do NOT fall back to os.stat, which is the
-                # GETATTR that caused the incident.
-                from fused_render.shell import mounts as shell_mounts
-
-                m = await asyncio.to_thread(shell_mounts.rc_mtime_for, self.path)
-                return _UNCHANGED if m is None else m
+                # mount. We deliberately do NOT fall back to os.stat, which is
+                # the GETATTR that caused the incident.
+                return await asyncio.to_thread(self._mount_signal)
             return await asyncio.to_thread(_mtime_or_none, self.path)
         except Exception:
             return _UNCHANGED
+
+    def _mount_signal(self):
+        """Change signal for a mount-backed watch, off the event loop.
+
+        A DIRECTORY's rclone ModTime is a constant sentinel (2000-01-01) for
+        synthetic S3 dirs, so create/delete/rename of children never moves it —
+        the mount-dir auto-refresh (Listing LS-1) was silently dead. So for a
+        directory the signal is a hash of a BOUNDED shallow listing instead:
+        one s3_list_page (anonymous S3) or a short-timeout rc_list_dir. A FILE
+        (rc rejects the listing as not-a-directory) keeps using operations/stat
+        ModTime. Any failure/timeout -> _UNCHANGED (never an error storm)."""
+        from fused_render.shell import mounts as shell_mounts
+
+        try:
+            if shell_mounts.s3_direct_capable(self.path):
+                page, _ = shell_mounts.s3_list_page(
+                    self.path, max_keys=1000, timeout=4)
+                return _hash_listing(page)
+            listed = shell_mounts.rc_list_dir(self.path, timeout=4)
+            return _hash_listing(listed)
+        except (shell_mounts.RcListUnavailable, shell_mounts.RcListTimeout):
+            return _UNCHANGED  # down / too big to list -> treat as unchanged
+        except shell_mounts.RcListError:
+            # Not a directory (a file): fall back to the file's ModTime.
+            m = shell_mounts.rc_mtime_for(self.path)
+            return _UNCHANGED if m is None else m
+        except Exception:
+            return _UNCHANGED  # S3ListError, etc.
 
     async def _read(self):
         """One tick's read with a hard timeout and in-flight de-duplication.
 
         asyncio.wait_for cancels its awaitable on timeout, but the underlying
-        os.stat runs in a thread that cannot be cancelled — so we shield the
-        stat task and, on timeout, leave it running and report _UNCHANGED. The
-        still-running task then guards the NEXT tick: while a stat is hung
-        (possibly for minutes) we never stack a second thread on top of it."""
-        if self._inflight is not None and not self._inflight.done():
-            return _UNCHANGED  # previous stat still hanging; skip this tick
+        stat/listing runs in a thread that cannot be cancelled — so we shield
+        the task and, on timeout, leave it running and report _UNCHANGED. The
+        still-running task then guards the NEXT tick: while it is hung (possibly
+        for minutes) we never stack a second thread on top of it. But once it
+        FINISHES (a slow stat that outlived its wait_for), the next tick must
+        CONSUME its result rather than discard a done future and start over —
+        otherwise a path whose stat always takes >_STAT_TIMEOUT_S never primes
+        and 100% of the work is wasted."""
+        if self._inflight is not None:
+            if not self._inflight.done():
+                return _UNCHANGED  # previous read still hanging; skip this tick
+            sig = self._inflight.result()  # _stat_signal never raises
+            self._inflight = None
+            return sig
         self._inflight = asyncio.ensure_future(self._stat_signal())
         try:
-            return await asyncio.wait_for(
+            sig = await asyncio.wait_for(
                 asyncio.shield(self._inflight), _STAT_TIMEOUT_S)
         except asyncio.TimeoutError:
-            return _UNCHANGED  # leave _inflight running to guard the next tick
+            return _UNCHANGED  # leave _inflight running; consumed on a later tick
+        self._inflight = None
+        return sig
 
     def _broadcast(self, sig):
         msg = json.dumps({"path": self.path, "mtime": sig})
