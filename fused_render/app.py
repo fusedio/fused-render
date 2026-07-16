@@ -67,6 +67,25 @@ def clone_url_path(raw_url: str) -> str:
     return "/clone?src=" + quote(raw_url, safe="")
 
 
+def openurls_target_path(raw_url: str) -> str:
+    """Shell URL path for an `application:openURLs:` event (SPEC §26, D110).
+
+    AppKit delivers both `fused-render://` deep links AND plain document
+    opens (e.g. a Finder double-click on a registered `.bookmark` file, as
+    a `file://` URL) through this one selector — unlike `openFiles:`, which
+    only ever gets plain paths. Only a `fused-render:` URL is a deep link;
+    anything else is a file open and must resolve the same way
+    `application_openFiles_` does, via `view_url_path`. Module-level (not a
+    closure) so it is testable without AppKit.
+    """
+    if raw_url.lower().startswith("fused-render:"):
+        return clone_url_path(raw_url)
+
+    from urllib.parse import unquote, urlparse
+
+    return view_url_path(unquote(urlparse(raw_url).path))
+
+
 def _is_process_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -225,17 +244,23 @@ def main() -> None:
     # to application:openURLs:. Same delegate-patch mechanism as openFiles
     # above; the /clone confirm page does all parsing and asks before any
     # clone, so this handler only ferries the raw URL to the server.
+    #
+    # AppKit also routes plain document opens (Finder double-click on a
+    # registered file type, e.g. .bookmark) through this same selector as a
+    # file:// URL on some launches, not through application:openFiles:.
+    # openurls_target_path tells the two apart (mirrors the scheme check in
+    # winopen.py's _open()).
     def application_openURLs_(self, _app, urls):
         raws = [str(u.absoluteString()) for u in urls]
         logger.info("deep-link open-URLs event: %s", raws)
         state["docs"] = True  # a deep-link launch shouldn't also open the home tab
         for raw in raws:
-            target = f"http://127.0.0.1:{port}" + clone_url_path(raw)
+            target = f"http://127.0.0.1:{port}" + openurls_target_path(raw)
             if state["ready"]:
-                logger.info("opening clone page: %s", target)
+                logger.info("opening open-URLs target: %s", target)
                 webbrowser.open(target)
             else:
-                logger.info("queuing clone page until server is ready: %s", target)
+                logger.info("queuing open-URLs target until server is ready: %s", target)
                 state["pending"].append(target)
 
     rumps.rumps.NSApp.application_openURLs_ = application_openURLs_
