@@ -11,7 +11,7 @@ import { useEffect, useRef } from "react";
 import { getRecents, postRecentOpen, putRecentsCollapsed } from "./api";
 import type { RecentEntry, RecentsResult } from "./api";
 import { notifyRecentsChanged } from "./hooks";
-import { IS_EMBED, currentUrl, fsPathFromLocation } from "./router";
+import { IS_EMBED, VIEW_PREFIX, currentUrl, fsPathFromLocation, rootedFsPath } from "./router";
 
 export type { RecentEntry };
 
@@ -19,6 +19,61 @@ let cache: RecentsResult = { collapsed: false, entries: [] };
 
 export function loadRecents(): RecentsResult {
   return cache;
+}
+
+// The fs path a recent entry targets, decoded from its /view/ url — the
+// entry's stable identity: the url mutates on every live param write, the
+// path doesn't (React row keys and the slot order below key on it).
+export function recentFsPath(url: string): string {
+  const qIdx = url.indexOf("?");
+  const pathname = qIdx !== -1 ? url.slice(0, qIdx) : url;
+  if (!pathname.startsWith(VIEW_PREFIX)) return pathname;
+  return rootedFsPath(
+    pathname.slice(VIEW_PREFIX.length).split("/").filter(Boolean).map(decodeURIComponent).join("/")
+  );
+}
+
+// --- stable-slot display order ----------------------------------------------
+//
+// The DATA is strict MRU (the server moves a re-recorded file to the top),
+// but displaying raw MRU makes the list jump under the user's own pointer:
+// clicking a shown recent, or param churn on the open file, would reshuffle
+// rows mid-interaction. So the visible top-3 uses session-scoped stable
+// slots: a displayed file keeps its slot for the whole page session — its
+// row just updates in place — and the only movement is a file NOT currently
+// displayed entering at the top (a real navigation), pushing the bottom row
+// out. A displayed file that vanishes (deleted; GET filters it) leaves its
+// slot and the next MRU entry fills in at the BOTTOM — survivors never
+// reshuffle. Not persisted: on boot the slots seed from server MRU order.
+
+const DISPLAY_ROWS = 3;
+
+let slotPaths: string[] = [];
+
+function computeSlots(prev: string[], entries: RecentEntry[]): string[] {
+  const mruPaths = entries.map((e) => recentFsPath(e.url));
+  const alive = new Set(mruPaths);
+  // Vanished files leave their slot; survivors keep their relative order.
+  let slots = prev.filter((p) => alive.has(p));
+  // A file not currently displayed entering at the MRU head is a real new
+  // open -> the one allowed movement: insert at top, bottom row falls out.
+  const head = mruPaths[0];
+  if (head !== undefined && !slots.includes(head)) slots = [head, ...slots];
+  // Fill any remaining vacancies from the bottom, in MRU order.
+  for (const p of mruPaths) {
+    if (slots.length >= DISPLAY_ROWS) break;
+    if (!slots.includes(p)) slots.push(p);
+  }
+  return slots.slice(0, DISPLAY_ROWS);
+}
+
+// The entries to display, in stable-slot order (each slot carries its file's
+// LATEST entry — url updates land in place). Idempotent per cache state, so
+// safe to call on every sidebar render.
+export function displayRecents(): RecentEntry[] {
+  slotPaths = computeSlots(slotPaths, cache.entries);
+  const byPath = new Map(cache.entries.map((e) => [recentFsPath(e.url), e]));
+  return slotPaths.flatMap((p) => byPath.get(p) ?? []);
 }
 
 // Serial promise chain like bookmarks.ts's enqueue: recording bursts (open +
@@ -33,8 +88,18 @@ function enqueue<T>(op: () => Promise<T>): Promise<T> {
 }
 
 async function refresh(): Promise<void> {
+  const prevCollapsed = cache.collapsed;
+  const prevSlots = slotPaths;
   cache = await getRecents();
-  notifyRecentsChanged();
+  slotPaths = computeSlots(prevSlots, cache.entries);
+  // Notify only when the user-visible slice changed (slot paths/order or the
+  // collapse flag). A param-only re-record keeps the slots identical -> zero
+  // sidebar re-renders from here; the row's url still reads fresh because
+  // every param write also fires fused:urlchange (useUrlVersion re-render),
+  // which re-reads the already-updated cache.
+  if (prevCollapsed !== cache.collapsed || prevSlots.join("\n") !== slotPaths.join("\n")) {
+    notifyRecentsChanged();
+  }
 }
 
 // Load the cache once at boot (main.tsx, beside hydrateBookmarks).

@@ -25,7 +25,7 @@ import { exportBookmarkFile } from "../lib/api";
 import IconPicker from "./IconPicker";
 import { FolderIcon } from "./FileIcons";
 import type { Bookmark, BookmarkFolder } from "../lib/bookmarks";
-import { loadRecents, setRecentsCollapsed } from "../lib/recents";
+import { loadRecents, displayRecents, setRecentsCollapsed } from "../lib/recents";
 import { basename } from "../lib/format";
 import {
   useUrlVersion,
@@ -316,11 +316,11 @@ export default function Sidebar({ config }: SidebarProps) {
   const draggedIdRef = useRef<string | null>(null);
   const draggedIsFolderRef = useRef(false);
 
-  // Recents (SPEC §29): last files opened, newest first. The server already
-  // filtered out entries whose file has since been deleted; the UI shows the
-  // top 3 (the store keeps a deeper buffer so 3 survive that filtering).
-  const { collapsed: recentsCollapsed, entries: recentEntries } = loadRecents();
-  const recents = recentEntries.slice(0, 3);
+  // Recents (SPEC §29): last files opened. Display order is stable-slot
+  // (RC-11) — a shown file keeps its row for the session, only a genuinely
+  // new open moves anything — while the store underneath stays strict MRU.
+  const { collapsed: recentsCollapsed } = loadRecents();
+  const recents = displayRecents();
 
   const onRecentsHeadingClick = () => {
     // Persisted with the data itself (recents.json), like D44's folder
@@ -734,7 +734,9 @@ export default function Sidebar({ config }: SidebarProps) {
           {!recentsCollapsed &&
             recents.map((r) => (
               <a
-                key={r.url}
+                // Keyed by fs path, not url: the url mutates on every live
+                // param write, and a key change would remount (flash) the row.
+                key={bookmarkFsPath(r.url)}
                 className={"sidebar-item recent-row" + (r.url === currentUrl() ? " active" : "")}
                 href={r.url}
                 title={bookmarkFsPath(r.url)}

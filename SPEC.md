@@ -1836,9 +1836,9 @@ Goal: getting back to what you were just working on is one click — the sidebar
 lists the last files opened in the app, each carrying the params it last had.
 
 - **RC-1** A collapsible **Recents** section in the shell sidebar shows the
-  last **3** files opened, newest first. Row label = basename of the file
-  (D22 naming); the full decoded path is the tooltip; the row for the current
-  view is highlighted.
+  last **3** files opened (display order per RC-11). Row label = basename of
+  the file (D22 naming); the full decoded path is the tooltip; the row for the
+  current view is highlighted.
 - **RC-2** An entry stores the exact shell url **verbatim including the query
   string** (D20 posture — the URL is the whole state). Click = plain
   query-preserving navigation (`navigateUrl`); opening a recent arms no
@@ -1869,3 +1869,15 @@ lists the last files opened in the app, each carrying the params it last had.
   view being opened); the recording hook rides the StatView seam beside
   session tracking (same confirmed-file gate, LSN-6 posture).
 - **RC-10** The section is hidden entirely while there are no entries.
+- **RC-11** **Data is MRU, display is stable slots.** The store stays strict
+  MRU (RC-6), but the visible top-3 must never move under the user's own
+  interaction: a displayed file keeps its slot for the page session — a
+  re-open or live param update (RC-3) changes its row **in place**, never its
+  position (so clicking a recents row moves nothing). The only movement is a
+  file NOT currently displayed entering at the top (a real navigation to a
+  new file), pushing the bottom row out. A displayed file that vanishes
+  (RC-7) leaves its slot and the next MRU entry fills in at the bottom —
+  surviving rows never reshuffle. The slot order is session view state, not
+  persisted: on boot the display seeds from server MRU order. Rows are keyed
+  by fs path (not url) so a param write never remounts a row, and a
+  param-only store refresh triggers no sidebar re-render.
