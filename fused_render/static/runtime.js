@@ -8,8 +8,8 @@
  *   fused.params.get(key) / getAll() / set(key, value) / onChange(cb) -> unsubscribe
  *   fused.env -> "local" — the runtime identity. This is the local fused-render app;
  *                the hosted/exported runtime (fused wheel) sets "hosted" instead, so a
- *                page can branch on where it runs (e.g. skip a localhost daemon when
- *                deployed). See docs/EXPORT.md.
+ *                page can branch on where it runs and gate any local-only behaviour
+ *                when deployed. See docs/EXPORT.md.
  *
  * Same-origin iframe model: this script talks to an ancestor window's URL
  * directly (no postMessage bridge — see DECISIONS.md D3/D4). The param target

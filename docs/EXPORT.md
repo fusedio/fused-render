@@ -71,7 +71,7 @@ runtime API is portable:
 | `fused.rawUrl(path)` | ✅ | `path` is bundled as a read-only asset. |
 | `fused.readFile(path)` | ✅ | same bundling as `rawUrl`. |
 | `fused.params.*` | ✅ | pure client-side URL state — unchanged. |
-| `fused.env` | ✅ | runtime identity — `"local"` in the fused-render app, `"hosted"` here. Branch on it to skip local-only paths (e.g. a `127.0.0.1` daemon) when deployed. |
+| `fused.env` | ✅ | runtime identity — `"local"` in the fused-render app, `"hosted"` here. Branch on it to gate local-only paths when deployed. |
 | `fused.writeFile(...)` | ❌ | a hosted artifact is immutable. |
 | `fused.stat(...)` | ❌ | no filesystem to stat. |
 | SSE live-reload | ❌ | the artifact does not change under the page. |
