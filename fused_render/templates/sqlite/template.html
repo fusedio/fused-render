@@ -662,7 +662,11 @@
         const data = await fused.runPython("./reader.py", {
           file, table, offset: String(offset), limit: String(LIMIT),
           sort: currentSort(), filters: currentFilters(),
-        });
+          // key:null — save() awaits load(); the default per-file cancellation
+          // (D114) would let a concurrent onChange load supersede this read (never
+          // settling), hanging save() and leaving Save disabled. The loadSeq guard
+          // already handles staleness here. (matches duckdb)
+        }, { key: null });
         clearTimeout(slowTimer);
         if (seq !== loadSeq) return;
         lastGridKey = file + "\n" + table;
@@ -707,7 +711,7 @@
       try {
         await fused.runPython("./writer.py", {
           file, table: state.table || "", edits, deletes, inserts,
-        });
+        }, { key: null }); // never cancel an in-flight save (D114)
         await load(); // reflect the written file (clears staging)
       } catch (err) {
         // Batch is atomic server-side: on failure the file is untouched and the
