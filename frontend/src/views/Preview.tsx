@@ -107,7 +107,12 @@ function usePreviewFileMenu(
 
   const parent = dirname(fsPath);
 
+  // In-flight guard (same as Listing's): a rapid double-invoke would race both
+  // calls to the same free "… copy" name and 409 the second.
+  const duplicateInFlight = useRef(false);
   const doDuplicate = () => {
+    if (duplicateInFlight.current) return;
+    duplicateInFlight.current = true;
     (async () => {
       try {
         const dst = await freeDuplicatePath(parent, stat.name, stat.is_dir);
@@ -115,6 +120,8 @@ function usePreviewFileMenu(
         setToast({ msg: `Duplicated as ${basename(dst)}`, tone: "info" });
       } catch (e) {
         setToast({ msg: friendlyFsError(e, { verb: "duplicate", name: stat.name }), tone: "error" });
+      } finally {
+        duplicateInFlight.current = false;
       }
     })();
   };

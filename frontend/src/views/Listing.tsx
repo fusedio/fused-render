@@ -895,12 +895,19 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   // Duplicate into the same folder, picking the first free "… copy[/ n]" name
   // (freeDuplicatePath lists the folder so the copy never 409s on an existing
   // name).
+  // In-flight guard, same idea as pasteInFlight: a rapid double Cmd+D would
+  // race both calls to the same free "… copy" name and 409 the second.
+  const duplicateInFlight = useRef(false);
   const doDuplicate = (row: RowCtx) => {
+    if (duplicateInFlight.current) return;
+    duplicateInFlight.current = true;
     run(async () => {
       const dst = await freeDuplicatePath(row.parentDir, row.name, row.isDir);
       await copyEntry(row.path, dst);
       pendingSelectRef.current = dst; // move selection onto the new copy
-    }, { verb: "duplicate", name: row.name });
+    }, { verb: "duplicate", name: row.name }).finally(() => {
+      duplicateInFlight.current = false;
+    });
   };
 
   const doReveal = (path: string) => {
