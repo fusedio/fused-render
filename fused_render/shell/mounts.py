@@ -734,6 +734,17 @@ def is_mount_backed(path: str) -> bool:
     return rp == real_root or rp.startswith(real_root + os.sep)
 
 
+def is_mounts_root(path: str) -> bool:
+    """True when `path` IS the mounts container itself — the local parent that
+    holds each mountpoint as a subdir — as opposed to a path under an individual
+    mount. is_mount_backed is true for the root too (its `ap == root` clause), so
+    the root is kept off the kernel like any remote path; but the root is under
+    no single mount record, so the rc/S3 listing routes have nothing to list.
+    Callers list the root by enumerating mount records instead (no kernel or
+    remote I/O)."""
+    return os.path.abspath(path) == os.path.abspath(mounts_dir())
+
+
 def rc_mtime_for(path: str) -> str | None:
     """ModTime of a mount-backed file, answered by the rclone rcd rc API
     (operations/stat) instead of the kernel NFS mount.
