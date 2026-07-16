@@ -181,11 +181,21 @@ def test_serve_vfs_opt_derived_from_mount_vfs_opt():
     # share cached ranges — the whole reason this bug existed. SERVE_VFS_OPT is
     # DERIVED from VFS_OPT to guarantee it; assert every key maps and the values
     # agree (bools -> "true"/"false", ints -> str, as serve/list echoes them).
-    assert set(mounts_mod._VFS_OPT_TO_SERVE_PARAM) == set(mounts_mod.VFS_OPT)
-    for obj_key, flat_key in mounts_mod._VFS_OPT_TO_SERVE_PARAM.items():
+    # The map also carries the per-mount ReadOnly key (added by _vfs_opt_for and
+    # layered on by _serve_vfs_opt_for), so VFS_OPT's keys are a SUBSET of it.
+    assert set(mounts_mod.VFS_OPT) <= set(mounts_mod._VFS_OPT_TO_SERVE_PARAM)
+    assert set(mounts_mod._VFS_OPT_TO_SERVE_PARAM) - set(mounts_mod.VFS_OPT) == {"ReadOnly"}
+    for obj_key in mounts_mod.VFS_OPT:
+        flat_key = mounts_mod._VFS_OPT_TO_SERVE_PARAM[obj_key]
         v = mounts_mod.VFS_OPT[obj_key]
         expected = ("true" if v else "false") if isinstance(v, bool) else str(v)
         assert mounts_mod.SERVE_VFS_OPT[flat_key] == expected
+
+    # _serve_vfs_opt_for is derived (not hand-written): it layers each mount's
+    # read_only onto the shared serve params via the same table.
+    assert mounts_mod._serve_vfs_opt_for({"read_only": True})["read_only"] == "true"
+    assert mounts_mod._serve_vfs_opt_for({"read_only": False})["read_only"] == "false"
+    assert mounts_mod._serve_vfs_opt_for({})["read_only"] == "false"
 
 
 @pytest.mark.skipif(mounts_mod.sys.platform != "darwin",
@@ -239,6 +249,17 @@ def test_rc_mtime_for_answers_from_rc_api_not_kernel(home, rcd, monkeypatch):
     assert path not in calls
 
 
+def test_rc_mtime_for_normalizes_mountpoint_root_to_empty_remote(home, rcd):
+    # The mount ROOT watch (Listing on the mountpoint itself) must send remote
+    # "" to operations/stat: _mount_for returns "." for the mountpoint, and
+    # remote "." returns {"item": null} so the root watch would never prime.
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    rcd.responses["operations/stat"] = {"item": {"ModTime": "2024-01-02T03:04:05Z"}}
+    assert mounts_mod.rc_mtime_for(mounts_mod.mountpoint(c)) == "2024-01-02T03:04:05Z"
+    [(_, body)] = [x for x in rcd.calls if x[0] == "operations/stat"]
+    assert body["remote"] == ""  # "." normalized to the fs root
+
+
 def test_rc_mtime_for_none_when_rcd_down(home):
     # rcd unreachable -> None ("unchanged"). Callers MUST NOT fall back to
     # os.stat here (that reintroduces the mount-killing hazard).
@@ -261,6 +282,39 @@ def test_rc_mtime_for_none_on_rc_error_or_missing(home, rcd):
 
 def test_rc_mtime_for_none_outside_any_mount(home, rcd):
     assert mounts_mod.rc_mtime_for("/tmp/not/a/mount/f.parquet") is None
+
+
+def test_is_mount_backed_follows_symlink_into_mounts(home, tmp_path):
+    # A symlink whose target is inside the mounts dir must classify as
+    # mount-backed (else it lands on the kernel os.stat ticker — the GETATTR
+    # storm). A pure abspath string check misses it; realpath resolution catches
+    # it. Direct mount paths and genuine local paths keep classifying by string.
+    import os as _os
+    mounts_root = mounts_mod.mounts_dir()
+    _os.makedirs(_os.path.join(mounts_root, "s3demo"), exist_ok=True)
+    real_target = _os.path.join(mounts_root, "s3demo", "world.zarr")
+    _os.makedirs(real_target, exist_ok=True)
+
+    local_dir = tmp_path / "local"
+    local_dir.mkdir()
+    link = local_dir / "shortcut"
+    _os.symlink(real_target, link)
+
+    assert mounts_mod.is_mount_backed(str(link)) is True          # symlink -> mount
+    assert mounts_mod.is_mount_backed(real_target) is True        # direct mount path
+    assert mounts_mod.is_mount_backed(str(local_dir)) is False    # genuine local dir
+
+
+def test_broken_mount_error_normalizes_non_abspath_input(home, rcd, monkeypatch):
+    # A request path carrying ".." must be abspath-normalized before the
+    # mounts-root prefix check, or a broken mount misclassifies as a plain 400
+    # instead of the 503 "reconnect".
+    c = mounts_mod.add_mount("s3demo", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    # Mount is recorded but not actually mounted -> broken.
+    messy = _os.path.join(mp, "sub", "..", "data")  # normalizes to <mp>/data
+    err = mounts_mod.broken_mount_error(messy)
+    assert err is not None and "reconnect" in err.lower()
 
 
 # -- rc_list_dir -----------------------------------------------------------
@@ -346,6 +400,23 @@ def test_rc_modtime_epoch_parses_rfc3339_and_passes_sentinel():
     assert mounts_mod.rc_modtime_epoch("2000-01-01T00:00:00Z") == sentinel
     assert mounts_mod.rc_modtime_epoch(None) is None
     assert mounts_mod.rc_modtime_epoch("not-a-date") is None
+
+
+def test_rc_modtime_epoch_normalizes_any_fractional_digit_count():
+    # rclone emits 1-9 fractional digits, but py3.10's fromisoformat accepts
+    # only 3 or 6 (7+ never parse anywhere); an off count used to silently drop
+    # the mtime. Every digit count must now parse, on 'Z' and on a numeric
+    # offset alike. Base instant is 2024-01-02T03:04:05 UTC.
+    import datetime as _dt
+    base = _dt.datetime(2024, 1, 2, 3, 4, 5, tzinfo=_dt.timezone.utc).timestamp()
+    for n in range(1, 10):
+        digits = "123456789"[:n]
+        # The value the parser should see is 0.<digits> truncated to microseconds.
+        expected_frac = float("0." + digits)
+        got_z = mounts_mod.rc_modtime_epoch(f"2024-01-02T03:04:05.{digits}Z")
+        assert got_z == pytest.approx(base + expected_frac, abs=1e-6), n
+        got_off = mounts_mod.rc_modtime_epoch(f"2024-01-02T03:04:05.{digits}+00:00")
+        assert got_off == pytest.approx(base + expected_frac, abs=1e-6), n
 
 
 def test_mounted_paths_merges_listmounts(home, rcd, monkeypatch):
@@ -1111,6 +1182,37 @@ def test_rcd_log_not_rotated_below_cap(home):
         f.write(b"small")
     mounts_mod._rotate_rcd_log()
     assert not _os.path.exists(log + ".1")
+
+
+def test_copytruncate_rcd_log_caps_a_live_daemons_log(home):
+    # The detached rcd outlives server restarts and holds the log inode open, so
+    # os.replace can't rotate it — copytruncate copies the contents aside and
+    # truncates the live file IN PLACE (same inode, so rclone keeps appending).
+    log = mounts_mod._rcd_log_path()
+    _os.makedirs(_os.path.dirname(log), exist_ok=True)
+    with open(log, "wb") as f:
+        f.write(b"y" * (mounts_mod.RCD_LOG_MAX_BYTES + 1))
+    ino_before = _os.stat(log).st_ino
+    mounts_mod._copytruncate_rcd_log()
+    assert _os.path.exists(log)                       # live file kept in place
+    assert _os.stat(log).st_ino == ino_before         # SAME inode (truncated, not replaced)
+    assert _os.path.getsize(log) == 0                 # emptied
+    assert _os.path.getsize(log + ".1") == mounts_mod.RCD_LOG_MAX_BYTES + 1  # contents saved
+
+
+def test_copytruncate_rcd_log_noop_below_cap(home):
+    log = mounts_mod._rcd_log_path()
+    _os.makedirs(_os.path.dirname(log), exist_ok=True)
+    with open(log, "wb") as f:
+        f.write(b"small")
+    mounts_mod._copytruncate_rcd_log()
+    assert not _os.path.exists(log + ".1")
+    assert _os.path.getsize(log) == len(b"small")
+
+
+def test_copytruncate_rcd_log_swallows_errors(home):
+    # Best-effort: a missing log (or any OSError) must never raise into startup.
+    mounts_mod._copytruncate_rcd_log()  # no log file at all -> no exception
 
 
 def test_attach_syncs_serves_when_already_mounted(home, rcd, monkeypatch):

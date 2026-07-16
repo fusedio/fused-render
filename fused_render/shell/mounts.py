@@ -118,14 +118,34 @@ _VFS_OPT_TO_SERVE_PARAM = {
     "CacheMaxSize": "vfs_cache_max_size",
     "FastFingerprint": "vfs_fast_fingerprint",
     "DirCacheTime": "dir_cache_time",
+    # The per-mount ReadOnly (added by _vfs_opt_for) maps to the serve's
+    # --read-only flag (NOT --vfs-read-only, which rcd silently ignores — see
+    # _serve_vfs_opt_for's history). Listed here so _serve_params derives it
+    # rather than any caller hand-writing "read_only".
+    "ReadOnly": "read_only",
 }
-# KeyError here on import is deliberate: a VFS_OPT key with no serve mapping
-# must not silently fall out of the serve's option set (that would re-split
-# the VFS) — add the mapping instead.
-SERVE_VFS_OPT = {
-    _VFS_OPT_TO_SERVE_PARAM[k]: ("true" if v else "false") if isinstance(v, bool) else str(v)
-    for k, v in VFS_OPT.items()
-}
+
+
+def _serve_params(vfs_opt: dict) -> dict:
+    """Map a mount/mount vfsOpt dict to the HTTP serve's flat rc params, via the
+    single _VFS_OPT_TO_SERVE_PARAM table. Values are stringified because
+    serve/list echoes them back as strings (bool -> "true"/"false", int -> "4")
+    and sync_serves' drift check compares against that echo.
+
+    A KeyError here is deliberate: a vfsOpt key with no serve mapping must not
+    silently fall out of the serve's option set (that would re-split the VFS
+    into a second instance) — add the mapping to _VFS_OPT_TO_SERVE_PARAM
+    instead. The guard now covers the per-mount ReadOnly key too, not just the
+    canonical VFS_OPT set."""
+    return {
+        _VFS_OPT_TO_SERVE_PARAM[k]: ("true" if v else "false") if isinstance(v, bool) else str(v)
+        for k, v in vfs_opt.items()
+    }
+
+
+# The canonical serve params for the shared VFS options (no per-mount ReadOnly);
+# _serve_vfs_opt_for layers each mount's read_only on via _serve_params below.
+SERVE_VFS_OPT = _serve_params(VFS_OPT)
 
 # macOS mounts rclone's nfsmount through the loopback NFS client, whose
 # request timeout defaults aggressively low — a single slow 8M chunk fetch
@@ -183,8 +203,12 @@ def _serve_vfs_opt_for(m: dict) -> dict:
     verified live against rcd: read_only joins the mount's VFS, vfs_read_only
     forked a second instance per remote). Stringified like the rest of
     SERVE_VFS_OPT because serve/list echoes params back as strings, and
-    sync_serves' drift check compares against that echo."""
-    return {**SERVE_VFS_OPT, "read_only": "true" if m.get("read_only") else "false"}
+    sync_serves' drift check compares against that echo.
+
+    Derived from _vfs_opt_for through _serve_params — NOT hand-written — so the
+    mount's vfsOpt and the serve's flat params can never drift (drift is what
+    split the VFS in two; the module's derive-don't-hand-write rule)."""
+    return _serve_params(_vfs_opt_for(m))
 
 
 def _nfs_mount_opt(m: dict) -> dict:
@@ -353,6 +377,35 @@ def _rotate_rcd_log() -> str:
     return log
 
 
+def _copytruncate_rcd_log() -> None:
+    """Enforce the log cap against a LIVE daemon (server startup path).
+
+    _rotate_rcd_log's os.replace only rolls the file when THIS process spawns a
+    new rcd, but the daemon is detached and outlives server restarts — so a
+    long-lived rcd's log grows unbounded, its cap never re-checked. os.replace
+    can't rotate under it either: rclone holds the inode open in append mode and
+    would keep writing to the renamed file. Copytruncate instead — copy the
+    current contents to rcd.log.1, then truncate the live file in place (its fd
+    keeps appending past offset 0, which is safe for O_APPEND writers). Fully
+    best-effort: any failure (missing file, permissions) must never block
+    startup, so it's swallowed."""
+    log = _rcd_log_path()
+    try:
+        if os.path.getsize(log) <= RCD_LOG_MAX_BYTES:
+            return
+    except OSError:
+        return
+    try:
+        with open(log, "r+b") as f:
+            data = f.read()
+            with open(log + ".1", "wb") as backup:
+                backup.write(data)
+            f.seek(0)
+            f.truncate(0)
+    except OSError:
+        logger.warning("rcd log copytruncate failed", exc_info=True)
+
+
 def write_rcd_state(port: int, pid: int, log_path: str | None = None) -> None:
     # Record the log path alongside port/pid so tooling (and a human tailing
     # the daemon) can find it without reconstructing home_dir() (INCIDENT).
@@ -385,15 +438,41 @@ def _rc(port: int, method: str, params: dict | None = None, timeout: float = 30)
         raise RuntimeError(f"rclone rc {method}: {e}") from e
 
 
+# A live-port probe (core/pid over the loopback rc port, timeout=3) runs on
+# EVERY rc-routed call — rc_list_dir, rc_mtime_for, _remote_config, the S3
+# capability check. A single fs/walk fans that probe out across every directory
+# it lists, so an un-memoized probe is up to ~3s of pure overhead per dir. Cache
+# the verified port for a short TTL, keyed on the recorded (port, pid): a new
+# daemon writes a new state (different key) and is picked up at once, while a
+# burst of calls within the window shares one probe. Only a SUCCESSFUL probe is
+# cached — "rcd down" always re-probes (a refused connection is cheap), so the
+# daemon coming up is never masked. The short TTL keeps liveness detection: a
+# daemon that dies is noticed within _LIVE_PORT_TTL_S.
+_LIVE_PORT_TTL_S = 1.0
+_live_port_lock = threading.Lock()
+_live_port_cache: tuple | None = None  # ((port, pid), port, monotonic expiry)
+
+
 def _live_rcd_port() -> int | None:
-    """The recorded daemon's port iff it answers core/pid; never spawns."""
+    """The recorded daemon's port iff it answers core/pid; never spawns.
+    Memoized for _LIVE_PORT_TTL_S per recorded (port, pid) so a walk over many
+    directories doesn't re-probe core/pid for every listing."""
+    global _live_port_cache
     state = storage.read_json(_rcd_state_path())
     if not isinstance(state, dict) or not state.get("port"):
         return None
+    key = (state.get("port"), state.get("pid"))
+    now = time.monotonic()
+    with _live_port_lock:
+        c = _live_port_cache
+        if c is not None and c[0] == key and c[2] > now:
+            return c[1]
     try:
         _rc(state["port"], "core/pid", timeout=3)
     except RuntimeError:
         return None
+    with _live_port_lock:
+        _live_port_cache = (key, state["port"], now + _LIVE_PORT_TTL_S)
     return state["port"]
 
 
@@ -636,9 +715,23 @@ def _refresh_read_only_flag(m: dict, port: int | None = None) -> None:
 
 def is_mount_backed(path: str) -> bool:
     """True when `path` sits under the mounts dir — i.e. its bytes come from a
-    remote. Pure prefix check (no probe, no rc), cheap enough for every stat."""
+    remote. Cheap enough for every stat: the fast abspath prefix check settles
+    the common case with no I/O.
+
+    A symlink whose TARGET is inside the mounts dir would slip past a pure string
+    check and be classified LOCAL — landing on the 200ms kernel os.stat ticker,
+    the exact GETATTR storm the mount routing avoids. So a path that does NOT
+    look mount-backed by string is re-checked through os.path.realpath (which
+    resolves the symlink). A genuine mount path already matches on abspath and
+    never reaches realpath, so no kernel I/O / mount traversal is added to the
+    hot path; only local-looking paths pay one realpath."""
     root = os.path.abspath(mounts_dir())
-    return os.path.abspath(path).startswith(root + os.sep)
+    ap = os.path.abspath(path)
+    if ap == root or ap.startswith(root + os.sep):
+        return True
+    real_root = os.path.realpath(mounts_dir())
+    rp = os.path.realpath(path)
+    return rp == real_root or rp.startswith(real_root + os.sep)
 
 
 def rc_mtime_for(path: str) -> str | None:
@@ -670,9 +763,14 @@ def rc_mtime_for(path: str) -> str | None:
     port = _live_rcd_port()
     if port is None:
         return None
+    # _mount_for returns "." for the mountpoint itself; operations/stat wants ""
+    # for the fs root (remote "." returns {"item": null}, so the mount-ROOT
+    # watch would never prime — same quirk operations/list has, normalized in
+    # rc_list_dir).
+    remote = "" if rel == "." else rel
     try:
         resp = _rc(port, "operations/stat",
-                   {"fs": m["remote"], "remote": rel}, timeout=10)
+                   {"fs": m["remote"], "remote": remote}, timeout=10)
     except RuntimeError:
         return None
     item = resp.get("item") if isinstance(resp, dict) else None
@@ -779,12 +877,18 @@ def rc_modtime_epoch(modtime: str | None) -> float | None:
         return None
     s = modtime.strip()
     # datetime.fromisoformat only accepts 'Z' on 3.11+; normalize to +00:00 so
-    # any interpreter agrees, then trim fractional seconds to <=6 digits.
+    # any interpreter agrees.
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
-    m = re.match(r"^(.*\.\d{6})\d+(.*)$", s)
+    # Normalize the fractional part to EXACTLY 6 digits. rclone emits anywhere
+    # from 1-9 fractional digits, but py3.10's fromisoformat accepts only 3 or 6
+    # (7+ never parse on any version); an off-count silently returned None and
+    # dropped the mtime. Pad short fractions with zeros and trim long ones to
+    # microseconds, preserving any trailing timezone offset.
+    m = re.match(r"^(.*?)\.(\d+)(.*)$", s)
     if m:
-        s = m.group(1) + m.group(2)
+        frac = (m.group(2) + "000000")[:6]
+        s = f"{m.group(1)}.{frac}{m.group(3)}"
     try:
         return datetime.fromisoformat(s).timestamp()
     except ValueError:
@@ -873,6 +977,19 @@ def _mount_for(path: str) -> tuple[dict | None, str]:
     return None, ""
 
 
+def _s3_base_url(bucket: str, region: str) -> str:
+    """Base https URL addressing a bucket, applying the dotted-bucket rule once.
+    Virtual-hosted style puts the bucket in the TLS hostname, but
+    *.s3.<region>.amazonaws.com can't match a bucket whose name contains dots
+    (e.g. us-west-2.opendata.source.coop) — every client fails the handshake —
+    so a dotted bucket goes path-style instead. Single source of this rule;
+    _public_object_url (object URLs), s3_list_page (list query URLs), and
+    _fix_dotted_bucket_url (the rewrite case) all route through it."""
+    if "." in bucket:
+        return f"https://s3.{region}.amazonaws.com/{bucket}"
+    return f"https://{bucket}.s3.{region}.amazonaws.com"
+
+
 def _fix_dotted_bucket_url(url: str) -> str | None:
     """Virtual-hosted S3 URLs put the bucket in the TLS hostname, and
     *.s3.<region>.amazonaws.com can't match a bucket with dots in its name
@@ -888,7 +1005,7 @@ def _fix_dotted_bucket_url(url: str) -> str | None:
     if p.query:
         return None
     bucket, region = m.group(1), m.group(2)
-    return f"https://s3.{region}.amazonaws.com/{bucket}{p.path}"
+    return _s3_base_url(bucket, region) + p.path
 
 
 def _s3_bucket_prefix_region(fs: str, cfg: dict) -> tuple[str, str, str] | None:
@@ -920,14 +1037,8 @@ def _public_object_url(fs: str, rel: str) -> str | None:
         return None
     bucket, prefix, region = derived
     key = (prefix + "/" if prefix else "") + rel
-    # Path-style for dotted buckets: virtual-hosted style puts the bucket in
-    # the TLS hostname, and *.s3.<region>.amazonaws.com can't match the extra
-    # dots (e.g. us-west-2.opendata.source.coop) — every client fails the
-    # handshake on the redirect.
-    if "." in bucket:
-        return (f"https://s3.{region}.amazonaws.com/{bucket}/"
-                + urllib.parse.quote(key))
-    return f"https://{bucket}.s3.{region}.amazonaws.com/" + urllib.parse.quote(key)
+    # _s3_base_url applies the dotted-bucket path-style rule (see there).
+    return _s3_base_url(bucket, region) + "/" + urllib.parse.quote(key)
 
 
 # ------------------------------------------------------- direct S3 pagination
@@ -1012,12 +1123,11 @@ def s3_list_page(path: str, *, max_keys: int, continuation: str | None = None,
     if continuation:
         params["continuation-token"] = continuation
     query = urllib.parse.urlencode(params)
-    # Path-style for dotted buckets (see _public_object_url): the bucket can't
-    # sit in the TLS hostname, so it goes in the path.
-    if "." in bucket:
-        url = f"https://s3.{region}.amazonaws.com/{bucket}?{query}"
-    else:
-        url = f"https://{bucket}.s3.{region}.amazonaws.com/?{query}"
+    # _s3_base_url applies the dotted-bucket path-style rule. Path-style
+    # addresses the bucket in the path already; virtual-hosted style needs the
+    # root "/" before the query string.
+    base = _s3_base_url(bucket, region)
+    url = f"{base}?{query}" if "." in bucket else f"{base}/?{query}"
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
             body = resp.read()
@@ -1507,6 +1617,10 @@ def run_automount() -> None:
 def startup() -> None:
     """Called from create_app: automount in a daemon thread so a slow or
     missing rclone never delays server start."""
+    # Enforce the rcd log cap here too, not only on respawn: the daemon outlives
+    # server restarts, so this is the one reliable moment to cap a log a
+    # long-lived rcd has grown past it (see _copytruncate_rcd_log).
+    _copytruncate_rcd_log()
     threading.Thread(target=run_automount, daemon=True, name="mounts-automount").start()
 
 
@@ -1631,10 +1745,15 @@ def broken_mount_error(path: str) -> str | None:
     trusting an empty or failed listing: a dead mount leaves a plain (empty)
     local dir or a wedged NFS mount behind, which would otherwise render as
     an ordinary empty folder with no hint the remote data ever existed."""
-    root = mounts_dir()
-    if not path.startswith(root + os.sep):
+    # abspath (NOT realpath) the input before the prefix check, consistent with
+    # is_mount_backed: a raw request path carrying ".." or a missing leading
+    # slash would otherwise fail the prefix match and misclassify a broken mount
+    # as a plain 400 instead of the 503 "reconnect" it deserves.
+    root = os.path.abspath(mounts_dir())
+    p = os.path.abspath(path)
+    if not p.startswith(root + os.sep):
         return None
-    name = path[len(root) + 1:].split(os.sep, 1)[0]
+    name = p[len(root) + 1:].split(os.sep, 1)[0]
     m = next((c for c in list_mounts() if c["name"] == name), None)
     if m is None:
         return None
