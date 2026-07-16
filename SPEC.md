@@ -1837,8 +1837,9 @@ lists the last files opened in the app, each carrying the params it last had.
 
 - **RC-1** A collapsible **Recents** section in the shell sidebar shows the
   last **3** files opened (display order per RC-11). Row label = basename of
-  the file (D22 naming); the full decoded path is the tooltip; the row for the
-  current view is highlighted.
+  the file (D22 naming); the full decoded path is the tooltip. Recents rows
+  carry **no active/selected state** (owner call — the section is a jump
+  list, not a location indicator; bookmark rows keep theirs).
 - **RC-2** An entry stores the exact shell url **verbatim including the query
   string** (D20 posture — the URL is the whole state). Click = plain
   query-preserving navigation (`navigateUrl`); opening a recent arms no

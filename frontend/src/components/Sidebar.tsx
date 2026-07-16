@@ -1,6 +1,6 @@
 // Sidebar UI: brand, Fused-dir entry, bookmark rows with hover card + inline rename.
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { navigate, navigateUrl, currentUrl, fsPathFromLocation, rootedFsPath, VIEW_PREFIX } from "../lib/router";
+import { navigate, navigateUrl, currentUrl, rootedFsPath, VIEW_PREFIX } from "../lib/router";
 // Folder-as-tabs entry (TM-8): composeFolderTabsUrl builds the `/view/_tab` url
 // from a folder's children. This sidebar -> views/Tabs.jsx import is the
 // documented acyclic exception (Tabs.jsx never imports back), mirroring
@@ -842,9 +842,9 @@ export default function Sidebar({ config }: SidebarProps) {
       </div>
       {/* Recents (SPEC §29) — below the bookmark tree, above the pinned
           footer. Rows reuse the bookmark row classes so the section reads as
-          a native sibling: same height, padding, glyph slot, ellipsis, hover
-          and active treatment. Heading click toggles the fold; the count
-          pill carries the collapsed signal (no chevron — D44). */}
+          a native sibling: same height, padding, glyph slot, ellipsis and
+          hover treatment. Heading click toggles the fold; the count pill
+          carries the collapsed signal (no chevron — D44). */}
       {recents.length > 0 && (
         <div className="sidebar-section sidebar-recents">
           <div
@@ -863,15 +863,10 @@ export default function Sidebar({ config }: SidebarProps) {
                   // Keyed by fs path, not url: the url mutates on every live
                   // param write, and a key change would remount (flash) the row.
                   key={fsPath}
-                  // Active = same FILE, not exact url (unlike bookmark rows,
-                  // which deliberately exact-match — a bookmark is one specific
-                  // param state, a recents entry is the file itself): the
-                  // stored url lags live param writes by the record debounce,
-                  // so an exact match would drop the highlight mid-edit.
-                  className={
-                    "bookmark-row recent-row" +
-                    (fsPath === fsPathFromLocation() ? " active" : "")
-                  }
+                  // No active/selected state on recents rows (owner call —
+                  // unlike bookmark rows): the section is a jump list, not a
+                  // location indicator.
+                  className="bookmark-row recent-row"
                   href={r.url}
                   title={fsPath}
                   onClick={(e) => onRecentClick(e, r.url)}
