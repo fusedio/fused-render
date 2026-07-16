@@ -140,6 +140,11 @@ export default function DeploymentsList() {
                 items.push({
                   label: "Revoke",
                   danger: true,
+                  // Gate ONLY the destructive action while the list reloads or
+                  // another row is being revoked — Open ↗ / Copy link are
+                  // read-only and stay available (they were always clickable
+                  // before this moved into the menu).
+                  disabled: revoking !== null || loading,
                   onClick: () => void onRevoke(m.token),
                 });
               }
@@ -159,11 +164,7 @@ export default function DeploymentsList() {
                     {revoking === m.token ? (
                       <span className="deploy-muted">Revoking…</span>
                     ) : (
-                      <RowActionsMenu
-                        items={items}
-                        disabled={revoking !== null || loading}
-                        label={`Actions for ${rowLabel}`}
-                      />
+                      <RowActionsMenu items={items} label={`Actions for ${rowLabel}`} />
                     )}
                   </td>
                 </tr>

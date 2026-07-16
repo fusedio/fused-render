@@ -10,7 +10,7 @@
 // the open point (the button's bottom-left; ContextMenu clamps it back in when
 // the row sits near a viewport edge). A row with no actionable entries renders
 // a muted "—" so the actions column still lines up.
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ContextMenu, { type MenuEntry } from "./ContextMenu";
 
 export default function RowActionsMenu({
@@ -24,6 +24,13 @@ export default function RowActionsMenu({
 }) {
   const btnRef = useRef<HTMLButtonElement | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+
+  // A disabled trigger must not leave an already-open menu interactive: if the
+  // trigger disables while the menu is open (e.g. another row's action starts),
+  // close it so its actions can't still be run from the open menu.
+  useEffect(() => {
+    if (disabled) setMenu(null);
+  }, [disabled]);
 
   const hasActions = items.some((it) => it !== "separator" && !it.disabled);
   if (!hasActions) return <span className="deploy-muted">—</span>;
