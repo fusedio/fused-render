@@ -34,6 +34,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import xml.etree.ElementTree as ElementTree
 from datetime import datetime
 
 from fastapi import APIRouter, Body, Header
@@ -890,22 +891,35 @@ def _fix_dotted_bucket_url(url: str) -> str | None:
     return f"https://s3.{region}.amazonaws.com/{bucket}{p.path}"
 
 
+def _s3_bucket_prefix_region(fs: str, cfg: dict) -> tuple[str, str, str] | None:
+    """(bucket, key prefix, region) for an AWS S3 remote's fs string
+    (e.g. "aws-open:mur-sst/zarr-v1" -> ("mur-sst", "zarr-v1", "us-east-1")).
+    The key prefix is stripped of any trailing slash; region defaults to
+    us-east-1. None when the fs carries no bucket. Shared by _public_object_url
+    (per-object URLs) and s3_list_page (ListObjectsV2 prefixes) so the two can't
+    derive the bucket/region differently."""
+    _, _, root = fs.partition(":")
+    bucket, _, prefix = root.partition("/")
+    if not bucket:
+        return None
+    return bucket, prefix.rstrip("/"), cfg.get("region") or "us-east-1"
+
+
 def _public_object_url(fs: str, rel: str) -> str | None:
     """Plain https URL for an object on an ANONYMOUS AWS S3 remote — the one
     backend class that can't presign but doesn't need to. Credentialed or
     non-AWS remotes return None (their objects aren't reachable unsigned).
     Pure string building once _remote_config has memoized the config — no rc
     round trip per object."""
-    name, _, root = fs.partition(":")
-    cfg = _remote_config(name)
+    cfg = _remote_config(fs.partition(":")[0])
     if not _anonymous_s3(cfg):
         return None
     assert cfg is not None
-    bucket, _, prefix = root.partition("/")
-    if not bucket:
+    derived = _s3_bucket_prefix_region(fs, cfg)
+    if derived is None:
         return None
-    key = (prefix.rstrip("/") + "/" if prefix else "") + rel
-    region = cfg.get("region") or "us-east-1"
+    bucket, prefix, region = derived
+    key = (prefix + "/" if prefix else "") + rel
     # Path-style for dotted buckets: virtual-hosted style puts the bucket in
     # the TLS hostname, and *.s3.<region>.amazonaws.com can't match the extra
     # dots (e.g. us-west-2.opendata.source.coop) — every client fails the
@@ -914,6 +928,135 @@ def _public_object_url(fs: str, rel: str) -> str | None:
         return (f"https://s3.{region}.amazonaws.com/{bucket}/"
                 + urllib.parse.quote(key))
     return f"https://{bucket}.s3.{region}.amazonaws.com/" + urllib.parse.quote(key)
+
+
+# ------------------------------------------------------- direct S3 pagination
+# rclone can't paginate operations/list at any layer (see rc_list_dir), so a
+# flat S3 prefix with millions of keys (aws-open:mur-sst/zarr-v1 ->
+# analysed_sst/) times out and the user sees nothing. But S3's own
+# ListObjectsV2 paginates fine (~300ms per 1000-key page), so for the one
+# backend class that dominates our mounts — anonymous plain AWS S3
+# (_anonymous_s3) — fetch a single page at a time straight from S3, unsigned.
+# Credentialed / custom-endpoint remotes can't be listed unsigned and stay on
+# the Phase 1 rc path.
+S3_LIST_TIMEOUT_S = 15.0
+_S3_XMLNS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
+
+
+class S3ListError(Exception):
+    """A direct ListObjectsV2 page failed — an HTTP status (403 needs auth, 301
+    wrong region), a network error, or unparseable XML. The caller falls back
+    to rc_list_dir; kept distinct from the RcList* family so the fallback ladder
+    (S3-direct -> rc -> 503) reads cleanly."""
+
+
+def s3_direct_capable(path: str) -> bool:
+    """True when `path` is mount-backed by an anonymous plain-AWS-S3 remote —
+    the one backend class s3_list_page can enumerate unsigned. Lets the server
+    pick the fast path without re-deriving the _anonymous_s3 test."""
+    m, _ = _mount_for(path)
+    if m is None:
+        return False
+    return _anonymous_s3(_remote_config(m["remote"].partition(":")[0]))
+
+
+def _s3_listing_prefix(store_prefix: str, rel: str) -> str:
+    """ListObjectsV2 prefix for a mount-relative directory: <store prefix>/<rel>,
+    no leading slash and exactly one trailing slash (with delimiter=/, that
+    groups the directory's immediate children). The mountpoint itself (rel ".")
+    lists the store prefix's children; a bucket-root mountpoint (no store
+    prefix) yields "" — the whole bucket."""
+    if rel == ".":
+        joined = store_prefix
+    elif store_prefix:
+        joined = store_prefix + "/" + rel
+    else:
+        joined = rel
+    joined = joined.strip("/")
+    return joined + "/" if joined else ""
+
+
+def s3_list_page(path: str, *, max_keys: int, continuation: str | None = None,
+                 timeout: float | None = None) -> tuple[list, str | None]:
+    """One ListObjectsV2 page for a mount-backed directory on an anonymous AWS
+    S3 remote, fetched by a plain unsigned HTTPS GET — no kernel I/O on the
+    mount, no rclone, no boto3.
+
+    Returns (entries, next_token): entries shaped exactly like rc_list_dir
+    output (Name/Size/IsDir/ModTime dicts) so downstream mapping is shared, and
+    next_token the S3 continuation token when the listing is truncated, else
+    None. CommonPrefixes become synthetic directories (Size/ModTime None);
+    Contents become files; the zero-byte placeholder object whose key IS the
+    prefix (an S3-console "directory" marker) is skipped.
+
+    Raises S3ListError on any HTTP/network/XML failure so the caller can fall
+    back to rc_list_dir; a 403/301 (needs auth / wrong region) raises too,
+    never crashes."""
+    if timeout is None:
+        timeout = S3_LIST_TIMEOUT_S
+    m, rel = _mount_for(path)
+    if m is None:
+        raise S3ListError(f"{path} is under no known mount")
+    fs = m["remote"]
+    cfg = _remote_config(fs.partition(":")[0])
+    if not _anonymous_s3(cfg):
+        raise S3ListError(f"{path}: remote {fs!r} is not anonymous AWS S3")
+    assert cfg is not None
+    derived = _s3_bucket_prefix_region(fs, cfg)
+    if derived is None:
+        raise S3ListError(f"{path}: remote {fs!r} carries no bucket")
+    bucket, store_prefix, region = derived
+    prefix = _s3_listing_prefix(store_prefix, rel)
+    params = {"list-type": "2", "delimiter": "/", "prefix": prefix,
+              "max-keys": str(max_keys)}
+    if continuation:
+        params["continuation-token"] = continuation
+    query = urllib.parse.urlencode(params)
+    # Path-style for dotted buckets (see _public_object_url): the bucket can't
+    # sit in the TLS hostname, so it goes in the path.
+    if "." in bucket:
+        url = f"https://s3.{region}.amazonaws.com/{bucket}?{query}"
+    else:
+        url = f"https://{bucket}.s3.{region}.amazonaws.com/?{query}"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            body = resp.read()
+    except urllib.error.HTTPError as e:
+        raise S3ListError(f"S3 list {path}: HTTP {e.code}") from e
+    except (urllib.error.URLError, OSError) as e:
+        raise S3ListError(f"S3 list {path}: {e}") from e
+    try:
+        root_el = ElementTree.fromstring(body)
+    except ElementTree.ParseError as e:
+        raise S3ListError(f"S3 list {path}: unparseable XML") from e
+    entries: list = []
+    for cp in root_el.findall(f"{_S3_XMLNS}CommonPrefixes"):
+        p = cp.findtext(f"{_S3_XMLNS}Prefix") or ""
+        name = p[len(prefix):].rstrip("/")
+        if name:
+            entries.append({"Name": name, "Size": None, "IsDir": True,
+                            "ModTime": None})
+    for obj in root_el.findall(f"{_S3_XMLNS}Contents"):
+        key = obj.findtext(f"{_S3_XMLNS}Key") or ""
+        # The zero-byte object whose key IS the prefix is the directory
+        # placeholder S3 consoles create — it's this directory, not an entry.
+        if key == prefix:
+            continue
+        name = key[len(prefix):]
+        if not name:
+            continue
+        size_txt = obj.findtext(f"{_S3_XMLNS}Size")
+        entries.append({
+            "Name": name,
+            "Size": int(size_txt) if size_txt and size_txt.isdigit() else None,
+            "IsDir": False,
+            # RFC3339 already; the mapping site runs rc_modtime_epoch on it.
+            "ModTime": obj.findtext(f"{_S3_XMLNS}LastModified"),
+        })
+    next_token = None
+    if (root_el.findtext(f"{_S3_XMLNS}IsTruncated") or "").lower() == "true":
+        next_token = root_el.findtext(f"{_S3_XMLNS}NextContinuationToken") or None
+    return entries, next_token
 
 
 def upstream_url_for(path: str) -> str | None:

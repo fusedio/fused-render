@@ -1663,3 +1663,202 @@ def test_fix_dotted_bucket_url():
               "https://plain.s3.us-west-2.amazonaws.com/key?X-Amz-Sig=x",
               "https://minio.example.com/bucket/key"):
         assert fix(u) == u
+
+
+# -- s3_list_page / s3_direct_capable ---------------------------------------
+#
+# rclone can't paginate a listing at any layer (see rc_list_dir), so a flat S3
+# prefix with millions of keys times out. For anonymous plain AWS S3 — the
+# backend class that dominates our mounts — a single ListObjectsV2 page is
+# fetched straight from S3 unsigned, off the kernel mount. Real S3 is never
+# hit: urllib.request.urlopen is monkeypatched with canned XML.
+
+_ANON_S3_CFG = {"type": "s3", "provider": "AWS", "env_auth": "false"}
+
+
+def _s3_list_xml(*, prefixes=(), contents=(), truncated=False, next_token=None):
+    """A ListObjectsV2 response body. `contents` are (key, size, lastmod)."""
+    ns = "http://s3.amazonaws.com/doc/2006-03-01/"
+    parts = [f'<?xml version="1.0" encoding="UTF-8"?>',
+             f'<ListBucketResult xmlns="{ns}">',
+             f'<IsTruncated>{"true" if truncated else "false"}</IsTruncated>']
+    if next_token:
+        parts.append(f'<NextContinuationToken>{next_token}</NextContinuationToken>')
+    for key, size, lastmod in contents:
+        parts.append(f'<Contents><Key>{key}</Key><Size>{size}</Size>'
+                     f'<LastModified>{lastmod}</LastModified></Contents>')
+    for p in prefixes:
+        parts.append(f'<CommonPrefixes><Prefix>{p}</Prefix></CommonPrefixes>')
+    parts.append('</ListBucketResult>')
+    return "".join(parts).encode()
+
+
+class _FakeS3Resp:
+    def __init__(self, body):
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+@pytest.fixture()
+def s3_urlopen(monkeypatch):
+    """Capture the ListObjectsV2 URL and hand back canned XML. `box["body"]`
+    is the reply; set `box["raise"]` to an exception to fail the GET."""
+    calls = []
+    box = {"body": _s3_list_xml()}
+    real = mounts_mod.urllib.request.urlopen
+
+    def fake(url, timeout=None):
+        # rc calls (config/get etc.) go to the loopback stub rcd over http —
+        # only intercept the S3 ListObjectsV2 GET, delegate the rest.
+        target = url if isinstance(url, str) else url.get_full_url()
+        if "amazonaws.com" not in target:
+            return real(url, timeout=timeout)
+        calls.append((target, timeout))
+        if box.get("raise") is not None:
+            raise box["raise"]
+        return _FakeS3Resp(box["body"])
+
+    monkeypatch.setattr(mounts_mod.urllib.request, "urlopen", fake)
+    return calls, box
+
+
+def test_s3_direct_capable_true_for_anonymous_s3(home, rcd, fresh_upstream):
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    assert mounts_mod.s3_direct_capable(mounts_mod.mountpoint(c) + "/analysed_sst")
+
+
+def test_s3_direct_capable_false_for_credentialed(home, rcd, fresh_upstream):
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
+    c = mounts_mod.add_mount("corp", "corp:bucket")
+    assert not mounts_mod.s3_direct_capable(mounts_mod.mountpoint(c) + "/x")
+
+
+def test_s3_direct_capable_false_for_custom_endpoint(home, rcd, fresh_upstream):
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "false",
+                                   "endpoint": "https://r2.example.com"}
+    c = mounts_mod.add_mount("r2", "r2:bucket")
+    assert not mounts_mod.s3_direct_capable(mounts_mod.mountpoint(c) + "/x")
+
+
+def test_s3_direct_capable_false_outside_mount(home, rcd, fresh_upstream):
+    assert not mounts_mod.s3_direct_capable("/tmp/not/a/mount")
+
+
+def test_s3_list_page_url_and_query_nested_dir(home, rcd, fresh_upstream, s3_urlopen):
+    import urllib.parse as up
+
+    calls, _box = s3_urlopen
+    rcd.responses["config/get"] = {**_ANON_S3_CFG, "region": "us-west-2"}
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    mounts_mod.s3_list_page(
+        mounts_mod.mountpoint(c) + "/analysed_sst", max_keys=1000)
+    [(url, timeout)] = calls
+    assert url.startswith("https://mur-sst.s3.us-west-2.amazonaws.com/?")
+    q = up.parse_qs(up.urlsplit(url).query)
+    assert q["list-type"] == ["2"]
+    assert q["delimiter"] == ["/"]
+    assert q["prefix"] == ["zarr-v1/analysed_sst/"]
+    assert q["max-keys"] == ["1000"]
+    assert "continuation-token" not in q
+    assert timeout == mounts_mod.S3_LIST_TIMEOUT_S
+
+
+def test_s3_list_page_mountpoint_uses_store_prefix(home, rcd, fresh_upstream, s3_urlopen):
+    import urllib.parse as up
+
+    calls, _box = s3_urlopen
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    mounts_mod.s3_list_page(mounts_mod.mountpoint(c), max_keys=500)
+    q = up.parse_qs(up.urlsplit(calls[0][0]).query)
+    assert q["prefix"] == ["zarr-v1/"]
+
+
+def test_s3_list_page_bucket_root_mountpoint_empty_prefix(home, rcd, fresh_upstream, s3_urlopen):
+    import urllib.parse as up
+
+    calls, _box = s3_urlopen
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst")
+    mounts_mod.s3_list_page(mounts_mod.mountpoint(c), max_keys=500)
+    q = up.parse_qs(up.urlsplit(calls[0][0]).query, keep_blank_values=True)
+    assert q["prefix"] == [""]
+
+
+def test_s3_list_page_continuation_token_urlencoded(home, rcd, fresh_upstream, s3_urlopen):
+    import urllib.parse as up
+
+    calls, _box = s3_urlopen
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    mounts_mod.s3_list_page(mounts_mod.mountpoint(c), max_keys=1000,
+                            continuation="a b/c+d=")
+    q = up.parse_qs(up.urlsplit(calls[0][0]).query)
+    assert q["continuation-token"] == ["a b/c+d="]
+
+
+def test_s3_list_page_dotted_bucket_path_style(home, rcd, fresh_upstream, s3_urlopen):
+    calls, _box = s3_urlopen
+    rcd.responses["config/get"] = {**_ANON_S3_CFG, "region": "us-west-2"}
+    c = mounts_mod.add_mount("open", "aws-open:us-west-2.opendata.source.coop/foo")
+    mounts_mod.s3_list_page(mounts_mod.mountpoint(c), max_keys=1000)
+    assert calls[0][0].startswith(
+        "https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop?")
+
+
+def test_s3_list_page_parses_prefixes_files_and_token(home, rcd, fresh_upstream, s3_urlopen):
+    calls, box = s3_urlopen
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    box["body"] = _s3_list_xml(
+        prefixes=["zarr-v1/analysed_sst/2020/", "zarr-v1/analysed_sst/2021/"],
+        contents=[
+            # placeholder object whose key IS the prefix -> skipped
+            ("zarr-v1/analysed_sst/", 0, "2000-01-01T00:00:00.000Z"),
+            ("zarr-v1/analysed_sst/.zattrs", 42, "2024-01-02T03:04:05.000Z"),
+        ],
+        truncated=True, next_token="TOKEN123")
+    entries, token = mounts_mod.s3_list_page(
+        mounts_mod.mountpoint(c) + "/analysed_sst", max_keys=1000)
+    by = {e["Name"]: e for e in entries}
+    assert set(by) == {"2020", "2021", ".zattrs"}
+    assert by["2020"]["IsDir"] is True and by["2020"]["Size"] is None
+    assert by["2020"]["ModTime"] is None
+    assert by[".zattrs"]["IsDir"] is False and by[".zattrs"]["Size"] == 42
+    assert by[".zattrs"]["ModTime"] == "2024-01-02T03:04:05.000Z"
+    assert token == "TOKEN123"
+
+
+def test_s3_list_page_not_truncated_returns_none_token(home, rcd, fresh_upstream, s3_urlopen):
+    calls, box = s3_urlopen
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    box["body"] = _s3_list_xml(contents=[("zarr-v1/f.txt", 1, "2024-01-02T03:04:05Z")])
+    _entries, token = mounts_mod.s3_list_page(mounts_mod.mountpoint(c), max_keys=1000)
+    assert token is None
+
+
+def test_s3_list_page_http_403_raises_s3listerror(home, rcd, fresh_upstream, s3_urlopen):
+    calls, box = s3_urlopen
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    box["raise"] = mounts_mod.urllib.error.HTTPError(
+        "https://x", 403, "Forbidden", {}, None)
+    with pytest.raises(mounts_mod.S3ListError):
+        mounts_mod.s3_list_page(mounts_mod.mountpoint(c), max_keys=1000)
+
+
+def test_s3_list_page_non_anonymous_raises_s3listerror(home, rcd, fresh_upstream, s3_urlopen):
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
+    c = mounts_mod.add_mount("corp", "corp:bucket/pre")
+    with pytest.raises(mounts_mod.S3ListError):
+        mounts_mod.s3_list_page(mounts_mod.mountpoint(c), max_keys=1000)
