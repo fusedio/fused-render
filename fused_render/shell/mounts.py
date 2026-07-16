@@ -936,13 +936,29 @@ def attach_mount(m: dict) -> str | None:
         if fs is not None and fs != m["remote"]:
             return (f"mountpoint already serves '{fs}' — unmount it before "
                     f"mounting '{m['remote']}'")
+        # Refresh read_only BEFORE reconciling serves: sync_serves derives the
+        # serve's read_only param from this record, so refreshing afterwards
+        # would leave the serve on the stale flag (disagreeing with the mount
+        # and splitting the shared VFS) until some later sync.
+        _refresh_read_only_flag(m)
+        # An adopted rcd mount keeps whatever vfsOpt it was created with —
+        # mount options only apply at mount/mount, and listmounts doesn't echo
+        # them — so a mount created before read_only was known (legacy record,
+        # or detection just flipped the flag) still has a WRITABLE VFS no
+        # matter what the record now says: the doomed-upload retry loop the
+        # flag exists to prevent. mounted_read_only records what was actually
+        # baked in at mount time; on mismatch, remount to apply. Only for
+        # rcd-known mounts (fs set) — a foreign kernel mount is adopted as-is.
+        if fs is not None and bool(m.get("read_only")) != bool(
+            m.get("mounted_read_only")
+        ):
+            return reconnect_mount(m)  # unmounts first, so no recursion here
         # Already mounted (double-click, adopted foreign mount) — but the
         # HTTP serve may still be missing (a prior serve/start failed, or the
         # mount predates the serve layer), so reconcile serves here too:
         # without one, /api/fs/raw silently falls back to reads through the
         # wedge-prone kernel mount.
         sync_serves()
-        _refresh_read_only_flag(m)
         return None
     try:
         port = ensure_rcd()
@@ -974,6 +990,12 @@ def attach_mount(m: dict) -> str | None:
         _rc(port, "mount/mount", params, timeout=60)
     except RuntimeError as e:
         return str(e)
+    # Record what was actually baked into this mount's vfsOpt: rcd never
+    # echoes mount options back, so this is the only way the adopt path above
+    # can tell a live VFS predates a read_only change and must be remounted.
+    if bool(m.get("mounted_read_only")) != bool(m.get("read_only")):
+        m["mounted_read_only"] = bool(m.get("read_only"))
+        _update_mount(m)
     sync_serves()
     return None
 
@@ -1209,13 +1231,17 @@ def run_automount() -> None:
         return
     live = mounted_paths()
     for m in mounts:
-        if mountpoint(m) in live or os.path.ismount(mountpoint(m)):
-            # Survived the restart, so attach_mount (and its read-only
-            # detection) never runs for it below — re-detect here instead,
-            # otherwise a legacy record without the flag stays "writable"
-            # forever once the kernel mount is already live.
-            _refresh_read_only_flag(m)
+        mp = mountpoint(m)
+        if mp in live and not os.path.ismount(mp):
+            # Split-brain: rcd lists the mount but the kernel dropped it.
+            # mount/mount over rcd's own stale entry would fail — leave it
+            # for mount_state to surface as "stale" and Reconnect to heal.
             continue
+        # A mount that survived the restart takes attach_mount's
+        # already-mounted branch, which re-runs read-only detection and
+        # remounts if the live VFS was created before the current
+        # read_only flag (adopted mounts keep their original vfsOpt) —
+        # otherwise a legacy writable VFS would outlive the flag forever.
         err = attach_mount(m)
         if err:
             logger.warning("automount of %r failed: %s", m["name"], err)

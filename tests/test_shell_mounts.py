@@ -904,6 +904,65 @@ def test_read_write_mount_has_no_rdonly_on_macos(home, rcd):
     assert "rdonly" not in body["mountOpt"]["ExtraOptions"]
 
 
+# rcd never echoes a live mount's vfsOpt back, so the only way to notice that
+# an adopted mount predates a read_only change is to record what was baked in
+# (mounted_read_only) and remount on mismatch — otherwise a legacy writable
+# VFS survives every restart no matter what the record says (Bugbot, PR #157).
+
+
+def test_attach_records_mounted_read_only(home, rcd):
+    c = mounts_mod.add_mount("ro", "remote:bucket", read_only=True)
+    assert mounts_mod.attach_mount(c) is None
+    assert mounts_mod.get_mount(c["id"])["mounted_read_only"] is True
+
+
+def test_adopted_mount_remounts_when_vfs_predates_read_only(home, rcd, monkeypatch):
+    c = mounts_mod.add_mount("ro", "remote:bucket", read_only=True)
+    # Live rcd mount, but the record has no mounted_read_only: it was created
+    # before the flag reached the rclone layer, so its VFS is writable.
+    mp = mounts_mod.mountpoint(c)
+    rcd.responses["mount/listmounts"] = {
+        "mountPoints": [{"Fs": "remote:bucket", "MountPoint": mp}]}
+    # Kernel mount is up for the adopt check, gone once reconnect unmounts.
+    seq = iter([True])
+    monkeypatch.setattr(mounts_mod.os.path, "ismount",
+                        lambda p: next(seq, False))
+    assert mounts_mod.attach_mount(c) is None
+    methods = [m for m, _ in rcd.calls]
+    assert methods.index("mount/unmount") < methods.index("mount/mount")
+    [(_, body)] = [x for x in rcd.calls if x[0] == "mount/mount"]
+    assert body["vfsOpt"]["ReadOnly"] is True
+    assert mounts_mod.get_mount(c["id"])["mounted_read_only"] is True
+
+
+def test_adopted_mount_left_alone_when_vfs_matches_flag(home, rcd, monkeypatch):
+    c = mounts_mod.add_mount("ro", "remote:bucket", read_only=True)
+    c["mounted_read_only"] = True
+    mounts_mod._update_mount(c)
+    mp = mounts_mod.mountpoint(c)
+    rcd.responses["mount/listmounts"] = {
+        "mountPoints": [{"Fs": "remote:bucket", "MountPoint": mp}]}
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    assert mounts_mod.attach_mount(c) is None
+    assert not any(m in ("mount/mount", "mount/unmount") for m, _ in rcd.calls)
+
+
+def test_run_automount_reapplies_read_only_to_adopted_mounts(home, rcd, monkeypatch):
+    # The startup adopt path must go through attach_mount's already-mounted
+    # branch, or a mount that survived the restart keeps its pre-flag
+    # writable VFS forever (the incident's doomed-upload loop, reborn).
+    c = mounts_mod.add_mount("ro", "remote:bucket", read_only=True)
+    mp = mounts_mod.mountpoint(c)
+    rcd.responses["mount/listmounts"] = {
+        "mountPoints": [{"Fs": "remote:bucket", "MountPoint": mp}]}
+    seq = iter([True, True])  # live for automount + adopt checks, then unmounted
+    monkeypatch.setattr(mounts_mod.os.path, "ismount",
+                        lambda p: next(seq, False))
+    mounts_mod.run_automount()
+    [(_, body)] = [x for x in rcd.calls if x[0] == "mount/mount"]
+    assert body["vfsOpt"]["ReadOnly"] is True
+
+
 # -- split-brain (stale) detection + reconnect healing (INCIDENT 2026-07-16) -----
 
 
