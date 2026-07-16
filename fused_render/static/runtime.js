@@ -6,6 +6,10 @@
  *                   aborts the prior in-flight one (D113 — cancel stale scrubs).
  *     opts.signal — a caller AbortSignal; composes with the channel abort.
  *   fused.params.get(key) / getAll() / set(key, value) / onChange(cb) -> unsubscribe
+ *   fused.env -> "local" — the runtime identity. This is the local fused-render app;
+ *                the hosted/exported runtime (fused wheel) sets "hosted" instead, so a
+ *                page can branch on where it runs (e.g. skip a localhost daemon when
+ *                deployed). See docs/EXPORT.md.
  *
  * Same-origin iframe model: this script talks to an ancestor window's URL
  * directly (no postMessage bridge — see DECISIONS.md D3/D4). The param target
@@ -572,6 +576,9 @@
   }
 
   window.fused = {
+    // Runtime identity: "local" here (the fused-render app). The hosted/exported
+    // runtime sets "hosted", so a page can branch on where it runs (EXPORT.md).
+    env: "local",
     runPython,
     rawUrl,
     stat,

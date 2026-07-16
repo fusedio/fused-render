@@ -116,7 +116,17 @@ fused.params.get(name)
 fused.params.set(name, value)          // strings only; always replaceState
 fused.params.getAll()
 fused.params.onChange(callback)   // fires whenever params change; author re-runs Python here
+
+// Runtime identity — "local" here, "hosted" on a deployed artifact (§18, RH-10)
+fused.env
 ```
+
+- **RH-10** `fused.env` is the **runtime identity**: `"local"` in the fused-render app,
+  `"hosted"` on a deployed/exported artifact (set by the fused wheel's serve runtime,
+  §18). It lets a page branch on where it runs — e.g. use a local-only mechanism (a
+  spawned `runPython` daemon reachable at `127.0.0.1`) when `fused.env === "local"` and
+  degrade gracefully when `"hosted"`, where no such daemon exists. Both runtimes expose
+  it, so the check is a positive signal, not the absence of an API.
 
 ### 4.2 `runPython(path, params)`
 

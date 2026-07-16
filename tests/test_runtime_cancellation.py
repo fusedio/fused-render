@@ -20,6 +20,13 @@ SINE = (
 ).read_text(encoding="utf-8")
 
 
+def test_runtime_exposes_local_env_identity():
+    # fused.env is the runtime identity: "local" here, "hosted" on a deployed
+    # artifact (SPEC RH-10). A page branches on it to skip local-only paths
+    # (e.g. a 127.0.0.1 daemon) when served.
+    assert 'env: "local"' in RUNTIME
+
+
 def test_runtime_runpython_takes_opts():
     # runPython grew a third `opts` argument carrying key/signal.
     assert "function runPython(pyPath, params, opts)" in RUNTIME
