@@ -44,7 +44,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Everything derived from a workbook (DuckDB parquet cache, export scratch
 # copies) lives under the user's cache dir, never next to the template.
-CACHE_ROOT = os.path.expanduser(os.path.join("~", ".fused-render", "cache", "excel"))
+CACHE_ROOT = os.path.join(
+    os.path.expanduser(
+        os.environ.get("FUSED_RENDER_CACHE_DIR")
+        or os.path.join("~", ".fused-render", "cache")
+    ),
+    "excel",
+)
 EXPORTS = os.path.join(CACHE_ROOT, "exports")
 
 SMALL_ROWS = 10_000        # a sheet bigger than this in either measure ...
@@ -168,6 +174,14 @@ def _duck(excel_ext=False):
     import duckdb
 
     con = duckdb.connect()
+    for setting, env_name in (
+        ("extension_directory", "FUSED_RENDER_DUCKDB_EXTENSION_DIR"),
+        ("temp_directory", "FUSED_RENDER_DUCKDB_TEMP_DIR"),
+    ):
+        path = os.environ.get(env_name)
+        if path:
+            os.makedirs(path, exist_ok=True)
+            con.execute(f"SET {setting} = ?", [path])
     if excel_ext:
         con.execute("INSTALL excel; LOAD excel;")
     return con

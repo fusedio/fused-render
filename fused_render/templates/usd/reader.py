@@ -28,7 +28,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
 from procutil import pid_alive as _pid_alive
 
-CACHE_ROOT = os.path.expanduser(os.path.join("~", ".fused-render", "cache", "usd"))
+CACHE_ROOT = os.path.join(
+    os.path.expanduser(
+        os.environ.get("FUSED_RENDER_CACHE_DIR")
+        or os.path.join("~", ".fused-render", "cache")
+    ),
+    "usd",
+)
 
 LOADABLE = (".usdz", ".usd", ".usda", ".usdc", ".ply", ".splat", ".ksplat",
             ".glb", ".gltf", ".obj", ".stl")

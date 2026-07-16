@@ -15,15 +15,16 @@ import os
 import sys
 import traceback
 
-# Top-level (not `fused_render._binding`) import on purpose: this file is
-# invoked as a standalone script (`python .../fused_render/_child.py`), so its
-# own directory is sys.path[0] and `_binding.py` next to it always resolves —
-# even when the package isn't pip-installed (dev-from-source). The import runs
-# before run() mutates sys.path, so a user module dir can't shadow it.
-from _binding import bind_params
+try:
+    from fused_render._binding import bind_params
+    from fused_render.windows_process import install_no_window_policy
+except ImportError:
+    from _binding import bind_params
+    from windows_process import install_no_window_policy
 
 
 def run():
+    install_no_window_policy()
     req = json.load(sys.stdin)
     path = os.path.abspath(req["path"])
     params = req.get("params") or {}

@@ -39,13 +39,17 @@ import sys
 import threading
 import time
 
-STATE = os.path.expanduser("~/.cache/fused-render-gridv2/daemon.json")
 DAEMON_DEPS = ["numpy", "scipy", "zarr"]
-# venv dir is keyed by the dep set: growing DAEMON_DEPS must provision a fresh
-# venv, not reuse an existing one that lacks the new package
-DAEMON_VENV = os.path.expanduser(
-    "~/.cache/fused-render-gridv2/venv-"
-    + hashlib.sha256(",".join(DAEMON_DEPS).encode()).hexdigest()[:8])
+DAEMON_ROOT = os.path.join(
+    os.path.expanduser(os.environ["FUSED_RENDER_CACHE_DIR"]), "daemons", "gridv2"
+) if os.environ.get("FUSED_RENDER_CACHE_DIR") else os.path.expanduser(
+    "~/.cache/fused-render-gridv2"
+)
+STATE = os.path.join(DAEMON_ROOT, "daemon.json")
+DAEMON_VENV = os.path.join(
+    DAEMON_ROOT,
+    "venv-" + hashlib.sha256(",".join(DAEMON_DEPS).encode()).hexdigest()[:8],
+)
 IDLE_EXIT_S = 30 * 60
 TILE = 256
 MERC_R = 6378137.0
@@ -63,7 +67,8 @@ def _me():
 
 
 def _daemon_python():
-    vp = os.path.join(DAEMON_VENV, "bin", "python")
+    vp = (os.path.join(DAEMON_VENV, "Scripts", "python.exe") if os.name == "nt"
+          else os.path.join(DAEMON_VENV, "bin", "python"))
     if os.path.exists(vp):
         return vp
     import shutil

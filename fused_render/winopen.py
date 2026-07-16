@@ -24,6 +24,7 @@ from urllib.parse import quote
 
 from fused_render._branch import branch_port, branch_ref, branch_suffix
 from fused_render.logs import setup_logging
+from fused_render.paths import runtime_dir
 
 logger = logging.getLogger("fused_render")
 
@@ -60,8 +61,9 @@ _ICON_VARIANT_FOR_TOKEN = {
     ),
     # documents / prose
     **dict.fromkeys(
-        "pdf md markdown txt log docx pptx tex ltx latex".split(), "doc"
+        "pdf md markdown txt log docx pptx".split(), "doc"
     ),
+    **dict.fromkeys("tex ltx latex".split(), "latex"),
     # audio / video
     **dict.fromkeys("mp4 mov m4v webm mp3 wav m4a ogg flac".split(), "media"),
     # geospatial / vector
@@ -81,7 +83,7 @@ _ICON_VARIANT_FOR_TOKEN = {
 }
 
 _LOCALAPPDATA = os.environ.get("LOCALAPPDATA") or os.path.expanduser(r"~\AppData\Local")
-_APP_SUPPORT_BASE = os.path.join(_LOCALAPPDATA, "fused-render")
+_APP_SUPPORT_BASE = runtime_dir(os.path.join(_LOCALAPPDATA, "fused-render"))
 APP_SUPPORT_DIR = (
     _APP_SUPPORT_BASE if not branch_ref() else os.path.join(_APP_SUPPORT_BASE, branch_ref())
 )

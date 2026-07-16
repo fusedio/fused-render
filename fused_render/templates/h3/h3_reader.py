@@ -41,6 +41,14 @@ def main(file: str = "", h3_col: str = "", max_cells: int = MAX_CELLS):
 
     import duckdb
     con = duckdb.connect()
+    for setting, env_name in (
+        ("extension_directory", "FUSED_RENDER_DUCKDB_EXTENSION_DIR"),
+        ("temp_directory", "FUSED_RENDER_DUCKDB_TEMP_DIR"),
+    ):
+        path = os.environ.get(env_name)
+        if path:
+            os.makedirs(path, exist_ok=True)
+            con.execute(f"SET {setting} = ?", [path])
     q = lambda sql: con.execute(sql).fetchall()
     src = file.replace("'", "''")
     try:

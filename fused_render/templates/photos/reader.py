@@ -38,7 +38,13 @@ def _home() -> str:
 
 
 def _cache_dir() -> str:
-    d = os.path.join(_home(), ".fused-render", "cache", "photos")
+    d = os.path.join(
+        os.path.expanduser(
+            os.environ.get("FUSED_RENDER_CACHE_DIR")
+            or os.path.join("~", ".fused-render", "cache")
+        ),
+        "photos",
+    )
     os.makedirs(d, exist_ok=True)
     return d
 

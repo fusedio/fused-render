@@ -49,12 +49,23 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
 from procutil import pid_alive as _pid_alive
 
-CACHE_ROOT = os.path.expanduser("~/.fused-render/cache/latex")
+CACHE_ROOT = os.path.join(
+    os.path.expanduser(
+        os.environ.get("FUSED_RENDER_CACHE_DIR")
+        or os.path.join("~", ".fused-render", "cache")
+    ),
+    "latex",
+)
 TECTONIC_CACHE = os.path.join(CACHE_ROOT, "tectonic-cache")  # shared package/font cache
 BUILDS = os.path.join(CACHE_ROOT, "builds")                  # per-doc aux output, hashed
 EXPORTS = os.path.join(CACHE_ROOT, "exports")                # per-doc pandoc exports, hashed
 INSTALL_DIR = os.path.join(CACHE_ROOT, "_install")           # tectonic download staging
-BIN_DIR = os.path.expanduser("~/.fused-render/bin")          # user-owned install location
+BIN_DIR = os.path.join(
+    os.path.expanduser(
+        os.environ.get("FUSED_RENDER_HOME") or os.path.join("~", ".fused-render")
+    ),
+    "bin",
+)
 
 TECTONIC_VERSION = "0.16.9"
 

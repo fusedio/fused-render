@@ -38,6 +38,7 @@ import uuid
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
+from fused_render.paths import daemon_cache_dir
 from fused_render.shell import storage
 
 logger = logging.getLogger(__name__)
@@ -146,8 +147,8 @@ NFS_MOUNT_OPT = {"ExtraOptions": ["timeo=600", "retrans=2"]}
 # hold files open under a mount (geotiff, and the grid server shared by
 # zarr + netcdf). Unmount asks each to /quit before retrying (EBUSY fix).
 DAEMON_STATE_FILES = (
-    os.path.expanduser("~/.cache/fused-render-geotiff-v2/daemon.json"),
-    os.path.expanduser("~/.cache/fused-render-gridv2/daemon.json"),
+    os.path.join(daemon_cache_dir("geotiff-v2"), "daemon.json"),
+    os.path.join(daemon_cache_dir("gridv2"), "daemon.json"),
 )
 
 

@@ -28,7 +28,13 @@ import re
 # State lives under the user home dir, never inside the installed template
 # package (same layout as pdf_studio); everything the viewer writes — parquet
 # caches, extracts, exports — is regenerable (cache/).
-CACHE_ROOT = os.path.expanduser(os.path.join("~", ".fused-render", "cache", "tableau"))
+CACHE_ROOT = os.path.join(
+    os.path.expanduser(
+        os.environ.get("FUSED_RENDER_CACHE_DIR")
+        or os.path.join("~", ".fused-render", "cache")
+    ),
+    "tableau",
+)
 EXPORTS = os.path.join(CACHE_ROOT, "exports")
 SOURCES = os.path.join(CACHE_ROOT, "sources")
 
@@ -53,6 +59,14 @@ def _duck(excel_ext=False):
     import duckdb
 
     con = duckdb.connect()
+    for setting, env_name in (
+        ("extension_directory", "FUSED_RENDER_DUCKDB_EXTENSION_DIR"),
+        ("temp_directory", "FUSED_RENDER_DUCKDB_TEMP_DIR"),
+    ):
+        path = os.environ.get(env_name)
+        if path:
+            os.makedirs(path, exist_ok=True)
+            con.execute(f"SET {setting} = ?", [path])
     if excel_ext:
         con.execute("INSTALL excel; LOAD excel;")
     return con

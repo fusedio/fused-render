@@ -37,8 +37,19 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
 from procutil import pid_alive as _pid_alive
 
-CACHE_ROOT = os.path.join(os.path.expanduser("~"), ".fused-render", "cache", "docs")
-BIN_DIR = os.path.expanduser(os.path.join("~", ".fused-render", "bin"))
+CACHE_ROOT = os.path.join(
+    os.path.expanduser(
+        os.environ.get("FUSED_RENDER_CACHE_DIR")
+        or os.path.join("~", ".fused-render", "cache")
+    ),
+    "docs",
+)
+BIN_DIR = os.path.join(
+    os.path.expanduser(
+        os.environ.get("FUSED_RENDER_HOME") or os.path.join("~", ".fused-render")
+    ),
+    "bin",
+)
 TYPST_INSTALL_DIR = os.path.join(CACHE_ROOT, "_typst_install")
 TYPST_VERSION = "v0.13.1"
 

@@ -34,7 +34,12 @@ import sys
 import threading
 import time
 
-STATE = os.path.expanduser("~/.cache/fused-render-geotiff-v2/daemon.json")
+DAEMON_ROOT = os.path.join(
+    os.path.expanduser(os.environ["FUSED_RENDER_CACHE_DIR"]), "daemons", "geotiff-v2"
+) if os.environ.get("FUSED_RENDER_CACHE_DIR") else os.path.expanduser(
+    "~/.cache/fused-render-geotiff-v2"
+)
+STATE = os.path.join(DAEMON_ROOT, "daemon.json")
 IDLE_EXIT_S = 30 * 60
 TILE = 256
 MERC_R = 6378137.0
@@ -112,7 +117,7 @@ def _version():
         return "0"
 
 
-DAEMON_VENV = os.path.expanduser("~/.cache/fused-render-geotiff-v2/venv")
+DAEMON_VENV = os.path.join(DAEMON_ROOT, "venv")
 DAEMON_DEPS = ["numpy", "pyproj", "imagecodecs"]
 
 
@@ -120,7 +125,8 @@ def _daemon_python():
     """Interpreter for the daemon: a self-managed uv venv (so imagecodecs is
     available even though the app runner falls back to its bundled python),
     else whatever interpreter is running now."""
-    vp = os.path.join(DAEMON_VENV, "bin", "python")
+    vp = (os.path.join(DAEMON_VENV, "Scripts", "python.exe") if os.name == "nt"
+          else os.path.join(DAEMON_VENV, "bin", "python"))
     if os.path.exists(vp):
         return vp
     import shutil

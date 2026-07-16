@@ -223,6 +223,18 @@ def _build_order(sort, columns):
 # back to the plain file path.
 
 
+def _configure_connection(con):
+    for setting, env_name in (
+        ("extension_directory", "FUSED_RENDER_DUCKDB_EXTENSION_DIR"),
+        ("temp_directory", "FUSED_RENDER_DUCKDB_TEMP_DIR"),
+    ):
+        path = os.environ.get(env_name)
+        if path:
+            os.makedirs(path, exist_ok=True)
+            con.execute(f"SET {setting} = ?", [path])
+    return con
+
+
 def _http_connection():
     """A DuckDB connection for reading mounted parquet over HTTP, kept alive
     across reader runs. DuckDB's external file cache holds the byte ranges a
@@ -238,8 +250,8 @@ def _http_connection():
     key = "_fused_render_http_con_v3"
     con = getattr(duckdb, key, None)
     if con is None:
-        con = duckdb.connect(":memory:")
-        con.execute("LOAD httpfs")  # raises if unavailable -> caller falls back
+        con = _configure_connection(duckdb.connect(":memory:"))
+        con.execute("INSTALL httpfs; LOAD httpfs")
         con.execute("PRAGMA enable_object_cache=true")
         # The object cache alone revalidates cached parquet metadata against
         # the remote's etag/last-modified — and presigned store URLs are
@@ -341,7 +353,7 @@ def _read_database(file, table, offset, limit, sort, filters, mode="full"):
     `mode` gates the count/page split identically to the flat-file path (see
     main): "count" returns only {total_rows}, "page" the page with total_rows
     None, "full" both."""
-    con = duckdb.connect(":memory:")
+    con = _configure_connection(duckdb.connect(":memory:"))
     try:
         con.execute(f"ATTACH {_quote_str(os.path.abspath(file))} AS db (READ_ONLY)")
         tables, kinds = _db_tables(con)
@@ -453,7 +465,7 @@ def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
             finally:
                 cur.close()
 
-    con = duckdb.connect(":memory:")
+    con = _configure_connection(duckdb.connect(":memory:"))
     try:
         # Reuse parsed parquet/CSV metadata across the queries in *this* call
         # (DESCRIBE, COUNT, page all touch the same footer). It can't cache

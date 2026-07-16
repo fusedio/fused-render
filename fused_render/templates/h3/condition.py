@@ -61,6 +61,14 @@ def main(path: str) -> bool:
     try:
         import duckdb
         con = duckdb.connect()
+        for setting, env_name in (
+            ("extension_directory", "FUSED_RENDER_DUCKDB_EXTENSION_DIR"),
+            ("temp_directory", "FUSED_RENDER_DUCKDB_TEMP_DIR"),
+        ):
+            value = os.environ.get(env_name)
+            if value:
+                os.makedirs(value, exist_ok=True)
+                con.execute(f"SET {setting} = ?", [value])
         src = path.replace("'", "''")
         # Footer-only read: names, physical types, per-row-group min/max.
         meta = con.execute(

@@ -26,6 +26,7 @@ function notifyNavigate(): void {
 // whose segment split drops the trailing slash) canonicalizes to "C:/" —
 // bare "C:" is cwd-relative for os.stat on Windows.
 export function rootedFsPath(joined: string): string {
+  if (joined.startsWith("\\\\")) return joined;
   if (/^[A-Za-z]:$/.test(joined)) return joined + "/";
   return /^[A-Za-z]:\//.test(joined) ? joined : "/" + joined;
 }

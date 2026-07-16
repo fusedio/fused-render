@@ -31,7 +31,7 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
-from fastapi import Body, FastAPI, Header, Request, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -1582,8 +1582,12 @@ def create_app(start_dir: str) -> FastAPI:
         return _session_put(body, x_fused)
 
     @app.get("/api/config")
-    def api_config():
-        return {
+    def api_config(
+        token: str | None = Header(default=None, alias="X-Fused-Desktop-Token"),
+    ):
+        from fused_render.paths import desktop_instance
+
+        config = {
             "start_dir": start_dir,
             "home": os.path.expanduser("~"),
             # The Fused workspace dir (~/Documents/Fused, D81) — the sidebar's
@@ -1596,6 +1600,28 @@ def create_app(start_dir: str) -> FastAPI:
             # Read per request — it can change under the Preferences switch.
             "engine": current_engine(),
         }
+        if instance := desktop_instance():
+            config["desktop_instance"] = {"id": instance[0]}
+            if token == instance[1]:
+                config["desktop_instance"]["token"] = instance[1]
+        return config
+
+    @app.post("/api/desktop/shutdown")
+    def api_desktop_shutdown(
+        token: str | None = Header(default=None, alias="X-Fused-Desktop-Token"),
+    ):
+        from fused_render.paths import desktop_instance
+
+        instance = desktop_instance()
+        if instance is None:
+            raise HTTPException(status_code=404, detail="desktop supervisor is not active")
+        if token != instance[1]:
+            raise HTTPException(status_code=403, detail="invalid desktop supervisor token")
+        uvicorn_server = getattr(app.state, "uvicorn_server", None)
+        if uvicorn_server is None:
+            raise HTTPException(status_code=503, detail="server shutdown is not ready")
+        uvicorn_server.should_exit = True
+        return {"ok": True}
 
     # GET /api/templates/registry moved to templates_api.py (extended §2.2
     # shape) and registered via templates_router above.

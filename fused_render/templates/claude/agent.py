@@ -32,7 +32,10 @@ import tempfile
 import time
 
 RUNS = os.path.join(tempfile.gettempdir(), "fused_render_claude", "runs")
-PROJECTS = os.path.expanduser("~/.claude/projects")
+PROJECTS = os.path.join(
+    os.path.expanduser(os.environ.get("FUSED_RENDER_CLAUDE_DIR") or "~/.claude"),
+    "projects",
+)
 
 
 def _claude_bin() -> str:

@@ -24,7 +24,13 @@ if "__file__" not in globals():
     import os, sys
     __file__ = os.path.join(sys.path[0], "pano.py")
 
-CACHE_ROOT = os.path.expanduser(os.path.join("~", ".fused-render", "cache", "pano"))
+CACHE_ROOT = os.path.join(
+    os.path.expanduser(
+        os.environ.get("FUSED_RENDER_CACHE_DIR")
+        or os.path.join("~", ".fused-render", "cache")
+    ),
+    "pano",
+)
 
 DISPLAY_MAX_W = 8192   # keep under common WebGL texture limits
 CONVERT_MAX_W = 4096   # resample source cap so conversions stay interactive

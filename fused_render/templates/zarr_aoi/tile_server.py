@@ -39,8 +39,13 @@ import sys
 import threading
 import time
 
-STATE = os.path.expanduser("~/.cache/fused-render-zarraoi/daemon.json")
-DAEMON_VENV = os.path.expanduser("~/.cache/fused-render-zarraoi/venv")
+DAEMON_ROOT = os.path.join(
+    os.path.expanduser(os.environ["FUSED_RENDER_CACHE_DIR"]), "daemons", "zarraoi"
+) if os.environ.get("FUSED_RENDER_CACHE_DIR") else os.path.expanduser(
+    "~/.cache/fused-render-zarraoi"
+)
+STATE = os.path.join(DAEMON_ROOT, "daemon.json")
+DAEMON_VENV = os.path.join(DAEMON_ROOT, "venv")
 DAEMON_DEPS = ["numpy", "zarr>=3.0.8", "s3fs", "crc32c"]
 IDLE_EXIT_S = 30 * 60
 TILE = 256
@@ -62,7 +67,8 @@ def _me():
 
 
 def _daemon_python():
-    vp = os.path.join(DAEMON_VENV, "bin", "python")
+    vp = (os.path.join(DAEMON_VENV, "Scripts", "python.exe") if os.name == "nt"
+          else os.path.join(DAEMON_VENV, "bin", "python"))
     if os.path.exists(vp):
         return vp
     import shutil
@@ -295,7 +301,8 @@ def _serve():
     # ---------------- source resolution ----------------
     def rclone_conf():
         out, sec = {}, None
-        for p in (os.path.expanduser("~/.config/rclone/rclone.conf"),):
+        for p in (os.path.expanduser(
+                os.environ.get("RCLONE_CONFIG") or "~/.config/rclone/rclone.conf"),):
             try:
                 for ln in open(p):
                     ln = ln.strip()
@@ -321,7 +328,9 @@ def _serve():
             return {"kind": "http", "url": path, "storage_options": {},
                     "label": path}
         path = os.path.abspath(os.path.expanduser(path))
-        mroot = os.path.expanduser("~/.fused-render/mounts") + os.sep
+        app_home = os.path.expanduser(
+            os.environ.get("FUSED_RENDER_HOME") or "~/.fused-render")
+        mroot = os.path.join(app_home, "mounts") + os.sep
         if path.startswith(mroot):
             # Default transport: the server's own ranged-read API. The server
             # decides how the bytes move (rclone-serve proxy, presigned 307,
@@ -341,8 +350,7 @@ def _serve():
             rel = path[len(mroot):]
             name, _, rest = rel.partition(os.sep)
             try:
-                mounts = json.load(open(os.path.expanduser(
-                    "~/.fused-render/mounts.json")))
+                mounts = json.load(open(os.path.join(app_home, "mounts.json")))
             except (OSError, ValueError):
                 mounts = []
             ent = next((m for m in mounts if m.get("name") == name), None)

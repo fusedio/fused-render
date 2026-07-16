@@ -1,0 +1,22 @@
+name: Windows supervisor
+
+on:
+  pull_request:
+    paths:
+      - ".cargo/**"
+      - "windows/supervisor/**"
+      - ".github/workflows/windows-supervisor.yml"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+      - run: cargo fmt --manifest-path windows/supervisor/Cargo.toml -- --check
+      - run: cargo clippy --manifest-path windows/supervisor/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --manifest-path windows/supervisor/Cargo.toml
+      - run: cargo build --manifest-path windows/supervisor/Cargo.toml --release

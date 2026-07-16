@@ -22,11 +22,9 @@ def home_dir() -> str:
     all shell state (templates, bookmarks, prefs) nests under a per-branch
     subdir so parallel branches don't collide; baseline (no ref) is the
     unnested dir, byte-identical to today."""
-    from fused_render._branch import branch_ref
+    from fused_render.paths import state_dir
 
-    base = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
-    ref = branch_ref()
-    return os.path.join(base, ref) if ref else base
+    return state_dir()
 
 
 def read_json(path: str):

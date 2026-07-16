@@ -15,7 +15,11 @@ import os
 import subprocess
 import sys
 
-CACHE = os.path.expanduser("~/.cache/fused-render-las")
+CACHE = os.path.join(
+    os.path.expanduser(os.environ["FUSED_RENDER_CACHE_DIR"]), "daemons", "las"
+) if os.environ.get("FUSED_RENDER_CACHE_DIR") else os.path.expanduser(
+    "~/.cache/fused-render-las"
+)
 VENV_DEPS = ["laspy", "lazrs", "numpy", "pyproj"]
 
 CLASS_NAMES = {
@@ -97,8 +101,10 @@ np.savez_compressed(dst, meta=json.dumps(meta),
 
 def _venv_python():
     os.makedirs(CACHE, exist_ok=True)
-    py = os.path.join(CACHE, "venv", "bin", "python")
-    stamp = os.path.join(CACHE, "venv", ".deps")
+    venv = os.path.join(CACHE, "venv")
+    py = (os.path.join(venv, "Scripts", "python.exe") if os.name == "nt"
+          else os.path.join(venv, "bin", "python"))
+    stamp = os.path.join(venv, ".deps")
     want = " ".join(VENV_DEPS)
     if os.path.exists(py) and os.path.exists(stamp):
         with open(stamp) as f:
@@ -111,7 +117,7 @@ def _venv_python():
             "reading .las/.laz needs the 'uv' tool to set up a one-time "
             "Python environment (laspy). Install it with: "
             "brew install uv  —  or:  curl -LsSf https://astral.sh/uv/install.sh | sh")
-    subprocess.run([uv, "venv", "--python", "3.12", os.path.join(CACHE, "venv")],
+    subprocess.run([uv, "venv", "--python", "3.12", venv],
                    check=True, capture_output=True)
     subprocess.run([uv, "pip", "install", "-p", py, *VENV_DEPS],
                    check=True, capture_output=True)

@@ -30,7 +30,12 @@ import sys
 import threading
 import time
 
-STATE = os.path.expanduser("~/.cache/fused-render-map-v1/daemon.json")
+DAEMON_ROOT = os.path.join(
+    os.path.expanduser(os.environ["FUSED_RENDER_CACHE_DIR"]), "daemons", "map-v1"
+) if os.environ.get("FUSED_RENDER_CACHE_DIR") else os.path.expanduser(
+    "~/.cache/fused-render-map-v1"
+)
+STATE = os.path.join(DAEMON_ROOT, "daemon.json")
 IDLE_EXIT_S = 30 * 60
 MERC_R = 6378137.0
 MERC_MAX = math.pi * MERC_R
@@ -121,8 +126,16 @@ def _serve():
     last_hit = [time.time()]
 
     con = duckdb.connect()
+    for setting, env_name in (
+        ("extension_directory", "FUSED_RENDER_DUCKDB_EXTENSION_DIR"),
+        ("temp_directory", "FUSED_RENDER_DUCKDB_TEMP_DIR"),
+    ):
+        path = os.environ.get(env_name)
+        if path:
+            os.makedirs(path, exist_ok=True)
+            con.execute(f"SET {setting} = ?", [path])
     con.execute("PRAGMA threads=8")
-    con.execute("LOAD spatial")
+    con.execute("INSTALL spatial; LOAD spatial")
 
     files = {}                       # (path, layer) -> file-state dict
     files_lock = threading.Lock()

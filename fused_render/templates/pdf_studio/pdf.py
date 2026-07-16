@@ -58,8 +58,15 @@ import shutil
 # non-regenerable content so they get their own `data/` root rather than
 # sitting under `cache/`, which a future clear-cache action could sweep;
 # working copies and undo snapshots are transient and belong under `cache/`.
-DATA_ROOT = os.path.expanduser(os.path.join("~", ".fused-render", "data", "pdf_studio"))
-CACHE_ROOT = os.path.expanduser(os.path.join("~", ".fused-render", "cache", "pdf_studio"))
+APP_HOME = os.path.expanduser(
+    os.environ.get("FUSED_RENDER_HOME") or os.path.join("~", ".fused-render")
+)
+CACHE_HOME = os.path.expanduser(
+    os.environ.get("FUSED_RENDER_CACHE_DIR")
+    or os.path.join("~", ".fused-render", "cache")
+)
+DATA_ROOT = os.path.join(APP_HOME, "data", "pdf_studio")
+CACHE_ROOT = os.path.join(CACHE_HOME, "pdf_studio")
 LIBRARY = os.path.join(DATA_ROOT, "library.json")   # flat list of PDF paths the user added
 DOWNLOADS = os.path.join(DATA_ROOT, "downloads")    # PDFs fetched via import_url
 EXPORTS = os.path.join(CACHE_ROOT, "exports")

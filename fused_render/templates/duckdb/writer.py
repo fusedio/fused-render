@@ -29,6 +29,15 @@ import os
 
 import duckdb
 
+
+def _connect():
+    con = duckdb.connect(":memory:")
+    temp_dir = os.environ.get("FUSED_RENDER_DUCKDB_TEMP_DIR")
+    if temp_dir:
+        os.makedirs(temp_dir, exist_ok=True)
+        con.execute("SET temp_directory = ?", [temp_dir])
+    return con
+
 # Base COPY options per logical format. CSV/TSV are written with a header; the
 # reader reads them all-VARCHAR, so values round-trip as the exact text typed.
 _COPY_OPTS = {
@@ -122,7 +131,7 @@ def _write_database(file, table, edits, deletes, inserts):
     Only base tables are writable — a view (no rowid) is rejected up front."""
     if not table:
         raise ValueError("no table specified")
-    con = duckdb.connect(":memory:")
+    con = _connect()
     try:
         con.execute(f"ATTACH {_quote_str(os.path.abspath(file))} AS db")
         kind = con.execute(
@@ -185,7 +194,7 @@ def main(file: str, table: str = "", edits: "list | None" = None,
     if ext not in _COPY_OPTS:
         raise ValueError(f"{ext} files are read-only in the DuckDB grid")
 
-    con = duckdb.connect(":memory:")
+    con = _connect()
     try:
         # rowid on this base table == file position (insertion == scan order).
         con.execute(f"CREATE TABLE t AS SELECT * FROM {_relation_for(file)}")

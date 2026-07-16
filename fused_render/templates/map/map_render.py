@@ -12,7 +12,13 @@ import hashlib
 import json
 import os
 
-CACHE_ROOT = os.path.expanduser("~/.fused-render/cache/map")
+CACHE_ROOT = os.path.join(
+    os.path.expanduser(
+        os.environ.get("FUSED_RENDER_CACHE_DIR")
+        or os.path.join("~", ".fused-render", "cache")
+    ),
+    "map",
+)
 _URLISH = ("http://", "https://", "s3://", "/vsi")
 
 

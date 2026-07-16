@@ -49,7 +49,13 @@ if "__file__" not in globals():
 
 import engine  # sibling module; cwd is set to the .py's dir
 
-CACHE_ROOT = os.path.expanduser(os.path.join("~", ".fused-render", "cache", "slides"))
+CACHE_ROOT = os.path.join(
+    os.path.expanduser(
+        os.environ.get("FUSED_RENDER_CACHE_DIR")
+        or os.path.join("~", ".fused-render", "cache")
+    ),
+    "slides",
+)
 UPLOADS = os.path.join(tempfile.gettempdir(), "fused_render_slides_uploads")
 EXPORTS = os.path.join(tempfile.gettempdir(), "fused_render_slides_exports")
 

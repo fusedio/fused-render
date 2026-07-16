@@ -66,6 +66,13 @@ GLYPHS: dict[str, tuple[str, list[str]]] = {
         '<path d="M16 17H8"/>',
         '<path d="M10 9H8"/>',
     ]),
+    "latex": ("#a99acb", [
+        '<path d="M5 4h14"/>',
+        '<path d="M9 4v16"/>',
+        '<path d="M5 20h8"/>',
+        '<path d="m14 10 5 5"/>',
+        '<path d="m19 10-5 5"/>',
+    ]),
     "media": ("#d0939b", [
         '<rect width="18" height="18" x="3" y="3" rx="2"/>',
         '<path d="M7 3v18"/>',

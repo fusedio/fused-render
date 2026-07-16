@@ -1,4 +1,4 @@
-"""Redirect the shell home dir + Fused workspace dir to throwaway tmp dirs for
+"""Redirect app-managed state and the Fused workspace to throwaway tmp dirs for
 the whole test run.
 
 Importing fused_render.server / .executor now stages the core templates into
@@ -19,8 +19,11 @@ import os
 import shutil
 import tempfile
 
-for _var, _prefix in (("FUSED_RENDER_HOME", "fused-render-tests-"),
-                       ("FUSED_RENDER_DIR", "fused-render-tests-dir-")):
+for _var, _prefix in (
+    ("FUSED_RENDER_HOME", "fused-render-tests-"),
+    ("FUSED_RENDER_DIR", "fused-render-tests-dir-"),
+    ("FUSED_RENDER_CACHE_DIR", "fused-render-tests-cache-"),
+):
     if _var not in os.environ:
         _tmp = tempfile.mkdtemp(prefix=_prefix)
         os.environ[_var] = _tmp
