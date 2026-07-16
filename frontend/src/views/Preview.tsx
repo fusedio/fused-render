@@ -23,6 +23,7 @@ import {
   freeDuplicatePath,
   copyToClipboard,
   clearClipboardIfDeleted,
+  remapClipboardPath,
   trashEntry,
   buildOpenWithItems,
 } from "../lib/fs-actions";
@@ -164,6 +165,10 @@ function usePreviewFileMenu(
         const dst = join(parent, name);
         renameEntry(fsPath, dst).then(
           () => {
+            // The clipboard may still be pointing at the old path (or inside
+            // it, if this was a renamed folder holding the cut/copied entry)
+            // — repoint it so a later Paste doesn't target a gone source.
+            remapClipboardPath(fsPath, dst);
             // Navigate to the renamed file, preserving the current query
             // (`_mode`/params) so the same view stays open on the new path.
             navigateUrl(urlForFsPath(dst, location.search));

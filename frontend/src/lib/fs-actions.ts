@@ -86,6 +86,23 @@ export function clearClipboardIfDeleted(deleted: string): void {
   }
 }
 
+// After a successful rename/move, repoint the module clipboard if it was
+// referencing the moved entry — either the exact path (clip IS the renamed
+// entry) or something inside it when a directory was renamed (prefix +
+// separator, e.g. a file cut from inside a folder that then got renamed).
+// Keeps the op (cut/copy) unchanged. Otherwise a later Paste would target a
+// source path that no longer exists (or, worse, silently hit whatever now
+// occupies the stale path). Mirrors clearClipboardIfDeleted above.
+export function remapClipboardPath(oldPath: string, newPath: string): void {
+  const clip = getClipboard();
+  if (!clip) return;
+  if (clip.path === oldPath) {
+    setClipboard({ ...clip, path: newPath });
+  } else if (clip.path.startsWith(oldPath + "/")) {
+    setClipboard({ ...clip, path: newPath + clip.path.slice(oldPath.length) });
+  }
+}
+
 // Outcome of a Move to Bin attempt. "unsupported" is the non-macOS 501 case
 // where the caller should fall back to a hard-delete confirm; "error" is any
 // other failure (surface it as a toast).

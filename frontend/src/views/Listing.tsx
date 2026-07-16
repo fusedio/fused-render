@@ -29,6 +29,7 @@ import {
   freeDuplicatePath,
   copyToClipboard,
   clearClipboardIfDeleted,
+  remapClipboardPath,
   trashEntry,
   resolveOpenWithModes,
   buildOpenWithItems,
@@ -947,6 +948,10 @@ export default function Listing({ fsPath }: { fsPath: string }) {
           // Re-anchor onto the new name so the reloaded listing keeps this row
           // selected (and Enter opens the renamed file, not the dead old path).
           pendingSelectRef.current = dst;
+          // The clipboard may still be pointing at the old path (or inside it,
+          // if a renamed folder held the cut/copied entry) — repoint it so a
+          // later Paste doesn't target a source that's now gone.
+          remapClipboardPath(row.path, dst);
         });
       },
     });
@@ -1030,7 +1035,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     { label: "Paste", icon: MenuIcons.paste, disabled: !clipboard, onClick: () => doPaste(base) },
     "separator",
     { label: "Refresh", icon: MenuIcons.refresh, onClick: refetch },
-    { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: () => doReveal(base) },
+    { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: () => doReveal(normDir(base)) },
   ];
 
   const openRowMenu = (e: React.MouseEvent, row: RowCtx) => {
