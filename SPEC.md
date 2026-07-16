@@ -1880,5 +1880,7 @@ lists the last files opened in the app, each carrying the params it last had.
   (RC-7) leaves its slot and the next MRU entry fills in at the bottom —
   surviving rows never reshuffle. The slot order is session view state, not
   persisted: on boot the display seeds from server MRU order. Rows are keyed
-  by fs path (not url) so a param write never remounts a row, and a
-  param-only store refresh triggers no sidebar re-render.
+  by fs path (not url) so a param write never remounts a row; a url update
+  DOES notify (hrefs/click targets must stay fresh per RC-3) but re-renders
+  the row's attributes in place — zero movement — and a refresh that changes
+  nothing visible triggers no re-render at all.

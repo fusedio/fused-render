@@ -87,17 +87,23 @@ function enqueue<T>(op: () => Promise<T>): Promise<T> {
   return run;
 }
 
+// What the sidebar actually renders from this store: the collapse flag plus
+// each displayed slot's (path, latest url). Urls are INCLUDED — a stale href
+// is a real bug (middle-click/copy-link navigates to outdated params, RC-3);
+// with stable slots + path-keyed rows a url-only notify re-renders the anchor
+// attributes in place with zero movement and zero remounts.
+function displaySignature(slots: string[], entries: RecentEntry[], collapsed: boolean): string {
+  const byPath = new Map(entries.map((e) => [recentFsPath(e.url), e]));
+  return JSON.stringify([collapsed, slots.map((p) => [p, byPath.get(p)?.url])]);
+}
+
 async function refresh(): Promise<void> {
-  const prevCollapsed = cache.collapsed;
-  const prevSlots = slotPaths;
+  const prevSig = displaySignature(slotPaths, cache.entries, cache.collapsed);
   cache = await getRecents();
-  slotPaths = computeSlots(prevSlots, cache.entries);
-  // Notify only when the user-visible slice changed (slot paths/order or the
-  // collapse flag). A param-only re-record keeps the slots identical -> zero
-  // sidebar re-renders from here; the row's url still reads fresh because
-  // every param write also fires fused:urlchange (useUrlVersion re-render),
-  // which re-reads the already-updated cache.
-  if (prevCollapsed !== cache.collapsed || prevSlots.join("\n") !== slotPaths.join("\n")) {
+  slotPaths = computeSlots(slotPaths, cache.entries);
+  // Notify only when the visible slice changed; identical-signature refreshes
+  // (e.g. a re-record of an unchanged url) stay render-free.
+  if (displaySignature(slotPaths, cache.entries, cache.collapsed) !== prevSig) {
     notifyRecentsChanged();
   }
 }
@@ -148,23 +154,35 @@ export function useRecentsTracking(fsPath: string, isDir: boolean | null): void 
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => {
     if (IS_EMBED || isDir !== false) return;
-    const record = () => {
-      // The debounced callback can outlive a same-tick navigation race;
-      // only record while the shell still shows this file.
-      if (fsPathFromLocation() !== fsPath) return;
-      void recordRecentOpen(currentUrl());
-    };
-    record(); // the open itself (session restore's replaceState re-records with the restored params)
-    const onUrlChange = () => {
+    // The url waiting out the debounce. Captured at EVENT time, while the
+    // shell still shows this file — the unmount flush below runs after the
+    // location has already moved on, so reading currentUrl() there would
+    // either drop the update or record the next view's url.
+    let pending: string | null = null;
+    const flush = () => {
       window.clearTimeout(timer.current);
-      timer.current = window.setTimeout(record, 500);
+      if (pending !== null) {
+        void recordRecentOpen(pending);
+        pending = null;
+      }
+    };
+    // The open itself (session restore's replaceState re-records with the
+    // restored params). Guarded against a same-tick navigation race.
+    if (fsPathFromLocation() === fsPath) void recordRecentOpen(currentUrl());
+    const onUrlChange = () => {
+      if (fsPathFromLocation() !== fsPath) return; // navigated away — not ours
+      pending = currentUrl();
+      window.clearTimeout(timer.current);
+      timer.current = window.setTimeout(flush, 500);
     };
     window.addEventListener("fused:urlchange", onUrlChange);
     window.addEventListener("popstate", onUrlChange);
     return () => {
       window.removeEventListener("fused:urlchange", onUrlChange);
       window.removeEventListener("popstate", onUrlChange);
-      window.clearTimeout(timer.current);
+      // Navigating away inside the debounce window must not lose the last
+      // param state — flush the captured url instead of dropping it.
+      flush();
     };
     // fsPath + isDir identify the open, like useSessionTracking.
     // eslint-disable-next-line react-hooks/exhaustive-deps

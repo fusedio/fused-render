@@ -247,9 +247,9 @@ the session hooks — records the open once the stat confirms a file, then
 re-records the current url on every `fused:urlchange`/`popstate` (500 ms
 debounce), so the entry tracks live param changes. Display order is
 **stable-slot**, not raw MRU (RC-11): `displayRecents()` keeps session-scoped
-slots — a displayed file's row updates in place (rows keyed by fs path, and
-the store skips its notify when the visible slice is unchanged, so param
-churn moves and re-renders nothing); only a not-displayed file entering at
+slots — a displayed file's row updates in place (rows keyed by fs path; the
+store notifies on visible changes only, urls included so hrefs stay fresh,
+and param churn moves nothing); only a not-displayed file entering at
 the top shifts rows, and a vanished file's slot fills from the bottom.
 Sidebar rows are basename
 labels (D22); click = `navigateUrl` (query-preserving), arms nothing; the
