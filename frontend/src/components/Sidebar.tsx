@@ -1,6 +1,6 @@
 // Sidebar UI: brand, Fused-dir entry, bookmark rows with hover card + inline rename.
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { navigate, navigateUrl, currentUrl, rootedFsPath, VIEW_PREFIX } from "../lib/router";
+import { navigate, navigateUrl, currentUrl, fsPathFromLocation, rootedFsPath, VIEW_PREFIX } from "../lib/router";
 // Folder-as-tabs entry (TM-8): composeFolderTabsUrl builds the `/view/_tab` url
 // from a folder's children. This sidebar -> views/Tabs.jsx import is the
 // documented acyclic exception (Tabs.jsx never imports back), mirroring
@@ -737,7 +737,15 @@ export default function Sidebar({ config }: SidebarProps) {
                 // Keyed by fs path, not url: the url mutates on every live
                 // param write, and a key change would remount (flash) the row.
                 key={bookmarkFsPath(r.url)}
-                className={"sidebar-item recent-row" + (r.url === currentUrl() ? " active" : "")}
+                // Active = same FILE, not exact url (unlike bookmark rows,
+                // which deliberately exact-match — a bookmark is one specific
+                // param state, a recents entry is the file itself): the
+                // stored url lags live param writes by the record debounce,
+                // so an exact match would drop the highlight mid-edit.
+                className={
+                  "sidebar-item recent-row" +
+                  (bookmarkFsPath(r.url) === fsPathFromLocation() ? " active" : "")
+                }
                 href={r.url}
                 title={bookmarkFsPath(r.url)}
                 onClick={(e) => onRecentClick(e, r.url)}
