@@ -27,6 +27,7 @@ import {
   normDir,
   join,
   freeDuplicatePath,
+  freePastePath,
   copyToClipboard,
   clearClipboardIfDeleted,
   remapClipboardPath,
@@ -876,7 +877,12 @@ export default function Listing({ fsPath }: { fsPath: string }) {
           throw e;
         }
       } else {
-        await copyEntry(src, dst);
+        // Cross-folder copy: keep the name when free, dedupe to "… copy" when
+        // taken (Finder keep-both), instead of surfacing a 409.
+        const { is_dir } = await statPath(src);
+        const copyDst = await freePastePath(target, basename(src), is_dir);
+        await copyEntry(src, copyDst);
+        pendingSelectRef.current = copyDst;
       }
     }).finally(() => {
       pasteInFlight.current = false;

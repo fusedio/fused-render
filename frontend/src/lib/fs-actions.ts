@@ -77,6 +77,20 @@ export async function freeDuplicatePath(
   return join(dir, candidate);
 }
 
+// Destination path for pasting `name` into `parentDir`: keeps the original
+// name when free, otherwise falls back to the first free "… copy[/ n]" name
+// (same dedupe as Duplicate) so a paste never 409s on an existing entry.
+export async function freePastePath(parentDir: string, name: string, isDir: boolean): Promise<string> {
+  const dir = normDir(parentDir);
+  const { entries } = await listDir(dir);
+  const taken = new Set(entries.map((e) => e.name));
+  if (!taken.has(name)) return join(dir, name);
+  let i = 1;
+  let candidate = duplicateName(name, i, isDir);
+  while (taken.has(candidate)) candidate = duplicateName(name, ++i, isDir);
+  return join(dir, candidate);
+}
+
 // Write text to the system clipboard; resolves true on success, false when the
 // Clipboard API is missing or the write is denied. Callers decide whether to
 // toast (a failure stays silent — the path is still reachable via Reveal).
