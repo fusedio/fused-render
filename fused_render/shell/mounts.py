@@ -634,6 +634,46 @@ def is_mount_backed(path: str) -> bool:
     return os.path.abspath(path).startswith(root + os.sep)
 
 
+def rc_mtime_for(path: str) -> str | None:
+    """ModTime of a mount-backed file, answered by the rclone rcd rc API
+    (operations/stat) instead of the kernel NFS mount.
+
+    Background — the fs/events stat storm incident: a read-only S3-backed
+    rclone NFS mount died with the macOS "Server connections interrupted"
+    dialog. The /api/fs/events poller was calling os.stat() on every watched
+    path every 200ms, and each of those is a kernel NFS GETATTR. When the
+    attribute cache expires, that GETATTR forces rclone to re-list the
+    directory on S3; for a world-scale .zarr on a slow bucket the re-list
+    exceeds the macOS NFS client's timeo*retrans ceiling (~2min) and the
+    kernel declares the mount dead. Several open preview panes plus the
+    Listing view held ~5 such stat loops at once.
+
+    Asking the rcd directly over its loopback rc port removes the kernel from
+    the loop entirely: a slow answer here is just a slow HTTP response, never
+    a wedged mount. The remote (`fs`) and remote-relative path come from the
+    same _mount_for() translation the raw-proxy hot path uses.
+
+    Returns the RFC3339 ModTime string, or None when it cannot be determined
+    (path not under a mount, rcd unreachable, rc error/timeout, or missing
+    item). Callers MUST treat None as "unchanged" and MUST NOT fall back to
+    os.stat — that fallback is the exact GETATTR that killed the mount."""
+    m, rel = _mount_for(path)
+    if m is None:
+        return None
+    port = _live_rcd_port()
+    if port is None:
+        return None
+    try:
+        resp = _rc(port, "operations/stat",
+                   {"fs": m["remote"], "remote": rel}, timeout=10)
+    except RuntimeError:
+        return None
+    item = resp.get("item") if isinstance(resp, dict) else None
+    if not isinstance(item, dict):
+        return None
+    return item.get("ModTime") or None
+
+
 def serve_url_for(path: str) -> str | None:
     """Localhost HTTP URL serving `path`'s bytes, if it sits under a mount
     with a live HTTP serve (serves.json). /api/fs/raw proxies from this URL

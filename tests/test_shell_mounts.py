@@ -213,6 +213,52 @@ def test_unmount_calls_rc(home, rcd):
     assert body["mountPoint"] == mounts_mod.mountpoint(c)
 
 
+def test_rc_mtime_for_answers_from_rc_api_not_kernel(home, rcd, monkeypatch):
+    # The fs/events poller must learn a mount-backed file's mtime from the rcd
+    # rc API (operations/stat), never a kernel os.stat — that GETATTR is what
+    # killed a mount in the stat-storm incident. Verify it calls operations/stat
+    # with the mount's remote + relative path, returns ModTime, and never stats.
+    c = mounts_mod.add_mount("data", "remote:bucket/prefix")
+    mp = mounts_mod.mountpoint(c)
+    rcd.responses["operations/stat"] = {"item": {"ModTime": "2024-01-02T03:04:05Z"}}
+
+    import os as _os
+    calls = []
+    real = _os.stat
+    monkeypatch.setattr(mounts_mod.os, "stat",
+                        lambda p, *a, **k: (calls.append(_os.fspath(p)), real(p, *a, **k))[1])
+
+    path = _os.path.join(mp, "sub", "world.zarr")
+    assert mounts_mod.rc_mtime_for(path) == "2024-01-02T03:04:05Z"
+    [(_, body)] = [x for x in rcd.calls if x[0] == "operations/stat"]
+    assert body == {"fs": "remote:bucket/prefix", "remote": "sub/world.zarr"}
+    assert path not in calls
+
+
+def test_rc_mtime_for_none_when_rcd_down(home):
+    # rcd unreachable -> None ("unchanged"). Callers MUST NOT fall back to
+    # os.stat here (that reintroduces the mount-killing hazard).
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    path = mounts_mod.mountpoint(c) + "/f.parquet"
+    assert mounts_mod.rc_mtime_for(path) is None
+
+
+def test_rc_mtime_for_none_on_rc_error_or_missing(home, rcd):
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    path = mounts_mod.mountpoint(c) + "/f.parquet"
+    # rc error (stub returns 404 for unset methods) -> None.
+    assert mounts_mod.rc_mtime_for(path) is None
+    # item present but no ModTime, or item null -> None.
+    rcd.responses["operations/stat"] = {"item": {"Size": 1}}
+    assert mounts_mod.rc_mtime_for(path) is None
+    rcd.responses["operations/stat"] = {"item": None}
+    assert mounts_mod.rc_mtime_for(path) is None
+
+
+def test_rc_mtime_for_none_outside_any_mount(home, rcd):
+    assert mounts_mod.rc_mtime_for("/tmp/not/a/mount/f.parquet") is None
+
+
 def test_mounted_paths_merges_listmounts(home, rcd, monkeypatch):
     import os
 
