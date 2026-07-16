@@ -109,6 +109,21 @@ def test_get_hides_missing_files_without_deleting_them(tmp_path, monkeypatch):
     assert len(saved["entries"]) == 2
 
 
+def test_dedupe_replaces_dead_entry_for_same_path(tmp_path, monkeypatch):
+    # Dedupe identity is the decoded fs path, existence-blind: an entry whose
+    # file was deleted (and here recreated) must be REPLACED by a re-record of
+    # the same path, not left wasting a cap slot beside the fresh entry.
+    client, home = _client(tmp_path, monkeypatch)
+    f = _make_file(tmp_path, "reborn.csv")
+    client.post("/api/recents/open", json={"url": _view_url(f, "?x=1")}, headers=FUSED)
+    f.unlink()
+    f = _make_file(tmp_path, "reborn.csv")
+    client.post("/api/recents/open", json={"url": _view_url(f, "?x=2")}, headers=FUSED)
+
+    saved = json.loads((home / "recents.json").read_text(encoding="utf-8"))
+    assert [e["url"] for e in saved["entries"]] == [_view_url(f, "?x=2")]
+
+
 def test_entries_capped_at_20(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     for i in range(25):

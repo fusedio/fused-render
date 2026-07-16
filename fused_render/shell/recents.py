@@ -47,15 +47,18 @@ def _path() -> str:
     return os.path.join(storage.home_dir(), "recents.json")
 
 
-def _file_path_from_url(url: str) -> str | None:
-    """Resolve a shell url to the absolute path of the FILE it views, or None
-    when it is not a file view: non-/view/ urls, sentinel routes (any
-    `_`-prefixed top-level pathname — `_panel`, `_prefs`, `_templates`, ...),
-    directories, and paths that don't exist all resolve to None.
+def _decoded_fs_path(url: str) -> str | None:
+    """Decode a shell url to the absolute fs path it names, or None when it
+    cannot name a file at all: non-/view/ urls and sentinel routes (any
+    `_`-prefixed top-level pathname — `_panel`, `_prefs`, `_templates`, ...).
 
-    Mirrors bookmarks._fs_path_from_url but is deliberately stricter: recents
-    record files only (the sidebar rows are files, D22-style basename labels),
-    and only under /view/ (recording never happens in embed panes)."""
+    Deliberately does NOT check disk: this is the dedupe identity, and two
+    entries for the same path must dedupe even while the file is deleted
+    (existence matters only for GET filtering and for accepting a new record —
+    see _file_path_from_url).
+
+    Mirrors bookmarks._fs_path_from_url but is stricter: only under /view/
+    (recording never happens in embed panes)."""
     try:
         parts = urlsplit(url)
     except ValueError:
@@ -78,7 +81,15 @@ def _file_path_from_url(url: str) -> str | None:
         fs_path = joined
     else:
         fs_path = "/" + joined
-    if not os.path.isfile(fs_path):
+    return fs_path
+
+
+def _file_path_from_url(url: str) -> str | None:
+    """`_decoded_fs_path`, additionally requiring the path to be an existing
+    FILE right now (recents record files only, D22-style basename rows) —
+    the gate for accepting a record and for the GET response filter."""
+    fs_path = _decoded_fs_path(url)
+    if fs_path is None or not os.path.isfile(fs_path):
         return None
     return fs_path
 
@@ -123,11 +134,12 @@ def post_recent_open(
         # posture as POST /api/bookmarks/history for non-file urls.
         return {"recorded": False}
     data = _read()
-    # Dedupe by target fs path: re-opening (or a live param update on) an
-    # already-listed file moves it to the top and replaces its url.
+    # Dedupe by DECODED target fs path — existence-blind, so a dead entry for
+    # the same path (file deleted and recreated since) is replaced rather than
+    # left wasting a cap slot beside the fresh one.
     kept = [
         e for e in data["entries"]
-        if not (isinstance(e.get("url"), str) and _file_path_from_url(e["url"]) == fs_path)
+        if not (isinstance(e.get("url"), str) and _decoded_fs_path(e["url"]) == fs_path)
     ]
     entry = {"url": url, "openedAt": datetime.now(timezone.utc).isoformat()}
     data["entries"] = [entry, *kept][:ENTRY_CAP]
