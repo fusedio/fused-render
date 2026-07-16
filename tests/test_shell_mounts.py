@@ -860,7 +860,7 @@ def test_attach_starts_http_serve_and_writes_map(home, rcd):
 # read_only was purely an app-level guard; the rclone VFS still cached writes
 # and looped forever on S3 PutObject 403s. These assert the flag now reaches
 # both layers that accept bytes: the VFS (mount vfsOpt.ReadOnly + serve
-# vfs_read_only, which must agree or the shared VFS splits) and, on macOS, the
+# read_only, which must agree or the shared VFS splits) and, on macOS, the
 # kernel NFS mount ("rdonly" ExtraOption).
 
 
@@ -871,7 +871,7 @@ def test_read_only_mount_sets_vfs_readonly_and_serve_flag(home, rcd):
     assert body["vfsOpt"]["ReadOnly"] is True
     # The serve carries the matching flat flag so mount and serve share one VFS.
     [(_, serve)] = [x for x in rcd.calls if x[0] == "serve/start"]
-    assert serve["vfs_read_only"] == "true"
+    assert serve["read_only"] == "true"
 
 
 def test_read_write_mount_has_readonly_false_and_no_serve_flag(home, rcd):
@@ -881,7 +881,7 @@ def test_read_write_mount_has_readonly_false_and_no_serve_flag(home, rcd):
     # Explicit False, not omission, so it reads back matching the serve.
     assert body["vfsOpt"]["ReadOnly"] is False
     [(_, serve)] = [x for x in rcd.calls if x[0] == "serve/start"]
-    assert serve["vfs_read_only"] == "false"
+    assert serve["read_only"] == "false"
 
 
 @pytest.mark.skipif(mounts_mod.sys.platform != "darwin",
@@ -982,8 +982,8 @@ def test_attach_syncs_serves_when_already_mounted(home, rcd, monkeypatch):
 def test_sync_serves_reuses_existing_serve(home, rcd):
     c = mounts_mod.add_mount("data", "remote:bucket")
     # A serve whose flat params exactly match this (read_write) mount's expected
-    # option set — SERVE_VFS_OPT plus vfs_read_only=false — is reused, not
-    # restarted. (An adopted serve missing vfs_read_only reads as drift and is
+    # option set — SERVE_VFS_OPT plus read_only=false — is reused, not
+    # restarted. (An adopted serve missing read_only reads as drift and is
     # restarted; that rollout is covered by the stale-opts test below.)
     rcd.responses["serve/list"] = {"list": [{
         "id": "http-live", "addr": "127.0.0.1:41000",

@@ -157,7 +157,7 @@ NFS_MOUNT_OPT = {"ExtraOptions": ["timeo=600", "retrans=2"]}
 # is ever cached:
 #   - the VFS (ReadOnly), shared by the mount's vfsOpt and the HTTP serve's
 #     flat params — both must set it identically or rcd splits the VFS in two
-#     (see SERVE_VFS_OPT), so the serve carries vfs_read_only too;
+#     (see SERVE_VFS_OPT), so the serve carries read_only too;
 #   - the macOS kernel NFS mount (rdonly), so even Finder can't write.
 # read_write mounts get the explicit falses / no rdonly — the pre-incident
 # behavior, stated rather than left to defaults.
@@ -167,17 +167,22 @@ def _vfs_opt_for(m: dict) -> dict:
     """The mount's vfsOpt: the canonical VFS_OPT plus ReadOnly driven by the
     record's read_only flag. Explicit False (not omission) so a read_write
     mount reads back ReadOnly:false in vfs/stats and matches its serve's
-    vfs_read_only=false — the two option sets must agree exactly for the mount
+    read_only=false — the two option sets must agree exactly for the mount
     and serve to share one VFS."""
     return {**VFS_OPT, "ReadOnly": bool(m.get("read_only"))}
 
 
 def _serve_vfs_opt_for(m: dict) -> dict:
     """The HTTP serve's flat vfs params for this mount: SERVE_VFS_OPT plus
-    vfs_read_only, the serve-side spelling of the mount's vfsOpt.ReadOnly.
-    Stringified like the rest of SERVE_VFS_OPT because serve/list echoes params
-    back as strings, and sync_serves' drift check compares against that echo."""
-    return {**SERVE_VFS_OPT, "vfs_read_only": "true" if m.get("read_only") else "false"}
+    read_only, the serve-side spelling of the mount's vfsOpt.ReadOnly (the CLI
+    flag is --read-only, NOT --vfs-read-only — an unknown rc param is silently
+    ignored, and an ignored one here leaves the serve's VFS at ReadOnly:false,
+    which both defeats the write guard AND splits the mount/serve VFS in two;
+    verified live against rcd: read_only joins the mount's VFS, vfs_read_only
+    forked a second instance per remote). Stringified like the rest of
+    SERVE_VFS_OPT because serve/list echoes params back as strings, and
+    sync_serves' drift check compares against that echo."""
+    return {**SERVE_VFS_OPT, "read_only": "true" if m.get("read_only") else "false"}
 
 
 def _nfs_mount_opt(m: dict) -> dict:
@@ -884,7 +889,7 @@ def _sync_serves_locked() -> None:
             # Stale cache options (serves outlive server runs, so a config
             # change here never reaches an already-running serve otherwise).
             # This now also fires when a mount's read_only flips: the serve's
-            # vfs_read_only must track the mount's vfsOpt.ReadOnly or the two
+            # read_only must track the mount's vfsOpt.ReadOnly or the two
             # stop sharing one VFS (INCIDENT 2026-07-16).
             if serve["id"]:
                 try:
@@ -963,7 +968,7 @@ def attach_mount(m: dict) -> str | None:
         # for a read-only mount (see NFS_MOUNT_OPT / _nfs_mount_opt). mountOpt is
         # the NFS transport layer, not a vfs option, so it does NOT affect the
         # (fs, vfsOpt) VFS-reuse key — the mount still shares its VFS with the
-        # serve (whose vfs_read_only matches the vfsOpt.ReadOnly here).
+        # serve (whose read_only matches the vfsOpt.ReadOnly here).
         if sys.platform == "darwin":
             params["mountOpt"] = _nfs_mount_opt(m)
         _rc(port, "mount/mount", params, timeout=60)
