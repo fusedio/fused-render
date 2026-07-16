@@ -65,10 +65,24 @@ export interface StatResult {
   template_error?: string;
 }
 
+// Error thrown by the shared fetch helpers, carrying the HTTP status alongside
+// the server's message. `.message` is exactly what it was before (the server's
+// `error` string, else `HTTP <status>`), so callers that only read `.message`
+// are unaffected; the extra `.status` lets client-side humanizers (lib/
+// fs-actions friendlyFsError) branch on e.g. 404 without re-parsing the text.
+export interface HttpError extends Error {
+  status?: number;
+}
+function httpError(data: { error?: string } | null, status: number): HttpError {
+  const err = new Error((data && data.error) || `HTTP ${status}`) as HttpError;
+  err.status = status;
+  return err;
+}
+
 async function getJson<T>(url: string, headers?: Record<string, string>): Promise<T> {
   const res = await fetch(url, headers ? { headers } : undefined);
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (!res.ok) throw httpError(data, res.status);
   return data as T;
 }
 
@@ -82,7 +96,7 @@ async function mutateJson<T>(method: "PUT" | "POST", url: string, body: unknown)
     body: JSON.stringify(body),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (!res.ok) throw httpError(data, res.status);
   return data as T;
 }
 
@@ -564,6 +578,55 @@ export function putDeployEnabled(enabled: boolean): Promise<Prefs> {
 // Reveal a path in the OS file manager (same POST the breadcrumb button uses).
 export function revealPath(fsPath: string): Promise<void> {
   return postJson<unknown>("/api/fs/reveal", { path: fsPath }).then(() => undefined);
+}
+
+// -- Filesystem mutations (fused_render/server.py; X-Fused write-guard) -------
+// Create / delete / rename / copy entries, driven by the explorer's context
+// menu. All share /api/fs/write's error contract, surfaced as the thrown
+// Error's message: 400 (bad/relative path), 403 ("readonly" target), 404
+// (missing src), 409 ("conflict" — destination exists, or a non-empty dir
+// deleted without recursive).
+
+// Create (or overwrite) a plain file. Used for "New File…" with empty content;
+// the parent directory must already exist (the server does not mkdir -p).
+// With create=true the write refuses (409 "conflict") when the path already
+// exists, so "New File" can't silently clobber an existing file.
+export function writeFile(path: string, content = "", create = false): Promise<StatResult> {
+  return postJson<StatResult>("/api/fs/write", { path, content, create });
+}
+
+// Create a single directory (no mkdir -p — a missing parent is a 400).
+export function mkdir(path: string): Promise<StatResult> {
+  return postJson<StatResult>("/api/fs/mkdir", { path });
+}
+
+// Remove a file or directory. A non-empty directory needs recursive=true (the
+// context menu passes it only after the confirm dialog spells that out).
+// With trash=true the entry is moved to the user's Trash instead (macOS only);
+// where that's unsupported the server replies 501 "trash unsupported" and the
+// caller falls back to a hard delete.
+export function deleteEntry(
+  path: string,
+  recursive = false,
+  trash = false
+): Promise<{ deleted: string; trashed?: boolean }> {
+  return postJson<{ deleted: string; trashed?: boolean }>("/api/fs/delete", {
+    path,
+    recursive,
+    trash,
+  });
+}
+
+// Move/rename src -> dst (also the paste-of-a-cut move). An existing dst is a
+// 409 unless overwrite=true.
+export function renameEntry(src: string, dst: string, overwrite = false): Promise<StatResult> {
+  return postJson<StatResult>("/api/fs/rename", { src, dst, overwrite });
+}
+
+// Copy src -> dst (paste-of-a-copy, and Duplicate). Same 409-on-existing-dst
+// rule as rename; a directory copied into itself/a descendant is a 400.
+export function copyEntry(src: string, dst: string, overwrite = false): Promise<StatResult> {
+  return postJson<StatResult>("/api/fs/copy", { src, dst, overwrite });
 }
 
 // -- Mounts (shell/mounts.py) ------------------------------------------

@@ -94,6 +94,22 @@ def test_write_creates_new_file_in_writable_dir(tmp_path):
     assert out["writable"] is True
 
 
+# ----------------------------------------------------- create guard (New File)
+
+def test_write_create_conflicts_on_existing_file(target):
+    resp = _write(target, "clobbered", create=True)
+    assert _status(resp) == 409
+    assert _data(resp)["error"] == "conflict"
+    assert target.read_text() == "original"  # bytes untouched
+
+
+def test_write_create_ok_for_new_file(tmp_path):
+    f = tmp_path / "fresh.txt"
+    out = _data(_write(f, "hi", create=True))
+    assert f.read_text() == "hi"
+    assert out["writable"] is True
+
+
 # ---------------------------------------------------- read-only remote mounts
 # Under a mount, os.access(W_OK) lies: with CacheMode=full a kernel write
 # lands in the local VFS cache and only fails at async upload. The mount
