@@ -442,6 +442,59 @@ def test_list_s3_overall_budget_returns_resumable_page(home, rcd, tmp_path, monk
     assert len(calls) == 1                      # stopped after one page
 
 
+def test_list_s3_midlisting_failure_returns_partial(home, rcd, tmp_path, monkeypatch, fresh_cfg_cache):
+    # A page failure AFTER at least one page returns the accumulated entries
+    # with the failed page's token as the resume cursor — not a 503, and not
+    # an rc-restart that would discard everything fetched (the last page
+    # routinely times out when the per-page timeout shrinks to the budget).
+    rcd.responses["config/get"] = ANON_S3
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    calls = []
+
+    def fake(path, *, max_keys, continuation=None, timeout=None):
+        calls.append(continuation)
+        if len(calls) == 2:
+            raise mounts_mod.S3ListError("read timed out")
+        return ([_entry(f"p{len(calls)}_{i}.txt", size=1) for i in range(10)], "TOK1")
+
+    monkeypatch.setattr(mounts_mod, "s3_list_page", fake)
+    resp = _client(tmp_path).get(
+        "/api/fs/list", params={"path": mounts_mod.mountpoint(c)})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["entries"]) == 10
+    assert data["truncated"] is True
+    assert data["cursor"] == "TOK1"           # resume from the FAILED page
+    assert calls == [None, "TOK1"]            # no rc fallback, no third try
+
+
+def test_list_s3_budget_never_passes_nonpositive_timeout(home, rcd, tmp_path, monkeypatch, fresh_cfg_cache):
+    # Bugbot: post-page budget check can pass with ~nothing left; the next
+    # page must not reach urlopen with a timeout <= 0 (ValueError, not
+    # S3ListError -> unhandled 500). First page always runs (progress
+    # guarantee); later pages stop cleanly when the remainder hits zero.
+    rcd.responses["config/get"] = ANON_S3
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    seen_timeouts = []
+
+    def fake(path, *, max_keys, continuation=None, timeout=None):
+        seen_timeouts.append(timeout)
+        if timeout is not None and timeout <= 0:
+            raise ValueError("timeout must be positive")  # what urlopen does
+        return ([_entry(f"g{len(seen_timeouts)}_{i}.txt", size=1)
+                 for i in range(10)], "NEXT")
+
+    monkeypatch.setattr(mounts_mod, "s3_list_page", fake)
+    monkeypatch.setattr(server, "S3_LIST_OVERALL_TIMEOUT_S", 1e-9)
+    resp = _client(tmp_path).get(
+        "/api/fs/list", params={"path": mounts_mod.mountpoint(c)})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["entries"]) == 10          # exactly the guaranteed page
+    assert data["truncated"] is True and data["cursor"] == "NEXT"
+    assert seen_timeouts[0] is None            # first page: full page timeout
+
+
 def test_list_empty_rc_listing_on_broken_mount_returns_503(home, rcd, tmp_path):
     # 2.3: rcd alive but the kernel mount gone -> rc lists empty; an empty
     # listing under a broken mount must 503, not render as an empty folder.

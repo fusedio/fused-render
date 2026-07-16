@@ -159,9 +159,11 @@ WALK_RC_LIST_TIMEOUT_S = 10.0
 # page, but page COUNT is unbounded — a prefix that returns few keys per page
 # could run many pages and stall a request for minutes. On budget exhaustion the
 # accumulator stops and returns what it has with the last continuation token, a
-# valid resumable page (truncated=True, cursor set), NOT an error. Matches
-# mounts.RC_LIST_TIMEOUT_S. Module-level so tests can shrink it.
-S3_LIST_OVERALL_TIMEOUT_S = 20.0
+# valid resumable page (truncated=True, cursor set), NOT an error. Kept well
+# under the rc timeouts because this is FIRST-PAINT latency: on a slow bucket
+# (mur-sst pages run ~2s each) the user waits this long for the partial listing,
+# and Load more resumes from the cursor. Module-level so tests can shrink it.
+S3_LIST_OVERALL_TIMEOUT_S = 8.0
 # Max entries per NDJSON batch line in the streamed walk — a framing CAP, not
 # the streaming lever (WALK_FLUSH_INTERVAL_S below is). Kept large so a big
 # local walk emits few lines; the timer guarantees timely flushing regardless.
@@ -414,8 +416,14 @@ def _accumulate_s3_pages(path, cursor, max_entries, *,
 
     Returns (raw_entries, next_token). next_token is non-None exactly when more
     entries remain (cap hit, budget hit with more pending, or S3 truncated) —
-    i.e. the listing is partial. Raises shell_mounts.S3ListError on any page
-    failure so the caller can fall back to the rc route."""
+    i.e. the listing is partial. Raises shell_mounts.S3ListError only when the
+    FIRST page fails (nothing fetched, so the rc fallback is worth trying); a
+    failure after at least one page returns what was accumulated with the
+    failed page's continuation token as the resume point — on a slow bucket
+    the per-page timeout shrinks toward the budget's deadline and the last
+    page routinely times out, and discarding thousands of fetched entries to
+    re-list via rc (which can't paginate at all) would turn a partial success
+    into a guaranteed 503."""
     from fused_render.shell import mounts as shell_mounts
 
     entries: list = []
@@ -426,11 +434,26 @@ def _accumulate_s3_pages(path, cursor, max_entries, *,
         if remaining <= 0:
             break
         t = page_timeout
-        if deadline is not None:
+        # The first page always runs with the full page timeout (the progress
+        # guarantee — even a zero budget returns one page). Later pages shrink
+        # to the budget's remainder, and stop before it reaches zero: a
+        # non-positive timeout would hit urlopen as a ValueError, not an
+        # S3ListError (Bugbot), and token is already a valid resume point.
+        if deadline is not None and entries:
             left = deadline - time.monotonic()
+            if left <= 0:
+                break
             t = left if t is None else min(t, left)
-        page, token = shell_mounts.s3_list_page(
-            path, max_keys=min(1000, remaining), continuation=token, timeout=t)
+        try:
+            page, next_token = shell_mounts.s3_list_page(
+                path, max_keys=min(1000, remaining), continuation=token, timeout=t)
+        except shell_mounts.S3ListError:
+            if not entries:
+                raise
+            logger.warning("S3 page for %r failed mid-listing; returning %d "
+                           "accumulated entries as partial", path, len(entries))
+            return entries, token
+        token = next_token
         entries.extend(page)
         if token is None:
             break
