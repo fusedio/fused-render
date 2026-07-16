@@ -278,7 +278,7 @@ def test_list_non_s3_mount_never_hits_s3(home, rcd, tmp_path, monkeypatch, fresh
 def test_list_s3_direct_multipage_and_cursor(home, rcd, tmp_path, monkeypatch, fresh_cfg_cache):
     rcd.responses["config/get"] = ANON_S3
     c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
-    monkeypatch.setattr(server, "LIST_MAX_ENTRIES", 2000)
+    monkeypatch.setattr(server, "S3_LIST_MAX_ENTRIES", 2000)
     seen = []
 
     def fake(path, *, max_keys, continuation=None, timeout=None):
@@ -397,11 +397,11 @@ def test_list_s3_first_page_failure_still_falls_back_to_rc(home, rcd, tmp_path, 
 
 def test_list_s3_cap_never_overshoots(home, rcd, tmp_path, monkeypatch, fresh_cfg_cache):
     # 1.4: each page requests only min(1000, remaining) keys, so the response
-    # never exceeds LIST_MAX_ENTRIES (a whole extra 1000-key page could push a
-    # 1500 cap to 2000). cap=1500 -> page1 asks 1000, page2 asks 500.
+    # never exceeds S3_LIST_MAX_ENTRIES (a whole extra 1000-key page could push
+    # a 1500 cap to 2000). cap=1500 -> page1 asks 1000, page2 asks 500.
     rcd.responses["config/get"] = ANON_S3
     c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
-    monkeypatch.setattr(server, "LIST_MAX_ENTRIES", 1500)
+    monkeypatch.setattr(server, "S3_LIST_MAX_ENTRIES", 1500)
     asked = []
 
     def fake(path, *, max_keys, continuation=None, timeout=None):
@@ -425,7 +425,7 @@ def test_list_s3_overall_budget_returns_resumable_page(home, rcd, tmp_path, monk
     # page (truncated True + cursor), NOT an error.
     rcd.responses["config/get"] = ANON_S3
     c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
-    monkeypatch.setattr(server, "LIST_MAX_ENTRIES", 100_000)  # cap won't bite
+    monkeypatch.setattr(server, "S3_LIST_MAX_ENTRIES", 100_000)  # cap won't bite
     monkeypatch.setattr(server, "S3_LIST_OVERALL_TIMEOUT_S", 0.0)  # budget bites after page 1
     calls = []
 

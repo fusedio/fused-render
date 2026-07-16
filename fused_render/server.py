@@ -142,6 +142,12 @@ WALK_MAX_ENTRIES = 200_000
 # `cursor`) tells the client the listing is partial. Module-level so tests can
 # shrink it.
 LIST_MAX_ENTRIES = 10_000
+# Per-request cap for the RESUMABLE S3-direct listing route. Deliberately one
+# S3 page: each page runs seconds on a slow bucket (mur-sst ~2s), so a bigger
+# first paint just multiplies the wait, and unlike the local/rc routes the
+# client can always fetch the next 1000 via the cursor (Load more). Module-
+# level so tests can shrink it.
+S3_LIST_MAX_ENTRIES = 1_000
 # Much smaller cap when the walked path sits under a mount mountpoint
 # (shell/mounts.py): there every directory listing is a remote LIST call
 # (S3 etc.), so an unbounded walk over a bucket is a slow, potentially paid
@@ -466,12 +472,14 @@ def _accumulate_s3_pages(path, cursor, max_entries, *,
 
 def _list_s3_direct(path, cursor):
     """Accumulate S3 ListObjectsV2 pages for a mount-backed dir on an anonymous
-    S3 remote into sorted /api/fs/list items, up to LIST_MAX_ENTRIES within an
-    overall time budget. Returns (entries, next_token); a non-None token means
-    the listing is partial and resumable. Raises shell_mounts.S3ListError on any
-    page failure so the caller can fall back to the rc route."""
+    S3 remote into sorted /api/fs/list items, up to S3_LIST_MAX_ENTRIES within
+    an overall time budget — a deliberately small per-request cap, since this
+    route is resumable (Load more pages in the rest). Returns (entries,
+    next_token); a non-None token means the listing is partial and resumable.
+    Raises shell_mounts.S3ListError on any page failure so the caller can fall
+    back to the rc route."""
     raw, token = _accumulate_s3_pages(
-        path, cursor, LIST_MAX_ENTRIES,
+        path, cursor, S3_LIST_MAX_ENTRIES,
         overall_timeout=S3_LIST_OVERALL_TIMEOUT_S)
     # Sorted over what was fetched, not the whole directory — a truncated
     # listing is honestly partial (see the endpoint's sort caveat). Skip any
