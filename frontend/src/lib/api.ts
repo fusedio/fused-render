@@ -575,10 +575,14 @@ export interface Mount {
   name: string;
   remote: string;
   mountpoint: string;
-  // Health, not just presence: "disconnected" = a kernel mount is (or was)
-  // there but its rclone daemon no longer serves it — listings show stale or
-  // empty data. Repaired via reconnectMount (force unmount + fresh mount).
-  state: "mounted" | "disconnected" | "unmounted";
+  // Health, not just presence:
+  //  - "disconnected" = a kernel mount is (or was) there but its rclone daemon
+  //    no longer serves it — listings show stale or empty data.
+  //  - "stale" = the split-brain from the 2026-07-16 incident: rclone still
+  //    lists the mount but the kernel dropped it (e.g. the user hit
+  //    "Disconnect" on the macOS "Server connections interrupted" dialog).
+  // Both are repaired via reconnectMount (force unmount + fresh mount).
+  state: "mounted" | "stale" | "disconnected" | "unmounted";
   mounted: boolean; // state === "mounted"
   // The remote rejects writes (anonymous S3, an http backend, …), detected at
   // attach time. Files under the mountpoint stat as writable:false, so
