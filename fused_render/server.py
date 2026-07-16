@@ -51,6 +51,7 @@ from fused_render.shell import prefs as shell_prefs
 from fused_render.shell import storage
 from fused_render.shell.bookmarks import router as bookmarks_router
 from fused_render.shell.prefs import router as prefs_router
+from fused_render.shell.recents import router as recents_router
 from fused_render.shell.seed import fused_dir
 from fused_render.shell.storage import home_dir
 
@@ -1534,9 +1535,10 @@ def create_app(start_dir: str) -> FastAPI:
         return FileResponse(shell_path)
 
     # Shell-specific state backends live in fused_render/shell/ (bookmarks,
-    # prefs), kept out of this module's fs/render internals.
+    # prefs, recents), kept out of this module's fs/render internals.
     app.include_router(bookmarks_router)
     app.include_router(prefs_router)
+    app.include_router(recents_router)
     # Mounts: remote storage mounted as local paths via rclone rcd
     # (shell/mounts.py). startup() remounts every mount in a background
     # thread; mounts deliberately survive server restarts.
