@@ -24,6 +24,8 @@ import {
 import type { FsEntry, WalkEntry } from "../lib/api";
 import {
   dirname,
+  normDir,
+  join,
   freeDuplicatePath,
   copyToClipboard,
   clearClipboardIfDeleted,
@@ -31,6 +33,7 @@ import {
   resolveOpenWithModes,
   buildOpenWithItems,
 } from "../lib/fs-actions";
+import { acquireOverlay, releaseOverlay, isOverlayOpen } from "../lib/ui-overlay";
 import { formatSize, formatMtime, basename } from "../lib/format";
 import { fuzzyMatch, highlightSegments } from "../lib/fuzzy";
 import { iconForEntry } from "../components/FileIcons";
@@ -54,7 +57,7 @@ interface RowCtx {
 // The target folder for a New File / Paste against a row: INTO a directory row,
 // or the PARENT of a file row (Finder's behaviour).
 function targetDirOf(row: RowCtx): string {
-  return row.isDir ? row.path : row.parentDir;
+  return normDir(row.isDir ? row.path : row.parentDir);
 }
 
 // One open modal: a text prompt (New File/Folder, Rename) or a confirm (Delete).
@@ -318,6 +321,17 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   // sits (the dialog's own containment covers focus; this covers the rest).
   const overlayOpenRef = useRef(false);
   overlayOpenRef.current = menu !== null || dialog !== null;
+  // Also publish this view's overlay state to the shared registry (lib/
+  // ui-overlay) so OTHER views back off. When a directory is opened in Preview,
+  // that Preview's header menu/dialogs live in separate state; this embedded
+  // Listing's document-level handlers must not fire behind them (and vice
+  // versa). acquire on open, release on close — and on unmount, so a nav-away
+  // while the menu is open can't leak a held count.
+  useEffect(() => {
+    if (!overlayOpenRef.current) return;
+    acquireOverlay();
+    return () => releaseOverlay();
+  }, [menu, dialog]);
   // A path the selection should jump to once it appears in the reloaded rows
   // (a rename/duplicate target — its row doesn't exist until the refetch lands).
   const pendingSelectRef = useRef<string | null>(null);
@@ -339,8 +353,10 @@ export default function Listing({ fsPath }: { fsPath: string }) {
       // move through the candidate list — never repurpose them for navigation.
       if (e.isComposing) return;
       // An open context menu / dialog owns the keyboard: don't let Enter open a
-      // row behind it (the dialog handles its own Enter/Escape).
-      if (overlayOpenRef.current) return;
+      // row behind it (the dialog handles its own Enter/Escape). isOverlayOpen()
+      // also covers an overlay owned by a HOSTING view (Preview's header menu
+      // when this Listing is embedded), which overlayOpenRef alone can't see.
+      if (overlayOpenRef.current || isOverlayOpen()) return;
       const el = document.activeElement as HTMLElement | null;
       const inSearch = el === searchInputRef.current;
       // Only drive navigation from the search box or when nothing in particular
@@ -820,8 +836,9 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   const doPaste = (dir: string) => {
     const clip = getClipboard();
     if (!clip || pasteInFlight.current) return;
+    const target = normDir(dir); // "" (root) → "/", and join avoids "//name"
     const { path: src, op } = clip;
-    const dst = dir + "/" + basename(src);
+    const dst = join(target, basename(src));
     // Same-folder paste (dst would collide with the source), matching Finder:
     //   • CUT into its own folder is a no-op — the backend rename would 409 on
     //     dst === src, so just drop the cut clipboard (nothing to move).
@@ -835,7 +852,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
       pasteInFlight.current = true;
       run(async () => {
         const { is_dir } = await statPath(src);
-        const copyDst = await freeDuplicatePath(dir, basename(src), is_dir);
+        const copyDst = await freeDuplicatePath(target, basename(src), is_dir);
         await copyEntry(src, copyDst);
         pendingSelectRef.current = copyDst; // move selection onto the new copy
       }).finally(() => {
@@ -898,7 +915,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
         if (rejectName(name)) return;
         // create=true: refuse (409 "conflict", surfaced as an error toast) if a
         // file with this name already exists, so New File never clobbers it.
-        run(() => writeFile(dir + "/" + name, "", true));
+        run(() => writeFile(join(normDir(dir), name), "", true));
       },
     });
 
@@ -910,7 +927,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
       confirmLabel: "Create",
       onConfirm: (name) => {
         if (rejectName(name)) return;
-        run(() => mkdir(dir + "/" + name));
+        run(() => mkdir(join(normDir(dir), name)));
       },
     });
 
@@ -924,7 +941,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
       onConfirm: (name) => {
         if (name === row.name) return;
         if (rejectName(name)) return;
-        const dst = row.parentDir + "/" + name;
+        const dst = join(normDir(row.parentDir), name);
         run(async () => {
           await renameEntry(row.path, dst);
           // Re-anchor onto the new name so the reloaded listing keeps this row
@@ -1038,9 +1055,10 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   shortcutRef.current = (e: KeyboardEvent) => {
     if (e.isComposing) return;
     // Same hard guard as the nav handler: while a context menu or dialog is
-    // open, file-op shortcuts (Cmd+Backspace trash, Cmd+X cut, …) must not fire
-    // on the row behind it.
-    if (overlayOpenRef.current) return;
+    // open (in this view OR a hosting one, e.g. Preview's header menu with this
+    // Listing embedded), file-op shortcuts (Cmd+Backspace trash, Cmd+X cut, …)
+    // must not fire on the row behind it.
+    if (overlayOpenRef.current || isOverlayOpen()) return;
     const el = document.activeElement as HTMLElement | null;
     const inSearch = el === searchInputRef.current;
     const navActive = inSearch || !el || el === document.body || el === document.documentElement;

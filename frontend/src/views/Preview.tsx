@@ -19,12 +19,14 @@ import { navigate, navigateUrl, urlForFsPath } from "../lib/router";
 import { formatSize, formatMtime, basename } from "../lib/format";
 import {
   dirname,
+  join,
   freeDuplicatePath,
   copyToClipboard,
   clearClipboardIfDeleted,
   trashEntry,
   buildOpenWithItems,
 } from "../lib/fs-actions";
+import { acquireOverlay, releaseOverlay } from "../lib/ui-overlay";
 import { setClipboard } from "../lib/fs-clipboard";
 import ModeSwitcher, { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "../components/ModeSwitcher";
 import ContextMenu, { type MenuEntry, type MenuItem } from "../components/ContextMenu";
@@ -83,6 +85,19 @@ function usePreviewFileMenu(
     const t = setTimeout(() => setToast(null), 6000);
     return () => clearTimeout(t);
   }, [toast]);
+
+  // Publish this header menu's overlay state to the shared registry (lib/
+  // ui-overlay). A directory opened in Preview embeds a Listing whose own
+  // document-level keyboard handlers would otherwise fire (Cmd+Backspace,
+  // Cmd+X, …) on a row behind this preview menu/dialog — the embedded Listing
+  // can't see this view's local state, so the shared count is what makes it
+  // back off. Release on close and on unmount so no held count leaks.
+  const overlayOpen = menu !== null || dialog !== null;
+  useEffect(() => {
+    if (!overlayOpen) return;
+    acquireOverlay();
+    return () => releaseOverlay();
+  }, [overlayOpen]);
 
   const parent = dirname(fsPath);
 
@@ -146,7 +161,7 @@ function usePreviewFileMenu(
           setToast({ msg: err, tone: "error" });
           return;
         }
-        const dst = parent + "/" + name;
+        const dst = join(parent, name);
         renameEntry(fsPath, dst).then(
           () => {
             // Navigate to the renamed file, preserving the current query

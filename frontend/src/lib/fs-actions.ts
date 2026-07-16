@@ -20,6 +20,21 @@ export function dirname(p: string): string {
   return i <= 0 ? "/" : norm.slice(0, i);
 }
 
+// Canonical directory form. A listing's `base` is `fsPath` with the trailing
+// "/" stripped, so at the filesystem root it collapses to "" — the API rejects
+// "" as a directory path and only accidentally survives string joins. Treat ""
+// as "/" wherever a parent/target dir is derived.
+export function normDir(dir: string): string {
+  return dir === "" ? "/" : dir;
+}
+
+// Join a directory and a child name into a path, root-safe: at the filesystem
+// root the dir is "/", where a plain `dir + "/" + name` would yield "//name".
+// Everywhere else it's the ordinary concat.
+export function join(dir: string, name: string): string {
+  return dir === "/" ? "/" + name : dir + "/" + name;
+}
+
 // Finder-style duplicate name: "report.csv" -> "report copy.csv" ->
 // "report copy 2.csv". Directories (and extension-less / dotfile names) keep
 // the whole name and just gain the " copy" suffix.
@@ -38,12 +53,13 @@ export async function freeDuplicatePath(
   name: string,
   isDir: boolean
 ): Promise<string> {
-  const { entries } = await listDir(parentDir);
+  const dir = normDir(parentDir); // "" (root) would be rejected by listDir
+  const { entries } = await listDir(dir);
   const taken = new Set(entries.map((e) => e.name));
   let i = 1;
   let candidate = duplicateName(name, i, isDir);
   while (taken.has(candidate)) candidate = duplicateName(name, ++i, isDir);
-  return parentDir + "/" + candidate;
+  return join(dir, candidate);
 }
 
 // Write text to the system clipboard; resolves true on success, false when the
