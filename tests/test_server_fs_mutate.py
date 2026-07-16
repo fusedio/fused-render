@@ -258,6 +258,21 @@ def test_rename_relative_dst_400(tmp_path):
     assert _status(RENAME({"src": str(src), "dst": "rel"}, x_fused="1")) == 400
 
 
+def test_rename_readonly_src_403(tmp_path):
+    # A move deletes the source, so a readonly source must refuse the same way
+    # delete does — otherwise rename lifts entries off a read-only location.
+    src = tmp_path / "a.txt"
+    src.write_text("a")
+    os.chmod(src, stat.S_IRUSR)
+    try:
+        resp = RENAME({"src": str(src), "dst": str(tmp_path / "b.txt")}, x_fused="1")
+        assert _status(resp) == 403
+        assert _data(resp)["error"] == "readonly"
+        assert src.exists()
+    finally:
+        os.chmod(src, stat.S_IRWXU)
+
+
 def test_rename_missing_dst_parent_400(tmp_path):
     # A missing dst parent is a 400 (not the misleading "readonly" 403 that
     # _writable would otherwise produce for an outside/unwritable ancestor).

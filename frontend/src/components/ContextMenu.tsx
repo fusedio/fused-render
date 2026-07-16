@@ -146,6 +146,14 @@ export default function ContextMenu({ x, y, items, onClose }: ContextMenuProps) 
     };
   }, [onClose]);
 
+  // Invalidate any in-flight submenu load on unmount so a late resolve can't
+  // setState on a closed menu.
+  useEffect(() => {
+    return () => {
+      loadToken.current++;
+    };
+  }, []);
+
   const enterItem = (idx: number, item: MenuItem) => {
     if (!item.submenu) {
       setOpenSub(null);

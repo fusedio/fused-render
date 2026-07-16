@@ -868,6 +868,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
       if (op === "cut") {
         try {
           await renameEntry(src, dst);
+          pendingSelectRef.current = dst; // re-anchor if dst lands in this view
         } catch (e) {
           // The move was rejected (e.g. a 409/403); the pre-clear above dropped
           // the clipboard, so re-set it to the same cut and let run() toast the
@@ -1079,6 +1080,9 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     const row = sel ? rowCtxByPath.get(sel) : undefined;
     const mod = e.metaKey || e.ctrlKey;
     const key = e.key.toLowerCase();
+    // With focus in the search box, Cmd+C/X/V must keep their native text
+    // clipboard meaning — only the non-text shortcuts stay live there.
+    if (inSearch && mod && (key === "c" || key === "x" || key === "v")) return;
     if (mod && key === "c") {
       if (!row) return;
       e.preventDefault();

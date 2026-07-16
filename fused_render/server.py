@@ -1317,7 +1317,9 @@ def _fs_rename(body: dict, x_fused: str | None):
     dst_exists = os.path.exists(dst)
     if dst_exists and not overwrite:
         return JSONResponse({"error": "conflict"}, status_code=409)
-    if not _writable(dst):
+    # A move deletes the source, so the source must be writable too — otherwise
+    # a rename could lift entries off a read-only mount (delete/write refuse).
+    if not _writable(src) or not _writable(dst):
         return JSONResponse({"error": "readonly"}, status_code=403)
 
     try:
