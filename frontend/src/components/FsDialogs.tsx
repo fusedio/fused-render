@@ -149,6 +149,16 @@ export function ConfirmDialog({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const confirmRef = useRef<HTMLButtonElement | null>(null);
+
+  // Move focus into the modal on open so the confirm button owns Enter/Space —
+  // otherwise focus stays on document.body and the listing's document-level
+  // handlers (Enter to open a row, Cmd+Backspace to trash) fire behind the
+  // dialog. Escape is contained by Overlay's capture-phase listener.
+  useEffect(() => {
+    confirmRef.current?.focus();
+  }, []);
+
   return (
     <Overlay onCancel={onCancel}>
       <div className="deploy-head">
@@ -157,13 +167,25 @@ export function ConfirmDialog({
           ✕
         </button>
       </div>
-      <div className="deploy-body">
+      <div
+        className="deploy-body"
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            // Contain the confirming Enter so it can't also reach the listing's
+            // document-level nav handler (mirrors PromptDialog).
+            e.stopPropagation();
+            onConfirm();
+          }
+        }}
+      >
         <p>{message}</p>
         <div className="fs-dialog-actions">
           <button type="button" onClick={onCancel}>
             Cancel
           </button>
           <button
+            ref={confirmRef}
             type="button"
             className={danger ? "deploy-danger" : "deploy-primary"}
             onClick={onConfirm}

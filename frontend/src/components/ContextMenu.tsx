@@ -125,15 +125,22 @@ export default function ContextMenu({ x, y, items, onClose }: ContextMenuProps) 
         onClose();
       }
     };
+    // Captured so a scroll of the .listing-scroll pane (which doesn't bubble to
+    // window) still dismisses. But ignore scrolls originating inside the menu
+    // itself — a scrollable submenu shouldn't close the menu it lives in.
+    const onScroll = (e: Event) => {
+      if (rootRef.current?.contains(e.target as Node)) return;
+      onClose();
+    };
     document.addEventListener("pointerdown", onDown, true);
     document.addEventListener("keydown", onKey, true);
-    window.addEventListener("scroll", onClose, true);
+    window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", onClose);
     window.addEventListener("blur", onClose);
     return () => {
       document.removeEventListener("pointerdown", onDown, true);
       document.removeEventListener("keydown", onKey, true);
-      window.removeEventListener("scroll", onClose, true);
+      window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", onClose);
       window.removeEventListener("blur", onClose);
     };

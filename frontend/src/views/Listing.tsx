@@ -311,6 +311,13 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   const navRowsRef = useRef<string[]>([]);
   const selectedPathRef = useRef<string | null>(null);
   selectedPathRef.current = selectedPath;
+  // True while a context menu or a modal dialog is open. The document-level nav
+  // and shortcut handlers (registered once, reading refs) hard-guard on this so
+  // an open overlay owns the keyboard — a stray Enter can't navigate a row and
+  // Cmd+Backspace can't trash one behind the dialog, regardless of where focus
+  // sits (the dialog's own containment covers focus; this covers the rest).
+  const overlayOpenRef = useRef(false);
+  overlayOpenRef.current = menu !== null || dialog !== null;
   // A path the selection should jump to once it appears in the reloaded rows
   // (a rename/duplicate target — its row doesn't exist until the refetch lands).
   const pendingSelectRef = useRef<string | null>(null);
@@ -331,6 +338,9 @@ export default function Listing({ fsPath }: { fsPath: string }) {
       // While an IME is composing, Enter confirms a candidate and the arrows
       // move through the candidate list — never repurpose them for navigation.
       if (e.isComposing) return;
+      // An open context menu / dialog owns the keyboard: don't let Enter open a
+      // row behind it (the dialog handles its own Enter/Escape).
+      if (overlayOpenRef.current) return;
       const el = document.activeElement as HTMLElement | null;
       const inSearch = el === searchInputRef.current;
       // Only drive navigation from the search box or when nothing in particular
@@ -1027,6 +1037,10 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   const shortcutRef = useRef<(e: KeyboardEvent) => void>(() => {});
   shortcutRef.current = (e: KeyboardEvent) => {
     if (e.isComposing) return;
+    // Same hard guard as the nav handler: while a context menu or dialog is
+    // open, file-op shortcuts (Cmd+Backspace trash, Cmd+X cut, …) must not fire
+    // on the row behind it.
+    if (overlayOpenRef.current) return;
     const el = document.activeElement as HTMLElement | null;
     const inSearch = el === searchInputRef.current;
     const navActive = inSearch || !el || el === document.body || el === document.documentElement;
