@@ -15,6 +15,11 @@ jobs:
       KEYCHAIN_PATH: ${{ github.workspace }}/ci-signing.keychain-db
       NOTARY_PROFILE: ci-notary
       AWS_DEFAULT_REGION: us-west-2
+      S3_BUCKET: fused-render
+      # CloudFront distribution fronting the fused-render bucket
+      # (application/terraform/main, aws_cloudfront_distribution.fused_render).
+      CDN_DOMAIN: d2ic19jpchjovp.cloudfront.net
+      CLOUDFRONT_DISTRIBUTION_ID: E393B7TS7Y3EDS
     steps:
       - uses: actions/checkout@v4
         with:
@@ -101,11 +106,18 @@ jobs:
           echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
           echo "DMG_SHA256=$DMG_SHA256" >> "$GITHUB_ENV"
           echo "WHL_PATH=$WHL_PATH" >> "$GITHUB_ENV"
-          # Bucket is public read; plain https S3 URL works with no signing.
-          echo "DMG_URL=https://fused-magic.s3.us-west-2.amazonaws.com/fused-render-dmgs/$(basename "$DMG_PATH")" >> "$GITHUB_ENV"
-          echo "WHL_URL=https://fused-magic.s3.us-west-2.amazonaws.com/fused-render-wheels/$(basename "$WHL_PATH")" >> "$GITHUB_ENV"
-          aws s3 cp "$DMG_PATH" "s3://fused-magic/fused-render-dmgs/$(basename "$DMG_PATH")"
-          aws s3 cp "$WHL_PATH" "s3://fused-magic/fused-render-wheels/$(basename "$WHL_PATH")"
+          # Served via CloudFront (public bucket behind the CDN).
+          echo "DMG_URL=https://${CDN_DOMAIN}/fused-render-dmgs/$(basename "$DMG_PATH")" >> "$GITHUB_ENV"
+          echo "WHL_URL=https://${CDN_DOMAIN}/fused-render-wheels/$(basename "$WHL_PATH")" >> "$GITHUB_ENV"
+          aws s3 cp "$DMG_PATH" "s3://${S3_BUCKET}/fused-render-dmgs/$(basename "$DMG_PATH")"
+          aws s3 cp "$WHL_PATH" "s3://${S3_BUCKET}/fused-render-wheels/$(basename "$WHL_PATH")"
+
+      - name: Invalidate CloudFront
+        run: |
+          set -euo pipefail
+          aws cloudfront create-invalidation \
+            --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
+            --paths "/fused-render-dmgs/*" "/fused-render-wheels/*"
 
       - name: Find previous tag
         id: prev_tag
