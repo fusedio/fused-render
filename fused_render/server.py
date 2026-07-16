@@ -1156,6 +1156,149 @@ def _fs_write(body: dict, x_fused: str | None):
     return _stat_payload(path, False)
 
 
+# ---------------------------------------------------------------------------
+# fs/events watch registry
+#
+# Incident this exists to prevent: a read-only S3-backed rclone NFS mount died
+# with the macOS "Server connections interrupted" dialog. Root cause was the
+# /api/fs/events WebSocket poller calling os.stat() on every watched path every
+# 200ms for the life of each socket. Each stat is a kernel NFS GETATTR; when
+# the attribute cache expires it forces rclone to re-list the directory on S3,
+# and for a world-scale .zarr on a slow bucket that re-list blows past the
+# macOS NFS client's timeo*retrans ceiling (~2min) -> the kernel declares the
+# mount dead. During the incident ~5 sockets (open preview panes + the Listing
+# view) ran these loops at once, several on paths under the mount.
+#
+# This registry fixes the whole class of problem:
+#   * ONE stat ticker per unique path, refcounted, fanned out to every socket
+#     watching it (so N panes watching the same file = 1 stat/interval, not N).
+#   * Stats run OFF the event loop (asyncio.to_thread) with a hard timeout, so
+#     a hung NFS stat can never freeze the server's event loop. A timed-out or
+#     errored stat reports "unchanged".
+#   * A path with a stat still in flight never gets a second stat queued on top
+#     of it — a stat hung for minutes must not spawn a thread every tick.
+#   * Mount-backed paths poll slowly (5s vs 200ms) and answer via the rclone rc
+#     API (mounts.rc_mtime_for), not the kernel, removing NFS from the loop
+#     entirely. Local paths keep the cheap 200ms os.stat behavior.
+# ---------------------------------------------------------------------------
+
+_LOCAL_POLL_S = 0.2   # local files: cheap os.stat, snappy reload
+_MOUNT_POLL_S = 5.0   # mount-backed files: rc stat, far less remote pressure
+_STAT_TIMEOUT_S = 4.0  # a stat outliving this reports "unchanged" for this tick
+
+# Sentinel distinct from every real mtime signal (float, RFC3339 str, or None
+# meaning "deleted"): _read() returns it for "no change / could not determine",
+# which must NOT be confused with None (a real local-deletion signal, LR-6).
+_UNCHANGED = object()
+
+
+def _mtime_or_none(path: str):
+    """Local-file mtime signal for the poller: st_mtime, or None when the path
+    is gone. None is a real change signal (deletion -> reload, LR-6), distinct
+    from the _UNCHANGED sentinel returned on timeout."""
+    try:
+        return os.stat(path).st_mtime
+    except OSError:
+        return None
+
+
+class _WatchEntry:
+    """One coalesced stat ticker for a single path, fanning changes out to
+    every subscribed socket. Classified once at creation as local or
+    mount-backed, which fixes both the poll interval and the stat strategy."""
+
+    def __init__(self, path: str):
+        from fused_render.shell import mounts as shell_mounts
+
+        self.path = path
+        self.is_mount = shell_mounts.is_mount_backed(path)
+        self.interval = _MOUNT_POLL_S if self.is_mount else _LOCAL_POLL_S
+        self.subscribers: set = set()  # asyncio.Queue per socket
+        self.last = _UNCHANGED  # primed by the first successful read
+        self._inflight = None   # in-progress stat task; guards against pile-up
+        self.task = None        # the ticker task
+
+    async def _stat_signal(self):
+        """The change signal for this path, off the event loop. Never raises:
+        any error becomes _UNCHANGED so a transient failure never masquerades
+        as a change (which would spuriously reload the pane)."""
+        try:
+            if self.is_mount:
+                # rc API, NOT the kernel — a slow answer here can't kill the
+                # mount. None (rcd down / error / missing) means "unchanged";
+                # we deliberately do NOT fall back to os.stat, which is the
+                # GETATTR that caused the incident.
+                from fused_render.shell import mounts as shell_mounts
+
+                m = await asyncio.to_thread(shell_mounts.rc_mtime_for, self.path)
+                return _UNCHANGED if m is None else m
+            return await asyncio.to_thread(_mtime_or_none, self.path)
+        except Exception:
+            return _UNCHANGED
+
+    async def _read(self):
+        """One tick's read with a hard timeout and in-flight de-duplication.
+
+        asyncio.wait_for cancels its awaitable on timeout, but the underlying
+        os.stat runs in a thread that cannot be cancelled — so we shield the
+        stat task and, on timeout, leave it running and report _UNCHANGED. The
+        still-running task then guards the NEXT tick: while a stat is hung
+        (possibly for minutes) we never stack a second thread on top of it."""
+        if self._inflight is not None and not self._inflight.done():
+            return _UNCHANGED  # previous stat still hanging; skip this tick
+        self._inflight = asyncio.ensure_future(self._stat_signal())
+        try:
+            return await asyncio.wait_for(
+                asyncio.shield(self._inflight), _STAT_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            return _UNCHANGED  # leave _inflight running to guard the next tick
+
+    def _broadcast(self, sig):
+        msg = json.dumps({"path": self.path, "mtime": sig})
+        for q in list(self.subscribers):
+            q.put_nowait(msg)
+
+    async def run(self):
+        # First read primes the baseline WITHOUT broadcasting, so connecting a
+        # socket never triggers an immediate reload. A late subscriber joining
+        # an already-running ticker inherits the current baseline the same way.
+        while True:
+            sig = await self._read()
+            if sig is not _UNCHANGED:
+                if self.last is not _UNCHANGED and sig != self.last:
+                    self._broadcast(sig)
+                self.last = sig
+            await asyncio.sleep(self.interval)
+
+
+class _WatchRegistry:
+    """Module-level map of path -> _WatchEntry, refcounted by subscriber count.
+    subscribe() attaches a socket's queue (starting the ticker on the first
+    subscriber); unsubscribe() detaches it (stopping the ticker on the last)."""
+
+    def __init__(self):
+        self._entries: dict = {}
+
+    def subscribe(self, path: str, queue):
+        entry = self._entries.get(path)
+        if entry is None:
+            entry = _WatchEntry(path)
+            self._entries[path] = entry
+            entry.task = asyncio.create_task(entry.run())
+        entry.subscribers.add(queue)
+        return entry
+
+    def unsubscribe(self, entry, queue):
+        entry.subscribers.discard(queue)
+        if not entry.subscribers:
+            if entry.task is not None:
+                entry.task.cancel()
+            self._entries.pop(entry.path, None)
+
+
+_WATCH_REGISTRY = _WatchRegistry()
+
+
 def create_app(start_dir: str) -> FastAPI:
     # Engine (D69/D70 + SPEC §20): validate any FUSED_RENDER_ENGINE override
     # ONCE at startup — this raises on a bad value and fails loudly for
@@ -1333,6 +1476,14 @@ def create_app(start_dir: str) -> FastAPI:
             # Which /api/run engine is in effect (D69/§20): "fused" | "builtin".
             # Read per request — it can change under the Preferences switch.
             "engine": current_engine(),
+            # Root of the mounts dir (~/.fused-render/mounts). The rendered
+            # page's auto-reload watcher (static/runtime.js) uses this to skip
+            # watching mount-backed data files: they live on read-only remote
+            # buckets that never change, so watching them buys nothing and every
+            # poll is remote traffic — the stat storm that killed a mount in the
+            # fs/events incident. Templates stay mount-agnostic; the skip lives
+            # in runtime internals, keyed off this server-provided prefix.
+            "mounts_root": os.path.abspath(shell_mounts.mounts_dir()),
         }
 
     # GET /api/templates/registry moved to templates_api.py (extended §2.2
@@ -1561,37 +1712,39 @@ def create_app(start_dir: str) -> FastAPI:
         # rides ordinary HTTP/1.1 — Chrome caps those at 6 per origin, so a
         # 6-pane panel pinned every socket and all later fetches (/api/run!)
         # queued browser-side forever. WebSockets live in a separate, much
-        # larger connection pool. Polling stat every 200ms is dependency-free
-        # and cheap at local scale; upgrading to real FS events later is
-        # internal to this endpoint. Messages are JSON: {path, mtime} on
-        # change, {keepalive: true} every 15 s (WF-3).
+        # larger connection pool. Messages are JSON: {path, mtime} on change,
+        # {keepalive: true} every 15 s (WF-3).
+        #
+        # Stat mechanics live in the module-level _WATCH_REGISTRY, NOT here:
+        # every socket watching a given path shares ONE ticker (so a panel of
+        # panes previewing the same mounted file makes one stat per interval,
+        # not one per pane), stats run off the event loop with a hard timeout
+        # so a hung NFS stat can't freeze the server, mount-backed paths poll
+        # at 5s via the rclone rc API instead of the kernel, and a stat already
+        # in flight is never stacked on. This all exists because a stat storm
+        # on a slow S3-backed NFS mount killed the mount — see the registry's
+        # header comment. This handler just plumbs each path's queue to the
+        # socket and emits keepalives.
         await ws.accept()
         paths = ws.query_params.getlist("path")
 
-        def mtime_of(p):
-            try:
-                return os.stat(p).st_mtime
-            except OSError:
-                return None
+        queue: asyncio.Queue = asyncio.Queue()
+        entries = [_WATCH_REGISTRY.subscribe(p, queue) for p in paths]
 
-        async def poll():
-            last = {p: mtime_of(p) for p in paths}
-            ticks = 0
+        async def pump():
+            # Forward change messages; a 15s idle gap emits a keepalive (WF-3).
             while True:
-                await asyncio.sleep(0.2)
-                for p in paths:
-                    m = mtime_of(p)
-                    if m != last[p]:
-                        last[p] = m
-                        await ws.send_text(json.dumps({"path": p, "mtime": m}))
-                ticks += 1
-                if ticks % 75 == 0:
+                try:
+                    msg = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
                     await ws.send_text(json.dumps({"keepalive": True}))
+                    continue
+                await ws.send_text(msg)
 
-        poller = asyncio.create_task(poll())
+        pumper = asyncio.create_task(pump())
         try:
             # Drain the receive side purely to learn about disconnect; the
-            # poll loop alone would only notice on its next send.
+            # pump loop alone would only notice on its next send.
             while True:
                 msg = await ws.receive()
                 if msg["type"] == "websocket.disconnect":
@@ -1599,7 +1752,9 @@ def create_app(start_dir: str) -> FastAPI:
         except WebSocketDisconnect:
             pass
         finally:
-            poller.cancel()
+            pumper.cancel()
+            for entry in entries:
+                _WATCH_REGISTRY.unsubscribe(entry, queue)
 
     @app.post("/api/fs/reveal")
     def api_fs_reveal(body: dict = Body(...), x_fused: str | None = Header(default=None)):
