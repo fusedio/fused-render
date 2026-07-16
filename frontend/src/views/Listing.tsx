@@ -275,6 +275,14 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     history.replaceState(null, "", location.pathname + "?" + params.toString());
   }, [fsPath]);
   const [refresh, setRefresh] = useState(0); // bumped by the dir watch socket
+  // loadMore captures the refresh generation it started in; a dir-watch refresh
+  // on the SAME path (App keys StatView on epoch+fsPath, so cross-directory
+  // merges can't happen, but a same-path re-fetch can) resets the listing while
+  // a cursored fetch is pending — the stale page must be discarded, not merged
+  // into the refreshed listing. Ref so the async callback reads the LATEST
+  // generation, not the one captured when loadMore was defined.
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
   const [query, setQueryState] = useState<string>(currentQuery);
   const [walk, setWalk] = useState<WalkState>(IDLE_WALK);
   // Which refresh generation of the walk has been REQUESTED (null = none).
@@ -455,9 +463,11 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   const loadMore = () => {
     if (state.status !== "ok" || !state.cursor || loadingMore) return;
     const cursor = state.cursor;
+    const gen = refresh; // discard the response if a refresh supersedes it
     setLoadingMore(true);
     listDir(fsPath, cursor).then(
       (data) => {
+        if (refreshRef.current !== gen) return; // stale: a refresh replaced the listing
         setLoadingMore(false);
         setState((prev) => {
           if (prev.status !== "ok") return prev;
@@ -474,6 +484,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
         });
       },
       (err: Error) => {
+        if (refreshRef.current !== gen) return; // stale: the fetch effect reset state
         setLoadingMore(false);
         setToast({ msg: err.message, tone: "error" });
       }
