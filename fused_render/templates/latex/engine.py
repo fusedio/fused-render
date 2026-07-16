@@ -209,7 +209,21 @@ def _dedup(diags):
     return out
 
 
-def _compile(main_path: str, synctex: bool = True):
+def _newest_source_mtime(root):
+    """Newest mtime under root (same exclusions as _tree). None means the dir
+    is too big to scan cheaply — treat as unknown and just compile."""
+    newest, seen = 0.0, 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in (".build", ".git", "__pycache__")]
+        for fn in filenames:
+            seen += 1
+            if seen > 2000:
+                return None
+            newest = max(newest, os.path.getmtime(os.path.join(dirpath, fn)))
+    return newest
+
+
+def _compile(main_path: str, synctex: bool = True, force: bool = False):
     main_path = os.path.abspath(main_path)
     if not os.path.exists(main_path):
         return {"ok": False, "error": f"no such file: {main_path}", "errors": []}
@@ -219,6 +233,20 @@ def _compile(main_path: str, synctex: bool = True):
                 "error": "Tectonic isn't installed — install it to compile."}
     os.makedirs(TECTONIC_CACHE, exist_ok=True)
     build = _build_dir_for(main_path)
+    # A compile costs ~10s (tectonic runs several passes), so skip it when the
+    # last PDF is newer than every file under the doc's directory — page
+    # reloads become instant. `force` (the Recompile button) always runs it.
+    if not force:
+        stem = os.path.splitext(os.path.basename(main_path))[0]
+        pdf = os.path.join(build, stem + ".pdf")
+        if os.path.exists(pdf):
+            newest = _newest_source_mtime(os.path.dirname(main_path))
+            if newest is not None and os.path.getmtime(pdf) > newest:
+                diags = _dedup(_parse_tex_log(os.path.join(build, stem + ".log")))
+                return {"ok": True, "pdf": pdf,
+                        "synctex": os.path.join(build, stem + ".synctex.gz"),
+                        "log_tail": "", "errors": diags, "seconds": 0.0,
+                        "cached": True}
     env = dict(os.environ, TECTONIC_CACHE_DIR=TECTONIC_CACHE)
     # We do NOT pass --only-cached: the Tectonic subprocess is server-side (not
     # the sandboxed browser iframe), so it may reach the package repo. A warm
@@ -232,9 +260,12 @@ def _compile(main_path: str, synctex: bool = True):
     t0 = time.time()
     try:
         # cwd = the .tex file's own directory, so relative \input/\includegraphics
-        # resolve the way the author expects.
+        # resolve the way the author expects. CREATE_NO_WINDOW: the server is
+        # windowless (pythonw), so a console subprocess would otherwise flash
+        # a terminal window per compile.
         p = subprocess.run(cmd, capture_output=True, text=True, env=env,
-                           cwd=os.path.dirname(main_path), timeout=28)
+                           cwd=os.path.dirname(main_path), timeout=28,
+                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "compile exceeded 28s (too complex, or a "
                 "cold package fetch) — simplify, or recompile once the fetch "
@@ -491,7 +522,7 @@ def _synctex_forward(synctex_gz: str, target_file: str, line: int):
 
 # -------------------------------------------------------------------- dispatcher
 def main(action: str = "tectonic_status", path: str = "", target: str = "",
-         line: int = 0, synctex: bool = True, name: str = ""):
+         line: int = 0, synctex: bool = True, name: str = "", force: int = 0):
     if action == "tectonic_status":
         return _tectonic_status()
 
@@ -563,7 +594,7 @@ def main(action: str = "tectonic_status", path: str = "", target: str = "",
     if action == "compile":
         if not path:
             return {"ok": False, "error": "compile needs path", "errors": []}
-        return _compile(path, synctex=synctex)
+        return _compile(path, synctex=synctex, force=bool(force))
 
     if action == "outline":
         if not path or not os.path.exists(path):
