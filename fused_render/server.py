@@ -14,6 +14,7 @@ at startup if missing) to opt in to the local compute backend (`engine.py`).
 import asyncio
 import codecs
 import email.utils
+import itertools
 import json
 import logging
 from collections import deque
@@ -133,6 +134,13 @@ KNOWN_SENTINELS = {"_render", "_listing"}
 # are all emitted long before the cap can bite. Module-level so tests can
 # shrink it.
 WALK_MAX_ENTRIES = 200_000
+# Flat cap on a single /api/fs/list response, across all three routes (S3-direct,
+# rc, local). An unbounded listing of a directory with a million entries builds
+# and serializes a million-entry JSON response — slow to produce, slow to render.
+# The response's `truncated` flag (and, on the resumable S3-direct route, its
+# `cursor`) tells the client the listing is partial. Module-level so tests can
+# shrink it.
+LIST_MAX_ENTRIES = 10_000
 # Much smaller cap when the walked path sits under a mount mountpoint
 # (shell/mounts.py): there every directory listing is a remote LIST call
 # (S3 etc.), so an unbounded walk over a bucket is a slow, potentially paid
@@ -349,6 +357,47 @@ class _RcDirEntry:
         return self._stat
 
 
+def _mount_list_item(de):
+    """Map one rc/S3 listing entry (Name/Size/IsDir/ModTime, the shared shape of
+    rc_list_dir and s3_list_page) to an /api/fs/list item. `ignored` is always
+    False under a mount: there's no git repo there, and `git check-ignore`
+    against a mount path is the very kernel I/O these routes avoid."""
+    from fused_render.shell import mounts as shell_mounts
+
+    is_dir = bool(de.get("IsDir"))
+    return {
+        "name": de.get("Name"),
+        "is_dir": is_dir,
+        "size": None if is_dir else de.get("Size"),
+        "mtime": shell_mounts.rc_modtime_epoch(de.get("ModTime")),
+        "ignored": False,
+    }
+
+
+def _list_s3_direct(path, cursor):
+    """Accumulate S3 ListObjectsV2 pages for a mount-backed dir on an anonymous
+    S3 remote into /api/fs/list items, up to LIST_MAX_ENTRIES. Returns
+    (entries, next_token): whole pages are appended (never split mid-page, so a
+    returned token always resumes cleanly), stopping once the cap is reached or
+    the listing is exhausted. `cursor` (an opaque continuation token) resumes a
+    prior page. Raises shell_mounts.S3ListError on any page failure so the
+    caller can fall back to the rc route."""
+    from fused_render.shell import mounts as shell_mounts
+
+    entries = []
+    token = cursor or None
+    while True:
+        page, token = shell_mounts.s3_list_page(
+            path, max_keys=1000, continuation=token)
+        entries.extend(_mount_list_item(de) for de in page)
+        if token is None or len(entries) >= LIST_MAX_ENTRIES:
+            break
+    # Sorted over what was fetched, not the whole directory — a truncated
+    # listing is honestly partial (see the endpoint's sort caveat).
+    entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower(), e["name"]))
+    return entries, token
+
+
 def _walk_bfs(path, include_hidden):
     """Level-order walk of `path` yielding /api/fs/walk entry dicts.
 
@@ -399,11 +448,30 @@ def _walk_bfs(path, include_hidden):
             # failing the whole request or wedging the mount.
             mount_backed = shell_mounts.is_mount_backed(current)
             if mount_backed:
-                try:
-                    listed = shell_mounts.rc_list_dir(
-                        current, timeout=WALK_RC_LIST_TIMEOUT_S)
-                except shell_mounts.RcListError:
-                    continue
+                listed = None
+                # Anonymous S3 dir: page S3's own ListObjectsV2 (fast, non-
+                # timeout-prone) up to the remote walk cap instead of the rc
+                # listing rclone can't paginate. On any S3 failure, fall back to
+                # rc for THIS dir (same skip-on-failure semantics as below).
+                if shell_mounts.s3_direct_capable(current):
+                    try:
+                        listed = []
+                        token = None
+                        while True:
+                            page, token = shell_mounts.s3_list_page(
+                                current, max_keys=1000, continuation=token,
+                                timeout=WALK_RC_LIST_TIMEOUT_S)
+                            listed.extend(page)
+                            if token is None or len(listed) >= WALK_MAX_ENTRIES_REMOTE:
+                                break
+                    except shell_mounts.S3ListError:
+                        listed = None  # fall back to the rc path for this dir
+                if listed is None:
+                    try:
+                        listed = shell_mounts.rc_list_dir(
+                            current, timeout=WALK_RC_LIST_TIMEOUT_S)
+                    except shell_mounts.RcListError:
+                        continue
                 children = [
                     _RcDirEntry(e, shell_mounts.rc_modtime_epoch(e.get("ModTime")))
                     for e in listed
@@ -1816,15 +1884,35 @@ def create_app(start_dir: str) -> FastAPI:
         return _conditions_payload(path)
 
     @app.get("/api/fs/list")
-    def api_fs_list(path: str):
+    def api_fs_list(path: str, cursor: str | None = None):
         # A mount-backed listing must never issue kernel filesystem I/O: both
         # os.path.isdir and os.scandir below are kernel READDIR/GETATTR calls,
         # and on a flat remote prefix with millions of keys rclone's VFS must
         # enumerate the WHOLE directory before the kernel gets its first entry
         # — minutes of blocking that trips the macOS NFS deadman and kills the
-        # mount (the mur-sst incident). Route through the rcd rc API instead, so
-        # a too-huge directory is a failed request, never a wedged mount.
+        # mount (the mur-sst incident). Route off the kernel instead, so a
+        # too-huge directory is a failed/partial request, never a wedged mount.
+        #
+        # Every response carries `truncated` (the listing is a partial page) and
+        # `cursor` (an opaque resume token, non-None only on the S3-direct route
+        # — rclone and a local scandir can't resume). Fallback ladder for a
+        # mount path: S3-direct -> rc -> 503.
         if shell_mounts.is_mount_backed(path):
+            # S3-direct fast path: for anonymous plain AWS S3 — the backend that
+            # dominates our mounts — page S3's own ListObjectsV2 (rclone can't
+            # paginate its listing at any layer, so a million-key prefix times
+            # out on the rc route). On any page failure, log and fall through to
+            # the rc route below.
+            if shell_mounts.s3_direct_capable(path):
+                try:
+                    entries, next_token = _list_s3_direct(path, cursor)
+                except shell_mounts.S3ListError:
+                    logger.warning("S3-direct listing of %s failed; falling "
+                                   "back to rc", path, exc_info=True)
+                else:
+                    return {"path": path, "entries": entries,
+                            "truncated": next_token is not None,
+                            "cursor": next_token}
             try:
                 listed = shell_mounts.rc_list_dir(path)
             except shell_mounts.RcListTimeout:
@@ -1850,21 +1938,14 @@ def create_app(start_dir: str) -> FastAPI:
                 if broken:
                     return _error(broken, status=503)
                 return _error(f"not a directory: {path}", status=400)
-            entries = [
-                {
-                    "name": de.get("Name"),
-                    "is_dir": bool(de.get("IsDir")),
-                    "size": None if de.get("IsDir") else de.get("Size"),
-                    "mtime": shell_mounts.rc_modtime_epoch(de.get("ModTime")),
-                    # No git repo under a mount, and `git check-ignore` against a
-                    # mount path is exactly the kernel I/O we're avoiding — the
-                    # dimming hint is always off here.
-                    "ignored": False,
-                }
-                for de in listed
-            ]
+            # rclone can't resume a listing, so cap and flag rather than page:
+            # the client sees the first LIST_MAX_ENTRIES entries, `truncated`
+            # tells it there are more, and `cursor` stays None (no Load more).
+            truncated = len(listed) > LIST_MAX_ENTRIES
+            entries = [_mount_list_item(de) for de in listed[:LIST_MAX_ENTRIES]]
             entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower(), e["name"]))
-            return {"path": path, "entries": entries}
+            return {"path": path, "entries": entries,
+                    "truncated": truncated, "cursor": None}
         if not os.path.isdir(path):
             return _error(f"not a directory: {path}", status=400)
         entries = []
@@ -1873,14 +1954,21 @@ def create_app(start_dir: str) -> FastAPI:
         # the old loop did two stats per entry (os.stat + os.path.isdir's own
         # stat), i.e. 2N remote round-trips under a mount. Both follow symlinks,
         # matching the previous os.stat/os.path.isdir behavior.
+        #
+        # islice caps consumption at LIST_MAX_ENTRIES: a directory with a
+        # million entries would otherwise build a million-entry JSON response.
+        # Read one past the cap to detect overflow, then trim.
         try:
             with os.scandir(path) as it:
-                dents = list(it)
+                dents = list(itertools.islice(it, LIST_MAX_ENTRIES + 1))
         except OSError as e:
             broken = shell_mounts.broken_mount_error(path)
             if broken:
                 return _error(broken, status=503)
             return _error(f"cannot read directory {path}: {e}", status=400)
+        truncated = len(dents) > LIST_MAX_ENTRIES
+        if truncated:
+            dents = dents[:LIST_MAX_ENTRIES]
         if not dents:
             # A dead mount leaves a plain empty dir (or a wedged NFS mount
             # serving nothing) at the mountpoint — an empty listing under
@@ -1909,7 +1997,8 @@ def create_app(start_dir: str) -> FastAPI:
         # tiebreak so names differing only by case get a stable order instead of
         # falling back to arbitrary os.listdir() order (which changes per call).
         entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower(), e["name"]))
-        return {"path": path, "entries": entries}
+        return {"path": path, "entries": entries,
+                "truncated": truncated, "cursor": None}
 
     @app.get("/api/fs/walk")
     def api_fs_walk(path: str, hidden: str = "0", stream: str = "0"):

@@ -195,3 +195,184 @@ def test_walk_mount_clamped_to_remote_cap(home, tmp_path, monkeypatch):
     data = _client(tmp_path).get("/api/fs/walk", params={"path": mp}).json()
     assert data["truncated"] is True
     assert len(data["entries"]) == 3
+
+
+# -- fs/list truncation contract + S3-direct route ---------------------------
+#
+# Phase 2: fs/list gains `truncated`/`cursor` across all three routes, and a
+# mount on anonymous AWS S3 is listed by paging S3's own ListObjectsV2
+# (s3_list_page) rather than the un-paginatable rc listing. Fallback ladder:
+# S3-direct -> rc -> 503.
+
+ANON_S3 = {"type": "s3", "provider": "AWS", "env_auth": "false"}
+
+
+@pytest.fixture()
+def fresh_cfg_cache():
+    """s3_direct_capable memoizes config/get in a module global; clear it so a
+    remote's anon-ness doesn't leak between tests."""
+    mounts_mod._upstream_cfg.clear()
+    yield
+    mounts_mod._upstream_cfg.clear()
+
+
+def test_list_local_under_cap_shape_unchanged(tmp_path):
+    # A plain local listing under the cap: entries as before, plus the two new
+    # fields (truncated False, cursor None).
+    d = tmp_path / "proj"
+    d.mkdir()
+    (d / "b.txt").write_text("x", encoding="utf-8")
+    (d / "a").mkdir()
+    data = _client(tmp_path).get("/api/fs/list", params={"path": str(d)}).json()
+    assert data["truncated"] is False
+    assert data["cursor"] is None
+    assert [e["name"] for e in data["entries"]] == ["a", "b.txt"]
+    assert all({"name", "is_dir", "size", "mtime", "ignored"} <= set(e)
+               for e in data["entries"])
+
+
+def test_list_local_over_cap_truncated(tmp_path, monkeypatch):
+    d = tmp_path / "big"
+    d.mkdir()
+    for i in range(7):
+        (d / f"f{i:02d}.txt").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(server, "LIST_MAX_ENTRIES", 3)
+    data = _client(tmp_path).get("/api/fs/list", params={"path": str(d)}).json()
+    assert data["truncated"] is True
+    assert data["cursor"] is None
+    assert len(data["entries"]) == 3
+
+
+def test_list_rc_route_over_cap_truncated(home, rcd, tmp_path, monkeypatch):
+    # Non-S3 mount whose rc listing exceeds the cap: capped + truncated, cursor
+    # None (rclone can't resume).
+    c = mounts_mod.add_mount("data", "remote:bucket/prefix")
+    rcd.responses["operations/list"] = {
+        "list": [_entry(f"f{i:03d}.txt", size=1) for i in range(10)]}
+    monkeypatch.setattr(server, "LIST_MAX_ENTRIES", 4)
+    data = _client(tmp_path).get(
+        "/api/fs/list", params={"path": mounts_mod.mountpoint(c)}).json()
+    assert data["truncated"] is True
+    assert data["cursor"] is None
+    assert len(data["entries"]) == 4
+
+
+def test_list_non_s3_mount_never_hits_s3(home, rcd, tmp_path, monkeypatch, fresh_cfg_cache):
+    # config/get unset -> 404 -> not anonymous S3 -> rc route; the S3 pager is
+    # never called.
+    c = mounts_mod.add_mount("data", "remote:bucket/prefix")
+    rcd.responses["operations/list"] = {"list": [_entry("f.txt", size=1)]}
+    called = []
+    monkeypatch.setattr(mounts_mod, "s3_list_page",
+                        lambda *a, **k: called.append(1) or ([], None))
+    data = _client(tmp_path).get(
+        "/api/fs/list", params={"path": mounts_mod.mountpoint(c)}).json()
+    assert [e["name"] for e in data["entries"]] == ["f.txt"]
+    assert called == []
+
+
+def test_list_s3_direct_multipage_and_cursor(home, rcd, tmp_path, monkeypatch, fresh_cfg_cache):
+    rcd.responses["config/get"] = ANON_S3
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    monkeypatch.setattr(server, "LIST_MAX_ENTRIES", 2000)
+    seen = []
+
+    def fake(path, *, max_keys, continuation=None, timeout=None):
+        seen.append(continuation)
+        n = len(seen)
+        if n == 1:
+            return ([_entry(f"a{i:04d}.txt", size=1) for i in range(1000)], "TOK1")
+        if n == 2:
+            return ([_entry(f"b{i:04d}.txt", size=1) for i in range(1000)], "TOK2")
+        return ([_entry("z.txt", size=1)], None)
+
+    monkeypatch.setattr(mounts_mod, "s3_list_page", fake)
+    data = _client(tmp_path).get(
+        "/api/fs/list", params={"path": mounts_mod.mountpoint(c)}).json()
+    # Two whole 1000-key pages hit the 2000 cap; stop with the 2nd page's token.
+    assert len(data["entries"]) == 2000
+    assert data["truncated"] is True
+    assert data["cursor"] == "TOK2"
+    assert seen == [None, "TOK1"]  # started with no cursor, threaded TOK1
+
+
+def test_list_s3_direct_cursor_param_resumes(home, rcd, tmp_path, monkeypatch, fresh_cfg_cache):
+    rcd.responses["config/get"] = ANON_S3
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    got = {}
+
+    def fake(path, *, max_keys, continuation=None, timeout=None):
+        got["continuation"] = continuation
+        return ([_entry("x.txt", size=1)], None)
+
+    monkeypatch.setattr(mounts_mod, "s3_list_page", fake)
+    data = _client(tmp_path).get(
+        "/api/fs/list",
+        params={"path": mounts_mod.mountpoint(c), "cursor": "RESUME"}).json()
+    assert got["continuation"] == "RESUME"
+    assert [e["name"] for e in data["entries"]] == ["x.txt"]
+    assert data["truncated"] is False
+    assert data["cursor"] is None
+
+
+def test_list_s3_failure_falls_back_to_rc(home, rcd, tmp_path, monkeypatch, fresh_cfg_cache):
+    rcd.responses["config/get"] = ANON_S3
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+
+    def boom(path, *, max_keys, continuation=None, timeout=None):
+        raise mounts_mod.S3ListError("kaboom")
+
+    monkeypatch.setattr(mounts_mod, "s3_list_page", boom)
+    rcd.responses["operations/list"] = {"list": [_entry("fromrc.txt", size=5)]}
+    data = _client(tmp_path).get(
+        "/api/fs/list", params={"path": mounts_mod.mountpoint(c)}).json()
+    assert [e["name"] for e in data["entries"]] == ["fromrc.txt"]
+    assert data["truncated"] is False
+    assert data["cursor"] is None
+    assert any(x[0] == "operations/list" for x in rcd.calls)
+
+
+# -- fs/walk on S3-capable mounts --------------------------------------------
+
+
+def test_walk_s3_capable_uses_pages(home, rcd, tmp_path, monkeypatch, fresh_cfg_cache):
+    rcd.responses["config/get"] = ANON_S3
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    mp = mounts_mod.mountpoint(c)
+
+    calls = []
+
+    def fake(path, *, max_keys, continuation=None, timeout=None):
+        calls.append(path)
+        tail = path.rstrip("/").rsplit("/", 1)[-1]
+        if tail == "sub":
+            return ([_entry("b.txt", size=2)], None)
+        return ([_entry("a.txt", size=1), _entry("sub", is_dir=True)], None)
+
+    monkeypatch.setattr(mounts_mod, "s3_list_page", fake)
+    # rc must NOT be used when the S3 pager succeeds.
+    monkeypatch.setattr(mounts_mod, "rc_list_dir",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("rc_list_dir used")))
+    data = _client(tmp_path).get("/api/fs/walk", params={"path": mp}).json()
+    rels = {e["rel"] for e in data["entries"]}
+    assert rels == {"a.txt", "sub", "sub/b.txt"}
+    assert data["truncated"] is False
+    assert calls  # the S3 pager did the listing
+
+
+def test_walk_s3_failure_falls_back_to_rc(home, rcd, tmp_path, monkeypatch, fresh_cfg_cache):
+    rcd.responses["config/get"] = ANON_S3
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    mp = mounts_mod.mountpoint(c)
+
+    def s3_boom(path, *, max_keys, continuation=None, timeout=None):
+        raise mounts_mod.S3ListError("kaboom")
+
+    monkeypatch.setattr(mounts_mod, "s3_list_page", s3_boom)
+    monkeypatch.setattr(mounts_mod, "rc_list_dir",
+                        lambda p, timeout=None: [_entry("fromrc.txt", size=1)])
+    data = _client(tmp_path).get("/api/fs/walk", params={"path": mp}).json()
+    rels = {e["rel"] for e in data["entries"]}
+    assert rels == {"fromrc.txt"}
+    assert data["truncated"] is False
