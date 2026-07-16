@@ -4,7 +4,6 @@ import {
   downloadTemplatesExport,
   openTemplateInClaude,
   rawUrl,
-  revealPath,
 } from "../../lib/api";
 import type { InventoryTemplate, TemplateInventory } from "../../lib/api";
 import { navigate } from "../../lib/router";
@@ -37,18 +36,10 @@ export function InventoryPanel({
       return next;
     });
 
-  // Reveal/Open target the template's absolute folder path from the inventory
+  // Open targets the template's absolute folder path from the inventory
   // (works for core under .core-templates AND user), NOT a dir derived from the
   // user registry. Open reuses the file explorer's navigate() (Listing.tsx),
   // which stats the path and shows the directory listing.
-  const reveal = async (path: string) => {
-    setError(null);
-    try {
-      await revealPath(path);
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  };
   const open = (path: string) => {
     navigate(path);
   };
@@ -174,7 +165,6 @@ export function InventoryPanel({
                     checked={selected.has(t.name)}
                     onToggle={() => toggle(t.name)}
                     onExport={() => runExport([t.name])}
-                    onReveal={() => reveal(t.path)}
                     onOpen={() => open(t.path)}
                     onOpenInClaude={g.source.editable ? () => openClaude(t.name) : undefined}
                     onDelete={g.source.editable ? () => setDeleting(t) : undefined}
@@ -350,7 +340,6 @@ function InventoryRow({
   checked,
   onToggle,
   onExport,
-  onReveal,
   onOpen,
   onOpenInClaude,
   onDelete,
@@ -359,7 +348,6 @@ function InventoryRow({
   checked: boolean;
   onToggle: () => void;
   onExport: () => void;
-  onReveal: () => void;
   onOpen: () => void;
   onOpenInClaude?: () => void; // only for editable (user) sources; core is read-only
   onDelete?: () => void; // only for editable (user) sources; core is undeletable
@@ -400,9 +388,6 @@ function InventoryRow({
       <td className="templates-inv-actions">
         <button type="button" className="templates-ghost-btn" onClick={onExport} title="Export this template as a zip">
           Export
-        </button>
-        <button type="button" className="templates-ghost-btn" onClick={onReveal} title="Reveal in Finder">
-          Reveal
         </button>
         <button type="button" className="templates-ghost-btn" onClick={onOpen} title="Open the folder in the file explorer">
           Open

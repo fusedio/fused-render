@@ -3332,7 +3332,7 @@ body.embed .preview-browse-chip:hover {
   margin-left: 6px;
 }
 
-/* Row-hover-only ghost action buttons. */
+/* Ghost action buttons. */
 .templates-ghost-btn {
   font: inherit;
   font-size: 12px;
@@ -3342,12 +3342,6 @@ body.embed .preview-browse-chip:hover {
   background: none;
   color: var(--fg-muted);
   cursor: pointer;
-  opacity: 0;
-}
-
-.templates-inv-table tr:hover .templates-ghost-btn,
-.templates-ghost-btn:focus-visible {
-  opacity: 1;
 }
 
 .templates-ghost-btn.danger:hover {
