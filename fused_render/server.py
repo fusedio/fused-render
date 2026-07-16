@@ -24,6 +24,7 @@ import stat as stat_mod
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import time
 import traceback
 import urllib.error
@@ -138,6 +139,12 @@ WALK_MAX_ENTRIES = 200_000
 # API storm. The walk truncates early and the existing `truncated` flag tells
 # the client search was bounded.
 WALK_MAX_ENTRIES_REMOTE = 2_000
+# Per-directory hard timeout for the rc listing of a mount-backed dir during a
+# walk (see _walk_bfs). Shorter than the interactive fs/list timeout: a walk
+# fans out across many directories, so a single slow/huge one is skipped (the
+# walk moves on) rather than stalling the whole subtree — same "dead mount ->
+# skipped dir" safety, without failing the request.
+WALK_RC_LIST_TIMEOUT_S = 10.0
 # Max entries per NDJSON batch line in the streamed walk — a framing CAP, not
 # the streaming lever (WALK_FLUSH_INTERVAL_S below is). Kept large so a big
 # local walk emits few lines; the timer guarantees timely flushing regardless.
@@ -317,6 +324,31 @@ def _repo_toplevel(path):
     return top or None
 
 
+class _RcDirEntry:
+    """os.DirEntry-shaped view of one rclone operations/list entry, so
+    _walk_bfs can consume mount-backed listings (fetched via the rcd rc API,
+    off the kernel NFS mount) through the exact same loop as local os.scandir
+    entries. Remote listings carry no symlinks (is_symlink is always False) and
+    the size/mtime an os.stat would return are already in the entry, so stat()
+    never touches the kernel."""
+
+    __slots__ = ("name", "_is_dir", "_stat")
+
+    def __init__(self, entry, mtime):
+        self.name = entry.get("Name")
+        self._is_dir = bool(entry.get("IsDir"))
+        self._stat = SimpleNamespace(st_size=entry.get("Size"), st_mtime=mtime)
+
+    def is_dir(self):
+        return self._is_dir
+
+    def is_symlink(self):
+        return False
+
+    def stat(self):
+        return self._stat
+
+
 def _walk_bfs(path, include_hidden):
     """Level-order walk of `path` yielding /api/fs/walk entry dicts.
 
@@ -338,6 +370,8 @@ def _walk_bfs(path, include_hidden):
     check-ignore co-process per repo (_IgnoreOracle), capped at
     WALK_MAX_ORACLES concurrently, all closed when the walk ends.
     """
+    from fused_render.shell import mounts as shell_mounts
+
     oracles = {}  # repo root -> _IgnoreOracle, insertion order = LRU
 
     def oracle_for(repo):
@@ -351,28 +385,49 @@ def _walk_bfs(path, include_hidden):
 
     try:
         # (abs dir, rel from walk root, repo root or None, rel from repo root)
-        top = _repo_toplevel(path)
+        # A mount-backed root gets no repo: mounts hold no git repositories, and
+        # `git -C <mount> rev-parse` (like every gitignore check below) is kernel
+        # I/O on the mount we're deliberately routing around.
+        top = None if shell_mounts.is_mount_backed(path) else _repo_toplevel(path)
         top_rel = "" if top is None else os.path.relpath(path, top).replace(os.sep, "/")
         queue = deque([(path, "", top, "" if top_rel == "." else top_rel)])
         while queue:
             current, rel_base, repo, repo_rel_base = queue.popleft()
-            try:
-                with os.scandir(current) as it:
-                    children = list(it)
-            except OSError:
-                continue  # unreadable dir skipped silently
+            # Mount-backed dir: list it via the rcd rc API, off the kernel mount
+            # (see rc_list_dir / the mur-sst incident). A dir that times out or
+            # can't be listed is skipped and the walk moves on, rather than
+            # failing the whole request or wedging the mount.
+            mount_backed = shell_mounts.is_mount_backed(current)
+            if mount_backed:
+                try:
+                    listed = shell_mounts.rc_list_dir(
+                        current, timeout=WALK_RC_LIST_TIMEOUT_S)
+                except shell_mounts.RcListError:
+                    continue
+                children = [
+                    _RcDirEntry(e, shell_mounts.rc_modtime_epoch(e.get("ModTime")))
+                    for e in listed
+                ]
+            else:
+                try:
+                    with os.scandir(current) as it:
+                        children = list(it)
+                except OSError:
+                    continue  # unreadable dir skipped silently
             # A .git entry (dir, or gitfile for worktrees/submodules) marks a
             # nested repository: its own gitignore rules take over below here.
             # A .gitignore WITHOUT any repo in scope marks a standalone
             # ignore root (un-inited project, vault, …): same pruning, backed
             # by the empty-GIT_DIR graft (see _IgnoreOracle). Not applied
             # inside a real repo — there git already cascades nested
-            # .gitignore files itself.
-            names = {c.name for c in children}
-            if ".git" in names and current != repo:
-                repo, repo_rel_base = current, ""
-            elif repo is None and ".gitignore" in names:
-                repo, repo_rel_base = current, ""
+            # .gitignore files itself. Skipped entirely for mount-backed dirs:
+            # they hold no repos, and check-ignore is kernel I/O on the mount.
+            if not mount_backed:
+                names = {c.name for c in children}
+                if ".git" in names and current != repo:
+                    repo, repo_rel_base = current, ""
+                elif repo is None and ".gitignore" in names:
+                    repo, repo_rel_base = current, ""
             dirs = []
             files = []
             for child in children:
@@ -389,7 +444,7 @@ def _walk_bfs(path, include_hidden):
                     dirs.append(child)
                 else:
                     files.append(child)
-            if repo is not None and (dirs or files):
+            if repo is not None and not mount_backed and (dirs or files):
                 prefix = repo_rel_base + "/" if repo_rel_base else ""
                 ignored = oracle_for(repo).ignored(
                     [prefix + c.name for c in dirs + files]
@@ -1762,6 +1817,54 @@ def create_app(start_dir: str) -> FastAPI:
 
     @app.get("/api/fs/list")
     def api_fs_list(path: str):
+        # A mount-backed listing must never issue kernel filesystem I/O: both
+        # os.path.isdir and os.scandir below are kernel READDIR/GETATTR calls,
+        # and on a flat remote prefix with millions of keys rclone's VFS must
+        # enumerate the WHOLE directory before the kernel gets its first entry
+        # — minutes of blocking that trips the macOS NFS deadman and kills the
+        # mount (the mur-sst incident). Route through the rcd rc API instead, so
+        # a too-huge directory is a failed request, never a wedged mount.
+        if shell_mounts.is_mount_backed(path):
+            try:
+                listed = shell_mounts.rc_list_dir(path)
+            except shell_mounts.RcListTimeout:
+                return _error(
+                    f"directory listing timed out — too many entries to list "
+                    f"({path})", status=503)
+            except shell_mounts.RcListUnavailable:
+                # rcd down or path under no known mount: the mount can't be
+                # trusted. Prefer the specific broken-mount wording when we have
+                # it (it tells the user to reconnect from the Mounts page).
+                broken = shell_mounts.broken_mount_error(path)
+                return _error(broken or f"cannot list directory {path}",
+                              status=503)
+            except shell_mounts.RcListError:
+                # rcd answered but rejected the listing. Two causes look alike
+                # here: a genuinely broken mount (dead/stale/disconnected — the
+                # empty-mountpoint bug this endpoint already guards), and a path
+                # that is simply a file. broken_mount_error distinguishes them:
+                # a message means the mount is unhealthy (503, reconnect); no
+                # message means the mount is fine and the path just isn't a
+                # directory (400, the mount-safe stand-in for os.path.isdir).
+                broken = shell_mounts.broken_mount_error(path)
+                if broken:
+                    return _error(broken, status=503)
+                return _error(f"not a directory: {path}", status=400)
+            entries = [
+                {
+                    "name": de.get("Name"),
+                    "is_dir": bool(de.get("IsDir")),
+                    "size": None if de.get("IsDir") else de.get("Size"),
+                    "mtime": shell_mounts.rc_modtime_epoch(de.get("ModTime")),
+                    # No git repo under a mount, and `git check-ignore` against a
+                    # mount path is exactly the kernel I/O we're avoiding — the
+                    # dimming hint is always off here.
+                    "ignored": False,
+                }
+                for de in listed
+            ]
+            entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower(), e["name"]))
+            return {"path": path, "entries": entries}
         if not os.path.isdir(path):
             return _error(f"not a directory: {path}", status=400)
         entries = []
@@ -1836,17 +1939,16 @@ def create_app(start_dir: str) -> FastAPI:
         # closes the generator on disconnect). Without `stream=1` the response
         # is the original single-JSON shape, unchanged for old clients.
         include_hidden = hidden == "1"
-        if not os.path.isdir(path):
+        # Under a mount, os.path.isdir is itself a kernel GETATTR on the mount
+        # we route around; _walk_bfs lists mount dirs via the rc API and simply
+        # yields nothing for a non-directory root, so the guard is local-only.
+        under_mount = shell_mounts.is_mount_backed(path)
+        if not under_mount and not os.path.isdir(path):
             return _error(f"not a directory: {path}", status=400)
         walker = _walk_bfs(path, include_hidden)
-        # Remote-mount clamp: under a mount mountpoint every directory is
-        # a remote LIST round-trip, so the cap drops to WALK_MAX_ENTRIES_REMOTE
-        # (see the constant's comment). Resolved per request — the mounts dir
-        # follows home_dir()'s env-based redirection.
-        from fused_render.shell.mounts import mounts_dir as _mounts_dir
-
-        mroot = os.path.abspath(_mounts_dir())
-        under_mount = os.path.abspath(path).startswith(mroot + os.sep)
+        # Remote-mount clamp: under a mount mountpoint every directory is a
+        # remote LIST round-trip, so the cap drops to WALK_MAX_ENTRIES_REMOTE
+        # (see the constant's comment).
         max_entries = WALK_MAX_ENTRIES_REMOTE if under_mount else WALK_MAX_ENTRIES
 
         if stream != "1":
