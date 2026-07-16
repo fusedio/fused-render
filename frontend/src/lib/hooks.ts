@@ -50,6 +50,20 @@ export function useBookmarksVersion(): number {
   return useEventCounter([BOOKMARKS_EVENT]);
 }
 
+// Recents store change signal — same pattern as the bookmarks event. The
+// recents store (lib/recents.ts) dispatches it itself after every cache
+// advance (its mutations are triggered by tracking, not by UI clicks alone,
+// so the store owns the notify rather than each call site).
+const RECENTS_EVENT = "fused:recents";
+
+export function notifyRecentsChanged(): void {
+  window.dispatchEvent(new Event(RECENTS_EVENT));
+}
+
+export function useRecentsVersion(): number {
+  return useEventCounter([RECENTS_EVENT]);
+}
+
 // Run `cb` when the tab regains focus or becomes visible again — the app's
 // "re-read cheap state on return" freshness posture (deploy dot, deploy
 // pref, account status). One shared subscription instead of per-site

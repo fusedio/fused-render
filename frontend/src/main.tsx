@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { IS_EMBED } from "./lib/router";
 import { getConfig } from "./lib/api";
 import { hydrateBookmarks, refreshBookmarks } from "./lib/bookmarks";
+import { hydrateRecents } from "./lib/recents";
 import { notifyBookmarksChanged } from "./lib/hooks";
 import App from "./App";
 import "./shell.css";
@@ -36,6 +37,8 @@ getConfig().then(
     // the sidebar/breadcrumb re-read once it resolves). Independent of config —
     // fire after mount so a config failure still shows its error screen.
     hydrateBookmarks().then(notifyBookmarksChanged);
+    // Recents hydrate the same way; the store notifies its own subscribers.
+    void hydrateRecents();
     // Poll every 30 s so another tab's/window's bookmark edits converge here
     // (D77). refreshBookmarks() re-renders only when the tree actually changed.
     const BOOKMARK_POLL_MS = 30_000;

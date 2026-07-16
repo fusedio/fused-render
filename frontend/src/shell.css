@@ -124,6 +124,38 @@ body {
   font-size: 12px;
 }
 
+/* Recents (SPEC §29): heading click toggles the fold; the count pill carries
+   the collapsed signal — no chevron, matching D44's folder rows. */
+.recents-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.recents-count {
+  font-size: 10.5px;
+  line-height: 1;
+  color: var(--fg-muted);
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  padding: 3px 6px;
+  letter-spacing: normal;
+}
+
+.recent-row {
+  /* A lone text label (no icon slot) — block so the ellipsis applies to it. */
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.recent-row.active {
+  background: rgba(229, 255, 68, 0.13);
+}
+
 .bookmark-row {
   position: relative;
   display: flex;

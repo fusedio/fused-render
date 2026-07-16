@@ -25,7 +25,14 @@ import { exportBookmarkFile } from "../lib/api";
 import IconPicker from "./IconPicker";
 import { FolderIcon } from "./FileIcons";
 import type { Bookmark, BookmarkFolder } from "../lib/bookmarks";
-import { useUrlVersion, useBookmarksVersion, notifyBookmarksChanged } from "../lib/hooks";
+import { loadRecents, setRecentsCollapsed } from "../lib/recents";
+import { basename } from "../lib/format";
+import {
+  useUrlVersion,
+  useBookmarksVersion,
+  notifyBookmarksChanged,
+  useRecentsVersion,
+} from "../lib/hooks";
 import type { Config } from "../lib/api";
 import { splitShellSearch } from "../lib/layout-codec";
 import { fuzzyMatch, highlightSegments } from "../lib/fuzzy";
@@ -285,6 +292,7 @@ export default function Sidebar({ config }: SidebarProps) {
   // of the store it renders).
   useUrlVersion();
   useBookmarksVersion();
+  useRecentsVersion();
   // Signed-in dot on the footer's Fused-account entry (SPEC AC-1).
   const accountLoggedIn = useAccountLoggedIn();
 
@@ -307,6 +315,26 @@ export default function Sidebar({ config }: SidebarProps) {
   // imperative classList toggling below).
   const draggedIdRef = useRef<string | null>(null);
   const draggedIsFolderRef = useRef(false);
+
+  // Recents (SPEC §29): last files opened, newest first. The server already
+  // filtered out entries whose file has since been deleted; the UI shows the
+  // top 3 (the store keeps a deeper buffer so 3 survive that filtering).
+  const { collapsed: recentsCollapsed, entries: recentEntries } = loadRecents();
+  const recents = recentEntries.slice(0, 3);
+
+  const onRecentsHeadingClick = () => {
+    // Persisted with the data itself (recents.json), like D44's folder
+    // collapse; the store notifies, so no explicit re-render call here.
+    void setRecentsCollapsed(!recentsCollapsed);
+  };
+
+  const onRecentClick = (e: React.MouseEvent<HTMLAnchorElement>, url: string) => {
+    // Plain navigation to the stored url verbatim — query preserved
+    // (navigateUrl, not navigate). href kept for middle-click/copy-link.
+    // Opening a recent arms nothing — it is not a bookmark.
+    e.preventDefault();
+    navigateUrl(url);
+  };
 
   const items = loadBookmarks(); // top-level items: bookmarks and folders
   const folderById = new Map<string, BookmarkFolder>(items.filter(isFolder).map((f) => [f.id, f]));
@@ -691,6 +719,32 @@ export default function Sidebar({ config }: SidebarProps) {
           <span className="icon"><FolderIcon /></span> Fused
         </a>
       </div>
+      {recents.length > 0 && (
+        <div className="sidebar-section sidebar-recents">
+          {/* Heading click toggles the fold; the count pill carries the
+              collapsed signal instead of a chevron (D44's visual language). */}
+          <div
+            className="sidebar-heading recents-heading"
+            title={recentsCollapsed ? "Show recents" : "Hide recents"}
+            onClick={onRecentsHeadingClick}
+          >
+            Recents
+            {recentsCollapsed && <span className="recents-count">{recents.length}</span>}
+          </div>
+          {!recentsCollapsed &&
+            recents.map((r) => (
+              <a
+                key={r.url}
+                className={"sidebar-item recent-row" + (r.url === currentUrl() ? " active" : "")}
+                href={r.url}
+                title={bookmarkFsPath(r.url)}
+                onClick={(e) => onRecentClick(e, r.url)}
+              >
+                {basename(bookmarkFsPath(r.url))}
+              </a>
+            ))}
+        </div>
+      )}
       <div className="sidebar-section sidebar-bookmarks">
         <div className="sidebar-heading">Bookmarks</div>
         {items.length === 0 ? (
