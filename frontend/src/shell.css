@@ -2053,6 +2053,26 @@ body.embed .preview-browse-chip:hover {
   cursor: default;
 }
 
+/* Inline text-link button (e.g. the setup panel's "Edit name") — no button
+   chrome, accent underline on hover. Scoped under .prefs-section to override
+   the generic `.prefs-section button` box styling. */
+.prefs-section .link-button {
+  font: inherit;
+  display: inline;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.prefs-section .link-button:hover:not(:disabled) {
+  background: none;
+  border: none;
+  text-decoration: underline;
+}
+
 .deploy-close:disabled {
   opacity: 0.4;
   cursor: default;
