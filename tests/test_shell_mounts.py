@@ -7,6 +7,7 @@ FUSED_RENDER_HOME is redirected per test so no test touches the real
 """
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -28,6 +29,7 @@ class StubRcd:
 
     def __init__(self):
         self.calls = []
+        self.delay = {}  # method -> seconds to sleep before responding (timeouts)
         self.responses = {
             "core/pid": {"pid": 4242},
             "mount/mount": {},
@@ -48,6 +50,8 @@ class StubRcd:
                 body = json.loads(self.rfile.read(length) or b"{}")
                 method = self.path.lstrip("/")
                 stub.calls.append((method, body))
+                if method in stub.delay:
+                    time.sleep(stub.delay[method])
                 resp = stub.responses.get(method)
                 if isinstance(resp, list):  # per-call sequence; last repeats
                     resp = resp.pop(0) if len(resp) > 1 else resp[0]
@@ -257,6 +261,91 @@ def test_rc_mtime_for_none_on_rc_error_or_missing(home, rcd):
 
 def test_rc_mtime_for_none_outside_any_mount(home, rcd):
     assert mounts_mod.rc_mtime_for("/tmp/not/a/mount/f.parquet") is None
+
+
+# -- rc_list_dir -----------------------------------------------------------
+#
+# A mount-backed directory listing must come from the rcd rc API
+# (operations/list), never a kernel os.scandir: a READDIR on a flat S3 prefix
+# with millions of keys forces rclone's VFS to enumerate the whole directory
+# before the kernel gets a single entry, blowing past the macOS NFS deadman
+# and killing the mount (the mur-sst incident).
+
+
+def test_rc_list_dir_calls_operations_list_with_fs_and_remote(home, rcd, monkeypatch):
+    import os as _os
+
+    c = mounts_mod.add_mount("data", "remote:bucket/prefix")
+    mp = mounts_mod.mountpoint(c)
+    rcd.responses["operations/list"] = {"list": [
+        {"Name": "a", "IsDir": True, "Size": -1, "ModTime": "2024-01-02T03:04:05Z"},
+        {"Name": "b.txt", "IsDir": False, "Size": 7, "ModTime": "2024-01-02T03:04:05Z"},
+    ]}
+    # Never touch the mount path through the kernel.
+    monkeypatch.setattr(mounts_mod.os, "scandir",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("scandir!")))
+
+    entries = mounts_mod.rc_list_dir(_os.path.join(mp, "sub"))
+    assert [e["Name"] for e in entries] == ["a", "b.txt"]
+    [(_, body)] = [x for x in rcd.calls if x[0] == "operations/list"]
+    assert body == {"fs": "remote:bucket/prefix", "remote": "sub",
+                    "opt": {"noMimeType": True}}
+
+
+def test_rc_list_dir_normalizes_mountpoint_root_to_empty_remote(home, rcd):
+    # _mount_for returns "." for the mountpoint itself; operations/list wants
+    # "" for the fs root ("." yields a nonsense result).
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    rcd.responses["operations/list"] = {"list": []}
+    mounts_mod.rc_list_dir(mounts_mod.mountpoint(c))
+    [(_, body)] = [x for x in rcd.calls if x[0] == "operations/list"]
+    assert body["remote"] == ""
+
+
+def test_rc_list_dir_unavailable_when_rcd_down(home):
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    with pytest.raises(mounts_mod.RcListUnavailable):
+        mounts_mod.rc_list_dir(mounts_mod.mountpoint(c) + "/sub")
+
+
+def test_rc_list_dir_unavailable_outside_any_mount(home, rcd):
+    with pytest.raises(mounts_mod.RcListUnavailable):
+        mounts_mod.rc_list_dir("/tmp/not/a/mount")
+
+
+def test_rc_list_dir_error_when_rcd_rejects_listing(home, rcd):
+    # rcd is up but operations/list errors (stub 404s the unset method): the
+    # remote path is not a listable directory (it's a file). Distinct from a
+    # timeout / a down rcd so the caller can answer 400 "not a directory".
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    with pytest.raises(mounts_mod.RcListError) as exc:
+        mounts_mod.rc_list_dir(mounts_mod.mountpoint(c) + "/file.parquet")
+    assert not isinstance(exc.value, (mounts_mod.RcListTimeout,
+                                      mounts_mod.RcListUnavailable))
+
+
+def test_rc_list_dir_timeout_raises_rc_list_timeout(home, rcd):
+    # A directory too large to enumerate hits the hard timeout; the request
+    # fails rather than the kernel readdir wedging the mount.
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    rcd.responses["operations/list"] = {"list": []}
+    rcd.delay["operations/list"] = 1.0
+    with pytest.raises(mounts_mod.RcListTimeout):
+        mounts_mod.rc_list_dir(mounts_mod.mountpoint(c) + "/huge", timeout=0.2)
+
+
+def test_rc_modtime_epoch_parses_rfc3339_and_passes_sentinel():
+    import datetime as _dt
+
+    # 'Z', fractional seconds, and sub-microsecond precision all parse.
+    assert mounts_mod.rc_modtime_epoch("1970-01-01T00:00:01Z") == 1.0
+    assert mounts_mod.rc_modtime_epoch(
+        "1970-01-01T00:00:01.123456789Z") == pytest.approx(1.123456, abs=1e-6)
+    # The synthetic-dir sentinel (2000-01-01) is passed through like any stamp.
+    sentinel = _dt.datetime(2000, 1, 1, tzinfo=_dt.timezone.utc).timestamp()
+    assert mounts_mod.rc_modtime_epoch("2000-01-01T00:00:00Z") == sentinel
+    assert mounts_mod.rc_modtime_epoch(None) is None
+    assert mounts_mod.rc_modtime_epoch("not-a-date") is None
 
 
 def test_mounted_paths_merges_listmounts(home, rcd, monkeypatch):

@@ -34,6 +34,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from datetime import datetime
 
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
@@ -677,6 +678,116 @@ def rc_mtime_for(path: str) -> str | None:
     if not isinstance(item, dict):
         return None
     return item.get("ModTime") or None
+
+
+# operations/list can't be paginated at any rclone layer (verified: `rclone lsf
+# <dir> | head` takes as long as the full listing), so a directory with millions
+# of keys takes minutes to enumerate. A hard timeout turns that "dead mount"
+# outcome into a plain "listing failed" HTTP error: the request fails, the mount
+# lives. 20s is generous for a healthy directory yet well under the macOS NFS
+# deadman that a kernel readdir would otherwise trip.
+RC_LIST_TIMEOUT_S = 20.0
+
+
+class RcListError(Exception):
+    """The rcd answered but rejected an operations/list — the remote path is
+    not a listable directory (a file, or missing). The caller maps this to the
+    400 "not a directory" response, the mount-safe equivalent of the
+    os.path.isdir guard a local listing runs before scandir."""
+
+
+class RcListUnavailable(RcListError):
+    """The rcd itself is unreachable (not running, or the path resolves to no
+    known mount record) — indistinguishable here from a broken mount, so the
+    caller consults broken_mount_error and returns 503."""
+
+
+class RcListTimeout(RcListError):
+    """operations/list did not finish within the hard timeout — a directory too
+    large to enumerate. The caller surfaces a 503 "too many entries" rather
+    than letting a kernel readdir wedge the mount."""
+
+
+def _rc_timed_out(e: BaseException) -> bool:
+    """Whether an _rc RuntimeError was caused by the request timing out. _rc
+    wraps every transport failure (OSError, including the socket read timeout)
+    into a RuntimeError, so the original timeout survives only on the
+    exception's __cause__ chain."""
+    cause = e.__cause__
+    if isinstance(cause, TimeoutError):  # socket.timeout is an alias since 3.10
+        return True
+    return (isinstance(cause, urllib.error.URLError)
+            and isinstance(getattr(cause, "reason", None), TimeoutError))
+
+
+def rc_list_dir(path: str, timeout: float | None = None) -> list:
+    """Directory listing of a mount-backed path, answered by the rclone rcd rc
+    API (operations/list) instead of a kernel os.scandir.
+
+    Background — the mur-sst listing incident: a kernel READDIR on an rclone
+    NFS mount forces rclone's VFS to enumerate the ENTIRE remote directory
+    before the kernel gets its first entry. On a flat S3 prefix with millions
+    of keys (aws-open:mur-sst/zarr-v1 -> analysed_sst/) that runs for minutes,
+    blows past the macOS NFS deadman, and the OS kills the mount ("Server
+    connections interrupted"). rclone can't paginate a listing at any layer, so
+    Phase 1's goal is SAFETY, not speed: ask the rcd directly over its loopback
+    rc port, bounded by a hard timeout, so a too-huge directory becomes a failed
+    request instead of a wedged mount.
+
+    Returns the raw operations/list array (dicts with Name, Size, IsDir,
+    ModTime, ...). Does ZERO kernel I/O on the mount path — no os.stat,
+    os.scandir, or os.path.isdir of `path`. The (fs, remote) translation is the
+    same _mount_for() one rc_mtime_for and the raw proxy use.
+
+    Raises RcListTimeout when the listing exceeds `timeout`, RcListUnavailable
+    when the rcd is unreachable / the path is under no known mount, and
+    RcListError when the rcd rejects the listing (the path is a file, not a
+    directory)."""
+    if timeout is None:
+        timeout = RC_LIST_TIMEOUT_S
+    m, rel = _mount_for(path)
+    if m is None:
+        raise RcListUnavailable(f"{path} is under no known mount")
+    port = _live_rcd_port()
+    if port is None:
+        raise RcListUnavailable("rclone rcd is not running")
+    # _mount_for returns "." for the mountpoint itself; operations/list wants
+    # "" for the fs root ("." yields {"list": null}/nonsense, same quirk
+    # operations/stat has).
+    remote = "" if rel == "." else rel
+    try:
+        resp = _rc(port, "operations/list",
+                   {"fs": m["remote"], "remote": remote,
+                    "opt": {"noMimeType": True}}, timeout=timeout)
+    except RuntimeError as e:
+        if _rc_timed_out(e):
+            raise RcListTimeout(f"listing {path} timed out after {timeout:g}s") from e
+        raise RcListError(str(e)) from e
+    listed = resp.get("list") if isinstance(resp, dict) else None
+    return listed if isinstance(listed, list) else []
+
+
+def rc_modtime_epoch(modtime: str | None) -> float | None:
+    """RFC3339 ModTime from an rc listing entry -> epoch seconds (float), or
+    None when absent/unparseable. rclone emits e.g. "2024-01-02T03:04:05.12Z"
+    or with a numeric offset, up to nanosecond precision; datetime parses only
+    microseconds, so trailing sub-microsecond digits are trimmed. rclone
+    reports a constant sentinel (2000-01-01) for synthetic S3 directories —
+    parsed and passed through like any other timestamp."""
+    if not modtime:
+        return None
+    s = modtime.strip()
+    # datetime.fromisoformat only accepts 'Z' on 3.11+; normalize to +00:00 so
+    # any interpreter agrees, then trim fractional seconds to <=6 digits.
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    m = re.match(r"^(.*\.\d{6})\d+(.*)$", s)
+    if m:
+        s = m.group(1) + m.group(2)
+    try:
+        return datetime.fromisoformat(s).timestamp()
+    except ValueError:
+        return None
 
 
 def serve_url_for(path: str) -> str | None:
