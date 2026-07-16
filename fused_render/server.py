@@ -13,6 +13,7 @@ at startup if missing) to opt in to the local compute backend (`engine.py`).
 """
 import asyncio
 import codecs
+import email.utils
 import json
 import logging
 from collections import deque
@@ -26,19 +27,21 @@ import time
 import traceback
 import urllib.error
 import urllib.request
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlsplit
 
 from fastapi import Body, FastAPI, Header, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
     JSONResponse,
+    RedirectResponse,
     Response,
     StreamingResponse,
 )
 from fastapi.staticfiles import StaticFiles
 
 from fused_render import __version__
+from fused_render.account import router as account_router
 from fused_render.core_templates import ensure_core_templates
 from fused_render.deploy import router as deploy_router
 from fused_render.executor import run_python
@@ -183,6 +186,7 @@ def _empty_git_dir():
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
             )
             _EMPTY_GIT_DIR = os.path.join(root, ".git")
         except (OSError, subprocess.SubprocessError):
@@ -233,6 +237,7 @@ class _IgnoreOracle:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 env=env,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
             )
         except OSError:
             self.proc = None
@@ -300,6 +305,7 @@ def _repo_toplevel(path):
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -452,6 +458,7 @@ def _git_ignored(cwd: str, rel_names: list[str]) -> set[str]:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
     except (OSError, subprocess.SubprocessError):
         return set()
@@ -593,7 +600,7 @@ def _icon_for(template_path: str):
 def _condition_file(template_path: str):
     """The template folder's `condition.py` path, or None when it has no gate.
 
-    A template folder may ship a `condition.py` defining `def method(path):
+    A template folder may ship a `condition.py` defining `def main(path):
     bool` — the gate that decides whether the template shows for a given file
     (SPEC CT-12). No file -> the template is unconditional (the common case).
     Split from evaluation so `_apply_conditions` can cheaply tell which entries
@@ -604,14 +611,14 @@ def _condition_file(template_path: str):
 
 
 def _run_condition(condition_file: str, target_path: str):
-    """Load+exec a `condition.py` and call `method(target_path)`. Returns
+    """Load+exec a `condition.py` and call `main(target_path)`. Returns
     (allowed: bool, error: str|None).
 
     The module is loaded fresh per call (like the registries, so an edit applies
     on the next stat with no restart) and never inserted into `sys.modules` — so
     concurrent calls with the fixed spec name get independent module objects and
     are safe to run in parallel (same rationale as executor._run_in_process). A
-    broken condition — no callable `method`, or any raised exception — drops the
+    broken condition — no callable `main`, or any raised exception — drops the
     template and surfaces the reason as `template_error`, mirroring how an
     unresolvable name is dropped (SPEC CT-6): a template gated by code that
     can't decide is not silently shown.
@@ -624,9 +631,9 @@ def _run_condition(condition_file: str, target_path: str):
         )
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        fn = getattr(mod, "method", None)
+        fn = getattr(mod, "main", None)
         if not callable(fn):
-            return False, f"{condition_file}: does not define a callable 'method'"
+            return False, f"{condition_file}: does not define a callable 'main'"
         return bool(fn(target_path)), None
     except BaseException as e:  # never let a bad condition tear down the stat
         return False, f"{condition_file}: {e}"
@@ -973,7 +980,17 @@ def _writable(path: str) -> bool:
     W_OK on itself — the atomic os.replace would otherwise bypass a read-only
     bit via the parent directory — and a new file needs W_OK on its parent.
     Templates read this off the stat payload to render read-only mode up
-    front; keep the two in agreement."""
+    front; keep the two in agreement.
+
+    Paths under a read-only mount are never writable, whatever the permission
+    bits say: the rclone VFS (CacheMode=full) takes any write into its local
+    cache and only fails at the async upload, so W_OK is a lie there."""
+    # Local import, like _stat_payload's: server -> shell.mounts only,
+    # keeping shell ↛ server acyclic.
+    from fused_render.shell.mounts import mount_read_only
+
+    if mount_read_only(path):
+        return False
     if os.path.exists(path):
         return os.access(path, os.W_OK)
     return os.access(os.path.dirname(path) or ".", os.W_OK)
@@ -1024,6 +1041,16 @@ def _proxy_raw(upstream: str, request: Request):
             r.close()
 
     return StreamingResponse(body(), status_code=r.status, headers=out)
+
+
+def _stat_or_none(path: str) -> os.stat_result | None:
+    """stat() for /api/fs/raw's 404 gate: None for missing paths and
+    non-regular files alike (a directory has no raw bytes to serve)."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return st if stat_mod.S_ISREG(st.st_mode) else None
 
 
 def _stat_payload(path: str, is_dir: bool, st: os.stat_result | None = None) -> dict:
@@ -1258,9 +1285,18 @@ def create_app(start_dir: str) -> FastAPI:
 
     app.include_router(shell_mounts.router)
     shell_mounts.startup()
+    # GitHub deep links (SPEC §26, D110): GET /clone confirm page +
+    # POST /api/clone sparse-clone into ~/Documents/Fused. deeplink.py never
+    # imports server, so the include stays acyclic like shell/*.
+    from fused_render.deeplink import router as deeplink_router
+
+    app.include_router(deeplink_router)
     # Deploy (hosted publish through the fused CLI) — export + `fused share`
     # orchestration and the per-page deployment pointer store (deploy.py).
     app.include_router(deploy_router)
+    # Fused account (in-app `fused cloud login/logout`, account.py) — the
+    # sign-in the managed-env deploys need, without a terminal.
+    app.include_router(account_router)
     # Template management (templates_api.py) — the Templates view backend:
     # inventory across sources, registry bindings edit, import/export. It owns
     # GET /api/templates/registry (the extended §2.2 shape). Imported here
@@ -1436,8 +1472,6 @@ def create_app(start_dir: str) -> FastAPI:
 
     @app.api_route("/api/fs/raw", methods=["GET", "HEAD"])
     async def api_fs_raw(path: str, request: Request):
-        if not os.path.isfile(path):
-            return _error(f"no such file: {path}", status=404)
         # Mount-backed file with a live HTTP serve: proxy the bytes from
         # rclone instead of reading through the kernel mount. Concurrent
         # ranged reads (duckdb's httpfs) through the NFS mount stall its 1s
@@ -1445,16 +1479,78 @@ def create_app(start_dir: str) -> FastAPI:
         # over HTTP are merely slow. Explicit HEAD support matters: httpfs
         # HEADs for the length first, and Starlette's implicit HEAD-on-GET
         # would run the full upstream GET just to drop the body.
-        upstream = shell_mounts.serve_url_for(path)
+        #
+        # No stat() before a serve-backed GET: on a mount that's a VFS
+        # getattr — a full remote round trip (~1s cold), paid serially
+        # before the read even starts, per never-listed object. The serve
+        # and the store both 404 a missing object themselves (_proxy_raw
+        # passes error statuses through), so existence falls out of the
+        # read. Only HEAD (answered from st_size) and the local-file
+        # fallback below still stat.
+        upstream = await asyncio.to_thread(shell_mounts.serve_url_for, path)
         if upstream is not None:
             # Every remote read flows through here, so this is where the
             # shell learns a mounted file is in use: kick off (or just
             # touch) its background whole-file prefetch. Cheap no-op after
             # the first call; templates stay mount-agnostic (prefetch.py).
             shell_prefetch.schedule(path, upstream)
+            # HEAD answered from a VFS getattr rather than proxied: ranged
+            # clients (duckdb httpfs, fsspec/zarr, geotiff) probe the length
+            # before reading, and proxying that probe is a full remote round
+            # trip for headers the getattr already knows. The serve reads
+            # the same rclone remote, so the sizes agree. In a thread — a
+            # cold getattr would otherwise stall the event loop.
+            if request.method == "HEAD":
+                st = await asyncio.to_thread(_stat_or_none, path)
+                if st is None:
+                    return _error(f"no such file: {path}", status=404)
+                media_type, _ = mimetypes.guess_type(path)
+                return Response(status_code=200, headers={
+                    "content-length": str(st.st_size),
+                    "content-type": media_type or "application/octet-stream",
+                    "accept-ranges": "bytes",
+                    "last-modified": email.utils.formatdate(
+                        st.st_mtime, usegmt=True),
+                })
+            # Cold reads go straight to the store: the serve's VFS layer
+            # serializes concurrent uncached range reads of one file (an
+            # analytical scan pays ~0.25s per seek) and its per-file open
+            # ceremony dwarfs a small metadata fetch (zarr.json), while the
+            # store answers the same GETs in parallel. Once the prefetch
+            # has landed the whole file in the serve cache, the serve
+            # replays ranges from local disk and wins again. A 307 rather
+            # than a proxied fetch: the client (duckdb httpfs, fsspec)
+            # re-issues each GET against the store itself with its own
+            # pooled parallel connections — proxying here paid a fresh TLS
+            # handshake per range read (measured 2x on the point-read
+            # phase) and streamed every byte through this process twice.
+            # Whole-file GETs redirect too (zarr stores read many tiny
+            # metadata files whole; schedule() above warms the serve cache
+            # regardless). GET only: presigned links are minted for GET (a
+            # HEAD fails their signature). Native clients only: a browser
+            # fetch would follow the redirect cross-origin and die on CORS
+            # — browsers always send Sec-Fetch-Mode, duckdb's httpfs never
+            # does, so its absence is the gate.
+            if ("sec-fetch-mode" not in request.headers
+                    and not shell_prefetch.is_done(path)):
+                direct = await asyncio.to_thread(
+                    shell_mounts.upstream_url_for, path)
+                if direct:
+                    return RedirectResponse(direct, status_code=307)
+            # Not redirected (browser, warm read, or no direct URL): proxy the
+            # bytes. Guard non-files here — the cold redirect path above is the
+            # never-listed-object hot path and stays stat-free, but a directory
+            # proxied through rclone serve comes back as a 200 HTML listing, so
+            # stat before serving (warm getattr is cheap; a directory 404s).
+            st = await asyncio.to_thread(_stat_or_none, path)
+            if st is None:
+                return _error(f"no such file: {path}", status=404)
             resp = await asyncio.to_thread(_proxy_raw, upstream, request)
             if resp is not None:
                 return resp  # upstream unreachable -> plain file read below
+        st = await asyncio.to_thread(_stat_or_none, path)
+        if st is None:
+            return _error(f"no such file: {path}", status=404)
         media_type, _ = mimetypes.guess_type(path)
         return FileResponse(path, media_type=media_type or "application/octet-stream")
 
@@ -1569,6 +1665,33 @@ def create_app(start_dir: str) -> FastAPI:
         html = body.get("html")
         params = body.get("params") or {}
 
+        # Cold mount-backed reads: swap the raw-proxy source_url for the
+        # store's own URL before the reader sees it. The /api/fs/raw 307
+        # already sends cold ranged GETs to the store, but a redirect
+        # defeats httpfs connection pooling — duckdb re-follows it per
+        # range read and opens a fresh TLS connection to the store each
+        # time (measured ~3x on a cold open: schema 8.5s vs 3.4s, a
+        # 9-column page 14.5s vs 3.8s). Handing the reader the direct URL
+        # up front lets httpfs pool its store connections normally. Done
+        # here in the server, not in templates: pages keep sending the raw
+        # URL and stay mount-agnostic. Warm files (prefetch landed) keep
+        # the raw URL so the serve replays ranges from local disk; the
+        # explicit schedule() below matters because a direct-reading run
+        # never touches /api/fs/raw, which is otherwise the only place the
+        # prefetch learns a file is in use.
+        src = params.get("source_url")
+        if isinstance(src, str):
+            parts = urlsplit(src)
+            fpath = dict(parse_qsl(parts.query)).get("path")
+            if parts.path.endswith("/api/fs/raw") and fpath:
+                upstream = shell_mounts.serve_url_for(fpath)
+                if upstream is not None and not shell_prefetch.is_done(fpath):
+                    shell_prefetch.schedule(fpath, upstream)
+                    direct = await asyncio.to_thread(
+                        shell_mounts.upstream_url_for, fpath)
+                    if direct:
+                        params = dict(params, source_url=direct)
+
         if not py:
             return _error("request body must include 'py': a path to a Python file")
 
@@ -1616,8 +1739,16 @@ def create_app(start_dir: str) -> FastAPI:
         if not out or not os.path.isabs(out):
             return _error("'out' must be an absolute path to the output directory")
 
+        # Optional file selection (same as the Deploy modal): extra files to bundle
+        # beyond the literal-call scan, and files to drop from it. Absent -> auto-only.
+        include = body.get("include") or []
+        exclude = body.get("exclude") or []
+        for name, value in (("include", include), ("exclude", exclude)):
+            if not isinstance(value, list) or any(not isinstance(v, str) for v in value):
+                return _error(f"'{name}' must be an array of relative file paths")
+
         try:
-            plan = export_page(page, out)
+            plan = export_page(page, out, include=include, exclude=exclude)
         except ExportError as e:
             return _error(str(e))
 
@@ -1625,6 +1756,7 @@ def create_app(start_dir: str) -> FastAPI:
             "out": os.path.abspath(out),
             "entrypoints": [{"path": e.path, "name": e.name, "file": e.file} for e in plan.entrypoints],
             "assets": [{"path": a.path, "name": a.name, "file": a.file} for a in plan.assets],
+            "warnings": plan.warnings,
         }
 
     return app

@@ -248,7 +248,7 @@
   var folderName = (fileDir.split("/").pop() || "canvas");
 
   // Header renders immediately from the path, BEFORE the reader runs — so a
-  // reader error (which surfaces via the runtime's traceback overlay, SPEC §26)
+  // reader error (which surfaces via the runtime's traceback overlay, SPEC §28)
   // still leaves a titled page rather than a blank one.
   nameEl.textContent = folderName;
 
@@ -260,7 +260,7 @@
   }
 
   // ---- shell /view/ URL codec (mirrors router.ts urlForFsPath) -----------
-  // Sibling files open in a NEW TAB (SPEC §26 out-of-scope: no in-shell nav).
+  // Sibling files open in a NEW TAB (SPEC §28 out-of-scope: no in-shell nav).
   function urlForFsPath(fsPath) {
     var norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;
     var rest = norm.replace(/^\/+/, "");
@@ -270,7 +270,7 @@
 
   // ---- data -------------------------------------------------------------
   // No try/catch: a reader rejection carries a `.traceback` and the runtime's
-  // unhandledrejection overlay shows it (SPEC §26). Header is already painted.
+  // unhandledrejection overlay shows it (SPEC §28). Header is already painted.
   var data = await fused.runPython("./reader.py", { file: file });
   data = data || {};
   var nodes = Array.isArray(data.nodes) ? data.nodes : [];
@@ -372,7 +372,7 @@
   function num(v) { var n = parseFloat(v); return isFinite(n) ? n : null; }
 
   function initCamera() {
-    // URL params (post-interaction) override the toml viewport (SPEC §26).
+    // URL params (post-interaction) override the toml viewport (SPEC §28).
     // Zoom from a URL or stored viewport is clamped to the interactive
     // range — a shared/hand-edited URL must not restore an unusable camera.
     function clampZoom(zv) { return Math.max(MIN_ZOOM, Math.min(zv, MAX_ZOOM)); }
@@ -552,7 +552,7 @@
       ctx.restore();
     });
 
-    // 3) UDF node cards. Hidden nodes ghost at 40% alpha (SPEC §26).
+    // 3) UDF node cards. Hidden nodes ghost at 40% alpha (SPEC §28).
     nodes.slice().sort(byZ).forEach(function (n) {
       ctx.globalAlpha = (n.visible === false) ? 0.4 : 1;
 

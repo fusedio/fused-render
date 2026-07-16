@@ -42,6 +42,15 @@ def _write_baked_ref(root: str, ref: str, build_data: dict) -> None:
     )
 
 
+# The template starter kit ships the two canonical authoring skills so a
+# scaffolded template carries its own guidance. The skills live once at
+# skills/<name>/ (single source, D106); they are copied into the starter kit at
+# build time (see _copy_starter_skills), gitignored there, and shipped via the
+# `artifacts` glob in pyproject — the same not-committed-but-packaged pattern as
+# the Vite shell (D54).
+_STARTER_SKILLS = ("fused-render-authoring", "fused-render-custom-templates")
+
+
 class ShellBuildHook(BuildHookInterface):
     PLUGIN_NAME = "custom"
 
@@ -50,6 +59,7 @@ class ShellBuildHook(BuildHookInterface):
             return
 
         self._bake_branch_ref(build_data)
+        self._copy_starter_skills()
 
         frontend = os.path.join(self.root, "frontend")
         dist_index = os.path.join(
@@ -76,6 +86,23 @@ class ShellBuildHook(BuildHookInterface):
             [npm, "install", "--no-audit", "--no-fund"], cwd=frontend, check=True
         )
         subprocess.run([npm, "run", "build"], cwd=frontend, check=True)
+
+    def _copy_starter_skills(self) -> None:
+        """Copy the canonical authoring skills into the starter kit's
+        .claude/skills/ so every scaffolded template carries them. Source is the
+        single repo-level skills/<name>/ (D106); the copies are gitignored and
+        shipped via pyproject's `artifacts` glob. Refresh each time so a
+        packaged build always reflects the current skill.
+        """
+        dest_root = os.path.join(
+            self.root, "fused_render", "template_starter", ".claude", "skills"
+        )
+        for name in _STARTER_SKILLS:
+            src = os.path.join(self.root, "skills", name)
+            dest = os.path.join(dest_root, name)
+            if os.path.isdir(dest):
+                shutil.rmtree(dest)
+            shutil.copytree(src, dest)
 
     def _bake_branch_ref(self, build_data: dict) -> None:
         """Resolve the ref from ``FUSED_RENDER_BRANCH`` and bake it into the

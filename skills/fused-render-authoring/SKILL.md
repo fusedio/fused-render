@@ -58,7 +58,7 @@ The runtime is injected automatically when the explorer renders the page. Never 
 
 | Call | Behavior |
 |---|---|
-| `await fused.runPython(pyPath, params)` | Runs `main(**params)` of the file at `pyPath` — relative to **this html file's directory**, or absolute. Resolves with the return value; rejects with an `Error` carrying `.type`, `.message`, `.traceback`, `.stdout`. |
+| `await fused.runPython(pyPath, params, opts?)` | Runs `main(**params)` of the file at `pyPath` — relative to **this html file's directory**, or absolute. Resolves with the return value; rejects with an `Error` carrying `.type`, `.message`, `.traceback`, `.stdout`. `opts.key` (string) makes it a **latest-wins channel** — a newer call on that key aborts the prior in-flight one (cancel stale slider scrubs); `opts.signal` is a standard `AbortSignal` that composes with it. A superseded/aborted call rejects with a benign `AbortError` the runtime swallows (no overlay, no console noise). |
 | `fused.params.get(k)` | Current value from the URL, as a **string** (or `undefined`). |
 | `fused.params.getAll()` | All non-reserved params as an object — plus `_file` (read-only) when the page was opened as a preview template, even though `_file` is otherwise a reserved key. |
 | `fused.params.set(k, v)` | Writes to the URL (replaceState — no history spam). **Throws unless `v` is a string** — do `String(n)` yourself. Then fires `onChange`. |
@@ -72,7 +72,7 @@ The runtime is injected automatically when the explorer renders the page. Never 
 Notes:
 - Params are **strings only, always**. Parse numbers yourself (`parseInt(fused.params.get("limit") || "50", 10)`), JSON-encode structure yourself if you need it.
 - Uncaught `runPython` rejections auto-show a red traceback overlay — good default for debugging; catch the rejection yourself when you want custom error UI.
-- Concurrent `runPython` calls are fine; responses can arrive out of order — guard with a request counter if a stale response could overwrite a fresh one.
+- Concurrent `runPython` calls are fine; responses can arrive out of order. For the common slider/scrub case — where a fast drag fires a request per intermediate value and only the last matters — pass `{ key: "some-name" }`: each new call on that key **aborts** the prior in-flight one, so stale requests are cancelled instead of computed and drawn out of order. (No key ⇒ no cancellation, so independent fetches and same-file polling loops are untouched.) Use `{ signal }` with your own `AbortController` when you need to cancel on something other than the next call.
 - **Reach the filesystem only through these helpers**, never by fetching the server's `/api/fs/*` endpoints yourself — the helpers are the stable contract and carry required headers (writes are rejected without them).
 - `readFile`/`rawUrl` split: text you'll process → `readFile`; anything the browser should load itself (images, media, PDFs, download links) → `rawUrl`.
 
@@ -112,7 +112,9 @@ Every interactive view is the same loop: **params are the state; controls write 
       limitEl.value = limit;                              // reflect state INTO controls
       out.textContent = "Loading…";
       try {
-        const data = await fused.runPython("./largest.py", { limit });
+        // key: dragging the slider supersedes stale in-flight runs — only the
+        // value the slider lands on is computed and drawn.
+        const data = await fused.runPython("./largest.py", { limit }, { key: "largest" });
         out.innerHTML = renderTable(data.entries);        // author's own rendering
       } catch (err) {
         out.textContent = `${err.type}: ${err.message}`;  // or rethrow for the overlay

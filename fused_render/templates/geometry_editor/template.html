@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Geometry editor</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js"></script>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: #e8eaed; background: #131417; font-size: 13px; }
+  #map { position: absolute; inset: 0; }
+  .panel { position: absolute; background: rgba(19,20,23,.92); border: 1px solid #2a2d33;
+    border-radius: 10px; padding: 8px 10px; backdrop-filter: blur(6px); z-index: 10; }
+  .chip { display: inline-block; background: #1b1d21; border: 1px solid #2a2d33;
+    border-radius: 999px; padding: 2px 9px; font-size: 11.5px; color: #9aa0a6;
+    white-space: nowrap; }
+  .chip b { color: #e8eaed; font-weight: 600; }
+  input[type=text] { font: inherit; color: #e8eaed; background: #1b1d21;
+    border: 1px solid #2a2d33; border-radius: 6px; padding: 4px 8px; }
+  input[type=text]:focus { outline: 1px solid #2b5fd9; }
+  button { font: inherit; color: #e8eaed; background: #1b1d21; border: 1px solid #2a2d33;
+    border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+  button:hover { border-color: #4a4d55; }
+  button.on { background: #2b5fd9; border-color: #2b5fd9; font-weight: 600; }
+  button.accent { background: #1f7a4c; border-color: #1f7a4c; font-weight: 600; }
+  button.accent:hover { background: #269159; }
+  button.danger:hover { border-color: #ff7b72; color: #ff7b72; }
+  button:disabled { opacity: .45; cursor: default; }
+
+  #topbar { top: 10px; left: 10px; right: 10px; display: flex; flex-wrap: wrap;
+    gap: 6px; align-items: center; }
+  #topbar .title { font-weight: 700; margin-right: 2px; }
+  #topbar .sep { width: 1px; height: 20px; background: #2a2d33; margin: 0 4px; }
+  #topbar .grow { flex: 1; }
+  #dirty { color: #ffd43b; font-size: 11.5px; }
+
+  #sidePanel { position: absolute; right: 10px; top: 58px; width: 290px; z-index: 10;
+    display: flex; flex-direction: column; gap: 10px; pointer-events: none; }
+  #sidePanel > div { pointer-events: auto; }
+  .card { background: rgba(19,20,23,.92); border: 1px solid #2a2d33; border-radius: 10px;
+    padding: 9px 11px; backdrop-filter: blur(6px); }
+  .card h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: #9aa0a6; margin: 0 0 7px; }
+  #outPath { width: 100%; margin-bottom: 7px; font-size: 12px; }
+  label.radio { display: inline-flex; gap: 5px; align-items: center; margin-right: 10px;
+    color: #9aa0a6; cursor: pointer; font-size: 12px; }
+  #exportBtn { width: 100%; margin-top: 7px; }
+  #exportResult { font-size: 11.5px; margin-top: 7px; display: none; word-break: break-all; }
+  #exportResult.ok { color: #51cf66; } #exportResult.err { color: #ff7b72; }
+  #exportResult a { color: #8ab4ff; }
+  #selCard { display: none; }
+  #selMeta { color: #9aa0a6; font-size: 12px; margin-bottom: 6px; }
+  #selMeta b { color: #e8eaed; }
+  #props { display: grid; grid-template-columns: minmax(60px, 40%) 1fr; gap: 3px 6px;
+    max-height: 34vh; overflow-y: auto; }
+  #props .k { color: #9aa0a6; align-self: center; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; font-size: 11.5px; }
+  #props input { padding: 2px 6px; font-size: 12px; width: 100%; }
+
+  #hintbar { position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+    background: rgba(19,20,23,.85); border: 1px solid #2a2d33; border-radius: 999px;
+    padding: 4px 14px; color: #9aa0a6; font-size: 11.5px; z-index: 10; white-space: nowrap; }
+  #hintbar b { color: #e8eaed; font-weight: 600; }
+
+  #empty { position: absolute; inset: 0; display: flex; align-items: center;
+    justify-content: center; z-index: 15; background: rgba(19,20,23,.65); }
+  #empty .box { background: rgba(19,20,23,.95); border: 1px solid #2a2d33; border-radius: 12px;
+    padding: 22px 26px; width: 520px; max-width: 90vw; }
+  #empty h1 { font-size: 15px; margin: 0 0 6px; }
+  #empty p { color: #9aa0a6; margin: 0 0 12px; font-size: 12.5px; line-height: 1.5; }
+  #empty .row { display: flex; gap: 6px; }
+  #empty input { flex: 1; }
+  #emptyErr { color: #ff7b72; font-size: 12px; margin-top: 8px; display: none; }
+
+  #modeBanner { position: absolute; top: 56px; left: 50%; transform: translateX(-50%);
+    z-index: 20; background: rgba(19,20,23,.92); border: 1px solid #2b5fd9;
+    border-radius: 8px; padding: 5px 14px; display: none; font-size: 12.5px; }
+  #toast { position: absolute; bottom: 44px; left: 50%; transform: translateX(-50%);
+    background: rgba(12,13,15,.94); border: 1px solid #2a2d33; border-radius: 8px;
+    padding: 8px 15px; display: none; z-index: 30; max-width: 70vw; }
+  .spin { display: inline-block; width: 11px; height: 11px; border: 2px solid #4a4d55;
+    border-top-color: #8ab4ff; border-radius: 50%; animation: sp .8s linear infinite;
+    vertical-align: -2px; }
+  @keyframes sp { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div id="topbar" class="panel">
+  <span class="title">Geometry editor</span>
+  <span class="chip" id="fileChip" style="display:none"></span>
+  <span class="chip" id="statChip" style="display:none"></span>
+  <span id="dirty"></span>
+  <span class="sep"></span>
+  <button id="mEdit" class="on" title="Select features, drag vertices">Edit</button>
+  <button id="mLine" title="Draw a new LineString">+ Line</button>
+  <button id="mPoint" title="Add a new Point">+ Point</button>
+  <button id="mPoly" title="Draw a new Polygon">+ Polygon</button>
+  <span class="sep"></span>
+  <button id="undoBtn" disabled title="&#8984;Z">&#8630;</button>
+  <button id="redoBtn" disabled title="&#8679;&#8984;Z">&#8631;</button>
+  <button id="delFeatBtn" class="danger" disabled title="Delete selected feature (&#9003;)">Delete</button>
+  <span class="grow"></span>
+</div>
+
+<div id="sidePanel">
+  <div class="card" id="exportCard" style="display:none">
+    <h2>Export GeoParquet</h2>
+    <input type="text" id="outPath" spellcheck="false">
+    <div>
+      <label class="radio"><input type="radio" name="crs" value="original" checked> original CRS <span class="chip" id="crsChip"></span></label>
+      <label class="radio"><input type="radio" name="crs" value="wgs84"> EPSG:4326</label>
+    </div>
+    <button class="accent" id="exportBtn">Export GeoParquet</button>
+    <div id="exportResult"></div>
+  </div>
+  <div class="card" id="selCard">
+    <h2>Selected feature</h2>
+    <div id="selMeta"></div>
+    <div id="props"></div>
+  </div>
+</div>
+
+<div id="hintbar">
+  <b>click</b> select &nbsp;&middot;&nbsp; <b>drag handle</b> move &nbsp;&middot;&nbsp;
+  <b>midpoint</b> add &nbsp;&middot;&nbsp; <b>&#8997;-click</b> remove &nbsp;&middot;&nbsp;
+  <b>&#9003;</b> delete feature &nbsp;&middot;&nbsp; <b>&#8984;Z</b> undo
+</div>
+
+<div id="empty">
+  <div class="box">
+    <h1>Geometry editor</h1>
+    <p>Edit a vector file point-by-point and export it as GeoParquet.
+       Open any <b>.shp / .geojson / .gpkg / .fgb / .kml / .parquet</b> from the file
+       explorer with this template, or paste a path:</p>
+    <div class="row">
+      <input type="text" id="emptyPath" placeholder="/absolute/path/to/file.shp" spellcheck="false">
+      <button id="emptyLoad" class="on">Load</button>
+    </div>
+    <div id="emptyErr"></div>
+  </div>
+</div>
+
+<div id="modeBanner"></div>
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const fmtSize = b => b > 1e6 ? (b / 1e6).toFixed(1) + " MB" : b > 1e3 ? (b / 1e3).toFixed(0) + " KB" : b + " B";
+const deep = o => JSON.parse(JSON.stringify(o));
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const getParam = k => {
+  try {
+    if (fused.params && typeof fused.params.get === "function") return fused.params.get(k);
+    if (fused.params && fused.params[k] != null) return fused.params[k];
+  } catch (e) {}
+  return null;
+};
+
+/* ============================================================ state */
+let FC = null;            // FeatureCollection being edited (EPSG:4326)
+let META = null;          // {path, name, crs, count, geom_types, columns, bounds}
+let sel = -1;             // selected feature index
+let mode = "edit";        // edit | line | point | poly
+let draft = [];           // coords while drawing
+let drag = null;          // {ri, vi, moved, skipUndo} while dragging a vertex
+let dragSnap = null;      // FC snapshot taken at drag start
+let undoStack = [], redoStack = [], editCount = 0;
+
+/* ============================================================ map */
+const map = new maplibregl.Map({
+  container: "map",
+  style: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+  center: [0, 25], zoom: 1.6, attributionControl: { compact: true },
+  doubleClickZoom: false,
+});
+map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-left");
+map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-right");
+window._map = map; // debugging handle
+map.on("error", e => console.error("maplibre error:", e && e.error ? e.error.message : e));
+
+const EMPTY = { type: "FeatureCollection", features: [] };
+// MapLibre's "load" event fires from the render loop, which stalls while the
+// tab/window is hidden (background app-tab, occluded window). Set up layers
+// idempotently from both the event and a polling fallback.
+let layersReady = false;
+map.on("load", setupLayers);
+const setupPoll = setInterval(() => { if (map.isStyleLoaded()) setupLayers(); }, 300);
+function setupLayers() {
+  if (layersReady) return;
+  layersReady = true;
+  clearInterval(setupPoll);
+  for (const id of ["data", "sel", "handles", "mids", "draft"])
+    map.addSource(id, { type: "geojson", data: EMPTY });
+
+  map.addLayer({ id: "data-fill", source: "data", type: "fill",
+    filter: ["==", ["geometry-type"], "Polygon"],
+    paint: { "fill-color": "#4fc3f7", "fill-opacity": 0.14 } });
+  map.addLayer({ id: "data-line", source: "data", type: "line",
+    filter: ["!=", ["geometry-type"], "Point"],
+    paint: { "line-color": "#4fc3f7", "line-width": 2 } });
+  map.addLayer({ id: "data-pt", source: "data", type: "circle",
+    filter: ["==", ["geometry-type"], "Point"],
+    paint: { "circle-color": "#4fc3f7", "circle-radius": 5.5,
+             "circle-stroke-color": "#0c141a", "circle-stroke-width": 1.5 } });
+
+  map.addLayer({ id: "sel-fill", source: "sel", type: "fill",
+    filter: ["==", ["geometry-type"], "Polygon"],
+    paint: { "fill-color": "#ffb347", "fill-opacity": 0.18 } });
+  map.addLayer({ id: "sel-line", source: "sel", type: "line",
+    filter: ["!=", ["geometry-type"], "Point"],
+    paint: { "line-color": "#ffb347", "line-width": 3 } });
+  map.addLayer({ id: "sel-pt", source: "sel", type: "circle",
+    filter: ["==", ["geometry-type"], "Point"],
+    paint: { "circle-color": "#ffb347", "circle-radius": 6.5,
+             "circle-stroke-color": "#1a1a1a", "circle-stroke-width": 1.5 } });
+
+  map.addLayer({ id: "mids", source: "mids", type: "circle",
+    paint: { "circle-color": "#e8ecf2", "circle-opacity": 0.55, "circle-radius": 3.5 } });
+  map.addLayer({ id: "handles", source: "handles", type: "circle",
+    paint: { "circle-color": "#ffffff", "circle-radius": 5.5,
+             "circle-stroke-color": "#ffb347", "circle-stroke-width": 2 } });
+
+  map.addLayer({ id: "draft-line", source: "draft", type: "line",
+    filter: ["!=", ["geometry-type"], "Point"],
+    paint: { "line-color": "#6fdb8f", "line-width": 2, "line-dasharray": [2, 1.5] } });
+  map.addLayer({ id: "draft-pt", source: "draft", type: "circle",
+    paint: { "circle-color": "#6fdb8f", "circle-radius": 4 } });
+
+  wireMapEvents();
+  // a file can finish loading before the basemap style does (local files are
+  // fast, carto style is not) — sync whatever state already arrived
+  refreshAll();
+  refreshDraft();
+}
+
+/* ============================================================ ring access */
+// Returns coord-array *references* into the geometry, so splices/writes mutate FC.
+function ringsOf(geom) {
+  switch (geom.type) {
+    case "Point":            return [{ point: true, closed: false }];
+    case "MultiPoint":
+    case "LineString":       return [{ coords: geom.coordinates, closed: false, scatter: geom.type === "MultiPoint" }];
+    case "Polygon":          return geom.coordinates.map(r => ({ coords: r, closed: true }));
+    case "MultiLineString":  return geom.coordinates.map(r => ({ coords: r, closed: false }));
+    case "MultiPolygon": {
+      const out = [];
+      geom.coordinates.forEach(p => p.forEach(r => out.push({ coords: r, closed: true })));
+      return out;
+    }
+    default: return [];
+  }
+}
+function setVertex(geom, ri, vi, ll) {
+  const r = ringsOf(geom)[ri];
+  if (r.point) { geom.coordinates = ll; return; }
+  r.coords[vi] = ll;
+  if (r.closed && vi === 0) r.coords[r.coords.length - 1] = ll.slice();
+}
+
+/* ============================================================ rendering */
+function refreshData()   { map.getSource("data") && map.getSource("data").setData(FC || EMPTY); }
+function refreshSel() {
+  const src = map.getSource("sel"), h = map.getSource("handles"), m = map.getSource("mids");
+  if (!src) return;
+  if (sel < 0 || !FC || !FC.features[sel]) {
+    src.setData(EMPTY); h.setData(EMPTY); m.setData(EMPTY); renderSelCard(); return;
+  }
+  const f = FC.features[sel];
+  src.setData({ type: "FeatureCollection", features: [f] });
+
+  const handles = [], mids = [];
+  ringsOf(f.geometry).forEach((r, ri) => {
+    if (r.point) {
+      handles.push(pt(f.geometry.coordinates, { ri, vi: 0 }));
+      return;
+    }
+    const n = r.coords.length, last = r.closed ? n - 1 : n; // closed: skip dup end vertex
+    for (let i = 0; i < last; i++) handles.push(pt(r.coords[i], { ri, vi: i }));
+    if (!r.scatter)
+      for (let i = 0; i < n - 1; i++)
+        mids.push(pt([(r.coords[i][0] + r.coords[i + 1][0]) / 2,
+                      (r.coords[i][1] + r.coords[i + 1][1]) / 2], { ri, vi: i + 1 }));
+  });
+  h.setData({ type: "FeatureCollection", features: handles });
+  m.setData({ type: "FeatureCollection", features: mids });
+  renderSelCard();
+}
+const pt = (c, props) => ({ type: "Feature", properties: props, geometry: { type: "Point", coordinates: c.slice(0, 2) } });
+function refreshDraft() {
+  const src = map.getSource("draft");
+  if (!src) return;
+  const feats = draft.map(c => pt(c, {}));
+  if (draft.length > 1)
+    feats.push({ type: "Feature", properties: {},
+      geometry: { type: "LineString", coordinates: mode === "poly" && draft.length > 2 ? [...draft, draft[0]] : draft } });
+  src.setData({ type: "FeatureCollection", features: feats });
+}
+function refreshAll() { refreshData(); refreshSel(); }
+
+/* ============================================================ undo/redo */
+function pushUndo(snapshot) {
+  undoStack.push(snapshot || deep(FC));
+  if (undoStack.length > 100) undoStack.shift();
+  redoStack = [];
+  editCount++;
+  syncButtons();
+}
+function undo() {
+  if (!undoStack.length) return;
+  redoStack.push(deep(FC));
+  FC = undoStack.pop();
+  if (sel >= FC.features.length) sel = -1;
+  editCount = Math.max(0, editCount - 1);
+  refreshAll(); syncButtons();
+}
+function redo() {
+  if (!redoStack.length) return;
+  undoStack.push(deep(FC));
+  FC = redoStack.pop();
+  if (sel >= FC.features.length) sel = -1;
+  editCount++;
+  refreshAll(); syncButtons();
+}
+function syncButtons() {
+  $("undoBtn").disabled = !undoStack.length;
+  $("redoBtn").disabled = !redoStack.length;
+  $("delFeatBtn").disabled = sel < 0;
+  $("dirty").textContent = editCount ? `${editCount} edit${editCount > 1 ? "s" : ""} pending` : "";
+  renderChips();
+}
+
+/* ============================================================ map events */
+function wireMapEvents() {
+  for (const l of ["data-fill", "data-line", "data-pt"]) {
+    map.on("mouseenter", l, () => { if (mode === "edit" && !drag) map.getCanvas().style.cursor = "pointer"; });
+    map.on("mouseleave", l, () => { if (!drag) map.getCanvas().style.cursor = ""; });
+  }
+  map.on("mouseenter", "handles", () => { if (!drag) map.getCanvas().style.cursor = "move"; });
+  map.on("mouseleave", "handles", () => { if (!drag) map.getCanvas().style.cursor = ""; });
+  map.on("mouseenter", "mids", () => { if (!drag) map.getCanvas().style.cursor = "copy"; });
+  map.on("mouseleave", "mids", () => { if (!drag) map.getCanvas().style.cursor = ""; });
+
+  map.on("mousedown", "handles", e => {
+    if (mode !== "edit" || sel < 0) return;
+    e.preventDefault();
+    const p = e.features[0].properties;
+    if (e.originalEvent.altKey) { deleteVertex(p.ri, p.vi); return; }
+    drag = { ri: p.ri, vi: p.vi };
+    dragSnap = deep(FC);
+    map.dragPan.disable();
+    map.getCanvas().style.cursor = "grabbing";
+  });
+  map.on("mousemove", e => {
+    if (!drag) return;
+    drag.moved = true;
+    setVertex(FC.features[sel].geometry, drag.ri, drag.vi, [e.lngLat.lng, e.lngLat.lat]);
+    refreshSel(); // full data layer refreshed on mouseup (cheaper while dragging)
+  });
+  map.on("mouseup", () => {
+    if (!drag) return;
+    if (drag.moved && !drag.skipUndo) pushUndo(dragSnap); // snapshot taken at drag start
+    drag = null; dragSnap = null;
+    map.dragPan.enable();
+    map.getCanvas().style.cursor = "";
+    refreshAll();
+  });
+  map.on("contextmenu", "handles", e => {
+    if (mode !== "edit" || sel < 0) return;
+    e.preventDefault();
+    const p = e.features[0].properties;
+    deleteVertex(p.ri, p.vi);
+  });
+
+  map.on("mousedown", "mids", e => {
+    if (mode !== "edit" || sel < 0) return;
+    e.preventDefault();
+    const p = e.features[0].properties;
+    pushUndo();
+    const r = ringsOf(FC.features[sel].geometry)[p.ri];
+    r.coords.splice(p.vi, 0, [e.lngLat.lng, e.lngLat.lat]);
+    refreshAll();
+    // immediately start dragging the new vertex (undo entry already pushed above)
+    drag = { ri: p.ri, vi: p.vi, skipUndo: true };
+    dragSnap = null;
+    map.dragPan.disable();
+  });
+
+  map.on("click", e => {
+    if (mode === "edit") {
+      const hits = map.queryRenderedFeatures(e.point, { layers: ["data-pt", "data-fill", "data-line"] });
+      selectFeature(hits.length ? hits[0].id : -1);
+      return;
+    }
+    if (mode === "point") {
+      pushUndo();
+      addFeature({ type: "Point", coordinates: [e.lngLat.lng, e.lngLat.lat] });
+      setMode("edit");
+      return;
+    }
+    draft.push([e.lngLat.lng, e.lngLat.lat]);
+    refreshDraft();
+    banner();
+  });
+  map.on("dblclick", e => {
+    if (mode === "line" || mode === "poly") { e.preventDefault(); finishDraft(); }
+  });
+}
+
+function selectFeature(idx) {
+  sel = (typeof idx === "number" && idx >= 0) ? idx : -1;
+  refreshSel(); syncButtons();
+}
+
+function deleteVertex(ri, vi) {
+  const geom = FC.features[sel].geometry;
+  const r = ringsOf(geom)[ri];
+  if (r.point) { toast("This is a Point — delete the whole feature instead (⌫)"); return; }
+  const min = r.closed ? 4 : 2;
+  if (r.coords.length <= min) {
+    toast(r.closed ? "A ring needs at least 3 corners — delete the feature instead"
+                   : "Keeping the last 2 points — delete the feature instead");
+    return;
+  }
+  pushUndo();
+  r.coords.splice(vi, 1);
+  if (r.closed && vi === 0) r.coords[r.coords.length - 1] = r.coords[0].slice();
+  refreshAll();
+}
+
+function deleteFeature() {
+  if (sel < 0) return;
+  pushUndo();
+  FC.features.splice(sel, 1);
+  reindex();
+  sel = -1;
+  refreshAll(); syncButtons();
+}
+
+function reindex() { FC.features.forEach((f, i) => { f.id = i; }); }
+
+function addFeature(geometry) {
+  const props = {};
+  (META.columns || []).forEach(c => { props[c] = null; });
+  FC.features.push({ type: "Feature", id: FC.features.length, properties: props, geometry });
+  refreshAll();
+  selectFeature(FC.features.length - 1);
+  toast("Feature added");
+}
+
+function finishDraft() {
+  if (mode === "line" && draft.length >= 2) {
+    pushUndo();
+    addFeature({ type: "LineString", coordinates: draft.slice() });
+  } else if (mode === "poly" && draft.length >= 3) {
+    pushUndo();
+    addFeature({ type: "Polygon", coordinates: [[...draft.map(c => c.slice()), draft[0].slice()]] });
+  } else if (draft.length) {
+    toast(mode === "poly" ? "A polygon needs at least 3 points" : "A line needs at least 2 points");
+    return;
+  }
+  setMode("edit");
+}
+
+/* ============================================================ modes */
+const MODE_BTN = { edit: "mEdit", line: "mLine", point: "mPoint", poly: "mPoly" };
+function setMode(m) {
+  mode = m; draft = []; refreshDraft();
+  for (const [k, id] of Object.entries(MODE_BTN)) $(id).classList.toggle("on", k === m);
+  map.getCanvas().style.cursor = m === "edit" ? "" : "crosshair";
+  banner();
+}
+function banner() {
+  const el = $("modeBanner");
+  if (mode === "edit") { el.style.display = "none"; return; }
+  el.style.display = "block";
+  el.textContent = mode === "point" ? "Click the map to place a point (esc to cancel)"
+    : `Click to add points (${draft.length} so far) — ⏎ or double-click to finish, esc to cancel`;
+}
+$("mEdit").onclick  = () => setMode("edit");
+$("mLine").onclick  = () => { if (FC) setMode("line"); };
+$("mPoint").onclick = () => { if (FC) setMode("point"); };
+$("mPoly").onclick  = () => { if (FC) setMode("poly"); };
+$("undoBtn").onclick = undo;
+$("redoBtn").onclick = redo;
+$("delFeatBtn").onclick = deleteFeature;
+
+window.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+  const meta = e.metaKey || e.ctrlKey;
+  if (meta && e.key.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? redo() : undo(); }
+  else if (e.key === "Escape") setMode("edit");
+  else if (e.key === "Enter" && (mode === "line" || mode === "poly")) finishDraft();
+  else if ((e.key === "Backspace" || e.key === "Delete") && mode === "edit" && sel >= 0) { e.preventDefault(); deleteFeature(); }
+});
+
+/* ============================================================ panels */
+function renderChips() {
+  if (!META) return;
+  const fc = $("fileChip"), sc = $("statChip");
+  fc.style.display = sc.style.display = "inline-block";
+  fc.innerHTML = `<b>${esc(META.name)}</b>`;
+  fc.title = META.path;
+  const crs = META.crs.length > 30 ? "custom CRS" : META.crs;
+  sc.textContent = `${FC.features.length} features · ${META.geom_types.join("/")} · ${crs}`;
+}
+function renderLayerUI() {
+  $("empty").style.display = "none";
+  $("exportCard").style.display = "block";
+  renderChips();
+  $("crsChip").textContent = META.crs.length > 30 ? "custom" : META.crs;
+  const stem = META.path.replace(/\.[^./]+$/, "");
+  $("outPath").value = `${stem}_edited.parquet`;
+  $("exportResult").style.display = "none";
+}
+function renderSelCard() {
+  const card = $("selCard");
+  if (sel < 0 || !FC || !FC.features[sel]) { card.style.display = "none"; return; }
+  card.style.display = "block";
+  const f = FC.features[sel];
+  const nVert = ringsOf(f.geometry).reduce((a, r) => a + (r.point ? 1 : r.coords.length - (r.closed ? 1 : 0)), 0);
+  $("selMeta").innerHTML = `#${sel} · <b>${f.geometry.type}</b> · ${nVert} points`;
+  const props = f.properties || {};
+  $("props").innerHTML = "";
+  for (const k of Object.keys(props)) {
+    const kEl = document.createElement("span"); kEl.className = "k"; kEl.title = k; kEl.textContent = k;
+    const inp = document.createElement("input"); inp.type = "text";
+    inp.value = props[k] === null || props[k] === undefined ? "" : String(props[k]);
+    inp.onchange = () => {
+      pushUndo();
+      const was = props[k];
+      let v = inp.value;
+      if (v === "") v = null;
+      else if (typeof was === "number" && !isNaN(parseFloat(v))) v = parseFloat(v);
+      f.properties[k] = v;
+      refreshData();
+    };
+    $("props").append(kEl, inp);
+  }
+  if (!Object.keys(props).length) $("props").innerHTML = '<span class="k">no attributes</span>';
+}
+
+/* ============================================================ python bridge */
+const py = params => fused.runPython("./geometry_io.py", params);
+const errMsg = e => (e && e.message) ? e.message : String(e);
+
+async function loadFile(path) {
+  toast('<span class="spin"></span>&nbsp; loading ' + esc(path.split("/").pop()) + "&hellip;", 60000);
+  try {
+    const r = await py({ action: "load", path });
+    META = r.meta; FC = r.fc;
+    reindex();
+    sel = -1; undoStack = []; redoStack = []; editCount = 0; drag = null;
+    setMode("edit");
+    refreshAll(); syncButtons(); renderLayerUI();
+    const [w, s, e, n] = META.bounds;
+    map.fitBounds([[w, s], [e, n]], { padding: 70, duration: 800, maxZoom: 17 });
+    toast(`Loaded ${META.count} feature${META.count > 1 ? "s" : ""}`);
+  } catch (err) {
+    toast("", 1);
+    const ee = $("emptyErr");
+    $("empty").style.display = "flex";
+    ee.style.display = "block";
+    ee.textContent = "load failed: " + errMsg(err);
+  }
+}
+$("emptyLoad").onclick = () => { const p = $("emptyPath").value.trim(); if (p) loadFile(p); };
+$("emptyPath").addEventListener("keydown", e => { if (e.key === "Enter") $("emptyLoad").click(); });
+
+async function exportParquet() {
+  if (!FC) return;
+  if (!FC.features.length) { toast("Nothing to export — the layer is empty"); return; }
+  const out = $("outPath").value.trim();
+  if (!out) { toast("Set an output path first"); return; }
+  const crsMode = document.querySelector('input[name=crs]:checked').value;
+  const btn = $("exportBtn");
+  btn.disabled = true; btn.innerHTML = '<span class="spin"></span>&nbsp; writing&hellip;';
+  const res = $("exportResult");
+  try {
+    const clean = { type: "FeatureCollection",
+      features: FC.features.map(f => ({ type: "Feature", properties: f.properties, geometry: f.geometry })) };
+    const r = await py({ action: "export", geojson: JSON.stringify(clean), out,
+                         orig_crs: META.crs, crs_mode: crsMode });
+    res.className = "ok"; res.style.display = "block";
+    res.innerHTML = `&#10003; wrote ${r.count} features (${r.crs.length > 30 ? "custom CRS" : esc(r.crs)}, ${fmtSize(r.size)}) — <b>${esc(r.out.split("/").pop())}</b> <a id="revealLink" style="cursor:pointer">reveal in Finder</a>`;
+    document.getElementById("revealLink").onclick = () =>
+      fetch("/api/fs/reveal", { method: "POST",
+        headers: { "Content-Type": "application/json", "X-Fused": "1" },
+        body: JSON.stringify({ path: r.out }) });
+    editCount = 0; syncButtons();
+    toast("GeoParquet written &#10003;");
+  } catch (err) {
+    res.className = "err"; res.style.display = "block";
+    res.textContent = "export failed: " + errMsg(err);
+  } finally {
+    btn.disabled = false; btn.textContent = "Export GeoParquet";
+  }
+}
+$("exportBtn").onclick = exportParquet;
+
+/* ============================================================ toast + boot */
+let toastTimer;
+function toast(html, ms = 3500) {
+  const el = $("toast");
+  if (!html) { el.style.display = "none"; return; }
+  el.innerHTML = html; el.style.display = "block";
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.style.display = "none"; }, ms);
+}
+
+(function boot() {
+  if (typeof fused === "undefined") {
+    $("emptyErr").style.display = "block";
+    $("emptyErr").textContent = "Open this page inside FusedRender (the fused bridge is missing).";
+    return;
+  }
+  // template dispatch passes _file; standalone links may use ?file= on the
+  // parent /view URL (the shell strips extra params before the iframe)
+  let p = getParam("file") || getParam("_file");
+  if (!p) { try { p = new URLSearchParams(parent.location.search).get("file"); } catch (e) {} }
+  if (p) loadFile(p);
+})();
+</script>
+</body>
+</html>

@@ -1,11 +1,11 @@
-"""Condition gate for the `canvas` template (SPEC CT-12, §26).
+"""Condition gate for the `canvas` template (SPEC CT-12, §28).
 
 Runs in the SERVER process when `/api/fs/conditions` resolves a `.toml`'s
 gated modes in the background (stat only marks the entry `conditional`,
 CT-12 deferred evaluation). It must be cheap and must NEVER raise — a broken
 gate is meant to *deny* the mode, and returning False is how we do that
 (`server._run_condition` also catches, but we fail closed here explicitly,
-SPEC CT-12/§26).
+SPEC CT-12/§28).
 
 `method(target_path)` is True only when the file is a genuine Fused canvas
 definition: basename `canvas.toml` (the cheap pre-check, done before any I/O)
@@ -26,7 +26,7 @@ MAX_BYTES = 2 * 1024 * 1024
 def method(target_path) -> bool:
     try:
         # Cheap pre-check first: only a file literally named canvas.toml can be
-        # a canvas, so a plain .toml never pays the open/parse cost (SPEC §26).
+        # a canvas, so a plain .toml never pays the open/parse cost (SPEC §28).
         if os.path.basename(str(target_path)).lower() != "canvas.toml":
             return False
         # Size guard before opening — a pathological file must not be parsed.

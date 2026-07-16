@@ -52,12 +52,20 @@ router = APIRouter()
 # across N connections — unlike read-ahead it fetches no extra bytes (so it
 # doesn't hurt the random-access COG/parquet case), it just saturates the link
 # on the big-file cold read that one serial S3 range GET leaves idle.
+# CacheMaxSize is the soft LRU cap on the on-disk cache (open files never
+# evicted); it lives here — not only on the serve — because the mount and the
+# serve share ONE VFS (see SERVE_VFS_OPT), so both must carry the same cap or
+# the option sets diverge and rcd splits them into two VFS instances.
+#
+# This is the CANONICAL option set: SERVE_VFS_OPT is derived from it below so
+# the two can never drift out of sync (drift is what split the VFS in two).
 VFS_OPT = {
     "CacheMode": "full",
     "ChunkSize": "8M",
     "ChunkSizeLimit": "64M",
     "ChunkStreams": 4,
     "CacheMaxAge": "24h",
+    "CacheMaxSize": "20Gi",
     "FastFingerprint": True,
     "DirCacheTime": "30s",
 }
@@ -87,7 +95,52 @@ VFS_OPT = {
 # vfs_cache_mode). An unknown `vfsOpt` key is silently ignored — the serve
 # then runs with the cache OFF and every read, warm or not, goes to the
 # store (measured: 1MB re-read 4.4s uncached vs 2ms cached).
-SERVE_VFS_OPT = {"vfs_cache_mode": "full", "vfs_cache_max_size": "5Gi"}
+#
+# The serve and the mount MUST be given the same vfs option set: rcd keeps one
+# VFS per (fs, options) and reuses it across mount/mount and serve/start only
+# when the options match EXACTLY (verified — matching options yield a single
+# entry in vfs/list, and a range cached via the serve then reads in ~0.00s
+# through the mount path; mismatched options give two VFS instances that share
+# the on-disk cache dir but not their in-memory range state, so a serve-warmed
+# range costs a fresh ~0.8s S3 fetch when read through the mount). So the flat
+# serve params are DERIVED from VFS_OPT, not hand-written — the two literals
+# silently drifting is precisely the bug. Values are stringified because
+# serve/list echoes params back as strings (bool -> "true", int -> "4"), and
+# sync_serves' drift check compares SERVE_VFS_OPT against that echo.
+_VFS_OPT_TO_SERVE_PARAM = {
+    "CacheMode": "vfs_cache_mode",
+    "ChunkSize": "vfs_read_chunk_size",
+    "ChunkSizeLimit": "vfs_read_chunk_size_limit",
+    "ChunkStreams": "vfs_read_chunk_streams",
+    "CacheMaxAge": "vfs_cache_max_age",
+    "CacheMaxSize": "vfs_cache_max_size",
+    "FastFingerprint": "vfs_fast_fingerprint",
+    "DirCacheTime": "dir_cache_time",
+}
+# KeyError here on import is deliberate: a VFS_OPT key with no serve mapping
+# must not silently fall out of the serve's option set (that would re-split
+# the VFS) — add the mapping instead.
+SERVE_VFS_OPT = {
+    _VFS_OPT_TO_SERVE_PARAM[k]: ("true" if v else "false") if isinstance(v, bool) else str(v)
+    for k, v in VFS_OPT.items()
+}
+
+# macOS mounts rclone's nfsmount through the loopback NFS client, whose
+# request timeout defaults aggressively low — a single slow 8M chunk fetch
+# overruns it and the kernel drops the WHOLE mount ("server connections
+# interrupted"; this is the failure the HTTP serve was added to route
+# analytical reads around). `timeo` is in DECISECONDS on macOS/BSD, so
+# timeo=600 raises the per-request ceiling to 60s (vs the ~1s default), and
+# retrans allows a couple of tries before the mount is declared dead — enough
+# that a genuinely slow read is merely slow, not fatal, for the local-path
+# readers that can't go through the serve (the geotiff/grid tile daemons,
+# rasterio/PIL/laspy). A truly dead mount still fails, and the health probe
+# (mount_state) runs timeout-isolated in its own thread, so a high ceiling
+# never blocks a request. Passed via mountOpt.ExtraOptions, which rclone
+# forwards verbatim as `-o` flags to the macOS `mount` command (verified in
+# the rcd -vv log). nfsmount only — the Linux path uses FUSE `mount`, which
+# ignores these NFS options.
+NFS_MOUNT_OPT = {"ExtraOptions": ["timeo=600", "retrans=2"]}
 
 # Tile-server daemon state files — the two parallel implementations that can
 # hold files open under a mount (geotiff, and the grid server shared by
@@ -132,19 +185,37 @@ def list_mounts() -> list:
     return data if isinstance(data, list) else []
 
 
+_mounts_generation = 0  # bumped on every _write; see _read_only_mountpoints
+
+
 def _write(mounts: list) -> None:
+    global _mounts_generation
     storage.write_json(_path(), mounts)
+    _mounts_generation += 1
+
+
+# mounts.json writers are all read-modify-write of the whole list, and they
+# now run on two threads: the HTTP handlers (create/delete) and the startup
+# automount daemon thread (attach_mount persisting a detected read_only
+# flag). Unserialized, one writer's stale snapshot silently drops the
+# other's record.
+_store_lock = threading.Lock()
 
 
 def mountpoint(m: dict) -> str:
     return os.path.join(mounts_dir(), m["name"])
 
 
-def add_mount(name: str, remote: str) -> dict:
+def add_mount(name: str, remote: str, read_only: bool | None = None) -> dict:
     """Validate and persist a new mount; raises ValueError on bad input.
     Does NOT mount — the endpoint decides whether create implies mount.
     Every mount is remounted at startup (see run_automount); there is no
-    per-mount opt-in."""
+    per-mount opt-in.
+
+    `read_only` marks the remote as rejecting writes (stat.writable goes
+    false for everything under the mountpoint — see server._writable). An
+    explicit value is the user's call and is never overwritten by detection;
+    leave it None to have attach_mount detect it from the remote's config."""
     name = (name or "").strip()
     remote = (remote or "").strip()
     if not name or any(ch in name for ch in "/\\:") or name.startswith("."):
@@ -153,15 +224,32 @@ def add_mount(name: str, remote: str) -> dict:
         raise ValueError(
             "remote must be an rclone spec like 'gdrive:' or 's3remote:bucket/prefix'"
         )
-    mounts = list_mounts()
-    if any(c["name"] == name for c in mounts):
-        raise ValueError(f"a mount named '{name}' already exists")
-    if any(c["remote"] == remote for c in mounts):
-        raise ValueError(f"'{remote}' is already connected")
-    m = {"id": uuid.uuid4().hex[:12], "name": name, "remote": remote}
-    mounts.append(m)
-    _write(mounts)
+    # Strict bool, not truthiness: this comes straight off a JSON body, and
+    # bool("false") is True — a client sending the string would lock a
+    # writable mount read-only AND suppress detection forever.
+    if read_only is not None and not isinstance(read_only, bool):
+        raise ValueError("read_only must be a boolean")
+    with _store_lock:
+        mounts = list_mounts()
+        if any(c["name"] == name for c in mounts):
+            raise ValueError(f"a mount named '{name}' already exists")
+        if any(c["remote"] == remote for c in mounts):
+            raise ValueError(f"'{remote}' is already connected")
+        m: dict = {"id": uuid.uuid4().hex[:12], "name": name, "remote": remote}
+        if read_only is not None:
+            m["read_only"] = read_only
+            # Marks the flag as user-chosen so attach-time re-detection
+            # leaves it alone (mount_view never exposes this field).
+            m["read_only_user"] = True
+        mounts.append(m)
+        _write(mounts)
     return m
+
+
+def _update_mount(m: dict) -> None:
+    """Persist changed fields of an existing mount record (matched by id)."""
+    with _store_lock:
+        _write([m if c["id"] == m["id"] else c for c in list_mounts()])
 
 
 def get_mount(cid: str) -> dict | None:
@@ -169,7 +257,8 @@ def get_mount(cid: str) -> dict | None:
 
 
 def remove_mount(cid: str) -> None:
-    _write([c for c in list_mounts() if c["id"] != cid])
+    with _store_lock:
+        _write([c for c in list_mounts() if c["id"] != cid])
 
 
 # -------------------------------------------------------------- rcd client
@@ -311,7 +400,11 @@ def serves_path() -> str:
 
 def _http_serves(port: int) -> dict:
     """{fs: {"addr", "id", "vfs"}} for every live rc HTTP serve. "vfs" is the
-    flat vfs_* params the serve was started with (drift check input)."""
+    vfs option params the serve was started with (every param except the
+    type/fs/addr infra keys — i.e. the vfs_* flags AND dir_cache_time, which
+    has no vfs_ prefix but is part of the shared option set). This is the
+    drift-check input, compared against SERVE_VFS_OPT; capturing only vfs_*
+    keys would drop dir_cache_time and make the check always report drift."""
     try:
         listed = _rc(port, "serve/list").get("list", [])
     except RuntimeError:
@@ -319,7 +412,7 @@ def _http_serves(port: int) -> dict:
     return {
         s["params"]["fs"]: {"addr": s.get("addr", ""), "id": s.get("id", ""),
                             "vfs": {k: v for k, v in s["params"].items()
-                                    if k.startswith("vfs_")}}
+                                    if k not in ("type", "fs", "addr")}}
         for s in listed
         if isinstance(s, dict) and s.get("params", {}).get("type") == "http"
         and s.get("params", {}).get("fs")
@@ -329,6 +422,118 @@ def _http_serves(port: int) -> dict:
 # serve/list-then-serve/start isn't atomic; concurrent syncs (automount thread
 # vs a user mount request) would each start a serve for the same remote.
 _serves_lock = threading.Lock()
+
+
+# Read-only mountpoints, cached on _mounts_generation: mount_read_only sits
+# on the stat/write hot path (server._writable runs on every /api/fs/stat),
+# so it must not re-read and re-parse the store per call the way
+# list_mounts() does. Keyed on the in-process write counter rather than
+# mounts.json's mtime — add_mount and attach-time _update_mount can each
+# write within the same mtime tick (whatever the filesystem's resolution),
+# which would leave a stale cache silently in place; the counter can't
+# collide since every writer holds _store_lock while bumping it.
+_ro_cache_lock = threading.Lock()
+_ro_cache: tuple | None = None  # (_mounts_generation, [abs read-only mountpoints])
+
+
+def _read_only_mountpoints() -> list:
+    global _ro_cache
+    gen = _mounts_generation
+    with _ro_cache_lock:
+        if _ro_cache is None or _ro_cache[0] != gen:
+            _ro_cache = (gen, [os.path.abspath(mountpoint(c))
+                               for c in list_mounts() if c.get("read_only")])
+        return _ro_cache[1]
+
+
+def mount_read_only(path: str) -> bool:
+    """True when `path` sits under a mount whose remote rejects writes (the
+    persisted `read_only` flag: detected at attach, or set at create). The
+    kernel mount can't answer this itself: with CacheMode=full a write
+    "succeeds" into the local VFS cache and only fails at the async upload,
+    so os.access(W_OK) reports writable on a remote that will never take the
+    bytes. server._writable folds this in, which flips stat.writable and the
+    /api/fs/write guard together (SPEC RO-1). A record without the flag
+    (legacy, or detection still inconclusive) stays rw — the pre-flag
+    behavior. Deliberately ignores whether the mount is currently attached:
+    a file written into a detached read-only mountpoint would be shadowed by
+    the next attach, so refusing the write is right either way."""
+    if not is_mount_backed(path):
+        return False
+    p = os.path.abspath(path)
+    return any(p == mp or p.startswith(mp + os.sep)
+               for mp in _read_only_mountpoints())
+
+
+def _s3_without_credentials(cfg: dict) -> bool:
+    """An S3 remote config carrying no way to sign requests — rclone sends
+    them unsigned, which S3 accepts for public-bucket reads only (the
+    built-in aws-open suggestion is exactly this shape). Shared predicate:
+    _public_object_url decides "public URL is reachable unsigned" with it
+    and _detect_read_only decides "writes can never be accepted"; keep the
+    definition single so the two can't drift."""
+    return (cfg.get("type") == "s3"
+            and str(cfg.get("env_auth", "")).lower() != "true"
+            and not (cfg.get("access_key_id") or cfg.get("profile")
+                     or cfg.get("shared_credentials_file")
+                     or cfg.get("session_token")))
+
+
+def _detect_read_only(port: int, fs: str) -> bool | None:
+    """Best-effort, NON-MUTATING read-onlyness probe for a remote. Never
+    writes a probe object into the user's store; instead:
+      - operations/fsinfo: a backend advertising no write feature at all
+        (Put/PutStream/Copy — e.g. http) can never take a write.
+      - config/get: an anonymous S3 remote (see _s3_without_credentials).
+    Returns None when the probe is INCONCLUSIVE — an rc call failed, or the
+    reply didn't carry the expected shape (absence of a Features map is
+    version skew, not evidence of read-onlyness) — so the caller persists
+    nothing and the next attach tries again. Credentials an IAM policy
+    limits to read still report writable: only a real write could tell, and
+    probing with one would drop junk objects into user buckets."""
+    try:
+        feats = (_rc(port, "operations/fsinfo", {"fs": fs}, timeout=10)
+                 or {}).get("Features")
+    except RuntimeError:
+        return None
+    if not isinstance(feats, dict) or not feats:
+        return None
+    if not any(feats.get(k) for k in ("Put", "PutStream", "Copy")):
+        return True
+    try:
+        cfg = _rc(port, "config/get", {"name": fs.partition(":")[0]}, timeout=10)
+    except RuntimeError:
+        return None
+    if not isinstance(cfg, dict):
+        return None
+    return _s3_without_credentials(cfg)
+
+
+def _refresh_read_only_flag(m: dict, port: int | None = None) -> None:
+    """(Re-)detect and persist `read_only` on every attach, so a remote whose
+    credentials changed since the last detection (keys added to an
+    anonymous remote, or removed) converges without deleting the mount. A
+    user-set flag (read_only_user, add_mount) is never overwritten, and an
+    inconclusive probe (None) keeps whatever is recorded. Never raises —
+    attach_mount's "error string or None" contract must hold even when
+    persisting the flag fails."""
+    try:
+        if m.get("read_only_user"):
+            return
+        if port is None:
+            # Resolved only past the user-flag check: this is an rc probe
+            # with a timeout, not worth paying when the answer is fixed.
+            port = _live_rcd_port()
+        if port is None:
+            return
+        ro = _detect_read_only(port, m["remote"])
+        if ro is None or ro == m.get("read_only"):
+            return
+        m["read_only"] = ro
+        _update_mount(m)
+    except Exception:
+        logger.warning("read-only detection for %r failed", m.get("name"),
+                       exc_info=True)
 
 
 def is_mount_backed(path: str) -> bool:
@@ -354,6 +559,170 @@ def serve_url_for(path: str) -> str | None:
             rel = os.path.relpath(p, mp).replace(os.sep, "/")
             return base.rstrip("/") + "/" + urllib.parse.quote(rel)
     return None
+
+
+# ------------------------------------------------------- direct upstream URLs
+# Cold ranged reads through the serve are latency-bound: its VFS layer
+# serializes concurrent uncached reads of one file (~0.25s/seek — a cold
+# sorted parquet scan of 256 row groups took 63s), while the same range GETs
+# issued straight at the store run in parallel (same scan direct to S3: 6s).
+# So /api/fs/raw routes ranged reads to the store's own URL until the file's
+# background prefetch has landed it in the serve cache, then back to the
+# serve for local-disk replays. The URL is a presigned link minted by the
+# running rcd (operations/publiclink — S3/GCS/B2/Azure; credentials never
+# leave rclone, the link never leaves this server) or, for anonymous S3
+# remotes (which can't sign — "unsupported signer type noAuth"), the plain
+# public object URL. Anything else resolves to None and stays on the serve.
+
+# Presigned links default to a 1h expiry; reuse them for well under that so
+# a link handed to a proxied read is never near expiry.
+_LINK_TTL_S = 30 * 60.0
+_upstream_lock = threading.Lock()
+_upstream_links: dict = {}  # (fs, rel) -> (url, monotonic expiry)
+_upstream_mode: dict = {}   # fs -> "link" | "public" | "none"
+_upstream_cfg: dict = {}    # remote name -> config/get dict (successes only)
+
+
+def _remote_config(name: str) -> dict | None:
+    """config/get for a remote, memoized. Public-URL minting consults the
+    config per OBJECT (a zarr store touches thousands), and remote configs
+    only change through this process (add_remote restarts nothing that would
+    invalidate them) — so one rc round trip per remote, then pure lookups.
+    Failures aren't cached: rcd may simply not be up yet."""
+    with _upstream_lock:
+        cfg = _upstream_cfg.get(name)
+    if cfg is not None:
+        return cfg
+    port = _live_rcd_port()
+    if port is None:
+        return None
+    try:
+        cfg = _rc(port, "config/get", {"name": name}, timeout=10)
+    except RuntimeError:
+        return None
+    if not isinstance(cfg, dict):
+        return None
+    with _upstream_lock:
+        _upstream_cfg[name] = cfg
+    return cfg
+
+
+def _anonymous_s3(cfg: dict | None) -> bool:
+    """True when the remote is plain AWS S3 with no credentials — the one
+    backend class whose objects are reachable by unsigned public URL and
+    which can never presign ("unsupported signer type noAuth")."""
+    return (cfg is not None and _s3_without_credentials(cfg)
+            and not cfg.get("endpoint"))
+
+
+def _mount_for(path: str) -> tuple[dict | None, str]:
+    """(mount record, remote-relative path) for a path under a mountpoint."""
+    p = os.path.abspath(path)
+    for m in list_mounts():
+        mp = mountpoint(m)
+        if p == mp or p.startswith(mp + os.sep):
+            return m, os.path.relpath(p, mp).replace(os.sep, "/")
+    return None, ""
+
+
+def _fix_dotted_bucket_url(url: str) -> str | None:
+    """Virtual-hosted S3 URLs put the bucket in the TLS hostname, and
+    *.s3.<region>.amazonaws.com can't match a bucket with dots in its name
+    (e.g. us-west-2.opendata.source.coop) — every client fails the handshake.
+    Rewrite an unsigned dotted-bucket URL to path-style; a SIGNED one can't be
+    rewritten (SigV4 covers the Host header), so drop it — the caller then
+    stays on the serve proxy, which is slow but works."""
+    p = urllib.parse.urlsplit(url)
+    m = re.match(r"^(.+)\.s3[.-]([a-z0-9-]+)\.amazonaws\.com$",
+                 p.hostname or "")
+    if not m or "." not in m.group(1):
+        return url
+    if p.query:
+        return None
+    bucket, region = m.group(1), m.group(2)
+    return f"https://s3.{region}.amazonaws.com/{bucket}{p.path}"
+
+
+def _public_object_url(fs: str, rel: str) -> str | None:
+    """Plain https URL for an object on an ANONYMOUS AWS S3 remote — the one
+    backend class that can't presign but doesn't need to. Credentialed or
+    non-AWS remotes return None (their objects aren't reachable unsigned).
+    Pure string building once _remote_config has memoized the config — no rc
+    round trip per object."""
+    name, _, root = fs.partition(":")
+    cfg = _remote_config(name)
+    if not _anonymous_s3(cfg):
+        return None
+    assert cfg is not None
+    bucket, _, prefix = root.partition("/")
+    if not bucket:
+        return None
+    key = (prefix.rstrip("/") + "/" if prefix else "") + rel
+    region = cfg.get("region") or "us-east-1"
+    # Path-style for dotted buckets: virtual-hosted style puts the bucket in
+    # the TLS hostname, and *.s3.<region>.amazonaws.com can't match the extra
+    # dots (e.g. us-west-2.opendata.source.coop) — every client fails the
+    # handshake on the redirect.
+    if "." in bucket:
+        return (f"https://s3.{region}.amazonaws.com/{bucket}/"
+                + urllib.parse.quote(key))
+    return f"https://{bucket}.s3.{region}.amazonaws.com/" + urllib.parse.quote(key)
+
+
+def upstream_url_for(path: str) -> str | None:
+    """Direct store URL for a mount-backed file, or None when the backend has
+    no reachable one (the caller then stays on the serve). Never raises —
+    this sits on the raw-proxy hot path."""
+    try:
+        return _upstream_url_for(path)
+    except Exception:
+        logger.warning("upstream url for %r failed", path, exc_info=True)
+        return None
+
+
+def _upstream_url_for(path: str) -> str | None:
+    m, rel = _mount_for(path)
+    if m is None:
+        return None
+    fs = m["remote"]
+    now = time.monotonic()
+    with _upstream_lock:
+        hit = _upstream_links.get((fs, rel))
+        if hit is not None and hit[1] > now:
+            return hit[0]
+        mode = _upstream_mode.get(fs)
+    if mode == "none":
+        return None
+    if mode is None and _anonymous_s3(_remote_config(fs.partition(":")[0])):
+        # Anonymous S3 can never presign — don't burn an rc call per remote
+        # learning that from publiclink's "unsupported signer type" error.
+        mode = "public"
+    url = None
+    if mode in (None, "link"):
+        port = _live_rcd_port()
+        if port is None:
+            return None
+        try:
+            url = _rc(port, "operations/publiclink",
+                      {"fs": fs, "remote": rel, "expire": "1h"},
+                      timeout=10).get("url") or None
+        except RuntimeError:
+            url = None
+        if url is not None:
+            url = _fix_dotted_bucket_url(url)
+        if url is None and mode == "link":
+            return None  # transient failure on a known-linkable remote
+        if url is not None:
+            mode = "link"
+    if url is None:
+        url = _public_object_url(fs, rel)
+        mode = "public" if url else "none"
+    with _upstream_lock:
+        _upstream_mode[fs] = mode
+        if url is not None:
+            ttl = _LINK_TTL_S if mode == "link" else 3600.0
+            _upstream_links[(fs, rel)] = (url, now + ttl)
+    return url
 
 
 def sync_serves() -> None:
@@ -433,18 +802,27 @@ def attach_mount(m: dict) -> str | None:
         # without one, /api/fs/raw silently falls back to reads through the
         # wedge-prone kernel mount.
         sync_serves()
+        _refresh_read_only_flag(m)
         return None
     try:
         port = ensure_rcd()
-        _rc(port, "mount/mount", {
+        params = {
             "fs": m["remote"],
             "mountPoint": mp,
             "mountType": "nfsmount" if sys.platform == "darwin" else "mount",
             "vfsOpt": VFS_OPT,
-        }, timeout=60)
+        }
+        # macOS only: raise the loopback NFS client's timeout (see NFS_MOUNT_OPT).
+        # mountOpt is the NFS transport layer, not a vfs option, so it does NOT
+        # affect the (fs, vfsOpt) VFS-reuse key — the mount still shares its VFS
+        # with the serve.
+        if sys.platform == "darwin":
+            params["mountOpt"] = NFS_MOUNT_OPT
+        _rc(port, "mount/mount", params, timeout=60)
     except RuntimeError as e:
         return str(e)
     sync_serves()
+    _refresh_read_only_flag(m, port)
     return None
 
 
@@ -529,6 +907,22 @@ def detach_mount(m: dict, force: bool = False) -> str | None:
         return f"unmount failed (a preview may still hold a file open): {e}"
 
 
+def _stop_serve_for(port: int, fs: str) -> None:
+    """Stop the HTTP serve for `fs`, if one is live. Used by reconnect: rcd
+    shares ONE VFS between a mount and its serve, and `mount/unmount` shuts
+    that VFS down regardless of the serve's reference to it — verified: after
+    unmounting, the serve still replays disk-cached ranges but hangs on any
+    uncached read (vfs/list drops to 0). Dropping the serve here lets the
+    following sync_serves start a fresh one that re-binds to the remounted
+    VFS. Best-effort: a missing serve or a failed stop is fine."""
+    serve = _http_serves(port).get(fs)
+    if serve and serve["id"]:
+        try:
+            _rc(port, "serve/stop", {"id": serve["id"]})
+        except RuntimeError:
+            pass
+
+
 def reconnect_mount(m: dict) -> str | None:
     """Repair a disconnected mount: clear whatever is wedged at the
     mountpoint, then mount fresh. Returns an error string or None.
@@ -537,7 +931,10 @@ def reconnect_mount(m: dict) -> str | None:
     lists the mount), force-unmount whatever kernel mount remains (a dead
     NFS mount rejects plain umount — the state this whole path exists for),
     ask rcd once more so a force-cleared mount doesn't linger in its
-    listmounts and block the remount, then attach as usual."""
+    listmounts and block the remount, drop the HTTP serve (it shares the
+    mount's VFS, which the unmount just tore down — see _stop_serve_for),
+    then attach as usual (attach_mount's sync_serves starts a fresh serve
+    that re-binds to the remounted VFS)."""
     mp = mountpoint(m)
     port = _live_rcd_port()
     if port is not None:
@@ -554,6 +951,8 @@ def reconnect_mount(m: dict) -> str | None:
                 _rc(port, "mount/unmount", {"mountPoint": mp})
             except RuntimeError:
                 pass  # "mount not found" once the kernel mount is gone — fine
+    if port is not None:
+        _stop_serve_for(port, m["remote"])
     return attach_mount(m)
 
 
@@ -618,6 +1017,9 @@ def mount_view(m: dict, rcd_mounts: set | None = None, state: str | None = None)
         "state": state,
         # Healthy only — a disconnected mount must not read as mounted.
         "mounted": state == "mounted",
+        # Remote rejects writes (see mount_read_only); unflagged legacy
+        # records read as rw, the pre-flag behavior.
+        "read_only": bool(m.get("read_only")),
     }
 
 
@@ -636,6 +1038,11 @@ def run_automount() -> None:
     live = mounted_paths()
     for m in mounts:
         if mountpoint(m) in live or os.path.ismount(mountpoint(m)):
+            # Survived the restart, so attach_mount (and its read-only
+            # detection) never runs for it below — re-detect here instead,
+            # otherwise a legacy record without the flag stays "writable"
+            # forever once the kernel mount is already live.
+            _refresh_read_only_flag(m)
             continue
         err = attach_mount(m)
         if err:
@@ -818,7 +1225,11 @@ def create_mount(body: dict = Body(...), x_fused: str | None = Header(default=No
     if guard is not None:
         return guard
     try:
-        m = add_mount(body.get("name") or "", body.get("remote") or "")
+        # An explicit read_only in the body wins over attach-time detection —
+        # the caller knows their credentials better than the probe does.
+        # add_mount validates it (strict bool or absent).
+        m = add_mount(body.get("name") or "", body.get("remote") or "",
+                      read_only=body.get("read_only"))
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     err = attach_mount(m)

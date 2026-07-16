@@ -5,7 +5,8 @@
     "h3",
     "claude",
     "annotate",
-    "history"
+    "history",
+    "geometry_editor"
   ],
   ".csv": [
     "duckdb",
@@ -111,7 +112,8 @@
     "map",
     "tree",
     "code",
-    "annotate"
+    "annotate",
+    "geometry_editor"
   ],
   ".md": [
     "markdown",
@@ -371,6 +373,7 @@
     "preview"
   ],
   ".zarr/": [
+    "zarr_aoi",
     "zarr",
     "_listing"
   ],
@@ -385,25 +388,31 @@
   ],
   ".shp": [
     "vector",
-    "map"
+    "map",
+    "geometry_editor"
   ],
   ".kml": [
     "vector",
-    "map"
+    "map",
+    "geometry_editor"
   ],
   ".kmz": [
-    "vector"
+    "vector",
+    "geometry_editor"
   ],
   ".gpx": [
-    "vector"
+    "vector",
+    "geometry_editor"
   ],
   ".gpkg": [
     "vector",
-    "map"
+    "map",
+    "geometry_editor"
   ],
   ".fgb": [
     "vector",
-    "map"
+    "map",
+    "geometry_editor"
   ],
   ".pmtiles": [
     "pmtiles",

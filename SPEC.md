@@ -24,6 +24,10 @@ The differentiating feature is the **renderable HTML** system: HTML files can ca
 ### Non-Goals
 
 - Cloud or remote deployment, multi-user access, authentication/user accounts.
+  (Unchanged by §19/§27: deploying delegates to the separately-installed fused
+  CLI, and the §27 "Fused account" surface manages the *fused CLI's own*
+  credentials for those deploys — fused-render itself still has no accounts,
+  no tokens, and no server-side users.)
 - File editing (v1 is read/preview oriented; editing is a possible v2).
 - Sandboxing Python for safety against the *user's own* code — the user's code is trusted. (Protecting against *other websites* driving the server is in scope; see §9.)
 
@@ -105,6 +109,7 @@ The server serves the HTML with a small runtime `<script>` injected (or the ifra
 ```js
 // Execute main() of a Python file
 const result = await fused.runPython(pathToPy, paramsObject);
+const result = await fused.runPython(pathToPy, paramsObject, { key: "chan" }); // latest-wins (RH-9)
 
 // Params (see §6)
 fused.params.get(name)
@@ -118,8 +123,9 @@ fused.params.onChange(callback)   // fires whenever params change; author re-run
 - **RH-1** **DECIDED:** `path` may be **relative to the HTML file's own location** or **absolute** (anywhere on the machine — whole filesystem is in scope, consistent with FS-3).
 - **RH-2** `params` is a flat JSON object; keys map to the Python function's keyword arguments (§5.2).
 - **RH-3** Returns a Promise. Resolves with the deserialized return value; rejects with a structured error `{ type, message, traceback }` on Python exception, missing file, missing `main` function, or timeout.
-- **RH-4** Concurrent calls are allowed (e.g. a page fires 3 data fetches on load). Server may queue or parallelize; ordering is not guaranteed.
+- **RH-4** Concurrent calls are allowed (e.g. a page fires 3 data fetches on load). Server may queue or parallelize; ordering is not guaranteed. Opt-in supersession (RH-9) is the only thing that cancels a call — by default no call ever cancels another.
 - **RH-5** Calls have a configurable timeout (default e.g. 30 s), after which the worker is killed and the promise rejects.
+- **RH-9** **DECIDED (D113):** an optional third argument `opts` carries **stale-request cancellation**. `opts.key` (a string) names a **latest-wins channel**: firing a new `runPython` on a key **aborts** the prior in-flight call on that same key, so a slider scrubbed through many values leaves only the last value's request alive — the superseded fetches are cancelled (browser connection freed; the server abandons the now-irrelevant subprocess when it sees the dropped socket). Without a key, calls are independent (RH-4 unchanged) — same-file polling loops and unrelated concurrent fetches are never auto-cancelled, so keying is a deliberate author choice. `opts.signal` (a standard `AbortSignal`) composes with the channel: the fetch aborts on whichever fires first. A superseded/aborted call rejects with a standard **AbortError** (`DOMException`, `name === "AbortError"`); the runtime's unhandledrejection handler treats that as benign — no traceback overlay (RH-3/D17), no console noise — so a fire-and-forget `onChange` re-render that loses the race needs no try/catch. Applies identically to the hosted/exported runtime (§18).
 
 ### 4.3 Isolation — DESCOPED (v1)
 
@@ -379,6 +385,8 @@ Write surfaces are decentralized (the code editor via `/api/fs/write`; the sqlit
 - **RO-4** Template **readers** fold fs writability into the editability verdict they already return — `editable` + `readonly_message` (short badge text) + `readonly_tooltip` (hover explanation). Filesystem read-onlyness is just one more reason alongside content-level ones ("View", "No rowid", "JSON"); the fs gate wins over a content-level "editable".
 - **RO-5** UI treatment is shared: `/template-shared/ro-badge.js` (`fusedRoBadge.update(el, message, tooltip)`) renders the identical badge in every template with an edit surface. The code editor derives its verdict from `stat.writable` (no Python reader) and locks the CodeMirror buffer; the grids disable editing per their reader's verdict.
 - **RO-6** Read-only never blocks *viewing*, and a template whose write target differs from the viewed file gates on ITS target: annotate checks the `<file>.json` sidecar (a `status` action), keeps commenting fully functional (the URL is the live store), and only warns that history won't be recorded.
+- **RO-7** (D110) An archive member's **preview** copy (zip and tar readers) lands **0444**: it is a throwaway — an edit "saved" to it never reaches the archive — and the permission bit routes it through RO-1..RO-6 unchanged (stat.writable false, templates open read-only, `/api/fs/write` refuses, writer gates hold). The copy is written to a unique temp file and `os.replace`'d into place, so a re-preview swaps out a stale read-only copy and a concurrent preview of the same member never sees a half-written or permission-flapping file. Deliberate `extract`/`extract_all` output keeps the original semantics: writable, and failing loudly (EACCES) on a write-protected existing target rather than silently replacing it.
+- **RO-8** (D110) A mount record persists `read_only`, re-detected **non-mutatingly on every attach** (rc `operations/fsinfo`: a present Features map with no Put/PutStream/Copy → read-only; `config/get`: anonymous S3 — no keys, no env_auth, no profile — → read-only) unless the flag was set explicitly via `read_only` in the create body (strict boolean, 400 otherwise; persisted with a `read_only_user` marker that detection never overrides). An **inconclusive** probe (rc failure, missing Features map) persists nothing — a transient hiccup must not freeze a wrong verdict; the next attach re-probes. `_writable` folds the flag in ahead of the `W_OK` check — under a mount `W_OK` lies (CacheMode=full takes any write into the local VFS cache and fails only at async upload) — so stat.writable and the write guard flip together per RO-1, via an mtime-cached mountpoint lookup (no mounts.json parse per stat). Unflagged mounts stay rw (pre-flag behavior; a credentialed-but-IAM-read-only remote is knowingly not caught — only a junk-writing probe could tell). Known gap, accepted for now: template-side writer gates (RO-3, `os.access`) don't see the flag — only `/api/fs/write` surfaces do; the deep fix is mounting read-only remotes with the VFS `ReadOnly` option so `W_OK` itself turns truthful, deferred because the serve and the mount must carry identical vfs option sets (see SERVE_VFS_OPT) and a per-mount option split needs its own validation. `mount_view` exposes the flag; the Mounts card labels the mount "read-only".
 
 ## 14. Layout Mode — Split Panes (M5)
 
@@ -478,7 +486,7 @@ Goal: users replace or add preview templates using the **exact same mechanism** 
 - **CT-5** Registries are read **per stat/render resolution** (tiny local files — no restart, no cache invalidation problem); the built-in `templates/registry.json` rides the same loader (D73). Missing `~/.fused-render/templates/` or `registry.json` = clean no-op, built-in behavior; first run creates nothing.
 - **CT-6** **Validation and fallback — per entry:** a folder name must be a single safe path segment (no `/`, no `..`, no `.`, not empty) — it is joined into a filesystem path, so a malformed name must not stat arbitrary locations (correctness guard, not auth — §9 stands). Within a mode list, an entry whose name cannot resolve (unsafe name, `template.html` missing in both PT-6 locations) is **dropped** from the list, and the stat response carries a **`template_error`** string naming the first problem, so a typo is visible (via stat / server log) instead of silently ignored. If the user's value resolves to nothing at all (unparseable JSON, every listed name dangling), fall back to the **built-in list** for that extension. An explicitly **empty** list `[]` is not this case — it disables (CT-2/D94), no fallback.
 - **CT-7** **No convention fallback:** a folder in `~/.fused-render/templates/` without a registry entry is inert — a draft. Registration is only ever the registry line; deleting the line unregisters. One source of truth.
-- **CT-12** **Conditional templates (per-folder gate, deferred evaluation).** A template folder may ship an optional **`condition.py`** beside its `template.html`, defining `def method(path): bool`, for **both** built-in and user folders (whichever `template.html` PT-6 resolves) — so one registry key can offer different templates for different files (e.g. gate on a file's actual contents, a path prefix, or a naming convention). No `condition.py` = unconditionally shown (the common case). Gates may do real I/O (the H3 gate reads a parquet footer), and over a **remote mount** that I/O would stall every stat of the extension — so stat does **not** run gates: resolution (PT-8) only *marks* the entry `"conditional": true` (an isfile() check), and the shell resolves the verdicts **in the background** via **`GET /api/fs/conditions?path=<file>`** → `{"path", "conditions": {<mode>: bool}, "error"?}` while the default (first unconditional, PT-8) template already renders. Until its verdict lands, a conditional entry shows in the switcher (PT-10) as a **disabled pending spinner** — not selectable, never the default — then either becomes an ordinary mode or disappears; a `_mode` deep-link to a gated mode holds the preview body on a "checking" placeholder until the verdict, and an **all**-conditional list holds the whole preview. Each `condition.py` is loaded **fresh per evaluation** (CT-5) — no restart — and never inserted into `sys.modules`; multiple gates on one file are **evaluated concurrently** (one worker per gate; the fixed-name, never-`sys.modules`-inserted load keeps parallel evaluation safe), so the cost is the slowest single gate, not their sum. A broken condition (no callable `method`, an exception, evaluated on the target path) reports the mode **denied** — fail closed, a template gated by code that can't decide is not silently shown — and surfaces the reason as the payload's **`error`** (first broken gate in list order, the same posture as `template_error`/CT-6). Sentinel modes (`_render`, `_listing` — PT-12, `path: null`) have no folder and are never gated. The registry stays the source of truth for *which* templates apply to an extension; `condition.py` only narrows *whether* a listed one shows for a specific file.
+- **CT-12** **Conditional templates (per-folder gate, deferred evaluation).** A template folder may ship an optional **`condition.py`** beside its `template.html`, defining `def main(path): bool`, for **both** built-in and user folders (whichever `template.html` PT-6 resolves) — so one registry key can offer different templates for different files (e.g. gate on a file's actual contents, a path prefix, or a naming convention). No `condition.py` = unconditionally shown (the common case). Gates may do real I/O (the H3 gate reads a parquet footer), and over a **remote mount** that I/O would stall every stat of the extension — so stat does **not** run gates: resolution (PT-8) only *marks* the entry `"conditional": true` (an isfile() check), and the shell resolves the verdicts **in the background** via **`GET /api/fs/conditions?path=<file>`** → `{"path", "conditions": {<mode>: bool}, "error"?}` while the default (first unconditional, PT-8) template already renders. Until its verdict lands, a conditional entry shows in the switcher (PT-10) as a **disabled pending spinner** — not selectable, never the default — then either becomes an ordinary mode or disappears; a `_mode` deep-link to a gated mode holds the preview body on a "checking" placeholder until the verdict, and an **all**-conditional list holds the whole preview. Each `condition.py` is loaded **fresh per evaluation** (CT-5) — no restart — and never inserted into `sys.modules`; multiple gates on one file are **evaluated concurrently** (one worker per gate; the fixed-name, never-`sys.modules`-inserted load keeps parallel evaluation safe), so the cost is the slowest single gate, not their sum. A broken condition (no callable `main`, an exception, evaluated on the target path) reports the mode **denied** — fail closed, a template gated by code that can't decide is not silently shown — and surfaces the reason as the payload's **`error`** (first broken gate in list order, the same posture as `template_error`/CT-6). Sentinel modes (`_render`, `_listing` — PT-12, `path: null`) have no folder and are never gated. The registry stays the source of truth for *which* templates apply to an extension; `condition.py` only narrows *whether* a listed one shows for a specific file.
 
 ### 16.3 Pipeline & dev loop
 
@@ -576,22 +584,35 @@ nothing. Full detail: `docs/EXPORT.md`.
 ### 18.2 Portable subset
 
 - **EX-3** Only the transport-agnostic part of the injected `window.fused` API is
-  portable: `runPython` (→ a served route the page posts to), `rawUrl`/`readFile`
-  (→ read-only bundled assets), and `params` (pure client-side URL state, unchanged).
-  `writeFile`, `stat`, and SSE live-reload are **unsupported** — a hosted artifact is
-  immutable and has no filesystem behind it.
+  portable: `runPython` (→ a served route the page posts to, including its RH-9
+  `opts.key`/`opts.signal` cancellation), `rawUrl`/`readFile` (→ read-only bundled
+  assets), and `params` (pure client-side URL state, unchanged). `writeFile`, `stat`,
+  and SSE live-reload are **unsupported** — a hosted artifact is immutable and has no
+  filesystem behind it.
 
 ### 18.3 Static resolution & fail-loud
 
-- **EX-4** Every `runPython`/`rawUrl`/`readFile` path must be a **string literal**
-  resolvable at build time. A computed path, an unsupported API call, an absolute or
-  `..`-escaping path, or a missing target is a **blocking error** — export writes
-  nothing and reports all problems at once, rather than shipping a page whose calls
-  404 when hosted.
+- **EX-4** Blocking errors — export writes nothing and reports all problems at once,
+  rather than shipping a page whose calls 404 when hosted: a **computed `runPython`
+  path** (its served route name is derived from the literal, so it can't be routed),
+  an **unsupported API call** (`writeFile`/`stat`), an **absolute or `..`-escaping**
+  path (including a symlink resolving outside the page dir), or a **missing target**
+  (a referenced file, or an `include` file, not on disk).
+- **EX-4a** Warnings — advisory, never blocking: a **computed `rawUrl`/`readFile`
+  path** (the exporter can't resolve it, but the author can bundle its target via
+  `include` — EX-6 — and the served `_asset` route resolves it by key at request
+  time), and an **`exclude` that drops a literally-referenced file** (honored, but
+  that call 404s when hosted).
 - **EX-5** Route names derive from the `.py` stem (`sine.py` → `sine`), are prefixed
   `run-` when they'd collide with a reserved serve route (`data`, `health`, the
   `_`-prefixed control/shell/asset routes), and are suffixed `-2`, `-3`, … on
   duplicate stems — so the map is always valid and injective.
+- **EX-6** The auto-detected set can be adjusted by an optional selection on
+  `/api/export` (and the Deploy modal, §19): `include` — extra page-relative files
+  bundled as assets beyond the literal scan (for a computed-path target or data a
+  bundled `.py` reads at runtime), each validated like a scanned asset and deduped by
+  key; and `exclude` — files dropped from the final set by literal path or bundle
+  key. Both default empty (auto-only).
 
 ## 19. Deploy — Hosted Publish through the fused CLI (M11)
 
@@ -626,31 +647,49 @@ the product gains network access.
   current-deployment card (status chip, URL with copy/open), a **"Will
   publish" preview** (DP-2a), Deploy/Redeploy, and Revoke. The modal is scoped
   to the current page; the **env-wide** deployment list (DP-13) lives on the
-  Preferences page's Deployments section (PF-6), not in the modal.
+  Fused account page's Deployments section (AC-11, moved from Preferences
+  when the account surface landed), not in the modal.
 - **DP-2a** Before the click, the modal shows exactly what a deploy would
-  publish (`GET /api/deploy/preview` → `preview_deploy`, the same pure
-  `plan_export` scan the real export runs, resolved fresh, no files written):
-  the page plus each `runPython` target (and its served route name) and each
-  `rawUrl`/`readFile` asset. Export blockers come back in the same response
-  and **disable Deploy** with the full list — an unexportable page reads as
-  "fix these" up front, never as a failed deploy. A preview *fetch* failure
-  (unexportable type, file deleted since the header rendered) degrades to a
-  blocker entry the same way — the dialog still renders its form; it never
-  dead-ends on the preview call.
-- **DP-2b** Login guidance, before and after the click.
+  publish (`POST /api/deploy/preview` → `preview_deploy`, the same pure
+  `plan_export` scan the real export runs, resolved fresh with the current
+  selection, no files written): the page plus each `runPython` target (and its
+  served route name) and each `rawUrl`/`readFile` or included asset. Export
+  blockers (EX-4) come back in the same response and **disable Deploy** with the
+  full list — an unexportable page reads as "fix these" up front, never as a
+  failed deploy; warnings (EX-4a) show alongside but never block. A preview
+  *fetch* failure (unexportable type, file deleted since the header rendered)
+  degrades to a blocker entry the same way — the dialog still renders its form; it
+  never dead-ends on the preview call. (Preview is `POST`, not `GET`: it carries
+  the include/exclude selection, which doesn't fit a query string; it stays
+  read-only and unguarded.)
+- **DP-2c** The "will publish" list is **editable** — the user layers a file
+  selection (EX-6) on the auto-detected set: remove a listed file (× → `exclude`),
+  restore an excluded one, add extra files via a picker over the page's folder
+  (`walkDir`, gitignore-aware), "Add all in folder", or "Reset to default"
+  (clear both lists). The selection is sent on Deploy and **persisted on the
+  deployment record** (`include`/`exclude`, beside `entrypoints` — no separate
+  sidecar), so a reopened modal reloads exactly what was last published. This is
+  how a page whose data is fetched by a computed path deploys at all (EX-4a): the
+  author bundles those files explicitly.
+- **DP-2b** Login state, before and after the click (amended by §27/M18: the
+  warning is now an *action*, not guidance).
   `GET /api/deploy/config` carries `fused_logged_in` — presence of the fused
   CLI's own control-plane credentials file
   (`~/.openfused/fused-cloud-credentials.json`,
   `OPENFUSED_FUSED_CLOUD_CREDENTIALS` honored). Presence-only by design: an
   expired-but-refreshable token still works (the CLI refreshes silently), so
   the CLI stays the authority at action time. With a managed `fused` env
-  selected and no credentials on disk, the modal warns **before** the click,
-  naming `<setup_cli> cloud login` (a one-time browser sign-in). After a
-  failed action, CLI errors that name `fused cloud login` are suffixed with
-  the packaged app's real wrapper path (`_cli_error` + `_setup_cli_hint`) —
-  plain `fused` doesn't resolve inside the .app, so the instruction must be
-  runnable as printed. The no-envs guidance states that `cloud setup` opens
-  a browser sign-in first.
+  selected and no credentials on disk, the modal warns **before** the click
+  and offers a working **Sign in to Fused** button — the AC-3/AC-4 in-app
+  flow via the shared client hook, with a background config reload flipping
+  the warning away on completion (AC-9). Likewise the no-envs state signs in
+  in place or routes to the account page's setup panel; no modal state
+  instructs a terminal command for the managed path anymore. After a failed
+  action, CLI errors that name `fused cloud login` are still suffixed with
+  the packaged app's real wrapper path (fusedcli.py's `cli_error` +
+  `setup_cli_hint`) — plain `fused` doesn't resolve inside the .app, and the
+  CLI's error text must stay runnable as printed even though the app now
+  offers the in-app path first.
 
 ### 19.2 The fused CLI seam
 
@@ -694,17 +733,19 @@ the product gains network access.
   always present and the install panel never appears in the .app (its sealed,
   notarized bundle could not be pip-installed into anyway). The build also
   ships a terminal wrapper, `Contents/Resources/bin/fused` (bundled python +
-  the DP-3 shim), for the one-time interactive setup a modal can't do —
-  `fused cloud setup` / `cloud login` / `env create` — and smoke-tests real
-  CLI verbs through the shim before signing, so a py2app packaging gap fails
-  the build rather than the user's first deploy. The wrapper lives under
-  `Resources`, not `MacOS`: everything in a bundle's `MacOS/` is nested code
-  to codesign, and a shell script there cannot carry a code signature — the
-  bundle seal fails ("code object is not signed at all"); a script under
-  `Resources` is sealed by the resource rules instead. `GET /api/deploy/config`
-  carries `setup_cli` — the wrapper's absolute path when frozen
-  (`sys.frozen == "macosx_app"`), else `"fused"` — and the modal's
-  no-envs guidance names it.
+  the DP-3 shim), and smoke-tests real CLI verbs through the shim before
+  signing, so a py2app packaging gap fails the build rather than the user's
+  first deploy. Since §27/M18 the wrapper is a **power-user escape hatch**,
+  not the setup path: sign-in and managed-env setup happen in-app (AC-3/AC-6),
+  and the wrapper remains for what stays terminal-scoped — self-hosted AWS
+  provisioning (`fused env create` / `fused infra serve`) and ad-hoc CLI use.
+  The wrapper lives under `Resources`, not `MacOS`: everything in a bundle's
+  `MacOS/` is nested code to codesign, and a shell script there cannot carry
+  a code signature — the bundle seal fails ("code object is not signed at
+  all"); a script under `Resources` is sealed by the resource rules instead.
+  `GET /api/deploy/config` carries `setup_cli` — the wrapper's absolute path
+  when frozen (`sys.frozen == "macosx_app"`), else `"fused"` — and CLI error
+  suffixes plus the remaining AWS guidance name it.
 
 ### 19.3 Environments
 
@@ -798,8 +839,8 @@ the product gains network access.
   env" view: every mount from `share list --all`, joined back to the local
   page that deployed it via the pointer store (`page: null`, rendered "not
   from this app"), local pages first, live before revoked. Its consumer is the
-  **Preferences page's Deployments section** (PF-6) — a single env-wide list
-  with Revoke — not the per-page Deploy modal. `share list` returns no URLs on
+  **Fused account page's Deployments section** (AC-11; formerly Preferences'
+  PF-6) — a single env-wide list with Revoke — not the per-page Deploy modal. `share list` returns no URLs on
   either backend; each mount's URL is the pointer's recorded one, else
   **derived from the env's base URL**: every mount on one env serves as
   `<base>/<token>` (share-links.md §6), so any recorded absolute URL whose path
@@ -892,14 +933,10 @@ never imports server).
   their X-Fused guard); the preview re-reads the pref on focus/visibility so a
   toggle shows through without a reload. Any non-`true` stored value reads as
   off.
-- **PF-6** A per-env view of `fused share list` (the same joined
-  `/api/deploy/shares` data as the Deploy modal's list, same copy: rows with
-  a file name were deployed from this app) with a **Revoke** action per
-  non-revoked mount. Revocation is by **env + token** (`POST
-  /api/deploy/revoke {env, token}` → `deploy.revoke_mount`), so it also
-  covers mounts with no local pointer — the CLI's owner-binding still
-  applies and its refusal surfaces verbatim. Any local pointer recording the
-  revoked mount flips to revoked, keeping the page's Deploy button honest.
+- **PF-6** *(moved by M18/§27 — see AC-11)* The per-env share list lived
+  here before the account surface existed; Preferences keeps only the PF-8
+  Deploy-button toggle plus a link to the Fused account page, where the list
+  now renders beside the environments table.
 
 ### 20.5 Template registry view
 
@@ -1154,7 +1191,9 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   that resolves to neither). Names travel as **repeated `names=` params** (not
   comma-joined) so a folder name containing a comma round-trips. Each
   template's folder contents land at its own top level in the zip. **No
-  `registry.json` in the zip** — folders only.
+  `registry.json` in the zip** — template content is folders only; the one
+  root-level file is the `recommendation.json` binding-recommendation sidecar
+  (TV-22, D107), which carries *suggestions*, never registry rows.
 - **TV-8** `POST /api/templates/import` **(D90)** — step 1 of 2, multipart
   (`file` field, the `.zip`), stages without committing: unpacks to
   `home_dir()/.import-staging/<importId>/` (`importId` = `secrets.token_hex`).
@@ -1178,14 +1217,104 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
 - **TV-10** Reveal and "open in explorer" add **no new endpoints**:
   inventory's Reveal action reuses `POST /api/fs/reveal`; "open in explorer"
   is a plain shell navigation to `USER_TEMPLATES_DIR/<name>`.
-- **TV-19** `POST /api/templates/delete` **(D93)** — body `{name}`, `X-Fused`
-  guarded; deletes **one user template folder** under `USER_TEMPLATES_DIR`.
-  **Core templates are read-only and never deletable** — a core-only name
-  resolves to no user folder and 404s (the core folder is untouched); unsafe
-  names (path separators, `.`/`..`) → 400; symlinks are rejected. Registry
-  bindings are **not** rewritten — a binding that referenced the name resolves
-  broken (`exists:false`) until rebound, matching export/import being
-  folder-only. Returns `{deleted: name}`.
+- **TV-19** `POST /api/templates/delete` **(D93, D109)** — body
+  `{name, cleanRegistry?}`, `X-Fused` guarded; deletes **one user template
+  folder** under `USER_TEMPLATES_DIR`. **Core templates are read-only and
+  never deletable** — a core-only name resolves to no user folder and 404s
+  (the core folder is untouched); unsafe names (path separators, `.`/`..`) →
+  400; symlinks are rejected. With `cleanRegistry: true` (D109, default
+  false) the **user** registry is swept after the folder delete: every user
+  key whose value references the name drops it (exact match — names are not
+  lowercased like keys), and a key whose value is **emptied** by the sweep is
+  **removed entirely** (revert to core) — never left as `[]`, which means
+  *disabled* (D95). The user registry is loaded — and a corrupt file refused
+  with 400 — **before** the rmtree, so a refusal leaves the folder intact;
+  the core registry is never touched. Without the flag, bindings are left
+  as-is — a binding that referenced the name resolves broken (`exists:false`)
+  until rebound, matching export/import being folder-only. Returns
+  `{deleted: name}`, plus `registryKeysCleaned: [keys]` when the flag was set.
+- **TV-20** `POST /api/templates/new` **(D105)** — body `{name, extensions}`,
+  `X-Fused` guarded; **scaffolds a new user template and binds it**. Copies the
+  starter kit (`fused_render/template_starter/` — shipped in the wheel but
+  deliberately **outside** `templates/`, so it is never itself resolvable or
+  listed in the inventory) into `USER_TEMPLATES_DIR/<name>`, then binds each
+  extension via the **same per-key read-modify-write** as TV-5
+  (`_apply_binding`, never a whole-file rewrite). The bind is **additive**:
+  `name` is appended to whatever list the key currently resolves to (its user
+  override, or the core default if there is no override yet) — an existing
+  multi-mode binding is never replaced with just the new template.
+  `name` must be a safe template folder segment (no `/`, `\`, `.`; not
+  `_`-prefixed — CT-6, so the folder always resolves by PT-6); each extension
+  is validated against the **CT-3 key grammar** exactly like TV-5. All
+  validation runs **up front**, so a bad name/extension (400) or an existing
+  `USER_TEMPLATES_DIR/<name>` (**409**) leaves nothing created and the registry
+  untouched. `extensions` may be empty (scaffold a draft, bind nothing — no
+  registry file written). Returns `{ok, name, path, bindings:[keys]}`. Editing
+  the scaffolded files afterwards happens in the file explorer (D88), and the
+  extensions are re-editable through the ordinary Row editor (TV-15).
+- **TV-21** `POST /api/templates/open-in-claude` **(D105)** — body `{name}`,
+  `X-Fused` guarded; opens **Terminal.app** in a user template's folder and
+  starts the `claude` CLI there, so the author can iterate on the template with
+  Claude Code. **macOS only** for now (`sys.platform != "darwin"` → a clear
+  error, no other platform spawns a terminal yet). User templates only — a
+  core-only name resolves to no user folder and 404s; unsafe names → 400,
+  symlinks rejected (same guards as TV-19). The `claude` binary is located by
+  the same PATH/`~/.local/bin`/homebrew search as `templates/claude/agent.py`
+  (replicated, not imported — a template folder is not an import root); a
+  missing binary is a clear error. The terminal is spawned via `osascript`
+  (`tell application "Terminal" to do script "cd <folder> && <claude>"` +
+  `activate`), paths `shlex.quote`d for the shell then escaped for the
+  AppleScript literal. Returns `{ok: true}`.
+- **TV-22** **Export recommendation sidecar (D107):** the TV-7 zip **always**
+  contains a root-level **`recommendation.json`** — `{"version": 1,
+  "recommendations": {"<template name>": ["<registry key>", …]}}` — recording
+  each exported template's bindings *at export time*. Built by **reverse
+  lookup over the MERGED registry** (user shadows core per key, TV-2): a
+  template maps to every key whose effective ordered list contains its name.
+  The shape is **template → keys**, deliberately *not* registry-key →
+  ordered-list slices (D107) — the sidecar names *which* keys suggest a
+  template, never *where in the list* it sits, so applying it can never
+  clobber the importer's own mode ordering. Templates with zero bindings are
+  **omitted** from the map; the file is written even when the map is empty
+  (deterministic zip layout). Template names and each key list are sorted.
+- **TV-23** **Import staging reads the sidecar (D107):** TV-8 parses a root
+  `recommendation.json` and excludes it from the "ignored top-level file"
+  warnings. Robustness is strictly non-fatal — recommendations are never
+  worth failing a stage over: malformed JSON or a wrong shape → a warning and
+  the recommendations are dropped (folders stage normally); `version != 1` →
+  **silently ignored** (a future exporter's sidecar, not an error);
+  individual keys failing the CT-3 grammar are filtered **at staging** with a
+  per-key warning, so commit never has to reject a recommendation the user
+  merely ticked. Each valid staged item then carries **`recommendedKeys:
+  [{key, status}]`** (omitted when none) — `status` ∈ `new` (would bind) |
+  `already-bound` (name already in the key's effective list) | `disabled`
+  (the key has a user `null`/`[]` override; applying would re-enable it).
+- **TV-24** **Commit applies accepted bindings (D108):** TV-9's body gains an
+  optional **`bindings: {originalStagedName: [keys]}`**. The whole map is
+  validated (CT-3 grammar, same as TV-5) **before any folder move** — a 400
+  leaves the stage fully intact (retryable); a corrupt user registry is
+  likewise refused up front (never rewritten blind). Bindings apply **after**
+  the moves, against **FINAL names**: a skipped/invalid template's bindings
+  are silently ignored; a keep-both rename binds the **new** name
+  (rename-follows-bindings); an already-bound key is a no-op. Application is
+  **append-only** (the TV-20 posture): a key existing only in core gets a
+  user entry created as the **full core list + the appended name** (never a
+  shorter shadow over core); a user-disabled key is re-enabled — as core's
+  list + the name — **only when a binding for it was explicitly requested**;
+  appends always land at the **END** of the list, never reordering the user's
+  existing bindings. Response gains `bindingsApplied: [{key, template}]`.
+- **TV-25** **Import wizard — recommendations UI (D108):** step 2 (TV-17)
+  gains a master toggle **"Apply author's recommended bindings"** plus a
+  per-template **chip strip** of its `recommendedKeys`. Chip defaults: **ON**
+  for `new`; **OFF** for `disabled` (amber "disabled by you" badge + an
+  inline warn line when toggled on — re-enabling is explicit opt-in);
+  `already-bound` chips are **inert** (green badge, never sent — the server
+  would no-op anyway). A **"+ add"** chip lets the user type a custom key
+  (client-validated, server authoritative). Resolving an item to *skip*
+  greys its strip; a keep-both resolution shows a "will bind as `<renamed>`"
+  note. The commit button surfaces the pending binding count; step 3 lists
+  `bindingsApplied`. A zip without `recommendation.json` leaves the wizard
+  exactly as it was — the whole surface is additive.
 
 ### 23.3 Frontend — Templates view (`/view/_templates`)
 
@@ -1208,7 +1337,8 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   the TV-7 GET url for an `<a download>` click), `importTemplates(file)`
   (TV-8 — the app's first `FormData` multipart call; `X-Fused: 1` header
   set, `Content-Type` left for the browser to fill in with the multipart
-  boundary), `commitImport(importId, resolutions)` (TV-9).
+  boundary), `commitImport(importId, resolutions, bindings?)` (TV-9/TV-24 —
+  the optional bindings map is omitted from the body when empty).
 - **TV-14** **Bindings table** (one row per registry key): extension/key,
   ordered template chips (first badged "default"), a source chip
   (Core/User), a "● Modified" marker when `overridesCore`, a "Disabled" pill
@@ -1239,10 +1369,13 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
   — checkbox multi-select spans any rows (core or user) and drives the export
   download (`downloadTemplatesExport`, which surfaces server errors rather
   than saving a 400 body as a zip). **User** rows also get a **Delete** action
-  (never core — the source is read-only); it opens a confirm modal offering
-  "Export & delete" (downloads a recovery zip first via `downloadTemplatesExport`,
-  then deletes only if that resolves), "Delete without export", or Cancel,
-  calling `deleteTemplate` (TV-19) and refreshing on success.
+  (never core — the source is read-only); it opens a confirm modal (D109)
+  with two default-checked checkboxes — "Export zip before deleting"
+  (downloads a recovery zip first via `downloadTemplatesExport`; the delete
+  proceeds only if that resolves, keeping D92's export-first guarantee) and
+  "Remove registry bindings for this template" (sent as TV-19's
+  `cleanRegistry`) — and exactly two buttons, **Delete** (danger) and
+  **Cancel**, calling `deleteTemplate` (TV-19) and refreshing on success.
 - **TV-17** **Import wizard modal**, three steps: (1) file chooser
   (`accept=".zip"`) → `importTemplates(file)` (TV-8); (2) manifest — a
   table of staged items with a per-conflicting-item resolution selector
@@ -1262,9 +1395,12 @@ the `X-Fused: 1` guard (D36); all paths resolve under `home_dir()`.
 - Editing template file contents (`template.html`, `reader.py`, css, icons)
   in this UI — use the file explorer + the existing `/api/fs/write` (D88).
 - A real third source (org/project) — TV-1 only models for it.
-- Registry bindings inside export zips, or merging/writing registry entries
-  from an import — exports are folders only (D89); imported templates are
-  inert (CT-7) until bound via the row editor.
+- ~~Registry bindings inside export zips, or merging/writing registry entries
+  from an import~~ — **revised (D107/D108):** exports now carry a
+  `recommendation.json` *suggestion* sidecar (TV-22) and commit can apply
+  user-accepted bindings append-only (TV-24). D89's core stands: no registry
+  slices in the zip, nothing auto-merged — an imported template stays inert
+  (CT-7) unless the user opts in per key in the wizard (TV-25).
 - Persisting a per-file "last selected mode" — unrelated, not part of this
   feature.
 ## 24. History View — Sidecar Inspector Template (D96)
@@ -1385,7 +1521,248 @@ SPEC DM-7); the CLI/browser experience is unchanged.
   framework), the menu is attached as before — the app is never left
   unquittable.
 
-## 26. Canvas View — Conditional Layout Viewer for `canvas.toml` (D105)
+## 26. GitHub Deep Links — fused-render://open?git= (M17)
+
+A shareable link that lands a GitHub repository subdirectory in fused-render:
+`fused-render://open?git=https://github.com/{owner}/{repo}/tree/{ref}/{subpath}`
+— the original GitHub tree URL, verbatim, as the `git` query param (a link
+author copies the GitHub URL and prefixes it). Clicking it launches (or
+reuses) the app, shows a confirm page, sparse-clones the subdirectory into
+`~/Documents/Fused/<subpath basename>`, and opens the folder's `index.html`
+when one exists, else the folder itself.
+
+- **DL-1** Link shape: `fused-render://open?git=<github URL>`. The action
+  sits in host position (`open`) and payloads are query params, so future
+  payload kinds (a hosted page, a single file, …) become new params on the
+  same action instead of new grammar; the `git` value is taken verbatim to
+  end-of-string (an unencoded URL with `&`/`+` survives). Accepted GitHub
+  shapes: repo root (`/{owner}/{repo}`), `/tree/{ref}`, and
+  `/tree/{ref}/{subpath}`; a `.git` suffix on the repo is tolerated; the
+  embedded URL may be percent-encoded. `/blob/` (single files) and non-github
+  hosts are rejected with a clear error. The first segment after `/tree/` is
+  the ref — single-segment refs only (the URL grammar cannot delimit a
+  slashed branch name from the subpath; same assumption most tooling makes).
+  Refs must start alphanumeric (git forbids leading `-` too), and every
+  URL-derived value reaching git sits behind a `--` separator — a crafted
+  link cannot smuggle options (`-f`, `--stdin`) into checkout/sparse-checkout.
+- **DL-2** OS registration: macOS via `CFBundleURLTypes` in the py2app plist
+  (scheme deliberately not branch-suffixed, like the bookmark UTI — every
+  build speaks the same links), delivered to `application:openURLs:` in
+  app.py; Windows via an HKCU `Software\Classes\fused-render` URL-protocol
+  class written by the same `--register` as the Open-With keys, delivered as
+  `%1` to `fused-render-open`. Linux deferred. Both handlers reuse a live
+  server or spawn one (the winopen/app dance), then open the browser at the
+  confirm page — they never parse or clone themselves.
+- **DL-3** Confirm gate (`GET /clone?src=…`): a self-contained server-served
+  page (`static/clone.html`, no shell, no external assets). Nothing touches
+  disk until its button is clicked. The page previews repo / subdirectory /
+  ref / destination via read-only `GET /api/clone/info` and states the trust
+  boundary in plain words: once opened, content from the repository renders
+  same-origin and can run Python on this machine (trust-on-confirm, D110).
+  The preview matches what POST will do: an occupied destination that is not
+  a matching clone (non-git folder, other repo) is reported as blocked up
+  front (`conflict`), never offered as an Update that can only fail.
+- **DL-4** Clone (`POST /api/clone`, X-Fused-guarded like every mutating
+  route): `git clone --filter=blob:none --sparse` + `sparse-checkout set
+  <subpath>` (plain filtered clone for repo-root links) using the user's own
+  git — public repos clone anonymously, private repos ride the user's
+  existing credentials. Destination is `~/Documents/Fused/<subpath basename>`
+  (repo name for root links); the repo root, `.git` included, lives at the
+  destination, so the opened view is the nested `<dest>/<subpath>` path. A
+  failed clone removes the partial destination (retryable). Git runs
+  prompt-free (`GIT_TERMINAL_PROMPT=0`, ssh BatchMode — the server has no
+  TTY) with a PATH widened to the usual helper locations (a Finder-launched
+  .app gets `/usr/bin:/bin`, which silently breaks `gh`-style credential
+  helpers); an https auth failure retries once over `git@github.com:` before
+  reporting both errors with a how-to-authenticate hint.
+- **DL-5** Re-click = update: for an existing destination whose `origin`
+  matches the link's repo — `fetch --tags`, check out the LINK's ref (a link
+  naming a different branch/tag than what's on disk lands on that ref, not a
+  silent pull of the old one; refs check out after a `--no-checkout` clone,
+  never via `--branch`, so commit SHAs work), then `pull --ff-only` iff that
+  left HEAD on a branch (a tag/SHA is detached: SHA no-op, moved tag lands
+  on its new target). A ref-less link onto a detached clone checks out the
+  remote's default branch (origin/HEAD) — "no ref" means the default branch,
+  never a silent stay-put. A same-repo link whose subdir shares the basename
+  widens the sparse cone additively (`sparse-checkout add`) so its path
+  materializes without unchecking earlier links' paths. A dirty or diverged
+  tree surfaces git's own error and local edits are never clobbered. The
+  link's subdirectory is verified against the target ref's tree (`ls-tree`)
+  BEFORE any mutation — a link that would fail its target check leaves the
+  existing clone exactly as it was (a fresh clone rolls back via rmtree; an
+  update must be equally side-effect-free on failure). A destination that
+  exists but is not a clone of that repo is refused, never overwritten.
+- **DL-6** Open target: `<dest>/<subpath>/index.html` when present, else the
+  subdirectory itself, via the standard `/view/` URL codec.
+
+---
+
+## 27. Fused Account — In-App Login & Setup (M18)
+
+Goal: remove §19's remaining copy-a-terminal-command dead ends. Sign-in
+(`fused cloud login`), first-time managed-environment setup
+(`fused cloud setup`), and day-two env management happen in the app; the
+§1 non-goals stand — this surface manages the **fused CLI's own** credentials
+on the user's machine for deploy targets, and every mutation is a
+`fused cloud …` / `fused env …` child process through the DP-3 seam
+(fusedcli.py). The mechanics port the flow app's connect-fused surface (flow
+repo, `spec/app/connect-fused.md`); the design rationale is in DECISIONS.md
+(D111/D112). Scope line (deliberate, same as flow's): the
+in-app path covers the **managed `fused` backend** only — self-hosted AWS
+provisioning stays a documented terminal flow.
+
+### 27.1 Surface
+
+- **AC-1** `/view/_account` is a sentinel pathname like `_prefs` (no embed
+  variant), entered from a sidebar-footer entry between Mounts and
+  Preferences. The entry's icon carries a green **signed-in dot** (the
+  deploy-dot affordance): the presence-only `logged_in` signal, re-read on
+  focus/visibility regain, errors keeping the last-known value.
+- **AC-2** `GET /api/account/status` composes: `cli` (DP-4's `cli_status`
+  shape), `logged_in` (DP-2b's presence signal), `login_in_flight` (a login
+  child is live), `creds_stamp` (the credentials file's mtime, or null — a
+  cheap fingerprint the client uses to invalidate its cached probe across a
+  credential change, see AC-8), `envs_file`, `store` (the RAW env store: every backend,
+  each entry flagged `hosted`, plus the store's own `default` pointer —
+  distinct from DP-6's derivation; the deploy picker's derived view stays on
+  `GET /api/deploy/config`), and `probe` (null unless requested). The plain
+  read is an open GET like deploy's config; `?probe=1` EXECUTES (it spawns a
+  control-plane child) and therefore carries the D36 X-Fused guard — a
+  foreign page must not be able to trigger subprocess/network work with
+  blind cross-origin GETs. `?probe=1` — only when logged in and a CLI
+  exists — shells
+  `fused cloud orgs` (the authoritative check: it exercises/refreshes the
+  token): `{ok, admitted, orgs: [{org, env, provision_state, role}], error}`;
+  a probe failure degrades to `ok: false` with the CLI's message via the
+  DP-2b error mapping, never an HTTP error (the page renders from the
+  presence signal first and fills the probe in).
+
+### 27.2 Login
+
+- **AC-3** `POST /api/account/login {return_url}` spawns
+  `fused cloud login --no-browser` and returns `{authorize_url}` — the first
+  `http(s)://` URL captured from the child's output; **opening it is the
+  client's job** (`window.open`; the server never drives a browser). Child
+  env carries `PYTHONUNBUFFERED=1` (Python block-buffers piped stdout — the
+  URL line would otherwise sit past the capture window) and
+  `OPENFUSED_LOGIN_RETURN_URL=<return_url>` so the CLI's post-login callback
+  302s the browser back into the app. `return_url` must be an http(s) URL on
+  a loopback host (400 otherwise — mirrors the CLI's own rule; this server is
+  loopback-only, D2/D3). **Single-flight**: a concurrent POST joins the live
+  child (same URL back; its return_url is ignored) — never a second callback
+  server. The capture window is 30s (a COLD external CLI compiles bytecode on
+  first run; observed >15s); a child that exits **without** a URL fails the
+  request immediately (an exit watcher wakes waiters — no burning the
+  window), 502 carrying the CLI's last line via the DP-2b mapping. Every
+  kill path confirms death (SIGTERM → SIGKILL escalation, inline or on a
+  daemon thread): a merely-SIGTERM'd child could keep its callback server
+  alive and complete a late round-trip against a retried login.
+- **AC-4** Completion is **polled, not pushed**: the client polls status
+  (~2s) until `logged_in` flips; the CLI child owns the OAuth round-trip
+  (localhost callback, self-terminating after ~5min). A child that exits
+  signed-out (abandoned browser tab, timeout) surfaces as a retryable
+  message, detected as `login_in_flight` dropping without `logged_in`.
+- **AC-5** `POST /api/account/login/cancel` terminates the child.
+  `POST /api/account/logout` terminates **and waits out** (SIGTERM →
+  SIGKILL escalation) any in-flight login BEFORE running
+  `fused cloud logout --no-browser` — a login child outliving the credential
+  delete could complete its callback later and silently re-write the JWT.
+  Optional `{env}` forwards `--env NAME` (also drops that env's stored
+  data-plane key — the CLI's full-signout semantics). A RUNNING setup job is
+  canceled too (account-scoped work; its record reports "canceled by signing
+  out" and frees the single job slot) — no wait needed there, a setup child
+  can't resurrect the JWT. Returns fresh status.
+
+### 27.3 Environment setup & management
+
+- **AC-6** `POST /api/account/setup {org?, env?, env_name?}` runs
+  `fused cloud setup --no-browser [--org O --env E] --env-name NAME` as
+  **the one tracked background job**: 202 `{job_id, env_name}`; 409 when a
+  job is already running, and 409 when signed out — the interactive login
+  flow lives in ONE place (AC-3); a setup child silently waiting on a
+  sign-in URL nobody sees would just burn its timeout. Presence isn't
+  proof: before spawning, the sign-in is VERIFIED with one `cloud orgs`
+  probe, so an expired credential with a dead refresh token gets an
+  immediate actionable 409 instead of ~5 minutes of doomed spinner. `org`/`env` go
+  together (both or neither — omitting them lets the CLI discover the
+  account's workspace, self-creating a personal org for an admitted org-less
+  account); `env_name` is validated as a single safe token and defaults to
+  flow's convention (`fused` for the default managed env, `fused-<env>`
+  otherwise). The child's stdout+stderr are merged into one pipe (progress
+  goes to stderr, the final line to stdout — one pipe keeps terminal order)
+  and pumped into a bounded tail; `PYTHONUNBUFFERED=1` again; a 900s
+  backstop kills a wedged child. The CLI does everything real: waits for
+  provisioning, mints the data-plane key into the local secrets store,
+  writes the env into `envs.json` — the app never touches a secret.
+- **AC-6a** `GET /api/account/setup` reports
+  `{state: idle|running|done|failed, job_id, env_name, detail}` — `detail`
+  is the CLI's own lines (mapped error when failed; keyring-less Linux
+  hosts get the CLI's error naming the `fused[local]` remedy verbatim). The
+  client polls (~1.5s), **matches job_id** (a stale job's terminal state
+  must not complete a newer attempt), and **adopts** a running job on mount
+  (the page reopened mid-setup shows live progress; one-job-at-a-time makes
+  it unambiguous).
+- **AC-7** `POST /api/account/envs/default {name}` →
+  `fused env default NAME`; `POST /api/account/envs/delete {name}` →
+  `fused env delete NAME --yes` — the CLI's **local-pointer-only** delete
+  (no cloud teardown, no key revocation), stated in the confirm dialog and
+  the table copy. Names are rejected when flag-shaped (leading `-`): the
+  name lands in argv, where `--help` would be parsed as a click option that
+  exits 0 — a silent no-op the endpoint would report as success. Both
+  return fresh status so the client updates in one round-trip; the client
+  merges it over its cached probe (env actions don't change org
+  membership), so the signed-in summary never flickers away.
+
+### 27.4 Page & Deploy-modal behavior
+
+- **AC-8** The account page's states, in checking order (the DP-2 pattern):
+  CLI missing → the DP-4 install panel (same one-click/manual split);
+  signed out → sign-in (waiting + Cancel while connecting; a sign-in
+  started elsewhere — Deploy modal, another tab — is adopted read-only with
+  its own Cancel); signed in → account summary (probe orgs/roles table,
+  not-admitted note), the environments management table (default marker,
+  make-default, forget-with-confirm), and the setup panel — presented
+  as CONNECT when the account already has a workspace (`cloud setup
+  --org --env` connects the existing environment; nothing is created) and
+  as create-your-workspace when it has none: workspace picker when >1
+  org/env, the single workspace shown read-only when exactly one (the
+  user must see WHICH environment will be connected), prefilled editable
+  env name, live progress log; prominent while no managed env exists, else collapsed
+  behind an "Add managed environment" toggle. The deep probe is CACHED:
+  focus/visibility refreshes re-read only the cheap presence status and
+  keep the orgs view they have, re-probing only when it is missing (initial
+  load, right after a sign-in), forced (setup completion — self-serve may
+  have created the workspace), or when `creds_stamp` changed since the cached
+  probe (a re-login as a different account that never flipped `logged_in`
+  false in this tab — the cache must not show the prior account's orgs). All
+  return-to-tab refreshes ride the shared `useRefreshOnReturn` hook
+  (lib/hooks.ts), which coalesces the double focus+visibilitychange firing.
+- **AC-11** The page also hosts the **Deployments** section — the env-wide
+  `fused share list` view with per-mount Revoke that PF-6 previously placed
+  on Preferences (semantics unchanged: `/api/deploy/shares` joined to local
+  pages, revoke by env+token via `deploy.revoke_mount`). Environments and
+  Deployments render in BOTH auth states: the env store and an AWS env's
+  share list need the CLI, not a managed-Fused sign-in — an AWS-only user
+  must not pass through an irrelevant sign-in to revoke a link. Only the
+  account summary and the setup panel gate on `logged_in`.
+- **AC-9** The Deploy modal never dead-ends into a terminal for the managed
+  path: its signed-out warning carries the working sign-in button (DP-2b as
+  amended), and its no-envs state signs in in place or routes to the account
+  page's setup panel. AWS env creation keeps naming
+  `<setup_cli> env create` — out of scope by the §27 scope line — and that
+  hint renders in BOTH branches: an AWS-only user who is signed out must
+  not be funneled into an irrelevant managed-cloud sign-in to learn it.
+
+### 27.5 Trust & credentials
+
+- **AC-10** No credential ever touches fused-render: the CLI owns the JWT
+  (`~/.openfused/fused-cloud-credentials.json`) and the data-plane keys
+  (the CLI's local secrets store); this surface reads *presence/status* and
+  runs the CLI, and persists nothing of its own under `~/.fused-render`.
+  All mutating endpoints carry the D36 X-Fused guard; `return_url` is
+  loopback-constrained (AC-3). The D3 stance is unchanged — this is not
+  authentication *of* fused-render, and the §1 non-goal stands as annotated.
+## 28. Canvas View — Conditional Layout Viewer for `canvas.toml` (D105)
 
 A `canvas` view template renders a Fused **canvas definition** (`canvas.toml`,
 v2) as a read-only **layout viewer**: nodes drawn as positioned boxes, folder
@@ -1412,7 +1789,7 @@ offer it — a plain `.toml` never shows the mode at all.
   pass → `{name, version, previewImageUrl, nodes, folders, edges, viewport,
   viewportBounds, siblings}`. `type == "udf-folder"` entries go to `folders`
   (folderName, folderColor, childUdfOrder, isLocked); the rest to `nodes`
-  (title defaults to udfName, visible defaults true — the §26 defaults). Edges
+  (title defaults to udfName, visible defaults true — the §28 defaults). Edges
   are `[src, dst]` name pairs; malformed nodes/edges are **skipped, never
   fatal**. `siblings` maps each node's udfName → the sibling file extensions
   (`.py`/`.json`/`.md`/`.html`) present next to the toml, from one

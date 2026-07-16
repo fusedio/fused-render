@@ -8,6 +8,8 @@
   --sel: #2b3a52;
   --accent: #E5FF44;
   --error: #ff6b6b;
+  --success: #3fb950;
+  --warning: #d29922;
 }
 
 * {
@@ -600,6 +602,7 @@ a.bookmark-name::after {
 
 #content {
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -610,6 +613,7 @@ a.bookmark-name::after {
    listing and results. */
 .listing {
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -667,7 +671,7 @@ a.bookmark-name::after {
   height: 11px;
   margin-top: -5.5px;
   border: 1.5px solid var(--border);
-  border-top-color: var(--fg-muted);
+  border-top-color: var(--accent);
   border-radius: 50%;
   pointer-events: none;
   animation: listing-search-spin 0.6s linear infinite;
@@ -1588,6 +1592,39 @@ body.embed .preview-browse-chip:hover {
   padding-left: 10px;
 }
 
+/* Signed-in dot on the sidebar's Fused-account entry — same green as the
+   preview header's deploy dot. The footer icon span anchors it. */
+.sidebar-footer .icon {
+  position: relative;
+}
+
+.account-signedin-dot {
+  position: absolute;
+  top: -2px;
+  right: -3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #3fca6b;
+  border: 1px solid var(--bg-alt);
+}
+
+/* The account page's `fused cloud setup` progress log — the CLI's own lines,
+   streamed while the managed environment provisions. */
+.account-setup-log {
+  color: var(--fg-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
 /* Current-deployment card: status chip + URL row. */
 .deploy-current {
   border: 1px solid var(--border);
@@ -1743,13 +1780,233 @@ body.embed .preview-browse-chip:hover {
   }
 }
 
-/* "Will publish:" preview — the page + each bundled runPython/rawUrl target
-   as compact chips. */
-.deploy-preview {
+/* "Will publish" — a bordered, collapsible card holding the page + each bundled
+   runPython/rawUrl target plus the user's include/exclude edits (add files,
+   remove, restore, reset). Every row shares one 3-column grid — filename |
+   tag | action — so tags and the ✕/Restore buttons line up in fixed columns
+   regardless of which cells a given row fills. */
+.deploy-files {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Collapse toggle: a full-width header that reads as a section label, not a
+   button (no chrome), with the chevron + count inline. */
+.deploy-files-head {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  font: inherit;
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+}
+
+.deploy-files-chevron {
+  flex: 0 0 auto;
+  width: 12px;
+  color: var(--fg-muted);
+  font-size: 10px;
+}
+
+.deploy-files-title {
+  font-weight: 600;
+}
+
+.deploy-files-count {
+  margin-left: auto;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.deploy-files-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 12px 12px;
+}
+
+.deploy-preview-actions {
+  display: flex;
   gap: 6px;
+  flex-wrap: wrap;
+}
+
+.deploy-preview-actions button {
+  font-size: 12px;
+  padding: 3px 8px;
+}
+
+.deploy-file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+/* filename (flex-fills) | tag (fixed) | action (fixed) — shared by every row so
+   columns align across the publish and excluded lists. */
+.deploy-file {
+  display: grid;
+  grid-template-columns: 1fr 56px 72px;
+  align-items: center;
+  column-gap: 8px;
+  padding: 2px 4px;
+  border-radius: 6px;
+}
+
+.deploy-file:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.deploy-file code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+.deploy-file.excluded code {
+  text-decoration: line-through;
+  color: var(--fg-muted);
+  background: none;
+}
+
+.deploy-file-empty {
+  padding: 4px;
+}
+
+.deploy-file-tag {
+  justify-self: center;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+/* An empty tag cell keeps the column width without drawing a pill. */
+.deploy-file-tag.none {
+  border-color: transparent;
+  padding: 0;
+}
+
+.deploy-file-tag.added {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* The action column: ✕ is centered, Restore fills it — both sit in the same
+   fixed column so they align down the list. */
+.deploy-file-action {
+  justify-self: stretch;
+  font-size: 12px;
+  padding: 3px 6px;
+  min-height: 24px;
+}
+
+.deploy-file-remove {
+  color: var(--fg-muted);
+}
+
+.deploy-file-remove:hover:not(:disabled) {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.deploy-excluded {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.deploy-picker {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.deploy-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.deploy-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.deploy-picker-list button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  background: none;
+  border: none;
+  color: var(--fg);
+  cursor: pointer;
+  padding: 3px 6px;
+  border-radius: 6px;
+}
+
+.deploy-picker-list button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.deploy-picker-add {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.deploy-picker-list code {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deploy-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.deploy-warning {
+  color: var(--warning, #d9a441);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* ---- Preferences page (SPEC §20) ------------------------------------------ */
@@ -1763,8 +2020,10 @@ body.embed .preview-browse-chip:hover {
   padding: 6px;
   border-top: 1px solid var(--border);
   flex: 0 0 auto;
-  display: flex;
-  align-items: stretch;
+  /* Four entries no longer fit one row of the ~220px sidebar without
+     truncating every label — a 2×2 grid keeps the labels readable. */
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 4px;
 }
 
@@ -2016,6 +2275,92 @@ body.embed .preview-browse-chip:hover {
   background: rgba(255, 107, 107, 0.12);
 }
 
+/* Health dot — color tracks state via a modifier class, off the shared
+   tokens (never a hardcoded hex) so it stays theme-correct. */
+.mount-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--fg-muted);
+}
+.mount-dot.mounted {
+  background: var(--success);
+}
+.mount-dot.disconnected {
+  background: var(--warning);
+}
+
+/* Inline qualifier after a mount name ("— read-only", "— disconnected"). */
+.mount-hint {
+  font-weight: 400;
+  font-size: 0.85em;
+  color: var(--fg-muted);
+}
+.mount-hint.warn {
+  color: var(--warning);
+}
+
+/* The remote spec shown under a mount name, clipped to one line. */
+.mount-remote {
+  font-size: 0.8em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Labeled form field: a small uppercase caption over a native control, so
+   the add-mount row and the custom-remote modal read as named fields rather
+   than a line of bare placeholders. */
+.mount-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.mount-field > span {
+  font-size: 0.7em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+}
+.mount-field .req {
+  color: var(--accent);
+}
+
+/* Live preview of the rclone spec the Add button will mount. */
+.mount-spec {
+  font-size: 0.8em;
+  margin: 0;
+}
+.mount-spec .warn {
+  color: var(--warning);
+}
+
+/* Empty state — a quiet dashed panel pointing at the Add-mount form. */
+.mount-empty {
+  padding: 16px 18px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  text-align: center;
+  color: var(--fg-muted);
+}
+
+/* "Add a custom S3 remote …" — a quiet inline link-button. */
+.mount-link {
+  align-self: flex-start;
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+  font-size: 0.85em;
+  color: var(--fg-muted);
+  text-decoration: underline;
+}
+.mount-link:hover {
+  color: var(--fg);
+}
+
 .prefs-radio {
   display: flex;
   align-items: flex-start;
@@ -2142,6 +2487,17 @@ body.embed .preview-browse-chip:hover {
   margin-left: auto;
 }
 
+/* Right-aligned action cluster: keeps New template / Import / Export grouped so
+   they wrap as one unit under the search+filters instead of a lone button
+   floating onto its own row (margin-left:auto on a single wrapped flex item). */
+.templates-toolbar-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: stretch;
+  margin-left: auto;
+}
+
 .templates-search {
   font: inherit;
   font-size: 13px;
@@ -2253,26 +2609,20 @@ body.embed .preview-browse-chip:hover {
   cursor: default;
 }
 
-.templates-danger-text {
-  font: inherit;
-  font-size: 12px;
-  padding: 6px 4px;
-  margin-right: auto;
-  background: none;
-  border: none;
-  color: var(--error);
+/* Delete-confirm modal options (D109): the two default-checked checkboxes. */
+.templates-delete-opts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 2px 0 10px;
+}
+
+.templates-delete-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
   cursor: pointer;
-  opacity: 0.85;
-}
-
-.templates-danger-text:hover:not(:disabled) {
-  opacity: 1;
-  text-decoration: underline;
-}
-
-.templates-danger-text:disabled {
-  opacity: 0.4;
-  cursor: default;
 }
 
 .templates-add-btn {
@@ -2431,9 +2781,99 @@ body.embed .preview-browse-chip:hover {
   width: min(640px, 100%);
 }
 
+.templates-new {
+  width: min(520px, 100%);
+}
+
 .templates-editor .deploy-body,
-.templates-import .deploy-body {
+.templates-import .deploy-body,
+.templates-new .deploy-body {
   gap: 16px;
+}
+
+/* The name field reuses .templates-search's visual, but that class is authored
+   for the toolbar's flex ROW (flex:1 1 200px). Inside .templates-field (a flex
+   COLUMN) that flex-basis lands on the block axis and grows the input into a
+   tall box — pin it back to a single-line control. */
+.templates-field .templates-search {
+  flex: none;
+  width: 100%;
+}
+
+.templates-field-hint {
+  font-size: 12px;
+}
+
+/* Quick-pick extensions already in the registry: chip buttons under the tag
+   input, capped to ~3 rows with the overflow scrolling. */
+.templates-ext-suggest-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.templates-ext-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: flex-start;
+  align-content: flex-start;
+  /* Truncate at exactly 3 chip rows: chips are pinned to 24px tall below, so
+     rows start every 30px (24px + 6px gap) and the 4th row begins at 90px —
+     fully past this cutoff, no partial row peeking. Typing filters the list,
+     so hidden extensions are still reachable. */
+  max-height: 84px;
+  overflow: hidden;
+}
+
+.templates-ext-suggestion {
+  font: inherit;
+  cursor: pointer;
+  color: var(--fg);
+  /* Fixed height keeps suggestion rows on the 30px grid the container's
+     max-height counts on. */
+  height: 24px;
+  box-sizing: border-box;
+}
+
+.templates-ext-suggestion:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.templates-ext-suggestion:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Tag-style extension input: chips + a borderless draft field inside one box
+   that reads as a single text input (matches .templates-search framing). */
+.templates-chip-input {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-alt);
+}
+
+.templates-chip-input:focus-within {
+  border-color: var(--accent);
+}
+
+.templates-chip-draft {
+  flex: 1 1 80px;
+  min-width: 80px;
+  font: inherit;
+  border: none;
+  background: none;
+  color: var(--fg);
+  padding: 2px 0;
+}
+
+.templates-chip-draft:focus {
+  outline: none;
 }
 
 /* The row editor hosts the "Add template" popover, which is absolutely
@@ -2753,6 +3193,143 @@ body.embed .preview-browse-chip:hover {
   font-size: 12px;
 }
 
+/* Recommended-binding chips (import wizard step 2). */
+.templates-recs-toggle {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.templates-recs-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.templates-recs-subline {
+  font-size: 12px;
+}
+
+/* The strip visually belongs to the manifest row above it: dashed separator
+   instead of the table's solid row border. */
+.templates-import-table tr.templates-rec-strip td {
+  border-top: 1px dashed var(--border);
+  padding: 5px 0 8px;
+}
+
+.templates-rec-strip.inert .templates-rec-row,
+.templates-rec-strip.inert .templates-rec-warn {
+  opacity: 0.45;
+}
+
+.templates-rec-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.templates-rec-label {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+/* Chips fight the generic .deploy-body button skin (see note below) — match
+   its specificity and re-assert the pill look for both <button> and <span>. */
+.deploy-body .templates-rec-chip,
+.templates-rec-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  padding: 2px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: none;
+  color: var(--fg-muted);
+  align-self: auto;
+}
+
+.deploy-body button.templates-rec-chip {
+  cursor: pointer;
+}
+
+.deploy-body button.templates-rec-chip:hover:not(:disabled) {
+  background: none;
+  border-color: var(--fg-muted);
+}
+
+.deploy-body button.templates-rec-chip.on {
+  border-color: rgba(229, 255, 68, 0.5);
+  background: rgba(229, 255, 68, 0.07);
+  color: var(--accent);
+}
+
+.deploy-body button.templates-rec-chip.on:hover:not(:disabled) {
+  background: rgba(229, 255, 68, 0.12);
+  border-color: var(--accent);
+}
+
+.templates-rec-chip.off .templates-rec-key {
+  text-decoration: line-through;
+}
+
+.deploy-body button.templates-rec-chip.add {
+  border-style: dashed;
+}
+
+.templates-rec-badge {
+  display: inline-block;
+  font-family: system-ui, sans-serif;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.templates-rec-badge.bound {
+  color: #86d786;
+}
+
+.templates-rec-badge.disabled {
+  color: #dfb054;
+}
+
+.deploy-body .templates-rec-add-input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  width: 90px;
+  padding: 2px 9px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--bg-alt);
+  color: var(--fg);
+}
+
+.deploy-body .templates-rec-add-input:focus {
+  outline: none;
+}
+
+.deploy-body .templates-rec-add-input.err {
+  border-color: var(--error);
+}
+
+.templates-rec-warn {
+  margin-top: 5px;
+  font-size: 11px;
+  color: #dfb054;
+}
+
+.templates-result-bindings {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
 .templates-result {
   display: flex;
   flex-direction: column;
@@ -2818,20 +3395,6 @@ body.embed .preview-browse-chip:hover {
 
 .deploy-body .templates-seg-btn.danger.active {
   color: var(--error);
-}
-
-.deploy-body .templates-danger-text {
-  border: none;
-  background: none;
-  padding: 6px 4px;
-  font-size: 12px;
-  color: var(--error);
-  margin-right: auto;
-}
-
-.deploy-body .templates-danger-text:hover:not(:disabled) {
-  background: none;
-  border-color: transparent;
 }
 
 .deploy-body .templates-btn-primary {

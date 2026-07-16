@@ -22,3 +22,9 @@ export function basename(fsPath: string): string {
   const parts = fsPath.split("/").filter((s) => s.length > 0);
   return parts.length ? parts[parts.length - 1] : "/";
 }
+
+export function dirname(fsPath: string): string {
+  const idx = fsPath.replace(/\/+$/, "").lastIndexOf("/");
+  if (idx <= 0) return idx === 0 ? "/" : "";
+  return fsPath.slice(0, idx);
+}

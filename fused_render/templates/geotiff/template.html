@@ -170,12 +170,26 @@ async function ensureDaemon(){
 }
 const dURL = p => `http://127.0.0.1:${daemon.port}${p}`;
 
-function renderQuery(){
-  const q = new URLSearchParams({ file: P.file(), mode: P.mode(), band: P.band(),
-    r: P.r(), g: P.g(), b: P.b(), cmap: P.cmap() });
-  if (P.stretch()) q.set('stretch', P.stretch());
-  if (P.vlo() !== '' && P.vhi() !== ''){ q.set('vlo', P.vlo()); q.set('vhi', P.vhi()); }
+// Every request hands the daemon a range-capable /api/fs/raw locator; the
+// daemon asks the server (/api/fs/stat) whether the file is mount-backed and
+// only then reads chunks over HTTP instead of mmap'ing the kernel NFS mount,
+// whose concurrent page faults stall and drop the mount under a screenful of
+// tiles. Local files stay on mmap. The template carries no mount knowledge.
+const rawURL = f => `${location.origin}/api/fs/raw?path=${encodeURIComponent(f)}`;
+// EVERY daemon query is built here so none can miss `src` — a missed one
+// silently regresses that request to the mmap-over-NFS path.
+const daemonQuery = params => {
+  const q = new URLSearchParams(params);
+  q.set('src', rawURL(params.file));
   return q.toString();
+};
+
+function renderQuery(){
+  const params = { file: P.file(), mode: P.mode(), band: P.band(),
+    r: P.r(), g: P.g(), b: P.b(), cmap: P.cmap() };
+  if (P.stretch()) params.stretch = P.stretch();
+  if (P.vlo() !== '' && P.vhi() !== ''){ params.vlo = P.vlo(); params.vhi = P.vhi(); }
+  return daemonQuery(params);
 }
 
 // ---------------- raster layer (tile mode) ----------------
@@ -290,7 +304,7 @@ function viewportMercBbox(){
 async function refreshHist(){
   if (!tileMode || !daemon) return;
   const bbox = viewportMercBbox().join(',');
-  const q = new URLSearchParams({file: P.file(), mode: P.mode(), band: P.band(),
+  const q = daemonQuery({file: P.file(), mode: P.mode(), band: P.band(),
     r: P.r(), g: P.g(), b: P.b(), bins: '60', bbox});
   try {
     if (histAbort) histAbort.abort();
@@ -406,7 +420,7 @@ map.on('mousemove', async e => {
   const now = performance.now();
   if (!tileMode || !daemon || now - hoverT < 120) return;
   hoverT = now;
-  const q = new URLSearchParams({file: P.file(), lon: e.lngLat.lng, lat: e.lngLat.lat});
+  const q = daemonQuery({file: P.file(), lon: e.lngLat.lng, lat: e.lngLat.lat});
   try {
     const r = await (await fetch(dURL('/value?' + q))).json();
     const vs = r.values || [];
@@ -595,7 +609,7 @@ async function loadFile(){
   }
   if (d && d.port){
     try {
-      meta = await (await fetch(dURL('/meta?file=' + encodeURIComponent(file)))).json();
+      meta = await (await fetch(dURL('/meta?' + daemonQuery({file})))).json();
       tileMode = !!meta.supported;
     } catch (e) { meta = null; }
   }

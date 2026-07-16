@@ -12,7 +12,7 @@
 // (the injected runtime writes params through the parent's history object,
 // which fires no native event) — that wrapping is load-bearing for the
 // layout modes and the update-bookmark flow, not just for these hooks.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { NAV_EVENT } from "./router";
 
 function useEventCounter(events: readonly string[]): number {
@@ -48,6 +48,36 @@ export function notifyBookmarksChanged(): void {
 
 export function useBookmarksVersion(): number {
   return useEventCounter([BOOKMARKS_EVENT]);
+}
+
+// Run `cb` when the tab regains focus or becomes visible again — the app's
+// "re-read cheap state on return" freshness posture (deploy dot, deploy
+// pref, account status). One shared subscription instead of per-site
+// listener boilerplate, and coalesced: a single tab return fires BOTH
+// `focus` and `visibilitychange`, which would double every refresh — calls
+// landing in the same tick collapse to one. The callback is kept fresh via
+// a ref, so passing an inline closure is fine. Does NOT fire on mount —
+// callers own their initial read.
+export function useRefreshOnReturn(cb: () => void): void {
+  const ref = useRef(cb);
+  ref.current = cb;
+  useEffect(() => {
+    let queued = false;
+    const refresh = () => {
+      if (queued || document.visibilityState !== "visible") return;
+      queued = true;
+      window.setTimeout(() => {
+        queued = false;
+        ref.current();
+      }, 0);
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, []);
 }
 
 // Tab title reflects whatever's on screen (a file/dir name, or a static

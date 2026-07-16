@@ -166,6 +166,37 @@ def test_mount_calls_rc_with_vfs_options(home, rcd):
     assert body["mountPoint"] == mounts_mod.mountpoint(c)
     assert body["vfsOpt"]["CacheMode"] == "full"
     assert body["vfsOpt"]["CacheMaxAge"] == "24h"
+    # The mount carries the same on-disk cache cap as the serve — both must
+    # hold every vfs option or rcd splits them into two VFS instances.
+    assert body["vfsOpt"]["CacheMaxSize"] == "20Gi"
+
+
+def test_serve_vfs_opt_derived_from_mount_vfs_opt():
+    # The mount (vfsOpt object) and the serve (flat vfs_* params) must describe
+    # the SAME option set or rcd builds two independent VFS instances that don't
+    # share cached ranges — the whole reason this bug existed. SERVE_VFS_OPT is
+    # DERIVED from VFS_OPT to guarantee it; assert every key maps and the values
+    # agree (bools -> "true"/"false", ints -> str, as serve/list echoes them).
+    assert set(mounts_mod._VFS_OPT_TO_SERVE_PARAM) == set(mounts_mod.VFS_OPT)
+    for obj_key, flat_key in mounts_mod._VFS_OPT_TO_SERVE_PARAM.items():
+        v = mounts_mod.VFS_OPT[obj_key]
+        expected = ("true" if v else "false") if isinstance(v, bool) else str(v)
+        assert mounts_mod.SERVE_VFS_OPT[flat_key] == expected
+
+
+@pytest.mark.skipif(mounts_mod.sys.platform != "darwin",
+                    reason="nfsmount timeo override is macOS-only")
+def test_mount_raises_nfs_timeout_on_macos(home, rcd):
+    # The loopback NFS client's low default timeout drops the whole mount on a
+    # slow chunk fetch; attach must pass a raised timeo so local-path reads are
+    # slow, not fatal. mountOpt is NFS transport, not a vfs option, so it does
+    # not affect VFS sharing with the serve.
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    assert mounts_mod.attach_mount(c) is None
+    [(_, body)] = [x for x in rcd.calls if x[0] == "mount/mount"]
+    assert body["mountType"] == "nfsmount"
+    assert body["mountOpt"]["ExtraOptions"] == mounts_mod.NFS_MOUNT_OPT["ExtraOptions"]
+    assert any(o.startswith("timeo=") for o in body["mountOpt"]["ExtraOptions"])
 
 
 def test_mount_surfaces_rc_error(home, rcd):
@@ -284,7 +315,8 @@ def test_mount_view_has_no_automount_field(client, rcd):
         headers=FUSED).json()
     # automount is implicit for every mount now — the field is gone.
     assert "automount" not in m
-    assert set(m) == {"id", "name", "remote", "mountpoint", "mounted", "state"}
+    assert set(m) == {"id", "name", "remote", "mountpoint", "mounted", "state",
+                      "read_only"}
 
 
 def test_delete_unmounts_and_removes(client, rcd):
@@ -638,6 +670,22 @@ def test_reconnect_force_unmounts_dead_mount_then_remounts(home, rcd, monkeypatc
     assert any(m == "mount/mount" for m, _ in rcd.calls)
 
 
+def test_reconnect_stops_serve_so_it_rebinds_to_fresh_vfs(home, rcd):
+    # rcd shares one VFS between a mount and its serve; unmounting tears that
+    # VFS down and leaves the serve wedged on uncached reads (verified against
+    # real rclone). Reconnect must stop the serve so the following sync_serves
+    # starts a fresh one bound to the remounted VFS. The serve's options match
+    # SERVE_VFS_OPT, so the ONLY serve/stop here is reconnect's, not a drift.
+    c, mp = _make_mount(home, rcd, served=False)
+    rcd.responses["serve/list"] = {"list": [{
+        "id": "http-live", "addr": "127.0.0.1:41000",
+        "params": {"type": "http", "fs": "remote:bucket",
+                   **mounts_mod.SERVE_VFS_OPT}}]}
+    assert mounts_mod.reconnect_mount(c) is None
+    assert ("serve/stop", {"id": "http-live"}) in rcd.calls
+    assert any(m == "mount/mount" for m, _ in rcd.calls)
+
+
 def test_reconnect_reports_force_unmount_failure(home, rcd, monkeypatch):
     c, mp = _make_mount(home, rcd, served=False)
     monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
@@ -749,7 +797,11 @@ def test_attach_starts_http_serve_and_writes_map(home, rcd):
     # object is mount/mount-only and gets silently ignored (cache stays off).
     assert "vfsOpt" not in body
     assert body["vfs_cache_mode"] == "full"
-    assert body["vfs_cache_max_size"] == "5Gi"
+    assert body["vfs_cache_max_size"] == "20Gi"
+    # The serve is started with the FULL derived option set (not just cache
+    # mode/size) so it shares the mount's VFS — every SERVE_VFS_OPT key present.
+    for k, v in mounts_mod.SERVE_VFS_OPT.items():
+        assert body[k] == v
     serves = json.load(open(mounts_mod.serves_path()))
     assert serves == {mounts_mod.mountpoint(c): "http://127.0.0.1:59999"}
 
@@ -795,7 +847,7 @@ def test_sync_serves_restarts_serve_with_stale_vfs_opts(home, rcd):
     assert stop == {"id": "http-stale"}
     [(_, start)] = [x for x in rcd.calls if x[0] == "serve/start"]
     assert start["vfs_cache_mode"] == "full"
-    assert start["vfs_cache_max_size"] == "5Gi"
+    assert start["vfs_cache_max_size"] == "20Gi"
     serves = json.load(open(mounts_mod.serves_path()))
     assert serves == {mounts_mod.mountpoint(c): "http://127.0.0.1:59999"}
 
@@ -857,8 +909,13 @@ def test_stat_marks_mount_backed_files_remote(client, home):
 
 
 def test_fs_raw_proxies_range_from_mount_serve(client, home):
-    """/api/fs/raw for a mount-backed path streams from the mount's HTTP
-    serve (Range and HEAD forwarded), not from the local filesystem."""
+    """/api/fs/raw for a mount-backed path streams GETs from the mount's
+    HTTP serve, not from the local filesystem. HEAD is the exception: it is
+    answered from the mount's own stat — ranged clients (duckdb httpfs,
+    fsspec/zarr) probe the length before every read, and proxying that probe
+    costs a full remote round trip for headers the VFS getattr already
+    knows; on a real mount the stat and the serve read the same remote, so
+    the sizes agree (here they intentionally differ to prove the source)."""
     import functools
     import http.server
     import os
@@ -890,8 +947,50 @@ def test_fs_raw_proxies_range_from_mount_serve(client, home):
         assert r.status_code == 200 and r.content == b"REMOTE-BYTES"
         r = client.head("/api/fs/raw", params={"path": f})
         assert r.status_code == 200
-        assert r.headers["content-length"] == str(len(b"REMOTE-BYTES"))
+        assert r.headers["content-length"] == str(len(b"LOCAL-BYTES"))
+        assert r.headers["accept-ranges"] == "bytes"
+        assert "last-modified" in r.headers
         assert r.content == b""
+    finally:
+        srv.shutdown()
+
+
+def test_fs_raw_directory_404s_not_listing(client, home):
+    """A directory path under a served mount 404s on GET and HEAD. The serve
+    (like rclone serve http) answers a directory with a 200 HTML listing, so
+    without a guard the proxy would hand that listing back as raw bytes; a
+    directory has no bytes to serve, so both verbs must 404."""
+    import functools
+    import http.server
+    import os
+    import threading
+
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    os.makedirs(mp)
+    d = os.path.join(mp, "subdir")
+    os.makedirs(d)
+    open(os.path.join(d, "x.bin"), "wb").write(b"CHUNK")
+
+    class H(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0), functools.partial(H, directory=str(mp)))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        import fused_render.shell.storage as storage
+        storage.write_json(mounts_mod.serves_path(),
+                           {mp: f"http://127.0.0.1:{srv.server_address[1]}"})
+        # Browser-style request (Sec-Fetch-Mode present) skips the redirect
+        # branch and reaches the proxy path, which is where a directory would
+        # otherwise leak a 200 listing.
+        h = {"sec-fetch-mode": "navigate"}
+        r = client.get("/api/fs/raw", params={"path": d}, headers=h)
+        assert r.status_code == 404
+        r = client.head("/api/fs/raw", params={"path": d}, headers=h)
+        assert r.status_code == 404
     finally:
         srv.shutdown()
 
@@ -950,3 +1049,306 @@ def test_fs_raw_proxy_error_keeps_range_headers(client, home):
         assert r.headers["content-range"] == "bytes */12345"
     finally:
         srv.shutdown()
+
+
+# -- upstream_url_for (direct-to-store bypass) -------------------------------
+
+
+@pytest.fixture()
+def fresh_upstream():
+    """The bypass memoizes per-remote capability, config and per-object
+    links in module globals; clear around each test so results don't leak."""
+    mounts_mod._upstream_links.clear()
+    mounts_mod._upstream_mode.clear()
+    mounts_mod._upstream_cfg.clear()
+    yield
+    mounts_mod._upstream_links.clear()
+    mounts_mod._upstream_mode.clear()
+    mounts_mod._upstream_cfg.clear()
+
+
+def test_upstream_url_prefers_presigned_link(home, rcd, fresh_upstream):
+    import os
+
+    rcd.responses["operations/publiclink"] = {"url": "https://signed.example/x?sig=1"}
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    f = os.path.join(mounts_mod.mountpoint(c), "a", "b.parquet")
+    assert mounts_mod.upstream_url_for(f) == "https://signed.example/x?sig=1"
+    [(_, body)] = [x for x in rcd.calls if x[0] == "operations/publiclink"]
+    assert body["fs"] == "remote:bucket" and body["remote"] == "a/b.parquet"
+    # Second ask answers from the link cache — no extra rc round-trip.
+    assert mounts_mod.upstream_url_for(f) == "https://signed.example/x?sig=1"
+    assert len([x for x in rcd.calls if x[0] == "operations/publiclink"]) == 1
+
+
+def test_upstream_url_public_s3_when_link_unsupported(home, rcd, fresh_upstream):
+    import os
+
+    # Anonymous S3 remotes can't presign ("unsupported signer type noAuth")
+    # but don't need to — the plain public object URL works. The config makes
+    # that knowable up front, so publiclink is never even attempted, and the
+    # config is memoized: minting URLs for later objects on the same remote
+    # (a zarr store touches thousands) is pure string building, no rc call.
+    rcd.responses["operations/publiclink"] = (
+        500, {"error": 'unsupported signer type "smithy.api#noAuth"'})
+    rcd.responses["config/get"] = {
+        "type": "s3", "provider": "AWS", "env_auth": "false",
+        "region": "us-west-2"}
+    c = mounts_mod.add_mount("data", "aws-open:bucket/pre fix")
+    f = os.path.join(mounts_mod.mountpoint(c), "k ey.parquet")
+    assert mounts_mod.upstream_url_for(f) == (
+        "https://bucket.s3.us-west-2.amazonaws.com/pre%20fix/k%20ey.parquet")
+    f2 = os.path.join(mounts_mod.mountpoint(c), "other.parquet")
+    assert mounts_mod.upstream_url_for(f2) == (
+        "https://bucket.s3.us-west-2.amazonaws.com/pre%20fix/other.parquet")
+    assert [x for x in rcd.calls if x[0] == "operations/publiclink"] == []
+    assert len([x for x in rcd.calls if x[0] == "config/get"]) == 1
+
+
+def test_upstream_url_none_is_remembered(home, rcd, fresh_upstream):
+    import os
+
+    # A credentialed remote that can't presign has no reachable direct URL;
+    # the verdict is cached so the raw hot path doesn't re-ask rcd per read.
+    rcd.responses["operations/publiclink"] = (500, {"error": "boom"})
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
+    c = mounts_mod.add_mount("data", "corp:bucket")
+    f = os.path.join(mounts_mod.mountpoint(c), "x.parquet")
+    assert mounts_mod.upstream_url_for(f) is None
+    assert mounts_mod.upstream_url_for(f) is None
+    assert len([x for x in rcd.calls if x[0] == "operations/publiclink"]) == 1
+
+
+def test_upstream_url_none_outside_mounts(home, rcd, fresh_upstream):
+    assert mounts_mod.upstream_url_for("/somewhere/else.parquet") is None
+
+
+def test_fs_raw_redirects_cold_native_range_reads(client, home, rcd, fresh_upstream):
+    """A GET from a native client (no Sec-Fetch-Mode) on a cold mount-backed
+    file 307s to the store's direct URL — ranged or whole-file alike (zarr
+    reads its many tiny metadata files whole); browser requests and HEADs
+    keep today's serve proxy (a redirect would die on CORS / fail a
+    GET-signed link). No stat gates the redirect: a getattr on a never-listed
+    mount object is a full remote round trip, and the store 404s a missing
+    object itself."""
+    import os
+
+    import fused_render.shell.storage as storage
+
+    rcd.responses["operations/publiclink"] = {"url": "https://signed.example/x"}
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    os.makedirs(mp)
+    f = os.path.join(mp, "x.bin")
+    open(f, "wb").write(b"LOCAL-BYTES")
+    # A live-looking serve entry; the serve itself is never reached by the
+    # redirect path, and browser/HEAD fall back to the file when it's dead.
+    storage.write_json(mounts_mod.serves_path(), {mp: "http://127.0.0.1:1"})
+
+    r = client.get("/api/fs/raw", params={"path": f},
+                   headers={"Range": "bytes=0-3"}, follow_redirects=False)
+    assert r.status_code == 307
+    assert r.headers["location"] == "https://signed.example/x"
+
+    # Whole-file native GET: redirected too, and without any local stat —
+    # a path that doesn't exist under the (fake) mount still redirects, so
+    # the daemon's read never pays the VFS getattr round trip.
+    r = client.get("/api/fs/raw", params={"path": f}, follow_redirects=False)
+    assert r.status_code == 307
+    ghost = os.path.join(mp, "not-listed-yet.bin")
+    r = client.get("/api/fs/raw", params={"path": ghost},
+                   follow_redirects=False)
+    assert r.status_code == 307
+
+    r = client.get("/api/fs/raw", params={"path": f},
+                   headers={"Range": "bytes=0-3", "Sec-Fetch-Mode": "cors"},
+                   follow_redirects=False)
+    assert r.status_code != 307
+    r = client.head("/api/fs/raw", params={"path": f}, follow_redirects=False)
+    assert r.status_code != 307
+    # HEAD still answers from the stat: missing files 404 locally.
+    r = client.head("/api/fs/raw", params={"path": ghost},
+                    follow_redirects=False)
+    assert r.status_code == 404
+
+
+def test_api_run_rewrites_raw_source_url_to_direct(
+        client, home, rcd, fresh_upstream, tmp_path):
+    """/api/run swaps a raw-proxy source_url for the store's direct URL on a
+    cold mount-backed file (redirects defeat httpfs connection pooling — the
+    reader must get the direct URL up front), and leaves everything else
+    alone: non-mount paths, warm (prefetched) files, and foreign URLs."""
+    import os
+    from urllib.parse import quote
+
+    import fused_render.shell.prefetch as prefetch_mod
+    import fused_render.shell.storage as storage
+
+    rcd.responses["operations/publiclink"] = {"url": "https://signed.example/x"}
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    os.makedirs(mp)
+    f = os.path.join(mp, "x.parquet")
+    open(f, "wb").write(b"PAR1")
+    storage.write_json(mounts_mod.serves_path(), {mp: "http://127.0.0.1:1"})
+
+    echo = tmp_path / "echo.py"
+    echo.write_text("def main(source_url=None):\n"
+                    "    return {'source_url': source_url}\n",
+                    encoding="utf-8")
+
+    def run(src):
+        r = client.post("/api/run", json={
+            "py": str(echo), "params": {"source_url": src}},
+            headers={"X-Fused": "1"})
+        return r.json()["result"]["source_url"]
+
+    raw = f"http://testserver/api/fs/raw?path={quote(f)}"
+    # Cold mount-backed file: rewritten to the store URL.
+    assert run(raw) == "https://signed.example/x"
+    # Warm file (prefetch landed): the raw proxy stays, so reads replay from
+    # the serve's local cache.
+    with prefetch_mod._lock:
+        prefetch_mod._jobs[f] = {"status": "done", "size": 4, "done": 4,
+                                 "at": 0.0}
+    try:
+        assert run(raw) == raw
+    finally:
+        with prefetch_mod._lock:
+            prefetch_mod._jobs.pop(f, None)
+    # Non-mount path and foreign URLs: untouched.
+    plain = tmp_path / "plain.bin"
+    plain.write_bytes(b"x")
+    unmounted = f"http://testserver/api/fs/raw?path={quote(str(plain))}"
+    assert run(unmounted) == unmounted
+    assert run("https://elsewhere.example/data.parquet") == \
+        "https://elsewhere.example/data.parquet"
+
+
+# -- read-only remotes -----------------------------------------------------
+# A mount's writability is a property of the REMOTE (anonymous S3 can never
+# take a write; an :http: backend has no write verbs at all), but the kernel
+# mount can't say so: with CacheMode=full a write "succeeds" into the local
+# VFS cache and only fails at async upload. So every attach re-detects
+# read-onlyness non-mutatingly via rc (fsinfo features + remote config) and
+# persists it on the mount record — unless the user chose the flag at create
+# (read_only_user), which detection never overrides. Inconclusive probes
+# persist nothing. server._writable consults the flag via mount_read_only().
+
+FSINFO_RW = {"Features": {"Put": True, "PutStream": True, "Copy": True}}
+FSINFO_RO = {"Features": {"Put": False, "PutStream": False, "Copy": False}}
+
+
+def _attached(name, remote):
+    m = mounts_mod.add_mount(name, remote)
+    assert mounts_mod.attach_mount(m) is None
+    return mounts_mod.get_mount(m["id"])
+
+
+def test_attach_marks_anonymous_s3_read_only(home, rcd):
+    rcd.responses["operations/fsinfo"] = FSINFO_RW
+    rcd.responses["config/get"] = {"type": "s3", "provider": "AWS",
+                                   "env_auth": "false"}
+    assert _attached("pub", "aws-open:bucket")["read_only"] is True
+
+
+def test_attach_marks_credentialed_s3_writable(home, rcd):
+    rcd.responses["operations/fsinfo"] = FSINFO_RW
+    rcd.responses["config/get"] = {"type": "s3", "provider": "AWS",
+                                   "env_auth": "true", "profile": "default"}
+    assert _attached("data", "aws:bucket")["read_only"] is False
+
+
+def test_attach_marks_putless_backend_read_only(home, rcd):
+    # An :http:-style backend advertises no write features at all — read-only
+    # regardless of its config.
+    rcd.responses["operations/fsinfo"] = FSINFO_RO
+    rcd.responses["config/get"] = {"type": "http"}
+    assert _attached("web", "web:")["read_only"] is True
+
+
+def test_attach_persists_nothing_when_probe_inconclusive(home, rcd):
+    # Neither probe answers (stub 404s both) — persist NO verdict: the mount
+    # stays rw (the pre-flag behavior) and the next attach re-probes, so a
+    # transient rcd hiccup at first attach can't freeze a wrong answer.
+    m = _attached("data", "remote:bucket")
+    assert "read_only" not in m
+    # The probes come back — the same mount converges on the next attach.
+    rcd.responses["operations/fsinfo"] = FSINFO_RO
+    rcd.responses["config/get"] = {"type": "http"}
+    assert mounts_mod.attach_mount(m) is None
+    assert mounts_mod.get_mount(m["id"])["read_only"] is True
+
+
+def test_attach_treats_missing_features_as_inconclusive(home, rcd):
+    # fsinfo answering WITHOUT a Features map is version skew, not evidence
+    # of read-onlyness — a writable remote must not get locked by it.
+    rcd.responses["operations/fsinfo"] = {"Name": "remote"}
+    rcd.responses["config/get"] = (404, {"error": "config not found"})
+    assert "read_only" not in _attached("data", "remote:bucket")
+
+
+def test_reattach_redetects_when_credentials_change(home, rcd):
+    # Detected (not user-set) flags follow the remote: an anonymous S3 mount
+    # flagged read-only flips back once credentials appear in its config.
+    rcd.responses["operations/fsinfo"] = FSINFO_RW
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "false"}
+    m = _attached("pub", "aws-open:bucket")
+    assert m["read_only"] is True
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
+    assert mounts_mod.attach_mount(m) is None
+    assert mounts_mod.get_mount(m["id"])["read_only"] is False
+
+
+def test_explicit_read_only_flag_never_redetected(home, rcd):
+    rcd.responses["operations/fsinfo"] = FSINFO_RO  # would detect read-only
+    rcd.responses["config/get"] = {"type": "http"}
+    m = mounts_mod.add_mount("web", "web:", read_only=False)
+    assert mounts_mod.attach_mount(m) is None
+    assert mounts_mod.get_mount(m["id"])["read_only"] is False
+
+
+def test_add_mount_rejects_non_bool_read_only(home):
+    # Straight off a JSON body: bool("false") is True, so anything but a real
+    # boolean (or None) must be refused, not coerced.
+    with pytest.raises(ValueError):
+        mounts_mod.add_mount("pub", "aws-open:bucket", read_only="false")
+
+
+def test_mount_read_only_path_lookup(home):
+    ro = mounts_mod.add_mount("pub", "aws-open:bucket", read_only=True)
+    rw = mounts_mod.add_mount("data", "aws:bucket", read_only=False)
+    legacy = mounts_mod.add_mount("old", "old:bucket")  # pre-flag record
+    assert mounts_mod.mount_read_only(
+        _os.path.join(mounts_mod.mountpoint(ro), "f.parquet")) is True
+    assert mounts_mod.mount_read_only(
+        _os.path.join(mounts_mod.mountpoint(rw), "f.parquet")) is False
+    assert mounts_mod.mount_read_only(
+        _os.path.join(mounts_mod.mountpoint(legacy), "f.parquet")) is False
+    assert mounts_mod.mount_read_only("/somewhere/else.parquet") is False
+
+
+def test_mount_view_exposes_read_only(home):
+    m = mounts_mod.add_mount("pub", "aws-open:bucket", read_only=True)
+    assert mounts_mod.mount_view(m, rcd_mounts=set())["read_only"] is True
+    m2 = mounts_mod.add_mount("data", "aws:bucket")
+    assert mounts_mod.mount_view(m2, rcd_mounts=set())["read_only"] is False
+
+
+def test_fix_dotted_bucket_url():
+    fix = mounts_mod._fix_dotted_bucket_url
+    # dotted bucket in the TLS hostname can never pass the wildcard cert:
+    # unsigned URLs are rewritten to path-style
+    assert fix("https://us-west-2.opendata.source.coop.s3.us-west-2"
+               ".amazonaws.com/mindearth/a%20b/zarr.json") == \
+        ("https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop"
+         "/mindearth/a%20b/zarr.json")
+    # a signed one can't be (SigV4 covers Host) — dropped, caller stays on
+    # the serve proxy
+    assert fix("https://buck.et.s3.us-east-1.amazonaws.com/k"
+               "?X-Amz-Signature=abc") is None
+    # dot-free buckets and non-AWS hosts pass through untouched
+    for u in ("https://plain.s3.us-west-2.amazonaws.com/key",
+              "https://plain.s3.us-west-2.amazonaws.com/key?X-Amz-Sig=x",
+              "https://minio.example.com/bucket/key"):
+        assert fix(u) == u

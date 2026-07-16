@@ -1,11 +1,11 @@
 """Reader backing canvas/template.html — parses a Fused `canvas.toml` (v2) into
-a JSON-native layout the viewer draws (SPEC §26).
+a JSON-native layout the viewer draws (SPEC §28).
 
 One `tomllib` pass turns the canvas definition into
 `{name, nodes, folders, edges, viewport, viewportBounds, siblings}`:
 
   * nodes   — UDF nodes (positioned rects), optional fields defaulted per the
-              §26 table (title = udfName, visible = true).
+              §28 table (title = udfName, visible = true).
   * folders — `type = "udf-folder"` group boxes (folderName, folderColor,
               childUdfOrder, isLocked).
   * edges   — [[srcUdfName, dstUdfName], …] pairs, malformed ones dropped.
@@ -15,13 +15,13 @@ One `tomllib` pass turns the canvas definition into
 
 Malformed node/edge entries are skipped, never fatal — a hand-edited canvas
 with one broken node still previews the rest. A whole-file parse failure is
-allowed to propagate so the page's traceback overlay shows it (§26).
+allowed to propagate so the page's traceback overlay shows it (§28).
 
 Called by `fused.runPython("./reader.py", {file})`.
 """
 
 
-# ENGINE ISOLATION (SPEC PY / §26): under the fused engine the UDF body runs
+# ENGINE ISOLATION (SPEC PY / §28): under the fused engine the UDF body runs
 # re-exec'd in isolation from this module's globals, so EVERY helper and
 # constant lives INSIDE main() and every import is done inside main(). Nothing
 # is referenced at module level except the entrypoint and its registration shim.
@@ -46,7 +46,7 @@ def main(file: str = "") -> dict:
 
     def node_common(entry):
         # Fields shared by UDF nodes and folder nodes; position/size defaulted
-        # so a node missing them still lands somewhere paintable (§26).
+        # so a node missing them still lands somewhere paintable (§28).
         name = text(entry.get("udfName"))
         return {
             "udfName": name,
@@ -60,7 +60,7 @@ def main(file: str = "") -> dict:
     if not file:
         # Raise (don't return an error dict the viewer would render as an
         # empty canvas) — a reader failure surfaces via the page's traceback
-        # overlay (§26), same as a whole-file parse failure.
+        # overlay (§28), same as a whole-file parse failure.
         raise ValueError("no file (missing _file param)")
 
     # A whole-file parse failure propagates -> the page's traceback overlay.

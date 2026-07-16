@@ -8,15 +8,14 @@ still hosts nothing and mints nothing — every mutation is a `fused share …`
 child process, exactly the pattern the flow app uses for project deploys
 (flow repo, spec/app/deploy-project.md). What this module owns:
 
-  * **The fused CLI seam.** Deploying needs the `fused` package, which may not
-    be installed in the venv running this server. `fused_cli()` resolves it
-    from exactly two sources: an explicit FUSED_RENDER_FUSED_BIN override, or
-    — the ONE autodetected source — the `fused` package importable in this
-    interpreter, run via the `_fused_cli.py` shim under sys.executable (which
-    is what the packaged macOS app uses: its bundle bakes the package in and
-    has no console scripts). `POST /api/deploy/install` pip-installs the
-    wheel pinned by `PINNED_FUSED_REQUIREMENT` into the server's interpreter
-    when it is missing (Python 3.11+ with pip).
+  * **The one-click install.** Deploying needs the `fused` package, which may
+    not be installed in the venv running this server; the resolution seam
+    itself (`fused_cli()` — an explicit FUSED_RENDER_FUSED_BIN override, or
+    the ONE autodetected source, the `fused` package importable in this
+    interpreter via the `_fused_cli.py` shim) lives in fusedcli.py, shared
+    with the account surface (account.py). `POST /api/deploy/install`
+    pip-installs the wheel pinned by `PINNED_FUSED_REQUIREMENT` into the
+    server's interpreter when it is missing (Python 3.11+ with pip).
   * **Export to a temporary bundle.** Each deploy re-exports the page into a
     fresh temp directory (`export.export_page`) and hands that bundle to
     `share create`/`repoint`; the bundle is deleted afterwards — nothing to
@@ -48,7 +47,6 @@ X-Fused guard is duplicated locally like shell/bookmarks.py does.
 """
 from __future__ import annotations
 
-import dataclasses
 import importlib
 import importlib.util
 import json
@@ -64,14 +62,22 @@ from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
 from fused_render.export import ExportError, export_page, plan_export
+
+# The fused CLI seam (resolution, child-env hygiene, error mapping, the CLI's
+# own on-disk state) is shared with account.py — it lives in fusedcli.py.
+# Private aliases keep this module's historical names (and test patch targets)
+# stable.
+from fused_render.fusedcli import (
+    child_env as _child_env,
+    cli_error as _cli_error,
+    eligible_envs,
+    fused_cli,
+    fused_cloud_logged_in,
+    setup_cli_hint as _setup_cli_hint,
+)
 from fused_render.shell import storage
 
 router = APIRouter()
-
-# Backends that can answer a served URL (flow's HOSTED_BACKENDS): the managed
-# Fused control plane, or an AWS env whose serving plane `fused infra serve`
-# provisioned. `local` has no serving plane and is never eligible.
-HOSTED_BACKENDS = ("fused", "aws")
 
 # create/repoint upload the bundle (inline base64 on the fused backend) — give
 # them the same generous budget flow uses; list is a cheap read.
@@ -101,56 +107,24 @@ def _error(message: str, status: int = 400) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status)
 
 
+def _str_list(body: dict, key: str) -> list[str] | None:
+    """A JSON body field that must be a list of strings (absent/None -> []).
+
+    Returns None when the field is present but malformed (not a list, or holds a
+    non-string) so the caller can 400 rather than pass junk to the exporter."""
+    value = body.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, list) or any(not isinstance(v, str) for v in value):
+        return None
+    return value
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-# -- the fused CLI seam -------------------------------------------------------
-
-
-@dataclasses.dataclass(frozen=True)
-class FusedCli:
-    """The resolved fused CLI: the command vector, and whether it is an
-    EXTERNAL interpreter (a FUSED_RENDER_FUSED_BIN override) — external
-    children get PYTHONHOME/PYTHONPATH scrubbed so the packaged app's
-    bundle-scoped interpreter env can't poison them (see _child_env)."""
-
-    command: list[str]
-    external: bool
-
-
-def fused_cli() -> FusedCli | None:
-    """Resolve the fused CLI, or None when there is none.
-
-    Exactly TWO sources — one explicit, one autodetected — and nothing else
-    (no venv-bin scan, no PATH lookup, no well-known-location guessing; a CLI
-    this server didn't get from its own interpreter runs only because the
-    user explicitly configured it):
-
-      1. FUSED_RENDER_FUSED_BIN — trusted verbatim, split on whitespace so a
-         compound command works (e.g. "uv run fused"). Mirrors the flow app's
-         OPENFUSED_BIN seam; also how tests substitute a stub CLI.
-      2. the `fused` package importable in THIS interpreter — run as
-         ``[sys.executable, _fused_cli.py]`` (the shim sets argv[0] and calls
-         fused._cli.main). Covers a venv server that pip-installed the
-         [fused] extra (including via POST /api/deploy/install) AND the
-         packaged macOS app, whose py2app bundle has no console scripts but
-         bakes the fused package in (build_dmg.sh) and whose sys.executable
-         is a real re-invokable interpreter (the executor's _child.py spawn
-         pattern).
-    """
-    override = os.environ.get("FUSED_RENDER_FUSED_BIN")
-    if override:
-        parts = override.split()
-        return FusedCli(command=parts, external=True) if parts else None
-    try:
-        importable = importlib.util.find_spec("fused") is not None
-    except (ImportError, ValueError):
-        importable = False
-    if importable:
-        shim = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_fused_cli.py")
-        return FusedCli(command=[sys.executable, shim], external=False)
-    return None
+# -- the one-click install (the CLI seam itself is fusedcli.py) ---------------
 
 
 # The fused wheel the one-click install lands (POST /api/deploy/install) —
@@ -163,7 +137,7 @@ def fused_cli() -> FusedCli | None:
 # install button exactly when it mattered. The constant ships in the same
 # file as the code that uses it, so it is always as current as the server.
 PINNED_FUSED_REQUIREMENT = (
-    "fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post1-py3-none-any.whl"
+    "fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post2-py3-none-any.whl"
 )
 # The wheel's own environment marker (python_version >= "3.11"), enforced here
 # because pip is handed the marker-free requirement above.
@@ -262,54 +236,7 @@ def install_fused() -> dict:
     return {"ok": True, "requirement": requirement}
 
 
-# -- environments (the fused CLI's own store) ---------------------------------
-
-
-def _envs_file() -> str:
-    # The same override the fused CLI itself honors (environments.py), so a
-    # relocated store stays consistent between the CLI and this reader.
-    return os.environ.get("OPENFUSED_ENVS_FILE") or os.path.expanduser("~/.openfused/envs.json")
-
-
-def eligible_envs() -> dict:
-    """Hosted envs from the fused store + the picker's default.
-
-    Reads ~/.openfused/envs.json directly (like the flow app's readEnvs) so
-    the picker renders even when the CLI is not installed yet. Default pick:
-    OPENFUSED_ENV when it names an eligible env (explicit intent for this
-    process), else the first `fused`-backend env — preferring the store's own
-    default when that is one — else the store default, else the first eligible.
-    """
-    data = storage.read_json(_envs_file())
-    raw_envs = data.get("envs") if isinstance(data, dict) else None
-    envs = []
-    if isinstance(raw_envs, dict):
-        for entry in raw_envs.values():
-            if not isinstance(entry, dict):
-                continue
-            name, backend = entry.get("name"), entry.get("backend")
-            if isinstance(name, str) and backend in HOSTED_BACKENDS:
-                envs.append({"name": name, "backend": backend})
-    envs.sort(key=lambda e: e["name"])
-
-    by_name = {e["name"]: e for e in envs}
-    store_default = data.get("default") if isinstance(data, dict) else None
-    fused_backed = [e["name"] for e in envs if e["backend"] == "fused"]
-
-    default = None
-    ambient = os.environ.get("OPENFUSED_ENV")
-    if ambient in by_name:
-        default = ambient
-    elif store_default in by_name and by_name[store_default]["backend"] == "fused":
-        default = store_default
-    elif fused_backed:
-        default = fused_backed[0]
-    elif store_default in by_name:
-        default = store_default
-    elif envs:
-        default = envs[0]["name"]
-
-    return {"envs": envs, "default_env": default, "envs_file": _envs_file()}
+# -- environments (store reads live in fusedcli.py) ---------------------------
 
 
 def _backend_of(env_name: str) -> str | None:
@@ -319,60 +246,7 @@ def _backend_of(env_name: str) -> str | None:
     return None
 
 
-def fused_cloud_logged_in() -> bool:
-    """Whether the fused CLI's control-plane credentials exist on disk.
-
-    Presence of the credentials file the CLI itself reads/writes
-    (`fused cloud login` → ~/.openfused/fused-cloud-credentials.json, same
-    env override). Presence-only, deliberately: an expired-but-refreshable
-    token still works (the CLI refreshes silently), and validating deeper
-    would duplicate the CLI's own logic — this signal exists so the modal can
-    warn BEFORE a deploy click when a managed env is targeted with no login
-    at all; the CLI stays the authority at action time.
-    """
-    path = os.environ.get("OPENFUSED_FUSED_CLOUD_CREDENTIALS") or os.path.expanduser(
-        "~/.openfused/fused-cloud-credentials.json"
-    )
-    return os.path.isfile(path)
-
-
 # -- `fused share …` execution -------------------------------------------------
-
-
-def _cli_error(stderr: str, fallback: str) -> str:
-    """Last non-empty stderr line with click's `Error: ` prefix stripped — the
-    CLI's messages already name the fix, so they reach the modal verbatim.
-
-    One adjustment: login errors say `fused cloud login`, which doesn't
-    resolve inside the packaged app (no `fused` on PATH) — when the bundled
-    wrapper is the setup CLI, its real path is appended so the instruction is
-    runnable as printed.
-    """
-    lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
-    message = lines[-1] if lines else fallback
-    message = message.removeprefix("Error: ")
-    setup_cli = _setup_cli_hint()
-    if setup_cli != "fused" and "fused cloud login" in message:
-        message += f" (in this app: {setup_cli} cloud login)"
-    return message
-
-
-def _child_env(cli: FusedCli, env_name: str) -> dict[str, str]:
-    """The child environment for a fused CLI run.
-
-    OPENFUSED_ENV targets the chosen env (the CLI's own override channel).
-    For an EXTERNAL cli (FUSED_RENDER_FUSED_BIN), interpreter-scoped vars are
-    scrubbed: inside the packaged macOS app the process carries PYTHONHOME/
-    PYTHONPATH pointing into the bundle, which would break any other Python's
-    interpreter (same scrub the las template does for its external spawns).
-    The in-interpreter shim keeps them — they are what make sys.executable
-    work in the bundle.
-    """
-    child = {**os.environ, "OPENFUSED_ENV": env_name}
-    if cli.external:
-        for var in ("PYTHONHOME", "PYTHONPATH"):
-            child.pop(var, None)
-    return child
 
 
 def _run_share(env_name: str, args: list[str], timeout: float = SHARE_TIMEOUT):
@@ -520,7 +394,8 @@ def set_deployment(page: str, record: dict) -> None:
 
 
 def _record_from(raw: dict, *, page: str, env_name: str, backend: str,
-                 entrypoints: list[str], fallback: dict | None) -> dict:
+                 entrypoints: list[str], include: list[str], exclude: list[str],
+                 fallback: dict | None) -> dict:
     token = raw.get("token") or raw.get("id") or (fallback or {}).get("token")
     if not isinstance(token, str) or not token:
         raise DeployError("the fused CLI did not return a mount token")
@@ -542,18 +417,28 @@ def _record_from(raw: dict, *, page: str, env_name: str, backend: str,
         "url": url if isinstance(url, str) else None,
         "status": "active",
         "entrypoints": entrypoints,
+        # The file-selection the user deployed with, persisted here (not a separate
+        # sidecar) so reopening the modal reloads exactly what was published: extra
+        # files bundled beyond the auto-scan, and files dropped from it.
+        "include": include,
+        "exclude": exclude,
         "updated_at": _now_iso(),
     }
 
 
-def preview_deploy(page: str) -> dict:
+def preview_deploy(
+    page: str,
+    include: list[str] | None = None,
+    exclude: list[str] | None = None,
+) -> dict:
     """What a deploy of `page` would publish, resolved fresh — no files written.
 
     The modal shows this BEFORE the Deploy click (the flow app's
     DeployPreview precedent): the page itself, each runPython target and the
-    route it becomes, each rawUrl/readFile asset — and any export blockers,
-    so an unexportable page reads as "fix these" up front instead of a failed
-    deploy. Same scan the real export runs (export.plan_export).
+    route it becomes, each rawUrl/readFile asset (plus the user's `include`,
+    minus `exclude`) — plus any export blockers and advisory warnings, so an
+    unexportable page reads as "fix these" up front instead of a failed deploy.
+    Same scan the real export runs (export.plan_export), with the same selection.
     """
     if not os.path.isfile(page):
         raise DeployError(f"no such file: {page}")
@@ -564,18 +449,36 @@ def preview_deploy(page: str) -> dict:
             html = f.read()
     except OSError as e:
         raise DeployError(f"cannot read {page}: {e}") from None
-    plan = plan_export(html, os.path.dirname(os.path.abspath(page)))
+    page_dir = os.path.dirname(os.path.abspath(page))
+    plan = plan_export(html, page_dir, include=include, exclude=exclude)
+    # The auto-detected set (the literal runPython/rawUrl/readFile scan, before any
+    # include/exclude) — what the page publishes by DEFAULT. The modal uses it to
+    # tell an auto-detected file (removing it means excluding it, and it belongs in
+    # "Excluded" with a restore) from a purely manual include (removing it just
+    # drops it). Cheap: a second pure regex scan over the same HTML.
+    auto = plan_export(html, page_dir)
     return {
         "page": os.path.basename(page),
         "entrypoints": [{"path": e.path, "name": e.name} for e in plan.entrypoints],
         "assets": [{"path": a.path, "name": a.name} for a in plan.assets],
+        "auto": [e.path for e in auto.entrypoints] + [a.path for a in auto.assets],
         "errors": plan.errors,
+        "warnings": plan.warnings,
     }
 
 
-def deploy_page(page: str, env_name: str) -> dict:
+def deploy_page(
+    page: str,
+    env_name: str,
+    include: list[str] | None = None,
+    exclude: list[str] | None = None,
+) -> dict:
     """Export `page` to a temp bundle and publish it on `env_name`; returns the
     stored deployment record (token, URL when the backend returned one).
+
+    `include`/`exclude` are the user's file selection (see export.plan_export):
+    extra files bundled beyond the auto-scan, and files dropped from it. They are
+    persisted on the record so a reopened modal reloads the same selection.
 
     First deploy (or a pointer on a different env): `share create --public` —
     a fresh opaque capability URL. Redeploy on the same env keeps the URL:
@@ -583,6 +486,8 @@ def deploy_page(page: str, env_name: str) -> dict:
     recreate --same-token` then repoint (same URL comes back); token absent
     from `share list` entirely -> fresh create (nothing left to revive).
     """
+    include = include or []
+    exclude = exclude or []
     # Canonicalize up front so the direct locked store.get below, the record's
     # `page` field, and set_deployment all key on the same path as get_deployment
     # / deployment_status (all via _page_key) — one file, one pointer.
@@ -617,7 +522,7 @@ def deploy_page(page: str, env_name: str) -> dict:
 
     bundle = tempfile.mkdtemp(prefix="fused-render-deploy-")
     try:
-        plan = export_page(page, bundle)
+        plan = export_page(page, bundle, include=include, exclude=exclude)
         entrypoints = [e.name for e in plan.entrypoints]
 
         same_env = pointer if pointer and pointer.get("env") == env_name else None
@@ -666,7 +571,7 @@ def deploy_page(page: str, env_name: str) -> dict:
 
         record = _record_from(
             raw, page=page, env_name=env_name, backend=backend,
-            entrypoints=entrypoints, fallback=same_env,
+            entrypoints=entrypoints, include=include, exclude=exclude, fallback=same_env,
         )
         set_deployment(page, record)
         return record
@@ -687,7 +592,7 @@ def revoke_deployment(page: str) -> dict:
 
 
 def revoke_mount(env_name: str, token: str) -> dict:
-    """`share revoke` a mount by token — the Preferences page's revoke, which
+    """`share revoke` a mount by token — the account page's revoke, which
     also covers mounts with no local pointer (deployed by the CLI, another
     app, or another machine; the CLI's owner-binding still applies and its
     refusal surfaces verbatim). Any local pointer recording this mount flips
@@ -823,27 +728,6 @@ def list_shares(env_name: str) -> dict:
 # -- routes --------------------------------------------------------------------
 
 
-def _setup_cli_hint() -> str:
-    """The command users type in a terminal for one-time CLI setup
-    (`fused env create`, `fused cloud setup`, `fused cloud login`).
-
-    Inside the packaged macOS app (py2app sets sys.frozen) there is no
-    user-facing `fused` on PATH — but the bundle ships a terminal wrapper
-    that runs the same baked-in CLI the Deploy button uses, at
-    ``Contents/Resources/bin/fused`` (build_dmg.sh §4c — under Resources, not
-    MacOS, because a shell script in a code directory breaks the codesign
-    bundle seal). sys.executable is ``…/Contents/MacOS/python``; the wrapper
-    is resolved relative to it. Point guidance at it so a .app user never
-    needs a separate fused install.
-    """
-    if getattr(sys, "frozen", None) == "macosx_app":
-        contents = os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))
-        wrapper = os.path.join(contents, "Resources", "bin", "fused")
-        if os.path.isfile(wrapper):
-            return wrapper
-    return "fused"
-
-
 @router.get("/api/deploy/config")
 def api_deploy_config():
     return {
@@ -863,12 +747,20 @@ def api_deploy_status(path: str, reconcile: str = "0"):
     return deployment_status(path, reconcile == "1")
 
 
-@router.get("/api/deploy/preview")
-def api_deploy_preview(path: str):
-    if not os.path.isabs(path):
+@router.post("/api/deploy/preview")
+def api_deploy_preview(body: dict = Body(...)):
+    # POST (not GET) because it carries the include/exclude selection — arrays
+    # don't fit a query string cleanly. Read-only (no files written), so no
+    # X-Fused guard, matching the former GET.
+    path = body.get("path")
+    if not isinstance(path, str) or not path or not os.path.isabs(path):
         return _error("'path' must be an absolute filesystem path")
+    include = _str_list(body, "include")
+    exclude = _str_list(body, "exclude")
+    if include is None or exclude is None:
+        return _error("'include'/'exclude' must be arrays of relative file paths")
     try:
-        return preview_deploy(path)
+        return preview_deploy(path, include, exclude)
     except DeployError as e:
         return _error(str(e))
 
@@ -894,8 +786,12 @@ def api_deploy(body: dict = Body(...), x_fused: str | None = Header(default=None
         return _error("'page' must be an absolute path to the .html page")
     if not env_name or not isinstance(env_name, str):
         return _error("'env' must name a hosted environment")
+    include = _str_list(body, "include")
+    exclude = _str_list(body, "exclude")
+    if include is None or exclude is None:
+        return _error("'include'/'exclude' must be arrays of relative file paths")
     try:
-        return deploy_page(page, env_name)
+        return deploy_page(page, env_name, include, exclude)
     except ExportError as e:
         return _error(str(e))
     except DeployError as e:
@@ -908,7 +804,7 @@ def api_deploy_revoke(body: dict = Body(...), x_fused: str | None = Header(defau
     if guard is not None:
         return guard
     # Two addressing modes: by page (the Deploy modal — the page's own
-    # pointer) or by env+token (the Preferences page's share list, which
+    # pointer) or by env+token (the account page's share list, which
     # also covers mounts with no local pointer).
     page = body.get("page")
     env_name, token = body.get("env"), body.get("token")

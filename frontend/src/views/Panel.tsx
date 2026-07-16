@@ -121,6 +121,7 @@ interface PaneCtx {
   syncUrl: () => void;
   split: (id: number, dir: "row" | "col") => void;
   close: (id: number) => void;
+  home: string;
 }
 
 // One pane: bar (crumbs + split/maximize/close buttons) over a frozen-src
@@ -171,7 +172,12 @@ function Pane({ node, ctx }: { node: LayoutLeaf; ctx: PaneCtx }) {
     if (el) el.scrollLeft = el.scrollWidth;
   }, [loc]);
 
-  const parts = loc.path.split("/").filter((s) => s.length > 0);
+  // Same "~" contraction as the top-bar Breadcrumb: strictly below home only —
+  // home itself shows its full path, not a lone "~".
+  const underHome = loc.path.startsWith(ctx.home + "/");
+  const parts = (underHome ? loc.path.slice(ctx.home.length) : loc.path)
+    .split("/")
+    .filter((s) => s.length > 0);
   const crumbs: ReactNode[] = [];
   const addCrumb = (label: string, targetPath: string, isLast: boolean, key: string) => {
     crumbs.push(
@@ -189,11 +195,12 @@ function Pane({ node, ctx }: { node: LayoutLeaf; ctx: PaneCtx }) {
       </span>
     );
   };
-  addCrumb("/", "/", parts.length === 0, "root");
-  let acc = "";
+  addCrumb(underHome ? "~" : "/", underHome ? ctx.home : "/", parts.length === 0, "root");
+  let acc = underHome ? ctx.home : "";
   parts.forEach((p, i) => {
     acc += "/" + p;
-    if (i > 0) crumbs.push(<span key={"sep" + i} className="panel-crumb-sep">/</span>);
+    // The "~" crumb carries no slash, so its first segment needs one too.
+    if (i > 0 || underHome) crumbs.push(<span key={"sep" + i} className="panel-crumb-sep">/</span>);
     addCrumb(p, acc, i === parts.length - 1, acc);
   });
 
@@ -375,7 +382,8 @@ export default function Panel({ config }: { config: Config }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [version]);
 
-  const ctx: PaneCtx = { syncUrl, split, close };
+  // Windows expanduser returns backslashes; pane paths are always forward-slash.
+  const ctx: PaneCtx = { syncUrl, split, close, home: config.home.replace(/\\/g, "/") };
   return (
     <div className="panel-root">
       <Build node={treeRef.current} ctx={ctx} />

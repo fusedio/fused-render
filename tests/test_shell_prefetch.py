@@ -68,11 +68,12 @@ def fast(monkeypatch):
     in milliseconds; shrink the chunk so multi-chunk paths are exercised."""
     monkeypatch.setattr(prefetch_mod, "_jobs", {})
     monkeypatch.setattr(prefetch_mod, "_touched", {})
-    monkeypatch.setattr(prefetch_mod, "_worker_slot", threading.Semaphore(1))
     monkeypatch.setattr(prefetch_mod, "START_DELAY_S", 0.0)
     monkeypatch.setattr(prefetch_mod, "IDLE_WAIT_S", 0.0)
     monkeypatch.setattr(prefetch_mod, "MAX_IDLE_HOLD_S", 0.0)
     monkeypatch.setattr(prefetch_mod, "CHUNK_BYTES", 1024)
+    # Tests use tiny payloads; drop the size floor so they aren't skipped.
+    monkeypatch.setattr(prefetch_mod, "MIN_BYTES", 0)
     monkeypatch.setattr(prefetch_mod, "ENABLED", True)
 
 
@@ -107,6 +108,69 @@ def test_size_gate_skips_large_files(fast, monkeypatch):
         prefetch_mod.schedule("/m/big.bin", stub.url)
         wait_status("/m/big.bin", "skipped")
         assert not any(r[0] == "GET" for r in stub.requests)
+    finally:
+        stub.close()
+
+
+def test_size_gate_skips_small_files(fast, monkeypatch):
+    # A zarr chunk / tiny metadata object: below the floor, never streamed.
+    monkeypatch.setattr(prefetch_mod, "MIN_BYTES", 1000)
+    stub = StubServe(b"x" * 100)
+    try:
+        prefetch_mod.schedule("/m/chunk.bin", stub.url)
+        wait_status("/m/chunk.bin", "skipped")
+        assert not any(r[0] == "GET" for r in stub.requests)
+    finally:
+        stub.close()
+
+
+def test_size_gate_decides_without_start_delay(fast, monkeypatch):
+    # The gate HEAD runs before START_DELAY (delay applies to the download
+    # phase only), so a sub-floor file is dismissed immediately even with a
+    # long delay configured — no 5s wait to decide not to prefetch.
+    monkeypatch.setattr(prefetch_mod, "START_DELAY_S", 30.0)
+    monkeypatch.setattr(prefetch_mod, "MIN_BYTES", 1000)
+    stub = StubServe(b"x" * 100)
+    try:
+        prefetch_mod.schedule("/m/chunk.bin", stub.url)
+        wait_status("/m/chunk.bin", "skipped", timeout=5.0)   # << 30s delay
+        assert not any(r[0] == "GET" for r in stub.requests)
+    finally:
+        stub.close()
+
+
+def test_evicts_oldest_terminal_jobs_over_cap(fast, monkeypatch):
+    # Thousands of chunks would otherwise mint a permanent entry each; the
+    # map stays bounded by evicting oldest terminal jobs.
+    monkeypatch.setattr(prefetch_mod, "MAX_TRACKED", 2)
+    stub = StubServe(b"a" * 50)
+    try:
+        for i in range(5):
+            prefetch_mod.schedule(f"/m/f{i}.bin", stub.url)
+            wait_status(f"/m/f{i}.bin", "done")
+        assert len(prefetch_mod.status()) <= 2
+    finally:
+        stub.close()
+
+
+def test_eviction_is_lru_by_access_not_completion(fast, monkeypatch):
+    # A done file still being read must survive; the least-recently-read
+    # one is dropped first. Otherwise is_done routing flaps and an in-use
+    # file gets re-prefetched.
+    monkeypatch.setattr(prefetch_mod, "MAX_TRACKED", 2)
+    stub = StubServe(b"a" * 50)
+    try:
+        for p in ("/m/old.bin", "/m/mid.bin"):
+            prefetch_mod.schedule(p, stub.url)
+            wait_status(p, "done")
+        # Re-read old.bin: touches it even though it completed first.
+        prefetch_mod.schedule("/m/old.bin", stub.url)   # done -> touch only
+        # New file trips the cap; least-recently-read (mid.bin) is evicted.
+        prefetch_mod.schedule("/m/new.bin", stub.url)
+        wait_status("/m/new.bin", "done")
+        st = prefetch_mod.status()
+        assert "/m/old.bin" in st       # recently re-read -> survives
+        assert "/m/mid.bin" not in st   # least-recently-read -> evicted
     finally:
         stub.close()
 

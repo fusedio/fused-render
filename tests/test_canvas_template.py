@@ -1,4 +1,4 @@
-"""Tests for the `canvas` conditional preview template (SPEC §26, D105).
+"""Tests for the `canvas` conditional preview template (SPEC §28, D105).
 
 Two surfaces:
 
@@ -10,7 +10,7 @@ Two surfaces:
     `server._templates_for` + `server._conditions_payload` on tmp fixtures.
   * the reader (`canvas/reader.py`) — golden parse of a fixture canvas folder
     (nodes / folders / edges / viewport / siblings shape). Guarded on `fused`
-    since the reader is a `@fused.udf` (engine contract, §26).
+    since the reader is a `@fused.udf` (engine contract, §28).
 """
 import importlib.util
 import os
@@ -136,7 +136,7 @@ def test_malformed_toml_fails_closed(tmp_path):
 
 
 def test_canvas_content_but_wrong_basename_is_dropped(tmp_path):
-    # The cheap basename pre-check (§26) gates on the literal name canvas.toml —
+    # The cheap basename pre-check (§28) gates on the literal name canvas.toml —
     # canvas content under any other .toml name does not get the canvas mode.
     p = tmp_path / "layout.toml"
     p.write_text(CANVAS_TOML)
@@ -233,7 +233,7 @@ def test_reader_parses_nodes_folders_edges(reader, canvas_folder):
 def test_reader_defaults_and_visibility(reader, canvas_folder):
     out = reader.main(file=str(canvas_folder / "canvas.toml"))
     by = {n["udfName"]: n for n in out["nodes"]}
-    # title defaults to udfName when absent (§26 table)
+    # title defaults to udfName when absent (§28 table)
     assert by["b"]["title"] == "b"
     # visible defaults to True; explicit false is preserved
     assert by["a"]["visible"] is True
@@ -279,7 +279,7 @@ def test_reader_boolean_viewport_coords_are_absent(reader, tmp_path):
 
 
 def test_reader_no_file_raises(reader):
-    # A missing _file param must FAIL the call (traceback overlay, §26), not
+    # A missing _file param must FAIL the call (traceback overlay, §28), not
     # return a dict the viewer would render as a healthy empty canvas.
     with pytest.raises(ValueError):
         reader.main(file="")
@@ -293,7 +293,7 @@ def test_reader_siblings(reader, canvas_folder):
 
 
 def test_reader_skips_broken_nodes(reader, tmp_path):
-    # A malformed node entry (not a table) is skipped, never fatal (§26).
+    # A malformed node entry (not a table) is skipped, never fatal (§28).
     d = tmp_path / "partial"
     d.mkdir()
     (d / "canvas.toml").write_text(

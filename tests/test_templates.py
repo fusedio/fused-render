@@ -74,7 +74,7 @@ def test_builtin_parquet_default_is_duckdb():
     # `history` (HV-2) is bound here too — not `.html`-only.
     entries, error = server._templates_for("/x/data.parquet", False)
     assert error is None
-    assert [e["mode"] for e in entries] == ["duckdb", "structure", "h3", "claude", "annotate", "history"]
+    assert [e["mode"] for e in entries] == ["duckdb", "structure", "h3", "claude", "annotate", "history", "geometry_editor"]
     assert entries[0]["path"].endswith("duckdb/template.html")
 
 
@@ -99,9 +99,10 @@ def test_duckdb_database_files_route_to_duckdb():
 
 
 def test_builtin_zarr_directory_key():
-    # zarr dir carries the map preview plus the raw member listing as a peer
-    # mode (D81 — replaces the old `?listing=1` escape hatch)
-    assert modes("/x/store.zarr", is_dir=True) == (["zarr", "_listing"], None)
+    # zarr dir carries the AOI streamer, the map preview, and the raw member
+    # listing as peer modes (D81 — replaces the old `?listing=1` escape hatch)
+    assert modes("/x/store.zarr", is_dir=True) == (
+        ["zarr_aoi", "zarr", "_listing"], None)
     # a *file* named .zarr does not match the directory key
     assert modes("/x/store.zarr", is_dir=False) == ([], None)
 
@@ -362,7 +363,7 @@ def csv_file(tmp_path):
 
 def test_condition_marks_entry_without_evaluating(user_dir):
     # The gate would blow up if run — stat must not run it, only mark it.
-    user_dir.template("special", condition="def method(path):\n    raise RuntimeError\n")
+    user_dir.template("special", condition="def main(path):\n    raise RuntimeError\n")
     user_dir.registry({".csv": ["special", "code"]})
     entries, error = server._templates_for("/x/a.csv", False)
     assert [e["mode"] for e in entries] == ["special", "code"]
@@ -372,7 +373,7 @@ def test_condition_marks_entry_without_evaluating(user_dir):
 
 
 def test_condition_true_allows_template(user_dir, csv_file):
-    user_dir.template("special", condition="def method(path):\n    return True\n")
+    user_dir.template("special", condition="def main(path):\n    return True\n")
     user_dir.registry({".csv": ["special", "code"]})
     cond, error = conditions(csv_file)
     assert cond == {"special": True}
@@ -380,7 +381,7 @@ def test_condition_true_allows_template(user_dir, csv_file):
 
 
 def test_condition_false_disallows_template(user_dir, csv_file):
-    user_dir.template("special", condition="def method(path):\n    return False\n")
+    user_dir.template("special", condition="def main(path):\n    return False\n")
     user_dir.registry({".csv": ["special", "code"]})
     cond, error = conditions(csv_file)
     assert cond == {"special": False}
@@ -391,7 +392,7 @@ def test_condition_receives_file_path(user_dir, tmp_path):
     # Only show the template for files under a "reports" directory.
     user_dir.template(
         "special",
-        condition="def method(path):\n    return 'reports' in path\n",
+        condition="def main(path):\n    return 'reports' in path\n",
     )
     user_dir.registry({".csv": ["special", "code"]})
 
@@ -419,7 +420,7 @@ def test_condition_missing_is_unconditional(user_dir, csv_file):
 
 def test_condition_error_disallows_and_reports(user_dir, csv_file):
     user_dir.template(
-        "special", condition="def method(path):\n    raise ValueError('boom')\n"
+        "special", condition="def main(path):\n    raise ValueError('boom')\n"
     )
     user_dir.registry({".csv": ["special", "code"]})
     cond, error = conditions(csv_file)
@@ -427,12 +428,12 @@ def test_condition_error_disallows_and_reports(user_dir, csv_file):
     assert "boom" in error
 
 
-def test_condition_missing_method_disallows_and_reports(user_dir, csv_file):
-    user_dir.template("special", condition="x = 1\n")  # no `method`
+def test_condition_missing_main_disallows_and_reports(user_dir, csv_file):
+    user_dir.template("special", condition="x = 1\n")  # no `main`
     user_dir.registry({".csv": ["special", "code"]})
     cond, error = conditions(csv_file)
     assert cond == {"special": False}
-    assert "method" in error
+    assert "main" in error
 
 
 def test_condition_missing_target_is_404(user_dir, tmp_path):
@@ -443,12 +444,12 @@ def test_condition_missing_target_is_404(user_dir, tmp_path):
 def test_condition_reevaluated_per_call(user_dir, csv_file):
     # Registries + conditions are read fresh per call (no restart): editing
     # condition.py flips the verdict on the next resolution.
-    user_dir.template("special", condition="def method(path):\n    return False\n")
+    user_dir.template("special", condition="def main(path):\n    return False\n")
     user_dir.registry({".csv": ["special", "code"]})
     assert conditions(csv_file)[0] == {"special": False}
 
     (user_dir.path / "special" / "condition.py").write_text(
-        "def method(path):\n    return True\n"
+        "def main(path):\n    return True\n"
     )
     assert conditions(csv_file)[0] == {"special": True}
 
@@ -459,7 +460,7 @@ def test_conditions_run_concurrently(user_dir, csv_file):
     # concurrently they finish in well under that. Generous margin for CI jitter.
     import time
 
-    sleep = "import time\ndef method(path):\n    time.sleep(0.3)\n    return True\n"
+    sleep = "import time\ndef main(path):\n    time.sleep(0.3)\n    return True\n"
     names = [f"cond{i}" for i in range(4)]
     for name in names:
         user_dir.template(name, condition=sleep)
@@ -478,8 +479,8 @@ def test_condition_pool_failure_falls_back_to_serial(user_dir, csv_file, tmp_pat
     # under load), evaluation must NOT propagate and 500 the request — it falls
     # back to serial evaluation, preserving both the fail-closed guarantee and
     # correct results.
-    user_dir.template("a", condition="def method(path):\n    return True\n")
-    user_dir.template("b", condition="def method(path):\n    return 'keep' in path\n")
+    user_dir.template("a", condition="def main(path):\n    return True\n")
+    user_dir.template("b", condition="def main(path):\n    return 'keep' in path\n")
     user_dir.registry({".csv": ["a", "b", "code"]})
 
     import concurrent.futures
@@ -501,7 +502,7 @@ def test_stat_never_blocks_on_slow_condition(user_dir):
     import time
 
     user_dir.template(
-        "slow", condition="import time\ndef method(path):\n    time.sleep(5)\n    return True\n"
+        "slow", condition="import time\ndef main(path):\n    time.sleep(5)\n    return True\n"
     )
     user_dir.registry({".csv": ["slow", "code"]})
 

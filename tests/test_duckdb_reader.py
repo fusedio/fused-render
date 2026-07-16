@@ -283,6 +283,68 @@ def test_positions_mode_pins_ties(tmp_path):
     assert pos["positions"] == list(range(100, 150))
 
 
+# ------------------------------------------- row-group pruning (positions)
+
+@pytest.fixture
+def grouped_parquet(tmp_path):
+    """5 row groups of 2048 rows (DuckDB clamps ROW_GROUP_SIZE below 2048 up,
+    so this is the smallest multi-group file it writes). `seq` correlates
+    with file order (footer stats prune it); `scat` is hash-scattered so
+    every group spans the whole value range (provably unprunable); `seq_n`
+    is seq with a NULL tail."""
+    p = tmp_path / "g.parquet"
+    con = duckdb.connect()
+    con.execute(
+        "COPY (SELECT range AS seq, (range * 37) % 10000 AS scat, "
+        "CASE WHEN range >= 9000 THEN NULL ELSE range END AS seq_n "
+        f"FROM range(10000)) TO '{p}' (FORMAT parquet, ROW_GROUP_SIZE 2048)")
+    con.close()
+    return str(p)
+
+
+def _unpruned_positions(path, col, d, offset, limit):
+    con = duckdb.connect()
+    rows = con.execute(
+        f"SELECT file_row_number FROM read_parquet('{path}', "
+        f"file_row_number=true) ORDER BY {col} {d}, file_row_number "
+        f"LIMIT {limit} OFFSET {offset}").fetchall()
+    con.close()
+    return [r[0] for r in rows]
+
+
+def test_pruned_positions_match_full_scan(grouped_parquet):
+    for col in ("seq", "scat", "seq_n"):
+        for d in ("asc", "desc"):
+            for offset in (0, 2500, 9500):
+                got = reader.main(grouped_parquet, mode="positions",
+                                  sort={"column": col, "dir": d},
+                                  offset=offset, limit=50)["positions"]
+                assert got == _unpruned_positions(
+                    grouped_parquet, col, d, offset, 50), (col, d, offset)
+
+
+def test_prune_restricts_correlated_column(grouped_parquet):
+    con = duckdb.connect()
+    types = {r[0]: r[1] for r in con.execute(
+        f"DESCRIBE SELECT * FROM read_parquet('{grouped_parquet}')").fetchall()}
+    clause = reader._rowgroup_prune(
+        con, grouped_parquet, {"column": "seq", "dir": "desc"}, types, 100)
+    # top 100 of a file-ordered column live in exactly the last group
+    assert clause == " WHERE (file_row_number BETWEEN 8192 AND 9999)"
+
+
+def test_prune_bails_on_scattered_and_null_tail(grouped_parquet):
+    con = duckdb.connect()
+    types = {r[0]: r[1] for r in con.execute(
+        f"DESCRIBE SELECT * FROM read_parquet('{grouped_parquet}')").fetchall()}
+    # scattered: every group's [min,max] covers the range -> nothing provable
+    assert reader._rowgroup_prune(
+        con, grouped_parquet, {"column": "scat", "dir": "desc"}, types, 100) == ""
+    # window deep enough to reach the NULL tail (9000 non-null rows)
+    assert reader._rowgroup_prune(
+        con, grouped_parquet, {"column": "seq_n", "dir": "asc"}, types, 9500) == ""
+
+
 def test_page_with_positions_fetches_exactly_those_rows(parquet_file):
     # Phase two: a column batch hands the resolved positions back and gets
     # exactly those rows — sort/filters/offset/limit are ignored alongside
@@ -689,12 +751,52 @@ def test_source_url_ignored_unless_http(parquet_file):
     assert len(out["rows"]) == 3
 
 
-def test_source_url_ignored_for_csv(csv_file):
-    # The fast path is parquet-only; CSV keeps reading the file even when a
-    # URL is offered (its streaming scan can't prune and sniffing over HTTP
-    # would read the whole file anyway).
-    out = reader.main(csv_file, limit=3, source_url="http://127.0.0.1:1/s.csv")
+def test_source_url_reads_csv_over_http(csv_file):
+    # CSV/TSV/JSON take the URL too, not just parquet: a mount-backed file is
+    # scanned over the serve where hammering the NFS mount with the scan risks
+    # dropping the whole mount. Reading the whole file over HTTP is slow-but-
+    # safe (and the serve's shared VFS cache makes the repeat reads cheap).
+    srv, hits = _serve_dir(os.path.dirname(csv_file))
+    try:
+        url = f"http://127.0.0.1:{srv.server_address[1]}/s.csv"
+        try:
+            out = reader.main(csv_file, limit=3, source_url=url)
+        except Exception:
+            pytest.skip("duckdb httpfs extension unavailable")
+        assert out["rows"][0]["zip"] == "00000"   # all-varchar preserved
+        assert any("s.csv" in h for h in hits), "reader never hit the URL"
+    finally:
+        srv.shutdown()
+
+
+def test_source_url_reads_json_over_http(tmp_path):
+    p = _make(tmp_path, "s.json",
+              "SELECT range AS id, 'n'||range AS name FROM range(5)")
+    srv, hits = _serve_dir(os.path.dirname(p))
+    try:
+        url = f"http://127.0.0.1:{srv.server_address[1]}/s.json"
+        try:
+            out = reader.main(p, limit=3, source_url=url)
+        except Exception:
+            pytest.skip("duckdb httpfs extension unavailable")
+        assert [r["id"] for r in out["rows"]] == [0, 1, 2]
+        assert out["editable"] is False           # JSON stays view-only
+        assert any("s.json" in h for h in hits), "reader never hit the URL"
+    finally:
+        srv.shutdown()
+
+
+def test_source_url_csv_falls_back_when_dead(csv_file):
+    # A dead serve URL must not error the CSV read — fall back to the path.
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        dead = s.getsockname()[1]
+    out = reader.main(csv_file, limit=3,
+                      source_url=f"http://127.0.0.1:{dead}/s.csv")
     assert out["rows"][0]["zip"] == "00000"
+    assert out["total_rows"] == 250
 
 
 # ------------------------------------- schema mode / per-column projection
