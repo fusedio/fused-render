@@ -226,6 +226,27 @@ def test_parquet_unsorted_page_sql_prunes_by_file_row_number_range(parquet_file)
     assert "LIMIT ? OFFSET ?" in filtered_sql
 
 
+def test_page_branch_keys_on_scan_ext_not_file_ext(tmp_path):
+    # The natural-order pruning branch must be chosen by the SCAN's logical ext
+    # (what _page_sql itself branches on), not the file's. They can diverge — a
+    # source_url whose splitext-visible extension isn't .parquet while the local
+    # file is. If the branch keyed on the file ext it would take the no-bind
+    # range path while _page_sql emits a LIMIT ? OFFSET ? query -> a bind-count
+    # error. Here scan is a real .json (non-parquet ext) with the file ext
+    # forced to .parquet: the robust LIMIT/OFFSET path must run and read it.
+    jp = _make(tmp_path, "s.json",
+               "SELECT range AS id, 'n'||range AS name FROM range(5)")
+    con = duckdb.connect(":memory:")
+    con.execute("PRAGMA enable_object_cache=true")
+    try:
+        out = reader._read_flat(jp, jp, con, ".parquet", 0, 3,
+                                None, None, "page")
+    finally:
+        con.close()
+    assert out["ids"] == [0, 1, 2]
+    assert [r["id"] for r in out["rows"]] == [0, 1, 2]
+
+
 def _direct_page_positions(path, offset, limit):
     """Reference window: the plain LIMIT/OFFSET natural-order scan the pruning
     path replaces. Its rows/positions must match exactly."""

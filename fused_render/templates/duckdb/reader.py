@@ -600,11 +600,15 @@ def _read_flat(file: str, scan: str, con, ext: str, offset: int, limit: int,
         in_list = ",".join(str(int(p)) for p in positions[:MAX_LIMIT]) or "-1"
         cur = con.execute(f"SELECT file_row_number AS {_POS}, {proj} "
                           f"FROM {rel} WHERE file_row_number IN ({in_list})")
-    elif ext == ".parquet" and not where and not order:
+    elif _logical_ext(scan) == ".parquet" and not where and not order:
         # Unsorted, unfiltered parquet page: _page_sql bakes the window into a
         # file_row_number range predicate (see its docstring) so DuckDB prunes
         # to the covering row groups. The window is in the SQL, not bound —
         # wbinds is empty here (no filter), so there are no ? to fill.
+        # Key on the SCAN's ext, not `ext` (the file's): _page_sql branches on
+        # _logical_ext(scan), and if the two diverge (a source_url without a
+        # splitext-visible .parquet) the branch and the emitted SQL must still
+        # agree, else the no-bind path meets a LIMIT ? OFFSET ? query.
         cur = con.execute(_page_sql(scan, relation, where, order, projection,
                                     offset=offset, limit=limit), wbinds)
     else:
