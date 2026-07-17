@@ -527,6 +527,25 @@ def test_manifest_multiple_blocks_is_error(tmp_path):
     assert any("at most one" in e for e in plan.errors)
 
 
+def test_manifest_absolute_glob_rejected_before_expansion(tmp_path):
+    # An absolute glob pattern must be rejected with the same "absolute" error a literal
+    # gets — and NOT handed to glob.glob (which would walk from the filesystem root).
+    html = _manifest_block('{"include": ["/etc/*.conf"]}')
+    plan = plan_export(html, str(tmp_path))
+    assert any("absolute" in e for e in plan.errors)
+    assert not plan.assets
+
+
+def test_manifest_escaping_glob_rejected_before_expansion(tmp_path):
+    # A `..` glob pattern must be rejected up front (not walked outside the page tree).
+    (tmp_path / "page").mkdir()
+    (tmp_path / "sibling.json").write_text("leak")
+    html = _manifest_block('{"include": ["../*.json"]}')
+    plan = plan_export(html, str(tmp_path / "page"))
+    assert any("escapes" in e for e in plan.errors)
+    assert not plan.assets
+
+
 def test_manifest_glob_symlink_escape_rejected(tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()

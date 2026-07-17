@@ -313,7 +313,7 @@ def _extract_bundle_manifest(html: str, errors: list[str], warnings: list[str]) 
 
 
 def _expand_manifest_include(
-    page_dir: str, entries: list[str], warnings: list[str]
+    page_dir: str, entries: list[str], errors: list[str], warnings: list[str]
 ) -> list[str]:
     """Resolve manifest ``include`` entries (globs and literal paths) to page-relative files.
 
@@ -322,9 +322,16 @@ def _expand_manifest_include(
     files; a glob matching nothing is a **warning** (a declaration of intent may legitimately
     match nothing yet), never an error. A literal entry is passed through unchanged — missing
     or unsafe literals surface downstream as blocking errors, exactly like an explicit
-    ``/api/export`` include. Order is preserved and duplicates dropped; every result still
-    runs the caller's full safety gauntlet (``_reject_unsafe_rel`` / ``_within_page_dir``),
-    so a glob can never smuggle in a ``..``/symlink escape.
+    ``/api/export`` include.
+
+    An **absolute or ``..``-escaping glob pattern is rejected up front** (same
+    :func:`_reject_unsafe_rel` error a literal gets) and **not expanded** — otherwise
+    ``os.path.join`` would drop ``page_dir`` for an absolute pattern (or a ``..`` pattern
+    would climb out), making ``glob.glob`` walk the filesystem *outside* the page tree (a
+    ``**`` from ``/`` could be ruinous) before the per-result checks reject the matches.
+    Order is preserved and duplicates dropped; every surviving result still runs the
+    caller's full safety gauntlet (``_reject_unsafe_rel`` / ``_within_page_dir``), so a
+    relative glob still can't smuggle in a symlink escape.
     """
     out: list[str] = []
     seen: set[str] = set()
@@ -336,6 +343,10 @@ def _expand_manifest_include(
 
     for entry in entries:
         if _GLOB_META.search(entry):
+            # Validate the PATTERN before expanding, so an absolute/`..` glob never walks
+            # outside the page tree and reports the same failure a literal would.
+            if not _reject_unsafe_rel(entry, "manifest include glob", errors):
+                continue
             hits = sorted(
                 os.path.relpath(p, page_dir).replace(os.sep, "/")
                 for p in glob.glob(os.path.join(page_dir, entry), recursive=True)
@@ -479,7 +490,7 @@ def plan_export(
     # body can't false-positive in the scans below) and its expanded `include` globs are
     # prepended to the caller's include list (both are just added assets; exclude runs last).
     manifest_include, html = _extract_bundle_manifest(html, plan.errors, plan.warnings)
-    include = _expand_manifest_include(page_dir, manifest_include, plan.warnings) + include
+    include = _expand_manifest_include(page_dir, manifest_include, plan.errors, plan.warnings) + include
 
     for m in _UNSUPPORTED.finditer(html):
         api = m.group(1)
