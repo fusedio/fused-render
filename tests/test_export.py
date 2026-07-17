@@ -225,31 +225,33 @@ def test_non_html_input_rejected(tmp_path):
 
 
 def test_export_into_page_dir_rejected(tmp_path):
-    # The out dir is cleared on each export, so exporting into the page's OWN folder (a
-    # non-empty, non-bundle dir) is refused — it would delete the author's files.
+    # Export is non-destructive → the out dir must be empty. The page's OWN folder is
+    # non-empty, so exporting into it is refused (never delete the author's files).
     _write(tmp_path, "page.html", "<script>fused.runPython('./a.py', {});</script>")
     _write(tmp_path, "a.py", "def main():\n    return 1\n")
-    with pytest.raises(ExportError, match="not empty and not a fused-render bundle"):
+    with pytest.raises(ExportError, match="must be empty"):
         export_page(str(tmp_path / "page.html"), str(tmp_path))
+    assert (tmp_path / "a.py").read_text() == "def main():\n    return 1\n"  # untouched
 
 
 def test_export_into_ancestor_dir_rejected(tmp_path):
-    # High-severity guard: out being an ANCESTOR of the page folder is refused too (it holds
-    # the page subfolder + possibly sibling author files), so the sweep can't wipe them.
+    # An ANCESTOR of the page folder is non-empty (it holds the page subfolder + sibling
+    # author files), so it is refused — nothing outside the bundle is ever deleted.
     _write(tmp_path, "sub/page.html", "<script>fused.runPython('./a.py', {});</script>")
     _write(tmp_path, "sub/a.py", "def main():\n    return 1\n")
-    _write(tmp_path, "files/keep.txt", "author data")  # a sibling the sweep must not touch
-    with pytest.raises(ExportError, match="not empty and not a fused-render bundle"):
+    _write(tmp_path, "files/keep.txt", "author data")  # a sibling that must not be touched
+    with pytest.raises(ExportError, match="must be empty"):
         export_page(str(tmp_path / "sub" / "page.html"), str(tmp_path))
     assert (tmp_path / "files" / "keep.txt").read_text() == "author data"  # untouched
 
 
-def test_export_into_nonbundle_dir_rejected(tmp_path):
-    # Any non-empty directory that isn't a prior bundle is refused (never clobber user files).
+def test_export_into_nonempty_dir_rejected(tmp_path):
+    # ANY non-empty directory is refused (even one that looks like a prior bundle) — export
+    # never clobbers existing content.
     _write(tmp_path, "src/page.html", "<html></html>")
     out = tmp_path / "out"
     _write(out, "important.txt", "do not delete")
-    with pytest.raises(ExportError, match="not empty and not a fused-render bundle"):
+    with pytest.raises(ExportError, match="must be empty"):
         export_page(str(tmp_path / "src" / "page.html"), str(out))
     assert (out / "important.txt").read_text() == "do not delete"
 
@@ -273,27 +275,20 @@ def test_same_asset_literal_across_methods_deduped(tmp_path):
     assert [a.path for a in plan.assets] == ["./x.csv"]
 
 
-def test_reexport_clears_stale_bundle_files(tmp_path):
-    # Re-exporting after removing a dependency must not leave the old files
-    # in code/ or assets/ — a stale orphan beside a fresh manifest reads as
-    # part of the bundle.
+def test_reexport_into_same_dir_rejected(tmp_path):
+    # Export is non-destructive: a second export into the same (now non-empty) dir is
+    # refused, rather than clearing/overwriting the prior bundle. Re-export targets a fresh
+    # dir (Deploy always uses a new temp dir).
     src = tmp_path / "src"
     src.mkdir()
     (src / "a.py").write_text("def main():\n    return 1\n")
-    (src / "b.py").write_text("def main():\n    return 2\n")
-    (src / "page.html").write_text(
-        "<script>fused.runPython('./a.py',{}); fused.runPython('./b.py',{});</script>"
-    )
+    (src / "page.html").write_text("<script>fused.runPython('./a.py',{});</script>")
     out = tmp_path / "bundle"
     export_page(str(src / "page.html"), str(out))
-    assert (out / "files" / "b.py").is_file()
-
-    (src / "page.html").write_text("<script>fused.runPython('./a.py',{});</script>")
-    export_page(str(src / "page.html"), str(out))
     assert (out / "files" / "a.py").is_file()
-    assert not (out / "files" / "b.py").exists()  # stale entry cleared
-    manifest = json.loads((out / "manifest.json").read_text())
-    assert [e["name"] for e in manifest["entrypoints"]] == ["a"]
+
+    with pytest.raises(ExportError, match="must be empty"):
+        export_page(str(src / "page.html"), str(out))
 
 
 def test_dotfile_asset_key_not_mangled(tmp_path):
@@ -387,48 +382,6 @@ def test_export_page_writes_resources(tmp_path):
     assert (out / "files" / "helpers.py").is_file()
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["resources"] == [{"key": "helpers.py"}]
-
-
-def test_reexport_sweeps_stale_v1_layout(tmp_path):
-    # Re-exporting into an out dir that already holds a v1 bundle (root page.html +
-    # code/ /assets/ /resources/) must sweep those away, not leave a mixed v1+v2 tree.
-    src = tmp_path / "src"
-    src.mkdir()
-    (src / "page.html").write_text("<script>fused.runPython('./a.py',{});</script>")
-    (src / "a.py").write_text("def main():\n    return 1\n")
-    out = tmp_path / "bundle"
-    # Simulate a stale v1 bundle already in the out dir (a real v1 bundle carries a v1
-    # manifest.json — that is what marks the dir as a prior export safe to clear + overwrite).
-    out.mkdir()
-    (out / "manifest.json").write_text(json.dumps({"fused_render_bundle": 1, "page": "page.html"}))
-    (out / "page.html").write_text("stale")
-    for d in ("code", "assets", "resources"):
-        (out / d).mkdir()
-        (out / d / "stale.txt").write_text("stale")
-
-    export_page(str(src / "page.html"), str(out))
-
-    assert (out / "files" / "page.html").is_file()  # v2 payload written
-    assert not (out / "page.html").exists()  # stale v1 page swept
-    for d in ("code", "assets", "resources"):
-        assert not (out / d).exists()  # stale v1 category dirs swept
-
-
-def test_reexport_clears_stale_resources(tmp_path):
-    src = tmp_path / "src"
-    src.mkdir()
-    (src / "page.html").write_text("<script>fused.runPython('./sine.py', {});</script>")
-    (src / "sine.py").write_text("import helpers\n\ndef main():\n    return 1\n")
-    (src / "helpers.py").write_text("def go():\n    return 1\n")
-    out = tmp_path / "bundle"
-    export_page(str(src / "page.html"), str(out))
-    assert (out / "files" / "helpers.py").is_file()
-
-    # Drop the import; the stale resource must not linger beside the fresh manifest.
-    (src / "sine.py").write_text("def main():\n    return 1\n")
-    export_page(str(src / "page.html"), str(out))
-    assert not (out / "files" / "helpers.py").exists()
-    assert json.loads((out / "manifest.json").read_text())["resources"] == []
 
 
 def test_symlink_escaping_page_dir_rejected(tmp_path):

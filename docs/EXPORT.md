@@ -20,7 +20,10 @@ the minted URL. Manual export remains the path for driving the hosting layer
 yourself.
 
 `page` and `out` must both be absolute filesystem paths (same convention as
-every other endpoint). Two optional fields tune the file set (see "Choosing which
+every other endpoint). Export is **non-destructive** — it never deletes an existing
+file — so `out` must be **empty** (or not yet exist); a non-empty `out` is rejected.
+Re-export to a fresh directory (the Deploy flow always uses a new temp dir). Two
+optional fields tune the file set (see "Choosing which
 files are bundled" below): `include` (extra page-relative files to bundle as
 assets) and `exclude` (files to drop from the bundle) — both arrays of relative
 paths, defaulting to empty. On success the response is

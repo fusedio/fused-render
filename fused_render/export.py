@@ -523,22 +523,6 @@ def _manifest(plan: ExportPlan, page_key: str) -> dict:
     }
 
 
-def _is_prior_bundle(out_dir: str) -> bool:
-    """True iff ``out_dir`` already holds a fused-render bundle — a ``manifest.json`` declaring
-    ``fused_render_bundle`` (v1 or v2). Such a directory is a prior export this function owns
-    and may safely clear + overwrite; any other non-empty directory is treated as the user's
-    and left untouched (see :func:`export_page`)."""
-    manifest = os.path.join(out_dir, "manifest.json")
-    if not os.path.isfile(manifest):
-        return False
-    try:
-        with open(manifest, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return False
-    return isinstance(data, dict) and data.get("fused_render_bundle") in (1, 2)
-
-
 def export_page(
     html_path: str,
     out_dir: str,
@@ -576,60 +560,48 @@ def export_page(
             + "\n  - ".join(plan.errors)
         )
 
-    # The out dir is bundle-owned: export writes its payload dir + manifest.json and clears
-    # them (and any legacy v1 layout) on each run. To never delete an author's files, only
-    # write into a directory that is EMPTY or already a fused-render bundle (a prior export
-    # we own). This refuses the page's own folder, an ANCESTOR of it, or any directory with
-    # unrelated content — the sweep can then only touch bundle artifacts. Deploy always
-    # targets a fresh temp dir; a manual export must pick an empty dir or a previous bundle.
+    # Export is **non-destructive**: it writes a self-contained bundle and NEVER deletes an
+    # existing file, so the out dir must be empty (or freshly created). A non-empty out dir is
+    # refused outright — this makes it impossible to clobber an author's files (the page's own
+    # folder, an ancestor of it, or any dir with content) with no fragile "is this a prior
+    # bundle?" heuristic to get wrong. Deploy always targets a fresh temp dir; to re-export,
+    # point at a new/empty directory.
     os.makedirs(out_dir, exist_ok=True)
-    if os.listdir(out_dir) and not _is_prior_bundle(out_dir):
+    if os.listdir(out_dir):
         raise ExportError(
-            f"cannot export into {out_dir}: it is not empty and not a fused-render bundle. "
-            "Choose an empty directory or a previous export (the output directory is cleared "
-            "on each export)."
+            f"cannot export into {out_dir}: the output directory must be empty (export writes "
+            "a self-contained bundle and never deletes existing files). Choose a new or empty "
+            "directory."
         )
 
     page_key = os.path.basename(html_path)  # payload-relative path of the page
 
-    # Stage the whole bundle first and only swap it into place once every copy
-    # and the manifest write has succeeded — otherwise a mid-export failure
-    # (missing file, disk full) could leave the payload dir cleared or partially
-    # rewritten under a stale manifest.json that no longer matches it.
-    def _copy_into(src: str, rel: str) -> None:
+    # Stage the whole bundle in a temp dir OUTSIDE out_dir, then move it in. Staging outside
+    # means a mid-export failure leaves out_dir empty (never a half-written bundle), and a
+    # crashed run never leaves a hidden staging dir INSIDE out_dir that a later export would
+    # mistake for content. out_dir is empty (checked above), so the moves overwrite nothing.
+    def _copy_into(stage: str, src: str, rel: str) -> None:
         dest = os.path.join(stage, rel)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         shutil.copyfile(src, dest)
 
-    with tempfile.TemporaryDirectory(prefix=".fused-render-export-", dir=out_dir) as stage:
+    with tempfile.TemporaryDirectory(prefix="fused-render-export-") as stage:
         # The page + every bundled file lands under the single payload dir at its real
         # page-relative path (e.file / a.file / r.file are already f"{_PAYLOAD_DIR}/…").
-        _copy_into(html_path, f"{_PAYLOAD_DIR}/{page_key}")
+        _copy_into(stage, html_path, f"{_PAYLOAD_DIR}/{page_key}")
         for e in plan.entrypoints:
-            _copy_into(os.path.join(page_dir, e.path), e.file)
+            _copy_into(stage, os.path.join(page_dir, e.path), e.file)
         for a in plan.assets:
-            _copy_into(os.path.join(page_dir, a.path), a.file)
+            _copy_into(stage, os.path.join(page_dir, a.path), a.file)
         for r in plan.resources:
-            _copy_into(os.path.join(page_dir, r.key), r.file)
+            _copy_into(stage, os.path.join(page_dir, r.key), r.file)
 
         with open(os.path.join(stage, "manifest.json"), "w", encoding="utf-8") as f:
             json.dump(_manifest(plan, page_key), f, indent=2, sort_keys=True)
             f.write("\n")
 
-        # Everything staged successfully — now replace the bundle-owned paths. The whole
-        # payload dir is bundle-owned (a previous export may hold files this one no longer
-        # lists), so it is cleared before the move; anything else the user has in --out is
-        # left untouched. Also sweep any LEGACY v1 layout a prior export left in the same
-        # out dir (root page.html + code/ /assets/ /resources/), so a re-export never leaves
-        # a mixed v1+v2 tree that a whole-bundle walk would pick stale files out of.
-        # out_dir is guaranteed separate from the page's folder (checked above), so clearing
-        # these bundle-owned paths never touches the author's source files.
-        shutil.rmtree(os.path.join(out_dir, _PAYLOAD_DIR), ignore_errors=True)
-        for _legacy_dir in ("code", "assets", "resources"):
-            shutil.rmtree(os.path.join(out_dir, _legacy_dir), ignore_errors=True)
-        _legacy_page = os.path.join(out_dir, "page.html")
-        if os.path.isfile(_legacy_page):
-            os.remove(_legacy_page)
+        # Move the payload dir first, manifest.json last (its presence marks a complete
+        # bundle). out_dir is empty, so nothing is overwritten.
         shutil.move(os.path.join(stage, _PAYLOAD_DIR), os.path.join(out_dir, _PAYLOAD_DIR))
         shutil.move(os.path.join(stage, "manifest.json"), os.path.join(out_dir, "manifest.json"))
 
