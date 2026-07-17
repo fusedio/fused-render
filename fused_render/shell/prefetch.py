@@ -257,6 +257,15 @@ def _fetch_chunk(url: str, start: int, end: int, path: str,
             with _lock:
                 if path in _jobs:
                     _jobs[path]["done"] = committed + (off - start)
+    # A connection-close-delimited (or otherwise unframed) response can reach a
+    # clean EOF with the body truncated — read() just returns empty, no
+    # exception. Verify we actually consumed the whole [start, end] range; if
+    # not, raise so the caller re-requests the chunk instead of committing bytes
+    # that never landed and finishing the job with data missing.
+    if off != end + 1:
+        raise OSError(
+            f"short read: got {off - start} of {end - start + 1} bytes "
+            f"for range [{start}, {end}]")
 
 
 async def _acquire_slot() -> "asyncio.Semaphore":

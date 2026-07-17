@@ -21,11 +21,12 @@ class StubServe:
     then the connection drops)."""
 
     def __init__(self, data: bytes, fail_first_gets: int = 0,
-                 partial_first_gets: int = 0):
+                 partial_first_gets: int = 0, short_clean_first_gets: int = 0):
         self.data = data
         self.requests = []          # (method, range_header)
         self.fail_remaining = fail_first_gets
         self.partial_remaining = partial_first_gets
+        self.short_clean_remaining = short_clean_first_gets
         stub = self
 
         class H(BaseHTTPRequestHandler):
@@ -70,6 +71,21 @@ class StubServe:
                     self.wfile.write(b"HTTP/1.1 %d x\r\n" % status)
                     self.wfile.write(b"Transfer-Encoding: chunked\r\n\r\n")
                     self.wfile.write(b"%x\r\n%s\r\n" % (len(half), half))
+                    self.wfile.flush()
+                    self.close_connection = True
+                    return
+                if stub.short_clean_remaining > 0:
+                    stub.short_clean_remaining -= 1
+                    # Deliver half the body under HTTP/1.0 with NO Content-Length
+                    # and NO chunked framing, then close. The body is delimited
+                    # by connection close, so the client returns the partial
+                    # bytes and sees a *clean* EOF — no IncompleteRead, no
+                    # exception. This is the silent short read: the fetch returns
+                    # "successfully" with a truncated body, so the missing bytes
+                    # must be caught by an explicit full-range check.
+                    half = body[: max(1, len(body) // 2)]
+                    self.wfile.write(b"HTTP/1.0 %d x\r\n\r\n" % status)
+                    self.wfile.write(half)
                     self.wfile.flush()
                     self.close_connection = True
                     return
@@ -263,6 +279,28 @@ def test_progress_stays_exact_across_midchunk_retry(fast, monkeypatch):
         prefetch_mod.schedule("/m/f.bin", stub.url)
         job = wait_status("/m/f.bin", "done", timeout=15.0)
         assert job["done"] == job["size"] == 3 * mb    # exact, never > size
+    finally:
+        stub.close()
+
+
+def test_short_clean_read_is_retried_not_committed(fast, monkeypatch):
+    # A truncated body under a connection-close-delimited response yields a
+    # *clean* EOF: _fetch_chunk's read loop ends without an exception even
+    # though only half the range arrived. Treating that as a full chunk would
+    # commit bytes that never landed and finish the job as "done" with data
+    # missing. _fetch_chunk must verify it consumed the whole [start, end]
+    # range and raise otherwise, so the retry loop re-requests the chunk.
+    mb = 1024 * 1024
+    monkeypatch.setattr(prefetch_mod, "CHUNK_BYTES", 8 * mb)   # one chunk
+    monkeypatch.setattr(prefetch_mod, "HEAD_BYTES", 8 * mb)
+    stub = StubServe(os.urandom(3 * mb), short_clean_first_gets=1)
+    try:
+        prefetch_mod.schedule("/m/f.bin", stub.url)
+        job = wait_status("/m/f.bin", "done", timeout=15.0)
+        assert job["done"] == job["size"] == 3 * mb
+        # The short read forced a retry: the chunk was requested twice.
+        gets = [r for r in stub.requests if r[0] == "GET"]
+        assert len(gets) >= 2
     finally:
         stub.close()
 
