@@ -30,6 +30,21 @@ export function TemplatePicker({
     };
   }, []);
 
+  // Escape must close only the picker even when focus has tabbed outside it
+  // (the host modal's trap still includes its own footer controls). Capture
+  // phase beats the Modal chassis's document-level bubble listener.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const excludeSet = new Set(exclude);
   const groups = inventory.sources
     .slice()
@@ -51,13 +66,6 @@ export function TemplatePicker({
       ref={rootRef}
       role="dialog"
       aria-label="Add template"
-      onKeyDown={(e) => {
-        if (e.key === "Escape") {
-          // Close only the popover — keep the surrounding modal open.
-          e.stopPropagation();
-          onClose();
-        }
-      }}
     >
       <div className="templates-picker-head">
         <span className="deploy-muted">Add template</span>

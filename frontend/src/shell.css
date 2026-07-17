@@ -2636,15 +2636,6 @@ body.embed .preview-browse-chip:hover {
   cursor: default;
 }
 
-.prefs-section .deploy-danger {
-  color: var(--error);
-  border-color: var(--error);
-}
-
-.prefs-section .deploy-danger:hover:not(:disabled) {
-  background: rgba(255, 107, 107, 0.12);
-}
-
 .prefs-section select {
   font: inherit;
   background: var(--bg);
