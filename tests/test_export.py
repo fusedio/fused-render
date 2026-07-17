@@ -485,6 +485,26 @@ def test_manifest_zero_match_glob_warns_not_errors(tmp_path):
     assert any("matched no files" in w for w in plan.warnings)
 
 
+def test_manifest_glob_does_not_follow_directory_symlinks(tmp_path):
+    # A `**` glob must not traverse a directory symlink out of the page tree: it would
+    # scan/hang on an external tree and turn an out-of-tree file into a blocking error.
+    # Only the in-tree file matches; the symlinked subtree is not walked.
+    page = tmp_path / "page"
+    (page / "data").mkdir(parents=True)
+    (page / "data" / "real.json").write_text("1")
+    external = tmp_path / "external" / "deep"
+    external.mkdir(parents=True)
+    (external / "secret.json").write_text("leak")
+    try:
+        os.symlink(tmp_path / "external", page / "data" / "link")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not supported on this platform")
+    html = _manifest_block('{"include": ["data/**/*.json"]}')
+    plan = plan_export(html, str(page))
+    assert not plan.errors  # no "escapes the page directory" from a symlink-traversed file
+    assert {a.name for a in plan.assets} == {"data/real.json"}
+
+
 def test_manifest_block_stripped_before_scan(tmp_path):
     # A value inside the manifest that LOOKS like an unsupported call must not trip the
     # dependency scan — the block is removed before scanning.

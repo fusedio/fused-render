@@ -39,7 +39,7 @@ such look-alike text is not present, or split it out.
 from __future__ import annotations
 
 import ast
-import glob
+import fnmatch
 import json
 import os
 import re
@@ -312,26 +312,62 @@ def _extract_bundle_manifest(html: str, errors: list[str], warnings: list[str]) 
     return include, stripped
 
 
+def _glob_segments_match(path_segs: list[str], pat_segs: list[str]) -> bool:
+    """Glob-match a file's path segments against pattern segments.
+
+    ``*``/``?``/``[…]`` match within a single segment (via :func:`fnmatch.fnmatch`, so they
+    never cross ``/``); ``**`` spans zero or more whole segments (``data/**/*.json`` matches
+    ``data/x.json`` and ``data/a/b/x.json``). This is the segment-wise glob semantics used in
+    place of :func:`glob.glob` so expansion can walk with symlinks disabled (below)."""
+    if not pat_segs:
+        return not path_segs
+    head, rest = pat_segs[0], pat_segs[1:]
+    if head == "**":
+        if not rest:
+            return True  # trailing ** matches everything below here
+        return any(_glob_segments_match(path_segs[i:], rest) for i in range(len(path_segs) + 1))
+    if path_segs and fnmatch.fnmatch(path_segs[0], head):
+        return _glob_segments_match(path_segs[1:], rest)
+    return False
+
+
+def _glob_in_page(page_dir: str, pattern: str) -> list[str]:
+    """Page-relative files matching ``pattern``, walking ``page_dir`` **without following
+    directory symlinks** (``os.walk(followlinks=False)``).
+
+    Not following directory symlinks keeps the walk inside the real page tree: a
+    ``data/**`` glob can't be lured by a ``data/link -> /huge/tree`` symlink into scanning
+    (or hanging on) an external tree, and it won't surface an out-of-tree file that
+    ``_within_page_dir`` would then have to turn into a blocking error. A symlinked *file*
+    is still yielded (cheap) and rejected downstream by the caller's gauntlet, as before."""
+    pat_segs = [s for s in pattern.replace(os.sep, "/").split("/") if s != ""]
+    hits: list[str] = []
+    for dirpath, _dirnames, filenames in os.walk(page_dir, followlinks=False):
+        rel_dir = os.path.relpath(dirpath, page_dir).replace(os.sep, "/")
+        for fn in filenames:
+            rel = fn if rel_dir == "." else f"{rel_dir}/{fn}"
+            if _glob_segments_match(rel.split("/"), pat_segs):
+                hits.append(rel)
+    return hits
+
+
 def _expand_manifest_include(
     page_dir: str, entries: list[str], errors: list[str], warnings: list[str]
 ) -> list[str]:
     """Resolve manifest ``include`` entries (globs and literal paths) to page-relative files.
 
-    A glob (contains ``* ? [ ]``) is expanded with :func:`glob.glob` (``**`` recursion on)
-    against ``page_dir`` and reduced to page-relative, forward-slash paths for existing
-    files; a glob matching nothing is a **warning** (a declaration of intent may legitimately
-    match nothing yet), never an error. A literal entry is passed through unchanged — missing
-    or unsafe literals surface downstream as blocking errors, exactly like an explicit
+    A glob (contains ``* ? [ ]``) is expanded against ``page_dir`` (via :func:`_glob_in_page`,
+    which walks with directory symlinks disabled) to page-relative, forward-slash paths; a
+    glob matching nothing is a **warning** (a declaration of intent may legitimately match
+    nothing yet), never an error. A literal entry is passed through unchanged — missing or
+    unsafe literals surface downstream as blocking errors, exactly like an explicit
     ``/api/export`` include.
 
     An **absolute or ``..``-escaping glob pattern is rejected up front** (same
-    :func:`_reject_unsafe_rel` error a literal gets) and **not expanded** — otherwise
-    ``os.path.join`` would drop ``page_dir`` for an absolute pattern (or a ``..`` pattern
-    would climb out), making ``glob.glob`` walk the filesystem *outside* the page tree (a
-    ``**`` from ``/`` could be ruinous) before the per-result checks reject the matches.
-    Order is preserved and duplicates dropped; every surviving result still runs the
-    caller's full safety gauntlet (``_reject_unsafe_rel`` / ``_within_page_dir``), so a
-    relative glob still can't smuggle in a symlink escape.
+    :func:`_reject_unsafe_rel` error a literal gets) and **not expanded**, so the walk never
+    starts outside the page tree. Order is preserved and duplicates dropped; every surviving
+    result still runs the caller's full safety gauntlet (``_reject_unsafe_rel`` /
+    ``_within_page_dir``), so a relative glob still can't smuggle in a (file) symlink escape.
     """
     out: list[str] = []
     seen: set[str] = set()
@@ -347,11 +383,7 @@ def _expand_manifest_include(
             # outside the page tree and reports the same failure a literal would.
             if not _reject_unsafe_rel(entry, "manifest include glob", errors):
                 continue
-            hits = sorted(
-                os.path.relpath(p, page_dir).replace(os.sep, "/")
-                for p in glob.glob(os.path.join(page_dir, entry), recursive=True)
-                if os.path.isfile(p)
-            )
+            hits = sorted(_glob_in_page(page_dir, entry))
             if not hits:
                 warnings.append(
                     f"the fused-bundle manifest glob {entry!r} matched no files under the page"
