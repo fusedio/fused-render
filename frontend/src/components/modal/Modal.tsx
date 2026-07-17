@@ -64,13 +64,27 @@ export function Modal({
   const confirmTimer = useRef<number | null>(null);
 
   // Store the previously-focused element, move focus into the dialog on mount,
-  // and restore it on unmount.
+  // and restore it on unmount. Callers win: an `initialFocus` ref takes
+  // precedence, and a field that already grabbed focus via `autoFocus` (React
+  // focuses those during commit, before this effect) is left alone. Otherwise
+  // prefer the first focusable in the body/footer so focus doesn't land on the
+  // header ✕.
   useEffect(() => {
     restoreRef.current = document.activeElement;
     const dialog = dialogRef.current;
-    const target =
-      initialFocus?.current ?? dialog?.querySelector<HTMLElement>(FOCUSABLE) ?? dialog;
-    target?.focus();
+    if (initialFocus?.current) {
+      initialFocus.current.focus();
+    } else if (!(dialog && dialog.contains(document.activeElement))) {
+      const focusables = Array.from(
+        dialog?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [],
+      );
+      const target =
+        dialog?.querySelector<HTMLElement>("[autofocus]") ??
+        focusables.find((el) => !el.closest(".modal-head")) ??
+        focusables[0] ??
+        dialog;
+      target?.focus();
+    }
     return () => {
       const el = restoreRef.current as HTMLElement | null;
       el?.focus?.();
