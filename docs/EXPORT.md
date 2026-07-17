@@ -69,7 +69,10 @@ is no separate `file` field. (The hosting layer also still reads legacy **v1** b
 - **entrypoints** map each `runPython` literal path to a served route name. When
   hosted, `fused.runPython("./sine.py", params)` becomes a `POST` to that route.
 - **assets** map each `rawUrl`/`readFile` literal path to an asset key served by a
-  read-only `_asset` route.
+  read-only `_asset` route. That route honours **HTTP Range** requests (`206` +
+  `Content-Range`, with `Accept-Ranges: bytes` on a full `200`), so a browser client can
+  stream a large bundled file — e.g. geotiff.js reading a Cloud-Optimized GeoTIFF
+  byte-range by byte-range — directly from a hosted page, with no local range daemon.
 - **resources** are sibling `.py` modules a bundled entrypoint `import`s, found by a
   static scan of the entrypoint sources (transitively). They are shipped so the served
   entrypoint's `import helpers` resolves, but — unlike an asset — a page never fetches
@@ -118,9 +121,12 @@ faithfully, rather than shipping a page whose data calls 404 at request time:
 
 Some conditions are **warnings**, not errors — they don't block export:
 
-- **Computed `rawUrl`/`readFile` paths.** The exporter can't discover the target,
-  but you can bundle it yourself via `include` (below); the served `_asset` route
-  looks the file up by its bundle key, so a runtime-computed path resolves fine.
+- **Computed `rawUrl`/`readFile` paths.** The exporter can't discover the target from
+  the HTML, but once you bundle it — via the page's bundle manifest (below) or an
+  explicit `include` — the served `_asset` route looks the file up by its bundle key and
+  the hosted runtime resolves the computed path to that key, so `fused.rawUrl("data/" +
+  name)` resolves fine. (A call like that is a string *prefix* plus an expression, so it
+  is treated as computed — it is **not** mis-bundled as a literal `data/` target.)
 - **Excluding a referenced file.** Dropping a file the page literally references is
   honored, but the page's call to it will 404 when hosted.
 
@@ -147,6 +153,38 @@ add files from the page's folder, add everything, remove a file, or reset to the
 auto-detected default — and persists the selection on the deployment record so a
 reopened modal reloads it. `/api/export` exposes the same two fields for driving a
 bundle by hand.
+
+### The page's own bundle manifest (checked in, reproducible)
+
+`include`/`exclude` above are the per-deployment selection (kept on the deployment
+record). To declare the bundle set **in the repo** — reviewable, reproducible, and
+travelling inside the single HTML file — add one embedded manifest block to the page:
+
+```html
+<script type="application/fused-bundle">
+{ "include": ["data/*.json", "boundaries/**/*.geojson"] }
+</script>
+```
+
+- **`include`** takes page-relative **globs** (`*`, `?`, `**` for recursion) and/or
+  literal paths — an entry with no `*`/`?` is a literal, so a real filename with brackets
+  (e.g. a `file[1].json` browser download) is taken as-is, not a character class. Globs are
+  expanded against the page dir at export time and each match runs
+  the same safety checks as any asset (`..`/absolute/symlink escapes are rejected). A glob
+  that matches nothing is a **warning**; a literal that isn't on disk is an **error**. The
+  manifest set is folded in **beneath** any `/api/export` `include`.
+- The block carries **no version** — the `type` attribute identifies it, and unknown keys
+  are ignored, so new directives can be added later without breaking older exports. It is
+  stripped from the HTML before the dependency scan, so its JSON body is never misread as a
+  `fused.*` call.
+- **`exclude` is not honored here** (it would publish the withheld file names in the served
+  page source) — it is warned about; drop files via the Deploy modal / `/api/export`
+  `exclude` instead.
+
+This is the clean way to back a **computed** asset call: declare `"include": ["data/*.json"]`
+and fetch with `fused.rawUrl("data/" + name)` — the glob bundles the files and the hosted
+`_asset` route resolves the computed name by key, so there is no `RAW_URLS`-style table to
+hand-maintain.
 
 ### Reading a bundled file / importing a module from a `runPython` entrypoint
 
