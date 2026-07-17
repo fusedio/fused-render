@@ -359,6 +359,29 @@ def test_export_page_writes_resources(tmp_path):
     assert manifest["resources"] == [{"key": "helpers.py"}]
 
 
+def test_reexport_sweeps_stale_v1_layout(tmp_path):
+    # Re-exporting into an out dir that already holds a v1 bundle (root page.html +
+    # code/ /assets/ /resources/) must sweep those away, not leave a mixed v1+v2 tree.
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "page.html").write_text("<script>fused.runPython('./a.py',{});</script>")
+    (src / "a.py").write_text("def main():\n    return 1\n")
+    out = tmp_path / "bundle"
+    # Simulate a stale v1 bundle already in the out dir.
+    out.mkdir()
+    (out / "page.html").write_text("stale")
+    for d in ("code", "assets", "resources"):
+        (out / d).mkdir()
+        (out / d / "stale.txt").write_text("stale")
+
+    export_page(str(src / "page.html"), str(out))
+
+    assert (out / "files" / "page.html").is_file()  # v2 payload written
+    assert not (out / "page.html").exists()  # stale v1 page swept
+    for d in ("code", "assets", "resources"):
+        assert not (out / d).exists()  # stale v1 category dirs swept
+
+
 def test_reexport_clears_stale_resources(tmp_path):
     src = tmp_path / "src"
     src.mkdir()

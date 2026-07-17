@@ -591,8 +591,15 @@ def export_page(
         # Everything staged successfully — now replace the bundle-owned paths. The whole
         # payload dir is bundle-owned (a previous export may hold files this one no longer
         # lists), so it is cleared before the move; anything else the user has in --out is
-        # left untouched.
+        # left untouched. Also sweep any LEGACY v1 layout a prior export left in the same
+        # out dir (root page.html + code/ /assets/ /resources/), so a re-export never leaves
+        # a mixed v1+v2 tree that a whole-bundle walk would pick stale files out of.
         shutil.rmtree(os.path.join(out_dir, _PAYLOAD_DIR), ignore_errors=True)
+        for _legacy_dir in ("code", "assets", "resources"):
+            shutil.rmtree(os.path.join(out_dir, _legacy_dir), ignore_errors=True)
+        _legacy_page = os.path.join(out_dir, "page.html")
+        if os.path.isfile(_legacy_page):
+            os.remove(_legacy_page)
         shutil.move(os.path.join(stage, _PAYLOAD_DIR), os.path.join(out_dir, _PAYLOAD_DIR))
         shutil.move(os.path.join(stage, "manifest.json"), os.path.join(out_dir, "manifest.json"))
 
