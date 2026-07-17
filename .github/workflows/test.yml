@@ -1,0 +1,125 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request: {}
+
+concurrency:
+  # PR number is unique repo-wide, unlike head_ref — two fork PRs that happen
+  # to share a branch name (e.g. "patch-1") must not land in the same group
+  # and cancel each other's runs.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read # for dorny/paths-filter on pull_request
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      app: ${{ steps.filter.outputs.app }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            app:
+              - 'fused_render/**'
+              - 'tests/**'
+              - 'frontend/**'
+              - 'examples/**'
+              - 'scripts/hatch_build.py'
+              - 'pyproject.toml'
+              - '.github/workflows/test.yml'
+
+  # The React shell (frontend/) is built once here and shared with every
+  # python-version job below — fused_render/server.py refuses to start
+  # (RuntimeError) until fused_render/static/shell-dist/ exists (D52/D54),
+  # and the output is never committed, so tests always need a fresh build.
+  frontend:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.app == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck + build shell (tsc --noEmit && vite build)
+        working-directory: frontend
+        run: npm run build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shell-dist
+          path: fused_render/static/shell-dist/
+          retention-days: 1
+
+  test-python:
+    needs: [detect-changes, frontend]
+    if: needs.detect-changes.outputs.app == 'true' && needs.frontend.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: shell-dist
+          path: fused_render/static/shell-dist
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install fused-render (dev extra)
+        run: pip install -e ".[dev]"
+
+      # shell/mounts.py shells out to rclone (D102/D103); not bundled outside
+      # the packaged macOS app, so CI installs the real binary like a dev
+      # machine would (README's "Remote storage (mounts)" section).
+      - name: Install rclone
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rclone
+
+      - name: Run tests
+        run: python -m pytest tests/ -v
+
+  test-status:
+    name: Test Status
+    runs-on: ubuntu-latest
+    needs: [detect-changes, frontend, test-python]
+    if: always()
+    steps:
+      - name: Check test status
+        run: |
+          if [[ "${{ needs.detect-changes.result }}" != "success" ]]; then
+            echo "detect-changes did not succeed (${{ needs.detect-changes.result }})"
+            exit 1
+          fi
+          if [[ "${{ needs.detect-changes.outputs.app }}" != "true" ]]; then
+            echo "No relevant changes; skipped."
+            exit 0
+          fi
+          for result in "${{ needs.frontend.result }}" "${{ needs.test-python.result }}"; do
+            if [[ "$result" != "success" ]]; then
+              echo "Job did not succeed: $result"
+              exit 1
+            fi
+          done
+          echo "Tests passed"
+          exit 0

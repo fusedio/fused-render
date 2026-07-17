@@ -13,6 +13,7 @@ nothing touches the real stores.
 import json
 import sys
 
+import pytest
 from fastapi.testclient import TestClient
 
 import fused_render.deploy as deploy_mod
@@ -21,6 +22,13 @@ from fused_render.server import create_app
 
 
 FUSED = {"X-Fused": "1"}  # D3 guard header required on writes
+
+# The one-click install path (deploy.py's `install_fused`/`_availability`)
+# refuses outright on Python <3.11 (the fused package itself needs 3.11+) —
+# these tests exercise the 3.11+ "installable" behavior, not that refusal.
+requires_py311 = pytest.mark.skipif(
+    sys.version_info < (3, 11), reason="one-click fused install needs Python 3.11+"
+)
 
 # Answers each `fused share <verb>` from the FUSED_STUB_SCENARIO json file and
 # appends {argv, env, bundle_files} to FUSED_STUB_LOG. A verb missing from the
@@ -144,6 +152,7 @@ def test_config_default_honors_ambient_openfused_env(tmp_path, monkeypatch):
     assert h.client.get("/api/deploy/config").json()["default_env"] == "prod"
 
 
+@requires_py311
 def test_config_reports_missing_cli_as_installable(tmp_path, monkeypatch):
     # The pin is a code constant (never package metadata, which is absent on
     # source runs and stale on pre-extra editable installs), so a missing CLI
@@ -157,6 +166,7 @@ def test_config_reports_missing_cli_as_installable(tmp_path, monkeypatch):
     assert "fused-render[fused]" in cli["install_hint"]
 
 
+@requires_py311
 def test_config_missing_cli_without_pip_names_the_workaround(tmp_path, monkeypatch):
     # An embedded/packaged interpreter (no pip) can't install into itself —
     # the reason must route the user to FUSED_RENDER_FUSED_BIN instead.
@@ -303,6 +313,7 @@ def test_pointer_store_key_is_canonicalized(tmp_path, monkeypatch):
     assert "sub" not in " ".join(store)
 
 
+@requires_py311
 def test_install_invokes_pip_with_the_pinned_requirement(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
     ran: list[list[str]] = []
