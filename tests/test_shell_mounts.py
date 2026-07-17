@@ -2021,3 +2021,55 @@ def test_s3_list_page_non_anonymous_raises_s3listerror(home, rcd, fresh_upstream
     c = mounts_mod.add_mount("corp", "corp:bucket/pre")
     with pytest.raises(mounts_mod.S3ListError):
         mounts_mod.s3_list_page(mounts_mod.mountpoint(c), max_keys=1000)
+
+
+# -- Windows mounts (experimental) -----------------------------------------
+# rclone's Windows mount uses cgofuse -> WinFsp. These tests drive the
+# win32 code paths on the (Linux) CI by monkeypatching sys.platform and
+# mocking winreg/subprocess/os, following the heavy-mocking style above.
+# Every case also asserts the POSIX behavior is untouched.
+
+
+def test_path_mounted_delegates_to_ismount_on_posix_and_isdir_on_win32(monkeypatch):
+    seen = {"ismount": [], "isdir": []}
+    monkeypatch.setattr(mounts_mod.os.path, "ismount",
+                        lambda p: (seen["ismount"].append(p), True)[1])
+    monkeypatch.setattr(mounts_mod.os.path, "isdir",
+                        lambda p: (seen["isdir"].append(p), True)[1])
+
+    monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
+    assert mounts_mod._path_mounted("/mnt/x") is True
+    assert seen == {"ismount": ["/mnt/x"], "isdir": []}
+
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    assert mounts_mod._path_mounted(r"C:\mnt\x") is True
+    # win32 reads the leaf-dir presence and never touches ismount.
+    assert seen["isdir"] == [r"C:\mnt\x"]
+    assert seen["ismount"] == ["/mnt/x"]
+
+
+def test_rcd_mount_map_matches_mountpoint_despite_windows_slash_case_drift(
+        home, rcd, monkeypatch):
+    # rcd's listmounts on Windows can echo a mountpoint with forward slashes
+    # and different case than the one we asked for. _norm (normcase+normpath)
+    # must fold both sides so membership/lookup still resolve. Simulate the
+    # Windows path semantics on Linux by swapping in ntpath's normalizers.
+    import ntpath
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    drifted = mp.replace("\\", "/").upper()  # slash + case drift from rcd
+    rcd.responses["mount/listmounts"] = {
+        "mountPoints": [{"MountPoint": drifted, "Fs": "remote:bucket"}]}
+    # Swap in ntpath's normalizers only after the store write above, so
+    # tempfile (which also uses os.path) isn't handed Windows semantics.
+    monkeypatch.setattr(mounts_mod.os.path, "normcase", ntpath.normcase)
+    monkeypatch.setattr(mounts_mod.os.path, "normpath", ntpath.normpath)
+    assert mounts_mod._norm(mp) in mounts_mod.mounted_paths()
+    assert mounts_mod.rcd_mount_map().get(mounts_mod._norm(mp)) == "remote:bucket"
+
+
+def test_norm_is_identity_on_posix_paths():
+    # POSIX guarantee: a normalized absolute mountpoint is unchanged by _norm,
+    # so every membership test compares byte-for-byte as before.
+    p = "/home/u/.fused-render/mounts/data"
+    assert mounts_mod._norm(p) == p

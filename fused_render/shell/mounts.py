@@ -550,10 +550,31 @@ def _ensure_rcd_locked() -> int:
     raise RuntimeError("rclone rcd did not come up within 10s")
 
 
+def _norm(p: str) -> str:
+    """Normalize a mountpoint for comparison against rcd's listmounts. On
+    Windows rcd may echo forward slashes / mixed case, so normcase (lowercases
+    and flips separators on win32) + normpath fold both sides to one form. On
+    POSIX normcase is the identity and an already-normalized absolute path is
+    unchanged by normpath, so comparisons stay byte-for-byte as before."""
+    return os.path.normcase(os.path.normpath(p))
+
+
+def _path_mounted(mp: str) -> bool:
+    """Platform predicate for "is this mountpoint currently mounted?". POSIX
+    keeps os.path.ismount unchanged. On Windows os.path.ismount is unreliable
+    for WinFsp directory mounts, so the signal is instead whether the leaf dir
+    exists — valid precisely because attach_mount never pre-creates it, so
+    WinFsp's leaf lives only for the duration of a live mount."""
+    if sys.platform == "win32":
+        return os.path.isdir(mp)
+    return os.path.ismount(mp)
+
+
 def rcd_mount_map() -> dict:
     """{mountpoint: remote fs} for every mount rcd currently serves (empty
     when no daemon is live). Read-only: never spawns a daemon just to answer
-    a status question."""
+    a status question. Keys are _norm'd so a Windows listmounts entry with
+    slash/case drift still matches mountpoint(m)."""
     port = _live_rcd_port()
     if port is None:
         return {}
@@ -561,7 +582,13 @@ def rcd_mount_map() -> dict:
         listed = _rc(port, "mount/listmounts").get("mountPoints", [])
     except RuntimeError:
         return {}
-    return {m.get("MountPoint"): m.get("Fs") for m in listed if isinstance(m, dict)}
+    out = {}
+    for m in listed:
+        if not isinstance(m, dict):
+            continue
+        mp = m.get("MountPoint")
+        out[_norm(mp) if isinstance(mp, str) else mp] = m.get("Fs")
+    return out
 
 
 def mounted_paths() -> set:
@@ -1301,13 +1328,13 @@ def attach_mount(m: dict) -> str | None:
     """Mount via rcd; returns an error string or None."""
     mp = mountpoint(m)
     os.makedirs(mp, exist_ok=True)
-    if os.path.ismount(mp):
+    if _path_mounted(mp):
         # Already a kernel mount — but is it OURS? A stale mount left by a
         # deleted mount of the same name would otherwise pass for the
         # new remote. rcd knows the fs of every mount it serves; a mismatch
         # is an error, not a silent adopt. (A mount rcd doesn't know about
         # has no queryable fs — adopted as-is, the pre-rcd prototype case.)
-        fs = rcd_mount_map().get(mp)
+        fs = rcd_mount_map().get(_norm(mp))
         if fs is not None and fs != m["remote"]:
             return (f"mountpoint already serves '{fs}' — unmount it before "
                     f"mounting '{m['remote']}'")
@@ -1408,9 +1435,9 @@ def _force_unmount(mp: str) -> str | None:
         except (OSError, subprocess.TimeoutExpired) as e:
             last = str(e)
             continue
-        if not os.path.ismount(mp):
+        if not _path_mounted(mp):
             return None
-    if not os.path.ismount(mp):
+    if not _path_mounted(mp):
         return None
     return f"force unmount of {mp} failed: {last or 'still mounted'}"
 
@@ -1426,7 +1453,7 @@ def detach_mount(m: dict, force: bool = False) -> str | None:
     if port is None:
         # No daemon: nothing rcd-owned to unmount. A foreign mount at the
         # path (pre-rcd prototype, manual rclone) is not ours to force.
-        if os.path.ismount(mp):
+        if _path_mounted(mp):
             if force:
                 return _force_unmount(mp)
             return ("mounted outside the app (no rclone daemon running) — "
@@ -1442,7 +1469,7 @@ def detach_mount(m: dict, force: bool = False) -> str | None:
         # Linux both say "busy"); on any other failure quitting them would
         # tear down previews of unrelated LOCAL files for nothing.
         if "busy" not in str(e).lower():
-            if force and os.path.ismount(mp):
+            if force and _path_mounted(mp):
                 return _force_unmount(mp)
             return f"unmount failed: {e}"
     _quit_tile_daemons()
@@ -1451,7 +1478,7 @@ def detach_mount(m: dict, force: bool = False) -> str | None:
         _rc(port, "mount/unmount", params)
         return None
     except RuntimeError as e:
-        if force and os.path.ismount(mp):
+        if force and _path_mounted(mp):
             return _force_unmount(mp)
         return f"unmount failed (a preview may still hold a file open): {e}"
 
@@ -1496,7 +1523,7 @@ def reconnect_mount(m: dict) -> str | None:
             _rc(port, "mount/unmount", {"mountPoint": mp})
         except RuntimeError:
             pass  # wedged: rcd's own umount fails; the force path handles it
-    if os.path.ismount(mp):
+    if _path_mounted(mp):
         err = _force_unmount(mp)
         if err:
             return err
@@ -1548,8 +1575,8 @@ def mount_state(m: dict, rcd_mounts: set, timeout: float = PROBE_TIMEOUT) -> str
 
     def probe() -> None:
         try:
-            is_mnt = os.path.ismount(mp)
-            served = mp in rcd_mounts
+            is_mnt = _path_mounted(mp)
+            served = _norm(mp) in rcd_mounts
             if not is_mnt and not served:
                 out["state"] = "unmounted"
             elif served and not is_mnt:
@@ -1607,7 +1634,7 @@ def run_automount() -> None:
     live = mounted_paths()
     for m in mounts:
         mp = mountpoint(m)
-        if mp in live and not os.path.ismount(mp):
+        if _norm(mp) in live and not _path_mounted(mp):
             # Split-brain: rcd lists the mount but the kernel dropped it.
             # mount/mount over rcd's own stale entry would fail — leave it
             # for mount_state to surface as "stale" and Reconnect to heal.
@@ -1926,7 +1953,7 @@ def delete_mount(cid: str, x_fused: str | None = Header(default=None)):
         return JSONResponse({"error": "unknown mount"}, status_code=404)
     err = detach_mount(m)
     mp = mountpoint(m)
-    if err and os.path.ismount(mp):
+    if err and _path_mounted(mp):
         # Deleting the record while the filesystem is still mounted would
         # strand a live mount (and let a re-added name silently reuse it).
         return JSONResponse({"error": f"not deleted — {err}"}, status_code=502)
