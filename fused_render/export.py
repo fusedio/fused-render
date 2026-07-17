@@ -39,6 +39,8 @@ such look-alike text is not present, or split it out.
 from __future__ import annotations
 
 import ast
+import fnmatch
+import json
 import os
 import re
 import shutil
@@ -61,13 +63,26 @@ _RESERVED_NAMES = frozenset(
     }
 )
 
-# A `fused.<method>(` call whose first argument is a single- or double-quoted
-# string literal. Group 2 is the literal's contents. Calls that don't match this
-# (first arg is a variable/expression) are caught separately as dynamic-path errors.
-# `\s*` before the `(` tolerates `fused.runPython (...)` — valid JS a page author
-# could write, which must not silently vanish from export.
+# A `fused.<method>(` call whose first argument is a COMPLETE quoted string literal — the
+# string, then (modulo whitespace) a `,` or `)`. The named group `litd`/`lits` holds the
+# contents (double- vs single-quoted). Two things make this precise:
+#   * The body **excludes its own delimiter** (`[^"\\]` / `[^'\\]`, with `\\.` for escapes),
+#     so it cannot span across a `" + x + "`. This is what separates a real literal target
+#     from a string that is merely the PREFIX of a computed expression: `fused.rawUrl(
+#     "data/" + name)`, `"data/" + name + ".json"`, and `"data/" + foo("x")` all fail to
+#     match (the body stops at the first inner quote and the following `+` isn't `,`/`)`),
+#     so they fall through to the dynamic (computed-path) count instead of being
+#     mis-collected as a bogus `data/`-ish asset target. Separate quote branches let a
+#     double-quoted path contain an apostrophe (and vice-versa).
+#   * The `(?=\s*[,)])` lookahead requires the string to be the whole first argument.
+# `\s*` before the `(` tolerates `fused.runPython (...)` — valid JS a page author could
+# write, which must not silently vanish from export.
 _LITERAL_CALL = {
-    method: re.compile(r"fused\.%s\s*\(\s*(['\"])(.*?)\1" % method)
+    method: re.compile(
+        r"fused\.%s\s*\(\s*"
+        r"""(?:"(?P<litd>(?:[^"\\]|\\.)*)"|'(?P<lits>(?:[^'\\]|\\.)*)')"""
+        r"(?=\s*[,)])" % method
+    )
     for method in ("runPython", "rawUrl", "readFile")
 }
 # Any `fused.<method>(` occurrence, literal or not — used to detect dynamic paths
@@ -76,6 +91,31 @@ _ANY_CALL = {method: re.compile(r"fused\.%s\s*\(" % method) for method in _LITER
 
 # Unsupported API surface: present in an exported page => hard error.
 _UNSUPPORTED = re.compile(r"fused\.(writeFile|stat)\s*\(")
+
+# The page-adjacent bundle manifest: a single ``<script type="application/fused-bundle">``
+# block carrying a JSON object. Group 2 is the JSON body. Case-insensitive (HTML attrs)
+# and DOTALL (the JSON spans lines); the ``type`` attribute is the discriminator, so the
+# manifest carries NO version field — it is forward-lenient instead (unknown keys ignored,
+# so new directives can be added later without breaking an older exporter). Today it reads
+# only ``include`` (globs + literal page-relative paths bundled as read-only assets), which
+# leaks nothing a hosted page doesn't already expose (the served asset map enumerates every
+# file the globs resolve to). ``exclude`` is deliberately NOT honored here — it would name
+# withheld files in the public page source — so it is warned about, not applied; drop files
+# via the Deploy modal / ``/api/export`` ``exclude`` (kept on the deployment record, off the
+# artifact). The block is stripped before the dependency scan so its JSON body can never be
+# misread as a ``fused.*`` call.
+_BUNDLE_MANIFEST = re.compile(
+    r"<script\b[^>]*\btype\s*=\s*(['\"])application/fused-bundle\1[^>]*>(.*?)</script\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+# A path entry containing `*` or `?` is treated as a glob (expanded against the page dir);
+# otherwise it is a literal page-relative path (validated like an explicit include). `[`/`]`
+# are deliberately NOT triggers: a literal filename with brackets is common (e.g. a browser
+# "file[1].json" duplicate download), and treating it as a character class would silently
+# omit the real file (zero-match warning) instead of bundling it / erroring on a true miss.
+# A bracket used as an intentional character class still works inside a pattern that already
+# has a `*`/`?`.
+_GLOB_META = re.compile(r"[*?]")
 
 
 class ExportError(Exception):
@@ -181,7 +221,11 @@ def _literal_paths(html: str, method: str) -> list[str]:
     """Ordered, de-duplicated literal path arguments to ``fused.<method>(`` in ``html``."""
     seen: dict[str, None] = {}
     for m in _LITERAL_CALL[method].finditer(html):
-        seen.setdefault(m.group(2), None)
+        # Exactly one of the quote branches matched (double `litd` / single `lits`).
+        content = m.group("litd")
+        if content is None:
+            content = m.group("lits")
+        seen.setdefault(content, None)
     return list(seen)
 
 
@@ -225,6 +269,135 @@ def _within_page_dir(page_dir: str, target: str) -> bool:
     root = os.path.realpath(page_dir)
     real = os.path.realpath(target)
     return real == root or real.startswith(root + os.sep)
+
+
+def _extract_bundle_manifest(html: str, errors: list[str], warnings: list[str]) -> tuple[list[str], str]:
+    """Pull the embedded ``<script type="application/fused-bundle">`` manifest out of ``html``.
+
+    Returns ``(include_entries, html_without_the_block)``. The block is stripped from the
+    returned HTML so its JSON body can never be misread by the ``fused.*`` dependency scan
+    (a value shaped like ``fused.writeFile(…)`` would otherwise trip a spurious error).
+
+    The manifest is intentionally **unversioned and forward-lenient**: the ``type``
+    attribute identifies it, and unknown keys are ignored so new directives can be added
+    later without breaking an older exporter. Only ``include`` is read today (globs +
+    literal page-relative paths). ``exclude`` is a **warning**, not applied — honoring it
+    here would publish the names of withheld files in the served page source; drop files via
+    the Deploy modal / ``/api/export`` ``exclude`` instead. A malformed block (multiple
+    blocks, non-JSON, wrong shape) is a blocking error.
+    """
+    matches = list(_BUNDLE_MANIFEST.finditer(html))
+    if not matches:
+        return [], html
+    stripped = _BUNDLE_MANIFEST.sub("", html)
+    if len(matches) > 1:
+        errors.append(
+            'multiple <script type="application/fused-bundle"> blocks found; a page may '
+            "declare at most one bundle manifest"
+        )
+        return [], stripped
+    try:
+        data = json.loads(matches[0].group(2))
+    except ValueError as exc:
+        errors.append(f'the <script type="application/fused-bundle"> manifest is not valid JSON: {exc}')
+        return [], stripped
+    if not isinstance(data, dict):
+        errors.append('the fused-bundle manifest must be a JSON object')
+        return [], stripped
+    include = data.get("include", [])
+    if not isinstance(include, list) or not all(isinstance(x, str) for x in include):
+        errors.append("the fused-bundle manifest 'include' must be an array of strings")
+        return [], stripped
+    if "exclude" in data:
+        warnings.append(
+            "the fused-bundle manifest 'exclude' is ignored — excluding here would publish "
+            "the withheld file names in the served page; drop files via the Deploy modal or "
+            "the /api/export 'exclude' field instead"
+        )
+    return include, stripped
+
+
+def _glob_segments_match(path_segs: list[str], pat_segs: list[str]) -> bool:
+    """Glob-match a file's path segments against pattern segments.
+
+    ``*``/``?``/``[…]`` match within a single segment (via :func:`fnmatch.fnmatch`, so they
+    never cross ``/``); ``**`` spans zero or more whole segments (``data/**/*.json`` matches
+    ``data/x.json`` and ``data/a/b/x.json``). This is the segment-wise glob semantics used in
+    place of :func:`glob.glob` so expansion can walk with symlinks disabled (below)."""
+    if not pat_segs:
+        return not path_segs
+    head, rest = pat_segs[0], pat_segs[1:]
+    if head == "**":
+        if not rest:
+            return True  # trailing ** matches everything below here
+        return any(_glob_segments_match(path_segs[i:], rest) for i in range(len(path_segs) + 1))
+    if path_segs and fnmatch.fnmatch(path_segs[0], head):
+        return _glob_segments_match(path_segs[1:], rest)
+    return False
+
+
+def _glob_in_page(page_dir: str, pattern: str) -> list[str]:
+    """Page-relative files matching ``pattern``, walking ``page_dir`` **without following
+    directory symlinks** (``os.walk(followlinks=False)``).
+
+    Not following directory symlinks keeps the walk inside the real page tree: a
+    ``data/**`` glob can't be lured by a ``data/link -> /huge/tree`` symlink into scanning
+    (or hanging on) an external tree, and it won't surface an out-of-tree file that
+    ``_within_page_dir`` would then have to turn into a blocking error. A symlinked *file*
+    is still yielded (cheap) and rejected downstream by the caller's gauntlet, as before."""
+    pat_segs = [s for s in pattern.replace(os.sep, "/").split("/") if s != ""]
+    hits: list[str] = []
+    for dirpath, _dirnames, filenames in os.walk(page_dir, followlinks=False):
+        rel_dir = os.path.relpath(dirpath, page_dir).replace(os.sep, "/")
+        for fn in filenames:
+            rel = fn if rel_dir == "." else f"{rel_dir}/{fn}"
+            if _glob_segments_match(rel.split("/"), pat_segs):
+                hits.append(rel)
+    return hits
+
+
+def _expand_manifest_include(
+    page_dir: str, entries: list[str], errors: list[str], warnings: list[str]
+) -> list[str]:
+    """Resolve manifest ``include`` entries (globs and literal paths) to page-relative files.
+
+    A glob (contains ``*`` or ``?``) is expanded against ``page_dir`` (via :func:`_glob_in_page`,
+    which walks with directory symlinks disabled) to page-relative, forward-slash paths; a
+    glob matching nothing is a **warning** (a declaration of intent may legitimately match
+    nothing yet), never an error. A literal entry is passed through unchanged — missing or
+    unsafe literals surface downstream as blocking errors, exactly like an explicit
+    ``/api/export`` include.
+
+    An **absolute or ``..``-escaping glob pattern is rejected up front** (same
+    :func:`_reject_unsafe_rel` error a literal gets) and **not expanded**, so the walk never
+    starts outside the page tree. Order is preserved and duplicates dropped; every surviving
+    result still runs the caller's full safety gauntlet (``_reject_unsafe_rel`` /
+    ``_within_page_dir``), so a relative glob still can't smuggle in a (file) symlink escape.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(rel: str) -> None:
+        if rel not in seen:
+            seen.add(rel)
+            out.append(rel)
+
+    for entry in entries:
+        if _GLOB_META.search(entry):
+            # Validate the PATTERN before expanding, so an absolute/`..` glob never walks
+            # outside the page tree and reports the same failure a literal would.
+            if not _reject_unsafe_rel(entry, "manifest include glob", errors):
+                continue
+            hits = sorted(_glob_in_page(page_dir, entry))
+            if not hits:
+                warnings.append(
+                    f"the fused-bundle manifest glob {entry!r} matched no files under the page"
+                )
+            for rel in hits:
+                _add(rel)
+        else:
+            _add(entry)
+    return out
 
 
 def _local_module_imports(source: str) -> list[str]:
@@ -321,16 +494,21 @@ def plan_export(
     The auto-detected set is then adjusted by the user's selection:
 
       * ``include`` — extra page-relative files to bundle as read-only assets (beyond
-        the literal ``rawUrl``/``readFile`` scan). Each goes through the same safety
-        gauntlet as a scanned asset; a bad one is a blocking error. This is how a file
-        reached by a *computed* path (a warning, below) or read at runtime by a bundled
-        ``.py`` actually gets into the bundle.
+        the literal ``rawUrl``/``readFile`` scan), from the caller AND from the page's
+        embedded manifest (globs expanded, folded in first). Each goes through the same
+        safety gauntlet as a scanned asset; a bad one is a blocking error. This is how a
+        file reached by a *computed* path (a warning, below) or read at runtime by a
+        bundled ``.py`` actually gets into the bundle.
       * ``exclude`` — page-relative paths (or their bundle key) to drop from the final
         set. Dropping a literally-referenced target is honored but warned (that call
         404s when hosted).
 
     A computed (non-literal) ``rawUrl``/``readFile`` path is a **warning**, not an error:
-    the exporter can't discover the target, but the user can bundle it via ``include``.
+    the exporter can't discover the target, but the user can bundle it via ``include`` — or,
+    reproducibly, via a page-adjacent ``<script type="application/fused-bundle">`` manifest
+    whose ``include`` globs are expanded here and folded in **beneath** the caller's
+    ``include`` (see :func:`_extract_bundle_manifest`). Once the target is bundled, the
+    hosted ``_asset`` route resolves it by key, so a runtime-computed ``rawUrl`` path works.
     A computed ``runPython`` path stays a hard error (its served route name is derived
     from the literal path — there is nothing to route a computed call to).
 
@@ -344,6 +522,12 @@ def plan_export(
     plan = ExportPlan()
     include = include or []
     exclude = exclude or []
+
+    # The embedded manifest is read first: its block is stripped from `html` (so its JSON
+    # body can't false-positive in the scans below) and its expanded `include` globs are
+    # prepended to the caller's include list (both are just added assets; exclude runs last).
+    manifest_include, html = _extract_bundle_manifest(html, plan.errors, plan.warnings)
+    include = _expand_manifest_include(page_dir, manifest_include, plan.errors, plan.warnings) + include
 
     for m in _UNSUPPORTED.finditer(html):
         api = m.group(1)
@@ -363,8 +547,10 @@ def plan_export(
     if dyn_asset > 0:
         plan.warnings.append(
             f"{dyn_asset} fused.rawUrl()/readFile() call(s) use a computed path the "
-            "exporter can't resolve — add the files those calls fetch under \"Include "
-            "files\" (or \"Add all in folder\") so they are bundled and served"
+            "exporter can't resolve — declare the files those calls fetch in a "
+            '<script type="application/fused-bundle"> manifest ("include" globs), or add '
+            'them under "Include files" ("Add all in folder"), so they are bundled and '
+            "served (the hosted _asset route then resolves the computed path by key)"
         )
 
     taken_names: set[str] = set()
@@ -522,8 +708,6 @@ def export_page(
     all problems listed at once; advisory ``plan.warnings`` never block. Returns the
     realized :class:`ExportPlan` on success.
     """
-    import json
-
     html_path = os.path.abspath(html_path)
     if not os.path.isfile(html_path):
         raise ExportError(f"no such file: {html_path}")

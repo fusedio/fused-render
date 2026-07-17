@@ -2315,7 +2315,15 @@ def create_app(start_dir: str) -> FastAPI:
         return StreamingResponse(ndjson(), media_type="application/x-ndjson")
 
     @app.api_route("/api/fs/raw", methods=["GET", "HEAD"])
-    async def api_fs_raw(path: str, request: Request):
+    async def api_fs_raw(path: str, request: Request, base: str | None = None):
+        # Page-relative resolution (SPEC RH-1): a *relative* `path` is resolved against
+        # the directory of `base` — the page's own absolute path, sent by the runtime's
+        # fused.rawUrl(), the same contract /api/run uses via `html` (see the resolve at
+        # the top of api_run). An absolute `path` is used verbatim (base ignored). This is
+        # what lets one `fused.rawUrl("data/x.json")` call resolve locally here AND, when
+        # the page is hosted, against the bundle's _asset route by the same key.
+        if base and not os.path.isabs(path):
+            path = os.path.normpath(os.path.join(os.path.dirname(base), path))
         # Mount-backed file with a live HTTP serve: proxy the bytes from
         # rclone instead of reading through the kernel mount. Concurrent
         # ranged reads (duckdb's httpfs) through the NFS mount stall its 1s
