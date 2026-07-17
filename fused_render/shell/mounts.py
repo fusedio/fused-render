@@ -1345,7 +1345,14 @@ def _sync_serves_locked() -> None:
 def attach_mount(m: dict) -> str | None:
     """Mount via rcd; returns an error string or None."""
     mp = mountpoint(m)
-    os.makedirs(mp, exist_ok=True)
+    if sys.platform == "win32":
+        # WinFsp refuses to mount onto an EXISTING dir and creates (and later
+        # removes) the leaf itself — so ensure only the parent and leave the
+        # leaf absent. Its presence then doubles as the mount signal
+        # (_path_mounted).
+        os.makedirs(mounts_dir(), exist_ok=True)
+    else:
+        os.makedirs(mp, exist_ok=True)
     if _path_mounted(mp):
         # Already a kernel mount — but is it OURS? A stale mount left by a
         # deleted mount of the same name would otherwise pass for the
@@ -1400,6 +1407,8 @@ def attach_mount(m: dict) -> str | None:
         params = {
             "fs": m["remote"],
             "mountPoint": mp,
+            # "mount" is FUSE on Linux and cgofuse -> WinFsp on Windows (no
+            # Windows-specific value needed); only macOS uses nfsmount.
             "mountType": "nfsmount" if sys.platform == "darwin" else "mount",
             # Per-mount vfsOpt: VFS_OPT plus ReadOnly from the record, so a
             # read-only remote's VFS rejects writes instead of caching them for
@@ -1981,7 +1990,11 @@ def delete_mount(cid: str, x_fused: str | None = Header(default=None)):
         # Deleting the record while the filesystem is still mounted would
         # strand a live mount (and let a re-added name silently reuse it).
         return JSONResponse({"error": f"not deleted — {err}"}, status_code=502)
-    if os.path.isdir(mp) and not os.path.ismount(mp) and not os.listdir(mp):
+    # POSIX only: FUSE/NFS leave an empty real dir behind, so clean it up.
+    # On Windows WinFsp already removes the leaf on unmount (and we never
+    # pre-create it), so there is nothing to rmdir.
+    if (sys.platform != "win32" and os.path.isdir(mp)
+            and not os.path.ismount(mp) and not os.listdir(mp)):
         os.rmdir(mp)
     remove_mount(cid)
     sync_serves()  # stop the deleted mount's HTTP serve, drop its map entry

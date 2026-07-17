@@ -2141,3 +2141,58 @@ def test_attach_mount_proceeds_to_mount_when_winfsp_present(home, rcd, monkeypat
     assert mounts_mod.attach_mount(c) is None
     [(_, body)] = [x for x in rcd.calls if x[0] == "mount/mount"]
     assert body["mountType"] == "mount"  # cgofuse -> WinFsp, same as Linux
+
+
+def test_attach_mount_does_not_precreate_leaf_on_win32(home, rcd, monkeypatch):
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True)
+    monkeypatch.setattr(mounts_mod, "_path_mounted", lambda mp: False)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    real_makedirs = mounts_mod.os.makedirs
+    made = []
+    monkeypatch.setattr(mounts_mod.os, "makedirs",
+                        lambda p, **k: made.append(p) or real_makedirs(p, **k))
+    assert mounts_mod.attach_mount(c) is None
+    # WinFsp refuses to mount onto an existing dir: ensure only the parent,
+    # leave the leaf for WinFsp to create.
+    assert mounts_mod.mounts_dir() in made
+    assert mp not in made
+
+
+def test_attach_mount_precreates_leaf_on_posix(home, rcd, monkeypatch):
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    real_makedirs = mounts_mod.os.makedirs
+    made = []
+    monkeypatch.setattr(mounts_mod.os, "makedirs",
+                        lambda p, **k: made.append(p) or real_makedirs(p, **k))
+    assert mounts_mod.attach_mount(c) is None
+    assert mp in made  # POSIX still pre-creates the leaf, exactly as before
+
+
+def test_delete_cleanup_skips_rmdir_on_win32(home, rcd, monkeypatch):
+    import os as _os
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    _os.makedirs(mp, exist_ok=True)  # a leaf that WinFsp would already have removed
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_path_mounted", lambda p: False)
+    rmdirs = []
+    monkeypatch.setattr(mounts_mod.os, "rmdir", lambda p: rmdirs.append(p))
+    resp = mounts_mod.delete_mount(c["id"], x_fused="1")
+    assert resp == {"ok": True}
+    assert rmdirs == []  # WinFsp owns leaf teardown; the app never rmdirs on win32
+
+
+def test_delete_cleanup_rmdirs_empty_leaf_on_posix(home, rcd, monkeypatch):
+    import os as _os
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    _os.makedirs(mp, exist_ok=True)
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: False)
+    rmdirs = []
+    monkeypatch.setattr(mounts_mod.os, "rmdir", lambda p: rmdirs.append(p))
+    resp = mounts_mod.delete_mount(c["id"], x_fused="1")
+    assert resp == {"ok": True}
+    assert rmdirs == [mp]  # POSIX still removes the empty leaf FUSE/NFS left behind
