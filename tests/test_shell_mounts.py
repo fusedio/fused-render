@@ -2233,3 +2233,44 @@ def test_force_unmount_errors_when_stale_leaf_stuck_on_win32(monkeypatch):
     monkeypatch.setattr(mounts_mod.os, "rmdir", boom)
     err = mounts_mod._force_unmount(r"C:\mounts\data")
     assert err is not None and "in use" in err
+
+
+def _capture_rcd_spawn(monkeypatch, platform):
+    """Drive _ensure_rcd_locked to the Popen call without a real rclone: no
+    live daemon (no rcd fixture), a stubbed bin, and an _rc that answers
+    core/pid so the readiness loop returns immediately. Returns the captured
+    Popen kwargs dict."""
+    monkeypatch.setattr(mounts_mod.sys, "platform", platform)
+    monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: "/usr/bin/rclone")
+    monkeypatch.setattr(mounts_mod, "_rc", lambda *a, **k: {"pid": 1})
+    cap = {}
+
+    def fake_popen(argv, **kwargs):
+        cap["argv"] = argv
+        cap["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setattr(mounts_mod.subprocess, "Popen", fake_popen)
+    return cap
+
+
+def test_rcd_daemon_detaches_with_start_new_session_on_posix(home, monkeypatch):
+    cap = _capture_rcd_spawn(monkeypatch, "linux")
+    assert isinstance(mounts_mod.ensure_rcd(), int)
+    kw = cap["kwargs"]
+    assert kw["start_new_session"] is True
+    assert "creationflags" not in kw
+
+
+def test_rcd_daemon_detaches_with_creationflags_on_win32(home, monkeypatch):
+    # subprocess exposes these constants only on Windows; inject them so the
+    # win32 branch is exercisable on the Linux CI.
+    for name, val in (("CREATE_NEW_PROCESS_GROUP", 0x200),
+                      ("DETACHED_PROCESS", 0x8),
+                      ("CREATE_NO_WINDOW", 0x8000000)):
+        monkeypatch.setattr(mounts_mod.subprocess, name, val, raising=False)
+    cap = _capture_rcd_spawn(monkeypatch, "win32")
+    assert isinstance(mounts_mod.ensure_rcd(), int)
+    kw = cap["kwargs"]
+    assert "start_new_session" not in kw
+    assert kw["creationflags"] == (0x200 | 0x8 | 0x8000000)

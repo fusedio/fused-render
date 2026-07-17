@@ -531,13 +531,24 @@ def _ensure_rcd_locked() -> int:
     # DEVNULL: --log-file captures everything, and a detached daemon has no
     # console to write to anyway.
     log_path = _rotate_rcd_log()
+    # Detach so the daemon outlives this server (on purpose). POSIX uses
+    # start_new_session (setsid); on Windows that is a no-op, so use
+    # creationflags to fully detach with no console window — same idiom as
+    # server.py/executor.py.
+    if sys.platform == "win32":
+        detach_kwargs = {"creationflags": (
+            subprocess.CREATE_NEW_PROCESS_GROUP
+            | subprocess.DETACHED_PROCESS
+            | subprocess.CREATE_NO_WINDOW)}
+    else:
+        detach_kwargs = {"start_new_session": True}
     subprocess.Popen(
         [bin_, "rcd", "--rc-no-auth", "--use-server-modtime",
          f"--rc-addr=127.0.0.1:{port}",
          f"--log-file={log_path}", "--log-level", "INFO"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        start_new_session=True,  # outlives this server on purpose
+        **detach_kwargs,
     )
     deadline = time.time() + 10
     while time.time() < deadline:
