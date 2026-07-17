@@ -591,12 +591,16 @@ nothing. Full detail: `docs/EXPORT.md`.
 
 - **EX-1** A bundle is a directory holding `page.html` (the page verbatim),
   `manifest.json` (the hosting contract), `code/<name>.py` (one per `runPython`
-  target), and `assets/<key>` (one per `rawUrl`/`readFile` target).
+  target), `assets/<key>` (one per `rawUrl`/`readFile` target), and `resources/<key>`
+  (one per first-party module a bundled entrypoint imports — EX-7).
 - **EX-2** `manifest.json` (`{"fused_render_bundle": 1, "page", "entrypoints",
-  "assets"}`) maps each `runPython` literal path to a served route name + bundled
-  file, and each `rawUrl`/`readFile` literal path to an asset key + bundled file. The
-  hosting layer wires the served page's runtime from this map — it never re-parses
-  the HTML.
+  "assets", "resources"}`) maps each `runPython` literal path to a served route name +
+  bundled file, each `rawUrl`/`readFile` literal path to an asset key + bundled file,
+  and each imported module to a runtime key + bundled file. The hosting layer wires the
+  served page's runtime from this map — it never re-parses the HTML. Every bundled file
+  lands at its real page-relative key under the served project root (the runtime's cwd +
+  `sys.path[0]`), so the page's own `open("data.csv")` / `import helpers` resolve there
+  unchanged — the hosting layer does **not** relocate files under an `assets/` prefix.
 
 ### 18.2 Portable subset
 
@@ -633,7 +637,17 @@ nothing. Full detail: `docs/EXPORT.md`.
   bundled `.py` reads at runtime), each validated like a scanned asset and deduped by
   key; and `exclude` — files dropped from the final set by literal path or bundle
   key. Both default empty (auto-only).
-- **EX-7** A page may declare its own bundle set **in the repo**, reproducibly, via a
+- **EX-7** First-party **modules** a bundled entrypoint imports are discovered by a
+  static AST scan of the entrypoint sources (transitively) and shipped as `resources`,
+  so a served entrypoint's `import helpers` resolves without hand-listing. Only an
+  absolute import resolving to a `<name>.py` **beside the page** is bundled (stdlib /
+  third-party / subpackage imports are left alone; a relative `from . import x` is
+  skipped — a hosted entrypoint runs flattened with no package context). Unlike an
+  asset, a resource is runtime-only: it ships into the tree so `import` works but is
+  **not** on the `_asset` allow-list, so its source is not web-served. A module already
+  carried as an asset (assets land at the same real key) is not bundled twice; excluding
+  a module a bundled entrypoint imports is honored but warned (the import will fail).
+- **EX-8** A page may declare its own bundle set **in the repo**, reproducibly, via a
   single embedded `<script type="application/fused-bundle">` block holding a JSON object.
   Only **`include`** is read today: an array of page-relative **globs** (`data/*.json`,
   `tiles/**/*.png`) and/or literal paths, expanded against the page dir through the same
@@ -648,6 +662,12 @@ nothing. Full detail: `docs/EXPORT.md`.
   (kept on the deployment record, off the artifact). This is what collapses a
   hand-maintained `RAW_URLS`-style table (or a fake `_bundle*()` scanner-bait function)
   down to `fused.rawUrl("data/" + name)` against a `data/*.json` glob.
+
+> **Follow-up — bundle v2.** After the real-path landing (above), the `code/`/`assets/`/
+> `resources/` category dirs are vestigial: the manifest already carries each file's role and
+> runtime key. The proposed v2 replaces them with a single payload dir mirroring the author's
+> folder + a role-tagging manifest (and can drop the AST module scan by shipping the tree
+> wholesale). Full design: [`docs/bundle-v2-design.md`](docs/bundle-v2-design.md).
 
 ## 19. Deploy — Hosted Publish through the fused CLI (M11)
 

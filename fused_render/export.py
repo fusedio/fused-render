@@ -38,6 +38,7 @@ such look-alike text is not present, or split it out.
 
 from __future__ import annotations
 
+import ast
 import glob
 import json
 import os
@@ -126,6 +127,20 @@ class Asset:
     file: str  # bundle-relative destination, e.g. "assets/logo.png"
 
 
+@dataclass(frozen=True)
+class Resource:
+    """A first-party Python module a bundled entrypoint ``import``s (directly or
+    transitively).
+
+    Shipped into the served page's runtime tree at its real page-relative path so a bare
+    ``import helpers`` resolves — but, unlike an :class:`Asset`, a page never *fetches* it,
+    so the hosting layer ships it as a plain resource file and does **not** put it on the
+    ``_asset`` allow-list (its source is not web-readable)."""
+
+    key: str  # runtime-relative path == import location, e.g. "helpers.py"
+    file: str  # bundle-relative destination, e.g. "resources/helpers.py"
+
+
 @dataclass
 class ExportPlan:
     """What an export will bundle, plus any problems found while scanning.
@@ -139,6 +154,7 @@ class ExportPlan:
 
     entrypoints: list[Entrypoint] = field(default_factory=list)
     assets: list[Asset] = field(default_factory=list)
+    resources: list[Resource] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -322,6 +338,83 @@ def _expand_manifest_include(
     return out
 
 
+def _local_module_imports(source: str) -> list[str]:
+    """Ordered, de-duplicated top-level module names ``source`` imports **absolutely**.
+
+    ``import a`` / ``import a.b as c`` / ``from a import x`` / ``from a.b import y`` all
+    contribute ``a`` (the top-level name — only ``a.py`` beside the page can be bundled;
+    ``a.b`` as a subpackage is out of scope). Relative imports (``from . import x``,
+    ``level > 0``) are skipped: a hosted entrypoint runs flattened at the project root
+    with no package context, so only absolute imports of a sibling module resolve. Parsing
+    is static (``ast``) and side-effect-free — a file that does not parse yields nothing
+    (its own ``SyntaxError`` surfaces when the page runs it, not here)."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    seen: dict[str, None] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                seen.setdefault(alias.name.split(".", 1)[0], None)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            seen.setdefault(node.module.split(".", 1)[0], None)
+    return list(seen)
+
+
+def _discover_modules(
+    page_dir: str,
+    entrypoints: list[Entrypoint],
+    asset_keys: set[str],
+    exclude: list[str],
+) -> tuple[list[Resource], list[str]]:
+    """Find first-party sibling modules the bundled ``entrypoints`` import, transitively.
+
+    BFS over the ``import`` statements of each entrypoint source (and of each module it
+    pulls in), resolving every absolute top-level name to a ``<name>.py`` **beside the
+    page** — hosted entrypoints run flattened at the project root, so imports resolve from
+    the root regardless of the importer's own subdirectory. A name that resolves to no
+    local file (stdlib / third-party / a subpackage) is silently left alone. A module
+    already shipped as an asset (``asset_keys`` — assets land at the same real path, so the
+    import already resolves) is skipped so it is bundled once. Returns ``(resources,
+    warnings)``; excluding a module a bundled entrypoint imports is honored but warned (the
+    import will fail when hosted)."""
+    drop = {_asset_key(p) for p in exclude} | set(exclude)
+    resources: list[Resource] = []
+    warnings: list[str] = []
+    seen_keys = set(asset_keys)
+    scanned: set[str] = set()
+    queue = [os.path.join(page_dir, e.path) for e in entrypoints]
+    while queue:
+        src_path = queue.pop(0)
+        real = os.path.realpath(src_path)
+        if real in scanned:
+            continue
+        scanned.add(real)
+        try:
+            with open(src_path, "r", encoding="utf-8", errors="replace") as f:
+                source = f.read()
+        except OSError:
+            continue
+        for mod in _local_module_imports(source):
+            key = mod + ".py"
+            if key in seen_keys:
+                continue
+            cand = os.path.join(page_dir, key)
+            if not (os.path.isfile(cand) and _within_page_dir(page_dir, cand)):
+                continue  # not a first-party sibling module — nothing to bundle
+            seen_keys.add(key)
+            if key in drop:
+                warnings.append(
+                    f"excluding module {key!r}, which a bundled entrypoint imports — that "
+                    "import will fail on the hosted page"
+                )
+                continue
+            resources.append(Resource(key=key, file=f"resources/{key}"))
+            queue.append(cand)
+    return resources, warnings
+
+
 def plan_export(
     html: str,
     page_dir: str,
@@ -356,6 +449,13 @@ def plan_export(
     hosted ``_asset`` route resolves it by key, so a runtime-computed ``rawUrl`` path works.
     A computed ``runPython`` path stays a hard error (its served route name is derived
     from the literal path — there is nothing to route a computed call to).
+
+    Finally, first-party **modules** the bundled entrypoints ``import`` (transitively) are
+    discovered by a static AST scan (:func:`_discover_modules`) and recorded in
+    ``plan.resources`` — sibling ``.py`` files shipped so a hosted entrypoint's
+    ``import helpers`` resolves, without the author hand-listing them. Unlike assets they
+    are runtime-only (never web-served). Only absolute imports resolving to a ``<name>.py``
+    beside the page are bundled; stdlib/third-party imports and subpackages are left alone.
     """
     plan = ExportPlan()
     include = include or []
@@ -498,6 +598,15 @@ def plan_export(
                 kept_assets.append(a)
         plan.assets = kept_assets
 
+    # Ship first-party modules the (surviving) entrypoints import, so `import helpers`
+    # resolves on the hosted page with no hand-listing. Discovered after excludes so a
+    # dropped entrypoint is not scanned, and against the final asset key set so a module
+    # already carried as an asset is not bundled twice.
+    plan.resources, module_warnings = _discover_modules(
+        page_dir, plan.entrypoints, {a.name for a in plan.assets}, exclude
+    )
+    plan.warnings += module_warnings
+
     return plan
 
 
@@ -516,6 +625,7 @@ def _manifest(plan: ExportPlan, page_file: str) -> dict:
             {"path": e.path, "name": e.name, "file": e.file} for e in plan.entrypoints
         ],
         "assets": [{"path": a.path, "name": a.name, "file": a.file} for a in plan.assets],
+        "resources": [{"key": r.key, "file": r.file} for r in plan.resources],
     }
 
 
@@ -529,8 +639,9 @@ def export_page(
     """Export the page at ``html_path`` into a portable bundle at ``out_dir``.
 
     Writes ``page.html``, ``manifest.json``, ``code/<name>.py`` per ``runPython`` target,
-    and ``assets/<key>`` per ``rawUrl``/``readFile`` target (plus any ``include`` files,
-    minus any ``exclude`` — see :func:`plan_export`). Raises :class:`ExportError` on any
+    ``assets/<key>`` per ``rawUrl``/``readFile`` target (plus any ``include`` files, minus
+    any ``exclude`` — see :func:`plan_export`), and ``resources/<key>`` per first-party
+    module a bundled entrypoint imports. Raises :class:`ExportError` on any
     blocking problem (dynamic runPython path, unsupported API, unsafe/missing file) with
     all problems listed at once; advisory ``plan.warnings`` never block. Returns the
     realized :class:`ExportPlan` on success.
@@ -575,6 +686,11 @@ def export_page(
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             shutil.copyfile(os.path.join(page_dir, a.path), dest)
 
+        for r in plan.resources:
+            dest = os.path.join(stage, r.file)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.copyfile(os.path.join(page_dir, r.key), dest)
+
         with open(os.path.join(stage, "manifest.json"), "w", encoding="utf-8") as f:
             json.dump(_manifest(plan, page_file), f, indent=2, sort_keys=True)
             f.write("\n")
@@ -583,7 +699,7 @@ def export_page(
         # A previous bundle's code/assets may hold files the new manifest no
         # longer lists, so those two subdirs are cleared before the move;
         # anything else the user has in --out is left untouched.
-        for owned in ("code", "assets"):
+        for owned in ("code", "assets", "resources"):
             shutil.rmtree(os.path.join(out_dir, owned), ignore_errors=True)
             staged = os.path.join(stage, owned)
             if os.path.isdir(staged):
