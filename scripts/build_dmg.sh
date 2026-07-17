@@ -317,6 +317,17 @@ rm -rf "$PRUNE_FRAMEWORK/Versions/3.12/include" \
        "$PRUNE_FRAMEWORK/Versions/3.12/share" \
        "$PRUNE_FRAMEWORK/Headers"
 find "$PRUNE_FRAMEWORK" -type d -name __pycache__ -prune -exec rm -rf {} +
+
+# Strip debug + local symbols from every bundled native library (D118).
+# Wheels ship unstripped dylibs (pxr's libusd_ms alone carries ~96k symbols);
+# -S drops debug info, -x drops local symbols, globals stay so dlopen/linking
+# is untouched. Per-file `|| true`: find matches by extension, and a stray
+# non-Mach-O .so (text stub, universal file strip dislikes) must not fail the
+# build. MUST run before codesign (step 5) — stripping re-writes the file and
+# would invalidate an existing signature.
+echo "==> stripping debug symbols from bundled dylibs"
+find "$APP_DIR" -type f \( -name '*.so' -o -name '*.dylib' \) \
+  -exec sh -c 'for f do strip -S -x "$f" 2>/dev/null || true; done' _ {} +
 echo "    pruned; app now $(du -sh "$APP_DIR" | cut -f1)"
 
 # ---------------------------------------------------------------------------
