@@ -349,7 +349,6 @@ function isValidCustomKey(key: string): boolean {
 // non-interactive) when the master toggle is off or the template resolves to
 // skip — nothing is sent for those.
 function ChipStrip({
-  item,
   chips,
   enabled,
   skipped,

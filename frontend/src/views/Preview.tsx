@@ -455,7 +455,11 @@ function TemplatePreview({
     // the switcher can't wedge forever; timing out aborts the switch, never
     // the save.
     const frame = document.querySelector<HTMLIFrameElement>(".preview-body iframe");
-    const flush = frame?.contentWindow && (frame.contentWindow as any).__fusedFlushEdits;
+    const flushWindow = frame?.contentWindow as
+      | (Window & { __fusedFlushEdits?: () => Promise<unknown> })
+      | null
+      | undefined;
+    const flush = flushWindow?.__fusedFlushEdits;
     if (typeof flush === "function") {
       try {
         const res = await Promise.race([
