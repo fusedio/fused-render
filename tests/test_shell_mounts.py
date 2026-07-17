@@ -2264,13 +2264,15 @@ def test_rcd_daemon_detaches_with_start_new_session_on_posix(home, monkeypatch):
 
 def test_rcd_daemon_detaches_with_creationflags_on_win32(home, monkeypatch):
     # subprocess exposes these constants only on Windows; inject them so the
-    # win32 branch is exercisable on the Linux CI.
+    # win32 branch is exercisable on the Linux CI. CREATE_NO_WINDOW is
+    # deliberately NOT injected: CreateProcess ignores it when combined with
+    # DETACHED_PROCESS, so the flags must not include it (and referencing it
+    # here would AttributeError if the code still reached for it).
     for name, val in (("CREATE_NEW_PROCESS_GROUP", 0x200),
-                      ("DETACHED_PROCESS", 0x8),
-                      ("CREATE_NO_WINDOW", 0x8000000)):
+                      ("DETACHED_PROCESS", 0x8)):
         monkeypatch.setattr(mounts_mod.subprocess, name, val, raising=False)
     cap = _capture_rcd_spawn(monkeypatch, "win32")
     assert isinstance(mounts_mod.ensure_rcd(), int)
     kw = cap["kwargs"]
     assert "start_new_session" not in kw
-    assert kw["creationflags"] == (0x200 | 0x8 | 0x8000000)
+    assert kw["creationflags"] == (0x200 | 0x8)

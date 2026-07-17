@@ -533,13 +533,15 @@ def _ensure_rcd_locked() -> int:
     log_path = _rotate_rcd_log()
     # Detach so the daemon outlives this server (on purpose). POSIX uses
     # start_new_session (setsid); on Windows that is a no-op, so use
-    # creationflags to fully detach with no console window — same idiom as
-    # server.py/executor.py.
+    # creationflags to fully detach with no controlling console — the same
+    # detach idiom as templates/latex/engine.py and templates/usd/reader.py.
+    # DETACHED_PROCESS already gives the child no console; CREATE_NO_WINDOW is
+    # omitted because CreateProcess ignores it when combined with
+    # DETACHED_PROCESS.
     if sys.platform == "win32":
         detach_kwargs = {"creationflags": (
             subprocess.CREATE_NEW_PROCESS_GROUP
-            | subprocess.DETACHED_PROCESS
-            | subprocess.CREATE_NO_WINDOW)}
+            | subprocess.DETACHED_PROCESS)}
     else:
         detach_kwargs = {"start_new_session": True}
     subprocess.Popen(
