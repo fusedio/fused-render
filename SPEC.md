@@ -637,6 +637,12 @@ nothing. Full detail: `docs/EXPORT.md`.
   carried as an asset (assets land at the same real key) is not bundled twice; excluding
   a module a bundled entrypoint imports is honored but warned (the import will fail).
 
+> **Follow-up — bundle v2.** After the real-path landing (above), the `code/`/`assets/`/
+> `resources/` category dirs are vestigial: the manifest already carries each file's role and
+> runtime key. The proposed v2 replaces them with a single payload dir mirroring the author's
+> folder + a role-tagging manifest (and can drop the AST module scan by shipping the tree
+> wholesale). Full design: [`docs/bundle-v2-design.md`](docs/bundle-v2-design.md).
+
 ## 19. Deploy — Hosted Publish through the fused CLI (M11)
 
 Goal: close the gap between §18's bundle and a working URL, from the shell. The
