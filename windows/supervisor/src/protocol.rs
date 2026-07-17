@@ -12,6 +12,7 @@ const MAX_PATH_UNITS: usize = 32_767;
 pub enum Command {
     Open(PathBuf),
     OpenHome,
+    StartInBackground,
     ShutdownForUpgrade,
 }
 
@@ -21,6 +22,7 @@ impl Command {
             Self::Open(path) => (1, path.as_os_str().encode_wide().collect()),
             Self::OpenHome => (2, Vec::new()),
             Self::ShutdownForUpgrade => (3, Vec::new()),
+            Self::StartInBackground => (4, Vec::new()),
         };
         let mut frame = Vec::with_capacity(HEADER_LEN + payload.len() * 2);
         frame.extend_from_slice(&MAGIC.to_le_bytes());
@@ -58,6 +60,7 @@ impl Command {
             }
             2 if payload.is_empty() => Ok(Self::OpenHome),
             3 if payload.is_empty() => Ok(Self::ShutdownForUpgrade),
+            4 if payload.is_empty() => Ok(Self::StartInBackground),
             _ => Err(invalid("invalid command opcode or payload")),
         }
     }
@@ -73,12 +76,14 @@ where
         return Ok(Command::OpenHome);
     };
     if args.next().is_some() {
-        return Err(invalid("expected one file path or --shutdown-for-upgrade"));
+        return Err(invalid(
+            "expected one file path, --startup, or --shutdown-for-upgrade",
+        ));
     }
-    if first.as_ref() == "--shutdown-for-upgrade" {
-        Ok(Command::ShutdownForUpgrade)
-    } else {
-        Ok(Command::Open(PathBuf::from(first.as_ref())))
+    match first.as_ref().to_str() {
+        Some("--startup") => Ok(Command::StartInBackground),
+        Some("--shutdown-for-upgrade") => Ok(Command::ShutdownForUpgrade),
+        _ => Ok(Command::Open(PathBuf::from(first.as_ref()))),
     }
 }
 
@@ -96,6 +101,7 @@ mod tests {
             Command::Open(PathBuf::from(r"C:\data\résumé.xlsx")),
             Command::Open(PathBuf::from(r"\\server\share\report.pdf")),
             Command::OpenHome,
+            Command::StartInBackground,
             Command::ShutdownForUpgrade,
         ] {
             assert_eq!(Command::decode(&command.encode()).unwrap(), command);
@@ -116,6 +122,10 @@ mod tests {
     #[test]
     fn parses_launcher_commands() {
         assert_eq!(parse_args::<[&str; 0], _>([]).unwrap(), Command::OpenHome);
+        assert_eq!(
+            parse_args(["--startup"]).unwrap(),
+            Command::StartInBackground
+        );
         assert_eq!(
             parse_args(["--shutdown-for-upgrade"]).unwrap(),
             Command::ShutdownForUpgrade

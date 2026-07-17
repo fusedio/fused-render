@@ -101,7 +101,7 @@ impl DesktopPaths {
             ("CLAUDE_CONFIG_DIR", self.state.join("claude")),
             (
                 "FUSED_RENDER_DUCKDB_EXTENSION_DIR",
-                self.cache.join("duckdb").join("extensions"),
+                tools_dir.join("duckdb_extensions"),
             ),
             (
                 "FUSED_RENDER_DUCKDB_TEMP_DIR",
@@ -168,7 +168,7 @@ mod tests {
         assert_eq!(value("CLAUDE_CONFIG_DIR"), paths.state.join("claude"));
         assert_eq!(
             value("FUSED_RENDER_DUCKDB_EXTENSION_DIR"),
-            paths.cache.join("duckdb").join("extensions")
+            tools.join("duckdb_extensions")
         );
         assert_eq!(
             value("FUSED_RENDER_DUCKDB_TEMP_DIR"),

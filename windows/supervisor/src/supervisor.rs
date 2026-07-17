@@ -79,9 +79,6 @@ pub fn run(initial: Command) -> io::Result<()> {
                         TrayAction::DefaultApps => {
                             let _ = open_uri("ms-settings:defaultapps");
                         }
-                        TrayAction::ToggleLogin => {
-                            startup::set_enabled(!startup::enabled()?)?;
-                        }
                         TrayAction::Exit if confirm_exit() => {
                             let _ = graceful_shutdown(port, &token);
                             stop_pipe_locally = true;
@@ -367,7 +364,7 @@ fn open_command(port: u16, command: Command) -> io::Result<()> {
     let url = match command {
         Command::Open(path) => view_url(port, &path)?,
         Command::OpenHome => format!("http://127.0.0.1:{port}/"),
-        Command::ShutdownForUpgrade => return Ok(()),
+        Command::StartInBackground | Command::ShutdownForUpgrade => return Ok(()),
     };
     open_browser(&url)
 }

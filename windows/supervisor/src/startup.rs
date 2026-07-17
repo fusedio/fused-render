@@ -48,7 +48,10 @@ pub fn set_enabled(enabled: bool) -> io::Result<()> {
     }
 
     let executable = env::current_exe()?;
-    let value = wide_null(OsStr::new(&format!("\"{}\"", executable.display())));
+    let value = wide_null(OsStr::new(&format!(
+        "\"{}\" --startup",
+        executable.display()
+    )));
     let mut key: HKEY = null_mut();
     let status = unsafe {
         RegCreateKeyExW(

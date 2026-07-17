@@ -92,6 +92,13 @@ Remove-Item -LiteralPath (Join-Path $PythonRoot "Lib\EXTERNALLY-MANAGED") -Force
     Set-Content -Path (Join-Path $PythonRoot "python312._pth") -Encoding Ascii
 
 Invoke-Native $Uv @("pip", "install", "--python", $bundlePython, "$($wheel.FullName)[bundled,fused]")
+$duckdbExtensions = Join-Path $PythonRoot "duckdb_extensions"
+New-Item -ItemType Directory -Force -Path $duckdbExtensions | Out-Null
+Invoke-Native $bundlePython @(
+    "-I", "-c",
+    "import duckdb, sys; con = duckdb.connect(config=dict(extension_directory=sys.argv[1])); [con.install_extension(name) for name in sys.argv[2:]]",
+    $duckdbExtensions, "httpfs", "excel", "spatial"
+)
 Get-ChildItem -Path $PythonRoot -Directory -Recurse -Filter "__pycache__" -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force
 Get-ChildItem -Path (Join-Path $PythonRoot "Scripts") -Filter "*.exe" -ErrorAction SilentlyContinue |

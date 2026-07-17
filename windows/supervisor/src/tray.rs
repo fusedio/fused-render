@@ -9,6 +9,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::paths::DesktopPaths;
+use crate::startup;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayAction {
@@ -16,7 +17,6 @@ pub enum TrayAction {
     OpenFile,
     OpenLogs,
     DefaultApps,
-    ToggleLogin,
     Exit,
 }
 
@@ -39,7 +39,7 @@ pub fn start(port: u16, login_enabled: bool, paths: DesktopPaths) -> Receiver<Tr
         let mut delay = RETRY_START;
         for attempt in 1u32.. {
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run(port, login_enabled, actions.clone())
+                run(port, login_enabled, actions.clone(), &paths)
             }));
             match outcome {
                 Ok(Ok(())) => return, // consumer hung up: supervisor is shutting down
@@ -64,6 +64,7 @@ fn run(
     port: u16,
     login_enabled: bool,
     actions: mpsc::Sender<TrayAction>,
+    paths: &DesktopPaths,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let menu = Menu::new();
     let open = MenuItem::new("Open FusedRender", true, None);
@@ -116,7 +117,12 @@ fn run(
             } else if event.id == default_apps.id() {
                 Some(TrayAction::DefaultApps)
             } else if event.id == login.id() {
-                Some(TrayAction::ToggleLogin)
+                let checked = login.is_checked();
+                if let Err(error) = startup::set_enabled(checked) {
+                    paths.log(&format!("could not update sign-in setting: {error}"));
+                    login.set_checked(!checked);
+                }
+                None
             } else if event.id == exit.id() {
                 Some(TrayAction::Exit)
             } else {
