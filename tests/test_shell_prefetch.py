@@ -101,6 +101,31 @@ def test_streams_whole_file_in_sequential_chunks(fast):
         stub.close()
 
 
+def test_prioritizes_head_then_footer_before_middle(fast, monkeypatch):
+    # A file larger than the head region: the head (row group 0) streams first,
+    # then the footer tail, and only then the middle bulk — so an interactive
+    # first-page read racing the stream finds footer + row group 0 warm early.
+    monkeypatch.setattr(prefetch_mod, "HEAD_BYTES", 1024)
+    monkeypatch.setattr(prefetch_mod, "FOOTER_BYTES", 1024)
+    stub = StubServe(os.urandom(5000))          # CHUNK_BYTES=1024 -> 5 chunks
+    try:
+        prefetch_mod.schedule("/m/f.bin", stub.url)
+        job = wait_status("/m/f.bin", "done")
+        assert job["done"] == job["size"] == 5000
+        gets = [r[1] for r in stub.requests if r[0] == "GET"]
+        # head first, footer tail second, middle after.
+        assert gets == ["bytes=0-1023", "bytes=3976-4999",
+                        "bytes=1024-2047", "bytes=2048-3071", "bytes=3072-3975"]
+        # every byte covered exactly once (no gap, no overlap).
+        covered = []
+        for g in gets:
+            lo, hi = g.removeprefix("bytes=").split("-")
+            covered.extend(range(int(lo), int(hi) + 1))
+        assert sorted(covered) == list(range(5000))
+    finally:
+        stub.close()
+
+
 def test_size_gate_skips_large_files(fast, monkeypatch):
     monkeypatch.setattr(prefetch_mod, "MAX_BYTES", 100)
     stub = StubServe(b"x" * 3000)

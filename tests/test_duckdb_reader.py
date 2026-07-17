@@ -785,6 +785,27 @@ def test_source_url_reads_over_http(parquet_file):
         srv.shutdown()
 
 
+def test_http_connection_persists_across_reads(parquet_file):
+    # The shared connection is stashed on the duckdb module so it outlives a
+    # single reader run; with parquet_metadata_cache=true set once at build,
+    # the SECOND open in a server session reuses the parsed footer instead of
+    # re-downloading/re-parsing it (the ~7s cold DESCRIBE is paid only once).
+    srv, hits = _serve_dir(os.path.dirname(parquet_file))
+    try:
+        url = f"http://127.0.0.1:{srv.server_address[1]}/s.parquet"
+        try:
+            reader.main(parquet_file, limit=5, source_url=url)
+        except Exception:
+            pytest.skip("duckdb httpfs extension unavailable")
+        con1 = getattr(duckdb, "_fused_render_http_con_v3", None)
+        assert con1 is not None                   # stashed for reuse
+        reader.main(parquet_file, limit=5, source_url=url)
+        con2 = getattr(duckdb, "_fused_render_http_con_v3", None)
+        assert con2 is con1                        # same connection -> warm cache
+    finally:
+        srv.shutdown()
+
+
 def test_source_url_falls_back_when_dead(parquet_file):
     import socket
 
