@@ -1962,7 +1962,8 @@ def create_detected_remote(body: dict = Body(...), x_fused: str | None = Header(
     if sugg is None:
         return JSONResponse({"error": f"unknown credential source {sid!r}"}, status_code=404)
     name = sugg["remote_name"]
-    if f"{name}:" in _rclone_state().get("remotes", []):
+    # remotes are {name,label} objects now — match on the bare rclone spec.
+    if any(r["name"] == f"{name}:" for r in _rclone_state().get("remotes", [])):
         return {"ok": True, "name": name + ":"}
     cmd = [bin_, "config", "create", name, sugg["backend"]]
     for k, v in sugg["params"].items():
