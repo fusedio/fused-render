@@ -702,11 +702,19 @@ export interface RemoteSuggestion {
   kind: "public" | "detected";
 }
 
+// An existing rclone remote. `name` is the verbatim rclone spec (incl trailing
+// ':') used unchanged as the mount base; `label` is the friendly name to show —
+// the same one its suggestion used, or the bare `name` for a custom remote.
+export interface RcloneRemote {
+  name: string;
+  label: string;
+}
+
 export interface MountsResult {
   rclone: {
     available: boolean;
     version: string | null;
-    remotes: string[];
+    remotes: RcloneRemote[];
     suggested: RemoteSuggestion[];
   };
   mounts: Mount[];
