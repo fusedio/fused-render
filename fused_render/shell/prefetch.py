@@ -232,16 +232,22 @@ def _prioritized_chunks(size: int) -> "list[tuple[int, int]]":
             + _split(head_end, tail_start))
 
 
-def _fetch_chunk(url: str, off: int, end: int, path: str) -> int:
-    """Fetch bytes [off, end] through the serve and discard them (the point
-    is the serve's cache side effect); add the bytes that land to the job's
-    progress. Returns the new offset. Blocking — run via asyncio.to_thread.
+def _fetch_chunk(url: str, start: int, end: int, path: str,
+                 committed: int) -> None:
+    """Fetch bytes [start, end] through the serve and discard them (the point
+    is the serve's cache side effect); report progress as the bytes land.
+    Blocking — run via asyncio.to_thread.
 
-    Progress is accumulated (not set to the absolute offset) because chunks
-    stream out of file order — head, then tail, then middle — so `done` tracks
-    total bytes fetched, still reaching `size` when every chunk is in."""
+    Progress is `committed + (off - start)` — the bytes banked by fully
+    finished chunks plus this chunk's own intra-chunk offset. That is
+    idempotent across retries: a retried chunk re-requests from `start`, so a
+    failed partial attempt's bytes are simply re-counted from the chunk base
+    rather than added a second time — `done` can never overshoot `size`.
+    Chunks also stream out of file order (head, tail, middle), so the base is
+    `committed` (finished-chunk bytes), not the absolute file offset."""
     req = urllib.request.Request(url)
-    req.add_header("Range", f"bytes={off}-{end}")
+    req.add_header("Range", f"bytes={start}-{end}")
+    off = start
     with urllib.request.urlopen(req, timeout=120) as r:
         while True:
             b = r.read(1024 * 1024)
@@ -250,8 +256,7 @@ def _fetch_chunk(url: str, off: int, end: int, path: str) -> int:
             off += len(b)
             with _lock:
                 if path in _jobs:
-                    _jobs[path]["done"] += len(b)
-    return off
+                    _jobs[path]["done"] = committed + (off - start)
 
 
 async def _acquire_slot() -> "asyncio.Semaphore":
@@ -296,30 +301,34 @@ async def _prefetch(path: str, url: str) -> None:
         # after START_DELAY_S so the triggering interactive read gets ahead.
         await asyncio.sleep(START_DELAY_S)
         async with await _acquire_slot():
-            errors = 0
+            errors, committed = 0, 0
             # Head, then footer tail, then the middle bulk (see
             # _prioritized_chunks) so a first-page read racing us warms fast.
+            # `committed` banks the bytes of finished chunks; a chunk is
+            # re-requested whole on failure, so nothing partial is committed.
             for start, end in _prioritized_chunks(size):
-                off = start
-                while off <= end:
+                while True:
                     await _wait_for_lull(path)
                     try:
-                        off = await asyncio.to_thread(
-                            _fetch_chunk, url, off, end, path)
-                        errors = 0
+                        await asyncio.to_thread(
+                            _fetch_chunk, url, start, end, path, committed)
+                        break
                     except Exception as exc:
                         _release(exc)
                         errors += 1
                         if errors > MAX_CONSECUTIVE_ERRORS:
                             logger.warning(
                                 "prefetch of %r gave up at %d/%d bytes",
-                                path, off, size)
+                                path, committed, size)
                             _finish(path, "failed")
                             return
-                        # Resume at `off`: everything fetched so far is already
-                        # in the serve's cache, so re-requesting it replays
-                        # locally.
+                        # Re-request the whole chunk from `start`: bytes already
+                        # fetched are in the serve's cache and replay locally,
+                        # and progress resets to `committed` so the retry can't
+                        # push `done` past `size`.
                         await asyncio.sleep(min(2.0 * errors, 30.0))
+                errors = 0
+                committed += end - start + 1
             _finish(path, "done")
             logger.info("prefetched %r (%d bytes) into the serve cache",
                         path, size)
