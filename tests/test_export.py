@@ -225,12 +225,33 @@ def test_non_html_input_rejected(tmp_path):
 
 
 def test_export_into_page_dir_rejected(tmp_path):
-    # The out dir is cleared on each export, so exporting into the page's OWN folder (which
-    # would delete the author's files) is refused — export must target a separate directory.
+    # The out dir is cleared on each export, so exporting into the page's OWN folder (a
+    # non-empty, non-bundle dir) is refused — it would delete the author's files.
     _write(tmp_path, "page.html", "<script>fused.runPython('./a.py', {});</script>")
     _write(tmp_path, "a.py", "def main():\n    return 1\n")
-    with pytest.raises(ExportError, match="separate directory"):
+    with pytest.raises(ExportError, match="not empty and not a fused-render bundle"):
         export_page(str(tmp_path / "page.html"), str(tmp_path))
+
+
+def test_export_into_ancestor_dir_rejected(tmp_path):
+    # High-severity guard: out being an ANCESTOR of the page folder is refused too (it holds
+    # the page subfolder + possibly sibling author files), so the sweep can't wipe them.
+    _write(tmp_path, "sub/page.html", "<script>fused.runPython('./a.py', {});</script>")
+    _write(tmp_path, "sub/a.py", "def main():\n    return 1\n")
+    _write(tmp_path, "files/keep.txt", "author data")  # a sibling the sweep must not touch
+    with pytest.raises(ExportError, match="not empty and not a fused-render bundle"):
+        export_page(str(tmp_path / "sub" / "page.html"), str(tmp_path))
+    assert (tmp_path / "files" / "keep.txt").read_text() == "author data"  # untouched
+
+
+def test_export_into_nonbundle_dir_rejected(tmp_path):
+    # Any non-empty directory that isn't a prior bundle is refused (never clobber user files).
+    _write(tmp_path, "src/page.html", "<html></html>")
+    out = tmp_path / "out"
+    _write(out, "important.txt", "do not delete")
+    with pytest.raises(ExportError, match="not empty and not a fused-render bundle"):
+        export_page(str(tmp_path / "src" / "page.html"), str(out))
+    assert (out / "important.txt").read_text() == "do not delete"
 
 
 def test_equivalent_asset_literals_both_mapped(tmp_path):
@@ -376,8 +397,10 @@ def test_reexport_sweeps_stale_v1_layout(tmp_path):
     (src / "page.html").write_text("<script>fused.runPython('./a.py',{});</script>")
     (src / "a.py").write_text("def main():\n    return 1\n")
     out = tmp_path / "bundle"
-    # Simulate a stale v1 bundle already in the out dir.
+    # Simulate a stale v1 bundle already in the out dir (a real v1 bundle carries a v1
+    # manifest.json — that is what marks the dir as a prior export safe to clear + overwrite).
     out.mkdir()
+    (out / "manifest.json").write_text(json.dumps({"fused_render_bundle": 1, "page": "page.html"}))
     (out / "page.html").write_text("stale")
     for d in ("code", "assets", "resources"):
         (out / d).mkdir()

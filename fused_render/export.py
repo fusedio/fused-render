@@ -39,6 +39,7 @@ such look-alike text is not present, or split it out.
 from __future__ import annotations
 
 import ast
+import json
 import os
 import re
 import shutil
@@ -522,6 +523,22 @@ def _manifest(plan: ExportPlan, page_key: str) -> dict:
     }
 
 
+def _is_prior_bundle(out_dir: str) -> bool:
+    """True iff ``out_dir`` already holds a fused-render bundle — a ``manifest.json`` declaring
+    ``fused_render_bundle`` (v1 or v2). Such a directory is a prior export this function owns
+    and may safely clear + overwrite; any other non-empty directory is treated as the user's
+    and left untouched (see :func:`export_page`)."""
+    manifest = os.path.join(out_dir, "manifest.json")
+    if not os.path.isfile(manifest):
+        return False
+    try:
+        with open(manifest, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and data.get("fused_render_bundle") in (1, 2)
+
+
 def export_page(
     html_path: str,
     out_dir: str,
@@ -539,8 +556,6 @@ def export_page(
     unsafe/missing file) with all problems listed at once; advisory ``plan.warnings`` never
     block. Returns the realized :class:`ExportPlan` on success.
     """
-    import json
-
     html_path = os.path.abspath(html_path)
     if not os.path.isfile(html_path):
         raise ExportError(f"no such file: {html_path}")
@@ -552,16 +567,6 @@ def export_page(
         html = f.read()
     page_dir = os.path.dirname(html_path)
 
-    # The out dir is bundle-owned: export clears its payload dir (and any legacy v1 layout)
-    # on each run. Refuse to write into the page's OWN folder — that would delete the
-    # author's files (their page.html, a data `files/`/`assets/` dir, …). Deploy always
-    # exports to a fresh temp dir; a manual export must target a separate directory.
-    if os.path.realpath(out_dir) == os.path.realpath(page_dir):
-        raise ExportError(
-            "export 'out' must be a separate directory from the page's folder "
-            f"({page_dir}); the bundle output directory is cleared on each export"
-        )
-
     plan = plan_export(html, page_dir, include=include, exclude=exclude)
     if plan.errors:
         raise ExportError(
@@ -571,7 +576,20 @@ def export_page(
             + "\n  - ".join(plan.errors)
         )
 
+    # The out dir is bundle-owned: export writes its payload dir + manifest.json and clears
+    # them (and any legacy v1 layout) on each run. To never delete an author's files, only
+    # write into a directory that is EMPTY or already a fused-render bundle (a prior export
+    # we own). This refuses the page's own folder, an ANCESTOR of it, or any directory with
+    # unrelated content — the sweep can then only touch bundle artifacts. Deploy always
+    # targets a fresh temp dir; a manual export must pick an empty dir or a previous bundle.
     os.makedirs(out_dir, exist_ok=True)
+    if os.listdir(out_dir) and not _is_prior_bundle(out_dir):
+        raise ExportError(
+            f"cannot export into {out_dir}: it is not empty and not a fused-render bundle. "
+            "Choose an empty directory or a previous export (the output directory is cleared "
+            "on each export)."
+        )
+
     page_key = os.path.basename(html_path)  # payload-relative path of the page
 
     # Stage the whole bundle first and only swap it into place once every copy
