@@ -1,0 +1,93 @@
+name: lint
+
+on:
+  push:
+    branches: [main]
+  pull_request: {}
+
+concurrency:
+  # PR number is unique repo-wide, unlike head_ref — two fork PRs that happen
+  # to share a branch name must not land in the same group and cancel each
+  # other's runs.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read # for dorny/paths-filter on pull_request
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      python: ${{ steps.filter.outputs.python }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            python:
+              - 'fused_render/**'
+              - 'tests/**'
+              - 'pyproject.toml'
+              - '.github/workflows/lint.yml'
+            frontend:
+              - 'frontend/**'
+              - '.github/workflows/lint.yml'
+
+  ruff:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - run: ruff format --check .
+
+  frontend-lint:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm install --no-audit --no-fund
+      - name: eslint
+        working-directory: frontend
+        run: npm run lint
+      - name: prettier --check
+        working-directory: frontend
+        run: npm run format:check
+
+  lint-status:
+    name: Lint Status
+    runs-on: ubuntu-latest
+    needs: [detect-changes, ruff, frontend-lint]
+    if: always()
+    steps:
+      - name: Check lint status
+        run: |
+          if [[ "${{ needs.detect-changes.result }}" != "success" ]]; then
+            echo "detect-changes did not succeed (${{ needs.detect-changes.result }})"
+            exit 1
+          fi
+          if [[ "${{ needs.detect-changes.outputs.python }}" == "true" && "${{ needs.ruff.result }}" != "success" ]]; then
+            echo "ruff did not succeed: ${{ needs.ruff.result }}"
+            exit 1
+          fi
+          if [[ "${{ needs.detect-changes.outputs.frontend }}" == "true" && "${{ needs.frontend-lint.result }}" != "success" ]]; then
+            echo "frontend-lint did not succeed: ${{ needs.frontend-lint.result }}"
+            exit 1
+          fi
+          echo "Lint passed"
+          exit 0

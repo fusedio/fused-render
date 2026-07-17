@@ -30,6 +30,7 @@ dev = [
     "pytest",
     # fastapi.testclient hard-requires httpx at import time.
     "httpx",
+    "ruff",
 ]
 # Baked into the bundled CPython of the .app (SPEC DM-2): users of the packaged
 # app cannot pip install, so the interpreter ships with the popular data stack.
@@ -107,3 +108,29 @@ artifacts = [
 # installs skip it — see scripts/hatch_build.py.
 [tool.hatch.build.targets.wheel.hooks.custom]
 path = "scripts/hatch_build.py"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"  # matches requires-python
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]  # pycodestyle, pyflakes, isort, pyupgrade
+
+ignore = [
+    "E501", # line length — ruff format already wraps what it can
+    # The rest of this list is pre-existing style in this codebase that
+    # `ruff check --fix` can't rewrite mechanically (each hit needs a human
+    # judgment call, not just a formatter pass) — ignored for now so
+    # adopting ruff doesn't force an unrelated behavior-risking cleanup in
+    # the same change. Worth revisiting as deliberate follow-ups, not as
+    # part of turning the linter on.
+    "E701", # multiple statements on one line (colon) — `if x: return` etc.
+    "E702", # multiple statements on one line (semicolon)
+    "E731", # lambda assignment
+    "E741", # ambiguous variable name (l/I/o) — real renames, not a format
+    "E402", # module-level import not at top — a few intentional late imports
+    "UP031", # printf-style string formatting -> .format()/f-string
+    "F841", # unused variable — needs a look at each call site, not a strip
+    "UP022", # subprocess PIPE -> capture_output — ruff itself flags this as
+             # an unsafe (not plain `--fix`) rewrite; one call site today
+]
