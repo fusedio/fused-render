@@ -28,7 +28,7 @@ def test_plan_collects_runpython_and_assets(tmp_path):
     plan = plan_export(html, str(tmp_path))
     assert not plan.errors
     assert [(e.path, e.name, e.file) for e in plan.entrypoints] == [
-        ("./sine.py", "sine", "code/sine.py")
+        ("./sine.py", "sine", "files/sine.py")
     ]
     assert {a.name for a in plan.assets} == {"logo.png", "notes.txt"}
 
@@ -55,7 +55,7 @@ def test_include_bundles_an_unreferenced_file(tmp_path):
     plan = plan_export(html, str(tmp_path), include=["data/points.csv"])
     assert not plan.errors
     assert [(a.path, a.name, a.file) for a in plan.assets] == [
-        ("data/points.csv", "data/points.csv", "assets/data/points.csv")
+        ("data/points.csv", "data/points.csv", "files/data/points.csv")
     ]
 
 
@@ -197,15 +197,17 @@ def test_export_page_writes_bundle(tmp_path):
     plan = export_page(str(tmp_path / "src" / "page.html"), str(out))
     assert not plan.errors
 
-    assert (out / "page.html").is_file()
-    assert (out / "code" / "sine.py").is_file()
-    assert (out / "assets" / "data/logo.png").is_file()
+    # v2: one payload dir mirroring the page's folder; no code/ /assets/ category dirs.
+    assert (out / "files" / "page.html").is_file()
+    assert (out / "files" / "sine.py").is_file()
+    assert (out / "files" / "data/logo.png").is_file()
 
     manifest = json.loads((out / "manifest.json").read_text())
-    assert manifest["fused_render_bundle"] == 1
+    assert manifest["fused_render_bundle"] == 2
+    assert manifest["root"] == "files"
     assert manifest["page"] == "page.html"
-    assert manifest["entrypoints"][0]["name"] == "sine"
-    assert manifest["assets"][0]["name"] == "data/logo.png"
+    assert manifest["entrypoints"][0] == {"path": "./sine.py", "name": "sine", "key": "sine.py"}
+    assert manifest["assets"][0] == {"path": "./data/logo.png", "name": "data/logo.png"}
 
 
 def test_export_page_raises_on_error(tmp_path):
@@ -254,12 +256,12 @@ def test_reexport_clears_stale_bundle_files(tmp_path):
     )
     out = tmp_path / "bundle"
     export_page(str(src / "page.html"), str(out))
-    assert (out / "code" / "b.py").is_file()
+    assert (out / "files" / "b.py").is_file()
 
     (src / "page.html").write_text("<script>fused.runPython('./a.py',{});</script>")
     export_page(str(src / "page.html"), str(out))
-    assert (out / "code" / "a.py").is_file()
-    assert not (out / "code" / "b.py").exists()  # stale entry cleared
+    assert (out / "files" / "a.py").is_file()
+    assert not (out / "files" / "b.py").exists()  # stale entry cleared
     manifest = json.loads((out / "manifest.json").read_text())
     assert [e["name"] for e in manifest["entrypoints"]] == ["a"]
 
@@ -271,7 +273,7 @@ def test_dotfile_asset_key_not_mangled(tmp_path):
     plan = plan_export(html, str(tmp_path))
     assert not plan.errors
     assert plan.assets[0].name == ".data.bin"
-    assert plan.assets[0].file == "assets/.data.bin"
+    assert plan.assets[0].file == "files/.data.bin"
 
 
 def test_discovers_imported_sibling_module(tmp_path):
@@ -282,7 +284,7 @@ def test_discovers_imported_sibling_module(tmp_path):
     _write(tmp_path, "helpers.py", "def go():\n    return 1\n")
     plan = plan_export(html, str(tmp_path))
     assert not plan.errors
-    assert [(r.key, r.file) for r in plan.resources] == [("helpers.py", "resources/helpers.py")]
+    assert [(r.key, r.file) for r in plan.resources] == [("helpers.py", "files/helpers.py")]
 
 
 def test_transitive_module_discovery(tmp_path):
@@ -352,9 +354,9 @@ def test_export_page_writes_resources(tmp_path):
     out = tmp_path / "bundle"
     plan = export_page(str(tmp_path / "src" / "page.html"), str(out))
     assert not plan.errors
-    assert (out / "resources" / "helpers.py").is_file()
+    assert (out / "files" / "helpers.py").is_file()
     manifest = json.loads((out / "manifest.json").read_text())
-    assert manifest["resources"] == [{"key": "helpers.py", "file": "resources/helpers.py"}]
+    assert manifest["resources"] == [{"key": "helpers.py"}]
 
 
 def test_reexport_clears_stale_resources(tmp_path):
@@ -365,12 +367,12 @@ def test_reexport_clears_stale_resources(tmp_path):
     (src / "helpers.py").write_text("def go():\n    return 1\n")
     out = tmp_path / "bundle"
     export_page(str(src / "page.html"), str(out))
-    assert (out / "resources" / "helpers.py").is_file()
+    assert (out / "files" / "helpers.py").is_file()
 
     # Drop the import; the stale resource must not linger beside the fresh manifest.
     (src / "sine.py").write_text("def main():\n    return 1\n")
     export_page(str(src / "page.html"), str(out))
-    assert not (out / "resources" / "helpers.py").exists()
+    assert not (out / "files" / "helpers.py").exists()
     assert json.loads((out / "manifest.json").read_text())["resources"] == []
 
 

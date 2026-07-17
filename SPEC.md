@@ -581,18 +581,23 @@ nothing. Full detail: `docs/EXPORT.md`.
 
 ### 18.1 Bundle format
 
-- **EX-1** A bundle is a directory holding `page.html` (the page verbatim),
-  `manifest.json` (the hosting contract), `code/<name>.py` (one per `runPython`
-  target), `assets/<key>` (one per `rawUrl`/`readFile` target), and `resources/<key>`
-  (one per first-party module a bundled entrypoint imports — EX-7).
-- **EX-2** `manifest.json` (`{"fused_render_bundle": 1, "page", "entrypoints",
-  "assets", "resources"}`) maps each `runPython` literal path to a served route name +
-  bundled file, each `rawUrl`/`readFile` literal path to an asset key + bundled file,
-  and each imported module to a runtime key + bundled file. The hosting layer wires the
-  served page's runtime from this map — it never re-parses the HTML. Every bundled file
-  lands at its real page-relative key under the served project root (the runtime's cwd +
-  `sys.path[0]`), so the page's own `open("data.csv")` / `import helpers` resolve there
-  unchanged — the hosting layer does **not** relocate files under an `assets/` prefix.
+- **EX-1** A bundle (format **v2**) is a directory holding `manifest.json` (the hosting
+  contract) and a single **`files/` payload dir** mirroring the page's folder — the page,
+  each `runPython` target, each `rawUrl`/`readFile` target, and each first-party module a
+  bundled entrypoint imports (EX-7), all at their real page-relative path. There are no
+  `code/`/`assets/`/`resources/` category dirs; the bundle layout equals the author's
+  folder equals the served runtime tree (docs/bundle-v2-design.md).
+- **EX-2** `manifest.json` (`{"fused_render_bundle": 2, "root", "page", "entrypoints",
+  "assets", "resources"}`) classifies each payload file by role: `page` (the shell), each
+  `entrypoint` (`path` = the page's literal string for the runtime's seed map, `name` = the
+  served route, `key` = payload-relative path), each `asset` (`path` = literal, `name` =
+  payload-relative key + `_asset` allow-list entry), each `resource` (`key` = payload-
+  relative path). The hosting layer wires the runtime from this map — it never re-parses the
+  HTML. Every file's bundle location is `root/<payload-relative path>`, and that same path
+  is its runtime key: it lands under the served project root (the runtime's cwd +
+  `sys.path[0]`), so a page's own `open("data.csv")` / `import helpers` resolve unchanged.
+  (The hosting layer's `load_html_bundle` still reads legacy **v1** bundles — category dirs
+  + explicit `file` fields — for version-skew tolerance.)
 
 ### 18.2 Portable subset
 
@@ -636,12 +641,10 @@ nothing. Full detail: `docs/EXPORT.md`.
   **not** on the `_asset` allow-list, so its source is not web-served. A module already
   carried as an asset (assets land at the same real key) is not bundled twice; excluding
   a module a bundled entrypoint imports is honored but warned (the import will fail).
-
-> **Follow-up — bundle v2.** After the real-path landing (above), the `code/`/`assets/`/
-> `resources/` category dirs are vestigial: the manifest already carries each file's role and
-> runtime key. The proposed v2 replaces them with a single payload dir mirroring the author's
-> folder + a role-tagging manifest (and can drop the AST module scan by shipping the tree
-> wholesale). Full design: [`docs/bundle-v2-design.md`](docs/bundle-v2-design.md).
+  Under v2 (EX-1) a discovered module is stored at `files/<key>` like every other payload
+  file; it is still enumerated in the manifest's `resources` so the hosting layer knows to
+  ship it (and to keep it off the `_asset` allow-list). Full design + rationale:
+  [`docs/bundle-v2-design.md`](docs/bundle-v2-design.md).
 
 ## 19. Deploy — Hosted Publish through the fused CLI (M11)
 

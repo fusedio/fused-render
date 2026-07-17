@@ -77,6 +77,12 @@ _ANY_CALL = {method: re.compile(r"fused\.%s\s*\(" % method) for method in _LITER
 # Unsupported API surface: present in an exported page => hard error.
 _UNSUPPORTED = re.compile(r"fused\.(writeFile|stat)\s*\(")
 
+# Bundle v2 payload directory. Every bundled file lives at ``<PAYLOAD>/<page-relative
+# path>`` — one directory mirroring the author's folder, instead of the v1 ``code/``/
+# ``assets/``/``resources/`` category dirs. The hosting layer strips this prefix so each
+# file lands at its real relative path under the served project root (docs/bundle-v2-design.md).
+_PAYLOAD_DIR = "files"
+
 
 class ExportError(Exception):
     """A user-correctable failure while exporting a page (POST /api/export
@@ -90,7 +96,7 @@ class Entrypoint:
 
     path: str  # the literal string passed to runPython, e.g. "./sine.py"
     name: str  # the served route name, e.g. "sine"
-    file: str  # bundle-relative destination, e.g. "code/sine.py"
+    file: str  # bundle-relative destination, e.g. "files/sine.py"
 
 
 @dataclass(frozen=True)
@@ -99,7 +105,7 @@ class Asset:
 
     path: str  # the literal string passed to rawUrl/readFile, e.g. "./logo.png"
     name: str  # the asset key the page requests, e.g. "logo.png"
-    file: str  # bundle-relative destination, e.g. "assets/logo.png"
+    file: str  # bundle-relative destination, e.g. "files/logo.png"
 
 
 @dataclass(frozen=True)
@@ -113,7 +119,7 @@ class Resource:
     ``_asset`` allow-list (its source is not web-readable)."""
 
     key: str  # runtime-relative path == import location, e.g. "helpers.py"
-    file: str  # bundle-relative destination, e.g. "resources/helpers.py"
+    file: str  # bundle-relative destination, e.g. "files/helpers.py"
 
 
 @dataclass
@@ -299,7 +305,7 @@ def _discover_modules(
                     "import will fail on the hosted page"
                 )
                 continue
-            resources.append(Resource(key=key, file=f"resources/{key}"))
+            resources.append(Resource(key=key, file=f"{_PAYLOAD_DIR}/{key}"))
             queue.append(cand)
     return resources, warnings
 
@@ -383,7 +389,7 @@ def plan_export(
             continue
         name = _route_name(path, taken_names)
         plan.entrypoints.append(
-            Entrypoint(path=path, name=name, file=f"code/{name}.py")
+            Entrypoint(path=path, name=name, file=f"{_PAYLOAD_DIR}/{_asset_key(path)}")
         )
 
     # rawUrl and readFile both resolve to read-only bundled assets. De-duplicate by the
@@ -412,7 +418,7 @@ def plan_export(
             key = _asset_key(path)
             seen_asset_paths.add(path)
             seen_asset_keys.add(key)
-            plan.assets.append(Asset(path=path, name=key, file=f"assets/{key}"))
+            plan.assets.append(Asset(path=path, name=key, file=f"{_PAYLOAD_DIR}/{key}"))
 
     # Manual includes: extra files bundled as assets, keyed the same way. A file already
     # brought in by the literal scan (same key) is skipped — bundled once. A file already
@@ -438,7 +444,7 @@ def plan_export(
             plan.errors.append(f"included file {path!r} not found next to the page ({src})")
             continue
         seen_asset_keys.add(key)
-        plan.assets.append(Asset(path=path, name=key, file=f"assets/{key}"))
+        plan.assets.append(Asset(path=path, name=key, file=f"{_PAYLOAD_DIR}/{key}"))
 
     # Excludes drop matching entrypoints/assets by their literal path OR bundle key.
     # Dropping something the page literally references is the user's call, but warned —
@@ -486,22 +492,33 @@ def plan_export(
     return plan
 
 
-def _manifest(plan: ExportPlan, page_file: str) -> dict:
-    """The bundle's ``manifest.json`` — the contract the hosting layer reads.
+def _manifest(plan: ExportPlan, page_key: str) -> dict:
+    """The bundle's ``manifest.json`` (v2) — the contract the hosting layer reads.
 
-    ``entrypoints`` maps each ``runPython`` literal path to its served route name and
-    bundled file; ``assets`` does the same for ``rawUrl``/``readFile`` targets. The
-    hosting layer uses this to wire the served page's runtime (which literal path posts
-    to which route) without re-parsing the HTML.
+    v2 lays every bundled file under a single ``root`` payload dir at its real page-relative
+    path (== its runtime key), so the bundle mirrors the author's folder and the physical
+    ``file`` location is just ``root/<key>`` (no separate ``file`` field, no ``code/``/
+    ``assets/``/``resources/`` category dirs — docs/bundle-v2-design.md).
+
+    - ``page`` — the shell HTML's payload-relative path.
+    - ``entrypoints`` — each ``runPython`` target: ``path`` is the page's literal string (the
+      hosting layer's seed maps literal→route, so it must be preserved verbatim), ``name`` is
+      the served route, ``key`` is the payload-relative path the source is read from.
+    - ``assets`` — each ``rawUrl``/``readFile`` target: ``path`` is the literal, ``name`` is
+      the payload-relative key (also the ``_asset`` allow-list entry). Two distinct literals
+      may share a key — both appear so the runtime's exact-string lookup never misses.
+    - ``resources`` — imported modules: ``key`` is the payload-relative path (never web-served).
     """
     return {
-        "fused_render_bundle": 1,
-        "page": page_file,
+        "fused_render_bundle": 2,
+        "root": _PAYLOAD_DIR,
+        "page": page_key,
         "entrypoints": [
-            {"path": e.path, "name": e.name, "file": e.file} for e in plan.entrypoints
+            {"path": e.path, "name": e.name, "key": _asset_key(e.path)}
+            for e in plan.entrypoints
         ],
-        "assets": [{"path": a.path, "name": a.name, "file": a.file} for a in plan.assets],
-        "resources": [{"key": r.key, "file": r.file} for r in plan.resources],
+        "assets": [{"path": a.path, "name": a.name} for a in plan.assets],
+        "resources": [{"key": r.key} for r in plan.resources],
     }
 
 
@@ -512,15 +529,15 @@ def export_page(
     include: list[str] | None = None,
     exclude: list[str] | None = None,
 ) -> ExportPlan:
-    """Export the page at ``html_path`` into a portable bundle at ``out_dir``.
+    """Export the page at ``html_path`` into a portable bundle at ``out_dir`` (bundle v2).
 
-    Writes ``page.html``, ``manifest.json``, ``code/<name>.py`` per ``runPython`` target,
-    ``assets/<key>`` per ``rawUrl``/``readFile`` target (plus any ``include`` files, minus
-    any ``exclude`` — see :func:`plan_export`), and ``resources/<key>`` per first-party
-    module a bundled entrypoint imports. Raises :class:`ExportError` on any
-    blocking problem (dynamic runPython path, unsupported API, unsafe/missing file) with
-    all problems listed at once; advisory ``plan.warnings`` never block. Returns the
-    realized :class:`ExportPlan` on success.
+    Writes ``manifest.json`` and a single ``files/`` payload dir mirroring the page's folder:
+    the page, each ``runPython`` target, each ``rawUrl``/``readFile`` target (plus any
+    ``include`` files, minus any ``exclude`` — see :func:`plan_export`), and each first-party
+    module a bundled entrypoint imports, all at their real page-relative path. Raises
+    :class:`ExportError` on any blocking problem (dynamic runPython path, unsupported API,
+    unsafe/missing file) with all problems listed at once; advisory ``plan.warnings`` never
+    block. Returns the realized :class:`ExportPlan` on success.
     """
     import json
 
@@ -545,44 +562,38 @@ def export_page(
         )
 
     os.makedirs(out_dir, exist_ok=True)
-    page_file = "page.html"
+    page_key = os.path.basename(html_path)  # payload-relative path of the page
 
     # Stage the whole bundle first and only swap it into place once every copy
     # and the manifest write has succeeded — otherwise a mid-export failure
-    # (missing file, disk full) could leave code/assets cleared or partially
-    # rewritten under a stale manifest.json that no longer matches them.
+    # (missing file, disk full) could leave the payload dir cleared or partially
+    # rewritten under a stale manifest.json that no longer matches it.
+    def _copy_into(src: str, rel: str) -> None:
+        dest = os.path.join(stage, rel)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copyfile(src, dest)
+
     with tempfile.TemporaryDirectory(prefix=".fused-render-export-", dir=out_dir) as stage:
-        shutil.copyfile(html_path, os.path.join(stage, page_file))
-
-        if plan.entrypoints:
-            os.makedirs(os.path.join(stage, "code"), exist_ok=True)
+        # The page + every bundled file lands under the single payload dir at its real
+        # page-relative path (e.file / a.file / r.file are already f"{_PAYLOAD_DIR}/…").
+        _copy_into(html_path, f"{_PAYLOAD_DIR}/{page_key}")
         for e in plan.entrypoints:
-            shutil.copyfile(os.path.join(page_dir, e.path), os.path.join(stage, e.file))
-
+            _copy_into(os.path.join(page_dir, e.path), e.file)
         for a in plan.assets:
-            dest = os.path.join(stage, a.file)
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            shutil.copyfile(os.path.join(page_dir, a.path), dest)
-
+            _copy_into(os.path.join(page_dir, a.path), a.file)
         for r in plan.resources:
-            dest = os.path.join(stage, r.file)
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            shutil.copyfile(os.path.join(page_dir, r.key), dest)
+            _copy_into(os.path.join(page_dir, r.key), r.file)
 
         with open(os.path.join(stage, "manifest.json"), "w", encoding="utf-8") as f:
-            json.dump(_manifest(plan, page_file), f, indent=2, sort_keys=True)
+            json.dump(_manifest(plan, page_key), f, indent=2, sort_keys=True)
             f.write("\n")
 
-        # Everything staged successfully — now replace the bundle-owned paths.
-        # A previous bundle's code/assets may hold files the new manifest no
-        # longer lists, so those two subdirs are cleared before the move;
-        # anything else the user has in --out is left untouched.
-        for owned in ("code", "assets", "resources"):
-            shutil.rmtree(os.path.join(out_dir, owned), ignore_errors=True)
-            staged = os.path.join(stage, owned)
-            if os.path.isdir(staged):
-                shutil.move(staged, os.path.join(out_dir, owned))
-        shutil.move(os.path.join(stage, page_file), os.path.join(out_dir, page_file))
+        # Everything staged successfully — now replace the bundle-owned paths. The whole
+        # payload dir is bundle-owned (a previous export may hold files this one no longer
+        # lists), so it is cleared before the move; anything else the user has in --out is
+        # left untouched.
+        shutil.rmtree(os.path.join(out_dir, _PAYLOAD_DIR), ignore_errors=True)
+        shutil.move(os.path.join(stage, _PAYLOAD_DIR), os.path.join(out_dir, _PAYLOAD_DIR))
         shutil.move(os.path.join(stage, "manifest.json"), os.path.join(out_dir, "manifest.json"))
 
     return plan
