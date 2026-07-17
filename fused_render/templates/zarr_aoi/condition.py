@@ -14,9 +14,15 @@ efficiency is the whole design, and the gate never does more I/O than it must:
    `.zarr`-named, look for a small fixed set of store-marker files INSIDE it
    with targeted `os.path.isfile(join(path, marker))` calls, returning True on
    the FIRST hit. Order is cheapest/most-likely first: `.zmetadata`
-   (consolidated metadata — the common cloud case), `zarr.json` (v3), `.zgroup`
-   (v2 group), `.zarray` (v2 bare array). Each probe is constant-time
-   regardless of how many entries the store holds.
+   (consolidated metadata — the common cloud case), `zarr.json` (v3 group),
+   `.zgroup` (v2 group). Each probe is constant-time regardless of how many
+   entries the store holds.
+
+   Only GROUP roots are matched, not bare arrays (`.zarray`): `zarr_aoi` opens
+   the store with `zarr.open_group()` (`tile_server.py`), which raises on an
+   array root, so offering the template there would only produce an error
+   overlay. A world-scale store is a group in practice; a rare top-level bare
+   array is deliberately not offered rather than offered-then-broken.
 
 CRITICAL: this never lists or walks the directory (`os.listdir`, `os.scandir`,
 `glob`, recursion). On a world-scale remote store a listing scales with entry
@@ -29,8 +35,9 @@ False. Self-contained — the module is exec'd standalone (not imported as part 
 a package), so it imports only stdlib.
 """
 
-# v2 group/array, v3, and consolidated metadata — cheapest/most-likely first.
-_STORE_MARKERS = (".zmetadata", "zarr.json", ".zgroup", ".zarray")
+# Zarr GROUP roots only (v3 group / v2 group / consolidated) — cheapest/most-
+# likely first. `.zarray` is intentionally excluded: zarr_aoi renders groups.
+_STORE_MARKERS = (".zmetadata", "zarr.json", ".zgroup")
 
 
 def main(path: str) -> bool:
@@ -39,6 +46,10 @@ def main(path: str) -> bool:
     try:
         # Zero-I/O name fast path: strip any trailing slash, then a case-
         # insensitive `.zarr` suffix decides True with no filesystem calls.
+        # This does NOT verify the path is a directory (that would cost a stat
+        # and defeat the fast path). Safe because the gate only ever runs on
+        # entries the registry matched, and both zarr keys (`.zarr/`, `/`) are
+        # directory-only — a `.zarr`-named *file* never reaches this condition.
         name = os.path.basename((path or "").rstrip("/"))
         if name.lower().endswith(".zarr"):
             return True

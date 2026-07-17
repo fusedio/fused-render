@@ -564,11 +564,11 @@ def test_zarr_named_dir_gate_true_with_no_markers(tmp_path):
     assert cond == {"zarr_aoi": True} and err is None
 
 
-@pytest.mark.parametrize("marker", [".zmetadata", "zarr.json", ".zgroup", ".zarray"])
+@pytest.mark.parametrize("marker", [".zmetadata", "zarr.json", ".zgroup"])
 def test_plain_dir_with_store_marker_gates_true(tmp_path, marker):
-    # A non-`.zarr` directory containing a store marker is detected as a Zarr
-    # store by the "/" key gate — covering consolidated (.zmetadata), v3
-    # (zarr.json), v2 group (.zgroup), and v2 bare array (.zarray).
+    # A non-`.zarr` directory containing a GROUP store marker is detected as a
+    # Zarr store by the "/" key gate — covering consolidated (.zmetadata), v3
+    # group (zarr.json), and v2 group (.zgroup).
     store = tmp_path / "data"
     store.mkdir()
     (store / marker).write_text("{}")
@@ -576,6 +576,19 @@ def test_plain_dir_with_store_marker_gates_true(tmp_path, marker):
     assert _zarr_condition_main()(str(store)) is True
     cond, err = conditions(str(store))
     assert cond == {"zarr_aoi": True} and err is None
+
+
+def test_bare_array_dir_not_offered(tmp_path):
+    # A non-`.zarr` directory whose only marker is `.zarray` is a v2 *bare
+    # array*, not a group. zarr_aoi opens stores with zarr.open_group(), which
+    # raises on an array root — so the gate deliberately does NOT offer it
+    # (offering-then-erroring is worse than a clean plain-folder listing).
+    store = tmp_path / "arr"
+    store.mkdir()
+    (store / ".zarray").write_text("{}")
+    assert _zarr_condition_main()(str(store)) is False
+    cond, err = conditions(str(store))
+    assert cond == {"zarr_aoi": False} and err is None
 
 
 def test_plain_dir_without_markers_gates_false(tmp_path):
