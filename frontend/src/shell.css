@@ -2053,6 +2053,171 @@ body.embed .preview-browse-chip:hover {
   cursor: default;
 }
 
+/* Recent-errors panel (DeploymentErrors) — the owner-only view of a deployed
+   mount's captured failures. Used both in the Deploy modal (below the current
+   card) and expanded under a row on the account Deployments list. */
+.deploy-errors {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.deploy-errors-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.deploy-errors-title {
+  font-weight: 600;
+  font-size: 12px;
+}
+
+/* When expanded under a shares-table row, the panel fills the row and drops the
+   double border (the table cell already has a top border). */
+.deploy-errors-row > td {
+  padding: 0 8px 8px;
+}
+
+.deploy-errors-row .deploy-errors {
+  border-top: none;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+.deploy-err-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.deploy-err-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 4px 6px;
+  cursor: pointer;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+}
+
+.deploy-err-row:hover {
+  background: var(--bg-alt);
+  border-color: var(--border);
+}
+
+.deploy-err-time {
+  color: var(--fg-muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.deploy-err-kind {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+}
+
+/* user-code is the author's own traceback (actionable); invoke-failure is a
+   platform fault (no detail); bad-result is a contract mistake. */
+.deploy-err-kind.kind-user-code {
+  color: #e0a33e;
+  border-color: #e0a33e;
+}
+
+.deploy-err-kind.kind-invoke-failure {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.deploy-err-entry {
+  color: var(--fg-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: nowrap;
+}
+
+.deploy-err-msg {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.deploy-err-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 6px 6px 10px;
+}
+
+.deploy-err-cmd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.deploy-err-cmd code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: var(--bg-alt);
+  padding: 2px 6px;
+  border-radius: 4px;
+  word-break: break-all;
+}
+
+.deploy-err-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.deploy-err-field-label {
+  font-size: 11px;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 2px;
+}
+
+.deploy-err-pre {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow: auto;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.deploy-err-note {
+  font-size: 11px;
+}
+
 /* Inline text-link button (e.g. the setup panel's "Edit name") — no button
    chrome, accent underline on hover. Scoped under .prefs-section to override
    the generic `.prefs-section button` box styling. */

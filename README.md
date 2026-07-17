@@ -190,7 +190,11 @@ copying CLI commands into a terminal (a green dot on the icon = signed in):
   untouched).
 - **Deployments** lists every mount on a chosen hosted environment
   (`fused share list`), with per-mount **Revoke** — including mounts not
-  created from this app.
+  created from this app. Each mount's **Recent errors** panel shows the failures
+  its deployed endpoints hit (via `fused share errors`) — the traceback, output
+  tails, and params behind the opaque 500s a hosted page returns, so you can
+  debug a deployed page the way the local error overlay lets you debug it here.
+  (The same panel appears in the Deploy dialog for the page you have open.)
 - **Sign out** removes the CLI's stored sign-in on this machine.
 
 Self-hosted AWS environments (`fused env create`, `fused infra serve`) remain

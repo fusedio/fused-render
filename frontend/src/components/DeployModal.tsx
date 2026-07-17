@@ -26,6 +26,7 @@ import {
 } from "../lib/api";
 import type { DeployConfig, DeployPreview, Deployment, WalkEntry } from "../lib/api";
 import { useFusedLogin } from "../lib/account";
+import DeploymentErrors from "./DeploymentErrors";
 import { basename, dirname, formatSize } from "../lib/format";
 import { useRefreshOnReturn } from "../lib/hooks";
 import { navigateUrl } from "../lib/router";
@@ -840,6 +841,13 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
               </div>
             )}
           </div>
+        )}
+
+        {/* Owner-only diagnostics for this deployed page: the recent captured
+            failures behind its opaque 500s (fused share errors). Auto-loads for
+            the single deployed mount; viewers of the page never see any of it. */}
+        {deployment?.env && deployment?.token && (
+          <DeploymentErrors env={deployment.env} token={deployment.token} />
         )}
 
         {preview && (
