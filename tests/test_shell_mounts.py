@@ -2369,3 +2369,42 @@ def test_mount_for_is_case_sensitive_on_posix(home):
     # No case folding on posix.
     m2, _ = mounts_mod._mount_for(os.path.join(mp.upper(), "f.parquet"))
     assert m2 is None
+
+
+# -- Windows force-unmount error messaging (FINDING 3) ----------------------
+
+
+def test_force_unmount_live_mount_suggests_daemon_restart_on_win32(
+        home, rcd, monkeypatch):
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_path_mounted", lambda p: True)
+    mp = mounts_mod.mountpoint(mounts_mod.add_mount("data", "remote:bucket"))
+    rcd.responses["mount/listmounts"] = {
+        "mountPoints": [{"MountPoint": mp, "Fs": "remote:bucket"}]}
+
+    def boom(p):
+        raise OSError("in use")
+
+    monkeypatch.setattr(mounts_mod.os, "rmdir", boom)
+    err = mounts_mod._force_unmount(mp)
+    # A live WinFsp mount: say so and point at the daemon, not the raw rmdir
+    # error masquerading as a failed unmount.
+    assert err is not None
+    assert "live" in err and "rclone daemon" in err
+    assert "force unmount" not in err
+
+
+def test_force_unmount_stale_leaf_keeps_raw_error_on_win32(
+        home, rcd, monkeypatch):
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_path_mounted", lambda p: True)
+    mp = mounts_mod.mountpoint(mounts_mod.add_mount("data", "remote:bucket"))
+    rcd.responses["mount/listmounts"] = {"mountPoints": []}  # not live -> stale
+
+    def boom(p):
+        raise OSError("in use")
+
+    monkeypatch.setattr(mounts_mod.os, "rmdir", boom)
+    err = mounts_mod._force_unmount(mp)
+    # Genuinely stale leaf that won't rmdir keeps the original message.
+    assert err is not None and "force unmount" in err and "in use" in err

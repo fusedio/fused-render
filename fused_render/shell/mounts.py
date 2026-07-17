@@ -1499,6 +1499,13 @@ def _force_unmount(mp: str) -> str | None:
         try:
             os.rmdir(mp)
         except OSError as e:
+            if _norm(mp) in rcd_mount_map():
+                # rcd still serves this path: it's a LIVE WinFsp mount, and the
+                # raw rmdir error would masquerade as a failed unmount. Be
+                # explicit — there is no kernel umount to force it, so the fix
+                # is to restart the owning daemon.
+                return (f"{mp} is still a live mount — restart the rclone "
+                        f"daemon to release it")
             return f"force unmount of {mp} failed: {e}"
         return None
     attempts = [["umount", mp]]
