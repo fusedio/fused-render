@@ -269,6 +269,30 @@ def test_pruned_page_matches_limit_offset_scan(grouped_parquet):
         assert [r["seq"] for r in out["rows"]] == expected, offset
 
 
+def test_pruned_page_over_http_preserves_file_order(grouped_parquet):
+    # The pruned first page has no ORDER BY — it relies on
+    # preserve_insertion_order to return rows in file_row_number order. Prove
+    # that holds on the remote path this fix actually targets: the shared
+    # _http_connection runs SET threads=32, where an unordered parallel scan
+    # could otherwise interleave row groups. Windows straddling the 2048-row
+    # group boundary exercise the multi-group case.
+    srv, hits = _serve_dir(os.path.dirname(grouped_parquet))
+    try:
+        url = f"http://127.0.0.1:{srv.server_address[1]}/g.parquet"
+        try:
+            reader.main(grouped_parquet, mode="page", limit=1, source_url=url)
+        except Exception:
+            pytest.skip("duckdb httpfs extension unavailable")
+        for offset in (0, 2000, 2048, 4096, 6000):
+            out = reader.main(grouped_parquet, mode="page", offset=offset,
+                              limit=100, source_url=url)
+            expected = list(range(offset, offset + 100))
+            assert out["ids"] == expected, offset
+            assert [r["seq"] for r in out["rows"]] == expected, offset
+    finally:
+        srv.shutdown()
+
+
 def test_pruned_page_projection_matches_scan(grouped_parquet):
     # A narrow projection on the pruned path still keys rows by physical
     # position and returns exactly the window's rows.
