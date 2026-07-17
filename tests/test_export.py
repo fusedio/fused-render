@@ -274,6 +274,106 @@ def test_dotfile_asset_key_not_mangled(tmp_path):
     assert plan.assets[0].file == "assets/.data.bin"
 
 
+def test_discovers_imported_sibling_module(tmp_path):
+    # A first-party module a bundled entrypoint imports is auto-bundled as a resource, so
+    # `import helpers` resolves on the hosted page without the author hand-listing it.
+    html = "<script>fused.runPython('./sine.py', {});</script>"
+    _write(tmp_path, "sine.py", "import helpers\n\ndef main():\n    return helpers.go()\n")
+    _write(tmp_path, "helpers.py", "def go():\n    return 1\n")
+    plan = plan_export(html, str(tmp_path))
+    assert not plan.errors
+    assert [(r.key, r.file) for r in plan.resources] == [("helpers.py", "resources/helpers.py")]
+
+
+def test_transitive_module_discovery(tmp_path):
+    html = "<script>fused.runPython('./sine.py', {});</script>"
+    _write(tmp_path, "sine.py", "from a import x\n\ndef main():\n    return x\n")
+    _write(tmp_path, "a.py", "import b\nx = b.y\n")
+    _write(tmp_path, "b.py", "y = 2\n")
+    plan = plan_export(html, str(tmp_path))
+    assert not plan.errors
+    assert {r.key for r in plan.resources} == {"a.py", "b.py"}
+
+
+def test_stdlib_and_thirdparty_imports_not_bundled(tmp_path):
+    html = "<script>fused.runPython('./sine.py', {});</script>"
+    _write(tmp_path, "sine.py", "import os\nimport pandas\n\ndef main():\n    return os.getpid()\n")
+    plan = plan_export(html, str(tmp_path))
+    assert not plan.errors
+    assert plan.resources == []  # no os.py / pandas.py beside the page — nothing to bundle
+
+
+def test_relative_import_not_bundled(tmp_path):
+    # A hosted entrypoint runs flattened with no package context, so a relative import
+    # cannot resolve and is not bundled (only absolute sibling imports are).
+    html = "<script>fused.runPython('./sine.py', {});</script>"
+    _write(tmp_path, "sine.py", "from . import helpers\n\ndef main():\n    return 1\n")
+    _write(tmp_path, "helpers.py", "def go():\n    return 1\n")
+    plan = plan_export(html, str(tmp_path))
+    assert plan.resources == []
+
+
+def test_module_already_an_asset_not_duplicated(tmp_path):
+    # A file both imported AND fetched (rawUrl) ships once, as an asset — assets already
+    # land at the real key, so the import resolves without a second resource copy.
+    html = "<script>fused.runPython('./sine.py', {}); fused.rawUrl('./helpers.py');</script>"
+    _write(tmp_path, "sine.py", "import helpers\n\ndef main():\n    return 1\n")
+    _write(tmp_path, "helpers.py", "def go():\n    return 1\n")
+    plan = plan_export(html, str(tmp_path))
+    assert not plan.errors
+    assert [a.name for a in plan.assets] == ["helpers.py"]
+    assert plan.resources == []
+
+
+def test_exclude_module_warns(tmp_path):
+    html = "<script>fused.runPython('./sine.py', {});</script>"
+    _write(tmp_path, "sine.py", "import helpers\n\ndef main():\n    return 1\n")
+    _write(tmp_path, "helpers.py", "def go():\n    return 1\n")
+    plan = plan_export(html, str(tmp_path), exclude=["helpers.py"])
+    assert plan.resources == []
+    assert any("helpers.py" in w and "import" in w for w in plan.warnings)
+
+
+def test_syntax_error_in_entrypoint_yields_no_resources(tmp_path):
+    # A page .py that does not parse yields no discovered imports (its own error surfaces
+    # at run time, not during the export scan).
+    html = "<script>fused.runPython('./sine.py', {});</script>"
+    _write(tmp_path, "sine.py", "def main(:\n    return 1\n")
+    _write(tmp_path, "helpers.py", "x = 1\n")
+    plan = plan_export(html, str(tmp_path))
+    assert plan.resources == []
+
+
+def test_export_page_writes_resources(tmp_path):
+    html = "<script>fused.runPython('./sine.py', {});</script>"
+    _write(tmp_path, "src/page.html", html)
+    _write(tmp_path, "src/sine.py", "import helpers\n\ndef main():\n    return helpers.go()\n")
+    _write(tmp_path, "src/helpers.py", "def go():\n    return 1\n")
+    out = tmp_path / "bundle"
+    plan = export_page(str(tmp_path / "src" / "page.html"), str(out))
+    assert not plan.errors
+    assert (out / "resources" / "helpers.py").is_file()
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["resources"] == [{"key": "helpers.py", "file": "resources/helpers.py"}]
+
+
+def test_reexport_clears_stale_resources(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "page.html").write_text("<script>fused.runPython('./sine.py', {});</script>")
+    (src / "sine.py").write_text("import helpers\n\ndef main():\n    return 1\n")
+    (src / "helpers.py").write_text("def go():\n    return 1\n")
+    out = tmp_path / "bundle"
+    export_page(str(src / "page.html"), str(out))
+    assert (out / "resources" / "helpers.py").is_file()
+
+    # Drop the import; the stale resource must not linger beside the fresh manifest.
+    (src / "sine.py").write_text("def main():\n    return 1\n")
+    export_page(str(src / "page.html"), str(out))
+    assert not (out / "resources" / "helpers.py").exists()
+    assert json.loads((out / "manifest.json").read_text())["resources"] == []
+
+
 def test_symlink_escaping_page_dir_rejected(tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
