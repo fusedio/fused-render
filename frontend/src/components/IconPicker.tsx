@@ -197,8 +197,13 @@ export default function IconPicker({ anchor, onPick, onRemove, onClose }: IconPi
       if (target.closest(".bookmark-glyph:not(.folder-glyph)")) return;
       onClose();
     };
+    // Capture phase + stopPropagation so Escape closes only the picker — a
+    // host Modal's document-level (bubble) Esc handler must never see it.
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose();
+      }
     };
     // The popover is position:fixed against a one-shot anchor rect; any
     // scroll outside it would detach it from its glyph, so close instead.
@@ -207,11 +212,11 @@ export default function IconPicker({ anchor, onPick, onRemove, onClose }: IconPi
       onClose();
     };
     document.addEventListener("mousedown", onDocMouseDown);
-    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("keydown", onKeyDown, true);
     document.addEventListener("scroll", onScroll, true);
     return () => {
       document.removeEventListener("mousedown", onDocMouseDown);
-      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("keydown", onKeyDown, true);
       document.removeEventListener("scroll", onScroll, true);
     };
   }, [onClose]);
