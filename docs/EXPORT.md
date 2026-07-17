@@ -57,7 +57,10 @@ bundle/
 - **entrypoints** map each `runPython` literal path to a served route name. When
   hosted, `fused.runPython("./sine.py", params)` becomes a `POST` to that route.
 - **assets** map each `rawUrl`/`readFile` literal path to an asset key served by a
-  read-only `_asset` route.
+  read-only `_asset` route. That route honours **HTTP Range** requests (`206` +
+  `Content-Range`, with `Accept-Ranges: bytes` on a full `200`), so a browser client can
+  stream a large bundled file — e.g. geotiff.js reading a Cloud-Optimized GeoTIFF
+  byte-range by byte-range — directly from a hosted page, with no local range daemon.
 - **resources** are sibling `.py` modules a bundled entrypoint `import`s, found by a
   static scan of the entrypoint sources (transitively). They are shipped so the served
   entrypoint's `import helpers` resolves, but — unlike an asset — a page never fetches
