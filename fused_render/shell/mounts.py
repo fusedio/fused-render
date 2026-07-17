@@ -1719,20 +1719,40 @@ def _credential_suggestions() -> list[dict]:
     return out
 
 
-def _remote_label(remote: str, suggestions: list[dict] | None = None) -> str:
+def _rclone_config_dump(bin_: str) -> dict:
+    """Every remote's stored config as {bare_name: {"type": …, …params}} via
+    `rclone config dump` — a plain subprocess, no rcd daemon required (keeps
+    _rclone_state callable before any mount exists). {} on any failure, so
+    _remote_label just degrades to bare names rather than raising."""
+    try:
+        out = subprocess.run(
+            [bin_, "config", "dump"], capture_output=True, text=True, timeout=10
+        ).stdout
+        cfg = json.loads(out) if out.strip() else {}
+        return cfg if isinstance(cfg, dict) else {}
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return {}
+
+
+def _remote_label(remote: str, suggestions: list[dict], configs: dict) -> str:
     """Friendly label for a materialized rclone remote, so it presents under the
     SAME human name the suggestion used across its whole lifecycle (e.g. the
     built-in public option shows as "AWS S3 — public buckets…", not the cryptic
     "aws-open:" it materializes into). Match against the FULL suggestion set —
-    including ones already materialized, which _suggestions_view drops. remotes
-    carry a trailing ':', suggestion remote_name does not. No match (a custom
-    remote like "myminio:") falls back to the bare rclone string.
+    including ones already materialized, which _suggestions_view drops.
 
-    Pass a precomputed `suggestions` when labeling many remotes at once —
-    _credential_suggestions() re-reads the AWS dotfiles on every call, so
-    computing it once and reusing it avoids O(N) redundant disk I/O."""
-    for s in suggestions if suggestions is not None else _credential_suggestions():
-        if f'{s["remote_name"]}:' == remote:
+    Matching is by PROVENANCE, not name alone: the remote's stored config (from
+    `rclone config dump`, keyed by bare name) must match the suggestion's backend
+    and every param it was created with. A user's own remote that merely happens
+    to be named `aws`/`gcs` therefore keeps its bare name instead of inheriting a
+    credential-source label it never came from. Values compare case-insensitively
+    (rclone normalizes booleans). No match (e.g. "myminio:") → the bare string."""
+    cfg = configs.get(remote.rstrip(":"), {})
+    for s in suggestions:
+        if (f'{s["remote_name"]}:' == remote
+                and str(cfg.get("type", "")).lower() == s["backend"].lower()
+                and all(str(cfg.get(k, "")).lower() == str(v).lower()
+                        for k, v in s["params"].items())):
             return s["label"]
     return remote
 
@@ -1767,10 +1787,12 @@ def _rclone_state() -> dict:
     # Each remote carries its verbatim rclone spec (`name`, incl trailing ':',
     # used unchanged as the mount base) plus a friendly `label` for display —
     # so a remote reads under one stable human name whatever its lifecycle stage.
-    # Compute the suggestion set once and reuse it across every remote (it reads
-    # the AWS dotfiles per call, so a per-remote call would be O(N) disk I/O).
+    # Compute the suggestion set and the config dump once, then label every
+    # remote against them (both do I/O, so a per-remote call would be O(N)).
     suggestions = _credential_suggestions()
-    remotes = [{"name": n, "label": _remote_label(n, suggestions)} for n in names]
+    configs = _rclone_config_dump(bin_)
+    remotes = [{"name": n, "label": _remote_label(n, suggestions, configs)}
+               for n in names]
     return {"available": True, "version": version, "remotes": remotes,
             "suggested": _suggestions_view(names)}
 

@@ -626,37 +626,51 @@ def test_public_suggestion_hidden_once_materialized(monkeypatch):
                    for s in mounts_mod._suggestions_view(["aws-open:"]))
 
 
-def test_remote_label_matches_suggestion(monkeypatch):
-    """A materialized remote whose name matches a known suggestion reuses that
-    suggestion's friendly label — one stable human name across its lifecycle."""
-    monkeypatch.setattr(mounts_mod, "_credential_suggestions", lambda: [
-        {"id": "aws-open-public",
-         "label": "AWS S3 — public buckets (no credentials)",
-         "remote_name": "aws-open", "backend": "s3", "kind": "public",
-         "params": {"provider": "AWS", "env_auth": "false"}},
-    ])
-    assert (mounts_mod._remote_label("aws-open:")
+_AWS_OPEN_SUGG = {
+    "id": "aws-open-public",
+    "label": "AWS S3 — public buckets (no credentials)",
+    "remote_name": "aws-open", "backend": "s3", "kind": "public",
+    "params": {"provider": "AWS", "env_auth": "false"},
+}
+
+
+def test_remote_label_matches_suggestion():
+    """A remote whose stored config matches a suggestion's backend+params reuses
+    that suggestion's friendly label — one stable human name across its lifecycle."""
+    configs = {"aws-open": {"type": "s3", "provider": "AWS", "env_auth": "false"}}
+    assert (mounts_mod._remote_label("aws-open:", [_AWS_OPEN_SUGG], configs)
             == "AWS S3 — public buckets (no credentials)")
 
 
-def test_remote_label_falls_back_to_bare_name(monkeypatch):
+def test_remote_label_falls_back_to_bare_name():
     """An unknown/custom remote (no matching suggestion) keeps its bare rclone
     name as the label."""
-    monkeypatch.setattr(mounts_mod, "_credential_suggestions", lambda: [])
-    assert mounts_mod._remote_label("myminio:") == "myminio:"
+    assert mounts_mod._remote_label("myminio:", [], {}) == "myminio:"
+
+
+def test_remote_label_ignores_name_collision():
+    """Provenance, not name: a user's own remote merely named `aws` whose config
+    differs from the default-profile suggestion must NOT inherit that label —
+    the dropdown would otherwise claim the wrong credential source for the mount."""
+    sugg = {"id": "aws-profile:default", "label": "AWS S3 — default profile",
+            "remote_name": "aws", "backend": "s3",
+            "params": {"provider": "AWS", "env_auth": "true", "profile": "default"}}
+    # a custom MinIO remote that just happens to be named "aws"
+    configs = {"aws": {"type": "s3", "provider": "Minio",
+                       "endpoint": "http://localhost:9000"}}
+    assert mounts_mod._remote_label("aws:", [sugg], configs) == "aws:"
 
 
 def test_rclone_state_labels_materialized_remote(monkeypatch):
     """_rclone_state exposes remotes as {name,label}: a materialized suggestion
-    (aws-open:) carries its friendly label, a custom remote (myminio:) its bare
-    name. The name stays the verbatim rclone spec used as the mount base."""
-    monkeypatch.setattr(mounts_mod, "_credential_suggestions", lambda: [
-        {"id": "aws-open-public",
-         "label": "AWS S3 — public buckets (no credentials)",
-         "remote_name": "aws-open", "backend": "s3", "kind": "public",
-         "params": {"provider": "AWS", "env_auth": "false"}},
-    ])
-    _fake_rclone(monkeypatch, existing_remotes=("aws-open:", "myminio:"))
+    (aws-open:, config matches) carries its friendly label, a custom remote
+    (myminio:) its bare name. The name stays the verbatim rclone mount base."""
+    monkeypatch.setattr(mounts_mod, "_credential_suggestions",
+                        lambda: [_AWS_OPEN_SUGG])
+    _fake_rclone(monkeypatch, existing_remotes=("aws-open:", "myminio:"),
+                 configs={"aws-open": {"type": "s3", "provider": "AWS",
+                                       "env_auth": "false"},
+                          "myminio": {"type": "s3", "provider": "Minio"}})
 
     state = mounts_mod._rclone_state()
     assert state["remotes"] == [
@@ -683,9 +697,10 @@ def test_detect_materializes_public_anonymous_remote(client, monkeypatch):
     assert not any("secret" in str(x).lower() for x in cmd)
 
 
-def _fake_rclone(monkeypatch, existing_remotes=(), record=None):
-    """Stub rclone_bin + subprocess.run: version/listremotes canned, every
-    other argv appended to `record` and reported as success."""
+def _fake_rclone(monkeypatch, existing_remotes=(), record=None, configs=None):
+    """Stub rclone_bin + subprocess.run: version/listremotes/config-dump canned,
+    every other argv appended to `record` and reported as success. `configs` is
+    the {bare_name: cfg} map `rclone config dump` returns (JSON-encoded)."""
     def fake_run(cmd, **kw):
         if record is not None and "create" in cmd:
             record.append(cmd)
@@ -694,6 +709,7 @@ def _fake_rclone(monkeypatch, existing_remotes=(), record=None):
             returncode = 0
             stderr = ""
             stdout = ("rclone v1.2\n" if "version" in cmd
+                      else json.dumps(configs or {}) if "dump" in cmd
                       else "".join(f"{r}\n" for r in existing_remotes)
                       if "listremotes" in cmd else "")
         return R()
