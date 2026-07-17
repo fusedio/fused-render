@@ -1394,33 +1394,54 @@ def attach_mount(m: dict) -> str | None:
         # is an error, not a silent adopt. (A mount rcd doesn't know about
         # has no queryable fs — adopted as-is, the pre-rcd prototype case.)
         fs = rcd_mount_map().get(_norm(mp))
-        if fs is not None and fs != m["remote"]:
-            return (f"mountpoint already serves '{fs}' — unmount it before "
-                    f"mounting '{m['remote']}'")
-        # Refresh read_only BEFORE reconciling serves: sync_serves derives the
-        # serve's read_only param from this record, so refreshing afterwards
-        # would leave the serve on the stale flag (disagreeing with the mount
-        # and splitting the shared VFS) until some later sync.
-        _refresh_read_only_flag(m)
-        # An adopted rcd mount keeps whatever vfsOpt it was created with —
-        # mount options only apply at mount/mount, and listmounts doesn't echo
-        # them — so a mount created before read_only was known (legacy record,
-        # or detection just flipped the flag) still has a WRITABLE VFS no
-        # matter what the record now says: the doomed-upload retry loop the
-        # flag exists to prevent. mounted_read_only records what was actually
-        # baked in at mount time; on mismatch, remount to apply. Only for
-        # rcd-known mounts (fs set) — a foreign kernel mount is adopted as-is.
-        if fs is not None and bool(m.get("read_only")) != bool(
-            m.get("mounted_read_only")
-        ):
-            return reconnect_mount(m)  # unmounts first, so no recursion here
-        # Already mounted (double-click, adopted foreign mount) — but the
-        # HTTP serve may still be missing (a prior serve/start failed, or the
-        # mount predates the serve layer), so reconcile serves here too:
-        # without one, /api/fs/raw silently falls back to reads through the
-        # wedge-prone kernel mount.
-        sync_serves()
-        return None
+        stale = False
+        if sys.platform == "win32" and fs is None:
+            # On win32 _path_mounted is os.path.isdir, so a stale empty leaf
+            # (WinFsp crash / incomplete teardown) reads as "mounted". rcd not
+            # serving it (fs is None) means it isn't ours; probe whether it's a
+            # removable empty dir with rmdir. An empty removable dir cannot be a
+            # live mount serving anything, so a successful rmdir proves it was
+            # never mounted -> fall through to a fresh mount. A non-empty dir
+            # (foreign mount / real content) or a live WinFsp mount refuses
+            # removal (OSError) -> keep adopting as-is. (POSIX needs no probe:
+            # ismount already proves a real mount.)
+            try:
+                os.rmdir(mp)
+            except OSError:
+                pass  # foreign mount / real content / live mount — adopt below
+            else:
+                stale = True
+        # A removed stale leaf was never really mounted: fall through to a
+        # fresh mount. Otherwise honor the existing already-mounted handling.
+        if not stale:
+            if fs is not None and fs != m["remote"]:
+                return (f"mountpoint already serves '{fs}' — unmount it before "
+                        f"mounting '{m['remote']}'")
+            # Refresh read_only BEFORE reconciling serves: sync_serves derives
+            # the serve's read_only param from this record, so refreshing
+            # afterwards would leave the serve on the stale flag (disagreeing
+            # with the mount and splitting the shared VFS) until some later sync.
+            _refresh_read_only_flag(m)
+            # An adopted rcd mount keeps whatever vfsOpt it was created with —
+            # mount options only apply at mount/mount, and listmounts doesn't
+            # echo them — so a mount created before read_only was known (legacy
+            # record, or detection just flipped the flag) still has a WRITABLE
+            # VFS no matter what the record now says: the doomed-upload retry
+            # loop the flag exists to prevent. mounted_read_only records what
+            # was actually baked in at mount time; on mismatch, remount to
+            # apply. Only for rcd-known mounts (fs set) — a foreign kernel mount
+            # is adopted as-is.
+            if fs is not None and bool(m.get("read_only")) != bool(
+                m.get("mounted_read_only")
+            ):
+                return reconnect_mount(m)  # unmounts first, so no recursion here
+            # Already mounted (double-click, adopted foreign mount) — but the
+            # HTTP serve may still be missing (a prior serve/start failed, or
+            # the mount predates the serve layer), so reconcile serves here too:
+            # without one, /api/fs/raw silently falls back to reads through the
+            # wedge-prone kernel mount.
+            sync_serves()
+            return None
     if sys.platform == "win32" and not _winfsp_available():
         # Fail with actionable install guidance rather than letting the raw
         # cgofuse/WinFsp error surface. Matches the "return an error string"
@@ -2040,9 +2061,24 @@ def delete_mount(cid: str, x_fused: str | None = Header(default=None)):
     err = detach_mount(m)
     mp = mountpoint(m)
     if err and _path_mounted(mp):
-        # Deleting the record while the filesystem is still mounted would
-        # strand a live mount (and let a re-added name silently reuse it).
-        return JSONResponse({"error": f"not deleted — {err}"}, status_code=502)
+        if sys.platform == "win32" and _norm(mp) not in rcd_mount_map():
+            # On win32 _path_mounted is os.path.isdir, so a stale empty leaf
+            # (WinFsp crash / incomplete teardown) makes detach_mount error and
+            # keeps the path reading as "mounted" — blocking delete forever. rcd
+            # not listing it means it's not a live mount; if the leaf is an
+            # empty removable dir, rmdir clears it and the mount is genuinely
+            # gone, so fall through to deletion. If rmdir fails (non-empty /
+            # foreign), keep the 502.
+            try:
+                os.rmdir(mp)
+            except OSError:
+                return JSONResponse(
+                    {"error": f"not deleted — {err}"}, status_code=502)
+        else:
+            # Deleting the record while the filesystem is still mounted would
+            # strand a live mount (and let a re-added name silently reuse it).
+            return JSONResponse(
+                {"error": f"not deleted — {err}"}, status_code=502)
     # POSIX only: FUSE/NFS leave an empty real dir behind, so clean it up.
     # On Windows WinFsp already removes the leaf on unmount (and we never
     # pre-create it), so there is nothing to rmdir.

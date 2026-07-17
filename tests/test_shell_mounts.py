@@ -2371,6 +2371,96 @@ def test_mount_for_is_case_sensitive_on_posix(home):
     assert m2 is None
 
 
+# -- Windows stale-leaf recovery for attach / delete (FINDING 1) ------------
+# On win32 _path_mounted is os.path.isdir, so a stale empty leaf (WinFsp crash
+# / incomplete teardown) reads as "mounted". attach_mount and delete_mount must
+# probe it with os.rmdir: an empty removable dir was never a live mount.
+
+
+def test_attach_stale_empty_leaf_mounts_fresh_on_win32(home, rcd, monkeypatch):
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True)
+    # The stale leaf exists, so _path_mounted reads True; rcd does not serve it
+    # (default empty listmounts) so fs is None.
+    monkeypatch.setattr(mounts_mod, "_path_mounted", lambda mp: True)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    rmdirs = []
+    monkeypatch.setattr(mounts_mod.os, "rmdir", lambda p: rmdirs.append(p))
+    assert mounts_mod.attach_mount(c) is None
+    # The stale leaf was probed with rmdir, then a FRESH mount was issued.
+    assert rmdirs == [mounts_mod.mountpoint(c)]
+    assert any(x[0] == "mount/mount" for x in rcd.calls)
+
+
+def test_attach_non_empty_leaf_still_adopts_on_win32(home, rcd, monkeypatch):
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True)
+    monkeypatch.setattr(mounts_mod, "_path_mounted", lambda mp: True)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+
+    def boom(p):
+        raise OSError("directory not empty")
+
+    monkeypatch.setattr(mounts_mod.os, "rmdir", boom)
+    # A non-empty leaf (foreign mount / real content) refuses rmdir -> keep the
+    # existing adopt-as-is behavior, no fresh mount.
+    assert mounts_mod.attach_mount(c) is None
+    assert not any(x[0] == "mount/mount" for x in rcd.calls)
+
+
+def test_delete_stale_leaf_no_daemon_succeeds_on_win32(home, monkeypatch):
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    cid = c["id"]
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_path_mounted", lambda p: True)
+    monkeypatch.setattr(mounts_mod, "_live_rcd_port", lambda: None)
+    rmdirs = []
+    monkeypatch.setattr(mounts_mod.os, "rmdir", lambda p: rmdirs.append(p))
+    # detach_mount's daemon-absent leg returns "mounted outside the app…"; the
+    # stale-leaf rmdir then clears it and the delete succeeds.
+    resp = mounts_mod.delete_mount(cid, x_fused="1")
+    assert resp == {"ok": True}
+    assert rmdirs == [mounts_mod.mountpoint(c)]
+    assert mounts_mod.get_mount(cid) is None
+
+
+def test_delete_stale_leaf_unmount_not_found_succeeds_on_win32(
+        home, rcd, monkeypatch):
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    cid = c["id"]
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_path_mounted", lambda p: True)
+    # Daemon present but its unmount fails "mount not found", and it does not
+    # list the leaf -> stale, so rmdir recovers it.
+    rcd.responses["mount/unmount"] = (500, {"error": "mount not found"})
+    rcd.responses["mount/listmounts"] = {"mountPoints": []}
+    rmdirs = []
+    monkeypatch.setattr(mounts_mod.os, "rmdir", lambda p: rmdirs.append(p))
+    resp = mounts_mod.delete_mount(cid, x_fused="1")
+    assert resp == {"ok": True}
+    assert rmdirs == [mounts_mod.mountpoint(c)]
+    assert mounts_mod.get_mount(cid) is None
+
+
+def test_delete_live_leaf_still_502s_on_unmount_error_on_win32(
+        home, rcd, monkeypatch):
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    cid = c["id"]
+    mp = mounts_mod.mountpoint(c)
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_path_mounted", lambda p: True)
+    rcd.responses["mount/unmount"] = (500, {"error": "mount not found"})
+    # rcd DOES list this mount -> it is live, not stale: never rmdir it.
+    rcd.responses["mount/listmounts"] = {
+        "mountPoints": [{"MountPoint": mp, "Fs": "remote:bucket"}]}
+    rmdirs = []
+    monkeypatch.setattr(mounts_mod.os, "rmdir", lambda p: rmdirs.append(p))
+    resp = mounts_mod.delete_mount(cid, x_fused="1")
+    assert resp.status_code == 502
+    assert rmdirs == []
+    assert mounts_mod.get_mount(cid) is not None  # record kept
+
+
 # -- Windows force-unmount error messaging (FINDING 3) ----------------------
 
 
