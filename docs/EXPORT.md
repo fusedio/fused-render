@@ -39,6 +39,7 @@ bundle/
   manifest.json     # the contract the hosting layer reads
   code/<name>.py    # one file per fused.runPython() target
   assets/<key>      # one file per fused.rawUrl()/readFile() target
+  resources/<key>   # one file per first-party module a bundled entrypoint imports
 ```
 
 `manifest.json`:
@@ -48,7 +49,8 @@ bundle/
   "fused_render_bundle": 1,
   "page": "page.html",
   "entrypoints": [{ "path": "./sine.py", "name": "sine", "file": "code/sine.py" }],
-  "assets": [{ "path": "./logo.png", "name": "logo.png", "file": "assets/logo.png" }]
+  "assets": [{ "path": "./logo.png", "name": "logo.png", "file": "assets/logo.png" }],
+  "resources": [{ "key": "helpers.py", "file": "resources/helpers.py" }]
 }
 ```
 
@@ -56,6 +58,13 @@ bundle/
   hosted, `fused.runPython("./sine.py", params)` becomes a `POST` to that route.
 - **assets** map each `rawUrl`/`readFile` literal path to an asset key served by a
   read-only `_asset` route.
+- **resources** are sibling `.py` modules a bundled entrypoint `import`s, found by a
+  static scan of the entrypoint sources (transitively). They are shipped so the served
+  entrypoint's `import helpers` resolves, but — unlike an asset — a page never fetches
+  them, so they are **not** web-served. Only absolute imports resolving to a `<name>.py`
+  beside the page are bundled; stdlib/third-party imports and subpackages are left alone.
+  A relative import (`from . import x`) is skipped — a hosted entrypoint runs without
+  package context.
 
 The hosting layer uses the manifest to wire the served page's runtime — which
 literal path posts to which route — without re-parsing the HTML.
@@ -127,24 +136,31 @@ auto-detected default — and persists the selection on the deployment record so
 reopened modal reloads it. `/api/export` exposes the same two fields for driving a
 bundle by hand.
 
-### Reading a bundled file from a `runPython` entrypoint
+### Reading a bundled file / importing a module from a `runPython` entrypoint
 
-Included data is not placed beside your `.py` at the top level of the served
-runtime — the hosting layer materializes every bundled asset under an `assets/`
-prefix in the entrypoint's working directory (keyed by the manifest `name`, the
-same key `fused.rawUrl`/`readFile` use). So from entrypoint Python, a bare
-`open("data.csv")` will **not** find it. Read it via the injected `openfused`
-helper, which anchors an absolute path at the runtime's project root:
+The hosting layer materializes every bundled file at its **real page-relative path**
+under the entrypoint's working directory — the runtime's cwd **and** `sys.path[0]`. So
+from entrypoint Python your code reads and imports exactly as it did locally, with no
+rewriting:
 
 ```python
-import openfused
+import helpers                      # bundled automatically (a "resource") — resolves
 
 def main():
-    return open(openfused.asset_path("data.csv")).read()   # <root>/assets/data.csv
-    # a nested include works the same: openfused.asset_path("tiles", "0.png")
+    data = open("data.csv").read()  # <root>/data.csv — a bare relative open() works
+    return helpers.process(data)
 ```
 
-`open("assets/data.csv")` (relative to the working directory) also resolves, but
-`asset_path(...)` is the stable form and matches how the `_asset` route serves the
-same bytes to the browser. This `assets/` location is set by the hosting layer's
-resource scheme, not by where the bundle physically stores the file.
+- **Data files** reached by `fused.rawUrl`/`readFile`, or added under "Include files"
+  (below), land at their key, so `open("data.csv")` / `open("tiles/0.png")` resolve.
+- **Modules** a bundled entrypoint imports are discovered and shipped automatically, so
+  `import helpers` works. Only absolute imports of a sibling `<name>.py` are bundled; a
+  relative import (`from . import x`) is not — a hosted entrypoint runs without package
+  context.
+
+Use a bare relative path — it is the form that matches both local and hosted. Do **not**
+use `openfused.asset_path("data.csv")` here: that helper anchors under `<root>/assets/`
+(the resource scheme the project/widget deploy path uses), whereas a hosted fused-render
+page's files sit at the project root, so `asset_path` would point at a file that isn't
+there. If you need an absolute path, anchor it yourself at the working directory, e.g.
+`os.path.join(os.getcwd(), "data.csv")`.
