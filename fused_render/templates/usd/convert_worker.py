@@ -315,11 +315,20 @@ def _ensure_pxr(prog):
     import platform
     import urllib.request
     system = platform.system()
+    machine = platform.machine().lower()
     if system == "Darwin":
         plat = "macosx"          # single universal2 wheel per python version
     elif system == "Linux":
-        plat = "manylinux"       # x86_64 only upstream; aarch64 has no wheel
+        # upstream ships manylinux x86_64 only — fail fast on other arches
+        # instead of downloading a wheel whose .so files can't load
+        if machine != "x86_64":
+            raise RuntimeError(
+                f"no usd-core wheel for Linux/{machine} (x86_64 only)")
+        plat = "manylinux"
     elif system == "Windows":
+        if machine not in ("amd64", "x86_64"):
+            raise RuntimeError(
+                f"no usd-core wheel for Windows/{machine} (amd64 only)")
         plat = "win_amd64"
     else:
         raise RuntimeError(f"no usd-core wheel for platform: {system}")
@@ -337,8 +346,11 @@ def _ensure_pxr(prog):
         raise RuntimeError(
             f"no usd-core {USD_CORE_VERSION} wheel for {py_tag}/{plat}")
 
+    # All temp names are pid-suffixed: several convert workers can race on
+    # the shared site dir (two USD files opened at once), and a shared temp
+    # path would let one worker unpack into a file another is still writing.
     os.makedirs(os.path.dirname(site), exist_ok=True)
-    whl = site + ".whl.tmp"
+    whl = f"{site}.{os.getpid()}.whl.tmp"
     req = urllib.request.Request(url, headers={"User-Agent": "fused-render"})
     with urllib.request.urlopen(req, timeout=60) as r, open(whl, "wb") as f:
         total = int(r.headers.get("Content-Length") or 0)
@@ -354,13 +366,21 @@ def _ensure_pxr(prog):
                         f"downloading USD runtime {got >> 20} / {total >> 20} MB")
 
     prog.update("install-usd", 95, "unpacking USD runtime")
-    tmp_site = site + ".tmp"
+    tmp_site = f"{site}.{os.getpid()}.tmp"
     shutil.rmtree(tmp_site, ignore_errors=True)
     with zipfile.ZipFile(whl) as zf:
         zf.extractall(tmp_site)
     os.remove(whl)
-    shutil.rmtree(site, ignore_errors=True)   # clear any broken half-install
-    os.rename(tmp_site, site)
+    # Publish atomically: rename only wins if `site` doesn't exist. If a
+    # racing worker published first, its install is complete and identical
+    # (same pinned wheel) — drop ours and use theirs. Never rmtree a live
+    # `site`: another process may already be importing from it.
+    try:
+        os.rename(tmp_site, site)
+    except OSError:
+        if not os.path.isdir(site):
+            raise
+        shutil.rmtree(tmp_site, ignore_errors=True)
     # The failed import above ran while `site` didn't exist yet, and importlib
     # caches a "nothing there" finder for the path — flush it or the fresh
     # unpack stays invisible to this process.

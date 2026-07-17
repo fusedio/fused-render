@@ -499,7 +499,9 @@ echo "    $(echo "$RCLONE_SMOKE_OUT" | head -1)"
 # on Apple Silicon (unsigned binaries are refused), but the DMG is byte-for-
 # byte comparable for size work and the pre-sign smoke tests above still
 # validate the bundle. Never use for a distributable build.
-if [[ -n "${FUSED_RENDER_SKIP_CODESIGN:-}" ]]; then
+# Enabled only by the exact value "1" — a leftover "0"/"false" in the
+# environment must not silently ship an unsigned build.
+if [[ "${FUSED_RENDER_SKIP_CODESIGN:-}" == "1" ]]; then
   echo "==> FUSED_RENDER_SKIP_CODESIGN set -> skipping codesign (measurement build)"
   SIGN_IDENTITY=""
 else
@@ -642,6 +644,11 @@ rm -f "$DMG_PATH"
 # ---------------------------------------------------------------------------
 
 if [[ -n "${FUSED_RENDER_NOTARY_PROFILE:-}" ]]; then
+  if [[ "${FUSED_RENDER_SKIP_CODESIGN:-}" == "1" ]]; then
+    echo "FATAL: FUSED_RENDER_NOTARY_PROFILE and FUSED_RENDER_SKIP_CODESIGN are both set —" >&2
+    echo "       the app is completely unsigned; there is nothing to notarize." >&2
+    exit 1
+  fi
   if [[ -z "$SIGN_IDENTITY" ]]; then
     echo "FATAL: FUSED_RENDER_NOTARY_PROFILE is set but the app was signed ad-hoc." >&2
     echo "       Notarization requires a Developer ID signature — configure" >&2
