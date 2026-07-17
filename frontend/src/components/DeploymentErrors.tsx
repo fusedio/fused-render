@@ -119,7 +119,14 @@ export default function DeploymentErrors({ env, token }: { env: string; token: s
   };
 
   useEffect(() => {
+    setErrors(null);
+    setError(null);
+    setOpenId(null);
     void load();
+    return () => {
+      // Invalidate any in-flight fetch so its result can't land on the next mount.
+      loadSeq.current++;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [env, token]);
 
