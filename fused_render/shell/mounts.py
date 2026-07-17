@@ -570,6 +570,24 @@ def _path_mounted(mp: str) -> bool:
     return os.path.ismount(mp)
 
 
+def _winfsp_available() -> bool:
+    """True when WinFsp is installed. rclone's Windows mount is cgofuse ->
+    WinFsp and hard-requires it; without it the raw driver error surfaces.
+    Never gates POSIX (always True off win32). On Windows probe WinFsp's
+    registry keys; winreg is imported lazily since it's a Windows-only
+    module. FileNotFoundError (missing key) is an OSError subclass."""
+    if sys.platform != "win32":
+        return True
+    import winreg
+    for subkey in (r"SOFTWARE\WOW6432Node\WinFsp", r"SOFTWARE\WinFsp"):
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, subkey):
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def rcd_mount_map() -> dict:
     """{mountpoint: remote fs} for every mount rcd currently serves (empty
     when no daemon is live). Read-only: never spawns a daemon just to answer
@@ -1362,6 +1380,12 @@ def attach_mount(m: dict) -> str | None:
         # wedge-prone kernel mount.
         sync_serves()
         return None
+    if sys.platform == "win32" and not _winfsp_available():
+        # Fail with actionable install guidance rather than letting the raw
+        # cgofuse/WinFsp error surface. Matches the "return an error string"
+        # contract callers surface verbatim (see mount_surfaces_rc_error).
+        return ("WinFsp is required to mount on Windows — install it from "
+                "https://winfsp.dev, then retry.")
     try:
         port = ensure_rcd()
         # Detect and persist read_only BEFORE mounting (INCIDENT 2026-07-16):

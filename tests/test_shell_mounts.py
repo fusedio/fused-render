@@ -6,8 +6,10 @@ FUSED_RENDER_HOME is redirected per test so no test touches the real
 ~/.fused-render or a real mount.
 """
 import json
+import sys
 import threading
 import time
+import types
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -2073,3 +2075,69 @@ def test_norm_is_identity_on_posix_paths():
     # so every membership test compares byte-for-byte as before.
     p = "/home/u/.fused-render/mounts/data"
     assert mounts_mod._norm(p) == p
+
+
+class _FakeRegKey:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def test_winfsp_available_true_on_posix_without_touching_registry(monkeypatch):
+    # Never gates POSIX: returns True and never imports/reads winreg.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
+    monkeypatch.setitem(sys.modules, "winreg", None)  # would blow up if imported
+    assert mounts_mod._winfsp_available() is True
+
+
+def test_winfsp_available_reads_registry_on_win32(monkeypatch):
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    opened = []
+
+    def open_key(root, subkey):
+        opened.append(subkey)
+        if subkey.endswith("WOW6432Node\\WinFsp"):
+            return _FakeRegKey()
+        raise FileNotFoundError()
+
+    fake = types.SimpleNamespace(HKEY_LOCAL_MACHINE=0, OpenKey=open_key)
+    monkeypatch.setitem(sys.modules, "winreg", fake)
+    assert mounts_mod._winfsp_available() is True
+    assert opened == ["SOFTWARE\\WOW6432Node\\WinFsp"]
+
+
+def test_winfsp_available_false_when_no_registry_key(monkeypatch):
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    tried = []
+
+    def open_key(root, subkey):
+        tried.append(subkey)
+        raise FileNotFoundError()
+
+    fake = types.SimpleNamespace(HKEY_LOCAL_MACHINE=0, OpenKey=open_key)
+    monkeypatch.setitem(sys.modules, "winreg", fake)
+    assert mounts_mod._winfsp_available() is False
+    # Falls back to the non-WOW key before giving up.
+    assert tried == ["SOFTWARE\\WOW6432Node\\WinFsp", "SOFTWARE\\WinFsp"]
+
+
+def test_attach_mount_preflights_winfsp_and_skips_rcd_when_absent(home, rcd, monkeypatch):
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: False)
+    monkeypatch.setattr(mounts_mod, "_path_mounted", lambda mp: False)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    err = mounts_mod.attach_mount(c)
+    assert err is not None and "winfsp.dev" in err.lower()
+    assert rcd.calls == []  # never reached the daemon
+
+
+def test_attach_mount_proceeds_to_mount_when_winfsp_present(home, rcd, monkeypatch):
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True)
+    monkeypatch.setattr(mounts_mod, "_path_mounted", lambda mp: False)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    assert mounts_mod.attach_mount(c) is None
+    [(_, body)] = [x for x in rcd.calls if x[0] == "mount/mount"]
+    assert body["mountType"] == "mount"  # cgofuse -> WinFsp, same as Linux
