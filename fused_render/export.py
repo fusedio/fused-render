@@ -597,8 +597,13 @@ def export_page(
         shutil.rmtree(os.path.join(out_dir, _PAYLOAD_DIR), ignore_errors=True)
         for _legacy_dir in ("code", "assets", "resources"):
             shutil.rmtree(os.path.join(out_dir, _legacy_dir), ignore_errors=True)
+        # Remove a legacy root page.html — but NEVER the export's own source page (when the
+        # out dir IS the page's folder and the page is named page.html, the two are the same
+        # file; deleting it would destroy the author's original, leaving it only under files/).
         _legacy_page = os.path.join(out_dir, "page.html")
-        if os.path.isfile(_legacy_page):
+        if os.path.isfile(_legacy_page) and os.path.realpath(_legacy_page) != os.path.realpath(
+            html_path
+        ):
             os.remove(_legacy_page)
         shutil.move(os.path.join(stage, _PAYLOAD_DIR), os.path.join(out_dir, _PAYLOAD_DIR))
         shutil.move(os.path.join(stage, "manifest.json"), os.path.join(out_dir, "manifest.json"))
