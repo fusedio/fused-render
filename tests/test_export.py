@@ -288,3 +288,148 @@ def test_symlink_escaping_page_dir_rejected(tmp_path):
     html = "<script>fused.runPython('./linked.py', {});</script>"
     plan = plan_export(html, str(page))
     assert any("outside the page directory" in e for e in plan.errors)
+
+
+def test_computed_prefix_rawurl_is_dynamic_not_a_literal(tmp_path):
+    # `fused.rawUrl("data/" + name)` must NOT be collected as a literal asset named
+    # "data/" — the string is only a prefix of a computed expression, so it counts as a
+    # (warned) computed path instead.
+    html = "<script>const u = fused.rawUrl('data/' + name);</script>"
+    plan = plan_export(html, str(tmp_path))
+    assert not plan.errors  # no bogus "data/ not found"
+    assert not plan.assets
+    assert any("computed path" in w for w in plan.warnings)
+
+
+def test_computed_prefix_runpython_is_dynamic_error(tmp_path):
+    # The same for runPython, where a computed target is a hard error (route name derives
+    # from the literal path).
+    html = "<script>fused.runPython('./run_' + kind + '.py', {});</script>"
+    plan = plan_export(html, str(tmp_path))
+    assert any("computed" in e for e in plan.errors)
+
+
+# --- embedded bundle manifest (<script type="application/fused-bundle">) --------------
+
+
+def _manifest_block(obj_json):
+    return f'<script type="application/fused-bundle">{obj_json}</script>'
+
+
+def test_manifest_glob_bundles_matching_files(tmp_path):
+    # A glob in the embedded manifest bundles every match as a read-only asset, even
+    # though no literal rawUrl names them — this is what lets a computed rawUrl resolve.
+    html = _manifest_block('{"include": ["data/*.json"]}') + "<script>const u = fused.rawUrl('data/' + name);</script>"
+    _write(tmp_path, "data/a.json", "1")
+    _write(tmp_path, "data/b.json", "2")
+    _write(tmp_path, "data/notes.txt", "skip")
+    plan = plan_export(html, str(tmp_path))
+    assert not plan.errors
+    assert {a.name for a in plan.assets} == {"data/a.json", "data/b.json"}
+    # The computed rawUrl call is still an advisory warning, now mentioning the manifest.
+    assert any("computed path" in w for w in plan.warnings)
+
+
+def test_manifest_recursive_glob(tmp_path):
+    html = _manifest_block('{"include": ["tiles/**/*.png"]}')
+    _write(tmp_path, "tiles/0/0.png", "P")
+    _write(tmp_path, "tiles/1/2/3.png", "P")
+    plan = plan_export(html, str(tmp_path))
+    assert not plan.errors
+    assert {a.name for a in plan.assets} == {"tiles/0/0.png", "tiles/1/2/3.png"}
+
+
+def test_manifest_literal_include_missing_is_error(tmp_path):
+    # A literal (non-glob) manifest entry that isn't on disk is a blocking error,
+    # exactly like an explicit /api/export include.
+    html = _manifest_block('{"include": ["data/only.json"]}')
+    plan = plan_export(html, str(tmp_path))
+    assert any("not found" in e for e in plan.errors)
+
+
+def test_manifest_zero_match_glob_warns_not_errors(tmp_path):
+    html = _manifest_block('{"include": ["data/*.json"]}')
+    plan = plan_export(html, str(tmp_path))
+    assert not plan.errors
+    assert any("matched no files" in w for w in plan.warnings)
+
+
+def test_manifest_block_stripped_before_scan(tmp_path):
+    # A value inside the manifest that LOOKS like an unsupported call must not trip the
+    # dependency scan — the block is removed before scanning.
+    html = _manifest_block('{"include": ["writeFile-samples/*.json"], "note": "fused.writeFile( decoy"}')
+    _write(tmp_path, "writeFile-samples/x.json", "1")
+    plan = plan_export(html, str(tmp_path))
+    assert not plan.errors  # the decoy text inside the manifest did not become an error
+    assert {a.name for a in plan.assets} == {"writeFile-samples/x.json"}
+
+
+def test_manifest_exclude_key_is_ignored_with_warning(tmp_path):
+    html = _manifest_block('{"include": ["data/*.json"], "exclude": ["data/secret.json"]}')
+    _write(tmp_path, "data/a.json", "1")
+    _write(tmp_path, "data/secret.json", "2")
+    plan = plan_export(html, str(tmp_path))
+    assert not plan.errors
+    # exclude is NOT applied (both files bundled) and the user is warned it was ignored.
+    assert {a.name for a in plan.assets} == {"data/a.json", "data/secret.json"}
+    assert any("'exclude' is ignored" in w for w in plan.warnings)
+
+
+def test_manifest_unknown_key_ignored_forward_compat(tmp_path):
+    # Forward-lenient: an unknown future directive does not break an older exporter.
+    html = _manifest_block('{"include": ["data/a.json"], "futureThing": {"x": 1}}')
+    _write(tmp_path, "data/a.json", "1")
+    plan = plan_export(html, str(tmp_path))
+    assert not plan.errors
+    assert {a.name for a in plan.assets} == {"data/a.json"}
+
+
+def test_manifest_malformed_json_is_error(tmp_path):
+    html = _manifest_block('{"include": [')
+    plan = plan_export(html, str(tmp_path))
+    assert any("not valid JSON" in e for e in plan.errors)
+
+
+def test_manifest_multiple_blocks_is_error(tmp_path):
+    html = _manifest_block('{"include": []}') + _manifest_block('{"include": []}')
+    plan = plan_export(html, str(tmp_path))
+    assert any("at most one" in e for e in plan.errors)
+
+
+def test_manifest_glob_symlink_escape_rejected(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.json").write_text("leak")
+    page = tmp_path / "page"
+    (page / "data").mkdir(parents=True)
+    try:
+        os.symlink(outside / "secret.json", page / "data" / "linked.json")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not supported on this platform")
+    html = _manifest_block('{"include": ["data/*.json"]}')
+    plan = plan_export(html, str(page))
+    # The glob matched the symlink, but the safety gauntlet rejects the escape.
+    assert any("outside the page directory" in e for e in plan.errors)
+
+
+def test_manifest_include_deduped_with_literal_asset(tmp_path):
+    # A file the manifest globs AND the page references literally is bundled once.
+    html = _manifest_block('{"include": ["data/a.json"]}') + "<script>fused.rawUrl('data/a.json');</script>"
+    _write(tmp_path, "data/a.json", "1")
+    plan = plan_export(html, str(tmp_path))
+    assert not plan.errors
+    assert [a.name for a in plan.assets] == ["data/a.json"]
+
+
+def test_manifest_include_bundled_through_export_page(tmp_path):
+    html = _manifest_block('{"include": ["data/*.json"]}') + "<script>const u = fused.rawUrl('data/' + n);</script>"
+    _write(tmp_path, "src/page.html", html)
+    _write(tmp_path, "src/data/a.json", "1")
+    _write(tmp_path, "src/data/b.json", "2")
+    out = tmp_path / "bundle"
+    plan = export_page(str(tmp_path / "src" / "page.html"), str(out))
+    assert not plan.errors
+    assert (out / "assets" / "data/a.json").is_file()
+    assert (out / "assets" / "data/b.json").is_file()
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert {a["name"] for a in manifest["assets"]} == {"data/a.json", "data/b.json"}

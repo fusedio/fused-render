@@ -111,6 +111,14 @@ The server serves the HTML with a small runtime `<script>` injected (or the ifra
 const result = await fused.runPython(pathToPy, paramsObject);          // stale calls to this file auto-cancel (RH-9)
 const result = await fused.runPython(pathToPy, paramsObject, { key: null }); // opt out: run fully concurrent
 
+// Read-only file access. `path` is relative to the HTML file's own location or
+// absolute (RH-1). A relative path resolves page-relative in BOTH runtimes: locally the
+// runtime passes the page's own path as `base` to /api/fs/raw (mirroring runPython's
+// `html`); when hosted, the same key hits the bundle's `_asset` route (§18). So one
+// `fused.rawUrl("data/" + name)` works everywhere — no local/hosted branch.
+const url  = fused.rawUrl(path);        // synchronous URL of the raw bytes (for <img> src, links)
+const text = await fused.readFile(path); // fetch the file's text (via rawUrl)
+
 // Params (see §6)
 fused.params.get(name)
 fused.params.set(name, value)          // strings only; always replaceState
@@ -608,10 +616,13 @@ nothing. Full detail: `docs/EXPORT.md`.
   path (including a symlink resolving outside the page dir), or a **missing target**
   (a referenced file, or an `include` file, not on disk).
 - **EX-4a** Warnings — advisory, never blocking: a **computed `rawUrl`/`readFile`
-  path** (the exporter can't resolve it, but the author can bundle its target via
-  `include` — EX-6 — and the served `_asset` route resolves it by key at request
-  time), and an **`exclude` that drops a literally-referenced file** (honored, but
-  that call 404s when hosted).
+  path** (the exporter can't discover the target from the HTML, but once the target is
+  bundled — via an `include` glob in the page's manifest (EX-7) or an explicit `include`
+  (EX-6) — the served `_asset` route resolves it by key at request time, and the hosted
+  runtime resolves the computed path to that key; a call `fused.rawUrl("data/" + name)`
+  is a string *prefix* + expression, so it is counted here as computed, **not**
+  mis-collected as a literal `data/` target), and an **`exclude` that drops a
+  literally-referenced file** (honored, but that call 404s when hosted).
 - **EX-5** Route names derive from the `.py` stem (`sine.py` → `sine`), are prefixed
   `run-` when they'd collide with a reserved serve route (`data`, `health`, the
   `_`-prefixed control/shell/asset routes), and are suffixed `-2`, `-3`, … on
@@ -622,6 +633,21 @@ nothing. Full detail: `docs/EXPORT.md`.
   bundled `.py` reads at runtime), each validated like a scanned asset and deduped by
   key; and `exclude` — files dropped from the final set by literal path or bundle
   key. Both default empty (auto-only).
+- **EX-7** A page may declare its own bundle set **in the repo**, reproducibly, via a
+  single embedded `<script type="application/fused-bundle">` block holding a JSON object.
+  Only **`include`** is read today: an array of page-relative **globs** (`data/*.json`,
+  `tiles/**/*.png`) and/or literal paths, expanded against the page dir through the same
+  safety gauntlet as any asset (`..`/absolute/symlink-escape rejected) and folded in
+  **beneath** the caller's EX-6 `include`. A glob matching nothing is a **warning**, a
+  missing literal a **blocking error**. The block is **unversioned and forward-lenient**
+  — the `type` attribute is the discriminator, and unknown keys are ignored so new
+  directives can be added later without breaking an older exporter. It is **stripped
+  before the dependency scan**, so its JSON body can never be misread as a `fused.*`
+  call. `exclude` is **not** honored in the manifest (it would publish the withheld file
+  names in the served page source) — it is warned about; drop files via EX-6 `exclude`
+  (kept on the deployment record, off the artifact). This is what collapses a
+  hand-maintained `RAW_URLS`-style table (or a fake `_bundle*()` scanner-bait function)
+  down to `fused.rawUrl("data/" + name)` against a `data/*.json` glob.
 
 ## 19. Deploy — Hosted Publish through the fused CLI (M11)
 
