@@ -1719,6 +1719,44 @@ def _credential_suggestions() -> list[dict]:
     return out
 
 
+def _rclone_config_dump(bin_: str) -> dict:
+    """Every remote's stored config as {bare_name: {"type": …, …params}} via
+    `rclone config dump` — a plain subprocess, no rcd daemon required (keeps
+    _rclone_state callable before any mount exists). {} on any failure, so
+    _remote_label just degrades to bare names rather than raising."""
+    try:
+        out = subprocess.run(
+            [bin_, "config", "dump"], capture_output=True, text=True, timeout=10
+        ).stdout
+        cfg = json.loads(out) if out.strip() else {}
+        return cfg if isinstance(cfg, dict) else {}
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return {}
+
+
+def _remote_label(remote: str, suggestions: list[dict], configs: dict) -> str:
+    """Friendly label for a materialized rclone remote, so it presents under the
+    SAME human name the suggestion used across its whole lifecycle (e.g. the
+    built-in public option shows as "AWS S3 — public buckets…", not the cryptic
+    "aws-open:" it materializes into). Match against the FULL suggestion set —
+    including ones already materialized, which _suggestions_view drops.
+
+    Matching is by PROVENANCE, not name alone: the remote's stored config (from
+    `rclone config dump`, keyed by bare name) must match the suggestion's backend
+    and every param it was created with. A user's own remote that merely happens
+    to be named `aws`/`gcs` therefore keeps its bare name instead of inheriting a
+    credential-source label it never came from. Values compare case-insensitively
+    (rclone normalizes booleans). No match (e.g. "myminio:") → the bare string."""
+    cfg = configs.get(remote.rstrip(":"), {})
+    for s in suggestions:
+        if (f'{s["remote_name"]}:' == remote
+                and str(cfg.get("type", "")).lower() == s["backend"].lower()
+                and all(str(cfg.get(k, "")).lower() == str(v).lower()
+                        for k, v in s["params"].items())):
+            return s["label"]
+    return remote
+
+
 def _suggestions_view(remotes: list[str]) -> list[dict]:
     """Public shape, minus any suggestion already materialized as a remote (so
     the built-in aws-open drops out of the suggestions once created and shows
@@ -1743,11 +1781,20 @@ def _rclone_state() -> dict:
         remotes_out = subprocess.run(
             [bin_, "listremotes"], capture_output=True, text=True, timeout=10
         ).stdout
-        remotes = [r.strip() for r in remotes_out.splitlines() if r.strip()]
+        names = [r.strip() for r in remotes_out.splitlines() if r.strip()]
     except (OSError, subprocess.TimeoutExpired, IndexError):
         return {"available": False, "version": None, "remotes": [], "suggested": []}
+    # Each remote carries its verbatim rclone spec (`name`, incl trailing ':',
+    # used unchanged as the mount base) plus a friendly `label` for display —
+    # so a remote reads under one stable human name whatever its lifecycle stage.
+    # Compute the suggestion set and the config dump once, then label every
+    # remote against them (both do I/O, so a per-remote call would be O(N)).
+    suggestions = _credential_suggestions()
+    configs = _rclone_config_dump(bin_)
+    remotes = [{"name": n, "label": _remote_label(n, suggestions, configs)}
+               for n in names]
     return {"available": True, "version": version, "remotes": remotes,
-            "suggested": _suggestions_view(remotes)}
+            "suggested": _suggestions_view(names)}
 
 
 def broken_mount_error(path: str) -> str | None:
@@ -1944,7 +1991,8 @@ def create_detected_remote(body: dict = Body(...), x_fused: str | None = Header(
     if sugg is None:
         return JSONResponse({"error": f"unknown credential source {sid!r}"}, status_code=404)
     name = sugg["remote_name"]
-    if f"{name}:" in _rclone_state().get("remotes", []):
+    # remotes are {name,label} objects now — match on the bare rclone spec.
+    if any(r["name"] == f"{name}:" for r in _rclone_state().get("remotes", [])):
         return {"ok": True, "name": name + ":"}
     cmd = [bin_, "config", "create", name, sugg["backend"]]
     for k, v in sugg["params"].items():
