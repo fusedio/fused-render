@@ -1719,15 +1719,19 @@ def _credential_suggestions() -> list[dict]:
     return out
 
 
-def _remote_label(remote: str) -> str:
+def _remote_label(remote: str, suggestions: list[dict] | None = None) -> str:
     """Friendly label for a materialized rclone remote, so it presents under the
     SAME human name the suggestion used across its whole lifecycle (e.g. the
     built-in public option shows as "AWS S3 — public buckets…", not the cryptic
     "aws-open:" it materializes into). Match against the FULL suggestion set —
     including ones already materialized, which _suggestions_view drops. remotes
     carry a trailing ':', suggestion remote_name does not. No match (a custom
-    remote like "myminio:") falls back to the bare rclone string."""
-    for s in _credential_suggestions():
+    remote like "myminio:") falls back to the bare rclone string.
+
+    Pass a precomputed `suggestions` when labeling many remotes at once —
+    _credential_suggestions() re-reads the AWS dotfiles on every call, so
+    computing it once and reusing it avoids O(N) redundant disk I/O."""
+    for s in suggestions if suggestions is not None else _credential_suggestions():
         if f'{s["remote_name"]}:' == remote:
             return s["label"]
     return remote
@@ -1763,7 +1767,10 @@ def _rclone_state() -> dict:
     # Each remote carries its verbatim rclone spec (`name`, incl trailing ':',
     # used unchanged as the mount base) plus a friendly `label` for display —
     # so a remote reads under one stable human name whatever its lifecycle stage.
-    remotes = [{"name": n, "label": _remote_label(n)} for n in names]
+    # Compute the suggestion set once and reuse it across every remote (it reads
+    # the AWS dotfiles per call, so a per-remote call would be O(N) disk I/O).
+    suggestions = _credential_suggestions()
+    remotes = [{"name": n, "label": _remote_label(n, suggestions)} for n in names]
     return {"available": True, "version": version, "remotes": remotes,
             "suggested": _suggestions_view(names)}
 
