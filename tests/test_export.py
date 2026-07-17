@@ -1,6 +1,7 @@
 """Tests for the export logic (fused_render/export.py), served via POST /api/export."""
 import json
 import os
+import shutil
 
 import pytest
 
@@ -28,7 +29,7 @@ def test_plan_collects_runpython_and_assets(tmp_path):
     plan = plan_export(html, str(tmp_path))
     assert not plan.errors
     assert [(e.path, e.name, e.file) for e in plan.entrypoints] == [
-        ("./sine.py", "sine", "code/sine.py")
+        ("./sine.py", "sine", "files/sine.py")
     ]
     assert {a.name for a in plan.assets} == {"logo.png", "notes.txt"}
 
@@ -55,7 +56,7 @@ def test_include_bundles_an_unreferenced_file(tmp_path):
     plan = plan_export(html, str(tmp_path), include=["data/points.csv"])
     assert not plan.errors
     assert [(a.path, a.name, a.file) for a in plan.assets] == [
-        ("data/points.csv", "data/points.csv", "assets/data/points.csv")
+        ("data/points.csv", "data/points.csv", "files/data/points.csv")
     ]
 
 
@@ -197,15 +198,17 @@ def test_export_page_writes_bundle(tmp_path):
     plan = export_page(str(tmp_path / "src" / "page.html"), str(out))
     assert not plan.errors
 
-    assert (out / "page.html").is_file()
-    assert (out / "code" / "sine.py").is_file()
-    assert (out / "assets" / "data/logo.png").is_file()
+    # v2: one payload dir mirroring the page's folder; no code/ /assets/ category dirs.
+    assert (out / "files" / "page.html").is_file()
+    assert (out / "files" / "sine.py").is_file()
+    assert (out / "files" / "data/logo.png").is_file()
 
     manifest = json.loads((out / "manifest.json").read_text())
-    assert manifest["fused_render_bundle"] == 1
+    assert manifest["fused_render_bundle"] == 2
+    assert manifest["root"] == "files"
     assert manifest["page"] == "page.html"
-    assert manifest["entrypoints"][0]["name"] == "sine"
-    assert manifest["assets"][0]["name"] == "data/logo.png"
+    assert manifest["entrypoints"][0] == {"path": "./sine.py", "name": "sine", "key": "sine.py"}
+    assert manifest["assets"][0] == {"path": "./data/logo.png", "name": "data/logo.png"}
 
 
 def test_export_page_raises_on_error(tmp_path):
@@ -220,6 +223,38 @@ def test_non_html_input_rejected(tmp_path):
     p = _write(tmp_path, "notes.txt", "hi")
     with pytest.raises(ExportError):
         export_page(str(p), str(tmp_path / "out"))
+
+
+def test_export_into_page_dir_rejected(tmp_path):
+    # Export is non-destructive → the out dir must be empty. The page's OWN folder is
+    # non-empty, so exporting into it is refused (never delete the author's files).
+    _write(tmp_path, "page.html", "<script>fused.runPython('./a.py', {});</script>")
+    _write(tmp_path, "a.py", "def main():\n    return 1\n")
+    with pytest.raises(ExportError, match="must be empty"):
+        export_page(str(tmp_path / "page.html"), str(tmp_path))
+    assert (tmp_path / "a.py").read_text() == "def main():\n    return 1\n"  # untouched
+
+
+def test_export_into_ancestor_dir_rejected(tmp_path):
+    # An ANCESTOR of the page folder is non-empty (it holds the page subfolder + sibling
+    # author files), so it is refused — nothing outside the bundle is ever deleted.
+    _write(tmp_path, "sub/page.html", "<script>fused.runPython('./a.py', {});</script>")
+    _write(tmp_path, "sub/a.py", "def main():\n    return 1\n")
+    _write(tmp_path, "files/keep.txt", "author data")  # a sibling that must not be touched
+    with pytest.raises(ExportError, match="must be empty"):
+        export_page(str(tmp_path / "sub" / "page.html"), str(tmp_path))
+    assert (tmp_path / "files" / "keep.txt").read_text() == "author data"  # untouched
+
+
+def test_export_into_nonempty_dir_rejected(tmp_path):
+    # ANY non-empty directory is refused (even one that looks like a prior bundle) — export
+    # never clobbers existing content.
+    _write(tmp_path, "src/page.html", "<html></html>")
+    out = tmp_path / "out"
+    _write(out, "important.txt", "do not delete")
+    with pytest.raises(ExportError, match="must be empty"):
+        export_page(str(tmp_path / "src" / "page.html"), str(out))
+    assert (out / "important.txt").read_text() == "do not delete"
 
 
 def test_equivalent_asset_literals_both_mapped(tmp_path):
@@ -241,27 +276,45 @@ def test_same_asset_literal_across_methods_deduped(tmp_path):
     assert [a.path for a in plan.assets] == ["./x.csv"]
 
 
-def test_reexport_clears_stale_bundle_files(tmp_path):
-    # Re-exporting after removing a dependency must not leave the old files
-    # in code/ or assets/ — a stale orphan beside a fresh manifest reads as
-    # part of the bundle.
+def test_reexport_into_same_dir_rejected(tmp_path):
+    # Export is non-destructive: a second export into the same (now non-empty) dir is
+    # refused, rather than clearing/overwriting the prior bundle. Re-export targets a fresh
+    # dir (Deploy always uses a new temp dir).
     src = tmp_path / "src"
     src.mkdir()
     (src / "a.py").write_text("def main():\n    return 1\n")
-    (src / "b.py").write_text("def main():\n    return 2\n")
-    (src / "page.html").write_text(
-        "<script>fused.runPython('./a.py',{}); fused.runPython('./b.py',{});</script>"
-    )
+    (src / "page.html").write_text("<script>fused.runPython('./a.py',{});</script>")
     out = tmp_path / "bundle"
     export_page(str(src / "page.html"), str(out))
-    assert (out / "code" / "b.py").is_file()
+    assert (out / "files" / "a.py").is_file()
 
-    (src / "page.html").write_text("<script>fused.runPython('./a.py',{});</script>")
-    export_page(str(src / "page.html"), str(out))
-    assert (out / "code" / "a.py").is_file()
-    assert not (out / "code" / "b.py").exists()  # stale entry cleared
-    manifest = json.loads((out / "manifest.json").read_text())
-    assert [e["name"] for e in manifest["entrypoints"]] == ["a"]
+    with pytest.raises(ExportError, match="must be empty"):
+        export_page(str(src / "page.html"), str(out))
+
+
+def test_failed_export_leaves_out_clean_so_retry_works(tmp_path, monkeypatch):
+    # The bundle is built in a temp dir and swapped in with one atomic rename, so a failure
+    # mid-build never leaves a partial out dir — out_dir stays absent/empty and a retry to the
+    # same path is not blocked by the empty-dir check.
+    _write(tmp_path, "src/page.html", "<script>fused.runPython('./a.py', {});</script>")
+    _write(tmp_path, "src/a.py", "def main():\n    return 1\n")
+    out = tmp_path / "bundle"
+
+    real_copyfile = shutil.copyfile
+
+    def boom(src, dst):  # fail the very first file copy (simulates a disk-full / crash)
+        raise OSError("simulated mid-export failure")
+
+    monkeypatch.setattr("fused_render.export.shutil.copyfile", boom)
+    with pytest.raises(OSError, match="simulated mid-export failure"):
+        export_page(str(tmp_path / "src" / "page.html"), str(out))
+    # out_dir was never populated — absent, or empty if the caller pre-created it.
+    assert not out.exists() or not any(out.iterdir())
+
+    monkeypatch.setattr("fused_render.export.shutil.copyfile", real_copyfile)
+    plan = export_page(str(tmp_path / "src" / "page.html"), str(out))  # retry succeeds
+    assert not plan.errors
+    assert (out / "files" / "a.py").is_file()
 
 
 def test_dotfile_asset_key_not_mangled(tmp_path):
@@ -271,7 +324,7 @@ def test_dotfile_asset_key_not_mangled(tmp_path):
     plan = plan_export(html, str(tmp_path))
     assert not plan.errors
     assert plan.assets[0].name == ".data.bin"
-    assert plan.assets[0].file == "assets/.data.bin"
+    assert plan.assets[0].file == "files/.data.bin"
 
 
 def test_discovers_imported_sibling_module(tmp_path):
@@ -282,7 +335,7 @@ def test_discovers_imported_sibling_module(tmp_path):
     _write(tmp_path, "helpers.py", "def go():\n    return 1\n")
     plan = plan_export(html, str(tmp_path))
     assert not plan.errors
-    assert [(r.key, r.file) for r in plan.resources] == [("helpers.py", "resources/helpers.py")]
+    assert [(r.key, r.file) for r in plan.resources] == [("helpers.py", "files/helpers.py")]
 
 
 def test_transitive_module_discovery(tmp_path):
@@ -352,26 +405,9 @@ def test_export_page_writes_resources(tmp_path):
     out = tmp_path / "bundle"
     plan = export_page(str(tmp_path / "src" / "page.html"), str(out))
     assert not plan.errors
-    assert (out / "resources" / "helpers.py").is_file()
+    assert (out / "files" / "helpers.py").is_file()
     manifest = json.loads((out / "manifest.json").read_text())
-    assert manifest["resources"] == [{"key": "helpers.py", "file": "resources/helpers.py"}]
-
-
-def test_reexport_clears_stale_resources(tmp_path):
-    src = tmp_path / "src"
-    src.mkdir()
-    (src / "page.html").write_text("<script>fused.runPython('./sine.py', {});</script>")
-    (src / "sine.py").write_text("import helpers\n\ndef main():\n    return 1\n")
-    (src / "helpers.py").write_text("def go():\n    return 1\n")
-    out = tmp_path / "bundle"
-    export_page(str(src / "page.html"), str(out))
-    assert (out / "resources" / "helpers.py").is_file()
-
-    # Drop the import; the stale resource must not linger beside the fresh manifest.
-    (src / "sine.py").write_text("def main():\n    return 1\n")
-    export_page(str(src / "page.html"), str(out))
-    assert not (out / "resources" / "helpers.py").exists()
-    assert json.loads((out / "manifest.json").read_text())["resources"] == []
+    assert manifest["resources"] == [{"key": "helpers.py"}]
 
 
 def test_symlink_escaping_page_dir_rejected(tmp_path):
@@ -619,7 +655,7 @@ def test_manifest_include_bundled_through_export_page(tmp_path):
     out = tmp_path / "bundle"
     plan = export_page(str(tmp_path / "src" / "page.html"), str(out))
     assert not plan.errors
-    assert (out / "assets" / "data/a.json").is_file()
-    assert (out / "assets" / "data/b.json").is_file()
+    assert (out / "files" / "data/a.json").is_file()  # v2 payload dir
+    assert (out / "files" / "data/b.json").is_file()
     manifest = json.loads((out / "manifest.json").read_text())
     assert {a["name"] for a in manifest["assets"]} == {"data/a.json", "data/b.json"}

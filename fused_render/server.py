@@ -2602,7 +2602,7 @@ def create_app(start_dir: str) -> FastAPI:
         if guard is not None:
             return guard
 
-        from fused_render.export import ExportError, export_page
+        from fused_render.export import ExportError, _asset_key, export_page
 
         page = body.get("page")
         out = body.get("out")
@@ -2624,10 +2624,15 @@ def create_app(start_dir: str) -> FastAPI:
         except ExportError as e:
             return _error(str(e))
 
+        # Mirror the v2 manifest shape (entrypoints carry the payload-relative `key`, assets
+        # just `path`+`name`) so a caller sees the same fields the bundle's manifest.json has.
         return {
             "out": os.path.abspath(out),
-            "entrypoints": [{"path": e.path, "name": e.name, "file": e.file} for e in plan.entrypoints],
-            "assets": [{"path": a.path, "name": a.name, "file": a.file} for a in plan.assets],
+            "entrypoints": [
+                {"path": e.path, "name": e.name, "key": _asset_key(e.path)}
+                for e in plan.entrypoints
+            ],
+            "assets": [{"path": a.path, "name": a.name} for a in plan.assets],
             "warnings": plan.warnings,
         }
 

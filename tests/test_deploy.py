@@ -216,7 +216,7 @@ def test_importable_fused_autodetects_via_shim_and_deploys(tmp_path, monkeypatch
     (call,) = h.calls()
     assert call["argv0"] == "fused"  # the shim renamed argv[0] for click
     assert call["argv"][:2] == ["share", "create"]
-    assert call["bundle_files"] == ["code", "manifest.json", "page.html"]
+    assert call["bundle_files"] == ["files", "manifest.json"]
 
 
 def test_setup_cli_hint_names_the_bundle_wrapper_when_frozen(tmp_path, monkeypatch):
@@ -378,7 +378,7 @@ def test_deploy_creates_public_share_and_stores_pointer(tmp_path, monkeypatch):
     assert "--public" in call["argv"]
     assert call["env"] == "cloud"
     # The bundle handed to the CLI was a real export at call time.
-    assert call["bundle_files"] == ["code", "manifest.json", "page.html"]
+    assert call["bundle_files"] == ["files", "manifest.json"]
 
     assert h.pointer()["token"] == "abc123"
 
@@ -404,7 +404,7 @@ def test_deploy_bundles_included_file_and_persists_selection(tmp_path, monkeypat
 
     # The included file was actually bundled as an asset alongside the auto scan.
     (call,) = h.calls()
-    assert call["bundle_files"] == ["assets", "code", "manifest.json", "page.html"]
+    assert call["bundle_files"] == ["files", "manifest.json"]
 
 
 def test_redeploy_active_mount_repoints_same_token(tmp_path, monkeypatch):

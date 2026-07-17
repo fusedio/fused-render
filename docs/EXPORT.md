@@ -20,7 +20,10 @@ the minted URL. Manual export remains the path for driving the hosting layer
 yourself.
 
 `page` and `out` must both be absolute filesystem paths (same convention as
-every other endpoint). Two optional fields tune the file set (see "Choosing which
+every other endpoint). Export is **non-destructive** — it never deletes an existing
+file — so `out` must be **empty** (or not yet exist); a non-empty `out` is rejected.
+Re-export to a fresh directory (the Deploy flow always uses a new temp dir). Two
+optional fields tune the file set (see "Choosing which
 files are bundled" below): `include` (extra page-relative files to bundle as
 assets) and `exclude` (files to drop from the bundle) — both arrays of relative
 paths, defaulting to empty. On success the response is
@@ -33,26 +36,35 @@ header is a `403`).
 
 ## What a bundle contains
 
+A bundle (format **v2**) is `manifest.json` plus a single `files/` payload dir mirroring
+the page's folder — every bundled file at its real page-relative path, no category dirs:
+
 ```
 bundle/
-  page.html         # the page, copied verbatim
   manifest.json     # the contract the hosting layer reads
-  code/<name>.py    # one file per fused.runPython() target
-  assets/<key>      # one file per fused.rawUrl()/readFile() target
-  resources/<key>   # one file per first-party module a bundled entrypoint imports
+  files/            # the payload — mirrors the page's folder verbatim
+    page.html       # the page
+    sine.py         # a fused.runPython() target
+    logo.png        # a fused.rawUrl()/readFile() target
+    helpers.py      # a first-party module a bundled entrypoint imports
 ```
 
-`manifest.json`:
+`manifest.json` classifies each payload file by role (paths are relative to `root`):
 
 ```json
 {
-  "fused_render_bundle": 1,
+  "fused_render_bundle": 2,
+  "root": "files",
   "page": "page.html",
-  "entrypoints": [{ "path": "./sine.py", "name": "sine", "file": "code/sine.py" }],
-  "assets": [{ "path": "./logo.png", "name": "logo.png", "file": "assets/logo.png" }],
-  "resources": [{ "key": "helpers.py", "file": "resources/helpers.py" }]
+  "entrypoints": [{ "path": "./sine.py", "name": "sine", "key": "sine.py" }],
+  "assets": [{ "path": "./logo.png", "name": "logo.png" }],
+  "resources": [{ "key": "helpers.py" }]
 }
 ```
+
+Each file's bundle location is `root/<path>` and that same path is its runtime key — there
+is no separate `file` field. (The hosting layer also still reads legacy **v1** bundles —
+`code/`/`assets/`/`resources/` category dirs with explicit `file` fields.)
 
 - **entrypoints** map each `runPython` literal path to a served route name. When
   hosted, `fused.runPython("./sine.py", params)` becomes a `POST` to that route.

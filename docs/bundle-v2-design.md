@@ -1,10 +1,13 @@
 # Export bundle v2 — single payload dir + role-tagging manifest — design
 
-Date: 2026-07-17. Branch `claude/fused-render-html-files-vba3bc` (follow-up to the
-Layer A/B change in fusedio/fused-render#180 + fusedio/fused#335).
+Date: 2026-07-17. Branch `claude/bundle-v2-payload-dir` (follow-up to the Layer A/B change
+in fusedio/fused-render#180 + fusedio/fused#335).
 
-Status: **proposed**, not implemented. This documents the target format so the
-follow-up is a mechanical change, not a re-derivation.
+Status: **implemented** (option (a) — curated set under a single payload dir). Export emits
+v2; `load_html_bundle` reads both v1 and v2. The "what's in the payload" sub-options below
+are kept for context — v2 shipped with the curated set (page + entrypoints + assets +
+discovered modules) and still enumerates each role in the manifest, rather than the
+whole-folder ship of option (b). This doc remains the format reference and rationale.
 
 ## Problem
 
