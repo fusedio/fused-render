@@ -73,6 +73,15 @@ MAX_TRACKED = int(os.environ.get("FUSED_RENDER_PREFETCH_MAX_TRACKED", 2048))
 ENABLED = os.environ.get("FUSED_RENDER_PREFETCH", "1") != "0"
 
 CHUNK_BYTES = 32 * 1024 * 1024
+# Two regions a cold first-page read touches before anything else, fetched
+# ahead of the bulk so an interactive read racing this background stream finds
+# them already warm in the serve cache: the parquet footer/metadata lives in
+# the file *tail* (the ~7s cold DESCRIBE parses it), and row group 0 — what an
+# unsorted first page reads — lives in the *head*. Streaming strictly 0->end
+# would warm the head early but leave the footer cold until the very end, so a
+# first open midway through the stream still pays the cold footer parse.
+HEAD_BYTES = 8 * 1024 * 1024
+FOOTER_BYTES = 1 * 1024 * 1024
 # Applies to the DOWNLOAD phase only, not the size-gate HEAD: once a file
 # clears the gate, let the interactive load that triggered us win its
 # first cold seeks before the whole-file stream starts competing for the
@@ -204,12 +213,41 @@ def _head_size(url: str) -> int | None:
         return int(cl) if cl is not None else None
 
 
-def _fetch_chunk(url: str, off: int, end: int, path: str) -> int:
-    """Fetch bytes [off, end] through the serve and discard them (the point
-    is the serve's cache side effect); update the job's progress as bytes
-    land. Returns the new offset. Blocking — run via asyncio.to_thread."""
+def _prioritized_chunks(size: int) -> "list[tuple[int, int]]":
+    """The whole file as [start, end] chunks (end inclusive), ordered so the
+    two latency-critical regions stream first: the head (row group 0) then the
+    footer tail, then the middle bulk. Every byte of [0, size) is covered
+    exactly once. On a file at or below HEAD_BYTES the head already spans the
+    whole file, so this degrades to a plain sequential 0->end plan (the tail
+    and middle ranges are empty) — preserving the small-file behaviour."""
+    head_end = min(HEAD_BYTES, size)
+    tail_start = max(head_end, size - FOOTER_BYTES)
+
+    def _split(lo: int, hi: int) -> "list[tuple[int, int]]":
+        return [(o, min(o + CHUNK_BYTES, hi) - 1)
+                for o in range(lo, hi, CHUNK_BYTES)]
+
+    # head (row group 0), then footer tail, then the middle bulk.
+    return (_split(0, head_end) + _split(tail_start, size)
+            + _split(head_end, tail_start))
+
+
+def _fetch_chunk(url: str, start: int, end: int, path: str,
+                 committed: int) -> None:
+    """Fetch bytes [start, end] through the serve and discard them (the point
+    is the serve's cache side effect); report progress as the bytes land.
+    Blocking — run via asyncio.to_thread.
+
+    Progress is `committed + (off - start)` — the bytes banked by fully
+    finished chunks plus this chunk's own intra-chunk offset. That is
+    idempotent across retries: a retried chunk re-requests from `start`, so a
+    failed partial attempt's bytes are simply re-counted from the chunk base
+    rather than added a second time — `done` can never overshoot `size`.
+    Chunks also stream out of file order (head, tail, middle), so the base is
+    `committed` (finished-chunk bytes), not the absolute file offset."""
     req = urllib.request.Request(url)
-    req.add_header("Range", f"bytes={off}-{end}")
+    req.add_header("Range", f"bytes={start}-{end}")
+    off = start
     with urllib.request.urlopen(req, timeout=120) as r:
         while True:
             b = r.read(1024 * 1024)
@@ -218,8 +256,16 @@ def _fetch_chunk(url: str, off: int, end: int, path: str) -> int:
             off += len(b)
             with _lock:
                 if path in _jobs:
-                    _jobs[path]["done"] = off
-    return off
+                    _jobs[path]["done"] = committed + (off - start)
+    # A connection-close-delimited (or otherwise unframed) response can reach a
+    # clean EOF with the body truncated — read() just returns empty, no
+    # exception. Verify we actually consumed the whole [start, end] range; if
+    # not, raise so the caller re-requests the chunk instead of committing bytes
+    # that never landed and finishing the job with data missing.
+    if off != end + 1:
+        raise OSError(
+            f"short read: got {off - start} of {end - start + 1} bytes "
+            f"for range [{start}, {end}]")
 
 
 async def _acquire_slot() -> "asyncio.Semaphore":
@@ -264,26 +310,34 @@ async def _prefetch(path: str, url: str) -> None:
         # after START_DELAY_S so the triggering interactive read gets ahead.
         await asyncio.sleep(START_DELAY_S)
         async with await _acquire_slot():
-            off, errors = 0, 0
-            while off < size:
-                await _wait_for_lull(path)
-                end = min(off + CHUNK_BYTES, size) - 1
-                try:
-                    off = await asyncio.to_thread(
-                        _fetch_chunk, url, off, end, path)
-                    errors = 0
-                except Exception as exc:
-                    _release(exc)
-                    errors += 1
-                    if errors > MAX_CONSECUTIVE_ERRORS:
-                        logger.warning("prefetch of %r gave up at %d/%d bytes",
-                                       path, off, size)
-                        _finish(path, "failed")
-                        return
-                    # Resume at `off`: everything fetched so far is already
-                    # in the serve's cache, so re-requesting it replays
-                    # locally.
-                    await asyncio.sleep(min(2.0 * errors, 30.0))
+            errors, committed = 0, 0
+            # Head, then footer tail, then the middle bulk (see
+            # _prioritized_chunks) so a first-page read racing us warms fast.
+            # `committed` banks the bytes of finished chunks; a chunk is
+            # re-requested whole on failure, so nothing partial is committed.
+            for start, end in _prioritized_chunks(size):
+                while True:
+                    await _wait_for_lull(path)
+                    try:
+                        await asyncio.to_thread(
+                            _fetch_chunk, url, start, end, path, committed)
+                        break
+                    except Exception as exc:
+                        _release(exc)
+                        errors += 1
+                        if errors > MAX_CONSECUTIVE_ERRORS:
+                            logger.warning(
+                                "prefetch of %r gave up at %d/%d bytes",
+                                path, committed, size)
+                            _finish(path, "failed")
+                            return
+                        # Re-request the whole chunk from `start`: bytes already
+                        # fetched are in the serve's cache and replay locally,
+                        # and progress resets to `committed` so the retry can't
+                        # push `done` past `size`.
+                        await asyncio.sleep(min(2.0 * errors, 30.0))
+                errors = 0
+                committed += end - start + 1
             _finish(path, "done")
             logger.info("prefetched %r (%d bytes) into the serve cache",
                         path, size)

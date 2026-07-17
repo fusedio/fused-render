@@ -206,6 +206,103 @@ def test_parquet_page_sql_uses_file_row_number(parquet_file):
     assert "row_number() OVER" not in sql
 
 
+def test_parquet_unsorted_page_sql_prunes_by_file_row_number_range(parquet_file):
+    # The common first-page case (no sort, no filter) expresses its window as a
+    # file_row_number range predicate so DuckDB prunes to the covering row
+    # groups instead of reading ~threads groups ahead before LIMIT halts it.
+    rel = reader.relation_for(parquet_file)
+    sql = reader._page_sql(parquet_file, rel, "", "", offset=100, limit=50)
+    assert "file_row_number >= 100 AND file_row_number < 150" in sql
+    assert "LIMIT ? OFFSET ?" not in sql          # window is the predicate now
+    # A sort or filter must NOT prune by physical position (it no longer tracks
+    # logical page order) — those keep the LIMIT/OFFSET window.
+    sorted_sql = reader._page_sql(parquet_file, rel, "", ' ORDER BY "id" ASC',
+                                  offset=100, limit=50)
+    assert "file_row_number >= 100" not in sorted_sql
+    assert "LIMIT ? OFFSET ?" in sorted_sql
+    filtered_sql = reader._page_sql(parquet_file, rel, ' WHERE "id" > 5', "",
+                                    offset=100, limit=50)
+    assert "file_row_number >= 100" not in filtered_sql
+    assert "LIMIT ? OFFSET ?" in filtered_sql
+
+
+def test_page_branch_keys_on_scan_ext_not_file_ext(tmp_path):
+    # The natural-order pruning branch must be chosen by the SCAN's logical ext
+    # (what _page_sql itself branches on), not the file's. They can diverge — a
+    # source_url whose splitext-visible extension isn't .parquet while the local
+    # file is. If the branch keyed on the file ext it would take the no-bind
+    # range path while _page_sql emits a LIMIT ? OFFSET ? query -> a bind-count
+    # error. Here scan is a real .json (non-parquet ext) with the file ext
+    # forced to .parquet: the robust LIMIT/OFFSET path must run and read it.
+    jp = _make(tmp_path, "s.json",
+               "SELECT range AS id, 'n'||range AS name FROM range(5)")
+    con = duckdb.connect(":memory:")
+    con.execute("PRAGMA enable_object_cache=true")
+    try:
+        out = reader._read_flat(jp, jp, con, ".parquet", 0, 3,
+                                None, None, "page")
+    finally:
+        con.close()
+    assert out["ids"] == [0, 1, 2]
+    assert [r["id"] for r in out["rows"]] == [0, 1, 2]
+
+
+def _direct_page_positions(path, offset, limit):
+    """Reference window: the plain LIMIT/OFFSET natural-order scan the pruning
+    path replaces. Its rows/positions must match exactly."""
+    con = duckdb.connect()
+    rows = con.execute(
+        f"SELECT file_row_number FROM read_parquet('{path}', "
+        f"file_row_number=true) LIMIT {limit} OFFSET {offset}").fetchall()
+    con.close()
+    return [r[0] for r in rows]
+
+
+def test_pruned_page_matches_limit_offset_scan(grouped_parquet):
+    # Offsets landing in the first, a middle, and the last row group, plus one
+    # past EOF (empty). Each pruned page must return exactly the rows/positions
+    # the LIMIT/OFFSET scan would.
+    for offset in (0, 100, 5000, 9950, 10000, 12000):
+        out = reader.main(grouped_parquet, mode="page", offset=offset, limit=50)
+        expected = _direct_page_positions(grouped_parquet, offset, 50)
+        assert out["ids"] == expected, offset
+        assert [r["seq"] for r in out["rows"]] == expected, offset
+
+
+def test_pruned_page_over_http_preserves_file_order(grouped_parquet):
+    # The pruned first page has no ORDER BY — it relies on
+    # preserve_insertion_order to return rows in file_row_number order. Prove
+    # that holds on the remote path this fix actually targets: the shared
+    # _http_connection runs SET threads=32, where an unordered parallel scan
+    # could otherwise interleave row groups. Windows straddling the 2048-row
+    # group boundary exercise the multi-group case.
+    srv, hits = _serve_dir(os.path.dirname(grouped_parquet))
+    try:
+        url = f"http://127.0.0.1:{srv.server_address[1]}/g.parquet"
+        try:
+            reader.main(grouped_parquet, mode="page", limit=1, source_url=url)
+        except Exception:
+            pytest.skip("duckdb httpfs extension unavailable")
+        for offset in (0, 2000, 2048, 4096, 6000):
+            out = reader.main(grouped_parquet, mode="page", offset=offset,
+                              limit=100, source_url=url)
+            expected = list(range(offset, offset + 100))
+            assert out["ids"] == expected, offset
+            assert [r["seq"] for r in out["rows"]] == expected, offset
+    finally:
+        srv.shutdown()
+
+
+def test_pruned_page_projection_matches_scan(grouped_parquet):
+    # A narrow projection on the pruned path still keys rows by physical
+    # position and returns exactly the window's rows.
+    out = reader.main(grouped_parquet, mode="page", columns=["seq"],
+                      offset=4096, limit=10)
+    assert out["columns"] == ["seq"]
+    assert out["ids"] == list(range(4096, 4106))
+    assert [r["seq"] for r in out["rows"]] == list(range(4096, 4106))
+
+
 def test_csv_page_sql_keeps_window(csv_file):
     # CSV/JSON can't prune, and have no file_row_number, so they keep the
     # streaming row_number() window.
@@ -729,6 +826,27 @@ def test_source_url_reads_over_http(parquet_file):
             pytest.skip("duckdb httpfs extension unavailable")
         assert [r["id"] for r in out["rows"]] == [0, 1, 2, 3, 4]
         assert any("s.parquet" in h for h in hits), "reader never hit the URL"
+    finally:
+        srv.shutdown()
+
+
+def test_http_connection_persists_across_reads(parquet_file):
+    # The shared connection is stashed on the duckdb module so it outlives a
+    # single reader run; with parquet_metadata_cache=true set once at build,
+    # the SECOND open in a server session reuses the parsed footer instead of
+    # re-downloading/re-parsing it (the ~7s cold DESCRIBE is paid only once).
+    srv, hits = _serve_dir(os.path.dirname(parquet_file))
+    try:
+        url = f"http://127.0.0.1:{srv.server_address[1]}/s.parquet"
+        try:
+            reader.main(parquet_file, limit=5, source_url=url)
+        except Exception:
+            pytest.skip("duckdb httpfs extension unavailable")
+        con1 = getattr(duckdb, "_fused_render_http_con_v3", None)
+        assert con1 is not None                   # stashed for reuse
+        reader.main(parquet_file, limit=5, source_url=url)
+        con2 = getattr(duckdb, "_fused_render_http_con_v3", None)
+        assert con2 is con1                        # same connection -> warm cache
     finally:
         srv.shutdown()
 

@@ -2063,6 +2063,14 @@ def create_app(start_dir: str) -> FastAPI:
         # Deferred condition.py evaluation (SPEC CT-12): stat marks gated
         # templates `conditional`; this resolves them while the client already
         # renders the first unconditional template.
+        #
+        # This does NOT gate first paint, on either side. Server-side it's a
+        # sync `def`, so FastAPI runs it in the threadpool — its cold os.stat
+        # over the mount (~1.6s) never blocks the event loop or other requests.
+        # Client-side the frontend fetches it from a background useEffect
+        # (Preview.tsx `useConditions`) and renders every unconditional
+        # template while the verdict is still `null` — the gated ones just show
+        # a spinner until it lands. So no change on the render path is needed.
         return _conditions_payload(path)
 
     @app.get("/api/fs/list")
