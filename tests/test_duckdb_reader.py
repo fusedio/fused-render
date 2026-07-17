@@ -206,6 +206,58 @@ def test_parquet_page_sql_uses_file_row_number(parquet_file):
     assert "row_number() OVER" not in sql
 
 
+def test_parquet_unsorted_page_sql_prunes_by_file_row_number_range(parquet_file):
+    # The common first-page case (no sort, no filter) expresses its window as a
+    # file_row_number range predicate so DuckDB prunes to the covering row
+    # groups instead of reading ~threads groups ahead before LIMIT halts it.
+    rel = reader.relation_for(parquet_file)
+    sql = reader._page_sql(parquet_file, rel, "", "", offset=100, limit=50)
+    assert "file_row_number >= 100 AND file_row_number < 150" in sql
+    assert "LIMIT ? OFFSET ?" not in sql          # window is the predicate now
+    # A sort or filter must NOT prune by physical position (it no longer tracks
+    # logical page order) — those keep the LIMIT/OFFSET window.
+    sorted_sql = reader._page_sql(parquet_file, rel, "", ' ORDER BY "id" ASC',
+                                  offset=100, limit=50)
+    assert "file_row_number >= 100" not in sorted_sql
+    assert "LIMIT ? OFFSET ?" in sorted_sql
+    filtered_sql = reader._page_sql(parquet_file, rel, ' WHERE "id" > 5', "",
+                                    offset=100, limit=50)
+    assert "file_row_number >= 100" not in filtered_sql
+    assert "LIMIT ? OFFSET ?" in filtered_sql
+
+
+def _direct_page_positions(path, offset, limit):
+    """Reference window: the plain LIMIT/OFFSET natural-order scan the pruning
+    path replaces. Its rows/positions must match exactly."""
+    con = duckdb.connect()
+    rows = con.execute(
+        f"SELECT file_row_number FROM read_parquet('{path}', "
+        f"file_row_number=true) LIMIT {limit} OFFSET {offset}").fetchall()
+    con.close()
+    return [r[0] for r in rows]
+
+
+def test_pruned_page_matches_limit_offset_scan(grouped_parquet):
+    # Offsets landing in the first, a middle, and the last row group, plus one
+    # past EOF (empty). Each pruned page must return exactly the rows/positions
+    # the LIMIT/OFFSET scan would.
+    for offset in (0, 100, 5000, 9950, 10000, 12000):
+        out = reader.main(grouped_parquet, mode="page", offset=offset, limit=50)
+        expected = _direct_page_positions(grouped_parquet, offset, 50)
+        assert out["ids"] == expected, offset
+        assert [r["seq"] for r in out["rows"]] == expected, offset
+
+
+def test_pruned_page_projection_matches_scan(grouped_parquet):
+    # A narrow projection on the pruned path still keys rows by physical
+    # position and returns exactly the window's rows.
+    out = reader.main(grouped_parquet, mode="page", columns=["seq"],
+                      offset=4096, limit=10)
+    assert out["columns"] == ["seq"]
+    assert out["ids"] == list(range(4096, 4106))
+    assert [r["seq"] for r in out["rows"]] == list(range(4096, 4106))
+
+
 def test_csv_page_sql_keeps_window(csv_file):
     # CSV/JSON can't prune, and have no file_row_number, so they keep the
     # streaming row_number() window.

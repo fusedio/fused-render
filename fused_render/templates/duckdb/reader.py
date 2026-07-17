@@ -256,6 +256,17 @@ def _http_connection():
         # converge to the slowest column (measured: 32 threads -> the light
         # columns land in ~5s while an 18MB column takes 13s; default pool ->
         # everything takes 13s). IO-bound, so way past core count is fine.
+        #
+        # threads=32 used to also *drive* an over-read on many-small-row-group
+        # files: a LIMIT/OFFSET page let the parallel scan speculatively open
+        # ~threads row groups before the LIMIT halted it (measured ~32 groups /
+        # ~12s cold when only row group 0 was needed). That is fixed at the
+        # source now — the unsorted, unfiltered page prunes to its row-group
+        # range via a file_row_number predicate (see _page_sql), so DuckDB never
+        # schedules groups outside the window regardless of thread count. So
+        # threads=32 stays: it helps the single-big-row-group file (which must
+        # read whole column chunks and parallelizes to the bucket ceiling)
+        # without hurting the many-small-group file any more.
         con.execute("SET threads=32")
         setattr(duckdb, key, con)
     return con.cursor()
@@ -285,7 +296,8 @@ def relation_for(file: str, file_row_number: bool = False) -> str:
 
 
 def _page_sql(scan: str, relation: str, where: str, order: str,
-              projection: str = "*") -> str:
+              projection: str = "*", offset: int = 0,
+              limit: int = MAX_LIMIT) -> str:
     """The paging SELECT, which must also yield each row's physical file position
     as `_POS` (the writer's edit key) even after WHERE/ORDER reshuffle the page.
     `scan` is whatever relation_for reads — the file path, or the http URL on
@@ -304,6 +316,19 @@ def _page_sql(scan: str, relation: str, where: str, order: str,
     match. CSV/JSON have no such pseudo-column and can't prune anyway, so they
     keep the streaming window (LIMIT still pushes through it).
 
+    The common first-page case — an unsorted, unfiltered parquet page — gets
+    row-group pruning up front: file position IS the page order, so the window
+    [offset, offset+limit) is expressed as a `file_row_number` range predicate
+    instead of LIMIT/OFFSET. LIMIT/OFFSET alone are *reactive* — DuckDB's
+    parallel scan (threads=32 here) speculatively reads ~threads row groups
+    before the LIMIT halts it (measured: ~32 groups / ~12s cold when only row
+    group 0 / ~2MB was needed). The range predicate prunes to just the groups
+    spanning the window, so only their bytes move. Sound only unsorted +
+    unfiltered, where physical position and logical page order coincide; a sort
+    or filter keeps the LIMIT/OFFSET window (position no longer tracks order).
+    offset/limit are int-clamped in main, so interpolating them as literals is
+    safe and matches _rowgroup_prune / the positions IN-list path.
+
     A user sort always gets the physical position appended as a tiebreaker.
     Without it, ties at a page boundary make the LIMIT/OFFSET window itself
     nondeterministic under parallel execution — and the grid's per-column
@@ -314,6 +339,10 @@ def _page_sql(scan: str, relation: str, where: str, order: str,
     if _logical_ext(scan) == ".parquet":
         rel = relation_for(scan, file_row_number=True)
         proj = "* EXCLUDE (file_row_number)" if projection == "*" else projection
+        if not where and not order:
+            return (f"SELECT file_row_number AS {_POS}, {proj} FROM {rel} "
+                    f"WHERE file_row_number >= {offset} "
+                    f"AND file_row_number < {offset + limit}")
         tie = f"{order}, file_row_number" if order else ""
         return (f"SELECT file_row_number AS {_POS}, {proj} "
                 f"FROM {rel}{where}{tie} LIMIT ? OFFSET ?")
@@ -571,6 +600,13 @@ def _read_flat(file: str, scan: str, con, ext: str, offset: int, limit: int,
         in_list = ",".join(str(int(p)) for p in positions[:MAX_LIMIT]) or "-1"
         cur = con.execute(f"SELECT file_row_number AS {_POS}, {proj} "
                           f"FROM {rel} WHERE file_row_number IN ({in_list})")
+    elif ext == ".parquet" and not where and not order:
+        # Unsorted, unfiltered parquet page: _page_sql bakes the window into a
+        # file_row_number range predicate (see its docstring) so DuckDB prunes
+        # to the covering row groups. The window is in the SQL, not bound —
+        # wbinds is empty here (no filter), so there are no ? to fill.
+        cur = con.execute(_page_sql(scan, relation, where, order, projection,
+                                    offset=offset, limit=limit), wbinds)
     else:
         cur = con.execute(_page_sql(scan, relation, where, order, projection),
                           wbinds + [limit, offset])
