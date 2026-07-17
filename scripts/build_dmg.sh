@@ -273,6 +273,53 @@ rm -rf "$PY2APP_DIST" "$BUILD_DIR/py2app-build"
 test -d "$APP_DIR"
 
 # ---------------------------------------------------------------------------
+# 4a. Prune dead weight from the bundle (D116). py2app's `packages` option
+#     (setup_py2app.py) whole-copies each package, which drags along package
+#     test suites (~100 MB: numpy/pandas/scipy/pyarrow/... ship `tests`
+#     directories full of fixtures), stale `__pycache__` trees (~160 MB —
+#     the .pyc files double every .py, and the bundle recompiles on first
+#     run anyway), and the copied Python.framework's developer-only stdlib
+#     corners (test suite, idlelib, ensurepip, lib2to3, tkinter — the GUI is
+#     rumps/pyobjc, nothing imports tkinter) plus C headers. None of this is
+#     importable by the app or by user scripts in any supported path; grep
+#     of fused_render confirms nothing imports from a `tests` package.
+#
+#     MUST run before the smoke tests below (they validate the PRUNED
+#     bundle) and before codesign (step 5 — deleting files after signing
+#     would break the bundle seal).
+# ---------------------------------------------------------------------------
+
+echo "==> pruning bundle dead weight"
+PRUNE_PYLIB="$APP_DIR/Contents/Resources/lib/python3.12"
+PRUNE_FRAMEWORK="$APP_DIR/Contents/Frameworks/Python.framework"
+
+# Package test suites: only directories literally named `tests` or `test`.
+find "$PRUNE_PYLIB" -type d \( -name tests -o -name test \) -prune \
+  -exec rm -rf {} +
+# Stale bytecode caches (regenerated lazily at runtime in the user's
+# __pycache__-less bundle are simply skipped — python falls back to source).
+find "$APP_DIR/Contents/Resources/lib" -type d -name __pycache__ -prune \
+  -exec rm -rf {} +
+# Installer/dev tooling the app never runs: no pip in the bundle by design
+# (SPEC §19 DP-3 — the Deploy surface uses the baked-in CLI, not pip).
+rm -rf "$PRUNE_PYLIB/pip" "$PRUNE_PYLIB/setuptools" "$PRUNE_PYLIB/wheel" \
+       "$PRUNE_PYLIB/pkg_resources" "$PRUNE_PYLIB/PyObjCTest"
+# The copied Python.framework: stdlib test suite + developer-only modules +
+# C headers. The app's own stdlib lives here (Resources/lib holds packages),
+# so prune surgically, never wholesale.
+FW_LIB="$PRUNE_FRAMEWORK/Versions/3.12/lib/python3.12"
+rm -rf "$FW_LIB/test" "$FW_LIB/idlelib" "$FW_LIB/ensurepip" \
+       "$FW_LIB/lib2to3" "$FW_LIB/tkinter" \
+       "$FW_LIB/site-packages/pip" "$FW_LIB/site-packages/setuptools" \
+       "$FW_LIB/site-packages/wheel"
+rm -rf "$PRUNE_FRAMEWORK/Versions/3.12/include" \
+       "$PRUNE_FRAMEWORK/Versions/3.12/Headers" \
+       "$PRUNE_FRAMEWORK/Versions/3.12/share" \
+       "$PRUNE_FRAMEWORK/Headers"
+find "$PRUNE_FRAMEWORK" -type d -name __pycache__ -prune -exec rm -rf {} +
+echo "    pruned; app now $(du -sh "$APP_DIR" | cut -f1)"
+
+# ---------------------------------------------------------------------------
 # 4b. Bundle sanity checks.
 #     a) No Mach-O binary masquerading as a .py: py2app's `packages` option
 #        mis-copies a bare C-extension module (e.g. _duckdb) to
@@ -436,6 +483,16 @@ echo "    $(echo "$RCLONE_SMOKE_OUT" | head -1)"
 #                                      Path must not contain spaces.
 # ---------------------------------------------------------------------------
 
+# Escape hatch for size-measurement / dev iteration builds: skip signing
+# entirely (both Developer ID and ad-hoc). The resulting app may not LAUNCH
+# on Apple Silicon (unsigned binaries are refused), but the DMG is byte-for-
+# byte comparable for size work and the pre-sign smoke tests above still
+# validate the bundle. Never use for a distributable build.
+if [[ -n "${FUSED_RENDER_SKIP_CODESIGN:-}" ]]; then
+  echo "==> FUSED_RENDER_SKIP_CODESIGN set -> skipping codesign (measurement build)"
+  SIGN_IDENTITY=""
+else
+
 KC_PATH="${FUSED_RENDER_CODESIGN_KEYCHAIN:-}"
 KC_OPT=""
 [[ -n "$KC_PATH" ]] && KC_OPT="--keychain $KC_PATH"
@@ -530,6 +587,8 @@ else
   echo "    cert to your keychain, to produce a distributable build. See docs/signing.md."
   codesign --force --deep -s - "$APP_DIR"
 fi
+
+fi  # FUSED_RENDER_SKIP_CODESIGN
 
 # ---------------------------------------------------------------------------
 # 6. DMG via dmgbuild: app + Applications symlink, compressed UDZO
