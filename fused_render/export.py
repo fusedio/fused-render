@@ -63,16 +63,26 @@ _RESERVED_NAMES = frozenset(
     }
 )
 
-# A `fused.<method>(` call whose first argument is a single- or double-quoted string
-# literal AND the *whole* first argument. Group 2 is the literal's contents. The trailing
-# `(?=\s*[,)])` lookahead requires the closing quote to be immediately followed (modulo
-# whitespace) by a `,` or `)` — so `fused.rawUrl("data/" + name)` is NOT a literal call
-# (the string is only a prefix of a computed expression); it falls through to the dynamic
-# (computed-path) count instead of being mis-collected as a bogus `data/` asset target.
+# A `fused.<method>(` call whose first argument is a COMPLETE quoted string literal — the
+# string, then (modulo whitespace) a `,` or `)`. The named group `litd`/`lits` holds the
+# contents (double- vs single-quoted). Two things make this precise:
+#   * The body **excludes its own delimiter** (`[^"\\]` / `[^'\\]`, with `\\.` for escapes),
+#     so it cannot span across a `" + x + "`. This is what separates a real literal target
+#     from a string that is merely the PREFIX of a computed expression: `fused.rawUrl(
+#     "data/" + name)`, `"data/" + name + ".json"`, and `"data/" + foo("x")` all fail to
+#     match (the body stops at the first inner quote and the following `+` isn't `,`/`)`),
+#     so they fall through to the dynamic (computed-path) count instead of being
+#     mis-collected as a bogus `data/`-ish asset target. Separate quote branches let a
+#     double-quoted path contain an apostrophe (and vice-versa).
+#   * The `(?=\s*[,)])` lookahead requires the string to be the whole first argument.
 # `\s*` before the `(` tolerates `fused.runPython (...)` — valid JS a page author could
 # write, which must not silently vanish from export.
 _LITERAL_CALL = {
-    method: re.compile(r"fused\.%s\s*\(\s*(['\"])(.*?)\1(?=\s*[,)])" % method)
+    method: re.compile(
+        r"fused\.%s\s*\(\s*"
+        r"""(?:"(?P<litd>(?:[^"\\]|\\.)*)"|'(?P<lits>(?:[^'\\]|\\.)*)')"""
+        r"(?=\s*[,)])" % method
+    )
     for method in ("runPython", "rawUrl", "readFile")
 }
 # Any `fused.<method>(` occurrence, literal or not — used to detect dynamic paths
@@ -206,7 +216,11 @@ def _literal_paths(html: str, method: str) -> list[str]:
     """Ordered, de-duplicated literal path arguments to ``fused.<method>(`` in ``html``."""
     seen: dict[str, None] = {}
     for m in _LITERAL_CALL[method].finditer(html):
-        seen.setdefault(m.group(2), None)
+        # Exactly one of the quote branches matched (double `litd` / single `lits`).
+        content = m.group("litd")
+        if content is None:
+            content = m.group("lits")
+        seen.setdefault(content, None)
     return list(seen)
 
 

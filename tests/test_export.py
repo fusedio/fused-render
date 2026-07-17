@@ -409,6 +409,37 @@ def test_computed_prefix_runpython_is_dynamic_error(tmp_path):
     assert any("computed" in e for e in plan.errors)
 
 
+def test_computed_path_with_trailing_literal_not_miscollected(tmp_path):
+    # The scanner body must not stretch across an inner quote to a LATER one: forms like
+    # "data/" + name + ".json" or "data/" + foo("x") are computed, not a garbage literal
+    # ('data/" + name + ".json') that would 404 as a missing file (Bugbot, fused-render#184).
+    for expr in ('"data/" + name + ".json"', '"data/" + foo("x")', '"a" + b + "c"'):
+        html = f"<script>const u = fused.rawUrl({expr});</script>"
+        plan = plan_export(html, str(tmp_path))
+        assert not plan.errors, f"{expr} produced errors: {plan.errors}"
+        assert not plan.assets, f"{expr} was mis-collected as an asset: {plan.assets}"
+        assert any("computed path" in w for w in plan.warnings)
+
+
+def test_computed_prefix_runpython_with_trailing_literal_is_error(tmp_path):
+    # runPython variant of the same over-match: computed, so a hard error — never a
+    # bogus literal target that quietly resolves to the wrong route.
+    html = '<script>fused.runPython("./run_" + kind + ".py", {});</script>'
+    plan = plan_export(html, str(tmp_path))
+    assert any("computed" in e for e in plan.errors)
+    assert not plan.entrypoints
+
+
+def test_literal_path_may_contain_opposite_quote(tmp_path):
+    # A double-quoted literal may contain an apostrophe (and vice-versa) — the body only
+    # excludes its own delimiter, so this stays a real literal, not a computed path.
+    html = "<script>fused.rawUrl(\"it's.png\");</script>"
+    _write(tmp_path, "it's.png", "PNG")
+    plan = plan_export(html, str(tmp_path))
+    assert not plan.errors
+    assert [a.name for a in plan.assets] == ["it's.png"]
+
+
 # --- embedded bundle manifest (<script type="application/fused-bundle">) --------------
 
 
