@@ -790,6 +790,25 @@ def test_writer_refuses_readonly_file(readonly_parquet):
 # mounts — just "bytes are also available here".
 
 
+def _require_httpfs():
+    """Skip the calling test when the httpfs extension can't be loaded (e.g.
+    no network access to extensions.duckdb.org from this CI environment).
+
+    reader.main() itself never raises on a missing httpfs — it's designed to
+    fall back to a plain local read (see reader.py's `_http_connection`
+    docstring) — so probing it directly here, instead of wrapping the
+    reader.main() call in try/except, is what actually catches this case
+    rather than silently exercising the fallback path and failing later on
+    the "reader never hit the URL" assertion."""
+    con = duckdb.connect(":memory:")
+    try:
+        con.execute("LOAD httpfs")
+    except duckdb.Error:
+        pytest.skip("duckdb httpfs extension unavailable")
+    finally:
+        con.close()
+
+
 def _serve_dir(directory):
     """A local HTTP server over `directory` that records request paths."""
     import functools
@@ -817,13 +836,11 @@ def _serve_dir(directory):
 
 
 def test_source_url_reads_over_http(parquet_file):
+    _require_httpfs()
     srv, hits = _serve_dir(os.path.dirname(parquet_file))
     try:
         url = f"http://127.0.0.1:{srv.server_address[1]}/s.parquet"
-        try:
-            out = reader.main(parquet_file, limit=5, source_url=url)
-        except Exception:
-            pytest.skip("duckdb httpfs extension unavailable")
+        out = reader.main(parquet_file, limit=5, source_url=url)
         assert [r["id"] for r in out["rows"]] == [0, 1, 2, 3, 4]
         assert any("s.parquet" in h for h in hits), "reader never hit the URL"
     finally:
@@ -835,13 +852,11 @@ def test_http_connection_persists_across_reads(parquet_file):
     # single reader run; with parquet_metadata_cache=true set once at build,
     # the SECOND open in a server session reuses the parsed footer instead of
     # re-downloading/re-parsing it (the ~7s cold DESCRIBE is paid only once).
+    _require_httpfs()
     srv, hits = _serve_dir(os.path.dirname(parquet_file))
     try:
         url = f"http://127.0.0.1:{srv.server_address[1]}/s.parquet"
-        try:
-            reader.main(parquet_file, limit=5, source_url=url)
-        except Exception:
-            pytest.skip("duckdb httpfs extension unavailable")
+        reader.main(parquet_file, limit=5, source_url=url)
         con1 = getattr(duckdb, "_fused_render_http_con_v3", None)
         assert con1 is not None                   # stashed for reuse
         reader.main(parquet_file, limit=5, source_url=url)
@@ -874,13 +889,11 @@ def test_source_url_reads_csv_over_http(csv_file):
     # scanned over the serve where hammering the NFS mount with the scan risks
     # dropping the whole mount. Reading the whole file over HTTP is slow-but-
     # safe (and the serve's shared VFS cache makes the repeat reads cheap).
+    _require_httpfs()
     srv, hits = _serve_dir(os.path.dirname(csv_file))
     try:
         url = f"http://127.0.0.1:{srv.server_address[1]}/s.csv"
-        try:
-            out = reader.main(csv_file, limit=3, source_url=url)
-        except Exception:
-            pytest.skip("duckdb httpfs extension unavailable")
+        out = reader.main(csv_file, limit=3, source_url=url)
         assert out["rows"][0]["zip"] == "00000"   # all-varchar preserved
         assert any("s.csv" in h for h in hits), "reader never hit the URL"
     finally:
@@ -888,15 +901,13 @@ def test_source_url_reads_csv_over_http(csv_file):
 
 
 def test_source_url_reads_json_over_http(tmp_path):
+    _require_httpfs()
     p = _make(tmp_path, "s.json",
               "SELECT range AS id, 'n'||range AS name FROM range(5)")
     srv, hits = _serve_dir(os.path.dirname(p))
     try:
         url = f"http://127.0.0.1:{srv.server_address[1]}/s.json"
-        try:
-            out = reader.main(p, limit=3, source_url=url)
-        except Exception:
-            pytest.skip("duckdb httpfs extension unavailable")
+        out = reader.main(p, limit=3, source_url=url)
         assert [r["id"] for r in out["rows"]] == [0, 1, 2]
         assert out["editable"] is False           # JSON stays view-only
         assert any("s.json" in h for h in hits), "reader never hit the URL"

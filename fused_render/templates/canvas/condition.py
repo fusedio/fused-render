@@ -15,7 +15,6 @@ or anything that fails to parse → False, so the `canvas` mode never shows for
 ordinary toml.
 """
 import os
-import tomllib
 
 # Content sniff only opens files small enough to be a real canvas definition —
 # a canvas.toml is node/edge metadata, never megabytes. Anything larger is not
@@ -32,6 +31,10 @@ def main(target_path) -> bool:
         # Size guard before opening — a pathological file must not be parsed.
         if os.path.getsize(target_path) > MAX_BYTES:
             return False
+        # tomllib is 3.11+; imported here (not at module level) so a 3.10
+        # server still imports this module — the except below then fails
+        # closed on ImportError exactly like any other parse failure.
+        import tomllib
         with open(target_path, "rb") as f:
             data = tomllib.load(f)
     except Exception:
