@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { createTemplate, openTemplateInClaude } from "../../lib/api";
 import type { NewTemplateResult } from "../../lib/api";
+import { Modal } from "../../components/modal/Modal";
+import { ErrorBanner } from "../../components/ErrorBanner";
 
 // Scaffold a new user template. Name is required (nonempty, no "/"); extensions
 // are optional dot-keys the new template gets appended to — additive only, it
@@ -32,14 +34,6 @@ export function NewTemplateModal({
   useEffect(() => () => {
     alive.current = false;
   }, []);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !busy) onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, busy]);
 
   // Normalize "csv" / " .CSV " → ".csv"; dedupe against existing chips.
   const normalizeExt = (raw: string) => {
@@ -154,28 +148,41 @@ export function NewTemplateModal({
   };
 
   return (
-    <div
-      className="deploy-overlay"
-      onMouseDown={(e) => {
-        if (!busy && e.target === e.currentTarget) onClose();
-      }}
+    <Modal
+      title="New template"
+      onClose={onClose}
+      busy={busy}
+      dialogClassName="templates-new"
+      footer={
+        result ? (
+          <>
+            <button type="button" className="btn btn-secondary" onClick={onClose}>
+              Done
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => openInClaude(result.name)}
+              disabled={opening}
+            >
+              {opening ? "Opening…" : "Open in Claude"}
+            </button>
+          </>
+        ) : (
+          <>
+            <button type="button" className="btn btn-secondary" onClick={onClose} disabled={busy}>
+              Cancel
+            </button>
+            <button type="button" className="btn btn-primary" onClick={create} disabled={!canCreate}>
+              {busy ? "Creating…" : "Create"}
+            </button>
+          </>
+        )
+      }
     >
-      <div
-        className="deploy-dialog templates-new"
-        role="dialog"
-        aria-modal="true"
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <div className="deploy-head">
-          <h2>New template</h2>
-          <button type="button" className="deploy-close" onClick={onClose} disabled={busy}>
-            ✕
-          </button>
-        </div>
-        <div className="deploy-body">
-          {result ? (
-            <>
-              <div className="templates-result">
+      {result ? (
+        <>
+          <div className="templates-result">
                 <div className="templates-result-line">
                   Created <code>{result.name}</code>.
                 </div>
@@ -190,27 +197,14 @@ export function NewTemplateModal({
                   </div>
                 )}
               </div>
-              <p className="deploy-muted">
-                Edit the template's files from the file explorer, or open Claude Code in its folder
-                to build it out.
-              </p>
-              {openError && <div className="deploy-error">{openError}</div>}
-              <div className="templates-actions">
-                <button type="button" className="templates-btn-secondary" onClick={onClose}>
-                  Done
-                </button>
-                <button
-                  type="button"
-                  className="templates-btn-primary"
-                  onClick={() => openInClaude(result.name)}
-                  disabled={opening}
-                >
-                  {opening ? "Opening…" : "Open in Claude"}
-                </button>
-              </div>
-            </>
-          ) : (
-            <>
+          <p className="deploy-muted">
+            Edit the template's files from the file explorer, or open Claude Code in its folder to
+            build it out.
+          </p>
+          {openError && <ErrorBanner>{openError}</ErrorBanner>}
+        </>
+      ) : (
+        <>
               <p className="deploy-muted templates-field-hint">
                 Scaffold a new user template. Add it as a mode for file extensions now — it's
                 appended to any existing bindings, never replacing them — or leave that empty and
@@ -292,29 +286,9 @@ export function NewTemplateModal({
                   added for you).
                 </span>
               </div>
-              {error && <div className="deploy-error">{error}</div>}
-              <div className="templates-actions">
-                <button
-                  type="button"
-                  className="templates-btn-secondary"
-                  onClick={onClose}
-                  disabled={busy}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  className="templates-btn-primary"
-                  onClick={create}
-                  disabled={!canCreate}
-                >
-                  {busy ? "Creating…" : "Create"}
-                </button>
-              </div>
-            </>
-          )}
-        </div>
-      </div>
-    </div>
+          {error && <ErrorBanner>{error}</ErrorBanner>}
+        </>
+      )}
+    </Modal>
   );
 }

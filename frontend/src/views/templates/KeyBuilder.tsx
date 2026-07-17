@@ -4,8 +4,10 @@ import { buildKey, KEY_KINDS } from "./helpers";
 
 export function KeyBuilder({
   onChange,
+  inputId,
 }: {
   onChange: (key: string, valid: boolean) => void;
+  inputId?: string;
 }) {
   const [kind, setKind] = useState<KeyKind>("simple");
   const [raw, setRaw] = useState("");
@@ -37,6 +39,7 @@ export function KeyBuilder({
       <div className="templates-key-input">
         <span className="templates-key-fix">{prefix}</span>
         <input
+          id={inputId}
           type="text"
           value={raw}
           autoFocus

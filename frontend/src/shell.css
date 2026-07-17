@@ -494,8 +494,14 @@ a.bookmark-name::after {
   text-align: center;
 }
 
-.icon-picker-cell:hover {
+.icon-picker-cell:hover,
+.icon-picker-cell.active {
   background: rgba(255, 255, 255, 0.09);
+}
+
+.icon-picker-cell.active {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .icon-picker-empty {
@@ -1816,27 +1822,6 @@ body.embed .preview-browse-chip:hover {
   cursor: default;
 }
 
-.deploy-body .deploy-primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #10131a;
-  font-weight: 600;
-}
-
-.deploy-body .deploy-primary:hover:not(:disabled) {
-  background: var(--accent);
-  filter: brightness(1.08);
-}
-
-.deploy-body .deploy-danger {
-  color: var(--error);
-  border-color: var(--error);
-}
-
-.deploy-body .deploy-danger:hover:not(:disabled) {
-  background: rgba(255, 107, 107, 0.12);
-}
-
 .deploy-section {
   display: flex;
   flex-direction: column;
@@ -1847,10 +1832,14 @@ body.embed .preview-browse-chip:hover {
   color: var(--fg-muted);
 }
 
-.deploy-error {
+/* Error card (also rendered by components/ErrorBanner.tsx as .error-banner):
+   full 1px error-tinted border + a subtle error-tinted wash, no left stripe. */
+.deploy-error,
+.error-banner {
   color: var(--error);
   border: 1px solid var(--error);
   border-radius: 6px;
+  background: rgba(255, 107, 107, 0.07);
   padding: 8px 10px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -1858,9 +1847,149 @@ body.embed .preview-browse-chip:hover {
   overflow-y: auto;
 }
 
+/* Quiet note/info card — a full bordered card (no side stripe). */
 .deploy-note {
-  border-left: 2px solid var(--border);
-  padding-left: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* ---- Unified button vocabulary + modal chassis -------------------------- */
+/* One .btn base and four variants for every modal/form action, with ONE
+   disabled treatment and ONE focus-visible ring. The selectors are grouped for
+   the bare, .deploy-body and .prefs-section contexts so .btn wins over the
+   generic `.deploy-body button` / `.prefs-section button` skins by specificity
+   (0,2,x) regardless of source order. */
+.btn,
+.deploy-body .btn,
+.prefs-section .btn {
+  font: inherit;
+  font-size: 13px;
+  height: 32px;
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+  white-space: nowrap;
+  align-self: auto;
+}
+
+.btn:disabled,
+.deploy-body .btn:disabled,
+.prefs-section .btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.btn:focus-visible,
+.deploy-body .btn:focus-visible,
+.prefs-section .btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.btn-primary,
+.deploy-body .btn-primary,
+.prefs-section .btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #10131a;
+  font-weight: 600;
+}
+
+.btn-primary:hover:not(:disabled),
+.deploy-body .btn-primary:hover:not(:disabled),
+.prefs-section .btn-primary:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  filter: brightness(1.08);
+}
+
+.btn-secondary,
+.deploy-body .btn-secondary,
+.prefs-section .btn-secondary {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--fg);
+}
+
+.btn-secondary:hover:not(:disabled),
+.deploy-body .btn-secondary:hover:not(:disabled),
+.prefs-section .btn-secondary:hover:not(:disabled) {
+  background: transparent;
+  border-color: var(--fg-muted);
+}
+
+.btn-danger,
+.deploy-body .btn-danger,
+.prefs-section .btn-danger {
+  background: rgba(255, 107, 107, 0.1);
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.btn-danger:hover:not(:disabled),
+.deploy-body .btn-danger:hover:not(:disabled),
+.prefs-section .btn-danger:hover:not(:disabled) {
+  background: rgba(255, 107, 107, 0.18);
+  border-color: var(--error);
+}
+
+/* Text-only destructive action; margin-right:auto anchors it to the far left of
+   a footer row so the primary/cancel stay right-aligned. */
+.btn-danger-text,
+.deploy-body .btn-danger-text,
+.prefs-section .btn-danger-text {
+  background: none;
+  border-color: transparent;
+  color: var(--error);
+  margin-right: auto;
+}
+
+.btn-danger-text:hover:not(:disabled),
+.deploy-body .btn-danger-text:hover:not(:disabled),
+.prefs-section .btn-danger-text:hover:not(:disabled) {
+  background: rgba(255, 107, 107, 0.12);
+  border-color: transparent;
+}
+
+/* Shared modal chrome — .modal-* names alias the existing .deploy-* rules (the
+   Modal component applies both classes, so descendant .deploy-* skins keep
+   working). Footer row follows the footer grammar: destructive far left
+   (via .btn-danger-text margin-right:auto), Cancel then primary at the right. */
+.modal-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.modal-dirty-hint {
+  color: var(--fg-muted);
+  font-size: 12px;
+  margin-right: auto;
+}
+
+/* Quiet disclosure for always-on boilerplate (e.g. the deploy public-link
+   note) so it doesn't compete with the primary action. */
+.deploy-disclosure > summary {
+  cursor: pointer;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.deploy-disclosure > *:not(summary) {
+  margin-top: 6px;
 }
 
 /* Signed-in dot on the sidebar's Fused-account entry — same green as the
@@ -2076,17 +2205,6 @@ body.embed .preview-browse-chip:hover {
 .deploy-close:disabled {
   opacity: 0.4;
   cursor: default;
-}
-
-/* Busy/disabled primary keeps readable dark-on-accent contrast: the generic
-   button:disabled opacity darkened the accent under it into near-black-on-
-   black while "Deploying…" showed. Slight desaturation signals inactive
-   instead. */
-.deploy-body .deploy-primary:disabled {
-  opacity: 1;
-  background: var(--accent);
-  color: #10131a;
-  filter: saturate(0.45) brightness(0.85);
 }
 
 .deploy-spinner {
@@ -2536,6 +2654,20 @@ body.embed .preview-browse-chip:hover {
   padding: 5px 8px;
 }
 
+/* Add-mount / add-remote field rows (a <form> so Enter submits). */
+.mount-form-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+/* rclone-not-found callout — a full-bordered card (no side stripe). */
+.mount-callout-title {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
 /* Mount cards — one bordered card per mounted/available mount. */
 .mount-list {
   display: flex;
@@ -2893,49 +3025,6 @@ body.embed .preview-browse-chip:hover {
   color: var(--error);
 }
 
-/* Buttons. */
-.templates-btn-secondary {
-  font: inherit;
-  font-size: 13px;
-  height: 32px;
-  padding: 0 12px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg-alt);
-  color: var(--fg);
-  cursor: pointer;
-}
-
-.templates-btn-secondary:hover:not(:disabled) {
-  border-color: var(--fg-muted);
-}
-
-.templates-btn-secondary:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.templates-btn-primary {
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  height: 32px;
-  padding: 0 14px;
-  border: none;
-  border-radius: 6px;
-  background: var(--accent);
-  color: #111;
-  cursor: pointer;
-}
-
-.templates-btn-primary:hover:not(:disabled) {
-  filter: brightness(1.08);
-}
-
-.templates-btn-primary:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
 
 /* Delete-confirm modal options (D109): the two default-checked checkboxes. */
 .templates-delete-opts {
@@ -3119,6 +3208,15 @@ body.embed .preview-browse-chip:hover {
   gap: 16px;
 }
 
+/* The row-editor / import step content is wrapped in a <form> (so Enter
+   submits); keep the fields laid out with the same column gap the body used. */
+.templates-editor .deploy-body > form,
+.templates-import .deploy-body > form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
 /* The name field reuses .templates-search's visual, but that class is authored
    for the toolbar's flex ROW (flex:1 1 200px). Inside .templates-field (a flex
    COLUMN) that flex-basis lands on the block axis and grows the input into a
@@ -3219,7 +3317,8 @@ body.embed .preview-browse-chip:hover {
   gap: 6px;
 }
 
-.templates-field > label {
+.templates-field > label,
+.templates-field-label {
   color: var(--fg-muted);
   font-size: 12px;
   font-weight: 500;
@@ -3300,14 +3399,6 @@ body.embed .preview-browse-chip:hover {
 
 .templates-reorder-hint {
   font-size: 11px;
-}
-
-.templates-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-  justify-content: flex-end;
 }
 
 /* Add-template picker popover (row editor). */
@@ -3719,18 +3810,6 @@ body.embed .preview-browse-chip:hover {
   color: var(--error);
 }
 
-.deploy-body .templates-btn-primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #111;
-  font-weight: 600;
-}
-
-.deploy-body .templates-btn-primary:hover:not(:disabled) {
-  background: var(--accent);
-  filter: brightness(1.08);
-}
-
 .templates-inv-icon {
   display: inline-flex;
   margin-right: 8px;
@@ -3740,4 +3819,25 @@ body.embed .preview-browse-chip:hover {
 
 .templates-row:hover .templates-inv-icon {
   color: var(--fg);
+}
+
+/* ---- Reduced motion ------------------------------------------------------ */
+/* Honour prefers-reduced-motion: stop the infinite spinners (kept visible at a
+   static opacity) and collapse transition/animation durations. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .listing-search-spinner,
+  .deploy-spinner,
+  .mode-icon-spinner {
+    animation: none !important;
+    opacity: 0.6;
+  }
 }

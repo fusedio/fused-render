@@ -7,6 +7,7 @@
 //   • ConfirmDialog — a message + Cancel/confirm, for Delete (recursive for a
 //     non-empty directory is spelled out in the message the caller passes).
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { ErrorBanner } from "./ErrorBanner";
 
 // Validate a single path SEGMENT (a file/folder name, never a path). Returns an
 // inline error message or null when the (already-trimmed) name is usable. Beyond
@@ -122,12 +123,12 @@ export function PromptDialog({
             }
           }}
         />
-        {error && trimmed !== "" && <div className="deploy-error">{error}</div>}
+        {error && trimmed !== "" && <ErrorBanner>{error}</ErrorBanner>}
         <div className="fs-dialog-actions">
           <button type="button" onClick={onCancel}>
             Cancel
           </button>
-          <button type="button" className="deploy-primary" disabled={!!error} onClick={submit}>
+          <button type="button" className="btn btn-primary" disabled={!!error} onClick={submit}>
             {confirmLabel}
           </button>
         </div>
@@ -192,7 +193,7 @@ export function ConfirmDialog({
           <button
             ref={confirmRef}
             type="button"
-            className={danger ? "deploy-danger" : "deploy-primary"}
+            className={"btn " + (danger ? "btn-danger" : "btn-primary")}
             onClick={onConfirm}
           >
             {confirmLabel}
