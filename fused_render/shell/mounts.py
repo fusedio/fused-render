@@ -285,7 +285,13 @@ _store_lock = threading.Lock()
 
 
 def mountpoint(m: dict) -> str:
-    return os.path.join(mounts_dir(), m["name"])
+    # normpath so the canonical path has uniform separators: on Windows
+    # expanduser("~/.fused-render") yields mixed backslash/forward-slash, and
+    # this path is used for mounting, as serves.json keys, and in rcd params —
+    # a mixed form there would never match os.path.abspath()'s backslashes in
+    # serve_url_for / _mount_for. On POSIX these already-clean absolute paths
+    # are unchanged by normpath (identity), so comparisons stay byte-for-byte.
+    return os.path.normpath(os.path.join(mounts_dir(), m["name"]))
 
 
 def add_mount(name: str, remote: str, read_only: bool | None = None) -> dict:
@@ -975,9 +981,19 @@ def serve_url_for(path: str) -> str | None:
     if not isinstance(serves, dict):
         return None
     p = os.path.abspath(path)
+    np = _norm(p)
     for mp, base in sorted(serves.items(), key=lambda kv: -len(kv[0])):
-        if isinstance(base, str) and (p == mp or p.startswith(mp + os.sep)):
-            rel = os.path.relpath(p, mp).replace(os.sep, "/")
+        if not isinstance(base, str):
+            continue
+        # Compare via _norm on BOTH sides so a Windows key with slash/case
+        # drift still matches abspath's backslashes; compute the returned
+        # relative path from the un-lowercased normpath forms (never return a
+        # lowercased path). _norm is the identity on POSIX, so this stays
+        # byte-for-byte with the old p==mp / startswith comparison there.
+        nmp = _norm(mp)
+        if np == nmp or np.startswith(nmp + os.sep):
+            rel = os.path.relpath(
+                os.path.normpath(p), os.path.normpath(mp)).replace(os.sep, "/")
             return base.rstrip("/") + "/" + urllib.parse.quote(rel)
     return None
 
@@ -1039,10 +1055,15 @@ def _anonymous_s3(cfg: dict | None) -> bool:
 def _mount_for(path: str) -> tuple[dict | None, str]:
     """(mount record, remote-relative path) for a path under a mountpoint."""
     p = os.path.abspath(path)
+    np = _norm(p)
     for m in list_mounts():
         mp = mountpoint(m)
-        if p == mp or p.startswith(mp + os.sep):
-            return m, os.path.relpath(p, mp).replace(os.sep, "/")
+        # _norm both sides (Windows slash/case drift); relpath from the
+        # un-lowercased normpath forms. Identity on POSIX -> unchanged there.
+        nmp = _norm(mp)
+        if np == nmp or np.startswith(nmp + os.sep):
+            return m, os.path.relpath(
+                os.path.normpath(p), os.path.normpath(mp)).replace(os.sep, "/")
     return None, ""
 
 

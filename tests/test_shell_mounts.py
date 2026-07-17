@@ -2276,3 +2276,96 @@ def test_rcd_daemon_detaches_with_creationflags_on_win32(home, monkeypatch):
     kw = cap["kwargs"]
     assert "start_new_session" not in kw
     assert kw["creationflags"] == (0x200 | 0x8)
+
+
+# -- Windows path normalization: serve/upstream routing (FINDING 2) ---------
+# On Windows expanduser("~/.fused-render") yields mixed separators, so
+# mountpoint() must normpath to a uniform form or serves.json keys and mount
+# prefixes disagree with os.path.abspath()'s backslashes. These tests simulate
+# Windows path semantics on the (posix) CI by swapping in ntpath's normalizers.
+
+
+def test_mountpoint_normalizes_mixed_separators_on_win32(home, monkeypatch):
+    import ntpath
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    # A mounts_dir with the mixed backslash/forward-slash separators
+    # expanduser produces on Windows.
+    monkeypatch.setattr(mounts_mod, "mounts_dir",
+                        lambda: "C:\\Users\\me\\.fused-render/mounts")
+    monkeypatch.setattr(mounts_mod.os.path, "join", ntpath.join)
+    monkeypatch.setattr(mounts_mod.os.path, "normpath", ntpath.normpath)
+    mp = mounts_mod.mountpoint(c)
+    # Uniform backslashes: serves.json keys / mount prefixes and abspath() now
+    # agree, so serve_url_for / _mount_for can match.
+    assert mp == "C:\\Users\\me\\.fused-render\\mounts\\data"
+
+
+def test_mountpoint_normpath_is_identity_on_posix(home):
+    import os
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    # An already-clean absolute posix path is unchanged by normpath, and no
+    # separators are flipped.
+    assert mp == os.path.normpath(mp)
+    assert "\\" not in mp
+
+
+def test_serve_url_for_matches_windows_mixed_separators(home, rcd, monkeypatch):
+    import os
+    import ntpath
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    # A serves.json key left with drifted case (and, once ntpath flips them,
+    # separators), as a pre-normpath mountpoint() produced. Only _norm folding
+    # BOTH sides makes it match the canonical query path. Write it before
+    # swapping in ntpath so serves_path/storage keep posix semantics.
+    mounts_mod.storage.write_json(
+        mounts_mod.serves_path(), {mp.upper(): "http://127.0.0.1:59999"})
+    for name, fn in (("normcase", ntpath.normcase),
+                     ("normpath", ntpath.normpath),
+                     ("relpath", ntpath.relpath)):
+        monkeypatch.setattr(mounts_mod.os.path, name, fn)
+    monkeypatch.setattr(mounts_mod.os, "sep", ntpath.sep)
+    url = mounts_mod.serve_url_for(os.path.join(mp, "year=2022", "a b.parquet"))
+    # Matched despite case drift; the returned relative path keeps its original
+    # case and uses forward slashes (never lowercased).
+    assert url == "http://127.0.0.1:59999/year%3D2022/a%20b.parquet"
+
+
+def test_serve_url_for_is_case_sensitive_on_posix(home, rcd):
+    import os
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mounts_mod.sync_serves()  # stub serve at 127.0.0.1:59999
+    mp = mounts_mod.mountpoint(c)
+    # POSIX: _norm is the identity, so no case folding — a case-mismatched path
+    # must NOT match, exactly as before.
+    assert mounts_mod.serve_url_for(
+        os.path.join(mp.upper(), "f.parquet")) is None
+    assert mounts_mod.serve_url_for(os.path.join(mp, "f.parquet")) is not None
+
+
+def test_mount_for_matches_windows_mixed_separators(home, monkeypatch):
+    import os
+    import ntpath
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    query = os.path.join(mp, "sub", "f.parquet")
+    for name, fn in (("normcase", ntpath.normcase),
+                     ("normpath", ntpath.normpath),
+                     ("relpath", ntpath.relpath)):
+        monkeypatch.setattr(mounts_mod.os.path, name, fn)
+    monkeypatch.setattr(mounts_mod.os, "sep", ntpath.sep)
+    m, rel = mounts_mod._mount_for(query)
+    assert m is not None and m["name"] == "data"
+    assert rel == "sub/f.parquet"  # forward slashes, original case
+
+
+def test_mount_for_is_case_sensitive_on_posix(home):
+    import os
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    m, rel = mounts_mod._mount_for(os.path.join(mp, "sub", "f.parquet"))
+    assert m is not None and rel == "sub/f.parquet"
+    # No case folding on posix.
+    m2, _ = mounts_mod._mount_for(os.path.join(mp.upper(), "f.parquet"))
+    assert m2 is None
