@@ -591,7 +591,7 @@ fi
 fi  # FUSED_RENDER_SKIP_CODESIGN
 
 # ---------------------------------------------------------------------------
-# 6. DMG via dmgbuild: app + Applications symlink, compressed UDZO
+# 6. DMG via dmgbuild: app + Applications symlink, compressed ULFO
 # ---------------------------------------------------------------------------
 
 echo "==> building dmg"
@@ -605,7 +605,10 @@ appname = os.path.basename(application)
 
 files = [application]
 symlinks = {"Applications": "/Applications"}
-format = "UDZO"
+# ULFO (LZFSE) compresses this bundle notably tighter than the classic UDZO
+# (zlib) and mounts faster; needs macOS 10.11+ to open, well under the app's
+# own LSMinimumSystemVersion of 11.0 (setup_py2app.py).
+format = "ULFO"
 PYEOF
 
 rm -f "$DMG_PATH"
