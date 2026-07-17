@@ -746,13 +746,12 @@ def export_page(
         )
 
     # Export is **non-destructive**: it writes a self-contained bundle and NEVER deletes an
-    # existing file, so the out dir must be empty (or freshly created). A non-empty out dir is
+    # existing file, so the out dir must be empty (or not yet exist). A non-empty out dir is
     # refused outright — this makes it impossible to clobber an author's files (the page's own
     # folder, an ancestor of it, or any dir with content) with no fragile "is this a prior
     # bundle?" heuristic to get wrong. Deploy always targets a fresh temp dir; to re-export,
     # point at a new/empty directory.
-    os.makedirs(out_dir, exist_ok=True)
-    if os.listdir(out_dir):
+    if os.path.isdir(out_dir) and os.listdir(out_dir):
         raise ExportError(
             f"cannot export into {out_dir}: the output directory must be empty (export writes "
             "a self-contained bundle and never deletes existing files). Choose a new or empty "
@@ -761,16 +760,20 @@ def export_page(
 
     page_key = os.path.basename(html_path)  # payload-relative path of the page
 
-    # Stage the whole bundle in a temp dir OUTSIDE out_dir, then move it in. Staging outside
-    # means a mid-export failure leaves out_dir empty (never a half-written bundle), and a
-    # crashed run never leaves a hidden staging dir INSIDE out_dir that a later export would
-    # mistake for content. out_dir is empty (checked above), so the moves overwrite nothing.
     def _copy_into(stage: str, src: str, rel: str) -> None:
         dest = os.path.join(stage, rel)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         shutil.copyfile(src, dest)
 
-    with tempfile.TemporaryDirectory(prefix="fused-render-export-") as stage:
+    # Build the whole bundle in a temp dir alongside out_dir (same filesystem), then swap it
+    # in with ONE atomic rename. So out_dir is only ever absent/empty or the COMPLETE bundle:
+    # a failure mid-build leaves a partial tree only in the temp dir (cleaned up in `finally`),
+    # never in out_dir, so a retry to the same path always works. Staging in out_dir's PARENT
+    # (not inside it) keeps the emptiness check honest and leaves no hidden dir inside out_dir.
+    parent = os.path.dirname(os.path.abspath(out_dir))
+    os.makedirs(parent, exist_ok=True)
+    stage = tempfile.mkdtemp(prefix=".fused-render-export-", dir=parent)
+    try:
         # The page + every bundled file lands under the single payload dir at its real
         # page-relative path (e.file / a.file / r.file are already f"{_PAYLOAD_DIR}/…").
         _copy_into(stage, html_path, f"{_PAYLOAD_DIR}/{page_key}")
@@ -785,9 +788,12 @@ def export_page(
             json.dump(_manifest(plan, page_key), f, indent=2, sort_keys=True)
             f.write("\n")
 
-        # Move the payload dir first, manifest.json last (its presence marks a complete
-        # bundle). out_dir is empty, so nothing is overwritten.
-        shutil.move(os.path.join(stage, _PAYLOAD_DIR), os.path.join(out_dir, _PAYLOAD_DIR))
-        shutil.move(os.path.join(stage, "manifest.json"), os.path.join(out_dir, "manifest.json"))
+        # Atomic handoff: drop the (empty) out_dir if it exists so the rename can take the
+        # name, then rename the fully-built stage dir into place in one step.
+        if os.path.isdir(out_dir):
+            os.rmdir(out_dir)  # empty (checked above)
+        os.replace(stage, out_dir)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)  # no-op after a successful os.replace
 
     return plan

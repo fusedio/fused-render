@@ -1,6 +1,7 @@
 """Tests for the export logic (fused_render/export.py), served via POST /api/export."""
 import json
 import os
+import shutil
 
 import pytest
 
@@ -289,6 +290,31 @@ def test_reexport_into_same_dir_rejected(tmp_path):
 
     with pytest.raises(ExportError, match="must be empty"):
         export_page(str(src / "page.html"), str(out))
+
+
+def test_failed_export_leaves_out_clean_so_retry_works(tmp_path, monkeypatch):
+    # The bundle is built in a temp dir and swapped in with one atomic rename, so a failure
+    # mid-build never leaves a partial out dir — out_dir stays absent/empty and a retry to the
+    # same path is not blocked by the empty-dir check.
+    _write(tmp_path, "src/page.html", "<script>fused.runPython('./a.py', {});</script>")
+    _write(tmp_path, "src/a.py", "def main():\n    return 1\n")
+    out = tmp_path / "bundle"
+
+    real_copyfile = shutil.copyfile
+
+    def boom(src, dst):  # fail the very first file copy (simulates a disk-full / crash)
+        raise OSError("simulated mid-export failure")
+
+    monkeypatch.setattr("fused_render.export.shutil.copyfile", boom)
+    with pytest.raises(OSError, match="simulated mid-export failure"):
+        export_page(str(tmp_path / "src" / "page.html"), str(out))
+    # out_dir was never populated — absent, or empty if the caller pre-created it.
+    assert not out.exists() or not any(out.iterdir())
+
+    monkeypatch.setattr("fused_render.export.shutil.copyfile", real_copyfile)
+    plan = export_page(str(tmp_path / "src" / "page.html"), str(out))  # retry succeeds
+    assert not plan.errors
+    assert (out / "files" / "a.py").is_file()
 
 
 def test_dotfile_asset_key_not_mangled(tmp_path):
