@@ -3,11 +3,13 @@ name: test
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: ["*"]
+  pull_request: {}
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  # PR number is unique repo-wide, unlike head_ref — two fork PRs that happen
+  # to share a branch name (e.g. "patch-1") must not land in the same group
+  # and cancel each other's runs.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -65,7 +67,7 @@ jobs:
 
   test-python:
     needs: [detect-changes, frontend]
-    if: needs.detect-changes.outputs.app == 'true'
+    if: needs.detect-changes.outputs.app == 'true' && needs.frontend.result == 'success'
     strategy:
       fail-fast: false
       matrix:
@@ -105,13 +107,19 @@ jobs:
     steps:
       - name: Check test status
         run: |
+          if [[ "${{ needs.detect-changes.result }}" != "success" ]]; then
+            echo "detect-changes did not succeed (${{ needs.detect-changes.result }})"
+            exit 1
+          fi
           if [[ "${{ needs.detect-changes.outputs.app }}" != "true" ]]; then
             echo "No relevant changes; skipped."
             exit 0
           fi
-          if [[ "${{ needs.frontend.result }}" == "failure" || "${{ needs.test-python.result }}" == "failure" ]]; then
-            echo "Job failed"
-            exit 1
-          fi
+          for result in "${{ needs.frontend.result }}" "${{ needs.test-python.result }}"; do
+            if [[ "$result" != "success" ]]; then
+              echo "Job did not succeed: $result"
+              exit 1
+            fi
+          done
           echo "Tests passed"
           exit 0
