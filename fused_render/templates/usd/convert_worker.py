@@ -20,6 +20,7 @@ import gzip
 import io
 import json
 import os
+import shutil
 import struct
 import sys
 import time
@@ -271,6 +272,103 @@ def ply_to_splat(path, cache_dir, budget, crop, prog):
     return stats
 
 
+# ----------------------------------------------------------- usd runtime ---
+
+# usd-core is fetched on demand (D119), not bundled: the pxr package is
+# ~224 MB and only this worker's mesh extraction needs it — the same
+# large-binary-on-first-use posture as the docs template's pandoc/typst
+# (docs/install_worker.py). Version pinned like TYPST_VERSION; the wheel is
+# unpacked (a .whl is a zip) into a per-version, per-python site dir — no pip
+# involved, because the packaged app's python ships without pip by design
+# (SPEC §19 DP-3).
+USD_CORE_VERSION = "26.5"
+
+
+def _usd_site():
+    py_tag = f"cp{sys.version_info[0]}{sys.version_info[1]}"
+    return py_tag, os.path.expanduser(os.path.join(
+        "~", ".fused-render", "usd-site", f"{USD_CORE_VERSION}-{py_tag}"))
+
+
+def _ensure_pxr(prog):
+    """Import pxr, downloading + unpacking the usd-core wheel on first use.
+
+    Progress rides this worker's own progress.json (stage "install-usd"), so
+    the template's existing convert poll loop shows the download with zero
+    page changes. Raises on failure — the caller's mesh layer is best-effort
+    and surfaces the message as manifest.meshError.
+    """
+    try:
+        import pxr  # noqa: F401
+        return
+    except ImportError:
+        pass
+    py_tag, site = _usd_site()
+    if site not in sys.path:
+        sys.path.insert(0, site)
+    try:
+        import pxr  # noqa: F401  (previously installed on-demand copy)
+        return
+    except ImportError:
+        pass
+
+    import platform
+    import urllib.request
+    system = platform.system()
+    if system == "Darwin":
+        plat = "macosx"          # single universal2 wheel per python version
+    elif system == "Linux":
+        plat = "manylinux"       # x86_64 only upstream; aarch64 has no wheel
+    elif system == "Windows":
+        plat = "win_amd64"
+    else:
+        raise RuntimeError(f"no usd-core wheel for platform: {system}")
+
+    prog.update("install-usd", 0,
+                f"first USD preview — resolving usd-core {USD_CORE_VERSION}")
+    api = f"https://pypi.org/pypi/usd-core/{USD_CORE_VERSION}/json"
+    req = urllib.request.Request(api, headers={"User-Agent": "fused-render"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        meta = json.load(r)
+    url = next((u["url"] for u in meta["urls"]
+                if f"-{py_tag}-" in u["filename"] and plat in u["filename"]),
+               None)
+    if url is None:
+        raise RuntimeError(
+            f"no usd-core {USD_CORE_VERSION} wheel for {py_tag}/{plat}")
+
+    os.makedirs(os.path.dirname(site), exist_ok=True)
+    whl = site + ".whl.tmp"
+    req = urllib.request.Request(url, headers={"User-Agent": "fused-render"})
+    with urllib.request.urlopen(req, timeout=60) as r, open(whl, "wb") as f:
+        total = int(r.headers.get("Content-Length") or 0)
+        got = 0
+        while True:
+            chunk = r.read(CHUNK)
+            if not chunk:
+                break
+            f.write(chunk)
+            got += len(chunk)
+            pct = 90.0 * got / total if total else 50.0
+            prog.update("install-usd", pct,
+                        f"downloading USD runtime {got >> 20} / {total >> 20} MB")
+
+    prog.update("install-usd", 95, "unpacking USD runtime")
+    tmp_site = site + ".tmp"
+    shutil.rmtree(tmp_site, ignore_errors=True)
+    with zipfile.ZipFile(whl) as zf:
+        zf.extractall(tmp_site)
+    os.remove(whl)
+    shutil.rmtree(site, ignore_errors=True)   # clear any broken half-install
+    os.rename(tmp_site, site)
+    # The failed import above ran while `site` didn't exist yet, and importlib
+    # caches a "nothing there" finder for the path — flush it or the fresh
+    # unpack stays invisible to this process.
+    import importlib
+    importlib.invalidate_caches()
+    import pxr  # noqa: F401  (raises if the unpacked wheel is unusable)
+
+
 # ------------------------------------------------------------- mesh layer ---
 
 def smooth_normals(points, tris):
@@ -297,6 +395,7 @@ def triangulate(counts, indices):
 
 def usd_meshes(stage_path, prog):
     """Extract every UsdGeom.Mesh with its world transform and displayColor."""
+    _ensure_pxr(prog)
     from pxr import Usd, UsdGeom
     stage = Usd.Stage.Open(stage_path)
     meshes = []
