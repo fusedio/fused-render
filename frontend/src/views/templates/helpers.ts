@@ -15,7 +15,8 @@ export function buildKey(kind: KeyKind, raw: string): { key: string; error: stri
   const segs = literal.split(".").filter((s) => s.length > 0);
   const segsOk = segs.length > 0 && segs.every((s) => SEGMENT.test(s));
   if (kind === "simple") {
-    if (segs.length !== 1 || !segsOk) return { key: "." + literal, error: "Enter one extension, e.g. csv" };
+    if (segs.length !== 1 || !segsOk)
+      return { key: "." + literal, error: "Enter one extension, e.g. csv" };
     return { key: "." + segs[0], error: null };
   }
   if (kind === "compound") {
@@ -25,7 +26,10 @@ export function buildKey(kind: KeyKind, raw: string): { key: string; error: stri
   }
   if (kind === "wildcard") {
     if (segs.length < 1 || !segsOk)
-      return { key: ".*." + literal, error: "Enter the literal part after the wildcard, e.g. json" };
+      return {
+        key: ".*." + literal,
+        error: "Enter the literal part after the wildcard, e.g. json",
+      };
     return { key: ".*." + segs.join("."), error: null };
   }
   // directory

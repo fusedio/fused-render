@@ -19,12 +19,7 @@ export default function Toast({
       role={tone === "info" ? "status" : "alert"}
     >
       <span className="listing-toast-msg">{msg}</span>
-      <button
-        type="button"
-        className="listing-toast-close"
-        onClick={onClose}
-        aria-label="Dismiss"
-      >
+      <button type="button" className="listing-toast-close" onClick={onClose} aria-label="Dismiss">
         ✕
       </button>
     </div>

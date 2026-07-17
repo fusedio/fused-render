@@ -12,14 +12,14 @@ reference and never touches the file on disk, so it needs no gate.)
 The module keeps state dirs under ~/.fused-render at module level; every test
 repoints those attributes at tmp_path so nothing touches the real home.
 """
+
 import importlib.util
 import os
 
 import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PDF_PY = os.path.join(HERE, os.pardir, "fused_render", "templates",
-                      "pdf_studio", "pdf.py")
+PDF_PY = os.path.join(HERE, os.pardir, "fused_render", "templates", "pdf_studio", "pdf.py")
 
 
 def _load_pdf(tmp_path, monkeypatch):
@@ -55,15 +55,15 @@ def test_save_readonly_original_raises_and_leaves_file(tmp_path, monkeypatch):
     wpath, _ = mod._work_paths(src)
     with open(wpath, "wb") as out:
         out.write(b"%PDF-edited-working-copy")
-    mod._work_save_state(src, {"src": src.replace(os.sep, "/"),
-                               "base_mtime": os.path.getmtime(src),
-                               "dirty": True})
+    mod._work_save_state(
+        src, {"src": src.replace(os.sep, "/"), "base_mtime": os.path.getmtime(src), "dirty": True}
+    )
     os.chmod(src, 0o444)
     try:
         with pytest.raises(PermissionError):
             mod._save(src, force=0)
         assert f.read_bytes() == b"%PDF-original"  # untouched
-        assert not os.path.exists(src + ".tmp")    # gated before the tmp copy
+        assert not os.path.exists(src + ".tmp")  # gated before the tmp copy
     finally:
         os.chmod(src, 0o644)
 
@@ -78,9 +78,14 @@ def test_save_readonly_beats_conflict_force(tmp_path, monkeypatch):
     wpath, _ = mod._work_paths(src)
     with open(wpath, "wb") as out:
         out.write(b"%PDF-edited")
-    mod._work_save_state(src, {"src": src.replace(os.sep, "/"),
-                               "base_mtime": 0.0,  # stale on purpose
-                               "dirty": True})
+    mod._work_save_state(
+        src,
+        {
+            "src": src.replace(os.sep, "/"),
+            "base_mtime": 0.0,  # stale on purpose
+            "dirty": True,
+        },
+    )
     os.chmod(src, 0o444)
     try:
         with pytest.raises(PermissionError):

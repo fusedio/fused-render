@@ -11,6 +11,7 @@ exercises only code paths that raise or return BEFORE any pandoc call:
   "import" action — folds fs writability into editable/readonly_message/
   readonly_tooltip.
 """
+
 import importlib.util
 import os
 

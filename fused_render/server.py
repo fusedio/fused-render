@@ -11,6 +11,7 @@ whether or not the `fused` package is installed — set `FUSED_RENDER_ENGINE=aut
 (use fused if importable, else fall back) or `=fused` (require it — fail loudly
 at startup if missing) to opt in to the local compute backend (`engine.py`).
 """
+
 import asyncio
 import codecs
 import email.utils
@@ -18,7 +19,6 @@ import hashlib
 import itertools
 import json
 import logging
-from collections import deque
 import mimetypes
 import os
 import shutil
@@ -26,12 +26,13 @@ import stat as stat_mod
 import subprocess
 import sys
 import tempfile
-from types import SimpleNamespace
 import time
 import traceback
 import urllib.error
 import urllib.request
+from collections import deque
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qsl, urlsplit
 
 from fastapi import Body, FastAPI, Header, Request, WebSocket, WebSocketDisconnect
@@ -82,9 +83,7 @@ def _forced_engine() -> str | None:
         return None
     requested = raw.strip().lower()
     if requested not in ("auto", "fused", "builtin"):
-        raise RuntimeError(
-            f"FUSED_RENDER_ENGINE={requested!r} is not one of: auto, fused, builtin"
-        )
+        raise RuntimeError(f"FUSED_RENDER_ENGINE={requested!r} is not one of: auto, fused, builtin")
     if requested == "builtin":
         logger.info("execution engine: builtin (forced by FUSED_RENDER_ENGINE)")
         return "builtin"
@@ -104,6 +103,7 @@ def _forced_engine() -> str | None:
         )
     logger.info("execution engine: builtin (FUSED_RENDER_ENGINE=auto, `fused` not installed)")
     return "builtin"
+
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
@@ -284,7 +284,7 @@ class _IgnoreOracle:
             cut = self._buf.find(b"\0")
             if cut != -1:
                 field = self._buf[:cut]
-                self._buf = self._buf[cut + 1:]
+                self._buf = self._buf[cut + 1 :]
                 return field
             chunk = self.proc.stdout.read1(65536)
             if not chunk:
@@ -403,12 +403,10 @@ def _sort_entries(entries):
 
 def _list_response(path, entries, truncated, cursor):
     """The single /api/fs/list response shape, shared by all three routes."""
-    return {"path": path, "entries": entries,
-            "truncated": truncated, "cursor": cursor}
+    return {"path": path, "entries": entries, "truncated": truncated, "cursor": cursor}
 
 
-def _accumulate_s3_pages(path, cursor, max_entries, *,
-                         page_timeout=None, overall_timeout=None):
+def _accumulate_s3_pages(path, cursor, max_entries, *, page_timeout=None, overall_timeout=None):
     """Accumulate raw S3 ListObjectsV2 entries (Name/Size/IsDir/ModTime dicts,
     the shared rc/S3 shape) for a mount-backed dir on an anonymous S3 remote,
     up to `max_entries`. The one page-accumulation loop shared by /api/fs/list
@@ -453,12 +451,16 @@ def _accumulate_s3_pages(path, cursor, max_entries, *,
             t = left if t is None else min(t, left)
         try:
             page, next_token = shell_mounts.s3_list_page(
-                path, max_keys=min(1000, remaining), continuation=token, timeout=t)
+                path, max_keys=min(1000, remaining), continuation=token, timeout=t
+            )
         except shell_mounts.S3ListError:
             if not entries:
                 raise
-            logger.warning("S3 page for %r failed mid-listing; returning %d "
-                           "accumulated entries as partial", path, len(entries))
+            logger.warning(
+                "S3 page for %r failed mid-listing; returning %d accumulated entries as partial",
+                path,
+                len(entries),
+            )
             return entries, token
         token = next_token
         entries.extend(page)
@@ -480,8 +482,8 @@ def _list_s3_direct(path, cursor):
     Raises shell_mounts.S3ListError on any page failure so the caller can fall
     back to the rc route."""
     raw, token = _accumulate_s3_pages(
-        path, cursor, S3_LIST_MAX_ENTRIES,
-        overall_timeout=S3_LIST_OVERALL_TIMEOUT_S)
+        path, cursor, S3_LIST_MAX_ENTRIES, overall_timeout=S3_LIST_OVERALL_TIMEOUT_S
+    )
     # Sorted over what was fetched, not the whole directory — a truncated
     # listing is honestly partial (see the endpoint's sort caveat). Skip any
     # entry missing a Name (a malformed page must not 500 the request).
@@ -559,17 +561,19 @@ def _walk_bfs(path, include_hidden):
                 if shell_mounts.s3_direct_capable(current):
                     try:
                         listed, s3_token = _accumulate_s3_pages(
-                            current, None, WALK_MAX_ENTRIES_REMOTE,
+                            current,
+                            None,
+                            WALK_MAX_ENTRIES_REMOTE,
                             page_timeout=WALK_RC_LIST_TIMEOUT_S,
-                            overall_timeout=WALK_RC_LIST_TIMEOUT_S)
+                            overall_timeout=WALK_RC_LIST_TIMEOUT_S,
+                        )
                         if s3_token is not None:
                             dir_cut = True  # more keys remained unlisted
                     except shell_mounts.S3ListError:
                         listed = None  # fall back to the rc path for this dir
                 if listed is None:
                     try:
-                        listed = shell_mounts.rc_list_dir(
-                            current, timeout=WALK_RC_LIST_TIMEOUT_S)
+                        listed = shell_mounts.rc_list_dir(current, timeout=WALK_RC_LIST_TIMEOUT_S)
                     except shell_mounts.RcListError:
                         # The ROOT listing failing is fatal — surface it with the
                         # same status codes fs/list uses (see api_fs_walk, which
@@ -589,7 +593,8 @@ def _walk_bfs(path, include_hidden):
                     yield _WALK_TRUNCATED
                 children = [
                     _RcDirEntry(e, shell_mounts.rc_modtime_epoch(e.get("ModTime")))
-                    for e in listed if e.get("Name")
+                    for e in listed
+                    if e.get("Name")
                 ]
             else:
                 try:
@@ -629,9 +634,7 @@ def _walk_bfs(path, include_hidden):
                     files.append(child)
             if repo is not None and not mount_backed and (dirs or files):
                 prefix = repo_rel_base + "/" if repo_rel_base else ""
-                ignored = oracle_for(repo).ignored(
-                    [prefix + c.name for c in dirs + files]
-                )
+                ignored = oracle_for(repo).ignored([prefix + c.name for c in dirs + files])
                 if ignored:
                     dirs = [c for c in dirs if prefix + c.name not in ignored]
                     files = [c for c in files if prefix + c.name not in ignored]
@@ -679,8 +682,8 @@ def _mount_list_error_response(path, exc):
 
     if isinstance(exc, shell_mounts.RcListTimeout):
         return _error(
-            f"directory listing timed out — too many entries to list ({path})",
-            status=503)
+            f"directory listing timed out — too many entries to list ({path})", status=503
+        )
     if isinstance(exc, shell_mounts.RcListUnavailable):
         broken = shell_mounts.broken_mount_error(path)
         return _error(broken or f"cannot list directory {path}", status=503)
@@ -828,13 +831,7 @@ def _resolve_name(name):
     # guard, not auth (D3 stands). `.` is banned outright (SPEC CT-6): it
     # keeps names unambiguous against the "..." splice sigil and dotted
     # registry keys.
-    if (
-        not isinstance(name, str)
-        or not name
-        or "/" in name
-        or "\\" in name
-        or "." in name
-    ):
+    if not isinstance(name, str) or not name or "/" in name or "\\" in name or "." in name:
         return None, f"invalid template name: {name!r}"
     if name.startswith("_"):
         return None, (
@@ -848,7 +845,10 @@ def _resolve_name(name):
     builtin = os.path.join(TEMPLATES_DIR, name, "template.html")
     if os.path.isfile(builtin):
         return builtin, None
-    return None, f"no template.html for {name!r} (looked in ~/.fused-render/templates/{name}/ and core {TEMPLATES_DIR}/{name}/)"
+    return (
+        None,
+        f"no template.html for {name!r} (looked in ~/.fused-render/templates/{name}/ and core {TEMPLATES_DIR}/{name}/)",
+    )
 
 
 def _icon_for(template_path: str):
@@ -886,9 +886,7 @@ def _run_condition(condition_file: str, target_path: str):
     import importlib.util
 
     try:
-        spec = importlib.util.spec_from_file_location(
-            "__fused_condition__", condition_file
-        )
+        spec = importlib.util.spec_from_file_location("__fused_condition__", condition_file)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         fn = getattr(mod, "main", None)
@@ -1029,7 +1027,7 @@ def _load_registry(path: str, label: str):
     the two files in errors (both basenames are registry.json).
     """
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             registry = json.load(f)
     except FileNotFoundError:
         return None, None
@@ -1259,8 +1257,14 @@ def _writable(path: str) -> bool:
 # Response headers forwarded from the rclone serve on a proxied /api/fs/raw.
 # Content-Length/-Range/Accept-Ranges make ranged readers (duckdb httpfs)
 # work; Last-Modified/ETag let their caches revalidate.
-_PROXY_HEADERS = ("content-length", "content-range", "content-type",
-                  "accept-ranges", "last-modified", "etag")
+_PROXY_HEADERS = (
+    "content-length",
+    "content-range",
+    "content-type",
+    "accept-ranges",
+    "last-modified",
+    "etag",
+)
 
 
 def _proxy_raw(upstream: str, request: Request):
@@ -1448,8 +1452,8 @@ def _fs_write(body: dict, x_fused: str | None):
 #     entirely. Local paths keep the cheap 200ms os.stat behavior.
 # ---------------------------------------------------------------------------
 
-_LOCAL_POLL_S = 0.2   # local files: cheap os.stat, snappy reload
-_MOUNT_POLL_S = 5.0   # mount-backed files: rc stat, far less remote pressure
+_LOCAL_POLL_S = 0.2  # local files: cheap os.stat, snappy reload
+_MOUNT_POLL_S = 5.0  # mount-backed files: rc stat, far less remote pressure
 _STAT_TIMEOUT_S = 4.0  # a stat outliving this reports "unchanged" for this tick
 
 # Sentinel distinct from every real mtime signal (float, RFC3339 str, or None
@@ -1493,8 +1497,8 @@ class _WatchEntry:
         self.interval = _MOUNT_POLL_S if self.is_mount else _LOCAL_POLL_S
         self.subscribers: set = set()  # asyncio.Queue per socket
         self.last = _UNCHANGED  # primed by the first successful read
-        self._inflight = None   # in-progress stat task; guards against pile-up
-        self.task = None        # the ticker task
+        self._inflight = None  # in-progress stat task; guards against pile-up
+        self.task = None  # the ticker task
 
     async def _stat_signal(self):
         """The change signal for this path, off the event loop. Never raises:
@@ -1524,8 +1528,7 @@ class _WatchEntry:
 
         try:
             if shell_mounts.s3_direct_capable(self.path):
-                page, _ = shell_mounts.s3_list_page(
-                    self.path, max_keys=1000, timeout=4)
+                page, _ = shell_mounts.s3_list_page(self.path, max_keys=1000, timeout=4)
                 return _hash_listing(page)
             listed = shell_mounts.rc_list_dir(self.path, timeout=4)
             return _hash_listing(listed)
@@ -1558,8 +1561,7 @@ class _WatchEntry:
             return sig
         self._inflight = asyncio.ensure_future(self._stat_signal())
         try:
-            sig = await asyncio.wait_for(
-                asyncio.shield(self._inflight), _STAT_TIMEOUT_S)
+            sig = await asyncio.wait_for(asyncio.shield(self._inflight), _STAT_TIMEOUT_S)
         except asyncio.TimeoutError:
             return _UNCHANGED  # leave _inflight running; consumed on a later tick
         self._inflight = None
@@ -1683,7 +1685,7 @@ def _move_to_trash(path: str) -> None:
             [
                 "osascript",
                 "-e",
-                f"tell application \"Finder\" to delete POSIX file {json.dumps(path)}",
+                f'tell application "Finder" to delete POSIX file {json.dumps(path)}',
             ],
             check=True,
             capture_output=True,
@@ -1889,12 +1891,9 @@ def create_app(start_dir: str) -> FastAPI:
         # `Open logs` gives the full story. Log with the request line so a
         # noisy log still pins the failure to a URL.
         tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-        logger.error(
-            "unhandled error on %s %s\n%s", request.method, request.url.path, tb
-        )
+        logger.error("unhandled error on %s %s\n%s", request.method, request.url.path, tb)
         return _error(
-            f"fused-render internal error on {request.method} "
-            f"{request.url.path}:\n\n{tb}",
+            f"fused-render internal error on {request.method} {request.url.path}:\n\n{tb}",
             status=500,
         )
 
@@ -1950,9 +1949,7 @@ def create_app(start_dir: str) -> FastAPI:
             raise
         if logged:
             dur = (time.monotonic() - start) * 1000
-            logger.info(
-                "%s %s -> %s (%.0f ms)", request.method, path, response.status_code, dur
-            )
+            logger.info("%s %s -> %s (%.0f ms)", request.method, path, response.status_code, dur)
         response.headers["Cache-Control"] = "no-cache"
         return response
 
@@ -2022,9 +2019,7 @@ def create_app(start_dir: str) -> FastAPI:
         return _session_get(path)
 
     @app.put("/api/session")
-    def api_session_put(
-        body: dict = Body(...), x_fused: str | None = Header(default=None)
-    ):
+    def api_session_put(body: dict = Body(...), x_fused: str | None = Header(default=None)):
         return _session_put(body, x_fused)
 
     @app.get("/api/config")
@@ -2095,11 +2090,19 @@ def create_app(start_dir: str) -> FastAPI:
             # directory"). Enumerate the mount records directly instead — the
             # authoritative mount list, with zero kernel or remote I/O and no
             # sidecar files (mounts.json, per-mount *.json) leaking in.
-            entries = _sort_entries([
-                {"name": m["name"], "is_dir": True, "size": None,
-                 "mtime": None, "ignored": False}
-                for m in shell_mounts.list_mounts() if m.get("name")
-            ])
+            entries = _sort_entries(
+                [
+                    {
+                        "name": m["name"],
+                        "is_dir": True,
+                        "size": None,
+                        "mtime": None,
+                        "ignored": False,
+                    }
+                    for m in shell_mounts.list_mounts()
+                    if m.get("name")
+                ]
+            )
             return _list_response(path, entries, False, None)
         if shell_mounts.is_mount_backed(path):
             # S3-direct fast path: for anonymous plain AWS S3 — the backend that
@@ -2116,26 +2119,24 @@ def create_app(start_dir: str) -> FastAPI:
                     # rows and pagination dies) or 503s on a huge dir. Return a
                     # retryable error so the client resumes the SAME cursor.
                     if cursor is not None:
-                        return _error(
-                            "listing continuation failed — retry", status=503)
-                    logger.warning("S3-direct listing of %s failed; falling "
-                                   "back to rc", path, exc_info=True)
+                        return _error("listing continuation failed — retry", status=503)
+                    logger.warning(
+                        "S3-direct listing of %s failed; falling back to rc", path, exc_info=True
+                    )
                 else:
-                    return _list_response(path, entries,
-                                          next_token is not None, next_token)
+                    return _list_response(path, entries, next_token is not None, next_token)
             try:
                 listed = shell_mounts.rc_list_dir(path)
             except shell_mounts.RcListTimeout:
                 return _error(
-                    f"directory listing timed out — too many entries to list "
-                    f"({path})", status=503)
+                    f"directory listing timed out — too many entries to list ({path})", status=503
+                )
             except shell_mounts.RcListUnavailable:
                 # rcd down or path under no known mount: the mount can't be
                 # trusted. Prefer the specific broken-mount wording when we have
                 # it (it tells the user to reconnect from the Mounts page).
                 broken = shell_mounts.broken_mount_error(path)
-                return _error(broken or f"cannot list directory {path}",
-                              status=503)
+                return _error(broken or f"cannot list directory {path}", status=503)
             except shell_mounts.RcListError:
                 # rcd answered but rejected the listing. Two causes look alike
                 # here: a genuinely broken mount (dead/stale/disconnected — the
@@ -2163,8 +2164,7 @@ def create_app(start_dir: str) -> FastAPI:
             # Sort the WHOLE listing THEN cap, so the capped page is the true
             # sorted-first N rather than rclone's arbitrary order sliced. Skip
             # any entry missing a Name (a malformed rc entry must not 500).
-            entries = _sort_entries(
-                [_mount_list_item(de) for de in listed if de.get("Name")])
+            entries = _sort_entries([_mount_list_item(de) for de in listed if de.get("Name")])
             truncated = len(entries) > LIST_MAX_ENTRIES
             return _list_response(path, entries[:LIST_MAX_ENTRIES], truncated, None)
         if not os.path.isdir(path):
@@ -2357,13 +2357,15 @@ def create_app(start_dir: str) -> FastAPI:
                 if st is None:
                     return _error(f"no such file: {path}", status=404)
                 media_type, _ = mimetypes.guess_type(path)
-                return Response(status_code=200, headers={
-                    "content-length": str(st.st_size),
-                    "content-type": media_type or "application/octet-stream",
-                    "accept-ranges": "bytes",
-                    "last-modified": email.utils.formatdate(
-                        st.st_mtime, usegmt=True),
-                })
+                return Response(
+                    status_code=200,
+                    headers={
+                        "content-length": str(st.st_size),
+                        "content-type": media_type or "application/octet-stream",
+                        "accept-ranges": "bytes",
+                        "last-modified": email.utils.formatdate(st.st_mtime, usegmt=True),
+                    },
+                )
             # Cold reads go straight to the store: the serve's VFS layer
             # serializes concurrent uncached range reads of one file (an
             # analytical scan pays ~0.25s per seek) and its per-file open
@@ -2383,10 +2385,8 @@ def create_app(start_dir: str) -> FastAPI:
             # fetch would follow the redirect cross-origin and die on CORS
             # — browsers always send Sec-Fetch-Mode, duckdb's httpfs never
             # does, so its absence is the gate.
-            if ("sec-fetch-mode" not in request.headers
-                    and not shell_prefetch.is_done(path)):
-                direct = await asyncio.to_thread(
-                    shell_mounts.upstream_url_for, path)
+            if "sec-fetch-mode" not in request.headers and not shell_prefetch.is_done(path):
+                direct = await asyncio.to_thread(shell_mounts.upstream_url_for, path)
                 if direct:
                     return RedirectResponse(direct, status_code=307)
             # Not redirected (browser, warm read, or no direct URL): proxy the
@@ -2511,7 +2511,7 @@ def create_app(start_dir: str) -> FastAPI:
         if not os.path.isfile(path):
             return _error(f"no such file: {path}", status=404)
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
+            with open(path, encoding="utf-8", errors="replace") as f:
                 html = f.read()
         except OSError as e:
             return _error(f"cannot read {path}: {e}", status=400)
@@ -2559,8 +2559,7 @@ def create_app(start_dir: str) -> FastAPI:
                 upstream = shell_mounts.serve_url_for(fpath)
                 if upstream is not None and not shell_prefetch.is_done(fpath):
                     shell_prefetch.schedule(fpath, upstream)
-                    direct = await asyncio.to_thread(
-                        shell_mounts.upstream_url_for, fpath)
+                    direct = await asyncio.to_thread(shell_mounts.upstream_url_for, fpath)
                     if direct:
                         params = dict(params, source_url=direct)
 

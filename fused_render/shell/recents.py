@@ -17,6 +17,7 @@ persisted folder collapse. Entries whose file has since been deleted are
 hidden from the GET response but never deleted from disk — the file may come
 back (a mount reconnect, an undeleted trash item).
 """
+
 import os
 from datetime import datetime, timezone
 from urllib.parse import unquote, urlsplit
@@ -66,7 +67,7 @@ def _decoded_fs_path(url: str) -> str | None:
     path = parts.path
     if not path.startswith(VIEW_PREFIX):
         return None
-    segments = [unquote(s) for s in path[len(VIEW_PREFIX):].split("/") if s]
+    segments = [unquote(s) for s in path[len(VIEW_PREFIX) :].split("/") if s]
     # Any `_`-prefixed top-level pathname is a shell sentinel (`_panel`,
     # `_prefs`, `_templates`, `_listing`, ...) — the whole namespace is
     # shell-owned, so reject the prefix rather than enumerating names.
@@ -112,16 +113,15 @@ def get_recents():
     GET, like bookmarks; the file may reappear)."""
     data = _read()
     entries = [
-        e for e in data["entries"]
+        e
+        for e in data["entries"]
         if isinstance(e.get("url"), str) and _file_path_from_url(e["url"]) is not None
     ]
     return {"collapsed": data["collapsed"], "entries": entries}
 
 
 @router.post("/api/recents/open")
-def post_recent_open(
-    payload: dict = Body(...), x_fused: str | None = Header(default=None)
-):
+def post_recent_open(payload: dict = Body(...), x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -138,7 +138,8 @@ def post_recent_open(
     # the same path (file deleted and recreated since) is replaced rather than
     # left wasting a cap slot beside the fresh one.
     kept = [
-        e for e in data["entries"]
+        e
+        for e in data["entries"]
         if not (isinstance(e.get("url"), str) and _decoded_fs_path(e["url"]) == fs_path)
     ]
     entry = {"url": url, "openedAt": datetime.now(timezone.utc).isoformat()}
@@ -148,9 +149,7 @@ def post_recent_open(
 
 
 @router.put("/api/recents/collapsed")
-def put_recents_collapsed(
-    payload: dict = Body(...), x_fused: str | None = Header(default=None)
-):
+def put_recents_collapsed(payload: dict = Body(...), x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard

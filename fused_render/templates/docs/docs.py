@@ -17,6 +17,7 @@ Error handling: raise. The executor turns any exception into the error payload
 the page toasts; only structured, expected outcomes (conflict, missing typst)
 are returned as data.
 """
+
 import contextlib
 import hashlib
 import json
@@ -66,6 +67,7 @@ PANDOC_TO = {
 def _pandoc(args, input_text=None):
     """Run the bundled pandoc. Returns stdout bytes; raises on failure."""
     import pypandoc
+
     exe = pypandoc.get_pandoc_path()
     kw = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
     if input_text is not None:
@@ -100,8 +102,11 @@ def _install_progress():
 
 
 def _typst_status():
-    return {"available": _typst_bin() is not None, "path": _typst_bin(),
-            "progress": _install_progress()}
+    return {
+        "available": _typst_bin() is not None,
+        "path": _typst_bin(),
+        "progress": _install_progress(),
+    }
 
 
 def _typst_install():
@@ -114,16 +119,31 @@ def _typst_install():
     logf = open(os.path.join(TYPST_INSTALL_DIR, "worker.log"), "ab")
     detach_kwargs = (
         {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
-        if os.name == "nt" else {"start_new_session": True}
+        if os.name == "nt"
+        else {"start_new_session": True}
     )
     child = subprocess.Popen(
         [sys.executable, worker, TYPST_VERSION, BIN_DIR, TYPST_INSTALL_DIR],
-        stdout=logf, stderr=logf, stdin=subprocess.DEVNULL, cwd=HERE, **detach_kwargs)
+        stdout=logf,
+        stderr=logf,
+        stdin=subprocess.DEVNULL,
+        cwd=HERE,
+        **detach_kwargs,
+    )
     logf.close()
     stamp = os.path.join(TYPST_INSTALL_DIR, "progress.json")
     with open(stamp + ".tmp", "w", encoding="utf-8") as f:
-        json.dump({"stage": "spawn", "pct": 0, "detail": "starting installer",
-                   "done": False, "error": None, "pid": child.pid}, f)
+        json.dump(
+            {
+                "stage": "spawn",
+                "pct": 0,
+                "detail": "starting installer",
+                "done": False,
+                "error": None,
+                "pid": child.pid,
+            },
+            f,
+        )
     os.replace(stamp + ".tmp", stamp)
     time.sleep(0.3)
     return _typst_status()
@@ -133,9 +153,12 @@ def _editability(file: str):
     """Editability verdict for the reader (SPEC RO-4): fold fs writability into
     editable + readonly_message (badge) + readonly_tooltip (hover)."""
     if not os.access(file, os.W_OK):
-        return (False, "Read-only",
-                "The file is read-only — its permissions don't allow "
-                "writing, so it can't be edited here.")
+        return (
+            False,
+            "Read-only",
+            "The file is read-only — its permissions don't allow "
+            "writing, so it can't be edited here.",
+        )
     return True, "", ""
 
 
@@ -149,11 +172,21 @@ def _cache_dir(file: str) -> str:
 
 
 # -------------------------------------------------------------------- dispatcher
-def main(action: str = "export", file: str = "", html: str = "", title: str = "",
-         fmt: str = "pdf", path: str = "", directory: str = "", expected_mtime: str = "",
-         sha: str = "", keep: str = ""):
+def main(
+    action: str = "export",
+    file: str = "",
+    html: str = "",
+    title: str = "",
+    fmt: str = "pdf",
+    path: str = "",
+    directory: str = "",
+    expected_mtime: str = "",
+    sha: str = "",
+    keep: str = "",
+):
     if action == "warmup":
         import pypandoc
+
         return {"pandoc": pypandoc.get_pandoc_version()}
 
     if action == "typst_status":
@@ -175,23 +208,41 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
                 dirs.append(nm)
             elif nm.lower().endswith(".docx"):
                 files.append(nm)
-        parent = os.path.dirname(base) or base   # dirname(root) == root, so "up" stops there
+        parent = os.path.dirname(base) or base  # dirname(root) == root, so "up" stops there
         # forward slashes on every platform: the browser's crumb/join logic is "/"-based
-        return {"path": base.replace(os.sep, "/"), "parent": parent.replace(os.sep, "/"),
-                "dirs": dirs, "files": files,
-                "home": os.path.expanduser("~").replace(os.sep, "/")}
+        return {
+            "path": base.replace(os.sep, "/"),
+            "parent": parent.replace(os.sep, "/"),
+            "dirs": dirs,
+            "files": files,
+            "home": os.path.expanduser("~").replace(os.sep, "/"),
+        }
 
     # ---- open an existing .docx: convert to HTML for the editor
     if action == "import":
         if not file or not os.path.isfile(file):
             raise FileNotFoundError(f"file not found: {file}")
         editable, ro_msg, ro_tip = _editability(file)
-        out = _pandoc(["-f", "docx", "-t", "html+tex_math_dollars", "--mathjax",
-                       "--track-changes=all", "--embed-resources",
-                       "--wrap=none", file])
-        return {"html": out.decode("utf-8", "replace"), "mtime": os.path.getmtime(file),
-                "editable": editable, "readonly_message": ro_msg,
-                "readonly_tooltip": ro_tip}
+        out = _pandoc(
+            [
+                "-f",
+                "docx",
+                "-t",
+                "html+tex_math_dollars",
+                "--mathjax",
+                "--track-changes=all",
+                "--embed-resources",
+                "--wrap=none",
+                file,
+            ]
+        )
+        return {
+            "html": out.decode("utf-8", "replace"),
+            "mtime": os.path.getmtime(file),
+            "editable": editable,
+            "readonly_message": ro_msg,
+            "readonly_tooltip": ro_tip,
+        }
 
     # ---- export/convert: browser sends serialized HTML, we fan out to formats
     if action == "export":
@@ -205,26 +256,40 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
             typ_bin = _typst_bin()
             if not typ_bin:
                 return {"error": "typst is not installed", "missing_typst": True}
-            typ = _pandoc(["-f", HTML_FROM, "-t", "typst", "--wrap=none"],
-                          input_text=html)
+            typ = _pandoc(["-f", HTML_FROM, "-t", "typst", "--wrap=none"], input_text=html)
             typ_path = os.path.join(out_dir, stem + ".typ")
             with open(typ_path, "wb") as f:
                 f.write(typ)
             out_path = os.path.join(out_dir, stem + ".pdf")
-            subprocess.run([typ_bin, "compile", typ_path, out_path],
-                           check=True, capture_output=True)
+            subprocess.run(
+                [typ_bin, "compile", typ_path, out_path], check=True, capture_output=True
+            )
         elif ext in PANDOC_TO:
             out_ext = {"latex": "tex", "markdown": "md"}.get(ext, ext)
             out_path = os.path.join(out_dir, f"{stem}.{out_ext}")
-            data = _pandoc(["-f", HTML_FROM, "-t", PANDOC_TO[ext],
-                            "--wrap=none", "--standalone", "-o", out_path],
-                           input_text=html)
+            data = _pandoc(
+                [
+                    "-f",
+                    HTML_FROM,
+                    "-t",
+                    PANDOC_TO[ext],
+                    "--wrap=none",
+                    "--standalone",
+                    "-o",
+                    out_path,
+                ],
+                input_text=html,
+            )
             if not os.path.exists(out_path):  # some writers go to stdout
                 with open(out_path, "wb") as f:
                     f.write(data)
         else:
             raise ValueError(f"unsupported format: {fmt}")
-        return {"path": out_path, "name": os.path.basename(out_path), "size": os.path.getsize(out_path)}
+        return {
+            "path": out_path,
+            "name": os.path.basename(out_path),
+            "size": os.path.getsize(out_path),
+        }
 
     # ---- save the bound .docx in place, with a conflict lock
     if action == "save":
@@ -242,8 +307,10 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
                 return {"conflict": True, "mtime": on_disk}
         tmp = file + ".tmp"
         try:
-            _pandoc(["-f", HTML_FROM, "-t", "docx", "--wrap=none",
-                     "--standalone", "-o", tmp], input_text=html)
+            _pandoc(
+                ["-f", HTML_FROM, "-t", "docx", "--wrap=none", "--standalone", "-o", tmp],
+                input_text=html,
+            )
             os.replace(tmp, file)
         finally:
             # cleanup only — errors still propagate; on success the replace
@@ -276,11 +343,14 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
                 with contextlib.suppress(OSError, ValueError):
                     keep_shas = set(json.loads(keep)) | {version_sha}
                     for e in os.scandir(vdir):
-                        if e.name[:-len(".html")] not in keep_shas:
+                        if e.name[: -len(".html")] not in keep_shas:
                             with contextlib.suppress(OSError):
                                 os.unlink(e.path)
-        return {"path": file.replace(os.sep, "/"), "mtime": os.path.getmtime(file),
-                "version_sha": version_sha}
+        return {
+            "path": file.replace(os.sep, "/"),
+            "mtime": os.path.getmtime(file),
+            "version_sha": version_sha,
+        }
 
     # ---- fetch a version snapshot recorded by a previous save
     if action == "version_html":
@@ -301,8 +371,10 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
         if not dest.lower().endswith(".docx"):
             dest += ".docx"
         os.makedirs(os.path.dirname(dest), exist_ok=True)
-        _pandoc(["-f", HTML_FROM, "-t", "docx", "--wrap=none",
-                 "--standalone", "-o", dest], input_text=html)
+        _pandoc(
+            ["-f", HTML_FROM, "-t", "docx", "--wrap=none", "--standalone", "-o", dest],
+            input_text=html,
+        )
         return {"path": dest.replace(os.sep, "/"), "name": os.path.basename(dest)}
 
     raise ValueError(f"unknown action: {action}")

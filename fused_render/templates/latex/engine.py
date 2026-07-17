@@ -27,6 +27,7 @@ and per-document build output both live under ~/.fused-render/cache/latex/, so
 nothing is ever written into this template's own folder or uninvited next to
 the user's file.
 """
+
 import glob
 import gzip
 import hashlib
@@ -51,10 +52,10 @@ from procutil import pid_alive as _pid_alive
 
 CACHE_ROOT = os.path.expanduser("~/.fused-render/cache/latex")
 TECTONIC_CACHE = os.path.join(CACHE_ROOT, "tectonic-cache")  # shared package/font cache
-BUILDS = os.path.join(CACHE_ROOT, "builds")                  # per-doc aux output, hashed
-EXPORTS = os.path.join(CACHE_ROOT, "exports")                # per-doc pandoc exports, hashed
-INSTALL_DIR = os.path.join(CACHE_ROOT, "_install")           # tectonic download staging
-BIN_DIR = os.path.expanduser("~/.fused-render/bin")          # user-owned install location
+BUILDS = os.path.join(CACHE_ROOT, "builds")  # per-doc aux output, hashed
+EXPORTS = os.path.join(CACHE_ROOT, "exports")  # per-doc pandoc exports, hashed
+INSTALL_DIR = os.path.join(CACHE_ROOT, "_install")  # tectonic download staging
+BIN_DIR = os.path.expanduser("~/.fused-render/bin")  # user-owned install location
 
 TECTONIC_VERSION = "0.16.9"
 
@@ -90,8 +91,11 @@ def _install_progress():
 
 
 def _tectonic_status():
-    return {"available": _tectonic_bin() is not None, "path": _tectonic_bin(),
-            "progress": _install_progress()}
+    return {
+        "available": _tectonic_bin() is not None,
+        "path": _tectonic_bin(),
+        "progress": _install_progress(),
+    }
 
 
 def _tectonic_install():
@@ -107,16 +111,31 @@ def _tectonic_install():
     # CREATE_NEW_PROCESS_GROUP is the equivalent (mirrors usd_studio).
     detach_kwargs = (
         {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
-        if os.name == "nt" else {"start_new_session": True}
+        if os.name == "nt"
+        else {"start_new_session": True}
     )
     child = subprocess.Popen(
         [sys.executable, worker, TECTONIC_VERSION, BIN_DIR, INSTALL_DIR],
-        stdout=logf, stderr=logf, stdin=subprocess.DEVNULL, cwd=HERE, **detach_kwargs)
+        stdout=logf,
+        stderr=logf,
+        stdin=subprocess.DEVNULL,
+        cwd=HERE,
+        **detach_kwargs,
+    )
     logf.close()
     stamp = os.path.join(INSTALL_DIR, "progress.json")
     with open(stamp + ".tmp", "w", encoding="utf-8") as f:
-        json.dump({"stage": "spawn", "pct": 0, "detail": "starting installer",
-                   "done": False, "error": None, "pid": child.pid}, f)
+        json.dump(
+            {
+                "stage": "spawn",
+                "pct": 0,
+                "detail": "starting installer",
+                "done": False,
+                "error": None,
+                "pid": child.pid,
+            },
+            f,
+        )
     os.replace(stamp + ".tmp", stamp)
     time.sleep(0.3)
     return _tectonic_status()
@@ -160,12 +179,14 @@ def _parse_tectonic_stderr(stderr: str):
         sev, f, ln, msg = m.group(1), m.group(2), m.group(3), m.group(4).strip()
         if not msg:
             continue
-        out.append({
-            "file": os.path.basename(f) if f else "",
-            "line": int(ln) if ln else 0,
-            "severity": sev,
-            "message": msg,
-        })
+        out.append(
+            {
+                "file": os.path.basename(f) if f else "",
+                "line": int(ln) if ln else 0,
+                "severity": sev,
+                "message": msg,
+            }
+        )
     return out
 
 
@@ -190,10 +211,16 @@ def _parse_tex_log(log_path: str):
                     break
             out.append({"file": "", "line": lineno, "severity": "error", "message": msg})
         elif ln.startswith("LaTeX Warning:"):
-            msg = ln[len("LaTeX Warning:"):].strip()
+            msg = ln[len("LaTeX Warning:") :].strip()
             lm = re.search(r"on input line (\d+)", ln)
-            out.append({"file": "", "line": int(lm.group(1)) if lm else 0,
-                        "severity": "warning", "message": msg})
+            out.append(
+                {
+                    "file": "",
+                    "line": int(lm.group(1)) if lm else 0,
+                    "severity": "warning",
+                    "message": msg,
+                }
+            )
         i += 1
     return out
 
@@ -229,8 +256,12 @@ def _compile(main_path: str, synctex: bool = True, force: bool = False):
         return {"ok": False, "error": f"no such file: {main_path}", "errors": []}
     bin_path = _tectonic_bin()
     if not bin_path:
-        return {"ok": False, "missing_tectonic": True, "errors": [],
-                "error": "Tectonic isn't installed — install it to compile."}
+        return {
+            "ok": False,
+            "missing_tectonic": True,
+            "errors": [],
+            "error": "Tectonic isn't installed — install it to compile.",
+        }
     os.makedirs(TECTONIC_CACHE, exist_ok=True)
     build = _build_dir_for(main_path)
     # A compile costs ~10s (tectonic runs several passes), so skip it when the
@@ -243,10 +274,15 @@ def _compile(main_path: str, synctex: bool = True, force: bool = False):
             newest = _newest_source_mtime(os.path.dirname(main_path))
             if newest is not None and os.path.getmtime(pdf) > newest:
                 diags = _dedup(_parse_tex_log(os.path.join(build, stem + ".log")))
-                return {"ok": True, "pdf": pdf,
-                        "synctex": os.path.join(build, stem + ".synctex.gz"),
-                        "log_tail": "", "errors": diags, "seconds": 0.0,
-                        "cached": True}
+                return {
+                    "ok": True,
+                    "pdf": pdf,
+                    "synctex": os.path.join(build, stem + ".synctex.gz"),
+                    "log_tail": "",
+                    "errors": diags,
+                    "seconds": 0.0,
+                    "cached": True,
+                }
     env = dict(os.environ, TECTONIC_CACHE_DIR=TECTONIC_CACHE)
     # We do NOT pass --only-cached: the Tectonic subprocess is server-side (not
     # the sandboxed browser iframe), so it may reach the package repo. A warm
@@ -263,13 +299,24 @@ def _compile(main_path: str, synctex: bool = True, force: bool = False):
         # resolve the way the author expects. CREATE_NO_WINDOW: the server is
         # windowless (pythonw), so a console subprocess would otherwise flash
         # a terminal window per compile.
-        p = subprocess.run(cmd, capture_output=True, text=True, env=env,
-                           cwd=os.path.dirname(main_path), timeout=28,
-                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        p = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=os.path.dirname(main_path),
+            timeout=28,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
     except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "compile exceeded 28s (too complex, or a "
-                "cold package fetch) — simplify, or recompile once the fetch "
-                "has warmed the cache", "errors": [], "seconds": round(time.time() - t0, 2)}
+        return {
+            "ok": False,
+            "error": "compile exceeded 28s (too complex, or a "
+            "cold package fetch) — simplify, or recompile once the fetch "
+            "has warmed the cache",
+            "errors": [],
+            "seconds": round(time.time() - t0, 2),
+        }
     seconds = round(time.time() - t0, 2)
     stem = os.path.splitext(os.path.basename(main_path))[0]
     pdf = os.path.join(build, stem + ".pdf")
@@ -294,13 +341,23 @@ def _compile(main_path: str, synctex: bool = True, force: bool = False):
 # ---------------------------------------------------------------- source index
 _SECT_RE = re.compile(r"\\(part|chapter|section|subsection|subsubsection|paragraph)\*?\s*\{")
 _LABEL_RE = re.compile(r"\\label\{([^}]*)\}")
-_CITE_RE = re.compile(r"\\(?:cite|citep|citet|citeauthor|citeyear|parencite|textcite|autocite)\*?(?:\[[^\]]*\])*\{([^}]*)\}")
+_CITE_RE = re.compile(
+    r"\\(?:cite|citep|citet|citeauthor|citeyear|parencite|textcite|autocite)\*?(?:\[[^\]]*\])*\{([^}]*)\}"
+)
 _INPUT_RE = re.compile(r"\\(?:input|include|subfile)\{([^}]*)\}")
 _BIBRES_RE = re.compile(r"\\(?:addbibresource|bibliography)\{([^}]*)\}")
-_ENV_RE = re.compile(r"\\begin\{(figure|table|equation|align|algorithm|lstlisting|tikzpicture|theorem|lemma|proof|definition)\*?\}")
+_ENV_RE = re.compile(
+    r"\\begin\{(figure|table|equation|align|algorithm|lstlisting|tikzpicture|theorem|lemma|proof|definition)\*?\}"
+)
 _TITLE_RE = re.compile(r"\\title\{(.+?)\}", re.S)
-_LEVELS = {"part": 0, "chapter": 1, "section": 1, "subsection": 2,
-           "subsubsection": 3, "paragraph": 4}
+_LEVELS = {
+    "part": 0,
+    "chapter": 1,
+    "section": 1,
+    "subsection": 2,
+    "subsubsection": 3,
+    "paragraph": 4,
+}
 
 
 def _match_braces(s: str, start: int) -> str:
@@ -385,9 +442,15 @@ def _outline(main_path: str):
         for m in _SECT_RE.finditer(txt):
             kind = m.group(1)
             inner = _match_braces(txt, m.end() - 1)
-            sections.append({"level": _LEVELS.get(kind, 2), "kind": kind,
-                             "title": re.sub(r"\s+", " ", inner).strip()[:120],
-                             "file": rel, "line": line_of(m.start())})
+            sections.append(
+                {
+                    "level": _LEVELS.get(kind, 2),
+                    "kind": kind,
+                    "title": re.sub(r"\s+", " ", inner).strip()[:120],
+                    "file": rel,
+                    "line": line_of(m.start()),
+                }
+            )
         for m in _LABEL_RE.finditer(txt):
             labels.append({"name": m.group(1), "file": rel, "line": line_of(m.start())})
         for m in _CITE_RE.finditer(txt):
@@ -403,10 +466,16 @@ def _outline(main_path: str):
             for b in m.group(1).split(","):
                 if b.strip():
                     bibres.append(b.strip())
-    return {"title": title, "files": [os.path.basename(f) for f in files],
-            "sections": sections, "labels": labels,
-            "cites_used": sorted(set(cites)), "envs": envs,
-            "inputs": inputs, "bib_resources": bibres}
+    return {
+        "title": title,
+        "files": [os.path.basename(f) for f in files],
+        "sections": sections,
+        "labels": labels,
+        "cites_used": sorted(set(cites)),
+        "envs": envs,
+        "inputs": inputs,
+        "bib_resources": bibres,
+    }
 
 
 # ------------------------------------------------------------------- bib parse
@@ -424,7 +493,7 @@ def _bib_field(block: str, name: str) -> str:
         return re.sub(r"\s+", " ", _match_braces(block, i)).strip()
     if block[i] == '"':
         j = block.find('"', i + 1)
-        return block[i + 1:j].strip() if j > 0 else ""
+        return block[i + 1 : j].strip() if j > 0 else ""
     m2 = re.match(r"([^,}\n]+)", block[i:])
     return m2.group(1).strip() if m2 else ""
 
@@ -438,14 +507,17 @@ def _parse_bib(paths):
             continue
         for m in _BIB_ENTRY_RE.finditer(txt):
             etype, key = m.group(1).lower(), m.group(2)
-            block = txt[m.start():m.start() + 2000]
-            entries.append({
-                "key": key, "type": etype,
-                "title": _bib_field(block, "title")[:200],
-                "author": _bib_field(block, "author")[:160],
-                "year": _bib_field(block, "year"),
-                "file": os.path.basename(p),
-            })
+            block = txt[m.start() : m.start() + 2000]
+            entries.append(
+                {
+                    "key": key,
+                    "type": etype,
+                    "title": _bib_field(block, "title")[:200],
+                    "author": _bib_field(block, "author")[:160],
+                    "year": _bib_field(block, "year"),
+                    "file": os.path.basename(p),
+                }
+            )
     return entries
 
 
@@ -516,13 +588,19 @@ def _synctex_forward(synctex_gz: str, target_file: str, line: int):
     hits.sort()
     _, best_page, best_v = hits[0]
     maxv = page_max_v.get(best_page, 0) or 1
-    return {"page": best_page, "vfrac": max(0.0, min(1.0, best_v / maxv)),
-            "hits": len(hits)}
+    return {"page": best_page, "vfrac": max(0.0, min(1.0, best_v / maxv)), "hits": len(hits)}
 
 
 # -------------------------------------------------------------------- dispatcher
-def main(action: str = "tectonic_status", path: str = "", target: str = "",
-         line: int = 0, synctex: bool = True, name: str = "", force: int = 0):
+def main(
+    action: str = "tectonic_status",
+    path: str = "",
+    target: str = "",
+    line: int = 0,
+    synctex: bool = True,
+    name: str = "",
+    force: int = 0,
+):
     if action == "tectonic_status":
         return _tectonic_status()
 
@@ -557,8 +635,7 @@ def main(action: str = "tectonic_status", path: str = "", target: str = "",
                 size = 0 if isdir else os.path.getsize(full)
             except OSError:
                 continue
-            entries.append({"name": nm, "path": full, "is_dir": isdir,
-                            "ext": ext, "size": size})
+            entries.append({"name": nm, "path": full, "is_dir": isdir, "ext": ext, "size": size})
         entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
         parent = os.path.dirname(d.rstrip("/")) or "/"
         return {"dir": d, "parent": parent, "entries": entries}
@@ -573,8 +650,11 @@ def main(action: str = "tectonic_status", path: str = "", target: str = "",
         tex_only = (target or "").lower() == "tex"
         out, cap = [], 400
         for dp, dns, fns in os.walk(root):
-            dns[:] = [x for x in dns if not x.startswith(".")
-                      and x not in ("node_modules", "__pycache__", ".git")]
+            dns[:] = [
+                x
+                for x in dns
+                if not x.startswith(".") and x not in ("node_modules", "__pycache__", ".git")
+            ]
             # relpath on a file named "nul"/"con" device-expands and raises;
             # derive rel from the walk's dir instead.
             reldir = os.path.relpath(dp, root)
@@ -622,16 +702,26 @@ def main(action: str = "tectonic_status", path: str = "", target: str = "",
         # turns the .tex into docx/html/md for round-trips.
         if not path or not os.path.exists(path):
             return {"error": "export needs an existing path"}
-        fmt = (target or "pdf").lower()   # reuse `target` param as the format
+        fmt = (target or "pdf").lower()  # reuse `target` param as the format
         if fmt == "pdf":
             c = _compile(path)
-            return {"path": c.get("pdf", ""), "ok": c.get("ok", False),
-                    "missing_tectonic": c.get("missing_tectonic", False)}
+            return {
+                "path": c.get("pdf", ""),
+                "ok": c.get("ok", False),
+                "missing_tectonic": c.get("missing_tectonic", False),
+            }
         import pypandoc
+
         exports = _export_dir_for(path)
         stem = os.path.splitext(os.path.basename(path))[0]
-        to = {"docx": "docx", "html": "html", "md": "gfm",
-              "markdown": "gfm", "odt": "odt", "rtf": "rtf"}.get(fmt)
+        to = {
+            "docx": "docx",
+            "html": "html",
+            "md": "gfm",
+            "markdown": "gfm",
+            "odt": "odt",
+            "rtf": "rtf",
+        }.get(fmt)
         if not to:
             return {"error": f"unsupported format: {fmt}"}
         out_ext = {"gfm": "md"}.get(to, to)
@@ -643,13 +733,20 @@ def main(action: str = "tectonic_status", path: str = "", target: str = "",
         # the TOC line up, and resolving refs needs section numbers present.
         extra = ["--standalone"]
         if to == "html":
-            extra += ["--toc", "--toc-depth=3", "--number-sections", "--mathml",
-                      "--section-divs", "--embed-resources"]
+            extra += [
+                "--toc",
+                "--toc-depth=3",
+                "--number-sections",
+                "--mathml",
+                "--section-divs",
+                "--embed-resources",
+            ]
         elif to in ("docx", "odt"):
             extra += ["--toc"]
         try:
-            pypandoc.convert_file(path, to, format="latex+raw_tex",
-                                  outputfile=out, extra_args=extra)
+            pypandoc.convert_file(
+                path, to, format="latex+raw_tex", outputfile=out, extra_args=extra
+            )
         except Exception as e:
             return {"error": f"export to {fmt} failed: {e}"}
         return {"path": out, "name": os.path.basename(out), "size": os.path.getsize(out)}

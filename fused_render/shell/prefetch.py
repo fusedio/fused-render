@@ -41,6 +41,7 @@ costs nothing. A completed file is remembered for this server run only;
 re-prefetching after a restart re-streams from the local cache in
 seconds without touching the store.
 """
+
 import asyncio
 import logging
 import os
@@ -54,8 +55,7 @@ logger = logging.getLogger(__name__)
 # Skip files larger than this: the serve cache is LRU-capped at 20Gi
 # (SERVE_VFS_OPT) and one giant file would evict everything else. Beyond
 # the cap the on-demand path still works exactly as before.
-MAX_BYTES = int(os.environ.get("FUSED_RENDER_PREFETCH_MAX_BYTES",
-                               1024 * 1024 * 1024))
+MAX_BYTES = int(os.environ.get("FUSED_RENDER_PREFETCH_MAX_BYTES", 1024 * 1024 * 1024))
 # Skip files smaller than this. Prefetch only pays off for large,
 # latency-bound files whose scattered reads dominate (see the module
 # docstring): a zarr chunk or a tiny metadata object is read once, whole,
@@ -63,8 +63,7 @@ MAX_BYTES = int(os.environ.get("FUSED_RENDER_PREFETCH_MAX_BYTES",
 # redirected client never reads back is pure waste, and one tracked job
 # per chunk is how the maps below blow up on a store with thousands of
 # them. Below the floor the on-demand path is already quick.
-MIN_BYTES = int(os.environ.get("FUSED_RENDER_PREFETCH_MIN_BYTES",
-                               8 * 1024 * 1024))
+MIN_BYTES = int(os.environ.get("FUSED_RENDER_PREFETCH_MIN_BYTES", 8 * 1024 * 1024))
 # Bound the in-memory maps: a store with thousands of tiny objects would
 # otherwise mint a permanent entry per object for the life of the process.
 # Only terminal jobs are evicted (oldest first); the MIN_BYTES floor keeps
@@ -95,7 +94,7 @@ MAX_CONSECUTIVE_ERRORS = 30
 FAILED_RETRY_COOLDOWN_S = 60.0
 
 _lock = threading.Lock()
-_jobs: dict = {}     # path -> {"status", "size", "done", "at"}
+_jobs: dict = {}  # path -> {"status", "size", "done", "at"}
 _touched: dict = {}  # path -> monotonic time of last interactive access
 
 # Single dedicated event loop for all prefetch work, spun up lazily on the
@@ -129,8 +128,10 @@ def _evict_locked() -> None:
     if len(_jobs) <= MAX_TRACKED:
         return
     terminal = sorted(
-        (_touched.get(p, j["at"]), p) for p, j in _jobs.items()
-        if j["status"] in ("done", "skipped", "failed"))
+        (_touched.get(p, j["at"]), p)
+        for p, j in _jobs.items()
+        if j["status"] in ("done", "skipped", "failed")
+    )
     for _, p in terminal:
         if len(_jobs) <= MAX_TRACKED:
             break
@@ -156,8 +157,7 @@ def _ensure_loop() -> "asyncio.AbstractEventLoop":
     with _loop_lock:
         if _loop is None:
             loop = asyncio.new_event_loop()
-            threading.Thread(target=loop.run_forever, daemon=True,
-                             name="prefetch-loop").start()
+            threading.Thread(target=loop.run_forever, daemon=True, name="prefetch-loop").start()
             _loop = loop
     return _loop
 
@@ -174,15 +174,13 @@ def schedule(path: str, url: str) -> None:
             _touched[path] = now
             job = _jobs.get(path)
             if job is not None:
-                retry = (job["status"] == "failed"
-                         and now - job["at"] >= FAILED_RETRY_COOLDOWN_S)
+                retry = job["status"] == "failed" and now - job["at"] >= FAILED_RETRY_COOLDOWN_S
                 if not retry:
                     return
-            _jobs[path] = {"status": "queued", "size": None, "done": 0,
-                           "at": now}
+            _jobs[path] = {"status": "queued", "size": None, "done": 0, "at": now}
             _evict_locked()
         asyncio.run_coroutine_threadsafe(_prefetch(path, url), _ensure_loop())
-    except Exception:                                  # pragma: no cover
+    except Exception:  # pragma: no cover
         logger.warning("prefetch schedule failed for %r", path, exc_info=True)
 
 
@@ -224,16 +222,13 @@ def _prioritized_chunks(size: int) -> "list[tuple[int, int]]":
     tail_start = max(head_end, size - FOOTER_BYTES)
 
     def _split(lo: int, hi: int) -> "list[tuple[int, int]]":
-        return [(o, min(o + CHUNK_BYTES, hi) - 1)
-                for o in range(lo, hi, CHUNK_BYTES)]
+        return [(o, min(o + CHUNK_BYTES, hi) - 1) for o in range(lo, hi, CHUNK_BYTES)]
 
     # head (row group 0), then footer tail, then the middle bulk.
-    return (_split(0, head_end) + _split(tail_start, size)
-            + _split(head_end, tail_start))
+    return _split(0, head_end) + _split(tail_start, size) + _split(head_end, tail_start)
 
 
-def _fetch_chunk(url: str, start: int, end: int, path: str,
-                 committed: int) -> None:
+def _fetch_chunk(url: str, start: int, end: int, path: str, committed: int) -> None:
     """Fetch bytes [start, end] through the serve and discard them (the point
     is the serve's cache side effect); report progress as the bytes land.
     Blocking — run via asyncio.to_thread.
@@ -264,8 +259,8 @@ def _fetch_chunk(url: str, start: int, end: int, path: str,
     # that never landed and finishing the job with data missing.
     if off != end + 1:
         raise OSError(
-            f"short read: got {off - start} of {end - start + 1} bytes "
-            f"for range [{start}, {end}]")
+            f"short read: got {off - start} of {end - start + 1} bytes for range [{start}, {end}]"
+        )
 
 
 async def _acquire_slot() -> "asyncio.Semaphore":
@@ -319,16 +314,15 @@ async def _prefetch(path: str, url: str) -> None:
                 while True:
                     await _wait_for_lull(path)
                     try:
-                        await asyncio.to_thread(
-                            _fetch_chunk, url, start, end, path, committed)
+                        await asyncio.to_thread(_fetch_chunk, url, start, end, path, committed)
                         break
                     except Exception as exc:
                         _release(exc)
                         errors += 1
                         if errors > MAX_CONSECUTIVE_ERRORS:
                             logger.warning(
-                                "prefetch of %r gave up at %d/%d bytes",
-                                path, committed, size)
+                                "prefetch of %r gave up at %d/%d bytes", path, committed, size
+                            )
                             _finish(path, "failed")
                             return
                         # Re-request the whole chunk from `start`: bytes already
@@ -339,8 +333,7 @@ async def _prefetch(path: str, url: str) -> None:
                 errors = 0
                 committed += end - start + 1
             _finish(path, "done")
-            logger.info("prefetched %r (%d bytes) into the serve cache",
-                        path, size)
+            logger.info("prefetched %r (%d bytes) into the serve cache", path, size)
     except Exception:
         logger.warning("prefetch of %r died", path, exc_info=True)
         _finish(path, "failed")

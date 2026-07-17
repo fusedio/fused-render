@@ -66,7 +66,11 @@ export function BindingsTable({
             </option>
           ))}
         </select>
-        <button type="button" className="templates-btn-primary templates-toolbar-push" onClick={onAdd}>
+        <button
+          type="button"
+          className="templates-btn-primary templates-toolbar-push"
+          onClick={onAdd}
+        >
           + Add extension
         </button>
       </div>

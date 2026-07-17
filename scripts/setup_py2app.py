@@ -23,6 +23,7 @@ reasons every one of these needs it:
      extra (SPEC DM-2) must therefore be forced in explicitly — there is no
      static import for modulegraph to find in the first place.
 """
+
 import os
 import re
 import sys
@@ -51,16 +52,62 @@ APP = [os.path.join(SCRIPT_DIR, "app_entry.py")]
 # built-in key — users can bind those via the runtime template registry, and
 # extra Finder associations are harmless at Alternate rank.
 _PREVIEWABLE_EXTENSIONS = [
-    "html", "htm", "csv", "tsv", "json", "geojson", "md", "txt", "log",
-    "yaml", "yml", "toml", "py", "js", "ts", "sh", "css",
-    "png", "jpg", "jpeg", "gif", "webp", "svg", "xlsx", "pdf",
-    "mp4", "mov", "m4v", "webm", "mp3", "wav", "m4a", "ogg", "flac",
-    "tif", "tiff", "geotiff",  # GeoTIFF rasters (server.py "geotiff" template)
-    "nc", "nc4", "cdf",  # NetCDF (server.py "netcdf" template)
+    "html",
+    "htm",
+    "csv",
+    "tsv",
+    "json",
+    "geojson",
+    "md",
+    "txt",
+    "log",
+    "yaml",
+    "yml",
+    "toml",
+    "py",
+    "js",
+    "ts",
+    "sh",
+    "css",
+    "png",
+    "jpg",
+    "jpeg",
+    "gif",
+    "webp",
+    "svg",
+    "xlsx",
+    "pdf",
+    "mp4",
+    "mov",
+    "m4v",
+    "webm",
+    "mp3",
+    "wav",
+    "m4a",
+    "ogg",
+    "flac",
+    "tif",
+    "tiff",
+    "geotiff",  # GeoTIFF rasters (server.py "geotiff" template)
+    "nc",
+    "nc4",
+    "cdf",  # NetCDF (server.py "netcdf" template)
     # geo/sci formats with no built-in template key — bindable via the
     # runtime template registry:
-    "gpkg", "shp", "fgb", "kml", "kmz", "gpx", "las", "laz",
-    "pmtiles", "mbtiles", "zarr", "h5", "grib2", "jp2",
+    "gpkg",
+    "shp",
+    "fgb",
+    "kml",
+    "kmz",
+    "gpx",
+    "las",
+    "laz",
+    "pmtiles",
+    "mbtiles",
+    "zarr",
+    "h5",
+    "grib2",
+    "jp2",
 ]
 
 DOCUMENT_TYPES = [
@@ -94,7 +141,10 @@ OPTIONS = {
         "fused_render",
         # [bundled] extra (SPEC DM-2) + its native transitive deps, as
         # actually resolved in the build venv (see build_dmg.sh comments).
-        "numpy", "pandas", "dateutil", "six",
+        "numpy",
+        "pandas",
+        "dateutil",
+        "six",
         "pyarrow",
         # _duckdb deliberately NOT here: it's a bare top-level C extension
         # (site-packages/_duckdb.cpython-312-darwin.so), not a package.
@@ -103,33 +153,62 @@ OPTIONS = {
         # lib-dynload/_duckdb.so and breaks `import duckdb` with
         # "SyntaxError: source code string cannot contain null bytes".
         # It goes in `includes` below instead.
-        "duckdb", "adbc_driver_duckdb",
-        "polars", "_polars_runtime_32",
+        "duckdb",
+        "adbc_driver_duckdb",
+        "polars",
+        "_polars_runtime_32",
         # mpl_toolkits deliberately excluded: it's a PEP 420 namespace
         # package (no __init__.py), and py2app's package-bootstrap lookup
         # (imp.find_module, pre-namespace-package semantics) can't resolve
         # it when forced via `packages`. matplotlib's core plotting (Agg,
         # pyplot, figures) works fine without it; only mpl_toolkits-specific
         # features (3D axes, axes_grid1, ...) are unavailable to user scripts.
-        "matplotlib", "contourpy", "cycler", "fontTools", "kiwisolver", "pyparsing",
+        "matplotlib",
+        "contourpy",
+        "cycler",
+        "fontTools",
+        "kiwisolver",
+        "pyparsing",
         "scipy",
         "PIL",
-        "openpyxl", "et_xmlfile",
+        "openpyxl",
+        "et_xmlfile",
         "shapely",
-        "geopandas", "pyogrio", "pyproj",
-        "requests", "urllib3", "certifi", "charset_normalizer", "idna",
+        "geopandas",
+        "pyogrio",
+        "pyproj",
+        "requests",
+        "urllib3",
+        "certifi",
+        "charset_normalizer",
+        "idna",
         # web server stack: forced full-copy too, since uvicorn/pydantic-core
         # do dynamic/compiled imports modulegraph can't always follow.
-        "fastapi", "starlette", "uvicorn", "h11", "click", "anyio",
-        "pydantic", "pydantic_core", "typing_extensions", "typing_inspection",
-        "annotated_types", "annotated_doc", "packaging",
+        "fastapi",
+        "starlette",
+        "uvicorn",
+        "h11",
+        "click",
+        "anyio",
+        "pydantic",
+        "pydantic_core",
+        "typing_extensions",
+        "typing_inspection",
+        "annotated_types",
+        "annotated_doc",
+        "packaging",
         # menu-bar app shell. PyObjCTools deliberately excluded: same
         # namespace-package (no __init__.py) limitation as mpl_toolkits
         # above. rumps's own static `import` of what it needs from
         # PyObjCTools (e.g. AppHelper) is still picked up normally by
         # modulegraph's regular import tracing - only forcing the whole
         # package via `packages` breaks on its bootstrap lookup.
-        "rumps", "objc", "AppKit", "Foundation", "Cocoa", "CoreFoundation",
+        "rumps",
+        "objc",
+        "AppKit",
+        "Foundation",
+        "Cocoa",
+        "CoreFoundation",
         # Pinned view (SPEC §25, D97): WKWebView for the status-item popover.
         "WebKit",
         # The deploy CLI (SPEC §19 DP-3): the [fused] extra build_dmg.sh
@@ -147,12 +226,29 @@ OPTIONS = {
         # fused's verify scanner detects its absence and skips with a
         # warning finding.
         "fused",
-        "boto3", "botocore", "s3transfer", "jmespath",
-        "cryptography", "keyring",
-        "anthropic", "mcp", "httpx", "httpcore",
-        "pluggy", "tomlkit", "jwt", "yaml", "loguru",
-        "aiohttp", "yarl", "multidict", "frozenlist",
-        "fsspec", "tabulate", "tqdm", "rtoml",
+        "boto3",
+        "botocore",
+        "s3transfer",
+        "jmespath",
+        "cryptography",
+        "keyring",
+        "anthropic",
+        "mcp",
+        "httpx",
+        "httpcore",
+        "pluggy",
+        "tomlkit",
+        "jwt",
+        "yaml",
+        "loguru",
+        "aiohttp",
+        "yarl",
+        "multidict",
+        "frozenlist",
+        "fsspec",
+        "tabulate",
+        "tqdm",
+        "rtoml",
     ],
     # Single modules (incl. bare C extensions) that modulegraph can't be
     # trusted to find on its own — same runtime-import blindness as

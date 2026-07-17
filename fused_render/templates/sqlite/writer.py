@@ -19,6 +19,7 @@ Called by fused.runPython with structured params:
   inserts: [{<column>: <value>, ...}, ...]
 Returns {"total_rows": <int>} — the table's row count after the batch.
 """
+
 import os
 import sqlite3
 import urllib.request
@@ -48,8 +49,13 @@ def _check_column(col, valid):
     return _quote_ident(col)
 
 
-def main(file: str, table: str = "", edits: "list | None" = None,
-         deletes: "list | None" = None, inserts: "list | None" = None) -> dict:
+def main(
+    file: str,
+    table: str = "",
+    edits: "list | None" = None,
+    deletes: "list | None" = None,
+    inserts: "list | None" = None,
+) -> dict:
     edits = edits or []
     deletes = deletes or []
     inserts = inserts or []
@@ -91,8 +97,9 @@ def main(file: str, table: str = "", edits: "list | None" = None,
 
         if deletes:
             placeholders = ", ".join("?" for _ in deletes)
-            conn.execute(f"DELETE FROM {qtable} WHERE rowid IN ({placeholders})",
-                         [int(d) for d in deletes])
+            conn.execute(
+                f"DELETE FROM {qtable} WHERE rowid IN ({placeholders})", [int(d) for d in deletes]
+            )
 
         for row in inserts:
             cols = [_check_column(c, valid) for c in row]

@@ -277,7 +277,9 @@ def _within_page_dir(page_dir: str, target: str) -> bool:
     return real == root or real.startswith(root + os.sep)
 
 
-def _extract_bundle_manifest(html: str, errors: list[str], warnings: list[str]) -> tuple[list[str], str]:
+def _extract_bundle_manifest(
+    html: str, errors: list[str], warnings: list[str]
+) -> tuple[list[str], str]:
     """Pull the embedded ``<script type="application/fused-bundle">`` manifest out of ``html``.
 
     Returns ``(include_entries, html_without_the_block)``. The block is stripped from the
@@ -305,10 +307,12 @@ def _extract_bundle_manifest(html: str, errors: list[str], warnings: list[str]) 
     try:
         data = json.loads(matches[0].group(2))
     except ValueError as exc:
-        errors.append(f'the <script type="application/fused-bundle"> manifest is not valid JSON: {exc}')
+        errors.append(
+            f'the <script type="application/fused-bundle"> manifest is not valid JSON: {exc}'
+        )
         return [], stripped
     if not isinstance(data, dict):
-        errors.append('the fused-bundle manifest must be a JSON object')
+        errors.append("the fused-bundle manifest must be a JSON object")
         return [], stripped
     include = data.get("include", [])
     if not isinstance(include, list) or not all(isinstance(x, str) for x in include):
@@ -460,7 +464,7 @@ def _discover_modules(
             continue
         scanned.add(real)
         try:
-            with open(src_path, "r", encoding="utf-8", errors="replace") as f:
+            with open(src_path, encoding="utf-8", errors="replace") as f:
                 source = f.read()
         except OSError:
             continue
@@ -533,7 +537,9 @@ def plan_export(
     # body can't false-positive in the scans below) and its expanded `include` globs are
     # prepended to the caller's include list (both are just added assets; exclude runs last).
     manifest_include, html = _extract_bundle_manifest(html, plan.errors, plan.warnings)
-    include = _expand_manifest_include(page_dir, manifest_include, plan.errors, plan.warnings) + include
+    include = (
+        _expand_manifest_include(page_dir, manifest_include, plan.errors, plan.warnings) + include
+    )
 
     for m in _UNSUPPORTED.finditer(html):
         api = m.group(1)
@@ -702,8 +708,7 @@ def _manifest(plan: ExportPlan, page_key: str) -> dict:
         "root": _PAYLOAD_DIR,
         "page": page_key,
         "entrypoints": [
-            {"path": e.path, "name": e.name, "key": _asset_key(e.path)}
-            for e in plan.entrypoints
+            {"path": e.path, "name": e.name, "key": _asset_key(e.path)} for e in plan.entrypoints
         ],
         "assets": [{"path": a.path, "name": a.name} for a in plan.assets],
         "resources": [{"key": r.key} for r in plan.resources],
@@ -734,17 +739,14 @@ def export_page(
     if ext not in (".html", ".htm"):
         raise ExportError(f"{html_path} is not an .html/.htm file")
 
-    with open(html_path, "r", encoding="utf-8", errors="replace") as f:
+    with open(html_path, encoding="utf-8", errors="replace") as f:
         html = f.read()
     page_dir = os.path.dirname(html_path)
 
     plan = plan_export(html, page_dir, include=include, exclude=exclude)
     if plan.errors:
         raise ExportError(
-            "cannot export "
-            + os.path.basename(html_path)
-            + ":\n  - "
-            + "\n  - ".join(plan.errors)
+            "cannot export " + os.path.basename(html_path) + ":\n  - " + "\n  - ".join(plan.errors)
         )
 
     # Export is **non-destructive**: it writes a self-contained bundle and NEVER deletes an

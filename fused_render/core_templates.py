@@ -20,6 +20,7 @@ This is the core-template channel; it is distinct from the *user* override
 channel at ~/.fused-render/templates/ (server.USER_TEMPLATES_DIR), which is
 never touched here and always shadows a core template of the same name.
 """
+
 import os
 import shutil
 

@@ -22,6 +22,7 @@ Actions:
   main(action="history", file=..., session_id=...) -> {"turns": [...]}
   main(action="cancel", run_id=...)   -> {"cancelled": ...}
 """
+
 import json
 import os
 import re
@@ -39,8 +40,7 @@ def _claude_bin() -> str:
     found = shutil.which("claude")
     if found:
         return found
-    for candidate in ("~/.local/bin/claude", "/opt/homebrew/bin/claude",
-                      "/usr/local/bin/claude"):
+    for candidate in ("~/.local/bin/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude"):
         candidate = os.path.expanduser(candidate)
         if os.path.exists(candidate):
             return candidate
@@ -64,6 +64,7 @@ def _system_prompt(file: str) -> str:
 
 
 # ------------------------------------------------------------- sidecar store
+
 
 def _sidecar_path(file: str) -> str:
     return file + ".json"
@@ -103,8 +104,7 @@ def _save_sidecar(file: str, data: dict) -> None:
         raise
 
 
-def _record_session(file: str, session_id: str, message: str,
-                    resumed_from: str) -> None:
+def _record_session(file: str, session_id: str, message: str, resumed_from: str) -> None:
     """Add/refresh a sidecar entry.
 
     Plain --resume keeps the session id, but --fork-session (and older
@@ -122,17 +122,20 @@ def _record_session(file: str, session_id: str, message: str,
             entry["last_used"] = now
             entry["cwd"] = cwd
             return _save_sidecar(file, data)
-    data["claudeSessions"].append({
-        "id": session_id,
-        "preview": message.strip()[:80],
-        "created_at": now,
-        "last_used": now,
-        "cwd": cwd,
-    })
+    data["claudeSessions"].append(
+        {
+            "id": session_id,
+            "preview": message.strip()[:80],
+            "created_at": now,
+            "last_used": now,
+            "cwd": cwd,
+        }
+    )
     _save_sidecar(file, data)
 
 
 # ---------------------------------------------------------- session transfer
+
 
 def _munge(path: str) -> str:
     """A cwd's project-dir name under ~/.claude/projects: every
@@ -182,8 +185,8 @@ def _migrate_session(file: str, session_id: str) -> None:
 
 # ----------------------------------------------------------------- start/poll
 
-def _start(file: str, message: str, session_id: str, model: str,
-           effort: str) -> dict:
+
+def _start(file: str, message: str, session_id: str, model: str, effort: str) -> dict:
     file = os.path.abspath(file)
     if not os.path.isfile(file):
         return {"error": f"target file not found: {file}"}
@@ -194,11 +197,19 @@ def _start(file: str, message: str, session_id: str, model: str,
     run_dir = os.path.join(RUNS, run_id)
     os.makedirs(run_dir)
 
-    cmd = [_claude_bin(), "-p", message,
-           "--output-format", "stream-json",
-           "--verbose", "--include-partial-messages",
-           "--append-system-prompt", _system_prompt(file),
-           "--permission-mode", "acceptEdits"]
+    cmd = [
+        _claude_bin(),
+        "-p",
+        message,
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--include-partial-messages",
+        "--append-system-prompt",
+        _system_prompt(file),
+        "--permission-mode",
+        "acceptEdits",
+    ]
     if session_id:
         cmd += ["--resume", session_id]
     if model:
@@ -209,15 +220,20 @@ def _start(file: str, message: str, session_id: str, model: str,
     # poll() records the session into the sidecar once claude reports its id;
     # it needs the file + first message, so stash them with the run.
     with open(os.path.join(run_dir, "meta.json"), "w", encoding="utf-8") as f:
-        json.dump({"file": file, "message": message,
-                   "resumed_from": session_id}, f)
+        json.dump({"file": file, "message": message, "resumed_from": session_id}, f)
 
-    with open(os.path.join(run_dir, "out.jsonl"), "w", encoding="utf-8") as out, \
-         open(os.path.join(run_dir, "err.log"), "w", encoding="utf-8") as err:
-        proc = subprocess.Popen(cmd, stdout=out, stderr=err,
-                                cwd=os.path.dirname(file),
-                                stdin=subprocess.DEVNULL,
-                                start_new_session=True)
+    with (
+        open(os.path.join(run_dir, "out.jsonl"), "w", encoding="utf-8") as out,
+        open(os.path.join(run_dir, "err.log"), "w", encoding="utf-8") as err,
+    ):
+        proc = subprocess.Popen(
+            cmd,
+            stdout=out,
+            stderr=err,
+            cwd=os.path.dirname(file),
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
     with open(os.path.join(run_dir, "pid"), "w", encoding="utf-8") as f:
         f.write(str(proc.pid))
     return {"run_id": run_id}
@@ -242,13 +258,16 @@ def _poll(run_id: str) -> dict:
     new_session = ""
     done = False
     error = ""
-    tokens_done = 0      # output tokens of finished messages this turn
-    tokens_current = 0   # cumulative usage of the in-flight message
+    tokens_done = 0  # output tokens of finished messages this turn
+    tokens_current = 0  # cumulative usage of the in-flight message
     phase = "thinking"
 
     try:
-        lines = open(os.path.join(run_dir, "out.jsonl"), encoding="utf-8",
-                     errors="replace").read().splitlines()
+        lines = (
+            open(os.path.join(run_dir, "out.jsonl"), encoding="utf-8", errors="replace")
+            .read()
+            .splitlines()
+        )
     except FileNotFoundError:
         lines = []
 
@@ -294,12 +313,18 @@ def _poll(run_id: str) -> dict:
         # clean success and the sidecar-record guard below skips it.
         done = True
         try:
-            tail = open(os.path.join(run_dir, "err.log"), encoding="utf-8",
-                        errors="replace").read().strip()
+            tail = (
+                open(os.path.join(run_dir, "err.log"), encoding="utf-8", errors="replace")
+                .read()
+                .strip()
+            )
         except FileNotFoundError:
             tail = ""
-        error = tail or ("claude exited before completing the reply"
-                         if text_parts else "claude exited unexpectedly")
+        error = tail or (
+            "claude exited before completing the reply"
+            if text_parts
+            else "claude exited unexpectedly"
+        )
 
     # First poll that sees the session id writes it to the sidecar (marker
     # file keeps the write one-shot across the remaining polls).
@@ -308,25 +333,34 @@ def _poll(run_id: str) -> dict:
         try:
             with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as f:
                 meta = json.load(f)
-            _record_session(meta["file"], new_session, meta["message"],
-                            meta.get("resumed_from", ""))
+            _record_session(
+                meta["file"], new_session, meta["message"], meta.get("resumed_from", "")
+            )
             open(marker, "w", encoding="utf-8").close()
         except (OSError, json.JSONDecodeError, KeyError):
             pass  # sidecar bookkeeping must never break the chat itself
 
     # The final result is authoritative; partial deltas cover the streaming window.
     text = result_text if (done and result_text and not error) else "".join(text_parts)
-    return {"text": text, "done": done, "session_id": new_session, "error": error,
-            "tokens": tokens_done + tokens_current, "phase": phase}
+    return {
+        "text": text,
+        "done": done,
+        "session_id": new_session,
+        "error": error,
+        "tokens": tokens_done + tokens_current,
+        "phase": phase,
+    }
 
 
 # ------------------------------------------------------- sessions & history
 
+
 def _sessions(file: str) -> dict:
     """Sessions recorded in THIS file's sidecar, newest activity first."""
     file = os.path.abspath(file)
-    sessions = sorted(_load_sidecar(file)["claudeSessions"],
-                      key=lambda s: s.get("last_used", 0), reverse=True)
+    sessions = sorted(
+        _load_sidecar(file)["claudeSessions"], key=lambda s: s.get("last_used", 0), reverse=True
+    )
     return {"sessions": sessions}
 
 
@@ -343,8 +377,7 @@ def _history(file: str, session_id: str) -> dict:
         return {"turns": []}
     file = os.path.abspath(file)
     _migrate_session(file, session_id)
-    path = os.path.join(PROJECTS, _munge(os.path.dirname(file)),
-                        session_id + ".jsonl")
+    path = os.path.join(PROJECTS, _munge(os.path.dirname(file)), session_id + ".jsonl")
     if not os.path.isfile(path):
         return {"turns": []}
 
@@ -363,13 +396,19 @@ def _history(file: str, session_id: str) -> dict:
             if isinstance(content, str):
                 text = content
             else:
-                text = "\n".join(b.get("text", "") for b in content
-                                 if isinstance(b, dict) and b.get("type") == "text")
+                text = "\n".join(
+                    b.get("text", "")
+                    for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                )
             if text.strip() and not text.startswith(("<local-command", "<command-name")):
                 turns.append({"role": "user", "text": text})
         elif role == "assistant" and isinstance(content, list):
-            text = "\n".join(b.get("text", "") for b in content
-                             if isinstance(b, dict) and b.get("type") == "text")
+            text = "\n".join(
+                b.get("text", "")
+                for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
             if text.strip():
                 # consecutive assistant rows are one streamed turn; keep merged
                 if turns and turns[-1]["role"] == "assistant":
@@ -393,9 +432,15 @@ def _cancel(run_id: str) -> dict:
     return {"cancelled": run_id}
 
 
-def main(action: str = "start", file: str = "", message: str = "",
-         session_id: str = "", model: str = "", effort: str = "",
-         run_id: str = "") -> dict:
+def main(
+    action: str = "start",
+    file: str = "",
+    message: str = "",
+    session_id: str = "",
+    model: str = "",
+    effort: str = "",
+    run_id: str = "",
+) -> dict:
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}

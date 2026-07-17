@@ -45,7 +45,8 @@ DAEMON_DEPS = ["numpy", "scipy", "zarr"]
 # venv, not reuse an existing one that lacks the new package
 DAEMON_VENV = os.path.expanduser(
     "~/.cache/fused-render-gridv2/venv-"
-    + hashlib.sha256(",".join(DAEMON_DEPS).encode()).hexdigest()[:8])
+    + hashlib.sha256(",".join(DAEMON_DEPS).encode()).hexdigest()[:8]
+)
 IDLE_EXIT_S = 30 * 60
 TILE = 256
 MERC_R = 6378137.0
@@ -68,17 +69,27 @@ def _daemon_python():
         return vp
     import shutil
     import subprocess
+
     uv = shutil.which("uv") or os.path.expanduser("~/.local/bin/uv")
     if os.path.exists(uv):
         try:
             os.makedirs(os.path.dirname(DAEMON_VENV), exist_ok=True)
-            subprocess.run([uv, "venv", "--python", "3.12", DAEMON_VENV],
-                           check=True, capture_output=True, timeout=120)
-            subprocess.run([uv, "pip", "install", "-p", vp] + DAEMON_DEPS,
-                           check=True, capture_output=True, timeout=300)
+            subprocess.run(
+                [uv, "venv", "--python", "3.12", DAEMON_VENV],
+                check=True,
+                capture_output=True,
+                timeout=120,
+            )
+            subprocess.run(
+                [uv, "pip", "install", "-p", vp] + DAEMON_DEPS,
+                check=True,
+                capture_output=True,
+                timeout=300,
+            )
             return vp
         except Exception:
             import shutil as _sh
+
             _sh.rmtree(DAEMON_VENV, ignore_errors=True)
     return sys.executable
 
@@ -95,6 +106,7 @@ def _version():
 
 def _alive(port, version):
     import urllib.request
+
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/ping", timeout=2) as r:
             d = json.load(r)
@@ -105,6 +117,7 @@ def _alive(port, version):
 
 def main(action: str = "ensure"):
     import subprocess
+
     version = _version()
     try:
         with open(STATE) as f:
@@ -113,8 +126,8 @@ def main(action: str = "ensure"):
             return {"port": st["port"], "reused": True}
         try:
             import urllib.request
-            urllib.request.urlopen(
-                f"http://127.0.0.1:{st.get('port')}/quit", timeout=1).read()
+
+            urllib.request.urlopen(f"http://127.0.0.1:{st.get('port')}/quit", timeout=1).read()
         except Exception:
             pass
     except (OSError, ValueError):
@@ -122,9 +135,13 @@ def main(action: str = "ensure"):
     os.makedirs(os.path.dirname(STATE), exist_ok=True)
     log = os.path.join(os.path.dirname(STATE), "daemon.log")
     with open(log, "ab") as lf:
-        subprocess.Popen([_daemon_python(), _me(), "--serve"],
-                         stdout=lf, stderr=lf,
-                         start_new_session=True, cwd=os.path.dirname(_me()))
+        subprocess.Popen(
+            [_daemon_python(), _me(), "--serve"],
+            stdout=lf,
+            stderr=lf,
+            start_new_session=True,
+            cwd=os.path.dirname(_me()),
+        )
     for _ in range(200):
         time.sleep(0.05)
         try:
@@ -139,6 +156,7 @@ def main(action: str = "ensure"):
 
 try:
     import fused as _fused
+
     _udf_main = _fused.udf(main)
 except ImportError:
     pass
@@ -146,31 +164,80 @@ except ImportError:
 
 # ================================================================ daemon
 def _serve():
-    import numpy as np
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-    from urllib.parse import urlparse, parse_qs
+    from urllib.parse import parse_qs, urlparse
+
+    import numpy as np
 
     here = os.path.dirname(_me())
     sys.path.insert(0, here)
-    import _zarr_core as Z          # pure zarr chunk reader (v1 code)
+    import _zarr_core as Z  # pure zarr chunk reader (v1 code)
 
     VERSION = _version()
     last_hit = [time.time()]
 
     # ---------------- colormaps + PNG (self-contained) ----------------
     CMAPS = {
-        "viridis": ["440154", "472d7b", "3b528b", "2c728e", "21918c", "28ae80", "5ec962", "addc30", "fde725"],
-        "magma":   ["000004", "1c1044", "4f127b", "812581", "b5367a", "e55064", "fb8761", "fec287", "fcfdbf"],
-        "turbo":   ["30123b", "4145ab", "4675ed", "39a2fc", "1bcfd4", "24eca6", "61fc6c", "a4fc3b", "d1e834",
-                    "f3c63a", "fe9b2d", "f36315", "d93806", "b11901", "7a0402"],
-        "rdbu":    ["053061", "2166ac", "4393c3", "92c5de", "d1e5f0", "f7f7f7", "fddbc7", "f4a582", "d6604d",
-                    "b2182b", "67001f"],
-        "grays":   ["111111", "ffffff"],
+        "viridis": [
+            "440154",
+            "472d7b",
+            "3b528b",
+            "2c728e",
+            "21918c",
+            "28ae80",
+            "5ec962",
+            "addc30",
+            "fde725",
+        ],
+        "magma": [
+            "000004",
+            "1c1044",
+            "4f127b",
+            "812581",
+            "b5367a",
+            "e55064",
+            "fb8761",
+            "fec287",
+            "fcfdbf",
+        ],
+        "turbo": [
+            "30123b",
+            "4145ab",
+            "4675ed",
+            "39a2fc",
+            "1bcfd4",
+            "24eca6",
+            "61fc6c",
+            "a4fc3b",
+            "d1e834",
+            "f3c63a",
+            "fe9b2d",
+            "f36315",
+            "d93806",
+            "b11901",
+            "7a0402",
+        ],
+        "rdbu": [
+            "053061",
+            "2166ac",
+            "4393c3",
+            "92c5de",
+            "d1e5f0",
+            "f7f7f7",
+            "fddbc7",
+            "f4a582",
+            "d6604d",
+            "b2182b",
+            "67001f",
+        ],
+        "grays": ["111111", "ffffff"],
     }
 
     def lut(name):
-        stops = np.array([[int(h[i:i + 2], 16) for i in (0, 2, 4)]
-                          for h in CMAPS.get(name, CMAPS["viridis"])], dtype="float64")
+        stops = np.array(
+            [[int(h[i : i + 2], 16) for i in (0, 2, 4)] for h in CMAPS.get(name, CMAPS["viridis"])],
+            dtype="float64",
+        )
         x = np.linspace(0, len(stops) - 1, 256)
         i = np.clip(x.astype(int), 0, len(stops) - 2)
         f = (x - i)[:, None]
@@ -179,17 +246,24 @@ def _serve():
     def encode_png(rgba):
         import struct
         import zlib
+
         h, w = rgba.shape[:2]
         rows = np.zeros((h, 1 + w * 4), dtype=np.uint8)
         rows[:, 1:] = rgba.reshape(h, w * 4)
         comp = zlib.compress(rows.tobytes(), 1)
 
         def chunk(tag, data):
-            return (struct.pack(">I", len(data)) + tag + data +
-                    struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+            return (
+                struct.pack(">I", len(data))
+                + tag
+                + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+            )
+
         ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)
-        return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) +
-                chunk(b"IDAT", comp) + chunk(b"IEND", b""))
+        return (
+            b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", comp) + chunk(b"IEND", b"")
+        )
 
     def clean(x):
         if x is None:
@@ -201,6 +275,7 @@ def _serve():
     def system_python(module):
         import shutil
         import subprocess
+
         cands = []
         if os.environ.get("GEO_PYTHON"):
             cands.append(os.environ["GEO_PYTHON"])
@@ -208,8 +283,10 @@ def _serve():
         # the interpreter found here — no host python needed
         cands.append(sys.executable)
         home = os.path.expanduser("~")
-        cands += [os.path.join(home, p) for p in
-                  ("miniforge3/bin/python", "miniconda3/bin/python", "anaconda3/bin/python")]
+        cands += [
+            os.path.join(home, p)
+            for p in ("miniforge3/bin/python", "miniconda3/bin/python", "anaconda3/bin/python")
+        ]
         for nm in ("python3", "python"):
             w = shutil.which(nm)
             if w:
@@ -225,15 +302,16 @@ def _serve():
                 continue
             seen.add(rc)
             try:
-                r = subprocess.run([c, "-c", f"import {module}"],
-                                   capture_output=True, timeout=15, env=env)
+                r = subprocess.run(
+                    [c, "-c", f"import {module}"], capture_output=True, timeout=15, env=env
+                )
                 if r.returncode == 0:
                     return c
             except Exception:
                 continue
         return None
 
-    _NC_WORKER = r'''
+    _NC_WORKER = r"""
 import sys, os, json, tempfile
 import numpy as np, xarray as xr
 p = json.loads(sys.stdin.read())
@@ -283,9 +361,9 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
     "vars": allvars, "chosen": chosen, "index": idx0, "extra_dims": extra_dims,
     "engine": "system (xarray)",
     "attrs": {str(k): str(v)[:400] for k, v in ds.attrs.items()}}))
-'''
+"""
 
-    _ZARR_WORKER = r'''
+    _ZARR_WORKER = r"""
 import sys, os, json, tempfile
 import numpy as np, zarr
 p = json.loads(sys.stdin.read())
@@ -393,16 +471,23 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
     "vars": allvars, "chosen": chosen, "index": idx0, "extra_dims": extra_dims,
     "engine": "system (zarr)",
     "attrs": {str(k): str(v)[:400] for k, v in dict(g.attrs).items()}}))
-'''
+"""
 
     def run_worker(code, module, params):
         import subprocess
+
         py = system_python(module)
         if not py:
             raise Z.Unsupported(f"needs a system Python with {module} (set GEO_PYTHON)")
         env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
-        r = subprocess.run([py, "-c", code], input=json.dumps(params),
-                           capture_output=True, text=True, timeout=180, env=env)
+        r = subprocess.run(
+            [py, "-c", code],
+            input=json.dumps(params),
+            capture_output=True,
+            text=True,
+            timeout=180,
+            env=env,
+        )
         if r.returncode != 0:
             raise RuntimeError(f"system engine failed: {r.stderr[-400:]}")
         d = json.loads(r.stdout.strip().splitlines()[-1])
@@ -421,13 +506,15 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
     # ---------------- pure loaders ----------------
     def load_nc_pure(path, var, index):
         from scipy.io import netcdf_file
+
         f = netcdf_file(path, "r", mmap=False)
         try:
             names = []
             for name in f.variables:
                 v = f.variables[name]
-                if name in f.dimensions or (len(v.dimensions) <= 1 and
-                                            name.lower() in Z.COORD_NAMES):
+                if name in f.dimensions or (
+                    len(v.dimensions) <= 1 and name.lower() in Z.COORD_NAMES
+                ):
                     continue
                 names.append(name)
             if not names:
@@ -435,8 +522,12 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
 
             def score(n):
                 v = f.variables[n]
-                return (np.asarray(v.data).dtype.kind == "f",
-                        len(v.dimensions), int(np.asarray(v.data).size))
+                return (
+                    np.asarray(v.data).dtype.kind == "f",
+                    len(v.dimensions),
+                    int(np.asarray(v.data).size),
+                )
+
             chosen = var if var in names else max(names, key=score)
             cv = f.variables[chosen]
             dims = [str(d) for d in cv.dimensions]
@@ -484,20 +575,32 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
                     if np.issubdtype(arr.dtype, np.number):
                         return arr.astype("float64")
                 return None
+
             lats, lons = axis(ydim), axis(xdim)
             allvars = []
             for n in names:
                 v = f.variables[n]
                 at = getattr(v, "_attributes", {}) or {}
-                allvars.append({"name": n, "dims": [str(d) for d in v.dimensions],
-                                "shape": [int(s) for s in v.shape],
-                                "dtype": str(np.asarray(v.data).dtype),
-                                "long_name": str(at.get("long_name", b"") or n),
-                                "units": str(at.get("units", b"") or "")})
-            info = {"vars": allvars, "chosen": chosen, "index": idx0,
-                    "extra_dims": extra_dims, "engine": "pure (scipy)",
-                    "attrs": {str(k): str(v)[:400]
-                              for k, v in (getattr(f, "_attributes", {}) or {}).items()}}
+                allvars.append(
+                    {
+                        "name": n,
+                        "dims": [str(d) for d in v.dimensions],
+                        "shape": [int(s) for s in v.shape],
+                        "dtype": str(np.asarray(v.data).dtype),
+                        "long_name": str(at.get("long_name", b"") or n),
+                        "units": str(at.get("units", b"") or ""),
+                    }
+                )
+            info = {
+                "vars": allvars,
+                "chosen": chosen,
+                "index": idx0,
+                "extra_dims": extra_dims,
+                "engine": "pure (scipy)",
+                "attrs": {
+                    str(k): str(v)[:400] for k, v in (getattr(f, "_attributes", {}) or {}).items()
+                },
+            }
             return data, lats, lons, info
         finally:
             f.close()
@@ -515,8 +618,9 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
         for name, info in arrays.items():
             nd = len(info["zarray"]["shape"])
             base = name.split("/")[-1]
-            is_coord = (name in dim_names or base in dim_names) or \
-                       (nd <= 1 and base.lower() in Z.COORD_NAMES)
+            is_coord = (name in dim_names or base in dim_names) or (
+                nd <= 1 and base.lower() in Z.COORD_NAMES
+            )
             (coord_names if is_coord else band_names).append(name)
         if not band_names:
             band_names = list(arrays)
@@ -527,17 +631,28 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
         def slice_cells(n):
             shape = arrays[n]["zarray"]["shape"]
             return int(np.prod(shape[-2:] if len(shape) >= 2 else shape))
+
         if var in band_names:
             chosen = var
         else:
             fit = [n for n in band_names if slice_cells(n) <= 32_000_000]
-            chosen = max(fit, key=lambda n: (kind(n) == "f",
-                                             len(arrays[n]["zarray"]["shape"]),
-                                             int(np.prod(arrays[n]["zarray"]["shape"])))) \
-                if fit else min(band_names, key=slice_cells)
+            chosen = (
+                max(
+                    fit,
+                    key=lambda n: (
+                        kind(n) == "f",
+                        len(arrays[n]["zarray"]["shape"]),
+                        int(np.prod(arrays[n]["zarray"]["shape"])),
+                    ),
+                )
+                if fit
+                else min(band_names, key=slice_cells)
+            )
         if slice_cells(chosen) > 256_000_000:
-            raise RuntimeError(f"slice of '{chosen}' is {slice_cells(chosen) // 1000000}M "
-                               "cells - too large to load; pick a smaller variable")
+            raise RuntimeError(
+                f"slice of '{chosen}' is {slice_cells(chosen) // 1000000}M "
+                "cells - too large to load; pick a smaller variable"
+            )
         info = arrays[chosen]
         za = info["zarray"]
         dims = Z._dims_of(chosen, info)
@@ -565,8 +680,7 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
             ca = coord_array(d)
             vals = None
             if ca and int(np.prod(arrays[ca]["zarray"]["shape"])) <= 500:
-                vals = [str(x) for x in
-                        Z._read_full_1d(store, ca, arrays[ca]["zarray"])]
+                vals = [str(x) for x in Z._read_full_1d(store, ca, arrays[ca]["zarray"])]
             extra_dims.append({"name": d, "size": int(size), "values": vals})
 
         data = Z._read_2d_slice(store, chosen, za, ypos, xpos, fixed)
@@ -578,52 +692,73 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
                 if np.issubdtype(arr.dtype, np.number):
                     return arr.astype("float64")
             return None
+
         lats, lons = axis(ydim), axis(xdim)
-        allvars = [{"name": n, "dims": Z._dims_of(n, arrays[n]),
-                    "shape": [int(s) for s in arrays[n]["zarray"]["shape"]],
-                    "dtype": str(np.dtype(arrays[n]["zarray"]["dtype"])),
-                    "long_name": str(arrays[n].get("zattrs", {}).get("long_name", n)),
-                    "units": str(arrays[n].get("zattrs", {}).get("units", ""))}
-                   for n in band_names]
-        meta = {"vars": allvars, "chosen": chosen, "index": idx0,
-                "extra_dims": extra_dims, "engine": "pure",
-                "attrs": {str(k): str(v)[:400] for k, v in root_attrs.items()}}
+        allvars = [
+            {
+                "name": n,
+                "dims": Z._dims_of(n, arrays[n]),
+                "shape": [int(s) for s in arrays[n]["zarray"]["shape"]],
+                "dtype": str(np.dtype(arrays[n]["zarray"]["dtype"])),
+                "long_name": str(arrays[n].get("zattrs", {}).get("long_name", n)),
+                "units": str(arrays[n].get("zattrs", {}).get("units", "")),
+            }
+            for n in band_names
+        ]
+        meta = {
+            "vars": allvars,
+            "chosen": chosen,
+            "index": idx0,
+            "extra_dims": extra_dims,
+            "engine": "pure",
+            "attrs": {str(k): str(v)[:400] for k, v in root_attrs.items()},
+        }
         return data, lats, lons, meta
 
     def load_slice_raw(path, var, index):
-        if os.path.isdir(path) or os.path.isdir(os.path.dirname(path)) and \
-                os.path.basename(path) in (".zgroup", ".zattrs", ".zmetadata"):
+        if (
+            os.path.isdir(path)
+            or os.path.isdir(os.path.dirname(path))
+            and os.path.basename(path) in (".zgroup", ".zattrs", ".zmetadata")
+        ):
             store = path if os.path.isdir(path) else os.path.dirname(path)
             try:
                 return load_zarr_pure(store, var, index)
             except (Z.Unsupported, Exception) as e:
                 if isinstance(e, Z.Unsupported) or "compressor" in str(e):
-                    return run_worker(_ZARR_WORKER, "zarr",
-                                      {"file": store, "var": var, "index": index})
+                    return run_worker(
+                        _ZARR_WORKER, "zarr", {"file": store, "var": var, "index": index}
+                    )
                 raise
         # NetCDF
         with open(path, "rb") as fh:
             magic = fh.read(4)
         if magic[:3] == b"CDF":
             return load_nc_pure(path, var, index)
-        return run_worker(_NC_WORKER, "xarray",
-                          {"file": path, "var": var, "index": index})
+        return run_worker(_NC_WORKER, "xarray", {"file": path, "var": var, "index": index})
 
     # ---------------- slice cache ----------------
-    slices = {}        # (path, var, index) -> slice dict
+    slices = {}  # (path, var, index) -> slice dict
     order = []
     s_lock = threading.Lock()
 
     def prep_geo(vals, lats, lons):
         """Normalize orientation + build cell-edge arrays for index lookup."""
-        geo = (lats is not None and lons is not None and
-               lats.size == vals.shape[0] and lons.size == vals.shape[1] and
-               lats.size >= 2 and lons.size >= 2 and
-               np.nanmin(lats) >= -90.5 and np.nanmax(lats) <= 90.5)
+        geo = (
+            lats is not None
+            and lons is not None
+            and lats.size == vals.shape[0]
+            and lons.size == vals.shape[1]
+            and lats.size >= 2
+            and lons.size >= 2
+            and np.nanmin(lats) >= -90.5
+            and np.nanmax(lats) <= 90.5
+        )
         if not geo:
             return None
-        lats = lats.copy(); lons = lons.copy()
-        flip_y = lats[0] < lats[-1]           # want row 0 = north
+        lats = lats.copy()
+        lons = lons.copy()
+        flip_y = lats[0] < lats[-1]  # want row 0 = north
         if flip_y:
             lats = lats[::-1]
             vals = vals[::-1, :]
@@ -638,8 +773,9 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
             first = c[0] - (c[1] - c[0]) / 2
             last = c[-1] + (c[-1] - c[-2]) / 2
             return np.concatenate([[first], mid, [last]])
-        lat_e = edges(lats)                   # descending
-        lon_e = edges(lons)                   # ascending
+
+        lat_e = edges(lats)  # descending
+        lon_e = edges(lons)  # ascending
         # display bounds in [-180, 180]; a 0–360 grid that spans (or crosses
         # the antimeridian after conversion) is reported as full-width
         if wrap360:
@@ -649,11 +785,20 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
                 w, e = -180.0, 180.0
         else:
             w, e = float(lon_e[0]), float(lon_e[-1])
-        return {"vals": vals, "lats": lats, "lons": lons,
-                "lat_edges": lat_e, "lon_edges": lon_e, "wrap360": wrap360,
-                "bounds": {"west": float(w), "east": float(e),
-                           "south": float(max(-90.0, min(lat_e[0], lat_e[-1]))),
-                           "north": float(min(90.0, max(lat_e[0], lat_e[-1])))}}
+        return {
+            "vals": vals,
+            "lats": lats,
+            "lons": lons,
+            "lat_edges": lat_e,
+            "lon_edges": lon_e,
+            "wrap360": wrap360,
+            "bounds": {
+                "west": float(w),
+                "east": float(e),
+                "south": float(max(-90.0, min(lat_e[0], lat_e[-1]))),
+                "north": float(min(90.0, max(lat_e[0], lat_e[-1]))),
+            },
+        }
 
     def get_slice(path, var, index):
         key = (path, var, int(index))
@@ -667,14 +812,25 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
         fin = vals[np.isfinite(vals)]
         stats = {"count": int(fin.size), "nan": int(vals.size - fin.size)}
         if fin.size:
-            stats.update({"min": clean(fin.min()), "max": clean(fin.max()),
-                          "mean": clean(fin.mean()), "std": clean(fin.std()),
-                          "median": clean(np.median(fin)),
-                          "p2": clean(np.percentile(fin, 2)),
-                          "p98": clean(np.percentile(fin, 98))})
-        s = {"key": key, "vals": (g["vals"] if g else vals), "geo": g,
-             "info": info, "stats": stats,
-             "stretch": [stats.get("p2", 0.0), stats.get("p98", 1.0)]}
+            stats.update(
+                {
+                    "min": clean(fin.min()),
+                    "max": clean(fin.max()),
+                    "mean": clean(fin.mean()),
+                    "std": clean(fin.std()),
+                    "median": clean(np.median(fin)),
+                    "p2": clean(np.percentile(fin, 2)),
+                    "p98": clean(np.percentile(fin, 98)),
+                }
+            )
+        s = {
+            "key": key,
+            "vals": (g["vals"] if g else vals),
+            "geo": g,
+            "info": info,
+            "stats": stats,
+            "stretch": [stats.get("p2", 0.0), stats.get("p98", 1.0)],
+        }
         with s_lock:
             slices[key] = s
             order.append(key)
@@ -700,7 +856,8 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
             e0 = g["lon_edges"][0]
             lons = np.mod(lons - e0, 360.0) + e0
         # index lookup via cell edges (lat edges descending -> search reversed)
-        lat_e = g["lat_edges"]; lon_e = g["lon_edges"]
+        lat_e = g["lat_edges"]
+        lon_e = g["lon_edges"]
         iy = lat_e.size - 1 - np.searchsorted(lat_e[::-1], lats, side="left")
         ix = np.searchsorted(lon_e, lons, side="right") - 1
         ny, nx = g["vals"].shape
@@ -722,8 +879,11 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
         return v[0] if v else dflt
 
     def slice_of(q):
-        return get_slice(os.path.abspath(os.path.expanduser(q1(q, "file"))),
-                         q1(q, "var", ""), q1(q, "index", "0"))
+        return get_slice(
+            os.path.abspath(os.path.expanduser(q1(q, "file"))),
+            q1(q, "var", ""),
+            q1(q, "index", "0"),
+        )
 
     def stretch_of(q, s):
         st = q1(q, "stretch", "")
@@ -757,10 +917,14 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
         return rgba
 
     def tile_bbox(z, x, y):
-        n = 2 ** z
+        n = 2**z
         sz = 2 * MERC_MAX / n
-        return (-MERC_MAX + x * sz, MERC_MAX - (y + 1) * sz,
-                -MERC_MAX + (x + 1) * sz, MERC_MAX - y * sz)
+        return (
+            -MERC_MAX + x * sz,
+            MERC_MAX - (y + 1) * sz,
+            -MERC_MAX + (x + 1) * sz,
+            MERC_MAX - y * sz,
+        )
 
     def do_tile(q, z, x, y):
         s = slice_of(q)
@@ -770,20 +934,28 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
         vals = sample_bbox(s, mx0, my0, mx1, my1, TILE, TILE)
         return 200, encode_png(np.ascontiguousarray(colorize(q, s, vals))), "image/png"
 
-    dir_sizes = {}     # store path -> capped-walk size (None when capped)
+    dir_sizes = {}  # store path -> capped-walk size (None when capped)
 
     def do_meta(q):
         path = os.path.abspath(os.path.expanduser(q1(q, "file")))
         s = slice_of(q)
         g = s["geo"]
         rows, cols = s["vals"].shape
-        out = {"file": path, "supported": True, "geographic": bool(g),
-               "vars": s["info"]["vars"], "selected": s["info"]["chosen"],
-               "index": s["info"]["index"], "extra_dims": s["info"]["extra_dims"],
-               "engine": s["info"]["engine"], "attrs": s["info"].get("attrs", {}),
-               "stats": s["stats"], "stretch": [s["stretch"]],
-               "shape": [rows, cols],
-               "lonlat_bounds": (g["bounds"] if g else None)}
+        out = {
+            "file": path,
+            "supported": True,
+            "geographic": bool(g),
+            "vars": s["info"]["vars"],
+            "selected": s["info"]["chosen"],
+            "index": s["info"]["index"],
+            "extra_dims": s["info"]["extra_dims"],
+            "engine": s["info"]["engine"],
+            "attrs": s["info"].get("attrs", {}),
+            "stats": s["stats"],
+            "stretch": [s["stretch"]],
+            "shape": [rows, cols],
+            "lonlat_bounds": (g["bounds"] if g else None),
+        }
         try:
             if os.path.isfile(path):
                 out["file_size"] = os.path.getsize(path)
@@ -835,13 +1007,19 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
         ch = {"count": int(fin.size)}
         if fin.size:
             c, edges = np.histogram(fin, bins=bins)
-            ch.update({"counts": [int(v) for v in c],
-                       "edges": [float(v) for v in edges],
-                       "min": float(fin.min()), "max": float(fin.max()),
-                       "mean": float(fin.mean()), "std": float(fin.std()),
-                       "median": float(np.median(fin)),
-                       "p2": float(np.percentile(fin, 2)),
-                       "p98": float(np.percentile(fin, 98))})
+            ch.update(
+                {
+                    "counts": [int(v) for v in c],
+                    "edges": [float(v) for v in edges],
+                    "min": float(fin.min()),
+                    "max": float(fin.max()),
+                    "mean": float(fin.mean()),
+                    "std": float(fin.std()),
+                    "median": float(np.median(fin)),
+                    "p2": float(np.percentile(fin, 2)),
+                    "p98": float(np.percentile(fin, 98)),
+                }
+            )
         return 200, json.dumps({"channels": [ch]}).encode(), "application/json"
 
     def do_value(q):
@@ -853,8 +1031,11 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
         lat = max(-MAX_LAT, min(MAX_LAT, lat))
         my = math.log(math.tan(math.pi / 4 + math.radians(lat) / 2)) * MERC_R
         v = sample_bbox(s, mx - 0.5, my - 0.5, mx + 0.5, my + 0.5, 1, 1)[0, 0]
-        return 200, json.dumps(
-            {"values": [None if not np.isfinite(v) else float(v)]}).encode(), "application/json"
+        return (
+            200,
+            json.dumps({"values": [None if not np.isfinite(v) else float(v)]}).encode(),
+            "application/json",
+        )
 
     def do_img(q):
         """Whole-slice PNG (non-geographic fallback view)."""
@@ -864,8 +1045,11 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
         step = 1
         while (vals.shape[0] // step) * (vals.shape[1] // step) > max_cells and step < 64:
             step += 1
-        return 200, encode_png(np.ascontiguousarray(
-            colorize(q, s, vals[::step, ::step]))), "image/png"
+        return (
+            200,
+            encode_png(np.ascontiguousarray(colorize(q, s, vals[::step, ::step]))),
+            "image/png",
+        )
 
     # ---------------- HTTP ----------------
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer  # noqa: F811
@@ -880,8 +1064,11 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
             q = parse_qs(u.query)
             try:
                 if u.path == "/ping":
-                    code, body, ct = 200, json.dumps(
-                        {"ok": True, "version": VERSION}).encode(), "application/json"
+                    code, body, ct = (
+                        200,
+                        json.dumps({"ok": True, "version": VERSION}).encode(),
+                        "application/json",
+                    )
                 elif u.path == "/quit":
                     self._send(200, b"bye", "text/plain")
                     threading.Thread(target=srv.shutdown, daemon=True).start()
@@ -903,6 +1090,7 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
                     code, body, ct = 404, b"not found", "text/plain"
             except Exception as e:
                 import traceback
+
                 traceback.print_exc()
                 code, body, ct = 500, json.dumps({"error": str(e)}).encode(), "application/json"
             self._send(code, body, ct)
@@ -931,6 +1119,7 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
             if time.time() - last_hit[0] > IDLE_EXIT_S:
                 srv.shutdown()
                 return
+
     threading.Thread(target=reaper, daemon=True).start()
     print(f"grid tile daemon on 127.0.0.1:{port} (v{VERSION})", flush=True)
     srv.serve_forever()
@@ -938,4 +1127,5 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
 
 if __name__ == "__main__" and "--serve" in sys.argv:
     import numpy as np  # noqa: F401
+
     _serve()

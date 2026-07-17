@@ -170,7 +170,7 @@ export default function ContextMenu({ x, y, items, onClose }: ContextMenuProps) 
       },
       () => {
         if (loadToken.current === token) setSubItems([{ label: "Failed to load", disabled: true }]);
-      }
+      },
     );
   };
 
@@ -221,7 +221,7 @@ export default function ContextMenu({ x, y, items, onClose }: ContextMenuProps) 
               </div>
             )}
           </div>
-        )
+        ),
       )}
     </div>
   );

@@ -2,6 +2,7 @@
 (fused_render/server.py) — files matched by .gitignore inside a git work tree
 are flagged so the shell can dim them. Non-repos, and installs without git,
 degrade to `ignored: False` everywhere (dimming is a hint, never required)."""
+
 import shutil
 import subprocess
 
@@ -10,9 +11,7 @@ from fastapi.testclient import TestClient
 
 from fused_render.server import create_app
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("git") is None, reason="git binary not available"
-)
+pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git binary not available")
 
 
 def _client(tmp_path):

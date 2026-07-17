@@ -23,6 +23,7 @@ The wire shape returned here is the built-in executor's
 ``stderr``/``duration_ms`` keys), so runtime.js and every template consume one
 shape regardless of which engine ran the code.
 """
+
 import json
 import logging
 import os
@@ -122,9 +123,7 @@ def script_requirements(text: str) -> list[str]:
             ) from None
         deps = meta.get("dependencies", [])
         if not isinstance(deps, list) or not all(isinstance(d, str) for d in deps):
-            raise ValueError(
-                "'dependencies' in the '# /// script' block must be a list of strings"
-            )
+            raise ValueError("'dependencies' in the '# /// script' block must be a list of strings")
         return deps
     return []
 
@@ -317,7 +316,7 @@ async def run_python(path: str, params: dict) -> dict:
     if not os.path.isfile(path):
         return _error_dict("FileNotFoundError", f"no such Python file: {path}")
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             user_code = f.read()
     except OSError as e:
         return _error_dict("OSError", f"cannot read {path}: {e}")

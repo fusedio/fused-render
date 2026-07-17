@@ -7,6 +7,7 @@ server.USER_TEMPLATES_DIR / server.USER_REGISTRY are pointed under it (the same
 module-constant seam test_templates.py / test_shell_prefs.py patch). Core
 templates keep resolving from the conftest-staged .core-templates dir.
 """
+
 import io
 import json
 import os
@@ -17,7 +18,6 @@ from fastapi.testclient import TestClient
 
 from fused_render import server, templates_api
 from fused_render.server import create_app
-
 
 FUSED = {"X-Fused": "1"}
 
@@ -167,7 +167,12 @@ def test_registry_broken_name_marked_not_exists(ctx):
     ctx.registry({".csv": ["no-such-template", "csv"]})
     by_key = {e["key"]: e for e in ctx.client.get("/api/templates/registry").json()["entries"]}
     templates = by_key[".csv"]["templates"]
-    assert templates[0] == {"name": "no-such-template", "source": None, "exists": False, "hasIcon": False}
+    assert templates[0] == {
+        "name": "no-such-template",
+        "source": None,
+        "exists": False,
+        "hasIcon": False,
+    }
     assert templates[1]["name"] == "csv" and templates[1]["exists"] is True
 
 
@@ -255,7 +260,9 @@ def test_put_new_directory_key(ctx):
 def test_put_allows_sentinel_and_dangling_names(ctx):
     # Sentinels are accepted...
     ok = ctx.client.put(
-        "/api/templates/registry", json={"key": ".html", "value": ["code", "_render"]}, headers=FUSED
+        "/api/templates/registry",
+        json={"key": ".html", "value": ["code", "_render"]},
+        headers=FUSED,
     )
     assert ok.status_code == 200
     assert _names(ok.json()) == ["code", "_render"]
@@ -295,7 +302,9 @@ def test_put_unknown_names_saved_as_dangling(ctx):
     # Unknown names are no longer rejected — they save and surface broken, so a
     # user can bind a template they haven't created yet without being blocked.
     resp = ctx.client.put(
-        "/api/templates/registry", json={"key": ".csv", "value": ["nope", "also-nope"]}, headers=FUSED
+        "/api/templates/registry",
+        json={"key": ".csv", "value": ["nope", "also-nope"]},
+        headers=FUSED,
     )
     assert resp.status_code == 200
     assert all(t["exists"] is False for t in resp.json()["templates"])
@@ -326,9 +335,7 @@ def test_put_requires_fused_header(ctx):
 
 def test_put_case_collision_replaced(ctx):
     ctx.registry({".CSV": ["code"]})
-    ctx.client.put(
-        "/api/templates/registry", json={"key": ".csv", "value": ["csv"]}, headers=FUSED
-    )
+    ctx.client.put("/api/templates/registry", json={"key": ".csv", "value": ["csv"]}, headers=FUSED)
     reg = ctx.read_registry()
     assert ".CSV" not in reg  # the case-colliding key was dropped
     assert reg[".csv"] == ["csv"]
@@ -339,9 +346,7 @@ def test_put_case_collision_replaced(ctx):
 
 def test_reset_removes_user_override_reverts_to_core(ctx):
     ctx.registry({".csv": ["code"]})
-    resp = ctx.client.post(
-        "/api/templates/registry/reset", json={"key": ".csv"}, headers=FUSED
-    )
+    resp = ctx.client.post("/api/templates/registry/reset", json={"key": ".csv"}, headers=FUSED)
     assert resp.status_code == 200
     entry = resp.json()
     assert entry["resolvedSource"] == "core"
@@ -353,18 +358,14 @@ def test_reset_removes_user_override_reverts_to_core(ctx):
 def test_reset_user_only_key_reports_removed(ctx):
     ctx.make_template("brandcard")
     ctx.registry({".brand": ["brandcard"]})
-    resp = ctx.client.post(
-        "/api/templates/registry/reset", json={"key": ".brand"}, headers=FUSED
-    )
+    resp = ctx.client.post("/api/templates/registry/reset", json={"key": ".brand"}, headers=FUSED)
     assert resp.status_code == 200
     assert resp.json() == {"key": ".brand", "removed": True}
     assert ".brand" not in ctx.read_registry()
 
 
 def test_reset_absent_key_is_noop(ctx):
-    resp = ctx.client.post(
-        "/api/templates/registry/reset", json={"key": ".csv"}, headers=FUSED
-    )
+    resp = ctx.client.post("/api/templates/registry/reset", json={"key": ".csv"}, headers=FUSED)
     # .csv is a builtin key with no user override -> reverts to core cleanly.
     assert resp.status_code == 200
     assert resp.json()["resolvedSource"] == "core"
@@ -924,7 +925,9 @@ def test_commit_expired_import_id(ctx, monkeypatch):
     old = os.path.getmtime(staging) - templates_api.IMPORT_TTL_SEC - 10
     os.utime(staging, (old, old))
     resp = ctx.client.post(
-        f"/api/templates/import/{iid}/commit", json={"resolutions": {"fresh": "overwrite"}}, headers=FUSED
+        f"/api/templates/import/{iid}/commit",
+        json={"resolutions": {"fresh": "overwrite"}},
+        headers=FUSED,
     )
     assert resp.status_code == 410
     assert not staging.exists()  # expired stage is swept
@@ -968,7 +971,9 @@ def test_import_stage_parses_recommendations_with_statuses(ctx):
     items = {i["name"]: i for i in body["items"]}
     # The sidecar is metadata, never warned as a stray top-level file; only
     # the ungrammatical key drew a warning and was dropped.
-    assert body["warnings"] == ["recommendation.json: ignored invalid registry key 'nodot' for 'fresh'"]
+    assert body["warnings"] == [
+        "recommendation.json: ignored invalid registry key 'nodot' for 'fresh'"
+    ]
     assert items["fresh"]["recommendedKeys"] == [
         {"key": ".abc", "status": "already-bound"},
         {"key": ".dis", "status": "disabled"},

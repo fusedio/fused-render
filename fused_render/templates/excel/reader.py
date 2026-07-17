@@ -37,7 +37,9 @@ import re
 # script's own directory first on sys.path, so rebuild __file__ from it. Under
 # the built-in executor __file__ is already set, so this is a no-op.
 if "__file__" not in globals():
-    import os, sys
+    import os
+    import sys
+
     __file__ = os.path.join(sys.path[0], "reader.py")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -47,8 +49,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_ROOT = os.path.expanduser(os.path.join("~", ".fused-render", "cache", "excel"))
 EXPORTS = os.path.join(CACHE_ROOT, "exports")
 
-SMALL_ROWS = 10_000        # a sheet bigger than this in either measure ...
-SMALL_CELLS = 200_000      # ... goes to the DuckDB path instead of inline JSON
+SMALL_ROWS = 10_000  # a sheet bigger than this in either measure ...
+SMALL_CELLS = 200_000  # ... goes to the DuckDB path instead of inline JSON
 FIRST_BATCH = 500
 XLSX_SAVE_MAX_ROWS = 150_000  # streamed xlsx writes above this exceed the 30 s call budget
 
@@ -61,6 +63,7 @@ def _safe_name(name, default):
 
 
 # ---------- cell value conversion ----------
+
 
 def _cell_out(v):
     if v is None:
@@ -164,6 +167,7 @@ def _style_in(cell, st):
 
 # ---------- duckdb helpers ----------
 
+
 def _duck(excel_ext=False):
     import duckdb
 
@@ -235,6 +239,7 @@ def _is_big(nrows, ncols):
 
 # ---------- parquet cache ----------
 
+
 def _cache_dir(file):
     import hashlib
 
@@ -268,8 +273,14 @@ def _ensure_cache(file):
     sheets = []
     if ext in (".xlsx", ".xlsm"):
         for i, (name, nr, nc) in enumerate(_xlsx_dims(file)):
-            entry = {"name": name, "kind": "xlsx", "big": _is_big(nr, nc),
-                     "nrows": nr, "ncols": nc, "header": None}
+            entry = {
+                "name": name,
+                "kind": "xlsx",
+                "big": _is_big(nr, nc),
+                "nrows": nr,
+                "ncols": nc,
+                "header": None,
+            }
             if entry["big"]:
                 pq = os.path.join(d, f"s{i}.parquet")
                 nr2, nc2 = _xlsx_sheet_to_parquet(file, name, pq)
@@ -279,18 +290,36 @@ def _ensure_cache(file):
         con = _duck()
         pq = os.path.join(d, "s0.parquet")
         nr, nc, _ = _copy_to_parquet(
-            con, f"SELECT * FROM read_csv({_q(file)}, header=false, all_varchar=true, null_padding=true)", pq
+            con,
+            f"SELECT * FROM read_csv({_q(file)}, header=false, all_varchar=true, null_padding=true)",
+            pq,
         )
-        sheets.append({"name": os.path.splitext(os.path.basename(file))[0], "kind": "csv",
-                       "big": _is_big(nr, nc), "nrows": nr, "ncols": nc, "header": None,
-                       "parquet": "s0.parquet"})
+        sheets.append(
+            {
+                "name": os.path.splitext(os.path.basename(file))[0],
+                "kind": "csv",
+                "big": _is_big(nr, nc),
+                "nrows": nr,
+                "ncols": nc,
+                "header": None,
+                "parquet": "s0.parquet",
+            }
+        )
     elif ext == ".parquet":
         con = _duck()
         pq = os.path.join(d, "s0.parquet")
         nr, nc, cols = _copy_to_parquet(con, f"SELECT * FROM read_parquet({_q(file)})", pq)
-        sheets.append({"name": os.path.splitext(os.path.basename(file))[0], "kind": "parquet",
-                       "big": _is_big(nr, nc), "nrows": nr, "ncols": nc, "header": cols,
-                       "parquet": "s0.parquet"})
+        sheets.append(
+            {
+                "name": os.path.splitext(os.path.basename(file))[0],
+                "kind": "parquet",
+                "big": _is_big(nr, nc),
+                "nrows": nr,
+                "ncols": nc,
+                "header": cols,
+                "parquet": "s0.parquet",
+            }
+        )
     else:
         raise ValueError(f"unsupported file type {ext!r}")
     meta = {"file": file, "mtime": os.path.getmtime(file), "sheets": sheets}
@@ -336,6 +365,7 @@ def _sheet_parquet(file, sh):
 
 
 # ---------- windowed queries ----------
+
 
 def _filters_sql(filters):
     where, params = [], []
@@ -401,6 +431,7 @@ def _table_with_edits(con, pq, edits, ncols):
 
 # ---------- load ----------
 
+
 def _ro_verdict(file):
     """Editability verdict for the viewed file (SPEC §13.5 RO-4).
 
@@ -412,7 +443,7 @@ def _ro_verdict(file):
             "editable": False,
             "readonly_message": "Read-only",
             "readonly_tooltip": "The file is read-only — its permissions "
-                                "don't allow writing, so it can't be edited here.",
+            "don't allow writing, so it can't be edited here.",
         }
     return {"editable": True, "readonly_message": "", "readonly_tooltip": ""}
 
@@ -438,7 +469,9 @@ def _sheet_view_in(ws, sh):
 
     for c_str, px in (sh.get("colw") or {}).items():
         try:
-            ws.column_dimensions[get_column_letter(int(c_str) + 1)].width = max(1, round((float(px) - 5) / 7, 2))
+            ws.column_dimensions[get_column_letter(int(c_str) + 1)].width = max(
+                1, round((float(px) - 5) / 7, 2)
+            )
         except (ValueError, TypeError):
             continue
     if sh.get("freeze"):
@@ -458,10 +491,17 @@ def _load_rich(file):
             rows.append([_cell_out(c.value) for c in row])
             styles.append([_style_out(c) for c in row])
         colw, freeze = _sheet_view_out(ws)
-        sheets.append({"name": name, "rows": rows, "styles": styles, "big": False,
-                       "colw": colw, "freeze": freeze})
-    return {"sheets": sheets, "mtime": os.path.getmtime(file), "rich": True,
-            **_ro_verdict(file)}
+        sheets.append(
+            {
+                "name": name,
+                "rows": rows,
+                "styles": styles,
+                "big": False,
+                "colw": colw,
+                "freeze": freeze,
+            }
+        )
+    return {"sheets": sheets, "mtime": os.path.getmtime(file), "rich": True, **_ro_verdict(file)}
 
 
 def _load(file):
@@ -475,10 +515,21 @@ def _load(file):
     sheets = []
     for i, sh in enumerate(meta["sheets"]):
         if sh["big"]:
-            first = _query_rows(os.path.join(d, sh["parquet"]), sh["ncols"], 0, FIRST_BATCH, None, None)
-            sheets.append({"name": sh["name"], "big": True, "kind": sh["kind"],
-                           "nrows": sh["nrows"], "ncols": sh["ncols"], "header": sh["header"],
-                           "rows": first["rows"], "matched": first["matched"]})
+            first = _query_rows(
+                os.path.join(d, sh["parquet"]), sh["ncols"], 0, FIRST_BATCH, None, None
+            )
+            sheets.append(
+                {
+                    "name": sh["name"],
+                    "big": True,
+                    "kind": sh["kind"],
+                    "nrows": sh["nrows"],
+                    "ncols": sh["ncols"],
+                    "header": sh["header"],
+                    "rows": first["rows"],
+                    "matched": first["matched"],
+                }
+            )
         elif sh["kind"] == "xlsx":
             # small sheet inside a workbook that also has big ones: stream values
             import openpyxl
@@ -487,7 +538,9 @@ def _load(file):
             ws = wb[sh["name"]]
             rows = [[_cell_out(v) for v in row] for row in ws.iter_rows(values_only=True)] or [[""]]
             wb.close()
-            sheets.append({"name": sh["name"], "rows": rows, "styles": None, "big": False, "kind": "xlsx"})
+            sheets.append(
+                {"name": sh["name"], "rows": rows, "styles": None, "big": False, "kind": "xlsx"}
+            )
         else:
             con = _duck()
             sel = ", ".join(f"c{i2}" for i2 in range(sh["ncols"]))
@@ -495,13 +548,21 @@ def _load(file):
                 f"SELECT {sel} FROM read_parquet({_q(os.path.join(d, sh['parquet']))}) ORDER BY __rid"
             ).fetchall()
             rows = [["" if v is None else v for v in r] for r in data] or [[""]]
-            sheets.append({"name": sh["name"], "rows": rows, "styles": None, "big": False,
-                           "kind": sh["kind"], "header": sh["header"]})
-    return {"sheets": sheets, "mtime": os.path.getmtime(file), "rich": False,
-            **_ro_verdict(file)}
+            sheets.append(
+                {
+                    "name": sh["name"],
+                    "rows": rows,
+                    "styles": None,
+                    "big": False,
+                    "kind": sh["kind"],
+                    "header": sh["header"],
+                }
+            )
+    return {"sheets": sheets, "mtime": os.path.getmtime(file), "rich": False, **_ro_verdict(file)}
 
 
 # ---------- save ----------
+
 
 def _build_workbook(sheets):
     import openpyxl
@@ -651,17 +712,31 @@ def _save(file, sheets_payload, expected_mtime):
         con = _duck()
         if sp.get("big"):
             _persist_edits(file, [sp], meta)
-            con.execute(f"CREATE TABLE t AS SELECT * FROM read_parquet({_q(_sheet_parquet(file, sh))})")
+            con.execute(
+                f"CREATE TABLE t AS SELECT * FROM read_parquet({_q(_sheet_parquet(file, sh))})"
+            )
         else:
             # small parquet edited inline: rebuild from the sent rows
             rows = sp["rows"]
-            con.execute("CREATE TABLE t (__rid BIGINT, " + ", ".join(f"c{i} VARCHAR" for i in range(len(names))) + ")")
+            con.execute(
+                "CREATE TABLE t (__rid BIGINT, "
+                + ", ".join(f"c{i} VARCHAR" for i in range(len(names)))
+                + ")"
+            )
             con.executemany(
                 "INSERT INTO t VALUES (" + ", ".join("?" * (len(names) + 1)) + ")",
-                [[r] + [str(row[c]) if c < len(row) and str(row[c]) != "" else None for c in range(len(names))]
-                 for r, row in enumerate(rows)],
+                [
+                    [r]
+                    + [
+                        str(row[c]) if c < len(row) and str(row[c]) != "" else None
+                        for c in range(len(names))
+                    ]
+                    for r, row in enumerate(rows)
+                ],
             )
-        sel = ", ".join(f'c{i} AS "{str(names[i]).replace(chr(34), "")}"' for i in range(len(names)))
+        sel = ", ".join(
+            f'c{i} AS "{str(names[i]).replace(chr(34), "")}"' for i in range(len(names))
+        )
         con.execute(f"COPY (SELECT {sel} FROM t ORDER BY __rid) TO {_q(tmp)} (FORMAT PARQUET)")
         os.replace(tmp, file)
         _rekey_cache(file)
@@ -690,6 +765,7 @@ def _save_as(src, directory, name, sheets_payload):
 
 
 # ---------- file browsing (Save as… folder picker) ----------
+
 
 def _listdir(path):
     path = os.path.abspath(os.path.expanduser(path or "~"))
@@ -720,6 +796,7 @@ def _listdir(path):
 
 
 # ---------- export ----------
+
 
 def _latin1(s):
     return str(s).encode("latin-1", "replace").decode("latin-1")
@@ -758,15 +835,23 @@ def _export(kind, name, payload):
         sel = ", ".join(f"c{i}" for i in range(sh["ncols"]))
         if kind == "csv":
             dest = os.path.join(EXPORTS, base + ".csv")
-            con.execute(f"COPY (SELECT {sel} FROM t ORDER BY __rid) TO {_q(dest)} (FORMAT CSV, HEADER false)")
+            con.execute(
+                f"COPY (SELECT {sel} FROM t ORDER BY __rid) TO {_q(dest)} (FORMAT CSV, HEADER false)"
+            )
         elif kind == "parquet":
             names = sh.get("header") or [f"col{i}" for i in range(sh["ncols"])]
-            sel2 = ", ".join(f'c{i} AS "{str(names[i]).replace(chr(34), "")}"' for i in range(sh["ncols"]))
+            sel2 = ", ".join(
+                f'c{i} AS "{str(names[i]).replace(chr(34), "")}"' for i in range(sh["ncols"])
+            )
             dest = os.path.join(EXPORTS, base + ".parquet")
-            con.execute(f"COPY (SELECT {sel2} FROM t ORDER BY __rid) TO {_q(dest)} (FORMAT PARQUET)")
+            con.execute(
+                f"COPY (SELECT {sel2} FROM t ORDER BY __rid) TO {_q(dest)} (FORMAT PARQUET)"
+            )
         elif kind == "xlsx":
             if sh["nrows"] > XLSX_SAVE_MAX_ROWS:
-                raise ValueError(f"{sh['nrows']:,} rows is too large for xlsx export — use CSV or Parquet.")
+                raise ValueError(
+                    f"{sh['nrows']:,} rows is too large for xlsx export — use CSV or Parquet."
+                )
             import openpyxl
 
             dest = os.path.join(EXPORTS, base + ".xlsx")
@@ -785,7 +870,9 @@ def _export(kind, name, payload):
             rows = con.execute(f"SELECT {sel} FROM t ORDER BY __rid LIMIT {cap}").fetchall()
             rows = [["" if v is None else v for v in r] for r in rows]
             if sh["nrows"] > cap:
-                rows.append([f"… {sh['nrows'] - cap:,} more rows not shown (PDF capped at {cap:,})"])
+                rows.append(
+                    [f"… {sh['nrows'] - cap:,} more rows not shown (PDF capped at {cap:,})"]
+                )
             dest = os.path.join(EXPORTS, base + ".pdf")
             _pdf_from_rows(rows, payload.get("title") or base, dest)
         else:
@@ -805,7 +892,10 @@ def _export(kind, name, payload):
         con.execute("CREATE TABLE t (" + ", ".join(f'"col{i}" VARCHAR' for i in range(nc)) + ")")
         con.executemany(
             "INSERT INTO t VALUES (" + ", ".join("?" * nc) + ")",
-            [[str(row[c]) if c < len(row) and str(row[c]) != "" else None for c in range(nc)] for row in rows],
+            [
+                [str(row[c]) if c < len(row) and str(row[c]) != "" else None for c in range(nc)]
+                for row in rows
+            ],
         )
         dest = os.path.join(EXPORTS, base + ".parquet")
         con.execute(f"COPY t TO {_q(dest)} (FORMAT PARQUET)")
@@ -821,6 +911,7 @@ def _export(kind, name, payload):
 
 
 # ---------- scripting ----------
+
 
 def _run_script(script, payload):
     import contextlib
@@ -865,7 +956,10 @@ def main(
         meta = _ensure_cache(file)
         _, sh = _sheet_meta(meta, sheet)
         return _query_rows(
-            _sheet_parquet(file, sh), sh["ncols"], offset, min(limit, 10_000),
+            _sheet_parquet(file, sh),
+            sh["ncols"],
+            offset,
+            min(limit, 10_000),
             json.loads(sort) if sort else None,
             json.loads(filters) if filters else None,
         )

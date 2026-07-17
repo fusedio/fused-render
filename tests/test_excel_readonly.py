@@ -16,6 +16,7 @@ Under test:
 Test-env note: no openpyxl/fpdf2 here, so everything runs through .csv
 (stdlib csv for small saves; duckdb — which IS installed — for _load's cache).
 """
+
 import importlib.util
 import os
 import stat

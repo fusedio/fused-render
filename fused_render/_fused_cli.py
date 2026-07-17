@@ -14,6 +14,7 @@ Behaviorally identical to the ``fused`` console script: click reads
 ``sys.argv[1:]``, and argv[0] is renamed so usage/error text says ``fused``,
 not this file's path.
 """
+
 import sys
 
 if __name__ == "__main__":

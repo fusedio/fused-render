@@ -14,9 +14,9 @@ def _reload_with_ref(ref: str):
     _branch._CACHED_REF = None
     importlib.reload(_branch)
 
-    import fused_render.server as server
     import fused_render.app as app
     import fused_render.cli as cli
+    import fused_render.server as server
 
     server = importlib.reload(server)
     app = importlib.reload(app)
@@ -30,9 +30,9 @@ def _restore_baseline(monkeypatch):
     monkeypatch.delenv("FUSED_RENDER_BRANCH", raising=False)
     _branch._CACHED_REF = None
     importlib.reload(_branch)
-    import fused_render.server
     import fused_render.app
     import fused_render.cli
+    import fused_render.server
 
     importlib.reload(fused_render.server)
     importlib.reload(fused_render.app)
@@ -48,9 +48,7 @@ def test_baseline_ref_empty(monkeypatch):
     assert storage.home_dir() == base
     assert server.USER_TEMPLATES_DIR == os.path.join(base, "templates")
     assert server.USER_REGISTRY == os.path.join(base, "templates", "registry.json")
-    assert app.APP_SUPPORT_DIR == os.path.expanduser(
-        "~/Library/Application Support/fused-render"
-    )
+    assert app.APP_SUPPORT_DIR == os.path.expanduser("~/Library/Application Support/fused-render")
     assert app.DEFAULT_PORT == 1777
     assert app.MAX_PORT == 1787
     assert cli.DEFAULT_PORT == 1777

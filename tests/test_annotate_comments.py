@@ -14,6 +14,7 @@ write) is tombstoned with `deleted_at`, and the stamp is permanent — a stale
 URL re-recording the id can't undo the delete. Unowned keys (claudeSessions/bookmarkHistory/lastSession) are
 preserved through the read-merge-write.
 """
+
 import importlib.util
 import json
 import os
@@ -40,9 +41,13 @@ def _target(tmp_path):
 def test_record_creates_comments_key(tmp_path):
     ann = _load_annotate()
     f = _target(tmp_path)
-    resp = ann._record(str(f), [
-        {"id": "c1", "content": "hi", "createdAt": 1720000000000, "view": "_render"},
-    ], [])
+    resp = ann._record(
+        str(f),
+        [
+            {"id": "c1", "content": "hi", "createdAt": 1720000000000, "view": "_render"},
+        ],
+        [],
+    )
     assert resp == {"recorded": True, "count": 1, "deleted": 0}
 
     data = json.loads(_sidecar(tmp_path).read_text())
@@ -67,7 +72,7 @@ def test_second_record_same_id_updates_in_place(tmp_path):
     assert len(log) == 1  # not duplicated
     e = log[0]
     assert e["recorded_at"] == first["recorded_at"]  # first-seen time is stable
-    assert e["updated_at"] >= first["updated_at"]     # bumped on every record
+    assert e["updated_at"] >= first["updated_at"]  # bumped on every record
 
 
 def test_resolved_change_flows_through_as_update(tmp_path):
@@ -86,10 +91,14 @@ def test_dropped_comment_stays_in_sidecar(tmp_path):
     f = _target(tmp_path)
     # Two comments recorded, then only the first is re-recorded (B deleted from
     # the URL). B must remain in the log — the sidecar never deletes.
-    ann._record(str(f), [
-        {"id": "A", "content": "keep", "createdAt": 1},
-        {"id": "B", "content": "gone-from-url", "createdAt": 2},
-    ], [])
+    ann._record(
+        str(f),
+        [
+            {"id": "A", "content": "keep", "createdAt": 1},
+            {"id": "B", "content": "gone-from-url", "createdAt": 2},
+        ],
+        [],
+    )
     ann._record(str(f), [{"id": "A", "content": "keep", "createdAt": 1}], [])
 
     log = json.loads(_sidecar(tmp_path).read_text())["comments"]
@@ -105,11 +114,15 @@ def test_preserves_unowned_keys(tmp_path):
     f = _target(tmp_path)
     sess = [{"id": "s1", "preview": "hi", "created_at": 1, "last_used": 1, "cwd": "/x"}]
     hist = [{"id": "bk-1", "search": "a=1", "recorded_at": 1.0, "updated_at": 1.0}]
-    _sidecar(tmp_path).write_text(json.dumps({
-        "claudeSessions": sess,
-        "bookmarkHistory": hist,
-        "lastSession": "s1",
-    }))
+    _sidecar(tmp_path).write_text(
+        json.dumps(
+            {
+                "claudeSessions": sess,
+                "bookmarkHistory": hist,
+                "lastSession": "s1",
+            }
+        )
+    )
 
     ann._record(str(f), [{"id": "c1", "content": "hi", "createdAt": 1}], [])
     data = json.loads(_sidecar(tmp_path).read_text())
@@ -141,19 +154,24 @@ def test_empty_array_leaves_existing_log_untouched(tmp_path):
 def test_main_dispatch_and_missing_file(tmp_path):
     ann = _load_annotate()
     f = _target(tmp_path)
-    assert ann.main(action="record", file=str(f),
-                    comments=[{"id": "c1", "content": "x", "createdAt": 1}]) == \
-        {"recorded": True, "count": 1, "deleted": 0}
+    assert ann.main(
+        action="record", file=str(f), comments=[{"id": "c1", "content": "x", "createdAt": 1}]
+    ) == {"recorded": True, "count": 1, "deleted": 0}
     assert "error" in ann.main(action="record", file="")
     assert "error" in ann.main(action="bogus", file=str(f))
+
 
 def test_deleted_ids_tombstone_in_same_write(tmp_path):
     ann = _load_annotate()
     f = _target(tmp_path)
-    ann._record(str(f), [
-        {"id": "A", "content": "keep", "createdAt": 1},
-        {"id": "B", "content": "bye", "createdAt": 2},
-    ], [])
+    ann._record(
+        str(f),
+        [
+            {"id": "A", "content": "keep", "createdAt": 1},
+            {"id": "B", "content": "bye", "createdAt": 2},
+        ],
+        [],
+    )
     # Delete B: absent from the array AND named in deleted_ids — one call, one
     # write, so a concurrent-record ordering race cannot drop the tombstone.
     resp = ann._record(str(f), [{"id": "A", "content": "keep", "createdAt": 1}], ["B"])
@@ -197,6 +215,7 @@ def test_deleted_ids_alone_still_writes_and_unknown_ignored(tmp_path):
 
 
 # ------------------------------------------------------- status (writability)
+
 
 def test_status_writable_sidecar_dir(tmp_path):
     ann = _load_annotate()

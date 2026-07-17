@@ -30,8 +30,9 @@ def main(file: str = "", overwrite: str = "0"):
 
     t0 = time.time()
     try:
-        import pyogrio
         import pandas as pd
+        import pyogrio
+
         layers = [str(l[0]) for l in pyogrio.list_layers(file)]
         if len(layers) <= 1:
             gdf = gpd.read_file(file)
@@ -48,14 +49,14 @@ def main(file: str = "", overwrite: str = "0"):
                     parts.append(part)
             if not parts:
                 return {"error": "no readable features in any layer"}
-            gdf = gpd.GeoDataFrame(
-                pd.concat(parts, ignore_index=True), crs=parts[0].crs)
+            gdf = gpd.GeoDataFrame(pd.concat(parts, ignore_index=True), crs=parts[0].crs)
     except Exception as e:  # noqa: BLE001
         return {"error": f"could not read vector file: {type(e).__name__}: {e}"}
     try:
         try:
-            gdf.to_parquet(dst, compression="zstd",
-                           geometry_encoding="WKB", write_covering_bbox=True)
+            gdf.to_parquet(
+                dst, compression="zstd", geometry_encoding="WKB", write_covering_bbox=True
+            )
         except TypeError:
             # older geopandas without bbox/encoding kwargs
             gdf.to_parquet(dst, compression="zstd")
@@ -75,6 +76,7 @@ def main(file: str = "", overwrite: str = "0"):
 
 try:
     import fused as _fused
+
     _udf_main = _fused.udf(main)
 except ImportError:
     pass

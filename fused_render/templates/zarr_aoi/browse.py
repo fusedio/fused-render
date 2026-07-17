@@ -5,8 +5,7 @@ navigable picker — no need to type paths by hand. Stdlib only.
 """
 
 
-def main(dir: str = "~", exts: str = ".zarr", show_all: bool = False,
-         store_exts: str = ".zarr"):
+def main(dir: str = "~", exts: str = ".zarr", show_all: bool = False, store_exts: str = ".zarr"):
     import os
 
     dir = os.path.abspath(os.path.expanduser(dir or "~"))
@@ -19,11 +18,10 @@ def main(dir: str = "~", exts: str = ".zarr", show_all: bool = False,
     try:
         names = os.listdir(dir)
     except OSError as e:
-        return {"error": f"cannot list {dir}: {e}", "dir": dir,
-                "parent": os.path.dirname(dir)}
+        return {"error": f"cannot list {dir}: {e}", "dir": dir, "parent": os.path.dirname(dir)}
 
     for name in names:
-        if name.startswith("."):            # hide dotfiles
+        if name.startswith("."):  # hide dotfiles
             continue
         full = os.path.join(dir, name)
         try:
@@ -35,16 +33,32 @@ def main(dir: str = "~", exts: str = ".zarr", show_all: bool = False,
             # a directory whose name ends in a store extension (e.g. .zarr) is a
             # loadable store, not just a folder to descend into.
             if any(name.lower().endswith(s) for s in stores):
-                files.append({"name": name, "path": full, "is_dir": True,
-                              "size": None, "ext": ".zarr", "loadable": True})
+                files.append(
+                    {
+                        "name": name,
+                        "path": full,
+                        "is_dir": True,
+                        "size": None,
+                        "ext": ".zarr",
+                        "loadable": True,
+                    }
+                )
             else:
                 dirs.append({"name": name, "path": full, "is_dir": True})
         else:
             ext = os.path.splitext(name)[1].lower()
             loadable = ext in allow
             if loadable or show_all:
-                files.append({"name": name, "path": full, "is_dir": False,
-                              "size": size, "ext": ext, "loadable": loadable})
+                files.append(
+                    {
+                        "name": name,
+                        "path": full,
+                        "is_dir": False,
+                        "size": size,
+                        "ext": ext,
+                        "loadable": loadable,
+                    }
+                )
 
     dirs.sort(key=lambda e: e["name"].lower())
     files.sort(key=lambda e: e["name"].lower())
@@ -69,6 +83,7 @@ def main(dir: str = "~", exts: str = ".zarr", show_all: bool = False,
 # entrypoints; a bare main() silently returns null. Register main via the shim.
 try:
     import fused as _fused
+
     _udf_main = _fused.udf(main)
 except ImportError:
     pass

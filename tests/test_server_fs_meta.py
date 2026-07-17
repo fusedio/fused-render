@@ -6,6 +6,7 @@ of os.stat + os.path.isdir's second stat), and stat() does a single os.stat
 instead of exists()+isdir()+stat(). These tests pin the observable output so
 the round-trip reduction can't silently change is_dir/size/mtime or the 404.
 """
+
 from fastapi.testclient import TestClient
 
 from fused_render.server import create_app

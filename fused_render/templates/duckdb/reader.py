@@ -31,6 +31,7 @@ full `tables` list plus the selected `table`, and keys edits by DuckDB's real
 `rowid` (edited in place by writer.py, not rewritten). Views have no rowid and
 stay read-only.
 """
+
 import datetime
 import decimal
 import os
@@ -62,6 +63,7 @@ def _logical_ext(file: str) -> str:
             base = base[: -len(comp)]
             break
     return os.path.splitext(base)[1].lower()
+
 
 # Physical-position column injected into the page query. row_number() over the
 # raw scan is the 0-based file position — the same key the writer's rowid uses —
@@ -158,7 +160,9 @@ def _rowgroup_prune(con, scan: str, sort: dict, types: dict, need: int) -> str:
         f" TRY_CAST(stats_min_value AS {coltype}),"
         f" TRY_CAST(stats_max_value AS {coltype}), stats_null_count"
         f" FROM parquet_metadata(?) WHERE path_in_schema = ?"
-        f" ORDER BY row_group_id", [scan, col]).fetchall()
+        f" ORDER BY row_group_id",
+        [scan, col],
+    ).fetchall()
     # One row per row group, ids contiguous from 0 — anything else (nested
     # column with several leaves, exotic writer) breaks the cumulative
     # file_row_number offsets below.
@@ -169,8 +173,7 @@ def _rowgroup_prune(con, scan: str, sort: dict, types: dict, need: int) -> str:
     nonnull = [r[1] - r[4] for r in rows]
     if need >= sum(nonnull):
         return ""  # window reaches the NULL tail — stats can't bound it
-    ranked = sorted(range(len(rows)),
-                    key=lambda i: rows[i][2 if desc_ else 3], reverse=desc_)
+    ranked = sorted(range(len(rows)), key=lambda i: rows[i][2 if desc_ else 3], reverse=desc_)
     acc, bound = 0, rows[ranked[0]][2 if desc_ else 3]
     for i in ranked:
         acc += nonnull[i]
@@ -193,8 +196,7 @@ def _rowgroup_prune(con, scan: str, sort: dict, types: dict, need: int) -> str:
             else:
                 ranges.append([start, start + nrows])
         start += nrows
-    clause = " OR ".join(
-        f"file_row_number BETWEEN {a} AND {b - 1}" for a, b in ranges)
+    clause = " OR ".join(f"file_row_number BETWEEN {a} AND {b - 1}" for a, b in ranges)
     return f" WHERE ({clause})"
 
 
@@ -295,9 +297,15 @@ def relation_for(file: str, file_row_number: bool = False) -> str:
     return f"read_json_auto({lit})"
 
 
-def _page_sql(scan: str, relation: str, where: str, order: str,
-              projection: str = "*", offset: int = 0,
-              limit: int = MAX_LIMIT) -> str:
+def _page_sql(
+    scan: str,
+    relation: str,
+    where: str,
+    order: str,
+    projection: str = "*",
+    offset: int = 0,
+    limit: int = MAX_LIMIT,
+) -> str:
     """The paging SELECT, which must also yield each row's physical file position
     as `_POS` (the writer's edit key) even after WHERE/ORDER reshuffle the page.
     `scan` is whatever relation_for reads — the file path, or the http URL on
@@ -340,16 +348,19 @@ def _page_sql(scan: str, relation: str, where: str, order: str,
         rel = relation_for(scan, file_row_number=True)
         proj = "* EXCLUDE (file_row_number)" if projection == "*" else projection
         if not where and not order:
-            return (f"SELECT file_row_number AS {_POS}, {proj} FROM {rel} "
-                    f"WHERE file_row_number >= {offset} "
-                    f"AND file_row_number < {offset + limit}")
+            return (
+                f"SELECT file_row_number AS {_POS}, {proj} FROM {rel} "
+                f"WHERE file_row_number >= {offset} "
+                f"AND file_row_number < {offset + limit}"
+            )
         tie = f"{order}, file_row_number" if order else ""
-        return (f"SELECT file_row_number AS {_POS}, {proj} "
-                f"FROM {rel}{where}{tie} LIMIT ? OFFSET ?")
+        return f"SELECT file_row_number AS {_POS}, {proj} FROM {rel}{where}{tie} LIMIT ? OFFSET ?"
     proj = "*" if projection == "*" else f"{_POS}, {projection}"
     tie = f"{order}, {_POS}" if order else ""
-    return (f"SELECT {proj} FROM (SELECT (row_number() OVER () - 1) AS {_POS}, * "
-            f"FROM {relation}){where}{tie} LIMIT ? OFFSET ?")
+    return (
+        f"SELECT {proj} FROM (SELECT (row_number() OVER () - 1) AS {_POS}, * "
+        f"FROM {relation}){where}{tie} LIMIT ? OFFSET ?"
+    )
 
 
 def _db_tables(con):
@@ -357,7 +368,8 @@ def _db_tables(con):
     sorted by name so the relation selector is stable."""
     rows = con.execute(
         "SELECT table_name, table_type FROM information_schema.tables "
-        "WHERE table_catalog = 'db' ORDER BY table_name").fetchall()
+        "WHERE table_catalog = 'db' ORDER BY table_name"
+    ).fetchall()
     return [r[0] for r in rows], {r[0]: r[1] for r in rows}
 
 
@@ -377,33 +389,42 @@ def _read_database(file, table, offset, limit, sort, filters, mode="full"):
         if not tables:
             if mode == "count":
                 return {"total_rows": 0}
-            return {"columns": [], "types": {}, "rows": [], "ids": [],
-                    "total_rows": None, "editable": False, "tables": [], "table": "",
-                    "readonly_message": "", "readonly_tooltip": ""}
+            return {
+                "columns": [],
+                "types": {},
+                "rows": [],
+                "ids": [],
+                "total_rows": None,
+                "editable": False,
+                "tables": [],
+                "table": "",
+                "readonly_message": "",
+                "readonly_tooltip": "",
+            }
         # An unknown/stale table param falls back to the first real table
         # rather than erroring the whole view.
         sel = table if table in tables else tables[0]
         is_view = kinds[sel] != "BASE TABLE"
         relation = f"db.{_quote_ident(sel)}"
 
-        types = {r[0]: r[1] for r in
-                 con.execute(f"DESCRIBE SELECT * FROM {relation}").fetchall()}
+        types = {r[0]: r[1] for r in con.execute(f"DESCRIBE SELECT * FROM {relation}").fetchall()}
         where, wbinds = _build_where(filters, types)
         if mode == "count":
-            total = con.execute(
-                f"SELECT COUNT(*) FROM {relation}{where}", wbinds).fetchone()[0]
+            total = con.execute(f"SELECT COUNT(*) FROM {relation}{where}", wbinds).fetchone()[0]
             return {"total_rows": total}
         order = _build_order(sort, types)
         # "page" defers the count (the grid fetches it in a second call); "full"
         # returns it inline.
-        total_rows = con.execute(
-            f"SELECT COUNT(*) FROM {relation}{where}", wbinds).fetchone()[0] \
-            if mode == "full" else None
+        total_rows = (
+            con.execute(f"SELECT COUNT(*) FROM {relation}{where}", wbinds).fetchone()[0]
+            if mode == "full"
+            else None
+        )
 
         # Base tables carry rowid (the edit key); a view has none, so it pages
         # without ids and stays read-only.
         pos = "rowid AS " + _POS if not is_view else f"CAST(NULL AS BIGINT) AS {_POS}"
-        paged = (f"SELECT {pos}, * FROM {relation}{where}{order} LIMIT ? OFFSET ?")
+        paged = f"SELECT {pos}, * FROM {relation}{where}{order} LIMIT ? OFFSET ?"
         cur = con.execute(paged, wbinds + [limit, offset])
         desc = [d[0] for d in cur.description] if cur.description else []
         columns = desc[1:]
@@ -411,8 +432,12 @@ def _read_database(file, table, offset, limit, sort, filters, mode="full"):
         for raw in cur.fetchall():
             if not is_view:
                 ids.append(raw[0])
-            rows.append({columns[j] if j < len(columns) else f"col{j}": _jsonify(v)
-                         for j, v in enumerate(raw[1:])})
+            rows.append(
+                {
+                    columns[j] if j < len(columns) else f"col{j}": _jsonify(v)
+                    for j, v in enumerate(raw[1:])
+                }
+            )
         return {
             "columns": columns,
             "types": types,
@@ -423,9 +448,12 @@ def _read_database(file, table, offset, limit, sort, filters, mode="full"):
             "tables": tables,
             "table": sel,
             "readonly_message": "" if not is_view else "View",
-            "readonly_tooltip": "" if not is_view else (
+            "readonly_tooltip": ""
+            if not is_view
+            else (
                 "Read-only. A view has no stored rows of its own to edit — "
-                "change the underlying table instead."),
+                "change the underlying table instead."
+            ),
         }
     finally:
         con.close()
@@ -440,15 +468,23 @@ def _fs_gate(file, out):
             editable=False,
             readonly_message="Read-only",
             readonly_tooltip="The file is read-only — its permissions don't "
-                             "allow writing, so it can't be edited here.")
+            "allow writing, so it can't be edited here.",
+        )
     return out
 
 
-def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
-         sort: "dict | None" = None, filters: "list | None" = None,
-         mode: str = "full", source_url: str = "",
-         columns: "list | None" = None,
-         positions: "list | None" = None) -> dict:
+def main(
+    file: str,
+    table: str = "",
+    offset: int = 0,
+    limit: int = 100,
+    sort: "dict | None" = None,
+    filters: "list | None" = None,
+    mode: str = "full",
+    source_url: str = "",
+    columns: "list | None" = None,
+    positions: "list | None" = None,
+) -> dict:
     # Clamp so a hostile/negative limit can't turn LIMIT ? into an unbounded
     # fetch, and a negative offset can't error out mid-query.
     limit = max(1, min(int(limit), MAX_LIMIT))
@@ -475,8 +511,19 @@ def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
             cur = None
         if cur is not None:
             try:
-                return _read_flat(file, source_url, cur, ext, offset, limit,
-                                  sort, filters, mode, columns, positions)
+                return _read_flat(
+                    file,
+                    source_url,
+                    cur,
+                    ext,
+                    offset,
+                    limit,
+                    sort,
+                    filters,
+                    mode,
+                    columns,
+                    positions,
+                )
             except duckdb.Error:
                 pass
             finally:
@@ -489,15 +536,26 @@ def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
         # across calls — the executor re-execs this module and never keeps it in
         # sys.modules — so this only saves within a single reader run.
         con.execute("PRAGMA enable_object_cache=true")
-        return _read_flat(file, file, con, ext, offset, limit, sort, filters,
-                          mode, columns, positions)
+        return _read_flat(
+            file, file, con, ext, offset, limit, sort, filters, mode, columns, positions
+        )
     finally:
         con.close()
 
 
-def _read_flat(file: str, scan: str, con, ext: str, offset: int, limit: int,
-               sort, filters, mode: str, columns: "list | None" = None,
-               positions: "list | None" = None) -> dict:
+def _read_flat(
+    file: str,
+    scan: str,
+    con,
+    ext: str,
+    offset: int,
+    limit: int,
+    sort,
+    filters,
+    mode: str,
+    columns: "list | None" = None,
+    positions: "list | None" = None,
+) -> dict:
     """Page a flat file on an open connection/cursor. `scan` is what DuckDB
     reads (the file path, or its http URL on the mounted fast path); `file`
     stays the real path for the FS-level editability gate.
@@ -512,8 +570,7 @@ def _read_flat(file: str, scan: str, con, ext: str, offset: int, limit: int,
     # Column types (BIGINT, VARCHAR, DOUBLE, …) so the grid can label each
     # header. DESCRIBE reports the relation's schema without scanning rows,
     # and drives which filters are valid and how they cast.
-    types = {r[0]: r[1] for r in
-             con.execute(f"DESCRIBE SELECT * FROM {relation}").fetchall()}
+    types = {r[0]: r[1] for r in con.execute(f"DESCRIBE SELECT * FROM {relation}").fetchall()}
     where, wbinds = _build_where(filters, types)
 
     # "schema" answers from the footer alone — no row bytes moved. The grid
@@ -529,29 +586,43 @@ def _read_flat(file: str, scan: str, con, ext: str, offset: int, limit: int,
         col_sizes = {}
         if ext == ".parquet":
             try:
-                col_sizes = {r[0]: r[1] for r in con.execute(
-                    "SELECT path_in_schema, SUM(total_compressed_size) "
-                    "FROM parquet_metadata(?) WHERE row_group_id = 0 "
-                    "GROUP BY path_in_schema", [scan]).fetchall()}
+                col_sizes = {
+                    r[0]: r[1]
+                    for r in con.execute(
+                        "SELECT path_in_schema, SUM(total_compressed_size) "
+                        "FROM parquet_metadata(?) WHERE row_group_id = 0 "
+                        "GROUP BY path_in_schema",
+                        [scan],
+                    ).fetchall()
+                }
             except duckdb.Error:
                 pass
-        return _fs_gate(file, {
-            "columns": list(types), "types": types, "rows": [], "ids": [],
-            "col_sizes": col_sizes,
-            "total_rows": None, "editable": editable,
-            "readonly_message": "" if editable else "JSON",
-            "readonly_tooltip": "" if editable else (
-                "Read-only. JSON is flattened into columns for viewing; "
-                "writing that back would lose the original nested structure."),
-        })
+        return _fs_gate(
+            file,
+            {
+                "columns": list(types),
+                "types": types,
+                "rows": [],
+                "ids": [],
+                "col_sizes": col_sizes,
+                "total_rows": None,
+                "editable": editable,
+                "readonly_message": "" if editable else "JSON",
+                "readonly_tooltip": ""
+                if editable
+                else (
+                    "Read-only. JSON is flattened into columns for viewing; "
+                    "writing that back would lose the original nested structure."
+                ),
+            },
+        )
 
     # The filtered count scans every candidate row group, so over a remote
     # mount it dominates. The grid fetches it in a separate "count" call and
     # renders the page first ("… rows"), so "page" skips it (total_rows None)
     # and "count" returns only the total. "full" (default) keeps both inline.
     if mode == "count":
-        total = con.execute(
-            f"SELECT COUNT(*) FROM {relation}{where}", wbinds).fetchone()[0]
+        total = con.execute(f"SELECT COUNT(*) FROM {relation}{where}", wbinds).fetchone()[0]
         return {"total_rows": total}
     order = _build_order(sort, types)
 
@@ -574,12 +645,15 @@ def _read_flat(file: str, scan: str, con, ext: str, offset: int, limit: int,
                 prune = ""
         cur = con.execute(
             f"SELECT file_row_number FROM {rel}{prune}{tie} LIMIT ? OFFSET ?",
-            wbinds + [limit, offset])
+            wbinds + [limit, offset],
+        )
         return {"positions": [r[0] for r in cur.fetchall()]}
 
-    total_rows = con.execute(
-        f"SELECT COUNT(*) FROM {relation}{where}", wbinds).fetchone()[0] \
-        if mode == "full" else None
+    total_rows = (
+        con.execute(f"SELECT COUNT(*) FROM {relation}{where}", wbinds).fetchone()[0]
+        if mode == "full"
+        else None
+    )
 
     # Optional projection: page only the named (schema-checked) columns. The
     # grid's parallel batched loads use this — each call moves only its
@@ -595,11 +669,12 @@ def _read_flat(file: str, scan: str, con, ext: str, offset: int, limit: int,
         if ext != ".parquet":
             raise ValueError("positions require a parquet file")
         rel = relation_for(scan, file_row_number=True)
-        proj = ("* EXCLUDE (file_row_number)" if projection == "*"
-                else projection)
+        proj = "* EXCLUDE (file_row_number)" if projection == "*" else projection
         in_list = ",".join(str(int(p)) for p in positions[:MAX_LIMIT]) or "-1"
-        cur = con.execute(f"SELECT file_row_number AS {_POS}, {proj} "
-                          f"FROM {rel} WHERE file_row_number IN ({in_list})")
+        cur = con.execute(
+            f"SELECT file_row_number AS {_POS}, {proj} "
+            f"FROM {rel} WHERE file_row_number IN ({in_list})"
+        )
     elif _logical_ext(scan) == ".parquet" and not where and not order:
         # Unsorted, unfiltered parquet page: _page_sql bakes the window into a
         # file_row_number range predicate (see its docstring) so DuckDB prunes
@@ -609,29 +684,41 @@ def _read_flat(file: str, scan: str, con, ext: str, offset: int, limit: int,
         # _logical_ext(scan), and if the two diverge (a source_url without a
         # splitext-visible .parquet) the branch and the emitted SQL must still
         # agree, else the no-bind path meets a LIMIT ? OFFSET ? query.
-        cur = con.execute(_page_sql(scan, relation, where, order, projection,
-                                    offset=offset, limit=limit), wbinds)
+        cur = con.execute(
+            _page_sql(scan, relation, where, order, projection, offset=offset, limit=limit), wbinds
+        )
     else:
-        cur = con.execute(_page_sql(scan, relation, where, order, projection),
-                          wbinds + [limit, offset])
+        cur = con.execute(
+            _page_sql(scan, relation, where, order, projection), wbinds + [limit, offset]
+        )
     desc = [d[0] for d in cur.description] if cur.description else []
-    columns = desc[1:]                      # drop the leading _POS column
+    columns = desc[1:]  # drop the leading _POS column
     rows, ids = [], []
     for raw in cur.fetchall():
         ids.append(raw[0])
-        rows.append({columns[j] if j < len(columns) else f"col{j}": _jsonify(v)
-                     for j, v in enumerate(raw[1:])})
+        rows.append(
+            {
+                columns[j] if j < len(columns) else f"col{j}": _jsonify(v)
+                for j, v in enumerate(raw[1:])
+            }
+        )
     editable = ext in _EDITABLE_EXTS
-    return _fs_gate(file, {
-        "columns": columns,
-        "types": types,
-        "rows": rows,
-        # Absolute file position of each returned row — the edit/delete key.
-        "ids": ids,
-        "total_rows": total_rows,
-        "editable": editable,
-        "readonly_message": "" if editable else "JSON",
-        "readonly_tooltip": "" if editable else (
-            "Read-only. JSON is flattened into columns for viewing; writing "
-            "that back would lose the original nested structure."),
-    })
+    return _fs_gate(
+        file,
+        {
+            "columns": columns,
+            "types": types,
+            "rows": rows,
+            # Absolute file position of each returned row — the edit/delete key.
+            "ids": ids,
+            "total_rows": total_rows,
+            "editable": editable,
+            "readonly_message": "" if editable else "JSON",
+            "readonly_tooltip": ""
+            if editable
+            else (
+                "Read-only. JSON is flattened into columns for viewing; writing "
+                "that back would lose the original nested structure."
+            ),
+        },
+    )

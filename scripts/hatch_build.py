@@ -9,6 +9,7 @@ lets hatchling ship the gitignored output.
 Editable installs (`pip install -e .`) skip the build — the dev owns the
 build/watch loop, and serve-from-source means the freshest local build wins.
 """
+
 import os
 import shutil
 import subprocess
@@ -37,9 +38,7 @@ def _write_baked_ref(root: str, ref: str, build_data: dict) -> None:
         return
     with open(baked_path, "w") as f:
         f.write(f'_BAKED_REF = "{ref}"\n')
-    build_data.setdefault("artifacts", []).append(
-        "fused_render/_baked_branch.py"
-    )
+    build_data.setdefault("artifacts", []).append("fused_render/_baked_branch.py")
 
 
 # The template starter kit ships the two canonical authoring skills so a
@@ -62,9 +61,7 @@ class ShellBuildHook(BuildHookInterface):
         self._copy_starter_skills()
 
         frontend = os.path.join(self.root, "frontend")
-        dist_index = os.path.join(
-            self.root, "fused_render", "static", "shell-dist", "index.html"
-        )
+        dist_index = os.path.join(self.root, "fused_render", "static", "shell-dist", "index.html")
         if not os.path.isdir(frontend):
             # Building from a tree without frontend/ sources (shouldn't happen
             # — sdists include it); accept a pre-built shell, else fail loud.
@@ -82,9 +79,7 @@ class ShellBuildHook(BuildHookInterface):
                 "(frontend/ -> fused_render/static/shell-dist/), which needs "
                 "Node 22. Install node or pre-build the shell."
             )
-        subprocess.run(
-            [npm, "install", "--no-audit", "--no-fund"], cwd=frontend, check=True
-        )
+        subprocess.run([npm, "install", "--no-audit", "--no-fund"], cwd=frontend, check=True)
         subprocess.run([npm, "run", "build"], cwd=frontend, check=True)
 
     def _copy_starter_skills(self) -> None:
@@ -94,9 +89,7 @@ class ShellBuildHook(BuildHookInterface):
         shipped via pyproject's `artifacts` glob. Refresh each time so a
         packaged build always reflects the current skill.
         """
-        dest_root = os.path.join(
-            self.root, "fused_render", "template_starter", ".claude", "skills"
-        )
+        dest_root = os.path.join(self.root, "fused_render", "template_starter", ".claude", "skills")
         for name in _STARTER_SKILLS:
             src = os.path.join(self.root, "skills", name)
             dest = os.path.join(dest_root, name)

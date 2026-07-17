@@ -22,7 +22,9 @@ import time
 # script's own directory first on sys.path, so rebuild __file__ from it. Under
 # the built-in executor __file__ is already set, so this is a no-op.
 if "__file__" not in globals():
-    import os, sys
+    import os
+    import sys
+
     __file__ = os.path.join(sys.path[0], "reader.py")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -31,8 +33,19 @@ from procutil import pid_alive as _pid_alive
 
 CACHE_ROOT = os.path.expanduser(os.path.join("~", ".fused-render", "cache", "usd"))
 
-LOADABLE = (".usdz", ".usd", ".usda", ".usdc", ".ply", ".splat", ".ksplat",
-            ".glb", ".gltf", ".obj", ".stl")
+LOADABLE = (
+    ".usdz",
+    ".usd",
+    ".usda",
+    ".usdc",
+    ".ply",
+    ".splat",
+    ".ksplat",
+    ".glb",
+    ".gltf",
+    ".obj",
+    ".stl",
+)
 
 
 def _cache_dir(source):
@@ -69,21 +82,29 @@ def _read_json(path):
 def _state(cache_dir, budget, crop=1):
     manifest = _read_json(os.path.join(cache_dir, "manifest.json"))
     progress = _read_json(os.path.join(cache_dir, "progress.json"))
-    running = bool(progress and not progress.get("done")
-                   and _pid_alive(progress.get("pid")))
-    ready = bool(manifest and (
-        manifest.get("kind") == "usd"
-        or manifest.get("mesh")
-        or f"{budget}c{crop}" in manifest.get("splatFiles", {})
-        or str(budget) in manifest.get("pointFiles", {})))
-    return {"cacheKey": os.path.basename(cache_dir),
-            "cacheDir": os.path.abspath(cache_dir).replace(os.sep, "/"),
-            "manifest": manifest,
-            "progress": progress, "running": running, "ready": ready}
+    running = bool(progress and not progress.get("done") and _pid_alive(progress.get("pid")))
+    ready = bool(
+        manifest
+        and (
+            manifest.get("kind") == "usd"
+            or manifest.get("mesh")
+            or f"{budget}c{crop}" in manifest.get("splatFiles", {})
+            or str(budget) in manifest.get("pointFiles", {})
+        )
+    )
+    return {
+        "cacheKey": os.path.basename(cache_dir),
+        "cacheDir": os.path.abspath(cache_dir).replace(os.sep, "/"),
+        "manifest": manifest,
+        "progress": progress,
+        "running": running,
+        "ready": ready,
+    }
 
 
-def main(action: str = "inspect", file: str = "", budget: int = 1000000,
-         crop: int = 1, dir: str = ""):
+def main(
+    action: str = "inspect", file: str = "", budget: int = 1000000, crop: int = 1, dir: str = ""
+):
     if action == "browse":
         base = dir or (os.path.dirname(file) if file else os.path.expanduser("~"))
         base = os.path.abspath(base)
@@ -97,16 +118,24 @@ def main(action: str = "inspect", file: str = "", budget: int = 1000000,
                     if os.path.isdir(full):
                         dirs.append({"name": name, "path": full})
                     elif os.path.isfile(full) and name.lower().endswith(LOADABLE):
-                        entries.append({"name": name, "path": full,
-                                        "size": os.path.getsize(full)})
+                        entries.append({"name": name, "path": full, "size": os.path.getsize(full)})
                 except OSError:
                     continue  # unreadable entry (permissions, dangling link)
         except OSError as e:
-            return {"dir": base, "parent": os.path.dirname(base),
-                    "dirs": [], "entries": [], "error": str(e)}
+            return {
+                "dir": base,
+                "parent": os.path.dirname(base),
+                "dirs": [],
+                "entries": [],
+                "error": str(e),
+            }
         parent = os.path.dirname(base)
-        return {"dir": base, "parent": parent if parent != base else None,
-                "dirs": dirs, "entries": entries}
+        return {
+            "dir": base,
+            "parent": parent if parent != base else None,
+            "dirs": dirs,
+            "entries": entries,
+        }
 
     if not file:
         return {"error": "no file given"}
@@ -127,10 +156,13 @@ def main(action: str = "inspect", file: str = "", budget: int = 1000000,
         # template never shows a spurious read-only badge for them.
         sidecar_ok = True if is_url else _sidecar_writable(file)
         if direct:
-            return {"kind": "mesh-direct" if direct_mesh else "splat-direct",
-                    "ext": ext, "ready": True,
-                    "size": None if is_url else os.path.getsize(file),
-                    "sidecar_writable": sidecar_ok}
+            return {
+                "kind": "mesh-direct" if direct_mesh else "splat-direct",
+                "ext": ext,
+                "ready": True,
+                "size": None if is_url else os.path.getsize(file),
+                "sidecar_writable": sidecar_ok,
+            }
         cd = _cache_dir(file)
         out = _state(cd, budget, crop)
         out.update({"kind": "usd", "ext": ext, "sidecar_writable": sidecar_ok})
@@ -151,23 +183,35 @@ def main(action: str = "inspect", file: str = "", budget: int = 1000000,
         # CREATE_NEW_PROCESS_GROUP is the equivalent.
         detach_kwargs = (
             {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
-            if os.name == "nt" else {"start_new_session": True}
+            if os.name == "nt"
+            else {"start_new_session": True}
         )
         child = subprocess.Popen(
-            [sys.executable, worker, file, cd, str(int(budget)),
-             str(int(crop))],
-            stdout=logf, stderr=logf, stdin=subprocess.DEVNULL,
-            cwd=HERE,                # the backend's exec dir is deleted after
-            **detach_kwargs)
+            [sys.executable, worker, file, cd, str(int(budget)), str(int(crop))],
+            stdout=logf,
+            stderr=logf,
+            stdin=subprocess.DEVNULL,
+            cwd=HERE,  # the backend's exec dir is deleted after
+            **detach_kwargs,
+        )
         logf.close()
         # stamp progress immediately: the worker needs a second or two to boot,
         # and a status poll in that window must see "running", not "dead"
         stamp = os.path.join(cd, "progress.json")
         with open(stamp + ".tmp", "w") as f:
-            json.dump({"stage": "spawn", "pct": 0,
-                       "detail": "starting converter", "done": False,
-                       "error": None, "pid": child.pid, "elapsed": 0,
-                       "ts": time.time()}, f)
+            json.dump(
+                {
+                    "stage": "spawn",
+                    "pct": 0,
+                    "detail": "starting converter",
+                    "done": False,
+                    "error": None,
+                    "pid": child.pid,
+                    "elapsed": 0,
+                    "ts": time.time(),
+                },
+                f,
+            )
         os.replace(stamp + ".tmp", stamp)
         time.sleep(0.3)
         return _state(cd, budget, crop)
@@ -184,6 +228,7 @@ def main(action: str = "inspect", file: str = "", budget: int = 1000000,
 # entrypoints; a bare main() silently returns null. Register main via the shim.
 try:
     import fused as _fused
+
     _udf_main = _fused.udf(main)
 except ImportError:
     pass

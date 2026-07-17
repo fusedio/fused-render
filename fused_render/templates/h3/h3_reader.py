@@ -6,8 +6,18 @@ cell ids as hex strings plus the attribute columns. Boundary polygons are
 computed client-side with h3-js, so no H3 python dependency is needed.
 """
 
-H3_NAMES = ("hex", "h3", "h3_index", "h3index", "h3_cell", "cell", "cell_id",
-            "hex_id", "h3_id", "index")
+H3_NAMES = (
+    "hex",
+    "h3",
+    "h3_index",
+    "h3index",
+    "h3_cell",
+    "cell",
+    "cell_id",
+    "hex_id",
+    "h3_id",
+    "index",
+)
 MAX_CELLS = 80_000
 
 
@@ -32,6 +42,7 @@ def _looks_h3_str(v):
 
 def main(file: str = "", h3_col: str = "", max_cells: int = MAX_CELLS):
     import os
+
     max_cells = int(max_cells)
     if not file:
         return {"error": "no file selected"}
@@ -40,6 +51,7 @@ def main(file: str = "", h3_col: str = "", max_cells: int = MAX_CELLS):
         return {"error": f"not a file: {file}"}
 
     import duckdb
+
     con = duckdb.connect()
     q = lambda sql: con.execute(sql).fetchall()
     src = file.replace("'", "''")
@@ -58,8 +70,9 @@ def main(file: str = "", h3_col: str = "", max_cells: int = MAX_CELLS):
         vals = [r[i] for r in sample if r[i] is not None][:50]
         if not vals:
             return False
-        good = sum(1 for v in vals
-                   if (_looks_h3_int(v) if not isinstance(v, str) else _looks_h3_str(v)))
+        good = sum(
+            1 for v in vals if (_looks_h3_int(v) if not isinstance(v, str) else _looks_h3_str(v))
+        )
         return good >= max(1, int(len(vals) * 0.9))
 
     cand = None
@@ -80,17 +93,19 @@ def main(file: str = "", h3_col: str = "", max_cells: int = MAX_CELLS):
                     cand = n
                     break
     if cand is None:
-        return {"error": "no H3 index column detected — pick one manually",
-                "columns": names, "no_h3": True}
+        return {
+            "error": "no H3 index column detected — pick one manually",
+            "columns": names,
+            "no_h3": True,
+        }
 
     ci = names.index(cand)
     is_str = isinstance(next((r[ci] for r in sample if r[ci] is not None), None), str)
 
     # ---- pull cells + attributes ----
     others = [n for n in names if n != cand]
-    sel_h3 = (f'lower(trim("{cand}"))' if is_str
-              else f'format(\'{{:x}}\', "{cand}"::UBIGINT)')
-    sel = ", ".join([f'{sel_h3} AS __h3'] + [f'"{n}"' for n in others])
+    sel_h3 = f'lower(trim("{cand}"))' if is_str else f"format('{{:x}}', \"{cand}\"::UBIGINT)"
+    sel = ", ".join([f"{sel_h3} AS __h3"] + [f'"{n}"' for n in others])
     rows = q(f"SELECT {sel} FROM '{src}' WHERE \"{cand}\" IS NOT NULL LIMIT {max_cells}")
 
     cells = [r[0] for r in rows]
@@ -103,7 +118,9 @@ def main(file: str = "", h3_col: str = "", max_cells: int = MAX_CELLS):
                 vals.append(None)
             elif isinstance(v, (int, float, bool)):
                 f = float(v)
-                vals.append(None if f != f else (int(v) if isinstance(v, int) or isinstance(v, bool) else f))
+                vals.append(
+                    None if f != f else (int(v) if isinstance(v, int) or isinstance(v, bool) else f)
+                )
             else:
                 vals.append(str(v)[:120])
         attrs[n] = vals
@@ -124,6 +141,7 @@ def main(file: str = "", h3_col: str = "", max_cells: int = MAX_CELLS):
 
 try:
     import fused as _fused
+
     _udf_main = _fused.udf(main)
 except ImportError:
     pass

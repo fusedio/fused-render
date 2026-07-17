@@ -2,11 +2,7 @@ import { useEffect, useState } from "react";
 import type { KeyKind } from "../../lib/api";
 import { buildKey, KEY_KINDS } from "./helpers";
 
-export function KeyBuilder({
-  onChange,
-}: {
-  onChange: (key: string, valid: boolean) => void;
-}) {
+export function KeyBuilder({ onChange }: { onChange: (key: string, valid: boolean) => void }) {
   const [kind, setKind] = useState<KeyKind>("simple");
   const [raw, setRaw] = useState("");
   const { key, error } = buildKey(kind, raw);

@@ -77,7 +77,6 @@ def _open_oriented(path: str):
 
 
 def _encode(img, dst: str, quality: int):
-    from PIL import Image
 
     if img.mode not in ("RGB", "RGBA"):
         img = img.convert("RGB")
@@ -121,8 +120,13 @@ def _transpose_ops():
         from PIL import Image
 
         _TRANSPOSE = {
-            2: Image.FLIP_LEFT_RIGHT, 3: Image.ROTATE_180, 4: Image.FLIP_TOP_BOTTOM,
-            5: Image.TRANSPOSE, 6: Image.ROTATE_270, 7: Image.TRANSVERSE, 8: Image.ROTATE_90,
+            2: Image.FLIP_LEFT_RIGHT,
+            3: Image.ROTATE_180,
+            4: Image.FLIP_TOP_BOTTOM,
+            5: Image.TRANSPOSE,
+            6: Image.ROTATE_270,
+            7: Image.TRANSVERSE,
+            8: Image.ROTATE_90,
         }
     return _TRANSPOSE
 
@@ -271,7 +275,9 @@ def _day_epoch(day: str, end: bool) -> float:
     return t.timestamp()
 
 
-def list_dir(path: str, sort: str, offset: int, limit: int, q: str, date_from: str, date_to: str) -> dict:
+def list_dir(
+    path: str, sort: str, offset: int, limit: int, q: str, date_from: str, date_to: str
+) -> dict:
     d = os.path.abspath(os.path.expanduser(path))
     if not os.path.isdir(d):
         raise NotADirectoryError(f"not a directory: {path}")
@@ -338,16 +344,29 @@ def thumbs(paths: str) -> dict:
     for p in arr:
         try:
             if not os.path.isfile(p):
-                results.append({"path": _fwd(p), "ok": False, "error": "not-found", "detail": "file missing"})
+                results.append(
+                    {"path": _fwd(p), "ok": False, "error": "not-found", "detail": "file missing"}
+                )
                 continue
             results.append(_make_thumb(p))
         except RuntimeError as e:
             if str(e) == "no-decoder":
-                results.append({"path": _fwd(p), "ok": False, "error": "no-decoder", "detail": "install pillow-heif"})
+                results.append(
+                    {
+                        "path": _fwd(p),
+                        "ok": False,
+                        "error": "no-decoder",
+                        "detail": "install pillow-heif",
+                    }
+                )
             else:
-                results.append({"path": _fwd(p), "ok": False, "error": "decode-failed", "detail": str(e)[:120]})
+                results.append(
+                    {"path": _fwd(p), "ok": False, "error": "decode-failed", "detail": str(e)[:120]}
+                )
         except Exception as e:
-            results.append({"path": _fwd(p), "ok": False, "error": "decode-failed", "detail": str(e)[:120]})
+            results.append(
+                {"path": _fwd(p), "ok": False, "error": "decode-failed", "detail": str(e)[:120]}
+            )
     return {"ok": True, "results": results}
 
 
@@ -374,7 +393,7 @@ def _gps_to_decimal(coord, ref) -> str:
 
 
 def exif(path: str) -> dict:
-    from PIL import Image, ExifTags
+    from PIL import ExifTags, Image
 
     file = {
         "name": os.path.basename(path),
@@ -398,8 +417,14 @@ def exif(path: str) -> dict:
         w, h = h, w
     image = {"w": w, "h": h, "format": fmt}
     wanted = {
-        "DateTimeOriginal", "Make", "Model", "LensModel",
-        "FNumber", "ExposureTime", "ISOSpeedRatings", "FocalLength",
+        "DateTimeOriginal",
+        "Make",
+        "Model",
+        "LensModel",
+        "FNumber",
+        "ExposureTime",
+        "ISOSpeedRatings",
+        "FocalLength",
     }
     out = {}
     try:

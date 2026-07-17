@@ -33,9 +33,12 @@ export function ImportWizard({
   const [result, setResult] = useState<Awaited<ReturnType<typeof commitImport>> | null>(null);
 
   const alive = useRef(true);
-  useEffect(() => () => {
-    alive.current = false;
-  }, []);
+  useEffect(
+    () => () => {
+      alive.current = false;
+    },
+    [],
+  );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -119,7 +122,7 @@ export function ImportWizard({
       const payload: Record<string, ImportResolution> = {};
       for (const it of staged.items) {
         if (!it.valid) continue;
-        payload[it.name] = it.conflictsExisting ? resolutions[it.name] ?? "skip" : "overwrite";
+        payload[it.name] = it.conflictsExisting ? (resolutions[it.name] ?? "skip") : "overwrite";
       }
       const bindings = activeBindings();
       const res = await commitImport(
@@ -261,7 +264,12 @@ export function ImportWizard({
               )}
               {error && <div className="deploy-error">{error}</div>}
               <div className="templates-actions">
-                <button type="button" className="templates-btn-secondary" onClick={onClose} disabled={busy}>
+                <button
+                  type="button"
+                  className="templates-btn-secondary"
+                  onClick={onClose}
+                  disabled={busy}
+                >
                   Cancel
                 </button>
                 <button
@@ -274,7 +282,9 @@ export function ImportWizard({
                     ? "Importing…"
                     : hasRecs
                       ? `Import ${importCount} template${importCount === 1 ? "" : "s"}` +
-                        (bindingCount > 0 ? ` · ${bindingCount} binding${bindingCount === 1 ? "" : "s"}` : "")
+                        (bindingCount > 0
+                          ? ` · ${bindingCount} binding${bindingCount === 1 ? "" : "s"}`
+                          : "")
                       : "Import"}
                 </button>
               </div>
@@ -458,14 +468,16 @@ function ChipStrip({
             </button>
           )}
         </div>
-        {!inert && reEnabled.map((c) => (
-          <div key={c.key} className="templates-rec-warn">
-            Checking {c.key} re-enables an extension you disabled.
-          </div>
-        ))}
+        {!inert &&
+          reEnabled.map((c) => (
+            <div key={c.key} className="templates-rec-warn">
+              Checking {c.key} re-enables an extension you disabled.
+            </div>
+          ))}
         {!inert && keepBoth && anyOn && (
           <div className="templates-rec-warn">
-            Will bind under the renamed copy — added after your existing templates on these extensions.
+            Will bind under the renamed copy — added after your existing templates on these
+            extensions.
           </div>
         )}
       </td>

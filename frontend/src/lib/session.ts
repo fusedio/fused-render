@@ -76,6 +76,5 @@ export function useSessionTracking(fsPath: string, isDir: boolean | null): void 
       window.removeEventListener("popstate", maybeSave);
       window.clearTimeout(timer.current);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fsPath, isDir]);
 }

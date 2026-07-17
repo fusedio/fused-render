@@ -60,17 +60,16 @@ class _RangeReader:
 
     def read(self, off, count):
         import urllib.request
-        req = urllib.request.Request(
-            self.url, headers={"Range": f"bytes={off}-{off + count - 1}"})
+
+        req = urllib.request.Request(self.url, headers={"Range": f"bytes={off}-{off + count - 1}"})
         with urllib.request.urlopen(req, timeout=120) as r:
             body = r.read()
             status = r.status
         if status != 206:
             # Server ignored Range and sent the whole object: slice our window.
-            body = body[off:off + count]
+            body = body[off : off + count]
         if len(body) != count:
-            raise OSError(
-                f"range read: wanted {count}B at {off}, got {len(body)}B")
+            raise OSError(f"range read: wanted {count}B at {off}, got {len(body)}B")
         return body
 
 
@@ -81,6 +80,7 @@ def _server_url(src, endpoint, path):
     server's fs endpoints do no expansion — mixing the two identities would
     judge remote-ness on one path string and range-read another (404s)."""
     import urllib.parse
+
     u = urllib.parse.urlsplit(src)
     return f"{u.scheme}://{u.netloc}{endpoint}?path=" + urllib.parse.quote(path)
 
@@ -91,9 +91,9 @@ def _stat_remote(src, path):
     stays mount-agnostic). True/False from stat, None when it can't be reached
     (caller falls back to mmap and may retry on a later request)."""
     import urllib.request
+
     try:
-        with urllib.request.urlopen(_server_url(src, "/api/fs/stat", path),
-                                    timeout=10) as r:
+        with urllib.request.urlopen(_server_url(src, "/api/fs/stat", path), timeout=10) as r:
             return bool(json.load(r).get("remote"))
     except Exception:  # noqa: BLE001
         return None
@@ -125,17 +125,27 @@ def _daemon_python():
         return vp
     import shutil
     import subprocess
+
     uv = shutil.which("uv") or os.path.expanduser("~/.local/bin/uv")
     if os.path.exists(uv):
         try:
             os.makedirs(os.path.dirname(DAEMON_VENV), exist_ok=True)
-            subprocess.run([uv, "venv", "--python", "3.12", DAEMON_VENV],
-                           check=True, capture_output=True, timeout=120)
-            subprocess.run([uv, "pip", "install", "-p", vp] + DAEMON_DEPS,
-                           check=True, capture_output=True, timeout=300)
+            subprocess.run(
+                [uv, "venv", "--python", "3.12", DAEMON_VENV],
+                check=True,
+                capture_output=True,
+                timeout=120,
+            )
+            subprocess.run(
+                [uv, "pip", "install", "-p", vp] + DAEMON_DEPS,
+                check=True,
+                capture_output=True,
+                timeout=300,
+            )
             return vp
         except Exception:
             import shutil as _sh
+
             _sh.rmtree(DAEMON_VENV, ignore_errors=True)
     return sys.executable
 
@@ -143,6 +153,7 @@ def _daemon_python():
 # ================================================================ ensure()
 def _alive(port, version):
     import urllib.request
+
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/ping", timeout=2) as r:
             d = json.load(r)
@@ -154,6 +165,7 @@ def _alive(port, version):
 def main(action: str = "ensure"):
     """runPython entrypoint: make sure the daemon is running, return {port}."""
     import subprocess
+
     version = _version()
     try:
         with open(STATE) as f:
@@ -163,8 +175,8 @@ def main(action: str = "ensure"):
         # stale daemon (old version or dead) — ask it to quit, then respawn
         try:
             import urllib.request
-            urllib.request.urlopen(
-                f"http://127.0.0.1:{st.get('port')}/quit", timeout=1).read()
+
+            urllib.request.urlopen(f"http://127.0.0.1:{st.get('port')}/quit", timeout=1).read()
         except Exception:
             pass
     except (OSError, ValueError):
@@ -173,9 +185,13 @@ def main(action: str = "ensure"):
     os.makedirs(os.path.dirname(STATE), exist_ok=True)
     log = os.path.join(os.path.dirname(STATE), "daemon.log")
     with open(log, "ab") as lf:
-        subprocess.Popen([_daemon_python(), _me(), "--serve"],
-                         stdout=lf, stderr=lf,
-                         start_new_session=True, cwd=os.path.dirname(_me()))
+        subprocess.Popen(
+            [_daemon_python(), _me(), "--serve"],
+            stdout=lf,
+            stderr=lf,
+            start_new_session=True,
+            cwd=os.path.dirname(_me()),
+        )
     # wait for the state file to appear with a live port
     for _ in range(100):
         time.sleep(0.05)
@@ -191,6 +207,7 @@ def main(action: str = "ensure"):
 
 try:
     import fused as _fused
+
     _udf_main = _fused.udf(main)
 except ImportError:
     pass
@@ -198,14 +215,15 @@ except ImportError:
 
 # ================================================================ daemon
 def _serve():
-    import numpy as np
     from concurrent.futures import ThreadPoolExecutor
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-    from urllib.parse import urlparse, parse_qs
+    from urllib.parse import parse_qs, urlparse
+
+    import numpy as np
 
     sys.path.insert(0, os.path.dirname(_me()))
     import _tiff_core as T
-    import tiff_reader as R          # reuse encode_png / _lut / stretch utils
+    import tiff_reader as R  # reuse encode_png / _lut / stretch utils
 
     try:
         import imagecodecs as IC
@@ -213,14 +231,13 @@ def _serve():
         IC = None
     # compression codes the daemon can decode (1/8/32946 via stdlib zlib;
     # the rest via imagecodecs when present)
-    SUPPORTED_COMPS = {1, 8, 32946} | (
-        {5, 7, 32773, 50000, 50001, 34887} if IC else set())
+    SUPPORTED_COMPS = {1, 8, 32946} | ({5, 7, 32773, 50000, 50001, 34887} if IC else set())
 
     VERSION = _version()
     last_hit = [time.time()]
 
     # ---------------- file cache: parsed pyramid per path ----------------
-    files = {}          # path -> dict(levels, meta, lock, stretch cache)
+    files = {}  # path -> dict(levels, meta, lock, stretch cache)
     files_lock = threading.Lock()
     # Shared pool for coalesced warm reads: _warm_chunks runs on every cold
     # multi-miss request; a per-call executor would spawn+join up to 16 OS
@@ -228,17 +245,22 @@ def _serve():
     warm_pool = ThreadPoolExecutor(max_workers=16)
 
     def _parse_level(buf, en, t):
-        jt = T._v(t, 347)      # JPEGTables (shared quant/huffman tables)
-        lv = {"tags": t,
-              "W": T._v1(t, 256), "H": T._v1(t, 257),
-              "spp": T._v1(t, 277, 1),
-              "comp": T._v1(t, 259, 1),
-              "predictor": T._v1(t, 317, 1),
-              "planar": T._v1(t, 284, 1),
-              "photometric": T._v1(t, 262, 1),
-              "jpegtables": bytes(jt) if isinstance(jt, list) else None}
-        bits = T._v(t, 258, [8]); bits = bits[0] if isinstance(bits, list) else bits
-        sf = T._v(t, 339, [1]); sf = sf[0] if isinstance(sf, list) else sf
+        jt = T._v(t, 347)  # JPEGTables (shared quant/huffman tables)
+        lv = {
+            "tags": t,
+            "W": T._v1(t, 256),
+            "H": T._v1(t, 257),
+            "spp": T._v1(t, 277, 1),
+            "comp": T._v1(t, 259, 1),
+            "predictor": T._v1(t, 317, 1),
+            "planar": T._v1(t, 284, 1),
+            "photometric": T._v1(t, 262, 1),
+            "jpegtables": bytes(jt) if isinstance(jt, list) else None,
+        }
+        bits = T._v(t, 258, [8])
+        bits = bits[0] if isinstance(bits, list) else bits
+        sf = T._v(t, 339, [1])
+        sf = sf[0] if isinstance(sf, list) else sf
         lv["dtype"] = T._numpy_dtype(sf, bits, en)
         if 322 in t:
             lv["tiled"] = True
@@ -274,8 +296,12 @@ def _serve():
             # stat_lock keeps a screenful of concurrent requests from each
             # firing its own blocking stat; losers just serve this request
             # from the mmap as before.
-            if (src and f["reader"] is None and f.get("remote") is None
-                    and f["stat_lock"].acquire(blocking=False)):
+            if (
+                src
+                and f["reader"] is None
+                and f.get("remote") is None
+                and f["stat_lock"].acquire(blocking=False)
+            ):
                 old_buf = None
                 try:
                     remote = _stat_remote(src, path)
@@ -294,8 +320,7 @@ def _serve():
                     except Exception:  # noqa: BLE001
                         pass
                 if upgrade:
-                    threading.Thread(target=_prefetch_overviews, args=(f,),
-                                     daemon=True).start()
+                    threading.Thread(target=_prefetch_overviews, args=(f,), daemon=True).start()
             return f
         # No src -> remote-ness UNKNOWN (not False): a later request that does
         # carry src can still stat + upgrade a mount-backed file off the mmap.
@@ -318,12 +343,23 @@ def _serve():
         levels.sort(key=lambda l: -l["W"])
         supported = all(l["comp"] in SUPPORTED_COMPS for l in levels)
         epsg = (meta.get("crs") or {}).get("epsg")
-        f = {"path": path, "buf": buf, "en": en, "levels": levels,
-             "meta": meta, "epsg": epsg, "reader": None,
-             "transform": meta.get("transform"), "bounds": meta.get("bounds"),
-             "supported": bool(supported and epsg and meta.get("transform")),
-             "lock": threading.Lock(), "stat_lock": threading.Lock(),
-             "chunks": {}, "chunk_order": [], "stretch": {}}
+        f = {
+            "path": path,
+            "buf": buf,
+            "en": en,
+            "levels": levels,
+            "meta": meta,
+            "epsg": epsg,
+            "reader": None,
+            "transform": meta.get("transform"),
+            "bounds": meta.get("bounds"),
+            "supported": bool(supported and epsg and meta.get("transform")),
+            "lock": threading.Lock(),
+            "stat_lock": threading.Lock(),
+            "chunks": {},
+            "chunk_order": [],
+            "stretch": {},
+        }
         if remote is not None:
             f["remote"] = remote
         if remote:
@@ -341,8 +377,7 @@ def _serve():
         if f["reader"] is not None:
             # Warm the overviews off-thread so /meta returns immediately and the
             # bulk fetch overlaps the client's first tile requests.
-            threading.Thread(target=_prefetch_overviews, args=(f,),
-                             daemon=True).start()
+            threading.Thread(target=_prefetch_overviews, args=(f,), daemon=True).start()
         return f
 
     # ---------------- chunk-granular decode with LRU ----------------
@@ -411,7 +446,7 @@ def _serve():
             raw = rd.read(off, cnt)
         else:
             try:
-                raw = f["buf"][off:off + cnt]
+                raw = f["buf"][off : off + cnt]
             except (TypeError, ValueError):
                 # mmap dropped by a concurrent late-src upgrade; the reader is
                 # always attached before the mmap goes away, so it's there now.
@@ -452,8 +487,8 @@ def _serve():
         if len(items) <= 1:
             return  # single miss: the assembly loop's own get_chunk suffices
         items.sort()
-        GAP = 512 * 1024   # bridge small inter-tile gaps; don't read big holes
-        runs = []          # [start, end, [(ci, off, cnt), ...]]
+        GAP = 512 * 1024  # bridge small inter-tile gaps; don't read big holes
+        runs = []  # [start, end, [(ci, off, cnt), ...]]
         for off, cnt, ci in items:
             if runs and off - runs[-1][1] <= GAP:
                 runs[-1][1] = max(runs[-1][1], off + cnt)
@@ -467,7 +502,7 @@ def _serve():
                 raw = rd.read(start, end - start)
                 for ci, off, cnt in members:
                     if (li, ci) not in f["chunks"]:
-                        _decode_chunk(f, li, ci, raw[off - start:off - start + cnt])
+                        _decode_chunk(f, li, ci, raw[off - start : off - start + cnt])
             except Exception:  # noqa: BLE001
                 pass  # warming is best-effort; get_chunk refetches per-chunk
 
@@ -503,11 +538,16 @@ def _serve():
             across = (W + tw - 1) // tw
             down = (H + th - 1) // th
             per_plane = across * down
-            _warm_chunks(f, li, [
-                (bk * per_plane if planar == 2 else 0) + ty * across + tx
-                for ty in range(y0 // th, (y1 - 1) // th + 1)
-                for tx in range(x0 // tw, (x1 - 1) // tw + 1)
-                for bk in band_idx])
+            _warm_chunks(
+                f,
+                li,
+                [
+                    (bk * per_plane if planar == 2 else 0) + ty * across + tx
+                    for ty in range(y0 // th, (y1 - 1) // th + 1)
+                    for tx in range(x0 // tw, (x1 - 1) // tw + 1)
+                    for bk in band_idx
+                ],
+            )
             for ty in range(y0 // th, (y1 - 1) // th + 1):
                 for tx in range(x0 // tw, (x1 - 1) // tw + 1):
                     for oi, bk in enumerate(band_idx):
@@ -517,15 +557,21 @@ def _serve():
                         gy0, gx0 = ty * th, tx * tw
                         sy0, sx0 = max(y0, gy0), max(x0, gx0)
                         sy1, sx1 = min(y1, gy0 + th, H), min(x1, gx0 + tw, W)
-                        out[oi, sy0 - y0:sy1 - y0, sx0 - x0:sx1 - x0] = \
-                            a[sy0 - gy0:sy1 - gy0, sx0 - gx0:sx1 - gx0, s]
+                        out[oi, sy0 - y0 : sy1 - y0, sx0 - x0 : sx1 - x0] = a[
+                            sy0 - gy0 : sy1 - gy0, sx0 - gx0 : sx1 - gx0, s
+                        ]
         else:
             rps = lv["rps"]
             nsy = _nchunks_y(lv)
-            _warm_chunks(f, li, [
-                (bk * nsy if planar == 2 else 0) + si
-                for si in range(y0 // rps, (y1 - 1) // rps + 1)
-                for bk in band_idx])
+            _warm_chunks(
+                f,
+                li,
+                [
+                    (bk * nsy if planar == 2 else 0) + si
+                    for si in range(y0 // rps, (y1 - 1) // rps + 1)
+                    for bk in band_idx
+                ],
+            )
             for si in range(y0 // rps, (y1 - 1) // rps + 1):
                 for oi, bk in enumerate(band_idx):
                     ci = (bk * nsy if planar == 2 else 0) + si
@@ -533,7 +579,7 @@ def _serve():
                     s = 0 if planar == 2 else bk
                     gy0 = si * rps
                     sy0, sy1 = max(y0, gy0), min(y1, gy0 + a.shape[0])
-                    out[oi, sy0 - y0:sy1 - y0, :] = a[sy0 - gy0:sy1 - gy0, x0:x1, s]
+                    out[oi, sy0 - y0 : sy1 - y0, :] = a[sy0 - gy0 : sy1 - gy0, x0:x1, s]
         nod = f["meta"].get("nodata")
         if nod is not None:
             out[out == nod] = np.nan
@@ -541,6 +587,7 @@ def _serve():
 
     # ---------------- mercator plumbing ----------------
     from pyproj import Transformer
+
     _tr_cache = {}
 
     def merc_to_native(epsg):
@@ -553,10 +600,14 @@ def _serve():
         return tr
 
     def tile_bbox(z, x, y):
-        n = 2 ** z
+        n = 2**z
         s = 2 * MERC_MAX / n
-        return (-MERC_MAX + x * s, MERC_MAX - (y + 1) * s,
-                -MERC_MAX + (x + 1) * s, MERC_MAX - y * s)
+        return (
+            -MERC_MAX + x * s,
+            MERC_MAX - (y + 1) * s,
+            -MERC_MAX + (x + 1) * s,
+            MERC_MAX - y * s,
+        )
 
     def native_res_in_merc(f, li):
         """Approx native pixel size of level li expressed in merc m/px."""
@@ -604,8 +655,10 @@ def _serve():
         sx, sy = lv["W"] / float(W0), lv["H"] / float(H0)
         lpx = np.clip(px * sx, 0, lv["W"] - 1)
         lpy = np.clip(py * sy, 0, lv["H"] - 1)
-        x0 = int(np.floor(lpx[inside].min())); x1 = int(np.ceil(lpx[inside].max())) + 1
-        y0 = int(np.floor(lpy[inside].min())); y1 = int(np.ceil(lpy[inside].max())) + 1
+        x0 = int(np.floor(lpx[inside].min()))
+        x1 = int(np.ceil(lpx[inside].max())) + 1
+        y0 = int(np.floor(lpy[inside].min()))
+        y1 = int(np.ceil(lpy[inside].max())) + 1
         win = read_window(f, li, x0, y0, x1, y1, band_idx)
         ix = np.clip(lpx.astype(np.int32) - x0, 0, win.shape[2] - 1)
         iy = np.clip(lpy.astype(np.int32) - y0, 0, win.shape[1] - 1)
@@ -630,7 +683,8 @@ def _serve():
         for k in range(arr.shape[0]):
             fin = arr[k][np.isfinite(arr[k])]
             if not fin.size:
-                st.append([0.0, 1.0]); continue
+                st.append([0.0, 1.0])
+                continue
             if robust:
                 lo, hi = float(np.percentile(fin, 2)), float(np.percentile(fin, 98))
             else:
@@ -651,8 +705,10 @@ def _serve():
         mode = q1(q, "mode", "auto")
         want_rgb = (mode == "rgb") or (mode == "auto" and count >= 3)
         if want_rgb and count >= 3:
-            idx = [min(max(int(q1(q, k, str(i + 1))), 1), count) - 1
-                   for i, k in enumerate(("r", "g", "b"))]
+            idx = [
+                min(max(int(q1(q, k, str(i + 1))), 1), count) - 1
+                for i, k in enumerate(("r", "g", "b"))
+            ]
         else:
             want_rgb = False
             idx = [min(max(int(q1(q, "band", "1")), 1), count) - 1]
@@ -709,14 +765,14 @@ def _serve():
         per-band info. Cheap — pyproj + tag data only, plus a min/max pass
         on the smallest overview (cached)."""
         from pyproj import CRS, Transformer
+
         epsg, tr = f["epsg"], f["transform"]
         # full CRS description
         if epsg:
             try:
                 crs = CRS.from_epsg(int(epsg))
                 m["crs_wkt"] = crs.to_wkt(pretty=True)
-                m["crs_units"] = (crs.axis_info[0].unit_name
-                                  if crs.axis_info else None)
+                m["crs_units"] = crs.axis_info[0].unit_name if crs.axis_info else None
             except Exception:
                 pass
         # geotransform -> origin + pixel size
@@ -730,9 +786,13 @@ def _serve():
         if tr and f["bounds"]:
             W, H = f["levels"][0]["W"], f["levels"][0]["H"]
             a, b_, c, d, e, ff = tr
-            px = {"Upper Left": (0, 0), "Lower Left": (0, H),
-                  "Upper Right": (W, 0), "Lower Right": (W, H),
-                  "Center": (W / 2.0, H / 2.0)}
+            px = {
+                "Upper Left": (0, 0),
+                "Lower Left": (0, H),
+                "Upper Right": (W, 0),
+                "Lower Right": (W, H),
+                "Center": (W / 2.0, H / 2.0),
+            }
             t2ll = None
             if epsg and int(epsg) != 4326:
                 try:
@@ -743,10 +803,13 @@ def _serve():
             for name, (x, y) in px.items():
                 nx, ny = c + a * x + b_ * y, ff + d * x + e * y
                 lon, lat = (nx, ny) if not t2ll else t2ll.transform(nx, ny)
-                corners.append({"name": name, "native": [nx, ny],
-                                "lonlat": ([lon, lat]
-                                           if lon == lon and abs(lon) != float("inf")
-                                           else None)})
+                corners.append(
+                    {
+                        "name": name,
+                        "native": [nx, ny],
+                        "lonlat": ([lon, lat] if lon == lon and abs(lon) != float("inf") else None),
+                    }
+                )
             m["corners"] = corners
         # sidecar files
         base = f["path"].rsplit(".", 1)[0]
@@ -761,35 +824,40 @@ def _serve():
         spp = lv0["spp"]
         photometric = lv0.get("photometric", 1)
         gm = m.get("gdal_metadata") or {}
-        interp = (["Red", "Green", "Blue", "Alpha"] if photometric == 2
-                  else ["Palette"] if photometric == 3 else ["Gray"])
+        interp = (
+            ["Red", "Green", "Blue", "Alpha"]
+            if photometric == 2
+            else ["Palette"]
+            if photometric == 3
+            else ["Gray"]
+        )
         stats = None
         if f["supported"]:
             try:
                 stats = get_stretch(f, list(range(spp)), False)
             except Exception:
                 stats = None
-        block = ([lv0["tw"], lv0["th"]] if lv0["tiled"]
-                 else [lv0["W"], lv0["rps"]])
+        block = [lv0["tw"], lv0["th"]] if lv0["tiled"] else [lv0["W"], lv0["rps"]]
         bands = []
         for i in range(spp):
             smin = gm.get(f"band {i + 1}: STATISTICS_MINIMUM")
             smax = gm.get(f"band {i + 1}: STATISTICS_MAXIMUM")
-            bands.append({
-                "band": i + 1,
-                "description": (m.get("descriptions") or [None] * spp)[i],
-                "dtype": str(np.dtype(lv0["dtype"])).lstrip("<>|"),
-                "colorinterp": interp[i] if i < len(interp) else "Undefined",
-                "min": (float(smin) if smin else
-                        (stats[i][0] if stats else None)),
-                "max": (float(smax) if smax else
-                        (stats[i][1] if stats else None)),
-                "stats_source": ("GDAL metadata" if smin else
-                                 "overview scan" if stats else None),
-                "nodata": m.get("nodata"),
-                "block": block,
-                "overviews": len(f["levels"]) - 1,
-            })
+            bands.append(
+                {
+                    "band": i + 1,
+                    "description": (m.get("descriptions") or [None] * spp)[i],
+                    "dtype": str(np.dtype(lv0["dtype"])).lstrip("<>|"),
+                    "colorinterp": interp[i] if i < len(interp) else "Undefined",
+                    "min": (float(smin) if smin else (stats[i][0] if stats else None)),
+                    "max": (float(smax) if smax else (stats[i][1] if stats else None)),
+                    "stats_source": (
+                        "GDAL metadata" if smin else "overview scan" if stats else None
+                    ),
+                    "nodata": m.get("nodata"),
+                    "block": block,
+                    "overviews": len(f["levels"]) - 1,
+                }
+            )
         m["band_info"] = bands
         return m
 
@@ -799,10 +867,10 @@ def _serve():
         m["supported"] = f["supported"]
         m["crs_name"] = T._crs_name(m.get("crs"))
         import _raster_common as C
+
         m["lonlat_bounds"] = C.lonlat_bounds(m.get("bounds"), f["epsg"])
         try:
-            m["merc_bbox"] = list(R._merc_bbox(f["bounds"], f["epsg"])) \
-                if f["supported"] else None
+            m["merc_bbox"] = list(R._merc_bbox(f["bounds"], f["epsg"])) if f["supported"] else None
         except Exception:
             m["merc_bbox"] = None
         if f["supported"]:
@@ -844,15 +912,19 @@ def _serve():
             ch = {"count": int(fin.size)}
             if fin.size:
                 c, edges = np.histogram(fin, bins=bins)
-                ch.update({
-                    "counts": [int(v) for v in c],
-                    "edges": [float(v) for v in edges],
-                    "min": float(fin.min()), "max": float(fin.max()),
-                    "mean": float(fin.mean()), "std": float(fin.std()),
-                    "p2": float(np.percentile(fin, 2)),
-                    "p98": float(np.percentile(fin, 98)),
-                    "median": float(np.median(fin)),
-                })
+                ch.update(
+                    {
+                        "counts": [int(v) for v in c],
+                        "edges": [float(v) for v in edges],
+                        "min": float(fin.min()),
+                        "max": float(fin.max()),
+                        "mean": float(fin.mean()),
+                        "std": float(fin.std()),
+                        "p2": float(np.percentile(fin, 2)),
+                        "p98": float(np.percentile(fin, 98)),
+                        "median": float(np.median(fin)),
+                    }
+                )
             out["channels"].append(ch)
         return 200, json.dumps(out).encode(), "application/json"
 
@@ -868,8 +940,9 @@ def _serve():
         idx = list(range(count))
         eps = 0.5
         arr = sample_merc_grid(f, idx, mx - eps, my - eps, mx + eps, my + eps, 2, 2)
-        vals = [None if not np.isfinite(arr[k, 0, 0]) else float(arr[k, 0, 0])
-                for k in range(count)]
+        vals = [
+            None if not np.isfinite(arr[k, 0, 0]) else float(arr[k, 0, 0]) for k in range(count)
+        ]
         return 200, json.dumps({"values": vals}).encode(), "application/json"
 
     # ---------------- HTTP ----------------
@@ -883,14 +956,17 @@ def _serve():
             q = parse_qs(u.query)
             try:
                 if u.path == "/ping":
-                    code, body, ct = 200, json.dumps(
-                        {"ok": True, "version": VERSION}).encode(), "application/json"
+                    code, body, ct = (
+                        200,
+                        json.dumps({"ok": True, "version": VERSION}).encode(),
+                        "application/json",
+                    )
                 elif u.path == "/quit":
                     self._send(200, b"bye", "text/plain")
                     threading.Thread(target=srv.shutdown, daemon=True).start()
                     return
                 elif u.path.startswith("/tile/"):
-                    parts = u.path.split("/")   # '', 'tile', z, x, 'y.png'
+                    parts = u.path.split("/")  # '', 'tile', z, x, 'y.png'
                     z, x = int(parts[2]), int(parts[3])
                     y = int(parts[4].split(".")[0])
                     code, body, ct = do_tile(q, z, x, y)
@@ -904,6 +980,7 @@ def _serve():
                     code, body, ct = 404, b"not found", "text/plain"
             except Exception as e:
                 import traceback
+
                 traceback.print_exc()
                 code, body, ct = 500, str(e).encode(), "text/plain"
             self._send(code, body, ct)
@@ -932,6 +1009,7 @@ def _serve():
             if time.time() - last_hit[0] > IDLE_EXIT_S:
                 srv.shutdown()
                 return
+
     threading.Thread(target=reaper, daemon=True).start()
     print(f"tile daemon on 127.0.0.1:{port} (v{VERSION})", flush=True)
     srv.serve_forever()
@@ -939,4 +1017,5 @@ def _serve():
 
 if __name__ == "__main__" and "--serve" in sys.argv:
     import numpy as np  # noqa: F401  (fail fast if venv lacks numpy)
+
     _serve()

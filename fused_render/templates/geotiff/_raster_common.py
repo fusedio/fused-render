@@ -10,7 +10,9 @@ only, so it imports in either interpreter.
 
 def clean(x):
     import math
+
     import numpy as np
+
     if x is None:
         return None
     if isinstance(x, (np.floating, float)):
@@ -29,9 +31,14 @@ def lonlat_bounds(bounds, epsg):
         return None
     try:
         from pyproj import Transformer
+
         if int(epsg) == 4326:
-            return {"west": bounds["left"], "south": bounds["bottom"],
-                    "east": bounds["right"], "north": bounds["top"]}
+            return {
+                "west": bounds["left"],
+                "south": bounds["bottom"],
+                "east": bounds["right"],
+                "north": bounds["top"],
+            }
         tr = Transformer.from_crs(int(epsg), 4326, always_xy=True)
         xs = [bounds["left"], bounds["right"], bounds["right"], bounds["left"]]
         ys = [bounds["top"], bounds["top"], bounds["bottom"], bounds["bottom"]]
@@ -47,14 +54,16 @@ def parse_win(win, W, H):
         fx0, fy0, fx1, fy1 = [float(v) for v in str(win).split(",")]
     except (ValueError, AttributeError):
         return None
-    fx0 = min(max(fx0, 0.0), 1.0); fy0 = min(max(fy0, 0.0), 1.0)
-    fx1 = min(max(fx1, 0.0), 1.0); fy1 = min(max(fy1, 0.0), 1.0)
+    fx0 = min(max(fx0, 0.0), 1.0)
+    fy0 = min(max(fy0, 0.0), 1.0)
+    fx1 = min(max(fx1, 0.0), 1.0)
+    fy1 = min(max(fy1, 0.0), 1.0)
     x0, x1 = int(fx0 * W), min(W, int(round(fx1 * W)))
     y0, y1 = int(fy0 * H), min(H, int(round(fy1 * H)))
     if x1 - x0 < 2 or y1 - y0 < 2:
         return None
     if x0 == 0 and y0 == 0 and x1 == W and y1 == H:
-        return None                      # full view == no window
+        return None  # full view == no window
     return x0, y0, x1, y1
 
 
@@ -71,6 +80,7 @@ def win_bounds(transform, x0, y0, x1, y1):
 def channel_hists(bands, idx, bins):
     """Per-channel raw-value histograms for the RGB composite."""
     import numpy as np
+
     out = []
     for k in idx:
         b0 = bands[k - 1]
@@ -104,12 +114,14 @@ def _axis(bounds, n, which, step):
 def build_single(arr, meta, bins, max_cells, nodata):
     """arr: 2D float array of the selected band (nodata already -> NaN)."""
     import numpy as np
+
     arr = np.where(np.isfinite(arr), arr, np.nan)
     rows, cols = arr.shape
     valid = arr[np.isfinite(arr)]
     nv = int(valid.size)
     stats = {
-        "count": nv, "nan": int(arr.size - nv),
+        "count": nv,
+        "nan": int(arr.size - nv),
         "min": clean(valid.min()) if nv else None,
         "max": clean(valid.max()) if nv else None,
         "mean": clean(valid.mean()) if nv else None,
@@ -128,10 +140,13 @@ def build_single(arr, meta, bins, max_cells, nodata):
     grid = [[clean(x) for x in row] for row in small]
     b = meta.get("bounds")
     return {
-        "stats": stats, "histogram": hist,
+        "stats": stats,
+        "histogram": hist,
         "grid": {
-            "rows": len(grid), "cols": len(grid[0]) if grid else 0,
-            "step": step, "orig_shape": [rows, cols],
+            "rows": len(grid),
+            "cols": len(grid[0]) if grid else 0,
+            "step": step,
+            "orig_shape": [rows, cols],
             "values": grid,
             "lats": _axis(b, rows, "y", step) if b else None,
             "lons": _axis(b, cols, "x", step) if b else None,
@@ -142,6 +157,7 @@ def build_single(arr, meta, bins, max_cells, nodata):
 def build_rgb(bands, idx, meta, max_cells):
     """bands: 3D (count, H, W). idx: [r,g,b] 1-based. Percentile-stretch to 0-255."""
     import numpy as np
+
     _, rows, cols = bands.shape
     step = _downsample_step(rows, cols, max_cells)
     chans, ranges = [], []
@@ -156,12 +172,18 @@ def build_rgb(bands, idx, meta, max_cells):
         chans.append(np.where(np.isfinite(band), (v * 255).round(), 0).astype("uint8"))
         ranges.append([clean(lo), clean(hi)])
     r, g, b = chans
-    rgb = [[[int(r[i, j]), int(g[i, j]), int(b[i, j])] for j in range(r.shape[1])]
-           for i in range(r.shape[0])]
+    rgb = [
+        [[int(r[i, j]), int(g[i, j]), int(b[i, j])] for j in range(r.shape[1])]
+        for i in range(r.shape[0])
+    ]
     bb = meta.get("bounds")
     return {
-        "rows": r.shape[0], "cols": r.shape[1], "step": step,
-        "orig_shape": [rows, cols], "values": rgb, "ranges": ranges,
+        "rows": r.shape[0],
+        "cols": r.shape[1],
+        "step": step,
+        "orig_shape": [rows, cols],
+        "values": rgb,
+        "ranges": ranges,
         "lats": _axis(bb, rows, "y", step) if bb else None,
         "lons": _axis(bb, cols, "x", step) if bb else None,
     }

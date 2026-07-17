@@ -5,6 +5,7 @@ CI-testable slice of the pinned-view feature (the popover itself is AppKit,
 PV-7). A bad pin.json must read back as "no pin", never raise — the recovery
 path is just pinning again from the menu.
 """
+
 import os
 
 from fused_render import pin_store

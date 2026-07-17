@@ -4,6 +4,7 @@
 FUSED_RENDER_DIR (the Fused dir) and FUSED_RENDER_HOME (~/.fused-render, holding
 bookmarks.json) are both redirected to tmp dirs so no test touches a real dir.
 """
+
 import json
 import re
 from urllib.parse import unquote
@@ -80,9 +81,7 @@ def test_bookmarks_created_when_absent_with_view_urls(tmp_path, monkeypatch):
     assert left == (str(fdir / "sine" / "sine.html"), "")
     assert right == (str(fdir / "sine" / "sine.html"), "?_mode=code")
     # How it works stays a plain /view/ + per-segment-encoded absolute path.
-    assert marks[1]["url"] == "/view" + _encoded(
-        str(fdir / "how_it_works" / "explainer.html")
-    )
+    assert marks[1]["url"] == "/view" + _encoded(str(fdir / "how_it_works" / "explainer.html"))
     # UUIDv4 ids + a numeric created_at, matching the store's shape.
     for m in marks:
         assert len(m["id"]) == 36 and m["id"].count("-") == 4
@@ -125,7 +124,7 @@ def _parse_panel(url: str) -> list:
     # balanced-paren extract the _layout span, one decodeURIComponent pass, then
     # depth-aware split on ';' (rows) and ',' (columns), un-escaping each leaf.
     assert url.startswith("/view/_panel?_layout=(") and url.endswith(")")
-    inner = unquote(url[len("/view/_panel?_layout=("):-1])
+    inner = unquote(url[len("/view/_panel?_layout=(") : -1])
     rows = _split_top(inner, ";")
     assert len(rows) == 1  # single row, panes side by side
     leaves = []
@@ -134,7 +133,7 @@ def _parse_panel(url: str) -> list:
         if q == -1:
             leaves.append((_dec_seg(cell), ""))
         else:
-            leaves.append((_dec_seg(cell[:q]), "?" + _dec_seg(cell[q + 1:])))
+            leaves.append((_dec_seg(cell[:q]), "?" + _dec_seg(cell[q + 1 :])))
     return leaves
 
 
@@ -169,7 +168,7 @@ def test_bookmark_urls_encode_special_segments(tmp_path, monkeypatch):
     assert "My%20Fused%20Dir" in url  # space encoded, not literal
     assert " " not in url
     # Decoding the /view/ path yields the real absolute file path.
-    decoded = "/" + "/".join(unquote(s) for s in url[len("/view/"):].split("/"))
+    decoded = "/" + "/".join(unquote(s) for s in url[len("/view/") :].split("/"))
     assert decoded == str(fdir / "how_it_works" / "explainer.html")
 
 

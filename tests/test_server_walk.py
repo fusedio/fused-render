@@ -1,5 +1,6 @@
 """Tests for GET /api/fs/walk (fused_render/server.py) — the recursive listing
 backing the explorer search."""
+
 from fastapi.testclient import TestClient
 
 from fused_render import server
@@ -68,9 +69,7 @@ def test_walk_truncation_flag(tmp_path, monkeypatch):
 def test_walk_hidden_returns_dot_entries_and_descends_dot_dirs(tmp_path):
     _make_tree(tmp_path)
     data = (
-        _client(tmp_path)
-        .get("/api/fs/walk", params={"path": str(tmp_path), "hidden": "1"})
-        .json()
+        _client(tmp_path).get("/api/fs/walk", params={"path": str(tmp_path), "hidden": "1"}).json()
     )
     rels = {e["rel"] for e in data["entries"]}
     assert ".secret" in rels
@@ -83,9 +82,7 @@ def test_walk_hidden_returns_dot_entries_and_descends_dot_dirs(tmp_path):
 def test_walk_hidden_still_prunes_ignored_dirs(tmp_path):
     _make_tree(tmp_path)
     data = (
-        _client(tmp_path)
-        .get("/api/fs/walk", params={"path": str(tmp_path), "hidden": "1"})
-        .json()
+        _client(tmp_path).get("/api/fs/walk", params={"path": str(tmp_path), "hidden": "1"}).json()
     )
     rels = {e["rel"] for e in data["entries"]}
     assert not any("node_modules" in r for r in rels)  # ignored dir never descended
@@ -161,9 +158,7 @@ def test_walk_hidden_still_prunes_git_and_venv(tmp_path):
         (d / "junk.txt").write_text("x", encoding="utf-8")
     (tmp_path / ".env").write_text("x", encoding="utf-8")
     data = (
-        _client(tmp_path)
-        .get("/api/fs/walk", params={"path": str(tmp_path), "hidden": "1"})
-        .json()
+        _client(tmp_path).get("/api/fs/walk", params={"path": str(tmp_path), "hidden": "1"}).json()
     )
     rels = {e["rel"] for e in data["entries"]}
     assert ".env" in rels  # a real dotfile still shows
@@ -249,9 +244,7 @@ def test_walk_stream_truncation(tmp_path, monkeypatch):
 def test_walk_stream_not_a_directory(tmp_path):
     f = tmp_path / "a.txt"
     f.write_text("a", encoding="utf-8")
-    resp = _client(tmp_path).get(
-        "/api/fs/walk", params={"path": str(f), "stream": "1"}
-    )
+    resp = _client(tmp_path).get("/api/fs/walk", params={"path": str(f), "stream": "1"})
     assert resp.status_code == 400
     assert "not a directory" in resp.json()["error"]
 

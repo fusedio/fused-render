@@ -53,7 +53,9 @@ export default function PaneModeMenu({ path, query, onNavigate }: PaneModeMenuPr
         // resolved templates and the known sentinels (`_render`, `_listing`),
         // so a directory pane's menu offers the listing beside zarr/custom views.
         if (stale) return;
-        const filtered = s.templates.filter((t) => t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode));
+        const filtered = s.templates.filter(
+          (t) => t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode),
+        );
         setTemplates(filtered);
         if (!filtered.some((t) => t.conditional)) {
           setConditions({});
@@ -95,7 +97,9 @@ export default function PaneModeMenu({ path, query, onNavigate }: PaneModeMenuPr
   // default (and the trigger's fallback) is the first UNCONDITIONAL entry —
   // a gated template is never the default while a normal one exists (CT-12).
   const isPending = (t: TemplateEntry) => !!t.conditional && conditions === null;
-  const visible = templates.filter((t) => !t.conditional || conditions === null || conditions[t.mode] === true);
+  const visible = templates.filter(
+    (t) => !t.conditional || conditions === null || conditions[t.mode] === true,
+  );
   if (visible.length < 2) return null;
 
   const defaultEntry = visible.find((t) => !t.conditional) || visible[0];
@@ -139,7 +143,9 @@ export default function PaneModeMenu({ path, query, onNavigate }: PaneModeMenuPr
             <span
               key={t.mode}
               className={
-                "pane-mode-item" + (t.mode === active.mode ? " active" : "") + (isPending(t) ? " pending" : "")
+                "pane-mode-item" +
+                (t.mode === active.mode ? " active" : "") +
+                (isPending(t) ? " pending" : "")
               }
               title={isPending(t) ? "Checking if this view applies…" : undefined}
               onClick={(e) => {

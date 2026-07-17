@@ -24,6 +24,7 @@ MAX_VERTICES = 400000
 
 # ---------------------------------------------------------------- helpers
 
+
 def _json_safe(v):
     if v is None or isinstance(v, (bool, int, str)):
         return v
@@ -49,6 +50,7 @@ def _crs_str(crs):
 
 def _read_any(path):
     import geopandas as gpd
+
     ext = os.path.splitext(path)[1].lower()
     if ext in (".parquet", ".geoparquet"):
         return gpd.read_parquet(path)
@@ -62,6 +64,7 @@ def _read_any(path):
 
 def _n_vertices(gdf):
     from shapely import get_coordinates
+
     try:
         return int(sum(len(get_coordinates(g)) for g in gdf.geometry if g is not None))
     except Exception:
@@ -69,6 +72,7 @@ def _n_vertices(gdf):
 
 
 # ---------------------------------------------------------------- load
+
 
 def _load(path):
     if not path:
@@ -83,12 +87,14 @@ def _load(path):
     if len(gdf) > MAX_FEATURES:
         raise ValueError(
             f"{len(gdf):,} features — this editor caps at {MAX_FEATURES:,} "
-            "so exports stay lossless. Filter the file first.")
+            "so exports stay lossless. Filter the file first."
+        )
     n_vert = _n_vertices(gdf)
     if n_vert > MAX_VERTICES:
         raise ValueError(
             f"{n_vert:,} vertices — this editor caps at {MAX_VERTICES:,}. "
-            "Simplify or filter the file first.")
+            "Simplify or filter the file first."
+        )
 
     orig_crs = _crs_str(gdf.crs)
     if gdf.crs and gdf.crs.to_epsg() != 4326:
@@ -101,12 +107,14 @@ def _load(path):
     for i, row in enumerate(gdf.itertuples(index=False)):
         geom = getattr(row, gdf.geometry.name, None) or gdf.geometry.iloc[i]
         props = {c: _json_safe(gdf.iloc[i][c]) for c in prop_cols}
-        feats.append({
-            "type": "Feature",
-            "id": i,
-            "properties": props,
-            "geometry": json.loads(json.dumps(geom.__geo_interface__)),
-        })
+        feats.append(
+            {
+                "type": "Feature",
+                "id": i,
+                "properties": props,
+                "geometry": json.loads(json.dumps(geom.__geo_interface__)),
+            }
+        )
 
     b = gdf.total_bounds
     return {
@@ -125,6 +133,7 @@ def _load(path):
 
 
 # ---------------------------------------------------------------- export
+
 
 def _export(geojson, out, orig_crs, crs_mode, overwrite="0"):
     import geopandas as gpd
@@ -171,9 +180,16 @@ def _export(geojson, out, orig_crs, crs_mode, overwrite="0"):
 
 # ---------------------------------------------------------------- entrypoint
 
-def main(action: str = "load", path: str = "", geojson: str = "",
-         out: str = "", orig_crs: str = "", crs_mode: str = "original",
-         overwrite: str = "0"):
+
+def main(
+    action: str = "load",
+    path: str = "",
+    geojson: str = "",
+    out: str = "",
+    orig_crs: str = "",
+    crs_mode: str = "original",
+    overwrite: str = "0",
+):
     if action == "load":
         return _load(path)
     if action == "export":
@@ -183,6 +199,7 @@ def main(action: str = "load", path: str = "", geojson: str = "",
 
 try:
     import fused as _fused
+
     _udf_main = _fused.udf(main)
 except ImportError:
     pass

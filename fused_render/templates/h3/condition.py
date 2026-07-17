@@ -28,8 +28,18 @@ of a package), so it cannot rely on importing `h3_reader`. Fails closed — any
 read error means "cannot prove it's H3" and the template is dropped quietly.
 """
 
-H3_NAMES = ("hex", "h3", "h3_index", "h3index", "h3_cell", "cell", "cell_id",
-            "hex_id", "h3_id", "index")
+H3_NAMES = (
+    "hex",
+    "h3",
+    "h3_index",
+    "h3index",
+    "h3_cell",
+    "cell",
+    "cell_id",
+    "hex_id",
+    "h3_id",
+    "index",
+)
 
 
 def _looks_h3_int(v):
@@ -60,6 +70,7 @@ def main(path: str) -> bool:
 
     try:
         import duckdb
+
         con = duckdb.connect()
         src = path.replace("'", "''")
         # Footer-only read: names, physical types, per-row-group min/max.
@@ -78,9 +89,7 @@ def main(path: str) -> bool:
     for name, ptype, smin, smax in meta:
         if ptype not in ("INT64", "BYTE_ARRAY") or "." in name:
             continue
-        c = cols.setdefault(
-            name, {"str": ptype == "BYTE_ARRAY", "stats": [], "gap": False}
-        )
+        c = cols.setdefault(name, {"str": ptype == "BYTE_ARRAY", "stats": [], "gap": False})
         if smin is None or smax is None:
             c["gap"] = True  # this row group can't be judged from the footer
         else:
@@ -124,8 +133,9 @@ def main(path: str) -> bool:
         vals = [r[i] for r in sample if r[i] is not None][:50]
         if not vals:
             return False
-        good = sum(1 for v in vals
-                   if (_looks_h3_str(v) if isinstance(v, str) else _looks_h3_int(v)))
+        good = sum(
+            1 for v in vals if (_looks_h3_str(v) if isinstance(v, str) else _looks_h3_int(v))
+        )
         return good >= max(1, int(len(vals) * 0.9))
 
     return any(col_ok(i) for i in range(len(unresolved)))

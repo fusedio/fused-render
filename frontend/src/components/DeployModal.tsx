@@ -46,9 +46,12 @@ interface DeployModalProps {
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   const timer = useRef<number | null>(null);
-  useEffect(() => () => {
-    if (timer.current !== null) window.clearTimeout(timer.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (timer.current !== null) window.clearTimeout(timer.current);
+    },
+    [],
+  );
   const onCopy = async () => {
     try {
       await navigator.clipboard.writeText(text);
@@ -157,9 +160,7 @@ function FileSelection({
   // "Add all in folder", so the two never re-add or un-exclude the same files.
   const isCandidate = (rel: string) => {
     const key = relKey(rel);
-    return (
-      rel !== pageBase && !autoKeys.has(key) && !includeKeys.has(key) && !excludeKeys.has(key)
-    );
+    return rel !== pageBase && !autoKeys.has(key) && !includeKeys.has(key) && !excludeKeys.has(key);
   };
 
   const openPicker = () => {
@@ -445,9 +446,12 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   // after unmount doesn't setState on a dead tree. onChange still fires — it
   // updates the parent header dot, which stays mounted.
   const alive = useRef(true);
-  useEffect(() => () => {
-    alive.current = false;
-  }, []);
+  useEffect(
+    () => () => {
+      alive.current = false;
+    },
+    [],
+  );
 
   const applyDeployment = (d: Deployment | null) => {
     if (alive.current) setDeployment(d);
@@ -474,16 +478,14 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   const refreshPreview = async (inc: string[], exc: string[]) => {
     const seq = ++previewSeq.current;
     if (alive.current) setPreviewPending(true);
-    const prev = await getDeployPreview(fsPath, inc, exc).catch(
-      (e): DeployPreview => ({
-        page: basename(fsPath),
-        entrypoints: [],
-        assets: [],
-        auto: [],
-        errors: [(e as Error).message],
-        warnings: [],
-      }),
-    );
+    const prev = await getDeployPreview(fsPath, inc, exc).catch((e): DeployPreview => ({
+      page: basename(fsPath),
+      entrypoints: [],
+      assets: [],
+      auto: [],
+      errors: [(e as Error).message],
+      warnings: [],
+    }));
     // Only the latest request settles the view: a superseded fetch leaves both
     // `preview` and `previewPending` for the newer one to resolve, so Deploy
     // stays held until what's shown matches the current selection.
@@ -510,10 +512,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       setPreview(null);
     }
     try {
-      const [cfg, status] = await Promise.all([
-        getDeployConfig(),
-        getDeployStatus(fsPath, true),
-      ]);
+      const [cfg, status] = await Promise.all([getDeployConfig(), getDeployStatus(fsPath, true)]);
       if (seq !== loadSeq.current) return;
       setLoadError(null);
       setConfig(cfg);
@@ -611,10 +610,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   }, [onClose]);
 
   const envs = config?.envs ?? [];
-  const env = useMemo(
-    () => envs.find((e) => e.name === selectedEnv) ?? null,
-    [envs, selectedEnv],
-  );
+  const env = useMemo(() => envs.find((e) => e.name === selectedEnv) ?? null, [envs, selectedEnv]);
 
   // Each handler applies its result (onChange always propagates to the header
   // dot), then guards the modal's OWN setState on `alive` — the dialog may
@@ -721,9 +717,8 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       return (
         <div className="deploy-section">
           <p>
-            Deploying publishes this page through the <code>fused</code> CLI
-            (<code>fused share</code>), which is not installed in the server's
-            Python environment.
+            Deploying publishes this page through the <code>fused</code> CLI (
+            <code>fused share</code>), which is not installed in the server's Python environment.
           </p>
           {config.cli.installable ? (
             <button
@@ -736,8 +731,8 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             </button>
           ) : (
             <p className="deploy-muted">
-              {config.cli.reason ?? "It cannot be installed automatically."} Install it
-              manually: <code>{config.cli.install_hint}</code>
+              {config.cli.reason ?? "It cannot be installed automatically."} Install it manually:{" "}
+              <code>{config.cli.install_hint}</code>
             </p>
           )}
           {actionError && <div className="deploy-error">{actionError}</div>}
@@ -751,21 +746,18 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       return (
         <div className="deploy-section">
           <p>
-            No hosted environments are configured — deploying needs a managed{" "}
-            <code>fused</code> environment or an <code>aws</code> environment with a
-            provisioned serving plane.
+            No hosted environments are configured — deploying needs a managed <code>fused</code>{" "}
+            environment or an <code>aws</code> environment with a provisioned serving plane.
           </p>
           {!config.fused_logged_in ? (
             <>
               <p className="deploy-muted">
-                Setting up the managed environment starts with a one-time browser sign-in
-                to Fused.
+                Setting up the managed environment starts with a one-time browser sign-in to Fused.
               </p>
               {signin.connecting ? (
                 <div className="deploy-form-row">
                   <span className="deploy-muted">
-                    Waiting for the browser sign-in… finish signing in in the tab that just
-                    opened.
+                    Waiting for the browser sign-in… finish signing in in the tab that just opened.
                   </span>
                   <button type="button" onClick={() => void signin.cancel()}>
                     Cancel
@@ -835,8 +827,8 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
               </div>
             ) : (
               <div className="deploy-muted">
-                Token <code>{deployment.token}</code> — this backend doesn't report an
-                absolute URL; it is served under your environment's serving-plane base URL.
+                Token <code>{deployment.token}</code> — this backend doesn't report an absolute URL;
+                it is served under your environment's serving-plane base URL.
               </div>
             )}
           </div>
@@ -912,15 +904,15 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
           envs.some((e) => e.name === deployment.env) && (
             <div className="deploy-note">
               This page is already deployed on <b>{deployment.env}</b> — deploying to{" "}
-              <b>{selectedEnv}</b> mints an independent new link and this dialog will track
-              that one instead (the old mount stays live until revoked from the CLI).
+              <b>{selectedEnv}</b> mints an independent new link and this dialog will track that one
+              instead (the old mount stays live until revoked from the CLI).
             </div>
           )}
         {deployment && !envs.some((e) => e.name === deployment.env) && (
           <div className="deploy-note">
-            This page was deployed to <b>{deployment.env}</b>, which is no longer a
-            configured environment. Deploying here starts a new mount on{" "}
-            <b>{selectedEnv}</b>; the old one is unmanaged from this dialog.
+            This page was deployed to <b>{deployment.env}</b>, which is no longer a configured
+            environment. Deploying here starts a new mount on <b>{selectedEnv}</b>; the old one is
+            unmanaged from this dialog.
           </div>
         )}
         {samePointerEnv && mountAbsent && (
@@ -928,21 +920,20 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             The recorded deployment no longer exists on <b>{deployment!.env}</b>
             {/* Why it vanished is backend-specific: an AWS serving plane can be
                 torn down wholesale; a managed mount was removed on the server. */}
-            {env?.backend === "aws" ? " (e.g. after an infra teardown)" : ""} — deploying
-            mints a fresh link with a <b>new URL</b>.
+            {env?.backend === "aws" ? " (e.g. after an infra teardown)" : ""} — deploying mints a
+            fresh link with a <b>new URL</b>.
           </div>
         )}
         {env?.backend === "fused" && !config.fused_logged_in && (
           <div className="deploy-note">
             <div>
-              You aren't signed in to Fused — deploying to <b>{env.name}</b> needs a
-              one-time browser sign-in.
+              You aren't signed in to Fused — deploying to <b>{env.name}</b> needs a one-time
+              browser sign-in.
             </div>
             {signin.connecting ? (
               <div className="deploy-form-row">
                 <span className="deploy-muted">
-                  Waiting for the browser sign-in… finish signing in in the tab that just
-                  opened.
+                  Waiting for the browser sign-in… finish signing in in the tab that just opened.
                 </span>
                 <button type="button" onClick={() => void signin.cancel()}>
                   Cancel
@@ -962,8 +953,8 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
           </div>
         )}
         <div className="deploy-note deploy-muted">
-          Deploys publish as a <b>public share link</b> — an unguessable URL; anyone with
-          the link can open it.
+          Deploys publish as a <b>public share link</b> — an unguessable URL; anyone with the link
+          can open it.
         </div>
         {actionError && <div className="deploy-error">{actionError}</div>}
       </>
@@ -981,7 +972,12 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
         if (busy === null && e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="deploy-dialog" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
+      <div
+        className="deploy-dialog"
+        role="dialog"
+        aria-modal="true"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
         <div className="deploy-head">
           <h2>Deploy {basename(fsPath)}</h2>
           {/* Always closeable, even mid-action (#12): the action continues

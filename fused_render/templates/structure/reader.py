@@ -18,6 +18,7 @@ magic, so it ends exactly at end-of-file.
 Returns {file, schema, row_groups, layout}. Called by fused.runPython with
 {file: "<path>"}.
 """
+
 import datetime
 import decimal
 import os
@@ -72,15 +73,17 @@ def _schema(md):
     for i in range(md.num_columns):
         c = md.schema.column(i)
         lt = c.logical_type
-        out.append({
-            "name": c.name,
-            "path": c.path,
-            "physical_type": c.physical_type,
-            "logical_type": None if lt is None or str(lt) == "None" else str(lt),
-            "converted_type": c.converted_type,
-            "max_def": c.max_definition_level,
-            "max_rep": c.max_repetition_level,
-        })
+        out.append(
+            {
+                "name": c.name,
+                "path": c.path,
+                "physical_type": c.physical_type,
+                "logical_type": None if lt is None or str(lt) == "None" else str(lt),
+                "converted_type": c.converted_type,
+                "max_def": c.max_definition_level,
+                "max_rep": c.max_repetition_level,
+            }
+        )
     return out
 
 
@@ -95,48 +98,67 @@ def _row_groups(md):
             start = _chunk_start(cc)
             csize = int(cc.total_compressed_size)
             compressed += csize
-            cols.append({
-                "path": cc.path_in_schema,
-                "physical_type": cc.physical_type,
-                "compression": cc.compression,
-                "encodings": list(cc.encodings),
-                "num_values": cc.num_values,
-                "has_dictionary": bool(cc.has_dictionary_page),
-                "start": start,
-                "compressed_size": csize,
-                "uncompressed_size": int(cc.total_uncompressed_size),
-                "end": start + csize,
-                "stats": _stats(cc),
-            })
-        groups.append({
-            "index": gi,
-            "num_rows": rg.num_rows,
-            "total_byte_size": int(rg.total_byte_size),
-            "compressed_size": compressed,
-            "columns": cols,
-        })
+            cols.append(
+                {
+                    "path": cc.path_in_schema,
+                    "physical_type": cc.physical_type,
+                    "compression": cc.compression,
+                    "encodings": list(cc.encodings),
+                    "num_values": cc.num_values,
+                    "has_dictionary": bool(cc.has_dictionary_page),
+                    "start": start,
+                    "compressed_size": csize,
+                    "uncompressed_size": int(cc.total_uncompressed_size),
+                    "end": start + csize,
+                    "stats": _stats(cc),
+                }
+            )
+        groups.append(
+            {
+                "index": gi,
+                "num_rows": rg.num_rows,
+                "total_byte_size": int(rg.total_byte_size),
+                "compressed_size": compressed,
+                "columns": cols,
+            }
+        )
     return groups
 
 
 def _layout(row_groups, file_size, footer_start, footer_bytes):
     """Ordered physical regions for the box diagram: PAR1 header, each row group
     (with its column chunks), then the PAR1 footer."""
-    regions = [{"kind": "header", "label": "PAR1",
-                "start": 0, "bytes": _MAGIC_LEN, "end": _MAGIC_LEN}]
+    regions = [
+        {"kind": "header", "label": "PAR1", "start": 0, "bytes": _MAGIC_LEN, "end": _MAGIC_LEN}
+    ]
     for rg in row_groups:
-        regions.append({
-            "kind": "row_group",
-            "index": rg["index"],
-            "num_rows": rg["num_rows"],
-            "bytes": rg["compressed_size"],
-            "columns": [{"path": c["path"], "start": c["start"],
-                         "bytes": c["compressed_size"], "end": c["end"]}
-                        for c in rg["columns"]],
-        })
+        regions.append(
+            {
+                "kind": "row_group",
+                "index": rg["index"],
+                "num_rows": rg["num_rows"],
+                "bytes": rg["compressed_size"],
+                "columns": [
+                    {
+                        "path": c["path"],
+                        "start": c["start"],
+                        "bytes": c["compressed_size"],
+                        "end": c["end"],
+                    }
+                    for c in rg["columns"]
+                ],
+            }
+        )
     if file_size is not None:
-        regions.append({"kind": "footer", "label": "PAR1",
-                        "start": footer_start, "bytes": footer_bytes,
-                        "end": file_size})
+        regions.append(
+            {
+                "kind": "footer",
+                "label": "PAR1",
+                "start": footer_start,
+                "bytes": footer_bytes,
+                "end": file_size,
+            }
+        )
     return regions
 
 
@@ -154,11 +176,9 @@ def main(file: str) -> dict:
     footer_start = (file_size - footer_bytes) if file_size is not None else None
 
     row_groups = _row_groups(md)
-    compressions = sorted({c["compression"] for rg in row_groups
-                           for c in rg["columns"]})
+    compressions = sorted({c["compression"] for rg in row_groups for c in rg["columns"]})
     total_compressed = sum(rg["compressed_size"] for rg in row_groups)
-    total_uncompressed = sum(c["uncompressed_size"] for rg in row_groups
-                             for c in rg["columns"])
+    total_uncompressed = sum(c["uncompressed_size"] for rg in row_groups for c in rg["columns"])
 
     return {
         "file": {

@@ -61,13 +61,7 @@ function Modal({
   );
 }
 
-function MountRow({
-  conn,
-  onChanged,
-}: {
-  conn: Mount;
-  onChanged: () => void;
-}) {
+function MountRow({ conn, onChanged }: { conn: Mount; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -103,12 +97,20 @@ function MountRow({
   return (
     <div className="mount-card">
       <div className="mount-card-main">
-        <span className={`mount-dot ${conn.state}`} role="img" aria-label={dotLabel} title={dotLabel} />
+        <span
+          className={`mount-dot ${conn.state}`}
+          role="img"
+          aria-label={dotLabel}
+          title={dotLabel}
+        />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 600 }}>
             {conn.name}
             {conn.read_only && (
-              <span className="mount-hint" title="This remote rejects writes — files open read-only">
+              <span
+                className="mount-hint"
+                title="This remote rejects writes — files open read-only"
+              >
                 {" "}
                 — read-only
               </span>
@@ -213,14 +215,23 @@ function AddMount({
   // add_mount() strips the name and rejects it empty or containing / \ : or a
   // leading dot; mirror that when deriving so the auto-filled value always
   // passes server validation (or is empty, which disables the button below).
-  const folderSafe = (s: string) => s.trim().replace(/[/\\:]/g, "").replace(/^\.+/, "");
+  const folderSafe = (s: string) =>
+    s
+      .trim()
+      .replace(/[/\\:]/g, "")
+      .replace(/^\.+/, "");
 
   const onPathChange = (v: string) => {
     setSubpath(v);
     if (!nameTouched) {
       // Last non-blank segment: trim first so a trailing "/" or a whitespace
       // tail ("bucket/  ") derives the real segment, never a spaces-only name.
-      const seg = v.split("/").map((s) => s.trim()).filter(Boolean).pop() ?? "";
+      const seg =
+        v
+          .split("/")
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .pop() ?? "";
       setName(folderSafe(seg));
     }
   };
@@ -238,7 +249,8 @@ function AddMount({
   // on this keeps the preview from ever describing a folder the server rejects
   // (auto-derived names are already folderSafe; this catches manual edits).
   const trimmedName = name.trim();
-  const nameValid = trimmedName !== "" && !/[/\\:]/.test(trimmedName) && !trimmedName.startsWith(".");
+  const nameValid =
+    trimmedName !== "" && !/[/\\:]/.test(trimmedName) && !trimmedName.startsWith(".");
 
   const add = async () => {
     setBusy(true);
@@ -346,10 +358,7 @@ function AddMount({
               as folder <code>{trimmedName}</code>
             </>
           ) : trimmedName ? (
-            <span className="warn">
-              {" "}
-              — name can’t contain / \ : or start with “.”
-            </span>
+            <span className="warn"> — name can’t contain / \ : or start with “.”</span>
           ) : (
             <>
               {" "}
@@ -419,7 +428,11 @@ function AddRemote({ onChanged }: { onChanged: () => void }) {
           />
         </Field>
         <Field label="Region">
-          <input placeholder="optional" value={region} onChange={(e) => setRegion(e.target.value)} />
+          <input
+            placeholder="optional"
+            value={region}
+            onChange={(e) => setRegion(e.target.value)}
+          />
         </Field>
         <Field label="Access key ID" required>
           <input value={accessKey} onChange={(e) => setAccessKey(e.target.value)} />
@@ -430,11 +443,7 @@ function AddRemote({ onChanged }: { onChanged: () => void }) {
         {/* Blank caption reserves the label row's height so the button aligns
             with the inputs, not the captions above them. */}
         <Field label={" "}>
-          <button
-            type="button"
-            disabled={busy || !name || !accessKey || !secretKey}
-            onClick={add}
-          >
+          <button type="button" disabled={busy || !name || !accessKey || !secretKey} onClick={add}>
             {busy ? "Creating…" : "Create remote"}
           </button>
         </Field>
@@ -488,10 +497,10 @@ export default function Mounts() {
       )}
       <p className="deploy-muted" style={{ marginTop: 0 }}>
         Remote storage mounted as local folders
-        {state.rclone.version ? ` (${state.rclone.version})` : ""}. The <b>first</b> open of a
-        large remote file downloads what it needs and can be slow; repeat opens are served from
-        a local cache and are fast. Mounts stay up automatically, including across restarts;
-        if one stops responding, use <b>Reconnect</b>.
+        {state.rclone.version ? ` (${state.rclone.version})` : ""}. The <b>first</b> open of a large
+        remote file downloads what it needs and can be slow; repeat opens are served from a local
+        cache and are fast. Mounts stay up automatically, including across restarts; if one stops
+        responding, use <b>Reconnect</b>.
       </p>
       {state.mounts.length > 0 ? (
         <div className="mount-list">

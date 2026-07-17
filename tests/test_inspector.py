@@ -1,4 +1,5 @@
 """Tests for the api/template.html inspector (static AST parsing only)."""
+
 import importlib.util
 import os
 import sys
@@ -29,9 +30,7 @@ def test_builtin_engine_finds_main(tmp_path):
 def test_fused_engine_prefers_decorated_function(tmp_path):
     path = _write(
         tmp_path,
-        "def main():\n    return 1\n"
-        "@fused.udf\n"
-        "def other(n: int = 1):\n    return n\n",
+        "def main():\n    return 1\n@fused.udf\ndef other(n: int = 1):\n    return n\n",
     )
     info = inspector.main(path, engine="fused")
     assert info["function"]["name"] == "other"
@@ -68,10 +67,7 @@ def test_no_entrypoint_at_all(tmp_path):
 )
 def test_fused_engine_reports_pep723_dependencies(tmp_path):
     src = (
-        "# /// script\n"
-        '# dependencies = ["pyarrow", "requests"]\n'
-        "# ///\n"
-        "def main():\n    return 1\n"
+        '# /// script\n# dependencies = ["pyarrow", "requests"]\n# ///\ndef main():\n    return 1\n'
     )
     path = _write(tmp_path, src)
     info = inspector.main(path, engine="fused")
@@ -81,12 +77,7 @@ def test_fused_engine_reports_pep723_dependencies(tmp_path):
 def test_builtin_engine_never_reports_dependencies(tmp_path):
     # The builtin executor never resolves PEP 723 deps — showing them would
     # imply an install that never happens.
-    src = (
-        "# /// script\n"
-        '# dependencies = ["pyarrow"]\n'
-        "# ///\n"
-        "def main():\n    return 1\n"
-    )
+    src = '# /// script\n# dependencies = ["pyarrow"]\n# ///\ndef main():\n    return 1\n'
     path = _write(tmp_path, src)
     info = inspector.main(path, engine="builtin")
     assert info["dependencies"] == []

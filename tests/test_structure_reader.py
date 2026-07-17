@@ -3,6 +3,7 @@ byte layout (row-group / column-chunk level), built on pyarrow.
 
 Skipped when pyarrow isn't installed.
 """
+
 import importlib.util
 import os
 
@@ -14,8 +15,9 @@ import pyarrow.parquet as pq  # noqa: E402
 
 
 def _load(name):
-    path = os.path.join(os.path.dirname(__file__), "..", "fused_render",
-                        "templates", "structure", name)
+    path = os.path.join(
+        os.path.dirname(__file__), "..", "fused_render", "templates", "structure", name
+    )
     spec = importlib.util.spec_from_file_location(f"structure_{name}", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -28,16 +30,19 @@ reader = _load("reader.py")
 @pytest.fixture
 def pq_file(tmp_path):
     """A 4-row, 2-column, 2-row-group parquet with typed columns + stats."""
-    t = pa.table({
-        "id": pa.array([1, 2, 3, 4], pa.int32()),
-        "name": pa.array(["a", "bb", "ccc", "d"]),
-    })
+    t = pa.table(
+        {
+            "id": pa.array([1, 2, 3, 4], pa.int32()),
+            "name": pa.array(["a", "bb", "ccc", "d"]),
+        }
+    )
     p = tmp_path / "sample.parquet"
     pq.write_table(t, str(p), row_group_size=2, compression="snappy")
     return str(p)
 
 
 # ---------------------------------------------------------------- file summary
+
 
 def test_file_summary(pq_file):
     out = reader.main(pq_file)
@@ -53,6 +58,7 @@ def test_file_summary(pq_file):
 
 # ---------------------------------------------------------------- schema
 
+
 def test_schema_columns(pq_file):
     schema = reader.main(pq_file)["schema"]
     by_name = {c["name"]: c for c in schema}
@@ -64,6 +70,7 @@ def test_schema_columns(pq_file):
 
 
 # ---------------------------------------------------------------- row groups
+
 
 def test_row_groups_and_chunks(pq_file):
     rgs = reader.main(pq_file)["row_groups"]
@@ -93,6 +100,7 @@ def test_column_statistics(pq_file):
 
 # ---------------------------------------------------------------- layout boxes
 
+
 def test_layout_header_and_footer(pq_file):
     out = reader.main(pq_file)
     layout = out["layout"]
@@ -119,6 +127,8 @@ def test_layout_row_group_regions(pq_file):
 
 # ---------------------------------------------------------------- json safety
 
+
 def test_output_is_json_serializable(pq_file):
     import json
+
     json.dumps(reader.main(pq_file))  # must not raise

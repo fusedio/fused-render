@@ -10,6 +10,7 @@ with which flags) and the parsed results — without any real fused install or
 network. FUSED_RENDER_HOME / OPENFUSED_ENVS_FILE are redirected to tmp dirs so
 nothing touches the real stores.
 """
+
 import json
 import sys
 
@@ -19,7 +20,6 @@ from fastapi.testclient import TestClient
 import fused_render.deploy as deploy_mod
 import fused_render.fusedcli as fusedcli_mod
 from fused_render.server import create_app
-
 
 FUSED = {"X-Fused": "1"}  # D3 guard header required on writes
 
@@ -61,9 +61,7 @@ print(json.dumps(scenario[verb]))
 # whose `_cli.main()` the real fused_render/_fused_cli.py shim invokes — the
 # in-interpreter autodetection path (the packaged .app's shape: importable
 # package, no console script).
-FAKE_FUSED_CLI = "def main():\n" + "".join(
-    "    " + line + "\n" for line in STUB.splitlines()
-)
+FAKE_FUSED_CLI = "def main():\n" + "".join("    " + line + "\n" for line in STUB.splitlines())
 
 ENVS = {
     "default": "prod",
@@ -536,7 +534,11 @@ def test_redeploy_absent_mount_falls_back_to_fresh_create(tmp_path, monkeypatch)
     h.set_scenario(
         {
             "list": [],
-            "create": {"token": "new456", "url": "https://serve.example/new456", "status": "active"},
+            "create": {
+                "token": "new456",
+                "url": "https://serve.example/new456",
+                "status": "active",
+            },
         }
     )
     resp = h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
@@ -636,7 +638,9 @@ def test_deploy_refuses_to_overwrite_a_corrupt_store(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
     h.home.mkdir(parents=True, exist_ok=True)
     store = h.home / "deployments.json"
-    store.write_text('{"other.html": {"env": "cloud", "token": "keep-me"', encoding="utf-8")  # truncated
+    store.write_text(
+        '{"other.html": {"env": "cloud", "token": "keep-me"', encoding="utf-8"
+    )  # truncated
     h.set_scenario({"create": {"token": "abc123", "url": "https://x/abc123", "status": "active"}})
 
     resp = h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)

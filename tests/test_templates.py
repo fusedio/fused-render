@@ -2,14 +2,15 @@
 unified suffix-pattern matcher (multi-dot keys, `*` wildcard segments,
 trailing-"/" directory keys), user-registry precedence, and sentinel rules.
 """
+
 import json
 
 import pytest
 
 from fused_render import server
 
-
 # ---------------------------------------------------------------- fixtures
+
 
 @pytest.fixture
 def user_dir(tmp_path, monkeypatch):
@@ -45,6 +46,7 @@ def modes(path, is_dir=False):
 
 # ------------------------------------------------- built-in registry sanity
 
+
 def test_builtin_registry_parses_and_all_names_resolve():
     with open(server.BUILTIN_REGISTRY, encoding="utf-8") as f:
         registry = json.load(f)
@@ -74,7 +76,15 @@ def test_builtin_parquet_default_is_duckdb():
     # `history` (HV-2) is bound here too — not `.html`-only.
     entries, error = server._templates_for("/x/data.parquet", False)
     assert error is None
-    assert [e["mode"] for e in entries] == ["duckdb", "structure", "h3", "claude", "annotate", "history", "geometry_editor"]
+    assert [e["mode"] for e in entries] == [
+        "duckdb",
+        "structure",
+        "h3",
+        "claude",
+        "annotate",
+        "history",
+        "geometry_editor",
+    ]
     assert entries[0]["path"].endswith("duckdb/template.html")
 
 
@@ -101,8 +111,7 @@ def test_duckdb_database_files_route_to_duckdb():
 def test_builtin_zarr_directory_key():
     # zarr dir carries the AOI streamer, the map preview, and the raw member
     # listing as peer modes (D81 — replaces the old `?listing=1` escape hatch)
-    assert modes("/x/store.zarr", is_dir=True) == (
-        ["zarr_aoi", "zarr", "_listing"], None)
+    assert modes("/x/store.zarr", is_dir=True) == (["zarr_aoi", "zarr", "_listing"], None)
     # a *file* named .zarr does not match the directory key
     assert modes("/x/store.zarr", is_dir=False) == ([], None)
 
@@ -120,6 +129,7 @@ def test_unmapped_file_empty_and_plain_dir_lists():
 
 
 # --------------------------------------------- text sniff for unmapped files
+
 
 def test_unmapped_text_file_falls_back_to_text_viewers(tmp_path):
     # Whole-name dotfiles and extensionless files can't match any suffix key,
@@ -157,6 +167,7 @@ def test_mapped_file_never_hits_text_sniff(tmp_path):
 
 
 # ------------------------------------------------------------------ matcher
+
 
 def test_specificity_literal_beats_wildcard_beats_shorter():
     reg = {".json": "a", ".*.json": "b", ".xyz.json": "c"}
@@ -218,6 +229,7 @@ def test_universal_dir_key_lowest_specificity():
 
 
 # ------------------------------------------------------------ user registry
+
 
 def test_user_override_beats_builtin(user_dir):
     user_dir.template("geo")
@@ -419,9 +431,7 @@ def test_condition_missing_is_unconditional(user_dir, csv_file):
 
 
 def test_condition_error_disallows_and_reports(user_dir, csv_file):
-    user_dir.template(
-        "special", condition="def main(path):\n    raise ValueError('boom')\n"
-    )
+    user_dir.template("special", condition="def main(path):\n    raise ValueError('boom')\n")
     user_dir.registry({".csv": ["special", "code"]})
     cond, error = conditions(csv_file)
     assert cond == {"special": False}
@@ -448,9 +458,7 @@ def test_condition_reevaluated_per_call(user_dir, csv_file):
     user_dir.registry({".csv": ["special", "code"]})
     assert conditions(csv_file)[0] == {"special": False}
 
-    (user_dir.path / "special" / "condition.py").write_text(
-        "def main(path):\n    return True\n"
-    )
+    (user_dir.path / "special" / "condition.py").write_text("def main(path):\n    return True\n")
     assert conditions(csv_file)[0] == {"special": True}
 
 

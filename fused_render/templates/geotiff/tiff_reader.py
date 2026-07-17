@@ -14,11 +14,9 @@ BigTIFF).
 # ///
 
 import os
-import sys
 
 import _raster_common as C
 import _tiff_core as T
-
 
 MERC_MAX_LAT = 85.05112878
 
@@ -28,6 +26,7 @@ def encode_png(rgba):
     """uint8 (H, W, 4) -> PNG bytes. Pure stdlib: filter 0 rows + zlib lvl 1."""
     import struct
     import zlib
+
     import numpy as np
 
     h, w = rgba.shape[:2]
@@ -36,30 +35,82 @@ def encode_png(rgba):
     comp = zlib.compress(rows.tobytes(), 1)
 
     def chunk(tag, data):
-        return (struct.pack(">I", len(data)) + tag + data +
-                struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+        return (
+            struct.pack(">I", len(data))
+            + tag
+            + data
+            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+        )
 
     ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)
-    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) +
-            chunk(b"IDAT", comp) + chunk(b"IEND", b""))
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", comp) + chunk(b"IEND", b"")
 
 
 # ---------------------------------------------------------------- colormaps
 _CMAPS = {
-    "viridis": ["440154", "472d7b", "3b528b", "2c728e", "21918c", "28ae80", "5ec962", "addc30", "fde725"],
-    "magma":   ["000004", "1c1044", "4f127b", "812581", "b5367a", "e55064", "fb8761", "fec287", "fcfdbf"],
-    "turbo":   ["30123b", "4145ab", "4675ed", "39a2fc", "1bcfd4", "24eca6", "61fc6c", "a4fc3b", "d1e834",
-                "f3c63a", "fe9b2d", "f36315", "d93806", "b11901", "7a0402"],
-    "rdbu":    ["053061", "2166ac", "4393c3", "92c5de", "d1e5f0", "f7f7f7", "fddbc7", "f4a582", "d6604d",
-                "b2182b", "67001f"],
-    "grays":   ["111111", "ffffff"],
+    "viridis": [
+        "440154",
+        "472d7b",
+        "3b528b",
+        "2c728e",
+        "21918c",
+        "28ae80",
+        "5ec962",
+        "addc30",
+        "fde725",
+    ],
+    "magma": [
+        "000004",
+        "1c1044",
+        "4f127b",
+        "812581",
+        "b5367a",
+        "e55064",
+        "fb8761",
+        "fec287",
+        "fcfdbf",
+    ],
+    "turbo": [
+        "30123b",
+        "4145ab",
+        "4675ed",
+        "39a2fc",
+        "1bcfd4",
+        "24eca6",
+        "61fc6c",
+        "a4fc3b",
+        "d1e834",
+        "f3c63a",
+        "fe9b2d",
+        "f36315",
+        "d93806",
+        "b11901",
+        "7a0402",
+    ],
+    "rdbu": [
+        "053061",
+        "2166ac",
+        "4393c3",
+        "92c5de",
+        "d1e5f0",
+        "f7f7f7",
+        "fddbc7",
+        "f4a582",
+        "d6604d",
+        "b2182b",
+        "67001f",
+    ],
+    "grays": ["111111", "ffffff"],
 }
 
 
 def _lut(name):
     import numpy as np
-    stops = np.array([[int(h[i:i + 2], 16) for i in (0, 2, 4)]
-                      for h in _CMAPS.get(name, _CMAPS["viridis"])], dtype="float64")
+
+    stops = np.array(
+        [[int(h[i : i + 2], 16) for i in (0, 2, 4)] for h in _CMAPS.get(name, _CMAPS["viridis"])],
+        dtype="float64",
+    )
     x = np.linspace(0, len(stops) - 1, 256)
     i = np.clip(x.astype(int), 0, len(stops) - 2)
     f = (x - i)[:, None]
@@ -71,6 +122,7 @@ def _merc_bbox(bounds, epsg):
     """Native window bounds -> tight EPSG:3857 bbox (edge-sampled)."""
     import numpy as np
     from pyproj import Transformer
+
     l, r, t, b = bounds["left"], bounds["right"], bounds["top"], bounds["bottom"]
     n = 25
     xs = np.concatenate([np.linspace(l, r, n), np.full(n, r), np.linspace(r, l, n), np.full(n, l)])
@@ -79,7 +131,8 @@ def _merc_bbox(bounds, epsg):
         return float(l), float(b), float(r), float(t)
     tr = Transformer.from_crs(int(epsg), 3857, always_xy=True)
     mx, my = tr.transform(xs, ys)
-    mx = mx[np.isfinite(mx)]; my = my[np.isfinite(my)]
+    mx = mx[np.isfinite(mx)]
+    my = my[np.isfinite(my)]
     if not mx.size:
         raise ValueError("cannot project bounds to mercator")
     return float(mx.min()), float(my.min()), float(mx.max()), float(my.max())
@@ -129,6 +182,7 @@ def warp_grid(arr_bands, bounds, epsg, max_cells):
 # ---------------------------------------------------------------- rendering
 def _stretch_pair(vals, robust, given):
     import numpy as np
+
     if given:
         return float(given[0]), float(given[1])
     fin = vals[np.isfinite(vals)]
@@ -158,6 +212,7 @@ def _parse_stretch(s, nchan):
 def render_rgb(bands3, robust, stretch):
     """(3, H, W) float -> (rgba uint8, stretch used)."""
     import numpy as np
+
     h, w = bands3.shape[1:]
     rgba = np.zeros((h, w, 4), dtype="uint8")
     used = []
@@ -173,6 +228,7 @@ def render_rgb(bands3, robust, stretch):
 
 def render_single(vals, cmap, robust, div, vlo, vhi, stretch):
     import numpy as np
+
     lo, hi = _stretch_pair(vals, robust, stretch[0])
     if div:
         m = max(abs(lo), abs(hi)) or 1.0
@@ -190,7 +246,7 @@ def render_single(vals, cmap, robust, div, vlo, vhi, stretch):
 
 
 # ---------------------------------------------------------------- system decode
-_SYS_WORKER = r'''
+_SYS_WORKER = r"""
 import sys, os, json, tempfile
 import numpy as np, rasterio
 from rasterio.windows import Window
@@ -229,20 +285,27 @@ with rasterio.open(p["file"]) as ds:
     tmp = tempfile.NamedTemporaryFile(suffix=".npy", delete=False)
     np.save(tmp.name, arr)
     print(json.dumps({"npy": tmp.name, "meta": meta}))
-'''
+"""
 
 
 def _decode_system(file, frac, max_cells):
     import json
     import subprocess
+
     import numpy as np
+
     py = T._system_python()
     if not py:
         raise T.Unsupported("no system Python with rasterio (set GEO_PYTHON)")
     env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
-    r = subprocess.run([py, "-c", _SYS_WORKER],
-                       input=json.dumps({"file": file, "frac": frac, "max_cells": max_cells}),
-                       capture_output=True, text=True, timeout=120, env=env)
+    r = subprocess.run(
+        [py, "-c", _SYS_WORKER],
+        input=json.dumps({"file": file, "frac": frac, "max_cells": max_cells}),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
     if r.returncode != 0:
         raise T.Unsupported(f"system engine failed: {r.stderr[-400:]}")
     d = json.loads(r.stdout.strip().splitlines()[-1])
@@ -261,12 +324,17 @@ def _decode(file, win, max_cells, engine):
     meta gains win_bounds (native bounds of the returned pixels) and
     window_px (full-res pixel coords)."""
     import numpy as np
+
     frac = [0.0, 0.0, 1.0, 1.0]
     try:
         fx = [float(v) for v in str(win).split(",")]
         if len(fx) == 4:
-            frac = [min(max(fx[0], 0.0), 1.0), min(max(fx[1], 0.0), 1.0),
-                    min(max(fx[2], 0.0), 1.0), min(max(fx[3], 0.0), 1.0)]
+            frac = [
+                min(max(fx[0], 0.0), 1.0),
+                min(max(fx[1], 0.0), 1.0),
+                min(max(fx[2], 0.0), 1.0),
+                min(max(fx[3], 0.0), 1.0),
+            ]
     except (ValueError, AttributeError):
         pass
 
@@ -303,14 +371,26 @@ def _decode(file, win, max_cells, engine):
 
 
 # ---------------------------------------------------------------- entry point
-def main(file: str = "", band: int = 1, mode: str = "auto",
-         r: int = 1, g: int = 2, b: int = 3,
-         cmap: str = "viridis", robust: str = "1", div: str = "0",
-         vlo: str = "", vhi: str = "",
-         win: str = "", max_cells: int = 250000,
-         engine: str = "auto", stretch: str = "",
-         meta_only: str = "0"):
+def main(
+    file: str = "",
+    band: int = 1,
+    mode: str = "auto",
+    r: int = 1,
+    g: int = 2,
+    b: int = 3,
+    cmap: str = "viridis",
+    robust: str = "1",
+    div: str = "0",
+    vlo: str = "",
+    vhi: str = "",
+    win: str = "",
+    max_cells: int = 250000,
+    engine: str = "auto",
+    stretch: str = "",
+    meta_only: str = "0",
+):
     import base64
+
     import numpy as np
 
     band, r, g, b = int(band), int(r), int(g), int(b)
@@ -334,7 +414,8 @@ def main(file: str = "", band: int = 1, mode: str = "auto",
     if str(meta_only) == "1" and hmeta:
         hmeta["crs_name"] = T._crs_name(hmeta.get("crs"))
         hmeta["lonlat_bounds"] = C.lonlat_bounds(
-            hmeta.get("bounds"), (hmeta.get("crs") or {}).get("epsg"))
+            hmeta.get("bounds"), (hmeta.get("crs") or {}).get("epsg")
+        )
         hmeta["file"] = file
         return hmeta
 
@@ -358,7 +439,7 @@ def main(file: str = "", band: int = 1, mode: str = "auto",
     else:
         want_rgb = False
         sel = min(max(band, 1), count)
-        chans = bands[sel - 1:sel].astype("float64")
+        chans = bands[sel - 1 : sel].astype("float64")
         nchan = 1
 
     # warp to mercator when georeferenced; otherwise render the native grid
@@ -377,25 +458,32 @@ def main(file: str = "", band: int = 1, mode: str = "auto",
 
     png = encode_png(np.ascontiguousarray(rgba))
     out = {
-        "file": file, "engine": meta.get("engine"),
+        "file": file,
+        "engine": meta.get("engine"),
         "mode": "rgb" if want_rgb else "single",
-        "width": meta["width"], "height": meta["height"], "count": count,
-        "dtype": meta.get("dtype"), "nodata": C.clean(meta.get("nodata")),
+        "width": meta["width"],
+        "height": meta["height"],
+        "count": count,
+        "dtype": meta.get("dtype"),
+        "nodata": C.clean(meta.get("nodata")),
         "descriptions": meta.get("descriptions"),
-        "crs": meta.get("crs"), "crs_name": T._crs_name(meta.get("crs")),
+        "crs": meta.get("crs"),
+        "crs_name": T._crs_name(meta.get("crs")),
         "bounds": meta.get("bounds"),
         "lonlat_bounds": C.lonlat_bounds(meta.get("bounds"), epsg),
         "transform": meta.get("transform"),
-        "file_size": meta.get("file_size"), "tiff": meta.get("tiff"),
-        "tags": meta.get("tags"), "gdal_metadata": meta.get("gdal_metadata"),
+        "file_size": meta.get("file_size"),
+        "tiff": meta.get("tiff"),
+        "tags": meta.get("tags"),
+        "gdal_metadata": meta.get("gdal_metadata"),
         "georef": georef,
         "window_px": meta.get("window_px"),
         "stretch": used,
-        "selected": {"band": band, "mode": "rgb" if want_rgb else "single",
-                     "rgb_idx": [r, g, b]},
+        "selected": {"band": band, "mode": "rgb" if want_rgb else "single", "rgb_idx": [r, g, b]},
         "image": {
             "png": base64.b64encode(png).decode("ascii"),
-            "width": int(rgba.shape[1]), "height": int(rgba.shape[0]),
+            "width": int(rgba.shape[1]),
+            "height": int(rgba.shape[0]),
             "merc_bbox": list(merc) if merc else None,
             "win_bounds": wb,
         },
@@ -409,7 +497,8 @@ def main(file: str = "", band: int = 1, mode: str = "auto",
         out["vals"] = base64.b64encode(v32.tobytes()).decode("ascii")
         fin = chans[0][np.isfinite(chans[0])]
         out["stats"] = {
-            "count": int(fin.size), "nan": int(chans[0].size - fin.size),
+            "count": int(fin.size),
+            "nan": int(chans[0].size - fin.size),
             "min": C.clean(fin.min()) if fin.size else None,
             "max": C.clean(fin.max()) if fin.size else None,
             "mean": C.clean(fin.mean()) if fin.size else None,
@@ -422,6 +511,7 @@ def main(file: str = "", band: int = 1, mode: str = "auto",
 
 try:
     import fused as _fused
+
     _udf_main = _fused.udf(main)
 except ImportError:
     pass

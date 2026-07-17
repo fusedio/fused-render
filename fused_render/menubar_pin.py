@@ -13,6 +13,7 @@ All methods must be called on the main thread. app.py hops threads with
 PyObjCTools.AppHelper.callAfter where needed (server-ready arrives on a
 background thread).
 """
+
 import logging
 import os
 from urllib.parse import quote
@@ -182,9 +183,7 @@ class _ResizeGrip(NSView):
             else "_windowResizeNorthWestSouthEastCursor"
         )
         cursor = getattr(NSCursor, name, None)
-        self.addCursorRect_cursor_(
-            self.bounds(), cursor() if cursor else NSCursor.arrowCursor()
-        )
+        self.addCursorRect_cursor_(self.bounds(), cursor() if cursor else NSCursor.arrowCursor())
 
     def mouseDragged_(self, event):
         self._controller._resize_by(event.deltaX(), event.deltaY(), self._is_left)
@@ -366,13 +365,11 @@ class PinController:
         Default size gives a square webview; a remembered user resize
         (pin.json "size") overrides it.
         """
-        width, total_height = (
-            pin_store.load_size(self._app_support_dir)
-            or (POPOVER_WIDTH, BODY_HEIGHT + BAR_HEIGHT)
+        width, total_height = pin_store.load_size(self._app_support_dir) or (
+            POPOVER_WIDTH,
+            BODY_HEIGHT + BAR_HEIGHT,
         )
-        container = NSView.alloc().initWithFrame_(
-            NSMakeRect(0, 0, width, total_height)
-        )
+        container = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, width, total_height))
 
         config = WKWebViewConfiguration.alloc().init()
         self._webview = WKWebView.alloc().initWithFrame_configuration_(
@@ -381,17 +378,13 @@ class PinController:
         self._webview.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
         container.addSubview_(self._webview)
 
-        separator = NSBox.alloc().initWithFrame_(
-            NSMakeRect(0, BAR_HEIGHT - 1, width, 1)
-        )
+        separator = NSBox.alloc().initWithFrame_(NSMakeRect(0, BAR_HEIGHT - 1, width, 1))
         separator.setBoxType_(NSBoxSeparator)
         separator.setAutoresizingMask_(NSViewWidthSizable | NSViewMaxYMargin)
         container.addSubview_(separator)
 
         def icon_button(symbol, action, tooltip, x):
-            image = NSImage.imageWithSystemSymbolName_accessibilityDescription_(
-                symbol, tooltip
-            )
+            image = NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol, tooltip)
             b = NSButton.buttonWithImage_target_action_(image, self._target, action)
             b.setBordered_(False)
             b.setToolTip_(tooltip)
@@ -412,12 +405,8 @@ class PinController:
         )
         left_grip.setAutoresizingMask_(NSViewMaxXMargin | NSViewMaxYMargin)
         container.addSubview_(left_grip)
-        self._more_button = icon_button(
-            "ellipsis.circle", b"showMore:", "More", right - 42
-        )
-        self._browser_button = icon_button(
-            "safari", b"openBrowser:", "Open in Browser", right - 72
-        )
+        self._more_button = icon_button("ellipsis.circle", b"showMore:", "More", right - 42)
+        self._browser_button = icon_button("safari", b"openBrowser:", "Open in Browser", right - 72)
         self._pin_button = icon_button("pin", b"pinOrUnpin:", "Pin a file…", right - 102)
 
         label = NSTextField.labelWithString_("")
@@ -458,9 +447,7 @@ class PinController:
         menu = NSMenu.alloc().init()
 
         def add(title, action):
-            item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                title, action, ""
-            )
+            item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, action, "")
             item.setTarget_(self._target)
             menu.addItem_(item)
 
@@ -496,9 +483,7 @@ class PinController:
             )
         else:
             url = self._pin_url()
-            self._webview.loadRequest_(
-                NSURLRequest.requestWithURL_(NSURL.URLWithString_(url))
-            )
+            self._webview.loadRequest_(NSURLRequest.requestWithURL_(NSURL.URLWithString_(url)))
             logger.info("pinned webview loading %s", url)
             return
         self._webview.loadHTMLString_baseURL_(

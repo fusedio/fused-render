@@ -10,7 +10,7 @@ only a fallback if the popover controller fails (PV-8). The CLI (`cli.py`,
 pyproject.toml) — it is imported lazily, inside `main()`, so that
 `import fused_render.app` never fails on another platform or in CI.
 """
-import json
+
 import logging
 import os
 import socket
@@ -134,7 +134,9 @@ def pick_port(start: int = DEFAULT_PORT, end: int = MAX_PORT) -> int:
     for port in range(start, end + 1):
         if not _port_in_use(port):
             return port
-    raise RuntimeError(f"no free port between {start} and {end}; is something hogging the whole range?")
+    raise RuntimeError(
+        f"no free port between {start} and {end}; is something hogging the whole range?"
+    )
 
 
 def _wait_until_ready(port: int, timeout: float = 15.0) -> bool:
@@ -206,11 +208,11 @@ def main() -> None:
     # AFTER server readiness therefore happens long after any launch document
     # event has arrived — no timing race, unlike every timer-window variant.
     state = {
-        "ready": False,      # server answers; safe to open browser tabs
-        "docs": False,       # at least one document open event arrived
-        "pending": [],       # file views requested before the server was ready
-        "server": None,      # uvicorn.Server, set by the bootstrap thread
-        "pin": None,         # menubar_pin.PinController, built after run loop start
+        "ready": False,  # server answers; safe to open browser tabs
+        "docs": False,  # at least one document open event arrived
+        "pending": [],  # file views requested before the server was ready
+        "server": None,  # uvicorn.Server, set by the bootstrap thread
+        "pin": None,  # menubar_pin.PinController, built after run loop start
     }
 
     def open_file_view(fs_path: str) -> None:

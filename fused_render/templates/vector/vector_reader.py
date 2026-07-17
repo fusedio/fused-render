@@ -12,18 +12,19 @@ simplified with a tolerance derived from the data extent so the payload
 stays renderable.
 """
 
-
 MAX_VERTICES = 300_000
 
 
 def _vertex_count(geom):
     from shapely import get_coordinates
+
     return len(get_coordinates(geom))
 
 
 def main(file: str = "", max_features: int = 20000, table_rows: int = 50):
-    import os
     import json
+    import os
+
     import numpy as np
 
     max_features, table_rows = int(max_features), int(table_rows)
@@ -37,8 +38,9 @@ def main(file: str = "", max_features: int = 20000, table_rows: int = 50):
     from shapely import get_coordinates
 
     try:
-        import pyogrio
         import pandas as pd
+        import pyogrio
+
         layers = [str(l[0]) for l in pyogrio.list_layers(file)]
         if len(layers) <= 1:
             gdf = gpd.read_file(file)
@@ -55,10 +57,8 @@ def main(file: str = "", max_features: int = 20000, table_rows: int = 50):
                     part.insert(0, "_layer", name)
                     parts.append(part)
             if not parts:
-                return {"error": "no readable features in any layer",
-                        "layers": layers}
-            gdf = gpd.GeoDataFrame(
-                pd.concat(parts, ignore_index=True), crs=parts[0].crs)
+                return {"error": "no readable features in any layer", "layers": layers}
+            gdf = gpd.GeoDataFrame(pd.concat(parts, ignore_index=True), crs=parts[0].crs)
         total = len(gdf)
         truncated = total > max_features
         if truncated:
@@ -67,17 +67,18 @@ def main(file: str = "", max_features: int = 20000, table_rows: int = 50):
         return {"error": f"could not read vector file: {type(e).__name__}: {e}"}
 
     crs = gdf.crs
-    crs_info = {"epsg": (crs.to_epsg() if crs else None),
-                "name": (crs.name if crs else None),
-                "wkt_head": (crs.to_wkt()[:200] if crs else None)}
+    crs_info = {
+        "epsg": (crs.to_epsg() if crs else None),
+        "name": (crs.name if crs else None),
+        "wkt_head": (crs.to_wkt()[:200] if crs else None),
+    }
     native_bounds = [float(v) for v in gdf.total_bounds] if len(gdf) else None
 
     if crs and (crs.to_epsg() or 0) != 4326:
         try:
             gdf = gdf.to_crs(4326)
         except Exception as e:  # noqa: BLE001
-            return {"error": f"reprojection to EPSG:4326 failed: {e}",
-                    "crs": crs_info}
+            return {"error": f"reprojection to EPSG:4326 failed: {e}", "crs": crs_info}
 
     # vertex budget -> simplify (degrees tolerance scaled to extent)
     simplified = None
@@ -113,8 +114,7 @@ def main(file: str = "", max_features: int = 20000, table_rows: int = 50):
 
     cols = [c for c in gdf.columns if c != gdf.geometry.name]
     schema = [{"name": c, "dtype": str(gdf[c].dtype)} for c in cols]
-    table = [{c: safe(r[c]) for c in cols}
-             for _, r in gdf.head(table_rows).iterrows()]
+    table = [{c: safe(r[c]) for c in cols} for _, r in gdf.head(table_rows).iterrows()]
 
     gj = json.loads(gdf.to_json())
     # keep a stable feature id for hover state
@@ -124,9 +124,11 @@ def main(file: str = "", max_features: int = 20000, table_rows: int = 50):
     b = [float(v) for v in gdf.total_bounds] if len(gdf) else None
     if file.lower().endswith(".shp"):  # count the sidecar set
         stem = file.rsplit(".", 1)[0]
-        file_size = sum(os.path.getsize(stem + "." + ext)
-                        for ext in ("shp", "shx", "dbf", "prj", "cpg")
-                        if os.path.isfile(stem + "." + ext))
+        file_size = sum(
+            os.path.getsize(stem + "." + ext)
+            for ext in ("shp", "shx", "dbf", "prj", "cpg")
+            if os.path.isfile(stem + "." + ext)
+        )
     else:
         file_size = os.path.getsize(file)
     return {
@@ -149,6 +151,7 @@ def main(file: str = "", max_features: int = 20000, table_rows: int = 50):
 
 try:
     import fused as _fused
+
     _udf_main = _fused.udf(main)
 except ImportError:
     pass

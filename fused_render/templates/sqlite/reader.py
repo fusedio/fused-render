@@ -10,6 +10,7 @@ For editing (via the sibling writer.py) each row is keyed by its SQLite
 `editable` says whether the active object can be written: ordinary rowid tables
 can; views and WITHOUT ROWID tables (no accessible `rowid`) are view-only.
 """
+
 import os
 import sqlite3
 import urllib.request
@@ -64,19 +65,25 @@ def _editability(conn, active):
         (active,),
     ).fetchone()
     if row and row[0] == "view":
-        return (False, "View",
-                "Read-only. This is a view, not a table — its rows are computed "
-                "from other tables and can't be edited. Switch the table "
-                "selector to a base table to make changes.")
+        return (
+            False,
+            "View",
+            "Read-only. This is a view, not a table — its rows are computed "
+            "from other tables and can't be edited. Switch the table "
+            "selector to a base table to make changes.",
+        )
     if not row or row[0] != "table":
         return (False, "Read-only", "This object can't be edited.")
     try:
         conn.execute(f"SELECT rowid FROM {_quote_ident(active)} LIMIT 1").fetchone()
         return (True, "", "")
     except sqlite3.OperationalError:
-        return (False, "No rowid",
-                "Read-only. This is a WITHOUT ROWID table — it has no rowid to "
-                "identify rows by, so it can't be edited here.")
+        return (
+            False,
+            "No rowid",
+            "Read-only. This is a WITHOUT ROWID table — it has no rowid to "
+            "identify rows by, so it can't be edited here.",
+        )
 
 
 def _column_types(conn, active):
@@ -138,8 +145,14 @@ def _jsonify(value):
     return value  # None / int / float / str are already JSON-safe
 
 
-def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
-         sort: "dict | None" = None, filters: "list | None" = None) -> dict:
+def main(
+    file: str,
+    table: str = "",
+    offset: int = 0,
+    limit: int = 100,
+    sort: "dict | None" = None,
+    filters: "list | None" = None,
+) -> dict:
     # Clamp so a hostile/negative limit can't turn LIMIT ? into an unbounded
     # fetch, and a negative offset can't error out mid-query.
     limit = max(1, min(int(limit), MAX_LIMIT))
@@ -168,19 +181,23 @@ def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
             # writer refuses it too — see writer.py). Then the per-table gates.
             if not os.access(file, os.W_OK):
                 editable, readonly_message, readonly_tooltip = (
-                    False, "Read-only",
+                    False,
+                    "Read-only",
                     "The file is read-only — its permissions don't allow "
-                    "writing, so it can't be edited here.")
+                    "writing, so it can't be edited here.",
+                )
             else:
                 editable, readonly_message, readonly_tooltip = _editability(conn, active)
             # total_rows is the filtered count, so the grid pages within the filter.
-            total_rows = conn.execute(
-                f"SELECT COUNT(*) FROM {qname}{where}", wbinds).fetchone()[0]
+            total_rows = conn.execute(f"SELECT COUNT(*) FROM {qname}{where}", wbinds).fetchone()[0]
             # Editable tables carry rowid as the first column; views/WITHOUT
             # ROWID tables have no usable rowid, so ids stay empty (no editing).
-            select = f'SELECT rowid AS {_RID}, * FROM {qname}' if editable else f"SELECT * FROM {qname}"
-            cur = conn.execute(f"{select}{where}{order} LIMIT ? OFFSET ?",
-                               tuple(wbinds) + (limit, offset))
+            select = (
+                f"SELECT rowid AS {_RID}, * FROM {qname}" if editable else f"SELECT * FROM {qname}"
+            )
+            cur = conn.execute(
+                f"{select}{where}{order} LIMIT ? OFFSET ?", tuple(wbinds) + (limit, offset)
+            )
             desc = [d[0] for d in cur.description] if cur.description else []
             rid_first = editable and desc and desc[0] == _RID
             columns = desc[1:] if rid_first else desc
@@ -190,8 +207,12 @@ def main(file: str, table: str = "", offset: int = 0, limit: int = 100,
                     values = raw[1:]
                 else:
                     values = raw
-                rows.append({columns[j] if j < len(columns) else f"col{j}": _jsonify(v)
-                             for j, v in enumerate(values)})
+                rows.append(
+                    {
+                        columns[j] if j < len(columns) else f"col{j}": _jsonify(v)
+                        for j, v in enumerate(values)
+                    }
+                )
         return {
             "tables": tables,
             "table": active,

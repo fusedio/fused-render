@@ -12,6 +12,7 @@ module has no effect without an explicit reload):
 2. Baked ref written at build time (``fused_render/_baked_branch.py``, gitignored).
 3. "" (baseline).
 """
+
 import hashlib
 import os
 import re

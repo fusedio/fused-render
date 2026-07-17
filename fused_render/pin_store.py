@@ -4,6 +4,7 @@ One pinned filesystem path, stored as JSON at ``<app_support_dir>/pin.json``.
 Pure python and cross-platform so it stays unit-testable; all AppKit code
 lives in menubar_pin.py.
 """
+
 import json
 import logging
 import os

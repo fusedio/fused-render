@@ -57,7 +57,7 @@ function renderHighlight(text: string, positions: number[]) {
       </mark>
     ) : (
       <span key={i}>{seg.text}</span>
-    )
+    ),
   );
 }
 
@@ -178,7 +178,25 @@ interface BookmarkRowProps {
 }
 
 // Template for a bookmark row (top-level or, with child=true, inside a folder).
-function BookmarkRow({ b, child, parentId, isRenaming, justSaved, namePositions, onNameClick, onSave, onRename, onDelete, onCommitRename, onCancelRename, onMouseEnter, onMouseLeave, onGlyphClick, registerRef, dragProps }: BookmarkRowProps) {
+function BookmarkRow({
+  b,
+  child,
+  parentId,
+  isRenaming,
+  justSaved,
+  namePositions,
+  onNameClick,
+  onSave,
+  onRename,
+  onDelete,
+  onCommitRename,
+  onCancelRename,
+  onMouseEnter,
+  onMouseLeave,
+  onGlyphClick,
+  registerRef,
+  dragProps,
+}: BookmarkRowProps) {
   // Where "Save to disk" would write — shown on the button itself (title) so
   // the destination is visible before the click; null disables the button.
   const saveTarget = bookmarkSaveTarget(b);
@@ -187,7 +205,9 @@ function BookmarkRow({ b, child, parentId, isRenaming, justSaved, namePositions,
     : null;
   return (
     <div
-      className={"bookmark-row" + (child ? " child-row" : "") + (b.url === currentUrl() ? " active" : "")}
+      className={
+        "bookmark-row" + (child ? " child-row" : "") + (b.url === currentUrl() ? " active" : "")
+      }
       data-id={b.id}
       data-parent={child ? parentId : undefined}
       draggable="true"
@@ -246,10 +266,26 @@ interface FolderRowProps {
 
 // activeHint: folder is collapsed but holds the current view's bookmark —
 // highlight the row so the selection isn't invisible while folded away.
-function FolderRow({ folder, activeHint, isRenaming, onGlyphClick, onRowClick, onRename, onDelete, onCommitRename, onCancelRename, registerRef, dragProps }: FolderRowProps) {
+function FolderRow({
+  folder,
+  activeHint,
+  isRenaming,
+  onGlyphClick,
+  onRowClick,
+  onRename,
+  onDelete,
+  onCommitRename,
+  onCancelRename,
+  registerRef,
+  dragProps,
+}: FolderRowProps) {
   return (
     <div
-      className={"bookmark-row folder-row" + (folder.collapsed ? " collapsed" : "") + (activeHint ? " active" : "")}
+      className={
+        "bookmark-row folder-row" +
+        (folder.collapsed ? " collapsed" : "") +
+        (activeHint ? " active" : "")
+      }
       data-id={folder.id}
       draggable="true"
       ref={registerRef}
@@ -260,7 +296,11 @@ function FolderRow({ folder, activeHint, isRenaming, onGlyphClick, onRowClick, o
         {FOLDER_ICON}
       </span>
       {isRenaming ? (
-        <RenameInput initialName={folder.name} onCommit={onCommitRename} onCancel={onCancelRename} />
+        <RenameInput
+          initialName={folder.name}
+          onCommit={onCommitRename}
+          onCancel={onCancelRename}
+        />
       ) : (
         <span className="bookmark-name folder-name">{folder.name}</span>
       )}
@@ -269,7 +309,11 @@ function FolderRow({ folder, activeHint, isRenaming, onGlyphClick, onRowClick, o
         <button className="icon-btn rename-btn" title="Rename" onClick={onRename}>
           ✎
         </button>
-        <button className="icon-btn delete-btn" title="Delete folder and contents" onClick={onDelete}>
+        <button
+          className="icon-btn delete-btn"
+          title="Delete folder and contents"
+          onClick={onDelete}
+        >
           ✕
         </button>
       </span>
@@ -304,7 +348,7 @@ export default function Sidebar({ config }: SidebarProps) {
   const [hover, setHover] = useState<HoverState | null>(null);
   // Icon picker: which bookmark's glyph was clicked + where to anchor it.
   const [iconPicker, setIconPicker] = useState<{ id: string; top: number; left: number } | null>(
-    null
+    null,
   );
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   // id -> row DOM node, for imperative drag-class toggling (mirrors the
@@ -356,7 +400,13 @@ export default function Sidebar({ config }: SidebarProps) {
   if (bmSearching) {
     const bqLower = bq.toLowerCase();
     const pathHit = (url: string) => bookmarkFsPath(url).toLowerCase().includes(bqLower);
-    const ranked: { b: Bookmark; namePositions: number[]; nameHit: boolean; longestRun: number; score: number }[] = [];
+    const ranked: {
+      b: Bookmark;
+      namePositions: number[];
+      nameHit: boolean;
+      longestRun: number;
+      score: number;
+    }[] = [];
     // The strength of a match across all name fields that hit, for ranking. A
     // folder name match contributes its own run/score to every child it pulls in.
     const rank = (folderM: FuzzyResult | null, ...ms: (FuzzyResult | null)[]) => {
@@ -376,14 +426,26 @@ export default function Sidebar({ config }: SidebarProps) {
           const nameM = fuzzyMatch(bq, c.name);
           if (folderM || nameM || pathHit(c.url)) {
             const { longestRun, score } = rank(folderM, nameM);
-            ranked.push({ b: c, namePositions: nameM ? nameM.positions : [], nameHit: !!(folderM || nameM), longestRun, score });
+            ranked.push({
+              b: c,
+              namePositions: nameM ? nameM.positions : [],
+              nameHit: !!(folderM || nameM),
+              longestRun,
+              score,
+            });
           }
         }
       } else {
         const nameM = fuzzyMatch(bq, it.name);
         if (nameM || pathHit(it.url)) {
           const { longestRun, score } = rank(null, nameM);
-          ranked.push({ b: it, namePositions: nameM ? nameM.positions : [], nameHit: !!nameM, longestRun, score });
+          ranked.push({
+            b: it,
+            namePositions: nameM ? nameM.positions : [],
+            nameHit: !!nameM,
+            longestRun,
+            score,
+          });
         }
       }
     }
@@ -537,7 +599,11 @@ export default function Sidebar({ config }: SidebarProps) {
     navigateUrl(composeFolderTabsUrl(folder.children));
   };
 
-  const onDeleteFolder = async (e: React.MouseEvent<HTMLButtonElement>, id: string, folder: BookmarkFolder) => {
+  const onDeleteFolder = async (
+    e: React.MouseEvent<HTMLButtonElement>,
+    id: string,
+    folder: BookmarkFolder,
+  ) => {
     e.preventDefault();
     // Deleting a folder removes its children too; disarm if the armed
     // bookmark is one of them (mirrors the bookmark delete handler).
@@ -558,7 +624,7 @@ export default function Sidebar({ config }: SidebarProps) {
     e: React.DragEvent<HTMLDivElement>,
     row: HTMLDivElement,
     rowIsFolder: boolean,
-    rowIsChild: boolean
+    rowIsChild: boolean,
   ): "above" | "below" | "into" | null => {
     // A folder cannot be dropped inside a folder.
     if (rowIsChild && draggedIsFolderRef.current) return null;
@@ -611,7 +677,7 @@ export default function Sidebar({ config }: SidebarProps) {
     e: React.DragEvent<HTMLDivElement>,
     id: string,
     rowIsFolder: boolean,
-    rowIsChild: boolean
+    rowIsChild: boolean,
   ) => {
     if (draggedIdRef.current === null || draggedIdRef.current === id) return;
     const row = e.currentTarget;
@@ -632,7 +698,7 @@ export default function Sidebar({ config }: SidebarProps) {
     e: React.DragEvent<HTMLDivElement>,
     id: string,
     rowIsFolder: boolean,
-    rowIsChild: boolean
+    rowIsChild: boolean,
   ) => {
     if (draggedIdRef.current === null || draggedIdRef.current === id) return;
     const draggedId = draggedIdRef.current;
@@ -716,7 +782,10 @@ export default function Sidebar({ config }: SidebarProps) {
       </div>
       <div className="sidebar-section">
         <a href="#" id="fused-link" className="sidebar-item" onClick={onFusedClick}>
-          <span className="icon"><FolderIcon /></span> Fused
+          <span className="icon">
+            <FolderIcon />
+          </span>{" "}
+          Fused
         </a>
       </div>
       <div className="sidebar-section sidebar-bookmarks">
@@ -769,71 +838,72 @@ export default function Sidebar({ config }: SidebarProps) {
             ) : (
               items.map((it) => {
                 if (isFolder(it)) {
-              const activeHint = it.collapsed && it.children.some((c) => c.url === currentUrl());
-              return (
-                <React.Fragment key={it.id}>
-                  <FolderRow
-                    folder={it}
-                    activeHint={activeHint}
+                  const activeHint =
+                    it.collapsed && it.children.some((c) => c.url === currentUrl());
+                  return (
+                    <React.Fragment key={it.id}>
+                      <FolderRow
+                        folder={it}
+                        activeHint={activeHint}
+                        isRenaming={renamingId === it.id}
+                        registerRef={registerRow(it.id)}
+                        onGlyphClick={(e) => onFolderGlyphClick(e, it.id)}
+                        onRowClick={(e) => onFolderRowClick(e, it)}
+                        onRename={(e) => {
+                          e.preventDefault();
+                          setRenamingId(it.id);
+                        }}
+                        onDelete={(e) => onDeleteFolder(e, it.id, it)}
+                        onCommitRename={(value) => commitRename(it.id, value, it.name)}
+                        onCancelRename={cancelRename}
+                        dragProps={dragProps(it.id, true, false)}
+                      />
+                      {!it.collapsed && (
+                        <div className="folder-children">
+                          {it.children.map((c) => (
+                            <BookmarkRow
+                              key={c.id}
+                              b={c}
+                              child
+                              parentId={it.id}
+                              isRenaming={renamingId === c.id}
+                              justSaved={savedId === c.id}
+                              registerRef={registerRow(c.id)}
+                              onNameClick={(e) => onBookmarkNameClick(e, c)}
+                              onSave={(e) => onSaveBookmark(e, c)}
+                              onRename={(e) => onRenameBookmark(e, c.id)}
+                              onDelete={(e) => onDeleteBookmark(e, c.id)}
+                              onCommitRename={(value) => commitRename(c.id, value, c.name)}
+                              onCancelRename={cancelRename}
+                              onMouseEnter={(e) => onRowMouseEnter(e, c)}
+                              onMouseLeave={hideTooltip}
+                              onGlyphClick={(e) => onBookmarkGlyphClick(e, c.id)}
+                              dragProps={dragProps(c.id, false, true)}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </React.Fragment>
+                  );
+                }
+                return (
+                  <BookmarkRow
+                    key={it.id}
+                    b={it}
                     isRenaming={renamingId === it.id}
+                    justSaved={savedId === it.id}
                     registerRef={registerRow(it.id)}
-                    onGlyphClick={(e) => onFolderGlyphClick(e, it.id)}
-                    onRowClick={(e) => onFolderRowClick(e, it)}
-                    onRename={(e) => {
-                      e.preventDefault();
-                      setRenamingId(it.id);
-                    }}
-                    onDelete={(e) => onDeleteFolder(e, it.id, it)}
+                    onNameClick={(e) => onBookmarkNameClick(e, it)}
+                    onSave={(e) => onSaveBookmark(e, it)}
+                    onRename={(e) => onRenameBookmark(e, it.id)}
+                    onDelete={(e) => onDeleteBookmark(e, it.id)}
                     onCommitRename={(value) => commitRename(it.id, value, it.name)}
                     onCancelRename={cancelRename}
-                    dragProps={dragProps(it.id, true, false)}
+                    onMouseEnter={(e) => onRowMouseEnter(e, it)}
+                    onMouseLeave={hideTooltip}
+                    onGlyphClick={(e) => onBookmarkGlyphClick(e, it.id)}
+                    dragProps={dragProps(it.id, false, false)}
                   />
-                  {!it.collapsed && (
-                    <div className="folder-children">
-                      {it.children.map((c) => (
-                        <BookmarkRow
-                          key={c.id}
-                          b={c}
-                          child
-                          parentId={it.id}
-                          isRenaming={renamingId === c.id}
-                          justSaved={savedId === c.id}
-                          registerRef={registerRow(c.id)}
-                          onNameClick={(e) => onBookmarkNameClick(e, c)}
-                          onSave={(e) => onSaveBookmark(e, c)}
-                          onRename={(e) => onRenameBookmark(e, c.id)}
-                          onDelete={(e) => onDeleteBookmark(e, c.id)}
-                          onCommitRename={(value) => commitRename(c.id, value, c.name)}
-                          onCancelRename={cancelRename}
-                          onMouseEnter={(e) => onRowMouseEnter(e, c)}
-                          onMouseLeave={hideTooltip}
-                          onGlyphClick={(e) => onBookmarkGlyphClick(e, c.id)}
-                          dragProps={dragProps(c.id, false, true)}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </React.Fragment>
-              );
-            }
-            return (
-              <BookmarkRow
-                key={it.id}
-                b={it}
-                isRenaming={renamingId === it.id}
-                justSaved={savedId === it.id}
-                registerRef={registerRow(it.id)}
-                onNameClick={(e) => onBookmarkNameClick(e, it)}
-                onSave={(e) => onSaveBookmark(e, it)}
-                onRename={(e) => onRenameBookmark(e, it.id)}
-                onDelete={(e) => onDeleteBookmark(e, it.id)}
-                onCommitRename={(value) => commitRename(it.id, value, it.name)}
-                onCancelRename={cancelRename}
-                onMouseEnter={(e) => onRowMouseEnter(e, it)}
-                onMouseLeave={hideTooltip}
-                onGlyphClick={(e) => onBookmarkGlyphClick(e, it.id)}
-                dragProps={dragProps(it.id, false, false)}
-              />
                 );
               })
             )}
@@ -874,7 +944,15 @@ export default function Sidebar({ config }: SidebarProps) {
                   <span className="bookmark-glyph recent-glyph" aria-hidden="true">
                     {/* Clock in the star-glyph slot, inline so it follows
                         currentColor like the folder icon. */}
-                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+                    <svg
+                      width="12"
+                      height="12"
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.6"
+                      strokeLinecap="round"
+                    >
                       <circle cx="8" cy="8" r="6.2" />
                       <path d="M8 4.8V8l2.3 1.6" />
                     </svg>
@@ -899,7 +977,17 @@ export default function Sidebar({ config }: SidebarProps) {
           onClick={() => navigateUrl("/view/_templates")}
         >
           <span className="icon">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
               <rect x="3" y="3" width="7" height="7" rx="1" />
               <rect x="14" y="3" width="7" height="7" rx="1" />
               <rect x="3" y="14" width="7" height="7" rx="1" />
@@ -919,7 +1007,17 @@ export default function Sidebar({ config }: SidebarProps) {
           onClick={() => navigateUrl("/view/_mounts")}
         >
           <span className="icon">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
               <path d="M17.5 19a4.5 4.5 0 1 0-.9-8.9 6 6 0 1 0-11.4 2.4A3.5 3.5 0 0 0 6.5 19h11z" />
             </svg>
           </span>
@@ -939,7 +1037,17 @@ export default function Sidebar({ config }: SidebarProps) {
           onClick={() => navigateUrl("/view/_account")}
         >
           <span className="icon">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
               <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
               <circle cx="12" cy="7" r="4" />
             </svg>
@@ -957,7 +1065,17 @@ export default function Sidebar({ config }: SidebarProps) {
           onClick={() => navigateUrl("/view/_prefs")}
         >
           <span className="icon">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
               <circle cx="12" cy="12" r="3" />
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
             </svg>

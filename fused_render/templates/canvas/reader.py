@@ -27,6 +27,7 @@ Called by `fused.runPython("./reader.py", {file})`.
 # is referenced at module level except the entrypoint and its registration shim.
 def main(file: str = "") -> dict:
     import os
+
     import tomllib
 
     SIBLING_EXTS = (".py", ".json", ".md", ".html")
@@ -87,24 +88,27 @@ def main(file: str = "") -> dict:
                 continue
             if entry.get("type") == "udf-folder":
                 child_order = entry.get("childUdfOrder")
-                base.update({
-                    "folderName": text(entry.get("folderName"),
-                                       base["udfName"] or "folder"),
-                    "folderColor": text(entry.get("folderColor")),
-                    "childUdfOrder": [text(c) for c in child_order
-                                      if isinstance(c, str)]
-                    if isinstance(child_order, list) else [],
-                    "isLocked": flag(entry.get("isLocked"), False),
-                })
+                base.update(
+                    {
+                        "folderName": text(entry.get("folderName"), base["udfName"] or "folder"),
+                        "folderColor": text(entry.get("folderColor")),
+                        "childUdfOrder": [text(c) for c in child_order if isinstance(c, str)]
+                        if isinstance(child_order, list)
+                        else [],
+                        "isLocked": flag(entry.get("isLocked"), False),
+                    }
+                )
                 folders.append(base)
             else:
-                base.update({
-                    "title": text(entry.get("title"), base["udfName"]),
-                    "description": text(entry.get("description")),
-                    "visible": flag(entry.get("visible"), True),
-                    "type": text(entry.get("type")),
-                    "textBoxColor": text(entry.get("textBoxColor")),
-                })
+                base.update(
+                    {
+                        "title": text(entry.get("title"), base["udfName"]),
+                        "description": text(entry.get("description")),
+                        "visible": flag(entry.get("visible"), True),
+                        "type": text(entry.get("type")),
+                        "textBoxColor": text(entry.get("textBoxColor")),
+                    }
+                )
                 nodes.append(base)
 
     # ---- edges ------------------------------------------------------------
@@ -112,8 +116,12 @@ def main(file: str = "") -> dict:
     raw_edges = canvas.get("edges")
     if isinstance(raw_edges, list):
         for pair in raw_edges:
-            if (isinstance(pair, list) and len(pair) == 2
-                    and isinstance(pair[0], str) and isinstance(pair[1], str)):
+            if (
+                isinstance(pair, list)
+                and len(pair) == 2
+                and isinstance(pair[0], str)
+                and isinstance(pair[1], str)
+            ):
                 edges.append([pair[0], pair[1]])
 
     # ---- viewport ---------------------------------------------------------
@@ -122,9 +130,7 @@ def main(file: str = "") -> dict:
     # camera at a fabricated origin.
     viewport = None
     raw_vp = canvas.get("viewport")
-    if (isinstance(raw_vp, dict)
-            and is_num(raw_vp.get("x"))
-            and is_num(raw_vp.get("y"))):
+    if isinstance(raw_vp, dict) and is_num(raw_vp.get("x")) and is_num(raw_vp.get("y")):
         viewport = {
             "x": num(raw_vp.get("x")),
             "y": num(raw_vp.get("y")),
@@ -176,4 +182,3 @@ try:
     _udf_main = _fused.udf(main)
 except ImportError:
     pass
-

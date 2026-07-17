@@ -12,6 +12,7 @@ every template's writer gate (os.access W_OK) holds. Deliberate
 failing loudly (EACCES) on a write-protected existing target instead of
 silently replacing it.
 """
+
 import gzip
 import importlib.util
 import os
@@ -22,8 +23,9 @@ import pytest
 
 
 def _load(template):
-    path = os.path.join(os.path.dirname(__file__), "..", "fused_render",
-                        "templates", template, "reader.py")
+    path = os.path.join(
+        os.path.dirname(__file__), "..", "fused_render", "templates", template, "reader.py"
+    )
     spec = importlib.util.spec_from_file_location(f"{template}_reader", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -78,8 +80,7 @@ def test_preview_overwrites_stale_read_only_copy(tmp_path, reader, make):
     first = reader.main(make(tmp_path), "preview", "notes.txt")["path"]
     assert not os.access(first, os.W_OK)
     # The archive changes; a re-preview must replace the read-only copy.
-    second = reader.main(make(tmp_path, content="hello v2"),
-                         "preview", "notes.txt")["path"]
+    second = reader.main(make(tmp_path, content="hello v2"), "preview", "notes.txt")["path"]
     assert second == first
     with open(second) as f:
         assert f.read() == "hello v2"

@@ -29,9 +29,12 @@ export function NewTemplateModal({
 
   const alive = useRef(true);
   const extInputRef = useRef<HTMLInputElement>(null);
-  useEffect(() => () => {
-    alive.current = false;
-  }, []);
+  useEffect(
+    () => () => {
+      alive.current = false;
+    },
+    [],
+  );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -62,8 +65,7 @@ export function NewTemplateModal({
     setExtDraft("");
   };
 
-  const removeExtension = (ext: string) =>
-    setExtensions((prev) => prev.filter((e) => e !== ext));
+  const removeExtension = (ext: string) => setExtensions((prev) => prev.filter((e) => e !== ext));
 
   // Registry extensions not already picked, matching the current draft as a
   // filter — a quick-pick list on top of free typing.
@@ -71,7 +73,8 @@ export function NewTemplateModal({
   const pickedLower = new Set(extensions.map((e) => e.toLowerCase()));
   const suggestions = knownExtensions.filter(
     (ext) =>
-      !pickedLower.has(ext.toLowerCase()) && (!draftNorm || ext.slice(1).toLowerCase().includes(draftNorm)),
+      !pickedLower.has(ext.toLowerCase()) &&
+      (!draftNorm || ext.slice(1).toLowerCase().includes(draftNorm)),
   );
 
   const trimmedName = name.trim();

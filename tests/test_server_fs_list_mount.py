@@ -11,15 +11,16 @@ failed HTTP request, never a dead mount.
 Real rclone is never invoked — the StubRcd from test_shell_mounts answers the
 rc calls, and FUSED_RENDER_HOME is redirected per test.
 """
+
 import os
 
 import pytest
 from fastapi.testclient import TestClient
+from test_shell_mounts import StubRcd
 
 import fused_render.server as server
 import fused_render.shell.mounts as mounts_mod
 from fused_render.server import create_app
-from test_shell_mounts import StubRcd
 
 
 @pytest.fixture()
@@ -48,8 +49,7 @@ def _client(tmp_path):
 
 
 def _entry(name, is_dir=False, size=0, mtime="2024-01-02T03:04:05Z"):
-    return {"Name": name, "IsDir": is_dir,
-            "Size": -1 if is_dir else size, "ModTime": mtime}
+    return {"Name": name, "IsDir": is_dir, "Size": -1 if is_dir else size, "ModTime": mtime}
 
 
 # -- fs/list -----------------------------------------------------------------
@@ -58,23 +58,27 @@ def _entry(name, is_dir=False, size=0, mtime="2024-01-02T03:04:05Z"):
 def test_list_mount_backed_routes_through_rc_not_kernel(home, rcd, tmp_path, monkeypatch):
     c = mounts_mod.add_mount("s3demo", "remote:bucket/prefix")
     sub = os.path.join(mounts_mod.mountpoint(c), "data")
-    rcd.responses["operations/list"] = {"list": [
-        _entry("zeta.txt", size=3),
-        _entry("Alpha", is_dir=True),
-        _entry("beta.parquet", size=10),
-    ]}
+    rcd.responses["operations/list"] = {
+        "list": [
+            _entry("zeta.txt", size=3),
+            _entry("Alpha", is_dir=True),
+            _entry("beta.parquet", size=10),
+        ]
+    }
 
     # The mount path must never be touched through the kernel — record every
     # scandir/stat and assert none landed under the mountpoint.
     mp = mounts_mod.mountpoint(c)
     scanned, statted = [], []
     real_scandir, real_stat = os.scandir, os.stat
-    monkeypatch.setattr(os, "scandir",
-                        lambda p, *a, **k: (scanned.append(os.fspath(p)),
-                                            real_scandir(p, *a, **k))[1])
-    monkeypatch.setattr(os, "stat",
-                        lambda p, *a, **k: (statted.append(os.fspath(p)),
-                                            real_stat(p, *a, **k))[1])
+    monkeypatch.setattr(
+        os,
+        "scandir",
+        lambda p, *a, **k: (scanned.append(os.fspath(p)), real_scandir(p, *a, **k))[1],
+    )
+    monkeypatch.setattr(
+        os, "stat", lambda p, *a, **k: (statted.append(os.fspath(p)), real_stat(p, *a, **k))[1]
+    )
 
     data = _client(tmp_path).get("/api/fs/list", params={"path": sub}).json()
 
@@ -96,8 +100,7 @@ def test_list_mount_root_normalizes_rel_to_empty(home, rcd, tmp_path):
     # Non-empty listing so the empty-listing broken-mount guard (see
     # test_list_mount_empty_*) doesn't fire — this test pins rel normalization.
     rcd.responses["operations/list"] = {"list": [_entry("x.txt", size=1)]}
-    resp = _client(tmp_path).get("/api/fs/list",
-                                 params={"path": mounts_mod.mountpoint(c)})
+    resp = _client(tmp_path).get("/api/fs/list", params={"path": mounts_mod.mountpoint(c)})
     assert resp.status_code == 200
     [(_, body)] = [x for x in rcd.calls if x[0] == "operations/list"]
     assert body["remote"] == ""  # "." normalized to the fs root
@@ -119,14 +122,12 @@ def test_list_mounts_root_enumerates_records_not_rc(home, tmp_path, monkeypatch)
     with open(os.path.join(root, "alpha.json"), "w", encoding="utf-8") as f:
         f.write("{}")
     called = []
-    monkeypatch.setattr(mounts_mod, "rc_list_dir",
-                        lambda *a, **k: called.append(1) or [])
+    monkeypatch.setattr(mounts_mod, "rc_list_dir", lambda *a, **k: called.append(1) or [])
     resp = _client(tmp_path).get("/api/fs/list", params={"path": root})
     assert resp.status_code == 200
     data = resp.json()
     assert [e["name"] for e in data["entries"]] == ["alpha", "zebra"]  # sorted
-    assert all(e["is_dir"] is True and e["size"] is None
-               for e in data["entries"])
+    assert all(e["is_dir"] is True and e["size"] is None for e in data["entries"])
     assert data["truncated"] is False and data["cursor"] is None
     assert called == []  # never fell through to the rc listing route
 
@@ -139,11 +140,9 @@ def test_list_mount_file_is_not_a_directory(home, rcd, tmp_path, monkeypatch):
     c = mounts_mod.add_mount("s3demo", "remote:bucket")
     mp = mounts_mod.mountpoint(c)
     os.makedirs(mp, exist_ok=True)
-    rcd.responses["mount/listmounts"] = {
-        "mountPoints": [{"Fs": "remote:bucket", "MountPoint": mp}]}
+    rcd.responses["mount/listmounts"] = {"mountPoints": [{"Fs": "remote:bucket", "MountPoint": mp}]}
     monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
-    resp = _client(tmp_path).get(
-        "/api/fs/list", params={"path": mp + "/f.parquet"})
+    resp = _client(tmp_path).get("/api/fs/list", params={"path": mp + "/f.parquet"})
     assert resp.status_code == 400
     assert "not a directory" in resp.json()["error"]
 
@@ -153,7 +152,8 @@ def test_list_mount_rcd_down_returns_503_broken(home, tmp_path):
     # ("reconnect from the Mounts page"), never a kernel fallback.
     c = mounts_mod.add_mount("s3demo", "remote:bucket")
     resp = _client(tmp_path).get(
-        "/api/fs/list", params={"path": mounts_mod.mountpoint(c) + "/data"})
+        "/api/fs/list", params={"path": mounts_mod.mountpoint(c) + "/data"}
+    )
     assert resp.status_code == 503
     assert "reconnect" in resp.json()["error"].lower()
 
@@ -166,7 +166,8 @@ def test_list_mount_timeout_returns_503(home, rcd, tmp_path, monkeypatch):
     rcd.delay["operations/list"] = 1.0
     monkeypatch.setattr(mounts_mod, "RC_LIST_TIMEOUT_S", 0.2)
     resp = _client(tmp_path).get(
-        "/api/fs/list", params={"path": mounts_mod.mountpoint(c) + "/huge"})
+        "/api/fs/list", params={"path": mounts_mod.mountpoint(c) + "/huge"}
+    )
     assert resp.status_code == 503
     assert "timed out" in resp.json()["error"]
 
@@ -199,8 +200,7 @@ def test_walk_mount_skips_failing_subdir_and_continues(home, tmp_path, monkeypat
     # subdir's contents were never listed), so the client must know (1.3/2.2).
     c = mounts_mod.add_mount("s3demo", "remote:bucket")
     mp = mounts_mod.mountpoint(c)
-    root = [_entry("a.txt", size=1), _entry("big", is_dir=True),
-            _entry("ok", is_dir=True)]
+    root = [_entry("a.txt", size=1), _entry("big", is_dir=True), _entry("ok", is_dir=True)]
 
     def fake_list(path, timeout=None):
         tail = path.rstrip("/").rsplit("/", 1)[-1]
@@ -259,8 +259,7 @@ def test_list_local_under_cap_shape_unchanged(tmp_path):
     assert data["truncated"] is False
     assert data["cursor"] is None
     assert [e["name"] for e in data["entries"]] == ["a", "b.txt"]
-    assert all({"name", "is_dir", "size", "mtime", "ignored"} <= set(e)
-               for e in data["entries"])
+    assert all({"name", "is_dir", "size", "mtime", "ignored"} <= set(e) for e in data["entries"])
 
 
 def test_list_local_over_cap_truncated(tmp_path, monkeypatch):
@@ -280,10 +279,10 @@ def test_list_rc_route_over_cap_truncated(home, rcd, tmp_path, monkeypatch):
     # None (rclone can't resume).
     c = mounts_mod.add_mount("data", "remote:bucket/prefix")
     rcd.responses["operations/list"] = {
-        "list": [_entry(f"f{i:03d}.txt", size=1) for i in range(10)]}
+        "list": [_entry(f"f{i:03d}.txt", size=1) for i in range(10)]
+    }
     monkeypatch.setattr(server, "LIST_MAX_ENTRIES", 4)
-    data = _client(tmp_path).get(
-        "/api/fs/list", params={"path": mounts_mod.mountpoint(c)}).json()
+    data = _client(tmp_path).get("/api/fs/list", params={"path": mounts_mod.mountpoint(c)}).json()
     assert data["truncated"] is True
     assert data["cursor"] is None
     assert len(data["entries"]) == 4
@@ -295,10 +294,8 @@ def test_list_non_s3_mount_never_hits_s3(home, rcd, tmp_path, monkeypatch, fresh
     c = mounts_mod.add_mount("data", "remote:bucket/prefix")
     rcd.responses["operations/list"] = {"list": [_entry("f.txt", size=1)]}
     called = []
-    monkeypatch.setattr(mounts_mod, "s3_list_page",
-                        lambda *a, **k: called.append(1) or ([], None))
-    data = _client(tmp_path).get(
-        "/api/fs/list", params={"path": mounts_mod.mountpoint(c)}).json()
+    monkeypatch.setattr(mounts_mod, "s3_list_page", lambda *a, **k: called.append(1) or ([], None))
+    data = _client(tmp_path).get("/api/fs/list", params={"path": mounts_mod.mountpoint(c)}).json()
     assert [e["name"] for e in data["entries"]] == ["f.txt"]
     assert called == []
 
@@ -319,8 +316,7 @@ def test_list_s3_direct_multipage_and_cursor(home, rcd, tmp_path, monkeypatch, f
         return ([_entry("z.txt", size=1)], None)
 
     monkeypatch.setattr(mounts_mod, "s3_list_page", fake)
-    data = _client(tmp_path).get(
-        "/api/fs/list", params={"path": mounts_mod.mountpoint(c)}).json()
+    data = _client(tmp_path).get("/api/fs/list", params={"path": mounts_mod.mountpoint(c)}).json()
     # Two whole 1000-key pages hit the 2000 cap; stop with the 2nd page's token.
     assert len(data["entries"]) == 2000
     assert data["truncated"] is True
@@ -338,9 +334,11 @@ def test_list_s3_direct_cursor_param_resumes(home, rcd, tmp_path, monkeypatch, f
         return ([_entry("x.txt", size=1)], None)
 
     monkeypatch.setattr(mounts_mod, "s3_list_page", fake)
-    data = _client(tmp_path).get(
-        "/api/fs/list",
-        params={"path": mounts_mod.mountpoint(c), "cursor": "RESUME"}).json()
+    data = (
+        _client(tmp_path)
+        .get("/api/fs/list", params={"path": mounts_mod.mountpoint(c), "cursor": "RESUME"})
+        .json()
+    )
     assert got["continuation"] == "RESUME"
     assert [e["name"] for e in data["entries"]] == ["x.txt"]
     assert data["truncated"] is False
@@ -356,8 +354,7 @@ def test_list_s3_failure_falls_back_to_rc(home, rcd, tmp_path, monkeypatch, fres
 
     monkeypatch.setattr(mounts_mod, "s3_list_page", boom)
     rcd.responses["operations/list"] = {"list": [_entry("fromrc.txt", size=5)]}
-    data = _client(tmp_path).get(
-        "/api/fs/list", params={"path": mounts_mod.mountpoint(c)}).json()
+    data = _client(tmp_path).get("/api/fs/list", params={"path": mounts_mod.mountpoint(c)}).json()
     assert [e["name"] for e in data["entries"]] == ["fromrc.txt"]
     assert data["truncated"] is False
     assert data["cursor"] is None
@@ -383,9 +380,11 @@ def test_walk_s3_capable_uses_pages(home, rcd, tmp_path, monkeypatch, fresh_cfg_
 
     monkeypatch.setattr(mounts_mod, "s3_list_page", fake)
     # rc must NOT be used when the S3 pager succeeds.
-    monkeypatch.setattr(mounts_mod, "rc_list_dir",
-                        lambda *a, **k: (_ for _ in ()).throw(
-                            AssertionError("rc_list_dir used")))
+    monkeypatch.setattr(
+        mounts_mod,
+        "rc_list_dir",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("rc_list_dir used")),
+    )
     data = _client(tmp_path).get("/api/fs/walk", params={"path": mp}).json()
     rels = {e["rel"] for e in data["entries"]}
     assert rels == {"a.txt", "sub", "sub/b.txt"}
@@ -393,33 +392,43 @@ def test_walk_s3_capable_uses_pages(home, rcd, tmp_path, monkeypatch, fresh_cfg_
     assert calls  # the S3 pager did the listing
 
 
-def test_list_s3_cursored_failure_returns_retryable_503(home, rcd, tmp_path, monkeypatch, fresh_cfg_cache):
+def test_list_s3_cursored_failure_returns_retryable_503(
+    home, rcd, tmp_path, monkeypatch, fresh_cfg_cache
+):
     # 1.1: a page failure on a CURSORED request must return a retryable 503, NOT
     # fall through to rc — rc can't resume (it re-serves page 1 with cursor=None,
     # which the frontend dedupes to zero rows, or 503s on a huge dir).
     rcd.responses["config/get"] = ANON_S3
     c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
 
-    monkeypatch.setattr(mounts_mod, "s3_list_page",
-                        lambda *a, **k: (_ for _ in ()).throw(mounts_mod.S3ListError("x")))
-    monkeypatch.setattr(mounts_mod, "rc_list_dir",
-                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("rc used")))
+    monkeypatch.setattr(
+        mounts_mod,
+        "s3_list_page",
+        lambda *a, **k: (_ for _ in ()).throw(mounts_mod.S3ListError("x")),
+    )
+    monkeypatch.setattr(
+        mounts_mod, "rc_list_dir", lambda *a, **k: (_ for _ in ()).throw(AssertionError("rc used"))
+    )
     resp = _client(tmp_path).get(
-        "/api/fs/list",
-        params={"path": mounts_mod.mountpoint(c), "cursor": "RESUME"})
+        "/api/fs/list", params={"path": mounts_mod.mountpoint(c), "cursor": "RESUME"}
+    )
     assert resp.status_code == 503
     assert "retry" in resp.json()["error"].lower()
 
 
-def test_list_s3_first_page_failure_still_falls_back_to_rc(home, rcd, tmp_path, monkeypatch, fresh_cfg_cache):
+def test_list_s3_first_page_failure_still_falls_back_to_rc(
+    home, rcd, tmp_path, monkeypatch, fresh_cfg_cache
+):
     # 1.1 corollary: a CURSOR-LESS first request keeps the S3 -> rc -> 503 ladder.
     rcd.responses["config/get"] = ANON_S3
     c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
-    monkeypatch.setattr(mounts_mod, "s3_list_page",
-                        lambda *a, **k: (_ for _ in ()).throw(mounts_mod.S3ListError("x")))
+    monkeypatch.setattr(
+        mounts_mod,
+        "s3_list_page",
+        lambda *a, **k: (_ for _ in ()).throw(mounts_mod.S3ListError("x")),
+    )
     rcd.responses["operations/list"] = {"list": [_entry("fromrc.txt", size=1)]}
-    data = _client(tmp_path).get(
-        "/api/fs/list", params={"path": mounts_mod.mountpoint(c)}).json()
+    data = _client(tmp_path).get("/api/fs/list", params={"path": mounts_mod.mountpoint(c)}).json()
     assert [e["name"] for e in data["entries"]] == ["fromrc.txt"]
 
 
@@ -435,19 +444,22 @@ def test_list_s3_cap_never_overshoots(home, rcd, tmp_path, monkeypatch, fresh_cf
     def fake(path, *, max_keys, continuation=None, timeout=None):
         asked.append(max_keys)
         n = len(asked)
-        return ([_entry(f"f{n}_{i}.txt", size=1) for i in range(max_keys)],
-                "TOK" if n < 2 else "MORE")
+        return (
+            [_entry(f"f{n}_{i}.txt", size=1) for i in range(max_keys)],
+            "TOK" if n < 2 else "MORE",
+        )
 
     monkeypatch.setattr(mounts_mod, "s3_list_page", fake)
-    data = _client(tmp_path).get(
-        "/api/fs/list", params={"path": mounts_mod.mountpoint(c)}).json()
+    data = _client(tmp_path).get("/api/fs/list", params={"path": mounts_mod.mountpoint(c)}).json()
     assert len(data["entries"]) == 1500
     assert asked == [1000, 500]
     assert data["truncated"] is True
     assert data["cursor"] == "MORE"
 
 
-def test_list_s3_overall_budget_returns_resumable_page(home, rcd, tmp_path, monkeypatch, fresh_cfg_cache):
+def test_list_s3_overall_budget_returns_resumable_page(
+    home, rcd, tmp_path, monkeypatch, fresh_cfg_cache
+):
     # 1.2: page COUNT is bounded by an overall time budget; on exhaustion the
     # accumulator returns what it fetched plus the last token — a valid resumable
     # page (truncated True + cursor), NOT an error.
@@ -462,15 +474,16 @@ def test_list_s3_overall_budget_returns_resumable_page(home, rcd, tmp_path, monk
         return ([_entry(f"a{i}.txt", size=1) for i in range(10)], "NEXT")
 
     monkeypatch.setattr(mounts_mod, "s3_list_page", fake)
-    data = _client(tmp_path).get(
-        "/api/fs/list", params={"path": mounts_mod.mountpoint(c)}).json()
-    assert len(data["entries"]) == 10          # only the first page before the budget
+    data = _client(tmp_path).get("/api/fs/list", params={"path": mounts_mod.mountpoint(c)}).json()
+    assert len(data["entries"]) == 10  # only the first page before the budget
     assert data["truncated"] is True
     assert data["cursor"] == "NEXT"
-    assert len(calls) == 1                      # stopped after one page
+    assert len(calls) == 1  # stopped after one page
 
 
-def test_list_s3_midlisting_failure_returns_partial(home, rcd, tmp_path, monkeypatch, fresh_cfg_cache):
+def test_list_s3_midlisting_failure_returns_partial(
+    home, rcd, tmp_path, monkeypatch, fresh_cfg_cache
+):
     # A page failure AFTER at least one page returns the accumulated entries
     # with the failed page's token as the resume cursor — not a 503, and not
     # an rc-restart that would discard everything fetched (the last page
@@ -486,17 +499,18 @@ def test_list_s3_midlisting_failure_returns_partial(home, rcd, tmp_path, monkeyp
         return ([_entry(f"p{len(calls)}_{i}.txt", size=1) for i in range(10)], "TOK1")
 
     monkeypatch.setattr(mounts_mod, "s3_list_page", fake)
-    resp = _client(tmp_path).get(
-        "/api/fs/list", params={"path": mounts_mod.mountpoint(c)})
+    resp = _client(tmp_path).get("/api/fs/list", params={"path": mounts_mod.mountpoint(c)})
     assert resp.status_code == 200
     data = resp.json()
     assert len(data["entries"]) == 10
     assert data["truncated"] is True
-    assert data["cursor"] == "TOK1"           # resume from the FAILED page
-    assert calls == [None, "TOK1"]            # no rc fallback, no third try
+    assert data["cursor"] == "TOK1"  # resume from the FAILED page
+    assert calls == [None, "TOK1"]  # no rc fallback, no third try
 
 
-def test_list_s3_budget_never_passes_nonpositive_timeout(home, rcd, tmp_path, monkeypatch, fresh_cfg_cache):
+def test_list_s3_budget_never_passes_nonpositive_timeout(
+    home, rcd, tmp_path, monkeypatch, fresh_cfg_cache
+):
     # Bugbot: post-page budget check can pass with ~nothing left; the next
     # page must not reach urlopen with a timeout <= 0 (ValueError, not
     # S3ListError -> unhandled 500). First page always runs (progress
@@ -509,18 +523,16 @@ def test_list_s3_budget_never_passes_nonpositive_timeout(home, rcd, tmp_path, mo
         seen_timeouts.append(timeout)
         if timeout is not None and timeout <= 0:
             raise ValueError("timeout must be positive")  # what urlopen does
-        return ([_entry(f"g{len(seen_timeouts)}_{i}.txt", size=1)
-                 for i in range(10)], "NEXT")
+        return ([_entry(f"g{len(seen_timeouts)}_{i}.txt", size=1) for i in range(10)], "NEXT")
 
     monkeypatch.setattr(mounts_mod, "s3_list_page", fake)
     monkeypatch.setattr(server, "S3_LIST_OVERALL_TIMEOUT_S", 1e-9)
-    resp = _client(tmp_path).get(
-        "/api/fs/list", params={"path": mounts_mod.mountpoint(c)})
+    resp = _client(tmp_path).get("/api/fs/list", params={"path": mounts_mod.mountpoint(c)})
     assert resp.status_code == 200
     data = resp.json()
-    assert len(data["entries"]) == 10          # exactly the guaranteed page
+    assert len(data["entries"]) == 10  # exactly the guaranteed page
     assert data["truncated"] is True and data["cursor"] == "NEXT"
-    assert seen_timeouts[0] is None            # first page: full page timeout
+    assert seen_timeouts[0] is None  # first page: full page timeout
 
 
 def test_list_empty_rc_listing_on_broken_mount_returns_503(home, rcd, tmp_path):
@@ -528,8 +540,7 @@ def test_list_empty_rc_listing_on_broken_mount_returns_503(home, rcd, tmp_path):
     # listing under a broken mount must 503, not render as an empty folder.
     c = mounts_mod.add_mount("s3demo", "remote:bucket")  # never attached -> broken
     rcd.responses["operations/list"] = {"list": []}
-    resp = _client(tmp_path).get(
-        "/api/fs/list", params={"path": mounts_mod.mountpoint(c) + "/sub"})
+    resp = _client(tmp_path).get("/api/fs/list", params={"path": mounts_mod.mountpoint(c) + "/sub"})
     assert resp.status_code == 503
     assert "reconnect" in resp.json()["error"].lower()
 
@@ -540,8 +551,7 @@ def test_list_empty_rc_listing_on_healthy_mount_returns_200(home, rcd, tmp_path,
     mp = mounts_mod.mountpoint(c)
     os.makedirs(mp, exist_ok=True)
     rcd.responses["operations/list"] = {"list": []}
-    rcd.responses["mount/listmounts"] = {
-        "mountPoints": [{"Fs": "remote:bucket", "MountPoint": mp}]}
+    rcd.responses["mount/listmounts"] = {"mountPoints": [{"Fs": "remote:bucket", "MountPoint": mp}]}
     monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
     resp = _client(tmp_path).get("/api/fs/list", params={"path": mp})
     assert resp.status_code == 200
@@ -552,11 +562,12 @@ def test_walk_root_listing_timeout_surfaces_503(home, tmp_path, monkeypatch):
     # 2.2: fs/walk used to return 200-empty when the ROOT listing failed; now it
     # surfaces the same status codes fs/list does.
     c = mounts_mod.add_mount("s3demo", "remote:bucket")
-    monkeypatch.setattr(mounts_mod, "rc_list_dir",
-                        lambda p, timeout=None: (_ for _ in ()).throw(
-                            mounts_mod.RcListTimeout("too many")))
-    resp = _client(tmp_path).get(
-        "/api/fs/walk", params={"path": mounts_mod.mountpoint(c)})
+    monkeypatch.setattr(
+        mounts_mod,
+        "rc_list_dir",
+        lambda p, timeout=None: (_ for _ in ()).throw(mounts_mod.RcListTimeout("too many")),
+    )
+    resp = _client(tmp_path).get("/api/fs/walk", params={"path": mounts_mod.mountpoint(c)})
     assert resp.status_code == 503
     assert "timed out" in resp.json()["error"]
 
@@ -564,12 +575,13 @@ def test_walk_root_listing_timeout_surfaces_503(home, tmp_path, monkeypatch):
 def test_walk_root_rcd_down_surfaces_503(home, tmp_path):
     # 2.2: no live rcd -> RcListUnavailable at the root -> broken-mount 503.
     c = mounts_mod.add_mount("s3demo", "remote:bucket")
-    resp = _client(tmp_path).get(
-        "/api/fs/walk", params={"path": mounts_mod.mountpoint(c)})
+    resp = _client(tmp_path).get("/api/fs/walk", params={"path": mounts_mod.mountpoint(c)})
     assert resp.status_code == 503
 
 
-def test_walk_dir_cut_marks_truncated_even_when_few_entries_yielded(home, rcd, tmp_path, monkeypatch):
+def test_walk_dir_cut_marks_truncated_even_when_few_entries_yielded(
+    home, rcd, tmp_path, monkeypatch
+):
     # 1.3: the per-dir cap cuts the listing, but dotfile filtering yields FEWER
     # entries than the cap — truncated must still be True (the yielded count
     # alone would report False while thousands of keys went unlisted).
@@ -577,12 +589,17 @@ def test_walk_dir_cut_marks_truncated_even_when_few_entries_yielded(home, rcd, t
     mp = mounts_mod.mountpoint(c)
     monkeypatch.setattr(server, "WALK_MAX_ENTRIES_REMOTE", 3)
     # 5 entries > cap 3 -> cut; the first 3 include two dotfiles -> 1 yielded.
-    listed = [_entry(".h1"), _entry(".h2"), _entry("v.txt", size=1),
-              _entry("x.txt", size=1), _entry("y.txt", size=1)]
+    listed = [
+        _entry(".h1"),
+        _entry(".h2"),
+        _entry("v.txt", size=1),
+        _entry("x.txt", size=1),
+        _entry("y.txt", size=1),
+    ]
     monkeypatch.setattr(mounts_mod, "rc_list_dir", lambda p, timeout=None: listed)
     data = _client(tmp_path).get("/api/fs/walk", params={"path": mp}).json()
     rels = {e["rel"] for e in data["entries"]}
-    assert rels == {"v.txt"}          # only the non-dotfile among the first 3
+    assert rels == {"v.txt"}  # only the non-dotfile among the first 3
     assert data["truncated"] is True  # via the dir-cut sentinel, not the count
 
 
@@ -595,8 +612,9 @@ def test_walk_s3_failure_falls_back_to_rc(home, rcd, tmp_path, monkeypatch, fres
         raise mounts_mod.S3ListError("kaboom")
 
     monkeypatch.setattr(mounts_mod, "s3_list_page", s3_boom)
-    monkeypatch.setattr(mounts_mod, "rc_list_dir",
-                        lambda p, timeout=None: [_entry("fromrc.txt", size=1)])
+    monkeypatch.setattr(
+        mounts_mod, "rc_list_dir", lambda p, timeout=None: [_entry("fromrc.txt", size=1)]
+    )
     data = _client(tmp_path).get("/api/fs/walk", params={"path": mp}).json()
     rels = {e["rel"] for e in data["entries"]}
     assert rels == {"fromrc.txt"}

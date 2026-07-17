@@ -3,6 +3,7 @@
 Not a package: each backend loads this by path (the templates tree is always
 staged as one unit, so ../shared/ resolves from any template folder).
 """
+
 import os
 
 
@@ -16,10 +17,10 @@ def pid_alive(pid):
         return False
     if os.name == "nt":
         import ctypes
+
         PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
         STILL_ACTIVE = 259
-        handle = ctypes.windll.kernel32.OpenProcess(
-            PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if not handle:
             return False
         try:

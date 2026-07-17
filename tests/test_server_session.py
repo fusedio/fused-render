@@ -8,6 +8,7 @@ starlette TestClient" discipline as test_shell_bookmark_history.py (keeps the
 module importable in venvs where TestClient's httpx dependency is missing, and
 sidesteps create_app's built-shell requirement).
 """
+
 import json
 
 from fastapi.responses import JSONResponse
@@ -43,8 +44,9 @@ def test_get_non_file(tmp_path):
 
 def test_put_then_get_roundtrips(tmp_path):
     f = _target(tmp_path)
-    assert PUT(body={"path": str(f), "search": "city=oslo&limit=50&_mode=code"},
-               x_fused="1") == {"ok": True}
+    assert PUT(body={"path": str(f), "search": "city=oslo&limit=50&_mode=code"}, x_fused="1") == {
+        "ok": True
+    }
     r = GET(path=str(f))
     assert r["lastSession"]["search"] == "city=oslo&limit=50&_mode=code"
     assert isinstance(r["lastSession"]["updated_at"], float)
@@ -62,8 +64,7 @@ def test_put_rejects_relative_path(tmp_path):
 
 
 def test_put_rejects_missing_file(tmp_path):
-    resp = PUT(body={"path": str(tmp_path / "nope.html"), "search": "a=1"},
-               x_fused="1")
+    resp = PUT(body={"path": str(tmp_path / "nope.html"), "search": "a=1"}, x_fused="1")
     assert _status(resp) == 404
 
 
@@ -75,8 +76,7 @@ def test_put_rejects_non_string_search(tmp_path):
 
 def test_coexists_with_sessions(tmp_path):
     f = _target(tmp_path)
-    (tmp_path / "sample.html.json").write_text(
-        json.dumps({"claudeSessions": [{"id": "x"}]}))
+    (tmp_path / "sample.html.json").write_text(json.dumps({"claudeSessions": [{"id": "x"}]}))
     PUT(body={"path": str(f), "search": "a=1"}, x_fused="1")
     data = _sidecar(f)
     assert data["claudeSessions"] == [{"id": "x"}]

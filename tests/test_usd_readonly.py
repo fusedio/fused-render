@@ -14,12 +14,12 @@ Tests use a `.splat` target: inspect's direct branch needs only os.path, no
 cache dir and no heavy deps. CACHE_ROOT is repointed at tmp_path anyway so
 nothing can touch the real home.
 """
+
 import importlib.util
 import os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-READER_PY = os.path.join(HERE, os.pardir, "fused_render", "templates",
-                         "usd", "reader.py")
+READER_PY = os.path.join(HERE, os.pardir, "fused_render", "templates", "usd", "reader.py")
 
 
 def _load_reader(tmp_path, monkeypatch):
@@ -37,6 +37,7 @@ def _asset(tmp_path):
 
 
 # ---------------------------------------------------------- _sidecar_writable
+
 
 def test_sidecar_writable_no_sidecar_writable_dir(tmp_path, monkeypatch):
     mod = _load_reader(tmp_path, monkeypatch)
@@ -70,6 +71,7 @@ def test_sidecar_writable_readonly_parent_no_sidecar(tmp_path, monkeypatch):
 
 
 # ------------------------------------------------------------ inspect action
+
 
 def test_inspect_reports_sidecar_writable_true(tmp_path, monkeypatch):
     mod = _load_reader(tmp_path, monkeypatch)

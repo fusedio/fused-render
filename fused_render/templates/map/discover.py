@@ -3,6 +3,7 @@
 main(dir="") -> {dir, parent, entries:[{name, path, kind, ext}]}
 Default dir is the user's home. Pass any absolute directory to browse.
 """
+
 import os
 
 _DEFAULT_DIR = os.path.expanduser("~")

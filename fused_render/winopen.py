@@ -5,6 +5,7 @@ scripts/windows/register_open_with.ps1): reuses a live server or starts one
 detached, then opens the browser at FILE's /view URL (or / with no FILE).
 `--register`/`--unregister` write/remove the HKCU associations themselves.
 """
+
 import argparse
 import ctypes
 import json
@@ -55,29 +56,19 @@ _ICON_VARIANT_FOR_TOKEN = {
     # web
     **dict.fromkeys("html htm".split(), "html"),
     # images
-    **dict.fromkeys(
-        "png jpg jpeg gif webp svg bmp avif heic heif dng".split(), "image"
-    ),
+    **dict.fromkeys("png jpg jpeg gif webp svg bmp avif heic heif dng".split(), "image"),
     # documents / prose
-    **dict.fromkeys(
-        "pdf md markdown txt log docx pptx tex ltx latex".split(), "doc"
-    ),
+    **dict.fromkeys("pdf md markdown txt log docx pptx tex ltx latex".split(), "doc"),
     # audio / video
     **dict.fromkeys("mp4 mov m4v webm mp3 wav m4a ogg flac".split(), "media"),
     # geospatial / vector
-    **dict.fromkeys(
-        "geojson shp kml kmz gpx gpkg fgb pmtiles tif tiff las laz".split(), "geo"
-    ),
+    **dict.fromkeys("geojson shp kml kmz gpx gpkg fgb pmtiles tif tiff las laz".split(), "geo"),
     # archives
-    **dict.fromkeys(
-        "zip jar whl egg tar tgz tbz2 txz gz bz2 xz zst twbx tdsx".split(), "archive"
-    ),
+    **dict.fromkeys("zip jar whl egg tar tgz tbz2 txz gz bz2 xz zst twbx tdsx".split(), "archive"),
     # databases
     **dict.fromkeys("sqlite sqlite3 db duckdb ddb".split(), "db"),
     # 3D models / point clouds
-    **dict.fromkeys(
-        "usd usda usdc usdz ply splat ksplat obj stl glb gltf".split(), "model"
-    ),
+    **dict.fromkeys("usd usda usdc usdz ply splat ksplat obj stl glb gltf".split(), "model"),
 }
 
 _LOCALAPPDATA = os.environ.get("LOCALAPPDATA") or os.path.expanduser(r"~\AppData\Local")
@@ -163,7 +154,9 @@ def pick_port(start: int = DEFAULT_PORT, end: int = MAX_PORT) -> int:
     for port in range(start, end + 1):
         if not _port_in_use(port):
             return port
-    raise RuntimeError(f"no free port between {start} and {end}; is something hogging the whole range?")
+    raise RuntimeError(
+        f"no free port between {start} and {end}; is something hogging the whole range?"
+    )
 
 
 def _wait_until_ready(port: int, timeout: float = 15.0) -> bool:
@@ -364,20 +357,26 @@ def _register(port: int | None) -> None:
 
     # one ProgID per extension so Explorer's Type column keeps naming the format
     for ext in ext_list:
-        progid_key = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{_progid(ext)}")
+        progid_key = winreg.CreateKeyEx(
+            winreg.HKEY_CURRENT_USER, rf"Software\Classes\{_progid(ext)}"
+        )
         winreg.SetValueEx(progid_key, "", 0, winreg.REG_SZ, _type_name(ext))
         winreg.SetValueEx(progid_key, "FriendlyTypeName", 0, winreg.REG_SZ, _type_name(ext))
         icon_key = winreg.CreateKeyEx(progid_key, "DefaultIcon")
         winreg.SetValueEx(icon_key, "", 0, winreg.REG_SZ, f'"{_icon_for_ext(ext)}",0')
         open_cmd_key = winreg.CreateKeyEx(progid_key, r"shell\open\command")
         winreg.SetValueEx(open_cmd_key, "", 0, winreg.REG_SZ, command)
-        openwith_key = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{ext}\OpenWithProgids")
+        openwith_key = winreg.CreateKeyEx(
+            winreg.HKEY_CURRENT_USER, rf"Software\Classes\{ext}\OpenWithProgids"
+        )
         winreg.SetValueEx(openwith_key, _progid(ext), 0, winreg.REG_SZ, "")
         _delete_value(rf"Software\Classes\{ext}\OpenWithProgids", _LEGACY_PROGID)
     _delete_tree(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{_LEGACY_PROGID}")
 
     # the Open With dialog resolves display names via Applications\<exe> FriendlyAppName
-    app_key = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, r"Software\Classes\Applications\fused-render-open.exe")
+    app_key = winreg.CreateKeyEx(
+        winreg.HKEY_CURRENT_USER, r"Software\Classes\Applications\fused-render-open.exe"
+    )
     winreg.SetValueEx(app_key, "FriendlyAppName", 0, winreg.REG_SZ, "fused-render")
     app_icon_key = winreg.CreateKeyEx(app_key, "DefaultIcon")
     winreg.SetValueEx(app_icon_key, "", 0, winreg.REG_SZ, f'"{_ICON_PATH}",0')
@@ -447,11 +446,19 @@ def main() -> None:
         prog="python -m fused_render.winopen",
         description="Windows Explorer 'Open with' entry point for fused-render.",
     )
-    parser.add_argument("--port", type=int, default=None, help="port to use/reuse (default: autodetect)")
+    parser.add_argument(
+        "--port", type=int, default=None, help="port to use/reuse (default: autodetect)"
+    )
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--register", action="store_true", help="register the 'Open with' associations and exit")
-    group.add_argument("--unregister", action="store_true", help="remove the 'Open with' associations and exit")
-    parser.add_argument("path", nargs="?", default=None, help="file to open in /view (default: home)")
+    group.add_argument(
+        "--register", action="store_true", help="register the 'Open with' associations and exit"
+    )
+    group.add_argument(
+        "--unregister", action="store_true", help="remove the 'Open with' associations and exit"
+    )
+    parser.add_argument(
+        "path", nargs="?", default=None, help="file to open in /view (default: home)"
+    )
     args = parser.parse_args()
 
     try:

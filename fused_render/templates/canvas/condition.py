@@ -14,6 +14,7 @@ plain `.toml`, a `canvas.toml` that isn't actually a canvas, an oversized file,
 or anything that fails to parse → False, so the `canvas` mode never shows for
 ordinary toml.
 """
+
 import os
 
 # Content sniff only opens files small enough to be a real canvas definition —
@@ -35,6 +36,7 @@ def main(target_path) -> bool:
         # server still imports this module — the except below then fails
         # closed on ImportError exactly like any other parse failure.
         import tomllib
+
         with open(target_path, "rb") as f:
             data = tomllib.load(f)
     except Exception:

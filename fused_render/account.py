@@ -57,6 +57,7 @@ X-Fused guard is duplicated locally like deploy.py does. The CLI seam
 (resolution, child-env hygiene, error mapping, store reads) is fusedcli.py,
 shared with deploy.py.
 """
+
 from __future__ import annotations
 
 import collections
@@ -508,7 +509,7 @@ def api_account_login(body: dict = Body(...), x_fused: str | None = Header(defau
         return _error(
             "the fused CLI is not available: the fused package is not importable in "
             "the server's environment and no FUSED_RENDER_FUSED_BIN override is set; "
-            "install it from this page or run: pip install \"fused-render[fused]\""
+            'install it from this page or run: pip install "fused-render[fused]"'
         )
 
     global _active
@@ -599,9 +600,7 @@ def api_account_setup(body: dict = Body(...), x_fused: str | None = Header(defau
     global _setup
     with _SETUP_LOCK:
         if _setup is not None and _setup.state == "running":
-            return _error(
-                f"an environment setup is already running (job {_setup.job_id})", 409
-            )
+            return _error(f"an environment setup is already running (job {_setup.job_id})", 409)
         args = [*cli.command, "cloud", "setup", "--no-browser"]
         if org and env:
             args += ["--org", org, "--env", env]

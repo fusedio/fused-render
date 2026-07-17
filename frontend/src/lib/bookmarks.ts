@@ -39,8 +39,7 @@ export function loadBookmarks(): BookmarkItem[] {
   return cache;
 }
 
-const clone = (items: BookmarkItem[]): BookmarkItem[] =>
-  JSON.parse(JSON.stringify(items));
+const clone = (items: BookmarkItem[]): BookmarkItem[] => JSON.parse(JSON.stringify(items));
 
 // Persist a new tree, then advance the cache (order matters: on PUT failure the
 // cache is untouched and the mutation rejects, so the UI stays consistent).
@@ -188,8 +187,9 @@ export async function addBookmark(name: string, url: string): Promise<void> {
   });
   // Fire-and-forget after the bookmark write commits, so sidecar I/O never
   // blocks or fails the bookmark itself.
-  recordBookmarkHistory({ id: item.id, name: item.name, url, created_at: item.created_at })
-    .catch((e) => console.error("[fused] failed to record bookmark history:", e));
+  recordBookmarkHistory({ id: item.id, name: item.name, url, created_at: item.created_at }).catch(
+    (e) => console.error("[fused] failed to record bookmark history:", e),
+  );
 }
 
 export function deleteBookmark(id: string): Promise<void> {
@@ -240,11 +240,7 @@ export function renameBookmark(id: string, name: string): Promise<void> {
 // level; otherwise the id of the destination folder. targetIndex is the index
 // in the destination array AFTER the moved item is removed; the caller is
 // responsible for that convention. Folders can only move to the top level.
-export function moveItem(
-  id: string,
-  parentId: string | null,
-  targetIndex: number
-): Promise<void> {
+export function moveItem(id: string, parentId: string | null, targetIndex: number): Promise<void> {
   return mutate((items) => {
     // Locate the item first so a folder→folder move can abort before removal.
     let moved: BookmarkItem | undefined = items.find((it) => it.id === id);
@@ -281,10 +277,7 @@ export function moveItem(
 // [target, dragged], preserving the target's slot. Returns the folder id
 // (or null if either lookup fails). draggedId is removed from wherever it
 // lives (top level or another folder), then the folder is created.
-export function createFolderWith(
-  targetId: string,
-  draggedId: string
-): Promise<string | null> {
+export function createFolderWith(targetId: string, draggedId: string): Promise<string | null> {
   return enqueue(async () => {
     const items = clone(cache);
     const targetIdx = items.findIndex((it) => it.id === targetId && !isFolder(it));
@@ -351,8 +344,9 @@ export async function updateBookmarkUrl(id: string, url: string): Promise<void> 
   });
   if (!found) return;
   // Record the new url for that id (server upserts, refreshing updated_at).
-  recordBookmarkHistory({ id, url, name })
-    .catch((e) => console.error("[fused] failed to record bookmark history:", e));
+  recordBookmarkHistory({ id, url, name }).catch((e) =>
+    console.error("[fused] failed to record bookmark history:", e),
+  );
 }
 
 // Set or clear (icon = null) a bookmark's emoji icon. Bookmarks only —

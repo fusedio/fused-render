@@ -11,6 +11,7 @@ directory is writable — silently bypassing the read-only bit. The guard makes
 the write endpoint refuse instead, and `writable` on the stat payload lets
 templates render read-only mode up front.
 """
+
 import json
 import os
 import stat
@@ -53,6 +54,7 @@ def readonly(target):
 
 # ------------------------------------------------------------- stat.writable
 
+
 def test_stat_writable_true_for_writable_file(target):
     out = _data(STAT(str(target)))
     assert out["writable"] is True
@@ -73,6 +75,7 @@ def test_stat_writable_on_directory(tmp_path):
 
 
 # --------------------------------------------------------- write guard (403)
+
 
 def test_write_refuses_readonly_target(readonly):
     resp = _write(readonly, "clobbered")
@@ -96,6 +99,7 @@ def test_write_creates_new_file_in_writable_dir(tmp_path):
 
 # ----------------------------------------------------- create guard (New File)
 
+
 def test_write_create_conflicts_on_existing_file(target):
     resp = _write(target, "clobbered", create=True)
     assert _status(resp) == 409
@@ -116,6 +120,7 @@ def test_write_create_ok_for_new_file(tmp_path):
 # record carries a `read_only` flag (detected at attach, see
 # test_shell_mounts), and _writable must consult it so stat.writable and the
 # write guard stay in agreement (RO-1) for remote paths too.
+
 
 @pytest.fixture
 def mounted(tmp_path, monkeypatch):

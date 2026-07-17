@@ -29,6 +29,7 @@ No import of server.py (server includes this router — keep it acyclic); the
 X-Fused guard and the small env-var effective-engine mirror are duplicated
 locally like shell/bookmarks.py's guard is.
 """
+
 import os
 
 from fastapi import APIRouter, Body, Header

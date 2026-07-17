@@ -15,6 +15,7 @@ real Fused dir. The whole thing is idempotent and non-destructive on upgrades:
 
 Seeding concerns the Fused dir, independent of the server's --start-dir.
 """
+
 import os
 import shutil
 import time

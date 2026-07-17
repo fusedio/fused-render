@@ -6,13 +6,13 @@ extension→templates registry view (GET /api/templates/registry).
 FUSED_RENDER_HOME is redirected to a tmp dir and FUSED_RENDER_ENGINE cleared
 so no test reads the real prefs or a developer's env override.
 """
+
 import json
 
 from fastapi.testclient import TestClient
 
 import fused_render.shell.prefs as prefs_mod
 from fused_render.server import create_app
-
 
 FUSED = {"X-Fused": "1"}  # D3 guard header required on writes
 
@@ -70,9 +70,12 @@ def test_deploy_enabled_defaults_off_and_toggles(tmp_path, monkeypatch):
     assert json.loads((home / "prefs.json").read_text(encoding="utf-8"))["deploy_enabled"] is True
     assert client.get("/api/prefs").json()["deploy"]["enabled"] is True
     # And back off.
-    assert client.put("/api/prefs", json={"deploy_enabled": False}, headers=FUSED).json()[
-        "deploy"
-    ]["enabled"] is False
+    assert (
+        client.put("/api/prefs", json={"deploy_enabled": False}, headers=FUSED).json()["deploy"][
+            "enabled"
+        ]
+        is False
+    )
 
 
 def test_deploy_enabled_toggle_is_independent_of_engine(tmp_path, monkeypatch):
@@ -137,7 +140,9 @@ async def _fake_fused_run(path, params):
 
 def test_engine_switch_applies_without_restart(tmp_path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
-    (tmp_path / "one.py").write_text("def main():\n    return {'engine': 'builtin-real'}\n", encoding="utf-8")
+    (tmp_path / "one.py").write_text(
+        "def main():\n    return {'engine': 'builtin-real'}\n", encoding="utf-8"
+    )
 
     monkeypatch.setattr(prefs_mod, "fused_engine_available", lambda: True)
     monkeypatch.setattr("fused_render.engine.run_python", _fake_fused_run, raising=False)
@@ -264,9 +269,7 @@ def test_registry_view_splice_token_is_dangling(tmp_path, monkeypatch):
     # in the row, not expanded to the built-in list.
     client, _ = _client(tmp_path, monkeypatch)
     udir = _point_user_registry_at(tmp_path, monkeypatch)
-    (udir / "registry.json").write_text(
-        json.dumps({".html": ["...", "tree"]}), encoding="utf-8"
-    )
+    (udir / "registry.json").write_text(json.dumps({".html": ["...", "tree"]}), encoding="utf-8")
     body = client.get("/api/templates/registry").json()
     by_key = {e["key"]: e for e in body["entries"]}
     tmpl = {t["name"]: t for t in by_key[".html"]["templates"]}

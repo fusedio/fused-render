@@ -29,8 +29,7 @@ const STEPS: DriveStep[] = [
     element: ".sidebar-bookmarks",
     popover: {
       title: "Bookmarks",
-      description:
-        "Save any view or URL here — drag one bookmark onto another to make a folder.",
+      description: "Save any view or URL here — drag one bookmark onto another to make a folder.",
     },
   },
   {
@@ -64,9 +63,7 @@ const STEPS: DriveStep[] = [
 ];
 
 function presentSteps(): DriveStep[] {
-  return STEPS.filter(
-    (s) => typeof s.element === "string" && document.querySelector(s.element)
-  );
+  return STEPS.filter((s) => typeof s.element === "string" && document.querySelector(s.element));
 }
 
 // The one live driver instance. runTour is a no-op while a tour is already on

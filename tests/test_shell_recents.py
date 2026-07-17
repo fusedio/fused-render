@@ -3,13 +3,13 @@ recently-opened-files store at ~/.fused-render/recents.json.
 
 FUSED_RENDER_HOME is redirected to a tmp dir so no test touches the real home.
 """
+
 import json
 from urllib.parse import quote
 
 from fastapi.testclient import TestClient
 
 from fused_render.server import create_app
-
 
 FUSED = {"X-Fused": "1"}  # D3 guard header required on writes
 
@@ -76,9 +76,9 @@ def test_open_rejects_non_file_urls(tmp_path, monkeypatch):
     d = tmp_path / "sub"
     d.mkdir()
     for url in (
-        _view_url(d),               # directory
+        _view_url(d),  # directory
         "/view/_panel?_layout=(x)",  # sentinel route
-        "/view/_prefs",              # sentinel route
+        "/view/_prefs",  # sentinel route
         _view_url(tmp_path / "gone.txt"),  # missing file
         "/embed/" + str(_make_file(tmp_path)).lstrip("/"),  # embed prefix
     ):

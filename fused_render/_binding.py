@@ -6,6 +6,7 @@ in-process runner for first-party helpers (`executor.py`, D72). Keeping the
 coercion in one module means both paths agree on how string params from the URL
 map onto annotated signatures.
 """
+
 import inspect
 
 
@@ -33,9 +34,7 @@ def coerce(value, annotation):
 
 def bind_params(fn, params):
     sig = inspect.signature(fn)
-    has_var_kwargs = any(
-        p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
-    )
+    has_var_kwargs = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
     kwargs = {}
     for name, p in sig.parameters.items():
         if p.kind in (inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL):

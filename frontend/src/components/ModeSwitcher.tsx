@@ -38,7 +38,11 @@ interface ModeSwitcherProps<M extends string> {
   onSelect: (mode: M) => void;
 }
 
-export default function ModeSwitcher<M extends string>({ entries, active, onSelect }: ModeSwitcherProps<M>) {
+export default function ModeSwitcher<M extends string>({
+  entries,
+  active,
+  onSelect,
+}: ModeSwitcherProps<M>) {
   if (entries.length <= 1) return null;
   return (
     <div className="mode-switcher">
@@ -46,8 +50,14 @@ export default function ModeSwitcher<M extends string>({ entries, active, onSele
         <button
           key={e.mode}
           type="button"
-          className={"mode-switcher-btn" + (e.mode === active ? " active" : "") + (e.pending ? " pending" : "")}
-          title={e.pending ? `${modeTitle(e.mode)} — checking if this view applies…` : modeTitle(e.mode)}
+          className={
+            "mode-switcher-btn" +
+            (e.mode === active ? " active" : "") +
+            (e.pending ? " pending" : "")
+          }
+          title={
+            e.pending ? `${modeTitle(e.mode)} — checking if this view applies…` : modeTitle(e.mode)
+          }
           disabled={e.pending}
           onClick={() => onSelect(e.mode)}
         >
@@ -62,7 +72,16 @@ export default function ModeSwitcher<M extends string>({ entries, active, onSele
 // template folder, so there's no icon.svg to fetch. Component-local, matches
 // the old hardcoded Rendered|Source eye glyph.
 const RENDER_SENTINEL_ICON = (
-  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+  <svg
+    viewBox="0 0 24 24"
+    width="16"
+    height="16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
     <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z" />
     <circle cx="12" cy="12" r="3" />
   </svg>
@@ -71,7 +90,16 @@ const RENDER_SENTINEL_ICON = (
 // Shell-baked icon for the "_listing" sentinel (PT-12/D81) — the built-in
 // directory listing; sentinels have no template folder to ship icon.svg.
 const LISTING_SENTINEL_ICON = (
-  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+  <svg
+    viewBox="0 0 24 24"
+    width="16"
+    height="16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
     <line x1="8" y1="6" x2="21" y2="6" />
     <line x1="8" y1="12" x2="21" y2="12" />
     <line x1="8" y1="18" x2="21" y2="18" />

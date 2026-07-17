@@ -19,6 +19,7 @@ Gates under test:
 Read-only never blocks viewing or the cache-model autosave — only the explicit
 overwrite of the .pptx and the sidecar title write are gated.
 """
+
 import importlib.util
 import json
 import os
@@ -27,18 +28,19 @@ import types
 
 import pytest
 
-SLIDES_PY = os.path.join(os.path.dirname(__file__), "..",
-                         "fused_render", "templates", "slides", "slides.py")
+SLIDES_PY = os.path.join(
+    os.path.dirname(__file__), "..", "fused_render", "templates", "slides", "slides.py"
+)
 
 # os.access always says yes for root, so the chmod-based gates can't trip.
 pytestmark = pytest.mark.skipif(
     hasattr(os, "geteuid") and os.geteuid() == 0,
-    reason="read-only bits are ignored when running as root")
+    reason="read-only bits are ignored when running as root",
+)
 
 
 def _boom(*args, **kwargs):
-    raise AssertionError(
-        "engine must not be called — the read-only gate has to fire first")
+    raise AssertionError("engine must not be called — the read-only gate has to fire first")
 
 
 @pytest.fixture
@@ -46,7 +48,7 @@ def slides(tmp_path):
     """Load slides.py with a stub engine module and a tmp cache root."""
     saved = sys.modules.get("engine")
     stub = types.ModuleType("engine")
-    stub.ENGINE_V = 0            # referenced by _content_hash at runtime
+    stub.ENGINE_V = 0  # referenced by _content_hash at runtime
     stub.build_pptx = _boom
     stub.parse_pptx = _boom
     stub.build_pdf = _boom
@@ -57,7 +59,7 @@ def slides(tmp_path):
         spec = importlib.util.spec_from_file_location("slides_target", SLIDES_PY)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        mod.CACHE_ROOT = str(tmp_path / "cache")   # keep main() away from ~
+        mod.CACHE_ROOT = str(tmp_path / "cache")  # keep main() away from ~
         # pre-create: main()'s makedirs must survive tests that chmod tmp_path
         os.makedirs(mod.CACHE_ROOT, exist_ok=True)
         yield mod
@@ -138,7 +140,7 @@ def test_editability_verdict(slides, tmp_path):
 
 def test_sidecar_writable_helper(slides, tmp_path):
     f = _deck(tmp_path)
-    assert slides._sidecar_writable(str(f)) is True   # fresh sidecar, writable dir
+    assert slides._sidecar_writable(str(f)) is True  # fresh sidecar, writable dir
     sidecar = tmp_path / "deck.pptx.json"
     sidecar.write_text("{}")
     os.chmod(sidecar, 0o444)

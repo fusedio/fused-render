@@ -1,6 +1,7 @@
 """Tests for _forced_engine (D69/D70 + SPEC §20): FUSED_RENDER_ENGINE forces
 the whole process; unset returns None and the engine follows the persisted
 preference (shell/prefs.py — covered in test_shell_prefs.py)."""
+
 import pytest
 
 from fused_render import server

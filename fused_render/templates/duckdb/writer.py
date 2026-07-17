@@ -25,6 +25,7 @@ Called by fused.runPython with structured params:
   inserts: [{<column>: <value>, ...}, ...]
 Returns {"total_rows": <int>} — the row count after the batch.
 """
+
 import os
 
 import duckdb
@@ -127,7 +128,9 @@ def _write_database(file, table, edits, deletes, inserts):
         con.execute(f"ATTACH {_quote_str(os.path.abspath(file))} AS db")
         kind = con.execute(
             "SELECT table_type FROM information_schema.tables "
-            "WHERE table_catalog = 'db' AND table_name = ?", [table]).fetchone()
+            "WHERE table_catalog = 'db' AND table_name = ?",
+            [table],
+        ).fetchone()
         if not kind or kind[0] != "BASE TABLE":
             raise ValueError(f"{table!r} is not an editable table")
         qtable = f"db.{_quote_ident(table)}"
@@ -138,12 +141,15 @@ def _write_database(file, table, edits, deletes, inserts):
             for e in edits:
                 frag, binds = _cast_fragment(types, e["column"], e.get("value"))
                 con.execute(
-                    f"UPDATE {qtable} SET {_quote_ident(e['column'])} = {frag} "
-                    f"WHERE rowid = ?", binds + [int(e["row"])])
+                    f"UPDATE {qtable} SET {_quote_ident(e['column'])} = {frag} WHERE rowid = ?",
+                    binds + [int(e["row"])],
+                )
             if deletes:
                 placeholders = ", ".join("?" for _ in deletes)
-                con.execute(f"DELETE FROM {qtable} WHERE rowid IN ({placeholders})",
-                            [int(d) for d in deletes])
+                con.execute(
+                    f"DELETE FROM {qtable} WHERE rowid IN ({placeholders})",
+                    [int(d) for d in deletes],
+                )
             for row in inserts:
                 cols, frags, binds = [], [], []
                 for col, value in row.items():
@@ -153,8 +159,9 @@ def _write_database(file, table, edits, deletes, inserts):
                     binds.extend(b)
                 if cols:
                     con.execute(
-                        f"INSERT INTO {qtable} ({', '.join(cols)}) "
-                        f"VALUES ({', '.join(frags)})", binds)
+                        f"INSERT INTO {qtable} ({', '.join(cols)}) VALUES ({', '.join(frags)})",
+                        binds,
+                    )
                 else:
                     con.execute(f"INSERT INTO {qtable} DEFAULT VALUES")
             con.execute("COMMIT")
@@ -168,8 +175,13 @@ def _write_database(file, table, edits, deletes, inserts):
         con.close()
 
 
-def main(file: str, table: str = "", edits: "list | None" = None,
-         deletes: "list | None" = None, inserts: "list | None" = None) -> dict:
+def main(
+    file: str,
+    table: str = "",
+    edits: "list | None" = None,
+    deletes: "list | None" = None,
+    inserts: "list | None" = None,
+) -> dict:
     edits = edits or []
     deletes = deletes or []
     inserts = inserts or []
@@ -203,8 +215,7 @@ def main(file: str, table: str = "", edits: "list | None" = None,
 
         if deletes:
             placeholders = ", ".join("?" for _ in deletes)
-            con.execute(f"DELETE FROM t WHERE rowid IN ({placeholders})",
-                        [int(d) for d in deletes])
+            con.execute(f"DELETE FROM t WHERE rowid IN ({placeholders})", [int(d) for d in deletes])
 
         for row in inserts:
             cols, frags, binds = [], [], []

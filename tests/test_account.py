@@ -21,6 +21,7 @@ unreachable-control-plane path) and requires the credentials file, like the
 real CLI. FUSED_RENDER_HOME / OPENFUSED_* are redirected to tmp paths so
 nothing touches the real stores.
 """
+
 import json
 import sys
 import time
@@ -30,7 +31,6 @@ from fastapi.testclient import TestClient
 
 import fused_render.account as account_mod
 from fused_render.server import create_app
-
 
 FUSED = {"X-Fused": "1"}  # D3 guard header required on writes
 
@@ -527,9 +527,15 @@ def test_setup_org_env_and_name_derivation(tmp_path, monkeypatch):
     assert resp.json()["env_name"] == "fused-staging"  # fused-<env> for non-default
     (call,) = h.wait_for(lambda: [c for c in h.calls() if c["argv"][:2] == ["cloud", "setup"]])
     assert call["argv"] == [
-        "cloud", "setup", "--no-browser",
-        "--org", "acme", "--env", "staging",
-        "--env-name", "fused-staging",
+        "cloud",
+        "setup",
+        "--no-browser",
+        "--org",
+        "acme",
+        "--env",
+        "staging",
+        "--env-name",
+        "fused-staging",
     ]
     h.wait_setup(lambda j: j["state"] == "done")
 

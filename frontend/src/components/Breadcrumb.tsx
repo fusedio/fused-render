@@ -221,12 +221,17 @@ export function Breadcrumb({ fsPath, home }: { fsPath: string; home?: string }) 
     // Separator only between segments (root already carries the leading
     // slash) — matches the panel path bar's tight `/Users/name/...` format.
     // The "~" crumb carries no slash, so its first segment needs one too.
-    if (i > 0 || underHome) pieces.push(<span key={"sep" + i} className="path-crumb-sep">/</span>);
+    if (i > 0 || underHome)
+      pieces.push(
+        <span key={"sep" + i} className="path-crumb-sep">
+          /
+        </span>,
+      );
     if (isLast) {
       pieces.push(
         <span key={target} className="path-crumb last">
           {part}
-        </span>
+        </span>,
       );
     } else {
       pieces.push(
@@ -240,7 +245,7 @@ export function Breadcrumb({ fsPath, home }: { fsPath: string; home?: string }) 
           }}
         >
           {part}
-        </a>
+        </a>,
       );
     }
   });
