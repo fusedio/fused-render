@@ -108,9 +108,14 @@ _BUNDLE_MANIFEST = re.compile(
     r"<script\b[^>]*\btype\s*=\s*(['\"])application/fused-bundle\1[^>]*>(.*?)</script\s*>",
     re.IGNORECASE | re.DOTALL,
 )
-# A path entry containing any of these is treated as a glob (expanded against the page dir);
-# otherwise it is a literal page-relative path (validated like an explicit include).
-_GLOB_META = re.compile(r"[*?\[\]]")
+# A path entry containing `*` or `?` is treated as a glob (expanded against the page dir);
+# otherwise it is a literal page-relative path (validated like an explicit include). `[`/`]`
+# are deliberately NOT triggers: a literal filename with brackets is common (e.g. a browser
+# "file[1].json" duplicate download), and treating it as a character class would silently
+# omit the real file (zero-match warning) instead of bundling it / erroring on a true miss.
+# A bracket used as an intentional character class still works inside a pattern that already
+# has a `*`/`?`.
+_GLOB_META = re.compile(r"[*?]")
 
 
 class ExportError(Exception):
@@ -356,7 +361,7 @@ def _expand_manifest_include(
 ) -> list[str]:
     """Resolve manifest ``include`` entries (globs and literal paths) to page-relative files.
 
-    A glob (contains ``* ? [ ]``) is expanded against ``page_dir`` (via :func:`_glob_in_page`,
+    A glob (contains ``*`` or ``?``) is expanded against ``page_dir`` (via :func:`_glob_in_page`,
     which walks with directory symlinks disabled) to page-relative, forward-slash paths; a
     glob matching nothing is a **warning** (a declaration of intent may legitimately match
     nothing yet), never an error. A literal entry is passed through unchanged — missing or

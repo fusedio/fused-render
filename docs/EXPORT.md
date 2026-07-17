@@ -154,8 +154,10 @@ travelling inside the single HTML file — add one embedded manifest block to th
 </script>
 ```
 
-- **`include`** takes page-relative **globs** (`*`, `?`, `[…]`, `**` for recursion) and/or
-  literal paths. Globs are expanded against the page dir at export time and each match runs
+- **`include`** takes page-relative **globs** (`*`, `?`, `**` for recursion) and/or
+  literal paths — an entry with no `*`/`?` is a literal, so a real filename with brackets
+  (e.g. a `file[1].json` browser download) is taken as-is, not a character class. Globs are
+  expanded against the page dir at export time and each match runs
   the same safety checks as any asset (`..`/absolute/symlink escapes are rejected). A glob
   that matches nothing is a **warning**; a literal that isn't on disk is an **error**. The
   manifest set is folded in **beneath** any `/api/export` `include`.

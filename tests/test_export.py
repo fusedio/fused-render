@@ -485,6 +485,26 @@ def test_manifest_zero_match_glob_warns_not_errors(tmp_path):
     assert any("matched no files" in w for w in plan.warnings)
 
 
+def test_manifest_bracket_filename_is_literal_not_glob(tmp_path):
+    # A real filename with brackets (e.g. a browser "file[1].json" download) has no */?,
+    # so it's treated as a literal include and bundled — not globbed as a character class
+    # (which would match nothing and silently drop the file).
+    html = _manifest_block('{"include": ["data/file[1].json"]}')
+    _write(tmp_path, "data/file[1].json", "1")
+    plan = plan_export(html, str(tmp_path))
+    assert not plan.errors
+    assert [a.name for a in plan.assets] == ["data/file[1].json"]
+
+
+def test_manifest_missing_bracket_literal_is_error_not_warning(tmp_path):
+    # And when that literal is absent, it's the blocking missing-literal error (a literal),
+    # not a zero-match glob warning.
+    html = _manifest_block('{"include": ["data/file[1].json"]}')
+    plan = plan_export(html, str(tmp_path))
+    assert any("not found" in e for e in plan.errors)
+    assert not any("matched no files" in w for w in plan.warnings)
+
+
 def test_manifest_glob_does_not_follow_directory_symlinks(tmp_path):
     # A `**` glob must not traverse a directory symlink out of the page tree: it would
     # scan/hang on an external tree and turn an out-of-tree file into a blocking error.
