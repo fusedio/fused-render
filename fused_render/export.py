@@ -608,10 +608,12 @@ def plan_export(
 
     # Manual includes: extra files bundled as assets, keyed the same way. A file already
     # brought in by the literal scan (same key) is skipped — bundled once. A file already
-    # bundled as a runPython ENTRYPOINT is skipped too (compare by asset key): it is
-    # served as a route from code/<name>.py, so also copying it under assets/ would ship
-    # the bytes twice and list it as both an entrypoint and an asset. An unsafe or missing
-    # include is a blocking error, like a scanned asset that doesn't exist.
+    # bundled as a runPython ENTRYPOINT is skipped too (compare by asset key): under v2 the
+    # entrypoint already lives at files/<key>, so the concern is not duplicate bytes but the
+    # asset role — adding it as an asset would put that key on the read-only ``_asset``
+    # allow-list, web-exposing the entrypoint's source to GET when it should only be
+    # reachable as a POST-executed route. An unsafe or missing include is a blocking error,
+    # like a scanned asset that doesn't exist.
     entrypoint_keys = {_asset_key(e.path) for e in plan.entrypoints}
     for path in include:
         key = _asset_key(path)
