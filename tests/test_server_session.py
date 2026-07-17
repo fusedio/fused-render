@@ -9,7 +9,9 @@ module importable in venvs where TestClient's httpx dependency is missing, and
 sidesteps create_app's built-shell requirement).
 """
 import json
+import os
 
+import pytest
 from fastapi.responses import JSONResponse
 
 from fused_render.server import _session_get as GET
@@ -133,3 +135,37 @@ def test_empty_query_does_not_clobber_existing_session(tmp_path):
     PUT(body={"path": str(f), "search": "city=oslo"}, x_fused="1")
     assert PUT(body={"path": str(f), "search": ""}, x_fused="1")["skipped"] is True
     assert GET(path=str(f))["lastSession"]["search"] == "city=oslo"
+
+
+# ------------------------------------------------- read-only remote mounts
+# A file browsed inside a read-only S3 mount must not get a lastSession
+# sidecar: os.access(W_OK) lies under CacheMode=full (the write lands in the
+# VFS cache and only 403s at the async upload — the sidecar-write incident),
+# so _session_put must consult the mount's read_only flag and skip the write
+# entirely rather than loop the doomed PutObject.
+
+@pytest.fixture
+def ro_mount(tmp_path, monkeypatch):
+    """A real file under a fake read-only mountpoint inside a redirected
+    FUSED_RENDER_HOME. Returns the absolute file path."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    import fused_render.shell.mounts as mounts
+
+    m = mounts.add_mount("pub", "pub-remote:bucket", read_only=True)
+    mp = mounts.mountpoint(m)
+    os.makedirs(mp)
+    f = os.path.join(mp, "cog.tif")
+    with open(f, "w") as fh:
+        fh.write("x")
+    return f
+
+
+def test_put_skips_under_read_only_mount(ro_mount):
+    # A qualifying (non-_mode) query would normally start a session.
+    resp = PUT(body={"path": ro_mount, "search": "_mode=geotiff&stretch=2,1471"},
+               x_fused="1")
+    assert resp == {"ok": True, "skipped": True}
+    # No sidecar written next to the mounted file.
+    assert not os.path.exists(ro_mount + ".json")
+    # And GET reports no session for it.
+    assert GET(path=ro_mount)["lastSession"] is None
