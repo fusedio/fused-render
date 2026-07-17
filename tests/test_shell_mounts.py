@@ -2196,3 +2196,40 @@ def test_delete_cleanup_rmdirs_empty_leaf_on_posix(home, rcd, monkeypatch):
     resp = mounts_mod.delete_mount(c["id"], x_fused="1")
     assert resp == {"ok": True}
     assert rmdirs == [mp]  # POSIX still removes the empty leaf FUSE/NFS left behind
+
+
+def test_force_unmount_no_subprocess_on_win32_when_leaf_gone(monkeypatch):
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_path_mounted", lambda p: False)
+    ran = []
+    monkeypatch.setattr(mounts_mod.subprocess, "run",
+                        lambda *a, **k: ran.append(a))
+    assert mounts_mod._force_unmount(r"C:\mounts\data") is None
+    assert ran == []  # no umount binary on Windows
+
+
+def test_force_unmount_removes_stale_leaf_on_win32(monkeypatch):
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_path_mounted", lambda p: True)
+    ran = []
+    monkeypatch.setattr(mounts_mod.subprocess, "run",
+                        lambda *a, **k: ran.append(a))
+    removed = []
+    monkeypatch.setattr(mounts_mod.os, "rmdir", lambda p: removed.append(p))
+    assert mounts_mod._force_unmount(r"C:\mounts\data") is None
+    assert removed == [r"C:\mounts\data"]
+    assert ran == []
+
+
+def test_force_unmount_errors_when_stale_leaf_stuck_on_win32(monkeypatch):
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_path_mounted", lambda p: True)
+    monkeypatch.setattr(mounts_mod.subprocess, "run",
+                        lambda *a, **k: pytest.fail("must not shell out on win32"))
+
+    def boom(p):
+        raise OSError("in use")
+
+    monkeypatch.setattr(mounts_mod.os, "rmdir", boom)
+    err = mounts_mod._force_unmount(r"C:\mounts\data")
+    assert err is not None and "in use" in err

@@ -1455,6 +1455,18 @@ def _force_unmount(mp: str) -> str | None:
     mounts whose serving daemon is gone/wedged — there is nothing left to
     corrupt, and rcd's own unmount either failed or can't be asked. Returns
     an error string or None."""
+    if sys.platform == "win32":
+        # No kernel umount on Windows: the rc mount/unmount path (tried first
+        # by callers) is the real teardown, and a WinFsp mount dies with its
+        # owning rcd anyway. All that can remain here is a stale leaf — remove
+        # it best-effort; error only if it won't go.
+        if not _path_mounted(mp):
+            return None
+        try:
+            os.rmdir(mp)
+        except OSError as e:
+            return f"force unmount of {mp} failed: {e}"
+        return None
     attempts = [["umount", mp]]
     if sys.platform == "darwin":
         attempts += [["umount", "-f", mp], ["diskutil", "unmount", "force", mp]]
