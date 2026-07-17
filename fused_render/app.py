@@ -305,7 +305,7 @@ def main() -> None:
         for target in pending:
             webbrowser.open(target)
         # Home tab only when this launch wasn't a document double-click.
-        if not state["docs"]:
+        if not state["docs"] and not os.environ.get("FUSED_RENDER_NO_BROWSER"):
             webbrowser.open(url)
 
     class FusedRenderStatusApp(rumps.App):
