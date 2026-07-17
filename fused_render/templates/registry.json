@@ -370,21 +370,12 @@
   ],
   "/": [
     "_listing",
-    "preview"
+    "preview",
+    "zarr_aoi"
   ],
   ".zarr/": [
     "zarr_aoi",
-    "zarr",
     "_listing"
-  ],
-  ".zgroup": [
-    "zarr"
-  ],
-  ".zattrs": [
-    "zarr"
-  ],
-  ".zmetadata": [
-    "zarr"
   ],
   ".shp": [
     "vector",
