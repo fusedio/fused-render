@@ -626,6 +626,47 @@ def test_public_suggestion_hidden_once_materialized(monkeypatch):
                    for s in mounts_mod._suggestions_view(["aws-open:"]))
 
 
+def test_remote_label_matches_suggestion(monkeypatch):
+    """A materialized remote whose name matches a known suggestion reuses that
+    suggestion's friendly label — one stable human name across its lifecycle."""
+    monkeypatch.setattr(mounts_mod, "_credential_suggestions", lambda: [
+        {"id": "aws-open-public",
+         "label": "AWS S3 — public buckets (no credentials)",
+         "remote_name": "aws-open", "backend": "s3", "kind": "public",
+         "params": {"provider": "AWS", "env_auth": "false"}},
+    ])
+    assert (mounts_mod._remote_label("aws-open:")
+            == "AWS S3 — public buckets (no credentials)")
+
+
+def test_remote_label_falls_back_to_bare_name(monkeypatch):
+    """An unknown/custom remote (no matching suggestion) keeps its bare rclone
+    name as the label."""
+    monkeypatch.setattr(mounts_mod, "_credential_suggestions", lambda: [])
+    assert mounts_mod._remote_label("myminio:") == "myminio:"
+
+
+def test_rclone_state_labels_materialized_remote(monkeypatch):
+    """_rclone_state exposes remotes as {name,label}: a materialized suggestion
+    (aws-open:) carries its friendly label, a custom remote (myminio:) its bare
+    name. The name stays the verbatim rclone spec used as the mount base."""
+    monkeypatch.setattr(mounts_mod, "_credential_suggestions", lambda: [
+        {"id": "aws-open-public",
+         "label": "AWS S3 — public buckets (no credentials)",
+         "remote_name": "aws-open", "backend": "s3", "kind": "public",
+         "params": {"provider": "AWS", "env_auth": "false"}},
+    ])
+    _fake_rclone(monkeypatch, existing_remotes=("aws-open:", "myminio:"))
+
+    state = mounts_mod._rclone_state()
+    assert state["remotes"] == [
+        {"name": "aws-open:", "label": "AWS S3 — public buckets (no credentials)"},
+        {"name": "myminio:", "label": "myminio:"},
+    ]
+    # the materialized aws-open drops out of the suggestions (shown under Remotes)
+    assert not any(s["id"] == "aws-open-public" for s in state["suggested"])
+
+
 def test_detect_materializes_public_anonymous_remote(client, monkeypatch):
     """Selecting the built-in public option creates an anonymous S3 remote —
     no secret material, env_auth=false — so unsigned requests reach open data."""

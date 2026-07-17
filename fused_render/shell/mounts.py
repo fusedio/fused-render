@@ -1719,6 +1719,20 @@ def _credential_suggestions() -> list[dict]:
     return out
 
 
+def _remote_label(remote: str) -> str:
+    """Friendly label for a materialized rclone remote, so it presents under the
+    SAME human name the suggestion used across its whole lifecycle (e.g. the
+    built-in public option shows as "AWS S3 — public buckets…", not the cryptic
+    "aws-open:" it materializes into). Match against the FULL suggestion set —
+    including ones already materialized, which _suggestions_view drops. remotes
+    carry a trailing ':', suggestion remote_name does not. No match (a custom
+    remote like "myminio:") falls back to the bare rclone string."""
+    for s in _credential_suggestions():
+        if f'{s["remote_name"]}:' == remote:
+            return s["label"]
+    return remote
+
+
 def _suggestions_view(remotes: list[str]) -> list[dict]:
     """Public shape, minus any suggestion already materialized as a remote (so
     the built-in aws-open drops out of the suggestions once created and shows
@@ -1743,11 +1757,15 @@ def _rclone_state() -> dict:
         remotes_out = subprocess.run(
             [bin_, "listremotes"], capture_output=True, text=True, timeout=10
         ).stdout
-        remotes = [r.strip() for r in remotes_out.splitlines() if r.strip()]
+        names = [r.strip() for r in remotes_out.splitlines() if r.strip()]
     except (OSError, subprocess.TimeoutExpired, IndexError):
         return {"available": False, "version": None, "remotes": [], "suggested": []}
+    # Each remote carries its verbatim rclone spec (`name`, incl trailing ':',
+    # used unchanged as the mount base) plus a friendly `label` for display —
+    # so a remote reads under one stable human name whatever its lifecycle stage.
+    remotes = [{"name": n, "label": _remote_label(n)} for n in names]
     return {"available": True, "version": version, "remotes": remotes,
-            "suggested": _suggestions_view(remotes)}
+            "suggested": _suggestions_view(names)}
 
 
 def broken_mount_error(path: str) -> str | None:
