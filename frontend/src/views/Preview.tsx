@@ -395,11 +395,13 @@ function TemplatePreview({
   stat,
   templates,
   conditions,
+  onRenderedTitle,
 }: {
   fsPath: string;
   stat: StatResult;
   templates: TemplateEntry[];
   conditions: Record<string, boolean> | null;
+  onRenderedTitle?: (title: string | null) => void;
 }) {
   // Caller only renders this when `templates` (already sentinel-filtered by
   // Preview's dispatch, SPEC PT-12) is non-empty. Entries whose condition.py
@@ -422,6 +424,24 @@ function TemplatePreview({
   // single `_listing` mode), so the preview header is uniform across files and
   // dirs.
   const isListing = entry.mode === "_listing";
+
+  // Tab title (App's StatView owns the actual document.title write): only a
+  // "_render" entry is the file's OWN html, so only it can carry an authored
+  // <title> worth showing over the filename — a template's title is a fixed
+  // generic string ("CSV preview") that's strictly worse than the filename
+  // StatView already falls back to. Reset on every mode change (covers
+  // switching away from "_render") so a stale title never survives a switch;
+  // the "_render" branch overwrites it once its iframe loads. Same-origin
+  // iframe (D3/D4 — /render always serves same-origin), so a direct
+  // contentDocument read is safe and needs no postMessage round trip.
+  useEffect(() => {
+    onRenderedTitle?.(null);
+  }, [mode, onRenderedTitle]);
+  const onRenderFrameLoad = (e: React.SyntheticEvent<HTMLIFrameElement>) => {
+    if (entry.mode !== "_render") return;
+    const title = e.currentTarget.contentDocument?.title.trim();
+    onRenderedTitle?.(title || null);
+  };
 
   // One switch at a time: the flush below is async, and a second click landing
   // mid-flight could resolve in either order, desyncing iframe key / local
@@ -548,7 +568,7 @@ function TemplatePreview({
           <Listing fsPath={fsPath} />
         ) : (
           /* key: switching mode replaces the iframe (fresh document per switch). */
-          <iframe key={mode} src={src as string} />
+          <iframe key={mode} src={src as string} onLoad={onRenderFrameLoad} />
         )}
         {toggleListing && (
           <button type="button" className="preview-browse-chip" onClick={toggleListing}>
@@ -598,9 +618,13 @@ function FallbackPreview({ fsPath, stat }: { fsPath: string; stat: StatResult })
 interface PreviewProps {
   fsPath: string;
   stat: StatResult;
+  // Reports the "_render" iframe's own authored <title>, so callers wanting a
+  // better tab title than the filename can use it (App's StatView). Undefined
+  // for every dispatch branch that isn't the "_render"-carrying TemplatePreview.
+  onRenderedTitle?: (title: string | null) => void;
 }
 
-export default function Preview({ fsPath, stat }: PreviewProps) {
+export default function Preview({ fsPath, stat, onRenderedTitle }: PreviewProps) {
   // Defensive filter (SPEC PT-12): an entry with path===null whose mode isn't
   // a recognized sentinel (`_render`, `_listing`) is dropped. Filtering here
   // keeps the non-empty dispatch check honest (an all-unknown list falls back
@@ -628,6 +652,14 @@ export default function Preview({ fsPath, stat }: PreviewProps) {
     );
   }
   if (visible.length > 0)
-    return <TemplatePreview fsPath={fsPath} stat={stat} templates={visible} conditions={conditions} />;
+    return (
+      <TemplatePreview
+        fsPath={fsPath}
+        stat={stat}
+        templates={visible}
+        conditions={conditions}
+        onRenderedTitle={onRenderedTitle}
+      />
+    );
   return <FallbackPreview fsPath={fsPath} stat={stat} />;
 }
