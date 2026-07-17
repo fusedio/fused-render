@@ -552,6 +552,16 @@ def export_page(
         html = f.read()
     page_dir = os.path.dirname(html_path)
 
+    # The out dir is bundle-owned: export clears its payload dir (and any legacy v1 layout)
+    # on each run. Refuse to write into the page's OWN folder — that would delete the
+    # author's files (their page.html, a data `files/`/`assets/` dir, …). Deploy always
+    # exports to a fresh temp dir; a manual export must target a separate directory.
+    if os.path.realpath(out_dir) == os.path.realpath(page_dir):
+        raise ExportError(
+            "export 'out' must be a separate directory from the page's folder "
+            f"({page_dir}); the bundle output directory is cleared on each export"
+        )
+
     plan = plan_export(html, page_dir, include=include, exclude=exclude)
     if plan.errors:
         raise ExportError(
@@ -594,16 +604,13 @@ def export_page(
         # left untouched. Also sweep any LEGACY v1 layout a prior export left in the same
         # out dir (root page.html + code/ /assets/ /resources/), so a re-export never leaves
         # a mixed v1+v2 tree that a whole-bundle walk would pick stale files out of.
+        # out_dir is guaranteed separate from the page's folder (checked above), so clearing
+        # these bundle-owned paths never touches the author's source files.
         shutil.rmtree(os.path.join(out_dir, _PAYLOAD_DIR), ignore_errors=True)
         for _legacy_dir in ("code", "assets", "resources"):
             shutil.rmtree(os.path.join(out_dir, _legacy_dir), ignore_errors=True)
-        # Remove a legacy root page.html — but NEVER the export's own source page (when the
-        # out dir IS the page's folder and the page is named page.html, the two are the same
-        # file; deleting it would destroy the author's original, leaving it only under files/).
         _legacy_page = os.path.join(out_dir, "page.html")
-        if os.path.isfile(_legacy_page) and os.path.realpath(_legacy_page) != os.path.realpath(
-            html_path
-        ):
+        if os.path.isfile(_legacy_page):
             os.remove(_legacy_page)
         shutil.move(os.path.join(stage, _PAYLOAD_DIR), os.path.join(out_dir, _PAYLOAD_DIR))
         shutil.move(os.path.join(stage, "manifest.json"), os.path.join(out_dir, "manifest.json"))

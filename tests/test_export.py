@@ -224,6 +224,15 @@ def test_non_html_input_rejected(tmp_path):
         export_page(str(p), str(tmp_path / "out"))
 
 
+def test_export_into_page_dir_rejected(tmp_path):
+    # The out dir is cleared on each export, so exporting into the page's OWN folder (which
+    # would delete the author's files) is refused — export must target a separate directory.
+    _write(tmp_path, "page.html", "<script>fused.runPython('./a.py', {});</script>")
+    _write(tmp_path, "a.py", "def main():\n    return 1\n")
+    with pytest.raises(ExportError, match="separate directory"):
+        export_page(str(tmp_path / "page.html"), str(tmp_path))
+
+
 def test_equivalent_asset_literals_both_mapped(tmp_path):
     # `./logo.png` and `logo.png` normalize to the same key but are distinct literals —
     # both must appear in the manifest (the served runtime looks up by exact string).
