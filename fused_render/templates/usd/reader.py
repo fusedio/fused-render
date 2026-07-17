@@ -1,5 +1,6 @@
 # /// script
-# dependencies = ["numpy>=1.26", "msgpack>=1.0", "usd-core>=24.5"]
+# usd-core deliberately absent: convert_worker.py fetches it on demand (D119)
+# dependencies = ["numpy>=1.26", "msgpack>=1.0"]
 # ///
 """Data/dispatch side of the usd preview template.
 

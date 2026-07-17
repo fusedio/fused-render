@@ -45,12 +45,12 @@ bundled = [
     "openpyxl",
     "shapely",
     "geopandas",
-    # Preview-template backends. pandoc and typst are intentionally absent —
-    # they are large per-platform binaries fetched on demand at runtime (see
-    # docs/docs.py, docs/install_worker.py, latex/engine.py).
+    # Preview-template backends. pandoc, typst and usd-core are intentionally
+    # absent — they are large per-platform binaries fetched on demand at
+    # runtime (see docs/docs.py, docs/install_worker.py, latex/engine.py,
+    # usd/convert_worker.py's _ensure_pxr — D119).
     "python-pptx",
     "fpdf2>=2.8.7",
-    "usd-core>=24.5",
     "msgpack>=1.0",
     "rasterio",
     "zarr",
