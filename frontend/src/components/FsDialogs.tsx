@@ -41,13 +41,13 @@ function Overlay({ onCancel, children }: { onCancel: () => void; children: React
 
   return (
     <div
-      className="deploy-overlay"
+      className="modal-overlay deploy-overlay"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onCancel();
       }}
     >
       <div
-        className="deploy-dialog fs-dialog"
+        className="modal-dialog deploy-dialog fs-dialog"
         role="dialog"
         aria-modal="true"
         onMouseDown={(e) => e.stopPropagation()}
@@ -100,13 +100,13 @@ export function PromptDialog({
 
   return (
     <Overlay onCancel={onCancel}>
-      <div className="deploy-head">
+      <div className="modal-head deploy-head">
         <h2>{title}</h2>
-        <button type="button" className="deploy-close" onClick={onCancel} aria-label="Close">
+        <button type="button" className="modal-close deploy-close" onClick={onCancel} aria-label="Close">
           ✕
         </button>
       </div>
-      <div className="deploy-body">
+      <div className="modal-body deploy-body">
         <input
           ref={inputRef}
           className="fs-dialog-input"
@@ -125,7 +125,7 @@ export function PromptDialog({
         />
         {error && trimmed !== "" && <ErrorBanner>{error}</ErrorBanner>}
         <div className="fs-dialog-actions">
-          <button type="button" onClick={onCancel}>
+          <button type="button" className="btn btn-secondary" onClick={onCancel}>
             Cancel
           </button>
           <button type="button" className="btn btn-primary" disabled={!!error} onClick={submit}>
@@ -164,14 +164,14 @@ export function ConfirmDialog({
 
   return (
     <Overlay onCancel={onCancel}>
-      <div className="deploy-head">
+      <div className="modal-head deploy-head">
         <h2>{title}</h2>
-        <button type="button" className="deploy-close" onClick={onCancel} aria-label="Close">
+        <button type="button" className="modal-close deploy-close" onClick={onCancel} aria-label="Close">
           ✕
         </button>
       </div>
       <div
-        className="deploy-body"
+        className="modal-body deploy-body"
         onKeyDown={(e) => {
           if (e.key === "Enter") {
             // Contain the Enter so it can't reach the listing's document-level
@@ -187,7 +187,7 @@ export function ConfirmDialog({
       >
         <p>{message}</p>
         <div className="fs-dialog-actions">
-          <button type="button" onClick={onCancel}>
+          <button type="button" className="btn btn-secondary" onClick={onCancel}>
             Cancel
           </button>
           <button

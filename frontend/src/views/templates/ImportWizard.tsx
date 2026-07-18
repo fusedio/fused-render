@@ -160,7 +160,13 @@ export function ImportWizard({
   const bindingCount = Object.values(activeBindings()).reduce((n, keys) => n + keys.length, 0);
 
   let footer: ReactNode = null;
-  if (step === "manifest" && staged) {
+  if (step === "choose") {
+    footer = (
+      <button type="button" className="btn btn-secondary" onClick={onClose} disabled={busy}>
+        Cancel
+      </button>
+    );
+  } else if (step === "manifest" && staged) {
     footer = (
       <>
         <button type="button" className="btn btn-secondary" onClick={onClose} disabled={busy}>

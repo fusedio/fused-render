@@ -20,6 +20,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
+import { createPortal } from "react-dom";
 
 const FOCUSABLE =
   'a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
@@ -179,7 +180,10 @@ export function Modal({
 
   const dialogStyle: CSSProperties | undefined = width !== undefined ? { width } : undefined;
 
-  return (
+  // Portal to <body>: modals mount from arbitrary spots (e.g. DeployModal
+  // inside the preview toolbar), and ancestor-scoped `button` rules were
+  // leaking into the dialog chrome (boxed ✕ on Deploy only).
+  return createPortal(
     <div
       className="modal-overlay deploy-overlay"
       onMouseDown={(e) => {
@@ -222,7 +226,8 @@ export function Modal({
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

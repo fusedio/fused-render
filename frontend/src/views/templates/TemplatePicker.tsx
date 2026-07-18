@@ -69,7 +69,7 @@ export function TemplatePicker({
     >
       <div className="templates-picker-head">
         <span className="deploy-muted">Add template</span>
-        <button type="button" className="deploy-close" onClick={onClose} aria-label="Close">
+        <button type="button" className="modal-close deploy-close" onClick={onClose} aria-label="Close">
           ✕
         </button>
       </div>
