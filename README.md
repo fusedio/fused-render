@@ -11,6 +11,18 @@ for the full design.
 
 ## Install
 
+**macOS app** — the packaged FusedRender.app (bundles the `fused` CLI and
+rclone; no Python required):
+
+```
+brew install --cask fusedio/tap/fused-render
+```
+
+or download the DMG from the [releases page](https://github.com/fusedio/fused-render/releases).
+
+**Python package** — each release also attaches a wheel (see the release
+notes for its URL): `pip install <wheel-url>`. From a source checkout:
+
 ```
 pip install -e .
 ```
@@ -165,9 +177,10 @@ The modal handles the whole flow:
   environment, joined back to the local pages that deployed them.
 
 Whether a given backend accepts a *page bundle* is the installed `fused` CLI's
-contract (its `spec/serve/fused-render.md`): AWS serving planes build the
-hosted-page artifact today; the managed backend's inline-upload bundle
-classification is an upstream follow-up — until then its CLI error shows in the
+contract (its `spec/serve/fused-render.md`): both the managed backend (inline
+`kind="html"` upload) and AWS serving planes build the hosted-page artifact as
+of `fused` 2.9.3.post6 — the wheel this package pins. A backend running an
+older `fused` rejects the bundle server-side, and its CLI error shows in the
 modal verbatim.
 
 ## Fused account

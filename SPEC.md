@@ -848,9 +848,11 @@ the product gains network access.
 - **DP-15** Version dependency, surfaced not hidden: whether a *bundle* deploy
   succeeds on a given backend is the installed fused CLI's contract, not ours —
   the fused repo's spec/serve/fused-render.md publishes bundles via
-  `share create` on AWS envs and lists the managed backend's inline-upload
-  bundle classification as a follow-up. fused-render passes the CLI's own
-  error through verbatim rather than second-guessing the installed version.
+  `share create` on AWS envs and classifies them for inline upload
+  (`kind="html"`) on the managed backend, both as of fused 2.9.3.post6 (the
+  wheel this package pins); a control plane running an older fused rejects
+  the upload server-side. fused-render passes the CLI's own error through
+  verbatim rather than second-guessing the installed version.
 
 ### 19.5 State & truth
 
