@@ -18,6 +18,9 @@ jobs:
       S3_BUCKET: fused-render
       # CloudFront distribution fronting the fused-render bucket
       # (application/terraform/main, aws_cloudfront_distribution.fused_render).
+      # Flip to render.fused.io once the alias + cert terraform in the
+      # application repo has applied — release-note and latest.json links
+      # pick it up from here.
       CDN_DOMAIN: d2ic19jpchjovp.cloudfront.net
       CLOUDFRONT_DISTRIBUTION_ID: E393B7TS7Y3EDS
     steps:
@@ -112,12 +115,34 @@ jobs:
           aws s3 cp "$DMG_PATH" "s3://${S3_BUCKET}/fused-render-dmgs/$(basename "$DMG_PATH")"
           aws s3 cp "$WHL_PATH" "s3://${S3_BUCKET}/fused-render-wheels/$(basename "$WHL_PATH")"
 
+      - name: Publish download page + version manifest
+        run: |
+          set -euo pipefail
+          # Same version derivation as the homebrew step below: from the DMG
+          # that was actually built, not the git tag.
+          VERSION="$(basename "$DMG_PATH" .dmg | sed 's/^FusedRender-//')"
+          export VERSION
+          python3 scripts/download_page/write_manifest.py > "$RUNNER_TEMP/latest.json"
+          # These root keys need the IAM grant from the application repo
+          # (github_fused_render_policy: index.html + latest.json). Until that
+          # terraform applies, warn instead of failing the release — the page
+          # is cosmetic, the DMG/wheel artifacts above are not.
+          if aws s3 cp "$RUNNER_TEMP/latest.json" "s3://${S3_BUCKET}/latest.json" \
+               --content-type "application/json" --cache-control "max-age=300" \
+             && aws s3 cp scripts/download_page/index.html "s3://${S3_BUCKET}/index.html" \
+               --content-type "text/html; charset=utf-8" --cache-control "max-age=300"; then
+            echo "download page + latest.json published"
+          else
+            echo "::warning::download page/manifest upload failed (root-key IAM grant not applied yet?) — release artifacts are unaffected"
+          fi
+
       - name: Invalidate CloudFront
         run: |
           set -euo pipefail
           aws cloudfront create-invalidation \
             --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
-            --paths "/fused-render-dmgs/*" "/fused-render-wheels/*"
+            --paths "/fused-render-dmgs/*" "/fused-render-wheels/*" \
+            "/index.html" "/latest.json" "/"
 
       - name: Find previous tag
         id: prev_tag
