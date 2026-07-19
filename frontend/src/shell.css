@@ -2240,11 +2240,14 @@ body.embed .preview-browse-chip:hover {
 }
 
 /* rawUrl/readFile-exposed assets — a scanned literal reference ("rawUrl") or a
-   manifest-declared bundle file ("bundle"). Slightly brighter than the muted
-   run/page pills so the list visibly flags which bundled files are web-fetchable
-   via the hosted `_asset` route. */
+   manifest-declared bundle file ("bundle"). Brighter than the muted run/page
+   pills so the list visibly flags which bundled files are web-fetchable via the
+   hosted `_asset` route. Casing is preserved (no uppercase) so "rawUrl" reads as
+   the fused.rawUrl API name rather than "RAWURL". */
 .deploy-file-tag.rawurl {
   color: var(--fg);
+  text-transform: none;
+  letter-spacing: normal;
 }
 
 /* The action column: ✕ is centered, Restore fills it — both sit in the same
