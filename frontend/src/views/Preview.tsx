@@ -436,9 +436,14 @@ function TemplatePreview({
   // that set it; the "_render" branch overwrites it once its iframe loads.
   // Same-origin iframe (D3/D4 — /render always serves same-origin), so a
   // direct contentDocument read is safe and needs no postMessage round trip.
+  const titleObserverRef = useRef<MutationObserver | null>(null);
   useEffect(() => {
     onRenderedTitle?.(null);
-    return () => onRenderedTitle?.(null);
+    return () => {
+      titleObserverRef.current?.disconnect();
+      titleObserverRef.current = null;
+      onRenderedTitle?.(null);
+    };
   }, [mode, onRenderedTitle]);
   const onRenderFrameLoad = (e: React.SyntheticEvent<HTMLIFrameElement>) => {
     if (entry.mode !== "_render") return;
@@ -446,9 +451,25 @@ function TemplatePreview({
     // it: React already detached this exact node (key={mode} swaps it out),
     // so a late event here is stale regardless of what entry.mode's closure
     // says — isConnected is checked at call time, not closure-capture time.
-    if (!e.currentTarget.isConnected) return;
-    const title = e.currentTarget.contentDocument?.title.trim();
-    onRenderedTitle?.(title || null);
+    const frame = e.currentTarget;
+    if (!frame.isConnected) return;
+    const doc = frame.contentDocument;
+    const report = () => {
+      if (!frame.isConnected) return;
+      onRenderedTitle?.(doc?.title.trim() || null);
+    };
+    report();
+    // The authored title can change after load (e.g. a page updates
+    // document.title once async data arrives) — watch <head> (not just the
+    // <title> node) so both a text edit on an existing <title> and a
+    // <title> element added after load are caught; the isConnected guard in
+    // `report` covers the same stale-after-unmount race as above.
+    titleObserverRef.current?.disconnect();
+    if (doc?.head) {
+      const observer = new MutationObserver(report);
+      observer.observe(doc.head, { childList: true, subtree: true, characterData: true });
+      titleObserverRef.current = observer;
+    }
   };
 
   // One switch at a time: the flush below is async, and a second click landing
