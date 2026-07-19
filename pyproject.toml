@@ -30,7 +30,7 @@ dev = [
     "pytest",
     # fastapi.testclient hard-requires httpx at import time.
     "httpx",
-    "ruff",
+    "ruff==0.15.2", # pinned to match .pre-commit-config.yaml's rev
 ]
 # Baked into the bundled CPython of the .app (SPEC DM-2): users of the packaged
 # app cannot pip install, so the interpreter ships with the popular data stack.

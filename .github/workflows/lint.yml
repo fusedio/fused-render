@@ -29,8 +29,10 @@ jobs:
         with:
           filters: |
             python:
-              - 'fused_render/**'
-              - 'tests/**'
+              # ruff runs over the whole repo (`ruff check .`), not just
+              # fused_render/ + tests/ — match every .py file so a change
+              # under examples/, scripts/, or prototypes/ isn't skipped.
+              - '**/*.py'
               - 'pyproject.toml'
               - '.github/workflows/lint.yml'
             frontend:
