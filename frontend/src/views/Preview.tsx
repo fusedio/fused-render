@@ -429,16 +429,24 @@ function TemplatePreview({
   // "_render" entry is the file's OWN html, so only it can carry an authored
   // <title> worth showing over the filename — a template's title is a fixed
   // generic string ("CSV preview") that's strictly worse than the filename
-  // StatView already falls back to. Reset on every mode change (covers
-  // switching away from "_render") so a stale title never survives a switch;
-  // the "_render" branch overwrites it once its iframe loads. Same-origin
-  // iframe (D3/D4 — /render always serves same-origin), so a direct
-  // contentDocument read is safe and needs no postMessage round trip.
+  // StatView already falls back to. Reset on mode change AND on unmount (the
+  // cleanup covers TemplatePreview being swapped out entirely — the resolving
+  // spinner, FallbackPreview, a re-stat that errors — cases the mode-keyed
+  // effect alone never observes) so a stale title never outlives the preview
+  // that set it; the "_render" branch overwrites it once its iframe loads.
+  // Same-origin iframe (D3/D4 — /render always serves same-origin), so a
+  // direct contentDocument read is safe and needs no postMessage round trip.
   useEffect(() => {
     onRenderedTitle?.(null);
+    return () => onRenderedTitle?.(null);
   }, [mode, onRenderedTitle]);
   const onRenderFrameLoad = (e: React.SyntheticEvent<HTMLIFrameElement>) => {
     if (entry.mode !== "_render") return;
+    // Guards a slow "_render" iframe's load firing AFTER a switch away from
+    // it: React already detached this exact node (key={mode} swaps it out),
+    // so a late event here is stale regardless of what entry.mode's closure
+    // says — isConnected is checked at call time, not closure-capture time.
+    if (!e.currentTarget.isConnected) return;
     const title = e.currentTarget.contentDocument?.title.trim();
     onRenderedTitle?.(title || null);
   };
