@@ -697,6 +697,117 @@ def test_detect_materializes_public_anonymous_remote(client, monkeypatch):
     assert not any("secret" in str(x).lower() for x in cmd)
 
 
+def test_gcs_public_bucket_suggestion_always_present(monkeypatch):
+    """The anonymous GCS public-bucket remote is offered alongside aws-open,
+    even with no gcloud credentials — anonymous=true needs no key material."""
+    monkeypatch.setattr(mounts_mod, "_aws_profiles", lambda: [])
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.setattr(mounts_mod.os.path, "exists", lambda p: False)
+
+    by_id = {s["id"]: s for s in mounts_mod._credential_suggestions()}
+    pub = by_id["gcs-open-public"]
+    assert pub["remote_name"] == "gcs-open"
+    assert pub["kind"] == "public"
+    assert pub["backend"] == "google cloud storage"
+    assert pub["params"] == {"anonymous": "true"}
+
+
+def test_detect_materializes_gcs_public_anonymous_remote(client, monkeypatch):
+    """Selecting the built-in GCS public option creates an anonymous GCS remote
+    — no key material, anonymous=true — reaching public buckets unsigned."""
+    created = []
+    _fake_rclone(monkeypatch, existing_remotes=(), record=created)
+
+    r = client.post("/api/mounts/remotes/detect",
+                    json={"id": "gcs-open-public"}, headers=FUSED)
+    assert r.status_code == 200
+    assert r.json()["name"] == "gcs-open:"
+    [cmd] = created
+    assert cmd[:5] == ["/usr/bin/rclone", "config", "create", "gcs-open",
+                       "google cloud storage"]
+    assert "anonymous" in cmd and "true" in cmd
+    assert not any("secret" in str(x).lower() for x in cmd)
+
+
+def test_gcs_anonymous_detected_read_only():
+    """anonymous=true GCS is the gcs-open shape — unauthenticated requests can
+    never take a write, so it must read-only detect like anonymous S3 does."""
+    assert mounts_mod._gcs_anonymous(
+        {"type": "google cloud storage", "anonymous": "true"})
+    assert not mounts_mod._gcs_anonymous({"type": "google cloud storage"})
+    assert not mounts_mod._gcs_anonymous(
+        {"type": "s3", "anonymous": "true"})
+
+
+_DETECTED_SUGG = {
+    "id": "aws-env", "label": "AWS S3 — environment credentials",
+    "remote_name": "aws-env", "backend": "s3",
+    "params": {"provider": "AWS", "env_auth": "true"},
+}
+
+
+def _fake_rclone_probe(monkeypatch, lsd_rc=0, lsd_stderr="", record=None):
+    """Like _fake_rclone but the `lsd` credential probe can be made to fail
+    with a given stderr; records EVERY argv (create, lsd, delete)."""
+    def fake_run(cmd, **kw):
+        if record is not None:
+            record.append(cmd)
+
+        class R:
+            returncode = lsd_rc if "lsd" in cmd else 0
+            stderr = lsd_stderr if "lsd" in cmd else ""
+            stdout = ("rclone v1.2\n" if "version" in cmd
+                      else "{}" if "dump" in cmd else "")
+        return R()
+
+    monkeypatch.setattr(mounts_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: "/usr/bin/rclone")
+
+
+def test_detect_rejects_expired_credentials(client, monkeypatch):
+    """Materializing a detected credential source whose keys are stale (expired
+    STS/SSO token) fails with an actionable message and rolls the half-created
+    remote back — a broken remote must not linger inviting doomed mounts."""
+    monkeypatch.setattr(mounts_mod, "_credential_suggestions",
+                        lambda: [_DETECTED_SUGG])
+    calls = []
+    _fake_rclone_probe(
+        monkeypatch, lsd_rc=1, record=calls,
+        lsd_stderr="ERROR: ExpiredToken: The provided token has expired.")
+
+    r = client.post("/api/mounts/remotes/detect",
+                    json={"id": "aws-env"}, headers=FUSED)
+    assert r.status_code == 502
+    assert "expired" in r.json()["error"].lower()
+    assert any(c[:3] == ["/usr/bin/rclone", "config", "delete"] for c in calls)
+
+
+def test_detect_accepts_access_denied_probe(client, monkeypatch):
+    """AccessDenied means valid keys without ListBuckets permission — the probe
+    must not reject those; only credential-shaped failures do."""
+    monkeypatch.setattr(mounts_mod, "_credential_suggestions",
+                        lambda: [_DETECTED_SUGG])
+    _fake_rclone_probe(monkeypatch, lsd_rc=1,
+                       lsd_stderr="ERROR: AccessDenied: Access Denied")
+
+    r = client.post("/api/mounts/remotes/detect",
+                    json={"id": "aws-env"}, headers=FUSED)
+    assert r.status_code == 200
+    assert r.json()["name"] == "aws-env:"
+
+
+def test_detect_skips_probe_for_public_remotes(client, monkeypatch):
+    """Anonymous public remotes carry no credentials to go stale — no lsd
+    probe runs for them (it would only add latency and network flake)."""
+    calls = []
+    _fake_rclone_probe(monkeypatch, record=calls)
+
+    r = client.post("/api/mounts/remotes/detect",
+                    json={"id": "aws-open-public"}, headers=FUSED)
+    assert r.status_code == 200
+    assert not any("lsd" in c for c in calls)
+
+
 def _fake_rclone(monkeypatch, existing_remotes=(), record=None, configs=None):
     """Stub rclone_bin + subprocess.run: version/listremotes/config-dump canned,
     every other argv appended to `record` and reported as success. `configs` is
@@ -908,6 +1019,95 @@ def test_state_disconnected_when_listing_hangs(home, rcd, monkeypatch):
 def test_state_unmounted_when_nothing_there(home, rcd):
     c, mp = _make_mount(home, rcd, served=False)
     assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "unmounted"
+
+
+# -- broken_mount_error: expired detected credentials ----------------------
+#
+# A mount backed by detected (env_auth) credentials keeps mounting fine, then
+# stops flowing when the SSO/STS token expires — the kernel raises an opaque
+# I/O error, so mount_state reads "disconnected" exactly like a dead daemon.
+# But "reconnect" can't fix an expired token: broken_mount_error probes the
+# remote and, when the failure is credential-shaped, tells the user to re-auth.
+
+
+def _stub_lsd(monkeypatch, rc=0, lsd_stderr="", record=None):
+    """Stub rclone_bin + subprocess.run so the credential probe's `lsd` returns
+    a chosen returncode/stderr; config/get still routes to the stub rcd."""
+    def fake_run(cmd, **kw):
+        if record is not None:
+            record.append(cmd)
+
+        class R:
+            returncode = rc
+            stderr = lsd_stderr
+            stdout = ""
+        return R()
+
+    monkeypatch.setattr(mounts_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: "/usr/bin/rclone")
+
+
+def _disconnected_mount(home, rcd, monkeypatch, remote="corp:bucket"):
+    c, mp = _make_mount(home, rcd, remote=remote, served=False)
+    # ismount True + not served -> "disconnected" (kernel mount, daemon gone).
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    return c, mp
+
+
+def test_broken_mount_error_reports_expired_credentials(
+        home, rcd, monkeypatch, fresh_upstream):
+    c, mp = _disconnected_mount(home, rcd, monkeypatch)
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
+    _stub_lsd(monkeypatch, rc=1,
+              lsd_stderr="ERROR: ExpiredToken: The provided token has expired.")
+
+    err = mounts_mod.broken_mount_error(_os.path.join(mp, "data"))
+    assert err is not None
+    assert "expired" in err.lower() and "refresh" in err.lower()
+    # Must NOT send the user to the reconnect button — that won't re-auth.
+    assert "reconnect" not in err.lower()
+
+
+def test_broken_mount_error_reconnect_when_creds_still_valid(
+        home, rcd, monkeypatch, fresh_upstream):
+    # env_auth remote, but the probe succeeds: the disconnection is a dead
+    # daemon, not stale creds — keep the generic "reconnect" guidance.
+    c, mp = _disconnected_mount(home, rcd, monkeypatch)
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
+    _stub_lsd(monkeypatch, rc=0)
+
+    err = mounts_mod.broken_mount_error(_os.path.join(mp, "data"))
+    assert err is not None and "reconnect" in err.lower()
+
+
+def test_broken_mount_error_skips_cred_probe_for_non_env_auth(
+        home, rcd, monkeypatch, fresh_upstream):
+    # A remote that isn't env_auth-backed can't have detected creds expire —
+    # no lsd probe runs (it would only add latency), and the generic message
+    # stands.
+    c, mp = _disconnected_mount(home, rcd, monkeypatch)
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "false",
+                                   "access_key_id": "AKIA"}
+    calls = []
+    _stub_lsd(monkeypatch, rc=1, lsd_stderr="ExpiredToken", record=calls)
+
+    err = mounts_mod.broken_mount_error(_os.path.join(mp, "data"))
+    assert err is not None and "reconnect" in err.lower()
+    assert not any("lsd" in cmd for cmd in calls)
+
+
+def test_broken_mount_error_no_cred_probe_when_never_mounted(
+        home, rcd, monkeypatch, fresh_upstream):
+    # "unmounted" (never mounted / cleanly disconnected) is a user action, not
+    # a credential failure — the probe must not run for it.
+    c, mp = _make_mount(home, rcd, remote="corp:bucket", served=False)
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
+    calls = []
+    _stub_lsd(monkeypatch, rc=1, lsd_stderr="ExpiredToken", record=calls)
+
+    err = mounts_mod.broken_mount_error(_os.path.join(mp, "data"))
+    assert err is not None and "not mounted" in err.lower()
+    assert not any("lsd" in cmd for cmd in calls)
 
 
 def test_reconnect_force_unmounts_dead_mount_then_remounts(home, rcd, monkeypatch):

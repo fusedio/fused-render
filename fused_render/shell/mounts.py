@@ -656,12 +656,21 @@ def _s3_without_credentials(cfg: dict) -> bool:
                      or cfg.get("session_token")))
 
 
+def _gcs_anonymous(cfg: dict) -> bool:
+    """A GCS remote configured anonymous=true (the built-in gcs-open
+    suggestion) — rclone sends unauthenticated requests, which GCS accepts
+    for public-bucket reads only, so writes can never be accepted."""
+    return (cfg.get("type") == "google cloud storage"
+            and str(cfg.get("anonymous", "")).lower() == "true")
+
+
 def _detect_read_only(port: int, fs: str) -> bool | None:
     """Best-effort, NON-MUTATING read-onlyness probe for a remote. Never
     writes a probe object into the user's store; instead:
       - operations/fsinfo: a backend advertising no write feature at all
         (Put/PutStream/Copy — e.g. http) can never take a write.
-      - config/get: an anonymous S3 remote (see _s3_without_credentials).
+      - config/get: an anonymous S3 or GCS remote (see
+        _s3_without_credentials / _gcs_anonymous).
     Returns None when the probe is INCONCLUSIVE — an rc call failed, or the
     reply didn't carry the expected shape (absence of a Features map is
     version skew, not evidence of read-onlyness) — so the caller persists
@@ -683,7 +692,7 @@ def _detect_read_only(port: int, fs: str) -> bool | None:
         return None
     if not isinstance(cfg, dict):
         return None
-    return _s3_without_credentials(cfg)
+    return _s3_without_credentials(cfg) or _gcs_anonymous(cfg)
 
 
 def _refresh_read_only_flag(m: dict, port: int | None = None) -> None:
@@ -1677,11 +1686,12 @@ def _credential_suggestions() -> list[dict]:
     params) — the endpoint consumes these; the API view (below) exposes only
     id/label/remote_name/kind.
 
-    The first entry is always present: an anonymous S3 remote for public buckets
-    (AWS Open Data, etc.). It needs no credentials — env_auth=false with blank
-    keys makes rclone send unsigned requests — so it works even when the user
-    has no (or expired) AWS creds. region is just the endpoint rclone starts at;
-    it follows S3's region redirect to reach buckets in any region. The rest are
+    The first two entries are always present: anonymous S3 and anonymous GCS
+    remotes for public buckets (AWS Open Data, public GCS datasets, etc.).
+    They need no credentials — S3 via env_auth=false with blank keys (unsigned
+    requests), GCS via anonymous=true — so they work even when the user has no
+    (or expired) cloud creds. region is just the endpoint rclone starts at; it
+    follows S3's region redirect to reach buckets in any region. The rest are
     credential-backed (kind="detected", defaulted in _suggestions_view)."""
     out: list[dict] = [{
         "id": "aws-open-public",
@@ -1690,6 +1700,13 @@ def _credential_suggestions() -> list[dict]:
         "backend": "s3",
         "kind": "public",
         "params": {"provider": "AWS", "env_auth": "false", "region": "us-west-2"},
+    }, {
+        "id": "gcs-open-public",
+        "label": "Google Cloud Storage — public buckets (no credentials)",
+        "remote_name": "gcs-open",
+        "backend": "google cloud storage",
+        "kind": "public",
+        "params": {"anonymous": "true"},
     }]
     for prof in _aws_profiles():
         out.append({
@@ -1818,6 +1835,15 @@ def broken_mount_error(path: str) -> str | None:
     state = mount_state(m, mounted_paths())
     if state == "mounted":
         return None
+    # A mount backed by detected (env_auth) credentials that have since
+    # expired stops flowing with an opaque kernel I/O error — same
+    # "disconnected" symptom as a dead daemon, but "reconnect" can't fix an
+    # expired SSO token. When the remote probes credential-shaped, tell the
+    # user to refresh their credentials instead of pointing them at reconnect.
+    if state in ("disconnected", "stale"):
+        cred_err = _mount_credential_error(m)
+        if cred_err:
+            return f"mount '{name}' — {cred_err}"
     # "stale" (the INCIDENT split-brain) and "disconnected" both mean a mount
     # that was there and stopped flowing — same user-facing wording; only a
     # never-mounted mount reads as "not mounted".
@@ -1973,6 +1999,66 @@ def create_remote(body: dict = Body(...), x_fused: str | None = Header(default=N
     return {"ok": True, "name": name + ":"}
 
 
+# Errors that mean the credential material itself is bad — an expired STS/SSO
+# session, a revoked OAuth grant, a deleted access key — as opposed to valid
+# credentials that merely lack a permission (AccessDenied) or a transient
+# network failure. Matched case-insensitively against rclone's output.
+_BAD_CRED_MARKERS = (
+    "expiredtoken", "expired token", "token has expired", "token is expired",
+    "invalidaccesskeyid", "invalidclienttokenid", "signaturedoesnotmatch",
+    "no valid credential", "nocredentialproviders",
+    "invalid_grant", "unauthenticated", "401 unauthorized",
+    "could not find default credentials",
+)
+
+
+def _detected_credential_error(bin_: str, name: str) -> str | None:
+    """Probe a just-materialized env_auth remote with a top-level listing and
+    return a user-facing message when the underlying credentials are expired
+    or invalid, else None. Detection surfaces creds that merely EXIST in the
+    dotfiles — nothing proves they still work, and mounting with a stale SSO
+    token fails later with an opaque I/O error, so catch it here where the
+    fix is actionable. Only credential-shaped failures (_BAD_CRED_MARKERS)
+    reject: AccessDenied (valid keys without ListBuckets permission) and
+    transient/network errors pass — the check exists to catch stale keys
+    early, not to demand list permission."""
+    try:
+        r = subprocess.run(
+            [bin_, "lsd", f"{name}:", "--max-depth", "1",
+             "--contimeout", "5s", "--timeout", "10s",
+             "--retries", "1", "--low-level-retries", "2"],
+            capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode == 0:
+        return None
+    err = ((r.stderr or "") + (r.stdout or "")).lower()
+    if any(m in err for m in _BAD_CRED_MARKERS):
+        return ("the detected credentials appear expired or invalid — "
+                "refresh them (e.g. `aws sso login` or `gcloud auth "
+                "application-default login`) and try again")
+    return None
+
+
+def _mount_credential_error(m: dict) -> str | None:
+    """For a broken mount whose remote is backed by detected (env_auth)
+    credentials, the 'refresh your credentials' message when a top-level
+    listing now fails credential-shaped — else None. broken_mount_error uses
+    this to distinguish an expired-credential mount (reconnect won't help;
+    the user must re-auth) from a merely dead daemon. Only env_auth remotes
+    are probed: anonymous/public and key-carrying remotes don't expire this
+    way, and the probe (an rclone `lsd`) is paid only on the already-broken
+    fs/list path, never on a healthy listing."""
+    bin_ = rclone_bin()
+    if not bin_:
+        return None
+    name = m["remote"].partition(":")[0]
+    cfg = _remote_config(name)
+    if not isinstance(cfg, dict) or str(cfg.get("env_auth", "")).lower() != "true":
+        return None
+    return _detected_credential_error(bin_, name)
+
+
 @router.post("/api/mounts/remotes/detect")
 def create_detected_remote(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     """Materialize a keyless rclone remote from an auto-detected credential
@@ -2003,4 +2089,17 @@ def create_detected_remote(body: dict = Body(...), x_fused: str | None = Header(
         return JSONResponse({"error": "rclone config create timed out (30s)"}, status_code=502)
     if r.returncode != 0:
         return JSONResponse({"error": (r.stderr or r.stdout or "").strip()[-500:]}, status_code=502)
+    # Public (anonymous) remotes carry no credentials to go stale; only the
+    # detected, env_auth-backed ones get the validity probe. A remote whose
+    # creds turn out expired is rolled back so the broken thing doesn't
+    # linger under Remotes inviting doomed mounts.
+    if sugg.get("kind", "detected") == "detected":
+        cred_err = _detected_credential_error(bin_, name)
+        if cred_err:
+            try:
+                subprocess.run([bin_, "config", "delete", name],
+                               capture_output=True, text=True, timeout=30)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            return JSONResponse({"error": cred_err}, status_code=502)
     return {"ok": True, "name": name + ":"}
