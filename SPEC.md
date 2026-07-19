@@ -626,12 +626,19 @@ nothing. Full detail: `docs/EXPORT.md`.
   (a referenced file, or an `include` file, not on disk).
 - **EX-4a** Warnings — advisory, never blocking: a **computed `rawUrl`/`readFile`
   path** (the exporter can't discover the target from the HTML, but once the target is
-  bundled — via an `include` glob in the page's manifest (EX-7) or an explicit `include`
+  bundled — via an `include` glob in the page's manifest (EX-8) or an explicit `include`
   (EX-6) — the served `_asset` route resolves it by key at request time, and the hosted
   runtime resolves the computed path to that key; a call `fused.rawUrl("data/" + name)`
   is a string *prefix* + expression, so it is counted here as computed, **not**
-  mis-collected as a literal `data/` target), and an **`exclude` that drops a
-  literally-referenced file** (honored, but that call 404s when hosted).
+  mis-collected as a literal `data/` target). This warning is **suppressed when the
+  page's own bundle manifest (EX-8) contributes files**: those are `manifest`-source
+  assets (EX-6), shown as `bundle` provenance pills in §19's list (DP-2a), so the list
+  itself already shows what backs the call and the nag would be redundant — with no
+  manifest includes there is nothing bundled to resolve the computed key against, so it
+  still fires. A per-deployment `include` (EX-6, source `include`) does **not** suppress
+  it: that selection is not checked in with the page, so a fresh export without it would
+  still 404. Also warned: an **`exclude` that drops a literally-referenced file**
+  (honored, but that call 404s when hosted).
 - **EX-5** Route names derive from the `.py` stem (`sine.py` → `sine`), are prefixed
   `run-` when they'd collide with a reserved serve route (`data`, `health`, the
   `_`-prefixed control/shell/asset routes), and are suffixed `-2`, `-3`, … on

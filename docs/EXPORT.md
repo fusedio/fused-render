@@ -127,6 +127,10 @@ Some conditions are **warnings**, not errors — they don't block export:
   the hosted runtime resolves the computed path to that key, so `fused.rawUrl("data/" +
   name)` resolves fine. (A call like that is a string *prefix* plus an expression, so it
   is treated as computed — it is **not** mis-bundled as a literal `data/` target.)
+  This warning is **suppressed once the page's bundle manifest (below) contributes
+  files** — they show as `bundle` assets in the Deploy list, so the list already shows
+  what backs the call. A per-deployment `include` (Deploy modal / `/api/export`) does
+  not suppress it, since that selection isn't checked in with the page.
 - **Excluding a referenced file.** Dropping a file the page literally references is
   honored, but the page's call to it will 404 when hosted.
 

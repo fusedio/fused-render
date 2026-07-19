@@ -572,7 +572,15 @@ def plan_export(
             "computed runPython target cannot be bundled or routed"
         )
     dyn_asset = sum(_dynamic_call_count(html, method) for method in ("rawUrl", "readFile"))
-    if dyn_asset > 0:
+    # Suppressed once the page's own bundle manifest already contributes files: those land as
+    # `manifest`-source assets ("bundle" badges in the Deploy list, §19), which is the
+    # reproducible, checked-in way to back a computed rawUrl/readFile path (EX-8) — the list
+    # then shows what's backing the call, so the nag is redundant. With no manifest includes
+    # there is nothing bundled for the hosted `_asset` route to resolve the computed key
+    # against, so it still fires. A per-deployment `include` (source `include`, e.g. "Add all
+    # in folder") does NOT suppress it: it is not checked in with the page, so a fresh export
+    # without that ad-hoc selection would still 404 — only the manifest travels with the page.
+    if dyn_asset > 0 and not manifest_include:
         plan.warnings.append(
             f"{dyn_asset} fused.rawUrl()/readFile() call(s) use a computed path the "
             "exporter can't resolve — declare the files those calls fetch in a "

@@ -902,9 +902,10 @@ def test_preview_reports_asset_source(tmp_path, monkeypatch):
         "tiles/0.png": "manifest",
         "extra.csv": "include",
     }
-    # The computed rawUrl path still warns — the manifest backs it but the scan
-    # can't verify the glob covers what the page will actually request.
-    assert any("computed path" in w for w in body["warnings"])
+    # The computed rawUrl path's warning is suppressed: the page's manifest bundles
+    # files to back it (shown as a "bundle" provenance pill in the list), so the nag
+    # is redundant.
+    assert not any("computed path" in w for w in body["warnings"])
 
 
 def test_preview_reports_export_blockers(tmp_path, monkeypatch):
