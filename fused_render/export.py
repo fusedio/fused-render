@@ -571,23 +571,8 @@ def plan_export(
             "hosted entrypoint's route name is derived from its literal path, so a "
             "computed runPython target cannot be bundled or routed"
         )
-    dyn_asset = sum(_dynamic_call_count(html, method) for method in ("rawUrl", "readFile"))
-    # Suppressed once the page's own bundle manifest already contributes files: those land as
-    # `manifest`-source assets ("bundle" badges in the Deploy list, §19), which is the
-    # reproducible, checked-in way to back a computed rawUrl/readFile path (EX-8) — the list
-    # then shows what's backing the call, so the nag is redundant. With no manifest includes
-    # there is nothing bundled for the hosted `_asset` route to resolve the computed key
-    # against, so it still fires. A per-deployment `include` (source `include`, e.g. "Add all
-    # in folder") does NOT suppress it: it is not checked in with the page, so a fresh export
-    # without that ad-hoc selection would still 404 — only the manifest travels with the page.
-    if dyn_asset > 0 and not manifest_include:
-        plan.warnings.append(
-            f"{dyn_asset} fused.rawUrl()/readFile() call(s) use a computed path the "
-            "exporter can't resolve — declare the files those calls fetch in a "
-            '<script type="application/fused-bundle"> manifest ("include" globs), or add '
-            'them under "Include files" ("Add all in folder"), so they are bundled and '
-            "served (the hosted _asset route then resolves the computed path by key)"
-        )
+    # The computed-path advisory is emitted AFTER the asset passes below (it depends on the
+    # FINAL bundle), near the end of this function.
 
     taken_names: set[str] = set()
     for path in _literal_paths(html, "runPython"):
@@ -704,6 +689,27 @@ def plan_export(
             else:
                 kept_assets.append(a)
         plan.assets = kept_assets
+
+    # A computed rawUrl/readFile path can't be resolved from the HTML — advisory, never
+    # blocking. Emitted HERE, after dedup and exclude, so it reflects the FINAL bundle:
+    # suppressed only when a `manifest`-source asset actually SURVIVED — a "bundle" badge in
+    # the Deploy list (§19) that shows the user what backs the call. Keyed on the surviving
+    # assets, NOT the raw manifest globs, because a manifest entry can fail to leave a
+    # `manifest` row: one that is also a literal reference is deduped to a `reference` asset,
+    # and any manifest file can be dropped by `exclude`. In both cases no "bundle" row
+    # remains, so the justification ("the list shows what backs it") does not hold and the
+    # nag must still fire. A per-deployment `include` (source `include`, e.g. "Add all in
+    # folder") never suppresses it either: that ad-hoc selection is not checked in with the
+    # page, so a fresh export without it would still 404 — only the manifest travels along.
+    dyn_asset = sum(_dynamic_call_count(html, method) for method in ("rawUrl", "readFile"))
+    if dyn_asset > 0 and not any(a.source == "manifest" for a in plan.assets):
+        plan.warnings.append(
+            f"{dyn_asset} fused.rawUrl()/readFile() call(s) use a computed path the "
+            "exporter can't resolve — declare the files those calls fetch in a "
+            '<script type="application/fused-bundle"> manifest ("include" globs), or add '
+            'them under "Include files" ("Add all in folder"), so they are bundled and '
+            "served (the hosted _asset route then resolves the computed path by key)"
+        )
 
     # Ship first-party modules the (surviving) entrypoints import, so `import helpers`
     # resolves on the hosted page with no hand-listing. Discovered after excludes so a

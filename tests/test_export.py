@@ -124,6 +124,39 @@ def test_manual_include_does_not_suppress_computed_path_warning(tmp_path):
     assert [(a.name, a.source) for a in plan.assets] == [("tiles/0.png", "include")]
 
 
+def test_manifest_file_that_is_also_a_literal_leaves_no_bundle_row_and_warns(tmp_path):
+    # Suppression keys on a SURVIVING `manifest` asset, not the raw manifest globs. When the
+    # only manifest match is also a literal rawUrl target, dedup attributes it to `reference`
+    # (literal wins), so no "bundle" row remains — the computed call still has no visible
+    # backing, so the warning must still fire (Bugbot #192).
+    html = (
+        _manifest_block('{"include": ["data/a.json"]}')
+        + "<script>fused.rawUrl('data/a.json'); const u = fused.rawUrl('data/' + n);</script>"
+    )
+    _write(tmp_path, "data/a.json", "1")
+    plan = plan_export(html, str(tmp_path))
+    assert not plan.errors
+    assert [(a.name, a.source) for a in plan.assets] == [("data/a.json", "reference")]
+    assert not any(a.source == "manifest" for a in plan.assets)
+    assert any("computed path" in w for w in plan.warnings)
+
+
+def test_excluding_the_manifest_file_reinstates_the_computed_path_warning(tmp_path):
+    # A manifest file dropped by `exclude` leaves no "bundle" row, so the suppression
+    # justification no longer holds and the warning must fire again (Bugbot #192).
+    html = (
+        _manifest_block('{"include": ["tiles/*.png"]}')
+        + "<script>const z = 2; fused.rawUrl('tiles/' + z + '.png');</script>"
+    )
+    _write(tmp_path, "tiles/0.png", "PNG")
+    # Without the exclude the warning is suppressed; excluding the sole backing file brings it back.
+    assert not any("computed path" in w for w in plan_export(html, str(tmp_path)).warnings)
+    plan = plan_export(html, str(tmp_path), exclude=["tiles/0.png"])
+    assert not plan.errors
+    assert not any(a.source == "manifest" for a in plan.assets)
+    assert any("computed path" in w for w in plan.warnings)
+
+
 def test_include_bundles_an_unreferenced_file(tmp_path):
     html = "<script>fused.runPython('./sine.py', {});</script>"
     _write(tmp_path, "sine.py", "def main():\n    return 1\n")
