@@ -876,6 +876,37 @@ def test_preview_applies_include_and_exclude(tmp_path, monkeypatch):
     assert any("sine.py" in w for w in body["warnings"])
 
 
+def test_preview_reports_asset_source(tmp_path, monkeypatch):
+    # The preview tags each asset with HOW it's exposed so the "Will publish" list
+    # can mention rawUrl/readFile exposure: a scanned literal reference, a
+    # manifest-declared bundle file, and a hand-added include each land distinctly.
+    h = _harness(tmp_path, monkeypatch)
+    h.page.write_text(
+        '<html><body><script type="application/fused-bundle">'
+        '{"include": ["tiles/*.png"]}</script>'
+        "<script>fused.rawUrl('./logo.png'); const u = fused.rawUrl('tiles/' + z);</script>"
+        "</body></html>",
+        encoding="utf-8",
+    )
+    (tmp_path / "logo.png").write_text("PNG", encoding="utf-8")
+    (tmp_path / "tiles").mkdir()
+    (tmp_path / "tiles" / "0.png").write_text("PNG", encoding="utf-8")
+    (tmp_path / "extra.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    resp = h.client.post(
+        "/api/deploy/preview", json={"path": str(h.page), "include": ["extra.csv"]}
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert {a["name"]: a["source"] for a in body["assets"]} == {
+        "logo.png": "reference",
+        "tiles/0.png": "manifest",
+        "extra.csv": "include",
+    }
+    # The computed rawUrl path still warns — the manifest backs it but the scan
+    # can't verify the glob covers what the page will actually request.
+    assert any("computed path" in w for w in body["warnings"])
+
+
 def test_preview_reports_export_blockers(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
     h.page.write_text(

@@ -460,7 +460,10 @@ def preview_deploy(
     return {
         "page": os.path.basename(page),
         "entrypoints": [{"path": e.path, "name": e.name} for e in plan.entrypoints],
-        "assets": [{"path": a.path, "name": a.name} for a in plan.assets],
+        # `source` lets the "Will publish" list say HOW each asset is exposed: a
+        # scanned literal rawUrl/readFile reference, a manifest-declared bundle file
+        # (backs a computed path), or a hand-added include. See export.Asset.
+        "assets": [{"path": a.path, "name": a.name, "source": a.source} for a in plan.assets],
         "auto": [e.path for e in auto.entrypoints] + [a.path for a in auto.assets],
         "errors": plan.errors,
         "warnings": plan.warnings,

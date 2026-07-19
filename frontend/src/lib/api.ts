@@ -401,13 +401,23 @@ export interface ShareMount {
   page: string | null;
 }
 
+// How a bundled asset is exposed / why it's in the bundle (export.Asset.source):
+//   reference — a literal fused.rawUrl()/readFile() the HTML scan resolved (the
+//               page fetches it via rawUrl/readFile)
+//   manifest  — declared in the page's <script type="application/fused-bundle">
+//               include, the reproducible way to back a *computed* rawUrl/readFile path
+//   include   — added by hand via the modal's include ("Add all in folder")
+// Every asset is served read-only on the hosted `_asset` route regardless; the
+// distinction drives the row's label so the list mentions rawUrl/readFile exposure.
+export type AssetSource = "reference" | "manifest" | "include";
+
 // What deploying a page would publish, resolved fresh from on-disk state —
 // shown BEFORE the Deploy click. Non-empty `errors` means the page cannot be
 // exported as-is (Deploy would fail with exactly these).
 export interface DeployPreview {
   page: string;
   entrypoints: { path: string; name: string }[];
-  assets: { path: string; name: string }[];
+  assets: { path: string; name: string; source: AssetSource }[];
   // The auto-detected default set (literal runPython/rawUrl/readFile paths, before
   // include/exclude). Lets the modal distinguish an auto file (removing → exclude,
   // shown under "Excluded" with restore) from a manual include (removing → just drop).

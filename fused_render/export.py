@@ -141,11 +141,28 @@ class Entrypoint:
 
 @dataclass(frozen=True)
 class Asset:
-    """A ``rawUrl``/``readFile`` target: a read-only file bundled and served by ``_asset``."""
+    """A read-only file bundled and served by the ``_asset`` route — the surface
+    ``fused.rawUrl``/``readFile`` fetch from.
+
+    ``source`` records WHY the file is in the bundle, so the Deploy modal's "Will
+    publish" list can say whether the page is *known* to fetch it via
+    ``rawUrl``/``readFile`` versus bundled to back a computed path or added by hand:
+
+      * ``"reference"`` — a literal ``fused.rawUrl()``/``readFile()`` argument the
+        HTML scan resolved: the page fetches this file via rawUrl/readFile.
+      * ``"manifest"`` — declared in the page's embedded
+        ``<script type="application/fused-bundle">`` include (globs/literals), the
+        reproducible way to back a *computed* rawUrl/readFile path (EX-4a/EX-8).
+      * ``"include"`` — added out-of-band via the caller's / Deploy modal's
+        ``include`` (e.g. "Add all in folder"), not seen in the HTML at all.
+
+    A file reachable more than one way is attributed to the first that claims it,
+    in that order (reference > manifest > include), and bundled once."""
 
     path: str  # the literal string passed to rawUrl/readFile, e.g. "./logo.png"
     name: str  # the asset key the page requests, e.g. "logo.png"
     file: str  # bundle-relative destination, e.g. "files/logo.png"
+    source: str = "reference"  # "reference" | "manifest" | "include" (see above)
 
 
 @dataclass(frozen=True)
@@ -532,8 +549,13 @@ def plan_export(
     # The embedded manifest is read first: its block is stripped from `html` (so its JSON
     # body can't false-positive in the scans below) and its expanded `include` globs are
     # prepended to the caller's include list (both are just added assets; exclude runs last).
+    # The prepend order also fixes provenance: a key declared in BOTH the manifest and the
+    # caller's include is deduped to the manifest entry (first wins), so it is attributed to
+    # the page's own reproducible declaration rather than the ad-hoc selection.
     manifest_include, html = _extract_bundle_manifest(html, plan.errors, plan.warnings)
-    include = _expand_manifest_include(page_dir, manifest_include, plan.errors, plan.warnings) + include
+    manifest_include = _expand_manifest_include(page_dir, manifest_include, plan.errors, plan.warnings)
+    manifest_keys = {_asset_key(p) for p in manifest_include}
+    include = manifest_include + include
 
     for m in _UNSUPPORTED.finditer(html):
         api = m.group(1)
@@ -604,7 +626,9 @@ def plan_export(
             key = _asset_key(path)
             seen_asset_paths.add(path)
             seen_asset_keys.add(key)
-            plan.assets.append(Asset(path=path, name=key, file=f"{_PAYLOAD_DIR}/{key}"))
+            plan.assets.append(
+                Asset(path=path, name=key, file=f"{_PAYLOAD_DIR}/{key}", source="reference")
+            )
 
     # Manual includes: extra files bundled as assets, keyed the same way. A file already
     # brought in by the literal scan (same key) is skipped — bundled once. A file already
@@ -632,7 +656,12 @@ def plan_export(
             plan.errors.append(f"included file {path!r} not found next to the page ({src})")
             continue
         seen_asset_keys.add(key)
-        plan.assets.append(Asset(path=path, name=key, file=f"{_PAYLOAD_DIR}/{key}"))
+        # A manifest-declared file is the page's own reproducible bundle declaration
+        # (it backs a computed rawUrl/readFile path); a caller/modal include is ad-hoc.
+        source = "manifest" if key in manifest_keys else "include"
+        plan.assets.append(
+            Asset(path=path, name=key, file=f"{_PAYLOAD_DIR}/{key}", source=source)
+        )
 
     # Excludes drop matching entrypoints/assets by their literal path OR bundle key.
     # Dropping something the page literally references is the user's call, but warned —

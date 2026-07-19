@@ -154,6 +154,18 @@ auto-detected default — and persists the selection on the deployment record so
 reopened modal reloads it. `/api/export` exposes the same two fields for driving a
 bundle by hand.
 
+Each asset in the list is labelled by how it is exposed, so it is clear which
+bundled files are web-fetchable via `rawUrl`/`readFile`:
+
+- **`rawUrl`** — a literal `fused.rawUrl()`/`readFile()` reference the scan found;
+  the page fetches it via rawUrl/readFile.
+- **`bundle`** — a file declared in the page's `<script type="application/fused-bundle">`
+  manifest (below). These **auto-show up** in the list — they back a *computed*
+  rawUrl/readFile path, so the manifest is how they get bundled without a literal.
+- **`added`** — a file you added by hand ("Add files" / "Add all in folder").
+
+All three are served read-only by the `_asset` route regardless of label.
+
 ### The page's own bundle manifest (checked in, reproducible)
 
 `include`/`exclude` above are the per-deployment selection (kept on the deployment

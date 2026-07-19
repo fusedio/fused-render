@@ -32,6 +32,41 @@ def test_plan_collects_runpython_and_assets(tmp_path):
         ("./sine.py", "sine", "files/sine.py")
     ]
     assert {a.name for a in plan.assets} == {"logo.png", "notes.txt"}
+    # A literal rawUrl/readFile target is exposed via rawUrl/readFile — source "reference".
+    assert {a.source for a in plan.assets} == {"reference"}
+
+
+def test_asset_source_reflects_how_the_file_entered_the_bundle(tmp_path):
+    # Three provenances land as three distinct `source` values so the Deploy modal's
+    # list can say whether the page is known to fetch a file via rawUrl/readFile.
+    html = (
+        _manifest_block('{"include": ["data/*.geojson"]}')
+        + "<script>fused.rawUrl('./logo.png'); const u = fused.rawUrl('data/' + n);</script>"
+    )
+    _write(tmp_path, "logo.png", "PNG")
+    _write(tmp_path, "data/a.geojson", "{}")
+    _write(tmp_path, "extra.csv", "a,b\n1,2\n")
+    plan = plan_export(html, str(tmp_path), include=["extra.csv"])
+    assert not plan.errors
+    by_name = {a.name: a.source for a in plan.assets}
+    assert by_name == {
+        "logo.png": "reference",  # literal fused.rawUrl() target
+        "data/a.geojson": "manifest",  # declared in the page's fused-bundle manifest
+        "extra.csv": "include",  # added out-of-band via the caller's include
+    }
+
+
+def test_literal_reference_wins_source_over_manifest_and_include(tmp_path):
+    # A file reachable more than one way is attributed to the strongest claim
+    # (reference > manifest > include) and bundled once.
+    html = (
+        _manifest_block('{"include": ["logo.png"]}')
+        + "<script>fused.rawUrl('./logo.png');</script>"
+    )
+    _write(tmp_path, "logo.png", "PNG")
+    plan = plan_export(html, str(tmp_path), include=["logo.png"])
+    assert not plan.errors
+    assert [(a.name, a.source) for a in plan.assets] == [("logo.png", "reference")]
 
 
 def test_dynamic_path_is_an_error(tmp_path):
