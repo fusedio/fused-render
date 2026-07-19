@@ -75,7 +75,6 @@
     padding: 10px 18px;
     margin: 6px 0 2px;
   }
-  .btn[aria-disabled="true"] { opacity: 0.5; pointer-events: none; }
   pre {
     background: var(--bg);
     border: 1px solid var(--border);
@@ -109,7 +108,9 @@
 
   <section>
     <h2>macOS</h2>
-    <p><a class="btn" id="dmg" href="https://github.com/fusedio/fused-render/releases" aria-disabled="true">Download for macOS</a></p>
+    <!-- Usable before/without latest.json: falls back to the releases page,
+         upgraded to the direct DMG link once the manifest loads. -->
+    <p><a class="btn" id="dmg" href="https://github.com/fusedio/fused-render/releases">Download for macOS</a></p>
     <p class="muted">Signed and notarized app, macOS 11+. Bundles its own
     Python, the fused CLI, and rclone — nothing else to install.</p>
     <p class="muted">Or with Homebrew:</p>
@@ -120,7 +121,7 @@
     <h2>Python package (macOS, Windows, Linux)</h2>
     <p class="muted">Requires Python 3.10+. Install the wheel, then run
     <code>fused-render</code>:</p>
-    <pre id="pip">pip install fused-render  # wheel URL loads with the current release</pre>
+    <pre id="pip">pip install &lt;wheel-url&gt;  # copy the wheel URL from the latest release</pre>
     <p class="muted">On Windows, <code>fused-render-open --register</code> adds
     Explorer "Open with" integration for every format it previews.</p>
   </section>
@@ -140,15 +141,13 @@
         v.hidden = false;
       }
       if (m.dmg_url) {
-        const dmg = document.getElementById("dmg");
-        dmg.href = m.dmg_url;
-        dmg.removeAttribute("aria-disabled");
+        document.getElementById("dmg").href = m.dmg_url;
       }
       if (m.wheel_url) {
         document.getElementById("pip").textContent = "pip install " + m.wheel_url;
       }
     })
-    .catch(() => { /* the static release-page links above still work */ });
+    .catch(() => { /* button + footer already point at the releases page */ });
 </script>
 </body>
 </html>
