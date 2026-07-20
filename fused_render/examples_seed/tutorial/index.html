@@ -26,6 +26,9 @@
   .tnav a.cur::before { content:""; display:inline-block; width:6px; height:6px; border-radius:50%;
                         background:var(--yellow); margin-right:8px; vertical-align:1px; }
   .tnav a.gone { display:none; }
+  .tnav a.sub { margin:0; padding:4px 12px 4px 27px; border:0; font-size:11.5px; color:var(--mut); }
+  .tnav a.sub:hover { color:var(--text); background:none; }
+  .tnav a.sub .sn { color:var(--yellow); margin-right:6px; font-weight:700; }
   h1 { font-size:27px; margin:0 0 10px; letter-spacing:-.4px; }
   .tag { color:var(--dim); font-size:15.5px; margin:0 0 8px; max-width:660px; }
   .tag b { color:var(--text); font-weight:600; }
@@ -124,6 +127,7 @@
     .tnav { position:static; width:auto; display:flex; flex-wrap:wrap; gap:6px; margin-bottom:26px; }
     .tnav .tlab { display:none; }
     .tnav a { margin:0; padding:7px 11px; border-color:var(--border); background:var(--panel); }
+    .tnav a.sub { display:none; }
   }
 </style>
 </head>
@@ -277,6 +281,27 @@ document.querySelectorAll("#tnav a[data-page]").forEach(a => {
     a.href = viewUrl(p);
     a.target = "_top";
   }).catch(() => a.classList.add("gone"));
+});
+
+// Under the open page's entry, list this page's sections (the numbered h2s)
+// as in-page jump links.
+let navAnchor = document.querySelector("#tnav a.cur");
+document.querySelectorAll(".wrap h2").forEach((h, i) => {
+  if (!h.id) h.id = "s" + (i + 1);
+  const num = h.querySelector(".n");
+  const title = Array.from(h.childNodes)
+    .filter(n => n.nodeType === Node.TEXT_NODE)
+    .map(n => n.textContent).join("").trim();
+  const a = document.createElement("a");
+  a.className = "sub";
+  a.href = "#" + h.id;
+  a.innerHTML = (num ? '<span class="sn">' + num.textContent + '</span>' : "") + title;
+  a.addEventListener("click", e => {
+    e.preventDefault();
+    h.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+  navAnchor.after(a);
+  navAnchor = a;
 });
 
 // Wire an embedded example iff the sibling file actually exists; otherwise
