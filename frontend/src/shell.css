@@ -1809,7 +1809,7 @@ body.embed .preview-browse-chip:hover {
 .modal-body :where(input:not([type="checkbox"], [type="radio"], [type="file"]), select, textarea):focus,
 .mount-form-row :where(input, select):focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--fg-muted);
 }
 
 /* ---- Field primitives (components/field/fields.tsx) ---------------------- */
@@ -1854,7 +1854,7 @@ select.field-control {
 
 .field-control:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--fg-muted);
 }
 
 .field-select-wrap {
@@ -3054,7 +3054,7 @@ select.field-control:has(option[value=""]:checked) {
 
 .templates-search:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--fg-muted);
 }
 
 .templates-toolbar select {
@@ -3357,7 +3357,7 @@ select.field-control:has(option[value=""]:checked) {
 }
 
 .templates-chip-input:focus-within {
-  border-color: var(--accent);
+  border-color: var(--fg-muted);
 }
 
 .templates-chip-draft {
@@ -3431,7 +3431,7 @@ select.field-control:has(option[value=""]:checked) {
 }
 
 .templates-key-input:focus-within {
-  border-color: var(--accent);
+  border-color: var(--fg-muted);
 }
 
 .templates-key-fix {
