@@ -88,13 +88,23 @@ function enqueue<T>(op: () => Promise<T>): Promise<T> {
 }
 
 // What the sidebar actually renders from this store: the collapse flag plus
-// each displayed slot's (path, latest url). Urls are INCLUDED — a stale href
-// is a real bug (middle-click/copy-link navigates to outdated params, RC-3);
-// with stable slots + path-keyed rows a url-only notify re-renders the anchor
-// attributes in place with zero movement and zero remounts.
+// each displayed slot's (path, latest url, latest title). Urls are INCLUDED —
+// a stale href is a real bug (middle-click/copy-link navigates to outdated
+// params, RC-3); with stable slots + path-keyed rows a url-only notify
+// re-renders the anchor attributes in place with zero movement and zero
+// remounts. Title is included for the same reason: the open-record and the
+// title-report re-record that follows it share the same url (only the title
+// differs), so a url-only signature would miss that change entirely and the
+// row would keep showing the basename after the cache already has the title.
 function displaySignature(slots: string[], entries: RecentEntry[], collapsed: boolean): string {
   const byPath = new Map(entries.map((e) => [recentFsPath(e.url), e]));
-  return JSON.stringify([collapsed, slots.map((p) => [p, byPath.get(p)?.url])]);
+  return JSON.stringify([
+    collapsed,
+    slots.map((p) => {
+      const e = byPath.get(p);
+      return [p, e?.url, e?.title];
+    }),
+  ]);
 }
 
 async function refresh(): Promise<void> {

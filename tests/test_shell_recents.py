@@ -147,6 +147,40 @@ def test_open_re_record_updates_title(tmp_path, monkeypatch):
     assert saved["entries"][0]["title"] == "My DB app"
 
 
+def test_open_title_persists_across_titleless_re_record(tmp_path, monkeypatch):
+    # The initial open-record always fires before the async <title> arrives
+    # (and opening straight into a mode other than "_render" never reports
+    # one at all) — a later title-less re-record of the same fs path (a param
+    # update, or just reopening the file) must not erase a title already
+    # learned, so recents never regresses back to the filename once it knows
+    # better.
+    client, home = _client(tmp_path, monkeypatch)
+    f = _make_file(tmp_path)
+    client.post(
+        "/api/recents/open",
+        json={"url": _view_url(f), "title": "My DB app"},
+        headers=FUSED,
+    )
+    client.post("/api/recents/open", json={"url": _view_url(f, "?x=1")}, headers=FUSED)
+    saved = json.loads((home / "recents.json").read_text(encoding="utf-8"))
+    assert len(saved["entries"]) == 1
+    assert saved["entries"][0]["title"] == "My DB app"
+    assert saved["entries"][0]["url"] == _view_url(f, "?x=1")
+
+
+def test_open_new_title_overrides_old_one(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    f = _make_file(tmp_path)
+    client.post(
+        "/api/recents/open", json={"url": _view_url(f), "title": "Old title"}, headers=FUSED
+    )
+    client.post(
+        "/api/recents/open", json={"url": _view_url(f), "title": "New title"}, headers=FUSED
+    )
+    saved = json.loads((home / "recents.json").read_text(encoding="utf-8"))
+    assert saved["entries"][0]["title"] == "New title"
+
+
 def test_get_hides_missing_files_without_deleting_them(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     keep = _make_file(tmp_path, "keep.csv")

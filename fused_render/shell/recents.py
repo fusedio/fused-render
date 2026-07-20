@@ -224,14 +224,25 @@ def post_recent_open(
     data = _read()
     # Dedupe by DECODED target fs path — existence-blind, so a dead entry for
     # the same path (file deleted and recreated since) is replaced rather than
-    # left wasting a cap slot beside the fresh one.
-    kept = [
-        e for e in data["entries"]
-        if not (isinstance(e.get("url"), str) and _decoded_fs_path(e["url"]) == fs_path)
-    ]
+    # left wasting a cap slot beside the fresh one. A title-less record (the
+    # synchronous open-record always fires before the async title arrives;
+    # some modes never report one at all) must not erase a title learned on a
+    # PREVIOUS open — carry the old one forward when this record doesn't
+    # supply a fresher one, so a known title only ever improves, never regresses.
+    existing_title = None
+    kept = []
+    for e in data["entries"]:
+        if isinstance(e.get("url"), str) and _decoded_fs_path(e["url"]) == fs_path:
+            t = e.get("title")
+            if existing_title is None and isinstance(t, str) and t:
+                existing_title = t
+            continue
+        kept.append(e)
     entry = {"url": url, "openedAt": datetime.now(timezone.utc).isoformat()}
     if title is not None:
         entry["title"] = title
+    elif existing_title is not None:
+        entry["title"] = existing_title
     data["entries"] = [entry, *kept][:ENTRY_CAP]
     storage.write_json(_path(), data)
     return {"recorded": True}
