@@ -564,14 +564,27 @@ def test_zarr_named_dir_gate_true_with_no_markers(tmp_path):
     assert cond == {"zarr_aoi": True} and err is None
 
 
-@pytest.mark.parametrize("marker", [".zmetadata", "zarr.json", ".zgroup"])
+@pytest.mark.parametrize("marker", [".zmetadata", ".zgroup"])
 def test_plain_dir_with_store_marker_gates_true(tmp_path, marker):
-    # A non-`.zarr` directory containing a GROUP store marker is detected as a
-    # Zarr store by the "/" key gate — covering consolidated (.zmetadata), v3
-    # group (zarr.json), and v2 group (.zgroup).
+    # A non-`.zarr` directory containing an inherently GROUP-root marker is
+    # detected as a Zarr store by the "/" key gate — consolidated metadata
+    # (.zmetadata, always at the group root) and v2 group (.zgroup). The v3
+    # `zarr.json` marker is group/array-ambiguous and covered separately below.
     store = tmp_path / "data"
     store.mkdir()
     (store / marker).write_text("{}")
+    assert modes(str(store), is_dir=True) == (["_listing", "preview", "zarr_aoi"], None)
+    assert _zarr_condition_main()(str(store)) is True
+    cond, err = conditions(str(store))
+    assert cond == {"zarr_aoi": True} and err is None
+
+
+def test_v3_group_dir_offered(tmp_path):
+    # A non-`.zarr` directory whose `zarr.json` declares a v3 GROUP root is a
+    # loadable store: zarr.open_group() opens it, so the gate offers zarr_aoi.
+    store = tmp_path / "grp"
+    store.mkdir()
+    (store / "zarr.json").write_text('{"zarr_format": 3, "node_type": "group"}')
     assert modes(str(store), is_dir=True) == (["_listing", "preview", "zarr_aoi"], None)
     assert _zarr_condition_main()(str(store)) is True
     cond, err = conditions(str(store))
@@ -589,6 +602,32 @@ def test_bare_array_dir_not_offered(tmp_path):
     assert _zarr_condition_main()(str(store)) is False
     cond, err = conditions(str(store))
     assert cond == {"zarr_aoi": False} and err is None
+
+
+def test_v3_bare_array_dir_not_offered(tmp_path):
+    # The v3 analogue of the `.zarray` case: a `zarr.json` with
+    # node_type == "array" is a v3 bare array root. zarr.open_group() raises on
+    # it, so the gate must NOT offer zarr_aoi (offered-then-broken > not-offered).
+    store = tmp_path / "v3arr"
+    store.mkdir()
+    (store / "zarr.json").write_text('{"zarr_format": 3, "node_type": "array"}')
+    assert _zarr_condition_main()(str(store)) is False
+    cond, err = conditions(str(store))
+    assert cond == {"zarr_aoi": False} and err is None
+
+
+def test_v3_zarr_json_without_node_type_not_offered(tmp_path):
+    # A `zarr.json` that can't be confirmed as a group (missing node_type, or
+    # unparseable) fails closed — the gate never offers a store it can't prove
+    # is group-shaped, so a malformed root stays a plain listing, not an error.
+    store = tmp_path / "ambiguous"
+    store.mkdir()
+    (store / "zarr.json").write_text("{}")
+    assert _zarr_condition_main()(str(store)) is False
+    bad = tmp_path / "unparseable"
+    bad.mkdir()
+    (bad / "zarr.json").write_text("not json{")
+    assert _zarr_condition_main()(str(bad)) is False
 
 
 def test_plain_dir_without_markers_gates_false(tmp_path):
