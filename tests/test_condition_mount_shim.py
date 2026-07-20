@@ -61,7 +61,7 @@ def _mount(monkeypatch, kind_map, read_bytes=None):
     monkeypatch.setattr(mounts_mod, "is_mount_backed",
                         lambda p: isinstance(p, str) and p.startswith(MOUNT_PREFIX))
 
-    def _kind(p):
+    def _kind(p, **k):  # shim now passes a per-probe `timeout=` (budget backstop)
         return kind_map.get(p, kind_map.get("*", "missing"))
 
     monkeypatch.setattr(mounts_mod, "rc_kind_for", _kind)
@@ -195,7 +195,7 @@ def test_from_os_import_stat_routed(monkeypatch, guard_kernel, tmp_path):
     _mount(monkeypatch, {STORE: "dir"})
     monkeypatch.setattr(
         mounts_mod, "rc_stat_result",
-        lambda p: os.stat_result((_s.S_IFDIR | 0o755, 0, 0, 1, 0, 0, 0, 0, 0.0, 0.0)))
+        lambda p, **k: os.stat_result((_s.S_IFDIR | 0o755, 0, 0, 1, 0, 0, 0, 0, 0.0, 0.0)))
     cf = _gate(tmp_path, "from os import stat\n"
                          "def main(path):\n"
                          "    import stat as s\n"
@@ -277,3 +277,31 @@ def test_fs_stat_local_unaffected(tmp_path, guard_kernel):
     assert r.status_code == 200
     body = r.json()
     assert body["is_dir"] is False and body["remote"] is False and body["size"] == 3
+
+
+def test_fs_stat_mount_indeterminate_is_503_not_404(monkeypatch, guard_kernel):
+    # BUG FIX: an rc stat that could not be TAKEN (rcd hung past its deadline /
+    # rc timeout / mount slow) raises a bare OSError — the "indeterminate"
+    # outcome, NOT proof the path is gone. /api/fs/stat must surface a retryable
+    # 503; mapping it to 404 tells the client a path it just opened has vanished.
+    _mount(monkeypatch, {STORE: "dir"})
+
+    def _indeterminate(p, **k):
+        raise OSError(f"rc stat unavailable for {p}")
+
+    monkeypatch.setattr(mounts_mod, "rc_stat_result", _indeterminate)
+    r = _client().get("/api/fs/stat", params={"path": STORE})
+    assert r.status_code == 503
+
+
+def test_fs_stat_mount_confirmed_missing_is_404(monkeypatch, guard_kernel):
+    # A backend confirming the item is gone (FileNotFoundError) is a trustworthy
+    # negative -> a real 404, distinct from the indeterminate 503 above.
+    _mount(monkeypatch, {STORE: "missing"})
+
+    def _gone(p, **k):
+        raise FileNotFoundError(p)
+
+    monkeypatch.setattr(mounts_mod, "rc_stat_result", _gone)
+    r = _client().get("/api/fs/stat", params={"path": STORE})
+    assert r.status_code == 404

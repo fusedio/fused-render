@@ -1537,13 +1537,27 @@ def _mount_safe_stat(path: str) -> os.stat_result:
 
 def _fs_stat(path: str):
     # One stat, not the exists()+isdir()+stat() trio: over a remote mount each
-    # is a round-trip, so a plain metadata fetch cost 3 LISTs. os.path.exists()
-    # returns False for any OSError, so mirror that -> 404. _mount_safe_stat keeps
-    # a mount stat off the kernel (rc API), raising OSError like os.stat on any
-    # unreachable/missing so this 404 path is unchanged.
+    # is a round-trip, so a plain metadata fetch cost 3 LISTs. _mount_safe_stat
+    # keeps a mount stat off the kernel (rc API / direct probe).
+    #
+    # 404 vs 503: FileNotFoundError is a CONFIRMED miss (kernel ENOENT, or a
+    # healthy backend's trustworthy negative) -> 404, matching os.path.exists()'s
+    # OSError->False for a local path. A bare OSError on a MOUNT path is
+    # rc_stat_result's "indeterminate" (rcd unreachable, rc timeout, mount slow /
+    # unresponsive) — NOT proof the path is gone. Mapping it to 404 tells the
+    # client a path it just opened has vanished; surface it as a retryable 503
+    # instead. A non-mount OSError keeps the historical exists()->False -> 404.
+    from fused_render.shell.mounts import is_mount_backed
+
     try:
         st = _mount_safe_stat(path)
+    except FileNotFoundError:
+        return _error(f"no such file or directory: {path}", status=404)
     except OSError:
+        if is_mount_backed(path):
+            return _error(
+                f"mount is slow or unresponsive, could not stat {path}",
+                status=503)
         return _error(f"no such file or directory: {path}", status=404)
     return _stat_payload(path, stat_mod.S_ISDIR(st.st_mode), st)
 
