@@ -302,26 +302,40 @@ export function moveItem(
   });
 }
 
-// Replace top-level bookmark targetId with a new folder containing
-// [target, dragged], preserving the target's slot. Returns the folder id
-// (or null if either lookup fails). draggedId is removed from wherever it
-// lives (top level or another folder), then the folder is created.
+// The children array that directly holds item `id` (the tree root counts).
+// Distinct from containerOf, which resolves a folder id to ITS children.
+function arrayHolding(items: BookmarkItem[], id: string): BookmarkItem[] | undefined {
+  if (items.some((it) => it.id === id)) return items;
+  for (const item of items) {
+    if (!isFolder(item)) continue;
+    const hit = arrayHolding(item.children, id);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
+// Replace bookmark targetId (at any depth) with a new folder containing
+// [target, dragged], preserving the target's slot in its own parent. Returns
+// the folder id (or null if either lookup fails). draggedId is removed from
+// wherever it lives, then the folder is created.
 export function createFolderWith(
   targetId: string,
   draggedId: string
 ): Promise<string | null> {
   return enqueue(async () => {
     const items = clone(cache);
-    const targetIdx = items.findIndex((it) => it.id === targetId && !isFolder(it));
-    if (targetIdx === -1) return null;
+    const target = findById(items, targetId);
+    if (!target || isFolder(target)) return null;
 
     // Remove dragged from wherever it lives — top level or any nested folder.
     const dragged = removeById(items, draggedId);
     if (!dragged || isFolder(dragged)) return null; // combine is bookmarks-only
 
-    // Target index may have shifted if dragged was an earlier top-level item.
-    const target = items.find((it) => it.id === targetId) as Bookmark;
-    const at = items.indexOf(target);
+    // Re-find the containing array AFTER removal: if dragged shared the
+    // target's parent and sat earlier, the target's index has shifted.
+    const siblings = arrayHolding(items, targetId);
+    if (!siblings) return null;
+    const at = siblings.findIndex((it) => it.id === targetId);
     const folder: BookmarkFolder = {
       id: crypto.randomUUID(),
       type: "folder",
@@ -329,7 +343,7 @@ export function createFolderWith(
       collapsed: false,
       children: [target, dragged],
     };
-    items.splice(at, 1, folder);
+    siblings.splice(at, 1, folder);
     await commit(prune(items));
     return folder.id;
   });

@@ -587,15 +587,14 @@ export default function Sidebar({ config }: SidebarProps) {
   const dropZone = (
     e: React.DragEvent<HTMLDivElement>,
     row: HTMLDivElement,
-    rowIsFolder: boolean,
-    rowIsChild: boolean
+    rowIsFolder: boolean
   ): "above" | "below" | "into" | null => {
     const rect = row.getBoundingClientRect();
     const y = e.clientY - rect.top;
     // "into": a folder row accepts anything at any depth (D121 nesting);
-    // a bookmark onto a top-level bookmark still combines into a new folder
-    // (never inside a folder, never with a dragged folder — no folder combine).
-    const combine = rowIsFolder || (!draggedIsFolderRef.current && !rowIsChild);
+    // a bookmark onto a bookmark at any depth combines into a new subfolder
+    // (dragged folders never combine — folders only nest via folder rows).
+    const combine = rowIsFolder || !draggedIsFolderRef.current;
     if (combine) {
       if (y < rect.height * 0.25) return "above";
       if (y > rect.height * 0.75) return "below";
@@ -646,8 +645,7 @@ export default function Sidebar({ config }: SidebarProps) {
   const onRowDragOver = (
     e: React.DragEvent<HTMLDivElement>,
     id: string,
-    rowIsFolder: boolean,
-    rowIsChild: boolean
+    rowIsFolder: boolean
   ) => {
     if (draggedIdRef.current === null || draggedIdRef.current === id) return;
     const row = e.currentTarget;
@@ -656,7 +654,7 @@ export default function Sidebar({ config }: SidebarProps) {
       row.classList.remove("drag-above", "drag-below", "drag-into");
       return;
     }
-    const zone = dropZone(e, row, rowIsFolder, rowIsChild);
+    const zone = dropZone(e, row, rowIsFolder);
     if (zone === null) return;
     e.preventDefault(); // required to allow a drop
     e.dataTransfer.dropEffect = "move";
@@ -679,15 +677,15 @@ export default function Sidebar({ config }: SidebarProps) {
     if (overOwnSubtree(id)) return; // moveItem's cycle guard is the backstop
     const draggedId = draggedIdRef.current;
     const row = e.currentTarget;
-    const zone = dropZone(e, row, rowIsFolder, rowIsChild);
+    const zone = dropZone(e, row, rowIsFolder);
     if (zone === null) return;
     e.preventDefault();
     const below = zone === "below";
 
     if (zone === "into" && !rowIsFolder) {
-      // Bookmark onto a top-level bookmark: make a folder of the two, then
-      // immediately rename it. Reset drag state before the await so a stale
-      // ref can't leak into a follow-up drag.
+      // Bookmark onto a bookmark (any depth): make a folder of the two in the
+      // target's slot, then immediately rename it. Reset drag state before the
+      // await so a stale ref can't leak into a follow-up drag.
       draggedIdRef.current = null;
       draggedIsFolderRef.current = false;
       const folderId = await createFolderWith(id, draggedId);
@@ -733,7 +731,7 @@ export default function Sidebar({ config }: SidebarProps) {
 
   const dragProps = (id: string, rowIsFolder: boolean, rowIsChild: boolean): DragProps => ({
     onDragStart: (e) => onRowDragStart(e, id, rowIsFolder),
-    onDragOver: (e) => onRowDragOver(e, id, rowIsFolder, rowIsChild),
+    onDragOver: (e) => onRowDragOver(e, id, rowIsFolder),
     onDragLeave: onRowDragLeave,
     onDrop: (e) => onRowDrop(e, id, rowIsFolder, rowIsChild),
     onDragEnd: onRowDragEnd,
