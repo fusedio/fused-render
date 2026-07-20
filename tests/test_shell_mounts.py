@@ -1860,6 +1860,53 @@ def test_upstream_url_public_s3_when_link_unsupported(home, rcd, fresh_upstream)
     assert len([x for x in rcd.calls if x[0] == "config/get"]) == 1
 
 
+def test_gcs_public_object_url_builds_unsigned_url(home, rcd, fresh_upstream):
+    # Anonymous GCS objects are reachable by a plain path-style storage URL —
+    # no region, no dotted-bucket rule. The key is percent-encoded exactly as
+    # the S3 builder encodes it.
+    mounts_mod._upstream_cfg["gcs-open"] = {
+        "type": "google cloud storage", "anonymous": "true"}
+    assert mounts_mod._gcs_public_object_url(
+        "gcs-open:bucket/pre fix", "k ey.parquet") == (
+        "https://storage.googleapis.com/bucket/pre%20fix/k%20ey.parquet")
+    # A non-anonymous GCS remote has no reachable unsigned URL.
+    mounts_mod._upstream_cfg["gcp"] = {"type": "google cloud storage"}
+    assert mounts_mod._gcs_public_object_url("gcp:bucket", "x.parquet") is None
+
+
+def test_upstream_url_public_gcs_when_anonymous(home, rcd, fresh_upstream):
+    import os
+
+    # Anonymous GCS remotes can never presign either — the config makes that
+    # knowable up front, so publiclink is never attempted and the plain public
+    # object URL is minted directly, config memoized for later objects.
+    rcd.responses["config/get"] = {
+        "type": "google cloud storage", "anonymous": "true"}
+    c = mounts_mod.add_mount("open", "gcs-open:bucket/pre fix")
+    f = os.path.join(mounts_mod.mountpoint(c), "k ey.parquet")
+    assert mounts_mod.upstream_url_for(f) == (
+        "https://storage.googleapis.com/bucket/pre%20fix/k%20ey.parquet")
+    f2 = os.path.join(mounts_mod.mountpoint(c), "other.parquet")
+    assert mounts_mod.upstream_url_for(f2) == (
+        "https://storage.googleapis.com/bucket/pre%20fix/other.parquet")
+    assert [x for x in rcd.calls if x[0] == "operations/publiclink"] == []
+    assert len([x for x in rcd.calls if x[0] == "config/get"]) == 1
+
+
+def test_upstream_url_non_anonymous_gcs_gets_no_public_url(home, rcd, fresh_upstream):
+    import os
+
+    # A non-anonymous GCS remote whose publiclink fails has no reachable
+    # unsigned URL — the verdict is cached like the credentialed-S3 case.
+    rcd.responses["operations/publiclink"] = (500, {"error": "boom"})
+    rcd.responses["config/get"] = {"type": "google cloud storage"}
+    c = mounts_mod.add_mount("gcp", "gcp:bucket")
+    f = os.path.join(mounts_mod.mountpoint(c), "x.parquet")
+    assert mounts_mod.upstream_url_for(f) is None
+    assert mounts_mod.upstream_url_for(f) is None
+    assert len([x for x in rcd.calls if x[0] == "operations/publiclink"]) == 1
+
+
 def test_upstream_url_none_is_remembered(home, rcd, fresh_upstream):
     import os
 

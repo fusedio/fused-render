@@ -987,6 +987,15 @@ def _anonymous_s3(cfg: dict | None) -> bool:
             and not cfg.get("endpoint"))
 
 
+def _cannot_presign(cfg: dict | None) -> bool:
+    """True when the remote is anonymous S3 or anonymous GCS — the backend
+    classes that can never presign (S3's "unsupported signer type noAuth", and
+    anonymous GCS carrying no signing key at all) but reach their public
+    objects by a plain unsigned URL instead. Lets _upstream_url_for skip the
+    wasted publiclink rc call for either backend."""
+    return cfg is not None and (_anonymous_s3(cfg) or _gcs_anonymous(cfg))
+
+
 def _mount_for(path: str) -> tuple[dict | None, str]:
     """(mount record, remote-relative path) for a path under a mountpoint."""
     p = os.path.abspath(path)
@@ -1059,6 +1068,25 @@ def _public_object_url(fs: str, rel: str) -> str | None:
     key = (prefix + "/" if prefix else "") + rel
     # _s3_base_url applies the dotted-bucket path-style rule (see there).
     return _s3_base_url(bucket, region) + "/" + urllib.parse.quote(key)
+
+
+def _gcs_public_object_url(fs: str, rel: str) -> str | None:
+    """Plain https URL for an object on an ANONYMOUS GCS remote — the GCS
+    analog of _public_object_url. GCS always path-addresses the bucket
+    (storage.googleapis.com/<bucket>/<key>), so there is no region and no
+    dotted-bucket rule. Credentialed or non-GCS remotes return None (their
+    objects aren't reachable unsigned). Pure string building once
+    _remote_config has memoized the config — no rc round trip per object."""
+    cfg = _remote_config(fs.partition(":")[0])
+    if not _gcs_anonymous(cfg or {}):
+        return None
+    derived = _gcs_bucket_prefix(fs)
+    if derived is None:
+        return None
+    bucket, prefix = derived
+    key = (prefix + "/" if prefix else "") + rel
+    # Match _public_object_url's key quoting (same default safe chars).
+    return f"https://storage.googleapis.com/{bucket}/{urllib.parse.quote(key)}"
 
 
 # ------------------------------------------------------- direct S3 pagination
@@ -1356,9 +1384,10 @@ def _upstream_url_for(path: str) -> str | None:
         mode = _upstream_mode.get(fs)
     if mode == "none":
         return None
-    if mode is None and _anonymous_s3(_remote_config(fs.partition(":")[0])):
-        # Anonymous S3 can never presign — don't burn an rc call per remote
-        # learning that from publiclink's "unsupported signer type" error.
+    if mode is None and _cannot_presign(_remote_config(fs.partition(":")[0])):
+        # Anonymous S3 or GCS can never presign — don't burn an rc call per
+        # remote learning that from publiclink's "unsupported signer type"
+        # error.
         mode = "public"
     url = None
     if mode in (None, "link"):
@@ -1378,7 +1407,9 @@ def _upstream_url_for(path: str) -> str | None:
         if url is not None:
             mode = "link"
     if url is None:
-        url = _public_object_url(fs, rel)
+        # Dispatch by backend, mirroring direct_list_page: whichever object-URL
+        # builder recognizes the remote returns a non-None URL, the rest None.
+        url = _public_object_url(fs, rel) or _gcs_public_object_url(fs, rel)
         mode = "public" if url else "none"
     with _upstream_lock:
         _upstream_mode[fs] = mode
