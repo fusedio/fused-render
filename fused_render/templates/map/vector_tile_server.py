@@ -75,11 +75,13 @@ def main(action: str = "ensure"):
         with open(STATE) as f:
             st = json.load(f)
         if _alive(st.get("port"), version):
-            return {"port": st["port"], "reused": True, "version": version}
+            return {"port": st["port"], "token": st.get("token"),
+                    "reused": True, "version": version}
         try:
             import urllib.request
             urllib.request.urlopen(
-                f"http://127.0.0.1:{st.get('port')}/quit", timeout=1).read()
+                f"http://127.0.0.1:{st.get('port')}/quit?t={st.get('token', '')}",
+                timeout=1).read()
         except Exception:
             pass
     except (OSError, ValueError):
@@ -97,7 +99,8 @@ def main(action: str = "ensure"):
             with open(STATE) as f:
                 st = json.load(f)
             if st.get("version") == version and _alive(st.get("port"), version):
-                return {"port": st["port"], "reused": False, "version": version}
+                return {"port": st["port"], "token": st.get("token"),
+                        "reused": False, "version": version}
         except (OSError, ValueError):
             continue
     return {"error": f"daemon did not start — see {log}"}
@@ -113,8 +116,14 @@ except ImportError:
 # ================================================================ daemon
 def _serve():
     import duckdb
+    import secrets
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from urllib.parse import urlparse, parse_qs
+
+    # Per-daemon secret required on every endpoint except /ping; map_render.py
+    # threads it into the tile/status/meta URLs it hands the client as ?t=.
+    # See geotiff/tile_server.py for the rationale.
+    TOKEN = secrets.token_urlsafe(32)
 
     sys.path.insert(0, os.path.dirname(_me()))
     VERSION = _version()
@@ -647,6 +656,8 @@ def _serve():
             u = urlparse(self.path)
             if u.path == "/ping":
                 return 200, json.dumps({"ok": True, "version": VERSION}).encode(), "application/json"
+            if q.get("t", [""])[0] != TOKEN:
+                return 403, b"forbidden", "text/plain"
             if u.path == "/quit":
                 threading.Thread(target=srv.shutdown, daemon=True).start()
                 return 200, b"bye", "text/plain"
@@ -710,7 +721,8 @@ def _serve():
     port = srv.server_address[1]
     os.makedirs(os.path.dirname(STATE), exist_ok=True)
     with open(STATE, "w") as fh:
-        json.dump({"port": port, "pid": os.getpid(), "version": VERSION}, fh)
+        json.dump({"port": port, "token": TOKEN,
+                   "pid": os.getpid(), "version": VERSION}, fh)
 
     def reaper():
         while True:

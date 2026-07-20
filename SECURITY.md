@@ -44,8 +44,8 @@ that isn't there.
 
 ## What *is* guarded, and why it's narrow
 
-Two targeted mitigations actually hold against an adversary. Neither is
-authentication and neither changes the trust model above:
+A few targeted mitigations hold against an adversary. None is authentication
+and none changes the trust model above:
 
 - **Cross-origin POST guard (D36).** The two mutating/executing endpoints,
   `POST /api/run` and `POST /api/fs/write`, require a custom `X-Fused: 1`
@@ -56,33 +56,24 @@ authentication and neither changes the trust model above:
   app's own same-origin JS gets through. This blocks blind foreign POSTs;
   it does nothing against a page that can otherwise run inside the trust
   boundary above.
+- **Tile-daemon access token (D122).** The built-in map templates (`geotiff/`,
+  `netcdf/`, `map/`, `zarr_aoi/`) each spin up a localhost tile daemon on a
+  random port that answers with `Access-Control-Allow-Origin: *` so the
+  template's cross-port iframe can read tiles. The loopback bind is *not* the
+  boundary here: a malicious page open in the same browser can fetch
+  `http://127.0.0.1:<port>/...` cross-origin, and open CORS would let it read
+  the reply. So each daemon mints a random token at startup and requires it
+  (`?t=<token>`) on every endpoint except `/ping`; the template gets the token
+  from the daemon handshake and threads it into every request. A foreign page
+  can't produce a valid request even if it guesses the port. The token lives
+  in the daemon's state file, so it is only as private as the local
+  filesystem — which is consistent with the trust model above (local read is
+  already out of scope; this guards the *browser* boundary).
 - **Write-write races, not unauthorized writes.** `POST /api/fs/write` uses
   an atomic write (temp file + `fsync` + `os.replace`) gated by an optimistic
   `expected_mtime` check (409 on conflict). This protects against two
   editors silently clobbering each other's changes; it is not an access
   control — anyone who can reach the endpoint with a fresh mtime can write.
-
-## Known, accepted exposures (not guards)
-
-These are real, narrow trade-offs shipped as-is — worth naming precisely
-rather than filing under "guarded":
-
-- **Tile daemons leak local file data to any page in your browser, not just
-  fused-render's own UI.** `geotiff/`, `netcdf/`, `map/`, and `zarr_aoi/` are
-  built-in templates enabled by default (see `templates/registry.json`);
-  each spins up its own localhost tile daemon that answers every request
-  with `Access-Control-Allow-Origin: *` (D122). Binding to `127.0.0.1` does
-  **not** protect against the relevant threat here: a malicious web page
-  open in the *same browser*, on any origin, can have its JS fetch
-  `http://127.0.0.1:<port>/...` — loopback binding only stops a different
-  *machine* from connecting, it does nothing to stop your own browser from
-  being the one making the request. Because the daemon returns open CORS,
-  that foreign page really can read the tile/metadata bytes back. The only
-  practical obstacle is that each daemon binds a random ephemeral port per
-  run, so a foreign page has to guess it — that's obscurity, not access
-  control. Impact is bounded to read-only tile/metadata bytes for whichever
-  local file the daemon happens to be serving; there's no write, no code
-  execution reachable through it.
 
 ## Network / supply chain
 
@@ -129,7 +120,7 @@ a shared machine.
 If you find a security issue, please open a
 [private security advisory](https://github.com/fusedio/fused-render/security/advisories/new)
 on this repository rather than a public issue. Given the trust model above,
-most impactful reports will concern the two things actually meant to hold —
-the `X-Fused` cross-origin POST guard (D36) and the `127.0.0.1` bind itself —
-rather than the local filesystem/code-execution access that is the intended
-design, or the accepted exposures named above.
+most impactful reports will concern the things actually meant to hold — the
+`X-Fused` cross-origin POST guard (D36), the tile-daemon access token (D122),
+and the `127.0.0.1` bind itself — rather than the local filesystem/code-execution
+access that is the intended design.
