@@ -712,6 +712,27 @@ def test_gcs_public_bucket_suggestion_always_present(monkeypatch):
     assert pub["params"] == {"anonymous": "true"}
 
 
+def test_gcs_env_credentials_suggestion_detected(monkeypatch):
+    """GOOGLE_APPLICATION_CREDENTIALS (a service-account JSON path) is detected
+    symmetrically with AWS_ACCESS_KEY_ID → a keyless env_auth=true GCS
+    suggestion; absent, it isn't offered. No key material is copied."""
+    monkeypatch.setattr(mounts_mod, "_aws_profiles", lambda: [])
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.setattr(mounts_mod.os.path, "exists", lambda p: False)
+
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/creds/sa.json")
+    by_id = {s["id"]: s for s in mounts_mod._credential_suggestions()}
+    sug = by_id["gcs-env"]
+    assert sug["remote_name"] == "gcs-env"
+    assert sug["backend"] == "google cloud storage"
+    assert sug["params"] == {"env_auth": "true"}
+    assert not any("secret" in k or "key" in k for k in sug["params"])
+
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    by_id = {s["id"]: s for s in mounts_mod._credential_suggestions()}
+    assert "gcs-env" not in by_id
+
+
 def test_detect_materializes_gcs_public_anonymous_remote(client, monkeypatch):
     """Selecting the built-in GCS public option creates an anonymous GCS remote
     — no key material, anonymous=true — reaching public buckets unsigned."""

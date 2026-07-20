@@ -1907,6 +1907,14 @@ def _credential_suggestions() -> list[dict]:
             "backend": "google cloud storage",
             "params": {"env_auth": "true"},
         })
+    if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+        out.append({
+            "id": "gcs-env",
+            "label": "Google Cloud Storage — environment credentials",
+            "remote_name": "gcs-env",
+            "backend": "google cloud storage",
+            "params": {"env_auth": "true"},
+        })
     return out
 
 
