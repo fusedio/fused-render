@@ -36,6 +36,7 @@ PACKAGE_SEED_DIR = os.path.join(
 # workspace root and sine.py's __pycache__ stays inside the subfolder.
 _SINE_HTML = os.path.join("sine", "sine.html")
 _EXPLAINER_HTML = os.path.join("how_it_works", "explainer.html")
+_TUTORIAL_HTML = os.path.join("tutorial", "index.html")
 
 
 def fused_dir() -> str:
@@ -168,6 +169,10 @@ def _seed_examples(fdir: str) -> bool:
     if nonempty:
         return False
     for entry in os.scandir(PACKAGE_SEED_DIR):
+        # Hidden metadata (.DS_Store a dev machine dropped into the package
+        # dir) is not seed content — mirror the emptiness check above.
+        if entry.name.startswith("."):
+            continue
         dest = os.path.join(fdir, entry.name)
         partial = os.path.join(fdir, "." + entry.name + ".partial")
         _remove(partial)  # defensive: no residue from this same run
@@ -199,6 +204,12 @@ def _seed_bookmarks(fdir: str) -> None:
             "id": str(uuid.uuid4()),
             "name": "How it works",
             "url": _view_url(os.path.join(fdir, _EXPLAINER_HTML)),
+            "created_at": now,
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "name": "Tutorial",
+            "url": _view_url(os.path.join(fdir, _TUTORIAL_HTML)),
             "created_at": now,
         },
     ]

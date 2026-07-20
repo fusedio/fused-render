@@ -23,19 +23,26 @@ def _bookmarks(home):
     return json.loads((home / "bookmarks.json").read_text(encoding="utf-8"))
 
 
+# Every project folder the packaged seed ships (dot-metadata like .DS_Store on
+# a dev machine is skipped by the seeder and must never land).
+SEED_DIRS = ["how_it_works", "showcase", "sine", "start_here", "tutorial"]
+
+
 def test_seeds_examples_into_empty_dir(tmp_path, monkeypatch):
     fdir, _ = _setup(tmp_path, monkeypatch)
     returned = ensure_fused_dir()
 
     assert returned == str(fdir)
-    # All four packaged seed files land, each inside its own subfolder — nothing
+    # The packaged seed files land, each inside its own subfolder — nothing
     # loose at the workspace root.
     assert (fdir / "sine" / "sine.html").is_file()
     assert (fdir / "sine" / "sine.py").is_file()
     assert (fdir / "how_it_works" / "demo.py").is_file()
     assert (fdir / "how_it_works" / "explainer.html").is_file()
-    # Nothing spilled to the root: only the two example subfolders exist.
-    assert sorted(p.name for p in fdir.iterdir()) == ["how_it_works", "sine"]
+    assert (fdir / "tutorial" / "index.html").is_file()
+    assert (fdir / "tutorial" / "hello.py").is_file()
+    # Nothing spilled to the root: only the example subfolders exist.
+    assert sorted(p.name for p in fdir.iterdir()) == SEED_DIRS
 
 
 def test_non_empty_dir_is_left_untouched(tmp_path, monkeypatch):
@@ -73,7 +80,7 @@ def test_bookmarks_created_when_absent_with_view_urls(tmp_path, monkeypatch):
     ensure_fused_dir()
 
     marks = _bookmarks(home)
-    assert [m["name"] for m in marks] == ["Sine demo", "How it works"]
+    assert [m["name"] for m in marks] == ["Sine demo", "How it works", "Tutorial"]
     # Sine demo opens a two-pane panel split (render | code) — parses back under
     # the layout codec to the SAME sine page in both panes, right in code mode.
     left, right = _parse_panel(marks[0]["url"])
@@ -82,6 +89,10 @@ def test_bookmarks_created_when_absent_with_view_urls(tmp_path, monkeypatch):
     # How it works stays a plain /view/ + per-segment-encoded absolute path.
     assert marks[1]["url"] == "/view" + _encoded(
         str(fdir / "how_it_works" / "explainer.html")
+    )
+    # Tutorial is likewise a plain /view/ URL onto the seeded page.
+    assert marks[2]["url"] == "/view" + _encoded(
+        str(fdir / "tutorial" / "index.html")
     )
     # UUIDv4 ids + a numeric created_at, matching the store's shape.
     for m in marks:
@@ -214,7 +225,7 @@ def test_partial_seed_leftover_is_cleaned_and_reseeded(tmp_path, monkeypatch):
     assert not partial.exists()
     assert (fdir / "sine" / "sine.html").is_file()
     assert (fdir / "how_it_works" / "explainer.html").is_file()
-    assert sorted(p.name for p in fdir.iterdir()) == ["how_it_works", "sine"]
+    assert sorted(p.name for p in fdir.iterdir()) == SEED_DIRS
     # Bookmarks ride along with the completed seed.
     assert (home / "bookmarks.json").is_file()
 
