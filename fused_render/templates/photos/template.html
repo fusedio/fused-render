@@ -307,6 +307,10 @@ const PY = "./reader.py";
 // + lightbox display concurrently, all results needed; the default per-file
 // cancellation (D114) would collapse them to one. Route every call through this.
 const pyRun = (params) => fused.runPython(PY, params, { key: null });
+// Mount-safe listing: pass the server origin so the worker can ask /api/fs/stat
+// whether a dir is mount-backed and, if so, list it via /api/fs/list instead of
+// a kernel scan that could drop the mount. Origin only; stays mount-agnostic.
+const rawURL = (f) => `${location.origin}/api/fs/raw?path=${encodeURIComponent(f || "")}`;
 const q = (id) => document.getElementById(id);
 const P = fused.params;
 const getP = (k, d) => P.get(k) || d;
@@ -404,7 +408,7 @@ async function fillChildren(kids, path) {
   kids.dataset.loaded = "1";
   let dirs = childCache.get(path);
   if (!dirs) {
-    try { dirs = (await pyRun( { action: "folders", path })).dirs; }
+    try { dirs = (await pyRun( { action: "folders", path, src: rawURL(path) })).dirs; }
     catch { dirs = []; }
     childCache.set(path, dirs);
   }
@@ -440,7 +444,7 @@ async function loadPicker(path) {
   const list = q("pkList");
   list.innerHTML = "Loading…";
   let res;
-  try { res = await pyRun( { action: "folders", path }); }
+  try { res = await pyRun( { action: "folders", path, src: rawURL(path) }); }
   catch (e) { list.innerHTML = ""; const d = document.createElement("div"); d.className = "pk-item"; d.textContent = "Cannot open: " + (e.message || path); list.append(d); return; }
   pkPath = res.path || "";
   renderPkCrumbs();
@@ -516,7 +520,7 @@ async function loadDir(path, opts, append) {
   const offset = append ? items.length : 0;
   const res = await pyRun( {
     action: "list_dir", path, sort: opts.sort, offset: String(offset), limit: "200",
-    q: opts.q, date_from: opts.from, date_to: opts.to,
+    q: opts.q, date_from: opts.from, date_to: opts.to, src: rawURL(path),
   });
   currentDir = res.dir; total = res.total;
   items = append ? items.concat(res.items) : res.items;
@@ -872,7 +876,7 @@ q("pkCancel").onclick = closePicker;
 q("pkAdd").onclick = async () => {
   const target = normInput(q("pkInput").value) || pkPath;
   if (!target) return;
-  try { await pyRun( { action: "folders", path: target }); }
+  try { await pyRun( { action: "folders", path: target, src: rawURL(target) }); }
   catch (e) { q("pkList").innerHTML = '<div class="pk-item">Not a folder: ' + target + "</div>"; return; }
   addRoot(target); renderTree(); closePicker(); P.set("photo", ""); P.set("path", target);
 };

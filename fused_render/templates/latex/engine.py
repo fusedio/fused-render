@@ -209,6 +209,67 @@ def _dedup(diags):
     return out
 
 
+# --- mount-safe directory listing ------------------------------------------
+# A kernel listing (os.listdir/os.scandir/os.walk) on a path under a remote
+# rclone NFS mount forces rclone to enumerate the ENTIRE parent S3 prefix and
+# can DROP the mount, wedging the server. This template stays mount-AGNOSTIC:
+# it never imports shell.mounts and never matches mount paths. Instead the UI
+# passes `src` (server origin + /api/fs/raw?path=) and we ask the server whether
+# a path is remote (/api/fs/stat); if so we list it via the mount-routed,
+# paginated /api/fs/list — never through the kernel. _server_url + _stat are
+# copied verbatim from pyramid/overview_pyramid.py.
+import urllib.error as _urlerr
+import urllib.parse as _urlparse
+import urllib.request as _urlreq
+
+
+def _server_url(src, endpoint, path):
+    u = _urlparse.urlsplit(src)
+    return (f"{u.scheme}://{u.netloc}{endpoint}?path="
+            + _urlparse.quote(path))
+
+
+def _stat(src, path):
+    url = _server_url(src, "/api/fs/stat", path)
+    try:
+        with _urlreq.urlopen(url, timeout=10) as r:
+            return ("ok", json.load(r))
+    except _urlerr.HTTPError as e:
+        if e.code == 404:
+            return ("missing", None)
+        return ("unreachable", None)
+    except Exception:  # noqa: BLE001 — any network error -> fall back to local
+        return ("unreachable", None)
+
+
+def _remote_dir(src, path):
+    """True iff the server says `path` is a remote (mount-backed) directory.
+    No src / unreachable / missing -> False (presume local, kernel listing OK)."""
+    if not src or not path:
+        return False
+    status, meta = _stat(src, path)
+    return status == "ok" and bool(meta.get("remote"))
+
+
+def _list_remote(src, path, cap=5000):
+    """List `path` via the server's mount-routed, paginated /api/fs/list — never
+    the kernel. Follows the cursor up to `cap` entries so a huge S3 prefix
+    returns a bounded page set instead of tripping the NFS deadman."""
+    entries, cursor, truncated = [], "", False
+    while True:
+        url = _server_url(src, "/api/fs/list", path)
+        if cursor:
+            url += "&cursor=" + _urlparse.quote(cursor)
+        with _urlreq.urlopen(url, timeout=30) as r:
+            payload = json.load(r)
+        entries.extend(payload.get("entries") or [])
+        truncated = bool(payload.get("truncated"))
+        cursor = payload.get("cursor") or ""
+        if len(entries) >= cap or not truncated or not cursor:
+            break
+    return entries, truncated
+
+
 def _newest_source_mtime(root):
     """Newest mtime under root (same exclusions as _tree). None means the dir
     is too big to scan cheaply — treat as unknown and just compile."""
@@ -223,7 +284,7 @@ def _newest_source_mtime(root):
     return newest
 
 
-def _compile(main_path: str, synctex: bool = True, force: bool = False):
+def _compile(main_path: str, synctex: bool = True, force: bool = False, remote: bool = False):
     main_path = os.path.abspath(main_path)
     if not os.path.exists(main_path):
         return {"ok": False, "error": f"no such file: {main_path}", "errors": []}
@@ -240,7 +301,9 @@ def _compile(main_path: str, synctex: bool = True, force: bool = False):
         stem = os.path.splitext(os.path.basename(main_path))[0]
         pdf = os.path.join(build, stem + ".pdf")
         if os.path.exists(pdf):
-            newest = _newest_source_mtime(os.path.dirname(main_path))
+            # Never os.walk a mount-backed project dir (unbounded S3 enumeration
+            # can drop the mount). Remote -> treat mtimes as unknown and compile.
+            newest = None if remote else _newest_source_mtime(os.path.dirname(main_path))
             if newest is not None and os.path.getmtime(pdf) > newest:
                 diags = _dedup(_parse_tex_log(os.path.join(build, stem + ".log")))
                 return {"ok": True, "pdf": pdf,
@@ -522,7 +585,8 @@ def _synctex_forward(synctex_gz: str, target_file: str, line: int):
 
 # -------------------------------------------------------------------- dispatcher
 def main(action: str = "tectonic_status", path: str = "", target: str = "",
-         line: int = 0, synctex: bool = True, name: str = "", force: int = 0):
+         line: int = 0, synctex: bool = True, name: str = "", force: int = 0,
+         src: str = ""):
     if action == "tectonic_status":
         return _tectonic_status()
 
@@ -535,12 +599,32 @@ def main(action: str = "tectonic_status", path: str = "", target: str = "",
         # an ext filter) = "tex" or "" for all. Server-side, so it sees the
         # whole machine incl. WSL /mnt/c, /home, etc.
         d = os.path.abspath(path) if path else os.path.expanduser("~")
+        tex_only = (target or "").lower() == "tex"
+        entries = []
+        if _remote_dir(src, d):
+            # Mount-backed dir: list via /api/fs/list, never a kernel scan.
+            try:
+                ents, _ = _list_remote(src, d)
+            except Exception as exc:  # noqa: BLE001
+                return {"error": str(exc), "dir": d}
+            for ent in ents:
+                nm = ent["name"]
+                if nm.startswith("."):
+                    continue
+                isdir = bool(ent.get("is_dir"))
+                ext = os.path.splitext(nm)[1].lower()
+                if not isdir and tex_only and ext not in TEX_EXT:
+                    continue
+                entries.append({"name": nm, "path": os.path.join(d, nm),
+                                "is_dir": isdir, "ext": ext,
+                                "size": 0 if isdir else (ent.get("size") or 0)})
+            entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
+            parent = os.path.dirname(d.rstrip("/")) or "/"
+            return {"dir": d, "parent": parent, "entries": entries}
         if os.path.isfile(d):
             d = os.path.dirname(d)
         if not os.path.isdir(d):
             d = os.path.expanduser("~")
-        tex_only = (target or "").lower() == "tex"
-        entries = []
         try:
             names = os.listdir(d)
         except OSError as e:
@@ -572,6 +656,28 @@ def main(action: str = "tectonic_status", path: str = "", target: str = "",
         q = (name or "").lower()
         tex_only = (target or "").lower() == "tex"
         out, cap = [], 400
+        if _remote_dir(src, root):
+            # A recursive os.walk of a mount-backed dir can enumerate a huge S3
+            # prefix and drop the mount. Degrade to a single-level /api/fs/list
+            # (non-recursive) so search still works without the kernel walk.
+            try:
+                ents, trunc = _list_remote(src, root)
+            except Exception:  # noqa: BLE001
+                ents, trunc = [], False
+            for ent in sorted(ents, key=lambda e: e["name"].lower()):
+                if ent.get("is_dir"):
+                    continue
+                fn = ent["name"]
+                ext = os.path.splitext(fn)[1].lower()
+                if tex_only and ext not in TEX_EXT:
+                    continue
+                if q and q not in fn.lower():
+                    continue
+                out.append({"name": fn, "path": os.path.join(root, fn),
+                            "rel": fn, "ext": ext})
+                if len(out) >= cap:
+                    return {"root": root, "results": out, "truncated": True}
+            return {"root": root, "results": out, "truncated": trunc}
         for dp, dns, fns in os.walk(root):
             dns[:] = [x for x in dns if not x.startswith(".")
                       and x not in ("node_modules", "__pycache__", ".git")]
@@ -594,7 +700,9 @@ def main(action: str = "tectonic_status", path: str = "", target: str = "",
     if action == "compile":
         if not path:
             return {"ok": False, "error": "compile needs path", "errors": []}
-        return _compile(path, synctex=synctex, force=bool(force))
+        # remote -> skip the project-dir mtime walk (mount-drop risk) in _compile
+        remote = _remote_dir(src, os.path.dirname(os.path.abspath(path)))
+        return _compile(path, synctex=synctex, force=bool(force), remote=remote)
 
     if action == "outline":
         if not path or not os.path.exists(path):

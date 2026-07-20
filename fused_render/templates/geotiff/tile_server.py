@@ -30,6 +30,7 @@ editing the module auto-respawns a fresh daemon on the next ensure().
 # dependencies = ["numpy", "pyproj", "imagecodecs", "rasterio"]
 # ///
 
+import io
 import json
 import math
 import os
@@ -77,6 +78,78 @@ class _RangeReader:
         return body
 
 
+class _HttpRangeFile(io.RawIOBase):
+    """A seekable, read-only binary file object over /api/fs/raw, for handing to
+    rasterio via `opener=` on the /ltile path. rasterio/GDAL walk many small
+    offsets (IFD tags, tile indices); reads are served from fixed-size blocks
+    with a tiny LRU so a burst of nearby small reads collapses into a few Range
+    GETs. `size` comes from /api/fs/stat, so we never kernel-stat the NFS mount
+    to learn the length. Unlike the native /tile engine's mmap+_RangeReader
+    path, this lets rasterio open a mount-backed file with zero kernel I/O."""
+
+    def __init__(self, url, size, block=65536):
+        self._r = _RangeReader(url)
+        self._size = int(size)
+        self._pos = 0
+        self._block = int(block)
+        self._cache = {}
+        self._order = []
+
+    def readable(self):
+        return True
+
+    def seekable(self):
+        return True
+
+    def tell(self):
+        return self._pos
+
+    def seek(self, off, whence=io.SEEK_SET):
+        if whence == io.SEEK_SET:
+            self._pos = off
+        elif whence == io.SEEK_CUR:
+            self._pos += off
+        elif whence == io.SEEK_END:
+            self._pos = self._size + off
+        else:
+            raise ValueError(f"bad whence: {whence}")
+        return self._pos
+
+    def _fetch_block(self, bi):
+        blk = self._cache.get(bi)
+        if blk is not None:
+            return blk
+        off = bi * self._block
+        n = min(self._block, self._size - off)
+        if n <= 0:
+            return b""
+        blk = self._r.read(off, n)
+        self._cache[bi] = blk
+        self._order.append(bi)
+        if len(self._order) > 64:  # tiny LRU — keep memory bounded
+            self._cache.pop(self._order.pop(0), None)
+        return blk
+
+    def readinto(self, b):
+        if self._pos >= self._size:
+            return 0
+        want = min(len(b), self._size - self._pos)
+        out = bytearray()
+        p = self._pos
+        while len(out) < want:
+            bi = p // self._block
+            blk = self._fetch_block(bi)
+            start = p - bi * self._block
+            take = min(len(blk) - start, want - len(out))
+            if take <= 0:
+                break
+            out += blk[start:start + take]
+            p += take
+        b[:len(out)] = out
+        self._pos += len(out)
+        return len(out)
+
+
 def _server_url(src, endpoint, path):
     """Server URL built from `src`'s origin and the daemon's own normalized
     `path`. src is trusted only for the origin: its ?path= carries the
@@ -100,6 +173,69 @@ def _stat_remote(src, path):
             return bool(json.load(r).get("remote"))
     except Exception:  # noqa: BLE001
         return None
+
+
+def _stat_payload(src, path):
+    """Full /api/fs/stat payload (has bool `remote` and int `size`), or None
+    when the server can't be reached / errors. The /ltile path needs both the
+    remote flag AND the size (for the HTTP opener) in one probe, without ever
+    kernel-statting the mount."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(_server_url(src, "/api/fs/stat", path),
+                                    timeout=10) as r:
+            return json.load(r)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _ltile_remote(src, file):
+    """None for a LOCAL file (unchanged fast kernel path). For a MOUNT-backed
+    file, a descriptor {raw_url, size, key} so /ltile opens it over HTTP range
+    reads instead of kernel-statting (getmtime) or kernel-opening/mmapping the
+    NFS mount — which stalls 18–30s or drops the mount. `file` is the abspath
+    (mirrors _tile_native's use of the expanded path for both stat and raw).
+    Server unreachable / no src -> None -> presumed-local kernel fallback."""
+    if not src:
+        return None
+    payload = _stat_payload(src, file)
+    if not payload or not payload.get("remote"):
+        return None
+    raw_url = _server_url(src, "/api/fs/raw", file)
+    size = payload.get("size")
+    return {"raw_url": raw_url, "size": size, "key": f"{raw_url}|{size}"}
+
+
+def _lvl_tok(file, rem):
+    """Cache token for the /ltile VRT/meta/stretch caches: for a remote file,
+    raw URL + size (NO kernel getmtime); for a local file, the file mtime."""
+    return rem["key"] if rem is not None else os.path.getmtime(file)
+
+
+def _rio_open(file, rem, **kw):
+    """rasterio.open for the /ltile chain, mount-safe. Local (rem None) -> plain
+    kernel open, unchanged. Remote -> a GDAL `opener=` that range-reads
+    /api/fs/raw, so no kernel open/mmap ever touches the NFS mount (GDAL uses
+    INTERNAL overviews for decimated reads, so overview_level= works)."""
+    import rasterio
+    if rem is None:
+        return rasterio.open(file, **kw)
+    raw_url, size = rem["raw_url"], rem["size"]
+
+    def _http_opener(p, mode="rb", **_kw):
+        # GDAL calls the opener not just for the dataset but for sidecar probes:
+        # p.ovr, p.msk, p.aux.xml, a directory 'test', etc. Serving the main
+        # bytes for a '.ovr' probe makes GDAL read the base image as a bogus
+        # EXTERNAL overview (a file with NO overviews then reports dozens of
+        # phantom levels). Serve raw_url ONLY for the exact identifier and raise
+        # FileNotFoundError for every other path, so GDAL sees no sidecars.
+        # `file` (the abspath) is the identifier — unique per file, so concurrent
+        # handles never conflate.
+        if str(p) != file:
+            raise FileNotFoundError(p)
+        return _HttpRangeFile(raw_url, size)
+
+    return rasterio.open(file, opener=_http_opener, **kw)
 
 
 def _me():
@@ -927,24 +1063,23 @@ def _serve():
     # then a dead process). All reads through cached VRTs go through this lock.
     _rio_read_lock = threading.Lock()
 
-    def _lvl_vrt(file, level):
-        import rasterio
+    def _lvl_vrt(file, level, rem=None):
         from rasterio.enums import Resampling
         from rasterio.vrt import WarpedVRT
-        key = (file, level, os.path.getmtime(file))
+        key = (file, level, _lvl_tok(file, rem))
         with _lvl_lock:
             if key in _lvl_cache:
                 return _lvl_cache[key]
             kw = {} if level <= 0 else {"overview_level": level - 1}
-            src = rasterio.open(file, **kw)
+            src = _rio_open(file, rem, **kw)
             vrt = WarpedVRT(src, crs="EPSG:3857", resampling=Resampling.nearest)
             _lvl_cache[key] = vrt
             return vrt
 
-    def _render_level(file, level, z, x, y, stretch=None, cmap=None):
+    def _render_level(file, level, z, x, y, stretch=None, cmap=None, rem=None):
         from rasterio.enums import Resampling
         from rasterio.windows import Window
-        vrt = _lvl_vrt(file, level)
+        vrt = _lvl_vrt(file, level, rem)
         mx0, my0, mx1, my1 = tile_bbox(z, x, y)
         rgba = np.zeros((TILE, TILE, 4), "uint8")
         # nearest SOURCE pixel per output pixel, computed in source index
@@ -1005,33 +1140,36 @@ def _serve():
 
     def do_ltile(q, z, x, y):
         file = os.path.abspath(os.path.expanduser(q1(q, "file")))
+        # `src` (server origin + /api/fs/raw?path=) is set by the UI per request;
+        # rem is None for local files (unchanged fast path) or a range-read
+        # descriptor for a mount-backed file, so nothing kernel-opens the mount.
+        rem = _ltile_remote(q1(q, "src"), file)
         # global stretch (sampled once, coarsest level) — a per-tile stretch
         # gives every tile its own contrast and the map shows seams
         return _render_level(file, int(q1(q, "level", "0")), z, x, y,
-                             stretch=_rio_stretch(file))
+                             stretch=_rio_stretch(file, rem), rem=rem)
 
-    def _rio_meta(file):
-        import rasterio
-        key = ("meta", file, os.path.getmtime(file))
+    def _rio_meta(file, rem=None):
+        key = ("meta", file, _lvl_tok(file, rem))
         with _lvl_lock:
             if key in _lvl_cache:
                 return _lvl_cache[key]
-        with rasterio.open(file) as src:
+        with _rio_open(file, rem) as src:
             factors = [1] + list(src.overviews(1))
-        meta = {"factors": factors, "res0": _lvl_vrt(file, 0).transform.a}
+        meta = {"factors": factors, "res0": _lvl_vrt(file, 0, rem).transform.a}
         with _lvl_lock:
             _lvl_cache[key] = meta
         return meta
 
-    def _rio_stretch(file):
+    def _rio_stretch(file, rem=None):
         """Global 2–98% stretch sampled once from the coarsest level, so every
         tile shares the same contrast (no per-tile seams)."""
-        key = ("stretch", file, os.path.getmtime(file))
+        key = ("stretch", file, _lvl_tok(file, rem))
         with _lvl_lock:
             if key in _lvl_cache:
                 return _lvl_cache[key]
-        m = _rio_meta(file)
-        vrt = _lvl_vrt(file, len(m["factors"]) - 1)
+        m = _rio_meta(file, rem)
+        vrt = _lvl_vrt(file, len(m["factors"]) - 1, rem)
         n = min(3, vrt.count)
         oh, ow = max(1, min(512, vrt.height)), max(1, min(512, vrt.width))
         with _rio_read_lock:

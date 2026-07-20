@@ -196,6 +196,67 @@ def _set_title(file, title):
 # --------------------------------------------------------------------------- #
 #  main dispatcher                                                            #
 # --------------------------------------------------------------------------- #
+# --- mount-safe directory listing ------------------------------------------
+# A kernel listing (os.listdir/os.scandir/os.walk) on a path under a remote
+# rclone NFS mount forces rclone to enumerate the ENTIRE parent S3 prefix and
+# can DROP the mount, wedging the server. This template stays mount-AGNOSTIC:
+# it never imports shell.mounts and never matches mount paths. Instead the UI
+# passes a server origin (as the `src` param on the listdir action) and we ask
+# the server whether a path is remote (/api/fs/stat); if so we list it via the
+# mount-routed, paginated /api/fs/list — never through the kernel. _server_url +
+# _stat are copied verbatim from pyramid/overview_pyramid.py.
+import urllib.error as _urlerr
+import urllib.parse as _urlparse
+import urllib.request as _urlreq
+
+
+def _server_url(origin, endpoint, path):
+    u = _urlparse.urlsplit(origin)
+    return (f"{u.scheme}://{u.netloc}{endpoint}?path="
+            + _urlparse.quote(path))
+
+
+def _stat(origin, path):
+    url = _server_url(origin, "/api/fs/stat", path)
+    try:
+        with _urlreq.urlopen(url, timeout=10) as r:
+            return ("ok", json.load(r))
+    except _urlerr.HTTPError as e:
+        if e.code == 404:
+            return ("missing", None)
+        return ("unreachable", None)
+    except Exception:  # noqa: BLE001 — any network error -> fall back to local
+        return ("unreachable", None)
+
+
+def _remote_dir(origin, path):
+    """True iff the server says `path` is a remote (mount-backed) directory.
+    No origin / unreachable / missing -> False (presume local, kernel OK)."""
+    if not origin or not path:
+        return False
+    status, meta = _stat(origin, path)
+    return status == "ok" and bool(meta.get("remote"))
+
+
+def _list_remote(origin, path, cap=5000):
+    """List `path` via the server's mount-routed, paginated /api/fs/list — never
+    the kernel. Follows the cursor up to `cap` entries so a huge S3 prefix
+    returns a bounded page set instead of tripping the NFS deadman."""
+    entries, cursor, truncated = [], "", False
+    while True:
+        url = _server_url(origin, "/api/fs/list", path)
+        if cursor:
+            url += "&cursor=" + _urlparse.quote(cursor)
+        with _urlreq.urlopen(url, timeout=30) as r:
+            payload = json.load(r)
+        entries.extend(payload.get("entries") or [])
+        truncated = bool(payload.get("truncated"))
+        cursor = payload.get("cursor") or ""
+        if len(entries) >= cap or not truncated or not cursor:
+            break
+    return entries, truncated
+
+
 def main(action: str = "open",
          file: str = "", doc: str = "",
          slide: str = "", el: str = "",
@@ -241,20 +302,39 @@ def main(action: str = "open",
     if action == "listdir":
         path = _to_native_path(path)
         base = os.path.abspath(os.path.expanduser(path)) if path else os.path.expanduser("~")
-        if not os.path.isdir(base):
-            base = os.path.dirname(base) or "/"
         dirs, files = [], []
-        try:
-            for nm in sorted(os.listdir(base), key=str.lower):
+        # `src` on the listdir action carries the server ORIGIN for mount-safe
+        # routing (distinct from its add-image meaning, an image src).
+        if _remote_dir(src, base):
+            # Mount-backed dir: list via /api/fs/list, never a kernel scan.
+            try:
+                ents, _ = _list_remote(src, base)
+            except Exception:  # noqa: BLE001
+                ents = []
+            for ent in ents:
+                nm = ent["name"]
                 if nm.startswith("."):
                     continue
-                full = os.path.join(base, nm)
-                if os.path.isdir(full):
+                if ent.get("is_dir"):
                     dirs.append(nm)
                 elif nm.lower().endswith(".pptx"):
                     files.append(nm)
-        except PermissionError:
-            pass
+        else:
+            if not os.path.isdir(base):
+                base = os.path.dirname(base) or "/"
+            try:
+                for nm in sorted(os.listdir(base), key=str.lower):
+                    if nm.startswith("."):
+                        continue
+                    full = os.path.join(base, nm)
+                    if os.path.isdir(full):
+                        dirs.append(nm)
+                    elif nm.lower().endswith(".pptx"):
+                        files.append(nm)
+            except PermissionError:
+                pass
+        dirs.sort(key=str.lower)
+        files.sort(key=str.lower)
         parent = os.path.dirname(base) or base   # dirname(root) == root, so "up" stops there
         # forward slashes on every platform: the browser's crumb/join logic is "/"-based
         return {"path": base.replace(os.sep, "/"), "parent": parent.replace(os.sep, "/"),
