@@ -1684,14 +1684,13 @@ def test_stat_marks_mount_backed_files_remote(client, home):
     assert client.get("/api/fs/stat", params={"path": plain}).json()["remote"] is False
 
 
-def test_fs_raw_proxies_range_from_mount_serve(client, home):
+def test_fs_raw_proxies_range_from_mount_serve(client, home, rcd):
     """/api/fs/raw for a mount-backed path streams GETs from the mount's
-    HTTP serve, not from the local filesystem. HEAD is the exception: it is
-    answered from the mount's own stat — ranged clients (duckdb httpfs,
-    fsspec/zarr) probe the length before every read, and proxying that probe
-    costs a full remote round trip for headers the VFS getattr already
-    knows; on a real mount the stat and the serve read the same remote, so
-    the sizes agree (here they intentionally differ to prove the source)."""
+    HTTP serve, not from the local filesystem. HEAD is answered from the
+    rclone rcd (operations/list), NOT a kernel os.stat: a missing-sidecar HEAD
+    is the cold-negative probe that would enumerate the whole remote prefix and
+    wedge the mount. Here the rc size (77) intentionally differs from both the
+    local file (11) and the serve body (12) to prove HEAD is rc-sourced."""
     import functools
     import http.server
     import os
@@ -1701,6 +1700,9 @@ def test_fs_raw_proxies_range_from_mount_serve(client, home):
     os.makedirs(mp)
     f = os.path.join(mp, "x.bin")
     open(f, "wb").write(b"LOCAL-BYTES")  # what a (dead-mount) local read would see
+    rcd.responses["operations/list"] = {"list": [
+        {"Name": "x.bin", "IsDir": False, "Size": 77,
+         "ModTime": "2024-01-02T03:04:05Z"}]}
 
     served = home / "served"
     served.mkdir()
@@ -1723,7 +1725,7 @@ def test_fs_raw_proxies_range_from_mount_serve(client, home):
         assert r.status_code == 200 and r.content == b"REMOTE-BYTES"
         r = client.head("/api/fs/raw", params={"path": f})
         assert r.status_code == 200
-        assert r.headers["content-length"] == str(len(b"LOCAL-BYTES"))
+        assert r.headers["content-length"] == "77"  # from the rcd, not kernel
         assert r.headers["accept-ranges"] == "bytes"
         assert "last-modified" in r.headers
         assert r.content == b""
@@ -1731,11 +1733,13 @@ def test_fs_raw_proxies_range_from_mount_serve(client, home):
         srv.shutdown()
 
 
-def test_fs_raw_directory_404s_not_listing(client, home):
+def test_fs_raw_directory_404s_not_listing(client, home, rcd):
     """A directory path under a served mount 404s on GET and HEAD. The serve
     (like rclone serve http) answers a directory with a 200 HTML listing, so
     without a guard the proxy would hand that listing back as raw bytes; a
-    directory has no bytes to serve, so both verbs must 404."""
+    directory has no bytes to serve, so both verbs must 404. GET's guard is the
+    proxy-path stat; HEAD detects the directory via the rclone rcd (IsDir), the
+    mount-safe replacement for the kernel os.stat."""
     import functools
     import http.server
     import os
@@ -1747,6 +1751,11 @@ def test_fs_raw_directory_404s_not_listing(client, home):
     d = os.path.join(mp, "subdir")
     os.makedirs(d)
     open(os.path.join(d, "x.bin"), "wb").write(b"CHUNK")
+    # rcd reports `subdir` as a directory, so the HEAD probe 404s without a
+    # kernel stat.
+    rcd.responses["operations/list"] = {"list": [
+        {"Name": "subdir", "IsDir": True, "Size": -1,
+         "ModTime": "2024-01-02T03:04:05Z"}]}
 
     class H(http.server.SimpleHTTPRequestHandler):
         def log_message(self, *a):
@@ -1771,7 +1780,11 @@ def test_fs_raw_directory_404s_not_listing(client, home):
         srv.shutdown()
 
 
-def test_fs_raw_falls_back_to_file_when_serve_dead(client, home):
+def test_fs_raw_serve_dead_returns_503_never_kernel_reads_mount(client, home):
+    """When the mount's HTTP serve is unreachable, /api/fs/raw must 503 rather
+    than fall back to a local-file kernel read: reading through the kernel NFS
+    mount is the wedge this whole subsystem exists to avoid, so even a file that
+    happens to be cached locally is refused while the serve is down/respawning."""
     import os
     import socket
 
@@ -1786,7 +1799,7 @@ def test_fs_raw_falls_back_to_file_when_serve_dead(client, home):
     import fused_render.shell.storage as storage
     storage.write_json(mounts_mod.serves_path(), {mp: f"http://127.0.0.1:{dead}"})
     r = client.get("/api/fs/raw", params={"path": f})
-    assert r.status_code == 200 and r.content == b"LOCAL-BYTES"
+    assert r.status_code == 503
 
 
 def test_fs_raw_proxy_error_keeps_range_headers(client, home):
