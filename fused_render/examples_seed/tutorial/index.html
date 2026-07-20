@@ -89,6 +89,17 @@
   .pair { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
   .pair h5 { margin:0 0 7px; font-size:11px; text-transform:uppercase; letter-spacing:.6px; color:var(--mut); }
 
+  /* 6 · go deeper */
+  .deeper { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+  a.dcard { display:block; background:var(--panel); border:1px solid var(--border); border-radius:12px;
+            padding:16px 18px; text-decoration:none; transition:border-color .15s; }
+  a.dcard:hover { border-color:var(--yellow); }
+  a.dcard.gone { display:none; }
+  .dcard h4 { margin:0 0 5px; font-size:13.5px; color:var(--text); }
+  .dcard h4 .y { color:var(--yellow); }
+  .dcard p { margin:0; color:var(--dim); font-size:12px; }
+  .dcard p code { color:var(--text); font-size:11px; }
+
   .outro { border-top:1px solid var(--border); margin-top:46px; padding-top:18px;
            color:var(--dim); font-size:13.5px; max-width:660px; }
   .outro b { color:var(--text); }
@@ -96,7 +107,7 @@
 
   @media (max-width:760px){
     .hellogrid,.paramgrid,.pair { grid-template-columns:1fr; }
-    .steps { grid-template-columns:1fr; }
+    .steps,.deeper { grid-template-columns:1fr; }
   }
 </style>
 </head>
@@ -195,6 +206,24 @@
     </div>
   </div>
 
+  <!-- ---------- 6 · GO DEEPER ---------- -->
+  <h2><span class="n">6</span>Go deeper</h2>
+  <p class="h2sub">Three short guides, one feature each — every one a live page in your workspace, like this tutorial.</p>
+  <div class="deeper">
+    <a class="dcard gone" id="deepClaude" target="_blank" rel="noopener">
+      <h4><span class="y">Claude Code</span> in Fused</h4>
+      <p>A chat pinned to any file — Claude answers about it and edits it in place. <code>tutorial_claude/</code></p>
+    </a>
+    <a class="dcard gone" id="deepAnno" target="_blank" rel="noopener">
+      <h4>Annotating <span class="y">pages</span></h4>
+      <p>Click-to-comment on any preview; the whole review travels in the URL. <code>tutorial_annotations/</code></p>
+    </a>
+    <a class="dcard gone" id="deepTmpl" target="_blank" rel="noopener">
+      <h4>Custom <span class="y">templates</span></h4>
+      <p>Every preview is a template — replace the built-ins or bind your own. <code>tutorial_templates/</code></p>
+    </a>
+  </div>
+
   <!-- ---------- OUTRO ---------- -->
   <p class="outro"><b>Where to next:</b> for a slower, animated walkthrough of the page-to-Python round trip, open <a id="explainerLink" target="_blank" rel="noopener"><code>how_it_works/</code></a> in your workspace — and everything on this page is a folder you can open and edit, starting with this one: <code>tutorial/</code>.</p>
 </div>
@@ -243,6 +272,20 @@ if (showcasePath) {
 
 const explainerPath = sibling("how_it_works/explainer.html");
 if (explainerPath) $("explainerLink").href = viewUrl(explainerPath);
+
+// ---- 6 · go deeper: the feature tutorials, iff seeded next to us ------------
+function mountDeeper(cardId, rel){
+  const p = sibling(rel);
+  if (!p) return;
+  fused.stat(p).then(() => {
+    const card = $(cardId);
+    card.href = viewUrl(p);
+    card.classList.remove("gone");
+  }).catch(() => {});
+}
+mountDeeper("deepClaude", "tutorial_claude/index.html");
+mountDeeper("deepAnno", "tutorial_annotations/index.html");
+mountDeeper("deepTmpl", "tutorial_templates/index.html");
 
 // ---- 2 · hello.py round trip ------------------------------------------------
 async function hello(){

@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Tutorial — Claude Code in Fused</title>
+<style>
+  :root {
+    --bg:#141414; --panel:#1c1c1e; --panel2:#252527; --border:#333333;
+    --text:#ffffff; --dim:#a6a6ab; --mut:#77777c;
+    --yellow:#E5FF44;
+    --code-bg:#0f0f10;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:44px 30px 70px; background:var(--bg); color:var(--text);
+         font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  .wrap { max-width:900px; margin:0 auto; }
+  h1 { font-size:27px; margin:0 0 10px; letter-spacing:-.4px; }
+  .tag { color:var(--dim); font-size:15.5px; margin:0 0 8px; max-width:660px; }
+  .tag b { color:var(--text); font-weight:600; }
+  .tag .y { color:var(--yellow); font-weight:600; }
+  code, .mono { font-family:"SF Mono",ui-monospace,Menlo,monospace; }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.7px; color:var(--mut);
+       margin:42px 0 6px; font-weight:700; }
+  h2 .n { color:var(--yellow); margin-right:7px; }
+  .h2sub { color:var(--dim); font-size:13.5px; margin:0 0 16px; max-width:660px; }
+  .h2sub code { color:var(--text); font-size:12.5px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:18px 20px; }
+  pre { margin:0; background:var(--code-bg); border:1px solid var(--border); border-radius:9px;
+        padding:13px 15px; font-size:12px; overflow-x:auto; color:#d0d0d4; }
+  pre .c { color:var(--mut); }
+  a { color:var(--dim); }
+  a:hover { color:var(--text); }
+  .status { color:var(--mut); font-size:12px; min-height:16px; }
+
+  .frame { position:relative; border:1px solid var(--border); border-radius:14px; overflow:hidden;
+           background:var(--panel); }
+  .frame iframe { display:block; width:100%; border:0; background:var(--panel); }
+  .frame.tall iframe { height:560px; }
+  .framebar { display:flex; align-items:center; justify-content:space-between; gap:12px;
+              padding:9px 14px; border-bottom:1px solid var(--border); background:var(--panel2); }
+  .framebar .cap { color:var(--dim); font-size:12px; }
+  .framebar .cap b { color:var(--text); }
+  .framebar a { font-size:12px; color:var(--yellow); text-decoration:none; white-space:nowrap; }
+  .framebar a:hover { text-decoration:underline; }
+  .miss { display:none; padding:26px 20px; color:var(--mut); font-size:13px; text-align:center; }
+  .miss code { color:var(--dim); }
+  .frame.gone iframe { display:none; }
+  .frame.gone .miss { display:block; }
+
+  .steps { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:16px; }
+  .step { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:16px 18px; }
+  .step .num { width:22px; height:22px; border-radius:7px; background:var(--panel2); border:1px solid var(--border);
+               display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700;
+               color:var(--yellow); margin-bottom:10px; }
+  .step h4 { margin:0 0 5px; font-size:13.5px; }
+  .step p { margin:0; color:var(--dim); font-size:12px; }
+  .step p code { color:var(--text); font-size:11px; }
+
+  .prereq { border-color:var(--yellow); margin-bottom:16px; }
+  .prereq b { color:var(--yellow); }
+  .prereq p { margin:6px 0 0; color:var(--dim); font-size:13px; }
+  .prereq code { color:var(--text); font-size:12px; }
+
+  figure.shot { margin:16px 0 0; border:1px solid var(--border); border-radius:14px; overflow:hidden;
+                background:var(--panel); }
+  figure.shot img { display:block; width:100%; }
+  figure.shot figcaption { padding:9px 14px; border-top:1px solid var(--border); background:var(--panel2);
+                           color:var(--dim); font-size:12px; }
+
+  .tips { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .tip { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:14px 16px;
+         color:var(--dim); font-size:12.5px; }
+  .tip b { color:var(--text); display:block; margin-bottom:4px; font-size:13px; }
+  .tip code { color:var(--yellow); font-size:11.5px; }
+
+  .outro { border-top:1px solid var(--border); margin-top:46px; padding-top:18px;
+           color:var(--dim); font-size:13.5px; max-width:660px; }
+  .outro b { color:var(--text); }
+  .outro code { color:var(--yellow); font-size:12.5px; }
+
+  @media (max-width:760px){
+    .steps, .tips { grid-template-columns:1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Tutorial — Claude Code in Fused</h1>
+  <p class="tag">Every file preview has a <span class="y">Claude</span> mode: a chat scoped to <b>that one file</b>, powered by the Claude Code CLI on your machine. Ask about the file, or ask for changes — Claude edits it in place, and the page reloads with the result. <a id="seriesLink">Part of the tutorial series ↗</a></p>
+
+  <!-- ---------- 1 · WHAT CLAUDE DOES HERE ---------- -->
+  <h2><span class="n">1</span>What Claude does here</h2>
+  <p class="h2sub">Open any file, and the mode switcher in the preview header offers Claude alongside the other views. It isn't a generic chatbot: each conversation is pinned to the file you were looking at, Claude runs in that file's folder, and edits it makes land directly on disk.</p>
+  <div class="card prereq">
+    <b>Prerequisite:</b> the <code>claude</code> CLI.
+    <p>Fused runs <a href="https://claude.com/claude-code" target="_blank" rel="noopener">Claude Code</a> installed on your own machine — nothing here talks to a Fused server. If <code>claude</code> isn't on your PATH, the chat below still opens, but sending a message will tell you to install it first.</p>
+  </div>
+
+  <!-- ---------- 2 · TRY IT, LIVE ---------- -->
+  <h2><span class="n">2</span>Try it, live</h2>
+  <p class="h2sub">This is Claude mode opened on the <code>sine/</code> example next door — the same view you'd reach from its mode switcher. Ask it something about the file ("what does the slider control?") right here.</p>
+  <div class="frame tall" id="claudeFrame">
+    <div class="framebar">
+      <span class="cap"><b>sine/sine.html</b> — in Claude mode (<code>?_mode=claude</code>)</span>
+      <a id="claudeOpen" target="_blank" rel="noopener">open in the app ↗</a>
+    </div>
+    <iframe id="claudeIf" title="Claude mode on the sine example, embedded live"></iframe>
+    <div class="miss">The <code>sine/</code> example isn't next to this tutorial. Open any HTML or parquet file from your workspace and pick Claude from the mode switcher instead.</div>
+  </div>
+  <figure class="shot" id="shotSession">
+    <img id="shotSessionImg" alt="A Claude session mid-conversation">
+    <figcaption>A session in progress — Claude explains the file, then edits it on request.</figcaption>
+  </figure>
+
+  <!-- ---------- 3 · YOUR FIRST SESSION ---------- -->
+  <h2><span class="n">3</span>Your first session</h2>
+  <p class="h2sub">Three clicks from any file to a working conversation.</p>
+  <div class="steps">
+    <div class="step"><div class="num">1</div><h4>Open a file, switch mode</h4>
+      <p>Click a file in the explorer, then pick the Claude icon from the mode switcher in the preview header.</p></div>
+    <div class="step"><div class="num">2</div><h4>Ask, or ask for changes</h4>
+      <p>Claude answers about the file — and can edit it. It runs with <code>acceptEdits</code>, so requested changes are written to disk immediately, no approval prompt.</p></div>
+    <div class="step"><div class="num">3</div><h4>Come back anytime</h4>
+      <p>Sessions are saved per file (in its <code>.json</code> sidecar) and survive the file being moved. The Sessions list on the chat home resumes any of them.</p></div>
+  </div>
+
+  <!-- ---------- 4 · OPEN IN CLAUDE (TEMPLATES) ---------- -->
+  <h2><span class="n">4</span>Open in Claude — for templates</h2>
+  <p class="h2sub">There's a second, bigger door. In <a id="tmplLink" target="_blank" rel="noopener">Templates management</a>, every template you own has an <b>Open in Claude</b> button: it opens a Terminal window with Claude Code already running <em>inside that template's folder</em> — a full agent session for building the whole template, not just one file. (macOS only; it drives Terminal.app.)</p>
+  <div class="card">
+    <pre><span class="c"># what "Open in Claude" amounts to:</span>
+cd ~/.fused-render/templates/my_template
+claude</pre>
+    <div class="status" style="margin-top:10px">New templates scaffold with authoring skills in <code>.claude/skills/</code>, so the Claude session that opens already knows how Fused templates work. More on this in the <a id="tmplTutLink">custom templates tutorial</a>.</div>
+  </div>
+  <figure class="shot" id="shotTerminal">
+    <img id="shotTerminalImg" alt="Terminal after clicking Open in Claude">
+    <figcaption>Terminal, one click later — Claude Code sitting in the template's folder.</figcaption>
+  </figure>
+
+  <!-- ---------- 5 · TIPS ---------- -->
+  <h2><span class="n">5</span>Tips</h2>
+  <div class="tips">
+    <div class="tip"><b>Pick a model &amp; effort</b>Two dropdowns on the chat home (and in the footer while chatting) select the model — default, fable, opus, sonnet, haiku — and the reasoning effort.</div>
+    <div class="tip"><b>Resume from Sessions</b>The chat home lists this file's past sessions. Opening one restores the full transcript and continues where you left off.</div>
+    <div class="tip"><b>Deep-link a session</b>A session's URL carries <code>_mode=claude&amp;session_id=…</code> — bookmark or share it and it reopens on exactly that conversation.</div>
+    <div class="tip"><b>Arrives from annotations</b>The annotate view's "Send to Claude" button opens this same chat pre-loaded with your review comments — see the <a id="annoTutLink">annotations tutorial</a>.</div>
+  </div>
+
+  <!-- ---------- OUTRO ---------- -->
+  <p class="outro"><b>Where to next:</b> back to the <a id="outroSeries"><code>tutorial/</code></a> overview, or keep going with <a id="outroAnno"><code>tutorial_annotations/</code></a> and <a id="outroTmpl"><code>tutorial_templates/</code></a>.</p>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+// ---- locate ourselves & our siblings (same scheme as tutorial/) -------------
+// Served at /render?path=<abs path of this file>; folder and siblings derive
+// from the URL alone.
+const ownPath = new URLSearchParams(window.location.search).get("path");
+const ownDir = ownPath ? ownPath.slice(0, ownPath.lastIndexOf("/")) : null;
+const parentDir = ownDir ? ownDir.slice(0, ownDir.lastIndexOf("/")) : null;
+const sibling = rel => parentDir ? parentDir + "/" + rel : null;
+// Per-segment encoding, matching the shell's own URL scheme for fs paths.
+const encPath = p => p.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+const embedUrl = (p, q) => "/embed/" + encPath(p) + (q || "");
+const viewUrl  = (p, q) => "/view/"  + encPath(p) + (q || "");
+
+// Live claude-mode frame on the sine example, iff it exists next door.
+const sinePath = sibling("sine/sine.html");
+if (sinePath) {
+  fused.stat(sinePath).then(() => {
+    $("claudeIf").src = embedUrl(sinePath, "?_mode=claude");
+    $("claudeOpen").href = viewUrl(sinePath, "?_mode=claude");
+  }).catch(() => $("claudeFrame").classList.add("gone"));
+} else {
+  $("claudeFrame").classList.add("gone");
+}
+
+// Series links (stat-guarded: hide the anchor's affordance if missing).
+function linkTo(aId, rel, q){
+  const p = sibling(rel);
+  if (!p) return;
+  fused.stat(p).then(() => {
+    const a = $(aId);
+    a.href = viewUrl(p, q);
+    a.target = "_blank"; a.rel = "noopener";
+  }).catch(() => {});
+}
+linkTo("seriesLink", "tutorial/index.html");
+linkTo("outroSeries", "tutorial/index.html");
+linkTo("annoTutLink", "tutorial_annotations/index.html");
+linkTo("outroAnno", "tutorial_annotations/index.html");
+linkTo("tmplTutLink", "tutorial_templates/index.html");
+linkTo("outroTmpl", "tutorial_templates/index.html");
+$("tmplLink").href = "/view/_templates";
+
+// Screenshot slots: images live in ./assets/ and may not exist yet — a 404
+// hides the whole figure so the page ships clean without them.
+function mountShot(figId, imgId, name){
+  const img = $(imgId);
+  img.onerror = () => { $(figId).style.display = "none"; };
+  img.src = fused.rawUrl("assets/" + name);
+}
+mountShot("shotSession", "shotSessionImg", "claude_session.png");
+mountShot("shotTerminal", "shotTerminalImg", "open_in_claude_terminal.png");
+</script>
+</body>
+</html>
