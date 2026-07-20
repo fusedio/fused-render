@@ -23,7 +23,7 @@ import webbrowser
 
 import uvicorn
 
-from fused_render._branch import branch_port, branch_ref
+from fused_render._branch import branch_dir, branch_port
 from fused_render.logs import log_path, setup_logging
 from fused_render.server import create_app
 from fused_render.shell.seed import ensure_fused_dir
@@ -31,9 +31,7 @@ from fused_render.shell.seed import ensure_fused_dir
 logger = logging.getLogger("fused_render")
 
 _APP_SUPPORT_BASE = os.path.expanduser("~/Library/Application Support/fused-render")
-APP_SUPPORT_DIR = (
-    _APP_SUPPORT_BASE if not branch_ref() else os.path.join(_APP_SUPPORT_BASE, branch_ref())
-)
+APP_SUPPORT_DIR = branch_dir(_APP_SUPPORT_BASE)
 PIDFILE = os.path.join(APP_SUPPORT_DIR, "server.pid")
 PORTFILE = os.path.join(APP_SUPPORT_DIR, "server.port")
 
