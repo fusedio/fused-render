@@ -183,17 +183,28 @@ if [[ "$RELOAD" -eq 1 ]]; then
   # One-shot opener: wait for the port to accept a connection, then open the tab.
   if [[ "$NO_BROWSER" -eq 0 && -n "$PORT" ]]; then
     (
+      ready=0
       for _ in $(seq 1 120); do
         if "$PY" -c "import socket,sys; s=socket.socket(); s.settimeout(0.5); sys.exit(0 if s.connect_ex(('127.0.0.1', $PORT))==0 else 1)" 2>/dev/null; then
+          ready=1
           break
         fi
         sleep 0.5
       done
-      URL="http://127.0.0.1:$PORT/"
-      # Open via Python's webbrowser (cross-platform, matches cli.py); a shell
-      # open/xdg-open/start chain misses Windows/git-bash (start is a cmd
-      # builtin, not a binary on PATH).
-      "$PY" -c "import webbrowser; webbrowser.open('$URL')" >/dev/null 2>&1 || true
+      # Only open if the server actually came up — otherwise (e.g. the port
+      # guard SystemExited on a stale server) we'd pop a dead tab after timeout.
+      if [[ "$ready" -eq 1 ]]; then
+        # Match cli.py's first-run onboarding: open the seeded showcase landing
+        # page on a brand-new install, else the root. ensure_fused_dir_and_landing
+        # is idempotent (cli.py calls it too) and returns (fused_dir, landing);
+        # landing is a "/view/…" path on first run, else None → fall back to root.
+        LANDING="$("$PY" -c 'from fused_render.shell.seed import ensure_fused_dir_and_landing; _, l = ensure_fused_dir_and_landing(); print(l or "")' 2>/dev/null || true)"
+        if [[ -n "$LANDING" ]]; then URL="http://127.0.0.1:$PORT$LANDING"; else URL="http://127.0.0.1:$PORT/"; fi
+        # Open via Python's webbrowser (cross-platform, matches cli.py); a shell
+        # open/xdg-open/start chain misses Windows/git-bash (start is a cmd
+        # builtin, not a binary on PATH).
+        "$PY" -c "import webbrowser; webbrowser.open('$URL')" >/dev/null 2>&1 || true
+      fi
     ) &
     OPENER_PID=$!
   fi
@@ -205,8 +216,14 @@ if [[ "$RELOAD" -eq 1 ]]; then
   # fused_render/templates/ — those *.py are per-request UDF code, not imported
   # into the server process, so editing them shouldn't restart it (watchfiles
   # resolves ignore paths to absolute; comma-separate to add more).
-  CMD="$(printf '%q' "$PY") -m fused_render.cli --no-browser"
+  #
+  # --no-browser goes AFTER the passthrough args: cli.py's main() injects a
+  # default `serve` only when argv[0] isn't already a subcommand, so a leading
+  # `serve` (e.g. `dev.sh serve --port N`) must stay argv[0]. Prepending
+  # --no-browser would shift it and trigger a duplicate-`serve` parse error.
+  CMD="$(printf '%q' "$PY") -m fused_render.cli"
   for a in "$@"; do CMD+=" $(printf '%q' "$a")"; done
+  CMD+=" --no-browser"
   "$PY" -m watchfiles --filter python --ignore-paths "$REPO_ROOT/fused_render/templates" "$CMD" "$REPO_ROOT/fused_render"
 else
   # Original single-launch behavior: the server opens its own browser tab.
