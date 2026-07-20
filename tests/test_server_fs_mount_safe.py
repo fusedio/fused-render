@@ -172,6 +172,34 @@ def test_write_writable_mount_create_conflict_409_via_rc(home, monkeypatch):
     assert _data(resp)["error"] == "conflict"
 
 
+def test_write_mount_subsecond_mtime_gap_does_not_conflict(home, monkeypatch):
+    # The client's expected_mtime is a kernel /api/fs/stat st_mtime; the mount
+    # conflict check compares it against the rc ModTime. The two sources
+    # disagree sub-second, so the MOUNT branch tolerates < 1s and must NOT 409.
+    mp = _mount("rw", read_only=False, on_disk=True)
+    _no_kernel_on_mount(monkeypatch, mp)
+    modtime = "2024-01-02T03:04:05Z"
+    _list_returns(monkeypatch, [_entry("notes.txt", size=3, mtime=modtime)])
+    epoch = mounts_mod.rc_modtime_epoch(modtime)
+    resp = WRITE({"path": os.path.join(mp, "notes.txt"), "content": "x",
+                  "expected_mtime": epoch + 0.4}, x_fused="1")
+    assert _status(resp) == 200
+
+
+def test_write_mount_large_mtime_gap_still_conflicts(home, monkeypatch):
+    # A gap beyond the cross-source tolerance is a genuine concurrent change:
+    # still a 409, so the widened tolerance can't mask a real conflict.
+    mp = _mount("rw", read_only=False, on_disk=True)
+    _no_kernel_on_mount(monkeypatch, mp)
+    modtime = "2024-01-02T03:04:05Z"
+    _list_returns(monkeypatch, [_entry("notes.txt", size=3, mtime=modtime)])
+    epoch = mounts_mod.rc_modtime_epoch(modtime)
+    resp = WRITE({"path": os.path.join(mp, "notes.txt"), "content": "x",
+                  "expected_mtime": epoch + 5.0}, x_fused="1")
+    assert _status(resp) == 409
+    assert _data(resp)["error"] == "conflict"
+
+
 def test_write_writable_mount_new_file_succeeds_via_vfs(home, monkeypatch):
     mp = _mount("rw", read_only=False, on_disk=True)
     _no_kernel_on_mount(monkeypatch, mp)

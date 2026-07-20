@@ -1532,7 +1532,12 @@ def _fs_write(body: dict, x_fused: str | None):
             if not pr.exists:
                 return JSONResponse({"error": "conflict", "mtime": None},
                                     status_code=409)
-            if pr.mtime is None or abs(pr.mtime - expected_mtime) >= 1e-6:
+            # Cross-source compare: expected_mtime is a KERNEL /api/fs/stat
+            # st_mtime, but pr.mtime is the rclone rcd ModTime — the two round
+            # a mount's timestamp differently and disagree sub-second, so the
+            # 1e-6 tolerance the local branch uses would 409 every save on a
+            # writable mount. Tolerate < 1s here; a larger gap is a real change.
+            if pr.mtime is None or abs(pr.mtime - expected_mtime) >= 1.0:
                 return JSONResponse({"error": "conflict", "mtime": pr.mtime},
                                     status_code=409)
         # The write itself goes through the rclone VFS (acceptable — it is the
