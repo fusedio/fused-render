@@ -2376,31 +2376,54 @@ def _suggestions_view(remotes: list[str]) -> list[dict]:
     ]
 
 
-def _rclone_state() -> dict:
-    bin_ = rclone_bin()
-    if not bin_:
-        return {"available": False, "version": None, "remotes": [], "suggested": []}
-    try:
-        version = subprocess.run(
-            [bin_, "version"], capture_output=True, text=True, timeout=10
-        ).stdout.splitlines()[0]
-        remotes_out = subprocess.run(
-            [bin_, "listremotes"], capture_output=True, text=True, timeout=10
-        ).stdout
-        names = [r.strip() for r in remotes_out.splitlines() if r.strip()]
-    except (OSError, subprocess.TimeoutExpired, IndexError):
-        return {"available": False, "version": None, "remotes": [], "suggested": []}
-    # Each remote carries its verbatim rclone spec (`name`, incl trailing ':',
-    # used unchanged as the mount base) plus a friendly `label` for display —
-    # so a remote reads under one stable human name whatever its lifecycle stage.
-    # Compute the suggestion set and the config dump once, then label every
-    # remote against them (both do I/O, so a per-remote call would be O(N)).
+def _rclone_state_view(version: str | None, names: list[str],
+                       bin_: str | None) -> dict:
+    """Assemble the available:True payload from a version string and the remote
+    names (each carrying its verbatim rclone spec, incl trailing ':', used
+    unchanged as the mount base). Each remote also gets a friendly `label` so it
+    reads under one stable human name whatever its lifecycle stage. Compute the
+    suggestion set and the config dump once, then label every remote against them
+    (both do I/O, so a per-remote call would be O(N)). `bin_` may be None when a
+    live daemon vouched for rclone but the binary didn't resolve on PATH — the
+    config dump is then skipped and labels degrade to bare names."""
     suggestions = _credential_suggestions()
-    configs = _rclone_config_dump(bin_)
+    configs = _rclone_config_dump(bin_) if bin_ else {}
     remotes = [{"name": n, "label": _remote_label(n, suggestions, configs)}
                for n in names]
     return {"available": True, "version": version, "remotes": remotes,
             "suggested": _suggestions_view(names)}
+
+
+def _rclone_state() -> dict:
+    bin_ = rclone_bin()
+    if bin_:
+        try:
+            version = subprocess.run(
+                [bin_, "version"], capture_output=True, text=True, timeout=10
+            ).stdout.splitlines()[0]
+            remotes_out = subprocess.run(
+                [bin_, "listremotes"], capture_output=True, text=True, timeout=10
+            ).stdout
+            names = [r.strip() for r in remotes_out.splitlines() if r.strip()]
+            return _rclone_state_view(version, names, bin_)
+        except (OSError, subprocess.TimeoutExpired, IndexError):
+            pass  # fall through to the daemon vouch below
+    # The direct probe couldn't confirm rclone — the binary didn't resolve on
+    # PATH, or the version/listremotes subprocess hiccupped. Observed on a fresh
+    # server launch: the first probe reports unavailable while an already-running
+    # rcd is happily serving mounts, so the Mounts page shows a spurious "rclone
+    # not found" until the process is bounced. A live rcd daemon is itself proof
+    # rclone works, so ask IT for version/remotes rather than reporting a false
+    # "not installed". Only when there's no daemon either do we report unavailable.
+    port = _live_rcd_port()
+    if port is not None:
+        try:
+            version = _rc(port, "core/version").get("version")
+            names = [f"{n}:" for n in _rc(port, "config/listremotes").get("remotes", [])]
+            return _rclone_state_view(version, names, bin_)
+        except RuntimeError:
+            return {"available": True, "version": None, "remotes": [], "suggested": []}
+    return {"available": False, "version": None, "remotes": [], "suggested": []}
 
 
 def broken_mount_error(path: str) -> str | None:
