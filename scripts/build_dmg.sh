@@ -32,10 +32,14 @@ REF="$(PYTHONPATH="$REPO_ROOT" python3 -m fused_render._branch ref)"
 SUFFIX="$(PYTHONPATH="$REPO_ROOT" python3 -m fused_render._branch suffix)"
 APP_NAME="FusedRender${SUFFIX}"
 
+# Single source of truth is fused_render/__init__.py's __version__ (pyproject
+# derives it dynamically via [tool.hatch.version], so it has no literal version
+# line to grep). Regex the file rather than importing the package — no import
+# side effects, and it works before deps are installed.
 VERSION="$(python3 -c "
 import re
-text = open('${REPO_ROOT}/pyproject.toml').read()
-print(re.search(r'(?m)^version\s*=\s*\"([^\"]+)\"', text).group(1))
+text = open('${REPO_ROOT}/fused_render/__init__.py').read()
+print(re.search(r'(?m)^__version__\s*=\s*\"([^\"]+)\"', text).group(1))
 ")"
 
 BUILD_DIR="$REPO_ROOT/build"

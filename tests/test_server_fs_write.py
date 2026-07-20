@@ -120,9 +120,18 @@ def test_write_create_ok_for_new_file(tmp_path):
 @pytest.fixture
 def mounted(tmp_path, monkeypatch):
     """A real file sitting under a fake mountpoint inside a redirected
-    FUSED_RENDER_HOME. Returns a factory: mounted(read_only=...) -> file path."""
+    FUSED_RENDER_HOME. Returns a factory: mounted(read_only=...) -> file path.
+
+    fs/stat routes a mount-backed stat through the rclone rc API instead of the
+    kernel (a kernel GETATTR over a mount can wedge it), so a live stub rcd must
+    answer operations/stat for the mounted file."""
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     import fused_render.shell.mounts as mounts
+    from test_shell_mounts import StubRcd
+
+    stub = StubRcd()
+    stub.responses["operations/stat"] = {"item": {"Size": len(b"original")}}
+    mounts.write_rcd_state(stub.port, 4242)
 
     def make(name, read_only):
         m = mounts.add_mount(name, f"{name}-remote:bucket", read_only=read_only)
@@ -133,7 +142,8 @@ def mounted(tmp_path, monkeypatch):
             fh.write("original")
         return f
 
-    return make
+    yield make
+    stub.close()
 
 
 def test_stat_not_writable_under_read_only_mount(mounted):
