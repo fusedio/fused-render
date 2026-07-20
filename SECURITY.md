@@ -44,8 +44,8 @@ that isn't there.
 
 ## What *is* guarded, and why it's narrow
 
-A few targeted mitigations exist, each for a specific cross-origin scenario —
-none of them are authentication and none change the trust model above:
+Two targeted mitigations actually hold against an adversary. Neither is
+authentication and neither changes the trust model above:
 
 - **Cross-origin POST guard (D36).** The two mutating/executing endpoints,
   `POST /api/run` and `POST /api/fs/write`, require a custom `X-Fused: 1`
@@ -56,24 +56,45 @@ none of them are authentication and none change the trust model above:
   app's own same-origin JS gets through. This blocks blind foreign POSTs;
   it does nothing against a page that can otherwise run inside the trust
   boundary above.
-- **Standalone tile daemons intentionally do the opposite (D122).** The
-  localhost map/tile daemons (`geotiff/`, `netcdf/`, `map/`, `zarr_aoi/`)
-  answer with `Access-Control-Allow-Origin: *` because their only client is
-  the template's own cross-port iframe reading tile bytes, and every
-  endpoint they expose is a read-only GET. They still only bind
-  `127.0.0.1`, which is the actual boundary, not the CORS header.
 - **Write-write races, not unauthorized writes.** `POST /api/fs/write` uses
   an atomic write (temp file + `fsync` + `os.replace`) gated by an optimistic
   `expected_mtime` check (409 on conflict). This protects against two
   editors silently clobbering each other's changes; it is not an access
   control — anyone who can reach the endpoint with a fresh mtime can write.
-- **Hosted export/deploy bundling is containment-checked.** Unlike the
-  general local filesystem (unrestricted by design), the code path that
-  bundles a page for hosted deploy (`export.py`: `_reject_unsafe_rel`,
-  `_within_page_dir`) rejects absolute paths, `..` escapes, and symlinks
-  resolving outside the page directory, and the bundle manifest is
-  include-only (D120) — because that output is served to third parties,
-  unlike everything else in the app.
+
+## Known, accepted exposures (not guards)
+
+These are real, narrow trade-offs shipped as-is — worth naming precisely
+rather than filing under "guarded":
+
+- **Tile daemons leak local file data to any page in your browser, not just
+  fused-render's own UI.** `geotiff/`, `netcdf/`, `map/`, and `zarr_aoi/` are
+  built-in templates enabled by default (see `templates/registry.json`);
+  each spins up its own localhost tile daemon that answers every request
+  with `Access-Control-Allow-Origin: *` (D122). Binding to `127.0.0.1` does
+  **not** protect against the relevant threat here: a malicious web page
+  open in the *same browser*, on any origin, can have its JS fetch
+  `http://127.0.0.1:<port>/...` — loopback binding only stops a different
+  *machine* from connecting, it does nothing to stop your own browser from
+  being the one making the request. Because the daemon returns open CORS,
+  that foreign page really can read the tile/metadata bytes back. The only
+  practical obstacle is that each daemon binds a random ephemeral port per
+  run, so a foreign page has to guess it — that's obscurity, not access
+  control. Impact is bounded to read-only tile/metadata bytes for whichever
+  local file the daemon happens to be serving; there's no write, no code
+  execution reachable through it.
+- **Export/deploy bundling checks guard against your own mistakes, not a
+  malicious deploy.** `export.py`'s `_reject_unsafe_rel`/`_within_page_dir`
+  reject `..` escapes, absolute paths, and symlinks resolving outside the
+  page directory when a bundle manifest's `include` globs are expanded
+  (D120). This exists because glob/symlink expansion can silently pull in a
+  file from outside the intended folder before you ever see the resulting
+  file list — it is **not** an access-control boundary against you
+  deliberately publishing files: you already see the full bundle contents
+  before deploying, and nothing stops you from adding any file you want to
+  your own page directory and including it on purpose. The check only turns
+  an accidental glob/symlink escape into an error instead of a silent extra
+  file in a public deploy.
 
 ## Network / supply chain
 
@@ -120,7 +141,7 @@ a shared machine.
 If you find a security issue, please open a
 [private security advisory](https://github.com/fusedio/fused-render/security/advisories/new)
 on this repository rather than a public issue. Given the trust model above,
-most impactful reports will concern the boundaries that *are* meant to hold
-(the `127.0.0.1` bind, the `X-Fused` cross-origin guard, or the export/deploy
-containment checks) rather than the local filesystem/code-execution access
-that is the intended design.
+most impactful reports will concern the two things actually meant to hold —
+the `X-Fused` cross-origin POST guard (D36) and the `127.0.0.1` bind itself —
+rather than the local filesystem/code-execution access that is the intended
+design, or the accepted exposures named above.
