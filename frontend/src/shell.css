@@ -1789,6 +1789,29 @@ body.embed .preview-browse-chip:hover {
   font-size: 13px;
 }
 
+/* Canonical field controls inside modals and mount forms — ONE background
+   (--bg, recessed against the --bg-alt dialog surface), ONE padding, ONE
+   focus treatment. :where() keeps specificity at the scope class alone, so
+   composite frames that reset their inner input (.templates-key-input input,
+   .templates-chip-draft) and deliberate variants (.templates-rec-add-input)
+   still win. */
+.modal-body :where(input:not([type="checkbox"], [type="radio"], [type="file"]), select, textarea),
+.mount-form-row :where(input, select) {
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+}
+
+.modal-body :where(input:not([type="checkbox"], [type="radio"], [type="file"]), select, textarea):focus,
+.mount-form-row :where(input, select):focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 .deploy-body p {
   margin: 0;
 }
@@ -2103,7 +2126,7 @@ body.embed .preview-browse-chip:hover {
   color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 5px 8px;
+  padding: 7px 10px;
   max-width: 100%;
 }
 
@@ -2642,7 +2665,7 @@ body.embed .preview-browse-chip:hover {
   color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 5px 8px;
+  padding: 7px 10px;
 }
 
 /* Add-mount / add-remote field rows (a <form> so Enter submits). */
@@ -2766,12 +2789,12 @@ body.embed .preview-browse-chip:hover {
 .mount-field {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 6px;
 }
+/* Same label voice as .templates-field — one caption style across all forms. */
 .mount-field > span {
-  font-size: 0.7em;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--fg-muted);
 }
 .mount-field .req {
@@ -3217,6 +3240,14 @@ body.embed .preview-browse-chip:hover {
   width: 100%;
 }
 
+/* Inside a modal the field sits on the --bg-alt dialog surface, so it takes
+   the canonical recessed style (toolbar keeps --bg-alt on the --bg page). */
+.modal-body .templates-search {
+  background: var(--bg);
+  height: auto;
+  padding: 7px 10px;
+}
+
 .templates-field-hint {
   font-size: 12px;
 }
@@ -3272,7 +3303,7 @@ body.embed .preview-browse-chip:hover {
   padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--bg-alt);
+  background: var(--bg);
 }
 
 .templates-chip-input:focus-within {
@@ -3332,7 +3363,7 @@ body.embed .preview-browse-chip:hover {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0 8px;
-  background: var(--bg-alt);
+  background: var(--bg);
   align-self: flex-start;
 }
 
@@ -3341,12 +3372,16 @@ body.embed .preview-browse-chip:hover {
   background: none;
   color: var(--fg);
   border: none;
-  padding: 6px 2px;
+  padding: 7px 2px;
   min-width: 120px;
 }
 
 .templates-key-input input:focus {
   outline: none;
+}
+
+.templates-key-input:focus-within {
+  border-color: var(--accent);
 }
 
 .templates-key-fix {
