@@ -4,11 +4,13 @@ recently-opened-files store at ~/.fused-render/recents.json.
 FUSED_RENDER_HOME is redirected to a tmp dir so no test touches the real home.
 """
 import json
+import time
 from urllib.parse import quote
 
 from fastapi.testclient import TestClient
 
 from fused_render.server import create_app
+from fused_render.shell import recents as recents_mod
 
 
 FUSED = {"X-Fused": "1"}  # D3 guard header required on writes
@@ -165,6 +167,76 @@ def test_writes_without_fused_header_are_rejected(tmp_path, monkeypatch):
     assert client.post("/api/recents/open", json={"url": _view_url(f)}).status_code == 403
     assert client.put("/api/recents/collapsed", json={"collapsed": True}).status_code == 403
     assert not (home / "recents.json").exists()
+
+
+def test_get_is_bounded_when_existence_check_hangs(tmp_path, monkeypatch):
+    # A stale entry sitting on a slow/hung mount must never stall the sidebar.
+    # With the existence check hung for 10s each, a serial GET would take
+    # 30s+; the bounded, fan-out GET must return well under the hang duration
+    # AND keep the entries (fail open: a possibly-dead row beats a stalled
+    # sidebar — only a check that COMPLETES False may filter).
+    client, _ = _client(tmp_path, monkeypatch)
+    urls = []
+    for i in range(3):
+        f = _make_file(tmp_path, f"hang{i}.parquet")
+        url = _view_url(f)
+        urls.append(url)
+        client.post("/api/recents/open", json={"url": url}, headers=FUSED)
+
+    def _hang(path):
+        time.sleep(10)
+        return False  # would filter if it ever completed within budget
+
+    monkeypatch.setattr(recents_mod.os.path, "isfile", _hang)
+
+    start = time.monotonic()
+    resp = client.get("/api/recents")
+    elapsed = time.monotonic() - start
+
+    assert resp.status_code == 200
+    assert elapsed < 3.0, f"GET /api/recents took {elapsed:.1f}s — not bounded"
+    # Fail open: every hung entry is still present.
+    got = {e["url"] for e in resp.json()["entries"]}
+    assert got == set(urls)
+
+
+def test_get_checks_run_concurrently_not_serially(tmp_path, monkeypatch):
+    # N entries each with a ~0.5s existence check must complete in ~one sleep
+    # (concurrent fan-out), not N sleeps (serial). Five serial checks = 2.5s;
+    # concurrent + shared budget stays well under that.
+    client, _ = _client(tmp_path, monkeypatch)
+    for i in range(5):
+        f = _make_file(tmp_path, f"slow{i}.parquet")
+        client.post("/api/recents/open", json={"url": _view_url(f)}, headers=FUSED)
+
+    def _slow(path):
+        time.sleep(0.5)
+        return True
+
+    monkeypatch.setattr(recents_mod.os.path, "isfile", _slow)
+
+    start = time.monotonic()
+    resp = client.get("/api/recents")
+    elapsed = time.monotonic() - start
+
+    assert resp.status_code == 200
+    assert len(resp.json()["entries"]) == 5
+    assert elapsed < 1.5, f"GET took {elapsed:.1f}s — checks not concurrent"
+
+
+def test_get_completed_false_filters_completed_true_shows(tmp_path, monkeypatch):
+    # Fast-path regression: a check that COMPLETES False filters the entry; one
+    # that completes True keeps it. (The completed-False path is what the
+    # fail-open timeout path must NOT reach.)
+    client, _ = _client(tmp_path, monkeypatch)
+    keep = _make_file(tmp_path, "present.csv")
+    gone = _make_file(tmp_path, "vanished.csv")
+    client.post("/api/recents/open", json={"url": _view_url(gone)}, headers=FUSED)
+    client.post("/api/recents/open", json={"url": _view_url(keep)}, headers=FUSED)
+    gone.unlink()
+
+    entries = client.get("/api/recents").json()["entries"]
+    assert [e["url"] for e in entries] == [_view_url(keep)]
 
 
 def test_corrupt_file_reads_as_defaults(tmp_path, monkeypatch):
