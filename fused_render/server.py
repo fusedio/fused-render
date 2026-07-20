@@ -2717,7 +2717,11 @@ def create_app(start_dir: str) -> FastAPI:
                         return _mount_list_error_response(os.path.dirname(path), e)
                     if not pr.exists or pr.is_dir:
                         return _error(f"no such file: {path}", status=404)
-                    size, mtime = pr.size or 0, pr.mtime or 0.0
+                    # rclone reports Size:-1 for an object of unknown length;
+                    # `-1 or 0` is -1, which is an invalid content-length. Clamp
+                    # a missing/negative size to 0 (keep the mtime fallback).
+                    size = pr.size if pr.size is not None and pr.size >= 0 else 0
+                    mtime = pr.mtime or 0.0
                 else:
                     st = await asyncio.to_thread(_stat_or_none, path)
                     if st is None:

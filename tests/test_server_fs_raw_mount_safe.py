@@ -68,6 +68,20 @@ def test_raw_head_present_file_200_via_rc(raw_client, home, monkeypatch):
     assert r.headers["content-length"] == "42"
 
 
+def test_raw_head_unknown_size_reports_zero_not_negative(raw_client, home, monkeypatch):
+    client, arm_serve = raw_client
+    mp = _mount("rw", read_only=False)
+    arm_serve(mp)
+    _no_kernel_on_mount(monkeypatch, mp)
+    # rclone reports Size:-1 for an object of unknown length; `-1 or 0` is -1,
+    # which would emit an invalid content-length: -1. It must clamp to 0.
+    _list_returns(monkeypatch, [{"Name": "blob.bin", "IsDir": False, "Size": -1,
+                                 "ModTime": "2024-01-02T03:04:05Z"}])
+    r = client.head("/api/fs/raw", params={"path": os.path.join(mp, "blob.bin")})
+    assert r.status_code == 200
+    assert r.headers["content-length"] == "0"
+
+
 def test_raw_head_indeterminate_is_503(raw_client, home, monkeypatch):
     client, arm_serve = raw_client
     mp = _mount("rw", read_only=False)
