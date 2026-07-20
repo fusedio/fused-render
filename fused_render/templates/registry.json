@@ -353,10 +353,12 @@
   ],
   ".tif": [
     "geotiff",
+    "pyramid",
     "map"
   ],
   ".tiff": [
     "geotiff",
+    "pyramid",
     "map"
   ],
   ".nc": [

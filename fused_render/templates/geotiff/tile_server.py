@@ -17,14 +17,17 @@ Endpoints (all GET, CORS *):
         &stretch=&vlo=&vhi=    -> PNG tile (transparent where no data)
   /hist?file=&bbox=w,s,e,n(3857)&bins=&band=&mode=  -> viewport stats+hist
   /value?file=&lon=&lat=&band= -> raw value under cursor
+  /ltile/{z}/{x}/{y}.png?file=&level=N -> PNG tile rendered ONLY from pyramid
+        level N (0 = full res) via rasterio — used by the pyramid template
 
-Only pure-decodable TIFFs (uncompressed/deflate) are served; /meta returns
-supported=false otherwise and the page falls back to tiff_reader.py.
+/tile tries the native pure-python engine first (uncompressed/deflate TIFFs);
+local files it can't read (BigTIFF, user-defined CRS, exotic compression)
+fall back to a rasterio WarpedVRT render instead of the runPython image path.
 Idle shutdown after 30 min. The state file embeds this file's mtime, so
 editing the module auto-respawns a fresh daemon on the next ensure().
 """
 # /// script
-# dependencies = ["numpy", "pyproj", "imagecodecs"]
+# dependencies = ["numpy", "pyproj", "imagecodecs", "rasterio"]
 # ///
 
 import json
@@ -113,7 +116,27 @@ def _version():
 
 
 DAEMON_VENV = os.path.expanduser("~/.cache/fused-render-geotiff-v2/venv")
-DAEMON_DEPS = ["numpy", "pyproj", "imagecodecs"]
+DAEMON_DEPS = ["numpy", "pyproj", "imagecodecs", "rasterio"]
+
+
+def _upgrade_deps(vp):
+    """Older venvs predate rasterio (needed by /ltile and the /tile fallback)
+    — install it in place instead of rebuilding the venv."""
+    import shutil
+    import subprocess
+    try:
+        subprocess.run([vp, "-c", "import rasterio"], check=True,
+                       capture_output=True, timeout=60)
+        return
+    except Exception:
+        pass
+    uv = shutil.which("uv") or os.path.expanduser("~/.local/bin/uv")
+    if os.path.exists(uv):
+        try:
+            subprocess.run([uv, "pip", "install", "-p", vp, "rasterio"],
+                           check=True, capture_output=True, timeout=300)
+        except Exception:
+            pass
 
 
 def _daemon_python():
@@ -172,9 +195,17 @@ def main(action: str = "ensure"):
 
     os.makedirs(os.path.dirname(STATE), exist_ok=True)
     log = os.path.join(os.path.dirname(STATE), "daemon.log")
+    dp = _daemon_python()
+    if dp != sys.executable:
+        _upgrade_deps(dp)
+    # scrub the app's interpreter env — inherited PYTHONPATH/PYTHONHOME makes
+    # the venv python import the APP BUNDLE's packages (mixed-install imports
+    # fail randomly under concurrency, e.g. bundle rasterio vs venv rasterio)
+    denv = {k: v for k, v in os.environ.items()
+            if k not in ("PYTHONPATH", "PYTHONHOME")}
     with open(log, "ab") as lf:
-        subprocess.Popen([_daemon_python(), _me(), "--serve"],
-                         stdout=lf, stderr=lf,
+        subprocess.Popen([dp, _me(), "--serve"],
+                         stdout=lf, stderr=lf, env=denv,
                          start_new_session=True, cwd=os.path.dirname(_me()))
     # wait for the state file to appear with a live port
     for _ in range(100):
@@ -671,9 +702,22 @@ def _serve():
         return get_stretch(f, idx, robust)
 
     def do_tile(q, z, x, y):
+        # native pure-python engine first; LOCAL files it can't read (BigTIFF,
+        # user-defined CRS, exotic compression) fall back to rasterio below.
+        # Mount-backed files keep the old 404 (rasterio can't range-read them
+        # through /api/fs/raw) so the page falls back to tiff_reader.py.
+        try:
+            return _tile_native(q, z, x, y)
+        except Exception:
+            f = os.path.abspath(os.path.expanduser(q1(q, "file") or ""))
+            if not os.path.exists(f):
+                return 404, b"unsupported", "text/plain"
+            return _tile_rio(q, z, x, y)
+
+    def _tile_native(q, z, x, y):
         f = open_file(q1(q, "file"), q1(q, "src"))
         if not f["supported"]:
-            return 404, b"unsupported", "text/plain"
+            raise ValueError("unsupported by native engine")
         want_rgb, idx = render_params(q, f)
         st = parse_stretch(q, f, idx, want_rgb)
         mx0, my0, mx1, my1 = tile_bbox(z, x, y)
@@ -872,6 +916,152 @@ def _serve():
                 for k in range(count)]
         return 200, json.dumps({"values": vals}).encode(), "application/json"
 
+    # ------------- forced-level tiles (rasterio — any compression) -------
+    # /ltile/{z}/{x}/{y}.png?file=&level=N renders ONLY from pyramid level N
+    # (0 = full res), reprojected to web mercator. Used by the overview-
+    # pyramid template to compare levels honestly on a basemap.
+    _lvl_cache = {}
+    _lvl_lock = threading.Lock()
+    # rasterio dataset handles are NOT thread-safe: concurrent vrt.read() from
+    # the threaded server corrupts libtiff state (TIFFReadEncodedTile failures,
+    # then a dead process). All reads through cached VRTs go through this lock.
+    _rio_read_lock = threading.Lock()
+
+    def _lvl_vrt(file, level):
+        import rasterio
+        from rasterio.enums import Resampling
+        from rasterio.vrt import WarpedVRT
+        key = (file, level, os.path.getmtime(file))
+        with _lvl_lock:
+            if key in _lvl_cache:
+                return _lvl_cache[key]
+            kw = {} if level <= 0 else {"overview_level": level - 1}
+            src = rasterio.open(file, **kw)
+            vrt = WarpedVRT(src, crs="EPSG:3857", resampling=Resampling.nearest)
+            _lvl_cache[key] = vrt
+            return vrt
+
+    def _render_level(file, level, z, x, y, stretch=None, cmap=None):
+        from rasterio.enums import Resampling
+        from rasterio.windows import Window
+        vrt = _lvl_vrt(file, level)
+        mx0, my0, mx1, my1 = tile_bbox(z, x, y)
+        rgba = np.zeros((TILE, TILE, 4), "uint8")
+        # nearest SOURCE pixel per output pixel, computed in source index
+        # space: pasting a fractionally-rounded resampled window instead puts
+        # pixel edges in different places per tile (non-square pixels when
+        # zoomed past the level's resolution)
+        T = vrt.transform
+        xs = mx0 + (np.arange(TILE) + 0.5) * (mx1 - mx0) / TILE
+        ys = my1 + (np.arange(TILE) + 0.5) * (my0 - my1) / TILE
+        cols = np.floor((xs - T.c) / T.a).astype("int64")
+        rows = np.floor((ys - T.f) / T.e).astype("int64")
+        okc = (cols >= 0) & (cols < vrt.width)
+        okr = (rows >= 0) & (rows < vrt.height)
+        if okc.any() and okr.any():
+            c0, c1 = int(cols[okc].min()), int(cols[okc].max()) + 1
+            r0, r1 = int(rows[okr].min()), int(rows[okr].max()) + 1
+            ow, oh = min(c1 - c0, TILE), min(r1 - r0, TILE)
+            win = Window(c0, r0, c1 - c0, r1 - r0)
+            n = min(3, vrt.count)
+            with _rio_read_lock:
+                data = vrt.read(indexes=list(range(1, n + 1)), window=win,
+                                out_shape=(n, oh, ow), resampling=Resampling.nearest)
+                msk = vrt.read_masks(1, window=win, out_shape=(oh, ow),
+                                     resampling=Resampling.nearest)
+            ci = np.clip((cols - c0) * ow // (c1 - c0), 0, ow - 1)
+            ri = np.clip((rows - r0) * oh // (r1 - r0), 0, oh - 1)
+            sub = data[:, ri[:, None], ci[None, :]]
+            m2 = msk[ri[:, None], ci[None, :]].copy()
+            m2[~okr, :] = 0
+            m2[:, ~okc] = 0
+            if n == 1 and cmap:
+                vals = sub[0].astype("float64")
+                lo, hi = stretch[0] if stretch else (
+                    np.percentile(vals[m2 > 0], [2, 98]) if (m2 > 0).any()
+                    else (0.0, 1.0))
+                lut = R._lut(cmap)
+                t = np.clip((vals - lo) / max(hi - lo, 1e-9), 0, 1)
+                rgba[:, :, :3] = lut[(t * 255).astype("uint8")]
+            else:
+                if sub.dtype != np.uint8:  # 2–98% stretch for non-8-bit
+                    d = sub.astype("float64")
+                    good = np.broadcast_to(m2 > 0, d.shape)
+                    for k in range(n):
+                        if stretch:
+                            lo, hi = stretch[k if k < len(stretch) else 0]
+                        else:
+                            g = d[k][good[k]]
+                            lo, hi = (np.percentile(g, [2, 98]) if g.size
+                                      else (0.0, 1.0))
+                        d[k] = np.clip((d[k] - lo) / max(hi - lo, 1e-9), 0, 1) * 255
+                    sub = d.astype("uint8")
+                px = np.transpose(sub, (1, 2, 0))
+                if n < 3:
+                    px = np.repeat(px[:, :, :1], 3, axis=2)
+                rgba[:, :, :3] = px
+            rgba[:, :, 3] = np.where(m2 > 0, 255, 0)
+        return 200, R.encode_png(np.ascontiguousarray(rgba)), "image/png"
+
+    def do_ltile(q, z, x, y):
+        file = os.path.abspath(os.path.expanduser(q1(q, "file")))
+        # global stretch (sampled once, coarsest level) — a per-tile stretch
+        # gives every tile its own contrast and the map shows seams
+        return _render_level(file, int(q1(q, "level", "0")), z, x, y,
+                             stretch=_rio_stretch(file))
+
+    def _rio_meta(file):
+        import rasterio
+        key = ("meta", file, os.path.getmtime(file))
+        with _lvl_lock:
+            if key in _lvl_cache:
+                return _lvl_cache[key]
+        with rasterio.open(file) as src:
+            factors = [1] + list(src.overviews(1))
+        meta = {"factors": factors, "res0": _lvl_vrt(file, 0).transform.a}
+        with _lvl_lock:
+            _lvl_cache[key] = meta
+        return meta
+
+    def _rio_stretch(file):
+        """Global 2–98% stretch sampled once from the coarsest level, so every
+        tile shares the same contrast (no per-tile seams)."""
+        key = ("stretch", file, os.path.getmtime(file))
+        with _lvl_lock:
+            if key in _lvl_cache:
+                return _lvl_cache[key]
+        m = _rio_meta(file)
+        vrt = _lvl_vrt(file, len(m["factors"]) - 1)
+        n = min(3, vrt.count)
+        oh, ow = max(1, min(512, vrt.height)), max(1, min(512, vrt.width))
+        with _rio_read_lock:
+            data = vrt.read(indexes=list(range(1, n + 1)), out_shape=(n, oh, ow))
+            msk = vrt.read_masks(1, out_shape=(oh, ow))
+        st = []
+        d = data.astype("float64")
+        for k in range(n):
+            g = d[k][msk > 0]
+            lo, hi = (np.percentile(g, [2, 98]) if g.size else (0.0, 1.0))
+            st.append((float(lo), float(hi if hi > lo else lo + 1)))
+        with _lvl_lock:
+            _lvl_cache[key] = st
+        return st
+
+    def _tile_rio(q, z, x, y):
+        """Rasterio fallback for local files the native engine can't read:
+        picks the overview level a COG reader would and renders through the
+        WarpedVRT."""
+        file = os.path.abspath(os.path.expanduser(q1(q, "file")))
+        m = _rio_meta(file)
+        mx0, my0, mx1, my1 = tile_bbox(z, x, y)
+        target = (mx1 - mx0) / TILE
+        level = 0
+        for i, fac in enumerate(m["factors"]):
+            if m["res0"] * fac <= target:
+                level = i
+        return _render_level(file, level, z, x, y, stretch=_rio_stretch(file),
+                             cmap=q1(q, "cmap", "viridis"))
+
     # ---------------- HTTP ----------------
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -894,6 +1084,11 @@ def _serve():
                     z, x = int(parts[2]), int(parts[3])
                     y = int(parts[4].split(".")[0])
                     code, body, ct = do_tile(q, z, x, y)
+                elif u.path.startswith("/ltile/"):
+                    parts = u.path.split("/")   # '', 'ltile', z, x, 'y.png'
+                    z, x = int(parts[2]), int(parts[3])
+                    y = int(parts[4].split(".")[0])
+                    code, body, ct = do_ltile(q, z, x, y)
                 elif u.path == "/meta":
                     code, body, ct = do_meta(q)
                 elif u.path == "/hist":
