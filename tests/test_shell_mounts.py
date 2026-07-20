@@ -1827,10 +1827,15 @@ def test_serve_url_for_maps_and_quotes(home, rcd):
     assert mounts_mod.serve_url_for("/somewhere/else.parquet") is None
 
 
-def test_stat_marks_mount_backed_files_remote(client, home):
+def test_stat_marks_mount_backed_files_remote(client, home, rcd):
     import os
 
-    mp = os.path.join(mounts_mod.mounts_dir(), "data")
+    # fs/stat routes a mount stat through the rc API, so the stub rcd answers
+    # operations/stat for the mount-backed file (the local path still stats via
+    # the kernel).
+    rcd.responses["operations/stat"] = {"item": {"Size": 2}}
+    c = mounts_mod.add_mount("data", "remote:bucket")  # a real record for _mount_for
+    mp = mounts_mod.mountpoint(c)
     os.makedirs(mp)
     f = os.path.join(mp, "x.parquet")
     open(f, "wb").write(b"pq")

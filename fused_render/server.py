@@ -884,6 +884,121 @@ def _condition_file(template_path: str):
     return condition_file if os.path.isfile(condition_file) else None
 
 
+def _mount_gate_builtins(target_path: str):
+    """Custom `__builtins__` for a condition gate whose target is MOUNT-backed,
+    so the gate's own filesystem primitives route through the rclone rc API
+    instead of the kernel NFS mount.
+
+    Kernel NFS is the enemy: a cold NEGATIVE os.path.isfile over an rclone-NFS
+    mount is a kernel LOOKUP miss that forces rclone to LIST the whole parent S3
+    prefix to resolve it (~18-24s on a world-scale store), tripping the macOS NFS
+    deadman so the mount is declared dead. This is the same "route via rc, never
+    the kernel" hardening api_fs_list / rc_list_dir already carry; the gate path
+    never got it because gates run raw os.path against the mount.
+
+    The gate is exec'd stdlib-only and calls os.path directly (we can't ask
+    arbitrary gate code to call an rc helper), so we intercept at the os / open
+    layer. `import os` inside the gate resolves through __import__, so a fake
+    `os` injected into the module globals would just be overwritten by the real
+    one — instead we override __import__ (and open) in the gate module's OWN
+    __builtins__. That dict is built per _run_condition call on a fresh module,
+    so this is thread-safe under the concurrent ThreadPoolExecutor fan-out
+    (_evaluate_conditions) — NEVER a global monkeypatch of os.path.*, which would
+    race across threads and the rest of the server.
+
+    Fail-closed (SPEC CT-12): any rc error / timeout / unreachable rcd makes the
+    routed call behave as the kernel exception would today (isfile/isdir/exists
+    -> False, os.stat -> OSError, open -> OSError), so the gate returns False
+    quietly. A mount path NEVER falls back to the kernel os.* — that reintroduces
+    the wedge. Non-mount paths a gate might also touch pass straight through to
+    the real os / open.
+    """
+    import builtins
+    import io
+
+    from fused_render.shell import mounts
+
+    real_os = os
+
+    def _isfile(p):
+        if not mounts.is_mount_backed(p):
+            return real_os.path.isfile(p)
+        return mounts.rc_kind_for(p) == "file"
+
+    def _isdir(p):
+        if not mounts.is_mount_backed(p):
+            return real_os.path.isdir(p)
+        return mounts.rc_kind_for(p) == "dir"
+
+    def _exists(p):
+        if not mounts.is_mount_backed(p):
+            return real_os.path.exists(p)
+        return mounts.rc_kind_for(p) in ("file", "dir")
+
+    def _stat(p, *a, **k):
+        if not mounts.is_mount_backed(p):
+            return real_os.stat(p, *a, **k)
+        return mounts.rc_stat_result(p)
+
+    def _listdir(p="."):
+        # A kernel listing over a mount is the mur-sst wedge; the gate is
+        # forbidden from enumerating anyway (constant-time by design), so fail
+        # closed rather than route a listing it should never issue.
+        if mounts.is_mount_backed(p):
+            raise OSError(f"listing not permitted for mount path {p} in a gate")
+        return real_os.listdir(p)
+
+    def _scandir(p="."):
+        if mounts.is_mount_backed(p):
+            raise OSError(f"scandir not permitted for mount path {p} in a gate")
+        return real_os.scandir(p)
+
+    class _OsPathShim:
+        # Instance attrs win over __getattr__, so only these three route via rc;
+        # join / basename / everything else delegate to the real os.path.
+        isfile = staticmethod(_isfile)
+        isdir = staticmethod(_isdir)
+        exists = staticmethod(_exists)
+
+        def __getattr__(self, name):
+            return getattr(real_os.path, name)
+
+    class _OsShim:
+        path = _OsPathShim()
+        stat = staticmethod(_stat)
+        listdir = staticmethod(_listdir)
+        scandir = staticmethod(_scandir)
+
+        def __getattr__(self, name):
+            return getattr(real_os, name)
+
+    os_shim = _OsShim()
+    real_import = builtins.__import__
+    real_open = open
+
+    def _import(name, *args, **kwargs):
+        if name == "os":
+            return os_shim
+        return real_import(name, *args, **kwargs)
+
+    def _open(file, *args, **kwargs):
+        if isinstance(file, str) and mounts.is_mount_backed(file):
+            # The one bounded gate read (zarr.json node_type). Ranged HTTP read
+            # over the mount's serve — never a kernel open. OSError -> the gate's
+            # own except -> fail closed.
+            data = mounts.rc_read_bounded(file)
+            mode = args[0] if args else kwargs.get("mode", "r")
+            if "b" in mode:
+                return io.BytesIO(data)
+            return io.StringIO(data.decode(kwargs.get("encoding") or "utf-8"))
+        return real_open(file, *args, **kwargs)
+
+    b = dict(vars(builtins))
+    b["__import__"] = _import
+    b["open"] = _open
+    return b
+
+
 def _run_condition(condition_file: str, target_path: str):
     """Load+exec a `condition.py` and call `main(target_path)`. Returns
     (allowed: bool, error: str|None).
@@ -896,6 +1011,12 @@ def _run_condition(condition_file: str, target_path: str):
     template and surfaces the reason as `template_error`, mirroring how an
     unresolvable name is dropped (SPEC CT-6): a template gated by code that
     can't decide is not silently shown.
+
+    For a MOUNT-backed target the gate runs under a per-call, thread-safe shim
+    (_mount_gate_builtins) that routes its os.path / os.stat / open off the
+    kernel NFS mount and onto the rclone rc API — a cold negative os.path.isfile
+    over a mount otherwise lists the whole S3 prefix and wedges the mount.
+    Templates stay mount-agnostic; all mount-awareness lives here.
     """
     import importlib.util
 
@@ -904,6 +1025,11 @@ def _run_condition(condition_file: str, target_path: str):
             "__fused_condition__", condition_file
         )
         mod = importlib.util.module_from_spec(spec)
+        # Local import keeps shell ↛ server acyclic; resolves the attr at call
+        # time so the mount routing is monkeypatchable in tests.
+        from fused_render.shell.mounts import is_mount_backed
+        if is_mount_backed(target_path):
+            mod.__dict__["__builtins__"] = _mount_gate_builtins(target_path)
         spec.loader.exec_module(mod)
         fn = getattr(mod, "main", None)
         if not callable(fn):
@@ -980,11 +1106,26 @@ def _conditions_payload(path: str):
     carries the first gate error in list order (a broken gate reports False —
     fail closed — with the reason), matching stat's `template_error` posture.
     """
-    try:
-        st = os.stat(path)
-    except OSError:
-        return _error(f"no such file or directory: {path}", status=404)
-    entries, _ = _templates_for(path, stat_mod.S_ISDIR(st.st_mode))
+    from fused_render.shell.mounts import is_mount_backed, rc_kind_for
+
+    if is_mount_backed(path):
+        # A mount is_dir probe off the kernel (a kernel os.stat here is a
+        # GETATTR that can force an S3 re-list and wedge the mount). "missing" is
+        # a trustworthy 404; "indeterminate" (rcd down / rc error) must NOT 404 a
+        # path the user just opened — proceed treating it as a dir, and the gates
+        # then fail closed on their own indeterminate rc calls, so the endpoint
+        # still returns 200 with all-False conditions rather than a spurious 404.
+        kind = rc_kind_for(path)
+        if kind == "missing":
+            return _error(f"no such file or directory: {path}", status=404)
+        is_dir = kind != "file"
+    else:
+        try:
+            st = os.stat(path)
+        except OSError:
+            return _error(f"no such file or directory: {path}", status=404)
+        is_dir = stat_mod.S_ISDIR(st.st_mode)
+    entries, _ = _templates_for(path, is_dir)
 
     gated = []  # [(mode, condition_file)] — mode keys are unique per list
     for entry in entries:
@@ -1261,10 +1402,18 @@ def _writable(path: str) -> bool:
     cache and only fails at the async upload, so W_OK is a lie there."""
     # Local import, like _stat_payload's: server -> shell.mounts only,
     # keeping shell ↛ server acyclic.
-    from fused_render.shell.mounts import mount_read_only
+    from fused_render.shell.mounts import is_mount_backed, mount_read_only
 
     if mount_read_only(path):
         return False
+    if is_mount_backed(path):
+        # A writable (not read-only) mount: the rclone VFS (CacheMode=full) takes
+        # writes into its local cache, so a path under it is writable regardless
+        # of kernel permission bits. Return True WITHOUT a kernel
+        # os.path.exists/os.access — a cold negative lookup over the mount lists
+        # the whole S3 prefix and wedges it, the same trap fs/stat's os.stat is
+        # routed off the kernel to avoid (mount_read_only reads mounts.json only).
+        return True
     if os.path.exists(path):
         return os.access(path, os.W_OK)
     return os.access(os.path.dirname(path) or ".", os.W_OK)
@@ -1331,12 +1480,13 @@ def _stat_payload(path: str, is_dir: bool, st: os.stat_result | None = None) -> 
     """The /api/fs/stat shape. /api/fs/write returns it too, so the editor can
     re-arm its optimistic lock from a save response. Pass a pre-fetched `st` to
     avoid a redundant stat() — one remote round-trip under a mount."""
-    if st is None:
-        st = os.stat(path)
-    templates, template_error = _templates_for(path, is_dir)
     # Local import, like api_fs_walk's: server -> shell.mounts only, keeping
     # shell ↛ server acyclic.
     from fused_render.shell.mounts import is_mount_backed
+
+    if st is None:
+        st = _mount_safe_stat(path)
+    templates, template_error = _templates_for(path, is_dir)
 
     payload = {
         "path": path,
@@ -1355,12 +1505,30 @@ def _stat_payload(path: str, is_dir: bool, st: os.stat_result | None = None) -> 
     return payload
 
 
+def _mount_safe_stat(path: str) -> os.stat_result:
+    """os.stat for a path that may be mount-backed, off the kernel for mounts.
+
+    A kernel os.stat on a mount is a GETATTR that can force an S3 re-list and
+    wedge the mount (the stat-storm / deadman incident); route mount paths
+    through the rclone rc API (rc_stat_result) instead. It raises OSError /
+    FileNotFoundError exactly like the kernel os.stat it replaces, so callers'
+    existing OSError->404 handling holds — and it NEVER falls back to that kernel
+    GETATTR, which is the call that killed the mount."""
+    from fused_render.shell.mounts import is_mount_backed, rc_stat_result
+
+    if is_mount_backed(path):
+        return rc_stat_result(path)
+    return os.stat(path)
+
+
 def _fs_stat(path: str):
     # One stat, not the exists()+isdir()+stat() trio: over a remote mount each
     # is a round-trip, so a plain metadata fetch cost 3 LISTs. os.path.exists()
-    # returns False for any OSError, so mirror that -> 404.
+    # returns False for any OSError, so mirror that -> 404. _mount_safe_stat keeps
+    # a mount stat off the kernel (rc API), raising OSError like os.stat on any
+    # unreachable/missing so this 404 path is unchanged.
     try:
-        st = os.stat(path)
+        st = _mount_safe_stat(path)
     except OSError:
         return _error(f"no such file or directory: {path}", status=404)
     return _stat_payload(path, stat_mod.S_ISDIR(st.st_mode), st)
