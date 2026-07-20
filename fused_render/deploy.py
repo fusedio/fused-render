@@ -396,6 +396,16 @@ def set_deployment(page: str, record: dict) -> None:
 def _record_from(raw: dict, *, page: str, env_name: str, backend: str,
                  entrypoints: list[str], include: list[str], exclude: list[str],
                  cache_max_age: str, fallback: dict | None) -> dict:
+    # `cache_max_age` here must be the setting actually now in effect on the live
+    # mount — NOT necessarily what the caller requested. On a managed Fused env, a
+    # repoint/recreate-revive reuses the existing mount's `cache_settings` verbatim
+    # (fixed at first `create`, `application` repo spec 021 §3.1); the CLI already
+    # withholds `--cache-max-age` on those calls (see deploy_page) precisely because
+    # sending it would either be ignored or (on `repoint`) rejected outright. The
+    # caller (deploy_page) resolves the effective value before calling this, so a
+    # reused-token redeploy that requested a different duration still shows the
+    # duration that is really running — the deployment card must never claim a
+    # setting the mount doesn't have.
     token = raw.get("token") or raw.get("id") or (fallback or {}).get("token")
     if not isinstance(token, str) or not token:
         raise DeployError("the fused CLI did not return a mount token")
@@ -481,6 +491,7 @@ def deploy_page(
     include: list[str] | None = None,
     exclude: list[str] | None = None,
     cache_max_age: str = "0s",
+    force_new: bool = False,
 ) -> dict:
     """Export `page` to a temp bundle and publish it on `env_name`; returns the
     stored deployment record (token, URL when the backend returned one).
@@ -490,27 +501,36 @@ def deploy_page(
     persisted on the record so a reopened modal reloads the same selection.
 
     `cache_max_age` (`"0s"` off by default, e.g. `"5m"`/`"1h"`) is the Deploy
-    dialog's caching choice: how long a `runPython` route's result may be served
-    from cache instead of re-executed. It rides the export bundle's own manifest
+    dialog's caching choice: how long a page's result may be served from cache
+    instead of re-executed. It rides the export bundle's own manifest
     (`export.export_page`) AND is passed explicitly as `share create
     --cache-max-age` — the two backends read it from different places (`fused`
     repo's spec/serve/fused-render.md § Caching): an AWS environment's
     `build_html_artifact` reads the manifest field (so either source works,
-    including on a later `repoint`); a managed Fused environment reads only the
-    explicit `--cache-max-age` on `create`, as its own mount-level
-    `cache_settings` field, wholly independent of the bundle. Every deploy
-    re-sends it explicitly, like `include`/`exclude`; there is no "leave it as
-    it was" (see `bust_cache_deployment` to force-refresh already-cached results
-    without changing this setting). On a managed environment this setting is
-    fixed at first deploy — a `repoint` (every redeploy after that) cannot
-    change it, so toggling caching on an already-deployed page there has no
-    effect until it is revoked and redeployed fresh.
+    including on a later `repoint`); a managed Fused environment reads it only
+    on `create`, as its own mount-level `cache_settings` field (`application`
+    repo spec `021` §3.1), wholly independent of the bundle. On a managed
+    environment `cache_settings` is fixed for the life of a token — `repoint`
+    carries no cache fields at all (the control plane rejects one), and a
+    revoked-token revive (`recreate --same-token`) preserves the existing
+    setting verbatim — so a redeploy that reuses the token can request a
+    different `cache_max_age` all it wants, it never takes effect. This
+    function does not pretend otherwise: on that reuse path the stored record
+    keeps reporting the setting that is actually live, not the one requested
+    (see `_record_from`). `force_new=True` is the only way to actually change
+    it on a managed environment: it skips token reuse entirely and always
+    mints a fresh `share create` (a new token, new URL) with the requested
+    `cache_max_age`, matching what a genuinely fresh deploy would get. The
+    caller is responsible for revoking the old token first if it should stop
+    serving (see `revoke_deployment`); `force_new` does not do that itself, so
+    the old and new mounts can briefly coexist if that is what's wanted.
 
-    First deploy (or a pointer on a different env): `share create --public` —
-    a fresh opaque capability URL. Redeploy on the same env keeps the URL:
-    active mount -> `share repoint <token>`; revoked tombstone -> `share
-    recreate --same-token` then repoint (same URL comes back); token absent
-    from `share list` entirely -> fresh create (nothing left to revive).
+    First deploy (or a pointer on a different env, or `force_new=True`):
+    `share create --public` — a fresh opaque capability URL. Otherwise, redeploy
+    on the same env keeps the URL: active mount -> `share repoint <token>`;
+    revoked tombstone -> `share recreate --same-token` then repoint (same URL
+    comes back); token absent from `share list` entirely -> fresh create
+    (nothing left to revive).
     """
     include = include or []
     exclude = exclude or []
@@ -551,8 +571,18 @@ def deploy_page(
         plan = export_page(page, bundle, include=include, exclude=exclude, cache_max_age=cache_max_age)
         entrypoints = [e.name for e in plan.entrypoints]
 
-        same_env = pointer if pointer and pointer.get("env") == env_name else None
+        # force_new deliberately treats any existing pointer as absent — never
+        # reused for token lookup below — so the branch that follows always
+        # takes the fresh-create path and mints a new token (see docstring).
+        same_env = (
+            None if force_new else (pointer if pointer and pointer.get("env") == env_name else None)
+        )
         token = same_env.get("token") if same_env else None
+        # What the mount will ACTUALLY be caching after this call — defaults to
+        # the requested value (true for AWS always, and for fused on any branch
+        # that runs `create`); overridden below on a fused-backend token-reuse
+        # branch, where the request never reaches the control plane.
+        effective_cache_max_age = cache_max_age
 
         if not token:
             raw = _run_share(
@@ -560,6 +590,17 @@ def deploy_page(
             )
         else:
             live = _classify_mount(_list_mounts(env_name), token)
+            # A repoint/recreate-revive (the "active"/"revoked" branches just
+            # below) reuses the mount's own cache_settings on a managed Fused env
+            # (spec 021 §3.1) — the request never reaches the control plane on
+            # those two calls (see docstring), so the record must keep reporting
+            # whatever was already live, not this request. The "absent" branch
+            # below is a genuine fresh `create`, so it's excluded here — the
+            # requested value really does take effect there. AWS is unaffected
+            # either way: build_html_artifact re-reads the bundle's own manifest
+            # on every repoint, so the request DOES take effect there too.
+            if backend == "fused" and live in ("active", "revoked"):
+                effective_cache_max_age = (same_env or {}).get("cache_max_age", "0s")
             if live == "active":
                 raw = _run_share(env_name, ["repoint", token, bundle])
             elif live == "revoked":
@@ -602,7 +643,7 @@ def deploy_page(
         record = _record_from(
             raw, page=page, env_name=env_name, backend=backend,
             entrypoints=entrypoints, include=include, exclude=exclude,
-            cache_max_age=cache_max_age, fallback=same_env,
+            cache_max_age=effective_cache_max_age, fallback=same_env,
         )
         set_deployment(page, record)
         return record
@@ -840,8 +881,13 @@ def api_deploy(body: dict = Body(...), x_fused: str | None = Header(default=None
     cache_max_age = body.get("cache_max_age", "0s")
     if not isinstance(cache_max_age, str):
         return _error("'cache_max_age' must be a string, e.g. '0s'/'5m'/'1h'")
+    force_new = body.get("force_new", False)
+    if not isinstance(force_new, bool):
+        return _error("'force_new' must be a boolean")
     try:
-        return deploy_page(page, env_name, include, exclude, cache_max_age=cache_max_age)
+        return deploy_page(
+            page, env_name, include, exclude, cache_max_age=cache_max_age, force_new=force_new
+        )
     except ExportError as e:
         return _error(str(e))
     except DeployError as e:

@@ -692,7 +692,8 @@ nothing. Full detail: `docs/EXPORT.md`.
   `openfused.caching.parse_cache_max_age` accepts) — the Deploy modal's caching
   choice (DP-17), written fresh on every export so a redeploy always re-asserts
   the current setting. The hosting layer's `build_html_artifact` applies it
-  uniformly to every `runPython` route (never the shell or the asset route); see
+  **page-wide** — to every route uniformly (the shell, each `runPython` route,
+  and the asset route), matching the managed backend's mount-wide caching; see
   the fused repo's spec/serve/fused-render.md § Caching. A bundle exported before
   this field existed omits it, which the hosting layer reads as off.
 
@@ -882,32 +883,45 @@ the product gains network access.
   `share create` on AWS envs and lists the managed backend's inline-upload
   bundle classification as a follow-up. fused-render passes the CLI's own
   error through verbatim rather than second-guessing the installed version.
-- **DP-17** The modal carries a **caching control**: a checkbox ("Cache
-  runPython results") plus a duration select (1m/5m/15m/1h/6h/1d presets, plus
-  the current value verbatim when it isn't one of them — e.g. set by a direct
-  `share create --cache-max-age` outside this dialog), seeded on open from the
-  stored deployment record like `include`/`exclude` (DP-2c) and re-sent as
-  `cache_max_age` on every Deploy — there is no "leave it as it was". It reaches
-  the two backends **differently**, because they model caching differently
-  (fused repo's spec/serve/fused-render.md § Caching / spec/serve/share-links.md
-  §8): it travels in the export bundle's manifest (EX-9) for an AWS environment
-  (read by `build_html_artifact`, so a later `repoint`/redeploy can change it
-  too — `deploy_page` sends it both ways there, harmlessly redundant); for a
-  managed `fused` environment the manifest field is not read at all — only the
-  explicit `--cache-max-age` on the `share create` call is, as the mount's own
-  `cache_settings` (a control-plane concept independent of the bundle). That
-  field is **fixed at create time**: a `repoint` (every redeploy after the
-  first) cannot change it, so the modal notes this inline on a redeploy to a
-  `fused` env rather than implying the checkbox took effect.
+- **DP-17** The modal carries a **caching control**: a checkbox ("Cache page
+  results") plus a duration select (1m/5m/15m/1h/6h/1d presets, default **1h**,
+  plus the current value verbatim when it isn't one of them — e.g. set by a
+  direct `share create --cache-max-age` outside this dialog), seeded on open
+  from the stored deployment record like `include`/`exclude` (DP-2c) and
+  re-sent as `cache_max_age` on every Deploy — there is no "leave it as it
+  was". It reaches the two backends **differently**, because they model
+  caching differently (fused repo's spec/serve/fused-render.md § Caching /
+  spec/serve/share-links.md §8): it travels in the export bundle's manifest
+  (EX-9) for an AWS environment (read by `build_html_artifact`, so a later
+  `repoint`/redeploy can change it too — `deploy_page` sends it both ways
+  there, harmlessly redundant); for a managed `fused` environment the manifest
+  field is not read at all — only the explicit `--cache-max-age` on the
+  `share create` call is, as the mount's own `cache_settings` (a control-plane
+  concept independent of the bundle, `application` repo spec `021` §3.1). That
+  field is **fixed for the life of a token**: a `repoint` carries no cache
+  fields at all, and a revoked-token revive (`recreate --same-token`) preserves
+  it verbatim — so `deploy_page` deliberately withholds `--cache-max-age` on
+  those two calls (sending it would either be ignored or, on `repoint`,
+  rejected outright) and persists the setting that is **actually** live, not
+  the one requested (`_record_from`'s `effective_cache_max_age`), so the
+  deployment card never claims a setting the mount doesn't have. When the
+  modal detects the checkbox/duration no longer matches what's live on a
+  `fused`-backend redeploy, it shows this inline (naming the live value) with
+  a **"Deploy as new URL"** action (`deploy_page(..., force_new=True)`) — the
+  only way to actually change caching on that backend: it skips token reuse
+  and mints a fresh `share create` with the requested setting, at a new URL.
+  The previous URL is left running; the caller revokes it separately (Revoke)
+  if it should stop serving.
 - **DP-18** **Bust cache** (`POST /api/deploy/bust-cache {"page"}` →
   `bust_cache_deployment` → `fused share cache-clear <token>`) forces every
   cached result for the deployment's mount to be recomputed on the next
   request, without touching its status, URL, or caching setting — for "the
   underlying data changed, not the code" (a redeploy dedupes to the same
   content address and would otherwise keep serving the old cached result until
-  `cache_max_age` expires). Shown alongside Revoke whenever the deployment is
-  active; its result (`{deleted, scope}`) renders as a one-line status
-  ("Cleared N cached results…" / "Nothing was cached…").
+  `cache_max_age` expires). Shown in the caching row (next to the duration
+  control) whenever the deployment is active; its result (`{deleted, scope}`)
+  renders as a one-line status ("Cleared N cached results…" / "Nothing was
+  cached…").
 
 ### 19.5 State & truth
 

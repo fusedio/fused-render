@@ -460,6 +460,150 @@ def test_deploy_rejects_invalid_cache_max_age(tmp_path, monkeypatch):
     assert h.calls() == []  # rejected before any CLI shellout
 
 
+def test_repoint_on_fused_backend_keeps_previous_cache_max_age(tmp_path, monkeypatch):
+    # A managed Fused mount's cache_settings are fixed at `create` (021 §3.1) —
+    # `repoint` carries no cache fields at all, so a redeploy requesting a
+    # DIFFERENT duration must not claim it took effect: the record has to keep
+    # reporting the value that's actually live.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
+    )
+    h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "cache_max_age": "5m"},
+        headers=FUSED,
+    )
+
+    h.set_scenario(
+        {
+            "list": [{"token": "abc123", "status": "active"}],
+            "repoint": {"token": "abc123", "status": "active"},
+        }
+    )
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "cache_max_age": "1h"},
+        headers=FUSED,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["cache_max_age"] == "5m"
+    assert h.pointer()["cache_max_age"] == "5m"
+    repoint_call = h.calls()[-1]
+    assert repoint_call["argv"][1] == "repoint"
+    assert "--cache-max-age" not in repoint_call["argv"]
+
+
+def test_recreate_revive_on_fused_backend_keeps_previous_cache_max_age(tmp_path, monkeypatch):
+    # Same guarantee on the revoked-tombstone revive path (recreate --same-token
+    # + repoint): neither call can change cache_settings on a managed env.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
+    )
+    h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "cache_max_age": "5m"},
+        headers=FUSED,
+    )
+
+    h.set_scenario(
+        {
+            "list": [{"token": "abc123", "status": "revoked"}],
+            "recreate": {"token": "abc123", "status": "active"},
+            "repoint": {"token": "abc123", "status": "active"},
+        }
+    )
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "cache_max_age": "1h"},
+        headers=FUSED,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["cache_max_age"] == "5m"
+    verbs_and_flags = [(c["argv"][1], "--cache-max-age" in c["argv"]) for c in h.calls()[-2:]]
+    assert verbs_and_flags == [("recreate", False), ("repoint", False)]
+
+
+def test_repoint_on_aws_backend_applies_the_new_cache_max_age(tmp_path, monkeypatch):
+    # AWS is unaffected by the fused-backend carve-out above: build_html_artifact
+    # re-reads the bundle's own manifest on every repoint, so a redeploy's request
+    # really does take effect there.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario({"create": {"token": "abc123", "status": "active"}})
+    h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "prod", "cache_max_age": "5m"},
+        headers=FUSED,
+    )
+
+    h.set_scenario(
+        {
+            "list": [{"token": "abc123", "status": "active"}],
+            "repoint": {"token": "abc123", "status": "active"},
+        }
+    )
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "prod", "cache_max_age": "1h"},
+        headers=FUSED,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["cache_max_age"] == "1h"
+
+
+def test_force_new_mints_a_fresh_token_on_fused_backend_with_the_new_setting(tmp_path, monkeypatch):
+    # The only way to actually change caching on a managed Fused mount: skip
+    # token reuse entirely and mint a brand-new mount via `create`.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
+    )
+    h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "cache_max_age": "5m"},
+        headers=FUSED,
+    )
+
+    # The old token is still very much live in `share list` — force_new must
+    # not even look it up (no repoint/recreate call at all).
+    h.set_scenario(
+        {
+            "list": [{"token": "abc123", "status": "active"}],
+            "create": {"token": "new789", "url": "https://serve.example/new789", "status": "active"},
+        }
+    )
+    resp = h.client.post(
+        "/api/deploy",
+        json={
+            "page": str(h.page),
+            "env": "cloud",
+            "cache_max_age": "1h",
+            "force_new": True,
+        },
+        headers=FUSED,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["token"] == "new789"
+    assert body["cache_max_age"] == "1h"
+    assert body["url"] == "https://serve.example/new789"
+    verbs = [c["argv"][1] for c in h.calls()]
+    assert verbs == ["create", "create"]  # never repoint/recreate/list
+    assert h.calls()[-1]["argv"][-2:] == ["--cache-max-age", "1h"]
+
+
+def test_force_new_rejects_non_bool(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "force_new": "yes"},
+        headers=FUSED,
+    )
+    assert resp.status_code == 400
+    assert "force_new" in resp.json()["error"]
+
+
 def test_redeploy_active_mount_repoints_same_token(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
     h.set_scenario(

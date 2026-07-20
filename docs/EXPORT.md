@@ -88,12 +88,16 @@ literal path posts to which route — without re-parsing the HTML.
 
 ## Caching
 
-`cache_max_age` is the deploy-time choice for how long a `runPython` route's result
-may be served from cache instead of re-executed — `"0s"` (off, the default) or a
+`cache_max_age` is the deploy-time choice for how long the page's result may be
+served from cache instead of re-executed — `"0s"` (off, the default) or a
 duration like `"5m"`/`"1h"`/`"1d"` (a non-negative integer + `s`/`m`/`h`/`d` unit).
-It applies uniformly to every `runPython` route in the bundle — never the page shell
-or the `_asset` route, which the hosting layer always keeps uncached. The Deploy
-modal (SPEC §19, DP-17) exposes it as a checkbox + duration picker and re-exports on
+It applies **page-wide** — to every served route uniformly (the page shell, each
+`runPython` route, and the `_asset` route), matching the managed backend's
+mount-wide caching. This is safe against a redeploy serving stale content: the
+hosting layer folds the full bundle into each route's cache key, so any content
+change re-hashes it (and the `_asset` route's HTTP Range reads cache correctly
+because the `Range` header is part of that key). The Deploy modal (SPEC §19,
+DP-17) exposes it as a checkbox + duration picker (default 1h) and re-exports on
 every deploy so the manifest always carries the current choice; a direct
 `POST /api/export` caller sets it the same way.
 
@@ -104,9 +108,12 @@ directly, so it works on both a fresh `share create` and a later `share repoint`
 (redeploy). A managed **Fused** environment does not read the manifest field for
 caching at all — it is a mount-level control-plane setting, sent as an explicit
 `share create --cache-max-age` (the Deploy modal's `deploy_page` sends both, so
-either backend gets it correctly) — and it is fixed at that first create; a
-`repoint` cannot change it, so redeploying an already-cached page to a managed
-environment cannot toggle or retune caching there.
+either backend gets it correctly) — and it is fixed for the life of a mount
+token; a `repoint` cannot change it, so `deploy_page` withholds the flag on
+redeploys there and persists the setting that is actually live. To actually
+change caching on a managed environment, the Deploy modal offers a "Deploy as
+new URL" action (`force_new`) that mints a fresh `share create` with the new
+setting at a new URL.
 
 See spec/caching/serve.md for how the AWS dispatcher honors it (result caching,
 cache-key scoping, the `X-Openfused-Cache` hit/miss header) and

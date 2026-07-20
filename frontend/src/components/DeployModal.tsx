@@ -56,7 +56,7 @@ const CACHE_DURATION_PRESETS: { value: string; label: string }[] = [
   { value: "6h", label: "6 hours" },
   { value: "1d", label: "1 day" },
 ];
-const DEFAULT_CACHE_DURATION = "5m";
+const DEFAULT_CACHE_DURATION = "1h";
 
 // The preset list, plus the current value as its own option when it isn't a preset
 // (e.g. a duration set via `share create --cache-max-age` outside this dialog) — so
@@ -675,13 +675,13 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   // Each handler applies its result (onChange always propagates to the header
   // dot), then guards the modal's OWN setState on `alive` — the dialog may
   // have been closed mid-action (#12).
-  const onDeploy = async () => {
+  const onDeploy = async (forceNew = false) => {
     if (!env) return;
     setBusy("deploy");
     setActionError(null);
     setBustCacheResult(null); // a stale "N cleared" note must not survive a redeploy
     try {
-      const record = await deployPage(fsPath, env.name, include, exclude, cacheMaxAge);
+      const record = await deployPage(fsPath, env.name, include, exclude, cacheMaxAge, forceNew);
       applyDeployment(record);
       if (!alive.current) return;
       setReconciled(true);
@@ -945,7 +945,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
                 setCacheMaxAge(e.target.checked ? DEFAULT_CACHE_DURATION : "0s")
               }
             />
-            Cache runPython results
+            Cache page results
           </label>
           {cacheMaxAge !== "0s" && (
             <Select
@@ -961,13 +961,44 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
               ))}
             </Select>
           )}
+          {deployment?.status === "active" && (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={onBustCache}
+              disabled={busy !== null}
+              title="Force cached results to be recomputed on the next request, without redeploying or changing the URL"
+            >
+              {busy === "bust-cache" ? "Busting cache…" : "Bust cache"}
+            </button>
+          )}
         </div>
-        {env?.backend === "fused" && isRedeploy && (
-          <div className="deploy-note">
-            Managed Fused environments fix caching at first deploy — redeploying can't
-            change it here. Revoke and deploy fresh if you need a different setting.
-          </div>
-        )}
+        {env?.backend === "fused" &&
+          isRedeploy &&
+          cacheMaxAge !== (deployment?.cache_max_age ?? "0s") && (
+            <div className="deploy-note">
+              Managed Fused environments fix caching at first deploy — redeploying this URL
+              keeps its current setting (
+              {(deployment?.cache_max_age ?? "0s") === "0s"
+                ? "off"
+                : `on, ${deployment?.cache_max_age}`}
+              ), not the one just chosen above.{" "}
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => onDeploy(true)}
+                disabled={
+                  busy !== null ||
+                  preview === null ||
+                  previewPending ||
+                  (preview?.errors.length ?? 0) > 0
+                }
+                title="Publish this page at a brand-new URL with the setting chosen above — the current URL keeps serving until you revoke it separately"
+              >
+                Deploy as new URL
+              </button>
+            </div>
+          )}
 
         <div className="deploy-form-row">
           <label htmlFor="deploy-env-select">Deploy to</label>
@@ -986,7 +1017,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
           <button
             type="button"
             className="btn btn-primary"
-            onClick={onDeploy}
+            onClick={() => onDeploy()}
             // Hold Deploy until the shown "Will publish" list matches the current
             // selection: preview === null (still resolving, or cleared on a page
             // switch) or previewPending (a refresh is in flight after an edit) both
@@ -1019,16 +1050,6 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
               title="Take the URL down (the link stops working until you deploy again)"
             >
               {busy === "revoke" ? "Revoking…" : "Revoke"}
-            </button>
-          )}
-          {deployment?.status === "active" && (
-            <button
-              type="button"
-              onClick={onBustCache}
-              disabled={busy !== null}
-              title="Force cached results to be recomputed on the next request, without redeploying or changing the URL"
-            >
-              {busy === "bust-cache" ? "Busting cache…" : "Bust cache"}
             </button>
           )}
         </div>

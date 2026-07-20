@@ -792,8 +792,9 @@ def export_page(
     ``include`` files, minus any ``exclude`` — see :func:`plan_export`), and each first-party
     module a bundled entrypoint imports, all at their real page-relative path. ``cache_max_age``
     (``"0s"`` off by default, e.g. ``"5m"``) is the deploy-time result-caching choice, written
-    into the manifest and applied by the hosting layer to every ``runPython`` route (never the
-    shell or an asset route) — see spec/serve/fused-render.md § Caching in the fused repo.
+    into the manifest and applied by the hosting layer **page-wide** — to every served route
+    uniformly (the shell, each ``runPython`` route, and the asset route) — see
+    spec/serve/fused-render.md § Caching in the fused repo.
     Raises :class:`ExportError` on any blocking problem (dynamic runPython path, unsupported
     API, unsafe/missing file, malformed ``cache_max_age``) with all problems listed at once;
     advisory ``plan.warnings`` never block. Returns the realized :class:`ExportPlan` on success.

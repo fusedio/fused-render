@@ -474,6 +474,7 @@ export function deployPage(
   include: string[],
   exclude: string[],
   cacheMaxAge: string,
+  forceNew?: boolean,
 ): Promise<Deployment> {
   return postJson<Deployment>("/api/deploy", {
     page: fsPath,
@@ -481,6 +482,7 @@ export function deployPage(
     include,
     exclude,
     cache_max_age: cacheMaxAge,
+    force_new: forceNew ?? false,
   });
 }
 
