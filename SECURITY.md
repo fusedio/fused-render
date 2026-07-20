@@ -44,8 +44,8 @@ that isn't there.
 
 ## What *is* guarded, and why it's narrow
 
-A few targeted mitigations hold against an adversary. None is authentication
-and none changes the trust model above:
+Two targeted mitigations hold against an adversary. Neither is authentication
+and neither changes the trust model above:
 
 - **Cross-origin POST guard (D36).** The two mutating/executing endpoints,
   `POST /api/run` and `POST /api/fs/write`, require a custom `X-Fused: 1`
@@ -69,11 +69,6 @@ and none changes the trust model above:
   in the daemon's state file, so it is only as private as the local
   filesystem — which is consistent with the trust model above (local read is
   already out of scope; this guards the *browser* boundary).
-- **Write-write races, not unauthorized writes.** `POST /api/fs/write` uses
-  an atomic write (temp file + `fsync` + `os.replace`) gated by an optimistic
-  `expected_mtime` check (409 on conflict). This protects against two
-  editors silently clobbering each other's changes; it is not an access
-  control — anyone who can reach the endpoint with a fresh mtime can write.
 
 ## Network / supply chain
 
