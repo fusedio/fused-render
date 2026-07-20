@@ -5,7 +5,7 @@
 // Backend: shell/mounts.py (rclone rcd). Credentials live in rclone's
 // own config, never here. Section layout and per-action busy/error state
 // follow views/Preferences.tsx.
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import {
   createDetectedRemote,
   createMount,
@@ -18,6 +18,7 @@ import type { Mount, MountsResult, RemoteSuggestion } from "../lib/api";
 import { navigate } from "../lib/router";
 import { Modal } from "../components/modal/Modal";
 import { ErrorBanner } from "../components/ErrorBanner";
+import { Field, Select, TextInput } from "../components/field/fields";
 
 function MountRow({
   conn,
@@ -121,34 +122,6 @@ function MountRow({
   );
 }
 
-// A labelled form control: a small uppercase caption above the input, so the
-// Add-mount row and the custom-remote modal read as named fields instead of a
-// row of bare placeholders. `required` shows an accent marker.
-function Field({
-  label,
-  required,
-  children,
-}: {
-  label: string;
-  required?: boolean;
-  children: ReactNode;
-}) {
-  return (
-    <label className="mount-field">
-      <span>
-        {label}
-        {required && (
-          <span className="req" title="required" aria-hidden="true">
-            {" "}
-            *
-          </span>
-        )}
-      </span>
-      {children}
-    </label>
-  );
-}
-
 function AddMount({
   remotes,
   suggested,
@@ -238,7 +211,7 @@ function AddMount({
         }}
       >
         <Field label="Name" required>
-          <input
+          <TextInput
             placeholder="e.g. sensor-data"
             value={name}
             onChange={(e) => {
@@ -248,7 +221,7 @@ function AddMount({
           />
         </Field>
         <Field label="Remote" required>
-          <select value={remote} onChange={(e) => setRemote(e.target.value)}>
+          <Select value={remote} onChange={(e) => setRemote(e.target.value)}>
             <option value="">— remote —</option>
             {remotes.length > 0 && (
               <optgroup label="Remotes">
@@ -281,10 +254,10 @@ function AddMount({
                   ))}
               </optgroup>
             )}
-          </select>
+          </Select>
         </Field>
         <Field label="Path">
-          <input
+          <TextInput
             placeholder="bucket/prefix"
             style={{ minWidth: 200 }}
             value={subpath}
@@ -386,10 +359,10 @@ function AddRemote({
         }}
       >
         <Field label="Remote name" required>
-          <input placeholder="e.g. r2" value={name} onChange={(e) => setName(e.target.value)} />
+          <TextInput placeholder="e.g. r2" value={name} onChange={(e) => setName(e.target.value)} />
         </Field>
         <Field label="Endpoint">
-          <input
+          <TextInput
             placeholder="blank for AWS S3"
             style={{ minWidth: 240 }}
             value={endpoint}
@@ -397,13 +370,21 @@ function AddRemote({
           />
         </Field>
         <Field label="Region">
-          <input placeholder="optional" value={region} onChange={(e) => setRegion(e.target.value)} />
+          <TextInput
+            placeholder="optional"
+            value={region}
+            onChange={(e) => setRegion(e.target.value)}
+          />
         </Field>
         <Field label="Access key ID" required>
-          <input value={accessKey} onChange={(e) => setAccessKey(e.target.value)} />
+          <TextInput value={accessKey} onChange={(e) => setAccessKey(e.target.value)} />
         </Field>
         <Field label="Secret access key" required>
-          <input type="password" value={secretKey} onChange={(e) => setSecretKey(e.target.value)} />
+          <TextInput
+            type="password"
+            value={secretKey}
+            onChange={(e) => setSecretKey(e.target.value)}
+          />
         </Field>
         {/* Blank caption reserves the label row's height so the button aligns
             with the inputs, not the captions above them. */}

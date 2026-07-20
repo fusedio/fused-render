@@ -3,6 +3,7 @@ import { createTemplate, openTemplateInClaude } from "../../lib/api";
 import type { NewTemplateResult } from "../../lib/api";
 import { Modal } from "../../components/modal/Modal";
 import { ErrorBanner } from "../../components/ErrorBanner";
+import { TextInput } from "../../components/field/fields";
 
 // Scaffold a new user template. Name is required (nonempty, no "/"); extensions
 // are optional dot-keys the new template gets appended to — additive only, it
@@ -212,10 +213,9 @@ export function NewTemplateModal({
               </p>
               <div className="templates-field">
                 <label htmlFor="new-template-name">Name</label>
-                <input
+                <TextInput
                   id="new-template-name"
                   type="text"
-                  className="templates-search"
                   placeholder="my-template"
                   value={name}
                   autoFocus

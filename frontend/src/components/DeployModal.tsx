@@ -31,6 +31,7 @@ import { useRefreshOnReturn } from "../lib/hooks";
 import { navigateUrl } from "../lib/router";
 import { Modal } from "./modal/Modal";
 import { ErrorBanner } from "./ErrorBanner";
+import { Select } from "./field/fields";
 
 // A path's bundle key: what dedup/exclude match on. Mirrors the server's
 // _asset_key (export.py) for the common case — strip a leading "./"; the exact
@@ -844,7 +845,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
         )}
         <div className="deploy-form-row">
           <label htmlFor="deploy-env-select">Deploy to</label>
-          <select
+          <Select
             id="deploy-env-select"
             value={selectedEnv ?? ""}
             onChange={(e) => setSelectedEnv(e.target.value)}
@@ -855,7 +856,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
                 {e.name} ({e.backend === "fused" ? "fused — managed" : e.backend})
               </option>
             ))}
-          </select>
+          </Select>
           <button
             type="button"
             className="btn btn-primary"

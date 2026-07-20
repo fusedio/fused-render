@@ -1812,6 +1812,77 @@ body.embed .preview-browse-chip:hover {
   border-color: var(--accent);
 }
 
+/* ---- Field primitives (components/field/fields.tsx) ---------------------- */
+/* .field-control is the canonical field style above, extracted as an explicit
+   class so native controls (notably <select>) render identically everywhere.
+   The :where() rules stay as the safety net for unmigrated fields. */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg-muted);
+}
+
+.field-label .req {
+  color: var(--accent);
+}
+
+.field-hint {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.field-control {
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+}
+
+input.field-control,
+select.field-control {
+  height: 32px;
+}
+
+.field-control:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.field-select-wrap {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.field-select-wrap > select {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* De-nativize the select: drop the platform chevron/metrics, draw our own
+   (muted-gray inline SVG) so it sits flush with sibling inputs. */
+select.field-control {
+  appearance: none;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5l3 3 3-3' fill='none' stroke='%239aa0a6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+
+/* Placeholder option selected → muted, matching input placeholders. */
+select.field-control:has(option[value=""]:checked) {
+  color: var(--fg-muted);
+}
+
 .deploy-body p {
   margin: 0;
 }
@@ -1918,21 +1989,22 @@ body.embed .preview-browse-chip:hover {
   outline-offset: 2px;
 }
 
+/* Quiet primary: accent-tinted, not accent-filled — still the strongest button
+   in a footer, without the neon pop of a solid lime fill on the dark surface. */
 .btn-primary,
 .deploy-body .btn-primary,
 .prefs-section .btn-primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #10131a;
+  background: rgba(229, 255, 68, 0.12);
+  border-color: rgba(229, 255, 68, 0.35);
+  color: var(--accent);
   font-weight: 600;
 }
 
 .btn-primary:hover:not(:disabled),
 .deploy-body .btn-primary:hover:not(:disabled),
 .prefs-section .btn-primary:hover:not(:disabled) {
-  background: var(--accent);
-  border-color: var(--accent);
-  filter: brightness(1.08);
+  background: rgba(229, 255, 68, 0.18);
+  border-color: rgba(229, 255, 68, 0.35);
 }
 
 .btn-secondary,
@@ -2120,7 +2192,9 @@ body.embed .preview-browse-chip:hover {
   color: var(--fg-muted);
 }
 
-.deploy-form-row select {
+/* Safety net for unmigrated selects only (e.g. Account's workspace picker) —
+   .field-control selects carry their own canonical skin + custom chevron. */
+.deploy-form-row select:not(.field-control) {
   font: inherit;
   background: var(--bg);
   color: var(--fg);
@@ -2230,14 +2304,17 @@ body.embed .preview-browse-chip:hover {
   cursor: default;
 }
 
+/* currentColor-based so it stays readable on any host: accent inside the
+   tinted .btn-primary, --fg/--fg-muted in plain rows (was dark-on-lime, tuned
+   for the old solid-accent primary). */
 .deploy-spinner {
   display: inline-block;
   width: 12px;
   height: 12px;
   margin-right: 7px;
   vertical-align: -1px;
-  border: 2px solid rgba(16, 19, 26, 0.35);
-  border-top-color: #10131a;
+  border: 2px solid rgba(154, 160, 166, 0.35);
+  border-top-color: currentColor;
   border-radius: 50%;
   animation: deploy-spin 0.8s linear infinite;
 }
@@ -2659,7 +2736,9 @@ body.embed .preview-browse-chip:hover {
   cursor: default;
 }
 
-.prefs-section select {
+/* Safety net for unmigrated selects only — .field-control selects carry their
+   own canonical skin + custom chevron. */
+.prefs-section select:not(.field-control) {
   font: inherit;
   background: var(--bg);
   color: var(--fg);
@@ -2786,20 +2865,6 @@ body.embed .preview-browse-chip:hover {
 /* Labeled form field: a small uppercase caption over a native control, so
    the add-mount row and the custom-remote modal read as named fields rather
    than a line of bare placeholders. */
-.mount-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-/* Same label voice as .templates-field — one caption style across all forms. */
-.mount-field > span {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--fg-muted);
-}
-.mount-field .req {
-  color: var(--accent);
-}
 
 /* Live preview of the rclone spec the Add button will mount. */
 .mount-spec {
@@ -3229,23 +3294,6 @@ body.embed .preview-browse-chip:hover {
   display: flex;
   flex-direction: column;
   gap: 16px;
-}
-
-/* The name field reuses .templates-search's visual, but that class is authored
-   for the toolbar's flex ROW (flex:1 1 200px). Inside .templates-field (a flex
-   COLUMN) that flex-basis lands on the block axis and grows the input into a
-   tall box — pin it back to a single-line control. */
-.templates-field .templates-search {
-  flex: none;
-  width: 100%;
-}
-
-/* Inside a modal the field sits on the --bg-alt dialog surface, so it takes
-   the canonical recessed style (toolbar keeps --bg-alt on the --bg page). */
-.modal-body .templates-search {
-  background: var(--bg);
-  height: auto;
-  padding: 7px 10px;
 }
 
 .templates-field-hint {
