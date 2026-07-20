@@ -2056,6 +2056,16 @@ def _fs_rename(body: dict, x_fused: str | None):
             return _error(f"parent directory does not exist: {dst_parent}")
         if dst_pr.exists and not overwrite:
             return JSONResponse({"error": "conflict"}, status_code=409)
+        # The mount read-only gate above only covers the mount side(s). A LOCAL
+        # side still needs the ordinary _writable check: a move deletes src and
+        # writes dst, so a chmod-protected local src or a non-writable local dst
+        # must 403 "readonly" (same contract as the all-local branch below).
+        # Never _writable a mount side — for a writable mount that kernel-probes
+        # W_OK on the mount, the exact stat this whole path exists to avoid.
+        if not shell_mounts.is_mount_backed(src) and not _writable(src):
+            return JSONResponse({"error": "readonly"}, status_code=403)
+        if not shell_mounts.is_mount_backed(dst) and not _writable(dst):
+            return JSONResponse({"error": "readonly"}, status_code=403)
         try:
             if dst_pr.exists:
                 os.remove(dst)  # single file (a dir dst was refused above)
@@ -2146,6 +2156,12 @@ def _fs_copy(body: dict, x_fused: str | None):
             return _error(f"parent directory does not exist: {dst_parent}")
         if dst_pr.exists and not overwrite:
             return JSONResponse({"error": "conflict"}, status_code=409)
+        # See _fs_rename: the mount read-only gate covers only the mount side. A
+        # copy writes dst (never src), so a LOCAL dst still needs _writable —
+        # matching the all-local branch, which checks dst only. Never _writable a
+        # mount side (it kernel-stats a writable mount).
+        if not shell_mounts.is_mount_backed(dst) and not _writable(dst):
+            return JSONResponse({"error": "readonly"}, status_code=403)
         try:
             if dst_pr.exists:
                 os.remove(dst)  # single file (a dir dst was refused above)

@@ -410,3 +410,42 @@ def test_mounts_root_known_mount_name_still_exists_mkdir_409(home, monkeypatch):
     assert _status(resp) == 409
     assert _data(resp)["error"] == "conflict"
 
+
+# ===========================================================================
+# Local side of a mixed local+mount rename/copy still gets the _writable check
+# (Bugbot 3615342580 "Local writable checks skipped"). The mount read-only gate
+# only covers the mount side; a chmod-protected LOCAL src (rename) or a
+# non-writable LOCAL dst must still 403 "readonly", same as the all-local branch.
+# The mount side is NEVER _writable-probed (that kernel-stats a writable mount).
+# ===========================================================================
+
+def test_rename_local_readonly_src_refused_with_mount_dst(home, monkeypatch, tmp_path):
+    mp = _mount("rw", read_only=False, on_disk=True)
+    _no_kernel_on_mount(monkeypatch, mp)
+    src = tmp_path / "src.txt"
+    src.write_text("data")
+    os.chmod(src, 0o400)  # read-only local file: a move (delete+write) must 403
+    _list_returns(monkeypatch, [])  # mount dst parent listable, dst absent
+    try:
+        resp = RENAME({"src": str(src), "dst": os.path.join(mp, "b.txt")}, x_fused="1")
+        assert _status(resp) == 403
+        assert _data(resp)["error"] == "readonly"
+    finally:
+        os.chmod(src, 0o600)
+
+
+def test_copy_local_readonly_dst_refused_with_mount_src(home, monkeypatch, tmp_path):
+    mp = _mount("rw", read_only=False)
+    _no_kernel_on_mount(monkeypatch, mp)
+    ro_dir = tmp_path / "roout"
+    ro_dir.mkdir()
+    os.chmod(ro_dir, 0o500)  # non-writable local dst parent -> new file refused
+    _list_returns(monkeypatch, [_entry("a.txt", size=4)])  # mount src is a file
+    try:
+        resp = COPY({"src": os.path.join(mp, "a.txt"), "dst": str(ro_dir / "b.txt")},
+                    x_fused="1")
+        assert _status(resp) == 403
+        assert _data(resp)["error"] == "readonly"
+    finally:
+        os.chmod(ro_dir, 0o700)
+
