@@ -24,8 +24,9 @@ Endpoints (GET, CORS *):
   /img?file=&var=&index=&max_cells=&cmap=...  -> whole-slice PNG (fallback
                                view for non-geographic grids)
 
-This file is kept BYTE-IDENTICAL in netcdf/ and zarr/ (the daemon
-version is a content hash, so both copies share one daemon).
+This daemon is keyed by a content hash of the script, so identical copies
+across templates share one running daemon. netcdf/ is now the sole copy (the
+former byte-identical zarr/ twin was removed when that template was retired).
 """
 # /// script
 # dependencies = ["numpy", "scipy", "zarr"]
