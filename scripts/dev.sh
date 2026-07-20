@@ -211,11 +211,12 @@ if [[ "$RELOAD" -eq 1 ]]; then
 
   # watchfiles wants the target as a single shell-command string, then the watch
   # paths. printf %q quotes $PY and each passthrough arg so paths/args with
-  # spaces survive. --filter python watches only *.py, so vite's shell-dist
-  # output (.html/.js/.css) never triggers a restart. --ignore-paths excludes
-  # fused_render/templates/ — those *.py are per-request UDF code, not imported
-  # into the server process, so editing them shouldn't restart it (watchfiles
-  # resolves ignore paths to absolute; comma-separate to add more).
+  # spaces survive. --filter python watches only *.py under the whole
+  # fused_render/ tree, so vite's shell-dist output (.html/.js/.css) never
+  # triggers a restart. Editing a template UDF (fused_render/templates/**/*.py)
+  # triggers a harmless extra server restart; we don't exclude templates/
+  # because watchfiles' --ignore-paths matches by bare prefix (filters.py:
+  # startswith), so it would also hide the imported sibling templates_api.py.
   #
   # --no-browser goes AFTER the passthrough args: cli.py's main() injects a
   # default `serve` only when argv[0] isn't already a subcommand, so a leading
@@ -224,7 +225,7 @@ if [[ "$RELOAD" -eq 1 ]]; then
   CMD="$(printf '%q' "$PY") -m fused_render.cli"
   for a in "$@"; do CMD+=" $(printf '%q' "$a")"; done
   CMD+=" --no-browser"
-  "$PY" -m watchfiles --filter python --ignore-paths "$REPO_ROOT/fused_render/templates" "$CMD" "$REPO_ROOT/fused_render"
+  "$PY" -m watchfiles --filter python "$CMD" "$REPO_ROOT/fused_render"
 else
   # Original single-launch behavior: the server opens its own browser tab.
   "$PY" -m fused_render.cli "$@"
