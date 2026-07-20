@@ -315,13 +315,11 @@
   }
 
   // ------------------------------------------------------------- controls
-  function slider(key, label, min, max, step, fmt, editable) {
+  function slider(key, label, min, max, step) {
     const v = P.get(key);
-    const val = editable
-      ? `<input class="num" type="number" data-p="${key}" min="${min}" ` +
-        `max="${max}" step="${step}" value="${v}">`
-      : `<output id="o-${key}">${fmt ? fmt(v) : v}</output>`;
-    return `<div class="row"><label>${label}${val}</label>` +
+    return `<div class="row"><label>${label}` +
+      `<input class="num" type="number" data-p="${key}" min="${min}" ` +
+      `max="${max}" step="${step}" value="${v}"></label>` +
       `<input type="range" data-p="${key}" min="${min}" max="${max}" ` +
       `step="${step}" value="${v}"></div>`;
   }
@@ -338,8 +336,6 @@
       if (el === document.activeElement) return;
       const v = P.get(el.dataset.p);
       if (el.value !== v) el.value = v;
-      const o = $("o-" + el.dataset.p);
-      if (o) o.textContent = v;
     });
   }
   let ctrlMode = null;
@@ -350,7 +346,7 @@
     let html = "";
     if (m === "perspective") {
       html = `<h4>Perspective (e2p)</h4>` +
-        slider("fov", "FOV °", 20, 175, 1, null, true) +
+        slider("fov", "FOV °", 20, 175, 1) +
         slider("yaw", "Yaw °", -180, 180, 1) +
         slider("pitch", "Pitch °", -90, 90, 1) +
         slider("roll", "Roll °", -180, 180, 1) +
@@ -380,8 +376,6 @@
       const sync = () => {
         if (el.value === "") return;   // mid-edit blank; commit clamps on change
         P.set(el.dataset.p, el.value);
-        const o = $("o-" + el.dataset.p);
-        if (o) o.textContent = el.value;
         els.ctrl.querySelectorAll(`[data-p="${el.dataset.p}"]`).forEach((s) => {
           if (s !== el) s.value = el.value;
         });
