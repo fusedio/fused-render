@@ -202,8 +202,10 @@ if [[ "$RELOAD" -eq 1 ]]; then
         if [[ -n "$LANDING" ]]; then URL="http://127.0.0.1:$PORT$LANDING"; else URL="http://127.0.0.1:$PORT/"; fi
         # Open via Python's webbrowser (cross-platform, matches cli.py); a shell
         # open/xdg-open/start chain misses Windows/git-bash (start is a cmd
-        # builtin, not a binary on PATH).
-        "$PY" -c "import webbrowser; webbrowser.open('$URL')" >/dev/null 2>&1 || true
+        # builtin, not a binary on PATH). Pass the URL through argv, not
+        # interpolated into the -c source: a landing path with an apostrophe
+        # (e.g. a home dir containing ') would otherwise break the string literal.
+        "$PY" -c "import sys, webbrowser; webbrowser.open(sys.argv[1])" "$URL" >/dev/null 2>&1 || true
       fi
     ) &
     OPENER_PID=$!
