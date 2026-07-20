@@ -28,7 +28,7 @@ Endpoints (GET, CORS *):
   /stats?file=[&reset=1]       -> live counters + recent op log
 """
 # /// script
-# dependencies = ["numpy", "zarr>=3.0.8", "s3fs", "crc32c"]
+# dependencies = ["numpy", "zarr>=3.0.8", "s3fs", "gcsfs", "crc32c"]
 # ///
 
 import hashlib
@@ -41,7 +41,7 @@ import time
 
 STATE = os.path.expanduser("~/.cache/fused-render-zarraoi/daemon.json")
 DAEMON_VENV = os.path.expanduser("~/.cache/fused-render-zarraoi/venv")
-DAEMON_DEPS = ["numpy", "zarr>=3.0.8", "s3fs", "crc32c"]
+DAEMON_DEPS = ["numpy", "zarr>=3.0.8", "s3fs", "gcsfs", "crc32c"]
 IDLE_EXIT_S = 30 * 60
 TILE = 256
 MERC_R = 6378137.0
