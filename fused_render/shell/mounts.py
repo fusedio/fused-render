@@ -2148,6 +2148,9 @@ def create_remote(body: dict = Body(...), x_fused: str | None = Header(default=N
 # network failure. Matched case-insensitively against rclone's output.
 _BAD_CRED_MARKERS = (
     "expiredtoken", "expired token", "token has expired", "token is expired",
+    # Google ADC/OAuth refresh failure: "Token has been expired or revoked."
+    # — matches neither "has expired" nor "is expired" above.
+    "has been expired or revoked",
     "invalidaccesskeyid", "invalidclienttokenid", "signaturedoesnotmatch",
     "no valid credential", "nocredentialproviders",
     "invalid_grant", "unauthenticated", "401 unauthorized",

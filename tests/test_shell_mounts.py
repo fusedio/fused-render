@@ -782,6 +782,25 @@ def test_detect_rejects_expired_credentials(client, monkeypatch):
     assert any(c[:3] == ["/usr/bin/rclone", "config", "delete"] for c in calls)
 
 
+def test_detect_rejects_google_expired_or_revoked_token(client, monkeypatch):
+    """Google ADC/OAuth refresh failures surface as "Token has been expired or
+    revoked." — no invalid_grant, and it matches neither "has expired" nor "is
+    expired". _BAD_CRED_MARKERS must still classify it as expired creds, or
+    stale GCS creds slip through to the opaque reconnect path this replaces."""
+    monkeypatch.setattr(mounts_mod, "_credential_suggestions",
+                        lambda: [_DETECTED_SUGG])
+    calls = []
+    _fake_rclone_probe(
+        monkeypatch, lsd_rc=1, record=calls,
+        lsd_stderr="Token has been expired or revoked.")
+
+    r = client.post("/api/mounts/remotes/detect",
+                    json={"id": "aws-env"}, headers=FUSED)
+    assert r.status_code == 502
+    assert "expired" in r.json()["error"].lower()
+    assert any(c[:3] == ["/usr/bin/rclone", "config", "delete"] for c in calls)
+
+
 def test_detect_accepts_access_denied_probe(client, monkeypatch):
     """AccessDenied means valid keys without ListBuckets permission — the probe
     must not reject those; only credential-shaped failures do."""
