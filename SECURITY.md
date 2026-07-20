@@ -3,10 +3,10 @@
 fused-render is a **local-first, single-user tool**: a server on your own
 machine that gives your browser (and any HTML page you open) direct access to
 your filesystem and the ability to run Python on your behalf. That is the
-product, not a bug — but it means the security model is different from a
-typical web app's, and worth stating explicitly rather than leaving implicit.
+product, not a bug — but it means the security model differs from a typical
+web app's, and it's worth stating explicitly rather than leaving it implicit.
 
-This document describes the posture as designed. See `DECISIONS.md` (D‑numbers
+This document describes the posture as designed. See `DECISIONS.md` (D-numbers
 referenced below) and `ARCHITECTURE.md` for the full rationale behind each
 choice.
 
@@ -20,7 +20,7 @@ off-box can reach it directly. Beyond that:
   There is no serve-root/allowlist concept. `/api/fs/*` endpoints (`read`,
   `write`, `list`, `walk`, `mkdir`, `delete`, `rename`, `copy`) take an
   absolute path and act on it — any path the OS user running the process can
-  reach, they can reach.
+  reach, these endpoints can reach too.
 - **Any `.html` file you open runs as a same-origin page against the server's
   own API (D4).** There is no sandboxed iframe or postMessage bridge; a
   template's JS calls the filesystem/run endpoints the same way the shell
@@ -29,7 +29,7 @@ off-box can reach it directly. Beyond that:
 - **`POST /api/run` executes your Python with no sandboxing** — a fresh OS
   subprocess per call (D5), same user and privileges as the server process
   itself, 30s timeout. The timeout and per-call process are for crash
-  containment and staleness, not for security isolation.
+  containment and avoiding stale state, not for security isolation.
 - **No output sanitization anywhere in the render path.** The `markdown`
   template renders parsed Markdown as raw `innerHTML` by design ("local trust
   model", D3) — the file is treated as your own. The same is true of every
@@ -97,8 +97,8 @@ narrow exceptions that fetch something on first use:
   `typst` and `tectonic` binaries from GitHub Releases on first use.
 - `zarr_aoi/tile_server.py` builds a dedicated venv via `uv` (from PyPI) on
   first use of that daemon.
-- Configured rclone mounts talk to remote cloud storage, by definition,
-  once you set one up.
+- An rclone mount talks to remote cloud storage, by definition, once you
+  configure one.
 
 Treat these the same as any other tool that fetches pinned third-party
 binaries on demand: review the source before relying on it in a sensitive
@@ -113,7 +113,7 @@ data-plane keys live entirely in the CLI's own credential file and OS
 keyring. This does not add authentication to fused-render itself; it only
 lets the app drive deploys to Fused's managed backend. Deployed pages are
 served as **public capability links** — anyone with the URL can view them —
-which is a deliberate v1 tradeoff (D78), not an oversight.
+which is a deliberate v1 trade-off (D78), not an oversight.
 
 ## Secrets at rest
 
