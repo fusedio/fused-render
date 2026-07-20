@@ -11,9 +11,21 @@
     --code-bg:#0f0f10;
   }
   * { box-sizing:border-box; }
-  body { margin:0; padding:44px 30px 70px; background:var(--bg); color:var(--text);
+  body { margin:0; padding:44px 30px 70px 224px; background:var(--bg); color:var(--text);
          font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
   .wrap { max-width:900px; margin:0 auto; }
+
+  /* tutorial nav rail (shared across the 4 pages; body padding reserves it) */
+  .tnav { position:fixed; top:46px; left:24px; width:176px; }
+  .tnav .tlab { margin:0 0 8px; padding-left:12px; font-size:10.5px; text-transform:uppercase;
+                letter-spacing:.7px; color:var(--mut); font-weight:700; }
+  .tnav a { display:block; margin:2px 0; padding:7px 12px; border-radius:8px; border:1px solid transparent;
+            font-size:12.5px; color:var(--dim); text-decoration:none; }
+  .tnav a:hover { color:var(--text); background:var(--panel); }
+  .tnav a.cur { color:var(--text); background:var(--panel); border-color:var(--border); font-weight:600; }
+  .tnav a.cur::before { content:""; display:inline-block; width:6px; height:6px; border-radius:50%;
+                        background:var(--yellow); margin-right:8px; vertical-align:1px; }
+  .tnav a.gone { display:none; }
   h1 { font-size:27px; margin:0 0 10px; letter-spacing:-.4px; }
   .tag { color:var(--dim); font-size:15.5px; margin:0 0 8px; max-width:660px; }
   .tag b { color:var(--text); font-weight:600; }
@@ -80,13 +92,24 @@
 
   @media (max-width:760px){
     .steps, .tips { grid-template-columns:1fr; }
+    body { padding:28px 18px 70px; }
+    .tnav { position:static; width:auto; display:flex; flex-wrap:wrap; gap:6px; margin-bottom:26px; }
+    .tnav .tlab { display:none; }
+    .tnav a { margin:0; padding:7px 11px; border-color:var(--border); background:var(--panel); }
   }
 </style>
 </head>
 <body>
+<nav class="tnav" id="tnav">
+  <p class="tlab">Tutorials</p>
+  <a data-page="index.html">Using Fused</a>
+  <a data-page="claude.html" class="cur">Claude Code</a>
+  <a data-page="annotations.html">Annotating pages</a>
+  <a data-page="templates.html">Custom templates</a>
+</nav>
 <div class="wrap">
   <h1>Tutorial — Claude Code in Fused</h1>
-  <p class="tag">Every file preview has a <span class="y">Claude</span> mode: a chat scoped to <b>that one file</b>, powered by the Claude Code CLI on your machine. Ask about the file, or ask for changes — Claude edits it in place, and the page reloads with the result. <a id="seriesLink">Part of the tutorial series ↗</a></p>
+  <p class="tag">Every file preview has a <span class="y">Claude</span> mode: a chat scoped to <b>that one file</b>, powered by the Claude Code CLI on your machine. Ask about the file, or ask for changes — Claude edits it in place, and the page reloads with the result.</p>
 
   <!-- ---------- 1 · WHAT CLAUDE DOES HERE ---------- -->
   <h2><span class="n">1</span>What Claude does here</h2>
@@ -132,6 +155,7 @@
 cd ~/.fused-render/templates/my_template
 claude</pre>
     <div class="status" style="margin-top:10px">New templates scaffold with authoring skills in <code>.claude/skills/</code>, so the Claude session that opens already knows how Fused templates work. More on this in the <a id="tmplTutLink">custom templates tutorial</a>.</div>
+
   </div>
 
   <!-- ---------- 5 · TIPS ---------- -->
@@ -144,23 +168,35 @@ claude</pre>
   </div>
 
   <!-- ---------- OUTRO ---------- -->
-  <p class="outro"><b>Where to next:</b> back to the <a id="outroSeries"><code>tutorial/</code></a> overview, or keep going with <a id="outroAnno"><code>tutorial_annotations/</code></a> and <a id="outroTmpl"><code>tutorial_templates/</code></a>.</p>
+  <p class="outro"><b>Where to next:</b> back to the <a id="outroSeries"><code>index.html</code></a> overview, or keep going with <a id="outroAnno"><code>annotations.html</code></a> and <a id="outroTmpl"><code>templates.html</code></a>.</p>
 </div>
 
 <script>
 const $ = id => document.getElementById(id);
 
-// ---- locate ourselves & our siblings (same scheme as tutorial/) -------------
+// ---- locate ourselves & our siblings (same scheme as index.html) ------------
 // Served at /render?path=<abs path of this file>; folder and siblings derive
-// from the URL alone.
+// from the URL alone. Tutorial pages live in THIS dir; example projects one up.
 const ownPath = new URLSearchParams(window.location.search).get("path");
 const ownDir = ownPath ? ownPath.slice(0, ownPath.lastIndexOf("/")) : null;
 const parentDir = ownDir ? ownDir.slice(0, ownDir.lastIndexOf("/")) : null;
+const page = rel => ownDir ? ownDir + "/" + rel : null;
 const sibling = rel => parentDir ? parentDir + "/" + rel : null;
 // Per-segment encoding, matching the shell's own URL scheme for fs paths.
 const encPath = p => p.split("/").filter(Boolean).map(encodeURIComponent).join("/");
 const embedUrl = (p, q) => "/embed/" + encPath(p) + (q || "");
 const viewUrl  = (p, q) => "/view/"  + encPath(p) + (q || "");
+
+// Nav rail: each entry points at a page in this folder; clicking navigates the
+// WHOLE shell (target=_top keeps its chrome). Hide entries that don't exist.
+document.querySelectorAll("#tnav a[data-page]").forEach(a => {
+  const p = page(a.dataset.page);
+  if (!p) { a.classList.add("gone"); return; }
+  fused.stat(p).then(() => {
+    a.href = viewUrl(p);
+    a.target = "_top";
+  }).catch(() => a.classList.add("gone"));
+});
 
 // Live claude-mode frame on the sine example, iff it exists next door.
 const sinePath = sibling("sine/sine.html");
@@ -173,22 +209,22 @@ if (sinePath) {
   $("claudeFrame").classList.add("gone");
 }
 
-// Series links (stat-guarded: hide the anchor's affordance if missing).
-function linkTo(aId, rel, q){
-  const p = sibling(rel);
+// Cross-links to the other tutorial pages in this folder (stat-guarded;
+// _top so the whole shell navigates, same as the nav rail).
+function linkTo(aId, rel){
+  const p = page(rel);
   if (!p) return;
   fused.stat(p).then(() => {
     const a = $(aId);
-    a.href = viewUrl(p, q);
-    a.target = "_blank"; a.rel = "noopener";
+    a.href = viewUrl(p);
+    a.target = "_top";
   }).catch(() => {});
 }
-linkTo("seriesLink", "tutorial/index.html");
-linkTo("outroSeries", "tutorial/index.html");
-linkTo("annoTutLink", "tutorial_annotations/index.html");
-linkTo("outroAnno", "tutorial_annotations/index.html");
-linkTo("tmplTutLink", "tutorial_templates/index.html");
-linkTo("outroTmpl", "tutorial_templates/index.html");
+linkTo("outroSeries", "index.html");
+linkTo("annoTutLink", "annotations.html");
+linkTo("outroAnno", "annotations.html");
+linkTo("tmplTutLink", "templates.html");
+linkTo("outroTmpl", "templates.html");
 $("tmplLink").href = "/view/_templates";
 
 // Screenshot slots: images live in ./assets/ and may not exist yet — a 404

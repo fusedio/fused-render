@@ -11,9 +11,21 @@
     --code-bg:#0f0f10;
   }
   * { box-sizing:border-box; }
-  body { margin:0; padding:44px 30px 70px; background:var(--bg); color:var(--text);
+  body { margin:0; padding:44px 30px 70px 224px; background:var(--bg); color:var(--text);
          font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
   .wrap { max-width:900px; margin:0 auto; }
+
+  /* tutorial nav rail (shared across the 4 pages; body padding reserves it) */
+  .tnav { position:fixed; top:46px; left:24px; width:176px; }
+  .tnav .tlab { margin:0 0 8px; padding-left:12px; font-size:10.5px; text-transform:uppercase;
+                letter-spacing:.7px; color:var(--mut); font-weight:700; }
+  .tnav a { display:block; margin:2px 0; padding:7px 12px; border-radius:8px; border:1px solid transparent;
+            font-size:12.5px; color:var(--dim); text-decoration:none; }
+  .tnav a:hover { color:var(--text); background:var(--panel); }
+  .tnav a.cur { color:var(--text); background:var(--panel); border-color:var(--border); font-weight:600; }
+  .tnav a.cur::before { content:""; display:inline-block; width:6px; height:6px; border-radius:50%;
+                        background:var(--yellow); margin-right:8px; vertical-align:1px; }
+  .tnav a.gone { display:none; }
   h1 { font-size:27px; margin:0 0 10px; letter-spacing:-.4px; }
   .tag { color:var(--dim); font-size:15.5px; margin:0 0 8px; max-width:660px; }
   .tag b { color:var(--text); font-weight:600; }
@@ -77,13 +89,24 @@
 
   @media (max-width:760px){
     .pair, .steps { grid-template-columns:1fr; }
+    body { padding:28px 18px 70px; }
+    .tnav { position:static; width:auto; display:flex; flex-wrap:wrap; gap:6px; margin-bottom:26px; }
+    .tnav .tlab { display:none; }
+    .tnav a { margin:0; padding:7px 11px; border-color:var(--border); background:var(--panel); }
   }
 </style>
 </head>
 <body>
+<nav class="tnav" id="tnav">
+  <p class="tlab">Tutorials</p>
+  <a data-page="index.html">Using Fused</a>
+  <a data-page="claude.html">Claude Code</a>
+  <a data-page="annotations.html">Annotating pages</a>
+  <a data-page="templates.html" class="cur">Custom templates</a>
+</nav>
 <div class="wrap">
   <h1>Tutorial — custom templates</h1>
-  <p class="tag">Every preview you've seen in Fused — the CSV table, the map, the Claude chat — is a <span class="y">template</span>: a folder with an HTML page and optional Python, exactly the pattern your own pages use. Which means you can replace any of them, or add your own. <a id="seriesLink">Part of the tutorial series ↗</a></p>
+  <p class="tag">Every preview you've seen in Fused — the CSV table, the map, the Claude chat — is a <span class="y">template</span>: a folder with an HTML page and optional Python, exactly the pattern your own pages use. Which means you can replace any of them, or add your own.</p>
 
   <!-- ---------- 1 · THE MANAGEMENT UI, LIVE ---------- -->
   <h2><span class="n">1</span>The management UI, live</h2>
@@ -144,7 +167,7 @@
 
   <!-- ---------- 5 · NEW TEMPLATE + CLAUDE ---------- -->
   <h2><span class="n">5</span>New template, built by Claude</h2>
-  <p class="h2sub">The Library's <b>New template</b> button scaffolds a working starter — and ships authoring skills in its <code>.claude/skills/</code>. Click <b>Open in Claude</b> on the success screen and a Terminal opens with Claude Code sitting in the new folder, ready to build the view for you. That workflow is covered in the <a id="claudeTutLink"><code>tutorial_claude/</code></a> guide.</p>
+  <p class="h2sub">The Library's <b>New template</b> button scaffolds a working starter — and ships authoring skills in its <code>.claude/skills/</code>. Click <b>Open in Claude</b> on the success screen and a Terminal opens with Claude Code sitting in the new folder, ready to build the view for you. That workflow is covered in the <a id="claudeTutLink"><code>claude.html</code></a> guide.</p>
   <p class="h2sub">Sharing goes both ways: <b>Export</b> zips any of your templates; <b>Import</b> is a two-step wizard that can read a bundled <code>recommendation.json</code> and offer the author's suggested bindings as step two.</p>
   <figure class="shot" id="shotImport">
     <img id="shotImportImg" alt="Import wizard, step 2: recommended bindings">
@@ -159,36 +182,46 @@
   </div>
 
   <!-- ---------- OUTRO ---------- -->
-  <p class="outro"><b>Where to next:</b> back to the <a id="outroSeries"><code>tutorial/</code></a> overview — or open <a href="/view/_templates" target="_blank" rel="noopener">Templates</a> for real and make the CSV view yours.</p>
+  <p class="outro"><b>Where to next:</b> back to the <a id="outroSeries"><code>index.html</code></a> overview — or open <a href="/view/_templates" target="_blank" rel="noopener">Templates</a> for real and make the CSV view yours.</p>
 </div>
 
 <script>
 const $ = id => document.getElementById(id);
 
-// ---- locate ourselves & our siblings (same scheme as tutorial/) -------------
-// Served at /render?path=<abs path of this file>; folder and siblings derive
-// from the URL alone.
+// ---- locate ourselves & our siblings (same scheme as index.html) ------------
+// Served at /render?path=<abs path of this file>; the other tutorial pages
+// live in THIS dir.
 const ownPath = new URLSearchParams(window.location.search).get("path");
 const ownDir = ownPath ? ownPath.slice(0, ownPath.lastIndexOf("/")) : null;
-const parentDir = ownDir ? ownDir.slice(0, ownDir.lastIndexOf("/")) : null;
-const sibling = rel => parentDir ? parentDir + "/" + rel : null;
+const page = rel => ownDir ? ownDir + "/" + rel : null;
 // Per-segment encoding, matching the shell's own URL scheme for fs paths.
 const encPath = p => p.split("/").filter(Boolean).map(encodeURIComponent).join("/");
 const viewUrl = p => "/view/" + encPath(p);
 
-// Series links (stat-guarded: only wired if the sibling exists).
+// Nav rail: each entry points at a page in this folder; clicking navigates the
+// WHOLE shell (target=_top keeps its chrome). Hide entries that don't exist.
+document.querySelectorAll("#tnav a[data-page]").forEach(a => {
+  const p = page(a.dataset.page);
+  if (!p) { a.classList.add("gone"); return; }
+  fused.stat(p).then(() => {
+    a.href = viewUrl(p);
+    a.target = "_top";
+  }).catch(() => a.classList.add("gone"));
+});
+
+// Cross-links to the other tutorial pages in this folder (stat-guarded;
+// _top so the whole shell navigates, same as the nav rail).
 function linkTo(aId, rel){
-  const p = sibling(rel);
+  const p = page(rel);
   if (!p) return;
   fused.stat(p).then(() => {
     const a = $(aId);
     a.href = viewUrl(p);
-    a.target = "_blank"; a.rel = "noopener";
+    a.target = "_top";
   }).catch(() => {});
 }
-linkTo("seriesLink", "tutorial/index.html");
-linkTo("outroSeries", "tutorial/index.html");
-linkTo("claudeTutLink", "tutorial_claude/index.html");
+linkTo("outroSeries", "index.html");
+linkTo("claudeTutLink", "claude.html");
 
 // Screenshot slot: image lives in ./assets/ and may not exist yet — a 404
 // hides the whole figure so the page ships clean without it.

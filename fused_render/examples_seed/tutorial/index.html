@@ -11,9 +11,21 @@
     --code-bg:#0f0f10;
   }
   * { box-sizing:border-box; }
-  body { margin:0; padding:44px 30px 70px; background:var(--bg); color:var(--text);
+  body { margin:0; padding:44px 30px 70px 224px; background:var(--bg); color:var(--text);
          font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
   .wrap { max-width:900px; margin:0 auto; }
+
+  /* tutorial nav rail (shared across the 4 pages; body padding reserves it) */
+  .tnav { position:fixed; top:46px; left:24px; width:176px; }
+  .tnav .tlab { margin:0 0 8px; padding-left:12px; font-size:10.5px; text-transform:uppercase;
+                letter-spacing:.7px; color:var(--mut); font-weight:700; }
+  .tnav a { display:block; margin:2px 0; padding:7px 12px; border-radius:8px; border:1px solid transparent;
+            font-size:12.5px; color:var(--dim); text-decoration:none; }
+  .tnav a:hover { color:var(--text); background:var(--panel); }
+  .tnav a.cur { color:var(--text); background:var(--panel); border-color:var(--border); font-weight:600; }
+  .tnav a.cur::before { content:""; display:inline-block; width:6px; height:6px; border-radius:50%;
+                        background:var(--yellow); margin-right:8px; vertical-align:1px; }
+  .tnav a.gone { display:none; }
   h1 { font-size:27px; margin:0 0 10px; letter-spacing:-.4px; }
   .tag { color:var(--dim); font-size:15.5px; margin:0 0 8px; max-width:660px; }
   .tag b { color:var(--text); font-weight:600; }
@@ -108,10 +120,21 @@
   @media (max-width:760px){
     .hellogrid,.paramgrid,.pair { grid-template-columns:1fr; }
     .steps,.deeper { grid-template-columns:1fr; }
+    body { padding:28px 18px 70px; }
+    .tnav { position:static; width:auto; display:flex; flex-wrap:wrap; gap:6px; margin-bottom:26px; }
+    .tnav .tlab { display:none; }
+    .tnav a { margin:0; padding:7px 11px; border-color:var(--border); background:var(--panel); }
   }
 </style>
 </head>
 <body>
+<nav class="tnav" id="tnav">
+  <p class="tlab">Tutorials</p>
+  <a data-page="index.html" class="cur">Using Fused</a>
+  <a data-page="claude.html">Claude Code</a>
+  <a data-page="annotations.html">Annotating pages</a>
+  <a data-page="templates.html">Custom templates</a>
+</nav>
 <div class="wrap">
   <h1>Tutorial — using Fused</h1>
   <p class="tag">Fused Render turns folders on your machine into <b>live pages</b>: any HTML file renders as an app, and a <span class="y mono">fused</span> global lets it run the Python sitting next to it. This tutorial is itself one of those pages — everything below runs for real.</p>
@@ -208,19 +231,19 @@
 
   <!-- ---------- 6 · GO DEEPER ---------- -->
   <h2><span class="n">6</span>Go deeper</h2>
-  <p class="h2sub">Three short guides, one feature each — every one a live page in your workspace, like this tutorial.</p>
+  <p class="h2sub">Three short guides, one feature each — every one a page in this folder, live like this one.</p>
   <div class="deeper">
-    <a class="dcard gone" id="deepClaude" target="_blank" rel="noopener">
+    <a class="dcard gone" id="deepClaude" target="_top">
       <h4><span class="y">Claude Code</span> in Fused</h4>
-      <p>A chat pinned to any file — Claude answers about it and edits it in place. <code>tutorial_claude/</code></p>
+      <p>A chat pinned to any file — Claude answers about it and edits it in place. <code>claude.html</code></p>
     </a>
-    <a class="dcard gone" id="deepAnno" target="_blank" rel="noopener">
+    <a class="dcard gone" id="deepAnno" target="_top">
       <h4>Annotating <span class="y">pages</span></h4>
-      <p>Click-to-comment on any preview; the whole review travels in the URL. <code>tutorial_annotations/</code></p>
+      <p>Click-to-comment on any preview; the whole review travels in the URL. <code>annotations.html</code></p>
     </a>
-    <a class="dcard gone" id="deepTmpl" target="_blank" rel="noopener">
+    <a class="dcard gone" id="deepTmpl" target="_top">
       <h4>Custom <span class="y">templates</span></h4>
-      <p>Every preview is a template — replace the built-ins or bind your own. <code>tutorial_templates/</code></p>
+      <p>Every preview is a template — replace the built-ins or bind your own. <code>templates.html</code></p>
     </a>
   </div>
 
@@ -238,11 +261,23 @@ const $ = id => document.getElementById(id);
 const ownPath = new URLSearchParams(window.location.search).get("path");
 const ownDir = ownPath ? ownPath.slice(0, ownPath.lastIndexOf("/")) : null;
 const parentDir = ownDir ? ownDir.slice(0, ownDir.lastIndexOf("/")) : null;
-const sibling = rel => parentDir ? parentDir + "/" + rel : null;
+const page = rel => ownDir ? ownDir + "/" + rel : null;     // this folder
+const sibling = rel => parentDir ? parentDir + "/" + rel : null;   // example projects
 // Per-segment encoding, matching the shell's own URL scheme for fs paths.
 const encPath = p => p.split("/").filter(Boolean).map(encodeURIComponent).join("/");
 const embedUrl = p => "/embed/" + encPath(p);   // page only, no shell chrome
 const viewUrl  = p => "/view/"  + encPath(p);   // full shell, opened on that file
+
+// Nav rail: the tutorial pages live in this folder; clicking navigates the
+// WHOLE shell (target=_top keeps its chrome). Hide entries that don't exist.
+document.querySelectorAll("#tnav a[data-page]").forEach(a => {
+  const p = page(a.dataset.page);
+  if (!p) { a.classList.add("gone"); return; }
+  fused.stat(p).then(() => {
+    a.href = viewUrl(p);
+    a.target = "_top";
+  }).catch(() => a.classList.add("gone"));
+});
 
 // Wire an embedded example iff the sibling file actually exists; otherwise
 // collapse the frame to a hint instead of showing a broken iframe.
@@ -273,9 +308,9 @@ if (showcasePath) {
 const explainerPath = sibling("how_it_works/explainer.html");
 if (explainerPath) $("explainerLink").href = viewUrl(explainerPath);
 
-// ---- 6 · go deeper: the feature tutorials, iff seeded next to us ------------
+// ---- 6 · go deeper: the feature tutorial pages, iff present in this folder --
 function mountDeeper(cardId, rel){
-  const p = sibling(rel);
+  const p = page(rel);
   if (!p) return;
   fused.stat(p).then(() => {
     const card = $(cardId);
@@ -283,9 +318,9 @@ function mountDeeper(cardId, rel){
     card.classList.remove("gone");
   }).catch(() => {});
 }
-mountDeeper("deepClaude", "tutorial_claude/index.html");
-mountDeeper("deepAnno", "tutorial_annotations/index.html");
-mountDeeper("deepTmpl", "tutorial_templates/index.html");
+mountDeeper("deepClaude", "claude.html");
+mountDeeper("deepAnno", "annotations.html");
+mountDeeper("deepTmpl", "templates.html");
 
 // ---- 2 · hello.py round trip ------------------------------------------------
 async function hello(){

@@ -11,9 +11,21 @@
     --code-bg:#0f0f10;
   }
   * { box-sizing:border-box; }
-  body { margin:0; padding:44px 30px 70px; background:var(--bg); color:var(--text);
+  body { margin:0; padding:44px 30px 70px 224px; background:var(--bg); color:var(--text);
          font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
   .wrap { max-width:900px; margin:0 auto; }
+
+  /* tutorial nav rail (shared across the 4 pages; body padding reserves it) */
+  .tnav { position:fixed; top:46px; left:24px; width:176px; }
+  .tnav .tlab { margin:0 0 8px; padding-left:12px; font-size:10.5px; text-transform:uppercase;
+                letter-spacing:.7px; color:var(--mut); font-weight:700; }
+  .tnav a { display:block; margin:2px 0; padding:7px 12px; border-radius:8px; border:1px solid transparent;
+            font-size:12.5px; color:var(--dim); text-decoration:none; }
+  .tnav a:hover { color:var(--text); background:var(--panel); }
+  .tnav a.cur { color:var(--text); background:var(--panel); border-color:var(--border); font-weight:600; }
+  .tnav a.cur::before { content:""; display:inline-block; width:6px; height:6px; border-radius:50%;
+                        background:var(--yellow); margin-right:8px; vertical-align:1px; }
+  .tnav a.gone { display:none; }
   h1 { font-size:27px; margin:0 0 10px; letter-spacing:-.4px; }
   .tag { color:var(--dim); font-size:15.5px; margin:0 0 8px; max-width:660px; }
   .tag b { color:var(--text); font-weight:600; }
@@ -66,13 +78,24 @@
   @media (max-width:760px){
     .steps { grid-template-columns:1fr 1fr; }
     .pair { grid-template-columns:1fr; }
+    body { padding:28px 18px 70px; }
+    .tnav { position:static; width:auto; display:flex; flex-wrap:wrap; gap:6px; margin-bottom:26px; }
+    .tnav .tlab { display:none; }
+    .tnav a { margin:0; padding:7px 11px; border-color:var(--border); background:var(--panel); }
   }
 </style>
 </head>
 <body>
+<nav class="tnav" id="tnav">
+  <p class="tlab">Tutorials</p>
+  <a data-page="index.html">Using Fused</a>
+  <a data-page="claude.html">Claude Code</a>
+  <a data-page="annotations.html" class="cur">Annotating pages</a>
+  <a data-page="templates.html">Custom templates</a>
+</nav>
 <div class="wrap">
   <h1>Tutorial — annotating pages</h1>
-  <p class="tag">Any file you can preview, you can <span class="y">review</span>. Annotate mode overlays a commenting layer on the page: click an element, leave a note, and the whole review travels in the URL — send someone the link and they see exactly what you marked. <a id="seriesLink">Part of the tutorial series ↗</a></p>
+  <p class="tag">Any file you can preview, you can <span class="y">review</span>. Annotate mode overlays a commenting layer on the page: click an element, leave a note, and the whole review travels in the URL — send someone the link and they see exactly what you marked.</p>
 
   <!-- ---------- 1 · A LIVE PLAYGROUND ---------- -->
   <h2><span class="n">1</span>A live playground</h2>
@@ -116,29 +139,41 @@
 
   <!-- ---------- 4 · SEND THE REVIEW TO CLAUDE ---------- -->
   <h2><span class="n">4</span>Send the review to Claude</h2>
-  <p class="h2sub">The sidebar's <b>Send to Claude</b> button flips the same file into Claude mode with your comments attached — "fix everything marked here" becomes a one-click handoff. How that chat works is the subject of the <a id="claudeTutLink"><code>tutorial_claude/</code></a> guide.</p>
+  <p class="h2sub">The sidebar's <b>Send to Claude</b> button flips the same file into Claude mode with your comments attached — "fix everything marked here" becomes a one-click handoff. How that chat works is the subject of the <a id="claudeTutLink"><code>claude.html</code></a> guide.</p>
   <div class="card">
     <div class="status">Under the hood it's just another URL: <code class="mono">_mode=claude&amp;claudeComments=&lt;your comments as JSON&gt;</code>. The review stays a link from first pin to final fix.</div>
   </div>
 
   <!-- ---------- OUTRO ---------- -->
-  <p class="outro"><b>Where to next:</b> back to the <a id="outroSeries"><code>tutorial/</code></a> overview, or see <a id="outroClaude"><code>tutorial_claude/</code></a> for the chat this hands off to.</p>
+  <p class="outro"><b>Where to next:</b> back to the <a id="outroSeries"><code>index.html</code></a> overview, or see <a id="outroClaude"><code>claude.html</code></a> for the chat this hands off to.</p>
 </div>
 
 <script>
 const $ = id => document.getElementById(id);
 
-// ---- locate ourselves & our siblings (same scheme as tutorial/) -------------
+// ---- locate ourselves & our siblings (same scheme as index.html) ------------
 // Served at /render?path=<abs path of this file>; folder and siblings derive
-// from the URL alone.
+// from the URL alone. Tutorial pages live in THIS dir; example projects one up.
 const ownPath = new URLSearchParams(window.location.search).get("path");
 const ownDir = ownPath ? ownPath.slice(0, ownPath.lastIndexOf("/")) : null;
 const parentDir = ownDir ? ownDir.slice(0, ownDir.lastIndexOf("/")) : null;
+const page = rel => ownDir ? ownDir + "/" + rel : null;
 const sibling = rel => parentDir ? parentDir + "/" + rel : null;
 // Per-segment encoding, matching the shell's own URL scheme for fs paths.
 const encPath = p => p.split("/").filter(Boolean).map(encodeURIComponent).join("/");
 const embedUrl = (p, q) => "/embed/" + encPath(p) + (q || "");
 const viewUrl  = (p, q) => "/view/"  + encPath(p) + (q || "");
+
+// Nav rail: each entry points at a page in this folder; clicking navigates the
+// WHOLE shell (target=_top keeps its chrome). Hide entries that don't exist.
+document.querySelectorAll("#tnav a[data-page]").forEach(a => {
+  const p = page(a.dataset.page);
+  if (!p) { a.classList.add("gone"); return; }
+  fused.stat(p).then(() => {
+    a.href = viewUrl(p);
+    a.target = "_top";
+  }).catch(() => a.classList.add("gone"));
+});
 
 // Live annotate-mode frame on start_here, iff it exists next door.
 const targetPath = sibling("start_here/index.html");
@@ -151,20 +186,20 @@ if (targetPath) {
   $("annoFrame").classList.add("gone");
 }
 
-// Series links (stat-guarded: only wired if the sibling exists).
+// Cross-links to the other tutorial pages in this folder (stat-guarded;
+// _top so the whole shell navigates, same as the nav rail).
 function linkTo(aId, rel){
-  const p = sibling(rel);
+  const p = page(rel);
   if (!p) return;
   fused.stat(p).then(() => {
     const a = $(aId);
     a.href = viewUrl(p);
-    a.target = "_blank"; a.rel = "noopener";
+    a.target = "_top";
   }).catch(() => {});
 }
-linkTo("seriesLink", "tutorial/index.html");
-linkTo("outroSeries", "tutorial/index.html");
-linkTo("claudeTutLink", "tutorial_claude/index.html");
-linkTo("outroClaude", "tutorial_claude/index.html");
+linkTo("outroSeries", "index.html");
+linkTo("claudeTutLink", "claude.html");
+linkTo("outroClaude", "claude.html");
 </script>
 </body>
 </html>
