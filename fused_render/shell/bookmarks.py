@@ -17,7 +17,7 @@ from urllib.parse import unquote, urlsplit
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
-from fused_render.shell import storage
+from fused_render.shell import mounts, storage
 
 router = APIRouter()
 
@@ -304,6 +304,12 @@ def post_bookmark_history(
     fs_path = _fs_path_from_url(url)
     if fs_path is None:
         # Sentinel / directory-that-vanished / non-file url -> nothing to record.
+        return {"recorded": False}
+    # The bookmark itself already lives in the global tree (bookmarks.json);
+    # this sidecar mirror can't be written when fs_path is inside a read-only
+    # remote mount (CacheMode=full would 403-loop the doomed PutObject — the
+    # sidecar-write incident). Skip the mirror; the bookmark still works.
+    if mounts.mount_read_only(fs_path):
         return {"recorded": False}
     # Store only the portable query string, NOT the incoming url: the sidecar
     # lives next to fs_path, so the target file is implicit (it is the sidecar's
