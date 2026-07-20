@@ -23,6 +23,18 @@ FRONTEND="$REPO_ROOT/frontend"
 # or a manual wipe. Respect an already-set value so the caller can override.
 export FUSED_RENDER_CORE_TEMPLATES="${FUSED_RENDER_CORE_TEMPLATES:-$REPO_ROOT/fused_render/templates}"
 
+# Isolate each branch/worktree onto its own port + state dir. Without this every
+# dev.sh run (main checkout and every worktree) defaults to the baseline port
+# 1777 and clobbers the same ~/.fused-render state, so a server left running in
+# one worktree collides with — or gets served stale to — another. Deriving the
+# ref from the current branch gives each branch a deterministic port of its own
+# (see fused_render/_branch.py). main/master and detached HEAD sanitize to the
+# baseline, so this is a no-op there. Respect an already-set value so the caller
+# can override (including to "" to force baseline).
+if [[ -z "${FUSED_RENDER_BRANCH+x}" ]]; then
+  export FUSED_RENDER_BRANCH="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+fi
+
 # Python: active venv first, then the repo-local .venv, then PATH.
 if [[ -n "${VIRTUAL_ENV:-}" ]]; then
   PY="$VIRTUAL_ENV/bin/python"
