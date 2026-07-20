@@ -2683,16 +2683,32 @@ def create_app(start_dir: str) -> FastAPI:
             # the same rclone remote, so the sizes agree. In a thread — a
             # cold getattr would otherwise stall the event loop.
             if request.method == "HEAD":
-                st = await asyncio.to_thread(_stat_or_none, path)
-                if st is None:
-                    return _error(f"no such file: {path}", status=404)
+                if shell_mounts.is_mount_backed(path):
+                    # A missing-sidecar HEAD (.zmetadata, .ovr) is exactly the
+                    # cold-negative that a kernel os.stat would turn into a
+                    # full-prefix enumeration and a wedged mount — answer it
+                    # through the rclone rcd instead. Confirmed-missing/
+                    # non-regular -> 404; indeterminate (rcd down/timeout) ->
+                    # 503, never "missing".
+                    try:
+                        pr = await asyncio.to_thread(_mount_probe, path)
+                    except (shell_mounts.RcListUnavailable,
+                            shell_mounts.RcListTimeout) as e:
+                        return _mount_list_error_response(os.path.dirname(path), e)
+                    if not pr.exists or pr.is_dir:
+                        return _error(f"no such file: {path}", status=404)
+                    size, mtime = pr.size or 0, pr.mtime or 0.0
+                else:
+                    st = await asyncio.to_thread(_stat_or_none, path)
+                    if st is None:
+                        return _error(f"no such file: {path}", status=404)
+                    size, mtime = st.st_size, st.st_mtime
                 media_type, _ = mimetypes.guess_type(path)
                 return Response(status_code=200, headers={
-                    "content-length": str(st.st_size),
+                    "content-length": str(size),
                     "content-type": media_type or "application/octet-stream",
                     "accept-ranges": "bytes",
-                    "last-modified": email.utils.formatdate(
-                        st.st_mtime, usegmt=True),
+                    "last-modified": email.utils.formatdate(mtime, usegmt=True),
                 })
             # Cold reads go straight to the store: the serve's VFS layer
             # serializes concurrent uncached range reads of one file (an
@@ -2730,6 +2746,13 @@ def create_app(start_dir: str) -> FastAPI:
             resp = await asyncio.to_thread(_proxy_raw, upstream, request)
             if resp is not None:
                 return resp  # upstream unreachable -> plain file read below
+        # Reached when serve_url_for returned None (no live serve) or the
+        # proxied read failed. For a mount-backed path that means the rclone
+        # serve died or is respawning: reading through the kernel mount here is
+        # the wedge this whole module exists to avoid, so refuse with 503 rather
+        # than fall back to a local file read.
+        if shell_mounts.is_mount_backed(path):
+            return _error("mount serve unavailable", status=503)
         st = await asyncio.to_thread(_stat_or_none, path)
         if st is None:
             return _error(f"no such file: {path}", status=404)
