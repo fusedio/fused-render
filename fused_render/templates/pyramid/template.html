@@ -90,6 +90,13 @@
     border: 1.5px solid var(--c);
     box-shadow: 0 0 20px 1px color-mix(in srgb, var(--c) 40%, transparent); background: #000; }
   .layer img.px { image-rendering: pixelated; }
+  /* remote file with no overviews: a full-res preview would decode the whole
+     image over the network, so the reader skips it — show a placeholder */
+  .layer .noimg { display: flex; align-items: center; justify-content: center; text-align: center;
+    width: 100%; height: 100%; border-radius: 4px; border: 1.5px dashed var(--c);
+    background: repeating-linear-gradient(45deg, #0e1116 0 10px, #14181f 10px 20px);
+    color: var(--dim); font-size: 12px; padding: 8px; box-sizing: border-box; }
+  #crop-wrap .noimg { position: absolute; inset: 0; }
   .layer .grid { position: absolute; inset: 0; opacity: 0; transition: opacity .4s;
     pointer-events: none; border-radius: 4px;
     box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--c) 90%, #fff);
@@ -241,6 +248,11 @@ window.addEventListener("error", (e) => {
   if (el) { el.textContent = "JS error: " + e.message + " @" + (e.lineno || "?"); el.className = "err"; }
 });
 const READER = "./overview_pyramid.py";
+// src = the server origin + the raw-bytes URL for a file. The reader trusts it
+// only for the origin (to reach /api/fs/stat + /api/fs/raw) and stays mount-
+// agnostic; every runPython call passes it so a mount-backed file is read over
+// HTTP range requests instead of the kernel NFS mount (mirrors the .tif viewer).
+const rawURL = (f) => `${location.origin}/api/fs/raw?path=${encodeURIComponent(f)}`;
 // the sibling geotiff template's daemon — the SAME copy the .tif viewer
 // ensures, so the two modes share one daemon instead of respawning each
 // other's (relative py paths resolve against this template's folder)
@@ -293,7 +305,7 @@ async function analyze(file) {
   if (!file) { setStatus("no file — paste a path above", true); return; }
   setStatus("reading levels… (first run installs rasterio)");
   let res;
-  try { res = await fused.runPython(READER, { file }); }
+  try { res = await fused.runPython(READER, { file, src: rawURL(file) }); }
   catch (e) { showError("reader failed: " + (e.message || e)); return; }
   if (res.error) { showError(res.error); return; }
   R = res; sel = 0;
@@ -382,7 +394,9 @@ function buildScene() {
     return `
       <div class="layer ${i === sel ? "sel" : ""}" data-i="${i}" style="--c:${c};width:${N}px;height:${Nh}px;
         left:${-N / 2}px;top:${-Nh / 2}px;transform:translateZ(${g.z}px) scale(${g.w / N})">
-        <img class="${l.width <= 800 ? "px" : ""}" src="data:image/png;base64,${l.thumb}" alt="level ${l.level}" draggable="false">
+        ${l.thumb
+          ? `<img class="${l.width <= 800 ? "px" : ""}" src="data:image/png;base64,${l.thumb}" alt="level ${l.level}" draggable="false">`
+          : `<div class="noimg" title="${esc(l.thumb_skipped || "preview skipped")}">full-res preview skipped<br><span style="opacity:.7">(remote file, no overviews)</span></div>`}
         ${l.tiled ? `<div class="grid" style="background-size:${gx}px ${gy}px"></div>` : ""}
         <div class="patch" style="width:${N * l.crop_px / l.width}px;height:${Nh * l.crop_px / l.height}px;
           left:${N * (1 - l.crop_px / l.width) / 2}px;top:${Nh * (1 - l.crop_px / l.height) / 2}px"></div>
@@ -590,15 +604,23 @@ function ovlCoords() {
 
 function setOverlay(map, idx) {
   // real per-level tiles from the local daemon (honest resolution at any zoom);
-  // falls back to the ≤800px thumbnail overlay when the daemon is unavailable
+  // falls back to the ≤800px thumbnail overlay when the daemon is unavailable.
+  // For a mount-backed file we skip the daemon entirely: the geotiff daemon's
+  // /ltile handler kernel-opens the raw path (os.path.getmtime + rasterio.open,
+  // no _RangeReader routing), which risks stalling/dropping the NFS mount.
+  // Making /ltile mount-safe is the geotiff template's scope, not this PR.
   const old = map.getSource("ovl");
-  if (cmp.port) {
+  if (cmp.port && !R.remote) {
     const tiles = [`http://127.0.0.1:${cmp.port}/ltile/{z}/{x}/{y}.png?file=${encodeURIComponent(R.file)}&level=${idx}`];
     if (old && old.setTiles) { old.setTiles(tiles); return; }
     if (old) { map.removeLayer("ovl"); map.removeSource("ovl"); }
     map.addSource("ovl", { type: "raster", tiles, tileSize: 256 });
     map.addLayer({ id: "ovl", type: "raster", source: "ovl",
       paint: { "raster-resampling": "nearest", "raster-fade-duration": 0 } });
+  } else if (!R.levels[idx].thumb) {
+    // no daemon AND no thumbnail (remote file without overviews) — nothing to
+    // overlay without a full-res network decode; leave the basemap bare
+    if (old) { map.removeLayer("ovl"); map.removeSource("ovl"); }
   } else {
     const url = "data:image/png;base64," + R.levels[idx].thumb;
     if (old && old.updateImage) { old.updateImage({ url, coordinates: ovlCoords() }); return; }
@@ -819,13 +841,13 @@ $("jm-hide").addEventListener("click", () => { jm.hidden = true; jm.close(); });
 // launch a detached reader job (build/cogify escape the app's 30s budget) and
 // poll its status file until it reports done
 async function runJob(params, onProgress) {
-  const r = await fused.runPython(READER, params);
+  const r = await fused.runPython(READER, { ...params, src: rawURL(params.file) });
   if (r.error) throw new Error(r.error);
   if (!r.started) return r;
   for (;;) {
     await new Promise(res => setTimeout(res, 2000));
     const st = await fused.runPython(READER,
-      { file: params.file, action: "status", out: r.status_key });
+      { file: params.file, action: "status", out: r.status_key, src: rawURL(params.file) });
     if (st.state === "done") return st;
     if (st.state === "error" || st.error) throw new Error(st.error || "job failed");
     if (onProgress) onProgress(st.cur_size || 0, st.before || 0);
@@ -868,7 +890,7 @@ function wireFixPanel() {
 
   async function loadPredict() {
     try {
-      const p = await fused.runPython(READER, { file: R.file, action: "predict" });
+      const p = await fused.runPython(READER, { file: R.file, action: "predict", src: rawURL(R.file) });
       if (p.error) throw new Error(p.error);
       window.__predict = p;
       $("predict-out").innerHTML = `<table class="kv">` + p.rows.map(row => `
@@ -948,8 +970,8 @@ function renderLeft() {
     <h2>Same ${km ? km + " " : ""}ground patch — L${l.level} of ${R.levels.length - 1 ? "L0–L" + R.levels[R.levels.length - 1].level : "L0"}</h2>
     <div id="crop-flex">
       <div id="crop-wrap" style="--c:${c}">
-        <img class="ctx" src="data:image/png;base64,${l.thumb}"
-          style="width:${(70 * l.width / l.crop_px).toFixed(1)}%">
+        ${l.thumb ? `<img class="ctx" src="data:image/png;base64,${l.thumb}"
+          style="width:${(70 * l.width / l.crop_px).toFixed(1)}%">` : ""}
         <img id="crop-big" src="data:image/png;base64,${l.crop}">
       </div>
     </div>
