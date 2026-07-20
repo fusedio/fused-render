@@ -982,7 +982,9 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
               {(deployment?.cache_max_age ?? "0s") === "0s"
                 ? "off"
                 : `on, ${deployment?.cache_max_age}`}
-              ), not the one just chosen above.{" "}
+              ), not the one just chosen above. Deploying as a new URL replaces this
+              deployment: it mints a fresh URL with the setting above and takes the old one
+              down.{" "}
               <button
                 type="button"
                 className="btn btn-secondary"
@@ -993,7 +995,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
                   previewPending ||
                   (preview?.errors.length ?? 0) > 0
                 }
-                title="Publish this page at a brand-new URL with the setting chosen above — the current URL keeps serving until you revoke it separately"
+                title="Mint a fresh URL with the setting chosen above and switch this page to it — the old URL is taken down (existing links to it stop working)"
               >
                 Deploy as new URL
               </button>

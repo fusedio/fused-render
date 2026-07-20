@@ -908,10 +908,14 @@ the product gains network access.
   modal detects the checkbox/duration no longer matches what's live on a
   `fused`-backend redeploy, it shows this inline (naming the live value) with
   a **"Deploy as new URL"** action (`deploy_page(..., force_new=True)`) — the
-  only way to actually change caching on that backend: it skips token reuse
-  and mints a fresh `share create` with the requested setting, at a new URL.
-  The previous URL is left running; the caller revokes it separately (Revoke)
-  if it should stop serving.
+  only way to actually change caching on that backend. It **replaces** the
+  deployment: skips token reuse, mints a fresh `share create` with the
+  requested setting at a new URL, repoints the page pointer to it, then
+  **best-effort revokes the superseded mount** (last, after the new URL is
+  live, so a create failure never takes the page down; a revoke failure is
+  non-fatal — the new URL stands and the old mount lingers, revocable from the
+  account page's deployments list). The pointer therefore tracks the new mount,
+  so the modal's Revoke targets the new URL — no orphaned URL to chase.
 - **DP-18** **Clear cache** (`POST /api/deploy/clear-cache {"page"}` →
   `clear_cache_deployment` → `fused share cache-clear <token>`) forces every
   cached result for the deployment's mount to be recomputed on the next

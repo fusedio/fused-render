@@ -552,9 +552,10 @@ def test_repoint_on_aws_backend_applies_the_new_cache_max_age(tmp_path, monkeypa
     assert resp.json()["cache_max_age"] == "1h"
 
 
-def test_force_new_mints_a_fresh_token_on_fused_backend_with_the_new_setting(tmp_path, monkeypatch):
-    # The only way to actually change caching on a managed Fused mount: skip
-    # token reuse entirely and mint a brand-new mount via `create`.
+def test_force_new_replaces_the_deployment_and_revokes_the_old_mount(tmp_path, monkeypatch):
+    # The only way to actually change caching on a managed Fused mount: skip token
+    # reuse and mint a brand-new mount via `create`, then take the OLD mount down so
+    # the page isn't left serving at two URLs the pointer can't both track.
     h = _harness(tmp_path, monkeypatch)
     h.set_scenario(
         {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
@@ -565,12 +566,10 @@ def test_force_new_mints_a_fresh_token_on_fused_backend_with_the_new_setting(tmp
         headers=FUSED,
     )
 
-    # The old token is still very much live in `share list` — force_new must
-    # not even look it up (no repoint/recreate call at all).
     h.set_scenario(
         {
-            "list": [{"token": "abc123", "status": "active"}],
             "create": {"token": "new789", "url": "https://serve.example/new789", "status": "active"},
+            "revoke": {"token": "abc123", "status": "revoked"},
         }
     )
     resp = h.client.post(
@@ -588,9 +587,44 @@ def test_force_new_mints_a_fresh_token_on_fused_backend_with_the_new_setting(tmp
     assert body["token"] == "new789"
     assert body["cache_max_age"] == "1h"
     assert body["url"] == "https://serve.example/new789"
-    verbs = [c["argv"][1] for c in h.calls()]
-    assert verbs == ["create", "create"]  # never repoint/recreate/list
-    assert h.calls()[-1]["argv"][-2:] == ["--cache-max-age", "1h"]
+    # The pointer tracks the NEW mount (so the modal's Revoke targets it, not the old).
+    assert h.pointer()["token"] == "new789"
+    # A fresh create (never repoint/recreate reuse), then the OLD token is revoked.
+    calls = h.calls()
+    assert [c["argv"][1] for c in calls] == ["create", "create", "revoke"]
+    create_call = calls[1]
+    assert create_call["argv"][-2:] == ["--cache-max-age", "1h"]
+    revoke_call = calls[2]
+    assert revoke_call["argv"][1:3] == ["revoke", "abc123"]  # the superseded mount
+
+
+def test_force_new_revoke_of_old_mount_is_best_effort(tmp_path, monkeypatch):
+    # If revoking the superseded mount fails, the deploy still succeeds — the new URL
+    # is already live and persisted; the old mount just lingers (revocable elsewhere).
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
+    )
+    h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "cache_max_age": "5m"},
+        headers=FUSED,
+    )
+
+    # No "revoke" answer in the scenario → the stub exits 1, so the revoke raises
+    # DeployError, which deploy_page swallows (best-effort).
+    h.set_scenario(
+        {"create": {"token": "new789", "url": "https://serve.example/new789", "status": "active"}}
+    )
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "cache_max_age": "1h", "force_new": True},
+        headers=FUSED,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["token"] == "new789"
+    assert h.pointer()["token"] == "new789"  # new deployment stands despite the revoke failure
+    assert [c["argv"][1] for c in h.calls()] == ["create", "create", "revoke"]
 
 
 def test_force_new_rejects_non_bool(tmp_path, monkeypatch):

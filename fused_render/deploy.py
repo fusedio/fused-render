@@ -518,12 +518,16 @@ def deploy_page(
     function does not pretend otherwise: on that reuse path the stored record
     keeps reporting the setting that is actually live, not the one requested
     (see `_record_from`). `force_new=True` is the only way to actually change
-    it on a managed environment: it skips token reuse entirely and always
-    mints a fresh `share create` (a new token, new URL) with the requested
-    `cache_max_age`, matching what a genuinely fresh deploy would get. The
-    caller is responsible for revoking the old token first if it should stop
-    serving (see `revoke_deployment`); `force_new` does not do that itself, so
-    the old and new mounts can briefly coexist if that is what's wanted.
+    it on a managed environment: it **replaces** the deployment — mints a fresh
+    `share create` (a new token, new URL) with the requested `cache_max_age`,
+    repoints this page's pointer to it, then **best-effort revokes the old
+    mount** so the page is never left with two live URLs. The revoke is
+    deliberately last (after the new mount is live) so a create failure never
+    takes the page down, and best-effort (a revoke failure doesn't fail the
+    deploy — the new URL is live and correct; the superseded mount lingers and
+    is revocable from the Fused account page's deployments list). Because the
+    pointer now tracks the new mount, the modal's Revoke button targets the new
+    URL, as expected — there is no orphaned URL the user must chase separately.
 
     First deploy (or a pointer on a different env, or `force_new=True`):
     `share create --public` — a fresh opaque capability URL. Otherwise, redeploy
@@ -578,6 +582,15 @@ def deploy_page(
             None if force_new else (pointer if pointer and pointer.get("env") == env_name else None)
         )
         token = same_env.get("token") if same_env else None
+        # On a force_new replace, the mount we're superseding (same page + env) —
+        # revoked best-effort AFTER the new one is live, so the page never ends up
+        # with two URLs the pointer can't both track. None unless force_new found a
+        # prior same-env token.
+        superseded_token = (
+            pointer.get("token")
+            if force_new and pointer and pointer.get("env") == env_name
+            else None
+        )
         # What the mount will ACTUALLY be caching after this call — defaults to
         # the requested value (true for AWS always, and for fused on any branch
         # that runs `create`); overridden below on a fused-backend token-reuse
@@ -646,6 +659,21 @@ def deploy_page(
             cache_max_age=effective_cache_max_age, fallback=same_env,
         )
         set_deployment(page, record)
+        # force_new replace: the new mount is live and the pointer now tracks it,
+        # so take the superseded mount down — otherwise the page would serve at two
+        # URLs while the pointer (and the modal's Revoke) tracks only the new one,
+        # leaving the old one orphaned. Best-effort and LAST: the new URL is already
+        # live and persisted, so a revoke failure must not fail the deploy — the
+        # superseded mount just lingers and is revocable from the account page's
+        # deployments list. Skip if the token didn't actually change (defensive: a
+        # create that somehow returned the same token needs no self-revoke).
+        if superseded_token and superseded_token != record["token"]:
+            try:
+                _run_share(env_name, ["revoke", superseded_token])
+            except DeployError:
+                # New deployment stands; the old mount outlives it until manually
+                # revoked (account page / `fused share revoke <token>`). Not fatal.
+                pass
         return record
     finally:
         shutil.rmtree(bundle, ignore_errors=True)
