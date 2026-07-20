@@ -127,6 +127,13 @@ Some conditions are **warnings**, not errors — they don't block export:
   the hosted runtime resolves the computed path to that key, so `fused.rawUrl("data/" +
   name)` resolves fine. (A call like that is a string *prefix* plus an expression, so it
   is treated as computed — it is **not** mis-bundled as a literal `data/` target.)
+  This warning is **suppressed when a manifest-declared file actually lands as a
+  `bundle` asset** in the Deploy list — the list then shows what backs the call. It is
+  keyed on the surviving asset, not the raw manifest globs: a manifest file that is also
+  a literal `rawUrl`/`readFile` target counts as `rawUrl`, and one dropped by `exclude`
+  is gone — either way no `bundle` row remains, so the warning still fires. A
+  per-deployment `include` (Deploy modal / `/api/export`) never suppresses it, since that
+  selection isn't checked in with the page.
 - **Excluding a referenced file.** Dropping a file the page literally references is
   honored, but the page's call to it will 404 when hosted.
 
@@ -153,6 +160,18 @@ add files from the page's folder, add everything, remove a file, or reset to the
 auto-detected default — and persists the selection on the deployment record so a
 reopened modal reloads it. `/api/export` exposes the same two fields for driving a
 bundle by hand.
+
+Each asset in the list is labelled by how it is exposed, so it is clear which
+bundled files are web-fetchable via `rawUrl`/`readFile`:
+
+- **`rawUrl`** — a literal `fused.rawUrl()`/`readFile()` reference the scan found;
+  the page fetches it via rawUrl/readFile.
+- **`bundle`** — a file declared in the page's `<script type="application/fused-bundle">`
+  manifest (below). These **auto-show up** in the list — they back a *computed*
+  rawUrl/readFile path, so the manifest is how they get bundled without a literal.
+- **`added`** — a file you added by hand ("Add files" / "Add all in folder").
+
+All three are served read-only by the `_asset` route regardless of label.
 
 ### The page's own bundle manifest (checked in, reproducible)
 

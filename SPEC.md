@@ -626,12 +626,21 @@ nothing. Full detail: `docs/EXPORT.md`.
   (a referenced file, or an `include` file, not on disk).
 - **EX-4a** Warnings — advisory, never blocking: a **computed `rawUrl`/`readFile`
   path** (the exporter can't discover the target from the HTML, but once the target is
-  bundled — via an `include` glob in the page's manifest (EX-7) or an explicit `include`
+  bundled — via an `include` glob in the page's manifest (EX-8) or an explicit `include`
   (EX-6) — the served `_asset` route resolves it by key at request time, and the hosted
   runtime resolves the computed path to that key; a call `fused.rawUrl("data/" + name)`
   is a string *prefix* + expression, so it is counted here as computed, **not**
-  mis-collected as a literal `data/` target), and an **`exclude` that drops a
-  literally-referenced file** (honored, but that call 404s when hosted).
+  mis-collected as a literal `data/` target). This warning is **suppressed when a
+  `manifest`-source asset (EX-6/EX-8) survives into the final bundle** — a `bundle`
+  provenance pill in §19's list (DP-2a) that shows the user what backs the call, so the
+  nag would be redundant. It keys on the *surviving* asset, evaluated after dedup and
+  exclude, **not** the raw manifest globs: a manifest entry that is also a literal
+  reference is deduped to a `reference` asset, and any manifest file can be dropped by
+  `exclude` — in both cases no `bundle` row remains and the warning still fires. A
+  per-deployment `include` (EX-6, source `include`) never suppresses it: that selection
+  is not checked in with the page, so a fresh export without it would still 404. Also
+  warned: an **`exclude` that drops a literally-referenced file** (honored, but that call
+  404s when hosted).
 - **EX-5** Route names derive from the `.py` stem (`sine.py` → `sine`), are prefixed
   `run-` when they'd collide with a reserved serve route (`data`, `health`, the
   `_`-prefixed control/shell/asset routes), and are suffixed `-2`, `-3`, … on
@@ -641,7 +650,14 @@ nothing. Full detail: `docs/EXPORT.md`.
   bundled as assets beyond the literal scan (for a computed-path target or data a
   bundled `.py` reads at runtime), each validated like a scanned asset and deduped by
   key; and `exclude` — files dropped from the final set by literal path or bundle
-  key. Both default empty (auto-only).
+  key. Both default empty (auto-only). Each bundled asset carries a `source` —
+  `reference` (a literal `rawUrl`/`readFile` the scan resolved), `manifest`
+  (declared in the page's EX-8 manifest), or `include` (added out-of-band via the
+  selection) — attributed to the strongest claim in that order when a file is
+  reachable more than one way, and surfaced on `/api/deploy/preview` so §19's list
+  can label how each file is exposed (DP-2a). It is an in-process/preview
+  classification only: `manifest.json` (EX-2) does not carry it — the hosting
+  layer treats every asset the same.
 - **EX-7** First-party **modules** a bundled entrypoint imports are discovered by a
   static AST scan of the entrypoint sources (transitively) and shipped as `resources`,
   so a served entrypoint's `import helpers` resolves without hand-listing. Only an
@@ -711,7 +727,14 @@ the product gains network access.
   publish (`POST /api/deploy/preview` → `preview_deploy`, the same pure
   `plan_export` scan the real export runs, resolved fresh with the current
   selection, no files written): the page plus each `runPython` target (and its
-  served route name) and each `rawUrl`/`readFile` or included asset. Export
+  served route name) and each asset. Every asset row carries a **provenance
+  pill** driven by the preview's per-asset `source` (EX-6) so the list *mentions
+  how a bundled file is exposed*: `rawUrl` — a scanned literal
+  `fused.rawUrl()`/`readFile()` reference (the page fetches it via
+  rawUrl/readFile); `bundle` — a file declared in the page's fused-bundle
+  manifest (EX-8), which auto-shows here to back a computed rawUrl/readFile path;
+  `added` — a hand-added include. All three are served read-only on the hosted
+  `_asset` route (the pill's tooltip says so). Export
   blockers (EX-4) come back in the same response and **disable Deploy** with the
   full list — an unexportable page reads as "fix these" up front, never as a
   failed deploy; warnings (EX-4a) show alongside but never block. A preview
