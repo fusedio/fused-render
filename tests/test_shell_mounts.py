@@ -284,6 +284,58 @@ def test_rc_mtime_for_none_outside_any_mount(home, rcd):
     assert mounts_mod.rc_mtime_for("/tmp/not/a/mount/f.parquet") is None
 
 
+def test_rc_stat_for_tri_state(home, rcd):
+    # rc_stat_for distinguishes the three outcomes rc_mtime_for collapses to
+    # None, so a caller can filter a genuinely-deleted mount file while still
+    # failing open on anything indeterminate.
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    path = mounts_mod.mountpoint(c) + "/f.parquet"
+
+    # Healthy rcd, item is a dict -> file exists (ModTime irrelevant to stat).
+    rcd.responses["operations/stat"] = {"item": {"ModTime": "2024-01-02T03:04:05Z"}}
+    assert mounts_mod.rc_stat_for(path) == "exists"
+    rcd.responses["operations/stat"] = {"item": {"Size": 1}}  # exists, no ModTime
+    assert mounts_mod.rc_stat_for(path) == "exists"
+
+    # Healthy rcd, item is null -> a TRUSTWORTHY "the file is gone".
+    rcd.responses["operations/stat"] = {"item": None}
+    assert mounts_mod.rc_stat_for(path) == "missing"
+
+    # Malformed answer (missing 'item' key, non-dict resp) -> indeterminate.
+    rcd.responses["operations/stat"] = {"nope": 1}
+    assert mounts_mod.rc_stat_for(path) == "indeterminate"
+
+
+def test_rc_stat_for_indeterminate_on_error_or_no_rcd_or_no_mount(home, rcd):
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    path = mounts_mod.mountpoint(c) + "/f.parquet"
+    # rc error (stub 404s unset methods) -> indeterminate, NOT missing.
+    assert mounts_mod.rc_stat_for(path) == "indeterminate"
+    # Path under no mount record -> indeterminate.
+    assert mounts_mod.rc_stat_for("/tmp/not/a/mount/f.parquet") == "indeterminate"
+
+
+def test_rc_stat_for_indeterminate_when_rcd_down(home):
+    # No live rcd port at all -> indeterminate (fail open), never "missing".
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    path = mounts_mod.mountpoint(c) + "/f.parquet"
+    assert mounts_mod.rc_stat_for(path) == "indeterminate"
+
+
+def test_rc_mtime_for_and_rc_stat_for_share_one_rc_call_semantics(home, rcd):
+    # rc_mtime_for's documented None contract is preserved after being
+    # reimplemented on the shared stat: exists-but-no-ModTime and item-null
+    # both still yield None.
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    path = mounts_mod.mountpoint(c) + "/f.parquet"
+    rcd.responses["operations/stat"] = {"item": {"Size": 1}}
+    assert mounts_mod.rc_mtime_for(path) is None
+    assert mounts_mod.rc_stat_for(path) == "exists"
+    rcd.responses["operations/stat"] = {"item": None}
+    assert mounts_mod.rc_mtime_for(path) is None
+    assert mounts_mod.rc_stat_for(path) == "missing"
+
+
 def test_is_mount_backed_follows_symlink_into_mounts(home, tmp_path):
     # A symlink whose target is inside the mounts dir must classify as
     # mount-backed (else it lands on the kernel os.stat ticker — the GETATTR

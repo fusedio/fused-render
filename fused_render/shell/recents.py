@@ -127,22 +127,21 @@ def _local_exists(fs_path: str) -> bool:
 
 def _mount_exists(fs_path: str) -> bool:
     """Existence of a MOUNT-BACKED path, answered by the rclone rc API
-    (mounts.rc_mtime_for) — NEVER os.path.isfile. A raw os.stat/isfile on a hung
-    NFS mount is the exact GETATTR that wedges it (see rc_mtime_for's docstring
-    in mounts.py); rc_mtime_for keeps the kernel out of the loop entirely.
+    (mounts.rc_stat_for) — NEVER os.path.isfile. A raw os.stat/isfile on a hung
+    NFS mount is the exact GETATTR that wedges it (see rc_stat_for/rc_mtime_for
+    in mounts.py); the rc route keeps the kernel out of the loop entirely.
 
-    A present ModTime proves the file exists. None is INDETERMINATE — rc can't
-    tell "rcd down / timed out" from "genuinely missing" — so we fail open and
-    KEEP the entry (True) rather than risk hiding a live recent on a transient
+    The only outcome that filters the entry is a healthy rcd's confirmed
+    "missing" (operations/stat returned {"item": null}). "exists" keeps it, and
+    "indeterminate" (rcd down / timed out / errored — rc can't prove absence)
+    also keeps it: we fail open rather than hide a live recent on a transient
     rc hiccup."""
     from fused_render.shell import mounts as shell_mounts
 
     try:
-        if shell_mounts.rc_mtime_for(fs_path) is not None:
-            return True
+        return shell_mounts.rc_stat_for(fs_path) != "missing"
     except Exception:
-        pass
-    return True  # indeterminate -> fail open, keep the entry
+        return True  # unexpected error -> fail open, keep the entry
 
 
 async def _keep_entry(url: str) -> bool:

@@ -242,14 +242,18 @@ def test_get_completed_false_filters_completed_true_shows(tmp_path, monkeypatch)
 
 def test_get_mount_backed_paths_route_through_rc_not_isfile(tmp_path, monkeypatch):
     # Mount safety: a mount-backed recents path must be checked via the rclone
-    # rc API (rc_mtime_for), NEVER a kernel os.path.isfile — a raw GETATTR on a
-    # hung NFS mount is the exact call that wedges it. A present ModTime keeps
-    # the entry; a None (indeterminate) also keeps it (fail open).
+    # rc API (rc_stat_for), NEVER a kernel os.path.isfile — a raw GETATTR on a
+    # hung NFS mount is the exact call that wedges it. The tri-state result
+    # governs filtering: only a healthy-rcd-confirmed "missing" filters an
+    # entry; "exists" keeps it, and "indeterminate" (rcd down / timeout / error)
+    # keeps it too (fail open).
     client, _ = _client(tmp_path, monkeypatch)
     live = _make_file(tmp_path, "live_mount.parquet")
     indet = _make_file(tmp_path, "indet_mount.parquet")
+    gone = _make_file(tmp_path, "gone_mount.parquet")
     client.post("/api/recents/open", json={"url": _view_url(live)}, headers=FUSED)
     client.post("/api/recents/open", json={"url": _view_url(indet)}, headers=FUSED)
+    client.post("/api/recents/open", json={"url": _view_url(gone)}, headers=FUSED)
 
     monkeypatch.setattr(mounts_mod, "is_mount_backed", lambda p: True)
 
@@ -258,15 +262,19 @@ def test_get_mount_backed_paths_route_through_rc_not_isfile(tmp_path, monkeypatc
 
     monkeypatch.setattr(recents_mod.os.path, "isfile", _no_isfile)
 
-    # live -> ModTime present (exists), indet -> None (rc can't tell): both kept.
-    def _rc(path):
-        return "2026-01-01T00:00:00Z" if path.endswith("live_mount.parquet") else None
+    def _stat(path):
+        if path.endswith("live_mount.parquet"):
+            return "exists"
+        if path.endswith("gone_mount.parquet"):
+            return "missing"  # healthy rcd, item null -> trustworthy negative
+        return "indeterminate"  # rcd down / timeout / error
 
-    monkeypatch.setattr(mounts_mod, "rc_mtime_for", _rc)
+    monkeypatch.setattr(mounts_mod, "rc_stat_for", _stat)
 
     resp = client.get("/api/recents")
     assert resp.status_code == 200
     got = {e["url"] for e in resp.json()["entries"]}
+    # exists + indeterminate kept; only the confirmed-missing entry filtered.
     assert got == {_view_url(live), _view_url(indet)}
 
 

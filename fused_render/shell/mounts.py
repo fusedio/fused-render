@@ -777,12 +777,40 @@ def rc_mtime_for(path: str) -> str | None:
     (path not under a mount, rcd unreachable, rc error/timeout, or missing
     item). Callers MUST treat None as "unchanged" and MUST NOT fall back to
     os.stat — that fallback is the exact GETATTR that killed the mount."""
+    item = _rc_stat_item(path)
+    # Both "missing" (None) and "indeterminate" (the sentinel) collapse to None
+    # here — this preserves rc_mtime_for's documented contract. A caller that
+    # must distinguish a confirmed deletion from a transient failure uses
+    # rc_stat_for instead.
+    if not isinstance(item, dict):
+        return None
+    return item.get("ModTime") or None
+
+
+# Sentinel returned by _rc_stat_item when operations/stat could not be answered
+# at all (no mount record, no live rcd, rc error/timeout, malformed response) —
+# as opposed to None, which is a healthy rcd's TRUSTWORTHY "the item is gone".
+_STAT_INDETERMINATE = object()
+
+
+def _rc_stat_item(path: str):
+    """The raw operations/stat `item` for a mount-backed path, off the kernel:
+      - a dict          -> the item exists (its ModTime may or may not be set);
+      - None            -> a healthy rcd answered {"item": null}: the file is
+                           GONE (a trustworthy negative);
+      - _STAT_INDETERMINATE -> the stat could not be taken (path under no mount,
+                           no live rcd port, rc RuntimeError/timeout, or a
+                           malformed response). Callers MUST fail open on this
+                           and MUST NOT fall back to os.stat — that GETATTR is
+                           the exact call that wedged the mount.
+    Shared by rc_mtime_for and rc_stat_for so both speak to the rcd once and
+    agree on what each outcome means."""
     m, rel = _mount_for(path)
     if m is None:
-        return None
+        return _STAT_INDETERMINATE
     port = _live_rcd_port()
     if port is None:
-        return None
+        return _STAT_INDETERMINATE
     # _mount_for returns "." for the mountpoint itself; operations/stat wants ""
     # for the fs root (remote "." returns {"item": null}, so the mount-ROOT
     # watch would never prime — same quirk operations/list has, normalized in
@@ -792,11 +820,31 @@ def rc_mtime_for(path: str) -> str | None:
         resp = _rc(port, "operations/stat",
                    {"fs": m["remote"], "remote": remote}, timeout=10)
     except RuntimeError:
-        return None
-    item = resp.get("item") if isinstance(resp, dict) else None
+        return _STAT_INDETERMINATE
+    if not isinstance(resp, dict) or "item" not in resp:
+        return _STAT_INDETERMINATE  # malformed answer -> fail open
+    item = resp["item"]
+    if item is None:
+        return None  # healthy rcd: file confirmed gone
     if not isinstance(item, dict):
-        return None
-    return item.get("ModTime") or None
+        return _STAT_INDETERMINATE
+    return item
+
+
+def rc_stat_for(path: str) -> str:
+    """Tri-state existence of a mount-backed path via the rclone rc API, never
+    the kernel: "exists", "missing", or "indeterminate".
+
+    Splits apart what rc_mtime_for collapses into None, so a caller can filter a
+    genuinely-deleted mount file (a healthy rcd's {"item": null}) while still
+    failing open on any transient failure. "missing" is the ONLY outcome that
+    proves absence; treat "indeterminate" as "keep / unchanged"."""
+    item = _rc_stat_item(path)
+    if item is _STAT_INDETERMINATE:
+        return "indeterminate"
+    if item is None:
+        return "missing"
+    return "exists"
 
 
 # operations/list can't be paginated at any rclone layer (verified: `rclone lsf
