@@ -320,12 +320,18 @@ def _make_tif(path, with_overviews):
             ds.build_overviews([2, 4], Resampling.average)
 
 
-def _run_worker(fs_srv, path, action="analyze"):
+def _run_worker(path, action="analyze", fs_srv=None):
+    """Run the real worker. Remote (fs_srv given) -> opts carry raw_url+size so
+    every open routes over HTTP. Local (fs_srv None) -> plain opts, `path` is a
+    real local file read through the kernel."""
     import subprocess
     import sys
     import tempfile
-    raw_url = op._server_url(fs_srv.src, "/api/fs/raw", "/x.tif")
-    opts = {"remote": True, "raw_url": raw_url, "size": len(fs_srv.blob)}
+    if fs_srv is not None:
+        raw_url = op._server_url(fs_srv.src, "/api/fs/raw", "/x.tif")
+        opts = {"remote": True, "raw_url": raw_url, "size": len(fs_srv.blob)}
+    else:
+        opts = {}
     wf = tempfile.mktemp(suffix=".py")
     with open(wf, "w") as f:
         f.write(op._worker_source())
@@ -354,8 +360,11 @@ def test_remote_worker_end_to_end(fs, tmp_path, with_ov):
     remote_only_path = str(tmp_path / "gone" / "x.tif")  # never created on disk
     assert not os.path.exists(remote_only_path)
     s = fs(blob=blob, remote=True)
-    r = _run_worker(s, remote_only_path)
+    r = _run_worker(remote_only_path, fs_srv=s)
 
+    # the payload flags remote so the UI can avoid the geotiff daemon's /ltile
+    # (which kernel-opens the raw path) and stick to HTTP-backed previews
+    assert r["remote"] is True
     # size comes from /api/fs/stat, not a kernel getsize
     assert r["file_size"] == len(s.blob)
     # cog validation is skipped over the mount (opener-incompatible)
@@ -371,3 +380,16 @@ def test_remote_worker_end_to_end(fs, tmp_path, with_ov):
         assert lv0["thumb"] is None  # full-res decode skipped over the network
         assert lv0["thumb_skipped"]
         assert lv0["crop"] is not None  # a bounded center crop is still served
+
+
+def test_local_worker_reports_remote_false(tmp_path):
+    pytest.importorskip("rasterio")
+    pytest.importorskip("tifffile")
+    pytest.importorskip("rio_cogeo")
+    pytest.importorskip("PIL")
+    p = str(tmp_path / "local.tif")
+    _make_tif(p, with_overviews=True)
+    r = _run_worker(p)  # no fake server -> local kernel read
+    # local files may safely use the geotiff /ltile daemon, so remote is False
+    assert r["remote"] is False
+    assert r["file_size"] == os.path.getsize(p)

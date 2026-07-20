@@ -604,9 +604,13 @@ function ovlCoords() {
 
 function setOverlay(map, idx) {
   // real per-level tiles from the local daemon (honest resolution at any zoom);
-  // falls back to the ≤800px thumbnail overlay when the daemon is unavailable
+  // falls back to the ≤800px thumbnail overlay when the daemon is unavailable.
+  // For a mount-backed file we skip the daemon entirely: the geotiff daemon's
+  // /ltile handler kernel-opens the raw path (os.path.getmtime + rasterio.open,
+  // no _RangeReader routing), which risks stalling/dropping the NFS mount.
+  // Making /ltile mount-safe is the geotiff template's scope, not this PR.
   const old = map.getSource("ovl");
-  if (cmp.port) {
+  if (cmp.port && !R.remote) {
     const tiles = [`http://127.0.0.1:${cmp.port}/ltile/{z}/{x}/{y}.png?file=${encodeURIComponent(R.file)}&level=${idx}`];
     if (old && old.setTiles) { old.setTiles(tiles); return; }
     if (old) { map.removeLayer("ovl"); map.removeSource("ovl"); }

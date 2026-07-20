@@ -526,7 +526,7 @@ print(json.dumps({
     "file_size": file_size, "crs": crs, "crs_name": crs_name,
     "dtype": dtype, "bands": nbands,
     "bounds": bounds, "bounds4326": bounds4326,
-    "cog": cog, "fix": fix,
+    "cog": cog, "fix": fix, "remote": REMOTE,
     "n_overviews": n_ov, "levels": levels,
     "extra_ifds": [{k: d[k] for k in ("w", "h", "bytes", "compression")} for d in masks],
     "accounted": sum(l["bytes"] or 0 for l in levels) + sum(d["bytes"] for d in masks),
