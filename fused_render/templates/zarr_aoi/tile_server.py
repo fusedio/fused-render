@@ -107,11 +107,12 @@ def main(action: str = "ensure"):
         with open(STATE) as f:
             st = json.load(f)
         if _alive(st.get("port"), version):
-            return {"port": st["port"], "reused": True}
+            return {"port": st["port"], "token": st.get("token"), "reused": True}
         try:
             import urllib.request
             urllib.request.urlopen(
-                f"http://127.0.0.1:{st.get('port')}/quit", timeout=1).read()
+                f"http://127.0.0.1:{st.get('port')}/quit?t={st.get('token', '')}",
+                timeout=1).read()
         except Exception:
             pass
     except (OSError, ValueError):
@@ -141,7 +142,8 @@ def main(action: str = "ensure"):
             with open(STATE) as f:
                 st = json.load(f)
             if st.get("version") == version and _alive(st.get("port"), version):
-                return {"port": st["port"], "reused": False}
+                return {"port": st["port"], "token": st.get("token"),
+                        "reused": False}
         except (OSError, ValueError):
             continue
     return {"error": f"zarr AOI daemon did not start — see {log}"}
@@ -157,11 +159,16 @@ except ImportError:
 # ================================================================ daemon
 def _serve():
     import numpy as np
+    import secrets
     import zarr
     from collections import OrderedDict, deque
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from urllib.parse import urlparse, parse_qs
     from zarr.storage import WrapperStore
+
+    # Per-daemon secret required on every data endpoint (except /ping), threaded
+    # in by the template as ?t=; see geotiff/tile_server.py for the rationale.
+    TOKEN = secrets.token_urlsafe(32)
 
     VERSION = _version()
     last_hit = [time.time()]
@@ -978,6 +985,9 @@ def _serve():
             last_hit[0] = time.time()
             u = urlparse(self.path)
             q = parse_qs(u.query)
+            if u.path != "/ping" and q.get("t", [""])[0] != TOKEN:
+                self._send(403, b"forbidden", "text/plain")
+                return
             try:
                 if u.path == "/ping":
                     code, body, ct = 200, json.dumps(
@@ -1026,7 +1036,8 @@ def _serve():
     port = srv.server_address[1]
     os.makedirs(os.path.dirname(STATE), exist_ok=True)
     with open(STATE, "w") as fh:
-        json.dump({"port": port, "pid": os.getpid(), "version": VERSION}, fh)
+        json.dump({"port": port, "token": TOKEN,
+                   "pid": os.getpid(), "version": VERSION}, fh)
 
     def reaper():
         while True:

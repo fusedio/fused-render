@@ -35,7 +35,7 @@ def _union_bounds(boxes):
             max(b[2] for b in boxes), max(b[3] for b in boxes)]
 
 
-def _vector_layer(target, port, layer):
+def _vector_layer(target, port, layer, token):
     """MVT tile descriptor for one layer of `target` (layer=None for a
     single-layer file). Kicks off the daemon's warm-up for that layer."""
     import geo_classify
@@ -45,6 +45,8 @@ def _vector_layer(target, port, layer):
     params = {"file": target}
     if layer:
         params["layer"] = layer
+    if token:                      # per-daemon token gates every endpoint (?t=)
+        params["t"] = token
     qs = urllib.parse.urlencode(params)
 
     meta = geo_classify.vector_meta(target, layer)
@@ -92,20 +94,21 @@ def _vector_tiles(target):
 
     ensured = vts.main("ensure")
     port = ensured.get("port")
+    token = ensured.get("token")
     if not port:
         return _err(ensured.get("error", "tile daemon failed to start"))
 
     layers = geo_classify.list_layers(target)
     if not layers:
         try:
-            return _vector_layer(target, port, None)
+            return _vector_layer(target, port, None, token)
         except Exception as e:  # noqa: BLE001
             return _err(f"couldn't read vector file: {type(e).__name__}: {e}")
 
     children = []
     for lname in layers:
         try:
-            children.append(_vector_layer(target, port, lname))
+            children.append(_vector_layer(target, port, lname, token))
         except Exception as e:  # noqa: BLE001
             children.append({**_err(f"{type(e).__name__}: {e}"),
                              "layer": lname, "name": lname})
@@ -125,10 +128,14 @@ def _raster_tiles(target, colormap, rescale):
 
     ensured = vts.main("ensure")
     port = ensured.get("port")
+    token = ensured.get("token")
     if not port:
         return _err(ensured.get("error", "tile daemon failed to start"))
 
-    qs = urllib.parse.urlencode({"file": target})
+    rparams = {"file": target}
+    if token:                      # per-daemon token gates every endpoint (?t=)
+        rparams["t"] = token
+    qs = urllib.parse.urlencode(rparams)
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/rmeta?{qs}", timeout=120) as r:
             meta = json.loads(r.read())

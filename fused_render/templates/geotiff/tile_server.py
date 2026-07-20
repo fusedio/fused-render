@@ -182,12 +182,14 @@ def main(action: str = "ensure"):
         with open(STATE) as f:
             st = json.load(f)
         if _alive(st.get("port"), version):
-            return {"port": st["port"], "reused": True, "version": version}
+            return {"port": st["port"], "token": st.get("token"),
+                    "reused": True, "version": version}
         # stale daemon (old version or dead) — ask it to quit, then respawn
         try:
             import urllib.request
             urllib.request.urlopen(
-                f"http://127.0.0.1:{st.get('port')}/quit", timeout=1).read()
+                f"http://127.0.0.1:{st.get('port')}/quit?t={st.get('token', '')}",
+                timeout=1).read()
         except Exception:
             pass
     except (OSError, ValueError):
@@ -214,7 +216,8 @@ def main(action: str = "ensure"):
             with open(STATE) as f:
                 st = json.load(f)
             if st.get("version") == version and _alive(st.get("port"), version):
-                return {"port": st["port"], "reused": False, "version": version}
+                return {"port": st["port"], "token": st.get("token"),
+                        "reused": False, "version": version}
         except (OSError, ValueError):
             continue
     return {"error": f"daemon did not start — see {log}"}
@@ -230,9 +233,18 @@ except ImportError:
 # ================================================================ daemon
 def _serve():
     import numpy as np
+    import secrets
     from concurrent.futures import ThreadPoolExecutor
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from urllib.parse import urlparse, parse_qs
+
+    # Per-daemon secret. The daemon binds a random loopback port and answers
+    # with open CORS so the template's cross-port iframe can read tiles; that
+    # alone leaves it readable by any page in the same browser that guesses the
+    # port. Requiring this token on every data endpoint closes that gap — the
+    # template gets the token from ensure() and threads it in as ?t=. /ping
+    # (version only) stays token-free so liveness probes need no secret.
+    TOKEN = secrets.token_urlsafe(32)
 
     sys.path.insert(0, os.path.dirname(_me()))
     import _tiff_core as T
@@ -1071,6 +1083,9 @@ def _serve():
             last_hit[0] = time.time()
             u = urlparse(self.path)
             q = parse_qs(u.query)
+            if u.path != "/ping" and q.get("t", [""])[0] != TOKEN:
+                self._send(403, b"forbidden", "text/plain")
+                return
             try:
                 if u.path == "/ping":
                     code, body, ct = 200, json.dumps(
@@ -1119,7 +1134,8 @@ def _serve():
     port = srv.server_address[1]
     os.makedirs(os.path.dirname(STATE), exist_ok=True)
     with open(STATE, "w") as fh:
-        json.dump({"port": port, "pid": os.getpid(), "version": VERSION}, fh)
+        json.dump({"port": port, "token": TOKEN,
+                   "pid": os.getpid(), "version": VERSION}, fh)
 
     def reaper():
         while True:

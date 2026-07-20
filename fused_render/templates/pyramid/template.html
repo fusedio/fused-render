@@ -583,7 +583,7 @@ let justDragged = false;
 
 /* ================= map compare ================= */
 
-const cmp = { inited: false, A: null, B: null, la: 0, lb: 0, auto: true, port: null };
+const cmp = { inited: false, A: null, B: null, la: 0, lb: 0, auto: true, port: null, token: '' };
 
 async function ensureTileDaemon() {
   if (cmp.port !== null) return cmp.port;
@@ -591,7 +591,7 @@ async function ensureTileDaemon() {
   if (TILE_SERVER) {
     try {
       const r = await fused.runPython(TILE_SERVER, { action: "ensure" });
-      if (r && r.port) cmp.port = r.port;
+      if (r && r.port) { cmp.port = r.port; cmp.token = r.token || ''; }
     } catch (e) { /* fall back to thumbnails */ }
   }
   return cmp.port;
@@ -611,7 +611,7 @@ function setOverlay(map, idx) {
   // Making /ltile mount-safe is the geotiff template's scope, not this PR.
   const old = map.getSource("ovl");
   if (cmp.port && !R.remote) {
-    const tiles = [`http://127.0.0.1:${cmp.port}/ltile/{z}/{x}/{y}.png?file=${encodeURIComponent(R.file)}&level=${idx}`];
+    const tiles = [`http://127.0.0.1:${cmp.port}/ltile/{z}/{x}/{y}.png?file=${encodeURIComponent(R.file)}&level=${idx}&t=${encodeURIComponent(cmp.token)}`];
     if (old && old.setTiles) { old.setTiles(tiles); return; }
     if (old) { map.removeLayer("ovl"); map.removeSource("ovl"); }
     map.addSource("ovl", { type: "raster", tiles, tileSize: 256 });
