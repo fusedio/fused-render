@@ -337,36 +337,60 @@ def _sheet_parquet(file, sh):
 
 # ---------- windowed queries ----------
 
+def _criteria_sql(col, q):
+    """(sql, params) for a single text/number criteria like '>5' or 'foo'."""
+    m = re.match(r"^(<>|<=|>=|=|<|>)(.*)$", q)
+    if m and m.group(2).strip() != "":
+        op, val = m.group(1), m.group(2).strip()
+        try:
+            num = float(val)
+            if op == "=":
+                return f"TRY_CAST({col} AS DOUBLE) = ?", [num]
+            if op == "<>":
+                return f"TRY_CAST({col} AS DOUBLE) IS DISTINCT FROM ?", [num]
+            return f"TRY_CAST({col} AS DOUBLE) {op} ?", [num]
+        except ValueError:
+            sql_op = {"=": "=", "<>": "!=", "<": "<", ">": ">", "<=": "<=", ">=": ">="}[op]
+            return f"lower(coalesce({col}, '')) {sql_op} lower(?)", [val]
+    esc = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"{col} ILIKE ? ESCAPE '\\'", [f"%{esc}%"]
+
+
 def _filters_sql(filters):
+    """Build a WHERE for a list of {c, q?, exclude?} column filters. `q` is the
+    optional condition string; `exclude` is a list of display values to hide
+    (the Google-Sheets value checklist — everything not in the visible set)."""
     where, params = [], []
     for f in filters or []:
         c = int(f["c"])
-        q = str(f.get("q", "")).strip()
-        if not q:
-            continue
         col = f"c{c}"
-        m = re.match(r"^(<>|<=|>=|=|<|>)(.*)$", q)
-        if m and m.group(2).strip() != "":
-            op, val = m.group(1), m.group(2).strip()
-            try:
-                num = float(val)
-                if op == "=":
-                    where.append(f"TRY_CAST({col} AS DOUBLE) = ?")
-                elif op == "<>":
-                    where.append(f"TRY_CAST({col} AS DOUBLE) IS DISTINCT FROM ?")
-                else:
-                    where.append(f"TRY_CAST({col} AS DOUBLE) {op} ?")
-                params.append(num)
-                continue
-            except ValueError:
-                sql_op = {"=": "=", "<>": "!=", "<": "<", ">": ">", "<=": "<=", ">=": ">="}[op]
-                where.append(f"lower(coalesce({col}, '')) {sql_op} lower(?)")
-                params.append(val)
-                continue
-        esc = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        where.append(f"{col} ILIKE ? ESCAPE '\\'")
-        params.append(f"%{esc}%")
+        q = str(f.get("q", "")).strip()
+        if q:
+            sql, ps = _criteria_sql(col, q)
+            where.append(sql)
+            params.extend(ps)
+        exclude = f.get("exclude") or []
+        if exclude:
+            ph = ", ".join(["?"] * len(exclude))
+            where.append(f"coalesce(CAST({col} AS VARCHAR), '') NOT IN ({ph})")
+            params.extend(str(v) for v in exclude)
     return (" WHERE " + " AND ".join(where)) if where else "", params
+
+
+def _query_distinct(pq, col, filters, cap=2000):
+    """Distinct display values of one column, honouring the OTHER columns'
+    filters (matching how Google Sheets narrows the value list). Returns up to
+    `cap` values sorted, plus a truncated flag."""
+    con = _duck()
+    con.execute(f"CREATE VIEW t AS SELECT * FROM read_parquet({_q(pq)})")
+    where, params = _filters_sql([f for f in (filters or []) if int(f["c"]) != col])
+    rows = con.execute(
+        f"SELECT DISTINCT coalesce(CAST(c{col} AS VARCHAR), '') AS v FROM t{where} "
+        f"ORDER BY v LIMIT ?",
+        params + [cap + 1],
+    ).fetchall()
+    vals = [r[0] for r in rows]
+    return {"values": vals[:cap], "truncated": len(vals) > cap}
 
 
 def _query_rows(pq, ncols, offset, limit, sort, filters):
@@ -856,6 +880,7 @@ def main(
     limit: int = 1000,
     sort: str = "",
     filters: str = "",
+    col: int = -1,
 ):
     if action == "load":
         if not file:
@@ -867,6 +892,13 @@ def main(
         return _query_rows(
             _sheet_parquet(file, sh), sh["ncols"], offset, min(limit, 10_000),
             json.loads(sort) if sort else None,
+            json.loads(filters) if filters else None,
+        )
+    if action == "distinct":
+        meta = _ensure_cache(file)
+        _, sh = _sheet_meta(meta, sheet)
+        return _query_distinct(
+            _sheet_parquet(file, sh), int(col),
             json.loads(filters) if filters else None,
         )
     if action == "save":

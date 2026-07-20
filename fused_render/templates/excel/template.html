@@ -122,11 +122,45 @@
     cursor: col-resize; z-index: 7;
   }
   .colResize:hover, .colResize.on { background: var(--anchor); opacity: .55; }
-  tr.filterRow th { top: 23px; z-index: 3; cursor: default; padding: 0; height: 26px; }
-  tr.filterRow input {
-    width: 100%; font: 11px inherit; color: var(--text); background: var(--input);
-    border: none; border-top: 1px solid var(--grid); padding: 3px 6px; outline: none;
+  .funnel {
+    position: absolute; top: 50%; right: 8px; transform: translateY(-50%);
+    width: 16px; height: 16px; display: none; align-items: center; justify-content: center;
+    border-radius: 3px; cursor: pointer; color: var(--muted); font-size: 10px; z-index: 6;
   }
+  th:hover .funnel { display: flex; }
+  .funnel:hover { background: var(--hover); color: var(--text); }
+  .funnel.active { display: flex; color: var(--on-accent); background: var(--accent); }
+  #filterMenu {
+    position: fixed; z-index: 210; width: 250px; display: none;
+    background: var(--panel); border: 1px solid var(--border2); border-radius: 8px;
+    box-shadow: 0 8px 28px var(--shadow); font-size: 13px; color: var(--text);
+    padding: 6px; user-select: none;
+  }
+  #filterMenu .fm-sort { padding: 6px 10px; border-radius: 5px; cursor: pointer; display: flex; gap: 8px; }
+  #filterMenu .fm-sort:hover { background: var(--btn); }
+  #filterMenu .fm-sep { height: 1px; background: var(--border); margin: 5px 2px; }
+  #filterMenu .fm-search {
+    width: 100%; box-sizing: border-box; font: 12px inherit; color: var(--text);
+    background: var(--input); border: 1px solid var(--border2); border-radius: 5px;
+    padding: 5px 7px; outline: none; margin-bottom: 4px;
+  }
+  #filterMenu .fm-search:focus { border-color: var(--accent); }
+  #filterMenu .fm-toggle { padding: 4px 8px; display: flex; gap: 14px; font-size: 12px; }
+  #filterMenu .fm-toggle a { color: var(--accent); cursor: pointer; }
+  #filterMenu .fm-toggle a:hover { text-decoration: underline; }
+  #filterMenu .fm-list {
+    max-height: 210px; overflow: auto; border: 1px solid var(--border); border-radius: 5px;
+    margin: 4px 0; padding: 3px;
+  }
+  #filterMenu .fm-opt {
+    display: flex; align-items: center; gap: 7px; padding: 3px 6px; border-radius: 4px;
+    cursor: pointer; white-space: nowrap; overflow: hidden;
+  }
+  #filterMenu .fm-opt:hover { background: var(--btn); }
+  #filterMenu .fm-opt span { overflow: hidden; text-overflow: ellipsis; }
+  #filterMenu .fm-opt.blank span { color: var(--faint); font-style: italic; }
+  #filterMenu .fm-note { color: var(--faint); font-size: 11px; padding: 2px 6px; }
+  #filterMenu .fm-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 6px 2px 2px; }
   td.cell {
     height: 24px; padding: 2px 6px; background: var(--panel2);
     white-space: pre; overflow: hidden; text-overflow: ellipsis; cursor: cell; position: relative;
@@ -914,11 +948,42 @@ function redo() {
   restore(redoStack.pop());
 }
 
-// ================= small-sheet filtering =================
+// ================= filtering =================
+// Per column: filterQ[c] a condition string ('>5', 'foo'), filterEx[c] a list
+// of display values to hide (the value checklist — everything unchecked).
 function activeFilters(sh) {
   const out = [];
-  (sh.filterQ || []).forEach((q, c) => { if (q && q.trim()) out.push({ c, q: q.trim() }); });
+  const n = Math.max((sh.filterQ || []).length, (sh.filterEx || []).length);
+  for (let c = 0; c < n; c++) {
+    const q = ((sh.filterQ && sh.filterQ[c]) || "").trim();
+    const exclude = (sh.filterEx && sh.filterEx[c]) || [];
+    if (q || exclude.length) out.push({ c, q, exclude });
+  }
   return out;
+}
+function colHasFilter(sh, c) {
+  return !!(((sh.filterQ && sh.filterQ[c]) || "").trim() ||
+            (sh.filterEx && sh.filterEx[c] && sh.filterEx[c].length));
+}
+function cellDisplay(r, c) {   // display string used for filtering + the value list
+  const cv = values[r] && values[r][c];
+  if (!cv) return "";
+  return cv._d !== undefined ? cv._d : (cv._d = display(cv, null));
+}
+function rowPassesFilters(r, compiled) {
+  return compiled.every(({ c, test, exclude }) => {
+    const d = cellDisplay(r, c);
+    if (test && !test(d)) return false;
+    if (exclude && exclude.has(String(d))) return false;
+    return true;
+  });
+}
+function compileFilters(filters) {
+  return filters.map((f) => ({
+    c: f.c,
+    test: f.q ? criteriaFn(f.q) : null,
+    exclude: f.exclude && f.exclude.length ? new Set(f.exclude.map(String)) : null,
+  }));
 }
 function visibleRowIdx() {
   const sh = S();
@@ -926,17 +991,128 @@ function visibleRowIdx() {
   if (sh.big || !sh.filterOn) return all;
   const filters = activeFilters(sh);
   if (!filters.length) return all;
-  const compiled = filters.map((f) => ({ c: f.c, test: criteriaFn(f.q) }));
-  return all.filter((r) => {
-    if (r === 0) return true;   // header row stays visible
-    return compiled.every(({ c, test }) => {
-      const cv = values[r] && values[r][c];
-      if (!cv) return test("");
-      const d = cv._d !== undefined ? cv._d : (cv._d = display(cv, null));
-      return test(d);
-    });
-  });
+  const compiled = compileFilters(filters);
+  return all.filter((r) => r === 0 || rowPassesFilters(r, compiled));   // header stays
 }
+
+// ---- Google-Sheets-style per-column filter menu ----
+let fmState = null;   // { c, values, checked:Set }
+function fmEl() {
+  let m = $("filterMenu");
+  if (!m) { m = document.createElement("div"); m.id = "filterMenu"; document.body.appendChild(m); }
+  return m;
+}
+function closeFilterMenu() { const m = $("filterMenu"); if (m) m.style.display = "none"; fmState = null; }
+function positionFilterMenu(m, anchor) {
+  const r = anchor.getBoundingClientRect();
+  const mw = m.offsetWidth || 250, mh = m.offsetHeight || 320;
+  const left = Math.max(8, Math.min(r.right - mw, window.innerWidth - mw - 8));
+  let top = r.bottom + 4;
+  if (top + mh > window.innerHeight - 8) top = Math.max(8, window.innerHeight - mh - 8);
+  m.style.left = left + "px"; m.style.top = top + "px";
+}
+function distinctSmall(sh, col) {
+  ensureValues();
+  const others = compileFilters(activeFilters(sh).filter((f) => f.c !== col));
+  const set = new Set();
+  for (let r = 1; r < nRows(); r++) {
+    if (others.length && !rowPassesFilters(r, others)) continue;
+    set.add(String(cellDisplay(r, col)));
+  }
+  return { values: [...set].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)), truncated: false };
+}
+async function openFilterMenu(c, anchor) {
+  const sh = S();
+  const m = fmEl();
+  m.style.display = "block";
+  m.innerHTML = `<div class="fm-note">Loading values…</div>`;
+  positionFilterMenu(m, anchor);
+  let values, truncated = false;
+  try {
+    if (sh.big) {
+      const res = await pyRun({ action: "distinct", file: currentFile(), sheet: sh.name,
+        col: String(c), filters: JSON.stringify(activeFilters(sh).filter((f) => f.c !== c)) });
+      values = res.values; truncated = res.truncated;
+    } else {
+      ({ values, truncated } = distinctSmall(sh, c));
+    }
+  } catch (err) {
+    m.innerHTML = `<div class="fm-note">Could not load values: ${escHtml(err.message || String(err))}</div>`;
+    return;
+  }
+  if (m.style.display === "none") return;   // closed while awaiting
+  const excluded = new Set(((sh.filterEx && sh.filterEx[c]) || []).map(String));
+  fmState = { c, values, checked: new Set(values.filter((v) => !excluded.has(String(v)))) };
+  buildFilterMenu(m, anchor, truncated);
+}
+function buildFilterMenu(m, anchor, truncated) {
+  const sh = S(), c = fmState.c, values = fmState.values;
+  m.innerHTML = "";
+  const sortRow = (cls, txt, dir) => {
+    const d = document.createElement("div"); d.className = "fm-sort"; d.textContent = txt;
+    d.onclick = () => { closeFilterMenu(); sortSheet(dir, c); };
+    return d;
+  };
+  m.append(sortRow("", "↑  Sort A → Z", "asc"), sortRow("", "↓  Sort Z → A", "desc"));
+  const sep = document.createElement("div"); sep.className = "fm-sep"; m.appendChild(sep);
+
+  const search = document.createElement("input");
+  search.className = "fm-search"; search.type = "search"; search.placeholder = "Search values";
+  search.addEventListener("keydown", (e) => e.stopPropagation());
+  m.appendChild(search);
+
+  const toggle = document.createElement("div"); toggle.className = "fm-toggle";
+  const selAll = document.createElement("a"); selAll.textContent = "Select all";
+  const clrAll = document.createElement("a"); clrAll.textContent = "Clear";
+  toggle.append(selAll, clrAll); m.appendChild(toggle);
+
+  const list = document.createElement("div"); list.className = "fm-list"; m.appendChild(list);
+  const shownValues = () => {
+    const q = search.value.trim().toLowerCase();
+    return q ? values.filter((v) => String(v).toLowerCase().includes(q)) : values;
+  };
+  const renderList = () => {
+    list.innerHTML = "";
+    const shown = shownValues();
+    shown.forEach((v) => {
+      const opt = document.createElement("label");
+      opt.className = "fm-opt" + (v === "" ? " blank" : "");
+      const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = fmState.checked.has(v);
+      cb.onchange = () => { cb.checked ? fmState.checked.add(v) : fmState.checked.delete(v); };
+      const span = document.createElement("span"); span.textContent = v === "" ? "(blank)" : v;
+      opt.append(cb, span); list.appendChild(opt);
+    });
+    if (!shown.length) { const n = document.createElement("div"); n.className = "fm-note"; n.textContent = "No matching values"; list.appendChild(n); }
+  };
+  search.oninput = renderList;
+  selAll.onclick = () => { shownValues().forEach((v) => fmState.checked.add(v)); renderList(); };
+  clrAll.onclick = () => { shownValues().forEach((v) => fmState.checked.delete(v)); renderList(); };
+  renderList();
+
+  if (truncated) { const n = document.createElement("div"); n.className = "fm-note"; n.textContent = `Showing first ${fmtInt(values.length)} values only`; m.appendChild(n); }
+
+  const foot = document.createElement("div"); foot.className = "fm-foot";
+  const cancel = document.createElement("button"); cancel.className = "action"; cancel.textContent = "Cancel";
+  const ok = document.createElement("button"); ok.className = "action primary"; ok.textContent = "OK";
+  cancel.onclick = () => closeFilterMenu();
+  ok.onclick = () => applyFilterMenu();
+  foot.append(cancel, ok); m.appendChild(foot);
+  positionFilterMenu(m, anchor);
+  search.focus();
+}
+function applyFilterMenu() {
+  if (!fmState) return;
+  const sh = S(), { c, values, checked } = fmState;
+  sh.filterEx = sh.filterEx || [];
+  sh.filterEx[c] = values.filter((v) => !checked.has(v)).map(String);
+  closeFilterMenu();
+  renderLimit = RENDER_CAP;
+  if (sh.big) fetchRows(true); else renderGrid();
+}
+document.addEventListener("mousedown", (e) => {
+  if (!e.target.closest("#filterMenu") && !e.target.closest(".funnel")) closeFilterMenu();
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && fmState) { closeFilterMenu(); e.stopPropagation(); } }, true);
 
 // ================= rendering =================
 function cellClassAndStyle(td, r, c) {
@@ -973,8 +1149,8 @@ function cellClassAndStyle(td, r, c) {
   }
 }
 
-function frozenTop(dIdx) {   // sticky offset: letters row (23px) + filter row (27px) + rows above
-  return 23 + (S().filterOn ? 27 : 0) + dIdx * 25;
+function frozenTop(dIdx) {   // sticky offset: letters row (23px) + rows above
+  return 23 + dIdx * 25;
 }
 function makeRowTr(r, cols, dIdx) {
   const sh = S();
@@ -1078,29 +1254,19 @@ function renderGrid() {
       sh.colw[c] = w;
       if (!sh.big) markDirty();
     });
+    if (sh.filterOn) {
+      const fn = document.createElement("div");
+      fn.className = "funnel" + (colHasFilter(sh, c) ? " active" : "");
+      fn.textContent = "▾";
+      fn.title = "Filter / sort this column";
+      fn.addEventListener("mousedown", (e) => { e.preventDefault(); e.stopPropagation(); });
+      fn.addEventListener("click", (e) => { e.stopPropagation(); openFilterMenu(c, fn); });
+      th.appendChild(fn);
+    }
     th.appendChild(grip);
     hr.appendChild(th);
   }
   thead.appendChild(hr);
-  if (sh.filterOn) {
-    const fr = document.createElement("tr"); fr.className = "filterRow";
-    fr.appendChild(document.createElement("th"));
-    for (let c = 0; c < cols; c++) {
-      const th = document.createElement("th");
-      const inp = document.createElement("input");
-      inp.placeholder = "filter…"; inp.value = (sh.filterQ && sh.filterQ[c]) || "";
-      inp.addEventListener("input", () => {
-        sh.filterQ = sh.filterQ || [];
-        sh.filterQ[c] = inp.value;
-        clearTimeout(inp._t);
-        inp._t = setTimeout(() => { if (sh.big) fetchRows(true); else renderGrid(); }, sh.big ? 350 : 200);
-      });
-      inp.addEventListener("mousedown", (e) => e.stopPropagation());
-      inp.addEventListener("keydown", (e) => e.stopPropagation());
-      th.appendChild(inp); fr.appendChild(th);
-    }
-    thead.appendChild(fr);
-  }
   table.appendChild(thead);
 
   const tbody = document.createElement("tbody");
@@ -1513,10 +1679,10 @@ function insertCol(at) {
   S().styles.forEach((r) => r.splice(at, 0, null));
   invalidateValues(); markDirty(); renderGrid();
 }
-function sortSheet(dir) {
+function sortSheet(dir, colArg) {
   const sh = S();
   if (sh.big) {
-    sh.sort = dir === "off" ? null : { c: sel.ac, dir };
+    sh.sort = dir === "off" ? null : { c: colArg !== undefined ? colArg : sel.ac, dir };
     fetchRows(true);
     return;
   }
@@ -1526,7 +1692,7 @@ function sortSheet(dir) {
   if (roBlocked()) return;
   pushUndo();
   ensureValues();
-  const col = sel.ac;
+  const col = colArg !== undefined ? colArg : sel.ac;
   const header = { row: sh.rows[0], st: sh.styles[0] };
   const body = sh.rows.slice(1).map((row, i) => ({ row, st: sh.styles[i + 1], v: values[i + 1] && values[i + 1][col] }));
   body.sort((a, b) => {
@@ -1553,11 +1719,11 @@ function normalizeLoaded(res) {
     if (sh.big) {
       return { name: sh.name, big: true, kind: sh.kind, nrows: sh.nrows, ncols: sh.ncols,
                header: sh.header, loaded: sh.rows, matched: sh.matched ?? sh.nrows,
-               sort: null, filterOn: false, filterQ: [], edits: new Map(), fetching: false,
+               sort: null, filterOn: false, filterQ: [], filterEx: [], edits: new Map(), fetching: false,
                colw: {}, freeze: 0 };
     }
     const out = { name: sh.name, big: false, kind: sh.kind || "xlsx",
-                  rows: sh.rows, styles: sh.styles || [], filterOn: false, filterQ: [],
+                  rows: sh.rows, styles: sh.styles || [], filterOn: false, filterQ: [], filterEx: [],
                   colw: sh.colw || {}, freeze: sh.freeze || 0 };
     ensureRect(out);
     return out;
@@ -1751,7 +1917,7 @@ function runJs(code, out) {
     names() { return book.sheets.map((s2) => s2.name); },
     add(nm) {
       if (book.sheets.some((s2) => s2.name === nm)) throw new Error("sheet exists: " + nm);
-      const sh = { name: nm, big: false, kind: "xlsx", rows: [[""]], styles: [[null]], filterOn: false, filterQ: [] };
+      const sh = { name: nm, big: false, kind: "xlsx", rows: [[""]], styles: [[null]], filterOn: false, filterQ: [], filterEx: [] };
       ensureRect(sh); book.sheets.push(sh); return sheetApi(sh);
     },
   };
@@ -1784,7 +1950,7 @@ async function runPy(code, out) {
       const old = byName.get(ns.name);
       const sh = { name: ns.name, big: false, kind: old ? old.kind : "xlsx",
                    rows: ns.rows.map((r) => r.map((v) => (v == null ? "" : String(v)))),
-                   styles: old && !old.big ? old.styles : [], filterOn: false, filterQ: [] };
+                   styles: old && !old.big ? old.styles : [], filterOn: false, filterQ: [], filterEx: [] };
       ensureRect(sh); return sh;
     });
     book.sheets = [...bigs, ...updated];
@@ -2043,7 +2209,18 @@ async function act(name) {
       if (!isBig()) markDirty(); renderGrid();
     },
     unfreeze: () => { S().freeze = 0; if (!isBig()) markDirty(); renderGrid(); },
-    toggleFilter: () => { const sh = S(); sh.filterOn = !sh.filterOn; renderLimit = RENDER_CAP; renderGrid(); if (sh.big && !sh.filterOn && activeFilters(sh).length) { sh.filterQ = []; fetchRows(true); } },
+    toggleFilter: () => {
+      const sh = S();
+      sh.filterOn = !sh.filterOn;
+      closeFilterMenu();
+      renderLimit = RENDER_CAP;
+      if (!sh.filterOn) {   // turning filters off clears every column filter
+        const had = activeFilters(sh).length;
+        sh.filterQ = []; sh.filterEx = [];
+        if (sh.big && had) { fetchRows(true); return; }
+      }
+      renderGrid();
+    },
     loadAll: () => { if (isBig()) fetchRows(false); },
     addSheet: () => {
       if (book.sheets.some((s2) => s2.kind === "csv" || s2.kind === "parquet")) {
@@ -2051,7 +2228,7 @@ async function act(name) {
       }
       let n = book.sheets.length + 1, nm;
       do { nm = "Sheet" + n++; } while (book.sheets.some((s2) => s2.name === nm));
-      const sh = { name: nm, big: false, kind: "xlsx", rows: [[""]], styles: [[null]], filterOn: false, filterQ: [] };
+      const sh = { name: nm, big: false, kind: "xlsx", rows: [[""]], styles: [[null]], filterOn: false, filterQ: [], filterEx: [] };
       ensureRect(sh); book.sheets.push(sh); markDirty(); switchSheet(book.sheets.length - 1);
     },
     delSheet: async () => {
