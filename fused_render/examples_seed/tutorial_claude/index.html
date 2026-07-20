@@ -133,10 +133,6 @@ cd ~/.fused-render/templates/my_template
 claude</pre>
     <div class="status" style="margin-top:10px">New templates scaffold with authoring skills in <code>.claude/skills/</code>, so the Claude session that opens already knows how Fused templates work. More on this in the <a id="tmplTutLink">custom templates tutorial</a>.</div>
   </div>
-  <figure class="shot" id="shotTerminal">
-    <img id="shotTerminalImg" alt="Terminal after clicking Open in Claude">
-    <figcaption>Terminal, one click later — Claude Code sitting in the template's folder.</figcaption>
-  </figure>
 
   <!-- ---------- 5 · TIPS ---------- -->
   <h2><span class="n">5</span>Tips</h2>
@@ -203,7 +199,6 @@ function mountShot(figId, imgId, name){
   img.src = fused.rawUrl("assets/" + name);
 }
 mountShot("shotSession", "shotSessionImg", "claude_session.png");
-mountShot("shotTerminal", "shotTerminalImg", "open_in_claude_terminal.png");
 </script>
 </body>
 </html>
