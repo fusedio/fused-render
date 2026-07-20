@@ -21,9 +21,12 @@ function fmtTime(iso: string): string {
 }
 
 // The command the hosted overlay also names — copyable so an owner can pull the
-// full record in a terminal too.
+// full record in a terminal too. The `--` before the positionals mirrors the
+// API path (`_errors_args` in deploy.py): it stops a token/err_id beginning
+// with '-' from being parsed as a Click option, so the pasted command behaves
+// identically to the UI.
 function cliCommand(token: string, errId: string): string {
-  return `fused share errors ${token} ${errId}`;
+  return `fused share errors -- ${token} ${errId}`;
 }
 
 function Field({ label, value }: { label: string; value: string }) {
