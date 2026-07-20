@@ -962,11 +962,10 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             </Select>
           )}
         </div>
-        {cacheMaxAge !== "0s" && env?.backend === "fused" && (
+        {env?.backend === "fused" && isRedeploy && (
           <div className="deploy-note">
-            Caching isn't supported yet on managed Fused environments — this page will
-            deploy, but results won't be cached until that lands. Use an AWS environment
-            to cache results today.
+            Managed Fused environments fix caching at first deploy — redeploying can't
+            change it here. Revoke and deploy fresh if you need a different setting.
           </div>
         )}
 

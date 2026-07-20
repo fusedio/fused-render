@@ -95,11 +95,23 @@ It applies uniformly to every `runPython` route in the bundle — never the page
 or the `_asset` route, which the hosting layer always keeps uncached. The Deploy
 modal (SPEC §19, DP-17) exposes it as a checkbox + duration picker and re-exports on
 every deploy so the manifest always carries the current choice; a direct
-`POST /api/export` caller sets it the same way. See the fused repo's
-spec/serve/fused-render.md § Caching and spec/caching/serve.md for how the hosting
-layer honors it (result caching, cache-key scoping, the `X-Openfused-Cache`
-hit/miss header) and `fused share cache-clear <token>` / the Deploy modal's "Bust
-cache" action (DP-18) for forcing a recompute without changing this setting.
+`POST /api/export` caller sets it the same way.
+
+The manifest field is only **one** of the two ways this choice reaches a hosting
+layer — see the fused repo's spec/serve/fused-render.md § Caching for the full
+picture. An **AWS** environment's `build_html_artifact` reads this manifest field
+directly, so it works on both a fresh `share create` and a later `share repoint`
+(redeploy). A managed **Fused** environment does not read the manifest field for
+caching at all — it is a mount-level control-plane setting, sent as an explicit
+`share create --cache-max-age` (the Deploy modal's `deploy_page` sends both, so
+either backend gets it correctly) — and it is fixed at that first create; a
+`repoint` cannot change it, so redeploying an already-cached page to a managed
+environment cannot toggle or retune caching there.
+
+See spec/caching/serve.md for how the AWS dispatcher honors it (result caching,
+cache-key scoping, the `X-Openfused-Cache` hit/miss header) and
+`fused share cache-clear <token>` / the Deploy modal's "Bust cache" action (DP-18)
+for forcing a recompute on either backend without changing this setting.
 
 ## The portable subset of `window.fused`
 

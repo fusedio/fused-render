@@ -492,12 +492,19 @@ def deploy_page(
     `cache_max_age` (`"0s"` off by default, e.g. `"5m"`/`"1h"`) is the Deploy
     dialog's caching choice: how long a `runPython` route's result may be served
     from cache instead of re-executed. It rides the export bundle's own manifest
-    (`export.export_page`), so the hosting layer (`fused` repo's
-    `build_html_artifact`) applies it with no extra deploy-time plumbing — see
-    spec/serve/fused-render.md § Caching in the fused repo. Every deploy re-sends
-    it explicitly, like `include`/`exclude`; there is no "leave it as it was"
-    (see `bust_cache_deployment` to force-refresh already-cached results without
-    changing this setting).
+    (`export.export_page`) AND is passed explicitly as `share create
+    --cache-max-age` — the two backends read it from different places (`fused`
+    repo's spec/serve/fused-render.md § Caching): an AWS environment's
+    `build_html_artifact` reads the manifest field (so either source works,
+    including on a later `repoint`); a managed Fused environment reads only the
+    explicit `--cache-max-age` on `create`, as its own mount-level
+    `cache_settings` field, wholly independent of the bundle. Every deploy
+    re-sends it explicitly, like `include`/`exclude`; there is no "leave it as
+    it was" (see `bust_cache_deployment` to force-refresh already-cached results
+    without changing this setting). On a managed environment this setting is
+    fixed at first deploy — a `repoint` (every redeploy after that) cannot
+    change it, so toggling caching on an already-deployed page there has no
+    effect until it is revoked and redeployed fresh.
 
     First deploy (or a pointer on a different env): `share create --public` —
     a fresh opaque capability URL. Redeploy on the same env keeps the URL:
@@ -548,7 +555,9 @@ def deploy_page(
         token = same_env.get("token") if same_env else None
 
         if not token:
-            raw = _run_share(env_name, ["create", bundle, "--public"])
+            raw = _run_share(
+                env_name, ["create", bundle, "--public", "--cache-max-age", cache_max_age]
+            )
         else:
             live = _classify_mount(_list_mounts(env_name), token)
             if live == "active":
@@ -586,7 +595,9 @@ def deploy_page(
                     )
                     raise
             else:  # absent — e.g. after an infra teardown; nothing to revive
-                raw = _run_share(env_name, ["create", bundle, "--public"])
+                raw = _run_share(
+                    env_name, ["create", bundle, "--public", "--cache-max-age", cache_max_age]
+                )
 
         record = _record_from(
             raw, page=page, env_name=env_name, backend=backend,

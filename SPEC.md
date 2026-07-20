@@ -887,13 +887,18 @@ the product gains network access.
   the current value verbatim when it isn't one of them — e.g. set by a direct
   `share create --cache-max-age` outside this dialog), seeded on open from the
   stored deployment record like `include`/`exclude` (DP-2c) and re-sent as
-  `cache_max_age` on every Deploy — there is no "leave it as it was". It travels
-  in the export bundle's manifest (EX-9), not a CLI flag, so it reaches either
-  backend the same way `include`/`exclude`-selected files do. On a managed
-  `fused` env the deploy still succeeds, but the control plane does not yet read
-  the field back out into caching behavior (fused repo's
-  spec/serve/fused-render.md § Limitations) — the modal says so inline rather
-  than implying the setting took effect.
+  `cache_max_age` on every Deploy — there is no "leave it as it was". It reaches
+  the two backends **differently**, because they model caching differently
+  (fused repo's spec/serve/fused-render.md § Caching / spec/serve/share-links.md
+  §8): it travels in the export bundle's manifest (EX-9) for an AWS environment
+  (read by `build_html_artifact`, so a later `repoint`/redeploy can change it
+  too — `deploy_page` sends it both ways there, harmlessly redundant); for a
+  managed `fused` environment the manifest field is not read at all — only the
+  explicit `--cache-max-age` on the `share create` call is, as the mount's own
+  `cache_settings` (a control-plane concept independent of the bundle). That
+  field is **fixed at create time**: a `repoint` (every redeploy after the
+  first) cannot change it, so the modal notes this inline on a redeploy to a
+  `fused` env rather than implying the checkbox took effect.
 - **DP-18** **Bust cache** (`POST /api/deploy/bust-cache {"page"}` →
   `bust_cache_deployment` → `fused share cache-clear <token>`) forces every
   cached result for the deployment's mount to be recomputed on the next

@@ -431,6 +431,11 @@ def test_deploy_persists_cache_max_age(tmp_path, monkeypatch):
     assert resp.status_code == 200, resp.text
     assert resp.json()["cache_max_age"] == "5m"
     assert h.pointer()["cache_max_age"] == "5m"
+    # Explicit --cache-max-age on the CLI create call too — not just the export
+    # manifest — since a managed Fused environment reads only the flag (021
+    # spec's mount-level cache_settings, independent of the bundle).
+    (call,) = h.calls()
+    assert call["argv"][-2:] == ["--cache-max-age", "5m"]
 
 
 def test_deploy_defaults_cache_max_age_off(tmp_path, monkeypatch):
@@ -576,10 +581,17 @@ def test_redeploy_absent_mount_falls_back_to_fresh_create(tmp_path, monkeypatch)
             "create": {"token": "new456", "url": "https://serve.example/new456", "status": "active"},
         }
     )
-    resp = h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "cache_max_age": "1h"},
+        headers=FUSED,
+    )
     assert resp.status_code == 200, resp.text
     assert resp.json()["token"] == "new456"
     assert h.pointer()["url"] == "https://serve.example/new456"
+    # The fresh-create fallback also carries the explicit CLI flag (not just the
+    # export manifest), same as the first-deploy path.
+    assert h.calls()[-1]["argv"][-2:] == ["--cache-max-age", "1h"]
 
 
 def test_fresh_create_with_new_token_never_keeps_the_old_url(tmp_path, monkeypatch):
