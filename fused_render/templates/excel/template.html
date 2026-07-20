@@ -123,13 +123,18 @@
   }
   .colResize:hover, .colResize.on { background: var(--anchor); opacity: .55; }
   .funnel {
-    position: absolute; top: 50%; right: 8px; transform: translateY(-50%);
-    width: 16px; height: 16px; display: none; align-items: center; justify-content: center;
-    border-radius: 3px; cursor: pointer; color: var(--muted); font-size: 10px; z-index: 6;
+    position: absolute; top: 50%; right: 5px; transform: translateY(-50%);
+    width: 18px; height: 16px; display: flex; align-items: center; justify-content: center;
+    border-radius: 3px; cursor: pointer; color: var(--muted); z-index: 6;
+    background: var(--panel2); border: 1px solid var(--border);
   }
-  th:hover .funnel { display: flex; }
+  .funnel svg { width: 11px; height: 11px; display: block; }
   .funnel:hover { background: var(--hover); color: var(--text); }
-  .funnel.active { display: flex; color: var(--on-accent); background: var(--accent); }
+  .funnel.active { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
+  #filterMenu .fm-head { font-size: 11px; color: var(--muted); padding: 3px 6px 2px; }
+  #filterMenu .fm-cond { width: 100%; box-sizing: border-box; font: 12px inherit; color: var(--text);
+    background: var(--input); border: 1px solid var(--border2); border-radius: 5px; padding: 5px 7px; outline: none; }
+  #filterMenu .fm-cond:focus { border-color: var(--accent); }
   #filterMenu {
     position: fixed; z-index: 210; width: 250px; display: none;
     background: var(--panel); border: 1px solid var(--border2); border-radius: 8px;
@@ -1021,6 +1026,24 @@ function distinctSmall(sh, col) {
   }
   return { values: [...set].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)), truncated: false };
 }
+// Condition types map to the criteria string the reader already understands.
+const FM_CONDS = [
+  ["", "None"], ["contains", "Text contains"], ["=", "Is equal to"],
+  ["<>", "Is not equal to"], [">", "Greater than"], [">=", "Greater than or equal"],
+  ["<", "Less than"], ["<=", "Less than or equal"],
+];
+function qToCond(q) {   // parse an existing criteria string into [type, value]
+  q = (q || "").trim();
+  if (!q) return ["", ""];
+  const m = /^(<>|<=|>=|=|<|>)(.*)$/.exec(q);
+  if (m) return [m[1], m[2].trim()];
+  return ["contains", q];
+}
+function condToQ(type, val) {
+  val = (val || "").trim();
+  if (!type || (type !== "contains" && val === "")) return "";
+  return type === "contains" ? val : type + val;
+}
 async function openFilterMenu(c, anchor) {
   const sh = S();
   const m = fmEl();
@@ -1054,8 +1077,27 @@ function buildFilterMenu(m, anchor, truncated) {
     return d;
   };
   m.append(sortRow("", "↑  Sort A → Z", "asc"), sortRow("", "↓  Sort Z → A", "desc"));
-  const sep = document.createElement("div"); sep.className = "fm-sep"; m.appendChild(sep);
+  m.appendChild(Object.assign(document.createElement("div"), { className: "fm-sep" }));
 
+  // Filter by condition (maps to the reader's criteria string)
+  m.appendChild(Object.assign(document.createElement("div"), { className: "fm-head", textContent: "Filter by condition" }));
+  const [curType, curVal] = qToCond((sh.filterQ && sh.filterQ[c]) || "");
+  const condSel = document.createElement("select"); condSel.className = "fm-cond";
+  FM_CONDS.forEach(([v, label]) => {
+    const o = document.createElement("option"); o.value = v; o.textContent = label;
+    if (v === curType) o.selected = true; condSel.appendChild(o);
+  });
+  const condVal = document.createElement("input");
+  condVal.className = "fm-search"; condVal.placeholder = "Value"; condVal.value = curVal;
+  condVal.style.marginTop = "4px";
+  condVal.addEventListener("keydown", (e) => e.stopPropagation());
+  const syncCondVal = () => { condVal.style.display = condSel.value ? "block" : "none"; };
+  condSel.onchange = syncCondVal; syncCondVal();
+  fmState.condSel = condSel; fmState.condVal = condVal;
+  m.append(condSel, condVal);
+  m.appendChild(Object.assign(document.createElement("div"), { className: "fm-sep" }));
+
+  m.appendChild(Object.assign(document.createElement("div"), { className: "fm-head", textContent: "Filter by values" }));
   const search = document.createElement("input");
   search.className = "fm-search"; search.type = "search"; search.placeholder = "Search values";
   search.addEventListener("keydown", (e) => e.stopPropagation());
@@ -1102,8 +1144,10 @@ function buildFilterMenu(m, anchor, truncated) {
 }
 function applyFilterMenu() {
   if (!fmState) return;
-  const sh = S(), { c, values, checked } = fmState;
+  const sh = S(), { c, values, checked, condSel, condVal } = fmState;
+  sh.filterQ = sh.filterQ || [];
   sh.filterEx = sh.filterEx || [];
+  sh.filterQ[c] = condSel ? condToQ(condSel.value, condVal.value) : "";
   sh.filterEx[c] = values.filter((v) => !checked.has(v)).map(String);
   closeFilterMenu();
   renderLimit = RENDER_CAP;
@@ -1257,7 +1301,7 @@ function renderGrid() {
     if (sh.filterOn) {
       const fn = document.createElement("div");
       fn.className = "funnel" + (colHasFilter(sh, c) ? " active" : "");
-      fn.textContent = "▾";
+      fn.innerHTML = `<svg viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 2.5h13a.5.5 0 0 1 .38.82L10 9.2V13a.5.5 0 0 1-.72.45l-2.5-1.25A.5.5 0 0 1 6.5 11.75V9.2L1.12 3.32A.5.5 0 0 1 1.5 2.5Z"/></svg>`;
       fn.title = "Filter / sort this column";
       fn.addEventListener("mousedown", (e) => { e.preventDefault(); e.stopPropagation(); });
       fn.addEventListener("click", (e) => { e.stopPropagation(); openFilterMenu(c, fn); });
@@ -2354,7 +2398,19 @@ $("gridWrap").addEventListener("dblclick", (e) => {
 });
 
 // Ctrl+Arrow: jump to the edge of the data region (gsheet-style)
-function jumpEdge(dr, dc, extend) {
+async function jumpEdge(dr, dc, extend) {
+  const sh = S();
+  // Big sheets stream in batches; a vertical Ctrl+Arrow must pull the rest of
+  // the rows first, or it would stop at the end of the loaded window.
+  if (sh.big && dr !== 0 && sh.loaded.length < sh.matched) {
+    setStatus(`Loading all ${fmtInt(sh.matched)} rows…`, "");
+    while (sh.loaded.length < sh.matched) {
+      const n = sh.loaded.length;
+      await fetchRows(false);
+      if (sh.loaded.length === n) break;   // no progress — bail rather than spin
+    }
+    setStatus("", "");
+  }
   let r = extend ? sel.r2 : sel.ar, c = extend ? sel.c2 : sel.ac;
   const R = nRows() - 1, C = nCols() - 1;
   const inB = (rr, cc) => rr >= 0 && rr <= R && cc >= 0 && cc <= C;
