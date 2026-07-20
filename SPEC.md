@@ -912,8 +912,8 @@ the product gains network access.
   and mints a fresh `share create` with the requested setting, at a new URL.
   The previous URL is left running; the caller revokes it separately (Revoke)
   if it should stop serving.
-- **DP-18** **Bust cache** (`POST /api/deploy/bust-cache {"page"}` →
-  `bust_cache_deployment` → `fused share cache-clear <token>`) forces every
+- **DP-18** **Clear cache** (`POST /api/deploy/clear-cache {"page"}` →
+  `clear_cache_deployment` → `fused share cache-clear <token>`) forces every
   cached result for the deployment's mount to be recomputed on the next
   request, without touching its status, URL, or caching setting — for "the
   underlying data changed, not the code" (a redeploy dedupes to the same
@@ -980,7 +980,7 @@ the product gains network access.
 - **DP-14** Endpoints (`fused_render/deploy.py`, an APIRouter like
   shell/bookmarks): `GET /api/deploy/config`, `GET /api/deploy/status`,
   `GET /api/deploy/preview`, `GET /api/deploy/shares`, `POST /api/deploy`,
-  `POST /api/deploy/revoke`, `POST /api/deploy/bust-cache` (DP-18),
+  `POST /api/deploy/revoke`, `POST /api/deploy/clear-cache` (DP-18),
   `POST /api/deploy/install`; the POSTs carry the
   `X-Fused` guard (D36). CLI failures surface their last stderr line verbatim
   (click's `Error: ` prefix stripped) — the fused CLI's messages already name

@@ -663,8 +663,8 @@ def revoke_deployment(page: str) -> dict:
     return record
 
 
-def bust_cache_deployment(page: str) -> dict:
-    """Bust every cached result for the page's deployed mount (`fused share
+def clear_cache_deployment(page: str) -> dict:
+    """Clear every cached result for the page's deployed mount (`fused share
     cache-clear <token>`) — forces the next request to recompute instead of
     waiting out `cache_max_age`.
 
@@ -675,7 +675,7 @@ def bust_cache_deployment(page: str) -> dict:
     """
     pointer = get_deployment(page)
     if pointer is None or not pointer.get("token") or not pointer.get("env"):
-        raise DeployError("this page has no recorded deployment to bust the cache of")
+        raise DeployError("this page has no recorded deployment to clear the cache of")
     return _run_share(pointer["env"], ["cache-clear", pointer["token"]])
 
 
@@ -917,8 +917,8 @@ def api_deploy_revoke(body: dict = Body(...), x_fused: str | None = Header(defau
         return _error(str(e))
 
 
-@router.post("/api/deploy/bust-cache")
-def api_deploy_bust_cache(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+@router.post("/api/deploy/clear-cache")
+def api_deploy_clear_cache(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -926,7 +926,7 @@ def api_deploy_bust_cache(body: dict = Body(...), x_fused: str | None = Header(d
     if not isinstance(page, str) or not page or not os.path.isabs(page):
         return _error("'page' must be an absolute path to the .html page")
     try:
-        return bust_cache_deployment(page)
+        return clear_cache_deployment(page)
     except DeployError as e:
         return _error(str(e))
 

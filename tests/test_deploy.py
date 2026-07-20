@@ -934,7 +934,7 @@ def test_revoke_without_deployment_is_400(tmp_path, monkeypatch):
     assert resp.status_code == 400
 
 
-def test_bust_cache_calls_cache_clear_and_returns_result(tmp_path, monkeypatch):
+def test_clear_cache_calls_cache_clear_and_returns_result(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
     h.set_scenario(
         {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
@@ -942,23 +942,23 @@ def test_bust_cache_calls_cache_clear_and_returns_result(tmp_path, monkeypatch):
     h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
 
     h.set_scenario({"cache-clear": {"token": "abc123", "deleted": 3, "scope": "route:abc123"}})
-    resp = h.client.post("/api/deploy/bust-cache", json={"page": str(h.page)}, headers=FUSED)
+    resp = h.client.post("/api/deploy/clear-cache", json={"page": str(h.page)}, headers=FUSED)
     assert resp.status_code == 200, resp.text
     assert resp.json() == {"token": "abc123", "deleted": 3, "scope": "route:abc123"}
     assert h.calls()[-1]["argv"][1:3] == ["cache-clear", "abc123"]
-    # Busting the cache doesn't touch the deployment pointer (still active).
+    # Clearing the cache doesn't touch the deployment pointer (still active).
     assert h.pointer()["status"] == "active"
 
 
-def test_bust_cache_without_deployment_is_400(tmp_path, monkeypatch):
+def test_clear_cache_without_deployment_is_400(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
-    resp = h.client.post("/api/deploy/bust-cache", json={"page": str(h.page)}, headers=FUSED)
+    resp = h.client.post("/api/deploy/clear-cache", json={"page": str(h.page)}, headers=FUSED)
     assert resp.status_code == 400
 
 
-def test_bust_cache_requires_fused_header(tmp_path, monkeypatch):
+def test_clear_cache_requires_fused_header(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
-    resp = h.client.post("/api/deploy/bust-cache", json={"page": str(h.page)})
+    resp = h.client.post("/api/deploy/clear-cache", json={"page": str(h.page)})
     assert resp.status_code == 403
 
 

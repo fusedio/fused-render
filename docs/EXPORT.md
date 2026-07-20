@@ -117,7 +117,7 @@ setting at a new URL.
 
 See spec/caching/serve.md for how the AWS dispatcher honors it (result caching,
 cache-key scoping, the `X-Openfused-Cache` hit/miss header) and
-`fused share cache-clear <token>` / the Deploy modal's "Bust cache" action (DP-18)
+`fused share cache-clear <token>` / the Deploy modal's "Clear cache" action (DP-18)
 for forcing a recompute on either backend without changing this setting.
 
 ## The portable subset of `window.fused`

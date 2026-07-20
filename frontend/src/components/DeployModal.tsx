@@ -16,7 +16,7 @@
 // modal is scoped to the current page.
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  bustCacheDeployment,
+  clearCacheDeployment,
   deployPage,
   getDeployConfig,
   getDeployPreview,
@@ -26,7 +26,7 @@ import {
   walkDir,
 } from "../lib/api";
 import type {
-  CacheBustResult,
+  CacheClearResult,
   DeployConfig,
   DeployPreview,
   Deployment,
@@ -469,7 +469,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   const [live, setLive] = useState<"active" | "revoked" | "absent" | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedEnv, setSelectedEnv] = useState<string | null>(null);
-  const [busy, setBusy] = useState<"deploy" | "revoke" | "install" | "bust-cache" | null>(null);
+  const [busy, setBusy] = useState<"deploy" | "revoke" | "install" | "clear-cache" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   // The user's file selection, layered on the auto-detected set: `include` adds
   // extra files (as assets), `exclude` drops files. Seeded on open from the
@@ -481,9 +481,9 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   // fused's cache_max_age. Seeded on open from the stored record (like include/
   // exclude) and sent back on every Deploy; there is no "leave it as it was".
   const [cacheMaxAge, setCacheMaxAge] = useState<string>("0s");
-  // The result of the last "Bust cache" click (deleted/scope), shown as a status
+  // The result of the last "Clear cache" click (deleted/scope), shown as a status
   // line until the next load/action clears it.
-  const [bustCacheResult, setBustCacheResult] = useState<CacheBustResult | null>(null);
+  const [clearCacheResult, setClearCacheResult] = useState<CacheClearResult | null>(null);
   // True while a preview fetch is in flight — the shown "Will publish" list may
   // not yet reflect the latest include/exclude edit, so Deploy is held until it
   // catches up (keeps the click WYSIWYG: never deploy a set the list doesn't show).
@@ -573,7 +573,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       // no stale rows, and no × / restore edit that could target the wrong page.
       setPreview(null);
       // A stale "N cleared" note from the previous page must not linger.
-      setBustCacheResult(null);
+      setClearCacheResult(null);
     }
     try {
       const [cfg, status] = await Promise.all([
@@ -679,7 +679,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     if (!env) return;
     setBusy("deploy");
     setActionError(null);
-    setBustCacheResult(null); // a stale "N cleared" note must not survive a redeploy
+    setClearCacheResult(null); // a stale "N cleared" note must not survive a redeploy
     try {
       const record = await deployPage(fsPath, env.name, include, exclude, cacheMaxAge, forceNew);
       applyDeployment(record);
@@ -726,17 +726,17 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   };
 
   // Forces cached results to be recomputed on next request, without touching the
-  // mount's status/URL/caching setting (deploy.py's bust_cache_deployment) — for
+  // mount's status/URL/caching setting (deploy.py's clear_cache_deployment) — for
   // "I changed the underlying data, not the code" (a redeploy dedupes to the same
   // content-address and would otherwise keep serving the old cached result until
   // cache_max_age expires).
-  const onBustCache = async () => {
-    setBusy("bust-cache");
+  const onClearCache = async () => {
+    setBusy("clear-cache");
     setActionError(null);
-    setBustCacheResult(null);
+    setClearCacheResult(null);
     try {
-      const result = await bustCacheDeployment(fsPath);
-      if (alive.current) setBustCacheResult(result);
+      const result = await clearCacheDeployment(fsPath);
+      if (alive.current) setClearCacheResult(result);
     } catch (e) {
       if (alive.current) setActionError((e as Error).message);
     } finally {
@@ -965,11 +965,11 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             <button
               type="button"
               className="btn btn-secondary"
-              onClick={onBustCache}
+              onClick={onClearCache}
               disabled={busy !== null}
               title="Force cached results to be recomputed on the next request, without redeploying or changing the URL"
             >
-              {busy === "bust-cache" ? "Busting cache…" : "Bust cache"}
+              {busy === "clear-cache" ? "Clearing cache…" : "Clear cache"}
             </button>
           )}
         </div>
@@ -1056,10 +1056,10 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
         {/* One status line for the same-env case — the URL nuance that used to
             live in the button label / a stack of notes. */}
         {deployStatus && <div className="deploy-muted">{deployStatus}</div>}
-        {bustCacheResult && (
+        {clearCacheResult && (
           <div className="deploy-muted">
-            {bustCacheResult.deleted > 0
-              ? `Cleared ${bustCacheResult.deleted} cached result${bustCacheResult.deleted === 1 ? "" : "s"} — the next request recomputes.`
+            {clearCacheResult.deleted > 0
+              ? `Cleared ${clearCacheResult.deleted} cached result${clearCacheResult.deleted === 1 ? "" : "s"} — the next request recomputes.`
               : "Nothing was cached — nothing to clear."}
           </div>
         )}
