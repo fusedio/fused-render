@@ -15,6 +15,7 @@ import {
   moveItem,
   createFolderWith,
   toggleFolder,
+  isDescendant,
   armBookmark,
   disarmBookmark,
   getArmedBookmark,
@@ -24,7 +25,7 @@ import { bookmarkSaveTarget } from "../lib/bookmark-file";
 import { exportBookmarkFile } from "../lib/api";
 import IconPicker from "./IconPicker";
 import { FolderIcon } from "./FileIcons";
-import type { Bookmark, BookmarkFolder } from "../lib/bookmarks";
+import type { Bookmark, BookmarkFolder, BookmarkItem } from "../lib/bookmarks";
 import { loadRecents, displayRecents, setRecentsCollapsed } from "../lib/recents";
 import { basename } from "../lib/format";
 import {
@@ -232,6 +233,8 @@ function BookmarkRow({ b, child, parentId, isRenaming, justSaved, namePositions,
 
 interface FolderRowProps {
   folder: BookmarkFolder;
+  child?: boolean;
+  parentId?: string;
   activeHint: boolean;
   isRenaming: boolean;
   onGlyphClick: (e: React.MouseEvent<HTMLSpanElement>) => void;
@@ -246,11 +249,12 @@ interface FolderRowProps {
 
 // activeHint: folder is collapsed but holds the current view's bookmark —
 // highlight the row so the selection isn't invisible while folded away.
-function FolderRow({ folder, activeHint, isRenaming, onGlyphClick, onRowClick, onRename, onDelete, onCommitRename, onCancelRename, registerRef, dragProps }: FolderRowProps) {
+function FolderRow({ folder, child, parentId, activeHint, isRenaming, onGlyphClick, onRowClick, onRename, onDelete, onCommitRename, onCancelRename, registerRef, dragProps }: FolderRowProps) {
   return (
     <div
-      className={"bookmark-row folder-row" + (folder.collapsed ? " collapsed" : "") + (activeHint ? " active" : "")}
+      className={"bookmark-row folder-row" + (child ? " child-row" : "") + (folder.collapsed ? " collapsed" : "") + (activeHint ? " active" : "")}
       data-id={folder.id}
+      data-parent={child ? parentId : undefined}
       draggable="true"
       ref={registerRef}
       onClick={onRowClick}
@@ -337,7 +341,18 @@ export default function Sidebar({ config }: SidebarProps) {
   };
 
   const items = loadBookmarks(); // top-level items: bookmarks and folders
-  const folderById = new Map<string, BookmarkFolder>(items.filter(isFolder).map((f) => [f.id, f]));
+  // Folders at every depth, keyed by id — drop handlers resolve their
+  // immediate-parent children arrays through this map.
+  const folderById = new Map<string, BookmarkFolder>();
+  const indexFolders = (list: BookmarkItem[]): void => {
+    for (const it of list) {
+      if (isFolder(it)) {
+        folderById.set(it.id, it);
+        indexFolders(it.children);
+      }
+    }
+  };
+  indexFolders(items);
   const topOrder = items.map((it) => it.id); // top-level display order
 
   // Bookmark search: a non-empty query flattens the tree to matching rows.
@@ -369,24 +384,24 @@ export default function Sidebar({ config }: SidebarProps) {
       }
       return { longestRun, score };
     };
-    for (const it of items) {
-      if (isFolder(it)) {
-        const folderM = fuzzyMatch(bq, it.name);
-        for (const c of it.children) {
-          const nameM = fuzzyMatch(bq, c.name);
-          if (folderM || nameM || pathHit(c.url)) {
+    // Walk all depths; `folderM` carries the strongest match among the
+    // bookmark's ancestor folder names (any matching ancestor pulls in its
+    // whole subtree, same as the old one-level folder-match rule).
+    const walk = (list: BookmarkItem[], folderM: FuzzyResult | null): void => {
+      for (const it of list) {
+        if (isFolder(it)) {
+          const ownM = fuzzyMatch(bq, it.name);
+          walk(it.children, ownM && (!folderM || ownM.score > folderM.score) ? ownM : folderM);
+        } else {
+          const nameM = fuzzyMatch(bq, it.name);
+          if (folderM || nameM || pathHit(it.url)) {
             const { longestRun, score } = rank(folderM, nameM);
-            ranked.push({ b: c, namePositions: nameM ? nameM.positions : [], nameHit: !!(folderM || nameM), longestRun, score });
+            ranked.push({ b: it, namePositions: nameM ? nameM.positions : [], nameHit: !!(folderM || nameM), longestRun, score });
           }
         }
-      } else {
-        const nameM = fuzzyMatch(bq, it.name);
-        if (nameM || pathHit(it.url)) {
-          const { longestRun, score } = rank(null, nameM);
-          ranked.push({ b: it, namePositions: nameM ? nameM.positions : [], nameHit: !!nameM, longestRun, score });
-        }
       }
-    }
+    };
+    walk(items, null);
     ranked.sort((a, b) => {
       if (a.nameHit !== b.nameHit) return a.nameHit ? -1 : 1;
       if (b.longestRun !== a.longestRun) return b.longestRun - a.longestRun;
@@ -530,11 +545,22 @@ export default function Sidebar({ config }: SidebarProps) {
       return;
     }
     e.preventDefault();
-    if (!folder || !folder.children.length) return;
+    // Tabs are bookmarks-only: direct bookmark children open as tabs, nested
+    // folders are skipped (not flattened) — they open via their own row.
+    const tabChildren = folder ? folder.children.filter((c): c is Bookmark => !isFolder(c)) : [];
+    if (!folder || !tabChildren.length) {
+      // Nothing to open as tabs, but still expand a collapsed folder so its
+      // nested contents become reachable.
+      if (folder && folder.collapsed && folder.children.length) {
+        await toggleFolder(folder.id);
+        notifyBookmarksChanged();
+      }
+      return;
+    }
     if (folder.collapsed) await toggleFolder(folder.id); // expand only — never re-collapse
     // No notifyBookmarksChanged() here: navigateUrl re-renders the sidebar
     // via useUrlVersion (mirrors the vanilla route()-driven re-render).
-    navigateUrl(composeFolderTabsUrl(folder.children));
+    navigateUrl(composeFolderTabsUrl(tabChildren));
   };
 
   const onDeleteFolder = async (e: React.MouseEvent<HTMLButtonElement>, id: string, folder: BookmarkFolder) => {
@@ -542,8 +568,12 @@ export default function Sidebar({ config }: SidebarProps) {
     // Deleting a folder removes its children too; disarm if the armed
     // bookmark is one of them (mirrors the bookmark delete handler).
     const armed = getArmedBookmark();
+    // Capture before the await: `folder` is the pre-delete render snapshot,
+    // so its subtree is still walkable for the armed check.
+    const holdsArmed = (list: BookmarkItem[]): boolean =>
+      list.some((c) => (isFolder(c) ? holdsArmed(c.children) : c.id === armed?.id));
     await deleteFolder(id);
-    if (armed && folder && folder.children.some((c) => c.id === armed.id)) {
+    if (armed && folder && holdsArmed(folder.children)) {
       disarmBookmark();
       window.dispatchEvent(new Event("fused:urlchange"));
     }
@@ -560,13 +590,12 @@ export default function Sidebar({ config }: SidebarProps) {
     rowIsFolder: boolean,
     rowIsChild: boolean
   ): "above" | "below" | "into" | null => {
-    // A folder cannot be dropped inside a folder.
-    if (rowIsChild && draggedIsFolderRef.current) return null;
     const rect = row.getBoundingClientRect();
     const y = e.clientY - rect.top;
-    // Combine (folder-creation / drop-into) only for a bookmark onto a
-    // top-level bookmark or a folder — never inside a folder, never for folders.
-    const combine = !draggedIsFolderRef.current && !rowIsChild;
+    // "into": a folder row accepts anything at any depth (D121 nesting);
+    // a bookmark onto a top-level bookmark still combines into a new folder
+    // (never inside a folder, never with a dragged folder — no folder combine).
+    const combine = rowIsFolder || (!draggedIsFolderRef.current && !rowIsChild);
     if (combine) {
       if (y < rect.height * 0.25) return "above";
       if (y > rect.height * 0.75) return "below";
@@ -574,6 +603,13 @@ export default function Sidebar({ config }: SidebarProps) {
     }
     return y > rect.height / 2 ? "below" : "above";
   };
+
+  // A folder must never land on itself or inside its own subtree — ignore
+  // its own descendants' rows entirely (dragover gives no drop affordance).
+  const overOwnSubtree = (rowId: string): boolean =>
+    draggedIsFolderRef.current &&
+    draggedIdRef.current !== null &&
+    isDescendant(items, draggedIdRef.current, rowId);
 
   // Top-level reorder: move dragged to sit above/below the target row.
   const moveTopLevel = (targetId: string, below: boolean): Promise<void> => {
@@ -615,8 +651,13 @@ export default function Sidebar({ config }: SidebarProps) {
   ) => {
     if (draggedIdRef.current === null || draggedIdRef.current === id) return;
     const row = e.currentTarget;
+    if (overOwnSubtree(id)) {
+      // No zone classes either — the whole subtree is a dead drop target.
+      row.classList.remove("drag-above", "drag-below", "drag-into");
+      return;
+    }
     const zone = dropZone(e, row, rowIsFolder, rowIsChild);
-    if (zone === null) return; // ignore (e.g. folder over a child row)
+    if (zone === null) return;
     e.preventDefault(); // required to allow a drop
     e.dataTransfer.dropEffect = "move";
     row.classList.toggle("drag-above", zone === "above");
@@ -635,6 +676,7 @@ export default function Sidebar({ config }: SidebarProps) {
     rowIsChild: boolean
   ) => {
     if (draggedIdRef.current === null || draggedIdRef.current === id) return;
+    if (overOwnSubtree(id)) return; // moveItem's cycle guard is the backstop
     const draggedId = draggedIdRef.current;
     const row = e.currentTarget;
     const zone = dropZone(e, row, rowIsFolder, rowIsChild);
@@ -696,6 +738,69 @@ export default function Sidebar({ config }: SidebarProps) {
     onDrop: (e) => onRowDrop(e, id, rowIsFolder, rowIsChild),
     onDragEnd: onRowDragEnd,
   });
+
+  // True when the current view's bookmark lives anywhere in this subtree —
+  // keeps the collapsed-folder active hint visible at any nesting depth.
+  const subtreeHoldsActive = (list: BookmarkItem[]): boolean =>
+    list.some((c) => (isFolder(c) ? subtreeHoldsActive(c.children) : c.url === currentUrl()));
+
+  // Recursive tree render (D121). parentId is the immediate parent's id
+  // (null at top level); rows inside any folder carry it via data-parent so
+  // drop handlers can resolve the right children array. Indentation comes
+  // free from nesting .folder-children (its margin+rail compound per level).
+  const renderItems = (list: BookmarkItem[], parentId: string | null): React.ReactNode =>
+    list.map((it) => {
+      const child = parentId !== null;
+      if (isFolder(it)) {
+        const activeHint = it.collapsed && subtreeHoldsActive(it.children);
+        return (
+          <React.Fragment key={it.id}>
+            <FolderRow
+              folder={it}
+              child={child}
+              parentId={parentId ?? undefined}
+              activeHint={activeHint}
+              isRenaming={renamingId === it.id}
+              registerRef={registerRow(it.id)}
+              onGlyphClick={(e) => onFolderGlyphClick(e, it.id)}
+              onRowClick={(e) => onFolderRowClick(e, it)}
+              onRename={(e) => {
+                e.preventDefault();
+                setRenamingId(it.id);
+              }}
+              onDelete={(e) => onDeleteFolder(e, it.id, it)}
+              onCommitRename={(value) => commitRename(it.id, value, it.name)}
+              onCancelRename={cancelRename}
+              dragProps={dragProps(it.id, true, child)}
+            />
+            {!it.collapsed && (
+              <div className="folder-children">{renderItems(it.children, it.id)}</div>
+            )}
+          </React.Fragment>
+        );
+      }
+      return (
+        <BookmarkRow
+          key={it.id}
+          b={it}
+          child={child}
+          parentId={parentId ?? undefined}
+          isRenaming={renamingId === it.id}
+          justSaved={savedId === it.id}
+          registerRef={registerRow(it.id)}
+          onNameClick={(e) => onBookmarkNameClick(e, it)}
+          onSave={(e) => onSaveBookmark(e, it)}
+          onRename={(e) => onRenameBookmark(e, it.id)}
+          onDelete={(e) => onDeleteBookmark(e, it.id)}
+          onCommitRename={(value) => commitRename(it.id, value, it.name)}
+          onCancelRename={cancelRename}
+          onMouseEnter={(e) => onRowMouseEnter(e, it)}
+          onMouseLeave={hideTooltip}
+          onGlyphClick={(e) => onBookmarkGlyphClick(e, it.id)}
+          dragProps={dragProps(it.id, false, child)}
+        />
+      );
+    });
 
   return (
     <nav id="sidebar">
@@ -767,75 +872,7 @@ export default function Sidebar({ config }: SidebarProps) {
                 <div className="sidebar-empty">No matches</div>
               )
             ) : (
-              items.map((it) => {
-                if (isFolder(it)) {
-              const activeHint = it.collapsed && it.children.some((c) => c.url === currentUrl());
-              return (
-                <React.Fragment key={it.id}>
-                  <FolderRow
-                    folder={it}
-                    activeHint={activeHint}
-                    isRenaming={renamingId === it.id}
-                    registerRef={registerRow(it.id)}
-                    onGlyphClick={(e) => onFolderGlyphClick(e, it.id)}
-                    onRowClick={(e) => onFolderRowClick(e, it)}
-                    onRename={(e) => {
-                      e.preventDefault();
-                      setRenamingId(it.id);
-                    }}
-                    onDelete={(e) => onDeleteFolder(e, it.id, it)}
-                    onCommitRename={(value) => commitRename(it.id, value, it.name)}
-                    onCancelRename={cancelRename}
-                    dragProps={dragProps(it.id, true, false)}
-                  />
-                  {!it.collapsed && (
-                    <div className="folder-children">
-                      {it.children.map((c) => (
-                        <BookmarkRow
-                          key={c.id}
-                          b={c}
-                          child
-                          parentId={it.id}
-                          isRenaming={renamingId === c.id}
-                          justSaved={savedId === c.id}
-                          registerRef={registerRow(c.id)}
-                          onNameClick={(e) => onBookmarkNameClick(e, c)}
-                          onSave={(e) => onSaveBookmark(e, c)}
-                          onRename={(e) => onRenameBookmark(e, c.id)}
-                          onDelete={(e) => onDeleteBookmark(e, c.id)}
-                          onCommitRename={(value) => commitRename(c.id, value, c.name)}
-                          onCancelRename={cancelRename}
-                          onMouseEnter={(e) => onRowMouseEnter(e, c)}
-                          onMouseLeave={hideTooltip}
-                          onGlyphClick={(e) => onBookmarkGlyphClick(e, c.id)}
-                          dragProps={dragProps(c.id, false, true)}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </React.Fragment>
-              );
-            }
-            return (
-              <BookmarkRow
-                key={it.id}
-                b={it}
-                isRenaming={renamingId === it.id}
-                justSaved={savedId === it.id}
-                registerRef={registerRow(it.id)}
-                onNameClick={(e) => onBookmarkNameClick(e, it)}
-                onSave={(e) => onSaveBookmark(e, it)}
-                onRename={(e) => onRenameBookmark(e, it.id)}
-                onDelete={(e) => onDeleteBookmark(e, it.id)}
-                onCommitRename={(value) => commitRename(it.id, value, it.name)}
-                onCancelRename={cancelRename}
-                onMouseEnter={(e) => onRowMouseEnter(e, it)}
-                onMouseLeave={hideTooltip}
-                onGlyphClick={(e) => onBookmarkGlyphClick(e, it.id)}
-                dragProps={dragProps(it.id, false, false)}
-              />
-                );
-              })
+              renderItems(items, null)
             )}
           </>
         )}
