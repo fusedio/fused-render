@@ -656,12 +656,21 @@ def _s3_without_credentials(cfg: dict) -> bool:
                      or cfg.get("session_token")))
 
 
+def _gcs_anonymous(cfg: dict) -> bool:
+    """A GCS remote configured anonymous=true (the built-in gcs-open
+    suggestion) — rclone sends unauthenticated requests, which GCS accepts
+    for public-bucket reads only, so writes can never be accepted."""
+    return (cfg.get("type") == "google cloud storage"
+            and str(cfg.get("anonymous", "")).lower() == "true")
+
+
 def _detect_read_only(port: int, fs: str) -> bool | None:
     """Best-effort, NON-MUTATING read-onlyness probe for a remote. Never
     writes a probe object into the user's store; instead:
       - operations/fsinfo: a backend advertising no write feature at all
         (Put/PutStream/Copy — e.g. http) can never take a write.
-      - config/get: an anonymous S3 remote (see _s3_without_credentials).
+      - config/get: an anonymous S3 or GCS remote (see
+        _s3_without_credentials / _gcs_anonymous).
     Returns None when the probe is INCONCLUSIVE — an rc call failed, or the
     reply didn't carry the expected shape (absence of a Features map is
     version skew, not evidence of read-onlyness) — so the caller persists
@@ -683,7 +692,7 @@ def _detect_read_only(port: int, fs: str) -> bool | None:
         return None
     if not isinstance(cfg, dict):
         return None
-    return _s3_without_credentials(cfg)
+    return _s3_without_credentials(cfg) or _gcs_anonymous(cfg)
 
 
 def _refresh_read_only_flag(m: dict, port: int | None = None) -> None:
@@ -978,6 +987,15 @@ def _anonymous_s3(cfg: dict | None) -> bool:
             and not cfg.get("endpoint"))
 
 
+def _cannot_presign(cfg: dict | None) -> bool:
+    """True when the remote is anonymous S3 or anonymous GCS — the backend
+    classes that can never presign (S3's "unsupported signer type noAuth", and
+    anonymous GCS carrying no signing key at all) but reach their public
+    objects by a plain unsigned URL instead. Lets _upstream_url_for skip the
+    wasted publiclink rc call for either backend."""
+    return cfg is not None and (_anonymous_s3(cfg) or _gcs_anonymous(cfg))
+
+
 def _mount_for(path: str) -> tuple[dict | None, str]:
     """(mount record, remote-relative path) for a path under a mountpoint."""
     p = os.path.abspath(path)
@@ -1052,6 +1070,25 @@ def _public_object_url(fs: str, rel: str) -> str | None:
     return _s3_base_url(bucket, region) + "/" + urllib.parse.quote(key)
 
 
+def _gcs_public_object_url(fs: str, rel: str) -> str | None:
+    """Plain https URL for an object on an ANONYMOUS GCS remote — the GCS
+    analog of _public_object_url. GCS always path-addresses the bucket
+    (storage.googleapis.com/<bucket>/<key>), so there is no region and no
+    dotted-bucket rule. Credentialed or non-GCS remotes return None (their
+    objects aren't reachable unsigned). Pure string building once
+    _remote_config has memoized the config — no rc round trip per object."""
+    cfg = _remote_config(fs.partition(":")[0])
+    if not _gcs_anonymous(cfg or {}):
+        return None
+    derived = _gcs_bucket_prefix(fs)
+    if derived is None:
+        return None
+    bucket, prefix = derived
+    key = (prefix + "/" if prefix else "") + rel
+    # Match _public_object_url's key quoting (same default safe chars).
+    return f"https://storage.googleapis.com/{bucket}/{urllib.parse.quote(key)}"
+
+
 # ------------------------------------------------------- direct S3 pagination
 # rclone can't paginate operations/list at any layer (see rc_list_dir), so a
 # flat S3 prefix with millions of keys (aws-open:mur-sst/zarr-v1 ->
@@ -1065,11 +1102,17 @@ S3_LIST_TIMEOUT_S = 15.0
 _S3_XMLNS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
 
 
-class S3ListError(Exception):
-    """A direct ListObjectsV2 page failed — an HTTP status (403 needs auth, 301
-    wrong region), a network error, or unparseable XML. The caller falls back
-    to rc_list_dir; kept distinct from the RcList* family so the fallback ladder
-    (S3-direct -> rc -> 503) reads cleanly."""
+class DirectListError(Exception):
+    """A direct (unsigned) S3/GCS listing page failed — an HTTP status (403
+    needs auth, 301 wrong region), a network error, or an unparseable body
+    (S3 XML / GCS JSON). The caller falls back to rc_list_dir; kept distinct
+    from the RcList* family so the fallback ladder (direct -> rc -> 503) reads
+    cleanly."""
+
+
+# Back-compat alias: the direct-listing path started S3-only. Kept so callers
+# (and tests) that still import S3ListError keep working.
+S3ListError = DirectListError
 
 
 def s3_direct_capable(path: str) -> bool:
@@ -1180,6 +1223,143 @@ def s3_list_page(path: str, *, max_keys: int, continuation: str | None = None,
     return entries, next_token
 
 
+# ------------------------------------------------------ direct GCS pagination
+# The GCS analog of the S3-direct path above. rclone can't paginate a listing
+# at any layer either, so a flat GCS prefix with hundreds of thousands of
+# children times out on the rc route exactly as an S3 one does. But GCS's own
+# JSON API (objects.list) paginates fine, and anonymous GCS (the gcs-open
+# suggestion, _gcs_anonymous) serves it with a plain unsigned GET — so fetch a
+# single page at a time straight from GCS, unsigned. There is no dotted-bucket
+# / virtual-host rule here: the GCS JSON endpoint always carries the bucket in
+# the path, and there is no region.
+GCS_LIST_TIMEOUT_S = 15.0
+_GCS_LIST_URL = "https://storage.googleapis.com/storage/v1/b/{bucket}/o"
+
+
+def gcs_direct_capable(path: str) -> bool:
+    """True when `path` is mount-backed by an anonymous GCS remote — the one
+    GCS backend class gcs_list_page can enumerate unsigned. Mirrors
+    s3_direct_capable for the GCS side."""
+    m, _ = _mount_for(path)
+    if m is None:
+        return False
+    return _gcs_anonymous(_remote_config(m["remote"].partition(":")[0]) or {})
+
+
+def _gcs_bucket_prefix(fs: str) -> tuple[str, str] | None:
+    """(bucket, key prefix) for a GCS remote's fs string
+    (e.g. "gcs-open:mur-sst/zarr-v1" -> ("mur-sst", "zarr-v1")). The key prefix
+    is stripped of any trailing slash. None when the fs carries no bucket. The
+    GCS analog of _s3_bucket_prefix_region — no region (GCS has none)."""
+    _, _, root = fs.partition(":")
+    bucket, _, prefix = root.partition("/")
+    if not bucket:
+        return None
+    return bucket, prefix.rstrip("/")
+
+
+def gcs_list_page(path: str, *, max_keys: int, continuation: str | None = None,
+                  timeout: float | None = None) -> tuple[list, str | None]:
+    """One objects.list page for a mount-backed directory on an anonymous GCS
+    remote, fetched by a plain unsigned HTTPS GET against the GCS JSON API — no
+    kernel I/O on the mount, no rclone, no google SDK.
+
+    Returns (entries, next_token) in the identical shape to s3_list_page:
+    entries are Name/Size/IsDir/ModTime dicts (so downstream mapping is shared),
+    and next_token the GCS pageToken when the listing is truncated, else None.
+    `prefixes` become synthetic directories (Size/ModTime None); `items` become
+    files; the zero-byte placeholder object whose name IS the prefix (a GCS
+    "directory" marker) is skipped, exactly as s3_list_page skips the key ==
+    prefix.
+
+    Raises DirectListError on any HTTP/network/JSON failure so the caller can
+    fall back to rc_list_dir; a 403 (needs auth) raises too, never crashes."""
+    if timeout is None:
+        timeout = GCS_LIST_TIMEOUT_S
+    m, rel = _mount_for(path)
+    if m is None:
+        raise DirectListError(f"{path} is under no known mount")
+    fs = m["remote"]
+    cfg = _remote_config(fs.partition(":")[0])
+    if not _gcs_anonymous(cfg or {}):
+        raise DirectListError(f"{path}: remote {fs!r} is not anonymous GCS")
+    derived = _gcs_bucket_prefix(fs)
+    if derived is None:
+        raise DirectListError(f"{path}: remote {fs!r} carries no bucket")
+    bucket, store_prefix = derived
+    # _s3_listing_prefix is backend-agnostic (prefix/delimiter join) — reuse it.
+    prefix = _s3_listing_prefix(store_prefix, rel)
+    params = {"delimiter": "/", "prefix": prefix, "maxResults": str(max_keys)}
+    if continuation:
+        params["pageToken"] = continuation
+    query = urllib.parse.urlencode(params)
+    url = f"{_GCS_LIST_URL.format(bucket=bucket)}?{query}"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            body = resp.read()
+    except urllib.error.HTTPError as e:
+        raise DirectListError(f"GCS list {path}: HTTP {e.code}") from e
+    except (urllib.error.URLError, OSError) as e:
+        raise DirectListError(f"GCS list {path}: {e}") from e
+    try:
+        doc = json.loads(body)
+    except (ValueError, TypeError) as e:
+        raise DirectListError(f"GCS list {path}: unparseable JSON") from e
+    entries: list = []
+    for p in doc.get("prefixes") or []:
+        name = str(p)[len(prefix):].rstrip("/")
+        if name:
+            entries.append({"Name": name, "Size": None, "IsDir": True,
+                            "ModTime": None})
+    for obj in doc.get("items") or []:
+        key = obj.get("name") or ""
+        # The zero-byte object whose name IS the prefix is the directory
+        # placeholder GCS consoles create — it's this directory, not an entry.
+        if key == prefix:
+            continue
+        name = key[len(prefix):]
+        if not name:
+            continue
+        size_txt = obj.get("size")
+        entries.append({
+            "Name": name,
+            "Size": int(size_txt) if isinstance(size_txt, str)
+            and size_txt.isdigit() else None,
+            "IsDir": False,
+            # RFC3339 already; the mapping site runs rc_modtime_epoch on it.
+            "ModTime": obj.get("updated"),
+        })
+    return entries, doc.get("nextPageToken") or None
+
+
+# ------------------------------------------- unified direct-listing dispatch
+# The server routes every listing through these two so a call site need not
+# know whether the mount is S3 or GCS. direct_list_page re-derives the backend
+# from `path`, so a continuation token always feeds back to the backend that
+# produced it (an S3 continuation-token and a GCS pageToken never cross).
+
+
+def direct_list_capable(path: str) -> bool:
+    """True when `path` is mount-backed by ANY backend the direct (unsigned)
+    pager can enumerate — anonymous plain AWS S3 or anonymous GCS."""
+    return s3_direct_capable(path) or gcs_direct_capable(path)
+
+
+def direct_list_page(path: str, *, max_keys: int, continuation: str | None = None,
+                     timeout: float | None = None) -> tuple[list, str | None]:
+    """One direct (unsigned) listing page for `path`, routed to the S3 or GCS
+    pager by the backend the path resolves to. Returns (entries, next_token) in
+    the shared rc/direct shape; raises DirectListError when the path is backed
+    by neither direct-listable backend (or the chosen pager fails)."""
+    if s3_direct_capable(path):
+        return s3_list_page(path, max_keys=max_keys,
+                            continuation=continuation, timeout=timeout)
+    if gcs_direct_capable(path):
+        return gcs_list_page(path, max_keys=max_keys,
+                            continuation=continuation, timeout=timeout)
+    raise DirectListError(f"{path}: no direct-listable backend")
+
+
 def upstream_url_for(path: str) -> str | None:
     """Direct store URL for a mount-backed file, or None when the backend has
     no reachable one (the caller then stays on the serve). Never raises —
@@ -1204,9 +1384,10 @@ def _upstream_url_for(path: str) -> str | None:
         mode = _upstream_mode.get(fs)
     if mode == "none":
         return None
-    if mode is None and _anonymous_s3(_remote_config(fs.partition(":")[0])):
-        # Anonymous S3 can never presign — don't burn an rc call per remote
-        # learning that from publiclink's "unsupported signer type" error.
+    if mode is None and _cannot_presign(_remote_config(fs.partition(":")[0])):
+        # Anonymous S3 or GCS can never presign — don't burn an rc call per
+        # remote learning that from publiclink's "unsupported signer type"
+        # error.
         mode = "public"
     url = None
     if mode in (None, "link"):
@@ -1226,7 +1407,9 @@ def _upstream_url_for(path: str) -> str | None:
         if url is not None:
             mode = "link"
     if url is None:
-        url = _public_object_url(fs, rel)
+        # Dispatch by backend, mirroring direct_list_page: whichever object-URL
+        # builder recognizes the remote returns a non-None URL, the rest None.
+        url = _public_object_url(fs, rel) or _gcs_public_object_url(fs, rel)
         mode = "public" if url else "none"
     with _upstream_lock:
         _upstream_mode[fs] = mode
@@ -1677,11 +1860,12 @@ def _credential_suggestions() -> list[dict]:
     params) — the endpoint consumes these; the API view (below) exposes only
     id/label/remote_name/kind.
 
-    The first entry is always present: an anonymous S3 remote for public buckets
-    (AWS Open Data, etc.). It needs no credentials — env_auth=false with blank
-    keys makes rclone send unsigned requests — so it works even when the user
-    has no (or expired) AWS creds. region is just the endpoint rclone starts at;
-    it follows S3's region redirect to reach buckets in any region. The rest are
+    The first two entries are always present: anonymous S3 and anonymous GCS
+    remotes for public buckets (AWS Open Data, public GCS datasets, etc.).
+    They need no credentials — S3 via env_auth=false with blank keys (unsigned
+    requests), GCS via anonymous=true — so they work even when the user has no
+    (or expired) cloud creds. region is just the endpoint rclone starts at; it
+    follows S3's region redirect to reach buckets in any region. The rest are
     credential-backed (kind="detected", defaulted in _suggestions_view)."""
     out: list[dict] = [{
         "id": "aws-open-public",
@@ -1690,6 +1874,13 @@ def _credential_suggestions() -> list[dict]:
         "backend": "s3",
         "kind": "public",
         "params": {"provider": "AWS", "env_auth": "false", "region": "us-west-2"},
+    }, {
+        "id": "gcs-open-public",
+        "label": "Google Cloud Storage — public buckets (no credentials)",
+        "remote_name": "gcs-open",
+        "backend": "google cloud storage",
+        "kind": "public",
+        "params": {"anonymous": "true"},
     }]
     for prof in _aws_profiles():
         out.append({
@@ -1716,7 +1907,53 @@ def _credential_suggestions() -> list[dict]:
             "backend": "google cloud storage",
             "params": {"env_auth": "true"},
         })
+    if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+        out.append({
+            "id": "gcs-env",
+            "label": "Google Cloud Storage — environment credentials",
+            "remote_name": "gcs-env",
+            "backend": "google cloud storage",
+            "params": {"env_auth": "true"},
+        })
     return out
+
+
+def _rclone_config_dump(bin_: str) -> dict:
+    """Every remote's stored config as {bare_name: {"type": …, …params}} via
+    `rclone config dump` — a plain subprocess, no rcd daemon required (keeps
+    _rclone_state callable before any mount exists). {} on any failure, so
+    _remote_label just degrades to bare names rather than raising."""
+    try:
+        out = subprocess.run(
+            [bin_, "config", "dump"], capture_output=True, text=True, timeout=10
+        ).stdout
+        cfg = json.loads(out) if out.strip() else {}
+        return cfg if isinstance(cfg, dict) else {}
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return {}
+
+
+def _remote_label(remote: str, suggestions: list[dict], configs: dict) -> str:
+    """Friendly label for a materialized rclone remote, so it presents under the
+    SAME human name the suggestion used across its whole lifecycle (e.g. the
+    built-in public option shows as "AWS S3 — public buckets…", not the cryptic
+    "aws-open:" it materializes into). Match against the FULL suggestion set —
+    including ones already materialized, which _suggestions_view drops.
+
+    Matching is by PROVENANCE, not name alone: the remote's stored config (from
+    `rclone config dump`, keyed by bare name) must match the suggestion's backend
+    and every param it was created with. A user's own remote that merely happens
+    to be named `aws`/`gcs` therefore keeps its bare name instead of inheriting a
+    credential-source label it never came from. Values compare case-insensitively
+    (rclone normalizes booleans). No match (e.g. "myminio:") → the bare string."""
+    cfg = configs.get(remote.rstrip(":"), {})
+    for s in suggestions:
+        if (f'{s["remote_name"]}:' == remote
+                and str(cfg.get("type", "")).lower() == s["backend"].lower()
+                and all(str(cfg.get(k, "")).lower() == str(v).lower()
+                        for k, v in s["params"].items())):
+            return s["label"]
+    return remote
 
 
 def _suggestions_view(remotes: list[str]) -> list[dict]:
@@ -1743,11 +1980,20 @@ def _rclone_state() -> dict:
         remotes_out = subprocess.run(
             [bin_, "listremotes"], capture_output=True, text=True, timeout=10
         ).stdout
-        remotes = [r.strip() for r in remotes_out.splitlines() if r.strip()]
+        names = [r.strip() for r in remotes_out.splitlines() if r.strip()]
     except (OSError, subprocess.TimeoutExpired, IndexError):
         return {"available": False, "version": None, "remotes": [], "suggested": []}
+    # Each remote carries its verbatim rclone spec (`name`, incl trailing ':',
+    # used unchanged as the mount base) plus a friendly `label` for display —
+    # so a remote reads under one stable human name whatever its lifecycle stage.
+    # Compute the suggestion set and the config dump once, then label every
+    # remote against them (both do I/O, so a per-remote call would be O(N)).
+    suggestions = _credential_suggestions()
+    configs = _rclone_config_dump(bin_)
+    remotes = [{"name": n, "label": _remote_label(n, suggestions, configs)}
+               for n in names]
     return {"available": True, "version": version, "remotes": remotes,
-            "suggested": _suggestions_view(remotes)}
+            "suggested": _suggestions_view(names)}
 
 
 def broken_mount_error(path: str) -> str | None:
@@ -1771,6 +2017,15 @@ def broken_mount_error(path: str) -> str | None:
     state = mount_state(m, mounted_paths())
     if state == "mounted":
         return None
+    # A mount backed by detected (env_auth) credentials that have since
+    # expired stops flowing with an opaque kernel I/O error — same
+    # "disconnected" symptom as a dead daemon, but "reconnect" can't fix an
+    # expired SSO token. When the remote probes credential-shaped, tell the
+    # user to refresh their credentials instead of pointing them at reconnect.
+    if state in ("disconnected", "stale"):
+        cred_err = _mount_credential_error(m)
+        if cred_err:
+            return f"mount '{name}' — {cred_err}"
     # "stale" (the INCIDENT split-brain) and "disconnected" both mean a mount
     # that was there and stopped flowing — same user-facing wording; only a
     # never-mounted mount reads as "not mounted".
@@ -1926,13 +2181,77 @@ def create_remote(body: dict = Body(...), x_fused: str | None = Header(default=N
     return {"ok": True, "name": name + ":"}
 
 
+# Errors that mean the credential material itself is bad — an expired STS/SSO
+# session, a revoked OAuth grant, a deleted access key — as opposed to valid
+# credentials that merely lack a permission (AccessDenied) or a transient
+# network failure. Matched case-insensitively against rclone's output.
+_BAD_CRED_MARKERS = (
+    "expiredtoken", "expired token", "token has expired", "token is expired",
+    # Google ADC/OAuth refresh failure: "Token has been expired or revoked."
+    # — matches neither "has expired" nor "is expired" above.
+    "has been expired or revoked",
+    "invalidaccesskeyid", "invalidclienttokenid", "signaturedoesnotmatch",
+    "no valid credential", "nocredentialproviders",
+    "invalid_grant", "unauthenticated", "401 unauthorized",
+    "could not find default credentials",
+)
+
+
+def _detected_credential_error(bin_: str, name: str) -> str | None:
+    """Probe a just-materialized env_auth remote with a top-level listing and
+    return a user-facing message when the underlying credentials are expired
+    or invalid, else None. Detection surfaces creds that merely EXIST in the
+    dotfiles — nothing proves they still work, and mounting with a stale SSO
+    token fails later with an opaque I/O error, so catch it here where the
+    fix is actionable. Only credential-shaped failures (_BAD_CRED_MARKERS)
+    reject: AccessDenied (valid keys without ListBuckets permission) and
+    transient/network errors pass — the check exists to catch stale keys
+    early, not to demand list permission."""
+    try:
+        r = subprocess.run(
+            [bin_, "lsd", f"{name}:", "--max-depth", "1",
+             "--contimeout", "5s", "--timeout", "10s",
+             "--retries", "1", "--low-level-retries", "2"],
+            capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode == 0:
+        return None
+    err = ((r.stderr or "") + (r.stdout or "")).lower()
+    if any(m in err for m in _BAD_CRED_MARKERS):
+        return ("the detected credentials appear expired or invalid — "
+                "refresh them (e.g. `aws sso login` or `gcloud auth "
+                "application-default login`) and try again")
+    return None
+
+
+def _mount_credential_error(m: dict) -> str | None:
+    """For a broken mount whose remote is backed by detected (env_auth)
+    credentials, the 'refresh your credentials' message when a top-level
+    listing now fails credential-shaped — else None. broken_mount_error uses
+    this to distinguish an expired-credential mount (reconnect won't help;
+    the user must re-auth) from a merely dead daemon. Only env_auth remotes
+    are probed: anonymous/public and key-carrying remotes don't expire this
+    way, and the probe (an rclone `lsd`) is paid only on the already-broken
+    fs/list path, never on a healthy listing."""
+    bin_ = rclone_bin()
+    if not bin_:
+        return None
+    name = m["remote"].partition(":")[0]
+    cfg = _remote_config(name)
+    if not isinstance(cfg, dict) or str(cfg.get("env_auth", "")).lower() != "true":
+        return None
+    return _detected_credential_error(bin_, name)
+
+
 @router.post("/api/mounts/remotes/detect")
 def create_detected_remote(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     """Materialize a keyless rclone remote from an auto-detected credential
     source (see _credential_suggestions). The spec comes from the server's own
     detection keyed by `id` — never from client-supplied rclone params — and
     env_auth=true means no keys are written. Idempotent: an already-created
-    remote is returned as-is."""
+    remote is returned as-is — but a detected (env_auth) one is re-probed
+    first, since its creds may have expired since creation."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -1944,7 +2263,21 @@ def create_detected_remote(body: dict = Body(...), x_fused: str | None = Header(
     if sugg is None:
         return JSONResponse({"error": f"unknown credential source {sid!r}"}, status_code=404)
     name = sugg["remote_name"]
-    if f"{name}:" in _rclone_state().get("remotes", []):
+    # Public (anonymous) remotes carry no credentials to go stale; only the
+    # detected, env_auth-backed ones get the validity probe (an rclone `lsd`).
+    detected = sugg.get("kind", "detected") == "detected"
+    # remotes are {name,label} objects now — match on the bare rclone spec.
+    if any(r["name"] == f"{name}:" for r in _rclone_state().get("remotes", [])):
+        # Idempotent re-entry: the remote already exists. Don't report it
+        # healthy on faith — a detected remote's creds may have expired since
+        # it was created, and returning {"ok": True} here would invite a doomed
+        # mount just as surely as a freshly created stale one. Re-probe (one
+        # `lsd`) so an expired detected remote is never reported ok; anonymous
+        # remotes carry nothing that expires and return quickly.
+        if detected:
+            cred_err = _detected_credential_error(bin_, name)
+            if cred_err:
+                return JSONResponse({"error": cred_err}, status_code=502)
         return {"ok": True, "name": name + ":"}
     cmd = [bin_, "config", "create", name, sugg["backend"]]
     for k, v in sugg["params"].items():
@@ -1955,4 +2288,25 @@ def create_detected_remote(body: dict = Body(...), x_fused: str | None = Header(
         return JSONResponse({"error": "rclone config create timed out (30s)"}, status_code=502)
     if r.returncode != 0:
         return JSONResponse({"error": (r.stderr or r.stdout or "").strip()[-500:]}, status_code=502)
+    # A detected remote whose creds turn out expired is rolled back so the
+    # broken thing doesn't linger under Remotes inviting doomed mounts.
+    if detected:
+        cred_err = _detected_credential_error(bin_, name)
+        if cred_err:
+            # Roll back the just-created remote. If the delete itself fails
+            # (non-zero exit or an OSError/timeout) the remote may still exist,
+            # so say so rather than returning the bare cred error as if cleanup
+            # succeeded — a silently-lingering remote would be reported ok on
+            # the next detect and re-invite the doomed mount.
+            try:
+                d = subprocess.run([bin_, "config", "delete", name],
+                                   capture_output=True, text=True, timeout=30)
+                removed = d.returncode == 0
+            except (OSError, subprocess.TimeoutExpired):
+                removed = False
+            if not removed:
+                cred_err += (" (the half-created remote could not be removed "
+                             "automatically — delete it manually before "
+                             "retrying)")
+            return JSONResponse({"error": cred_err}, status_code=502)
     return {"ok": True, "name": name + ":"}

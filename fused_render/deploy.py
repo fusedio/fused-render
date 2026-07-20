@@ -137,7 +137,7 @@ def _now_iso() -> str:
 # install button exactly when it mattered. The constant ships in the same
 # file as the code that uses it, so it is always as current as the server.
 PINNED_FUSED_REQUIREMENT = (
-    "fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post3-py3-none-any.whl"
+    "fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post6-py3-none-any.whl"
 )
 # The wheel's own environment marker (python_version >= "3.11"), enforced here
 # because pip is handed the marker-free requirement above.
@@ -460,7 +460,10 @@ def preview_deploy(
     return {
         "page": os.path.basename(page),
         "entrypoints": [{"path": e.path, "name": e.name} for e in plan.entrypoints],
-        "assets": [{"path": a.path, "name": a.name} for a in plan.assets],
+        # `source` lets the "Will publish" list say HOW each asset is exposed: a
+        # scanned literal rawUrl/readFile reference, a manifest-declared bundle file
+        # (backs a computed path), or a hand-added include. See export.Asset.
+        "assets": [{"path": a.path, "name": a.name, "source": a.source} for a in plan.assets],
         "auto": [e.path for e in auto.entrypoints] + [a.path for a in auto.assets],
         "errors": plan.errors,
         "warnings": plan.warnings,

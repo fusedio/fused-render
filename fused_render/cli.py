@@ -12,13 +12,14 @@ CLI subcommand — it needs no separate offline step.
 import argparse
 import logging
 import os
+import socket
 import sys
 import threading
 import webbrowser
 
 from fused_render._branch import branch_port, branch_ref
 from fused_render.logs import setup_logging
-from fused_render.shell.seed import ensure_fused_dir, fused_dir
+from fused_render.shell.seed import ensure_fused_dir_and_landing, fused_dir
 
 logger = logging.getLogger("fused_render")
 
@@ -41,12 +42,55 @@ def _build_parser() -> argparse.ArgumentParser:
         "The whole filesystem remains browsable.",
     )
     serve.add_argument(
-        "--port", type=int, default=DEFAULT_PORT, help=f"port to bind (default: {DEFAULT_PORT})"
+        "--port",
+        type=int,
+        default=None,
+        help=f"port to bind (default: {DEFAULT_PORT}; startup fails if the port is "
+        "already in use rather than silently picking another)",
     )
     serve.add_argument(
         "--no-browser", action="store_true", help="do not open a browser tab on startup"
     )
     return parser
+
+
+_HOST = "127.0.0.1"
+
+
+def _port_free(port: int) -> bool:
+    """True if uvicorn could bind ``port`` on the loopback right now.
+
+    Mirror uvicorn's own bind by setting SO_REUSEADDR so the probe agrees with
+    it in both directions: an active listener (a stale server) still makes bind
+    fail — SO_REUSEADDR does not permit two live binds to the same address, that
+    needs SO_REUSEPORT — so a real collision is still caught, while a port merely
+    lingering in TIME_WAIT after a clean shutdown reads as free (uvicorn, which
+    also sets SO_REUSEADDR, would bind it). A plain bind here would reject those
+    TIME_WAIT ports and wrongly block an immediate dev.sh restart.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind((_HOST, port))
+            return True
+        except OSError:
+            return False
+
+
+def _check_port_free(port: int) -> None:
+    """Fail loudly if ``port`` is already taken.
+
+    Probing before uvicorn binds keeps the browser tab (opened a beat later)
+    from landing on a leftover server: with per-branch ports (see
+    fused_render._branch) a collision means a stale server for this same branch
+    is already running, so we stop with a clear message rather than silently
+    drifting to another port the tab wouldn't point at.
+    """
+    if not _port_free(port):
+        raise SystemExit(
+            f"port {port} is already in use — a server (likely a stale dev instance "
+            "for this branch) is running there. Stop it, or pass a different --port."
+        )
 
 
 def _run_serve(args: argparse.Namespace) -> None:
@@ -57,11 +101,16 @@ def _run_serve(args: argparse.Namespace) -> None:
     log_file = setup_logging()
     # First-run onboarding (D81): create ~/Documents/Fused and seed it once. Runs
     # regardless of --start-dir — seeding is about the Fused dir, not the start dir.
-    ensure_fused_dir()
+    # On the very first run, `landing` is the seeded showcase page and the browser
+    # opens there instead of the workspace root.
+    _, landing = ensure_fused_dir_and_landing()
     start_dir = os.path.abspath(os.path.expanduser(args.start_dir))
     app = create_app(start_dir=start_dir)
 
-    url = f"http://127.0.0.1:{args.port}/"
+    port = args.port if args.port is not None else DEFAULT_PORT
+    _check_port_free(port)
+
+    url = f"http://{_HOST}:{port}/"
     branch_note = f" (branch {branch_ref()})" if branch_ref() else ""
     print(f"fused-render serving at {url}{branch_note}")
     print(f"start dir: {start_dir}")
@@ -71,9 +120,10 @@ def _run_serve(args: argparse.Namespace) -> None:
     logger.info("serving at %s%s (start dir %s)", url, branch_note, start_dir)
 
     if not args.no_browser:
-        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+        open_url = url.rstrip("/") + landing if landing else url
+        threading.Timer(1.0, lambda: webbrowser.open(open_url)).start()
 
-    uvicorn.run(app, host="127.0.0.1", port=args.port)
+    uvicorn.run(app, host=_HOST, port=port)
 
 
 def main() -> None:

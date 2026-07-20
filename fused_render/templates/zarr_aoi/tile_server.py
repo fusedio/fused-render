@@ -28,7 +28,7 @@ Endpoints (GET, CORS *):
   /stats?file=[&reset=1]       -> live counters + recent op log
 """
 # /// script
-# dependencies = ["numpy", "zarr>=3.0.8", "s3fs", "crc32c"]
+# dependencies = ["numpy", "zarr>=3.0.8", "s3fs", "gcsfs", "crc32c"]
 # ///
 
 import hashlib
@@ -41,7 +41,7 @@ import time
 
 STATE = os.path.expanduser("~/.cache/fused-render-zarraoi/daemon.json")
 DAEMON_VENV = os.path.expanduser("~/.cache/fused-render-zarraoi/venv")
-DAEMON_DEPS = ["numpy", "zarr>=3.0.8", "s3fs", "crc32c"]
+DAEMON_DEPS = ["numpy", "zarr>=3.0.8", "s3fs", "gcsfs", "crc32c"]
 IDLE_EXIT_S = 30 * 60
 TILE = 256
 MERC_R = 6378137.0
@@ -367,6 +367,14 @@ def _serve():
                     return {"kind": "s3", "url": "s3://" + key,
                             "storage_options": so,
                             "label": f"mount '{name}' → s3://{key}"
+                                     + (" (anonymous)" if anon else "")}
+                elif cfg.get("type") == "google cloud storage":
+                    # GCS analog of the s3 branch: gcsfs takes token="anon" for
+                    # anonymous public buckets, and needs no region/endpoint.
+                    anon = cfg.get("anonymous") == "true"
+                    return {"kind": "gcs", "url": "gcs://" + key,
+                            "storage_options": {"token": "anon"} if anon else {},
+                            "label": f"mount '{name}' → gcs://{key}"
                                      + (" (anonymous)" if anon else "")}
         return {"kind": "local", "url": path, "label": path + " (local)"}
 

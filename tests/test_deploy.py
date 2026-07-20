@@ -13,6 +13,7 @@ nothing touches the real stores.
 import json
 import sys
 
+import pytest
 from fastapi.testclient import TestClient
 
 import fused_render.deploy as deploy_mod
@@ -21,6 +22,13 @@ from fused_render.server import create_app
 
 
 FUSED = {"X-Fused": "1"}  # D3 guard header required on writes
+
+# The one-click install path (deploy.py's `install_fused`/`_availability`)
+# refuses outright on Python <3.11 (the fused package itself needs 3.11+) —
+# these tests exercise the 3.11+ "installable" behavior, not that refusal.
+requires_py311 = pytest.mark.skipif(
+    sys.version_info < (3, 11), reason="one-click fused install needs Python 3.11+"
+)
 
 # Answers each `fused share <verb>` from the FUSED_STUB_SCENARIO json file and
 # appends {argv, env, bundle_files} to FUSED_STUB_LOG. A verb missing from the
@@ -144,6 +152,7 @@ def test_config_default_honors_ambient_openfused_env(tmp_path, monkeypatch):
     assert h.client.get("/api/deploy/config").json()["default_env"] == "prod"
 
 
+@requires_py311
 def test_config_reports_missing_cli_as_installable(tmp_path, monkeypatch):
     # The pin is a code constant (never package metadata, which is absent on
     # source runs and stale on pre-extra editable installs), so a missing CLI
@@ -157,6 +166,7 @@ def test_config_reports_missing_cli_as_installable(tmp_path, monkeypatch):
     assert "fused-render[fused]" in cli["install_hint"]
 
 
+@requires_py311
 def test_config_missing_cli_without_pip_names_the_workaround(tmp_path, monkeypatch):
     # An embedded/packaged interpreter (no pip) can't install into itself —
     # the reason must route the user to FUSED_RENDER_FUSED_BIN instead.
@@ -216,7 +226,7 @@ def test_importable_fused_autodetects_via_shim_and_deploys(tmp_path, monkeypatch
     (call,) = h.calls()
     assert call["argv0"] == "fused"  # the shim renamed argv[0] for click
     assert call["argv"][:2] == ["share", "create"]
-    assert call["bundle_files"] == ["code", "manifest.json", "page.html"]
+    assert call["bundle_files"] == ["files", "manifest.json"]
 
 
 def test_setup_cli_hint_names_the_bundle_wrapper_when_frozen(tmp_path, monkeypatch):
@@ -303,6 +313,7 @@ def test_pointer_store_key_is_canonicalized(tmp_path, monkeypatch):
     assert "sub" not in " ".join(store)
 
 
+@requires_py311
 def test_install_invokes_pip_with_the_pinned_requirement(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
     ran: list[list[str]] = []
@@ -378,7 +389,7 @@ def test_deploy_creates_public_share_and_stores_pointer(tmp_path, monkeypatch):
     assert "--public" in call["argv"]
     assert call["env"] == "cloud"
     # The bundle handed to the CLI was a real export at call time.
-    assert call["bundle_files"] == ["code", "manifest.json", "page.html"]
+    assert call["bundle_files"] == ["files", "manifest.json"]
 
     assert h.pointer()["token"] == "abc123"
 
@@ -404,7 +415,7 @@ def test_deploy_bundles_included_file_and_persists_selection(tmp_path, monkeypat
 
     # The included file was actually bundled as an asset alongside the auto scan.
     (call,) = h.calls()
-    assert call["bundle_files"] == ["assets", "code", "manifest.json", "page.html"]
+    assert call["bundle_files"] == ["files", "manifest.json"]
 
 
 def test_redeploy_active_mount_repoints_same_token(tmp_path, monkeypatch):
@@ -863,6 +874,38 @@ def test_preview_applies_include_and_exclude(tmp_path, monkeypatch):
     assert body["errors"] == []
     # excluding a literally-referenced target warns (its call will fail when hosted)
     assert any("sine.py" in w for w in body["warnings"])
+
+
+def test_preview_reports_asset_source(tmp_path, monkeypatch):
+    # The preview tags each asset with HOW it's exposed so the "Will publish" list
+    # can mention rawUrl/readFile exposure: a scanned literal reference, a
+    # manifest-declared bundle file, and a hand-added include each land distinctly.
+    h = _harness(tmp_path, monkeypatch)
+    h.page.write_text(
+        '<html><body><script type="application/fused-bundle">'
+        '{"include": ["tiles/*.png"]}</script>'
+        "<script>fused.rawUrl('./logo.png'); const u = fused.rawUrl('tiles/' + z);</script>"
+        "</body></html>",
+        encoding="utf-8",
+    )
+    (tmp_path / "logo.png").write_text("PNG", encoding="utf-8")
+    (tmp_path / "tiles").mkdir()
+    (tmp_path / "tiles" / "0.png").write_text("PNG", encoding="utf-8")
+    (tmp_path / "extra.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    resp = h.client.post(
+        "/api/deploy/preview", json={"path": str(h.page), "include": ["extra.csv"]}
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert {a["name"]: a["source"] for a in body["assets"]} == {
+        "logo.png": "reference",
+        "tiles/0.png": "manifest",
+        "extra.csv": "include",
+    }
+    # The computed rawUrl path's warning is suppressed: the page's manifest bundles
+    # files to back it (shown as a "bundle" provenance pill in the list), so the nag
+    # is redundant.
+    assert not any("computed path" in w for w in body["warnings"])
 
 
 def test_preview_reports_export_blockers(tmp_path, monkeypatch):

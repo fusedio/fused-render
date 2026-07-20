@@ -2405,7 +2405,7 @@ select.field-control:has(option[value=""]:checked) {
    columns align across the publish and excluded lists. */
 .deploy-file {
   display: grid;
-  grid-template-columns: 1fr 56px 72px;
+  grid-template-columns: 1fr 68px 72px;
   align-items: center;
   column-gap: 8px;
   padding: 2px 4px;
@@ -2457,6 +2457,17 @@ select.field-control:has(option[value=""]:checked) {
 .deploy-file-tag.added {
   color: var(--accent);
   border-color: var(--accent);
+}
+
+/* rawUrl/readFile-exposed assets — a scanned literal reference ("rawUrl") or a
+   manifest-declared bundle file ("bundle"). Brighter than the muted run/page
+   pills so the list visibly flags which bundled files are web-fetchable via the
+   hosted `_asset` route. Casing is preserved (no uppercase) so "rawUrl" reads as
+   the fused.rawUrl API name rather than "RAWURL". */
+.deploy-file-tag.rawurl {
+  color: var(--fg);
+  text-transform: none;
+  letter-spacing: normal;
 }
 
 /* The action column: ✕ is centered, Restore fills it — both sit in the same

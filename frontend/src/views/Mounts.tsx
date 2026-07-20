@@ -14,7 +14,7 @@ import {
   getMounts,
   reconnectMount,
 } from "../lib/api";
-import type { Mount, MountsResult, RemoteSuggestion } from "../lib/api";
+import type { Mount, MountsResult, RcloneRemote, RemoteSuggestion } from "../lib/api";
 import { navigate } from "../lib/router";
 import { Modal } from "../components/modal/Modal";
 import { ErrorBanner } from "../components/ErrorBanner";
@@ -127,7 +127,7 @@ function AddMount({
   suggested,
   onChanged,
 }: {
-  remotes: string[];
+  remotes: RcloneRemote[];
   suggested: RemoteSuggestion[];
   onChanged: () => void;
 }) {
@@ -226,8 +226,10 @@ function AddMount({
             {remotes.length > 0 && (
               <optgroup label="Remotes">
                 {remotes.map((r) => (
-                  <option key={r} value={r}>
-                    {r}
+                  // value is the raw rclone spec (add() and the live preview
+                  // mount against r.name); only the shown text is the label.
+                  <option key={r.name} value={r.name}>
+                    {r.label}
                   </option>
                 ))}
               </optgroup>

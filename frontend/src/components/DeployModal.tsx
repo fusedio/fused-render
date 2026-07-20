@@ -241,26 +241,53 @@ function FileSelection({
     );
   }
 
-  const rows = [
-    ...preview.entrypoints.map((e) => ({
-      path: e.path,
-      label: relKey(e.path),
-      title: `fused.runPython(${JSON.stringify(e.path)}) → route “${e.name}”`,
-      tag: "run" as const,
-    })),
-    ...preview.assets.map((a) => {
-      // "added" iff the file is NOT in the auto-detected set — a purely manual
-      // include. A file that's both referenced AND included reads as a normal
-      // asset (removing it must exclude, which the "added" affordance wouldn't
-      // convey), so auto-ness wins the label.
-      const manual = !autoKeys.has(relKey(a.path));
+  // A publish-list row. `tag` is the pill's CSS modifier class, `tagText` its
+  // (case-preserved) label — decoupled so the pill can read "rawUrl" while the
+  // class stays lowercase.
+  type Row = { path: string; label: string; title: string; tag: string; tagText: string };
+  const rows: Row[] = [
+    ...preview.entrypoints.map(
+      (e): Row => ({
+        path: e.path,
+        label: relKey(e.path),
+        title: `fused.runPython(${JSON.stringify(e.path)}) → route “${e.name}”`,
+        tag: "run",
+        tagText: "run",
+      }),
+    ),
+    ...preview.assets.map((a): Row => {
+      // Every asset is served read-only on the hosted `_asset` route — the surface
+      // fused.rawUrl()/readFile() fetch from. The pill mentions rawUrl/readFile
+      // exposure and names HOW the file got bundled (a.source, from the server):
+      //   reference → the page fetches it via a literal fused.rawUrl()/readFile()
+      //   manifest  → declared in the page's fused-bundle manifest to back a
+      //               *computed* rawUrl/readFile path (so it auto-shows here)
+      //   include   → added by hand (Add files / Add all in folder)
+      const served = `served read-only at _asset/${a.name} — the surface fused.rawUrl()/readFile() fetch from`;
+      if (a.source === "include") {
+        return {
+          path: a.path,
+          label: relKey(a.path),
+          title: `Added file — ${served} — ${a.path}`,
+          tag: "added",
+          tagText: "added",
+        };
+      }
+      if (a.source === "manifest") {
+        return {
+          path: a.path,
+          label: relKey(a.path),
+          title: `Declared in the page's fused-bundle manifest to back a computed fused.rawUrl()/readFile() path — ${served} — ${a.path}`,
+          tag: "rawurl",
+          tagText: "bundle",
+        };
+      }
       return {
         path: a.path,
         label: relKey(a.path),
-        title: manual
-          ? `included file — ${a.path}`
-          : `asset “${a.name}” (fused.rawUrl/readFile) — ${a.path}`,
-        tag: manual ? ("added" as const) : (null as null),
+        title: `Fetched by the page via fused.rawUrl()/readFile() — ${served} — ${a.path}`,
+        tag: "rawurl",
+        tagText: "rawUrl",
       };
     }),
   ];
@@ -312,11 +339,9 @@ function FileSelection({
               <span className="deploy-file-action" />
             </li>
             {rows.map((r) => (
-              <li key={(r.tag ?? "asset") + r.path} className="deploy-file">
+              <li key={r.tag + r.path} className="deploy-file">
                 <code title={r.title}>{r.label}</code>
-                <span className={"deploy-file-tag" + (r.tag ? " " + r.tag : " none")}>
-                  {r.tag ?? ""}
-                </span>
+                <span className={"deploy-file-tag " + r.tag}>{r.tagText}</span>
                 <button
                   type="button"
                   className="deploy-file-action deploy-file-remove"

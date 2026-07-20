@@ -626,6 +626,61 @@ def test_public_suggestion_hidden_once_materialized(monkeypatch):
                    for s in mounts_mod._suggestions_view(["aws-open:"]))
 
 
+_AWS_OPEN_SUGG = {
+    "id": "aws-open-public",
+    "label": "AWS S3 — public buckets (no credentials)",
+    "remote_name": "aws-open", "backend": "s3", "kind": "public",
+    "params": {"provider": "AWS", "env_auth": "false"},
+}
+
+
+def test_remote_label_matches_suggestion():
+    """A remote whose stored config matches a suggestion's backend+params reuses
+    that suggestion's friendly label — one stable human name across its lifecycle."""
+    configs = {"aws-open": {"type": "s3", "provider": "AWS", "env_auth": "false"}}
+    assert (mounts_mod._remote_label("aws-open:", [_AWS_OPEN_SUGG], configs)
+            == "AWS S3 — public buckets (no credentials)")
+
+
+def test_remote_label_falls_back_to_bare_name():
+    """An unknown/custom remote (no matching suggestion) keeps its bare rclone
+    name as the label."""
+    assert mounts_mod._remote_label("myminio:", [], {}) == "myminio:"
+
+
+def test_remote_label_ignores_name_collision():
+    """Provenance, not name: a user's own remote merely named `aws` whose config
+    differs from the default-profile suggestion must NOT inherit that label —
+    the dropdown would otherwise claim the wrong credential source for the mount."""
+    sugg = {"id": "aws-profile:default", "label": "AWS S3 — default profile",
+            "remote_name": "aws", "backend": "s3",
+            "params": {"provider": "AWS", "env_auth": "true", "profile": "default"}}
+    # a custom MinIO remote that just happens to be named "aws"
+    configs = {"aws": {"type": "s3", "provider": "Minio",
+                       "endpoint": "http://localhost:9000"}}
+    assert mounts_mod._remote_label("aws:", [sugg], configs) == "aws:"
+
+
+def test_rclone_state_labels_materialized_remote(monkeypatch):
+    """_rclone_state exposes remotes as {name,label}: a materialized suggestion
+    (aws-open:, config matches) carries its friendly label, a custom remote
+    (myminio:) its bare name. The name stays the verbatim rclone mount base."""
+    monkeypatch.setattr(mounts_mod, "_credential_suggestions",
+                        lambda: [_AWS_OPEN_SUGG])
+    _fake_rclone(monkeypatch, existing_remotes=("aws-open:", "myminio:"),
+                 configs={"aws-open": {"type": "s3", "provider": "AWS",
+                                       "env_auth": "false"},
+                          "myminio": {"type": "s3", "provider": "Minio"}})
+
+    state = mounts_mod._rclone_state()
+    assert state["remotes"] == [
+        {"name": "aws-open:", "label": "AWS S3 — public buckets (no credentials)"},
+        {"name": "myminio:", "label": "myminio:"},
+    ]
+    # the materialized aws-open drops out of the suggestions (shown under Remotes)
+    assert not any(s["id"] == "aws-open-public" for s in state["suggested"])
+
+
 def test_detect_materializes_public_anonymous_remote(client, monkeypatch):
     """Selecting the built-in public option creates an anonymous S3 remote —
     no secret material, env_auth=false — so unsigned requests reach open data."""
@@ -642,9 +697,227 @@ def test_detect_materializes_public_anonymous_remote(client, monkeypatch):
     assert not any("secret" in str(x).lower() for x in cmd)
 
 
-def _fake_rclone(monkeypatch, existing_remotes=(), record=None):
-    """Stub rclone_bin + subprocess.run: version/listremotes canned, every
-    other argv appended to `record` and reported as success."""
+def test_gcs_public_bucket_suggestion_always_present(monkeypatch):
+    """The anonymous GCS public-bucket remote is offered alongside aws-open,
+    even with no gcloud credentials — anonymous=true needs no key material."""
+    monkeypatch.setattr(mounts_mod, "_aws_profiles", lambda: [])
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.setattr(mounts_mod.os.path, "exists", lambda p: False)
+
+    by_id = {s["id"]: s for s in mounts_mod._credential_suggestions()}
+    pub = by_id["gcs-open-public"]
+    assert pub["remote_name"] == "gcs-open"
+    assert pub["kind"] == "public"
+    assert pub["backend"] == "google cloud storage"
+    assert pub["params"] == {"anonymous": "true"}
+
+
+def test_gcs_env_credentials_suggestion_detected(monkeypatch):
+    """GOOGLE_APPLICATION_CREDENTIALS (a service-account JSON path) is detected
+    symmetrically with AWS_ACCESS_KEY_ID → a keyless env_auth=true GCS
+    suggestion; absent, it isn't offered. No key material is copied."""
+    monkeypatch.setattr(mounts_mod, "_aws_profiles", lambda: [])
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.setattr(mounts_mod.os.path, "exists", lambda p: False)
+
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/creds/sa.json")
+    by_id = {s["id"]: s for s in mounts_mod._credential_suggestions()}
+    sug = by_id["gcs-env"]
+    assert sug["remote_name"] == "gcs-env"
+    assert sug["backend"] == "google cloud storage"
+    assert sug["params"] == {"env_auth": "true"}
+    assert not any("secret" in k or "key" in k for k in sug["params"])
+
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    by_id = {s["id"]: s for s in mounts_mod._credential_suggestions()}
+    assert "gcs-env" not in by_id
+
+
+def test_detect_materializes_gcs_public_anonymous_remote(client, monkeypatch):
+    """Selecting the built-in GCS public option creates an anonymous GCS remote
+    — no key material, anonymous=true — reaching public buckets unsigned."""
+    created = []
+    _fake_rclone(monkeypatch, existing_remotes=(), record=created)
+
+    r = client.post("/api/mounts/remotes/detect",
+                    json={"id": "gcs-open-public"}, headers=FUSED)
+    assert r.status_code == 200
+    assert r.json()["name"] == "gcs-open:"
+    [cmd] = created
+    assert cmd[:5] == ["/usr/bin/rclone", "config", "create", "gcs-open",
+                       "google cloud storage"]
+    assert "anonymous" in cmd and "true" in cmd
+    assert not any("secret" in str(x).lower() for x in cmd)
+
+
+def test_gcs_anonymous_detected_read_only():
+    """anonymous=true GCS is the gcs-open shape — unauthenticated requests can
+    never take a write, so it must read-only detect like anonymous S3 does."""
+    assert mounts_mod._gcs_anonymous(
+        {"type": "google cloud storage", "anonymous": "true"})
+    assert not mounts_mod._gcs_anonymous({"type": "google cloud storage"})
+    assert not mounts_mod._gcs_anonymous(
+        {"type": "s3", "anonymous": "true"})
+
+
+_DETECTED_SUGG = {
+    "id": "aws-env", "label": "AWS S3 — environment credentials",
+    "remote_name": "aws-env", "backend": "s3",
+    "params": {"provider": "AWS", "env_auth": "true"},
+}
+
+
+def _fake_rclone_probe(monkeypatch, lsd_rc=0, lsd_stderr="", record=None,
+                       existing_remotes=(), delete_rc=0):
+    """Like _fake_rclone but the `lsd` credential probe can be made to fail
+    with a given stderr; records EVERY argv (create, lsd, delete). Pass
+    `existing_remotes` to make `listremotes` report already-created remotes
+    (exercises the idempotent re-entry path) and `delete_rc` to make the
+    rollback `config delete` exit non-zero."""
+    def fake_run(cmd, **kw):
+        if record is not None:
+            record.append(cmd)
+
+        class R:
+            returncode = (lsd_rc if "lsd" in cmd
+                          else delete_rc if "delete" in cmd else 0)
+            stderr = lsd_stderr if "lsd" in cmd else ""
+            stdout = ("rclone v1.2\n" if "version" in cmd
+                      else "{}" if "dump" in cmd
+                      else "".join(f"{r}\n" for r in existing_remotes)
+                      if "listremotes" in cmd else "")
+        return R()
+
+    monkeypatch.setattr(mounts_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: "/usr/bin/rclone")
+
+
+def test_detect_rejects_expired_credentials(client, monkeypatch):
+    """Materializing a detected credential source whose keys are stale (expired
+    STS/SSO token) fails with an actionable message and rolls the half-created
+    remote back — a broken remote must not linger inviting doomed mounts."""
+    monkeypatch.setattr(mounts_mod, "_credential_suggestions",
+                        lambda: [_DETECTED_SUGG])
+    calls = []
+    _fake_rclone_probe(
+        monkeypatch, lsd_rc=1, record=calls,
+        lsd_stderr="ERROR: ExpiredToken: The provided token has expired.")
+
+    r = client.post("/api/mounts/remotes/detect",
+                    json={"id": "aws-env"}, headers=FUSED)
+    assert r.status_code == 502
+    assert "expired" in r.json()["error"].lower()
+    assert any(c[:3] == ["/usr/bin/rclone", "config", "delete"] for c in calls)
+
+
+def test_detect_rejects_google_expired_or_revoked_token(client, monkeypatch):
+    """Google ADC/OAuth refresh failures surface as "Token has been expired or
+    revoked." — no invalid_grant, and it matches neither "has expired" nor "is
+    expired". _BAD_CRED_MARKERS must still classify it as expired creds, or
+    stale GCS creds slip through to the opaque reconnect path this replaces."""
+    monkeypatch.setattr(mounts_mod, "_credential_suggestions",
+                        lambda: [_DETECTED_SUGG])
+    calls = []
+    _fake_rclone_probe(
+        monkeypatch, lsd_rc=1, record=calls,
+        lsd_stderr="Token has been expired or revoked.")
+
+    r = client.post("/api/mounts/remotes/detect",
+                    json={"id": "aws-env"}, headers=FUSED)
+    assert r.status_code == 502
+    assert "expired" in r.json()["error"].lower()
+    assert any(c[:3] == ["/usr/bin/rclone", "config", "delete"] for c in calls)
+
+
+def test_detect_accepts_access_denied_probe(client, monkeypatch):
+    """AccessDenied means valid keys without ListBuckets permission — the probe
+    must not reject those; only credential-shaped failures do."""
+    monkeypatch.setattr(mounts_mod, "_credential_suggestions",
+                        lambda: [_DETECTED_SUGG])
+    _fake_rclone_probe(monkeypatch, lsd_rc=1,
+                       lsd_stderr="ERROR: AccessDenied: Access Denied")
+
+    r = client.post("/api/mounts/remotes/detect",
+                    json={"id": "aws-env"}, headers=FUSED)
+    assert r.status_code == 200
+    assert r.json()["name"] == "aws-env:"
+
+
+def test_detect_skips_probe_for_public_remotes(client, monkeypatch):
+    """Anonymous public remotes carry no credentials to go stale — no lsd
+    probe runs for them (it would only add latency and network flake)."""
+    calls = []
+    _fake_rclone_probe(monkeypatch, record=calls)
+
+    r = client.post("/api/mounts/remotes/detect",
+                    json={"id": "aws-open-public"}, headers=FUSED)
+    assert r.status_code == 200
+    assert not any("lsd" in c for c in calls)
+
+
+def test_detect_reports_failed_rollback(client, monkeypatch):
+    """When creds are expired the half-created remote is rolled back — but if
+    the `config delete` itself fails (non-zero), the remote may still exist, so
+    the 502 must say so rather than returning the bare cred error as if cleanup
+    succeeded (a lingering remote would be reported ok on the next detect)."""
+    monkeypatch.setattr(mounts_mod, "_credential_suggestions",
+                        lambda: [_DETECTED_SUGG])
+    calls = []
+    _fake_rclone_probe(
+        monkeypatch, lsd_rc=1, record=calls, delete_rc=1,
+        lsd_stderr="ERROR: ExpiredToken: The provided token has expired.")
+
+    r = client.post("/api/mounts/remotes/detect",
+                    json={"id": "aws-env"}, headers=FUSED)
+    assert r.status_code == 502
+    err = r.json()["error"].lower()
+    assert "expired" in err  # keep the cred-error wording
+    assert "could not be removed" in err or "manually" in err
+    assert any(c[:3] == ["/usr/bin/rclone", "config", "delete"] for c in calls)
+
+
+def test_detect_reprobes_existing_detected_remote_now_expired(client, monkeypatch):
+    """Idempotent re-entry must not report an already-existing detected remote
+    healthy on faith: if its creds have since expired, re-detect returns the
+    502 cred error, NOT {"ok": True} — otherwise the stale remote invites a
+    doomed mount just like a freshly created one would."""
+    monkeypatch.setattr(mounts_mod, "_credential_suggestions",
+                        lambda: [_DETECTED_SUGG])
+    calls = []
+    _fake_rclone_probe(
+        monkeypatch, lsd_rc=1, record=calls, existing_remotes=("aws-env:",),
+        lsd_stderr="ERROR: ExpiredToken: The provided token has expired.")
+
+    r = client.post("/api/mounts/remotes/detect",
+                    json={"id": "aws-env"}, headers=FUSED)
+    assert r.status_code == 502
+    assert "expired" in r.json()["error"].lower()
+    # re-entry re-probed (lsd) but did NOT re-create or delete the remote
+    assert any("lsd" in c for c in calls)
+    assert not any("create" in c for c in calls)
+    assert not any("delete" in c for c in calls)
+
+
+def test_detect_existing_detected_remote_still_valid_returns_ok(client, monkeypatch):
+    """Regression: an already-existing detected remote whose creds are still
+    valid re-probes cleanly and returns {"ok": True} — the re-probe closes the
+    stale-cred hole without breaking the healthy idempotent path."""
+    monkeypatch.setattr(mounts_mod, "_credential_suggestions",
+                        lambda: [_DETECTED_SUGG])
+    calls = []
+    _fake_rclone_probe(monkeypatch, lsd_rc=0, record=calls,
+                       existing_remotes=("aws-env:",))
+
+    r = client.post("/api/mounts/remotes/detect",
+                    json={"id": "aws-env"}, headers=FUSED)
+    assert r.status_code == 200 and r.json()["name"] == "aws-env:"
+    assert not any("create" in c for c in calls)  # not re-created
+
+
+def _fake_rclone(monkeypatch, existing_remotes=(), record=None, configs=None):
+    """Stub rclone_bin + subprocess.run: version/listremotes/config-dump canned,
+    every other argv appended to `record` and reported as success. `configs` is
+    the {bare_name: cfg} map `rclone config dump` returns (JSON-encoded)."""
     def fake_run(cmd, **kw):
         if record is not None and "create" in cmd:
             record.append(cmd)
@@ -653,6 +926,7 @@ def _fake_rclone(monkeypatch, existing_remotes=(), record=None):
             returncode = 0
             stderr = ""
             stdout = ("rclone v1.2\n" if "version" in cmd
+                      else json.dumps(configs or {}) if "dump" in cmd
                       else "".join(f"{r}\n" for r in existing_remotes)
                       if "listremotes" in cmd else "")
         return R()
@@ -851,6 +1125,95 @@ def test_state_disconnected_when_listing_hangs(home, rcd, monkeypatch):
 def test_state_unmounted_when_nothing_there(home, rcd):
     c, mp = _make_mount(home, rcd, served=False)
     assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "unmounted"
+
+
+# -- broken_mount_error: expired detected credentials ----------------------
+#
+# A mount backed by detected (env_auth) credentials keeps mounting fine, then
+# stops flowing when the SSO/STS token expires — the kernel raises an opaque
+# I/O error, so mount_state reads "disconnected" exactly like a dead daemon.
+# But "reconnect" can't fix an expired token: broken_mount_error probes the
+# remote and, when the failure is credential-shaped, tells the user to re-auth.
+
+
+def _stub_lsd(monkeypatch, rc=0, lsd_stderr="", record=None):
+    """Stub rclone_bin + subprocess.run so the credential probe's `lsd` returns
+    a chosen returncode/stderr; config/get still routes to the stub rcd."""
+    def fake_run(cmd, **kw):
+        if record is not None:
+            record.append(cmd)
+
+        class R:
+            returncode = rc
+            stderr = lsd_stderr
+            stdout = ""
+        return R()
+
+    monkeypatch.setattr(mounts_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: "/usr/bin/rclone")
+
+
+def _disconnected_mount(home, rcd, monkeypatch, remote="corp:bucket"):
+    c, mp = _make_mount(home, rcd, remote=remote, served=False)
+    # ismount True + not served -> "disconnected" (kernel mount, daemon gone).
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    return c, mp
+
+
+def test_broken_mount_error_reports_expired_credentials(
+        home, rcd, monkeypatch, fresh_upstream):
+    c, mp = _disconnected_mount(home, rcd, monkeypatch)
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
+    _stub_lsd(monkeypatch, rc=1,
+              lsd_stderr="ERROR: ExpiredToken: The provided token has expired.")
+
+    err = mounts_mod.broken_mount_error(_os.path.join(mp, "data"))
+    assert err is not None
+    assert "expired" in err.lower() and "refresh" in err.lower()
+    # Must NOT send the user to the reconnect button — that won't re-auth.
+    assert "reconnect" not in err.lower()
+
+
+def test_broken_mount_error_reconnect_when_creds_still_valid(
+        home, rcd, monkeypatch, fresh_upstream):
+    # env_auth remote, but the probe succeeds: the disconnection is a dead
+    # daemon, not stale creds — keep the generic "reconnect" guidance.
+    c, mp = _disconnected_mount(home, rcd, monkeypatch)
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
+    _stub_lsd(monkeypatch, rc=0)
+
+    err = mounts_mod.broken_mount_error(_os.path.join(mp, "data"))
+    assert err is not None and "reconnect" in err.lower()
+
+
+def test_broken_mount_error_skips_cred_probe_for_non_env_auth(
+        home, rcd, monkeypatch, fresh_upstream):
+    # A remote that isn't env_auth-backed can't have detected creds expire —
+    # no lsd probe runs (it would only add latency), and the generic message
+    # stands.
+    c, mp = _disconnected_mount(home, rcd, monkeypatch)
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "false",
+                                   "access_key_id": "AKIA"}
+    calls = []
+    _stub_lsd(monkeypatch, rc=1, lsd_stderr="ExpiredToken", record=calls)
+
+    err = mounts_mod.broken_mount_error(_os.path.join(mp, "data"))
+    assert err is not None and "reconnect" in err.lower()
+    assert not any("lsd" in cmd for cmd in calls)
+
+
+def test_broken_mount_error_no_cred_probe_when_never_mounted(
+        home, rcd, monkeypatch, fresh_upstream):
+    # "unmounted" (never mounted / cleanly disconnected) is a user action, not
+    # a credential failure — the probe must not run for it.
+    c, mp = _make_mount(home, rcd, remote="corp:bucket", served=False)
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
+    calls = []
+    _stub_lsd(monkeypatch, rc=1, lsd_stderr="ExpiredToken", record=calls)
+
+    err = mounts_mod.broken_mount_error(_os.path.join(mp, "data"))
+    assert err is not None and "not mounted" in err.lower()
+    assert not any("lsd" in cmd for cmd in calls)
 
 
 def test_reconnect_force_unmounts_dead_mount_then_remounts(home, rcd, monkeypatch):
@@ -1518,6 +1881,53 @@ def test_upstream_url_public_s3_when_link_unsupported(home, rcd, fresh_upstream)
     assert len([x for x in rcd.calls if x[0] == "config/get"]) == 1
 
 
+def test_gcs_public_object_url_builds_unsigned_url(home, rcd, fresh_upstream):
+    # Anonymous GCS objects are reachable by a plain path-style storage URL —
+    # no region, no dotted-bucket rule. The key is percent-encoded exactly as
+    # the S3 builder encodes it.
+    mounts_mod._upstream_cfg["gcs-open"] = {
+        "type": "google cloud storage", "anonymous": "true"}
+    assert mounts_mod._gcs_public_object_url(
+        "gcs-open:bucket/pre fix", "k ey.parquet") == (
+        "https://storage.googleapis.com/bucket/pre%20fix/k%20ey.parquet")
+    # A non-anonymous GCS remote has no reachable unsigned URL.
+    mounts_mod._upstream_cfg["gcp"] = {"type": "google cloud storage"}
+    assert mounts_mod._gcs_public_object_url("gcp:bucket", "x.parquet") is None
+
+
+def test_upstream_url_public_gcs_when_anonymous(home, rcd, fresh_upstream):
+    import os
+
+    # Anonymous GCS remotes can never presign either — the config makes that
+    # knowable up front, so publiclink is never attempted and the plain public
+    # object URL is minted directly, config memoized for later objects.
+    rcd.responses["config/get"] = {
+        "type": "google cloud storage", "anonymous": "true"}
+    c = mounts_mod.add_mount("open", "gcs-open:bucket/pre fix")
+    f = os.path.join(mounts_mod.mountpoint(c), "k ey.parquet")
+    assert mounts_mod.upstream_url_for(f) == (
+        "https://storage.googleapis.com/bucket/pre%20fix/k%20ey.parquet")
+    f2 = os.path.join(mounts_mod.mountpoint(c), "other.parquet")
+    assert mounts_mod.upstream_url_for(f2) == (
+        "https://storage.googleapis.com/bucket/pre%20fix/other.parquet")
+    assert [x for x in rcd.calls if x[0] == "operations/publiclink"] == []
+    assert len([x for x in rcd.calls if x[0] == "config/get"]) == 1
+
+
+def test_upstream_url_non_anonymous_gcs_gets_no_public_url(home, rcd, fresh_upstream):
+    import os
+
+    # A non-anonymous GCS remote whose publiclink fails has no reachable
+    # unsigned URL — the verdict is cached like the credentialed-S3 case.
+    rcd.responses["operations/publiclink"] = (500, {"error": "boom"})
+    rcd.responses["config/get"] = {"type": "google cloud storage"}
+    c = mounts_mod.add_mount("gcp", "gcp:bucket")
+    f = os.path.join(mounts_mod.mountpoint(c), "x.parquet")
+    assert mounts_mod.upstream_url_for(f) is None
+    assert mounts_mod.upstream_url_for(f) is None
+    assert len([x for x in rcd.calls if x[0] == "operations/publiclink"]) == 1
+
+
 def test_upstream_url_none_is_remembered(home, rcd, fresh_upstream):
     import os
 
@@ -1964,3 +2374,195 @@ def test_s3_list_page_non_anonymous_raises_s3listerror(home, rcd, fresh_upstream
     c = mounts_mod.add_mount("corp", "corp:bucket/pre")
     with pytest.raises(mounts_mod.S3ListError):
         mounts_mod.s3_list_page(mounts_mod.mountpoint(c), max_keys=1000)
+
+
+# -- gcs_list_page / gcs_direct_capable -------------------------------------
+#
+# Anonymous GCS (the gcs-open shape) is the GCS analog of anonymous plain AWS
+# S3: rclone can't paginate a listing at any layer, so a flat prefix with
+# hundreds of thousands of children times out. For anonymous GCS a single page
+# is fetched straight from the GCS JSON API (objects.list) unsigned, off the
+# kernel mount. Real GCS is never hit: urllib.request.urlopen is monkeypatched
+# with canned JSON.
+
+_ANON_GCS_CFG = {"type": "google cloud storage", "anonymous": "true"}
+
+
+def _gcs_list_json(*, prefixes=(), items=(), next_token=None):
+    """A GCS objects.list response body. `items` are (name, size, updated);
+    `size` is emitted as a STRING, exactly as the JSON API returns it."""
+    body: dict = {}
+    if prefixes:
+        body["prefixes"] = list(prefixes)
+    if items:
+        body["items"] = [{"name": n, "size": str(sz), "updated": upd}
+                         for n, sz, upd in items]
+    if next_token:
+        body["nextPageToken"] = next_token
+    return json.dumps(body).encode()
+
+
+@pytest.fixture()
+def gcs_urlopen(monkeypatch):
+    """Capture the objects.list URL and hand back canned JSON. `box["body"]` is
+    the reply; set `box["raise"]` to an exception to fail the GET."""
+    calls = []
+    box = {"body": _gcs_list_json()}
+    real = mounts_mod.urllib.request.urlopen
+
+    def fake(url, timeout=None):
+        # rc calls (config/get etc.) go to the loopback stub rcd over http —
+        # only intercept the GCS objects.list GET, delegate the rest.
+        target = url if isinstance(url, str) else url.get_full_url()
+        if "storage.googleapis.com" not in target:
+            return real(url, timeout=timeout)
+        calls.append((target, timeout))
+        if box.get("raise") is not None:
+            raise box["raise"]
+        return _FakeS3Resp(box["body"])
+
+    monkeypatch.setattr(mounts_mod.urllib.request, "urlopen", fake)
+    return calls, box
+
+
+def test_gcs_direct_capable_true_for_anonymous_gcs(home, rcd, fresh_upstream):
+    rcd.responses["config/get"] = _ANON_GCS_CFG
+    c = mounts_mod.add_mount("open", "gcs-open:mur-sst/zarr-v1")
+    assert mounts_mod.gcs_direct_capable(mounts_mod.mountpoint(c) + "/analysed_sst")
+
+
+def test_gcs_direct_capable_false_for_non_anonymous(home, rcd, fresh_upstream):
+    rcd.responses["config/get"] = {"type": "google cloud storage"}
+    c = mounts_mod.add_mount("gcp", "gcp:bucket")
+    assert not mounts_mod.gcs_direct_capable(mounts_mod.mountpoint(c) + "/x")
+
+
+def test_gcs_direct_capable_false_outside_mount(home, rcd, fresh_upstream):
+    assert not mounts_mod.gcs_direct_capable("/tmp/not/a/mount")
+
+
+def test_gcs_list_page_url_and_query_nested_dir(home, rcd, fresh_upstream, gcs_urlopen):
+    import urllib.parse as up
+
+    calls, _box = gcs_urlopen
+    rcd.responses["config/get"] = _ANON_GCS_CFG
+    c = mounts_mod.add_mount("open", "gcs-open:mur-sst/zarr-v1")
+    mounts_mod.gcs_list_page(
+        mounts_mod.mountpoint(c) + "/analysed_sst", max_keys=1000)
+    [(url, timeout)] = calls
+    assert url.startswith(
+        "https://storage.googleapis.com/storage/v1/b/mur-sst/o?")
+    q = up.parse_qs(up.urlsplit(url).query)
+    assert q["delimiter"] == ["/"]
+    assert q["prefix"] == ["zarr-v1/analysed_sst/"]
+    assert q["maxResults"] == ["1000"]
+    assert "pageToken" not in q
+    assert timeout == mounts_mod.GCS_LIST_TIMEOUT_S
+
+
+def test_gcs_list_page_mountpoint_uses_store_prefix(home, rcd, fresh_upstream, gcs_urlopen):
+    import urllib.parse as up
+
+    calls, _box = gcs_urlopen
+    rcd.responses["config/get"] = _ANON_GCS_CFG
+    c = mounts_mod.add_mount("open", "gcs-open:mur-sst/zarr-v1")
+    mounts_mod.gcs_list_page(mounts_mod.mountpoint(c), max_keys=500)
+    q = up.parse_qs(up.urlsplit(calls[0][0]).query)
+    assert q["prefix"] == ["zarr-v1/"]
+
+
+def test_gcs_list_page_bucket_root_mountpoint_empty_prefix(home, rcd, fresh_upstream, gcs_urlopen):
+    import urllib.parse as up
+
+    calls, _box = gcs_urlopen
+    rcd.responses["config/get"] = _ANON_GCS_CFG
+    c = mounts_mod.add_mount("open", "gcs-open:mur-sst")
+    mounts_mod.gcs_list_page(mounts_mod.mountpoint(c), max_keys=500)
+    q = up.parse_qs(up.urlsplit(calls[0][0]).query, keep_blank_values=True)
+    assert q["prefix"] == [""]
+
+
+def test_gcs_list_page_continuation_token_urlencoded(home, rcd, fresh_upstream, gcs_urlopen):
+    import urllib.parse as up
+
+    calls, _box = gcs_urlopen
+    rcd.responses["config/get"] = _ANON_GCS_CFG
+    c = mounts_mod.add_mount("open", "gcs-open:mur-sst/zarr-v1")
+    mounts_mod.gcs_list_page(mounts_mod.mountpoint(c), max_keys=1000,
+                             continuation="a b/c+d=")
+    q = up.parse_qs(up.urlsplit(calls[0][0]).query)
+    assert q["pageToken"] == ["a b/c+d="]
+
+
+def test_gcs_list_page_parses_prefixes_files_and_token(home, rcd, fresh_upstream, gcs_urlopen):
+    calls, box = gcs_urlopen
+    rcd.responses["config/get"] = _ANON_GCS_CFG
+    c = mounts_mod.add_mount("open", "gcs-open:mur-sst/zarr-v1")
+    box["body"] = _gcs_list_json(
+        prefixes=["zarr-v1/analysed_sst/2020/", "zarr-v1/analysed_sst/2021/"],
+        items=[
+            # placeholder object whose name IS the prefix -> skipped
+            ("zarr-v1/analysed_sst/", 0, "2000-01-01T00:00:00.000Z"),
+            ("zarr-v1/analysed_sst/.zattrs", 42, "2024-01-02T03:04:05.000Z"),
+        ],
+        next_token="TOKEN123")
+    entries, token = mounts_mod.gcs_list_page(
+        mounts_mod.mountpoint(c) + "/analysed_sst", max_keys=1000)
+    by = {e["Name"]: e for e in entries}
+    assert set(by) == {"2020", "2021", ".zattrs"}
+    assert by["2020"]["IsDir"] is True and by["2020"]["Size"] is None
+    assert by["2020"]["ModTime"] is None
+    assert by[".zattrs"]["IsDir"] is False and by[".zattrs"]["Size"] == 42
+    assert by[".zattrs"]["ModTime"] == "2024-01-02T03:04:05.000Z"
+    assert token == "TOKEN123"
+
+
+def test_gcs_list_page_not_truncated_returns_none_token(home, rcd, fresh_upstream, gcs_urlopen):
+    calls, box = gcs_urlopen
+    rcd.responses["config/get"] = _ANON_GCS_CFG
+    c = mounts_mod.add_mount("open", "gcs-open:mur-sst/zarr-v1")
+    box["body"] = _gcs_list_json(items=[("zarr-v1/f.txt", 1, "2024-01-02T03:04:05Z")])
+    _entries, token = mounts_mod.gcs_list_page(mounts_mod.mountpoint(c), max_keys=1000)
+    assert token is None
+
+
+def test_gcs_list_page_http_403_raises_directlisterror(home, rcd, fresh_upstream, gcs_urlopen):
+    calls, box = gcs_urlopen
+    rcd.responses["config/get"] = _ANON_GCS_CFG
+    c = mounts_mod.add_mount("open", "gcs-open:mur-sst/zarr-v1")
+    box["raise"] = mounts_mod.urllib.error.HTTPError(
+        "https://x", 403, "Forbidden", {}, None)
+    with pytest.raises(mounts_mod.DirectListError):
+        mounts_mod.gcs_list_page(mounts_mod.mountpoint(c), max_keys=1000)
+
+
+def test_gcs_list_page_non_anonymous_raises_directlisterror(home, rcd, fresh_upstream, gcs_urlopen):
+    rcd.responses["config/get"] = {"type": "google cloud storage"}
+    c = mounts_mod.add_mount("gcp", "gcp:bucket/pre")
+    with pytest.raises(mounts_mod.DirectListError):
+        mounts_mod.gcs_list_page(mounts_mod.mountpoint(c), max_keys=1000)
+
+
+# -- unified direct-listing dispatchers (S3 + GCS) --------------------------
+
+
+def test_direct_list_capable_true_for_both_backends(home, rcd, fresh_upstream):
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    c = mounts_mod.add_mount("s3open", "aws-open:mur-sst/zarr-v1")
+    assert mounts_mod.direct_list_capable(mounts_mod.mountpoint(c))
+    mounts_mod._upstream_cfg.clear()
+    rcd.responses["config/get"] = _ANON_GCS_CFG
+    g = mounts_mod.add_mount("gcsopen", "gcs-open:mur-sst/zarr-v1")
+    assert mounts_mod.direct_list_capable(mounts_mod.mountpoint(g))
+
+
+def test_direct_list_page_routes_gcs_to_googleapis(home, rcd, fresh_upstream, gcs_urlopen):
+    calls, _box = gcs_urlopen
+    rcd.responses["config/get"] = _ANON_GCS_CFG
+    c = mounts_mod.add_mount("open", "gcs-open:mur-sst/zarr-v1")
+    mounts_mod.direct_list_page(mounts_mod.mountpoint(c), max_keys=1000)
+    assert calls and "storage.googleapis.com" in calls[0][0]
+
+
+def test_s3listerror_is_directlisterror_alias():
+    assert mounts_mod.S3ListError is mounts_mod.DirectListError

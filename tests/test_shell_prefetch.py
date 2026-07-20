@@ -15,12 +15,18 @@ import fused_render.shell.prefetch as prefetch_mod
 class StubServe:
     """Range-capable HTTP stand-in for an rclone serve. Serves `data` at
     every path, records requests, and can fail the first N GETs with a 500
-    (the transient store errors the real serve surfaces mid-stream)."""
+    (the transient store errors the real serve surfaces mid-stream) or, with
+    `partial_first_gets`, send a truncated body under a full Content-Length so
+    the client hits an IncompleteRead *mid-chunk* (partial bytes delivered,
+    then the connection drops)."""
 
-    def __init__(self, data: bytes, fail_first_gets: int = 0):
+    def __init__(self, data: bytes, fail_first_gets: int = 0,
+                 partial_first_gets: int = 0, short_clean_first_gets: int = 0):
         self.data = data
         self.requests = []          # (method, range_header)
         self.fail_remaining = fail_first_gets
+        self.partial_remaining = partial_first_gets
+        self.short_clean_remaining = short_clean_first_gets
         stub = self
 
         class H(BaseHTTPRequestHandler):
@@ -34,6 +40,12 @@ class StubServe:
                 self.send_header("Accept-Ranges", "bytes")
                 self.end_headers()
 
+            def _body(self, rng):
+                if rng:
+                    lo, hi = rng.removeprefix("bytes=").split("-")
+                    return stub.data[int(lo):int(hi) + 1], 206
+                return stub.data, 200
+
             def do_GET(self):
                 rng = self.headers.get("Range")
                 stub.requests.append(("GET", rng))
@@ -43,12 +55,40 @@ class StubServe:
                     self.send_header("Content-Length", "0")
                     self.end_headers()
                     return
-                body = stub.data
-                status = 200
-                if rng:
-                    lo, hi = rng.removeprefix("bytes=").split("-")
-                    body = stub.data[int(lo):int(hi) + 1]
-                    status = 206
+                body, status = self._body(rng)
+                if stub.partial_remaining > 0:
+                    stub.partial_remaining -= 1
+                    # Deliver half the body as one complete chunked frame, then
+                    # close WITHOUT the terminating 0-length chunk. The client
+                    # cleanly receives (and returns to the reader) the partial
+                    # bytes, then raises IncompleteRead on the missing
+                    # terminator — a genuine mid-chunk failure with partial
+                    # bytes already counted, which is what the retry accounting
+                    # must survive. (A clean short EOF or an RST would either be
+                    # tolerated as a short read or discard the buffered bytes,
+                    # neither of which exercises the double-count path.)
+                    half = body[: max(1, len(body) // 2)]
+                    self.wfile.write(b"HTTP/1.1 %d x\r\n" % status)
+                    self.wfile.write(b"Transfer-Encoding: chunked\r\n\r\n")
+                    self.wfile.write(b"%x\r\n%s\r\n" % (len(half), half))
+                    self.wfile.flush()
+                    self.close_connection = True
+                    return
+                if stub.short_clean_remaining > 0:
+                    stub.short_clean_remaining -= 1
+                    # Deliver half the body under HTTP/1.0 with NO Content-Length
+                    # and NO chunked framing, then close. The body is delimited
+                    # by connection close, so the client returns the partial
+                    # bytes and sees a *clean* EOF — no IncompleteRead, no
+                    # exception. This is the silent short read: the fetch returns
+                    # "successfully" with a truncated body, so the missing bytes
+                    # must be caught by an explicit full-range check.
+                    half = body[: max(1, len(body) // 2)]
+                    self.wfile.write(b"HTTP/1.0 %d x\r\n\r\n" % status)
+                    self.wfile.write(half)
+                    self.wfile.flush()
+                    self.close_connection = True
+                    return
                 self.send_response(status)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -97,6 +137,31 @@ def test_streams_whole_file_in_sequential_chunks(fast):
         gets = [r for r in stub.requests if r[0] == "GET"]
         assert [r[1] for r in gets] == [
             "bytes=0-1023", "bytes=1024-2047", "bytes=2048-2999"]
+    finally:
+        stub.close()
+
+
+def test_prioritizes_head_then_footer_before_middle(fast, monkeypatch):
+    # A file larger than the head region: the head (row group 0) streams first,
+    # then the footer tail, and only then the middle bulk — so an interactive
+    # first-page read racing the stream finds footer + row group 0 warm early.
+    monkeypatch.setattr(prefetch_mod, "HEAD_BYTES", 1024)
+    monkeypatch.setattr(prefetch_mod, "FOOTER_BYTES", 1024)
+    stub = StubServe(os.urandom(5000))          # CHUNK_BYTES=1024 -> 5 chunks
+    try:
+        prefetch_mod.schedule("/m/f.bin", stub.url)
+        job = wait_status("/m/f.bin", "done")
+        assert job["done"] == job["size"] == 5000
+        gets = [r[1] for r in stub.requests if r[0] == "GET"]
+        # head first, footer tail second, middle after.
+        assert gets == ["bytes=0-1023", "bytes=3976-4999",
+                        "bytes=1024-2047", "bytes=2048-3071", "bytes=3072-3975"]
+        # every byte covered exactly once (no gap, no overlap).
+        covered = []
+        for g in gets:
+            lo, hi = g.removeprefix("bytes=").split("-")
+            covered.extend(range(int(lo), int(hi) + 1))
+        assert sorted(covered) == list(range(5000))
     finally:
         stub.close()
 
@@ -194,6 +259,48 @@ def test_resumes_after_transient_errors(fast):
         prefetch_mod.schedule("/m/f.bin", stub.url)
         job = wait_status("/m/f.bin", "done", timeout=15.0)
         assert job["done"] == 2500
+    finally:
+        stub.close()
+
+
+def test_progress_stays_exact_across_midchunk_retry(fast, monkeypatch):
+    # A mid-chunk failure that delivers real bytes before raising (partial
+    # bytes counted, then IncompleteRead) must not double-count on retry: the
+    # retry re-requests the whole chunk from its start, so progress resets to
+    # the committed base rather than adding the failed attempt's partial bytes
+    # again. done must land exactly on size, never past it. MB-scale so the
+    # partial delivery clears _fetch_chunk's 1MB read block and is genuinely
+    # counted before the stream drops (the buggy `+= len(b)` overshoots here).
+    mb = 1024 * 1024
+    monkeypatch.setattr(prefetch_mod, "CHUNK_BYTES", 8 * mb)   # one chunk
+    monkeypatch.setattr(prefetch_mod, "HEAD_BYTES", 8 * mb)
+    stub = StubServe(os.urandom(3 * mb), partial_first_gets=1)  # ~2MB then drops
+    try:
+        prefetch_mod.schedule("/m/f.bin", stub.url)
+        job = wait_status("/m/f.bin", "done", timeout=15.0)
+        assert job["done"] == job["size"] == 3 * mb    # exact, never > size
+    finally:
+        stub.close()
+
+
+def test_short_clean_read_is_retried_not_committed(fast, monkeypatch):
+    # A truncated body under a connection-close-delimited response yields a
+    # *clean* EOF: _fetch_chunk's read loop ends without an exception even
+    # though only half the range arrived. Treating that as a full chunk would
+    # commit bytes that never landed and finish the job as "done" with data
+    # missing. _fetch_chunk must verify it consumed the whole [start, end]
+    # range and raise otherwise, so the retry loop re-requests the chunk.
+    mb = 1024 * 1024
+    monkeypatch.setattr(prefetch_mod, "CHUNK_BYTES", 8 * mb)   # one chunk
+    monkeypatch.setattr(prefetch_mod, "HEAD_BYTES", 8 * mb)
+    stub = StubServe(os.urandom(3 * mb), short_clean_first_gets=1)
+    try:
+        prefetch_mod.schedule("/m/f.bin", stub.url)
+        job = wait_status("/m/f.bin", "done", timeout=15.0)
+        assert job["done"] == job["size"] == 3 * mb
+        # The short read forced a retry: the chunk was requested twice.
+        gets = [r for r in stub.requests if r[0] == "GET"]
+        assert len(gets) >= 2
     finally:
         stub.close()
 

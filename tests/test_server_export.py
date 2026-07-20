@@ -58,7 +58,7 @@ def test_export_success(tmp_path):
     assert data["out"] == os.path.abspath(str(out_dir))
     assert [e["path"] for e in data["entrypoints"]] == ["./sine.py"]
     assert data["warnings"] == []
-    assert (out_dir / "page.html").is_file()
+    assert (out_dir / "files" / "page.html").is_file()
     assert (out_dir / "manifest.json").is_file()
 
 
@@ -84,7 +84,7 @@ def test_export_honors_include_and_exclude(tmp_path):
     data = resp.json()
     assert data["entrypoints"] == []  # sine.py excluded
     assert [a["path"] for a in data["assets"]] == ["data.csv"]  # include bundled
-    assert (out_dir / "assets" / "data.csv").is_file()
+    assert (out_dir / "files" / "data.csv").is_file()
     assert any("sine.py" in w for w in data["warnings"])
 
 
