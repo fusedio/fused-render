@@ -1319,7 +1319,11 @@ def _mount_probe(path: str) -> _MountProbe:
     parent = os.path.dirname(path)
     name = os.path.basename(path)
     if m.is_mounts_root(parent):
-        return _MountProbe(True, True, is_dir=True)  # `path` is a mountpoint
+        # A direct child of the container is a mountpoint only if a mount
+        # RECORD carries its name — an unknown/removed name is a phantom and
+        # must read as absent (mounts.json only, no I/O on any mount).
+        exists = any(rec.get("name") == name for rec in m.list_mounts())
+        return _MountProbe(True, exists, is_dir=exists)
     try:
         entries = m.rc_list_dir(parent)
     except (m.RcListUnavailable, m.RcListTimeout):

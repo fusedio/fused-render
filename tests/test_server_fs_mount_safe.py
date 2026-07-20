@@ -374,3 +374,39 @@ def test_copy_mount_indeterminate_503(home, monkeypatch, tmp_path):
                 x_fused="1")
     assert _status(resp) == 503
 
+
+# ===========================================================================
+# Mounts-root children exist only when a mount RECORD carries the name
+# (Bugbot 3615342568 "Mount root children always exist"). A direct child of the
+# mounts container is a mountpoint iff mounts.json lists its name — an unknown/
+# removed name is a phantom that must read as ABSENT, settled from mounts.json
+# with no rc_list_dir / no I/O on any mount.
+# ===========================================================================
+
+def test_mounts_root_unknown_child_reads_as_absent_delete_404(home, monkeypatch):
+    # An unknown name directly under the mounts container has no mount record:
+    # DELETE must 404 (absent), NOT treat it as an existing mountpoint dir. The
+    # rc listing must never be consulted — mounts.json settles it.
+    _list_raises(monkeypatch, AssertionError("rc_list_dir consulted for a mounts-root child"))
+    resp = DELETE({"path": os.path.join(mounts_mod.mounts_dir(), "phantom")}, x_fused="1")
+    assert _status(resp) == 404
+
+
+def test_mounts_root_unknown_child_mkdir_not_conflict(home, monkeypatch):
+    # MKDIR of an unknown mounts-root name must NOT 409: before the fix every
+    # basename read as "already exists". With the phantom absent, the create
+    # proceeds (200).
+    _list_raises(monkeypatch, AssertionError("rc_list_dir consulted for a mounts-root child"))
+    resp = MKDIR({"path": os.path.join(mounts_mod.mounts_dir(), "phantom")}, x_fused="1")
+    assert _status(resp) != 409
+
+
+def test_mounts_root_known_mount_name_still_exists_mkdir_409(home, monkeypatch):
+    # A name carried by a real mount record still reads as an existing dir, so
+    # MKDIR over it is a 409 conflict (the fix must not regress this direction).
+    mp = _mount("real", read_only=False)
+    _list_raises(monkeypatch, AssertionError("rc_list_dir consulted for a mounts-root child"))
+    resp = MKDIR({"path": mp}, x_fused="1")
+    assert _status(resp) == 409
+    assert _data(resp)["error"] == "conflict"
+
