@@ -16,6 +16,7 @@
 // modal is scoped to the current page.
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  bustCacheDeployment,
   deployPage,
   getDeployConfig,
   getDeployPreview,
@@ -24,7 +25,13 @@ import {
   revokeDeployment,
   walkDir,
 } from "../lib/api";
-import type { DeployConfig, DeployPreview, Deployment, WalkEntry } from "../lib/api";
+import type {
+  CacheBustResult,
+  DeployConfig,
+  DeployPreview,
+  Deployment,
+  WalkEntry,
+} from "../lib/api";
 import { useFusedLogin } from "../lib/account";
 import { basename, dirname, formatSize } from "../lib/format";
 import { useRefreshOnReturn } from "../lib/hooks";
@@ -37,6 +44,28 @@ import { Select } from "./field/fields";
 // _asset_key (export.py) for the common case — strip a leading "./"; the exact
 // literal is preserved elsewhere for display/tooltips.
 const relKey = (p: string) => p.replace(/^\.\//, "");
+
+// Caching duration presets (fused's cache_max_age format — a non-negative integer +
+// s/m/h/d unit; see fused/agent_core/caching.py's parse_cache_max_age). "0s" is off
+// and not itself an option here — the checkbox controls that axis.
+const CACHE_DURATION_PRESETS: { value: string; label: string }[] = [
+  { value: "1m", label: "1 minute" },
+  { value: "5m", label: "5 minutes" },
+  { value: "15m", label: "15 minutes" },
+  { value: "1h", label: "1 hour" },
+  { value: "6h", label: "6 hours" },
+  { value: "1d", label: "1 day" },
+];
+const DEFAULT_CACHE_DURATION = "5m";
+
+// The preset list, plus the current value as its own option when it isn't a preset
+// (e.g. a duration set via `share create --cache-max-age` outside this dialog) — so
+// the <select> always shows the TRUE value rather than silently falling back to
+// the first preset while a redeploy would still send the real, unlisted one.
+function cacheDurationOptions(current: string) {
+  if (CACHE_DURATION_PRESETS.some((o) => o.value === current)) return CACHE_DURATION_PRESETS;
+  return [{ value: current, label: current }, ...CACHE_DURATION_PRESETS];
+}
 
 interface DeployModalProps {
   fsPath: string;
@@ -440,7 +469,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   const [live, setLive] = useState<"active" | "revoked" | "absent" | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedEnv, setSelectedEnv] = useState<string | null>(null);
-  const [busy, setBusy] = useState<"deploy" | "revoke" | "install" | null>(null);
+  const [busy, setBusy] = useState<"deploy" | "revoke" | "install" | "bust-cache" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   // The user's file selection, layered on the auto-detected set: `include` adds
   // extra files (as assets), `exclude` drops files. Seeded on open from the
@@ -448,6 +477,13 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   // sent back on Deploy. Both empty = the auto-detected default.
   const [include, setInclude] = useState<string[]>([]);
   const [exclude, setExclude] = useState<string[]>([]);
+  // The caching choice: "0s" (off, the default) or a duration like "5m"/"1h" —
+  // fused's cache_max_age. Seeded on open from the stored record (like include/
+  // exclude) and sent back on every Deploy; there is no "leave it as it was".
+  const [cacheMaxAge, setCacheMaxAge] = useState<string>("0s");
+  // The result of the last "Bust cache" click (deleted/scope), shown as a status
+  // line until the next load/action clears it.
+  const [bustCacheResult, setBustCacheResult] = useState<CacheBustResult | null>(null);
   // True while a preview fetch is in flight — the shown "Will publish" list may
   // not yet reflect the latest include/exclude edit, so Deploy is held until it
   // catches up (keeps the click WYSIWYG: never deploy a set the list doesn't show).
@@ -536,6 +572,8 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       // so clearing preview keeps it hidden until the new page's preview lands —
       // no stale rows, and no × / restore edit that could target the wrong page.
       setPreview(null);
+      // A stale "N cleared" note from the previous page must not linger.
+      setBustCacheResult(null);
     }
     try {
       const [cfg, status] = await Promise.all([
@@ -556,6 +594,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       if (!background) {
         setInclude(status.deployment?.include ?? []);
         setExclude(status.deployment?.exclude ?? []);
+        setCacheMaxAge(status.deployment?.cache_max_age ?? "0s");
         // Selection is now known — open the gate; this (with the seeded include/
         // exclude) triggers the effect to fetch the first, correct preview.
         setSelectionReady(true);
@@ -640,8 +679,9 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     if (!env) return;
     setBusy("deploy");
     setActionError(null);
+    setBustCacheResult(null); // a stale "N cleared" note must not survive a redeploy
     try {
-      const record = await deployPage(fsPath, env.name, include, exclude);
+      const record = await deployPage(fsPath, env.name, include, exclude, cacheMaxAge);
       applyDeployment(record);
       if (!alive.current) return;
       setReconciled(true);
@@ -650,6 +690,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       // stored record (e.g. server-side dedup) rather than the raw local lists.
       setInclude(record.include ?? include);
       setExclude(record.exclude ?? exclude);
+      setCacheMaxAge(record.cache_max_age ?? cacheMaxAge);
     } catch (e) {
       // A deploy can fail AFTER the server mutated the pointer — the
       // failed-revive compensation path (deploy.py) persists status active or
@@ -679,6 +720,25 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
         setActionError((e as Error).message);
         void load(true);
       }
+    } finally {
+      if (alive.current) setBusy(null);
+    }
+  };
+
+  // Forces cached results to be recomputed on next request, without touching the
+  // mount's status/URL/caching setting (deploy.py's bust_cache_deployment) — for
+  // "I changed the underlying data, not the code" (a redeploy dedupes to the same
+  // content-address and would otherwise keep serving the old cached result until
+  // cache_max_age expires).
+  const onBustCache = async () => {
+    setBusy("bust-cache");
+    setActionError(null);
+    setBustCacheResult(null);
+    try {
+      const result = await bustCacheDeployment(fsPath);
+      if (alive.current) setBustCacheResult(result);
+    } catch (e) {
+      if (alive.current) setActionError((e as Error).message);
     } finally {
       if (alive.current) setBusy(null);
     }
@@ -854,6 +914,12 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
                 absolute URL; it is served under your environment's serving-plane base URL.
               </div>
             )}
+            <div className="deploy-muted">
+              Caching:{" "}
+              {(deployment.cache_max_age ?? "0s") === "0s"
+                ? "off"
+                : `on, ${deployment.cache_max_age}`}
+            </div>
           </div>
         )}
 
@@ -868,6 +934,42 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             setExclude={setExclude}
           />
         )}
+
+        <div className="deploy-form-row">
+          <label className="deploy-cache-toggle">
+            <input
+              type="checkbox"
+              checked={cacheMaxAge !== "0s"}
+              disabled={busy !== null}
+              onChange={(e) =>
+                setCacheMaxAge(e.target.checked ? DEFAULT_CACHE_DURATION : "0s")
+              }
+            />
+            Cache runPython results
+          </label>
+          {cacheMaxAge !== "0s" && (
+            <Select
+              aria-label="Cache duration"
+              value={cacheMaxAge}
+              onChange={(e) => setCacheMaxAge(e.target.value)}
+              disabled={busy !== null}
+            >
+              {cacheDurationOptions(cacheMaxAge).map((d) => (
+                <option key={d.value} value={d.value}>
+                  for {d.label}
+                </option>
+              ))}
+            </Select>
+          )}
+        </div>
+        {cacheMaxAge !== "0s" && env?.backend === "fused" && (
+          <div className="deploy-note">
+            Caching isn't supported yet on managed Fused environments — this page will
+            deploy, but results won't be cached until that lands. Use an AWS environment
+            to cache results today.
+          </div>
+        )}
+
         <div className="deploy-form-row">
           <label htmlFor="deploy-env-select">Deploy to</label>
           <Select
@@ -920,10 +1022,27 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
               {busy === "revoke" ? "Revoking…" : "Revoke"}
             </button>
           )}
+          {deployment?.status === "active" && (
+            <button
+              type="button"
+              onClick={onBustCache}
+              disabled={busy !== null}
+              title="Force cached results to be recomputed on the next request, without redeploying or changing the URL"
+            >
+              {busy === "bust-cache" ? "Busting cache…" : "Bust cache"}
+            </button>
+          )}
         </div>
         {/* One status line for the same-env case — the URL nuance that used to
             live in the button label / a stack of notes. */}
         {deployStatus && <div className="deploy-muted">{deployStatus}</div>}
+        {bustCacheResult && (
+          <div className="deploy-muted">
+            {bustCacheResult.deleted > 0
+              ? `Cleared ${bustCacheResult.deleted} cached result${bustCacheResult.deleted === 1 ? "" : "s"} — the next request recomputes.`
+              : "Nothing was cached — nothing to clear."}
+          </div>
+        )}
         {/* One context-derived note for the cross-env cases (recorded env still
             configured vs. removed) — mutually exclusive, collapsed into one. */}
         {deployment && selectedEnv !== null && deployment.env !== selectedEnv && (

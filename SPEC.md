@@ -687,6 +687,14 @@ nothing. Full detail: `docs/EXPORT.md`.
   (kept on the deployment record, off the artifact). This is what collapses a
   hand-maintained `RAW_URLS`-style table (or a fake `_bundle*()` scanner-bait function)
   down to `fused.rawUrl("data/" + name)` against a `data/*.json` glob.
+- **EX-9** `manifest.json` carries a top-level **`cache_max_age`** (`"0s"` off by
+  default; a duration like `"5m"`/`"1h"` — the same format the fused repo's
+  `openfused.caching.parse_cache_max_age` accepts) — the Deploy modal's caching
+  choice (DP-17), written fresh on every export so a redeploy always re-asserts
+  the current setting. The hosting layer's `build_html_artifact` applies it
+  uniformly to every `runPython` route (never the shell or the asset route); see
+  the fused repo's spec/serve/fused-render.md § Caching. A bundle exported before
+  this field existed omits it, which the hosting layer reads as off.
 
 ## 19. Deploy — Hosted Publish through the fused CLI (M11)
 
@@ -874,12 +882,34 @@ the product gains network access.
   `share create` on AWS envs and lists the managed backend's inline-upload
   bundle classification as a follow-up. fused-render passes the CLI's own
   error through verbatim rather than second-guessing the installed version.
+- **DP-17** The modal carries a **caching control**: a checkbox ("Cache
+  runPython results") plus a duration select (1m/5m/15m/1h/6h/1d presets, plus
+  the current value verbatim when it isn't one of them — e.g. set by a direct
+  `share create --cache-max-age` outside this dialog), seeded on open from the
+  stored deployment record like `include`/`exclude` (DP-2c) and re-sent as
+  `cache_max_age` on every Deploy — there is no "leave it as it was". It travels
+  in the export bundle's manifest (EX-9), not a CLI flag, so it reaches either
+  backend the same way `include`/`exclude`-selected files do. On a managed
+  `fused` env the deploy still succeeds, but the control plane does not yet read
+  the field back out into caching behavior (fused repo's
+  spec/serve/fused-render.md § Limitations) — the modal says so inline rather
+  than implying the setting took effect.
+- **DP-18** **Bust cache** (`POST /api/deploy/bust-cache {"page"}` →
+  `bust_cache_deployment` → `fused share cache-clear <token>`) forces every
+  cached result for the deployment's mount to be recomputed on the next
+  request, without touching its status, URL, or caching setting — for "the
+  underlying data changed, not the code" (a redeploy dedupes to the same
+  content address and would otherwise keep serving the old cached result until
+  `cache_max_age` expires). Shown alongside Revoke whenever the deployment is
+  active; its result (`{deleted, scope}`) renders as a one-line status
+  ("Cleared N cached results…" / "Nothing was cached…").
 
 ### 19.5 State & truth
 
 - **DP-12** A thin per-page pointer at `~/.fused-render/deployments.json`
   (shell/storage; keyed by absolute page path — env, backend, token, url,
-  status, entrypoints, updated_at) lets the shell mark deployed files, re-show
+  status, entrypoints, `cache_max_age` (DP-17), updated_at) lets the shell mark
+  deployed files, re-show
   the URL (`create` returns it exactly once; `share list` never carries one),
   and redeploy to the same token. **`share list` on the env stays the
   authority**: the modal reconciles status against it on open (`--all`, so an
@@ -931,7 +961,8 @@ the product gains network access.
 - **DP-14** Endpoints (`fused_render/deploy.py`, an APIRouter like
   shell/bookmarks): `GET /api/deploy/config`, `GET /api/deploy/status`,
   `GET /api/deploy/preview`, `GET /api/deploy/shares`, `POST /api/deploy`,
-  `POST /api/deploy/revoke`, `POST /api/deploy/install`; the POSTs carry the
+  `POST /api/deploy/revoke`, `POST /api/deploy/bust-cache` (DP-18),
+  `POST /api/deploy/install`; the POSTs carry the
   `X-Fused` guard (D36). CLI failures surface their last stderr line verbatim
   (click's `Error: ` prefix stripped) — the fused CLI's messages already name
   the fix (`fused cloud login`, `fused infra serve`, …).

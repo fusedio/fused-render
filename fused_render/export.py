@@ -723,7 +723,7 @@ def plan_export(
     return plan
 
 
-def _manifest(plan: ExportPlan, page_key: str) -> dict:
+def _manifest(plan: ExportPlan, page_key: str, cache_max_age: str) -> dict:
     """The bundle's ``manifest.json`` (v2) — the contract the hosting layer reads.
 
     v2 lays every bundled file under a single ``root`` payload dir at its real page-relative
@@ -739,6 +739,10 @@ def _manifest(plan: ExportPlan, page_key: str) -> dict:
       the payload-relative key (also the ``_asset`` allow-list entry). Two distinct literals
       may share a key — both appear so the runtime's exact-string lookup never misses.
     - ``resources`` — imported modules: ``key`` is the payload-relative path (never web-served).
+    - ``cache_max_age`` — the deploy-time result-caching choice (``"0s"`` off by default),
+      e.g. ``"5m"``/``"1h"``. Applied uniformly to every ``runPython`` route by the hosting
+      layer's ``build_html_artifact`` (never the shell or asset routes); see
+      spec/serve/fused-render.md § Caching in the fused repo.
     """
     return {
         "fused_render_bundle": 2,
@@ -750,7 +754,27 @@ def _manifest(plan: ExportPlan, page_key: str) -> dict:
         ],
         "assets": [{"path": a.path, "name": a.name} for a in plan.assets],
         "resources": [{"key": r.key} for r in plan.resources],
+        "cache_max_age": cache_max_age,
     }
+
+
+_CACHE_MAX_AGE_RE = re.compile(r"^(\d+)([smhd])$")
+
+
+def _validate_cache_max_age(value: str) -> None:
+    """Reject a malformed ``cache_max_age`` before it lands in a manifest.
+
+    Mirrors the hosting layer's own parser (the ``fused`` wheel's
+    ``openfused.caching.parse_cache_max_age`` — not imported here, since ``fused`` is an
+    optional extra export must work without): a non-negative integer + unit (``s``/``m``/
+    ``h``/``d``), ``"0s"`` the off sentinel. Validating at export time (not deferred to
+    `share create`) means a bad value fails the local, no-network step, not a later publish.
+    """
+    if not isinstance(value, str) or not _CACHE_MAX_AGE_RE.match(value):
+        raise ExportError(
+            f"invalid cache_max_age {value!r}: expected a non-negative integer with a unit "
+            "(s/m/h/d), e.g. '0s', '90s', '15m', '24h', '7d'."
+        )
 
 
 def export_page(
@@ -759,17 +783,22 @@ def export_page(
     *,
     include: list[str] | None = None,
     exclude: list[str] | None = None,
+    cache_max_age: str = "0s",
 ) -> ExportPlan:
     """Export the page at ``html_path`` into a portable bundle at ``out_dir`` (bundle v2).
 
     Writes ``manifest.json`` and a single ``files/`` payload dir mirroring the page's folder:
     the page, each ``runPython`` target, each ``rawUrl``/``readFile`` target (plus any
     ``include`` files, minus any ``exclude`` — see :func:`plan_export`), and each first-party
-    module a bundled entrypoint imports, all at their real page-relative path. Raises
-    :class:`ExportError` on any blocking problem (dynamic runPython path, unsupported API,
-    unsafe/missing file) with all problems listed at once; advisory ``plan.warnings`` never
-    block. Returns the realized :class:`ExportPlan` on success.
+    module a bundled entrypoint imports, all at their real page-relative path. ``cache_max_age``
+    (``"0s"`` off by default, e.g. ``"5m"``) is the deploy-time result-caching choice, written
+    into the manifest and applied by the hosting layer to every ``runPython`` route (never the
+    shell or an asset route) — see spec/serve/fused-render.md § Caching in the fused repo.
+    Raises :class:`ExportError` on any blocking problem (dynamic runPython path, unsupported
+    API, unsafe/missing file, malformed ``cache_max_age``) with all problems listed at once;
+    advisory ``plan.warnings`` never block. Returns the realized :class:`ExportPlan` on success.
     """
+    _validate_cache_max_age(cache_max_age)
     html_path = os.path.abspath(html_path)
     if not os.path.isfile(html_path):
         raise ExportError(f"no such file: {html_path}")
@@ -830,7 +859,7 @@ def export_page(
             _copy_into(stage, os.path.join(page_dir, r.key), r.file)
 
         with open(os.path.join(stage, "manifest.json"), "w", encoding="utf-8") as f:
-            json.dump(_manifest(plan, page_key), f, indent=2, sort_keys=True)
+            json.dump(_manifest(plan, page_key, cache_max_age), f, indent=2, sort_keys=True)
             f.write("\n")
 
         # Atomic handoff: drop the (empty) out_dir if it exists so the rename can take the

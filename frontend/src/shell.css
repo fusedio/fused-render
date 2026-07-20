@@ -2194,6 +2194,12 @@ select.field-control:has(option[value=""]:checked) {
   color: var(--fg-muted);
 }
 
+.deploy-cache-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 /* Safety net for unmigrated selects only (e.g. Account's workspace picker) —
    .field-control selects carry their own canonical skin + custom chevron. */
 .deploy-form-row select:not(.field-control) {

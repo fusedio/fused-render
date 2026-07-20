@@ -317,6 +317,23 @@ def test_export_page_writes_bundle(tmp_path):
     assert manifest["page"] == "page.html"
     assert manifest["entrypoints"][0] == {"path": "./sine.py", "name": "sine", "key": "sine.py"}
     assert manifest["assets"][0] == {"path": "./data/logo.png", "name": "data/logo.png"}
+    assert manifest["cache_max_age"] == "0s"  # default: off
+
+
+def test_export_page_writes_cache_max_age(tmp_path):
+    _write(tmp_path, "src/page.html", "<script>fused.runPython('./sine.py', {});</script>")
+    _write(tmp_path, "src/sine.py", "def main():\n    return 1\n")
+    out = tmp_path / "bundle"
+    export_page(str(tmp_path / "src" / "page.html"), str(out), cache_max_age="5m")
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["cache_max_age"] == "5m"
+
+
+def test_export_page_rejects_invalid_cache_max_age(tmp_path):
+    _write(tmp_path, "page.html", "<html></html>")
+    with pytest.raises(ExportError, match="cache_max_age"):
+        export_page(str(tmp_path / "page.html"), str(tmp_path / "out"), cache_max_age="bogus")
+    assert not (tmp_path / "out").exists()
 
 
 def test_export_page_raises_on_error(tmp_path):

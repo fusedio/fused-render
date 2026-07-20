@@ -374,7 +374,21 @@ export interface Deployment {
   // Optional — records written before this feature omit them (read as []).
   include?: string[];
   exclude?: string[];
+  // The caching choice this deployment was published with — "0s" (off) or a
+  // duration like "5m"/"1h" (fused/agent_core/caching.py's cache_max_age format).
+  // Reopening the modal reloads it, same as include/exclude. Optional — records
+  // written before this feature omit it (read as "0s").
+  cache_max_age?: string;
   updated_at: string;
+}
+
+// `POST /api/deploy/bust-cache`'s result — the fused CLI's `share cache-clear`
+// output verbatim (see deploy.py's bust_cache_deployment).
+export interface CacheBustResult {
+  token: string;
+  deleted: number;
+  scope: string;
+  prefix?: string;
 }
 
 export interface DeployStatusResult {
@@ -459,12 +473,27 @@ export function deployPage(
   env: string,
   include: string[],
   exclude: string[],
+  cacheMaxAge: string,
 ): Promise<Deployment> {
-  return postJson<Deployment>("/api/deploy", { page: fsPath, env, include, exclude });
+  return postJson<Deployment>("/api/deploy", {
+    page: fsPath,
+    env,
+    include,
+    exclude,
+    cache_max_age: cacheMaxAge,
+  });
 }
 
 export function revokeDeployment(fsPath: string): Promise<Deployment> {
   return postJson<Deployment>("/api/deploy/revoke", { page: fsPath });
+}
+
+// Busts every cached result for the page's deployed mount (`fused share
+// cache-clear <token>`) — forces the next request to recompute instead of
+// waiting out cache_max_age. Doesn't change the deployment's status/URL/caching
+// setting.
+export function bustCacheDeployment(fsPath: string): Promise<CacheBustResult> {
+  return postJson<CacheBustResult>("/api/deploy/bust-cache", { page: fsPath });
 }
 
 export function installFused(): Promise<void> {

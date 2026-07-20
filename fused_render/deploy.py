@@ -395,7 +395,7 @@ def set_deployment(page: str, record: dict) -> None:
 
 def _record_from(raw: dict, *, page: str, env_name: str, backend: str,
                  entrypoints: list[str], include: list[str], exclude: list[str],
-                 fallback: dict | None) -> dict:
+                 cache_max_age: str, fallback: dict | None) -> dict:
     token = raw.get("token") or raw.get("id") or (fallback or {}).get("token")
     if not isinstance(token, str) or not token:
         raise DeployError("the fused CLI did not return a mount token")
@@ -422,6 +422,11 @@ def _record_from(raw: dict, *, page: str, env_name: str, backend: str,
         # files bundled beyond the auto-scan, and files dropped from it.
         "include": include,
         "exclude": exclude,
+        # The caching choice deployed with (see deploy_page) — persisted the same way
+        # as include/exclude so reopening the modal shows the current setting, and a
+        # redeploy that doesn't touch it re-sends the same value (the fused CLI has no
+        # "preserve on omit" for this — every deploy is an explicit, full statement).
+        "cache_max_age": cache_max_age,
         "updated_at": _now_iso(),
     }
 
@@ -475,6 +480,7 @@ def deploy_page(
     env_name: str,
     include: list[str] | None = None,
     exclude: list[str] | None = None,
+    cache_max_age: str = "0s",
 ) -> dict:
     """Export `page` to a temp bundle and publish it on `env_name`; returns the
     stored deployment record (token, URL when the backend returned one).
@@ -482,6 +488,16 @@ def deploy_page(
     `include`/`exclude` are the user's file selection (see export.plan_export):
     extra files bundled beyond the auto-scan, and files dropped from it. They are
     persisted on the record so a reopened modal reloads the same selection.
+
+    `cache_max_age` (`"0s"` off by default, e.g. `"5m"`/`"1h"`) is the Deploy
+    dialog's caching choice: how long a `runPython` route's result may be served
+    from cache instead of re-executed. It rides the export bundle's own manifest
+    (`export.export_page`), so the hosting layer (`fused` repo's
+    `build_html_artifact`) applies it with no extra deploy-time plumbing — see
+    spec/serve/fused-render.md § Caching in the fused repo. Every deploy re-sends
+    it explicitly, like `include`/`exclude`; there is no "leave it as it was"
+    (see `bust_cache_deployment` to force-refresh already-cached results without
+    changing this setting).
 
     First deploy (or a pointer on a different env): `share create --public` —
     a fresh opaque capability URL. Redeploy on the same env keeps the URL:
@@ -525,7 +541,7 @@ def deploy_page(
 
     bundle = tempfile.mkdtemp(prefix="fused-render-deploy-")
     try:
-        plan = export_page(page, bundle, include=include, exclude=exclude)
+        plan = export_page(page, bundle, include=include, exclude=exclude, cache_max_age=cache_max_age)
         entrypoints = [e.name for e in plan.entrypoints]
 
         same_env = pointer if pointer and pointer.get("env") == env_name else None
@@ -574,7 +590,8 @@ def deploy_page(
 
         record = _record_from(
             raw, page=page, env_name=env_name, backend=backend,
-            entrypoints=entrypoints, include=include, exclude=exclude, fallback=same_env,
+            entrypoints=entrypoints, include=include, exclude=exclude,
+            cache_max_age=cache_max_age, fallback=same_env,
         )
         set_deployment(page, record)
         return record
@@ -592,6 +609,22 @@ def revoke_deployment(page: str) -> dict:
     record = {**pointer, "status": "revoked", "updated_at": _now_iso()}
     set_deployment(page, record)
     return record
+
+
+def bust_cache_deployment(page: str) -> dict:
+    """Bust every cached result for the page's deployed mount (`fused share
+    cache-clear <token>`) — forces the next request to recompute instead of
+    waiting out `cache_max_age`.
+
+    Doesn't touch the mount record, its URL, or the deployment pointer: this is
+    orthogonal to caching being on or off (it's a no-op cost if it was already
+    off — nothing was cached). Returns the CLI's result verbatim
+    (`{token, deleted, scope, prefix}`) so the modal can show what was cleared.
+    """
+    pointer = get_deployment(page)
+    if pointer is None or not pointer.get("token") or not pointer.get("env"):
+        raise DeployError("this page has no recorded deployment to bust the cache of")
+    return _run_share(pointer["env"], ["cache-clear", pointer["token"]])
 
 
 def revoke_mount(env_name: str, token: str) -> dict:
@@ -793,8 +826,11 @@ def api_deploy(body: dict = Body(...), x_fused: str | None = Header(default=None
     exclude = _str_list(body, "exclude")
     if include is None or exclude is None:
         return _error("'include'/'exclude' must be arrays of relative file paths")
+    cache_max_age = body.get("cache_max_age", "0s")
+    if not isinstance(cache_max_age, str):
+        return _error("'cache_max_age' must be a string, e.g. '0s'/'5m'/'1h'")
     try:
-        return deploy_page(page, env_name, include, exclude)
+        return deploy_page(page, env_name, include, exclude, cache_max_age=cache_max_age)
     except ExportError as e:
         return _error(str(e))
     except DeployError as e:
@@ -820,6 +856,20 @@ def api_deploy_revoke(body: dict = Body(...), x_fused: str | None = Header(defau
         return _error("provide 'page' (absolute path) or 'env' + 'token'")
     try:
         return revoke_deployment(page)
+    except DeployError as e:
+        return _error(str(e))
+
+
+@router.post("/api/deploy/bust-cache")
+def api_deploy_bust_cache(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    page = body.get("page")
+    if not isinstance(page, str) or not page or not os.path.isabs(page):
+        return _error("'page' must be an absolute path to the .html page")
+    try:
+        return bust_cache_deployment(page)
     except DeployError as e:
         return _error(str(e))
 

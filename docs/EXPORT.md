@@ -22,11 +22,12 @@ yourself.
 `page` and `out` must both be absolute filesystem paths (same convention as
 every other endpoint). Export is **non-destructive** — it never deletes an existing
 file — so `out` must be **empty** (or not yet exist); a non-empty `out` is rejected.
-Re-export to a fresh directory (the Deploy flow always uses a new temp dir). Two
-optional fields tune the file set (see "Choosing which
-files are bundled" below): `include` (extra page-relative files to bundle as
-assets) and `exclude` (files to drop from the bundle) — both arrays of relative
-paths, defaulting to empty. On success the response is
+Re-export to a fresh directory (the Deploy flow always uses a new temp dir). Three
+optional fields tune the bundle: `include` (extra page-relative files to bundle as
+assets) and `exclude` (files to drop from the bundle) — see "Choosing which files
+are bundled" below, both arrays of relative paths defaulting to empty — and
+`cache_max_age` (a string, default `"0s"`; see "Caching" below). On success the
+response is
 `{"out", "entrypoints": [...], "assets": [...], "warnings": [...]}` — the same
 shape written into `manifest.json` below, plus the resolved `out` directory and
 any advisory warnings. On a blocking export problem (see "Rules the exporter
@@ -58,7 +59,8 @@ bundle/
   "page": "page.html",
   "entrypoints": [{ "path": "./sine.py", "name": "sine", "key": "sine.py" }],
   "assets": [{ "path": "./logo.png", "name": "logo.png" }],
-  "resources": [{ "key": "helpers.py" }]
+  "resources": [{ "key": "helpers.py" }],
+  "cache_max_age": "0s"
 }
 ```
 
@@ -83,6 +85,21 @@ is no separate `file` field. (The hosting layer also still reads legacy **v1** b
 
 The hosting layer uses the manifest to wire the served page's runtime — which
 literal path posts to which route — without re-parsing the HTML.
+
+## Caching
+
+`cache_max_age` is the deploy-time choice for how long a `runPython` route's result
+may be served from cache instead of re-executed — `"0s"` (off, the default) or a
+duration like `"5m"`/`"1h"`/`"1d"` (a non-negative integer + `s`/`m`/`h`/`d` unit).
+It applies uniformly to every `runPython` route in the bundle — never the page shell
+or the `_asset` route, which the hosting layer always keeps uncached. The Deploy
+modal (SPEC §19, DP-17) exposes it as a checkbox + duration picker and re-exports on
+every deploy so the manifest always carries the current choice; a direct
+`POST /api/export` caller sets it the same way. See the fused repo's
+spec/serve/fused-render.md § Caching and spec/caching/serve.md for how the hosting
+layer honors it (result caching, cache-key scoping, the `X-Openfused-Cache`
+hit/miss header) and `fused share cache-clear <token>` / the Deploy modal's "Bust
+cache" action (DP-18) for forcing a recompute without changing this setting.
 
 ## The portable subset of `window.fused`
 
