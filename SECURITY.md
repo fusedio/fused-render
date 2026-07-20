@@ -83,18 +83,6 @@ rather than filing under "guarded":
   control. Impact is bounded to read-only tile/metadata bytes for whichever
   local file the daemon happens to be serving; there's no write, no code
   execution reachable through it.
-- **Export/deploy bundling checks guard against your own mistakes, not a
-  malicious deploy.** `export.py`'s `_reject_unsafe_rel`/`_within_page_dir`
-  reject `..` escapes, absolute paths, and symlinks resolving outside the
-  page directory when a bundle manifest's `include` globs are expanded
-  (D120). This exists because glob/symlink expansion can silently pull in a
-  file from outside the intended folder before you ever see the resulting
-  file list — it is **not** an access-control boundary against you
-  deliberately publishing files: you already see the full bundle contents
-  before deploying, and nothing stops you from adding any file you want to
-  your own page directory and including it on purpose. The check only turns
-  an accidental glob/symlink escape into an error instead of a silent extra
-  file in a public deploy.
 
 ## Network / supply chain
 
