@@ -31,6 +31,13 @@ export FUSED_RENDER_CORE_TEMPLATES="${FUSED_RENDER_CORE_TEMPLATES:-$REPO_ROOT/fu
 # (see fused_render/_branch.py). main/master and detached HEAD sanitize to the
 # baseline, so this is a no-op there. Respect an already-set value so the caller
 # can override (including to "" to force baseline).
+#
+# NOTE: on main/master this mirrors baseline (port 1777 + the shared
+# ~/.fused-render state), which is exactly what the installed macOS desktop app
+# uses. Running dev.sh on main alongside the installed app therefore collides:
+# the port bind fails loudly (see cli.py _check_port_free) and, more subtly,
+# both read/write the same baseline state dir. Work on a feature branch (or pass
+# FUSED_RENDER_BRANCH / --port) to run dev fully isolated from the desktop app.
 if [[ -z "${FUSED_RENDER_BRANCH+x}" ]]; then
   export FUSED_RENDER_BRANCH="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
 fi
