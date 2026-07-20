@@ -746,18 +746,25 @@ _DETECTED_SUGG = {
 }
 
 
-def _fake_rclone_probe(monkeypatch, lsd_rc=0, lsd_stderr="", record=None):
+def _fake_rclone_probe(monkeypatch, lsd_rc=0, lsd_stderr="", record=None,
+                       existing_remotes=(), delete_rc=0):
     """Like _fake_rclone but the `lsd` credential probe can be made to fail
-    with a given stderr; records EVERY argv (create, lsd, delete)."""
+    with a given stderr; records EVERY argv (create, lsd, delete). Pass
+    `existing_remotes` to make `listremotes` report already-created remotes
+    (exercises the idempotent re-entry path) and `delete_rc` to make the
+    rollback `config delete` exit non-zero."""
     def fake_run(cmd, **kw):
         if record is not None:
             record.append(cmd)
 
         class R:
-            returncode = lsd_rc if "lsd" in cmd else 0
+            returncode = (lsd_rc if "lsd" in cmd
+                          else delete_rc if "delete" in cmd else 0)
             stderr = lsd_stderr if "lsd" in cmd else ""
             stdout = ("rclone v1.2\n" if "version" in cmd
-                      else "{}" if "dump" in cmd else "")
+                      else "{}" if "dump" in cmd
+                      else "".join(f"{r}\n" for r in existing_remotes)
+                      if "listremotes" in cmd else "")
         return R()
 
     monkeypatch.setattr(mounts_mod.subprocess, "run", fake_run)
@@ -825,6 +832,65 @@ def test_detect_skips_probe_for_public_remotes(client, monkeypatch):
                     json={"id": "aws-open-public"}, headers=FUSED)
     assert r.status_code == 200
     assert not any("lsd" in c for c in calls)
+
+
+def test_detect_reports_failed_rollback(client, monkeypatch):
+    """When creds are expired the half-created remote is rolled back — but if
+    the `config delete` itself fails (non-zero), the remote may still exist, so
+    the 502 must say so rather than returning the bare cred error as if cleanup
+    succeeded (a lingering remote would be reported ok on the next detect)."""
+    monkeypatch.setattr(mounts_mod, "_credential_suggestions",
+                        lambda: [_DETECTED_SUGG])
+    calls = []
+    _fake_rclone_probe(
+        monkeypatch, lsd_rc=1, record=calls, delete_rc=1,
+        lsd_stderr="ERROR: ExpiredToken: The provided token has expired.")
+
+    r = client.post("/api/mounts/remotes/detect",
+                    json={"id": "aws-env"}, headers=FUSED)
+    assert r.status_code == 502
+    err = r.json()["error"].lower()
+    assert "expired" in err  # keep the cred-error wording
+    assert "could not be removed" in err or "manually" in err
+    assert any(c[:3] == ["/usr/bin/rclone", "config", "delete"] for c in calls)
+
+
+def test_detect_reprobes_existing_detected_remote_now_expired(client, monkeypatch):
+    """Idempotent re-entry must not report an already-existing detected remote
+    healthy on faith: if its creds have since expired, re-detect returns the
+    502 cred error, NOT {"ok": True} — otherwise the stale remote invites a
+    doomed mount just like a freshly created one would."""
+    monkeypatch.setattr(mounts_mod, "_credential_suggestions",
+                        lambda: [_DETECTED_SUGG])
+    calls = []
+    _fake_rclone_probe(
+        monkeypatch, lsd_rc=1, record=calls, existing_remotes=("aws-env:",),
+        lsd_stderr="ERROR: ExpiredToken: The provided token has expired.")
+
+    r = client.post("/api/mounts/remotes/detect",
+                    json={"id": "aws-env"}, headers=FUSED)
+    assert r.status_code == 502
+    assert "expired" in r.json()["error"].lower()
+    # re-entry re-probed (lsd) but did NOT re-create or delete the remote
+    assert any("lsd" in c for c in calls)
+    assert not any("create" in c for c in calls)
+    assert not any("delete" in c for c in calls)
+
+
+def test_detect_existing_detected_remote_still_valid_returns_ok(client, monkeypatch):
+    """Regression: an already-existing detected remote whose creds are still
+    valid re-probes cleanly and returns {"ok": True} — the re-probe closes the
+    stale-cred hole without breaking the healthy idempotent path."""
+    monkeypatch.setattr(mounts_mod, "_credential_suggestions",
+                        lambda: [_DETECTED_SUGG])
+    calls = []
+    _fake_rclone_probe(monkeypatch, lsd_rc=0, record=calls,
+                       existing_remotes=("aws-env:",))
+
+    r = client.post("/api/mounts/remotes/detect",
+                    json={"id": "aws-env"}, headers=FUSED)
+    assert r.status_code == 200 and r.json()["name"] == "aws-env:"
+    assert not any("create" in c for c in calls)  # not re-created
 
 
 def _fake_rclone(monkeypatch, existing_remotes=(), record=None, configs=None):

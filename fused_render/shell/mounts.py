@@ -2211,7 +2211,8 @@ def create_detected_remote(body: dict = Body(...), x_fused: str | None = Header(
     source (see _credential_suggestions). The spec comes from the server's own
     detection keyed by `id` — never from client-supplied rclone params — and
     env_auth=true means no keys are written. Idempotent: an already-created
-    remote is returned as-is."""
+    remote is returned as-is — but a detected (env_auth) one is re-probed
+    first, since its creds may have expired since creation."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -2223,8 +2224,21 @@ def create_detected_remote(body: dict = Body(...), x_fused: str | None = Header(
     if sugg is None:
         return JSONResponse({"error": f"unknown credential source {sid!r}"}, status_code=404)
     name = sugg["remote_name"]
+    # Public (anonymous) remotes carry no credentials to go stale; only the
+    # detected, env_auth-backed ones get the validity probe (an rclone `lsd`).
+    detected = sugg.get("kind", "detected") == "detected"
     # remotes are {name,label} objects now — match on the bare rclone spec.
     if any(r["name"] == f"{name}:" for r in _rclone_state().get("remotes", [])):
+        # Idempotent re-entry: the remote already exists. Don't report it
+        # healthy on faith — a detected remote's creds may have expired since
+        # it was created, and returning {"ok": True} here would invite a doomed
+        # mount just as surely as a freshly created stale one. Re-probe (one
+        # `lsd`) so an expired detected remote is never reported ok; anonymous
+        # remotes carry nothing that expires and return quickly.
+        if detected:
+            cred_err = _detected_credential_error(bin_, name)
+            if cred_err:
+                return JSONResponse({"error": cred_err}, status_code=502)
         return {"ok": True, "name": name + ":"}
     cmd = [bin_, "config", "create", name, sugg["backend"]]
     for k, v in sugg["params"].items():
@@ -2235,17 +2249,25 @@ def create_detected_remote(body: dict = Body(...), x_fused: str | None = Header(
         return JSONResponse({"error": "rclone config create timed out (30s)"}, status_code=502)
     if r.returncode != 0:
         return JSONResponse({"error": (r.stderr or r.stdout or "").strip()[-500:]}, status_code=502)
-    # Public (anonymous) remotes carry no credentials to go stale; only the
-    # detected, env_auth-backed ones get the validity probe. A remote whose
-    # creds turn out expired is rolled back so the broken thing doesn't
-    # linger under Remotes inviting doomed mounts.
-    if sugg.get("kind", "detected") == "detected":
+    # A detected remote whose creds turn out expired is rolled back so the
+    # broken thing doesn't linger under Remotes inviting doomed mounts.
+    if detected:
         cred_err = _detected_credential_error(bin_, name)
         if cred_err:
+            # Roll back the just-created remote. If the delete itself fails
+            # (non-zero exit or an OSError/timeout) the remote may still exist,
+            # so say so rather than returning the bare cred error as if cleanup
+            # succeeded — a silently-lingering remote would be reported ok on
+            # the next detect and re-invite the doomed mount.
             try:
-                subprocess.run([bin_, "config", "delete", name],
-                               capture_output=True, text=True, timeout=30)
+                d = subprocess.run([bin_, "config", "delete", name],
+                                   capture_output=True, text=True, timeout=30)
+                removed = d.returncode == 0
             except (OSError, subprocess.TimeoutExpired):
-                pass
+                removed = False
+            if not removed:
+                cred_err += (" (the half-created remote could not be removed "
+                             "automatically — delete it manually before "
+                             "retrying)")
             return JSONResponse({"error": cred_err}, status_code=502)
     return {"ok": True, "name": name + ":"}
