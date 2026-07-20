@@ -81,13 +81,24 @@ def test_bookmarks_created_when_absent_with_view_urls(tmp_path, monkeypatch):
     ensure_fused_dir()
 
     marks = _bookmarks(home)
-    assert [m["name"] for m in marks] == ["Showcase", "Tutorial"]
-    # Both are plain /view/ + per-segment-encoded absolute paths.
+    assert [m["name"] for m in marks] == [
+        "Tutorial",
+        "Showcase",
+        "Sine demo",
+        "How it works",
+    ]
+    # Tutorial/Showcase/How-it-works are plain /view/ + per-segment-encoded
+    # absolute paths; the Sine demo is a two-pane _panel split (page | code).
     assert marks[0]["url"] == "/view" + _encoded(
-        str(fdir / "showcase" / "index.html")
+        str(fdir / "tutorial" / "index.html")
     )
     assert marks[1]["url"] == "/view" + _encoded(
-        str(fdir / "tutorial" / "index.html")
+        str(fdir / "showcase" / "index.html")
+    )
+    sine = str(fdir / "sine" / "sine.html")
+    assert marks[2]["url"] == f"/view/_panel?_layout=({sine},{sine}?_mode=code)"
+    assert marks[3]["url"] == "/view" + _encoded(
+        str(fdir / "how_it_works" / "explainer.html")
     )
     # UUIDv4 ids + a numeric created_at, matching the store's shape.
     for m in marks:
@@ -113,12 +124,12 @@ def test_bookmark_urls_encode_special_segments(tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_HOME", str(home))
     ensure_fused_dir()
 
-    url = _bookmarks(home)[0]["url"]  # "Showcase" — a plain /view/ URL
+    url = _bookmarks(home)[0]["url"]  # "Tutorial" — a plain /view/ URL
     assert "My%20Fused%20Dir" in url  # space encoded, not literal
     assert " " not in url
     # Decoding the /view/ path yields the real absolute file path.
     decoded = "/" + "/".join(unquote(s) for s in url[len("/view/"):].split("/"))
-    assert decoded == str(fdir / "showcase" / "index.html")
+    assert decoded == str(fdir / "tutorial" / "index.html")
 
 
 def test_existing_bookmarks_never_overwritten(tmp_path, monkeypatch):
@@ -216,11 +227,11 @@ def test_bookmarks_skip_missing_targets_on_legacy_workspace(tmp_path, monkeypatc
 
 
 def test_no_bookmarks_when_no_targets_exist(tmp_path, monkeypatch):
-    # Neither bookmark target present in a non-empty dir: nothing to point at,
+    # No bookmark target present in a non-empty dir: nothing to point at,
     # so no bookmarks.json is written at all.
     fdir, home = _setup(tmp_path, monkeypatch)
-    (fdir / "sine").mkdir(parents=True)
-    (fdir / "sine" / "sine.html").write_text("old seed", encoding="utf-8")
+    (fdir / "my_stuff").mkdir(parents=True)
+    (fdir / "my_stuff" / "notes.html").write_text("user content", encoding="utf-8")
 
     ensure_fused_dir()
 
