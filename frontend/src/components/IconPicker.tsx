@@ -2,7 +2,7 @@
 // grid grouped by category, and a Remove action that restores the default ★.
 // Pure presentation — the caller owns positioning (anchor rect) and persists
 // the chosen icon.
-import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 
 interface Category {
   name: string;
@@ -168,10 +168,24 @@ interface IconPickerProps {
   onClose: () => void;
 }
 
+const GRID_COLS = 8;
+
 export default function IconPicker({ anchor, onPick, onRemove, onClose }: IconPickerProps) {
   const [query, setQuery] = useState("");
+  const [active, setActive] = useState(0);
+  const baseId = useId();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const restoreRef = useRef<Element | null>(null);
+
+  // Capture the opener on mount and restore focus to it on unmount (Esc or a
+  // pick), so focus never drops to <body> when the autofocused search unmounts.
+  useEffect(() => {
+    restoreRef.current = document.activeElement;
+    return () => {
+      (restoreRef.current as HTMLElement | null)?.focus?.();
+    };
+  }, []);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -183,8 +197,13 @@ export default function IconPicker({ anchor, onPick, onRemove, onClose }: IconPi
       if (target.closest(".bookmark-glyph:not(.folder-glyph)")) return;
       onClose();
     };
+    // Capture phase + stopPropagation so Escape closes only the picker — a
+    // host Modal's document-level (bubble) Esc handler must never see it.
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose();
+      }
     };
     // The popover is position:fixed against a one-shot anchor rect; any
     // scroll outside it would detach it from its glyph, so close instead.
@@ -193,11 +212,11 @@ export default function IconPicker({ anchor, onPick, onRemove, onClose }: IconPi
       onClose();
     };
     document.addEventListener("mousedown", onDocMouseDown);
-    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("keydown", onKeyDown, true);
     document.addEventListener("scroll", onScroll, true);
     return () => {
       document.removeEventListener("mousedown", onDocMouseDown);
-      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("keydown", onKeyDown, true);
       document.removeEventListener("scroll", onScroll, true);
     };
   }, [onClose]);
@@ -222,37 +241,97 @@ export default function IconPicker({ anchor, onPick, onRemove, onClose }: IconPi
     emoji: q ? cat.emoji.filter(([, kw]) => kw.includes(q)) : cat.emoji,
   })).filter((cat) => cat.emoji.length > 0);
 
+  // Flat order of the visible grid, for arrow-key navigation. `active` indexes
+  // into this list; the search input keeps focus and exposes the highlighted
+  // cell via aria-activedescendant. Sections start each grid row fresh, but a
+  // single flat ±GRID_COLS Up/Down is predictable enough across them.
+  const flat = sections.flatMap((cat) => cat.emoji.map(([emoji]) => emoji));
+  const activeIdx = Math.min(active, Math.max(0, flat.length - 1));
+  const cellId = (i: number) => `${baseId}-cell-${i}`;
+
+  const moveActive = (delta: number) => {
+    if (flat.length === 0) return;
+    const next = Math.max(0, Math.min(flat.length - 1, activeIdx + delta));
+    setActive(next);
+    document.getElementById(cellId(next))?.scrollIntoView({ block: "nearest" });
+  };
+
+  const onSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    switch (e.key) {
+      case "ArrowRight":
+        e.preventDefault();
+        moveActive(1);
+        break;
+      case "ArrowLeft":
+        e.preventDefault();
+        moveActive(-1);
+        break;
+      case "ArrowDown":
+        e.preventDefault();
+        moveActive(GRID_COLS);
+        break;
+      case "ArrowUp":
+        e.preventDefault();
+        moveActive(-GRID_COLS);
+        break;
+      case "Enter":
+        e.preventDefault();
+        if (flat[activeIdx]) onPick(flat[activeIdx]);
+        break;
+      // Escape is handled by the document-level listener (closes the popover).
+    }
+  };
+
+  // Track the flat position while rendering the grouped sections.
+  let flatIdx = 0;
+
   return (
-    <div className="icon-picker" ref={rootRef}>
+    <div className="icon-picker" ref={rootRef} role="dialog" aria-label="Choose icon">
       <div className="icon-picker-head">
         <input
           ref={inputRef}
           type="text"
           className="icon-picker-search"
           placeholder="Filter…"
+          aria-label="Filter icons"
+          role="combobox"
+          aria-expanded="true"
+          aria-controls={`${baseId}-grid`}
+          aria-activedescendant={flat.length > 0 ? cellId(activeIdx) : undefined}
           value={query}
-          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+            setQuery(e.target.value);
+            setActive(0);
+          }}
+          onKeyDown={onSearchKeyDown}
         />
         <button className="icon-picker-remove" title="Reset to default star" onClick={onRemove}>
           Remove
         </button>
       </div>
-      <div className="icon-picker-body">
+      <div className="icon-picker-body" id={`${baseId}-grid`} role="listbox" aria-label="Icons">
         {sections.length === 0 && <div className="icon-picker-empty">No match</div>}
         {sections.map((cat) => (
           <React.Fragment key={cat.name}>
             <div className="icon-picker-cat">{cat.name}</div>
             <div className="icon-picker-grid">
-              {cat.emoji.map(([emoji, kw]) => (
-                <button
-                  key={emoji}
-                  className="icon-picker-cell"
-                  title={kw}
-                  onClick={() => onPick(emoji)}
-                >
-                  {emoji}
-                </button>
-              ))}
+              {cat.emoji.map(([emoji, kw]) => {
+                const i = flatIdx++;
+                return (
+                  <button
+                    key={emoji}
+                    id={cellId(i)}
+                    role="option"
+                    aria-selected={i === activeIdx}
+                    tabIndex={-1}
+                    className={"icon-picker-cell" + (i === activeIdx ? " active" : "")}
+                    title={kw}
+                    onClick={() => onPick(emoji)}
+                  >
+                    {emoji}
+                  </button>
+                );
+              })}
             </div>
           </React.Fragment>
         ))}
