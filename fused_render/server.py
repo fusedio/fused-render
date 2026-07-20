@@ -884,6 +884,15 @@ def _condition_file(template_path: str):
     return condition_file if os.path.isfile(condition_file) else None
 
 
+# Per-gate probe budget (SPEC CT-12 fail-closed). One condition gate evaluation
+# shares this wall-clock deadline across ALL its mount probes. On a
+# non-direct-capable mount each operations/stat can burn the full rc timeout
+# resolving a miss (rclone lists the whole parent prefix), so a gate's serialized
+# probes would otherwise stack to N * that timeout. 5s bounds a whole gate to
+# roughly one slow probe; direct-capable mounts probe in ~1s and rarely reach it.
+GATE_PROBE_BUDGET_S = 5.0
+
+
 def _mount_gate_builtins(target_path: str):
     """Custom `__builtins__` for a condition gate whose target is MOUNT-backed,
     so the gate's own filesystem primitives route through the rclone rc API
@@ -920,25 +929,47 @@ def _mount_gate_builtins(target_path: str):
 
     real_os = os
 
+    # The gate's probes run SERIALLY in this one thread; give them ONE shared
+    # deadline (GATE_PROBE_BUDGET_S from now). Each probe is bounded to the budget
+    # REMAINING, and once it is spent every further probe fails closed instantly
+    # (isfile/isdir/exists -> False, stat -> OSError) instead of issuing another
+    # slow rc call — so a hung/slow backend can't stack timeouts across a gate.
+    deadline = time.monotonic() + GATE_PROBE_BUDGET_S
+
+    def _probe_budget():
+        return deadline - time.monotonic()
+
     def _isfile(p):
         if not mounts.is_mount_backed(p):
             return real_os.path.isfile(p)
-        return mounts.rc_kind_for(p) == "file"
+        left = _probe_budget()
+        if left <= 0:
+            return False  # budget spent -> fail closed
+        return mounts.rc_kind_for(p, timeout=left) == "file"
 
     def _isdir(p):
         if not mounts.is_mount_backed(p):
             return real_os.path.isdir(p)
-        return mounts.rc_kind_for(p) == "dir"
+        left = _probe_budget()
+        if left <= 0:
+            return False
+        return mounts.rc_kind_for(p, timeout=left) == "dir"
 
     def _exists(p):
         if not mounts.is_mount_backed(p):
             return real_os.path.exists(p)
-        return mounts.rc_kind_for(p) in ("file", "dir")
+        left = _probe_budget()
+        if left <= 0:
+            return False
+        return mounts.rc_kind_for(p, timeout=left) in ("file", "dir")
 
     def _stat(p, *a, **k):
         if not mounts.is_mount_backed(p):
             return real_os.stat(p, *a, **k)
-        return mounts.rc_stat_result(p)
+        left = _probe_budget()
+        if left <= 0:
+            raise OSError(f"probe budget exhausted for {p}")
+        return mounts.rc_stat_result(p, timeout=left)
 
     def _listdir(p="."):
         # A kernel listing over a mount is the mur-sst wedge; the gate is
@@ -1125,11 +1156,14 @@ def _conditions_payload(path: str):
     if is_mount_backed(path):
         # A mount is_dir probe off the kernel (a kernel os.stat here is a
         # GETATTR that can force an S3 re-list and wedge the mount). "missing" is
-        # a trustworthy 404; "indeterminate" (rcd down / rc error) must NOT 404 a
-        # path the user just opened — proceed treating it as a dir, and the gates
-        # then fail closed on their own indeterminate rc calls, so the endpoint
-        # still returns 200 with all-False conditions rather than a spurious 404.
-        kind = rc_kind_for(path)
+        # a trustworthy 404; "indeterminate" (rcd down / rc error / probe budget
+        # exhausted) must NOT 404 a path the user just opened — proceed treating
+        # it as a dir, and the gates then fail closed on their own indeterminate
+        # probes, so the endpoint still returns 200 with all-False conditions
+        # rather than a spurious 404. The probe is bounded by GATE_PROBE_BUDGET_S
+        # so a stalled non-direct-capable backend can't hang this endpoint before
+        # the gates (each also budgeted) even start.
+        kind = rc_kind_for(path, timeout=GATE_PROBE_BUDGET_S)
         if kind == "missing":
             return _error(f"no such file or directory: {path}", status=404)
         is_dir = kind != "file"
