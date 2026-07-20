@@ -6,6 +6,7 @@ FUSED_RENDER_HOME is redirected per test so no test touches the real
 ~/.fused-render or a real mount.
 """
 import json
+import stat
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -282,6 +283,162 @@ def test_rc_mtime_for_none_on_rc_error_or_missing(home, rcd):
 
 def test_rc_mtime_for_none_outside_any_mount(home, rcd):
     assert mounts_mod.rc_mtime_for("/tmp/not/a/mount/f.parquet") is None
+
+
+def test_rc_stat_for_tri_state(home, rcd):
+    # rc_stat_for distinguishes the three outcomes rc_mtime_for collapses to
+    # None, so a caller can filter a genuinely-deleted mount file while still
+    # failing open on anything indeterminate.
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    path = mounts_mod.mountpoint(c) + "/f.parquet"
+
+    # Healthy rcd, item is a dict -> file exists (ModTime irrelevant to stat).
+    rcd.responses["operations/stat"] = {"item": {"ModTime": "2024-01-02T03:04:05Z"}}
+    assert mounts_mod.rc_stat_for(path) == "exists"
+    rcd.responses["operations/stat"] = {"item": {"Size": 1}}  # exists, no ModTime
+    assert mounts_mod.rc_stat_for(path) == "exists"
+
+    # Healthy rcd, item is null -> a TRUSTWORTHY "the file is gone".
+    rcd.responses["operations/stat"] = {"item": None}
+    assert mounts_mod.rc_stat_for(path) == "missing"
+
+    # Malformed answer (missing 'item' key, non-dict resp) -> indeterminate.
+    rcd.responses["operations/stat"] = {"nope": 1}
+    assert mounts_mod.rc_stat_for(path) == "indeterminate"
+
+
+def test_rc_stat_for_indeterminate_on_error_or_no_rcd_or_no_mount(home, rcd):
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    path = mounts_mod.mountpoint(c) + "/f.parquet"
+    # rc error (stub 404s unset methods) -> indeterminate, NOT missing.
+    assert mounts_mod.rc_stat_for(path) == "indeterminate"
+    # Path under no mount record -> indeterminate.
+    assert mounts_mod.rc_stat_for("/tmp/not/a/mount/f.parquet") == "indeterminate"
+
+
+def test_rc_stat_for_indeterminate_when_rcd_down(home):
+    # No live rcd port at all -> indeterminate (fail open), never "missing".
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    path = mounts_mod.mountpoint(c) + "/f.parquet"
+    assert mounts_mod.rc_stat_for(path) == "indeterminate"
+
+
+def test_rc_mtime_for_and_rc_stat_for_share_one_rc_call_semantics(home, rcd):
+    # rc_mtime_for's documented None contract is preserved after being
+    # reimplemented on the shared stat: exists-but-no-ModTime and item-null
+    # both still yield None.
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    path = mounts_mod.mountpoint(c) + "/f.parquet"
+    rcd.responses["operations/stat"] = {"item": {"Size": 1}}
+    assert mounts_mod.rc_mtime_for(path) is None
+    assert mounts_mod.rc_stat_for(path) == "exists"
+    rcd.responses["operations/stat"] = {"item": None}
+    assert mounts_mod.rc_mtime_for(path) is None
+    assert mounts_mod.rc_stat_for(path) == "missing"
+
+
+def test_rc_kind_for_four_state(home, rcd):
+    # rc_kind_for extends rc_stat_for with the IsDir bit operations/stat already
+    # carries, so a condition-gate shim can tell os.path.isfile from isdir over a
+    # mount WITHOUT the cold negative kernel LOOKUP that lists the whole S3 prefix
+    # and wedges the mount.
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    path = mounts_mod.mountpoint(c) + "/store"
+
+    rcd.responses["operations/stat"] = {"item": {"IsDir": True}}
+    assert mounts_mod.rc_kind_for(path) == "dir"
+    rcd.responses["operations/stat"] = {"item": {"IsDir": False, "Size": 12}}
+    assert mounts_mod.rc_kind_for(path) == "file"
+    rcd.responses["operations/stat"] = {"item": {"Size": 12}}  # IsDir absent -> file
+    assert mounts_mod.rc_kind_for(path) == "file"
+    rcd.responses["operations/stat"] = {"item": None}  # healthy rcd: gone
+    assert mounts_mod.rc_kind_for(path) == "missing"
+    rcd.responses["operations/stat"] = {"nope": 1}  # malformed -> indeterminate
+    assert mounts_mod.rc_kind_for(path) == "indeterminate"
+
+
+def test_rc_kind_for_indeterminate_on_error_or_no_rcd_or_no_mount(home, rcd):
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    path = mounts_mod.mountpoint(c) + "/store"
+    # rc error (stub 404s unset methods) and a path under no mount -> indeterminate.
+    assert mounts_mod.rc_kind_for(path) == "indeterminate"
+    assert mounts_mod.rc_kind_for("/tmp/not/a/mount/store") == "indeterminate"
+
+
+def test_rc_stat_result_synthesizes_from_operations_stat(home, rcd):
+    # A mount stat is answered off the kernel: st_mode's dir/file bit, st_size,
+    # and st_mtime come from operations/stat, never a kernel GETATTR.
+    import stat as _stat
+
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    path = mounts_mod.mountpoint(c) + "/store"
+
+    rcd.responses["operations/stat"] = {
+        "item": {"IsDir": True, "ModTime": "2024-01-02T03:04:05Z"}}
+    st = mounts_mod.rc_stat_result(path)
+    assert _stat.S_ISDIR(st.st_mode)
+    assert st.st_mtime == mounts_mod.rc_modtime_epoch("2024-01-02T03:04:05Z")
+
+    rcd.responses["operations/stat"] = {
+        "item": {"IsDir": False, "Size": 99, "ModTime": "2024-01-02T03:04:05Z"}}
+    st = mounts_mod.rc_stat_result(path)
+    assert _stat.S_ISREG(st.st_mode)
+    assert st.st_size == 99
+
+
+def test_rc_stat_result_raises_like_kernel_on_missing_and_indeterminate(home, rcd):
+    # Fail exactly like the kernel os.stat it replaces so callers' 404 handling
+    # holds: FileNotFoundError when the rcd confirms the item gone, OSError on any
+    # indeterminate outcome — and NEVER fall back to a kernel GETATTR.
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    path = mounts_mod.mountpoint(c) + "/store"
+
+    rcd.responses["operations/stat"] = {"item": None}
+    with pytest.raises(FileNotFoundError):
+        mounts_mod.rc_stat_result(path)
+
+    rcd.responses["operations/stat"] = {"nope": 1}  # malformed -> indeterminate
+    with pytest.raises(OSError):
+        mounts_mod.rc_stat_result(path)
+
+
+def test_rc_read_bounded_reads_over_http_serve(home, monkeypatch):
+    # The condition-gate shim's open() reads the one bounded zarr.json over the
+    # mount's localhost HTTP serve (serve_url_for), never a kernel open/read.
+    import io as _io
+
+    calls = []
+
+    def _fake_serve_url_for(p):
+        return "http://127.0.0.1:59999/store/zarr.json"
+
+    def _fake_urlopen(req, timeout=None):
+        calls.append((req.full_url, dict(req.headers), timeout))
+        return _io.BytesIO(b'{"node_type": "group"}')
+
+    monkeypatch.setattr(mounts_mod, "serve_url_for", _fake_serve_url_for)
+    monkeypatch.setattr(mounts_mod.urllib.request, "urlopen", _fake_urlopen)
+
+    data = mounts_mod.rc_read_bounded("/mnt/store/zarr.json")
+    assert data == b'{"node_type": "group"}'
+    # Bounded: a Range header caps the read.
+    assert "Range" in calls[0][1] or "range" in {k.lower() for k in calls[0][1]}
+
+
+def test_rc_read_bounded_raises_oserror_without_serve_or_on_transport_error(home, monkeypatch):
+    # No live serve, or any transport failure -> OSError so the gate fails closed.
+    monkeypatch.setattr(mounts_mod, "serve_url_for", lambda p: None)
+    with pytest.raises(OSError):
+        mounts_mod.rc_read_bounded("/mnt/store/zarr.json")
+
+    monkeypatch.setattr(mounts_mod, "serve_url_for", lambda p: "http://127.0.0.1:1/x")
+
+    def _boom(req, timeout=None):
+        raise mounts_mod.urllib.error.URLError("refused")
+
+    monkeypatch.setattr(mounts_mod.urllib.request, "urlopen", _boom)
+    with pytest.raises(OSError):
+        mounts_mod.rc_read_bounded("/mnt/store/zarr.json")
 
 
 def test_is_mount_backed_follows_symlink_into_mounts(home, tmp_path):
@@ -1671,10 +1828,15 @@ def test_serve_url_for_maps_and_quotes(home, rcd):
     assert mounts_mod.serve_url_for("/somewhere/else.parquet") is None
 
 
-def test_stat_marks_mount_backed_files_remote(client, home):
+def test_stat_marks_mount_backed_files_remote(client, home, rcd):
     import os
 
-    mp = os.path.join(mounts_mod.mounts_dir(), "data")
+    # fs/stat routes a mount stat through the rc API, so the stub rcd answers
+    # operations/stat for the mount-backed file (the local path still stats via
+    # the kernel).
+    rcd.responses["operations/stat"] = {"item": {"Size": 2}}
+    c = mounts_mod.add_mount("data", "remote:bucket")  # a real record for _mount_for
+    mp = mounts_mod.mountpoint(c)
     os.makedirs(mp)
     f = os.path.join(mp, "x.parquet")
     open(f, "wb").write(b"pq")
@@ -1684,14 +1846,13 @@ def test_stat_marks_mount_backed_files_remote(client, home):
     assert client.get("/api/fs/stat", params={"path": plain}).json()["remote"] is False
 
 
-def test_fs_raw_proxies_range_from_mount_serve(client, home):
+def test_fs_raw_proxies_range_from_mount_serve(client, home, rcd):
     """/api/fs/raw for a mount-backed path streams GETs from the mount's
-    HTTP serve, not from the local filesystem. HEAD is the exception: it is
-    answered from the mount's own stat — ranged clients (duckdb httpfs,
-    fsspec/zarr) probe the length before every read, and proxying that probe
-    costs a full remote round trip for headers the VFS getattr already
-    knows; on a real mount the stat and the serve read the same remote, so
-    the sizes agree (here they intentionally differ to prove the source)."""
+    HTTP serve, not from the local filesystem. HEAD is answered from the
+    rclone rcd (operations/list), NOT a kernel os.stat: a missing-sidecar HEAD
+    is the cold-negative probe that would enumerate the whole remote prefix and
+    wedge the mount. Here the rc size (77) intentionally differs from both the
+    local file (11) and the serve body (12) to prove HEAD is rc-sourced."""
     import functools
     import http.server
     import os
@@ -1701,6 +1862,9 @@ def test_fs_raw_proxies_range_from_mount_serve(client, home):
     os.makedirs(mp)
     f = os.path.join(mp, "x.bin")
     open(f, "wb").write(b"LOCAL-BYTES")  # what a (dead-mount) local read would see
+    rcd.responses["operations/list"] = {"list": [
+        {"Name": "x.bin", "IsDir": False, "Size": 77,
+         "ModTime": "2024-01-02T03:04:05Z"}]}
 
     served = home / "served"
     served.mkdir()
@@ -1723,7 +1887,7 @@ def test_fs_raw_proxies_range_from_mount_serve(client, home):
         assert r.status_code == 200 and r.content == b"REMOTE-BYTES"
         r = client.head("/api/fs/raw", params={"path": f})
         assert r.status_code == 200
-        assert r.headers["content-length"] == str(len(b"LOCAL-BYTES"))
+        assert r.headers["content-length"] == "77"  # from the rcd, not kernel
         assert r.headers["accept-ranges"] == "bytes"
         assert "last-modified" in r.headers
         assert r.content == b""
@@ -1731,11 +1895,13 @@ def test_fs_raw_proxies_range_from_mount_serve(client, home):
         srv.shutdown()
 
 
-def test_fs_raw_directory_404s_not_listing(client, home):
+def test_fs_raw_directory_404s_not_listing(client, home, rcd):
     """A directory path under a served mount 404s on GET and HEAD. The serve
     (like rclone serve http) answers a directory with a 200 HTML listing, so
     without a guard the proxy would hand that listing back as raw bytes; a
-    directory has no bytes to serve, so both verbs must 404."""
+    directory has no bytes to serve, so both verbs must 404. GET's guard is the
+    proxy-path stat; HEAD detects the directory via the rclone rcd (IsDir), the
+    mount-safe replacement for the kernel os.stat."""
     import functools
     import http.server
     import os
@@ -1747,6 +1913,11 @@ def test_fs_raw_directory_404s_not_listing(client, home):
     d = os.path.join(mp, "subdir")
     os.makedirs(d)
     open(os.path.join(d, "x.bin"), "wb").write(b"CHUNK")
+    # rcd reports `subdir` as a directory, so the HEAD probe 404s without a
+    # kernel stat.
+    rcd.responses["operations/list"] = {"list": [
+        {"Name": "subdir", "IsDir": True, "Size": -1,
+         "ModTime": "2024-01-02T03:04:05Z"}]}
 
     class H(http.server.SimpleHTTPRequestHandler):
         def log_message(self, *a):
@@ -1771,7 +1942,11 @@ def test_fs_raw_directory_404s_not_listing(client, home):
         srv.shutdown()
 
 
-def test_fs_raw_falls_back_to_file_when_serve_dead(client, home):
+def test_fs_raw_serve_dead_returns_503_never_kernel_reads_mount(client, home):
+    """When the mount's HTTP serve is unreachable, /api/fs/raw must 503 rather
+    than fall back to a local-file kernel read: reading through the kernel NFS
+    mount is the wedge this whole subsystem exists to avoid, so even a file that
+    happens to be cached locally is refused while the serve is down/respawning."""
     import os
     import socket
 
@@ -1786,7 +1961,7 @@ def test_fs_raw_falls_back_to_file_when_serve_dead(client, home):
     import fused_render.shell.storage as storage
     storage.write_json(mounts_mod.serves_path(), {mp: f"http://127.0.0.1:{dead}"})
     r = client.get("/api/fs/raw", params={"path": f})
-    assert r.status_code == 200 and r.content == b"LOCAL-BYTES"
+    assert r.status_code == 503
 
 
 def test_fs_raw_proxy_error_keeps_range_headers(client, home):
@@ -2566,3 +2741,255 @@ def test_direct_list_page_routes_gcs_to_googleapis(home, rcd, fresh_upstream, gc
 
 def test_s3listerror_is_directlisterror_alias():
     assert mounts_mod.S3ListError is mounts_mod.DirectListError
+
+
+# -- direct_head / direct_is_dir (point probes) -----------------------------
+#
+# operations/stat has no S3 point lookup — rclone answers a negative or a dir
+# probe with an UNBOUNDED ListObjectsV2 of the whole parent prefix, so on a flat
+# world-scale prefix every probe burns the full rc timeout. HeadObject and a
+# max-keys=1 list are the true point lookups. These drive direct_head /
+# direct_is_dir against a LOCAL stub HTTP server (real HTTP HEAD/GET, real 404 ->
+# HTTPError, real header parsing); a urlopen redirector rewrites the object-store
+# host to the stub so the real path-style URL building still runs.
+
+
+class DirectObjStub:
+    """A stand-in for anonymous S3 / GCS object endpoints. `head` drives the
+    HEAD (or GCS objects.get GET) reply; `listing` drives the GET list reply."""
+
+    def __init__(self):
+        self.calls = []  # (method, path, query)
+        self.delay = {}  # method -> seconds to sleep before responding (timeouts)
+        # (status, headers-or-body). 200 head -> send those headers, no body.
+        self.head = (200, {"Content-Length": "123",
+                           "Last-Modified": "Wed, 21 Oct 2015 07:28:00 GMT"})
+        self.head_body = b'{"size": "123", "updated": "2015-10-21T07:28:00Z"}'
+        self.listing = (200, b"")  # GET list/objects.get body
+        stub = self
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _record(self):
+                p, _, q = self.path.partition("?")
+                stub.calls.append((self.command, p, q))
+                if self.command in stub.delay:
+                    time.sleep(stub.delay[self.command])
+
+            def do_HEAD(self):
+                self._record()
+                status, headers = stub.head
+                if status != 200:
+                    self.send_error(status)
+                    return
+                self.send_response(200)
+                for k, v in headers.items():
+                    self.send_header(k, v)
+                self.end_headers()
+
+            def do_GET(self):
+                self._record()
+                # GCS objects.get lands here too (path has no query); the
+                # objects.list has a query. Both use the `listing`/`head_body`.
+                p = self.path
+                if "/storage/v1/b/" in p and "?" not in p:
+                    status, body = 200, stub.head_body  # objects.get metadata
+                    if stub.head[0] != 200:
+                        self.send_error(stub.head[0])
+                        return
+                else:
+                    status, body = stub.listing
+                if status != 200:
+                    self.send_error(status)
+                    return
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.port = self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+
+
+@pytest.fixture()
+def direct_stub(monkeypatch):
+    """A live object-store stub + a urlopen redirector: object-store URLs
+    (amazonaws / googleapis) are rewritten to the local stub host, preserving
+    path/query/method; rc calls (loopback rcd) delegate to the real urlopen."""
+    import urllib.parse as _up
+
+    stub = DirectObjStub()
+    real = mounts_mod.urllib.request.urlopen
+
+    def fake(req, timeout=None):
+        url = req if isinstance(req, str) else req.get_full_url()
+        parts = _up.urlsplit(url)
+        if ("amazonaws.com" not in (parts.hostname or "")
+                and "googleapis.com" not in (parts.hostname or "")):
+            return real(req, timeout=timeout)
+        local = _up.urlunsplit(("http", f"127.0.0.1:{stub.port}",
+                               parts.path, parts.query, ""))
+        method = "GET" if isinstance(req, str) else req.get_method()
+        return real(mounts_mod.urllib.request.Request(local, method=method),
+                    timeout=timeout)
+
+    monkeypatch.setattr(mounts_mod.urllib.request, "urlopen", fake)
+    yield stub
+    stub.close()
+
+
+def test_direct_head_s3_exists_returns_size_and_mtime(home, rcd, fresh_upstream, direct_stub):
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    got = mounts_mod.direct_head(mounts_mod.mountpoint(c) + "/analysed_sst/zarr.json")
+    assert got.exists is True and got.size == 123
+    assert got.mtime.startswith("2015-10-21T07:28:00")
+    # A HEAD, not a prefix list — one point round trip.
+    assert direct_stub.calls and direct_stub.calls[-1][0] == "HEAD"
+
+
+def test_direct_head_s3_missing_is_definitive_not_error(home, rcd, fresh_upstream, direct_stub):
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    direct_stub.head = (404, {})
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    got = mounts_mod.direct_head(mounts_mod.mountpoint(c) + "/nope.json")
+    assert got.exists is False  # a 404 is a trustworthy negative, not a raise
+
+
+def test_direct_head_s3_http_error_raises(home, rcd, fresh_upstream, direct_stub):
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    direct_stub.head = (403, {})  # needs auth -> indeterminate
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    with pytest.raises(mounts_mod.DirectProbeError):
+        mounts_mod.direct_head(mounts_mod.mountpoint(c) + "/x.json")
+
+
+def test_direct_head_not_capable_raises(home, rcd, fresh_upstream, direct_stub):
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}  # credentialed
+    c = mounts_mod.add_mount("corp", "corp:bucket")
+    with pytest.raises(mounts_mod.DirectProbeError):
+        mounts_mod.direct_head(mounts_mod.mountpoint(c) + "/x.json")
+
+
+def test_direct_is_dir_s3_true_when_children(home, rcd, fresh_upstream, direct_stub):
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    direct_stub.listing = (200, _s3_list_xml(contents=[("zarr-v1/analysed_sst/x", 1, "2024-01-01T00:00:00Z")]))
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    assert mounts_mod.direct_is_dir(mounts_mod.mountpoint(c) + "/analysed_sst") is True
+    # max-keys=1 list against the prefix, off the kernel.
+    assert any(q for _m, _p, q in direct_stub.calls if "max-keys=1" in q)
+
+
+def test_direct_is_dir_s3_false_when_empty(home, rcd, fresh_upstream, direct_stub):
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    direct_stub.listing = (200, _s3_list_xml())  # no Contents
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    assert mounts_mod.direct_is_dir(mounts_mod.mountpoint(c) + "/ghost") is False
+
+
+def test_direct_is_dir_s3_http_error_raises(home, rcd, fresh_upstream, direct_stub):
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    direct_stub.listing = (500, b"")
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    with pytest.raises(mounts_mod.DirectProbeError):
+        mounts_mod.direct_is_dir(mounts_mod.mountpoint(c) + "/x")
+
+
+def test_direct_head_gcs_exists_and_dir(home, rcd, fresh_upstream, direct_stub):
+    rcd.responses["config/get"] = _ANON_GCS_CFG
+    c = mounts_mod.add_mount("open", "gcs-open:mur-sst/zarr-v1")
+    got = mounts_mod.direct_head(mounts_mod.mountpoint(c) + "/analysed_sst/zarr.json")
+    assert got.exists is True and got.size == 123
+    assert got.mtime == "2015-10-21T07:28:00Z"
+    direct_stub.listing = (200, _gcs_list_json(items=[("zarr-v1/analysed_sst/x", 1, "2024-01-01T00:00:00Z")]))
+    assert mounts_mod.direct_is_dir(mounts_mod.mountpoint(c) + "/analysed_sst") is True
+
+
+# -- rc stat helpers route direct-first (no operations/stat when capable) ----
+
+
+def test_rc_kind_for_uses_direct_probe_not_operations_stat(home, rcd, fresh_upstream, direct_stub):
+    # A direct-capable mount must answer rc_kind_for via HeadObject, NEVER via
+    # operations/stat (which lists the whole prefix). The stub rcd would fail the
+    # test if operations/stat were called.
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    rcd.responses["operations/stat"] = (500, {"error": "must not be called"})
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    kind = mounts_mod.rc_kind_for(mounts_mod.mountpoint(c) + "/analysed_sst/zarr.json")
+    assert kind == "file"
+    assert not any(x[0] == "operations/stat" for x in rcd.calls)
+
+
+def test_rc_kind_for_direct_dir_then_missing(home, rcd, fresh_upstream, direct_stub):
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    base = mounts_mod.mountpoint(c)
+    # HEAD 404 + a non-empty prefix list -> "dir".
+    direct_stub.head = (404, {})
+    direct_stub.listing = (200, _s3_list_xml(contents=[("zarr-v1/d/x", 1, "2024-01-01T00:00:00Z")]))
+    assert mounts_mod.rc_kind_for(base + "/d") == "dir"
+    # HEAD 404 + empty prefix list -> "missing" (trustworthy negative).
+    direct_stub.listing = (200, _s3_list_xml())
+    assert mounts_mod.rc_kind_for(base + "/gone") == "missing"
+    assert not any(x[0] == "operations/stat" for x in rcd.calls)
+
+
+def test_direct_stat_pair_shares_one_timeout_budget(home, rcd, fresh_upstream, direct_stub):
+    # A dir/miss resolution runs direct_head THEN direct_is_dir back-to-back. If
+    # each got a fresh full `timeout`, one logical rc_kind_for could burn up to
+    # 2x the caller's budget (the "direct stat doubles probe timeout" bug). The
+    # two probes must SHARE one deadline, so a slow head leaves the list only the
+    # remaining budget — a single stat never exceeds ~timeout.
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    # Both point probes are slow (0.8s); together they'd be ~1.6s if unbounded.
+    direct_stub.head = (404, {})                 # HEAD -> not a file (proceeds to dir probe)
+    direct_stub.listing = (200, _s3_list_xml())  # empty prefix
+    direct_stub.delay = {"HEAD": 0.8, "GET": 0.8}
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    t0 = time.monotonic()
+    mounts_mod.rc_kind_for(mounts_mod.mountpoint(c) + "/slow", timeout=1.0)
+    elapsed = time.monotonic() - t0
+    # With the shared budget the head eats most of the 1.0s and the list gets no
+    # meaningful budget, so the whole call stays well under 2x. Without the fix
+    # this is ~1.6s.
+    assert elapsed < 1.3, f"one stat took {elapsed:.2f}s, ~2x the 1.0s budget"
+
+
+def test_rc_stat_result_falls_back_to_rc_when_direct_errors(home, rcd, fresh_upstream, direct_stub):
+    # Direct probe indeterminate (403) -> fall back to operations/stat, which
+    # here reports a healthy directory item. Proves the ladder direct -> rc.
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    direct_stub.head = (403, {})       # HEAD indeterminate
+    direct_stub.listing = (403, b"")   # is_dir indeterminate too
+    rcd.responses["operations/stat"] = {"item": {"IsDir": True, "Size": -1,
+                                                 "ModTime": "2024-01-02T03:04:05Z"}}
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    st = mounts_mod.rc_stat_result(mounts_mod.mountpoint(c) + "/d")
+    assert stat.S_ISDIR(st.st_mode)
+    assert any(x[0] == "operations/stat" for x in rcd.calls)
+
+
+def test_probe_floor_never_exceeds_caller_timeout(home, rcd, fresh_upstream, direct_stub):
+    # _DIRECT_PROBE_MIN_S is a bail-out threshold, NOT a grant: when the
+    # caller's remaining budget is already below the floor, the stat must
+    # report indeterminate immediately — a max(floor, remaining) clamp would
+    # instead hand a 0.5s head probe PLUS a 0.5s rc fallback to a caller who
+    # asked for 0.2s, stacking one logical stat past the gate budget (the
+    # "probe floor exceeds caller timeout" bug).
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    direct_stub.head = (404, {})
+    direct_stub.listing = (200, _s3_list_xml())
+    direct_stub.delay = {"HEAD": 2.0, "GET": 2.0}  # any granted probe shows up as wall time
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    t0 = time.monotonic()
+    kind = mounts_mod.rc_kind_for(mounts_mod.mountpoint(c) + "/x", timeout=0.2)
+    elapsed = time.monotonic() - t0
+    assert kind == "indeterminate"
+    assert elapsed < 0.19, (
+        f"sub-floor budget still ran probes for {elapsed:.2f}s (floor granted, not bailed)")

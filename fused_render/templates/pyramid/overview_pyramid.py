@@ -11,6 +11,152 @@ compression playground, one install between the three tools).
 VENV_DIR_NAME = "fused-render-compressbench"
 VENV_DEPS = ["rasterio", "numpy", "pillow", "rio-cogeo", "tifffile"]
 
+# ---------------------------------------------------------------------------
+# Mount-safe byte access (mirrors geotiff/tile_server.py). Files under a
+# read-only rclone NFS mount stall (18-30s) or drop the mount on ANY kernel I/O
+# (os.stat, open, mmap, GDAL). The template stays mount-AGNOSTIC — it never
+# imports shell.mounts and never matches ~/.fused-render paths — and instead
+# passes a `src` (server origin + /api/fs/raw?path=). All mount knowledge lives
+# behind two HTTP endpoints: /api/fs/stat (says whether a path is `remote`) and
+# /api/fs/raw (serves bytes, honours Range; proxies rclone's VFS so parallel
+# range reads are safe). This block is defined ONCE here (importable + tested in
+# tests/test_pyramid_mount.py) and injected verbatim into the worker via
+# _worker_source(): the worker runs in a separate uv venv where fused_render is
+# not importable, so it needs the source, not an import.
+_SHARED = r'''
+import io as _io
+import json as _json
+import urllib.error as _urlerr
+import urllib.parse as _urlparse
+import urllib.request as _urlreq
+
+
+def _server_url(src, endpoint, path):
+    """Server URL built from `src`'s ORIGIN and our own normalized `path`. src
+    is trusted only for scheme+netloc: its ?path= carries the browser's raw
+    file param (possibly ~-prefixed / relative) and the fs endpoints do no
+    expansion — judging remote-ness on one path string and range-reading another
+    would 404. So we quote OUR path onto the endpoint, ignoring src's path."""
+    u = _urlparse.urlsplit(src)
+    return (f"{u.scheme}://{u.netloc}{endpoint}?path="
+            + _urlparse.quote(path))
+
+
+def _stat(src, path):
+    """Ask /api/fs/stat about `path`. Returns:
+      ("ok", payload)      — payload has bool `remote` and int `size`
+      ("missing", None)    — server says the path does not exist (404)
+      ("unreachable", None)— server could not be reached / errored; the caller
+                             falls back to a local kernel probe (presumed local).
+    """
+    url = _server_url(src, "/api/fs/stat", path)
+    try:
+        with _urlreq.urlopen(url, timeout=10) as r:
+            return ("ok", _json.load(r))
+    except _urlerr.HTTPError as e:
+        if e.code == 404:
+            return ("missing", None)
+        return ("unreachable", None)
+    except Exception:  # noqa: BLE001 — any network error -> fall back to local
+        return ("unreachable", None)
+
+
+class _RangeReader:
+    """Raw byte source over /api/fs/raw: one HTTP Range GET per read. When the
+    server ignores Range and returns the whole object (200), slice our window
+    out of the body so callers still get exactly what they asked for."""
+
+    def __init__(self, url):
+        self.url = url
+
+    def read(self, off, count):
+        req = _urlreq.Request(
+            self.url, headers={"Range": f"bytes={off}-{off + count - 1}"})
+        with _urlreq.urlopen(req, timeout=120) as r:
+            body = r.read()
+            status = r.status
+        if status != 206:
+            body = body[off:off + count]
+        if len(body) != count:
+            raise OSError(
+                f"range read: wanted {count}B at {off}, got {len(body)}B")
+        return body
+
+
+class _HttpRangeFile(_io.RawIOBase):
+    """A seekable, read-only binary file object over /api/fs/raw, for handing to
+    rasterio (via opener=) and tifffile (which walk many small offsets — IFD
+    tags, tile indices). Reads are served from fixed-size blocks with a tiny LRU
+    so a burst of nearby small reads collapses into a few Range GETs instead of
+    one round-trip per read. `size` comes from /api/fs/stat, so we never kernel-
+    stat the mount to learn the length."""
+
+    def __init__(self, url, size, block=65536):
+        self._r = _RangeReader(url)
+        self._size = int(size)
+        self._pos = 0
+        self._block = int(block)
+        self._cache = {}
+        self._order = []
+
+    def readable(self):
+        return True
+
+    def seekable(self):
+        return True
+
+    def tell(self):
+        return self._pos
+
+    def seek(self, off, whence=_io.SEEK_SET):
+        if whence == _io.SEEK_SET:
+            self._pos = off
+        elif whence == _io.SEEK_CUR:
+            self._pos += off
+        elif whence == _io.SEEK_END:
+            self._pos = self._size + off
+        else:
+            raise ValueError(f"bad whence: {whence}")
+        return self._pos
+
+    def _fetch_block(self, bi):
+        blk = self._cache.get(bi)
+        if blk is not None:
+            return blk
+        off = bi * self._block
+        n = min(self._block, self._size - off)
+        if n <= 0:
+            return b""
+        blk = self._r.read(off, n)
+        self._cache[bi] = blk
+        self._order.append(bi)
+        if len(self._order) > 64:  # tiny LRU — keep memory bounded
+            self._cache.pop(self._order.pop(0), None)
+        return blk
+
+    def readinto(self, b):
+        if self._pos >= self._size:
+            return 0
+        want = min(len(b), self._size - self._pos)
+        out = bytearray()
+        p = self._pos
+        while len(out) < want:
+            bi = p // self._block
+            blk = self._fetch_block(bi)
+            start = p - bi * self._block
+            take = min(len(blk) - start, want - len(out))
+            if take <= 0:
+                break
+            out += blk[start:start + take]
+            p += take
+        b[:len(out)] = out
+        self._pos += len(out)
+        return len(out)
+'''
+
+exec(_SHARED, globals())
+
+
 WORKER = r'''
 import base64, io, json, math, os, sys
 import numpy as np
@@ -23,6 +169,44 @@ action = sys.argv[2] if len(sys.argv) > 2 else "analyze"
 opts = json.loads(sys.argv[3]) if len(sys.argv) > 3 else {}
 THUMB = 800          # max px for whole-image previews (small levels stay native)
 CROP_CAP = 512       # max stored px for the same-ground crops
+
+# Mount-backed input? Then RAW_URL + SIZE come from main() (via /api/fs/stat)
+# and every rasterio/tifffile handle is opened over HTTP range reads — never a
+# kernel open/mmap of the NFS mount. Local files keep the plain path.
+REMOTE = bool(opts.get("remote"))
+RAW_URL = opts.get("raw_url")
+SIZE = opts.get("size")
+
+
+REMOTE_ID = "pyramid-remote.tif"  # the identifier handed to rasterio.open
+
+
+def _http_opener(p, mode="rb", **_kw):
+    # rasterio/GDAL call the opener not just for the dataset but for sidecar
+    # probes: p.ovr, p.msk, p.aux.xml, a directory 'test', etc. Serving the main
+    # bytes for a '.ovr' probe makes GDAL read the base image as a bogus EXTERNAL
+    # overview (measured: a file with NO overviews then reports 32 phantom
+    # levels). So serve RAW_URL ONLY for the exact identifier and raise
+    # FileNotFoundError for every other path, so GDAL sees no sidecars.
+    if str(p) != REMOTE_ID:
+        raise FileNotFoundError(p)
+    return _HttpRangeFile(RAW_URL, SIZE)
+
+
+def ropen(**kw):
+    """rasterio.open for the input, mount-safe. Remote -> a Python opener that
+    range-reads /api/fs/raw (GDAL uses INTERNAL overviews for decimated reads,
+    so it does NOT re-download the whole file per handle)."""
+    if REMOTE:
+        return rasterio.open(REMOTE_ID, opener=_http_opener, **kw)
+    return rasterio.open(path, **kw)
+
+
+def topen():
+    """tifffile.TiffFile for the input, mount-safe (file object when remote)."""
+    if REMOTE:
+        return tifffile.TiffFile(_HttpRangeFile(RAW_URL, SIZE))
+    return tifffile.TiffFile(path)
 
 def emit(obj):
     """Print the result AND (for detached build/cogify jobs) persist it to the
@@ -111,7 +295,7 @@ if action == "cogify":
 if action == "predict":
     # sample real blocks, recompress with candidate codecs, extrapolate sizes
     from rasterio.io import MemoryFile
-    with rasterio.open(path) as src:
+    with ropen() as src:
         w, h, bands, dtype = src.width, src.height, src.count, src.dtypes[0]
         raw_total = w * h * bands * np.dtype(dtype).itemsize
         win = 1024
@@ -158,7 +342,8 @@ if action == "predict":
         except Exception:
             continue  # codec unsupported in this build — drop the row
     print(json.dumps({"ok": True, "raw_bytes": int(raw_total),
-                      "current_bytes": os.path.getsize(path), "rows": rows,
+                      "current_bytes": SIZE if REMOTE else os.path.getsize(path),
+                      "rows": rows,
                       "note": "sampled 25 windows with rio-cogeo's own profiles; "
                               "overview overhead modeled as +33% pixels"}))
     sys.exit(0)
@@ -204,7 +389,7 @@ def png64(arr, cap=None):
     return base64.b64encode(buf.getvalue()).decode()
 
 try:
-    src0 = rasterio.open(path)
+    src0 = ropen()
 except Exception as e:
     fail(f"not a readable raster: {type(e).__name__}: {e}")
 
@@ -240,7 +425,7 @@ with src0:
 # ---- byte accounting per IFD via tifffile (no decode, tags only) ----
 ifds = []
 try:
-    with tifffile.TiffFile(path) as tf:
+    with topen() as tf:
         for pg in tf.pages:
             try:
                 h, w = pg.imagelength, pg.imagewidth
@@ -268,11 +453,17 @@ def ifd_for(w, h):
 # All crops cover the SAME center ground patch (a window `base` level-0 pixels
 # wide), each read at that level's own resolution — the quality comparison.
 levels = []
-file_size = os.path.getsize(path)
+file_size = SIZE if REMOTE else os.path.getsize(path)
 w0 = h0 = base = None
+# A decimated (out_shape) read of a level that HAS internal overviews is cheap:
+# GDAL satisfies it from the nearest overview. But level 0 of a file with NO
+# overviews decodes the ENTIRE base image — a full-file read. Over a mount that
+# is the worst case, so skip the L0 thumbnail there and let the UI say so.
+thumb_skipped = ("full-resolution preview skipped for remote file without "
+                 "overviews (would decode the whole image over the network)")
 for lvl in range(-1, n_ov):
     kw = {} if lvl < 0 else {"overview_level": lvl}
-    with rasterio.open(path, **kw) as src:
+    with ropen(**kw) as src:
         w, h = src.width, src.height
         px = src.transform.a
         if lvl < 0:
@@ -280,7 +471,8 @@ for lvl in range(-1, n_ov):
             base = min(max(256, w0 // 16), w0, h0)
         tw = min(THUMB, w)
         th = max(1, round(h * tw / w))
-        thumb = png64(src.read(out_shape=(src.count, th, tw)))
+        skip_thumb = REMOTE and n_ov == 0 and lvl < 0
+        thumb = None if skip_thumb else png64(src.read(out_shape=(src.count, th, tw)))
         c = max(4, round(base * w / w0))
         win = rasterio.windows.Window((w - c) // 2, (h - c) // 2, c, c)
         crop = png64(src.read(window=win), cap=CROP_CAP)
@@ -295,18 +487,26 @@ for lvl in range(-1, n_ov):
             "tiled": d.get("tiled"), "block": blk,
             "n_blocks": math.ceil(w / blk[1]) * math.ceil(h / blk[0]),
             "thumb": thumb, "crop": crop, "crop_px": c,
+            "thumb_skipped": thumb_skipped if skip_thumb else None,
             "crop_ground": base * abs(levels[0]["pixel_size"]) if levels else base * abs(px),
         })
 
 masks = [d for d in ifds if not any(d["w"] == l["width"] and d["h"] == l["height"] for l in levels)]
 
 # ---- COG health + "what would fixing cost" estimate ----
-try:
-    from rio_cogeo.cogeo import cog_validate
-    _v, _e, _w = cog_validate(path, quiet=True)
-    cog = {"valid": bool(_v), "errors": list(_e), "warnings": list(_w)}
-except Exception as e:
-    cog = {"valid": None, "errors": [f"validator unavailable: {e}"], "warnings": []}
+if REMOTE:
+    # rio-cogeo's cog_validate opens the path with rasterio directly (no opener
+    # hook), so it cannot run against /api/fs/raw without a kernel read of the
+    # mount. Skip it rather than risk wedging the mount.
+    cog = {"valid": None, "errors": [], "warnings": [],
+           "skipped": "COG validation skipped for remote file"}
+else:
+    try:
+        from rio_cogeo.cogeo import cog_validate
+        _v, _e, _w = cog_validate(path, quiet=True)
+        cog = {"valid": bool(_v), "errors": list(_e), "warnings": list(_w)}
+    except Exception as e:
+        cog = {"valid": None, "errors": [f"validator unavailable: {e}"], "warnings": []}
 fix = None
 if n_ov == 0:
     factors = overview_factors(w0, h0)
@@ -326,7 +526,7 @@ print(json.dumps({
     "file_size": file_size, "crs": crs, "crs_name": crs_name,
     "dtype": dtype, "bands": nbands,
     "bounds": bounds, "bounds4326": bounds4326,
-    "cog": cog, "fix": fix,
+    "cog": cog, "fix": fix, "remote": REMOTE,
     "n_overviews": n_ov, "levels": levels,
     "extra_ifds": [{k: d[k] for k in ("w", "h", "bytes", "compression")} for d in masks],
     "accounted": sum(l["bytes"] or 0 for l in levels) + sum(d["bytes"] for d in masks),
@@ -355,12 +555,22 @@ def _venv_python():
                        check=True, capture_output=True, env=env)
     subprocess.run([uv, "pip", "install", "-p", vpy] + VENV_DEPS,
                    check=True, capture_output=True, env=env)
+    # Marker written only AFTER a successful install (both subprocess.run calls
+    # use check=True and raise on failure, so we never reach here on a partial
+    # install). An existing venv + marker short-circuits at the top of the fn.
     open(marker, "w").write("ok")
     return vpy
 
 
+def _worker_source():
+    """The worker script, run in a separate uv venv where fused_render is not
+    importable. Prepend _SHARED so the mount-safe byte helpers (_server_url,
+    _RangeReader, _HttpRangeFile) are defined in the worker's namespace."""
+    return _SHARED + "\n" + WORKER
+
+
 def main(file: str = "", action: str = "analyze", resampling: str = "",
-         profile: str = "", out: str = "", overwrite: str = ""):
+         profile: str = "", out: str = "", overwrite: str = "", src: str = ""):
     import json
     import os
     import subprocess
@@ -369,14 +579,51 @@ def main(file: str = "", action: str = "analyze", resampling: str = "",
     if not file:
         return {"error": "no file selected — pass a .tif/.tiff path"}
     file = os.path.abspath(os.path.expanduser(file))
-    if not os.path.isfile(file):
-        return {"error": f"not a file: {file}"}
     if os.path.splitext(file)[1].lower() not in (".tif", ".tiff"):
         return {"error": "the overview pyramid only reads .tif/.tiff files"}
     if action not in ("analyze", "build", "cogify", "predict", "status"):
         return {"error": f"unknown action: {action}"}
+
+    # Remote detection REPLACES the os.path.isfile wedge-probe for mount files:
+    # a cold negative isfile() on a mount forces rclone to LIST the whole parent
+    # S3 prefix. One /api/fs/stat call (via the src origin — the template stays
+    # mount-agnostic) says whether `file` is mount-backed and its size. When the
+    # server is unreachable we presume local and fall back to the kernel probe.
+    # 'status' only polls local job files, so it never asks about `file`.
+    remote, remote_size = None, None
+    if src and action != "status":
+        stat_status, payload = _stat(src, file)
+        if stat_status == "missing":
+            return {"error": f"not a file: {file}"}
+        if stat_status == "ok":
+            # stat REPLACES os.path.isfile: a directory (is_dir, size null) is
+            # not a file, so reject it here rather than spawning a worker with
+            # size=None that would crash _HttpRangeFile on int(None).
+            if payload.get("is_dir"):
+                return {"error": f"not a file: {file}"}
+            remote = bool(payload.get("remote"))
+            remote_size = payload.get("size")
+        # "unreachable" -> remote stays None -> local kernel fallback below
+    if remote is None and action != "status":
+        # local presumed (no src, or server unreachable): today's kernel probe,
+        # unchanged. 'status' is excluded — it only reads a local job-status
+        # file by key and never needs (or should kernel-probe) the input path.
+        if not os.path.isfile(file):
+            return {"error": f"not a file: {file}"}
+    if remote and action in ("build", "cogify"):
+        return {"error": "this file is on a read-only remote mount — "
+                         "copy it locally to build overviews"}
+
     opts = {k: v for k, v in [("resampling", resampling), ("profile", profile),
                               ("out", out), ("overwrite", overwrite)] if v}
+    if remote:
+        # Hand the worker the raw-bytes URL (origin from src, path normalized
+        # here) + size, so every rasterio/tifffile open goes over HTTP range
+        # reads. Never a kernel open/mmap of a file the server called remote.
+        opts["remote"] = True
+        opts["raw_url"] = _server_url(src, "/api/fs/raw", file)
+        if remote_size is not None:
+            opts["size"] = remote_size
 
     def alive(pid):
         try:
@@ -427,7 +674,7 @@ def main(file: str = "", action: str = "analyze", resampling: str = "",
                 return {"ok": True, "started": True, "already_running": True,
                         "status_key": key, "watch": watch}
         opts["status_file"] = sf
-        open(wfile, "w").write(WORKER)
+        open(wfile, "w").write(_worker_source())
         st = {"state": "running", "pid": None, "action": action, "watch": watch,
               "before": os.path.getsize(file), "started": time.time()}
         json.dump(st, open(sf, "w"))
@@ -440,7 +687,7 @@ def main(file: str = "", action: str = "analyze", resampling: str = "",
                 "before": st["before"]}
 
     with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
-        f.write(WORKER)
+        f.write(_worker_source())
         wpath = f.name
     try:
         proc = subprocess.run([vpy, wpath, file, action, json.dumps(opts)],
