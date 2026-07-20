@@ -200,6 +200,33 @@ def test_no_landing_on_subsequent_runs(tmp_path, monkeypatch):
     assert landing is None
 
 
+def test_bookmarks_skip_missing_targets_on_legacy_workspace(tmp_path, monkeypatch):
+    # A legacy workspace (older seed set, bookmarks.json deleted): bookmark
+    # seeding re-runs but must only bookmark pages that actually exist —
+    # never a dangling bookmark onto a file that isn't there.
+    fdir, home = _setup(tmp_path, monkeypatch)
+    (fdir / "tutorial").mkdir(parents=True)
+    (fdir / "tutorial" / "index.html").write_text("old seed", encoding="utf-8")
+    # No showcase/ — the older seed never shipped it.
+
+    ensure_fused_dir()
+
+    marks = _bookmarks(home)
+    assert [m["name"] for m in marks] == ["Tutorial"]
+
+
+def test_no_bookmarks_when_no_targets_exist(tmp_path, monkeypatch):
+    # Neither bookmark target present in a non-empty dir: nothing to point at,
+    # so no bookmarks.json is written at all.
+    fdir, home = _setup(tmp_path, monkeypatch)
+    (fdir / "sine").mkdir(parents=True)
+    (fdir / "sine" / "sine.html").write_text("old seed", encoding="utf-8")
+
+    ensure_fused_dir()
+
+    assert not (home / "bookmarks.json").exists()
+
+
 def test_no_landing_when_dir_has_user_content(tmp_path, monkeypatch):
     # A non-empty dir never seeds, so it never redirects the first tab either.
     fdir, _ = _setup(tmp_path, monkeypatch)
