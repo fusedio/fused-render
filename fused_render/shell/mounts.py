@@ -26,6 +26,7 @@ import os
 import re
 import shutil
 import socket
+import stat as stat_mod
 import subprocess
 import sys
 import threading
@@ -845,6 +846,81 @@ def rc_stat_for(path: str) -> str:
     if item is None:
         return "missing"
     return "exists"
+
+
+def rc_kind_for(path: str) -> str:
+    """Four-state kind of a mount-backed path via the rclone rc API, never the
+    kernel: "dir", "file", "missing", or "indeterminate".
+
+    Extends rc_stat_for's present/absent with the IsDir bit operations/stat
+    already carries, so a caller can tell os.path.isfile from os.path.isdir
+    without a kernel LOOKUP. That LOOKUP is the whole point: a cold NEGATIVE
+    os.path.isfile over an rclone-NFS mount forces rclone to LIST the entire
+    parent S3 prefix to resolve the miss (~18-24s on a world-scale store), which
+    trips the macOS NFS deadman and the mount is declared dead. Same "kernel NFS
+    is the enemy, route via rc" hardening rc_list_dir / api_fs_list got.
+
+    "file"/"dir" prove presence; "missing" is the ONLY outcome that proves
+    absence (a healthy rcd's {"item": null}); "indeterminate" (rcd down / rc
+    error / no mount / malformed answer) must be treated as "don't know" and
+    MUST NOT fall back to the kernel."""
+    item = _rc_stat_item(path)
+    if item is _STAT_INDETERMINATE:
+        return "indeterminate"
+    if item is None:
+        return "missing"
+    return "dir" if item.get("IsDir") else "file"
+
+
+def rc_stat_result(path: str) -> os.stat_result:
+    """A synthesized os.stat_result for a mount-backed path, from operations/stat
+    instead of a kernel GETATTR (the stat-storm/deadman class — see rc_mtime_for).
+
+    Only the fields callers actually read are meaningful — st_mode's dir/file
+    bit, st_size, and st_mtime; the rest are zero-filled. Raises
+    FileNotFoundError when the rcd confirms the item is gone and OSError when the
+    stat is indeterminate (rcd down / rc error / no mount / malformed answer), so
+    a mount stat fails EXACTLY like the kernel os.stat it replaces and callers'
+    existing OSError->404 handling holds — and it NEVER falls back to that kernel
+    GETATTR, which is the call that wedged the mount."""
+    item = _rc_stat_item(path)
+    if item is _STAT_INDETERMINATE:
+        raise OSError(f"rc stat unavailable for {path}")
+    if item is None:
+        raise FileNotFoundError(path)
+    size = item.get("Size")
+    # rclone reports -1 for a directory / unknown size; clamp to 0.
+    size = int(size) if isinstance(size, (int, float)) and size >= 0 else 0
+    mtime = rc_modtime_epoch(item.get("ModTime")) or 0.0
+    mode = (stat_mod.S_IFDIR | 0o755) if item.get("IsDir") else (stat_mod.S_IFREG | 0o644)
+    # (mode, ino, dev, nlink, uid, gid, size, atime, mtime, ctime)
+    return os.stat_result((mode, 0, 0, 1, 0, 0, size, mtime, mtime, mtime))
+
+
+# A shim'd condition gate reads exactly one small known file (the zarr.json
+# node_type probe). Cap it so a surprise huge file can't stream unbounded
+# through the serve — a store's zarr.json is a few KB; 1 MiB is generous.
+_GATE_READ_CAP = 1 << 20
+
+
+def rc_read_bounded(path: str, cap: int = _GATE_READ_CAP, timeout: float = 10) -> bytes:
+    """Up to `cap` bytes of a mount-backed file, fetched over the mount's
+    localhost HTTP serve (serve_url_for) instead of a kernel open()/read.
+
+    The condition-gate shim uses this for the one bounded zarr.json read: a
+    kernel open of a mount file is the same GETATTR/READ class that wedges the
+    mount, while a ranged GET over the serve is at worst slow, never fatal.
+    Raises OSError on no live serve / transport error / timeout so the gate fails
+    closed (urllib.error.URLError and socket timeouts are already OSError)."""
+    url = serve_url_for(path)
+    if url is None:
+        raise OSError(f"no HTTP serve for {path}")
+    req = urllib.request.Request(url, headers={"Range": f"bytes=0-{cap - 1}"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read(cap)
+    except OSError as e:  # URLError/HTTPError/socket timeout are all OSError
+        raise OSError(f"serve read failed for {path}: {e}") from e
 
 
 # operations/list can't be paginated at any rclone layer (verified: `rclone lsf

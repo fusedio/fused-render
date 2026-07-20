@@ -336,6 +336,110 @@ def test_rc_mtime_for_and_rc_stat_for_share_one_rc_call_semantics(home, rcd):
     assert mounts_mod.rc_stat_for(path) == "missing"
 
 
+def test_rc_kind_for_four_state(home, rcd):
+    # rc_kind_for extends rc_stat_for with the IsDir bit operations/stat already
+    # carries, so a condition-gate shim can tell os.path.isfile from isdir over a
+    # mount WITHOUT the cold negative kernel LOOKUP that lists the whole S3 prefix
+    # and wedges the mount.
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    path = mounts_mod.mountpoint(c) + "/store"
+
+    rcd.responses["operations/stat"] = {"item": {"IsDir": True}}
+    assert mounts_mod.rc_kind_for(path) == "dir"
+    rcd.responses["operations/stat"] = {"item": {"IsDir": False, "Size": 12}}
+    assert mounts_mod.rc_kind_for(path) == "file"
+    rcd.responses["operations/stat"] = {"item": {"Size": 12}}  # IsDir absent -> file
+    assert mounts_mod.rc_kind_for(path) == "file"
+    rcd.responses["operations/stat"] = {"item": None}  # healthy rcd: gone
+    assert mounts_mod.rc_kind_for(path) == "missing"
+    rcd.responses["operations/stat"] = {"nope": 1}  # malformed -> indeterminate
+    assert mounts_mod.rc_kind_for(path) == "indeterminate"
+
+
+def test_rc_kind_for_indeterminate_on_error_or_no_rcd_or_no_mount(home, rcd):
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    path = mounts_mod.mountpoint(c) + "/store"
+    # rc error (stub 404s unset methods) and a path under no mount -> indeterminate.
+    assert mounts_mod.rc_kind_for(path) == "indeterminate"
+    assert mounts_mod.rc_kind_for("/tmp/not/a/mount/store") == "indeterminate"
+
+
+def test_rc_stat_result_synthesizes_from_operations_stat(home, rcd):
+    # A mount stat is answered off the kernel: st_mode's dir/file bit, st_size,
+    # and st_mtime come from operations/stat, never a kernel GETATTR.
+    import stat as _stat
+
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    path = mounts_mod.mountpoint(c) + "/store"
+
+    rcd.responses["operations/stat"] = {
+        "item": {"IsDir": True, "ModTime": "2024-01-02T03:04:05Z"}}
+    st = mounts_mod.rc_stat_result(path)
+    assert _stat.S_ISDIR(st.st_mode)
+    assert st.st_mtime == mounts_mod.rc_modtime_epoch("2024-01-02T03:04:05Z")
+
+    rcd.responses["operations/stat"] = {
+        "item": {"IsDir": False, "Size": 99, "ModTime": "2024-01-02T03:04:05Z"}}
+    st = mounts_mod.rc_stat_result(path)
+    assert _stat.S_ISREG(st.st_mode)
+    assert st.st_size == 99
+
+
+def test_rc_stat_result_raises_like_kernel_on_missing_and_indeterminate(home, rcd):
+    # Fail exactly like the kernel os.stat it replaces so callers' 404 handling
+    # holds: FileNotFoundError when the rcd confirms the item gone, OSError on any
+    # indeterminate outcome — and NEVER fall back to a kernel GETATTR.
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    path = mounts_mod.mountpoint(c) + "/store"
+
+    rcd.responses["operations/stat"] = {"item": None}
+    with pytest.raises(FileNotFoundError):
+        mounts_mod.rc_stat_result(path)
+
+    rcd.responses["operations/stat"] = {"nope": 1}  # malformed -> indeterminate
+    with pytest.raises(OSError):
+        mounts_mod.rc_stat_result(path)
+
+
+def test_rc_read_bounded_reads_over_http_serve(home, monkeypatch):
+    # The condition-gate shim's open() reads the one bounded zarr.json over the
+    # mount's localhost HTTP serve (serve_url_for), never a kernel open/read.
+    import io as _io
+
+    calls = []
+
+    def _fake_serve_url_for(p):
+        return "http://127.0.0.1:59999/store/zarr.json"
+
+    def _fake_urlopen(req, timeout=None):
+        calls.append((req.full_url, dict(req.headers), timeout))
+        return _io.BytesIO(b'{"node_type": "group"}')
+
+    monkeypatch.setattr(mounts_mod, "serve_url_for", _fake_serve_url_for)
+    monkeypatch.setattr(mounts_mod.urllib.request, "urlopen", _fake_urlopen)
+
+    data = mounts_mod.rc_read_bounded("/mnt/store/zarr.json")
+    assert data == b'{"node_type": "group"}'
+    # Bounded: a Range header caps the read.
+    assert "Range" in calls[0][1] or "range" in {k.lower() for k in calls[0][1]}
+
+
+def test_rc_read_bounded_raises_oserror_without_serve_or_on_transport_error(home, monkeypatch):
+    # No live serve, or any transport failure -> OSError so the gate fails closed.
+    monkeypatch.setattr(mounts_mod, "serve_url_for", lambda p: None)
+    with pytest.raises(OSError):
+        mounts_mod.rc_read_bounded("/mnt/store/zarr.json")
+
+    monkeypatch.setattr(mounts_mod, "serve_url_for", lambda p: "http://127.0.0.1:1/x")
+
+    def _boom(req, timeout=None):
+        raise mounts_mod.urllib.error.URLError("refused")
+
+    monkeypatch.setattr(mounts_mod.urllib.request, "urlopen", _boom)
+    with pytest.raises(OSError):
+        mounts_mod.rc_read_bounded("/mnt/store/zarr.json")
+
+
 def test_is_mount_backed_follows_symlink_into_mounts(home, tmp_path):
     # A symlink whose target is inside the mounts dir must classify as
     # mount-backed (else it lands on the kernel os.stat ticker — the GETATTR
