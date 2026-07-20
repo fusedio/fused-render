@@ -19,7 +19,9 @@ instead of orphaning them. Unmount is an explicit user action.
 Store: home_dir()/mounts.json, whole-file last-write-wins like
 shell/bookmarks.py. Same acyclic-router + X-Fused-guard conventions.
 """
+import collections
 import configparser
+import email.utils
 import json
 import logging
 import os
@@ -793,8 +795,17 @@ def rc_mtime_for(path: str) -> str | None:
 # as opposed to None, which is a healthy rcd's TRUSTWORTHY "the item is gone".
 _STAT_INDETERMINATE = object()
 
+# Default per-call ceiling for a single rc operations/stat. operations/stat has
+# NO S3 point lookup — rclone answers a negative or a directory probe with an
+# UNBOUNDED ListObjectsV2 of the whole parent prefix, so on a flat world-scale
+# prefix (source.coop/earthgenome/...) every probe burns this full timeout. The
+# ceiling caps ONE probe; the per-gate budget (_mount_gate_builtins) shrinks it
+# further so a gate's serialized probes can't stack to N*ceiling. Direct-capable
+# mounts skip this path entirely (see _stat_item -> direct_head/direct_is_dir).
+RC_STAT_TIMEOUT_S = 10.0
 
-def _rc_stat_item(path: str):
+
+def _rc_stat_item(path: str, *, timeout: float = RC_STAT_TIMEOUT_S):
     """The raw operations/stat `item` for a mount-backed path, off the kernel:
       - a dict          -> the item exists (its ModTime may or may not be set);
       - None            -> a healthy rcd answered {"item": null}: the file is
@@ -819,7 +830,7 @@ def _rc_stat_item(path: str):
     remote = "" if rel == "." else rel
     try:
         resp = _rc(port, "operations/stat",
-                   {"fs": m["remote"], "remote": remote}, timeout=10)
+                   {"fs": m["remote"], "remote": remote}, timeout=timeout)
     except RuntimeError:
         return _STAT_INDETERMINATE
     if not isinstance(resp, dict) or "item" not in resp:
@@ -832,15 +843,48 @@ def _rc_stat_item(path: str):
     return item
 
 
-def rc_stat_for(path: str) -> str:
-    """Tri-state existence of a mount-backed path via the rclone rc API, never
-    the kernel: "exists", "missing", or "indeterminate".
+def _stat_item(path: str, *, timeout: float = RC_STAT_TIMEOUT_S):
+    """Normalized stat outcome for a mount-backed path, DIRECT-PROBE-FIRST:
+      - a dict {"IsDir", "Size", "MtimeEpoch"} -> the path exists;
+      - None                                   -> confirmed missing;
+      - _STAT_INDETERMINATE                    -> could not be determined.
+
+    operations/stat has no S3 point lookup: a negative file probe or a directory
+    probe makes rclone run an UNBOUNDED ListObjectsV2 of the whole parent prefix,
+    so on a flat world-scale prefix every probe burns the full rc timeout. But
+    S3/GCS expose true point lookups — HeadObject answers exists/size/mtime in
+    one round trip and a max-keys=1 list answers dir-ness in another — so for the
+    anonymous backends we already list unsigned (direct_list_capable) we probe
+    the store DIRECTLY and never touch operations/stat. Any direct failure
+    (403/301/network — DirectProbeError) falls back to the rc path so a
+    misconfigured remote still degrades to the slow-but-correct route.
+
+    Shared by rc_stat_for / rc_kind_for / rc_stat_result so all three speak the
+    same direct-first path and agree on what each outcome means. rc_mtime_for
+    stays on _rc_stat_item directly (its raw-ModTime-string contract predates
+    this and no world-scale caller relies on it)."""
+    if direct_list_capable(path):
+        try:
+            return _direct_stat_item(path, timeout=timeout)
+        except DirectProbeError:
+            pass  # fall through to the slow rc route
+    item = _rc_stat_item(path, timeout=timeout)
+    if not isinstance(item, dict):
+        return item  # None (missing) or _STAT_INDETERMINATE pass straight through
+    return {"IsDir": bool(item.get("IsDir")), "Size": item.get("Size"),
+            "MtimeEpoch": rc_modtime_epoch(item.get("ModTime"))}
+
+
+def rc_stat_for(path: str, *, timeout: float = RC_STAT_TIMEOUT_S) -> str:
+    """Tri-state existence of a mount-backed path, never the kernel: "exists",
+    "missing", or "indeterminate".
 
     Splits apart what rc_mtime_for collapses into None, so a caller can filter a
     genuinely-deleted mount file (a healthy rcd's {"item": null}) while still
     failing open on any transient failure. "missing" is the ONLY outcome that
-    proves absence; treat "indeterminate" as "keep / unchanged"."""
-    item = _rc_stat_item(path)
+    proves absence; treat "indeterminate" as "keep / unchanged". Answered by a
+    direct point probe where the backend supports it, else operations/stat."""
+    item = _stat_item(path, timeout=timeout)
     if item is _STAT_INDETERMINATE:
         return "indeterminate"
     if item is None:
@@ -848,51 +892,50 @@ def rc_stat_for(path: str) -> str:
     return "exists"
 
 
-def rc_kind_for(path: str) -> str:
-    """Four-state kind of a mount-backed path via the rclone rc API, never the
-    kernel: "dir", "file", "missing", or "indeterminate".
+def rc_kind_for(path: str, *, timeout: float = RC_STAT_TIMEOUT_S) -> str:
+    """Four-state kind of a mount-backed path, never the kernel: "dir", "file",
+    "missing", or "indeterminate".
 
-    Extends rc_stat_for's present/absent with the IsDir bit operations/stat
-    already carries, so a caller can tell os.path.isfile from os.path.isdir
-    without a kernel LOOKUP. That LOOKUP is the whole point: a cold NEGATIVE
-    os.path.isfile over an rclone-NFS mount forces rclone to LIST the entire
-    parent S3 prefix to resolve the miss (~18-24s on a world-scale store), which
-    trips the macOS NFS deadman and the mount is declared dead. Same "kernel NFS
-    is the enemy, route via rc" hardening rc_list_dir / api_fs_list got.
+    Extends rc_stat_for's present/absent with the IsDir bit, so a caller can tell
+    os.path.isfile from os.path.isdir without a kernel LOOKUP. That LOOKUP is the
+    whole point: a cold NEGATIVE os.path.isfile over an rclone-NFS mount forces
+    rclone to LIST the entire parent S3 prefix to resolve the miss (~18-24s on a
+    world-scale store), which trips the macOS NFS deadman and the mount is
+    declared dead. Same "kernel NFS is the enemy, route via a bounded probe"
+    hardening rc_list_dir / api_fs_list got.
 
     "file"/"dir" prove presence; "missing" is the ONLY outcome that proves
-    absence (a healthy rcd's {"item": null}); "indeterminate" (rcd down / rc
-    error / no mount / malformed answer) must be treated as "don't know" and
-    MUST NOT fall back to the kernel."""
-    item = _rc_stat_item(path)
+    absence; "indeterminate" (backend unreachable / no mount / malformed answer)
+    must be treated as "don't know" and MUST NOT fall back to the kernel."""
+    item = _stat_item(path, timeout=timeout)
     if item is _STAT_INDETERMINATE:
         return "indeterminate"
     if item is None:
         return "missing"
-    return "dir" if item.get("IsDir") else "file"
+    return "dir" if item["IsDir"] else "file"
 
 
-def rc_stat_result(path: str) -> os.stat_result:
-    """A synthesized os.stat_result for a mount-backed path, from operations/stat
-    instead of a kernel GETATTR (the stat-storm/deadman class — see rc_mtime_for).
+def rc_stat_result(path: str, *, timeout: float = RC_STAT_TIMEOUT_S) -> os.stat_result:
+    """A synthesized os.stat_result for a mount-backed path, off the kernel
+    GETATTR (the stat-storm/deadman class — see rc_mtime_for).
 
     Only the fields callers actually read are meaningful — st_mode's dir/file
     bit, st_size, and st_mtime; the rest are zero-filled. Raises
-    FileNotFoundError when the rcd confirms the item is gone and OSError when the
-    stat is indeterminate (rcd down / rc error / no mount / malformed answer), so
-    a mount stat fails EXACTLY like the kernel os.stat it replaces and callers'
-    existing OSError->404 handling holds — and it NEVER falls back to that kernel
-    GETATTR, which is the call that wedged the mount."""
-    item = _rc_stat_item(path)
+    FileNotFoundError when the backend confirms the item is gone and OSError when
+    the stat is indeterminate, so a mount stat fails EXACTLY like the kernel
+    os.stat it replaces and callers' existing OSError->404 handling holds — and
+    it NEVER falls back to that kernel GETATTR, which is the call that wedged the
+    mount."""
+    item = _stat_item(path, timeout=timeout)
     if item is _STAT_INDETERMINATE:
         raise OSError(f"rc stat unavailable for {path}")
     if item is None:
         raise FileNotFoundError(path)
-    size = item.get("Size")
+    size = item["Size"]
     # rclone reports -1 for a directory / unknown size; clamp to 0.
     size = int(size) if isinstance(size, (int, float)) and size >= 0 else 0
-    mtime = rc_modtime_epoch(item.get("ModTime")) or 0.0
-    mode = (stat_mod.S_IFDIR | 0o755) if item.get("IsDir") else (stat_mod.S_IFREG | 0o644)
+    mtime = item["MtimeEpoch"] or 0.0
+    mode = (stat_mod.S_IFDIR | 0o755) if item["IsDir"] else (stat_mod.S_IFREG | 0o644)
     # (mode, ino, dev, nlink, uid, gid, size, atime, mtime, ctime)
     return os.stat_result((mode, 0, 0, 1, 0, 0, size, mtime, mtime, mtime))
 
@@ -1482,6 +1525,200 @@ def direct_list_page(path: str, *, max_keys: int, continuation: str | None = Non
         return gcs_list_page(path, max_keys=max_keys,
                             continuation=continuation, timeout=timeout)
     raise DirectListError(f"{path}: no direct-listable backend")
+
+
+# ------------------------------------------------- direct point probes (stat)
+# The stat analog of the direct-listing path above. operations/stat has no S3
+# point lookup — rclone resolves a negative file probe or a directory probe by
+# an UNBOUNDED ListObjectsV2 of the whole parent prefix, so on a flat
+# world-scale prefix (source.coop/earthgenome/sentinel2-temporal-mosaics) every
+# probe burns the full rc timeout, and an existing directory even 404s after the
+# timeout expires. But S3/GCS expose real point lookups: HeadObject answers
+# exists/size/mtime, and a max-keys=1 list answers dir-ness — each in ~one round
+# trip. For the anonymous backends we already list unsigned, probe those
+# directly and never touch the rc path. Path-style S3 URLs come from the shared
+# _s3_base_url (its dotted-bucket rule; see there) via _public_object_url.
+_HEAD_TIMEOUT_S = 5.0
+# objects.get (metadata) is the GCS analog of S3 HeadObject; the list endpoint
+# (_GCS_LIST_URL) answers dir-ness. Both carry the bucket in the path (no region).
+_GCS_OBJ_URL = "https://storage.googleapis.com/storage/v1/b/{bucket}/o/{key}"
+
+# (exists, size, mtime) for one object; mtime is RFC3339 (rc_modtime_epoch parses
+# it) so a direct head and an rc item feed rc_modtime_epoch identically.
+DirectHead = collections.namedtuple("DirectHead", ["exists", "size", "mtime"])
+
+
+class DirectProbeError(Exception):
+    """A direct (unsigned) S3/GCS point probe could not decide — an HTTP status
+    other than 404 (403 needs auth, 301 wrong region), a network error, or an
+    unparseable body. Distinct from a 404, which is a TRUSTWORTHY "the object is
+    not there". The caller falls back to operations/stat; kept separate from
+    DirectListError so the two fallback ladders read independently."""
+
+
+def _http_date_epoch(value: str | None) -> str | None:
+    """An HTTP-date Last-Modified header ("Wed, 21 Oct 2015 07:28:00 GMT") ->
+    RFC3339, so a direct S3 head yields the same ModTime shape rc_modtime_epoch
+    already parses off an rc item. None when absent/unparseable."""
+    if not value:
+        return None
+    try:
+        return email.utils.parsedate_to_datetime(value).isoformat()
+    except (TypeError, ValueError):
+        return None
+
+
+def direct_head(path: str, *, timeout: float = _HEAD_TIMEOUT_S) -> DirectHead:
+    """Point existence+metadata probe for a mount-backed FILE via an unsigned
+    S3 HeadObject / GCS objects.get — the fast alternative to operations/stat's
+    parent-prefix list. Returns DirectHead(exists, size, mtime): exists=False on
+    a definitive 404 (the object is not there). The mountpoint itself (rel ".")
+    is never an object -> exists=False. Raises DirectProbeError on any
+    indeterminate outcome (non-404 HTTP, network, unparseable) so the caller can
+    fall back to rc, and when `path` is under no direct-probe-capable backend."""
+    if s3_direct_capable(path):
+        return _s3_head(path, timeout)
+    if gcs_direct_capable(path):
+        return _gcs_head(path, timeout)
+    raise DirectProbeError(f"{path}: no direct-probe backend")
+
+
+def direct_is_dir(path: str, *, timeout: float = _HEAD_TIMEOUT_S) -> bool:
+    """Whether any key lives under `path`'s prefix — the point dir-ness probe, a
+    max-keys=1 S3 ListObjectsV2 / GCS objects.list. True even when only the
+    zero-byte directory-marker object exists (that marker IS the directory).
+    Raises DirectProbeError on any indeterminate outcome (so the caller falls
+    back to rc) and when the backend is not direct-probe-capable."""
+    if s3_direct_capable(path):
+        return _s3_has_children(path, timeout)
+    if gcs_direct_capable(path):
+        return _gcs_has_children(path, timeout)
+    raise DirectProbeError(f"{path}: no direct-probe backend")
+
+
+def _direct_stat_item(path: str, *, timeout: float):
+    """The _stat_item dict|None outcome via direct probes: a HeadObject decides
+    FILE, else a max-keys=1 list decides DIR, else confirmed missing (None). Any
+    probe raising DirectProbeError propagates so _stat_item falls back to rc.
+    Two round trips at worst (dir/miss); one for the common file hit."""
+    head = direct_head(path, timeout=timeout)
+    if head.exists:
+        return {"IsDir": False, "Size": head.size,
+                "MtimeEpoch": rc_modtime_epoch(head.mtime)}
+    if direct_is_dir(path, timeout=timeout):
+        # S3/GCS have no real directories; a present prefix (or marker) is a dir.
+        return {"IsDir": True, "Size": None, "MtimeEpoch": None}
+    return None  # no object, no children -> a trustworthy miss
+
+
+def _s3_head(path: str, timeout: float) -> DirectHead:
+    m, rel = _mount_for(path)
+    if rel == ".":
+        return DirectHead(False, None, None)  # the mountpoint is not an object
+    url = _public_object_url(m["remote"], rel)
+    if url is None:  # not anonymous S3 after all — let the caller fall back
+        raise DirectProbeError(f"{path}: no unsigned S3 object URL")
+    req = urllib.request.Request(url, method="HEAD")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            size = resp.headers.get("Content-Length")
+            return DirectHead(
+                True,
+                int(size) if size and size.isdigit() else None,
+                _http_date_epoch(resp.headers.get("Last-Modified")))
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return DirectHead(False, None, None)  # trustworthy negative
+        raise DirectProbeError(f"S3 head {path}: HTTP {e.code}") from e
+    except (urllib.error.URLError, OSError) as e:
+        raise DirectProbeError(f"S3 head {path}: {e}") from e
+
+
+def _gcs_head(path: str, timeout: float) -> DirectHead:
+    m, rel = _mount_for(path)
+    if rel == ".":
+        return DirectHead(False, None, None)  # the mountpoint is not an object
+    fs = m["remote"]
+    derived = _gcs_bucket_prefix(fs)
+    if derived is None:
+        raise DirectProbeError(f"{path}: remote {fs!r} carries no bucket")
+    bucket, store_prefix = derived
+    key = (store_prefix + "/" if store_prefix else "") + rel
+    url = _GCS_OBJ_URL.format(bucket=bucket,
+                              key=urllib.parse.quote(key, safe=""))
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            body = resp.read()
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return DirectHead(False, None, None)  # trustworthy negative
+        raise DirectProbeError(f"GCS head {path}: HTTP {e.code}") from e
+    except (urllib.error.URLError, OSError) as e:
+        raise DirectProbeError(f"GCS head {path}: {e}") from e
+    try:
+        doc = json.loads(body)
+    except (ValueError, TypeError) as e:
+        raise DirectProbeError(f"GCS head {path}: unparseable JSON") from e
+    size = doc.get("size")
+    return DirectHead(
+        True,
+        int(size) if isinstance(size, str) and size.isdigit() else None,
+        doc.get("updated"))  # RFC3339 already
+
+
+def _s3_has_children(path: str, timeout: float) -> bool:
+    m, rel = _mount_for(path)
+    fs = m["remote"]
+    cfg = _remote_config(fs.partition(":")[0])
+    derived = _s3_bucket_prefix_region(fs, cfg or {})
+    if derived is None:
+        raise DirectProbeError(f"{path}: remote {fs!r} carries no bucket")
+    bucket, store_prefix, region = derived
+    prefix = _s3_listing_prefix(store_prefix, rel)
+    # NO delimiter and max-keys=1: cheapest "does anything live here" — one key
+    # (the marker included) proves the directory. delimiter would only add
+    # CommonPrefixes work we don't need for a boolean.
+    params = {"list-type": "2", "prefix": prefix, "max-keys": "1"}
+    query = urllib.parse.urlencode(params)
+    base = _s3_base_url(bucket, region)
+    url = f"{base}?{query}" if "." in bucket else f"{base}/?{query}"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            body = resp.read()
+    except urllib.error.HTTPError as e:
+        raise DirectProbeError(f"S3 list {path}: HTTP {e.code}") from e
+    except (urllib.error.URLError, OSError) as e:
+        raise DirectProbeError(f"S3 list {path}: {e}") from e
+    try:
+        root_el = ElementTree.fromstring(body)
+    except ElementTree.ParseError as e:
+        raise DirectProbeError(f"S3 list {path}: unparseable XML") from e
+    return root_el.find(f"{_S3_XMLNS}Contents") is not None
+
+
+def _gcs_has_children(path: str, timeout: float) -> bool:
+    m, rel = _mount_for(path)
+    fs = m["remote"]
+    derived = _gcs_bucket_prefix(fs)
+    if derived is None:
+        raise DirectProbeError(f"{path}: remote {fs!r} carries no bucket")
+    bucket, store_prefix = derived
+    prefix = _s3_listing_prefix(store_prefix, rel)  # backend-agnostic join
+    params = {"prefix": prefix, "maxResults": "1"}
+    query = urllib.parse.urlencode(params)
+    url = f"{_GCS_LIST_URL.format(bucket=bucket)}?{query}"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            body = resp.read()
+    except urllib.error.HTTPError as e:
+        raise DirectProbeError(f"GCS list {path}: HTTP {e.code}") from e
+    except (urllib.error.URLError, OSError) as e:
+        raise DirectProbeError(f"GCS list {path}: {e}") from e
+    try:
+        doc = json.loads(body)
+    except (ValueError, TypeError) as e:
+        raise DirectProbeError(f"GCS list {path}: unparseable JSON") from e
+    return bool(doc.get("items") or doc.get("prefixes"))
 
 
 def upstream_url_for(path: str) -> str | None:

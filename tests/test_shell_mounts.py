@@ -6,6 +6,7 @@ FUSED_RENDER_HOME is redirected per test so no test touches the real
 ~/.fused-render or a real mount.
 """
 import json
+import stat
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -2727,3 +2728,211 @@ def test_direct_list_page_routes_gcs_to_googleapis(home, rcd, fresh_upstream, gc
 
 def test_s3listerror_is_directlisterror_alias():
     assert mounts_mod.S3ListError is mounts_mod.DirectListError
+
+
+# -- direct_head / direct_is_dir (point probes) -----------------------------
+#
+# operations/stat has no S3 point lookup — rclone answers a negative or a dir
+# probe with an UNBOUNDED ListObjectsV2 of the whole parent prefix, so on a flat
+# world-scale prefix every probe burns the full rc timeout. HeadObject and a
+# max-keys=1 list are the true point lookups. These drive direct_head /
+# direct_is_dir against a LOCAL stub HTTP server (real HTTP HEAD/GET, real 404 ->
+# HTTPError, real header parsing); a urlopen redirector rewrites the object-store
+# host to the stub so the real path-style URL building still runs.
+
+
+class DirectObjStub:
+    """A stand-in for anonymous S3 / GCS object endpoints. `head` drives the
+    HEAD (or GCS objects.get GET) reply; `listing` drives the GET list reply."""
+
+    def __init__(self):
+        self.calls = []  # (method, path, query)
+        # (status, headers-or-body). 200 head -> send those headers, no body.
+        self.head = (200, {"Content-Length": "123",
+                           "Last-Modified": "Wed, 21 Oct 2015 07:28:00 GMT"})
+        self.head_body = b'{"size": "123", "updated": "2015-10-21T07:28:00Z"}'
+        self.listing = (200, b"")  # GET list/objects.get body
+        stub = self
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _record(self):
+                p, _, q = self.path.partition("?")
+                stub.calls.append((self.command, p, q))
+
+            def do_HEAD(self):
+                self._record()
+                status, headers = stub.head
+                if status != 200:
+                    self.send_error(status)
+                    return
+                self.send_response(200)
+                for k, v in headers.items():
+                    self.send_header(k, v)
+                self.end_headers()
+
+            def do_GET(self):
+                self._record()
+                # GCS objects.get lands here too (path has no query); the
+                # objects.list has a query. Both use the `listing`/`head_body`.
+                p = self.path
+                if "/storage/v1/b/" in p and "?" not in p:
+                    status, body = 200, stub.head_body  # objects.get metadata
+                    if stub.head[0] != 200:
+                        self.send_error(stub.head[0])
+                        return
+                else:
+                    status, body = stub.listing
+                if status != 200:
+                    self.send_error(status)
+                    return
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.port = self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+
+
+@pytest.fixture()
+def direct_stub(monkeypatch):
+    """A live object-store stub + a urlopen redirector: object-store URLs
+    (amazonaws / googleapis) are rewritten to the local stub host, preserving
+    path/query/method; rc calls (loopback rcd) delegate to the real urlopen."""
+    import urllib.parse as _up
+
+    stub = DirectObjStub()
+    real = mounts_mod.urllib.request.urlopen
+
+    def fake(req, timeout=None):
+        url = req if isinstance(req, str) else req.get_full_url()
+        parts = _up.urlsplit(url)
+        if ("amazonaws.com" not in (parts.hostname or "")
+                and "googleapis.com" not in (parts.hostname or "")):
+            return real(req, timeout=timeout)
+        local = _up.urlunsplit(("http", f"127.0.0.1:{stub.port}",
+                               parts.path, parts.query, ""))
+        method = "GET" if isinstance(req, str) else req.get_method()
+        return real(mounts_mod.urllib.request.Request(local, method=method),
+                    timeout=timeout)
+
+    monkeypatch.setattr(mounts_mod.urllib.request, "urlopen", fake)
+    yield stub
+    stub.close()
+
+
+def test_direct_head_s3_exists_returns_size_and_mtime(home, rcd, fresh_upstream, direct_stub):
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    got = mounts_mod.direct_head(mounts_mod.mountpoint(c) + "/analysed_sst/zarr.json")
+    assert got.exists is True and got.size == 123
+    assert got.mtime.startswith("2015-10-21T07:28:00")
+    # A HEAD, not a prefix list — one point round trip.
+    assert direct_stub.calls and direct_stub.calls[-1][0] == "HEAD"
+
+
+def test_direct_head_s3_missing_is_definitive_not_error(home, rcd, fresh_upstream, direct_stub):
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    direct_stub.head = (404, {})
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    got = mounts_mod.direct_head(mounts_mod.mountpoint(c) + "/nope.json")
+    assert got.exists is False  # a 404 is a trustworthy negative, not a raise
+
+
+def test_direct_head_s3_http_error_raises(home, rcd, fresh_upstream, direct_stub):
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    direct_stub.head = (403, {})  # needs auth -> indeterminate
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    with pytest.raises(mounts_mod.DirectProbeError):
+        mounts_mod.direct_head(mounts_mod.mountpoint(c) + "/x.json")
+
+
+def test_direct_head_not_capable_raises(home, rcd, fresh_upstream, direct_stub):
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}  # credentialed
+    c = mounts_mod.add_mount("corp", "corp:bucket")
+    with pytest.raises(mounts_mod.DirectProbeError):
+        mounts_mod.direct_head(mounts_mod.mountpoint(c) + "/x.json")
+
+
+def test_direct_is_dir_s3_true_when_children(home, rcd, fresh_upstream, direct_stub):
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    direct_stub.listing = (200, _s3_list_xml(contents=[("zarr-v1/analysed_sst/x", 1, "2024-01-01T00:00:00Z")]))
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    assert mounts_mod.direct_is_dir(mounts_mod.mountpoint(c) + "/analysed_sst") is True
+    # max-keys=1 list against the prefix, off the kernel.
+    assert any(q for _m, _p, q in direct_stub.calls if "max-keys=1" in q)
+
+
+def test_direct_is_dir_s3_false_when_empty(home, rcd, fresh_upstream, direct_stub):
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    direct_stub.listing = (200, _s3_list_xml())  # no Contents
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    assert mounts_mod.direct_is_dir(mounts_mod.mountpoint(c) + "/ghost") is False
+
+
+def test_direct_is_dir_s3_http_error_raises(home, rcd, fresh_upstream, direct_stub):
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    direct_stub.listing = (500, b"")
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    with pytest.raises(mounts_mod.DirectProbeError):
+        mounts_mod.direct_is_dir(mounts_mod.mountpoint(c) + "/x")
+
+
+def test_direct_head_gcs_exists_and_dir(home, rcd, fresh_upstream, direct_stub):
+    rcd.responses["config/get"] = _ANON_GCS_CFG
+    c = mounts_mod.add_mount("open", "gcs-open:mur-sst/zarr-v1")
+    got = mounts_mod.direct_head(mounts_mod.mountpoint(c) + "/analysed_sst/zarr.json")
+    assert got.exists is True and got.size == 123
+    assert got.mtime == "2015-10-21T07:28:00Z"
+    direct_stub.listing = (200, _gcs_list_json(items=[("zarr-v1/analysed_sst/x", 1, "2024-01-01T00:00:00Z")]))
+    assert mounts_mod.direct_is_dir(mounts_mod.mountpoint(c) + "/analysed_sst") is True
+
+
+# -- rc stat helpers route direct-first (no operations/stat when capable) ----
+
+
+def test_rc_kind_for_uses_direct_probe_not_operations_stat(home, rcd, fresh_upstream, direct_stub):
+    # A direct-capable mount must answer rc_kind_for via HeadObject, NEVER via
+    # operations/stat (which lists the whole prefix). The stub rcd would fail the
+    # test if operations/stat were called.
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    rcd.responses["operations/stat"] = (500, {"error": "must not be called"})
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    kind = mounts_mod.rc_kind_for(mounts_mod.mountpoint(c) + "/analysed_sst/zarr.json")
+    assert kind == "file"
+    assert not any(x[0] == "operations/stat" for x in rcd.calls)
+
+
+def test_rc_kind_for_direct_dir_then_missing(home, rcd, fresh_upstream, direct_stub):
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    base = mounts_mod.mountpoint(c)
+    # HEAD 404 + a non-empty prefix list -> "dir".
+    direct_stub.head = (404, {})
+    direct_stub.listing = (200, _s3_list_xml(contents=[("zarr-v1/d/x", 1, "2024-01-01T00:00:00Z")]))
+    assert mounts_mod.rc_kind_for(base + "/d") == "dir"
+    # HEAD 404 + empty prefix list -> "missing" (trustworthy negative).
+    direct_stub.listing = (200, _s3_list_xml())
+    assert mounts_mod.rc_kind_for(base + "/gone") == "missing"
+    assert not any(x[0] == "operations/stat" for x in rcd.calls)
+
+
+def test_rc_stat_result_falls_back_to_rc_when_direct_errors(home, rcd, fresh_upstream, direct_stub):
+    # Direct probe indeterminate (403) -> fall back to operations/stat, which
+    # here reports a healthy directory item. Proves the ladder direct -> rc.
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    direct_stub.head = (403, {})       # HEAD indeterminate
+    direct_stub.listing = (403, b"")   # is_dir indeterminate too
+    rcd.responses["operations/stat"] = {"item": {"IsDir": True, "Size": -1,
+                                                 "ModTime": "2024-01-02T03:04:05Z"}}
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    st = mounts_mod.rc_stat_result(mounts_mod.mountpoint(c) + "/d")
+    assert stat.S_ISDIR(st.st_mode)
+    assert any(x[0] == "operations/stat" for x in rcd.calls)
