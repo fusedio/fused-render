@@ -190,10 +190,10 @@ if [[ "$RELOAD" -eq 1 ]]; then
         sleep 0.5
       done
       URL="http://127.0.0.1:$PORT/"
-      if command -v open >/dev/null 2>&1; then open "$URL"
-      elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$URL"
-      elif command -v start >/dev/null 2>&1; then start "$URL"
-      fi >/dev/null 2>&1 || true
+      # Open via Python's webbrowser (cross-platform, matches cli.py); a shell
+      # open/xdg-open/start chain misses Windows/git-bash (start is a cmd
+      # builtin, not a binary on PATH).
+      "$PY" -c "import webbrowser; webbrowser.open('$URL')" >/dev/null 2>&1 || true
     ) &
     OPENER_PID=$!
   fi
@@ -201,10 +201,13 @@ if [[ "$RELOAD" -eq 1 ]]; then
   # watchfiles wants the target as a single shell-command string, then the watch
   # paths. printf %q quotes $PY and each passthrough arg so paths/args with
   # spaces survive. --filter python watches only *.py, so vite's shell-dist
-  # output (.html/.js/.css) never triggers a restart.
+  # output (.html/.js/.css) never triggers a restart. --ignore-paths excludes
+  # fused_render/templates/ — those *.py are per-request UDF code, not imported
+  # into the server process, so editing them shouldn't restart it (watchfiles
+  # resolves ignore paths to absolute; comma-separate to add more).
   CMD="$(printf '%q' "$PY") -m fused_render.cli --no-browser"
   for a in "$@"; do CMD+=" $(printf '%q' "$a")"; done
-  "$PY" -m watchfiles --filter python "$CMD" "$REPO_ROOT/fused_render"
+  "$PY" -m watchfiles --filter python --ignore-paths "$REPO_ROOT/fused_render/templates" "$CMD" "$REPO_ROOT/fused_render"
 else
   # Original single-launch behavior: the server opens its own browser tab.
   "$PY" -m fused_render.cli "$@"
