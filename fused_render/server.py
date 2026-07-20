@@ -1523,15 +1523,31 @@ class _WatchEntry:
         it — the mount-dir auto-refresh (Listing LS-1) was silently dead. So for
         a directory the signal is a hash of a BOUNDED shallow listing instead:
         one direct_list_page (anonymous S3/GCS) or a short-timeout rc_list_dir.
-        A FILE (rc rejects the listing as not-a-directory) keeps using
-        operations/stat ModTime. Any failure/timeout -> _UNCHANGED (never an
-        error storm)."""
+
+        A FILE reaches the ModTime path differently by branch:
+          - direct-listable (anonymous S3/GCS): direct_list_capable is a pure
+            path/config check that can't tell a file from a directory, and
+            direct_list_page on a file KEY returns an EMPTY page (the file's own
+            key != the "<key>/" listing prefix). An empty page is
+            indistinguishable from an empty directory, so we fall back to the
+            file's operations/stat ModTime — a real, changing signal for a file;
+            harmless for a genuinely empty directory, since the moment a child
+            appears the page is non-empty and the listing hash takes over.
+          - rc route: rc rejects listing a file as not-a-directory (RcListError),
+            which likewise falls back to operations/stat ModTime.
+        Any failure/timeout -> _UNCHANGED (never an error storm)."""
         from fused_render.shell import mounts as shell_mounts
 
         try:
             if shell_mounts.direct_list_capable(self.path):
                 page, _ = shell_mounts.direct_list_page(
                     self.path, max_keys=1000, timeout=4)
+                if not page:
+                    # Empty: a file (its key isn't under the "<key>/" prefix) or
+                    # an empty dir. Use the rc ModTime — moves for a file's
+                    # content, constant-but-harmless for an empty dir.
+                    m = shell_mounts.rc_mtime_for(self.path)
+                    return _UNCHANGED if m is None else m
                 return _hash_listing(page)
             listed = shell_mounts.rc_list_dir(self.path, timeout=4)
             return _hash_listing(listed)

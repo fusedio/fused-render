@@ -192,6 +192,37 @@ def test_mount_file_signal_falls_back_to_modtime(home, monkeypatch):
     assert entry._mount_signal() == "2024-01-02T03:04:05Z"
 
 
+def test_mount_file_signal_direct_capable_empty_page_uses_modtime(home, monkeypatch):
+    # (3.2) A FILE under an anonymous S3/GCS mount is direct_list_capable (a pure
+    # path/config check that can't tell a file from a dir). direct_list_page on a
+    # file key returns an EMPTY page (its own key != the "<key>/" listing prefix),
+    # so a hash of that empty listing is CONSTANT and content changes go
+    # undetected. The empty page must fall back to the file's rc ModTime, which
+    # moves when the file content changes.
+    entry = server._WatchEntry(str(home / "mounts" / "open" / "f.parquet"))
+    monkeypatch.setattr(mounts_mod, "s3_direct_capable", lambda p: True)
+    monkeypatch.setattr(mounts_mod, "s3_list_page",
+                        lambda path, *, max_keys, continuation=None, timeout=None: ([], None))
+    mtimes = iter(["2024-01-02T03:04:05Z", "2024-01-02T09:09:09Z"])
+    monkeypatch.setattr(mounts_mod, "rc_mtime_for", lambda p: next(mtimes))
+
+    sig1 = entry._mount_signal()
+    assert sig1 == "2024-01-02T03:04:05Z"           # real ModTime, not empty-hash
+    assert not sig1.startswith("L")                 # not a listing hash
+    assert entry._mount_signal() == "2024-01-02T09:09:09Z"  # content change -> CHANGED
+
+
+def test_mount_file_signal_direct_capable_empty_page_none_modtime_unchanged(home, monkeypatch):
+    # (3.2) When the empty-page ModTime fallback returns None, report _UNCHANGED
+    # (matching the RcListError file arm) rather than a constant empty-hash.
+    entry = server._WatchEntry(str(home / "mounts" / "open" / "f.parquet"))
+    monkeypatch.setattr(mounts_mod, "s3_direct_capable", lambda p: True)
+    monkeypatch.setattr(mounts_mod, "s3_list_page",
+                        lambda path, *, max_keys, continuation=None, timeout=None: ([], None))
+    monkeypatch.setattr(mounts_mod, "rc_mtime_for", lambda p: None)
+    assert entry._mount_signal() is server._UNCHANGED
+
+
 def test_mount_dir_signal_unchanged_on_failure(home, monkeypatch):
     # (3.2) A down/timed-out listing returns _UNCHANGED — never an error storm.
     entry = server._WatchEntry(str(home / "mounts" / "s3demo" / "dir"))
