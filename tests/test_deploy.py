@@ -926,7 +926,10 @@ def test_errors_list_passes_filters_and_returns_summaries(tmp_path, monkeypatch)
     assert [e["err_id"] for e in body["errors"]] == ["e1"]
     # The filters travel through to the CLI verbatim (it parses the sugar).
     (call,) = h.calls()
-    assert call["argv"][:3] == ["share", "errors", "tok"]
+    assert call["argv"][:2] == ["share", "errors"]
+    # The mount token is passed after `--` so a '-'-leading token can't be
+    # mis-parsed as an option (see test_errors_dashed_token_is_not_parsed).
+    assert call["argv"][-2:] == ["--", "tok"]
     assert call["env"] == "cloud"
     assert call["argv"][call["argv"].index("--limit") + 1] == "5"
     assert call["argv"][call["argv"].index("--since") + 1] == "2h"
@@ -952,9 +955,21 @@ def test_error_detail_returns_full_record(tmp_path, monkeypatch):
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["record"]["error"].startswith("Traceback")
-    # A single-record fetch passes TOKEN ERR_ID and no list filters.
+    # A single-record fetch passes TOKEN ERR_ID (after `--`) and no list filters.
     (call,) = h.calls()
-    assert call["argv"] == ["share", "errors", "tok", "e1"]
+    assert call["argv"] == ["share", "errors", "--", "tok", "e1"]
+
+
+def test_errors_dashed_token_is_not_parsed_as_option(tmp_path, monkeypatch):
+    # A token beginning with '-' (e.g. "--env") must be passed as a positional,
+    # never parsed by click as a flag that would flip the per-mount list into an
+    # env-wide sweep. The `--` separator guarantees the token stays positional.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario({"errors": []})
+    resp = h.client.get("/api/deploy/errors", params={"env": "cloud", "token": "--env"})
+    assert resp.status_code == 200, resp.text
+    (call,) = h.calls()
+    assert call["argv"][-2:] == ["--", "--env"]
 
 
 def test_error_detail_requires_err_id(tmp_path, monkeypatch):

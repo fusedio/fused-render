@@ -738,10 +738,13 @@ def _errors_args(
     kind: str | None,
     entrypoint: str | None,
 ) -> list[str]:
-    args = ["errors", token]
+    args = ["errors"]
     if err_id:
         # A single-record fetch (`errors TOKEN ERR_ID`) takes no list filters.
-        args.append(err_id)
+        # `--` terminates option parsing so a browser-supplied token/err_id that
+        # begins with '-' can never be mis-parsed as a flag (e.g. token "--env"
+        # silently flipping the per-mount list into an env-wide sweep).
+        args += ["--", token, err_id]
         return args
     args += ["--limit", str(limit)]
     if since:
@@ -752,6 +755,8 @@ def _errors_args(
         args += ["--kind", kind]
     if entrypoint:
         args += ["--entrypoint", entrypoint]
+    # `--` before the positional token: see the err_id branch above.
+    args += ["--", token]
     return args
 
 

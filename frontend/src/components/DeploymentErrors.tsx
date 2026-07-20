@@ -70,7 +70,10 @@ function ErrorDetail({
   if (!record) return null;
 
   const params =
-    record.params !== undefined
+    // `!= null` (not `!== undefined`): the managed control plane serializes an
+    // absent params field as JSON null, the AWS plane omits the key entirely.
+    // Both must fall through to params_preview rather than render "null".
+    record.params != null
       ? JSON.stringify(record.params, null, 2)
       : record.params_preview;
 
