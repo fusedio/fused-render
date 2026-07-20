@@ -596,6 +596,11 @@ def main(file: str = "", action: str = "analyze", resampling: str = "",
         if stat_status == "missing":
             return {"error": f"not a file: {file}"}
         if stat_status == "ok":
+            # stat REPLACES os.path.isfile: a directory (is_dir, size null) is
+            # not a file, so reject it here rather than spawning a worker with
+            # size=None that would crash _HttpRangeFile on int(None).
+            if payload.get("is_dir"):
+                return {"error": f"not a file: {file}"}
             remote = bool(payload.get("remote"))
             remote_size = payload.get("size")
         # "unreachable" -> remote stays None -> local kernel fallback below

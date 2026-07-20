@@ -31,11 +31,13 @@ class _FakeFS:
     `honor_range` False -> /api/fs/raw ignores Range and returns 200 whole-body
     (the fallback path the reader must handle)."""
 
-    def __init__(self, blob=b"", remote=True, exists=True, honor_range=True):
+    def __init__(self, blob=b"", remote=True, exists=True, honor_range=True,
+                 is_dir=False):
         self.blob = blob
         self.remote = remote
         self.exists = exists
         self.honor_range = honor_range
+        self.is_dir = is_dir
         fs = self
 
         class H(BaseHTTPRequestHandler):
@@ -50,8 +52,9 @@ class _FakeFS:
                         self.wfile.write(b'{"error":"no such file"}')
                         return
                     body = json.dumps({
-                        "remote": fs.remote, "size": len(fs.blob),
-                        "is_dir": False, "name": "x.tif",
+                        "remote": fs.remote,
+                        "size": None if fs.is_dir else len(fs.blob),
+                        "is_dir": fs.is_dir, "name": "x.tif",
                     }).encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
@@ -212,6 +215,19 @@ def test_main_remote_missing_returns_not_a_file(fs):
     s = fs(exists=False)
     res = op.main(file="/mnt/x.tif", action="analyze", src=s.src)
     assert "not a file" in res.get("error", "")
+
+
+def test_main_remote_dir_returns_not_a_file(fs, monkeypatch):
+    # /api/fs/stat succeeds for a mount-backed DIRECTORY (is_dir true, size
+    # null). stat replaces os.path.isfile, so main() must reject it as "not a
+    # file" — never spawn a worker with size=None (which crashes _HttpRangeFile
+    # on int(None)).
+    s = fs(remote=True, is_dir=True)
+    monkeypatch.setattr(op, "_venv_python",
+                        lambda: (_ for _ in ()).throw(AssertionError("spawned")))
+    res = op.main(file="/mnt/x.tif", action="analyze", src=s.src)
+    assert "not a file" in res.get("error", "")
+    assert not res.get("started")
 
 
 def test_main_build_refused_for_remote(fs, monkeypatch):
