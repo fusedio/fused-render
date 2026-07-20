@@ -1162,7 +1162,8 @@ def tile_daemon(tmp_path, monkeypatch):
     server = ThreadingHTTPServer(("127.0.0.1", 0), H)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     state = tmp_path / "daemon.json"
-    state.write_text(json.dumps({"port": server.server_address[1], "pid": 1}))
+    state.write_text(json.dumps(
+        {"port": server.server_address[1], "pid": 1, "token": "tok-test"}))
     missing = tmp_path / "absent" / "daemon.json"  # the parallel file, absent
     monkeypatch.setattr(mounts_mod, "DAEMON_STATE_FILES", (str(state), str(missing)))
     yield quits
@@ -1174,7 +1175,7 @@ def test_unmount_busy_quits_daemons_and_retries(home, rcd, tile_daemon, monkeypa
     c = mounts_mod.add_mount("data", "remote:bucket")
     rcd.responses["mount/unmount"] = [(500, {"error": "device busy"}), {}]
     assert mounts_mod.detach_mount(c) is None
-    assert tile_daemon == ["/quit"]
+    assert tile_daemon == ["/quit?t=tok-test"]   # token forwarded (D122 gate)
     assert sum(1 for m, _ in rcd.calls if m == "mount/unmount") == 2
 
 
@@ -1201,7 +1202,7 @@ def test_unmount_still_busy_after_release_reports_error(home, rcd, tile_daemon, 
     rcd.responses["mount/unmount"] = (500, {"error": "device busy"})
     err = mounts_mod.detach_mount(c)
     assert err is not None and "hold a file open" in err
-    assert tile_daemon == ["/quit"]
+    assert tile_daemon == ["/quit?t=tok-test"]
 
 
 def test_delete_blocked_while_still_mounted(client, rcd, tile_daemon, monkeypatch):
