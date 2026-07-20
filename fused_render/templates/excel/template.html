@@ -1170,17 +1170,21 @@ function applyFilterMenu() {
   const checkedShown = shown.filter((v) => checked.has(v));
   const uncheckedShown = shown.filter((v) => !checked.has(v));
   const prior = sh.filterVal[c];
-  // Prior excludes for values not in this list (hidden by other columns' filters
-  // or beyond the distinct cap) must survive an OK click (bugbot: dropped excludes).
-  const priorOutOfList = (prior && prior.mode === "exclude")
+  // Values the prior filter referenced that aren't in this (possibly capped)
+  // distinct list must survive an OK click — for both modes (bugbot).
+  const priorOut = (mode) => (prior && prior.mode === mode)
     ? prior.vals.map(String).filter((v) => !shownSet.has(v)) : [];
 
-  if (checkedShown.length < uncheckedShown.length) {
+  if (prior && prior.mode === "include") {
+    // Stay inclusive: keep the checked shown values plus prior includes not shown.
+    const inc = [...new Set([...checkedShown, ...priorOut("include")])];
+    sh.filterVal[c] = inc.length ? { mode: "include", vals: inc } : null;
+  } else if (checkedShown.length < uncheckedShown.length && !priorOut("exclude").length) {
     // Narrowed to a subset: keep ONLY the checked values. Correct even when the
     // distinct list was capped — everything else (incl. uncounted values) drops.
     sh.filterVal[c] = { mode: "include", vals: checkedShown };
   } else {
-    const excl = [...new Set([...uncheckedShown, ...priorOutOfList])];
+    const excl = [...new Set([...uncheckedShown, ...priorOut("exclude")])];
     sh.filterVal[c] = excl.length ? { mode: "exclude", vals: excl } : null;
   }
   closeFilterMenu();
@@ -1543,32 +1547,37 @@ function switchSheet(i) {
 }
 
 // ================= big-sheet row fetching =================
-async function fetchRows(reset) {
+function fetchRows(reset) {
   const sh = S();
-  if (!sh.big) return;
-  if (sh.fetching) { sh._pendingReset = sh._pendingReset || reset; return; }
+  if (!sh.big) return Promise.resolve();
+  // Coalesce concurrent calls, but hand back the in-flight promise so a caller
+  // that needs the batch (e.g. the Ctrl+Arrow preload) can await it.
+  if (sh.fetching) { sh._pendingReset = sh._pendingReset || reset; return sh._fetchPromise || Promise.resolve(); }
   sh.fetching = true;
   sh._seq = (sh._seq || 0) + 1;
   const seq = sh._seq;
   updateMoreBar();
-  try {
-    const res = await pyRun( {
-      action: "rows", file: currentFile(), sheet: sh.name,
-      offset: String(reset ? 0 : sh.loaded.length), limit: String(LOAD_BATCH),
-      sort: sh.sort ? JSON.stringify(sh.sort) : "",
-      filters: JSON.stringify(activeFilters(sh)),
-    });
-    if (seq !== sh._seq || S() !== sh) return;
-    sh.matched = res.matched;
-    if (reset) { sh.loaded = res.rows; renderGrid(); }
-    else { const from = sh.loaded.length; sh.loaded.push(...res.rows); appendRows(from); }
-  } catch (err) {
-    setStatus(`${err.type || "error"}: ${err.message}`, "err");
-  } finally {
-    sh.fetching = false;
-    updateMoreBar();
-    if (sh._pendingReset) { sh._pendingReset = false; fetchRows(true); }
-  }
+  sh._fetchPromise = (async () => {
+    try {
+      const res = await pyRun( {
+        action: "rows", file: currentFile(), sheet: sh.name,
+        offset: String(reset ? 0 : sh.loaded.length), limit: String(LOAD_BATCH),
+        sort: sh.sort ? JSON.stringify(sh.sort) : "",
+        filters: JSON.stringify(activeFilters(sh)),
+      });
+      if (seq !== sh._seq || S() !== sh) return;
+      sh.matched = res.matched;
+      if (reset) { sh.loaded = res.rows; renderGrid(); }
+      else { const from = sh.loaded.length; sh.loaded.push(...res.rows); appendRows(from); }
+    } catch (err) {
+      setStatus(`${err.type || "error"}: ${err.message}`, "err");
+    } finally {
+      sh.fetching = false;
+      updateMoreBar();
+      if (sh._pendingReset) { sh._pendingReset = false; fetchRows(true); }
+    }
+  })();
+  return sh._fetchPromise;
 }
 
 $("gridWrap").addEventListener("scroll", () => {
