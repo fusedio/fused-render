@@ -302,6 +302,9 @@ export function putSession(fsPath: string, search: string): Promise<void> {
 export interface RecentEntry {
   url: string;
   openedAt: string;
+  // The page's own <title>, when one was known at record time — preferred
+  // over the file's basename for the sidebar row (see Sidebar.tsx).
+  title?: string;
 }
 
 export interface RecentsResult {
@@ -315,8 +318,11 @@ export function getRecents(): Promise<RecentsResult> {
 
 // Server no-ops (recorded: false) for directory/sentinel/missing-file urls,
 // so callers need not pre-classify the target.
-export function postRecentOpen(url: string): Promise<{ recorded: boolean }> {
-  return postJson<{ recorded: boolean }>("/api/recents/open", { url });
+export function postRecentOpen(url: string, title?: string | null): Promise<{ recorded: boolean }> {
+  return postJson<{ recorded: boolean }>(
+    "/api/recents/open",
+    title ? { url, title } : { url }
+  );
 }
 
 export function putRecentsCollapsed(collapsed: boolean): Promise<void> {
