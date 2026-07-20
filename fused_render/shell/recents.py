@@ -7,7 +7,9 @@ sentinel routes (`_panel`, `_prefs`, any `_`-prefixed view) are never recorded.
 
 File shape:
 
-    {"collapsed": false, "entries": [{"url": "/view/...?...", "openedAt": iso}]}
+    {"collapsed": false, "entries": [
+        {"url": "/view/...?...", "openedAt": iso, "title": "optional page title"}
+    ]}
 
 Entries are newest-first, deduped by target fs path, capped at ENTRY_CAP (a
 buffer so the UI's top 3 survive missing-file filtering). URLs are stored
@@ -214,6 +216,11 @@ def post_recent_open(
         # Directory / sentinel / missing-file url -> benign no-op, same
         # posture as POST /api/bookmarks/history for non-file urls.
         return {"recorded": False}
+    # The rendered page's own <title> (frontend lib/recents.ts), preferred
+    # over the file's basename by the sidebar row — same posture as bookmark
+    # naming. Optional: absent until the preview iframe reports one.
+    title_raw = payload.get("title")
+    title = title_raw.strip() if isinstance(title_raw, str) and title_raw.strip() else None
     data = _read()
     # Dedupe by DECODED target fs path — existence-blind, so a dead entry for
     # the same path (file deleted and recreated since) is replaced rather than
@@ -223,6 +230,8 @@ def post_recent_open(
         if not (isinstance(e.get("url"), str) and _decoded_fs_path(e["url"]) == fs_path)
     ]
     entry = {"url": url, "openedAt": datetime.now(timezone.utc).isoformat()}
+    if title is not None:
+        entry["title"] = title
     data["entries"] = [entry, *kept][:ENTRY_CAP]
     storage.write_json(_path(), data)
     return {"recorded": True}

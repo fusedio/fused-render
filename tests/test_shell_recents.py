@@ -96,6 +96,57 @@ def test_open_requires_url(tmp_path, monkeypatch):
     assert client.post("/api/recents/open", json={}, headers=FUSED).status_code == 400
 
 
+def test_open_stores_title_when_given(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    f = _make_file(tmp_path)
+    url = _view_url(f)
+    resp = client.post(
+        "/api/recents/open", json={"url": url, "title": "My DB app"}, headers=FUSED
+    )
+    assert resp.status_code == 200
+    saved = json.loads((home / "recents.json").read_text(encoding="utf-8"))
+    assert saved["entries"][0]["title"] == "My DB app"
+    assert client.get("/api/recents").json()["entries"][0]["title"] == "My DB app"
+
+
+def test_open_without_title_omits_the_field(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    f = _make_file(tmp_path)
+    client.post("/api/recents/open", json={"url": _view_url(f)}, headers=FUSED)
+    saved = json.loads((home / "recents.json").read_text(encoding="utf-8"))
+    assert "title" not in saved["entries"][0]
+
+
+def test_open_ignores_blank_or_non_string_title(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    f = _make_file(tmp_path)
+    client.post(
+        "/api/recents/open", json={"url": _view_url(f), "title": "   "}, headers=FUSED
+    )
+    client.post(
+        "/api/recents/open", json={"url": _view_url(f), "title": 42}, headers=FUSED
+    )
+    saved = json.loads((home / "recents.json").read_text(encoding="utf-8"))
+    assert "title" not in saved["entries"][0]
+
+
+def test_open_re_record_updates_title(tmp_path, monkeypatch):
+    # A re-record of the same fs path (e.g. once the iframe's <title> resolves
+    # after the initial open) replaces the entry, so the title lands even
+    # though the first record predates it.
+    client, home = _client(tmp_path, monkeypatch)
+    f = _make_file(tmp_path)
+    client.post("/api/recents/open", json={"url": _view_url(f)}, headers=FUSED)
+    client.post(
+        "/api/recents/open",
+        json={"url": _view_url(f), "title": "My DB app"},
+        headers=FUSED,
+    )
+    saved = json.loads((home / "recents.json").read_text(encoding="utf-8"))
+    assert len(saved["entries"]) == 1
+    assert saved["entries"][0]["title"] == "My DB app"
+
+
 def test_get_hides_missing_files_without_deleting_them(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     keep = _make_file(tmp_path, "keep.csv")
