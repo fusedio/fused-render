@@ -28,6 +28,7 @@ redirected per test.
 import json
 import os
 
+import pytest
 from fastapi.responses import JSONResponse
 
 import fused_render.shell.mounts as mounts_mod
@@ -44,6 +45,11 @@ from _mount_safe_helpers import (  # noqa: F401 — `home` is a reused fixture
     _no_kernel_on_mount,
     home,
 )
+
+# os.access always says yes for root, so the chmod-based gates can't trip.
+skip_root = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="read-only bits are ignored when running as root")
 
 
 # --------------------------------------------------------------------------- helpers
@@ -386,6 +392,7 @@ def test_mounts_root_known_mount_name_still_exists_mkdir_409(home, monkeypatch):
 # The mount side is NEVER _writable-probed (that kernel-stats a writable mount).
 # ===========================================================================
 
+@skip_root
 def test_rename_local_readonly_src_refused_with_mount_dst(home, monkeypatch, tmp_path):
     mp = _mount("rw", read_only=False, on_disk=True)
     _no_kernel_on_mount(monkeypatch, mp)
@@ -401,6 +408,7 @@ def test_rename_local_readonly_src_refused_with_mount_dst(home, monkeypatch, tmp
         os.chmod(src, 0o600)
 
 
+@skip_root
 def test_copy_local_readonly_dst_refused_with_mount_src(home, monkeypatch, tmp_path):
     mp = _mount("rw", read_only=False)
     _no_kernel_on_mount(monkeypatch, mp)

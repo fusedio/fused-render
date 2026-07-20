@@ -12,6 +12,11 @@ import pytest
 pytest.importorskip("duckdb")
 import duckdb  # noqa: E402
 
+# os.access always says yes for root, so the chmod-based gates can't trip.
+skip_root = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="read-only bits are ignored when running as root")
+
 
 def _load(name):
     path = os.path.join(os.path.dirname(__file__), "..", "fused_render",
@@ -766,6 +771,7 @@ def readonly_parquet(parquet_file):
     os.chmod(parquet_file, 0o644)  # so tmp_path cleanup works
 
 
+@skip_root
 def test_reader_readonly_file_not_editable(readonly_parquet):
     out = reader.main(readonly_parquet)
     assert out["editable"] is False
@@ -774,6 +780,7 @@ def test_reader_readonly_file_not_editable(readonly_parquet):
     assert out["readonly_tooltip"]
 
 
+@skip_root
 def test_writer_refuses_readonly_file(readonly_parquet):
     before = os.stat(readonly_parquet).st_size
     with pytest.raises(PermissionError):

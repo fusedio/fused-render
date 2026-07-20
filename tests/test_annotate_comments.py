@@ -20,6 +20,11 @@ import os
 
 import pytest
 
+# os.access always says yes for root, so the chmod-based gates can't trip.
+skip_root = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="read-only bits are ignored when running as root")
+
 
 def _load_annotate():
     path = os.path.join("fused_render", "templates", "annotate", "annotate.py")
@@ -207,6 +212,7 @@ def test_status_writable_sidecar_dir(tmp_path):
     assert ann.main(action="status", file=str(target)) == {"writable": True}
 
 
+@skip_root
 def test_status_readonly_sidecar_file(tmp_path):
     ann = _load_annotate()
     target = tmp_path / "page.html"
@@ -220,6 +226,7 @@ def test_status_readonly_sidecar_file(tmp_path):
         os.chmod(sidecar, 0o644)
 
 
+@skip_root
 def test_status_readonly_parent_dir(tmp_path):
     ann = _load_annotate()
     target = tmp_path / "page.html"
