@@ -150,6 +150,73 @@ def test_local_path_gate_uses_kernel_unaffected(tmp_path, guard_kernel):
     assert server._run_condition(ZARR_CONDITION, str(tmp_path))[0] is False
 
 
+# --------------------------------------------------- import-form coverage
+#
+# The shim routes the gate's `os` off the kernel by overriding __import__ in the
+# gate module's builtins. Every idiomatic import form a gate (builtin or
+# user-authored) might use must resolve to the shim — `import os`, `import os as
+# o`, `from os import path/stat`, and the DOTTED forms `import os.path` /
+# `from os.path import isfile`, which call __import__("os.path", ...) and would
+# otherwise fall through to the real kernel os.path.
+
+
+def _gate(tmp_path, body):
+    p = tmp_path / "condition.py"
+    p.write_text(body)
+    return str(p)
+
+
+def test_import_os_path_dotted_routed(monkeypatch, guard_kernel, tmp_path):
+    # `import os.path` -> __import__("os.path") must yield the shim, not real os.
+    _mount(monkeypatch, {STORE: "file"})
+    cf = _gate(tmp_path, "import os.path\n"
+                         "def main(path):\n    return os.path.isfile(path)\n")
+    assert server._run_condition(cf, STORE) == (True, None)
+
+
+def test_from_os_path_import_isfile_routed(monkeypatch, guard_kernel, tmp_path):
+    # `from os.path import isfile` -> __import__("os.path", fromlist=("isfile",))
+    # must return the shim's path submodule so isfile binds the shimmed function.
+    _mount(monkeypatch, {STORE: "file"})
+    cf = _gate(tmp_path, "from os.path import isfile\n"
+                         "def main(path):\n    return isfile(path)\n")
+    assert server._run_condition(cf, STORE) == (True, None)
+
+
+def test_from_os_path_import_isdir_exists_routed(monkeypatch, guard_kernel, tmp_path):
+    _mount(monkeypatch, {STORE: "dir"})
+    cf = _gate(tmp_path, "from os.path import isdir, exists\n"
+                         "def main(path):\n    return isdir(path) and exists(path)\n")
+    assert server._run_condition(cf, STORE) == (True, None)
+
+
+def test_from_os_import_stat_routed(monkeypatch, guard_kernel, tmp_path):
+    import stat as _s
+    _mount(monkeypatch, {STORE: "dir"})
+    monkeypatch.setattr(
+        mounts_mod, "rc_stat_result",
+        lambda p: os.stat_result((_s.S_IFDIR | 0o755, 0, 0, 1, 0, 0, 0, 0, 0.0, 0.0)))
+    cf = _gate(tmp_path, "from os import stat\n"
+                         "def main(path):\n"
+                         "    import stat as s\n"
+                         "    return s.S_ISDIR(stat(path).st_mode)\n")
+    assert server._run_condition(cf, STORE) == (True, None)
+
+
+def test_import_os_aliased_routed(monkeypatch, guard_kernel, tmp_path):
+    _mount(monkeypatch, {STORE: "file"})
+    cf = _gate(tmp_path, "import os as o\n"
+                         "def main(path):\n    return o.path.isfile(path)\n")
+    assert server._run_condition(cf, STORE) == (True, None)
+
+
+def test_from_os_import_path_aliased_routed(monkeypatch, guard_kernel, tmp_path):
+    _mount(monkeypatch, {STORE: "file"})
+    cf = _gate(tmp_path, "from os import path as p\n"
+                         "def main(path):\n    return p.isfile(path)\n")
+    assert server._run_condition(cf, STORE) == (True, None)
+
+
 # ------------------------------------------------- /api/fs/conditions + /api/fs/stat
 
 

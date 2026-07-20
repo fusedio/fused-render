@@ -976,10 +976,24 @@ def _mount_gate_builtins(target_path: str):
     real_import = builtins.__import__
     real_open = open
 
-    def _import(name, *args, **kwargs):
+    def _import(name, globals=None, locals=None, fromlist=(), level=0):
+        # Route every import form of `os`/`os.path` to the shim. __import__'s
+        # return-value contract differs by form: `import os` / `import os as o`
+        # (name "os") and `import os.path` (name "os.path", empty fromlist) bind
+        # the TOP package, then the import machinery walks .path off it via
+        # getattr — so return os_shim. `from os import ...` (name "os", non-empty
+        # fromlist) also wants the top package. Only `from os.path import x`
+        # (name "os.path", non-empty fromlist) wants the SUBMODULE — return the
+        # shim's path object so the names bind to shimmed functions.
+        # NOTE: this covers os / os.path only. A gate reaching the mount through
+        # a different stdlib module (pathlib, io, glob, ...) would still hit the
+        # kernel — a known, deliberately out-of-scope escape (low likelihood;
+        # the builtin gates use os).
         if name == "os":
             return os_shim
-        return real_import(name, *args, **kwargs)
+        if name == "os.path":
+            return os_shim.path if fromlist else os_shim
+        return real_import(name, globals, locals, fromlist, level)
 
     def _open(file, *args, **kwargs):
         if isinstance(file, str) and mounts.is_mount_backed(file):
