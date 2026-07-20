@@ -1,8 +1,8 @@
 """GET/PUT /api/bookmarks — the bookmark tree at ~/.fused-render/bookmarks.json.
 
-Whole-file, last-write-wins: the tree is tiny (a handful of items, one level
-of folders) so there is no partial-update API — the shell PUTs the entire
-tree on each mutation.
+Whole-file, last-write-wins: the tree is tiny (a handful of items, folders
+nesting to arbitrary depth — D121, revising D44's one-level rule) so there is
+no partial-update API — the shell PUTs the entire tree on each mutation.
 
 The GET `exists` flag distinguishes an absent/corrupt file from a valid
 (possibly empty) one — a user who deletes every bookmark leaves an existing
@@ -61,15 +61,22 @@ def _dedupe_names(items: list) -> bool:
     duplicate gets the first `-1`, `-2`, ... suffix whose key collides with
     nothing already in the tree ("-" and digits survive sanitization, so
     suffixed keys stay distinct). Idempotent — returns True only when
-    something was renamed."""
+    something was renamed. Folders nest to arbitrary depth (D121) — the walk
+    recurses so a bookmark in a grandchild folder shares the same namespace."""
     bookmarks = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        if item.get("type") == "folder":
-            bookmarks.extend(c for c in item.get("children") or [] if isinstance(c, dict))
-        else:
-            bookmarks.append(item)
+
+    def collect(entries: list) -> None:
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "folder":
+                children = item.get("children")
+                if isinstance(children, list):
+                    collect(children)
+            else:
+                bookmarks.append(item)
+
+    collect(items)
     named = [b for b in bookmarks if isinstance(b.get("name"), str)]
     # Suffix candidates must dodge EVERY current name (including a pre-existing
     # literal "x-1"), not just the ones processed so far.
@@ -90,6 +97,39 @@ def _dedupe_names(items: list) -> bool:
     return changed
 
 
+def _sanitize_tree(items: list) -> bool:
+    """Drop entries the sidebar cannot render (D121: folders nest to arbitrary
+    depth, revising D44). An entry — at the top level or inside any folder's
+    `children` — is kept iff it is a dict AND either a bookmark (string `url`)
+    or a folder (`type == "folder"` with a list `children`, sanitized
+    recursively). Anything else (urlless plain dict, folder with non-list
+    children, non-dict) would render as a bookmark row and crash reading its
+    missing `.url`, blanking the whole shell — the same failure at every
+    level, so the top level gets the same rule rather than D44's leniency.
+    Mutates in place; returns True only when something was removed (same
+    write-only-on-change posture as _dedupe_names). No cycle guard: the tree
+    always comes from json.load, which cannot produce reference cycles."""
+    changed = False
+    kept = []
+    for item in items:
+        if not isinstance(item, dict):
+            changed = True
+            continue
+        if item.get("type") == "folder":
+            children = item.get("children")
+            if not isinstance(children, list):
+                changed = True
+                continue
+            if _sanitize_tree(children):
+                changed = True
+        elif not isinstance(item.get("url"), str):
+            changed = True
+            continue
+        kept.append(item)
+    items[:] = kept
+    return changed
+
+
 @router.get("/api/bookmarks")
 def get_bookmarks():
     data = storage.read_json(_path())
@@ -97,9 +137,14 @@ def get_bookmarks():
     # (even []) reports exists=true.
     if not isinstance(data, list):
         return {"exists": False, "bookmarks": []}
+    # Order matters: sanitize before dedupe, so a dropped garbage entry never
+    # claims a name that a real bookmark would then get suffixed around.
+    changed = _sanitize_tree(data)
     # Pre-D97 files may hold duplicate names; migrate once (write only when
     # something actually changed — the normal GET stays read-only).
     if _dedupe_names(data):
+        changed = True
+    if changed:
         storage.write_json(_path(), data)
     return {"exists": True, "bookmarks": data}
 

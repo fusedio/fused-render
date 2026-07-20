@@ -24,7 +24,7 @@ export interface BookmarkFolder {
   type: "folder";
   name: string;
   collapsed: boolean;
-  children: Bookmark[];
+  children: BookmarkItem[]; // folders may nest to any depth (D121)
 }
 
 export type BookmarkItem = Bookmark | BookmarkFolder;
@@ -105,14 +105,63 @@ export function isFolder(item: BookmarkItem): item is BookmarkFolder {
   return item.type === "folder";
 }
 
-// Flatten to bookmarks only (no folders): top-level bookmarks and all folder
-// children, in display order.
+// --- recursive tree helpers (D121) ------------------------------------------
+// Folders nest arbitrarily, so every lookup/removal walks the whole tree.
+// These are the single source of that walk; mutators below build on them.
+
+function findById(items: BookmarkItem[], id: string): BookmarkItem | undefined {
+  for (const item of items) {
+    if (item.id === id) return item;
+    if (isFolder(item)) {
+      const hit = findById(item.children, id);
+      if (hit) return hit;
+    }
+  }
+  return undefined;
+}
+
+// Splice the item out of whichever children array holds it; returns it.
+function removeById(items: BookmarkItem[], id: string): BookmarkItem | undefined {
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.id === id) {
+      items.splice(i, 1);
+      return item;
+    }
+    if (isFolder(item)) {
+      const removed = removeById(item.children, id);
+      if (removed) return removed;
+    }
+  }
+  return undefined;
+}
+
+// The children array a move should insert into: the tree root for parentId
+// null, else the named folder's children (undefined if it no longer exists).
+function containerOf(items: BookmarkItem[], parentId: string | null): BookmarkItem[] | undefined {
+  if (parentId === null) return items;
+  const dest = findById(items, parentId);
+  return dest && isFolder(dest) ? dest.children : undefined;
+}
+
+// True when `id` lives anywhere inside folder `ancestorId`'s subtree. Used as
+// the cycle guard for folder moves (a folder must never become its own
+// descendant) and exported for drag-over feedback in the sidebar.
+export function isDescendant(items: BookmarkItem[], ancestorId: string, id: string): boolean {
+  const ancestor = findById(items, ancestorId);
+  return !!ancestor && isFolder(ancestor) && !!findById(ancestor.children, id);
+}
+
+// Flatten to bookmarks only (no folders), all depths, in display order.
 export function allBookmarks(): Bookmark[] {
   const out: Bookmark[] = [];
-  for (const item of cache) {
-    if (isFolder(item)) out.push(...item.children);
-    else out.push(item);
-  }
+  const walk = (list: BookmarkItem[]): void => {
+    for (const item of list) {
+      if (isFolder(item)) walk(item.children);
+      else out.push(item);
+    }
+  };
+  walk(cache);
   return out;
 }
 
@@ -159,11 +208,15 @@ export function uniqueBookmarkName(base: string, excludeId?: string): string {
   return uniqueNameIn(cache, base, excludeId);
 }
 
-// Remove folders left empty by a mutation. Mutates in place, returns items.
+// Remove folders left empty by a mutation. Depth-first so an emptied nested
+// folder disappears first and can in turn empty (and remove) its parent.
+// Mutates in place, returns items.
 function prune(items: BookmarkItem[]): BookmarkItem[] {
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i];
-    if (isFolder(item) && item.children.length === 0) items.splice(i, 1);
+    if (!isFolder(item)) continue;
+    prune(item.children);
+    if (item.children.length === 0) items.splice(i, 1);
   }
   return items;
 }
@@ -194,41 +247,23 @@ export async function addBookmark(name: string, url: string): Promise<void> {
 
 export function deleteBookmark(id: string): Promise<void> {
   return mutate((items) => {
-    const at = items.findIndex((it) => it.id === id);
-    if (at !== -1) {
-      items.splice(at, 1);
-    } else {
-      // Not top-level: search folder children.
-      for (const item of items) {
-        if (!isFolder(item)) continue;
-        const ci = item.children.findIndex((b) => b.id === id);
-        if (ci !== -1) {
-          item.children.splice(ci, 1);
-          break;
-        }
-      }
-    }
+    removeById(items, id);
     return prune(items);
   });
 }
 
-// Remove a folder (and its children) entirely.
+// Remove a folder (and its whole subtree) entirely, wherever it nests.
 export function deleteFolder(id: string): Promise<void> {
-  return mutate((items) => items.filter((it) => it.id !== id));
+  return mutate((items) => {
+    removeById(items, id);
+    return prune(items); // removal may leave an emptied ancestor behind
+  });
 }
 
-// Rename a bookmark or a folder. Top-level items are searched first, then
-// folder children.
+// Rename a bookmark or a folder, at any depth.
 export function renameBookmark(id: string, name: string): Promise<void> {
   return mutate((items) => {
-    let target: BookmarkItem | undefined = items.find((it) => it.id === id);
-    if (!target) {
-      for (const item of items) {
-        if (!isFolder(item)) continue;
-        target = item.children.find((b) => b.id === id);
-        if (target) break;
-      }
-    }
+    const target = findById(items, id);
     if (!target) return null; // nothing to change -> no write
     // Folders keep their own namespace; bookmark names auto-suffix on clash.
     target.name = isFolder(target) ? name : uniqueNameIn(items, name, id);
@@ -237,78 +272,70 @@ export function renameBookmark(id: string, name: string): Promise<void> {
 }
 
 // Move an item (bookmark or folder) to a new position. parentId null = top
-// level; otherwise the id of the destination folder. targetIndex is the index
-// in the destination array AFTER the moved item is removed; the caller is
-// responsible for that convention. Folders can only move to the top level.
+// level; otherwise the id of the destination folder, at any depth. targetIndex
+// is the index in the destination array AFTER the moved item is removed; the
+// caller is responsible for that convention.
 export function moveItem(
   id: string,
   parentId: string | null,
   targetIndex: number
 ): Promise<void> {
   return mutate((items) => {
-    // Locate the item first so a folder→folder move can abort before removal.
-    let moved: BookmarkItem | undefined = items.find((it) => it.id === id);
-    const isFolderItem = moved !== undefined && isFolder(moved);
-    if (isFolderItem && parentId !== null) return null;
-
-    // Remove from top level or whichever folder holds it.
-    if (moved) {
-      items.splice(items.indexOf(moved), 1);
-    } else {
-      for (const item of items) {
-        if (!isFolder(item)) continue;
-        const ci = item.children.findIndex((b) => b.id === id);
-        if (ci !== -1) {
-          [moved] = item.children.splice(ci, 1);
-          break;
-        }
+    // Cycle guard: a folder dropped onto itself or anywhere inside its own
+    // subtree would orphan the whole branch — abort before removal.
+    if (parentId !== null) {
+      const moved = findById(items, id);
+      if (moved && isFolder(moved) && (parentId === id || isDescendant(items, id, parentId))) {
+        return null;
       }
     }
+
+    const moved = removeById(items, id);
     if (!moved) return null;
 
-    if (parentId === null) {
-      items.splice(targetIndex, 0, moved);
-    } else {
-      const dest = items.find((it) => it.id === parentId && isFolder(it));
-      if (!dest || !isFolder(dest)) return null; // destination gone; bail without saving so nothing is lost
-      dest.children.splice(targetIndex, 0, moved as Bookmark);
-    }
+    // Destination resolved AFTER removal so a vanished folder (or one that
+    // lived inside the moved subtree) bails without saving — nothing is lost.
+    const dest = containerOf(items, parentId);
+    if (!dest) return null;
+    dest.splice(targetIndex, 0, moved);
     return prune(items);
   });
 }
 
-// Replace top-level bookmark targetId with a new folder containing
-// [target, dragged], preserving the target's slot. Returns the folder id
-// (or null if either lookup fails). draggedId is removed from wherever it
-// lives (top level or another folder), then the folder is created.
+// The children array that directly holds item `id` (the tree root counts).
+// Distinct from containerOf, which resolves a folder id to ITS children.
+function arrayHolding(items: BookmarkItem[], id: string): BookmarkItem[] | undefined {
+  if (items.some((it) => it.id === id)) return items;
+  for (const item of items) {
+    if (!isFolder(item)) continue;
+    const hit = arrayHolding(item.children, id);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
+// Replace bookmark targetId (at any depth) with a new folder containing
+// [target, dragged], preserving the target's slot in its own parent. Returns
+// the folder id (or null if either lookup fails). draggedId is removed from
+// wherever it lives, then the folder is created.
 export function createFolderWith(
   targetId: string,
   draggedId: string
 ): Promise<string | null> {
   return enqueue(async () => {
     const items = clone(cache);
-    const targetIdx = items.findIndex((it) => it.id === targetId && !isFolder(it));
-    if (targetIdx === -1) return null;
+    const target = findById(items, targetId);
+    if (!target || isFolder(target)) return null;
 
-    // Remove dragged from top level or a folder's children.
-    let dragged = items.find((it) => it.id === draggedId && !isFolder(it)) as Bookmark | undefined;
-    if (dragged) {
-      items.splice(items.indexOf(dragged), 1);
-    } else {
-      for (const item of items) {
-        if (!isFolder(item)) continue;
-        const ci = item.children.findIndex((b) => b.id === draggedId);
-        if (ci !== -1) {
-          [dragged] = item.children.splice(ci, 1);
-          break;
-        }
-      }
-    }
-    if (!dragged) return null;
+    // Remove dragged from wherever it lives — top level or any nested folder.
+    const dragged = removeById(items, draggedId);
+    if (!dragged || isFolder(dragged)) return null; // combine is bookmarks-only
 
-    // Target index may have shifted if dragged was an earlier top-level item.
-    const target = items.find((it) => it.id === targetId) as Bookmark;
-    const at = items.indexOf(target);
+    // Re-find the containing array AFTER removal: if dragged shared the
+    // target's parent and sat earlier, the target's index has shifted.
+    const siblings = arrayHolding(items, targetId);
+    if (!siblings) return null;
+    const at = siblings.findIndex((it) => it.id === targetId);
     const folder: BookmarkFolder = {
       id: crypto.randomUUID(),
       type: "folder",
@@ -316,7 +343,7 @@ export function createFolderWith(
       collapsed: false,
       children: [target, dragged],
     };
-    items.splice(at, 1, folder);
+    siblings.splice(at, 1, folder);
     await commit(prune(items));
     return folder.id;
   });
@@ -324,7 +351,7 @@ export function createFolderWith(
 
 export function toggleFolder(id: string): Promise<void> {
   return mutate((items) => {
-    const folder = items.find((it) => it.id === id && isFolder(it));
+    const folder = findById(items, id);
     if (!folder || !isFolder(folder)) return null;
     folder.collapsed = !folder.collapsed;
     return items;
@@ -335,15 +362,8 @@ export async function updateBookmarkUrl(id: string, url: string): Promise<void> 
   let name: string | undefined;
   let found = false;
   await mutate((items) => {
-    let bookmark = items.find((it) => it.id === id && !isFolder(it)) as Bookmark | undefined;
-    if (!bookmark) {
-      for (const item of items) {
-        if (!isFolder(item)) continue;
-        bookmark = item.children.find((b) => b.id === id);
-        if (bookmark) break;
-      }
-    }
-    if (!bookmark) return null;
+    const bookmark = findById(items, id);
+    if (!bookmark || isFolder(bookmark)) return null;
     bookmark.url = url;
     name = bookmark.name;
     found = true;
@@ -359,15 +379,8 @@ export async function updateBookmarkUrl(id: string, url: string): Promise<void> 
 // folders keep the themed folder glyph.
 export function setBookmarkIcon(id: string, icon: string | null): Promise<void> {
   return mutate((items) => {
-    let bookmark = items.find((it) => it.id === id && !isFolder(it)) as Bookmark | undefined;
-    if (!bookmark) {
-      for (const item of items) {
-        if (!isFolder(item)) continue;
-        bookmark = item.children.find((b) => b.id === id);
-        if (bookmark) break;
-      }
-    }
-    if (!bookmark) return null;
+    const bookmark = findById(items, id);
+    if (!bookmark || isFolder(bookmark)) return null;
     if (icon === null) delete bookmark.icon;
     else bookmark.icon = icon;
     return items;
