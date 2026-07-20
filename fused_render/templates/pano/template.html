@@ -114,6 +114,9 @@
   .row label { display: flex; justify-content: space-between; font-size: 11px;
     color: var(--dim); margin-bottom: 3px; }
   .row label output { color: var(--text); font-family: ui-monospace, monospace; }
+  .row label input.num { width: 52px; background: var(--panel); color: var(--text);
+    border: 1px solid var(--edge); border-radius: 5px; padding: 1px 4px;
+    font: inherit; font-family: ui-monospace, monospace; text-align: right; }
   .row input[type=range] { width: 100%; accent-color: var(--accent); }
   .row select {
     width: 100%; background: var(--panel); color: var(--text);
@@ -188,7 +191,7 @@
     <tr><td><kbd>1</kbd> … <kbd>8</kbd></td><td>switch projection view</td></tr>
     <tr><td><kbd>d</kbd></td><td>download current view</td></tr>
     <tr><td><kbd>?</kbd></td><td>toggle this help</td></tr>
-    <tr><td colspan="2" style="padding-top:10px">Perspective / fisheye: drag the image to look around, scroll to zoom FOV.</td></tr>
+    <tr><td colspan="2" style="padding-top:10px">Perspective / fisheye: drag the image to look around. Set FOV with the slider or by typing a value.</td></tr>
   </table>
 </div></div>
 
@@ -312,10 +315,11 @@
   }
 
   // ------------------------------------------------------------- controls
-  function slider(key, label, min, max, step, fmt) {
+  function slider(key, label, min, max, step) {
     const v = P.get(key);
-    return `<div class="row"><label>${label}<output id="o-${key}">` +
-      `${fmt ? fmt(v) : v}</output></label>` +
+    return `<div class="row"><label>${label}` +
+      `<input class="num" type="number" data-p="${key}" min="${min}" ` +
+      `max="${max}" step="${step}" value="${v}"></label>` +
       `<input type="range" data-p="${key}" min="${min}" max="${max}" ` +
       `step="${step}" value="${v}"></div>`;
   }
@@ -325,8 +329,20 @@
       options.map((o) => `<option value="${o[0]}"${String(o[0]) === v ? " selected" : ""}>${o[1]}</option>`).join("") +
       `</select></div>`;
   }
+  function syncControls() {
+    // Same mode as last build: refresh values in place rather than rebuilding
+    // the DOM, so a focused number field or an in-flight drag isn't clobbered.
+    els.ctrl.querySelectorAll("[data-p]").forEach((el) => {
+      if (el === document.activeElement) return;
+      const v = P.get(el.dataset.p);
+      if (el.value !== v) el.value = v;
+    });
+  }
+  let ctrlMode = null;
   function renderControls() {
     const m = mode();
+    if (m === ctrlMode) { syncControls(); return; }
+    ctrlMode = m;
     let html = "";
     if (m === "perspective") {
       html = `<h4>Perspective (e2p)</h4>` +
@@ -337,7 +353,7 @@
         sizeSelect("psize", "Output size", [["1024x576", "1024 × 576"],
           ["1280x720", "1280 × 720"], ["1920x1080", "1920 × 1080"],
           ["1080x1080", "1080 × 1080"]]) +
-        `<div class="hint">drag image to look · scroll to zoom</div>`;
+        `<div class="hint">drag image to look around</div>`;
     } else if (m === "little_planet") {
       html = `<h4>Little planet</h4>` +
         slider("zoom", "Zoom", 0.2, 3, 0.05) +
@@ -357,10 +373,18 @@
     els.ctrl.style.display = html ? "block" : "none";
     els.ctrl.innerHTML = html;
     els.ctrl.querySelectorAll("[data-p]").forEach((el) => {
-      el.addEventListener("input", () => {
+      const sync = () => {
+        if (el.value === "") return;   // mid-edit blank; commit clamps on change
         P.set(el.dataset.p, el.value);
-        const o = $("o-" + el.dataset.p);
-        if (o) o.textContent = el.value;
+        els.ctrl.querySelectorAll(`[data-p="${el.dataset.p}"]`).forEach((s) => {
+          if (s !== el) s.value = el.value;
+        });
+      };
+      el.addEventListener("input", sync);
+      if (el.type === "number") el.addEventListener("change", () => {
+        const n = parseFloat(el.value);   // keep a legit 0; only empty/NaN falls back
+        el.value = Math.max(+el.min, Math.min(+el.max, isNaN(n) ? +el.min : n));
+        sync();
       });
     });
   }
@@ -522,12 +546,6 @@
     const end = () => { drag = null; els.img.classList.remove("grabbing"); };
     els.img.addEventListener("pointerup", end);
     els.img.addEventListener("pointercancel", end);
-    els.img.addEventListener("wheel", (e) => {
-      if (mode() !== "perspective") return;
-      e.preventDefault();
-      const fov = Math.max(20, Math.min(175, P.num("fov") + (e.deltaY > 0 ? 5 : -5)));
-      P.set("fov", Math.round(fov));
-    }, { passive: false });
   })();
 
   // ------------------------------------------------------------- keyboard

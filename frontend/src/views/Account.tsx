@@ -260,7 +260,7 @@ function SetupPanel({
         )}
       </div>
       <div className="deploy-form-row">
-        <button type="button" className="deploy-primary" onClick={begin} disabled={starting}>
+        <button type="button" className="btn btn-primary" onClick={begin} disabled={starting}>
           {starting
             ? "Starting…"
             : hasWorkspace && chosen
@@ -522,7 +522,7 @@ export default function Account() {
           {status.cli.installable ? (
             <button
               type="button"
-              className="deploy-primary"
+              className="btn btn-primary"
               onClick={onInstall}
               disabled={busy !== null}
             >
@@ -656,7 +656,7 @@ export default function Account() {
               </button>
             </div>
           ) : (
-            <button type="button" className="deploy-primary" onClick={() => void signin.begin()}>
+            <button type="button" className="btn btn-primary" onClick={() => void signin.begin()}>
               Sign in to Fused
             </button>
           )}
@@ -718,7 +718,7 @@ export default function Account() {
           <div className="deploy-form-row">
             <button
               type="button"
-              className="deploy-danger"
+              className="btn btn-danger"
               onClick={onLogout}
               disabled={busy !== null}
               title="Removes the fused CLI's stored sign-in on this machine"

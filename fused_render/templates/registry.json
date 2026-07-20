@@ -11,6 +11,7 @@
   ".csv": [
     "duckdb",
     "csv",
+    "excel",
     "code",
     "annotate"
   ],

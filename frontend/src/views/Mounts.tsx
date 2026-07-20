@@ -5,7 +5,7 @@
 // Backend: shell/mounts.py (rclone rcd). Credentials live in rclone's
 // own config, never here. Section layout and per-action busy/error state
 // follow views/Preferences.tsx.
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import {
   createDetectedRemote,
   createMount,
@@ -16,50 +16,9 @@ import {
 } from "../lib/api";
 import type { Mount, MountsResult, RcloneRemote, RemoteSuggestion } from "../lib/api";
 import { navigate } from "../lib/router";
-
-// Lightweight modal reusing the Deploy modal's overlay/dialog chrome
-// (.deploy-* in shell.css): Escape or a click on the backdrop closes it.
-function Modal({
-  title,
-  onClose,
-  children,
-}: {
-  title: string;
-  onClose: () => void;
-  children: ReactNode;
-}) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  return (
-    <div
-      className="deploy-overlay"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div
-        className="deploy-dialog"
-        role="dialog"
-        aria-modal="true"
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <div className="deploy-head">
-          <h2>{title}</h2>
-          <button type="button" className="deploy-close" onClick={onClose} aria-label="Close">
-            ✕
-          </button>
-        </div>
-        <div className="deploy-body">{children}</div>
-      </div>
-    </div>
-  );
-}
+import { Modal } from "../components/modal/Modal";
+import { ErrorBanner } from "../components/ErrorBanner";
+import { Field, Select, TextInput } from "../components/field/fields";
 
 function MountRow({
   conn,
@@ -158,36 +117,8 @@ function MountRow({
           ✕
         </button>
       </div>
-      {error && <div className="deploy-error">{error}</div>}
+      {error && <ErrorBanner>{error}</ErrorBanner>}
     </div>
-  );
-}
-
-// A labelled form control: a small uppercase caption above the input, so the
-// Add-mount row and the custom-remote modal read as named fields instead of a
-// row of bare placeholders. `required` shows an accent marker.
-function Field({
-  label,
-  required,
-  children,
-}: {
-  label: string;
-  required?: boolean;
-  children: ReactNode;
-}) {
-  return (
-    <label className="mount-field">
-      <span>
-        {label}
-        {required && (
-          <span className="req" title="required" aria-hidden="true">
-            {" "}
-            *
-          </span>
-        )}
-      </span>
-      {children}
-    </label>
   );
 }
 
@@ -272,9 +203,15 @@ function AddMount({
         <b>Detected credentials</b> (from your AWS / gcloud config — no keys stored), or{" "}
         <b>Public buckets</b> for anonymous access to open data (no credentials needed).
       </p>
-      <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
+      <form
+        className="mount-form-row"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!busy && nameValid && remote) void add();
+        }}
+      >
         <Field label="Name" required>
-          <input
+          <TextInput
             placeholder="e.g. sensor-data"
             value={name}
             onChange={(e) => {
@@ -284,7 +221,7 @@ function AddMount({
           />
         </Field>
         <Field label="Remote" required>
-          <select value={remote} onChange={(e) => setRemote(e.target.value)}>
+          <Select value={remote} onChange={(e) => setRemote(e.target.value)}>
             <option value="">— remote —</option>
             {remotes.length > 0 && (
               <optgroup label="Remotes">
@@ -319,10 +256,10 @@ function AddMount({
                   ))}
               </optgroup>
             )}
-          </select>
+          </Select>
         </Field>
         <Field label="Path">
-          <input
+          <TextInput
             placeholder="bucket/prefix"
             style={{ minWidth: 200 }}
             value={subpath}
@@ -332,11 +269,11 @@ function AddMount({
         {/* Blank caption reserves the label row's height so the button
             aligns with the input boxes, not the labels above them. */}
         <Field label={" "}>
-          <button type="button" disabled={busy || !nameValid || !remote} onClick={add}>
+          <button type="submit" className="btn btn-primary" disabled={busy || !nameValid || !remote}>
             {busy ? "Mounting…" : "Add & mount"}
           </button>
         </Field>
-      </div>
+      </form>
       {spec && (
         <p className="deploy-muted mount-spec">
           Mounts <code>{spec}</code>
@@ -362,12 +299,18 @@ function AddMount({
         Tip: mount a specific <b>bucket/prefix</b>, not a whole bucket — narrow mounts browse and
         search much faster.
       </p>
-      {error && <div className="deploy-error">{error}</div>}
+      {error && <ErrorBanner>{error}</ErrorBanner>}
     </section>
   );
 }
 
-function AddRemote({ onChanged }: { onChanged: () => void }) {
+function AddRemote({
+  onChanged,
+  onBusyChange,
+}: {
+  onChanged: () => void;
+  onBusyChange?: (busy: boolean) => void;
+}) {
   const [name, setName] = useState("");
   const [endpoint, setEndpoint] = useState("");
   const [region, setRegion] = useState("");
@@ -376,8 +319,11 @@ function AddRemote({ onChanged }: { onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const canSubmit = !busy && !!name && !!accessKey && !!secretKey;
+
   const add = async () => {
     setBusy(true);
+    onBusyChange?.(true);
     setError(null);
     try {
       await createRemote(name, {
@@ -394,6 +340,7 @@ function AddRemote({ onChanged }: { onChanged: () => void }) {
       setError((e as Error).message);
     } finally {
       setBusy(false);
+      onBusyChange?.(false);
     }
   };
 
@@ -406,12 +353,18 @@ function AddRemote({ onChanged }: { onChanged: () => void }) {
         and for <b>Google Drive</b> or other sign-in backends run <code>rclone config</code> in a
         terminal — either then appears in the remote dropdown on reload.
       </p>
-      <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
+      <form
+        className="mount-form-row"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (canSubmit) void add();
+        }}
+      >
         <Field label="Remote name" required>
-          <input placeholder="e.g. r2" value={name} onChange={(e) => setName(e.target.value)} />
+          <TextInput placeholder="e.g. r2" value={name} onChange={(e) => setName(e.target.value)} />
         </Field>
         <Field label="Endpoint">
-          <input
+          <TextInput
             placeholder="blank for AWS S3"
             style={{ minWidth: 240 }}
             value={endpoint}
@@ -419,27 +372,31 @@ function AddRemote({ onChanged }: { onChanged: () => void }) {
           />
         </Field>
         <Field label="Region">
-          <input placeholder="optional" value={region} onChange={(e) => setRegion(e.target.value)} />
+          <TextInput
+            placeholder="optional"
+            value={region}
+            onChange={(e) => setRegion(e.target.value)}
+          />
         </Field>
         <Field label="Access key ID" required>
-          <input value={accessKey} onChange={(e) => setAccessKey(e.target.value)} />
+          <TextInput value={accessKey} onChange={(e) => setAccessKey(e.target.value)} />
         </Field>
         <Field label="Secret access key" required>
-          <input type="password" value={secretKey} onChange={(e) => setSecretKey(e.target.value)} />
+          <TextInput
+            type="password"
+            value={secretKey}
+            onChange={(e) => setSecretKey(e.target.value)}
+          />
         </Field>
         {/* Blank caption reserves the label row's height so the button aligns
             with the inputs, not the captions above them. */}
         <Field label={" "}>
-          <button
-            type="button"
-            disabled={busy || !name || !accessKey || !secretKey}
-            onClick={add}
-          >
+          <button type="submit" className="btn btn-primary" disabled={!canSubmit}>
             {busy ? "Creating…" : "Create remote"}
           </button>
         </Field>
-      </div>
-      {error && <div className="deploy-error">{error}</div>}
+      </form>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
     </div>
   );
 }
@@ -448,6 +405,9 @@ export default function Mounts() {
   const [state, setState] = useState<MountsResult | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [showAddRemote, setShowAddRemote] = useState(false);
+  // Lifted from AddRemote so the modal can gate its Esc/backdrop/✕ close while a
+  // create is in flight (previously the backdrop close was ungated).
+  const [remoteBusy, setRemoteBusy] = useState(false);
 
   const reload = () => {
     getMounts().then(setState, (e: Error) => setLoadError(e.message));
@@ -464,16 +424,8 @@ export default function Mounts() {
   return (
     <div className="prefs-page">
       {!state.rclone.available && (
-        <div
-          style={{
-            padding: "12px 14px",
-            border: "1px solid var(--border)",
-            borderLeft: "3px solid var(--error)",
-            borderRadius: 8,
-            background: "var(--bg-alt)",
-          }}
-        >
-          <div style={{ fontWeight: 700, marginBottom: 4 }}>rclone not found</div>
+        <div className="deploy-note mount-callout">
+          <div className="mount-callout-title">rclone not found</div>
           <div style={{ fontSize: "0.9em" }}>
             rclone must be installed and on your <code>PATH</code> for mounts to work. Install it
             with <code>brew install rclone</code> (macOS), <code>apt install rclone</code> /{" "}
@@ -517,8 +469,13 @@ export default function Mounts() {
             Add a custom S3 remote (R2, MinIO, …)
           </button>
           {showAddRemote && (
-            <Modal title="Add a custom S3 remote" onClose={() => setShowAddRemote(false)}>
+            <Modal
+              title="Add a custom S3 remote"
+              busy={remoteBusy}
+              onClose={() => setShowAddRemote(false)}
+            >
               <AddRemote
+                onBusyChange={setRemoteBusy}
                 onChanged={() => {
                   reload();
                   setShowAddRemote(false);

@@ -122,11 +122,50 @@
     cursor: col-resize; z-index: 7;
   }
   .colResize:hover, .colResize.on { background: var(--anchor); opacity: .55; }
-  tr.filterRow th { top: 23px; z-index: 3; cursor: default; padding: 0; height: 26px; }
-  tr.filterRow input {
-    width: 100%; font: 11px inherit; color: var(--text); background: var(--input);
-    border: none; border-top: 1px solid var(--grid); padding: 3px 6px; outline: none;
+  .funnel {
+    position: absolute; top: 50%; right: 5px; transform: translateY(-50%);
+    width: 18px; height: 16px; display: flex; align-items: center; justify-content: center;
+    border-radius: 3px; cursor: pointer; color: var(--muted); z-index: 6;
+    background: var(--panel2); border: 1px solid var(--border);
   }
+  .funnel svg { width: 11px; height: 11px; display: block; }
+  .funnel:hover { background: var(--hover); color: var(--text); }
+  .funnel.active { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
+  #filterMenu .fm-head { font-size: 11px; color: var(--muted); padding: 3px 6px 2px; }
+  #filterMenu .fm-cond { width: 100%; box-sizing: border-box; font: 12px inherit; color: var(--text);
+    background: var(--input); border: 1px solid var(--border2); border-radius: 5px; padding: 5px 7px; outline: none; }
+  #filterMenu .fm-cond:focus { border-color: var(--accent); }
+  #filterMenu {
+    position: fixed; z-index: 210; width: 250px; display: none;
+    background: var(--panel); border: 1px solid var(--border2); border-radius: 8px;
+    box-shadow: 0 8px 28px var(--shadow); font-size: 13px; color: var(--text);
+    padding: 6px; user-select: none;
+  }
+  #filterMenu .fm-sort { padding: 6px 10px; border-radius: 5px; cursor: pointer; display: flex; gap: 8px; }
+  #filterMenu .fm-sort:hover { background: var(--btn); }
+  #filterMenu .fm-sep { height: 1px; background: var(--border); margin: 5px 2px; }
+  #filterMenu .fm-search {
+    width: 100%; box-sizing: border-box; font: 12px inherit; color: var(--text);
+    background: var(--input); border: 1px solid var(--border2); border-radius: 5px;
+    padding: 5px 7px; outline: none; margin-bottom: 4px;
+  }
+  #filterMenu .fm-search:focus { border-color: var(--accent); }
+  #filterMenu .fm-toggle { padding: 4px 8px; display: flex; gap: 14px; font-size: 12px; }
+  #filterMenu .fm-toggle a { color: var(--accent); cursor: pointer; }
+  #filterMenu .fm-toggle a:hover { text-decoration: underline; }
+  #filterMenu .fm-list {
+    max-height: 210px; overflow: auto; border: 1px solid var(--border); border-radius: 5px;
+    margin: 4px 0; padding: 3px;
+  }
+  #filterMenu .fm-opt {
+    display: flex; align-items: center; gap: 7px; padding: 3px 6px; border-radius: 4px;
+    cursor: pointer; white-space: nowrap; overflow: hidden;
+  }
+  #filterMenu .fm-opt:hover { background: var(--btn); }
+  #filterMenu .fm-opt span { overflow: hidden; text-overflow: ellipsis; }
+  #filterMenu .fm-opt.blank span { color: var(--faint); font-style: italic; }
+  #filterMenu .fm-note { color: var(--faint); font-size: 11px; padding: 2px 6px; }
+  #filterMenu .fm-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 6px 2px 2px; }
   td.cell {
     height: 24px; padding: 2px 6px; background: var(--panel2);
     white-space: pre; overflow: hidden; text-overflow: ellipsis; cursor: cell; position: relative;
@@ -914,11 +953,49 @@ function redo() {
   restore(redoStack.pop());
 }
 
-// ================= small-sheet filtering =================
+// ================= filtering =================
+// Per column: filterQ[c] a condition string ('>5', 'foo') and filterVal[c] a
+// value-checklist filter {mode:"exclude"|"include", vals:[display strings]}.
+// exclude hides the listed values; include keeps only them (used when the user
+// narrows to a subset — correct even when the distinct list was capped).
 function activeFilters(sh) {
   const out = [];
-  (sh.filterQ || []).forEach((q, c) => { if (q && q.trim()) out.push({ c, q: q.trim() }); });
+  const n = Math.max((sh.filterQ || []).length, (sh.filterVal || []).length);
+  for (let c = 0; c < n; c++) {
+    const q = ((sh.filterQ && sh.filterQ[c]) || "").trim();
+    const fv = sh.filterVal && sh.filterVal[c];
+    const f = { c };
+    if (q) f.q = q;
+    if (fv && fv.vals && fv.vals.length) f[fv.mode === "include" ? "include" : "exclude"] = fv.vals;
+    if (f.q || f.include || f.exclude) out.push(f);
+  }
   return out;
+}
+function colHasFilter(sh, c) {
+  const fv = sh.filterVal && sh.filterVal[c];
+  return !!(((sh.filterQ && sh.filterQ[c]) || "").trim() || (fv && fv.vals && fv.vals.length));
+}
+function cellDisplay(r, c) {   // display string used for filtering + the value list
+  const cv = values[r] && values[r][c];
+  if (!cv) return "";
+  return cv._d !== undefined ? cv._d : (cv._d = display(cv, null));
+}
+function rowPassesFilters(r, compiled) {
+  return compiled.every(({ c, test, exclude, include }) => {
+    const d = String(cellDisplay(r, c));
+    if (test && !test(d)) return false;
+    if (exclude && exclude.has(d)) return false;
+    if (include && !include.has(d)) return false;
+    return true;
+  });
+}
+function compileFilters(filters) {
+  return filters.map((f) => ({
+    c: f.c,
+    test: f.q ? criteriaFn(f.q) : null,
+    exclude: f.exclude && f.exclude.length ? new Set(f.exclude.map(String)) : null,
+    include: f.include && f.include.length ? new Set(f.include.map(String)) : null,
+  }));
 }
 function visibleRowIdx() {
   const sh = S();
@@ -926,17 +1003,198 @@ function visibleRowIdx() {
   if (sh.big || !sh.filterOn) return all;
   const filters = activeFilters(sh);
   if (!filters.length) return all;
-  const compiled = filters.map((f) => ({ c: f.c, test: criteriaFn(f.q) }));
-  return all.filter((r) => {
-    if (r === 0) return true;   // header row stays visible
-    return compiled.every(({ c, test }) => {
-      const cv = values[r] && values[r][c];
-      if (!cv) return test("");
-      const d = cv._d !== undefined ? cv._d : (cv._d = display(cv, null));
-      return test(d);
-    });
-  });
+  const compiled = compileFilters(filters);
+  return all.filter((r) => r === 0 || rowPassesFilters(r, compiled));   // header stays
 }
+
+// ---- Google-Sheets-style per-column filter menu ----
+let fmState = null;   // { c, values, checked:Set }
+function fmEl() {
+  let m = $("filterMenu");
+  if (!m) { m = document.createElement("div"); m.id = "filterMenu"; document.body.appendChild(m); }
+  return m;
+}
+function closeFilterMenu() { const m = $("filterMenu"); if (m) m.style.display = "none"; fmState = null; }
+function positionFilterMenu(m, anchor) {
+  const r = anchor.getBoundingClientRect();
+  const mw = m.offsetWidth || 250, mh = m.offsetHeight || 320;
+  const left = Math.max(8, Math.min(r.right - mw, window.innerWidth - mw - 8));
+  let top = r.bottom + 4;
+  if (top + mh > window.innerHeight - 8) top = Math.max(8, window.innerHeight - mh - 8);
+  m.style.left = left + "px"; m.style.top = top + "px";
+}
+function distinctSmall(sh, col) {
+  ensureValues();
+  const others = compileFilters(activeFilters(sh).filter((f) => f.c !== col));
+  const set = new Set();
+  for (let r = 1; r < nRows(); r++) {
+    if (others.length && !rowPassesFilters(r, others)) continue;
+    set.add(String(cellDisplay(r, col)));
+  }
+  return { values: [...set].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)), truncated: false };
+}
+// Condition types map to the criteria string the reader already understands.
+const FM_CONDS = [
+  ["", "None"], ["contains", "Text contains"], ["=", "Is equal to"],
+  ["<>", "Is not equal to"], [">", "Greater than"], [">=", "Greater than or equal"],
+  ["<", "Less than"], ["<=", "Less than or equal"],
+];
+function qToCond(q) {   // parse an existing criteria string into [type, value]
+  q = (q || "").trim();
+  if (!q) return ["", ""];
+  const m = /^(<>|<=|>=|=|<|>)(.*)$/.exec(q);
+  if (m) return [m[1], m[2].trim()];
+  return ["contains", q];
+}
+function condToQ(type, val) {
+  val = (val || "").trim();
+  if (!type || (type !== "contains" && val === "")) return "";
+  return type === "contains" ? val : type + val;
+}
+let fmSeq = 0;
+async function openFilterMenu(c, anchor) {
+  const sh = S();
+  const seq = ++fmSeq;   // a later open supersedes a slow distinct response (bugbot)
+  const m = fmEl();
+  m.style.display = "block";
+  m.innerHTML = `<div class="fm-note">Loading values…</div>`;
+  positionFilterMenu(m, anchor);
+  let values, truncated = false;
+  try {
+    if (sh.big) {
+      const res = await pyRun({ action: "distinct", file: currentFile(), sheet: sh.name,
+        col: String(c), filters: JSON.stringify(activeFilters(sh).filter((f) => f.c !== c)) });
+      values = res.values; truncated = res.truncated;
+    } else {
+      ({ values, truncated } = distinctSmall(sh, c));
+    }
+  } catch (err) {
+    if (seq === fmSeq) m.innerHTML = `<div class="fm-note">Could not load values: ${escHtml(err.message || String(err))}</div>`;
+    return;
+  }
+  if (seq !== fmSeq || m.style.display === "none") return;   // superseded / closed
+  const fv = sh.filterVal && sh.filterVal[c];
+  const listed = new Set((fv && fv.vals || []).map(String));
+  const checked = new Set();
+  values.forEach((v) => {
+    const inList = listed.has(String(v));
+    // no filter -> all checked; include -> only listed; exclude -> all but listed
+    if (!fv || !fv.vals || !fv.vals.length || (fv.mode === "include" ? inList : !inList)) checked.add(v);
+  });
+  fmState = { c, values, checked };
+  buildFilterMenu(m, anchor, truncated);
+}
+function buildFilterMenu(m, anchor, truncated) {
+  const sh = S(), c = fmState.c, values = fmState.values;
+  m.innerHTML = "";
+  const sortRow = (cls, txt, dir) => {
+    const d = document.createElement("div"); d.className = "fm-sort"; d.textContent = txt;
+    d.onclick = () => { closeFilterMenu(); sortSheet(dir, c); };
+    return d;
+  };
+  m.append(sortRow("", "↑  Sort A → Z", "asc"), sortRow("", "↓  Sort Z → A", "desc"));
+  m.appendChild(Object.assign(document.createElement("div"), { className: "fm-sep" }));
+
+  // Filter by condition (maps to the reader's criteria string)
+  m.appendChild(Object.assign(document.createElement("div"), { className: "fm-head", textContent: "Filter by condition" }));
+  const [curType, curVal] = qToCond((sh.filterQ && sh.filterQ[c]) || "");
+  const condSel = document.createElement("select"); condSel.className = "fm-cond";
+  FM_CONDS.forEach(([v, label]) => {
+    const o = document.createElement("option"); o.value = v; o.textContent = label;
+    if (v === curType) o.selected = true; condSel.appendChild(o);
+  });
+  const condVal = document.createElement("input");
+  condVal.className = "fm-search"; condVal.placeholder = "Value"; condVal.value = curVal;
+  condVal.style.marginTop = "4px";
+  condVal.addEventListener("keydown", (e) => e.stopPropagation());
+  const syncCondVal = () => { condVal.style.display = condSel.value ? "block" : "none"; };
+  condSel.onchange = syncCondVal; syncCondVal();
+  fmState.condSel = condSel; fmState.condVal = condVal;
+  m.append(condSel, condVal);
+  m.appendChild(Object.assign(document.createElement("div"), { className: "fm-sep" }));
+
+  m.appendChild(Object.assign(document.createElement("div"), { className: "fm-head", textContent: "Filter by values" }));
+  const search = document.createElement("input");
+  search.className = "fm-search"; search.type = "search"; search.placeholder = "Search values";
+  search.addEventListener("keydown", (e) => e.stopPropagation());
+  m.appendChild(search);
+
+  const toggle = document.createElement("div"); toggle.className = "fm-toggle";
+  const selAll = document.createElement("a"); selAll.textContent = "Select all";
+  const clrAll = document.createElement("a"); clrAll.textContent = "Clear";
+  toggle.append(selAll, clrAll); m.appendChild(toggle);
+
+  const list = document.createElement("div"); list.className = "fm-list"; m.appendChild(list);
+  const shownValues = () => {
+    const q = search.value.trim().toLowerCase();
+    return q ? values.filter((v) => String(v).toLowerCase().includes(q)) : values;
+  };
+  const renderList = () => {
+    list.innerHTML = "";
+    const shown = shownValues();
+    shown.forEach((v) => {
+      const opt = document.createElement("label");
+      opt.className = "fm-opt" + (v === "" ? " blank" : "");
+      const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = fmState.checked.has(v);
+      cb.onchange = () => { cb.checked ? fmState.checked.add(v) : fmState.checked.delete(v); };
+      const span = document.createElement("span"); span.textContent = v === "" ? "(blank)" : v;
+      opt.append(cb, span); list.appendChild(opt);
+    });
+    if (!shown.length) { const n = document.createElement("div"); n.className = "fm-note"; n.textContent = "No matching values"; list.appendChild(n); }
+  };
+  search.oninput = renderList;
+  selAll.onclick = () => { shownValues().forEach((v) => fmState.checked.add(v)); renderList(); };
+  clrAll.onclick = () => { shownValues().forEach((v) => fmState.checked.delete(v)); renderList(); };
+  renderList();
+
+  if (truncated) { const n = document.createElement("div"); n.className = "fm-note"; n.textContent = `Showing first ${fmtInt(values.length)} values only`; m.appendChild(n); }
+
+  const foot = document.createElement("div"); foot.className = "fm-foot";
+  const cancel = document.createElement("button"); cancel.className = "action"; cancel.textContent = "Cancel";
+  const ok = document.createElement("button"); ok.className = "action primary"; ok.textContent = "OK";
+  cancel.onclick = () => closeFilterMenu();
+  ok.onclick = () => applyFilterMenu();
+  foot.append(cancel, ok); m.appendChild(foot);
+  positionFilterMenu(m, anchor);
+  search.focus();
+}
+function applyFilterMenu() {
+  if (!fmState) return;
+  const sh = S(), { c, values, checked, condSel, condVal } = fmState;
+  sh.filterQ = sh.filterQ || [];
+  sh.filterVal = sh.filterVal || [];
+  sh.filterQ[c] = condSel ? condToQ(condSel.value, condVal.value) : "";
+
+  const shown = values.map(String);
+  const shownSet = new Set(shown);
+  const checkedShown = shown.filter((v) => checked.has(v));
+  const uncheckedShown = shown.filter((v) => !checked.has(v));
+  const prior = sh.filterVal[c];
+  // Values the prior filter referenced that aren't in this (possibly capped)
+  // distinct list must survive an OK click — for both modes (bugbot).
+  const priorOut = (mode) => (prior && prior.mode === mode)
+    ? prior.vals.map(String).filter((v) => !shownSet.has(v)) : [];
+
+  if (prior && prior.mode === "include") {
+    // Stay inclusive: keep the checked shown values plus prior includes not shown.
+    const inc = [...new Set([...checkedShown, ...priorOut("include")])];
+    sh.filterVal[c] = inc.length ? { mode: "include", vals: inc } : null;
+  } else if (checkedShown.length < uncheckedShown.length && !priorOut("exclude").length) {
+    // Narrowed to a subset: keep ONLY the checked values. Correct even when the
+    // distinct list was capped — everything else (incl. uncounted values) drops.
+    sh.filterVal[c] = { mode: "include", vals: checkedShown };
+  } else {
+    const excl = [...new Set([...uncheckedShown, ...priorOut("exclude")])];
+    sh.filterVal[c] = excl.length ? { mode: "exclude", vals: excl } : null;
+  }
+  closeFilterMenu();
+  renderLimit = RENDER_CAP;
+  if (sh.big) fetchRows(true); else renderGrid();
+}
+document.addEventListener("mousedown", (e) => {
+  if (!e.target.closest("#filterMenu") && !e.target.closest(".funnel")) closeFilterMenu();
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && fmState) { closeFilterMenu(); e.stopPropagation(); } }, true);
 
 // ================= rendering =================
 function cellClassAndStyle(td, r, c) {
@@ -973,8 +1231,8 @@ function cellClassAndStyle(td, r, c) {
   }
 }
 
-function frozenTop(dIdx) {   // sticky offset: letters row (23px) + filter row (27px) + rows above
-  return 23 + (S().filterOn ? 27 : 0) + dIdx * 25;
+function frozenTop(dIdx) {   // sticky offset: letters row (23px) + rows above
+  return 23 + dIdx * 25;
 }
 function makeRowTr(r, cols, dIdx) {
   const sh = S();
@@ -1078,29 +1336,19 @@ function renderGrid() {
       sh.colw[c] = w;
       if (!sh.big) markDirty();
     });
+    if (sh.filterOn) {
+      const fn = document.createElement("div");
+      fn.className = "funnel" + (colHasFilter(sh, c) ? " active" : "");
+      fn.innerHTML = `<svg viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 2.5h13a.5.5 0 0 1 .38.82L10 9.2V13a.5.5 0 0 1-.72.45l-2.5-1.25A.5.5 0 0 1 6.5 11.75V9.2L1.12 3.32A.5.5 0 0 1 1.5 2.5Z"/></svg>`;
+      fn.title = "Filter / sort this column";
+      fn.addEventListener("mousedown", (e) => { e.preventDefault(); e.stopPropagation(); });
+      fn.addEventListener("click", (e) => { e.stopPropagation(); openFilterMenu(c, fn); });
+      th.appendChild(fn);
+    }
     th.appendChild(grip);
     hr.appendChild(th);
   }
   thead.appendChild(hr);
-  if (sh.filterOn) {
-    const fr = document.createElement("tr"); fr.className = "filterRow";
-    fr.appendChild(document.createElement("th"));
-    for (let c = 0; c < cols; c++) {
-      const th = document.createElement("th");
-      const inp = document.createElement("input");
-      inp.placeholder = "filter…"; inp.value = (sh.filterQ && sh.filterQ[c]) || "";
-      inp.addEventListener("input", () => {
-        sh.filterQ = sh.filterQ || [];
-        sh.filterQ[c] = inp.value;
-        clearTimeout(inp._t);
-        inp._t = setTimeout(() => { if (sh.big) fetchRows(true); else renderGrid(); }, sh.big ? 350 : 200);
-      });
-      inp.addEventListener("mousedown", (e) => e.stopPropagation());
-      inp.addEventListener("keydown", (e) => e.stopPropagation());
-      th.appendChild(inp); fr.appendChild(th);
-    }
-    thead.appendChild(fr);
-  }
   table.appendChild(thead);
 
   const tbody = document.createElement("tbody");
@@ -1203,20 +1451,35 @@ function paintSel() {
   $("tbU").classList.toggle("on", !!st.u);
   $("fmtSel").value = st.fmt || "";
   $("tbFilter").classList.toggle("on", !!sh.filterOn);
-  // selection stats
-  const nums = [];
-  for (let r = r1; r <= r2 && r - r1 < 100000; r++) for (let c = c1; c <= c2; c++) {
-    if (sh.big) {
-      const t = raw(r, c);
-      if (t !== "" && NUM_RE.test(t.trim())) nums.push(parseFloat(t));
-    } else {
-      const cv = values[r] && values[r][c];
-      if (cv && typeof cv.v === "number") nums.push(cv.v);
-    }
+  updateSelStats(r1, c1, r2, c2);
+}
+
+// Google-Sheets-style summary of the current selection (bottom-right): Count of
+// non-empty cells always, plus Sum/Avg/Min/Max/Count-numbers when it holds
+// numbers. Shown only for a multi-cell selection.
+function updateSelStats(r1, c1, r2, c2) {
+  const el = $("selStats");
+  if (r1 === r2 && c1 === c2) { el.textContent = ""; return; }
+  const sh = S();
+  let count = 0, nc = 0, sum = 0, min = Infinity, max = -Infinity, scanned = 0;
+  const CAP = 500000;
+  for (let r = r1; r <= r2 && scanned < CAP; r++) for (let c = c1; c <= c2 && scanned < CAP; c++) {
+    scanned++;
+    let t;
+    if (sh.big) t = raw(r, c);
+    else { const cv = values[r] && values[r][c]; t = !cv ? "" : (typeof cv.v === "number" ? cv.v : (cv.v == null ? "" : String(cv.v))); }
+    if (t === "" || t === null || t === undefined) continue;
+    count++;
+    const num = typeof t === "number" ? t : (NUM_RE.test(String(t).trim()) ? parseFloat(t) : NaN);
+    if (!isNaN(num)) { nc++; sum += num; if (num < min) min = num; if (num > max) max = num; }
   }
-  $("selStats").textContent = nums.length >= 2
-    ? `Sum: ${Math.round(nums.reduce((a, b) => a + b, 0) * 100) / 100} · Avg: ${Math.round(nums.reduce((a, b) => a + b, 0) / nums.length * 100) / 100} · Count: ${nums.length}`
-    : "";
+  if (!count) { el.textContent = ""; return; }
+  const f = (x) => (Math.round(x * 1e6) / 1e6).toLocaleString("en-US");
+  const parts = [];
+  if (nc) parts.push(`Sum: ${f(sum)}`, `Avg: ${f(sum / nc)}`, `Min: ${f(min)}`, `Max: ${f(max)}`);
+  parts.push(`Count: ${fmtInt(count)}`);
+  if (nc && nc !== count) parts.push(`Count Nums: ${fmtInt(nc)}`);
+  el.textContent = parts.join(" · ");
 }
 
 function normSel() {
@@ -1284,32 +1547,37 @@ function switchSheet(i) {
 }
 
 // ================= big-sheet row fetching =================
-async function fetchRows(reset) {
+function fetchRows(reset) {
   const sh = S();
-  if (!sh.big) return;
-  if (sh.fetching) { sh._pendingReset = sh._pendingReset || reset; return; }
+  if (!sh.big) return Promise.resolve();
+  // Coalesce concurrent calls, but hand back the in-flight promise so a caller
+  // that needs the batch (e.g. the Ctrl+Arrow preload) can await it.
+  if (sh.fetching) { sh._pendingReset = sh._pendingReset || reset; return sh._fetchPromise || Promise.resolve(); }
   sh.fetching = true;
   sh._seq = (sh._seq || 0) + 1;
   const seq = sh._seq;
   updateMoreBar();
-  try {
-    const res = await pyRun( {
-      action: "rows", file: currentFile(), sheet: sh.name,
-      offset: String(reset ? 0 : sh.loaded.length), limit: String(LOAD_BATCH),
-      sort: sh.sort ? JSON.stringify(sh.sort) : "",
-      filters: JSON.stringify(activeFilters(sh)),
-    });
-    if (seq !== sh._seq || S() !== sh) return;
-    sh.matched = res.matched;
-    if (reset) { sh.loaded = res.rows; renderGrid(); }
-    else { const from = sh.loaded.length; sh.loaded.push(...res.rows); appendRows(from); }
-  } catch (err) {
-    setStatus(`${err.type || "error"}: ${err.message}`, "err");
-  } finally {
-    sh.fetching = false;
-    updateMoreBar();
-    if (sh._pendingReset) { sh._pendingReset = false; fetchRows(true); }
-  }
+  sh._fetchPromise = (async () => {
+    try {
+      const res = await pyRun( {
+        action: "rows", file: currentFile(), sheet: sh.name,
+        offset: String(reset ? 0 : sh.loaded.length), limit: String(LOAD_BATCH),
+        sort: sh.sort ? JSON.stringify(sh.sort) : "",
+        filters: JSON.stringify(activeFilters(sh)),
+      });
+      if (seq !== sh._seq || S() !== sh) return;
+      sh.matched = res.matched;
+      if (reset) { sh.loaded = res.rows; renderGrid(); }
+      else { const from = sh.loaded.length; sh.loaded.push(...res.rows); appendRows(from); }
+    } catch (err) {
+      setStatus(`${err.type || "error"}: ${err.message}`, "err");
+    } finally {
+      sh.fetching = false;
+      updateMoreBar();
+      if (sh._pendingReset) { sh._pendingReset = false; fetchRows(true); }
+    }
+  })();
+  return sh._fetchPromise;
 }
 
 $("gridWrap").addEventListener("scroll", () => {
@@ -1513,10 +1781,10 @@ function insertCol(at) {
   S().styles.forEach((r) => r.splice(at, 0, null));
   invalidateValues(); markDirty(); renderGrid();
 }
-function sortSheet(dir) {
+function sortSheet(dir, colArg) {
   const sh = S();
   if (sh.big) {
-    sh.sort = dir === "off" ? null : { c: sel.ac, dir };
+    sh.sort = dir === "off" ? null : { c: colArg !== undefined ? colArg : sel.ac, dir };
     fetchRows(true);
     return;
   }
@@ -1526,7 +1794,7 @@ function sortSheet(dir) {
   if (roBlocked()) return;
   pushUndo();
   ensureValues();
-  const col = sel.ac;
+  const col = colArg !== undefined ? colArg : sel.ac;
   const header = { row: sh.rows[0], st: sh.styles[0] };
   const body = sh.rows.slice(1).map((row, i) => ({ row, st: sh.styles[i + 1], v: values[i + 1] && values[i + 1][col] }));
   body.sort((a, b) => {
@@ -1553,11 +1821,11 @@ function normalizeLoaded(res) {
     if (sh.big) {
       return { name: sh.name, big: true, kind: sh.kind, nrows: sh.nrows, ncols: sh.ncols,
                header: sh.header, loaded: sh.rows, matched: sh.matched ?? sh.nrows,
-               sort: null, filterOn: false, filterQ: [], edits: new Map(), fetching: false,
+               sort: null, filterOn: false, filterQ: [], filterVal: [], edits: new Map(), fetching: false,
                colw: {}, freeze: 0 };
     }
     const out = { name: sh.name, big: false, kind: sh.kind || "xlsx",
-                  rows: sh.rows, styles: sh.styles || [], filterOn: false, filterQ: [],
+                  rows: sh.rows, styles: sh.styles || [], filterOn: false, filterQ: [], filterVal: [],
                   colw: sh.colw || {}, freeze: sh.freeze || 0 };
     ensureRect(out);
     return out;
@@ -1751,7 +2019,7 @@ function runJs(code, out) {
     names() { return book.sheets.map((s2) => s2.name); },
     add(nm) {
       if (book.sheets.some((s2) => s2.name === nm)) throw new Error("sheet exists: " + nm);
-      const sh = { name: nm, big: false, kind: "xlsx", rows: [[""]], styles: [[null]], filterOn: false, filterQ: [] };
+      const sh = { name: nm, big: false, kind: "xlsx", rows: [[""]], styles: [[null]], filterOn: false, filterQ: [], filterVal: [] };
       ensureRect(sh); book.sheets.push(sh); return sheetApi(sh);
     },
   };
@@ -1784,7 +2052,7 @@ async function runPy(code, out) {
       const old = byName.get(ns.name);
       const sh = { name: ns.name, big: false, kind: old ? old.kind : "xlsx",
                    rows: ns.rows.map((r) => r.map((v) => (v == null ? "" : String(v)))),
-                   styles: old && !old.big ? old.styles : [], filterOn: false, filterQ: [] };
+                   styles: old && !old.big ? old.styles : [], filterOn: false, filterQ: [], filterVal: [] };
       ensureRect(sh); return sh;
     });
     book.sheets = [...bigs, ...updated];
@@ -2043,7 +2311,18 @@ async function act(name) {
       if (!isBig()) markDirty(); renderGrid();
     },
     unfreeze: () => { S().freeze = 0; if (!isBig()) markDirty(); renderGrid(); },
-    toggleFilter: () => { const sh = S(); sh.filterOn = !sh.filterOn; renderLimit = RENDER_CAP; renderGrid(); if (sh.big && !sh.filterOn && activeFilters(sh).length) { sh.filterQ = []; fetchRows(true); } },
+    toggleFilter: () => {
+      const sh = S();
+      sh.filterOn = !sh.filterOn;
+      closeFilterMenu();
+      renderLimit = RENDER_CAP;
+      if (!sh.filterOn) {   // turning filters off clears every column filter
+        const had = activeFilters(sh).length;
+        sh.filterQ = []; sh.filterVal = [];
+        if (sh.big && had) { fetchRows(true); return; }
+      }
+      renderGrid();
+    },
     loadAll: () => { if (isBig()) fetchRows(false); },
     addSheet: () => {
       if (book.sheets.some((s2) => s2.kind === "csv" || s2.kind === "parquet")) {
@@ -2051,7 +2330,7 @@ async function act(name) {
       }
       let n = book.sheets.length + 1, nm;
       do { nm = "Sheet" + n++; } while (book.sheets.some((s2) => s2.name === nm));
-      const sh = { name: nm, big: false, kind: "xlsx", rows: [[""]], styles: [[null]], filterOn: false, filterQ: [] };
+      const sh = { name: nm, big: false, kind: "xlsx", rows: [[""]], styles: [[null]], filterOn: false, filterQ: [], filterVal: [] };
       ensureRect(sh); book.sheets.push(sh); markDirty(); switchSheet(book.sheets.length - 1);
     },
     delSheet: async () => {
@@ -2177,7 +2456,19 @@ $("gridWrap").addEventListener("dblclick", (e) => {
 });
 
 // Ctrl+Arrow: jump to the edge of the data region (gsheet-style)
-function jumpEdge(dr, dc, extend) {
+async function jumpEdge(dr, dc, extend) {
+  const sh = S();
+  // Big sheets stream in batches; a vertical Ctrl+Arrow must pull the rest of
+  // the rows first, or it would stop at the end of the loaded window.
+  if (sh.big && dr !== 0 && sh.loaded.length < sh.matched) {
+    setStatus(`Loading all ${fmtInt(sh.matched)} rows…`, "");
+    while (sh.loaded.length < sh.matched) {
+      const n = sh.loaded.length;
+      await fetchRows(false);
+      if (sh.loaded.length === n) break;   // no progress — bail rather than spin
+    }
+    setStatus("", "");
+  }
   let r = extend ? sel.r2 : sel.ar, c = extend ? sel.c2 : sel.ac;
   const R = nRows() - 1, C = nCols() - 1;
   const inB = (rr, cc) => rr >= 0 && rr <= R && cc >= 0 && cc <= C;
@@ -2234,17 +2525,29 @@ $("gridWrap").addEventListener("keydown", (e) => {
   else if (k.length === 1) { e.preventDefault(); startEdit(k); }  // preventDefault or the key types twice
 });
 
-// copy / paste (raw values incl. formulas, TSV — pastes into Excel/GSheets)
-function selTSV() {
+// copy / paste (TSV). The clipboard gets computed VALUES so a formula cell
+// pastes its result into other apps; an in-session buffer keeps the formulas so
+// paste within the sheet still round-trips them (like Google Sheets).
+function cellCopyText(r, c) {
+  const sh = S();
+  if (sh.big) return raw(r, c);   // big sheets store values, never formulas
+  ensureValues();
+  return cellDisplay(r, c);        // the shown value, unformatted (no formula)
+}
+function selText(cell) {
   const { r1, c1, r2, c2 } = normSel();
   const out = [];
   for (let r = r1; r <= r2; r++) {
     const row = [];
-    for (let c = c1; c <= c2; c++) row.push(raw(r, c));
+    for (let c = c1; c <= c2; c++) row.push(cell(r, c));
     out.push(row.join("\t"));
   }
   return out.join("\n");
 }
+const selValues = () => selText(cellCopyText);
+const selRaw = () => selText(raw);
+let copyBuf = null;   // { text: valuesTSV, formulas: rawTSV } — for in-sheet paste
+function grabSelection() { const text = selValues(); copyBuf = { text, formulas: selRaw() }; return text; }
 function clearSelCells() {
   if (roBlocked()) return;   // cut degrades to copy on a read-only file
   pushUndo();
@@ -2269,12 +2572,12 @@ function pasteText(text) {
 }
 document.addEventListener("copy", (e) => {
   if (!book || editing || e.target.closest("input, textarea")) return;
-  e.clipboardData.setData("text/plain", selTSV());
+  e.clipboardData.setData("text/plain", grabSelection());
   e.preventDefault();
 });
 document.addEventListener("cut", (e) => {
   if (!book || editing || e.target.closest("input, textarea")) return;
-  e.clipboardData.setData("text/plain", selTSV());
+  e.clipboardData.setData("text/plain", grabSelection());
   e.preventDefault();
   clearSelCells();
 });
@@ -2283,7 +2586,8 @@ document.addEventListener("paste", (e) => {
   const text = e.clipboardData.getData("text/plain");
   if (!text) return;
   e.preventDefault();
-  pasteText(text);
+  // Pasting our own copy back into the sheet restores the formulas, not values.
+  pasteText(copyBuf && text === copyBuf.text ? copyBuf.formulas : text);
 });
 
 // ---- right-click context menu ----
@@ -2295,10 +2599,10 @@ function openCtx(x, y) {
   const { r1, r2, c1, c2 } = normSel();
   const nr = r2 - r1 + 1, nc = c2 - c1 + 1;
   const items = [
-    { label: "Cut", kbd: "Ctrl+X", fn: async () => { await navigator.clipboard.writeText(selTSV()); clearSelCells(); } },
-    { label: "Copy", kbd: "Ctrl+C", fn: () => navigator.clipboard.writeText(selTSV()) },
+    { label: "Cut", kbd: "Ctrl+X", fn: async () => { await navigator.clipboard.writeText(grabSelection()); clearSelCells(); } },
+    { label: "Copy", kbd: "Ctrl+C", fn: () => navigator.clipboard.writeText(grabSelection()) },
     { label: "Paste", kbd: "Ctrl+V", fn: async () => {
-        try { pasteText(await navigator.clipboard.readText()); }
+        try { const t = await navigator.clipboard.readText(); pasteText(copyBuf && t === copyBuf.text ? copyBuf.formulas : t); }
         catch { setStatus("Browser blocked menu paste — press Ctrl+V instead.", "err"); }
       } },
     null,

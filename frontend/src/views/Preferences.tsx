@@ -14,6 +14,7 @@ import { getPrefs, putDeployEnabled, putEnginePref, revealPath } from "../lib/ap
 import type { Prefs } from "../lib/api";
 import { navigateUrl } from "../lib/router";
 import { startTour } from "../lib/tour";
+import { ErrorBanner } from "../components/ErrorBanner";
 
 function TourSection() {
   return (
@@ -51,7 +52,7 @@ function LogsSection({ prefs }: { prefs: Prefs }) {
       <button type="button" onClick={reveal}>
         Open logs location
       </button>
-      {error && <div className="deploy-error">{error}</div>}
+      {error && <ErrorBanner>{error}</ErrorBanner>}
     </section>
   );
 }
@@ -134,7 +135,7 @@ function EngineSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs)
           <> — falling back to Local while the fused package is unavailable.</>
         )}
       </div>
-      {error && <div className="deploy-error">{error}</div>}
+      {error && <ErrorBanner>{error}</ErrorBanner>}
     </section>
   );
 }
@@ -166,7 +167,7 @@ function DeployToggle({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) 
           public hosted URL through the <code>fused</code> CLI.
         </span>
       </label>
-      {error && <div className="deploy-error">{error}</div>}
+      {error && <ErrorBanner>{error}</ErrorBanner>}
     </>
   );
 }
@@ -209,7 +210,7 @@ export default function Preferences() {
 
   return (
     <div className="prefs-page">
-      {error && <div className="deploy-error">{error}</div>}
+      {error && <ErrorBanner>{error}</ErrorBanner>}
       {!prefs && !error && <div className="deploy-muted">Loading…</div>}
       {prefs && (
         <>
