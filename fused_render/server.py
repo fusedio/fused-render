@@ -1270,6 +1270,126 @@ def _writable(path: str) -> bool:
     return os.access(os.path.dirname(path) or ".", os.W_OK)
 
 
+# ---------------------------------------------------------------------------
+# Mount-safe existence/shape probes for the fs mutation handlers + /api/fs/raw.
+#
+# An rclone-backed NFS mount has no cheap point lookup: a cold NEGATIVE kernel
+# probe (os.stat / os.path.exists / os.path.isdir / os.listdir) forces rclone
+# to enumerate the ENTIRE parent S3 prefix (measured: 44k entries, ~64s), which
+# blows the macOS NFS deadman and DROPS the mount — server threads then block
+# uninterruptibly. So a mutation handler must never touch a mount-backed path
+# through the kernel to decide whether it exists or what shape it is. These
+# helpers answer that via the rclone rcd (operations/list, bounded by a hard
+# timeout: a too-huge directory becomes a failed request, never a dead mount).
+
+
+class _MountProbe:
+    """Result of a mount-safe existence/shape probe. `parent_is_dir` is whether
+    the path's parent is a listable directory (a mount-safe stand-in for
+    os.path.isdir(parent)); `exists`/`is_dir`/`size`/`mtime` describe the path
+    itself. Size/mtime come from the rc listing entry (None when absent)."""
+
+    __slots__ = ("parent_is_dir", "exists", "is_dir", "size", "mtime")
+
+    def __init__(self, parent_is_dir, exists, is_dir=False, size=None, mtime=None):
+        self.parent_is_dir = parent_is_dir
+        self.exists = exists
+        self.is_dir = is_dir
+        self.size = size
+        self.mtime = mtime
+
+
+def _mount_probe(path: str) -> _MountProbe:
+    """Existence + shape of a MOUNT-BACKED path, answered by the rclone rcd
+    (rc_list_dir of the parent + membership match), doing ZERO kernel FS I/O on
+    the mount. The parent listing is bounded by rc_list_dir's hard timeout, so a
+    huge remote directory raises RcListTimeout rather than wedging the mount.
+
+    Returns a _MountProbe. Raises RcListUnavailable (rcd down / broken mount) or
+    RcListTimeout (directory too large to enumerate) when existence is
+    INDETERMINATE — the caller maps those to 503 (via _mount_list_error_response),
+    never to "missing"."""
+    from fused_render.shell import mounts as m
+
+    # The mounts container and each individual mountpoint are LOCAL directories
+    # the shell created to host mounts; they always exist as directories and
+    # their own parent has no single mount record to list. Answer directly.
+    if m.is_mounts_root(path):
+        return _MountProbe(True, True, is_dir=True)
+    parent = os.path.dirname(path)
+    name = os.path.basename(path)
+    if m.is_mounts_root(parent):
+        return _MountProbe(True, True, is_dir=True)  # `path` is a mountpoint
+    try:
+        entries = m.rc_list_dir(parent)
+    except (m.RcListUnavailable, m.RcListTimeout):
+        raise  # indeterminate -> caller returns 503
+    except m.RcListError:
+        # The rcd rejected the listing: the parent is a file or is missing, so
+        # the child cannot exist. Mount-safe equivalent of a False os.path.isdir.
+        return _MountProbe(False, False)
+    for ent in entries:
+        if ent.get("Name") == name:
+            return _MountProbe(True, True, is_dir=bool(ent.get("IsDir")),
+                               size=ent.get("Size"),
+                               mtime=m.rc_modtime_epoch(ent.get("ModTime")))
+    return _MountProbe(True, False)  # parent listable, child absent
+
+
+def _mount_stat_payload(path: str, is_dir: bool, size, mtime) -> dict:
+    """The /api/fs/stat payload for a MOUNT-BACKED path, built from an rc probe
+    (size/mtime) with NO kernel os.stat/os.access on the mount. `writable` is
+    True by construction — the caller only reaches this after clearing the
+    read-only gate (mount_read_only False)."""
+    templates, template_error = _templates_for(path, is_dir)
+    payload = {
+        "path": path,
+        "name": os.path.basename(path) or path,
+        "is_dir": is_dir,
+        "size": None if is_dir else size,
+        "mtime": mtime,
+        "writable": True,
+        "remote": True,
+        "templates": templates,
+    }
+    if template_error:
+        payload["template_error"] = template_error
+    return payload
+
+
+def _probe_path(path: str) -> _MountProbe:
+    """Existence + shape of `path`, mount-safe: a mount-backed path is answered
+    through the rclone rcd (_mount_probe, zero kernel I/O), a local path with a
+    plain kernel stat. Used by _fs_rename/_fs_copy, which may mix a local and a
+    mount-backed side. Raises RcListUnavailable/RcListTimeout for an
+    indeterminate mount probe (caller maps to 503)."""
+    from fused_render.shell import mounts as m
+
+    if m.is_mount_backed(path):
+        return _mount_probe(path)
+    parent_is_dir = os.path.isdir(os.path.dirname(path) or ".")
+    if not os.path.exists(path):
+        return _MountProbe(parent_is_dir, False)
+    return _MountProbe(parent_is_dir, True, is_dir=os.path.isdir(path))
+
+
+def _mutation_result_payload(path: str, is_dir: bool) -> dict:
+    """The /api/fs/stat payload returned after a successful mutation, mount-safe:
+    a mount-backed path is described from a fresh rc probe (no kernel os.stat),
+    a local path via the ordinary _stat_payload."""
+    from fused_render.shell import mounts as m
+
+    if not m.is_mount_backed(path):
+        return _stat_payload(path, is_dir)
+    try:
+        pr = _mount_probe(path)
+    except (m.RcListUnavailable, m.RcListTimeout):
+        pr = None
+    size = pr.size if pr and pr.exists else None
+    mtime = pr.mtime if pr and pr.exists else None
+    return _mount_stat_payload(path, is_dir, size, mtime)
+
+
 # Response headers forwarded from the rclone serve on a proxied /api/fs/raw.
 # Content-Length/-Range/Accept-Ranges make ranged readers (duckdb httpfs)
 # work; Last-Modified/ETag let their caches revalidate.
@@ -1383,9 +1503,64 @@ def _fs_write(body: dict, x_fused: str | None):
         return _error("'path' must be an absolute filesystem path")
     if not isinstance(content, str):
         return _error("'content' must be a string")
+    parent = os.path.dirname(path)
+
+    # Mount-backed target: gate on read-only-ness and answer existence/shape via
+    # the rclone rcd BEFORE any kernel probe — a cold negative os.stat here is
+    # the exact enumerate-the-whole-prefix call that wedges the mount.
+    from fused_render.shell import mounts as shell_mounts
+    if shell_mounts.is_mount_backed(path):
+        # Read-only mount: refuse first, before touching anything (the same
+        # "readonly" wire contract as the local guard below).
+        if shell_mounts.mount_read_only(path):
+            return JSONResponse({"error": "readonly"}, status_code=403)
+        try:
+            pr = _mount_probe(path)
+        except (shell_mounts.RcListUnavailable, shell_mounts.RcListTimeout) as e:
+            return _mount_list_error_response(parent, e)  # indeterminate -> 503
+        if pr.exists and pr.is_dir:
+            return _error(f"path is a directory: {path}")
+        if not pr.parent_is_dir:
+            return _error(f"parent directory does not exist: {parent}", status=404)
+        if create and pr.exists:
+            return JSONResponse({"error": "conflict"}, status_code=409)
+        if expected_mtime is not None:
+            if not pr.exists:
+                return JSONResponse({"error": "conflict", "mtime": None},
+                                    status_code=409)
+            if pr.mtime is None or abs(pr.mtime - expected_mtime) >= 1e-6:
+                return JSONResponse({"error": "conflict", "mtime": pr.mtime},
+                                    status_code=409)
+        # The write itself goes through the rclone VFS (acceptable — it is the
+        # negative/list probes, not the mutation, that wedge the mount): atomic
+        # temp-write + os.replace in the parent, same as the local path. No mode
+        # preservation (a remote object has no unix mode, and reading it would
+        # be an extra kernel getattr on the mount).
+        fd, tmp = tempfile.mkstemp(dir=parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(content)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        except OSError as e:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            return _error(f"cannot write {path}: {e}", status=400)
+        # Re-arm the client's optimistic lock from a fresh rc probe; fall back to
+        # the written length if the rcd can't answer (never kernel-stat).
+        try:
+            after = _mount_probe(path)
+        except (shell_mounts.RcListUnavailable, shell_mounts.RcListTimeout):
+            after = None
+        size = after.size if after and after.exists else len(content.encode("utf-8"))
+        mtime = after.mtime if after and after.exists else None
+        return _mount_stat_payload(path, False, size, mtime)
+
     if os.path.isdir(path):
         return _error(f"path is a directory: {path}")
-    parent = os.path.dirname(path)
     if not os.path.isdir(parent):
         return _error(f"parent directory does not exist: {parent}", status=404)
 
@@ -1656,6 +1831,27 @@ def _fs_mkdir(body: dict, x_fused: str | None):
     if not path or not os.path.isabs(path):
         return _error("'path' must be an absolute filesystem path")
     parent = os.path.dirname(path)
+
+    # Mount-backed target: read-only refusal first, then existence/shape via the
+    # rclone rcd — never a kernel probe (see _fs_write's mount branch).
+    from fused_render.shell import mounts as shell_mounts
+    if shell_mounts.is_mount_backed(path):
+        if shell_mounts.mount_read_only(path):
+            return JSONResponse({"error": "readonly"}, status_code=403)
+        try:
+            pr = _mount_probe(path)
+        except (shell_mounts.RcListUnavailable, shell_mounts.RcListTimeout) as e:
+            return _mount_list_error_response(parent, e)  # indeterminate -> 503
+        if not pr.parent_is_dir:
+            return _error(f"parent directory does not exist: {parent}")
+        if pr.exists:
+            return JSONResponse({"error": "conflict"}, status_code=409)
+        try:
+            os.mkdir(path)  # through the rclone VFS
+        except OSError as e:
+            return _error(f"cannot create directory {path}: {e}")
+        return _mount_stat_payload(path, True, None, None)
+
     if not os.path.isdir(parent):
         return _error(f"parent directory does not exist: {parent}")
     if os.path.exists(path):
@@ -1737,6 +1933,37 @@ def _fs_delete(body: dict, x_fused: str | None):
     trash = bool(body.get("trash", False))
     if not path or not os.path.isabs(path):
         return _error("'path' must be an absolute filesystem path")
+
+    # Mount-backed target: read-only refusal first; then answer shape via the
+    # rclone rcd. A DIRECTORY delete (the non-recursive os.listdir emptiness
+    # check or a recursive shutil.rmtree) would kernel-enumerate/walk the remote
+    # tree — refused, out of scope. A single-file delete goes through the VFS.
+    from fused_render.shell import mounts as shell_mounts
+    if shell_mounts.is_mount_backed(path):
+        if shell_mounts.mount_read_only(path):
+            return JSONResponse({"error": "readonly"}, status_code=403)
+        try:
+            pr = _mount_probe(path)
+        except (shell_mounts.RcListUnavailable, shell_mounts.RcListTimeout) as e:
+            return _mount_list_error_response(os.path.dirname(path), e)  # 503
+        if not pr.exists:
+            return _error(f"no such file or directory: {path}", status=404)
+        if pr.is_dir:
+            return _error(
+                "cannot delete a directory on a remote mount: directory-tree "
+                "operations are not supported over mounts", status=400)
+        if trash:
+            # Move-to-Trash lifts the file OFF the mount, which reads the whole
+            # file through the kernel; report it unsupported so the client
+            # falls back to the confirm-then-hard-delete flow (same 501 signal
+            # a non-darwin platform returns).
+            return JSONResponse({"error": "trash unsupported"}, status_code=501)
+        try:
+            os.remove(path)  # single VFS unlink
+        except OSError as e:
+            return _error(f"cannot delete {path}: {e}")
+        return {"deleted": path, "trashed": False}
+
     if not os.path.exists(path):
         return _error(f"no such file or directory: {path}", status=404)
     if not _writable(path):
@@ -1796,11 +2023,47 @@ def _fs_rename(body: dict, x_fused: str | None):
         return _error("'src' must be an absolute filesystem path")
     if not dst or not os.path.isabs(dst):
         return _error("'dst' must be an absolute filesystem path")
+    dst_parent = os.path.dirname(dst)
+
+    # A mount is involved on either side: gate mount-safely BEFORE any kernel
+    # probe. A move deletes src and writes dst, so a read-only mount on EITHER
+    # side refuses (readonly first, as the mount contract). Existence/shape is
+    # answered through the rclone rcd; a DIRECTORY on a mount side is refused
+    # (a rmtree/copytree-style walk of a remote tree is out of scope).
+    from fused_render.shell import mounts as shell_mounts
+    if shell_mounts.is_mount_backed(src) or shell_mounts.is_mount_backed(dst):
+        if shell_mounts.mount_read_only(src) or shell_mounts.mount_read_only(dst):
+            return JSONResponse({"error": "readonly"}, status_code=403)
+        try:
+            src_pr = _probe_path(src)
+            dst_pr = _probe_path(dst)
+        except (shell_mounts.RcListUnavailable, shell_mounts.RcListTimeout) as e:
+            return _mount_list_error_response(
+                os.path.dirname(src) if shell_mounts.is_mount_backed(src)
+                else dst_parent, e)
+        if not src_pr.exists:
+            return _error(f"no such file or directory: {src}", status=404)
+        if src_pr.is_dir or (dst_pr.exists and dst_pr.is_dir):
+            return _error(
+                "cannot move a directory to or from a remote mount: "
+                "directory-tree operations are not supported over mounts",
+                status=400)
+        if not dst_pr.parent_is_dir:
+            return _error(f"parent directory does not exist: {dst_parent}")
+        if dst_pr.exists and not overwrite:
+            return JSONResponse({"error": "conflict"}, status_code=409)
+        try:
+            if dst_pr.exists:
+                os.remove(dst)  # single file (a dir dst was refused above)
+            shutil.move(src, dst)
+        except OSError as e:
+            return _error(f"cannot rename {src} -> {dst}: {e}")
+        return _mutation_result_payload(dst, False)
+
     # dst's parent must already exist — a rename never creates intermediate
     # dirs. Without this, a missing parent falls through to _writable (which
     # walks up to the nearest existing ancestor) and surfaces a misleading
     # "readonly" 403; a 400 is the honest error, same as _fs_write/_fs_mkdir.
-    dst_parent = os.path.dirname(dst)
     if not os.path.isdir(dst_parent):
         return _error(f"parent directory does not exist: {dst_parent}")
     if not os.path.exists(src):
@@ -1850,11 +2113,47 @@ def _fs_copy(body: dict, x_fused: str | None):
         return _error("'src' must be an absolute filesystem path")
     if not dst or not os.path.isabs(dst):
         return _error("'dst' must be an absolute filesystem path")
+    dst_parent = os.path.dirname(dst)
+
+    # A mount is involved on either side: gate mount-safely BEFORE any kernel
+    # probe. A copy writes dst (only the dst mount must be writable — readonly
+    # first, as the mount contract) and never modifies src. A DIRECTORY on a
+    # mount side is refused (a copytree walk of a remote tree is out of scope);
+    # a single-file copy proceeds (its sequential read/write is slow, not fatal).
+    from fused_render.shell import mounts as shell_mounts
+    if shell_mounts.is_mount_backed(src) or shell_mounts.is_mount_backed(dst):
+        if shell_mounts.mount_read_only(dst):
+            return JSONResponse({"error": "readonly"}, status_code=403)
+        try:
+            src_pr = _probe_path(src)
+            dst_pr = _probe_path(dst)
+        except (shell_mounts.RcListUnavailable, shell_mounts.RcListTimeout) as e:
+            return _mount_list_error_response(
+                os.path.dirname(src) if shell_mounts.is_mount_backed(src)
+                else dst_parent, e)
+        if not src_pr.exists:
+            return _error(f"no such file or directory: {src}", status=404)
+        if src_pr.is_dir or (dst_pr.exists and dst_pr.is_dir):
+            return _error(
+                "cannot copy a directory to or from a remote mount: "
+                "directory-tree operations are not supported over mounts",
+                status=400)
+        if not dst_pr.parent_is_dir:
+            return _error(f"parent directory does not exist: {dst_parent}")
+        if dst_pr.exists and not overwrite:
+            return JSONResponse({"error": "conflict"}, status_code=409)
+        try:
+            if dst_pr.exists:
+                os.remove(dst)  # single file (a dir dst was refused above)
+            shutil.copy2(src, dst)
+        except OSError as e:
+            return _error(f"cannot copy {src} -> {dst}: {e}")
+        return _mutation_result_payload(dst, False)
+
     # dst's parent must already exist — a copy never creates intermediate dirs.
     # Without this, a missing parent falls through to _writable (which walks up
     # to the nearest existing ancestor) and surfaces a misleading "readonly"
     # 403; a 400 is the honest error, same as _fs_write/_fs_mkdir.
-    dst_parent = os.path.dirname(dst)
     if not os.path.isdir(dst_parent):
         return _error(f"parent directory does not exist: {dst_parent}")
     if not os.path.exists(src):
