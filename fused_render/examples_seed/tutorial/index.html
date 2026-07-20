@@ -318,17 +318,9 @@ const sinePath = sibling("sine/sine.html");
 mountFrame("sineFrame", "sineIf", sinePath, false);
 if (sinePath) $("sineOpen").href = viewUrl(sinePath);
 
-// The shell frame prefers the examples gallery; if it's missing (older seed),
-// fall back to start_here, then give up gracefully.
+// The shell frame shows the examples gallery; if it's missing, hide the frame.
 const showcasePath = sibling("showcase/index.html");
-const startHerePath = sibling("start_here/index.html");
-if (showcasePath) {
-  fused.stat(showcasePath)
-    .then(() => { $("shellIf").src = viewUrl(showcasePath); })
-    .catch(() => mountFrame("shellFrame", "shellIf", startHerePath, true));
-} else {
-  $("shellFrame").classList.add("gone");
-}
+mountFrame("shellFrame", "shellIf", showcasePath, true);
 
 const explainerPath = sibling("how_it_works/explainer.html");
 if (explainerPath) $("explainerLink").href = viewUrl(explainerPath);

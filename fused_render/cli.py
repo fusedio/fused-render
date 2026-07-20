@@ -18,7 +18,7 @@ import webbrowser
 
 from fused_render._branch import branch_port, branch_ref
 from fused_render.logs import setup_logging
-from fused_render.shell.seed import ensure_fused_dir, fused_dir
+from fused_render.shell.seed import ensure_fused_dir_and_landing, fused_dir
 
 logger = logging.getLogger("fused_render")
 
@@ -57,7 +57,9 @@ def _run_serve(args: argparse.Namespace) -> None:
     log_file = setup_logging()
     # First-run onboarding (D81): create ~/Documents/Fused and seed it once. Runs
     # regardless of --start-dir — seeding is about the Fused dir, not the start dir.
-    ensure_fused_dir()
+    # On the very first run, `landing` is the seeded showcase page and the browser
+    # opens there instead of the workspace root.
+    _, landing = ensure_fused_dir_and_landing()
     start_dir = os.path.abspath(os.path.expanduser(args.start_dir))
     app = create_app(start_dir=start_dir)
 
@@ -71,7 +73,8 @@ def _run_serve(args: argparse.Namespace) -> None:
     logger.info("serving at %s%s (start dir %s)", url, branch_note, start_dir)
 
     if not args.no_browser:
-        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+        open_url = url.rstrip("/") + landing if landing else url
+        threading.Timer(1.0, lambda: webbrowser.open(open_url)).start()
 
     uvicorn.run(app, host="127.0.0.1", port=args.port)
 

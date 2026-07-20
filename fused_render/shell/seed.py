@@ -30,12 +30,12 @@ PACKAGE_SEED_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples_seed"
 )
 
-# The two example pages the starter bookmarks point at; both existing is the
-# "examples are present" signal that gates bookmark seeding. Sine ships in its
-# own subfolder (sine/sine.html + sine/sine.py) so nothing lands loose at the
-# workspace root and sine.py's __pycache__ stays inside the subfolder.
-_SINE_HTML = os.path.join("sine", "sine.html")
-_EXPLAINER_HTML = os.path.join("how_it_works", "explainer.html")
+# The two example pages the starter bookmarks point at; any of them existing is
+# the "examples are present" signal that gates bookmark seeding, and each
+# bookmark is written only when its own target exists (a legacy workspace may
+# hold an older seed set missing some of them). Showcase is also the
+# first-launch landing page (see ensure_fused_dir_and_landing).
+_SHOWCASE_HTML = os.path.join("showcase", "index.html")
 _TUTORIAL_HTML = os.path.join("tutorial", "index.html")
 
 
@@ -59,67 +59,9 @@ def _view_url(abs_path: str) -> str:
     return "/view/" + "/".join(segs)
 
 
-# --- Panel `_layout` codec (mirror of frontend/src/lib/layout-codec.ts) -------
-# The Sine demo bookmark opens panel mode split into two panes of the SAME page
-# — left in the default render mode, right in `code` mode — exactly the URL the
-# app itself produces when you open sine/sine.html, click Split right, then set
-# the right pane to code mode. The panel URL is NOT the /view/ codec above: the
-# layout codec keeps `/ ? & =` literal and escapes only its own delimiters, so
-# it must be replicated here rather than reusing _view_url.
-
-
-def _enc_path(s: str) -> str:
-    """encPath(): escape `%` first, then the codec delimiters `, ; ( )` and `?`
-    (so a path can never contain the path/query separator)."""
-    return (
-        s.replace("%", "%25")
-        .replace(",", "%2C")
-        .replace(";", "%3B")
-        .replace("(", "%28")
-        .replace(")", "%29")
-        .replace("?", "%3F")
-    )
-
-
-def _enc_query(s: str) -> str:
-    """encQuery(): same as _enc_path but keep `?` literal (the leading `?` is the
-    path/query separator inside a segment)."""
-    return (
-        s.replace("%", "%25")
-        .replace(",", "%2C")
-        .replace(";", "%3B")
-        .replace("(", "%28")
-        .replace(")", "%29")
-    )
-
-
-def _encode_pane_segment(path: str, query: str = "") -> str:
-    """encodePaneSegment(): one pane = escaped fs path + escaped query (query
-    includes its leading `?`)."""
-    return _enc_path(path) + _enc_query(query)
-
-
-def _url_safe_layout(s: str) -> str:
-    """urlSafeLayout(): escape only `%`, `#` and space when placing the codec
-    string inside the `_layout=(...)` parens (splitShellSearch reverses it with
-    one decodeURIComponent pass)."""
-    return s.replace("%", "%25").replace("#", "%23").replace(" ", "%20")
-
-
-def _sine_panel_url(abs_path: str) -> str:
-    """The two-pane split-view URL for the Sine demo: `/view/_panel?_layout=(L,R)`
-    where L = the page in default render mode and R = the same page with
-    `_mode=code`. `,` is the row (side-by-side) separator; the whole layout is
-    parenthesized and emitted last, per the D51 grammar in buildSentinelUrl()."""
-    left = _encode_pane_segment(abs_path, "")
-    right = _encode_pane_segment(abs_path, "?_mode=code")
-    codec = left + "," + right
-    return "/view/_panel?_layout=(" + _url_safe_layout(codec) + ")"
-
-
 def _examples_present(fdir: str) -> bool:
-    return os.path.isfile(os.path.join(fdir, _SINE_HTML)) and os.path.isfile(
-        os.path.join(fdir, _EXPLAINER_HTML)
+    return os.path.isfile(os.path.join(fdir, _SHOWCASE_HTML)) or os.path.isfile(
+        os.path.join(fdir, _TUTORIAL_HTML)
     )
 
 
@@ -195,31 +137,36 @@ def _seed_bookmarks(fdir: str) -> None:
     bookmarks = [
         {
             "id": str(uuid.uuid4()),  # same UUIDv4 shape as crypto.randomUUID()
-            "name": "Sine demo",
-            # Split view: rendered sine page beside its source (code mode).
-            "url": _sine_panel_url(os.path.join(fdir, _SINE_HTML)),
+            "name": name,
+            "url": _view_url(os.path.join(fdir, rel)),
             "created_at": now,
-        },
-        {
-            "id": str(uuid.uuid4()),
-            "name": "How it works",
-            "url": _view_url(os.path.join(fdir, _EXPLAINER_HTML)),
-            "created_at": now,
-        },
-        {
-            "id": str(uuid.uuid4()),
-            "name": "Tutorial",
-            "url": _view_url(os.path.join(fdir, _TUTORIAL_HTML)),
-            "created_at": now,
-        },
+        }
+        # Only bookmark pages that actually exist: a legacy workspace (older
+        # seed set, bookmarks.json deleted) may be missing some of them, and a
+        # bookmark onto a nonexistent file is worse than none.
+        for name, rel in (("Showcase", _SHOWCASE_HTML), ("Tutorial", _TUTORIAL_HTML))
+        if os.path.isfile(os.path.join(fdir, rel))
     ]
-    storage.write_json(path, bookmarks)
+    if bookmarks:
+        storage.write_json(path, bookmarks)
 
 
 def ensure_fused_dir() -> str:
     """Create ~/Documents/Fused, seed examples into it once (empty dir only), and
     seed starter bookmarks once (absent bookmarks.json + examples present).
     Idempotent, non-destructive on upgrades. Returns the abs Fused dir."""
+    return ensure_fused_dir_and_landing()[0]
+
+
+def ensure_fused_dir_and_landing() -> tuple[str, str | None]:
+    """ensure_fused_dir plus the first-launch landing URL.
+
+    Returns (fused_dir, landing): `landing` is the /view/ URL of the seeded
+    showcase page iff THIS run performed the one-time example seed — the same
+    first-run condition that gates everything else here — so a brand-new
+    install's first browser tab opens on the showcase instead of the bare
+    workspace listing. Every later run (dir already non-empty) returns None
+    and the entry points open the root URL exactly as before."""
     fdir = os.path.abspath(fused_dir())
     os.makedirs(fdir, exist_ok=True)
 
@@ -228,4 +175,10 @@ def ensure_fused_dir() -> str:
     # kept — but never onto an unrelated dir the user filled with their own work.
     if seeded or _examples_present(fdir):
         _seed_bookmarks(fdir)
-    return fdir
+
+    landing = None
+    if seeded:
+        showcase = os.path.join(fdir, _SHOWCASE_HTML)
+        if os.path.isfile(showcase):
+            landing = _view_url(showcase)
+    return fdir, landing
