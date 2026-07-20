@@ -58,14 +58,18 @@ _HOST = "127.0.0.1"
 
 
 def _port_free(port: int) -> bool:
-    """True if we can bind ``port`` on the loopback right now.
+    """True if uvicorn could bind ``port`` on the loopback right now.
 
-    A plain bind (no SO_REUSEADDR) reflects real availability against an active
-    listener: if a stale dev server holds the port it fails, which is what we
-    want. uvicorn binds with SO_REUSEADDR (more permissive, only affects
-    TIME_WAIT sockets), so any port this probe accepts uvicorn will too.
+    Mirror uvicorn's own bind by setting SO_REUSEADDR so the probe agrees with
+    it in both directions: an active listener (a stale server) still makes bind
+    fail — SO_REUSEADDR does not permit two live binds to the same address, that
+    needs SO_REUSEPORT — so a real collision is still caught, while a port merely
+    lingering in TIME_WAIT after a clean shutdown reads as free (uvicorn, which
+    also sets SO_REUSEADDR, would bind it). A plain bind here would reject those
+    TIME_WAIT ports and wrongly block an immediate dev.sh restart.
     """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind((_HOST, port))
             return True
