@@ -402,6 +402,12 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
         if not py:
             raise Z.Unsupported(f"needs a system Python with {module} (set GEO_PYTHON)")
         env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
+        # NetCDF4/HDF5 opens request a POSIX file lock. Mounted buckets are
+        # served over NFS (see shell/mounts.py), which grants no locks, so HDF5
+        # aborts with "errno = 77, No locks available" (ENOLCK). The mounts are
+        # read-only, so disabling locking is safe. setdefault leaves an explicit
+        # host override intact.
+        env.setdefault("HDF5_USE_FILE_LOCKING", "FALSE")
         r = subprocess.run([py, "-c", code], input=json.dumps(params),
                            capture_output=True, text=True, timeout=180, env=env)
         if r.returncode != 0:
