@@ -19,14 +19,13 @@ def home_dir() -> str:
     ~/.fused-render — tests set it so they never touch the real home dir.
 
     When a branch ref is set (FUSED_RENDER_BRANCH, see fused_render._branch),
-    all shell state (templates, bookmarks, prefs) nests under a per-branch
-    subdir so parallel branches don't collide; baseline (no ref) is the
-    unnested dir, byte-identical to today."""
-    from fused_render._branch import branch_ref
+    all shell state (templates, bookmarks, prefs) nests under
+    ~/.fused-render/branches/<ref>/ so parallel branches don't collide; baseline
+    (no ref) is the unnested dir, byte-identical to today."""
+    from fused_render._branch import branch_dir
 
     base = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
-    ref = branch_ref()
-    return os.path.join(base, ref) if ref else base
+    return branch_dir(base)
 
 
 def read_json(path: str):
