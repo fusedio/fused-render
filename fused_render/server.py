@@ -1545,6 +1545,15 @@ def _fs_write(body: dict, x_fused: str | None):
         # temp-write + os.replace in the parent, same as the local path. No mode
         # preservation (a remote object has no unix mode, and reading it would
         # be an extra kernel getattr on the mount).
+        #
+        # RESIDUAL RISK: tempfile.mkstemp(dir=parent) + os.replace still do
+        # kernel negative LOOKUPs on the mount (as do os.mkdir/os.remove/
+        # shutil.move in the sibling handlers) — the rc probe above answers
+        # existence but does NOT warm the kernel dircache, so on a huge parent
+        # these lookups can still trigger the full-prefix enumeration this
+        # module exists to avoid. Follow-up: route the mutations themselves
+        # through rclone rc operations (uploadfile / deletefile / movefile),
+        # not the kernel VFS, so no mutation touches the mount through a LOOKUP.
         fd, tmp = tempfile.mkstemp(dir=parent)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
