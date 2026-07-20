@@ -10,6 +10,7 @@ from urllib.parse import quote
 from fastapi.testclient import TestClient
 
 from fused_render.server import create_app
+from fused_render.shell import mounts as mounts_mod
 from fused_render.shell import recents as recents_mod
 
 
@@ -237,6 +238,36 @@ def test_get_completed_false_filters_completed_true_shows(tmp_path, monkeypatch)
 
     entries = client.get("/api/recents").json()["entries"]
     assert [e["url"] for e in entries] == [_view_url(keep)]
+
+
+def test_get_mount_backed_paths_route_through_rc_not_isfile(tmp_path, monkeypatch):
+    # Mount safety: a mount-backed recents path must be checked via the rclone
+    # rc API (rc_mtime_for), NEVER a kernel os.path.isfile — a raw GETATTR on a
+    # hung NFS mount is the exact call that wedges it. A present ModTime keeps
+    # the entry; a None (indeterminate) also keeps it (fail open).
+    client, _ = _client(tmp_path, monkeypatch)
+    live = _make_file(tmp_path, "live_mount.parquet")
+    indet = _make_file(tmp_path, "indet_mount.parquet")
+    client.post("/api/recents/open", json={"url": _view_url(live)}, headers=FUSED)
+    client.post("/api/recents/open", json={"url": _view_url(indet)}, headers=FUSED)
+
+    monkeypatch.setattr(mounts_mod, "is_mount_backed", lambda p: True)
+
+    def _no_isfile(path):
+        raise AssertionError("os.path.isfile called on a mount-backed path")
+
+    monkeypatch.setattr(recents_mod.os.path, "isfile", _no_isfile)
+
+    # live -> ModTime present (exists), indet -> None (rc can't tell): both kept.
+    def _rc(path):
+        return "2026-01-01T00:00:00Z" if path.endswith("live_mount.parquet") else None
+
+    monkeypatch.setattr(mounts_mod, "rc_mtime_for", _rc)
+
+    resp = client.get("/api/recents")
+    assert resp.status_code == 200
+    got = {e["url"] for e in resp.json()["entries"]}
+    assert got == {_view_url(live), _view_url(indet)}
 
 
 def test_corrupt_file_reads_as_defaults(tmp_path, monkeypatch):

@@ -17,7 +17,9 @@ persisted folder collapse. Entries whose file has since been deleted are
 hidden from the GET response but never deleted from disk — the file may come
 back (a mount reconnect, an undeleted trash item).
 """
+import asyncio
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from urllib.parse import unquote, urlsplit
 
@@ -33,6 +35,25 @@ VIEW_PREFIX = "/view/"
 # Cap well above the UI's 3 visible rows so enough valid entries remain after
 # missing-file filtering.
 ENTRY_CAP = 20
+
+# Total wall-clock budget for ALL of a GET /api/recents' existence checks. The
+# checks fan out concurrently (on _CHECK_POOL below) and share this one deadline
+# — so the endpoint stays bounded no matter how many entries sit on a slow or hung
+# mount. An entry whose check outlives the budget is KEPT, not dropped (fail
+# open): a possibly-dead sidebar row beats a multi-second stall. Sized like the
+# fs/events watch ticker's per-stat _STAT_TIMEOUT_S (server.py, 4.0s) but tighter
+# — this is the whole sidebar section, not one background poll.
+CHECK_BUDGET_S = 1.5
+
+# Existence checks run on a DEDICATED pool, not asyncio's default loop executor:
+# a check that outlives CHECK_BUDGET_S keeps running in its thread (a blocking
+# os.stat/rc call can't be cancelled mid-flight), and parking those on the
+# shared default executor makes the request wait for them at loop teardown.
+# ENTRY_CAP-wide so every entry's check can run at once (true fan-out); slots
+# free themselves as the local isfile / bounded rc_mtime_for calls return.
+_CHECK_POOL = ThreadPoolExecutor(
+    max_workers=ENTRY_CAP, thread_name_prefix="recents-exists"
+)
 
 
 def _require_fused(x_fused: str | None) -> JSONResponse | None:
@@ -94,6 +115,54 @@ def _file_path_from_url(url: str) -> str | None:
     return fs_path
 
 
+def _local_exists(fs_path: str) -> bool:
+    """Existence of a LOCAL (non-mount-backed) path. A plain os.path.isfile is
+    safe and cheap here — the mount-wedging GETATTR concern only applies under a
+    managed mount, which _keep_entry routes away from this call."""
+    try:
+        return os.path.isfile(fs_path)
+    except OSError:
+        return False
+
+
+def _mount_exists(fs_path: str) -> bool:
+    """Existence of a MOUNT-BACKED path, answered by the rclone rc API
+    (mounts.rc_mtime_for) — NEVER os.path.isfile. A raw os.stat/isfile on a hung
+    NFS mount is the exact GETATTR that wedges it (see rc_mtime_for's docstring
+    in mounts.py); rc_mtime_for keeps the kernel out of the loop entirely.
+
+    A present ModTime proves the file exists. None is INDETERMINATE — rc can't
+    tell "rcd down / timed out" from "genuinely missing" — so we fail open and
+    KEEP the entry (True) rather than risk hiding a live recent on a transient
+    rc hiccup."""
+    from fused_render.shell import mounts as shell_mounts
+
+    try:
+        if shell_mounts.rc_mtime_for(fs_path) is not None:
+            return True
+    except Exception:
+        pass
+    return True  # indeterminate -> fail open, keep the entry
+
+
+async def _keep_entry(url: str) -> bool:
+    """Whether a recents entry should appear in the GET response: True to keep,
+    False to filter (file confirmed gone). Runs the existence check off the
+    event loop and routes mount-backed paths through the rc API. Only a check
+    that COMPLETES False filters; anything indeterminate keeps (fail open)."""
+    fs_path = _decoded_fs_path(url)
+    if fs_path is None:
+        return False  # not a file-naming url (sentinel / non-/view/) -> filtered
+    from fused_render.shell import mounts as shell_mounts
+
+    check = _mount_exists if shell_mounts.is_mount_backed(fs_path) else _local_exists
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(_CHECK_POOL, check, fs_path)
+    except Exception:
+        return True  # fail open on any unexpected error
+
+
 def _read() -> dict:
     data = storage.read_json(_path())
     if not isinstance(data, dict):
@@ -106,15 +175,28 @@ def _read() -> dict:
 
 
 @router.get("/api/recents")
-def get_recents():
+async def get_recents():
     """The collapsed flag + entries whose target file still exists. Missing
     files are filtered from the response, NOT deleted from disk (read-only
-    GET, like bookmarks; the file may reappear)."""
+    GET, like bookmarks; the file may reappear).
+
+    Existence checks fan out concurrently under a single CHECK_BUDGET_S deadline
+    and are mount-safe (mount-backed paths route through the rclone rc API, not
+    a kernel os.stat). An entry whose check outlives the budget is KEPT (fail
+    open) — a possibly-dead row beats a stalled sidebar."""
     data = _read()
-    entries = [
-        e for e in data["entries"]
-        if isinstance(e.get("url"), str) and _file_path_from_url(e["url"]) is not None
-    ]
+    raw = [e for e in data["entries"] if isinstance(e.get("url"), str)]
+    keeps = [True] * len(raw)  # default keep (fail open on timeout/cancel)
+    if raw:
+        tasks = [asyncio.ensure_future(_keep_entry(e["url"])) for e in raw]
+        done, pending = await asyncio.wait(tasks, timeout=CHECK_BUDGET_S)
+        for i, t in enumerate(tasks):
+            if t in done:
+                # _keep_entry never raises, but stay defensive: keep on error.
+                keeps[i] = t.result() if not t.cancelled() else True
+        for t in pending:
+            t.cancel()  # deadline hit; underlying thread finishes on its own
+    entries = [e for e, keep in zip(raw, keeps) if keep]
     return {"collapsed": data["collapsed"], "entries": entries}
 
 
