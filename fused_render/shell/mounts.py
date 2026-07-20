@@ -1074,11 +1074,17 @@ S3_LIST_TIMEOUT_S = 15.0
 _S3_XMLNS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
 
 
-class S3ListError(Exception):
-    """A direct ListObjectsV2 page failed — an HTTP status (403 needs auth, 301
-    wrong region), a network error, or unparseable XML. The caller falls back
-    to rc_list_dir; kept distinct from the RcList* family so the fallback ladder
-    (S3-direct -> rc -> 503) reads cleanly."""
+class DirectListError(Exception):
+    """A direct (unsigned) S3/GCS listing page failed — an HTTP status (403
+    needs auth, 301 wrong region), a network error, or an unparseable body
+    (S3 XML / GCS JSON). The caller falls back to rc_list_dir; kept distinct
+    from the RcList* family so the fallback ladder (direct -> rc -> 503) reads
+    cleanly."""
+
+
+# Back-compat alias: the direct-listing path started S3-only. Kept so callers
+# (and tests) that still import S3ListError keep working.
+S3ListError = DirectListError
 
 
 def s3_direct_capable(path: str) -> bool:
@@ -1187,6 +1193,143 @@ def s3_list_page(path: str, *, max_keys: int, continuation: str | None = None,
     if (root_el.findtext(f"{_S3_XMLNS}IsTruncated") or "").lower() == "true":
         next_token = root_el.findtext(f"{_S3_XMLNS}NextContinuationToken") or None
     return entries, next_token
+
+
+# ------------------------------------------------------ direct GCS pagination
+# The GCS analog of the S3-direct path above. rclone can't paginate a listing
+# at any layer either, so a flat GCS prefix with hundreds of thousands of
+# children times out on the rc route exactly as an S3 one does. But GCS's own
+# JSON API (objects.list) paginates fine, and anonymous GCS (the gcs-open
+# suggestion, _gcs_anonymous) serves it with a plain unsigned GET — so fetch a
+# single page at a time straight from GCS, unsigned. There is no dotted-bucket
+# / virtual-host rule here: the GCS JSON endpoint always carries the bucket in
+# the path, and there is no region.
+GCS_LIST_TIMEOUT_S = 15.0
+_GCS_LIST_URL = "https://storage.googleapis.com/storage/v1/b/{bucket}/o"
+
+
+def gcs_direct_capable(path: str) -> bool:
+    """True when `path` is mount-backed by an anonymous GCS remote — the one
+    GCS backend class gcs_list_page can enumerate unsigned. Mirrors
+    s3_direct_capable for the GCS side."""
+    m, _ = _mount_for(path)
+    if m is None:
+        return False
+    return _gcs_anonymous(_remote_config(m["remote"].partition(":")[0]) or {})
+
+
+def _gcs_bucket_prefix(fs: str) -> tuple[str, str] | None:
+    """(bucket, key prefix) for a GCS remote's fs string
+    (e.g. "gcs-open:mur-sst/zarr-v1" -> ("mur-sst", "zarr-v1")). The key prefix
+    is stripped of any trailing slash. None when the fs carries no bucket. The
+    GCS analog of _s3_bucket_prefix_region — no region (GCS has none)."""
+    _, _, root = fs.partition(":")
+    bucket, _, prefix = root.partition("/")
+    if not bucket:
+        return None
+    return bucket, prefix.rstrip("/")
+
+
+def gcs_list_page(path: str, *, max_keys: int, continuation: str | None = None,
+                  timeout: float | None = None) -> tuple[list, str | None]:
+    """One objects.list page for a mount-backed directory on an anonymous GCS
+    remote, fetched by a plain unsigned HTTPS GET against the GCS JSON API — no
+    kernel I/O on the mount, no rclone, no google SDK.
+
+    Returns (entries, next_token) in the identical shape to s3_list_page:
+    entries are Name/Size/IsDir/ModTime dicts (so downstream mapping is shared),
+    and next_token the GCS pageToken when the listing is truncated, else None.
+    `prefixes` become synthetic directories (Size/ModTime None); `items` become
+    files; the zero-byte placeholder object whose name IS the prefix (a GCS
+    "directory" marker) is skipped, exactly as s3_list_page skips the key ==
+    prefix.
+
+    Raises DirectListError on any HTTP/network/JSON failure so the caller can
+    fall back to rc_list_dir; a 403 (needs auth) raises too, never crashes."""
+    if timeout is None:
+        timeout = GCS_LIST_TIMEOUT_S
+    m, rel = _mount_for(path)
+    if m is None:
+        raise DirectListError(f"{path} is under no known mount")
+    fs = m["remote"]
+    cfg = _remote_config(fs.partition(":")[0])
+    if not _gcs_anonymous(cfg or {}):
+        raise DirectListError(f"{path}: remote {fs!r} is not anonymous GCS")
+    derived = _gcs_bucket_prefix(fs)
+    if derived is None:
+        raise DirectListError(f"{path}: remote {fs!r} carries no bucket")
+    bucket, store_prefix = derived
+    # _s3_listing_prefix is backend-agnostic (prefix/delimiter join) — reuse it.
+    prefix = _s3_listing_prefix(store_prefix, rel)
+    params = {"delimiter": "/", "prefix": prefix, "maxResults": str(max_keys)}
+    if continuation:
+        params["pageToken"] = continuation
+    query = urllib.parse.urlencode(params)
+    url = f"{_GCS_LIST_URL.format(bucket=bucket)}?{query}"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            body = resp.read()
+    except urllib.error.HTTPError as e:
+        raise DirectListError(f"GCS list {path}: HTTP {e.code}") from e
+    except (urllib.error.URLError, OSError) as e:
+        raise DirectListError(f"GCS list {path}: {e}") from e
+    try:
+        doc = json.loads(body)
+    except (ValueError, TypeError) as e:
+        raise DirectListError(f"GCS list {path}: unparseable JSON") from e
+    entries: list = []
+    for p in doc.get("prefixes") or []:
+        name = str(p)[len(prefix):].rstrip("/")
+        if name:
+            entries.append({"Name": name, "Size": None, "IsDir": True,
+                            "ModTime": None})
+    for obj in doc.get("items") or []:
+        key = obj.get("name") or ""
+        # The zero-byte object whose name IS the prefix is the directory
+        # placeholder GCS consoles create — it's this directory, not an entry.
+        if key == prefix:
+            continue
+        name = key[len(prefix):]
+        if not name:
+            continue
+        size_txt = obj.get("size")
+        entries.append({
+            "Name": name,
+            "Size": int(size_txt) if isinstance(size_txt, str)
+            and size_txt.isdigit() else None,
+            "IsDir": False,
+            # RFC3339 already; the mapping site runs rc_modtime_epoch on it.
+            "ModTime": obj.get("updated"),
+        })
+    return entries, doc.get("nextPageToken") or None
+
+
+# ------------------------------------------- unified direct-listing dispatch
+# The server routes every listing through these two so a call site need not
+# know whether the mount is S3 or GCS. direct_list_page re-derives the backend
+# from `path`, so a continuation token always feeds back to the backend that
+# produced it (an S3 continuation-token and a GCS pageToken never cross).
+
+
+def direct_list_capable(path: str) -> bool:
+    """True when `path` is mount-backed by ANY backend the direct (unsigned)
+    pager can enumerate — anonymous plain AWS S3 or anonymous GCS."""
+    return s3_direct_capable(path) or gcs_direct_capable(path)
+
+
+def direct_list_page(path: str, *, max_keys: int, continuation: str | None = None,
+                     timeout: float | None = None) -> tuple[list, str | None]:
+    """One direct (unsigned) listing page for `path`, routed to the S3 or GCS
+    pager by the backend the path resolves to. Returns (entries, next_token) in
+    the shared rc/direct shape; raises DirectListError when the path is backed
+    by neither direct-listable backend (or the chosen pager fails)."""
+    if s3_direct_capable(path):
+        return s3_list_page(path, max_keys=max_keys,
+                            continuation=continuation, timeout=timeout)
+    if gcs_direct_capable(path):
+        return gcs_list_page(path, max_keys=max_keys,
+                            continuation=continuation, timeout=timeout)
+    raise DirectListError(f"{path}: no direct-listable backend")
 
 
 def upstream_url_for(path: str) -> str | None:
