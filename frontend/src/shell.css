@@ -1991,20 +1991,22 @@ select.field-control:has(option[value=""]:checked) {
 
 /* Quiet primary: accent-tinted, not accent-filled — still the strongest button
    in a footer, without the neon pop of a solid lime fill on the dark surface. */
+/* Neutral filled primary — reads strongest through contrast, not accent
+   (Akshil: accent buttons pop too much). Accent stays for focus/selection. */
 .btn-primary,
 .deploy-body .btn-primary,
 .prefs-section .btn-primary {
-  background: rgba(229, 255, 68, 0.12);
-  border-color: rgba(229, 255, 68, 0.35);
-  color: var(--accent);
+  background: var(--fg);
+  border-color: transparent;
+  color: var(--bg);
   font-weight: 600;
 }
 
 .btn-primary:hover:not(:disabled),
 .deploy-body .btn-primary:hover:not(:disabled),
 .prefs-section .btn-primary:hover:not(:disabled) {
-  background: rgba(229, 255, 68, 0.18);
-  border-color: rgba(229, 255, 68, 0.35);
+  background: #ffffff;
+  border-color: transparent;
 }
 
 .btn-secondary,
