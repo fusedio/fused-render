@@ -342,10 +342,19 @@ def test_remote_worker_end_to_end(fs, tmp_path, with_ov):
     pytest.importorskip("tifffile")
     pytest.importorskip("rio_cogeo")
     pytest.importorskip("PIL")
-    p = str(tmp_path / "x.tif")
-    _make_tif(p, with_ov)
-    s = fs(blob=open(p, "rb").read(), remote=True)
-    r = _run_worker(s, p)
+    # Build the TIFF, upload its bytes into the fake HTTP server, then DELETE the
+    # local file. The worker is invoked with a path string that no longer exists
+    # on disk, so ANY accidental kernel open of `path` (a silent-fallback
+    # regression the whole PR exists to prevent) fails loudly instead of quietly
+    # returning byte-identical results. All bytes must come over /api/fs/raw.
+    build_path = str(tmp_path / "build.tif")
+    _make_tif(build_path, with_ov)
+    blob = open(build_path, "rb").read()
+    os.remove(build_path)
+    remote_only_path = str(tmp_path / "gone" / "x.tif")  # never created on disk
+    assert not os.path.exists(remote_only_path)
+    s = fs(blob=blob, remote=True)
+    r = _run_worker(s, remote_only_path)
 
     # size comes from /api/fs/stat, not a kernel getsize
     assert r["file_size"] == len(s.blob)
