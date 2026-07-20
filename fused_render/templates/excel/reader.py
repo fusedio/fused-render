@@ -374,6 +374,11 @@ def _filters_sql(filters):
             ph = ", ".join(["?"] * len(exclude))
             where.append(f"coalesce(CAST({col} AS VARCHAR), '') NOT IN ({ph})")
             params.extend(str(v) for v in exclude)
+        include = f.get("include") or []
+        if include:
+            ph = ", ".join(["?"] * len(include))
+            where.append(f"coalesce(CAST({col} AS VARCHAR), '') IN ({ph})")
+            params.extend(str(v) for v in include)
     return (" WHERE " + " AND ".join(where)) if where else "", params
 
 

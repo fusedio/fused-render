@@ -382,7 +382,8 @@
       };
       el.addEventListener("input", sync);
       if (el.type === "number") el.addEventListener("change", () => {
-        el.value = Math.max(+el.min, Math.min(+el.max, +el.value || +el.min));
+        const n = parseFloat(el.value);   // keep a legit 0; only empty/NaN falls back
+        el.value = Math.max(+el.min, Math.min(+el.max, isNaN(n) ? +el.min : n));
         sync();
       });
     });

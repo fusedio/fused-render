@@ -954,21 +954,26 @@ function redo() {
 }
 
 // ================= filtering =================
-// Per column: filterQ[c] a condition string ('>5', 'foo'), filterEx[c] a list
-// of display values to hide (the value checklist — everything unchecked).
+// Per column: filterQ[c] a condition string ('>5', 'foo') and filterVal[c] a
+// value-checklist filter {mode:"exclude"|"include", vals:[display strings]}.
+// exclude hides the listed values; include keeps only them (used when the user
+// narrows to a subset — correct even when the distinct list was capped).
 function activeFilters(sh) {
   const out = [];
-  const n = Math.max((sh.filterQ || []).length, (sh.filterEx || []).length);
+  const n = Math.max((sh.filterQ || []).length, (sh.filterVal || []).length);
   for (let c = 0; c < n; c++) {
     const q = ((sh.filterQ && sh.filterQ[c]) || "").trim();
-    const exclude = (sh.filterEx && sh.filterEx[c]) || [];
-    if (q || exclude.length) out.push({ c, q, exclude });
+    const fv = sh.filterVal && sh.filterVal[c];
+    const f = { c };
+    if (q) f.q = q;
+    if (fv && fv.vals && fv.vals.length) f[fv.mode === "include" ? "include" : "exclude"] = fv.vals;
+    if (f.q || f.include || f.exclude) out.push(f);
   }
   return out;
 }
 function colHasFilter(sh, c) {
-  return !!(((sh.filterQ && sh.filterQ[c]) || "").trim() ||
-            (sh.filterEx && sh.filterEx[c] && sh.filterEx[c].length));
+  const fv = sh.filterVal && sh.filterVal[c];
+  return !!(((sh.filterQ && sh.filterQ[c]) || "").trim() || (fv && fv.vals && fv.vals.length));
 }
 function cellDisplay(r, c) {   // display string used for filtering + the value list
   const cv = values[r] && values[r][c];
@@ -976,10 +981,11 @@ function cellDisplay(r, c) {   // display string used for filtering + the value 
   return cv._d !== undefined ? cv._d : (cv._d = display(cv, null));
 }
 function rowPassesFilters(r, compiled) {
-  return compiled.every(({ c, test, exclude }) => {
-    const d = cellDisplay(r, c);
+  return compiled.every(({ c, test, exclude, include }) => {
+    const d = String(cellDisplay(r, c));
     if (test && !test(d)) return false;
-    if (exclude && exclude.has(String(d))) return false;
+    if (exclude && exclude.has(d)) return false;
+    if (include && !include.has(d)) return false;
     return true;
   });
 }
@@ -988,6 +994,7 @@ function compileFilters(filters) {
     c: f.c,
     test: f.q ? criteriaFn(f.q) : null,
     exclude: f.exclude && f.exclude.length ? new Set(f.exclude.map(String)) : null,
+    include: f.include && f.include.length ? new Set(f.include.map(String)) : null,
   }));
 }
 function visibleRowIdx() {
@@ -1044,8 +1051,10 @@ function condToQ(type, val) {
   if (!type || (type !== "contains" && val === "")) return "";
   return type === "contains" ? val : type + val;
 }
+let fmSeq = 0;
 async function openFilterMenu(c, anchor) {
   const sh = S();
+  const seq = ++fmSeq;   // a later open supersedes a slow distinct response (bugbot)
   const m = fmEl();
   m.style.display = "block";
   m.innerHTML = `<div class="fm-note">Loading values…</div>`;
@@ -1060,12 +1069,19 @@ async function openFilterMenu(c, anchor) {
       ({ values, truncated } = distinctSmall(sh, c));
     }
   } catch (err) {
-    m.innerHTML = `<div class="fm-note">Could not load values: ${escHtml(err.message || String(err))}</div>`;
+    if (seq === fmSeq) m.innerHTML = `<div class="fm-note">Could not load values: ${escHtml(err.message || String(err))}</div>`;
     return;
   }
-  if (m.style.display === "none") return;   // closed while awaiting
-  const excluded = new Set(((sh.filterEx && sh.filterEx[c]) || []).map(String));
-  fmState = { c, values, checked: new Set(values.filter((v) => !excluded.has(String(v)))) };
+  if (seq !== fmSeq || m.style.display === "none") return;   // superseded / closed
+  const fv = sh.filterVal && sh.filterVal[c];
+  const listed = new Set((fv && fv.vals || []).map(String));
+  const checked = new Set();
+  values.forEach((v) => {
+    const inList = listed.has(String(v));
+    // no filter -> all checked; include -> only listed; exclude -> all but listed
+    if (!fv || !fv.vals || !fv.vals.length || (fv.mode === "include" ? inList : !inList)) checked.add(v);
+  });
+  fmState = { c, values, checked };
   buildFilterMenu(m, anchor, truncated);
 }
 function buildFilterMenu(m, anchor, truncated) {
@@ -1146,9 +1162,27 @@ function applyFilterMenu() {
   if (!fmState) return;
   const sh = S(), { c, values, checked, condSel, condVal } = fmState;
   sh.filterQ = sh.filterQ || [];
-  sh.filterEx = sh.filterEx || [];
+  sh.filterVal = sh.filterVal || [];
   sh.filterQ[c] = condSel ? condToQ(condSel.value, condVal.value) : "";
-  sh.filterEx[c] = values.filter((v) => !checked.has(v)).map(String);
+
+  const shown = values.map(String);
+  const shownSet = new Set(shown);
+  const checkedShown = shown.filter((v) => checked.has(v));
+  const uncheckedShown = shown.filter((v) => !checked.has(v));
+  const prior = sh.filterVal[c];
+  // Prior excludes for values not in this list (hidden by other columns' filters
+  // or beyond the distinct cap) must survive an OK click (bugbot: dropped excludes).
+  const priorOutOfList = (prior && prior.mode === "exclude")
+    ? prior.vals.map(String).filter((v) => !shownSet.has(v)) : [];
+
+  if (checkedShown.length < uncheckedShown.length) {
+    // Narrowed to a subset: keep ONLY the checked values. Correct even when the
+    // distinct list was capped — everything else (incl. uncounted values) drops.
+    sh.filterVal[c] = { mode: "include", vals: checkedShown };
+  } else {
+    const excl = [...new Set([...uncheckedShown, ...priorOutOfList])];
+    sh.filterVal[c] = excl.length ? { mode: "exclude", vals: excl } : null;
+  }
   closeFilterMenu();
   renderLimit = RENDER_CAP;
   if (sh.big) fetchRows(true); else renderGrid();
@@ -1413,20 +1447,35 @@ function paintSel() {
   $("tbU").classList.toggle("on", !!st.u);
   $("fmtSel").value = st.fmt || "";
   $("tbFilter").classList.toggle("on", !!sh.filterOn);
-  // selection stats
-  const nums = [];
-  for (let r = r1; r <= r2 && r - r1 < 100000; r++) for (let c = c1; c <= c2; c++) {
-    if (sh.big) {
-      const t = raw(r, c);
-      if (t !== "" && NUM_RE.test(t.trim())) nums.push(parseFloat(t));
-    } else {
-      const cv = values[r] && values[r][c];
-      if (cv && typeof cv.v === "number") nums.push(cv.v);
-    }
+  updateSelStats(r1, c1, r2, c2);
+}
+
+// Google-Sheets-style summary of the current selection (bottom-right): Count of
+// non-empty cells always, plus Sum/Avg/Min/Max/Count-numbers when it holds
+// numbers. Shown only for a multi-cell selection.
+function updateSelStats(r1, c1, r2, c2) {
+  const el = $("selStats");
+  if (r1 === r2 && c1 === c2) { el.textContent = ""; return; }
+  const sh = S();
+  let count = 0, nc = 0, sum = 0, min = Infinity, max = -Infinity, scanned = 0;
+  const CAP = 500000;
+  for (let r = r1; r <= r2 && scanned < CAP; r++) for (let c = c1; c <= c2 && scanned < CAP; c++) {
+    scanned++;
+    let t;
+    if (sh.big) t = raw(r, c);
+    else { const cv = values[r] && values[r][c]; t = !cv ? "" : (typeof cv.v === "number" ? cv.v : (cv.v == null ? "" : String(cv.v))); }
+    if (t === "" || t === null || t === undefined) continue;
+    count++;
+    const num = typeof t === "number" ? t : (NUM_RE.test(String(t).trim()) ? parseFloat(t) : NaN);
+    if (!isNaN(num)) { nc++; sum += num; if (num < min) min = num; if (num > max) max = num; }
   }
-  $("selStats").textContent = nums.length >= 2
-    ? `Sum: ${Math.round(nums.reduce((a, b) => a + b, 0) * 100) / 100} · Avg: ${Math.round(nums.reduce((a, b) => a + b, 0) / nums.length * 100) / 100} · Count: ${nums.length}`
-    : "";
+  if (!count) { el.textContent = ""; return; }
+  const f = (x) => (Math.round(x * 1e6) / 1e6).toLocaleString("en-US");
+  const parts = [];
+  if (nc) parts.push(`Sum: ${f(sum)}`, `Avg: ${f(sum / nc)}`, `Min: ${f(min)}`, `Max: ${f(max)}`);
+  parts.push(`Count: ${fmtInt(count)}`);
+  if (nc && nc !== count) parts.push(`Count Nums: ${fmtInt(nc)}`);
+  el.textContent = parts.join(" · ");
 }
 
 function normSel() {
@@ -1763,11 +1812,11 @@ function normalizeLoaded(res) {
     if (sh.big) {
       return { name: sh.name, big: true, kind: sh.kind, nrows: sh.nrows, ncols: sh.ncols,
                header: sh.header, loaded: sh.rows, matched: sh.matched ?? sh.nrows,
-               sort: null, filterOn: false, filterQ: [], filterEx: [], edits: new Map(), fetching: false,
+               sort: null, filterOn: false, filterQ: [], filterVal: [], edits: new Map(), fetching: false,
                colw: {}, freeze: 0 };
     }
     const out = { name: sh.name, big: false, kind: sh.kind || "xlsx",
-                  rows: sh.rows, styles: sh.styles || [], filterOn: false, filterQ: [], filterEx: [],
+                  rows: sh.rows, styles: sh.styles || [], filterOn: false, filterQ: [], filterVal: [],
                   colw: sh.colw || {}, freeze: sh.freeze || 0 };
     ensureRect(out);
     return out;
@@ -1961,7 +2010,7 @@ function runJs(code, out) {
     names() { return book.sheets.map((s2) => s2.name); },
     add(nm) {
       if (book.sheets.some((s2) => s2.name === nm)) throw new Error("sheet exists: " + nm);
-      const sh = { name: nm, big: false, kind: "xlsx", rows: [[""]], styles: [[null]], filterOn: false, filterQ: [], filterEx: [] };
+      const sh = { name: nm, big: false, kind: "xlsx", rows: [[""]], styles: [[null]], filterOn: false, filterQ: [], filterVal: [] };
       ensureRect(sh); book.sheets.push(sh); return sheetApi(sh);
     },
   };
@@ -1994,7 +2043,7 @@ async function runPy(code, out) {
       const old = byName.get(ns.name);
       const sh = { name: ns.name, big: false, kind: old ? old.kind : "xlsx",
                    rows: ns.rows.map((r) => r.map((v) => (v == null ? "" : String(v)))),
-                   styles: old && !old.big ? old.styles : [], filterOn: false, filterQ: [], filterEx: [] };
+                   styles: old && !old.big ? old.styles : [], filterOn: false, filterQ: [], filterVal: [] };
       ensureRect(sh); return sh;
     });
     book.sheets = [...bigs, ...updated];
@@ -2260,7 +2309,7 @@ async function act(name) {
       renderLimit = RENDER_CAP;
       if (!sh.filterOn) {   // turning filters off clears every column filter
         const had = activeFilters(sh).length;
-        sh.filterQ = []; sh.filterEx = [];
+        sh.filterQ = []; sh.filterVal = [];
         if (sh.big && had) { fetchRows(true); return; }
       }
       renderGrid();
@@ -2272,7 +2321,7 @@ async function act(name) {
       }
       let n = book.sheets.length + 1, nm;
       do { nm = "Sheet" + n++; } while (book.sheets.some((s2) => s2.name === nm));
-      const sh = { name: nm, big: false, kind: "xlsx", rows: [[""]], styles: [[null]], filterOn: false, filterQ: [], filterEx: [] };
+      const sh = { name: nm, big: false, kind: "xlsx", rows: [[""]], styles: [[null]], filterOn: false, filterQ: [], filterVal: [] };
       ensureRect(sh); book.sheets.push(sh); markDirty(); switchSheet(book.sheets.length - 1);
     },
     delSheet: async () => {
@@ -2467,17 +2516,29 @@ $("gridWrap").addEventListener("keydown", (e) => {
   else if (k.length === 1) { e.preventDefault(); startEdit(k); }  // preventDefault or the key types twice
 });
 
-// copy / paste (raw values incl. formulas, TSV — pastes into Excel/GSheets)
-function selTSV() {
+// copy / paste (TSV). The clipboard gets computed VALUES so a formula cell
+// pastes its result into other apps; an in-session buffer keeps the formulas so
+// paste within the sheet still round-trips them (like Google Sheets).
+function cellCopyText(r, c) {
+  const sh = S();
+  if (sh.big) return raw(r, c);   // big sheets store values, never formulas
+  ensureValues();
+  return cellDisplay(r, c);        // the shown value, unformatted (no formula)
+}
+function selText(cell) {
   const { r1, c1, r2, c2 } = normSel();
   const out = [];
   for (let r = r1; r <= r2; r++) {
     const row = [];
-    for (let c = c1; c <= c2; c++) row.push(raw(r, c));
+    for (let c = c1; c <= c2; c++) row.push(cell(r, c));
     out.push(row.join("\t"));
   }
   return out.join("\n");
 }
+const selValues = () => selText(cellCopyText);
+const selRaw = () => selText(raw);
+let copyBuf = null;   // { text: valuesTSV, formulas: rawTSV } — for in-sheet paste
+function grabSelection() { const text = selValues(); copyBuf = { text, formulas: selRaw() }; return text; }
 function clearSelCells() {
   if (roBlocked()) return;   // cut degrades to copy on a read-only file
   pushUndo();
@@ -2502,12 +2563,12 @@ function pasteText(text) {
 }
 document.addEventListener("copy", (e) => {
   if (!book || editing || e.target.closest("input, textarea")) return;
-  e.clipboardData.setData("text/plain", selTSV());
+  e.clipboardData.setData("text/plain", grabSelection());
   e.preventDefault();
 });
 document.addEventListener("cut", (e) => {
   if (!book || editing || e.target.closest("input, textarea")) return;
-  e.clipboardData.setData("text/plain", selTSV());
+  e.clipboardData.setData("text/plain", grabSelection());
   e.preventDefault();
   clearSelCells();
 });
@@ -2516,7 +2577,8 @@ document.addEventListener("paste", (e) => {
   const text = e.clipboardData.getData("text/plain");
   if (!text) return;
   e.preventDefault();
-  pasteText(text);
+  // Pasting our own copy back into the sheet restores the formulas, not values.
+  pasteText(copyBuf && text === copyBuf.text ? copyBuf.formulas : text);
 });
 
 // ---- right-click context menu ----
@@ -2528,10 +2590,10 @@ function openCtx(x, y) {
   const { r1, r2, c1, c2 } = normSel();
   const nr = r2 - r1 + 1, nc = c2 - c1 + 1;
   const items = [
-    { label: "Cut", kbd: "Ctrl+X", fn: async () => { await navigator.clipboard.writeText(selTSV()); clearSelCells(); } },
-    { label: "Copy", kbd: "Ctrl+C", fn: () => navigator.clipboard.writeText(selTSV()) },
+    { label: "Cut", kbd: "Ctrl+X", fn: async () => { await navigator.clipboard.writeText(grabSelection()); clearSelCells(); } },
+    { label: "Copy", kbd: "Ctrl+C", fn: () => navigator.clipboard.writeText(grabSelection()) },
     { label: "Paste", kbd: "Ctrl+V", fn: async () => {
-        try { pasteText(await navigator.clipboard.readText()); }
+        try { const t = await navigator.clipboard.readText(); pasteText(copyBuf && t === copyBuf.text ? copyBuf.formulas : t); }
         catch { setStatus("Browser blocked menu paste — press Ctrl+V instead.", "err"); }
       } },
     null,
