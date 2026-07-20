@@ -10,7 +10,7 @@
     rather than falling through to a local-file kernel read of the mount.
 
 Shared fixtures/helpers (home, _mount, _entry, _no_kernel_on_mount,
-_list_returns, _list_raises) are reused from test_server_fs_mount_safe.
+_list_returns, _list_raises) live in _mount_safe_helpers.
 """
 import os
 
@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 
 import fused_render.shell.mounts as mounts_mod
 from fused_render.server import create_app
-from test_server_fs_mount_safe import (  # noqa: F401 — `home` is a reused fixture
+from _mount_safe_helpers import (  # noqa: F401 — `home` is a reused fixture
     _entry,
     _list_raises,
     _list_returns,
