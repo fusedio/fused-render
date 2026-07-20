@@ -136,17 +136,17 @@ KNOWN_SENTINELS = {"_render", "_listing"}
 # are all emitted long before the cap can bite. Module-level so tests can
 # shrink it.
 WALK_MAX_ENTRIES = 200_000
-# Flat cap on a single /api/fs/list response, across all three routes (S3-direct,
+# Flat cap on a single /api/fs/list response, across all three routes (direct,
 # rc, local). An unbounded listing of a directory with a million entries builds
 # and serializes a million-entry JSON response — slow to produce, slow to render.
-# The response's `truncated` flag (and, on the resumable S3-direct route, its
+# The response's `truncated` flag (and, on the resumable direct route, its
 # `cursor`) tells the client the listing is partial. Module-level so tests can
 # shrink it.
 LIST_MAX_ENTRIES = 10_000
-# Per-request cap for the RESUMABLE S3-direct listing route. Deliberately one
-# S3 page: each page runs seconds on a slow bucket (mur-sst ~2s), so a bigger
-# first paint just multiplies the wait, and unlike the local/rc routes the
-# client can always fetch the next 1000 via the cursor (Load more). Module-
+# Per-request cap for the RESUMABLE direct (S3/GCS) listing route. Deliberately
+# one store page: each page runs seconds on a slow bucket (mur-sst ~2s), so a
+# bigger first paint just multiplies the wait, and unlike the local/rc routes
+# the client can always fetch the next 1000 via the cursor (Load more). Module-
 # level so tests can shrink it.
 S3_LIST_MAX_ENTRIES = 1_000
 # Much smaller cap when the walked path sits under a mount mountpoint
@@ -161,8 +161,9 @@ WALK_MAX_ENTRIES_REMOTE = 2_000
 # walk moves on) rather than stalling the whole subtree — same "dead mount ->
 # skipped dir" safety, without failing the request.
 WALK_RC_LIST_TIMEOUT_S = 10.0
-# Overall wall-clock budget for accumulating S3 pages into ONE /api/fs/list
-# response. The per-page timeout (mounts.S3_LIST_TIMEOUT_S, 15s) bounds a single
+# Overall wall-clock budget for accumulating direct (S3/GCS) pages into ONE
+# /api/fs/list response. The per-page timeout (mounts.S3_LIST_TIMEOUT_S /
+# GCS_LIST_TIMEOUT_S, 15s) bounds a single
 # page, but page COUNT is unbounded — a prefix that returns few keys per page
 # could run many pages and stall a request for minutes. On budget exhaustion the
 # accumulator stops and returns what it has with the last continuation token, a
@@ -376,8 +377,9 @@ class _RcDirEntry:
 
 
 def _mount_list_item(de):
-    """Map one rc/S3 listing entry (Name/Size/IsDir/ModTime, the shared shape of
-    rc_list_dir and s3_list_page) to an /api/fs/list item. `ignored` is always
+    """Map one rc/direct listing entry (Name/Size/IsDir/ModTime, the shared shape
+    of rc_list_dir and the direct S3/GCS pagers) to an /api/fs/list item.
+    `ignored` is always
     False under a mount: there's no git repo there, and `git check-ignore`
     against a mount path is the very kernel I/O these routes avoid."""
     from fused_render.shell import mounts as shell_mounts
@@ -396,7 +398,7 @@ def _sort_entries(entries):
     """Sort /api/fs/list items in place and return them: dirs first, then
     case-insensitive by name with the exact name as a deterministic tiebreak so
     case-only variants get a stable order. The single sort key for all three
-    list routes (S3-direct, rc, local)."""
+    list routes (direct, rc, local)."""
     entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower(), e["name"]))
     return entries
 
@@ -407,12 +409,13 @@ def _list_response(path, entries, truncated, cursor):
             "truncated": truncated, "cursor": cursor}
 
 
-def _accumulate_s3_pages(path, cursor, max_entries, *,
-                         page_timeout=None, overall_timeout=None):
-    """Accumulate raw S3 ListObjectsV2 entries (Name/Size/IsDir/ModTime dicts,
-    the shared rc/S3 shape) for a mount-backed dir on an anonymous S3 remote,
-    up to `max_entries`. The one page-accumulation loop shared by /api/fs/list
-    and the walk.
+def _accumulate_direct_pages(path, cursor, max_entries, *,
+                             page_timeout=None, overall_timeout=None):
+    """Accumulate raw direct-listing entries (Name/Size/IsDir/ModTime dicts, the
+    shared rc/direct shape) for a mount-backed dir on an anonymous S3 or GCS
+    remote, up to `max_entries`. The one page-accumulation loop shared by
+    /api/fs/list and the walk; the backend (S3 ListObjectsV2 vs GCS
+    objects.list) is picked per-path by shell_mounts.direct_list_page.
 
     Each page requests only min(1000, remaining) keys, so the accumulation never
     overshoots `max_entries` (a whole extra 1000-key page could otherwise push a
@@ -422,11 +425,11 @@ def _accumulate_s3_pages(path, cursor, max_entries, *,
     and returns the last token, a valid resume point.
 
     Returns (raw_entries, next_token). next_token is non-None exactly when more
-    entries remain (cap hit, budget hit with more pending, or S3 truncated) —
-    i.e. the listing is partial. Raises shell_mounts.S3ListError only when the
-    FIRST page fails (nothing fetched, so the rc fallback is worth trying); a
-    failure after at least one page returns what was accumulated with the
-    failed page's continuation token as the resume point — on a slow bucket
+    entries remain (cap hit, budget hit with more pending, or the listing was
+    truncated) — i.e. the listing is partial. Raises shell_mounts.DirectListError
+    only when the FIRST page fails (nothing fetched, so the rc fallback is worth
+    trying); a failure after at least one page returns what was accumulated with
+    the failed page's continuation token as the resume point — on a slow bucket
     the per-page timeout shrinks toward the budget's deadline and the last
     page routinely times out, and discarding thousands of fetched entries to
     re-list via rc (which can't paginate at all) would turn a partial success
@@ -444,21 +447,22 @@ def _accumulate_s3_pages(path, cursor, max_entries, *,
         # The first page always runs with the full page timeout (the progress
         # guarantee — even a zero budget returns one page). Later pages shrink
         # to the budget's remainder, and stop before it reaches zero: a
-        # non-positive timeout would hit urlopen as a ValueError, not an
-        # S3ListError (Bugbot), and token is already a valid resume point.
+        # non-positive timeout would hit urlopen as a ValueError, not a
+        # DirectListError (Bugbot), and token is already a valid resume point.
         if deadline is not None and entries:
             left = deadline - time.monotonic()
             if left <= 0:
                 break
             t = left if t is None else min(t, left)
         try:
-            page, next_token = shell_mounts.s3_list_page(
+            page, next_token = shell_mounts.direct_list_page(
                 path, max_keys=min(1000, remaining), continuation=token, timeout=t)
-        except shell_mounts.S3ListError:
+        except shell_mounts.DirectListError:
             if not entries:
                 raise
-            logger.warning("S3 page for %r failed mid-listing; returning %d "
-                           "accumulated entries as partial", path, len(entries))
+            logger.warning("direct-listing page for %r failed mid-listing; "
+                           "returning %d accumulated entries as partial",
+                           path, len(entries))
             return entries, token
         token = next_token
         entries.extend(page)
@@ -471,15 +475,15 @@ def _accumulate_s3_pages(path, cursor, max_entries, *,
     return entries, token
 
 
-def _list_s3_direct(path, cursor):
-    """Accumulate S3 ListObjectsV2 pages for a mount-backed dir on an anonymous
-    S3 remote into sorted /api/fs/list items, up to S3_LIST_MAX_ENTRIES within
-    an overall time budget — a deliberately small per-request cap, since this
-    route is resumable (Load more pages in the rest). Returns (entries,
-    next_token); a non-None token means the listing is partial and resumable.
-    Raises shell_mounts.S3ListError on any page failure so the caller can fall
-    back to the rc route."""
-    raw, token = _accumulate_s3_pages(
+def _list_direct(path, cursor):
+    """Accumulate direct-listing pages (S3 ListObjectsV2 / GCS objects.list) for
+    a mount-backed dir on an anonymous S3 or GCS remote into sorted /api/fs/list
+    items, up to S3_LIST_MAX_ENTRIES within an overall time budget — a
+    deliberately small per-request cap, since this route is resumable (Load more
+    pages in the rest). Returns (entries, next_token); a non-None token means the
+    listing is partial and resumable. Raises shell_mounts.DirectListError on any
+    page failure so the caller can fall back to the rc route."""
+    raw, token = _accumulate_direct_pages(
         path, cursor, S3_LIST_MAX_ENTRIES,
         overall_timeout=S3_LIST_OVERALL_TIMEOUT_S)
     # Sorted over what was fetched, not the whole directory — a truncated
@@ -489,9 +493,10 @@ def _list_s3_direct(path, cursor):
     return entries, token
 
 
-# Yielded by _walk_bfs when a directory's listing was cut short (S3 pages
-# stopped early, rc listing over the per-dir cap, or a per-dir rc/S3 failure
-# skipped it). The walk's `truncated` flag counts YIELDED entries, but dotfile /
+# Yielded by _walk_bfs when a directory's listing was cut short (direct S3/GCS
+# pages stopped early, rc listing over the per-dir cap, or a per-dir rc/direct
+# failure skipped it). The walk's `truncated` flag counts YIELDED entries, but
+# dotfile /
 # gitignore filtering means a dir cut at the per-dir cap can yield fewer than the
 # cap while thousands of keys went unlisted — so incompleteness is signalled
 # out-of-band with this sentinel rather than inferred from the entry count. The
@@ -552,19 +557,19 @@ def _walk_bfs(path, include_hidden):
                 is_root = current == path
                 listed = None
                 dir_cut = False  # this dir's listing stopped short (1.3)
-                # Anonymous S3 dir: page S3's own ListObjectsV2 (fast, non-
-                # timeout-prone) up to the remote walk cap instead of the rc
-                # listing rclone can't paginate. On any S3 failure, fall back to
-                # rc for THIS dir (same skip-on-failure semantics as below).
-                if shell_mounts.s3_direct_capable(current):
+                # Anonymous S3/GCS dir: page the store's own listing API (fast,
+                # non-timeout-prone) up to the remote walk cap instead of the rc
+                # listing rclone can't paginate. On any failure, fall back to rc
+                # for THIS dir (same skip-on-failure semantics as below).
+                if shell_mounts.direct_list_capable(current):
                     try:
-                        listed, s3_token = _accumulate_s3_pages(
+                        listed, direct_token = _accumulate_direct_pages(
                             current, None, WALK_MAX_ENTRIES_REMOTE,
                             page_timeout=WALK_RC_LIST_TIMEOUT_S,
                             overall_timeout=WALK_RC_LIST_TIMEOUT_S)
-                        if s3_token is not None:
+                        if direct_token is not None:
                             dir_cut = True  # more keys remained unlisted
-                    except shell_mounts.S3ListError:
+                    except shell_mounts.DirectListError:
                         listed = None  # fall back to the rc path for this dir
                 if listed is None:
                     try:
@@ -1514,17 +1519,18 @@ class _WatchEntry:
         """Change signal for a mount-backed watch, off the event loop.
 
         A DIRECTORY's rclone ModTime is a constant sentinel (2000-01-01) for
-        synthetic S3 dirs, so create/delete/rename of children never moves it —
-        the mount-dir auto-refresh (Listing LS-1) was silently dead. So for a
-        directory the signal is a hash of a BOUNDED shallow listing instead:
-        one s3_list_page (anonymous S3) or a short-timeout rc_list_dir. A FILE
-        (rc rejects the listing as not-a-directory) keeps using operations/stat
-        ModTime. Any failure/timeout -> _UNCHANGED (never an error storm)."""
+        synthetic S3/GCS dirs, so create/delete/rename of children never moves
+        it — the mount-dir auto-refresh (Listing LS-1) was silently dead. So for
+        a directory the signal is a hash of a BOUNDED shallow listing instead:
+        one direct_list_page (anonymous S3/GCS) or a short-timeout rc_list_dir.
+        A FILE (rc rejects the listing as not-a-directory) keeps using
+        operations/stat ModTime. Any failure/timeout -> _UNCHANGED (never an
+        error storm)."""
         from fused_render.shell import mounts as shell_mounts
 
         try:
-            if shell_mounts.s3_direct_capable(self.path):
-                page, _ = shell_mounts.s3_list_page(
+            if shell_mounts.direct_list_capable(self.path):
+                page, _ = shell_mounts.direct_list_page(
                     self.path, max_keys=1000, timeout=4)
                 return _hash_listing(page)
             listed = shell_mounts.rc_list_dir(self.path, timeout=4)
@@ -1536,7 +1542,7 @@ class _WatchEntry:
             m = shell_mounts.rc_mtime_for(self.path)
             return _UNCHANGED if m is None else m
         except Exception:
-            return _UNCHANGED  # S3ListError, etc.
+            return _UNCHANGED  # DirectListError, etc.
 
     async def _read(self):
         """One tick's read with a hard timeout and in-flight de-duplication.
@@ -2084,9 +2090,9 @@ def create_app(start_dir: str) -> FastAPI:
         # too-huge directory is a failed/partial request, never a wedged mount.
         #
         # Every response carries `truncated` (the listing is a partial page) and
-        # `cursor` (an opaque resume token, non-None only on the S3-direct route
-        # — rclone and a local scandir can't resume). Fallback ladder for a
-        # mount path: S3-direct -> rc -> 503.
+        # `cursor` (an opaque resume token, non-None only on the direct S3/GCS
+        # route — rclone and a local scandir can't resume). Fallback ladder for a
+        # mount path: direct -> rc -> 503.
         if shell_mounts.is_mounts_root(path):
             # The mounts container is a LOCAL directory whose children are the
             # mountpoints. is_mount_backed is true for it (so no kernel readdir
@@ -2102,15 +2108,15 @@ def create_app(start_dir: str) -> FastAPI:
             ])
             return _list_response(path, entries, False, None)
         if shell_mounts.is_mount_backed(path):
-            # S3-direct fast path: for anonymous plain AWS S3 — the backend that
-            # dominates our mounts — page S3's own ListObjectsV2 (rclone can't
-            # paginate its listing at any layer, so a million-key prefix times
-            # out on the rc route). On any page failure, log and fall through to
-            # the rc route below.
-            if shell_mounts.s3_direct_capable(path):
+            # Direct fast path: for anonymous plain AWS S3 / anonymous GCS — the
+            # backends that dominate our mounts — page the store's own listing
+            # API (rclone can't paginate its listing at any layer, so a
+            # million-key prefix times out on the rc route). On any page failure,
+            # log and fall through to the rc route below.
+            if shell_mounts.direct_list_capable(path):
                 try:
-                    entries, next_token = _list_s3_direct(path, cursor)
-                except shell_mounts.S3ListError:
+                    entries, next_token = _list_direct(path, cursor)
+                except shell_mounts.DirectListError:
                     # A cursored request can't fall through to rc: rc re-serves
                     # page 1 with cursor=None (the frontend dedupes it to zero
                     # rows and pagination dies) or 503s on a huge dir. Return a
@@ -2118,7 +2124,7 @@ def create_app(start_dir: str) -> FastAPI:
                     if cursor is not None:
                         return _error(
                             "listing continuation failed — retry", status=503)
-                    logger.warning("S3-direct listing of %s failed; falling "
+                    logger.warning("direct listing of %s failed; falling "
                                    "back to rc", path, exc_info=True)
                 else:
                     return _list_response(path, entries,
