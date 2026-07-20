@@ -59,6 +59,11 @@ export default function DeploymentsList() {
   };
 
   useEffect(() => {
+    // Collapse any open recent-errors panel when the environment changes: the
+    // expanded token belongs to the previous env, so leaving it open would
+    // silently re-mount the panel (and re-run its `share errors` call) for a
+    // mount the user never chose to inspect on the new env.
+    setOpenErrors(null);
     if (env !== null) void load(env);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [env]);
