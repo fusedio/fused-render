@@ -804,6 +804,15 @@ _STAT_INDETERMINATE = object()
 # mounts skip this path entirely (see _stat_item -> direct_head/direct_is_dir).
 RC_STAT_TIMEOUT_S = 10.0
 
+# A direct stat may run TWO probes back-to-back (a HeadObject, then a max-keys=1
+# list) and, on a direct miss, fall back to operations/stat. All of them share
+# the caller's SINGLE `timeout` via one deadline (see _stat_item), so a slow
+# first probe can't hand the next one a fresh full budget — which is how one
+# logical stat used to burn up to 2x the cap. This floor is the smallest slice
+# worth spending on a follow-on probe: below it there is no plausible round trip
+# left, so we stop and report indeterminate rather than overrun the deadline.
+_DIRECT_PROBE_MIN_S = 0.5
+
 
 def _rc_stat_item(path: str, *, timeout: float = RC_STAT_TIMEOUT_S):
     """The raw operations/stat `item` for a mount-backed path, off the kernel:
@@ -863,12 +872,17 @@ def _stat_item(path: str, *, timeout: float = RC_STAT_TIMEOUT_S):
     same direct-first path and agree on what each outcome means. rc_mtime_for
     stays on _rc_stat_item directly (its raw-ModTime-string contract predates
     this and no world-scale caller relies on it)."""
+    deadline = time.monotonic() + timeout
     if direct_list_capable(path):
         try:
-            return _direct_stat_item(path, timeout=timeout)
+            return _direct_stat_item(path, deadline=deadline)
         except DirectProbeError:
-            pass  # fall through to the slow rc route
-    item = _rc_stat_item(path, timeout=timeout)
+            pass  # fall through to the slow rc route, on the SAME deadline
+    # The rc fallback shares the direct probes' deadline so an indeterminate
+    # direct outcome can't add a fresh full timeout on top; when the budget is
+    # already spent it gets only the floor and fails open to indeterminate.
+    item = _rc_stat_item(path, timeout=max(_DIRECT_PROBE_MIN_S,
+                                           deadline - time.monotonic()))
     if not isinstance(item, dict):
         return item  # None (missing) or _STAT_INDETERMINATE pass straight through
     return {"IsDir": bool(item.get("IsDir")), "Size": item.get("Size"),
@@ -1596,16 +1610,25 @@ def direct_is_dir(path: str, *, timeout: float = _HEAD_TIMEOUT_S) -> bool:
     raise DirectProbeError(f"{path}: no direct-probe backend")
 
 
-def _direct_stat_item(path: str, *, timeout: float):
+def _direct_stat_item(path: str, *, deadline: float):
     """The _stat_item dict|None outcome via direct probes: a HeadObject decides
     FILE, else a max-keys=1 list decides DIR, else confirmed missing (None). Any
     probe raising DirectProbeError propagates so _stat_item falls back to rc.
-    Two round trips at worst (dir/miss); one for the common file hit."""
-    head = direct_head(path, timeout=timeout)
+    Two round trips at worst (dir/miss); one for the common file hit.
+
+    Both probes share the caller's single `deadline` (monotonic seconds): the
+    head gets the whole remaining budget, the dir list only what the head left,
+    so one logical stat never spends up to 2x the timeout. If the head consumed
+    the budget the dir probe can't fit -> raise so _stat_item treats it as
+    indeterminate (and its own rc fallback is bounded by the same deadline)."""
+    head = direct_head(path, timeout=max(_DIRECT_PROBE_MIN_S,
+                                         deadline - time.monotonic()))
     if head.exists:
         return {"IsDir": False, "Size": head.size,
                 "MtimeEpoch": rc_modtime_epoch(head.mtime)}
-    if direct_is_dir(path, timeout=timeout):
+    if deadline - time.monotonic() < _DIRECT_PROBE_MIN_S:
+        raise DirectProbeError(f"{path}: budget spent before dir probe")
+    if direct_is_dir(path, timeout=deadline - time.monotonic()):
         # S3/GCS have no real directories; a present prefix (or marker) is a dir.
         return {"IsDir": True, "Size": None, "MtimeEpoch": None}
     return None  # no object, no children -> a trustworthy miss

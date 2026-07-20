@@ -2747,6 +2747,7 @@ class DirectObjStub:
 
     def __init__(self):
         self.calls = []  # (method, path, query)
+        self.delay = {}  # method -> seconds to sleep before responding (timeouts)
         # (status, headers-or-body). 200 head -> send those headers, no body.
         self.head = (200, {"Content-Length": "123",
                            "Last-Modified": "Wed, 21 Oct 2015 07:28:00 GMT"})
@@ -2761,6 +2762,8 @@ class DirectObjStub:
             def _record(self):
                 p, _, q = self.path.partition("?")
                 stub.calls.append((self.command, p, q))
+                if self.command in stub.delay:
+                    time.sleep(stub.delay[self.command])
 
             def do_HEAD(self):
                 self._record()
@@ -2922,6 +2925,27 @@ def test_rc_kind_for_direct_dir_then_missing(home, rcd, fresh_upstream, direct_s
     direct_stub.listing = (200, _s3_list_xml())
     assert mounts_mod.rc_kind_for(base + "/gone") == "missing"
     assert not any(x[0] == "operations/stat" for x in rcd.calls)
+
+
+def test_direct_stat_pair_shares_one_timeout_budget(home, rcd, fresh_upstream, direct_stub):
+    # A dir/miss resolution runs direct_head THEN direct_is_dir back-to-back. If
+    # each got a fresh full `timeout`, one logical rc_kind_for could burn up to
+    # 2x the caller's budget (the "direct stat doubles probe timeout" bug). The
+    # two probes must SHARE one deadline, so a slow head leaves the list only the
+    # remaining budget — a single stat never exceeds ~timeout.
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    # Both point probes are slow (0.8s); together they'd be ~1.6s if unbounded.
+    direct_stub.head = (404, {})                 # HEAD -> not a file (proceeds to dir probe)
+    direct_stub.listing = (200, _s3_list_xml())  # empty prefix
+    direct_stub.delay = {"HEAD": 0.8, "GET": 0.8}
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    t0 = time.monotonic()
+    mounts_mod.rc_kind_for(mounts_mod.mountpoint(c) + "/slow", timeout=1.0)
+    elapsed = time.monotonic() - t0
+    # With the shared budget the head eats most of the 1.0s and the list gets no
+    # meaningful budget, so the whole call stays well under 2x. Without the fix
+    # this is ~1.6s.
+    assert elapsed < 1.3, f"one stat took {elapsed:.2f}s, ~2x the 1.0s budget"
 
 
 def test_rc_stat_result_falls_back_to_rc_when_direct_errors(home, rcd, fresh_upstream, direct_stub):
