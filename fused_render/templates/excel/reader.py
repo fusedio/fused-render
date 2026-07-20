@@ -783,10 +783,16 @@ def _list_remote(origin, path, cap=5000):
 
 def _listdir(path, origin=""):
     path = os.path.abspath(os.path.expanduser(path or "~"))
-    # forward slashes on every platform: the browser's crumb/join logic is "/"-based
-    parent = (os.path.dirname(path) or path).replace(os.sep, "/")  # dirname(root) == root
-    if _remote_dir(origin, path):
-        # Mount-backed dir: list via /api/fs/list, never a kernel scan.
+    # Ask the server once: is this a remote (mount-backed) path, and is it a dir?
+    status, meta = _stat(origin, path) if origin else ("", None)
+    if status == "ok" and meta.get("remote"):
+        # Mount-backed: list via /api/fs/list, never a kernel scan. If `path` is a
+        # file (not a dir), descend to its parent with pure string ops — never a
+        # kernel os.path call on a remote path (that call wedges the NFS mount).
+        if not meta.get("is_dir"):
+            path = os.path.dirname(path) or "/"
+        # forward slashes on every platform: the browser's crumb/join logic is "/"-based
+        parent = (os.path.dirname(path) or path).replace(os.sep, "/")  # dirname(root) == root
         fpath = path.replace(os.sep, "/")
         dirs, files = [], []
         try:
@@ -805,6 +811,8 @@ def _listdir(path, origin=""):
         dirs.sort(key=str.lower)
         files.sort(key=lambda f: f["name"].lower())
         return {"path": fpath, "parent": parent, "dirs": dirs, "files": files}
+    # forward slashes on every platform: the browser's crumb/join logic is "/"-based
+    parent = (os.path.dirname(path) or path).replace(os.sep, "/")  # dirname(root) == root
     if not os.path.isdir(path):
         path = os.path.dirname(path) or "/"
         parent = (os.path.dirname(path) or path).replace(os.sep, "/")

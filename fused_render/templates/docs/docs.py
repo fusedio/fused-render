@@ -227,8 +227,14 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
     if action == "listdir":
         base = os.path.abspath(os.path.expanduser(path)) if path else os.path.expanduser("~")
         dirs, files = [], []
-        if _remote_dir(src, base):
-            # Mount-backed dir: list via /api/fs/list, never a kernel scan.
+        # Ask the server once: is this a remote (mount-backed) path, and is it a dir?
+        status, meta = _stat(src, base) if src else ("", None)
+        if status == "ok" and meta.get("remote"):
+            # Mount-backed: list via /api/fs/list, never a kernel scan. If `base` is a
+            # file (not a dir), descend to its parent with pure string ops — never a
+            # kernel os.path call on a remote path (that call wedges the NFS mount).
+            if not meta.get("is_dir"):
+                base = os.path.dirname(base) or os.path.expanduser("~")
             try:
                 ents, _ = _list_remote(src, base)
             except Exception:  # noqa: BLE001

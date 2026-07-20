@@ -22,6 +22,9 @@ import pytest
 from fused_render.templates.map import discover as map_discover
 from fused_render.templates.photos import reader as photos
 from fused_render.templates.log_studio import reader as logstudio
+from fused_render.templates.excel import reader as excel
+from fused_render.templates.docs import docs
+from fused_render.templates.latex import engine
 
 
 class _FakeFS:
@@ -198,3 +201,114 @@ def test_reader_unreachable_falls_back_to_kernel_local(tmp_path):
     res = map_discover.main(dir=str(tmp_path), src=bad_src)
     names = {e["name"] for e in res["entries"]}
     assert "sub" in names and "z.tif" in names
+
+
+# --------------------------------------------------------------------------
+# remote FILE path -> descend to parent dir (string-only), then list that dir.
+# A reader that lists the FILE path directly via /api/fs/list gets nothing back
+# (a file is not a listable dir) — the fake below serves entries ONLY for the
+# parent dir path, so a missing file-to-parent descent fails loudly (empty).
+# --------------------------------------------------------------------------
+
+class _PathFakeFS:
+    """Serves /api/fs/stat + /api/fs/list keyed by the requested `path`, so a
+    FILE path and its parent DIR behave differently: stat reports the file as
+    is_dir=False and the dir as is_dir=True, and /api/fs/list returns entries
+    ONLY for the dir path (listing the file path yields an empty listing, as a
+    real server would for a non-directory)."""
+
+    def __init__(self, dir_path, dir_entries, file_path):
+        self.dir_path = dir_path
+        self.dir_entries = dir_entries
+        self.file_path = file_path
+        fs = self
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _json(self, code, obj):
+                body = json.dumps(obj).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                parts = urlsplit(self.path)
+                p = parse_qs(parts.query).get("path", [""])[0]
+                if parts.path == "/api/fs/stat":
+                    if p == fs.file_path:
+                        self._json(200, {"remote": True, "is_dir": False,
+                                         "size": 1, "name": "f"})
+                    elif p == fs.dir_path:
+                        self._json(200, {"remote": True, "is_dir": True,
+                                         "size": None, "name": "d"})
+                    else:
+                        self._json(404, {"error": "no such file"})
+                    return
+                if parts.path == "/api/fs/list":
+                    ents = fs.dir_entries if p == fs.dir_path else []
+                    self._json(200, {"path": p, "entries": ents,
+                                     "truncated": False, "cursor": ""})
+                    return
+                self._json(404, {"error": "not found"})
+
+        self._srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.port = self._srv.server_address[1]
+        self._t = threading.Thread(target=self._srv.serve_forever, daemon=True)
+        self._t.start()
+
+    @property
+    def src(self):
+        return f"http://127.0.0.1:{self.port}/api/fs/raw?path=%2Fmnt%2Fd"
+
+    def close(self):
+        self._srv.shutdown()
+
+
+@pytest.fixture
+def pathfs():
+    servers = []
+
+    def make(dir_path, dir_entries, file_path):
+        s = _PathFakeFS(dir_path, dir_entries, file_path)
+        servers.append(s)
+        return s
+
+    yield make
+    for s in servers:
+        s.close()
+
+
+_DIR = "/definitely/not/here/on/disk/mnt-dir"
+
+
+def test_excel_listdir_remote_file_descends_to_parent(pathfs):
+    fp = _DIR + "/book.xlsx"
+    s = pathfs(_DIR, [_ent("sub", is_dir=True), _ent("book.xlsx", size=10)], fp)
+    res = excel._listdir(fp, origin=s.src)
+    assert "error" not in res
+    assert res["path"] == _DIR
+    assert res["dirs"] == ["sub"]
+    assert [f["name"] for f in res["files"]] == ["book.xlsx"]
+
+
+def test_docs_listdir_remote_file_descends_to_parent(pathfs):
+    fp = _DIR + "/report.docx"
+    s = pathfs(_DIR, [_ent("sub", is_dir=True), _ent("report.docx")], fp)
+    res = docs.main(action="listdir", path=fp, src=s.src)
+    assert res["path"] == _DIR
+    assert res["dirs"] == ["sub"]
+    assert res["files"] == ["report.docx"]
+
+
+def test_latex_browse_remote_file_descends_to_parent(pathfs):
+    fp = _DIR + "/main.tex"
+    s = pathfs(_DIR, [_ent("sub", is_dir=True), _ent("main.tex")], fp)
+    res = engine.main(action="browse", path=fp, src=s.src)
+    assert "error" not in res
+    assert res["dir"] == _DIR
+    names = {e["name"] for e in res["entries"]}
+    assert names == {"sub", "main.tex"}

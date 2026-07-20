@@ -385,6 +385,26 @@ def test_stat_mounts_root_is_local_dir_not_indeterminate_503(home, monkeypatch):
     assert out["path"] == mounts_mod.mounts_dir()
 
 
+def test_stat_symlink_to_mounts_root_treated_as_root_not_503(home, monkeypatch, tmp_path):
+    # A symlink whose TARGET is the mounts container root is is_mount_backed
+    # (via its realpath branch), so it must ALSO read as is_mounts_root — else
+    # the _mount_safe_stat guard `is_mount_backed and not is_mounts_root` sends
+    # it through rc_stat_result, which finds no mount record for the container
+    # and surfaces the exact spurious 503 the root guard exists to prevent.
+    link = tmp_path / "mounts-link"
+    os.symlink(mounts_mod.mounts_dir(), link)
+    # is_mounts_root must resolve the symlink TO the root (mirrors is_mount_backed).
+    assert mounts_mod.is_mounts_root(str(link)) is True
+
+    def _boom(*a, **k):
+        raise AssertionError("rc_stat_result consulted for a symlink to the mounts root")
+    monkeypatch.setattr(mounts_mod, "rc_stat_result", _boom)
+    resp = STAT(str(link))
+    assert _status(resp) == 200
+    out = _data(resp)
+    assert out["is_dir"] is True
+
+
 def test_mounts_root_known_mount_name_still_exists_mkdir_409(home, monkeypatch):
     # A name carried by a real mount record still reads as an existing dir, so
     # MKDIR over it is a 409 conflict (the fix must not regress this direction).

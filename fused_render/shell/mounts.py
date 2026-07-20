@@ -753,8 +753,25 @@ def is_mounts_root(path: str) -> bool:
     the root is kept off the kernel like any remote path; but the root is under
     no single mount record, so the rc/S3 listing routes have nothing to list.
     Callers list the root by enumerating mount records instead (no kernel or
-    remote I/O)."""
-    return os.path.abspath(path) == os.path.abspath(mounts_dir())
+    remote I/O).
+
+    Mirrors is_mount_backed's symlink handling: a symlink whose TARGET is the
+    mounts root looks mount-backed (via that function's realpath branch) yet
+    would fail a pure abspath match here, so the guard that keeps the root off
+    the rc/S3 routes would miss it. So a path that does NOT resolve within the
+    container by abspath is re-checked through os.path.realpath, which follows
+    the symlink to the root. The real root matches on abspath and never reaches
+    realpath; a path already UNDER the container is a mountpoint (or deeper),
+    never the root itself, and is settled by string so realpath never gets to
+    kernel-stat a live mount. Only an outside-looking symlink pays one realpath
+    (a local resolve, off any mount)."""
+    root = os.path.abspath(mounts_dir())
+    ap = os.path.abspath(path)
+    if ap == root:
+        return True
+    if ap.startswith(root + os.sep):
+        return False
+    return os.path.realpath(path) == os.path.realpath(mounts_dir())
 
 
 def rc_mtime_for(path: str) -> str | None:

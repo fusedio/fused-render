@@ -35,6 +35,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import sys
 import threading
 import time
@@ -59,6 +60,23 @@ def _me():
     if "__file__" in globals():
         return os.path.abspath(__file__)
     return os.path.join(os.path.abspath(sys.path[0]), "tile_server.py")
+
+
+def _home_dir():
+    """Branch-aware ~/.fused-render, mirroring fused_render.shell.storage.home_dir
+    + _branch.branch_dir. The daemon runs in its own venv with no fused_render,
+    so the resolution is inlined; main() passes FUSED_RENDER_HOME and
+    FUSED_RENDER_BRANCH through the daemon's env, so a per-branch dev server
+    (state under ~/.fused-render/branches/<ref>/) is detected as a mount, not
+    misread as a plain local path. Keep the sanitize rule in lockstep with
+    _branch.sanitize (lowercase, collapse non-[a-z0-9] runs to '-', trim,
+    truncate to 12; main/master/head -> baseline)."""
+    base = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
+    raw = os.environ.get("FUSED_RENDER_BRANCH", "")
+    ref = ""
+    if raw and raw.lower() not in ("main", "master", "head"):
+        ref = re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-")[:12].rstrip("-")
+    return os.path.join(base, "branches", ref) if ref else base
 
 
 def _daemon_python():
@@ -321,7 +339,7 @@ def _serve():
             return {"kind": "http", "url": path, "storage_options": {},
                     "label": path}
         path = os.path.abspath(os.path.expanduser(path))
-        mroot = os.path.expanduser("~/.fused-render/mounts") + os.sep
+        mroot = os.path.join(_home_dir(), "mounts") + os.sep
         if path.startswith(mroot):
             # Default transport: the server's own ranged-read API. The server
             # decides how the bytes move (rclone-serve proxy, presigned 307,
@@ -341,8 +359,8 @@ def _serve():
             rel = path[len(mroot):]
             name, _, rest = rel.partition(os.sep)
             try:
-                mounts = json.load(open(os.path.expanduser(
-                    "~/.fused-render/mounts.json")))
+                mounts = json.load(open(os.path.join(
+                    _home_dir(), "mounts.json")))
             except (OSError, ValueError):
                 mounts = []
             ent = next((m for m in mounts if m.get("name") == name), None)

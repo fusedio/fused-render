@@ -601,8 +601,14 @@ def main(action: str = "tectonic_status", path: str = "", target: str = "",
         d = os.path.abspath(path) if path else os.path.expanduser("~")
         tex_only = (target or "").lower() == "tex"
         entries = []
-        if _remote_dir(src, d):
-            # Mount-backed dir: list via /api/fs/list, never a kernel scan.
+        # Ask the server once: is this a remote (mount-backed) path, and is it a dir?
+        status, meta = _stat(src, d) if src else ("", None)
+        if status == "ok" and meta.get("remote"):
+            # Mount-backed: list via /api/fs/list, never a kernel scan. If `d` is a
+            # file (not a dir), descend to its parent with pure string ops — never a
+            # kernel os.path call on a remote path (that call wedges the NFS mount).
+            if not meta.get("is_dir"):
+                d = os.path.dirname(d) or "/"
             try:
                 ents, _ = _list_remote(src, d)
             except Exception as exc:  # noqa: BLE001
