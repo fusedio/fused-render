@@ -879,10 +879,14 @@ def _stat_item(path: str, *, timeout: float = RC_STAT_TIMEOUT_S):
         except DirectProbeError:
             pass  # fall through to the slow rc route, on the SAME deadline
     # The rc fallback shares the direct probes' deadline so an indeterminate
-    # direct outcome can't add a fresh full timeout on top; when the budget is
-    # already spent it gets only the floor and fails open to indeterminate.
-    item = _rc_stat_item(path, timeout=max(_DIRECT_PROBE_MIN_S,
-                                           deadline - time.monotonic()))
+    # direct outcome can't add a fresh full timeout on top; below the floor
+    # there is no plausible round trip left, so fail open to indeterminate
+    # rather than overrun the caller's timeout (the floor is a bail-out
+    # threshold, never a grant).
+    remaining = deadline - time.monotonic()
+    if remaining < _DIRECT_PROBE_MIN_S:
+        return _STAT_INDETERMINATE
+    item = _rc_stat_item(path, timeout=remaining)
     if not isinstance(item, dict):
         return item  # None (missing) or _STAT_INDETERMINATE pass straight through
     return {"IsDir": bool(item.get("IsDir")), "Size": item.get("Size"),
@@ -1621,8 +1625,10 @@ def _direct_stat_item(path: str, *, deadline: float):
     so one logical stat never spends up to 2x the timeout. If the head consumed
     the budget the dir probe can't fit -> raise so _stat_item treats it as
     indeterminate (and its own rc fallback is bounded by the same deadline)."""
-    head = direct_head(path, timeout=max(_DIRECT_PROBE_MIN_S,
-                                         deadline - time.monotonic()))
+    remaining = deadline - time.monotonic()
+    if remaining < _DIRECT_PROBE_MIN_S:
+        raise DirectProbeError(f"{path}: budget spent before head probe")
+    head = direct_head(path, timeout=remaining)
     if head.exists:
         return {"IsDir": False, "Size": head.size,
                 "MtimeEpoch": rc_modtime_epoch(head.mtime)}

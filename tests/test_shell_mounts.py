@@ -2960,3 +2960,23 @@ def test_rc_stat_result_falls_back_to_rc_when_direct_errors(home, rcd, fresh_ups
     st = mounts_mod.rc_stat_result(mounts_mod.mountpoint(c) + "/d")
     assert stat.S_ISDIR(st.st_mode)
     assert any(x[0] == "operations/stat" for x in rcd.calls)
+
+
+def test_probe_floor_never_exceeds_caller_timeout(home, rcd, fresh_upstream, direct_stub):
+    # _DIRECT_PROBE_MIN_S is a bail-out threshold, NOT a grant: when the
+    # caller's remaining budget is already below the floor, the stat must
+    # report indeterminate immediately — a max(floor, remaining) clamp would
+    # instead hand a 0.5s head probe PLUS a 0.5s rc fallback to a caller who
+    # asked for 0.2s, stacking one logical stat past the gate budget (the
+    # "probe floor exceeds caller timeout" bug).
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    direct_stub.head = (404, {})
+    direct_stub.listing = (200, _s3_list_xml())
+    direct_stub.delay = {"HEAD": 2.0, "GET": 2.0}  # any granted probe shows up as wall time
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    t0 = time.monotonic()
+    kind = mounts_mod.rc_kind_for(mounts_mod.mountpoint(c) + "/x", timeout=0.2)
+    elapsed = time.monotonic() - t0
+    assert kind == "indeterminate"
+    assert elapsed < 0.19, (
+        f"sub-floor budget still ran probes for {elapsed:.2f}s (floor granted, not bailed)")
