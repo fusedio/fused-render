@@ -368,6 +368,14 @@ def _serve():
                             "storage_options": so,
                             "label": f"mount '{name}' → s3://{key}"
                                      + (" (anonymous)" if anon else "")}
+                elif cfg.get("type") == "google cloud storage":
+                    # GCS analog of the s3 branch: gcsfs takes token="anon" for
+                    # anonymous public buckets, and needs no region/endpoint.
+                    anon = cfg.get("anonymous") == "true"
+                    return {"kind": "gcs", "url": "gcs://" + key,
+                            "storage_options": {"token": "anon"} if anon else {},
+                            "label": f"mount '{name}' → gcs://{key}"
+                                     + (" (anonymous)" if anon else "")}
         return {"kind": "local", "url": path, "label": path + " (local)"}
 
     # ---------------- dataset open + discovery ----------------
