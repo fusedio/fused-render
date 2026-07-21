@@ -2234,7 +2234,24 @@ def ensure_learn_mount() -> None:
     via the existing read_only plumbing.
 
     Never raises — this runs on the automount path and a storage failure
-    must not break the user's own mounts."""
+    must not break the user's own mounts.
+
+    BUGBOT (2026-07-21): rcd survives server restarts (module docstring), so
+    an already-live mount at the learn mountpoint is never naturally
+    refreshed. Two staleness paths that opened:
+      - the bundle relocates (remote string changes) — a live mount still
+        serves the OLD fs, and attach_mount would then reject the new record
+        outright (fs mismatch — see attach_mount's already-mounted branch);
+      - an in-place app upgrade overwrites learn.zip at the SAME path — the
+        remote string never changes, so nothing signalled a refresh was
+        needed at all, and the live VFS + on-disk cache kept serving last
+        version's bytes indefinitely.
+    Fixed the same way for both: whenever a live rcd mount already sits at
+    the learn mountpoint, force-detach it here (best-effort) so run_automount's
+    normal per-mount loop right after this call does a fresh attach_mount —
+    unconditionally, not just when the remote string happens to differ, since
+    content can change under an unchanged path. Cheap: this is a small local
+    archive, not a network remote."""
     try:
         path = learn_zip_path()
         with _store_lock:
@@ -2245,12 +2262,16 @@ def ensure_learn_mount() -> None:
             if path is None:
                 if builtin is not None:
                     _write([m for m in mounts if m is not builtin])
+                    _force_detach_learn_mount(builtin)
                 return
             remote = f":archive:{path}"
             if builtin is not None:
                 if builtin["remote"] != remote:
                     builtin["remote"] = remote
                     _write(mounts)
+                # Force a fresh mount every startup, changed or not (see the
+                # upgrade-same-path staleness case above).
+                _force_detach_learn_mount(builtin)
                 return
             if any(m["name"] == LEARN_MOUNT_NAME for m in mounts):
                 logger.warning(
@@ -2269,6 +2290,24 @@ def ensure_learn_mount() -> None:
             _write(mounts)
     except Exception:
         logger.exception("ensure_learn_mount failed")
+
+
+def _force_detach_learn_mount(builtin: dict) -> None:
+    """Best-effort unmount of the builtin learn mountpoint if rcd (or the
+    kernel) still has one live from a prior server run, so the caller's
+    upserted record gets a genuinely fresh mount/mount instead of being
+    silently adopted with stale fs/content — see ensure_learn_mount's BUGBOT
+    note. Runs OUTSIDE any lock the caller already holds being irrelevant
+    here since detach_mount only talks to rcd/the kernel, never mounts.json.
+    Swallows everything: a failed detach just means run_automount's
+    subsequent attach_mount adopts (or errors on) whatever is still there,
+    exactly like before this fix — never worse."""
+    try:
+        mp = mountpoint(builtin)
+        if mp in mounted_paths() or os.path.ismount(mp):
+            detach_mount(builtin)
+    except Exception:
+        logger.warning("force-detach of builtin learn mount failed", exc_info=True)
 
 
 def run_automount() -> None:

@@ -99,6 +99,59 @@ def test_updates_stale_remote(home, learn_zip, tmp_path, monkeypatch):
     assert recs[0]["name"] == "learn"
 
 
+def test_forces_detach_when_remote_unchanged(home, learn_zip, monkeypatch):
+    # BUGBOT: an in-place app upgrade overwrites learn.zip at the SAME path,
+    # so the remote string never changes — nothing must be allowed to skip
+    # the detach just because the record looks unchanged, or a live rcd
+    # mount from a prior run would keep serving last version's bytes.
+    mounts_mod.ensure_learn_mount()
+    calls = []
+    monkeypatch.setattr(mounts_mod, "mounted_paths",
+                        lambda: {mounts_mod.mountpoint(_learn_records()[0])})
+    monkeypatch.setattr(mounts_mod, "detach_mount",
+                        lambda m, force=False: calls.append(m["id"]))
+    mounts_mod.ensure_learn_mount()  # same zip, same remote, still live
+    assert calls == [_learn_records()[0]["id"]]
+
+
+def test_forces_detach_on_remote_change(home, learn_zip, tmp_path, monkeypatch):
+    mounts_mod.ensure_learn_mount()
+    calls = []
+    monkeypatch.setattr(mounts_mod, "mounted_paths",
+                        lambda: {mounts_mod.mountpoint(_learn_records()[0])})
+    monkeypatch.setattr(mounts_mod, "detach_mount",
+                        lambda m, force=False: calls.append(m["id"]))
+    moved = tmp_path / "elsewhere" / "learn.zip"
+    moved.parent.mkdir()
+    moved.write_bytes(learn_zip.read_bytes())
+    monkeypatch.setenv("FUSED_RENDER_LEARN_ZIP", str(moved))
+    mounts_mod.ensure_learn_mount()
+    assert calls == [_learn_records()[0]["id"]]
+
+
+def test_forces_detach_when_zip_removed(home, learn_zip, monkeypatch):
+    mounts_mod.ensure_learn_mount()
+    builtin_id = _learn_records()[0]["id"]
+    calls = []
+    monkeypatch.setattr(mounts_mod, "mounted_paths",
+                        lambda: {mounts_mod.mountpoint({"name": "learn"})})
+    monkeypatch.setattr(mounts_mod, "detach_mount",
+                        lambda m, force=False: calls.append(m["id"]))
+    monkeypatch.delenv("FUSED_RENDER_LEARN_ZIP")
+    monkeypatch.setattr(mounts_mod.sys, "frozen", None, raising=False)
+    mounts_mod.ensure_learn_mount()
+    assert calls == [builtin_id]
+    assert _learn_records() == []
+
+
+def test_no_detach_when_nothing_live(home, learn_zip, monkeypatch):
+    calls = []
+    monkeypatch.setattr(mounts_mod, "detach_mount",
+                        lambda m, force=False: calls.append(m["id"]))
+    mounts_mod.ensure_learn_mount()  # first-ever create: nothing live yet
+    assert calls == []
+
+
 def test_removes_builtin_when_zip_gone(home, learn_zip, monkeypatch):
     mounts_mod.ensure_learn_mount()
     assert _learn_records()
