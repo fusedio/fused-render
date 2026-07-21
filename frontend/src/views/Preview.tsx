@@ -615,6 +615,21 @@ function TemplatePreview({
                 : modeTitle(counterpart as string)}
           </button>
         )}
+        {/* Embed hides .preview-header (see afterName above), so the "Open as
+            app" affordance also rides as a corner chip pinned over the
+            listing, revealed only in embed — same pattern as
+            preview-browse-chip. Opposite corner so the two can coexist (a
+            directory can have both a browsable counterpart mode AND a lone
+            HTML file). */}
+        {isListing && singleAppPath && (
+          <button
+            type="button"
+            className="open-as-app-chip"
+            onClick={() => navigate(singleAppPath, { isDir: false })}
+          >
+            Open as app
+          </button>
+        )}
       </div>
       {fileMenu.overlays}
     </>

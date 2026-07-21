@@ -1228,6 +1228,40 @@ body.embed .preview-browse-chip:hover {
   border-color: var(--accent);
 }
 
+/* Embed counterpart of .open-as-app-btn (embed hides .preview-header, so the
+   header button can't reach it) — opposite corner from .preview-browse-chip
+   so a directory carrying both can show both at once. Same accent tint as
+   the header button / the old per-row "App" chip. */
+.open-as-app-chip {
+  display: none;
+}
+
+body.embed .open-as-app-chip {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 5px 9px;
+  border: 1px solid rgba(229, 255, 68, 0.45);
+  border-radius: 8px;
+  /* Opaque (unlike .open-as-app-btn's translucent tint) — this one is pinned
+     OVER the listing's search input, and a see-through fill let its
+     placeholder text bleed through underneath. */
+  background: var(--bg-alt);
+  color: #c9d95e;
+  cursor: pointer;
+}
+
+body.embed .open-as-app-chip:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 /* Panel mode (/view/_panel, /embed/_panel): a split-pane grid of /embed iframes (SPEC §14).
    Modeled on the reference grid-viewer's pane styles, using our palette. The
    root is position:relative so a maximized pane fills the panel area (inside

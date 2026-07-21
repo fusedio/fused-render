@@ -788,9 +788,17 @@ export default function Listing({
   // ("app") file. Keyed off the plain listing, not the search results — the
   // button this drives describes the folder's own contents, regardless of
   // what's currently typed into the in-folder search box.
+  //   • A truncated listing (the server-cap banner) only ever holds a partial
+  //     page, so a lone HTML match there doesn't mean it's the folder's only
+  //     one — withhold the report rather than risk a false "app" button.
+  //   • "loading" reports nothing either way (neither null nor a path) so a
+  //     same-path remount (e.g. switching a mode away from `_listing` and
+  //     back) doesn't flicker an already-known button off for the length of
+  //     the refetch; only "ok"/"error" settle the caller's state.
   useEffect(() => {
     if (!onSingleApp) return;
-    if (state.status !== "ok") {
+    if (state.status === "loading") return;
+    if (state.status !== "ok" || state.truncated) {
       onSingleApp(null);
       return;
     }
