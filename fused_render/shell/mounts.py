@@ -44,7 +44,7 @@ from datetime import datetime
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
-from fused_render.shell import storage
+from fused_render.shell import s3sign, storage
 
 logger = logging.getLogger(__name__)
 
@@ -1435,10 +1435,32 @@ def serve_url_for(path: str) -> str | None:
 # Presigned links default to a 1h expiry; reuse them for well under that so
 # a link handed to a proxied read is never near expiry.
 _LINK_TTL_S = 30 * 60.0
+# Sign-mode presign lifetime. A signed link is handed to the 307 client and
+# consumed at once, so this only bounds the window a leaked link is replayable;
+# creds are re-resolved every _CRED_TTL_S regardless.
+_SIGN_EXPIRY_S = 15 * 60
+_SIGN_VALIDATE_TIMEOUT_S = 5.0
+_CRED_TTL_S = 60.0  # re-read env / ~/.aws so a rotated key / STS refresh lands
+_UPSTREAM_LINKS_CAP = 4096  # bound the publiclink cache (sign mode never inserts)
 _upstream_lock = threading.Lock()
 _upstream_links: dict = {}  # (fs, rel) -> (url, monotonic expiry)
-_upstream_mode: dict = {}   # fs -> "link" | "public" | "none"
+_upstream_mode: dict = {}   # fs -> "link" | "public" | "none" | "sign"
 _upstream_cfg: dict = {}    # remote name -> config/get dict (successes only)
+_upstream_region: dict = {}  # fs -> region (self-corrected from x-amz-bucket-region)
+_cred_cache: dict = {}      # remote name -> (Credentials|None, monotonic expiry)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Redirect handler that never follows: sign-mode validation must observe
+    a wrong-region 301/307 itself (with its x-amz-bucket-region header) rather
+    than have urllib chase it to a host the signature — which covers Host —
+    doesn't match, turning a correctable region hint into an opaque 403."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 def _remote_config(name: str) -> dict | None:
@@ -1480,6 +1502,20 @@ def _cannot_presign(cfg: dict | None) -> bool:
     objects by a plain unsigned URL instead. Lets _upstream_url_for skip the
     wasted publiclink rc call for either backend."""
     return cfg is not None and (_anonymous_s3(cfg) or _gcs_anonymous(cfg))
+
+
+def _s3_signable(cfg: dict | None) -> bool:
+    """True when the remote is plain AWS S3 (no custom endpoint) whose
+    credentials resolve locally — the class we can presign in-process instead
+    of round-tripping publiclink per object. NOT anonymous S3 (that carries no
+    creds and is handled first by _anonymous_s3/_cannot_presign), and NOT
+    custom-endpoint S3 (R2/MinIO/source.coop mirrors): endpoint addressing and
+    region conventions vary per provider, so those keep the publiclink path.
+    Callers must check _anonymous_s3 FIRST so an anonymous remote never reaches
+    the resolver."""
+    if cfg is None or cfg.get("type") != "s3" or cfg.get("endpoint"):
+        return False
+    return s3sign.resolve_credentials(cfg) is not None
 
 
 def _mount_for(path: str) -> tuple[dict | None, str]:
@@ -1573,6 +1609,72 @@ def _gcs_public_object_url(fs: str, rel: str) -> str | None:
     key = (prefix + "/" if prefix else "") + rel
     # Match _public_object_url's key quoting (same default safe chars).
     return f"https://storage.googleapis.com/{bucket}/{urllib.parse.quote(key)}"
+
+
+def _signable_credentials(name: str, cfg: dict | None):
+    """resolve_credentials for a remote, cached per name for _CRED_TTL_S so a
+    rotated ~/.aws/credentials or an STS refresh is picked up without a
+    restart, but the env/file reads aren't paid per object on the sign hot
+    path. None (also cached) when nothing resolves."""
+    now = time.monotonic()
+    with _upstream_lock:
+        hit = _cred_cache.get(name)
+        if hit is not None and hit[1] > now:
+            return hit[0]
+    creds = s3sign.resolve_credentials(cfg)
+    with _upstream_lock:
+        _cred_cache[name] = (creds, now + _CRED_TTL_S)
+    return creds
+
+
+def _s3_request_url(fs: str, rel: str, *, method: str = "GET",
+                    query: dict | None = None) -> str | None:
+    """The direct S3 URL for one request against a mount's remote — the single
+    dispatch the raw-read, listing and probe sites share so they can't diverge
+    on how a URL is built or signed:
+      - anonymous remote  -> the EXISTING unsigned builders, verbatim
+        (_public_object_url for an object; the same base?query build the pager
+        used for a listing) — byte-identical to today, resolver never consulted;
+      - signable remote   -> a locally presigned URL for `method`;
+      - neither           -> None (caller falls back to rc).
+    `query` present means a ListObjectsV2 request against the bucket root (its
+    params are signed through the presigner, canonicalized in one place);
+    absent means an object request keyed by `rel`."""
+    name = fs.partition(":")[0]
+    cfg = _remote_config(name)
+    if cfg is None:
+        return None
+    # Anonymous FIRST: an anonymous remote never resolves credentials, never
+    # signs — its URLs are the exact unsigned ones today's code produces.
+    if _anonymous_s3(cfg):
+        if query is None:
+            return _public_object_url(fs, rel)
+        derived = _s3_bucket_prefix_region(fs, cfg)
+        if derived is None:
+            return None
+        bucket, _prefix, region = derived
+        base = _s3_base_url(bucket, region)
+        qs = urllib.parse.urlencode(query)
+        return f"{base}?{qs}" if "." in bucket else f"{base}/?{qs}"
+    if not _s3_signable(cfg):
+        return None
+    creds = _signable_credentials(name, cfg)
+    derived = _s3_bucket_prefix_region(fs, cfg)
+    if creds is None or derived is None:
+        return None
+    bucket, prefix, cfg_region = derived
+    with _upstream_lock:
+        region = _upstream_region.get(fs, cfg_region)  # adopted region wins
+    if query is None:
+        key = (prefix + "/" if prefix else "") + rel
+        url = _s3_base_url(bucket, region) + "/" + urllib.parse.quote(key)
+        return s3sign.presign_url(url, method=method, region=region,
+                                  credentials=creds, expires=_SIGN_EXPIRY_S)
+    base = _s3_base_url(bucket, region)
+    root = base if "." in bucket else base + "/"
+    return s3sign.presign_url(root, method=method, region=region,
+                              credentials=creds, extra_query=query,
+                              expires=_SIGN_EXPIRY_S)
 
 
 # ------------------------------------------------------- direct S3 pagination
@@ -2062,6 +2164,63 @@ def upstream_url_for(path: str) -> str | None:
         return None
 
 
+def _remember_region(fs: str, region: str) -> None:
+    with _upstream_lock:
+        _upstream_region[fs] = region
+
+
+def _forget_region(fs: str) -> None:
+    with _upstream_lock:
+        _upstream_region.pop(fs, None)
+
+
+def _sign_validation_status(url: str) -> tuple[int, str | None]:
+    """Sign mode's one validation probe: a Range: bytes=0-0 GET against a
+    presigned URL, redirects NOT followed (see _NoRedirect). Returns (HTTP
+    status, x-amz-bucket-region header) — (0, None) on a network error. Only
+    the status/region is surfaced; the presigned URL is never logged."""
+    req = urllib.request.Request(url, method="GET",
+                                 headers={"Range": "bytes=0-0"})
+    try:
+        with _NO_REDIRECT_OPENER.open(
+                req, timeout=_SIGN_VALIDATE_TIMEOUT_S) as resp:
+            return resp.status, resp.headers.get("x-amz-bucket-region")
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers.get("x-amz-bucket-region")
+    except (urllib.error.URLError, OSError):
+        return 0, None
+
+
+def _validate_and_sign(fs: str, rel: str, cfg: dict) -> str | None:
+    """One-time sign-mode validation for a remote: presign a ranged GET for
+    `rel` and issue it once. Returns that presigned URL when S3 accepts the
+    signature (200/206/404/416 — a 404 means the signature was accepted and the
+    object is merely absent), self-correcting the region ONCE on a 301/400 that
+    carries x-amz-bucket-region (common for wrong-region private-bucket configs)
+    and re-signing. Returns None on 403 / network failure so the caller keeps
+    today's publiclink path — behavior identical to today for anything sign mode
+    can't serve."""
+    derived = _s3_bucket_prefix_region(fs, cfg)
+    if derived is None:
+        return None
+    region = derived[2]
+    for attempt in (1, 2):
+        _remember_region(fs, region)  # _s3_request_url reads the adopted region
+        url = _s3_request_url(fs, rel, method="GET")
+        if url is None:
+            break
+        status, corrected = _sign_validation_status(url)
+        if status in (200, 206, 404, 416):
+            return url
+        if (attempt == 1 and status in (301, 400)
+                and corrected and corrected != region):
+            region = corrected
+            continue
+        break
+    _forget_region(fs)  # don't leave a guessed/wrong region cached on failure
+    return None
+
+
 def _upstream_url_for(path: str) -> str | None:
     m, rel = _mount_for(path)
     if m is None:
@@ -2075,12 +2234,31 @@ def _upstream_url_for(path: str) -> str | None:
         mode = _upstream_mode.get(fs)
     if mode == "none":
         return None
-    if mode is None and _cannot_presign(_remote_config(fs.partition(":")[0])):
-        # Anonymous S3 or GCS can never presign — don't burn an rc call per
-        # remote learning that from publiclink's "unsupported signer type"
-        # error.
-        mode = "public"
+    if mode == "sign":
+        # In-process signing is microseconds and creds rotate, so sign mode
+        # mints per object and never caches a link. None means creds stopped
+        # resolving (a rotated-away key) — the caller falls back to the serve
+        # until a remote change (Task 4 invalidation) resets the mode.
+        return _s3_request_url(fs, rel, method="GET")
     url = None
+    if mode is None:
+        cfg = _remote_config(fs.partition(":")[0])
+        if _cannot_presign(cfg):
+            # Anonymous S3 or GCS can never presign — don't burn an rc call per
+            # remote learning that from publiclink's "unsupported signer type"
+            # error. CHECKED FIRST: an anonymous remote never resolves creds,
+            # never signs, never issues the validation GET; its mode is "public".
+            mode = "public"
+        elif _s3_signable(cfg):
+            # Credentialed plain-AWS S3: presign locally instead of a publiclink
+            # rc call per object. Validate the signature once per fs before
+            # committing; on 403/network fall through to publiclink below.
+            signed = _validate_and_sign(fs, rel, cfg)
+            if signed is not None:
+                with _upstream_lock:
+                    _upstream_mode[fs] = "sign"
+                return signed
+            # validation inconclusive -> mode stays None, publiclink handles it
     if mode in (None, "link"):
         port = _live_rcd_port()
         if port is None:

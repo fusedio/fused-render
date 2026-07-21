@@ -23,6 +23,20 @@ def home(tmp_path, monkeypatch):
     return home
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_aws_creds(tmp_path, monkeypatch):
+    """Sign mode's credential resolver reads AWS_* env vars and
+    ~/.aws/credentials; neutralize both so a developer's real AWS credentials
+    can't make an env_auth remote resolve as signable and perturb these tests.
+    Tests that exercise sign mode put explicit keys in the remote config."""
+    for var in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+                "AWS_SESSION_TOKEN", "AWS_PROFILE"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE",
+                       str(tmp_path / "no-aws-credentials"))
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "no-aws-config"))
+
+
 class StubRcd:
     """Minimal rclone rcd stand-in: answers the rc methods the module uses
     and records every call. Responses are per-method canned JSON that a test
@@ -2112,10 +2126,14 @@ def fresh_upstream():
     mounts_mod._upstream_links.clear()
     mounts_mod._upstream_mode.clear()
     mounts_mod._upstream_cfg.clear()
+    mounts_mod._upstream_region.clear()
+    mounts_mod._cred_cache.clear()
     yield
     mounts_mod._upstream_links.clear()
     mounts_mod._upstream_mode.clear()
     mounts_mod._upstream_cfg.clear()
+    mounts_mod._upstream_region.clear()
+    mounts_mod._cred_cache.clear()
 
 
 def test_upstream_url_prefers_presigned_link(home, rcd, fresh_upstream):
@@ -2219,6 +2237,151 @@ def test_upstream_url_none_is_remembered(home, rcd, fresh_upstream):
 
 def test_upstream_url_none_outside_mounts(home, rcd, fresh_upstream):
     assert mounts_mod.upstream_url_for("/somewhere/else.parquet") is None
+
+
+# -- sign mode: locally presigned URLs for credentialed plain-AWS S3 ---------
+
+_CRED_S3_CFG = {"type": "s3", "provider": "AWS",
+                "access_key_id": "AKIAIOSFODNN7EXAMPLE",
+                "secret_access_key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+                "region": "us-east-1"}
+
+
+def _query_of(url):
+    import urllib.parse as up
+    return dict(up.parse_qsl(up.urlsplit(url).query))
+
+
+def test_upstream_sign_mode_presigns_credentialed_s3(home, rcd, fresh_upstream, monkeypatch):
+    import os
+
+    rcd.responses["config/get"] = _CRED_S3_CFG
+    monkeypatch.setattr(mounts_mod, "_sign_validation_status",
+                        lambda url: (206, None))
+    c = mounts_mod.add_mount("corp", "corp:bucket/pre")
+    f = os.path.join(mounts_mod.mountpoint(c), "a", "b.parquet")
+    url = mounts_mod.upstream_url_for(f)
+    q = _query_of(url)
+    assert url.startswith(
+        "https://bucket.s3.us-east-1.amazonaws.com/pre/a/b.parquet?")
+    assert q["X-Amz-Algorithm"] == "AWS4-HMAC-SHA256"
+    assert "X-Amz-Signature" in q and "X-Amz-Expires" in q
+    # publiclink is never consulted, and sign mode caches no per-object link.
+    assert [x for x in rcd.calls if x[0] == "operations/publiclink"] == []
+    assert mounts_mod._upstream_mode["corp:bucket/pre"] == "sign"
+    assert mounts_mod._upstream_links == {}
+    # Validation is one-time per fs: a second object does not re-validate.
+    seen = []
+    monkeypatch.setattr(mounts_mod, "_sign_validation_status",
+                        lambda url: seen.append(url) or (206, None))
+    mounts_mod.upstream_url_for(
+        os.path.join(mounts_mod.mountpoint(c), "c.parquet"))
+    assert seen == []
+
+
+def test_upstream_sign_dotted_bucket_is_path_style_and_signed(home, rcd, fresh_upstream, monkeypatch):
+    # The regression for the dropped-URL gap: a dotted bucket can't be
+    # virtual-hosted, and a SIGNED publiclink URL can't be rewritten path-style
+    # (SigV4 covers Host) so today it's dropped. Sign mode builds path-style
+    # from the start, so the signature is valid.
+    import os
+
+    rcd.responses["config/get"] = {**_CRED_S3_CFG, "region": "us-west-2"}
+    monkeypatch.setattr(mounts_mod, "_sign_validation_status",
+                        lambda url: (200, None))
+    c = mounts_mod.add_mount("corp", "corp:us-west-2.opendata.source.coop/foo")
+    f = os.path.join(mounts_mod.mountpoint(c), "z.parquet")
+    url = mounts_mod.upstream_url_for(f)
+    assert url.startswith(
+        "https://s3.us-west-2.amazonaws.com/"
+        "us-west-2.opendata.source.coop/foo/z.parquet?")
+    assert "X-Amz-Signature" in url
+
+
+def test_upstream_sign_falls_back_to_publiclink_on_403(home, rcd, fresh_upstream, monkeypatch):
+    import os
+
+    rcd.responses["config/get"] = _CRED_S3_CFG
+    rcd.responses["operations/publiclink"] = {"url": "https://signed.example/x?sig=1"}
+    monkeypatch.setattr(mounts_mod, "_sign_validation_status",
+                        lambda url: (403, None))
+    c = mounts_mod.add_mount("corp", "corp:bucket/pre")
+    f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")
+    assert mounts_mod.upstream_url_for(f) == "https://signed.example/x?sig=1"
+    assert mounts_mod._upstream_mode["corp:bucket/pre"] == "link"
+    assert [x for x in rcd.calls if x[0] == "operations/publiclink"]
+    # A wrong/guessed region isn't left cached after a failed validation.
+    assert "corp:bucket/pre" not in mounts_mod._upstream_region
+
+
+def test_upstream_custom_endpoint_never_signs(home, rcd, fresh_upstream, monkeypatch):
+    import os
+
+    rcd.responses["config/get"] = {**_CRED_S3_CFG, "endpoint": "https://r2.example.com"}
+    rcd.responses["operations/publiclink"] = {"url": "https://signed.example/x?sig=1"}
+    validated = []
+    monkeypatch.setattr(mounts_mod, "_sign_validation_status",
+                        lambda url: validated.append(url) or (200, None))
+    c = mounts_mod.add_mount("r2", "r2:bucket")
+    f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")
+    assert mounts_mod.upstream_url_for(f) == "https://signed.example/x?sig=1"
+    assert validated == []  # never entered sign mode, so never validated
+    assert mounts_mod._upstream_mode["r2:bucket"] == "link"
+
+
+def test_upstream_sign_includes_session_token(home, rcd, fresh_upstream, monkeypatch):
+    import os
+
+    rcd.responses["config/get"] = {**_CRED_S3_CFG, "session_token": "FQoTOK//"}
+    monkeypatch.setattr(mounts_mod, "_sign_validation_status",
+                        lambda url: (200, None))
+    c = mounts_mod.add_mount("corp", "corp:bucket")
+    f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")
+    url = mounts_mod.upstream_url_for(f)
+    assert "X-Amz-Security-Token=FQoTOK%2F%2F" in url
+
+
+def test_upstream_sign_region_self_corrects(home, rcd, fresh_upstream, monkeypatch):
+    import os
+
+    rcd.responses["config/get"] = {**_CRED_S3_CFG, "region": "us-east-1"}
+    seq = [(301, "eu-west-1"), (206, None)]
+    monkeypatch.setattr(mounts_mod, "_sign_validation_status",
+                        lambda url: seq.pop(0))
+    c = mounts_mod.add_mount("corp", "corp:bucket")
+    f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")
+    url = mounts_mod.upstream_url_for(f)
+    assert url.startswith("https://bucket.s3.eu-west-1.amazonaws.com/")
+    assert mounts_mod._upstream_region["corp:bucket"] == "eu-west-1"
+    assert seq == []  # exactly two probes: initial + one retry after correction
+    # Later objects reuse the corrected region without re-validating.
+    url2 = mounts_mod.upstream_url_for(
+        os.path.join(mounts_mod.mountpoint(c), "b.parquet"))
+    assert url2.startswith("https://bucket.s3.eu-west-1.amazonaws.com/")
+
+
+def test_upstream_anonymous_s3_unchanged_and_never_resolves(home, rcd, fresh_upstream, monkeypatch):
+    # INVARIANT: an anonymous S3 mount is byte-identical to today — the
+    # resolver is never called, no validation GET is issued, the URL carries no
+    # X-Amz-* params, and the mode is "public".
+    import os
+
+    rcd.responses["config/get"] = {**_ANON_S3_CFG, "region": "us-west-2"}
+    resolver_calls = []
+    monkeypatch.setattr(mounts_mod.s3sign, "resolve_credentials",
+                        lambda cfg: resolver_calls.append(cfg) or None)
+    validated = []
+    monkeypatch.setattr(mounts_mod, "_sign_validation_status",
+                        lambda url: validated.append(url) or (200, None))
+    c = mounts_mod.add_mount("open", "aws-open:bucket/pre fix")
+    f = os.path.join(mounts_mod.mountpoint(c), "k ey.parquet")
+    got = mounts_mod.upstream_url_for(f)
+    assert got == (
+        "https://bucket.s3.us-west-2.amazonaws.com/pre%20fix/k%20ey.parquet")
+    assert "X-Amz" not in got
+    assert resolver_calls == []
+    assert validated == []
+    assert mounts_mod._upstream_mode["aws-open:bucket/pre fix"] == "public"
 
 
 def test_fs_raw_redirects_cold_native_range_reads(client, home, rcd, fresh_upstream):
