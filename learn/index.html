@@ -70,7 +70,7 @@
   .lede .y, .y { color:var(--yellow); }
   h2 { font-size:12px; text-transform:uppercase; letter-spacing:.7px; color:var(--mut);
        margin:44px 0 6px; font-weight:700; scroll-margin-top:24px; }
-  h2 .n { color:var(--yellow); margin-right:8px; }
+  h2 .n { display:none; }   /* section numbers hidden so any section can be hidden without leaving gaps */
   h3 { font-size:15px; margin:26px 0 5px; scroll-margin-top:24px; }
   .sub { color:var(--dim); font-size:13.5px; margin:0 0 14px; }
   .sub code, p code, li code { color:var(--text); font-size:12px; background:var(--panel2);
@@ -413,7 +413,9 @@
   </section>
 
   <!-- ============================ 2 · CLAUDE CODE ============================ -->
-  <section class="page" data-slug="claude" data-title="Claude Code integration" data-ix="2">
+  <!-- Claude Code integration: hidden for now (feature not ready to advertise).
+       To show it again, delete the data-hidden attribute below. Nothing else to change. -->
+  <section class="page" data-slug="claude" data-title="Claude Code integration" data-hidden>
     <p class="crumb">Workflow</p>
     <h1 class="title">Claude Code integration</h1>
     <p class="lede">Fused Render drives your locally installed <b>Claude Code</b> CLI, right inside the app. Ask it to build a project, explain a file, or edit a page — and with <b>feedback mode</b>, point at the part of a page you want changed.</p>
@@ -534,9 +536,8 @@
       <li>In the file tree, expand <b>source_coop</b> → the <code>country_iso=AND</code> folder.</li>
       <li>Click <code>AND.pmtiles</code> → it opens as a map.</li>
     </ol>
-    <div class="ph r16"><span class="tagn">screenshot</span><div class="ic">🗺️</div>
-      <div class="lab">[ Screenshot: AND.pmtiles rendered as a building-footprint map ]</div>
-      <div class="hint">Capture the mounted <code>source_coop</code> in the tree + the PMTiles map open.</div></div>
+    <figure class="figure"><img data-shot="assets/shot_mount_open.png" alt="AND.pmtiles from the mounted source.coop bucket, rendered as a building-footprint map">
+      <figcaption><b>Andorra building footprints</b>, opened straight from the mounted <code>source coop</code> bucket (see the breadcrumb) — rendered by the <code>pmtiles</code> template.</figcaption></figure>
   </section>
 
   <!-- ============================ 5 · DEPLOY (BETA) ============================ -->
@@ -555,9 +556,9 @@
     </ul>
 
     <h2><span class="n">2</span>Deploying</h2>
-    <p class="sub">Deploy an app and get a shareable <code>open.fused.io</code> URL anyone can open in a browser.</p>
-    <div class="ph r16"><span class="tagn">gif</span><div class="ic">🚀</div>
-      <div class="lab">[ GIF: deploying a project → shareable open.fused.io URL ]</div></div>
+    <p class="sub">Hit <b>Deploy</b> on any page. Pick which files ship (the page, its Python, and any bundled data), choose a managed Fused environment, and you get a shareable <code>open.fused.io</code> URL — redeploying keeps the same link.</p>
+    <figure class="figure"><img data-shot="assets/shot_deploy.png" alt="The Deploy dialog: active URL, the files that will publish, and Redeploy / Revoke">
+      <figcaption><b>The Deploy dialog</b> — the live URL, the files that will publish, and Redeploy / Revoke.</figcaption></figure>
 
     <h2><span class="n">3</span>See a live one</h2>
     <p class="sub">The <b>COG Overview Pyramid</b> example, deployed — it opens a cloud-optimized GeoTIFF and stacks every resolution level into an interactive 3D pyramid, with each level's pixel size and byte cost. Open it in your browser, no install:</p>
@@ -670,15 +671,17 @@ $$(".page").forEach(pg => {
 });
 
 /* ---------------- build sidebar nav ---------------- */
-const PAGES = $$(".page").map(pg => ({
-  slug: pg.dataset.slug, title: pg.dataset.title, ix: pg.dataset.ix,
+// A section with the `data-hidden` attribute is dropped from the nav, router,
+// pager and search entirely (its markup stays, so it's a one-attribute toggle).
+const PAGES = $$(".page:not([data-hidden])").map(pg => ({
+  slug: pg.dataset.slug, title: pg.dataset.title,
   beta: pg.dataset.beta === "1", el: pg,
 }));
 const navEl = $("#nav");
 PAGES.forEach(p => {
   const a = document.createElement("a");
   a.className = "top"; a.href = "?page=" + p.slug; a.dataset.slug = p.slug;
-  a.innerHTML = '<span class="ix">'+p.ix+'</span>'+p.title + (p.beta ? '<span class="beta">Beta</span>' : "");
+  a.innerHTML = p.title + (p.beta ? '<span class="beta">Beta</span>' : "");
   a.addEventListener("click", e => { e.preventDefault(); goto(p.slug); });
   navEl.appendChild(a);
   const sub = document.createElement("div");
@@ -690,6 +693,14 @@ PAGES.forEach(p => {
     sub.appendChild(link);
   });
   navEl.appendChild(sub);
+});
+
+// Neutralize any in-content links that point at a hidden page (so they don't
+// dead-end); turn them into plain text.
+const HIDDEN = new Set($$(".page[data-hidden]").map(pg => pg.dataset.slug));
+if (HIDDEN.size) $$('a[href^="?page="]').forEach(a => {
+  const slug = new URLSearchParams(a.getAttribute("href").slice(1).split("#")[0]).get("page");
+  if (HIDDEN.has(slug)) { const s = document.createElement("span"); s.textContent = a.textContent; a.replaceWith(s); }
 });
 
 /* ---------------- router ---------------- */
