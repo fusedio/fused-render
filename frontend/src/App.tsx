@@ -7,7 +7,7 @@
 // which is the React equivalent of the vanilla shell rebuilding the view DOM
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
 import { useEffect, useState } from "react";
-import { IS_EMBED, fsPathFromLocation, urlForFsPath } from "./lib/router";
+import { IS_EMBED, fsPathFromLocation, urlForFsPath, navHintIsDir } from "./lib/router";
 import { useSessionRestore, useSessionTracking } from "./lib/session";
 import { useRecentsTracking } from "./lib/recents";
 import { statPath, getMounts, reconnectMount, type Config, type Mount, type StatResult } from "./lib/api";
@@ -134,12 +134,50 @@ function StatErrorView({
   );
 }
 
+// First paint while `stat` is still in flight (~1.6s on a cold remote mount),
+// so a navigation shows a populated scaffold instead of a blank screen. The
+// breadcrumb is already rendered by StatView; here the preview header shows the
+// folder/file name (from the URL) with a spinner where the template
+// ModeSwitcher will land once stat resolves. When the nav hint says this is a
+// directory, the real Listing mounts NOW — its /api/fs/list runs in parallel
+// with stat rather than serialized behind it, and the same fetch is reused
+// (api.prefetchListDir) when stat resolves and the preview remounts the
+// listing. Without a directory hint we can't safely show a listing (a file's
+// list would 404), so only the header + a neutral loading body paint.
+function LoadingScaffold({ fsPath, isDir }: { fsPath: string; isDir: boolean }) {
+  return (
+    <>
+      <div className="preview-header">
+        <h1 title={fsPath}>{basename(fsPath)}</h1>
+        <div className="preview-actions">
+          <span className="mode-icon-spinner" aria-label="Loading" />
+        </div>
+      </div>
+      <div className="preview-body">
+        {isDir ? (
+          <Listing fsPath={fsPath} />
+        ) : (
+          <div className="preview-resolving">
+            <span className="mode-icon-spinner" />
+            Loading…
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
 // Stat-backed views (listing/preview): breadcrumb + content under one hook
 // component so useStat only runs when the pathname is a real fs path, not a
 // sentinel.
 function StatView({ fsPath, epoch, home }: { fsPath: string; epoch: number; home: string }) {
   // Bumped by StatErrorView to re-stat in place after reconnecting a mount.
   const [reloadKey, setReloadKey] = useState(0);
+  // Directory hint from the navigation that mounted this view (see router
+  // navHintIsDir). Captured ONCE at mount — StatView is keyed by epoch+fsPath
+  // so it remounts per navigation, and reading it live would be clobbered by
+  // the listing's own sort/search replaceState (which pass null state).
+  const [navIsDir] = useState<boolean | null>(() => navHintIsDir());
   const stat = useStat(fsPath, epoch, reloadKey);
   // null until the stat resolves — the session hooks opt out for anything that
   // is not a confirmed file, so a directory never gets a restore/track before
@@ -164,7 +202,11 @@ function StatView({ fsPath, epoch, home }: { fsPath: string; epoch: number; home
   // gate as session tracking.
   useRecentsTracking(fsPath, isDir, renderedTitle);
   let content = null;
-  if (stat.status === "error") {
+  if (stat.status === "loading") {
+    // Not a blank screen: paint the scaffold immediately (Fix #1). A directory
+    // nav also starts its listing fetch now, parallel with stat (Fix #2).
+    content = <LoadingScaffold fsPath={fsPath} isDir={navIsDir === true} />;
+  } else if (stat.status === "error") {
     content = (
       <StatErrorView
         fsPath={fsPath}
