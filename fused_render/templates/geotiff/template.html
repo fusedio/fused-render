@@ -128,7 +128,9 @@ const P = {
   b:     () => fused.params.get('b') || '3',
   cmap:  () => fused.params.get('cmap') || 'viridis',
   stretch: () => fused.params.get('stretch') || '',
-  autoStretch: () => (fused.params.get('autostretch') ?? '1') === '1',
+  // off by default: re-stretching to every viewport shifts colors on each
+  // pan/zoom, which reads as flicker; opt in via the checkbox / autostretch=1
+  autoStretch: () => fused.params.get('autostretch') === '1',
   vlo:   () => fused.params.get('vlo') || '',
   vhi:   () => fused.params.get('vhi') || '',
   dir:   () => fused.params.get('dir') || P.file().replace(/\/[^/]*$/, '') || '~',
