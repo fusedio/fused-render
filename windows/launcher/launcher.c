@@ -42,8 +42,26 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     wchar_t command_line[32768];
     int written = swprintf_s(command_line, 32768,
                               L"\"%s\" -I -m fused_render.win_supervisor", pythonw_path);
+    if (written < 0) {
+        MessageBoxW(NULL, L"FusedRender could not build its launch command line.",
+                    L"FusedRender", MB_OK | MB_ICONERROR);
+        return 1;
+    }
     if (pCmdLine != NULL && pCmdLine[0] != L'\0') {
-        swprintf_s(command_line + written, 32768 - written, L" %s", pCmdLine);
+        /* swprintf_s on overflow empties the destination and returns -1 (or
+         * fail-fasts under MSVC's invalid-parameter handler) — either way the
+         * file argument would be silently dropped. Pre-check the length so
+         * overflow is a loud error on every toolchain, never a quiet launch
+         * without the file. */
+        size_t remaining = 32768 - (size_t)written;
+        if (wcslen(pCmdLine) + 2 > remaining ||  /* leading space + null */
+            swprintf_s(command_line + written, remaining, L" %s", pCmdLine) < 0) {
+            MessageBoxW(NULL,
+                        L"FusedRender could not open this path: the command line "
+                        L"is too long for Windows to pass through.",
+                        L"FusedRender", MB_OK | MB_ICONERROR);
+            return 1;
+        }
     }
 
     BOOL shutdown_for_upgrade = (pCmdLine != NULL &&

@@ -14,6 +14,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from enum import Enum, auto
 from pathlib import Path
 
 import pythoncom
@@ -39,6 +40,12 @@ class SupervisorStoppedError(RuntimeError):
     and then failed (the server died mid-session, or its process tree would
     not stop during teardown). Callers must not report this as "could not
     start": the app DID start; the accurate story is that it stopped."""
+
+
+class _ExitReason(Enum):
+    TRAY_EXIT = auto()      # user confirmed Exit in the tray dialog
+    UPGRADE = auto()        # installer sent ShutdownForUpgrade over the pipe
+    SERVER_DIED = auto()    # the Python server exited on its own
 
 
 def run(initial: protocol.Command) -> None:
@@ -79,9 +86,9 @@ def run(initial: protocol.Command) -> None:
     token = _launch_token()
     job, process, port = _start_ready_server(paths, token)
 
-    if not _safe_open(port, initial, paths):
-        pass  # already logged by _safe_open — a failed initial open must
-        # never tear down the already-running Job-owned server (bugbot #7).
+    # A failed initial open is logged by _safe_open and deliberately ignored:
+    # it must never tear down the already-running Job-owned server (bugbot #7).
+    _safe_open(port, initial, paths)
 
     try:
         login_enabled = startup.enabled()
@@ -90,17 +97,47 @@ def run(initial: protocol.Command) -> None:
         login_enabled = False
 
     tray_handle = tray.start(port, login_enabled, paths)
-    tray_actions = tray_handle.actions
     pipe_requests: "queue.Queue[instance.Request]" = queue.Queue()
-    pipe_thread = inst.serve(pipe_requests)
+    pipe_thread = inst.serve(pipe_requests, paths.log)
 
-    stop_pipe_locally = False
-    shutdown_response = None
-    server_died = False
+    reason, upgrade_response = _event_loop(
+        port, process, paths, tray_handle.actions, pipe_requests
+    )
+    _teardown(
+        reason,
+        upgrade_response,
+        port=port,
+        token=token,
+        paths=paths,
+        job=job,
+        process=process,
+        inst=inst,
+        pipe_requests=pipe_requests,
+        pipe_thread=pipe_thread,
+        tray_handle=tray_handle,
+    )
+
+
+def _event_loop(
+    port: int,
+    process,
+    paths: DesktopPaths,
+    tray_actions: "queue.Queue[tray.TrayAction]",
+    pipe_requests: "queue.Queue[instance.Request]",
+) -> "tuple[_ExitReason, queue.Queue[int] | None]":
+    """Services tray actions and pipe requests until something ends the
+    session, then reports WHY it ended — and nothing else. All teardown
+    lives in _teardown(), so every exit reason goes through the identical
+    sequence instead of each hand-rolling its own. The second element is
+    the installer's pending response queue for UPGRADE (it must be answered
+    only after teardown finishes, with its true status), else None.
+
+    Ordering per iteration is load-bearing: pipe requests are checked even
+    while an exit-confirm dialog sits unanswered (confirmed is absent, not
+    blocking), so ShutdownForUpgrade pre-empts the dialog — it returns
+    immediately and the dangling daemon-thread dialog vanishes at exit."""
     exit_confirm: "queue.Queue[bool]" = queue.Queue()
-
-    running = True
-    while running:
+    while True:
         while True:
             try:
                 action = tray_actions.get_nowait()
@@ -118,14 +155,10 @@ def run(initial: protocol.Command) -> None:
                 _spawn_exit_confirm(exit_confirm)
 
         try:
-            confirmed = exit_confirm.get_nowait()
+            if exit_confirm.get_nowait():  # False (user clicked No) just resumes
+                return _ExitReason.TRAY_EXIT, None
         except queue.Empty:
-            confirmed = None
-        if confirmed:
-            tray_handle.stop()
-            _safe_graceful_shutdown(port, token, paths)
-            stop_pipe_locally = True
-            break
+            pass
 
         try:
             request = pipe_requests.get(timeout=0.25)
@@ -134,43 +167,59 @@ def run(initial: protocol.Command) -> None:
 
         if request is not None:
             if isinstance(request.command, protocol.ShutdownForUpgrade):
-                tray_handle.stop()
-                _safe_graceful_shutdown(port, token, paths)
-                shutdown_response = request.response
-                running = False
-            else:
-                ok = _safe_open(port, request.command, paths)
-                request.response.put(0 if ok else 1)
+                return _ExitReason.UPGRADE, request.response
+            ok = _safe_open(port, request.command, paths)
+            request.response.put(0 if ok else 1)
         elif process.wait(0):
-            server_died = True
-            break
+            return _ExitReason.SERVER_DIED, None
 
-    if server_died:
+
+def _teardown(
+    reason: _ExitReason,
+    upgrade_response: "queue.Queue[int] | None",
+    *,
+    port: int,
+    token: str,
+    paths: DesktopPaths,
+    job: Job,
+    process,
+    inst: instance.PrimaryInstance,
+    pipe_requests: "queue.Queue[instance.Request]",
+    pipe_thread: threading.Thread,
+    tray_handle: tray.TrayHandle,
+) -> None:
+    """The one teardown path. Invariants, identical for every reason: the
+    tray stops first, then the pipe, then the server — and job.close() runs
+    exactly once before this function returns or raises."""
+    tray_handle.stop()
+
+    if reason is not _ExitReason.UPGRADE:
+        # UPGRADE: the pipe thread is parked in its ShutdownForUpgrade
+        # handler waiting on upgrade_response and stops itself once that is
+        # answered below; a self-sent stop now would just time out against
+        # the busy pipe.
         _stop_pipe(inst, pipe_requests, pipe_thread)
+
+    error: SupervisorStoppedError | None = None
+    if reason is _ExitReason.SERVER_DIED:
         # The child itself already died, but any Job-assigned grandchildren
-        # (spawned processes it left behind) must not be left to PyHANDLE GC
-        # timing — close deterministically before raising, same rule as the
-        # normal teardown path below.
+        # must not be left to PyHANDLE GC timing — close deterministically
+        # before raising.
         job.close()
-        raise SupervisorStoppedError("Python server exited unexpectedly")
-
-    if stop_pipe_locally:
-        _stop_pipe(inst, pipe_requests, pipe_thread)
-
-    teardown_error = None
-    if not process.wait(int(_SHUTDOWN_TIMEOUT_S * 1000)):
-        job.close()
-        if not process.wait(int(_SHUTDOWN_TIMEOUT_S * 1000)):
-            teardown_error = SupervisorStoppedError("Python process tree did not stop")
+        error = SupervisorStoppedError("Python server exited unexpectedly")
     else:
+        _safe_graceful_shutdown(port, token, paths)
+        exited = process.wait(int(_SHUTDOWN_TIMEOUT_S * 1000))
         job.close()
+        if not exited and not process.wait(int(_SHUTDOWN_TIMEOUT_S * 1000)):
+            error = SupervisorStoppedError("Python process tree did not stop")
 
-    if shutdown_response is not None:
-        shutdown_response.put(1 if teardown_error else 0)
+    if upgrade_response is not None:
+        upgrade_response.put(1 if error else 0)
         pipe_thread.join(timeout=10)
 
-    if teardown_error:
-        raise teardown_error
+    if error:
+        raise error
 
 
 def _stop_pipe(

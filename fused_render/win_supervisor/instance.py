@@ -25,6 +25,12 @@ _PIPE_BUFFER_SIZE = 65_548
 _SYNCHRONIZE = 0x0010_0000
 _FILE_FLAG_FIRST_PIPE_INSTANCE = 0x0008_0000
 
+# CreateNamedPipe retry (same resilience rule as tray.py's retry loop, at
+# pipe scale: the handle-close race resolves in milliseconds, not seconds).
+_RETRY_START = 0.05
+_RETRY_CAP = 2.0
+_GIVE_UP_AFTER_ATTEMPTS = 10
+
 
 @dataclass(frozen=True)
 class InstanceNames:
@@ -112,9 +118,9 @@ class PrimaryInstance:
         self.names = names
         self._stop = threading.Event()
 
-    def serve(self, requests: "queue.Queue[Request]") -> threading.Thread:
+    def serve(self, requests: "queue.Queue[Request]", log=None) -> threading.Thread:
         thread = threading.Thread(
-            target=_serve_pipe, args=(self.names, requests, self._stop), daemon=True
+            target=_serve_pipe, args=(self.names, requests, self._stop, log), daemon=True
         )
         thread.start()
         return thread
@@ -146,23 +152,48 @@ def acquire(names: InstanceNames) -> PrimaryInstance | SecondaryInstance:
 
 
 def _serve_pipe(
-    names: InstanceNames, requests: "queue.Queue[Request]", stop: threading.Event
+    names: InstanceNames,
+    requests: "queue.Queue[Request]",
+    stop: threading.Event,
+    log=None,
 ) -> None:
     sa = _security_attributes(names.sid)
+    delay = _RETRY_START
+    failures = 0
     while not stop.is_set():
-        handle = win32pipe.CreateNamedPipe(
-            names.pipe,
-            win32pipe.PIPE_ACCESS_DUPLEX | _FILE_FLAG_FIRST_PIPE_INSTANCE,
-            win32pipe.PIPE_TYPE_MESSAGE
-            | win32pipe.PIPE_READMODE_MESSAGE
-            | win32pipe.PIPE_WAIT
-            | win32pipe.PIPE_REJECT_REMOTE_CLIENTS,
-            1,
-            4,
-            _PIPE_BUFFER_SIZE,
-            0,
-            sa,
-        )
+        try:
+            handle = win32pipe.CreateNamedPipe(
+                names.pipe,
+                win32pipe.PIPE_ACCESS_DUPLEX | _FILE_FLAG_FIRST_PIPE_INSTANCE,
+                win32pipe.PIPE_TYPE_MESSAGE
+                | win32pipe.PIPE_READMODE_MESSAGE
+                | win32pipe.PIPE_WAIT
+                | win32pipe.PIPE_REJECT_REMOTE_CLIENTS,
+                1,
+                4,
+                _PIPE_BUFFER_SIZE,
+                0,
+                sa,
+            )
+        except pywintypes.error as error:
+            # FIRST_PIPE_INSTANCE races the previous client's handle close: a
+            # just-disconnected client that still holds its handle makes this
+            # transiently fail with ERROR_ACCESS_DENIED. One transient
+            # failure must not kill IPC for the rest of the session — retry
+            # with backoff, and only give up (loudly) if it never clears.
+            failures += 1
+            if failures >= _GIVE_UP_AFTER_ATTEMPTS:
+                if log is not None:
+                    log(f"pipe server giving up after {failures} CreateNamedPipe failures: {error}")
+                return
+            if log is not None and failures == 1:
+                log(f"CreateNamedPipe failed, retrying: {error}")
+            if stop.wait(delay):
+                return
+            delay = min(delay * 2, _RETRY_CAP)
+            continue
+        failures = 0
+        delay = _RETRY_START
         try:
             try:
                 win32pipe.ConnectNamedPipe(handle, None)
