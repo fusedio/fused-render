@@ -25,7 +25,25 @@ except Exception:  # noqa: BLE001 - e.g. RuntimeError if LOCALAPPDATA is unset
 import ctypes  # noqa: E402
 import sys  # noqa: E402
 
-from fused_render.win_supervisor import protocol, supervisor  # noqa: E402
+try:
+    from fused_render.win_supervisor import protocol, supervisor  # noqa: E402
+except Exception as import_error:  # noqa: BLE001 - e.g. "DLL load failed" from a
+    # broken pywin32 after a bad upgrade. This runs under pythonw (no console)
+    # and before main() exists, so a bare raise here is an invisible exit —
+    # report it the same way main()'s fatal path does.
+    try:
+        DesktopPaths.discover().log(str(import_error))
+    except Exception:  # noqa: BLE001 - logging is best-effort, never the point of failure
+        pass
+    MB_OK = 0x0
+    MB_ICONERROR = 0x10
+    ctypes.windll.user32.MessageBoxW(
+        0,
+        f"FusedRender could not start:\n\n{import_error}",
+        "FusedRender",
+        MB_OK | MB_ICONERROR,
+    )
+    sys.exit(1)
 
 _APP_USER_MODEL_ID = "Fused.FusedRender.Desktop"
 
