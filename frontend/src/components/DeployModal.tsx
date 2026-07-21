@@ -338,7 +338,7 @@ function FileSelection({
         <span className="deploy-files-chevron" aria-hidden="true">
           {collapsed ? "▸" : "▾"}
         </span>
-        <span className="deploy-files-title">Will publish</span>
+        <span className="deploy-files-title">Files to publish</span>
         <span className="deploy-files-count">{summary}</span>
       </button>
 
@@ -491,7 +491,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   // mounted at all, so it never fetches until opened).
   const [cachingOpen, setCachingOpen] = useState(false);
   const [errorsOpen, setErrorsOpen] = useState(false);
-  // True while a preview fetch is in flight — the shown "Will publish" list may
+  // True while a preview fetch is in flight — the shown "Files to publish" list may
   // not yet reflect the latest include/exclude edit, so Deploy is held until it
   // catches up (keeps the click WYSIWYG: never deploy a set the list doesn't show).
   const [previewPending, setPreviewPending] = useState(true);
@@ -574,7 +574,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       setSelectionReady(false);
       // Drop the previous page's preview too (not just config): a fresh open —
       // including an fsPath switch with the modal still mounted — must not leave
-      // last page's "Will publish" list on screen while the new fetch is in
+      // last page's "Files to publish" list on screen while the new fetch is in
       // flight. FileSelection only renders when BOTH config and preview are set,
       // so clearing preview keeps it hidden until the new page's preview lands —
       // no stale rows, and no × / restore edit that could target the wrong page.
@@ -945,9 +945,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
               <span className="deploy-files-chevron" aria-hidden="true">
                 {errorsOpen ? "▾" : "▸"}
               </span>
-              <span className="deploy-files-title">
-                {errorsOpen ? "Hide recent errors" : "Recent errors"}
-              </span>
+              <span className="deploy-files-title">Recent errors</span>
             </button>
             {errorsOpen && <DeploymentErrors env={deployment.env} token={deployment.token} />}
           </div>
@@ -1048,7 +1046,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             type="button"
             className="btn btn-primary"
             onClick={() => onDeploy()}
-            // Hold Deploy until the shown "Will publish" list matches the current
+            // Hold Deploy until the shown "Files to publish" list matches the current
             // selection: preview === null (still resolving, or cleared on a page
             // switch) or previewPending (a refresh is in flight after an edit) both
             // mean the list on screen may not reflect what a click would ship, so
