@@ -2417,12 +2417,19 @@ def _rclone_state() -> dict:
     # "not installed". Only when there's no daemon either do we report unavailable.
     port = _live_rcd_port()
     if port is not None:
+        # The daemon's liveness already settles availability; fetch version and
+        # remotes INDEPENDENTLY so one rc call failing doesn't discard what the
+        # other returned (a shared try would drop a good version when only
+        # listremotes hiccups). Each degrades to its own empty on failure.
         try:
             version = _rc(port, "core/version").get("version")
-            names = [f"{n}:" for n in _rc(port, "config/listremotes").get("remotes", [])]
-            return _rclone_state_view(version, names, bin_)
         except RuntimeError:
-            return {"available": True, "version": None, "remotes": [], "suggested": []}
+            version = None
+        try:
+            names = [f"{n}:" for n in _rc(port, "config/listremotes").get("remotes", [])]
+        except RuntimeError:
+            names = []
+        return _rclone_state_view(version, names, bin_)
     return {"available": False, "version": None, "remotes": [], "suggested": []}
 
 
