@@ -13,22 +13,26 @@
     "csv",
     "excel",
     "code",
+    "reader",
     "annotate"
   ],
   ".tsv": [
     "duckdb",
     "csv",
     "code",
+    "reader",
     "annotate"
   ],
   ".xlsx": [
     "xlsx",
     "excel",
+    "reader",
     "annotate"
   ],
   ".xlsm": [
     "xlsx",
     "excel",
+    "reader",
     "annotate"
   ],
   ".pptx": [
@@ -43,19 +47,23 @@
     "tree",
     "code",
     "duckdb",
+    "reader",
     "annotate"
   ],
   ".jsonl": [
     "code",
     "duckdb",
+    "reader",
     "annotate"
   ],
   ".docx": [
-    "docs"
+    "docs",
+    "reader"
   ],
   ".ndjson": [
     "code",
     "duckdb",
+    "reader",
     "annotate"
   ],
   ".csv.gz": [
@@ -119,26 +127,31 @@
   ".md": [
     "markdown",
     "code",
+    "reader",
     "annotate"
   ],
   ".markdown": [
     "markdown",
     "code",
+    "reader",
     "annotate"
   ],
   ".tex": [
     "latex",
     "code",
+    "reader",
     "annotate"
   ],
   ".ltx": [
     "latex",
     "code",
+    "reader",
     "annotate"
   ],
   ".latex": [
     "latex",
     "code",
+    "reader",
     "annotate"
   ],
   ".svg": [
@@ -193,6 +206,7 @@
   ".pdf": [
     "pdf",
     "pdf_studio",
+    "reader",
     "annotate"
   ],
   ".mp4": [
@@ -229,120 +243,148 @@
   ".py": [
     "code",
     "api",
+    "reader",
     "annotate"
   ],
   ".js": [
     "code",
+    "reader",
     "annotate"
   ],
   ".ts": [
     "code",
+    "reader",
     "annotate"
   ],
   ".tsx": [
     "code",
+    "reader",
     "annotate"
   ],
   ".jsx": [
     "code",
+    "reader",
     "annotate"
   ],
   ".cjs": [
     "code",
+    "reader",
     "annotate"
   ],
   ".mjs": [
     "code",
+    "reader",
     "annotate"
   ],
   ".cts": [
     "code",
+    "reader",
     "annotate"
   ],
   ".mts": [
     "code",
+    "reader",
     "annotate"
   ],
   ".sh": [
     "code",
+    "reader",
     "annotate"
   ],
   ".zsh": [
     "code",
+    "reader",
     "annotate"
   ],
   ".fish": [
     "code",
+    "reader",
     "annotate"
   ],
   ".ps1": [
     "code",
+    "reader",
     "annotate"
   ],
   ".csh": [
     "code",
+    "reader",
     "annotate"
   ],
   ".zsh-theme": [
     "code",
+    "reader",
     "annotate"
   ],
   ".vim": [
     "code",
+    "reader",
     "annotate"
   ],
   ".yaml": [
     "code",
+    "reader",
     "annotate"
   ],
   ".yml": [
     "code",
+    "reader",
     "annotate"
   ],
   ".toml": [
     "canvas",
     "code",
+    "reader",
     "annotate"
   ],
   ".ini": [
     "code",
+    "reader",
     "annotate"
   ],
   ".cfg": [
     "code",
+    "reader",
     "annotate"
   ],
   ".conf": [
     "code",
+    "reader",
     "annotate"
   ],
   ".tf": [
     "code",
+    "reader",
     "annotate"
   ],
   ".hcl": [
     "code",
+    "reader",
     "annotate"
   ],
   ".css": [
     "code",
+    "reader",
     "annotate"
   ],
   ".txt": [
     "text",
     "code",
+    "reader",
     "annotate"
   ],
   ".log": [
     "log_studio",
     "text",
     "code",
+    "reader",
     "annotate"
   ],
   ".html": [
     "_render",
     "code",
     "claude",
+    "reader",
     "annotate",
     "history"
   ],
@@ -350,6 +392,7 @@
     "_render",
     "code",
     "claude",
+    "reader",
     "annotate"
   ],
   ".tif": [
@@ -524,6 +567,7 @@
   ".plist": [
     "plist",
     "code",
+    "reader",
     "annotate"
   ]
 }

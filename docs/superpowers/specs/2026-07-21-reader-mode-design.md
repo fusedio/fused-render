@@ -95,3 +95,6 @@ layouts (tables, code) are awkward to karaoke-highlight.
 - Global select→speak hotkey (small shell hook, deliberate containment
   exception).
 - Smarter per-view narration (CSV column summaries, code skipping punctuation).
+- Multi-column PDF reading order: extraction joins same-height text items in
+  content-stream order, so two-column PDFs can interleave columns. Needs
+  x-position-aware line building.
