@@ -332,19 +332,32 @@ export default function Sidebar({ config }: SidebarProps) {
   useEffect(() => {
     let cancelled = false;
     let attempts = 0;
+    // BUGBOT: setInterval fires a new getConfig() every tick without
+    // waiting for the previous one to settle, so responses can arrive
+    // out of order (a slow earlier request resolving AFTER a faster later
+    // one). Unconditionally applying whatever resolves most recently in
+    // WALL-CLOCK order let a stale `false` from an earlier in-flight
+    // request overwrite a `true` a later request already reported —
+    // permanently, since that `true` had already cleared the interval.
+    // latestRequestId tracks which tick's request is the newest ISSUED
+    // one; only that request's response is applied, so a straggler from
+    // an earlier tick is discarded as stale rather than overwriting it.
+    let latestRequestId = 0;
     const MAX_ATTEMPTS = 60;
     const POLL_MS = 2000;
     const timer = window.setInterval(() => {
       attempts += 1;
+      const requestId = ++latestRequestId;
       getConfig().then(
         (fresh) => {
-          if (cancelled) return;
+          if (cancelled || requestId !== latestRequestId) return;
           setLearnMountReady(fresh.learn_mount_ready);
           if (fresh.learn_mount_ready || attempts >= MAX_ATTEMPTS) {
             window.clearInterval(timer);
           }
         },
         () => {
+          if (cancelled || requestId !== latestRequestId) return;
           // Transient fetch failure — just try again next tick.
           if (attempts >= MAX_ATTEMPTS) window.clearInterval(timer);
         }
