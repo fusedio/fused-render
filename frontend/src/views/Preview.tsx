@@ -15,7 +15,7 @@ import {
   deleteEntry,
 } from "../lib/api";
 import type { Deployment, StatResult, TemplateEntry } from "../lib/api";
-import { navigate, navigateUrl, urlForFsPath } from "../lib/router";
+import { navigate, navigateUrl, urlForFsPath, replaceSearch } from "../lib/router";
 import { formatSize, formatMtime, basename } from "../lib/format";
 import { useRefreshOnReturn } from "../lib/hooks";
 import {
@@ -140,7 +140,7 @@ function usePreviewFileMenu(
         deleteEntry(fsPath, stat.is_dir).then(
           () => {
             clearClipboardIfDeleted(fsPath);
-            navigate(parent); // the open file is gone — leave for the parent listing
+            navigate(parent, { isDir: true }); // the open file is gone — leave for the parent listing
           },
           (e: Error) => setToast({ msg: friendlyFsError(e, { verb: "delete", name: stat.name }), tone: "error" })
         );
@@ -151,7 +151,7 @@ function usePreviewFileMenu(
     trashEntry(fsPath, stat.is_dir).then((r) => {
       if (r.status === "trashed") {
         clearClipboardIfDeleted(fsPath);
-        navigate(parent);
+        navigate(parent, { isDir: true });
       } else if (r.status === "unsupported") {
         startDelete();
       } else {
@@ -527,7 +527,7 @@ function TemplatePreview({
     if (next === defaultEntry.mode) params.delete("_mode");
     else params.set("_mode", next);
     const search = params.toString();
-    history.replaceState(null, "", location.pathname + (search ? "?" + search : ""));
+    replaceSearch(location.pathname + (search ? "?" + search : ""));
     setModeState(next);
   };
 

@@ -130,6 +130,32 @@ export function listDir(fsPath: string, cursor?: string | null): Promise<ListRes
   return getJson<ListResult>(url);
 }
 
+// Brief cross-mount dedupe for a directory's FIRST listing page. On navigation
+// the app paints a listing scaffold whose Listing kicks off /api/fs/list in
+// parallel with the slow /api/fs/stat; when stat resolves, the real preview
+// mounts a fresh Listing for the SAME path. Without this cache that second
+// mount would re-issue the identical request and throw the parallel fetch away.
+// So the initial (non-cursor, un-refreshed) listing goes through here: a call
+// within the short TTL of an earlier one for the same path reuses its promise.
+// A rejected promise evicts at once (errors never stick); the TTL keeps the
+// window small so a later navigation back to the same dir always re-reads,
+// matching stat's freshness posture (the dir-watch socket refresh bypasses this
+// entirely — it must see live data).
+const LIST_PREFETCH_TTL_MS = 5000;
+const listPrefetch = new Map<string, { promise: Promise<ListResult>; ts: number }>();
+
+export function prefetchListDir(fsPath: string): Promise<ListResult> {
+  const hit = listPrefetch.get(fsPath);
+  if (hit && Date.now() - hit.ts < LIST_PREFETCH_TTL_MS) return hit.promise;
+  const promise = listDir(fsPath);
+  listPrefetch.set(fsPath, { promise, ts: Date.now() });
+  promise.catch(() => {
+    // Evict only if still the same entry (a newer prefetch may have replaced it).
+    if (listPrefetch.get(fsPath)?.promise === promise) listPrefetch.delete(fsPath);
+  });
+  return promise;
+}
+
 export function walkDir(fsPath: string, opts?: { hidden?: boolean }): Promise<WalkResult> {
   let url = "/api/fs/walk?path=" + encodeURIComponent(fsPath);
   if (opts?.hidden) url += "&hidden=1";

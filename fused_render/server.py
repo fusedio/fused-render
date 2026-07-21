@@ -723,6 +723,59 @@ def _error(message: str, status: int = 400) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status)
 
 
+# /api/fs/conditions evaluates template condition.py gates, which over a remote
+# mount costs ~6.8s and was recomputed on every call. A small check-on-read TTL
+# cache lets re-navigation to the same directory reuse the verdict. Only success
+# payloads (plain dicts) are cached; error/404 responses are JSONResponse and are
+# never stored. No background eviction — a stale entry is overwritten on the next
+# miss. _CONDITIONS_TTL_S is a module attribute so tests can monkeypatch it.
+_CONDITIONS_TTL_S = 60.0
+_CONDITIONS_CACHE: dict[str, tuple[float, dict]] = {}  # path -> (inserted_monotonic, payload)
+
+
+# /api/fs/stat on a MOUNT path goes _mount_safe_stat -> _mount_probe ->
+# rc_list_dir(parent), a full cold LIST of the parent prefix over rclone/S3
+# (~1.6s) just to describe one child; opening a folder fires it, and
+# re-navigating to a sibling repaid it uncached. A short check-on-read TTL cache
+# (same shape as _CONDITIONS_CACHE) serves a recent stat instead. Only
+# MOUNT-backed success payloads are cached — see api_fs_stat for the scope
+# rationale and mutation-invalidation contract. Separate TTL from conditions so
+# each can be tuned/monkeypatched on its own; kept a module attribute so tests
+# can override it.
+_STAT_TTL_S = 60.0
+_STAT_CACHE: dict[str, tuple[float, dict]] = {}  # path -> (inserted_monotonic, payload)
+# Monotonic invalidation counter for the TOCTOU guard in api_fs_stat. Every
+# _invalidate_stat_cache bump happens-before the post-compute check in a stat
+# that reads the generation first, so any mutation that completes while a slow
+# _fs_stat is in flight is observed and blocks that stale result from refilling
+# the cache. A single global counter is deliberately conservative: a concurrent
+# mutation to ANY path just skips caching this one in-flight stat (rare and
+# harmless) rather than requiring per-path bookkeeping.
+_STAT_CACHE_GEN = 0
+
+
+def _invalidate_stat_cache(*paths: object) -> None:
+    # Drop cached /api/fs/stat entries for paths a mutation just touched, plus
+    # their parent directories (creating/deleting a child moves the parent's
+    # mtime on many backends). The editor re-stats a path right after
+    # write/rename/copy/mkdir to re-arm its optimistic lock, so a stale hit here
+    # would be a real clobber bug — invalidation is the correctness backbone of
+    # this cache, not an optimization. Popping a key that was never cached (or a
+    # non-string/None body field) is a harmless no-op, so callers can pass raw
+    # body values and invalidate unconditionally without inspecting the result.
+    #
+    # Bump the generation UNCONDITIONALLY (even for a no-op pop): a stat for a
+    # not-yet-cached path may be mid-flight, and the bump is what tells its
+    # post-compute check that a mutation raced it so it must not cache a
+    # pre-mutation payload. See api_fs_stat for the guard.
+    global _STAT_CACHE_GEN
+    _STAT_CACHE_GEN += 1
+    for p in paths:
+        if isinstance(p, str) and p:
+            _STAT_CACHE.pop(p, None)
+            _STAT_CACHE.pop(os.path.dirname(p), None)
+
+
 def _mount_list_error_response(path, exc):
     """Map an RcList* failure to the same HTTP response /api/fs/list returns, so
     fs/walk surfaces a failed ROOT listing identically (timeout/down rcd/broken
@@ -954,8 +1007,36 @@ def _condition_file(template_path: str):
 # roughly one slow probe; direct-capable mounts probe in ~1s and rarely reach it.
 GATE_PROBE_BUDGET_S = 5.0
 
+# One bounded direct-listing page fed to the gate seed (fix #3/#4). All zarr
+# group-root markers are immediate children of the store dir, so a COMPLETE
+# (untruncated) page of the dir's children answers all three marker isfile
+# probes with zero extra network calls; 1000 keys comfortably covers a store
+# root's immediate children in one unsigned request.
+_GATE_LIST_MAX_KEYS = 1000
 
-def _mount_gate_builtins(target_path: str):
+
+class _GateSeed:
+    """What `_conditions_payload` already knows about the target dir, threaded
+    into the gate shim so it answers isdir/isfile locally instead of reprobing.
+
+    - `kinds`: exact path -> "dir"|"file"|"missing" (a verdict already taken by
+      the endpoint's rc is_dir probe; consulted before any rc call).
+    - `dir_path`: the normalized (rstrip("/")) dir the listing describes.
+    - `file_children`: set of immediate FILE basenames from a COMPLETE listing,
+      or None when no complete listing is available.
+    - `listing_complete`: True only when the listing was NOT truncated, so an
+      absent marker is provably absent (a truncated listing can't prove that).
+    """
+
+    def __init__(self, kinds=None, dir_path=None, file_children=None,
+                 listing_complete=False):
+        self.kinds = kinds or {}
+        self.dir_path = dir_path
+        self.file_children = file_children
+        self.listing_complete = listing_complete
+
+
+def _mount_gate_builtins(target_path: str, seed=None):
     """Custom `__builtins__` for a condition gate whose target is MOUNT-backed,
     so the gate's own filesystem primitives route through the rclone rc API
     instead of the kernel NFS mount.
@@ -1004,6 +1085,22 @@ def _mount_gate_builtins(target_path: str):
     def _isfile(p):
         if not mounts.is_mount_backed(p):
             return real_os.path.isfile(p)
+        # A listing of the dir answers marker isfile with no network call
+        # (fix #3/#4). PRESENCE in the page is conclusive even if the page was
+        # TRUNCATED (the marker demonstrably exists); ABSENCE is only provable
+        # from a COMPLETE (untruncated) page. So a truncated page that captured
+        # the marker still short-circuits True, and only a truncated-and-absent
+        # marker falls through to the rc probe below. real_os.path is the real
+        # (captured) os.path.
+        if (seed is not None and seed.file_children is not None
+                and real_os.path.dirname(p) == seed.dir_path):
+            if real_os.path.basename(p) in seed.file_children:
+                return True
+            if seed.listing_complete:
+                return False
+        # Else a verdict the endpoint already took for this exact path (fix #2).
+        if seed is not None and p in seed.kinds:
+            return seed.kinds[p] == "file"
         left = _probe_budget()
         if left <= 0:
             return False  # budget spent -> fail closed
@@ -1012,6 +1109,8 @@ def _mount_gate_builtins(target_path: str):
     def _isdir(p):
         if not mounts.is_mount_backed(p):
             return real_os.path.isdir(p)
+        if seed is not None and p in seed.kinds:
+            return seed.kinds[p] == "dir"  # no reprobe of the target (fix #2)
         left = _probe_budget()
         if left <= 0:
             return False
@@ -1020,6 +1119,8 @@ def _mount_gate_builtins(target_path: str):
     def _exists(p):
         if not mounts.is_mount_backed(p):
             return real_os.path.exists(p)
+        if seed is not None and p in seed.kinds:
+            return seed.kinds[p] in ("file", "dir")
         left = _probe_budget()
         if left <= 0:
             return False
@@ -1106,7 +1207,7 @@ def _mount_gate_builtins(target_path: str):
     return b
 
 
-def _run_condition(condition_file: str, target_path: str):
+def _run_condition(condition_file: str, target_path: str, seed=None):
     """Load+exec a `condition.py` and call `main(target_path)`. Returns
     (allowed: bool, error: str|None).
 
@@ -1136,7 +1237,7 @@ def _run_condition(condition_file: str, target_path: str):
         # time so the mount routing is monkeypatchable in tests.
         from fused_render.shell.mounts import is_mount_backed
         if is_mount_backed(target_path):
-            mod.__dict__["__builtins__"] = _mount_gate_builtins(target_path)
+            mod.__dict__["__builtins__"] = _mount_gate_builtins(target_path, seed)
         spec.loader.exec_module(mod)
         fn = getattr(mod, "main", None)
         if not callable(fn):
@@ -1164,7 +1265,7 @@ def _mark_conditions(entries: list):
             entry["conditional"] = True
 
 
-def _evaluate_conditions(gated: list, target_path: str):
+def _evaluate_conditions(gated: list, target_path: str, seed=None):
     """Evaluate `condition.py` gates: `gated` is [(key, condition_file)];
     returns {key: (allowed: bool, error: str|None)}.
 
@@ -1177,7 +1278,7 @@ def _evaluate_conditions(gated: list, target_path: str):
 
     def _serial():
         for k, cf in gated:
-            results[k] = _run_condition(cf, target_path)
+            results[k] = _run_condition(cf, target_path, seed)
 
     if len(gated) == 1:
         _serial()
@@ -1193,7 +1294,7 @@ def _evaluate_conditions(gated: list, target_path: str):
             from concurrent.futures import ThreadPoolExecutor
 
             with ThreadPoolExecutor(max_workers=len(gated)) as pool:
-                futures = {pool.submit(_run_condition, cf, target_path): k for k, cf in gated}
+                futures = {pool.submit(_run_condition, cf, target_path, seed): k for k, cf in gated}
                 for fut, k in futures.items():
                     results[k] = fut.result()
         except BaseException:
@@ -1213,8 +1314,14 @@ def _conditions_payload(path: str):
     carries the first gate error in list order (a broken gate reports False —
     fail closed — with the reason), matching stat's `template_error` posture.
     """
-    from fused_render.shell.mounts import is_mount_backed, rc_kind_for
+    from fused_render.shell.mounts import (
+        direct_list_capable,
+        direct_list_page,
+        is_mount_backed,
+        rc_kind_for,
+    )
 
+    seed = None
     if is_mount_backed(path):
         # A mount is_dir probe off the kernel (a kernel os.stat here is a
         # GETATTR that can force an S3 re-list and wedge the mount). "missing" is
@@ -1229,6 +1336,16 @@ def _conditions_payload(path: str):
         if kind == "missing":
             return _error(f"no such file or directory: {path}", status=404)
         is_dir = kind != "file"
+        # Feed a DEFINITIVE verdict to the gate shim so the gate answers its own
+        # isdir(path) with no rc call instead of reprobing this exact path
+        # (fix #2). An "indeterminate" kind (rcd blip / budget exhausted) is NOT
+        # seeded: seeding it would make the gate's isdir return False without a
+        # probe and pin a spurious all-False verdict (and the TTL cache would
+        # hold it). Leaving seed=None lets the gate do its OWN probe, which may
+        # recover, and otherwise fail closed on its own budget — the posture the
+        # is_dir comment above describes.
+        if kind in ("dir", "file"):
+            seed = _GateSeed(kinds={path: kind})
     else:
         try:
             st = os.stat(path)
@@ -1244,7 +1361,26 @@ def _conditions_payload(path: str):
             if cf is not None:
                 gated.append((entry["mode"], cf))
 
-    results = _evaluate_conditions(gated, path)
+    # Only now that we know a gate will actually consume it is the bounded
+    # listing worth its network cost. For a direct-list-capable mount (anonymous
+    # S3/GCS), one unsigned listing of the dir's immediate children answers all
+    # three marker isfile probes locally (fix #3/#4) — the markers are always
+    # immediate children, so a COMPLETE page proves each present/absent without
+    # a per-marker rc probe. Fail-open: any error leaves the seed marker-less and
+    # the gate falls back to today's per-marker probes (logged, not silent).
+    if gated and seed is not None and is_dir and direct_list_capable(path):
+        try:
+            listing, next_token = direct_list_page(
+                path, max_keys=_GATE_LIST_MAX_KEYS, timeout=GATE_PROBE_BUDGET_S)
+            seed.file_children = {
+                e["Name"] for e in listing if not e.get("IsDir")}
+            seed.listing_complete = next_token is None
+        except Exception:
+            logger.debug("gate seed listing failed for %s; falling back to "
+                         "per-marker probes", path, exc_info=True)
+        seed.dir_path = path.rstrip("/")
+
+    results = _evaluate_conditions(gated, path, seed)
     conditions, error = {}, None
     for mode, _cf in gated:
         allowed, err = results[mode]
@@ -2820,7 +2956,38 @@ def create_app(start_dir: str) -> FastAPI:
 
     @app.get("/api/fs/stat")
     def api_fs_stat(path: str):
-        return _fs_stat(path)
+        # Short check-on-read TTL cache (mirrors api_fs_conditions) to avoid
+        # re-paying the ~1.6s cold parent-prefix LIST that a mount stat costs
+        # (see _STAT_CACHE). Only MOUNT-backed paths are cached: a local stat is
+        # a cheap kernel call, and a local file can be mutated out-of-band (git,
+        # another editor) with no hook for us to invalidate — caching those
+        # would risk handing back a stale mtime the editor's optimistic lock
+        # trusts, for no latency win. Mount paths are mutated only through this
+        # server's fs/write|rename|copy|delete|mkdir handlers, which call
+        # _invalidate_stat_cache, so their only staleness is the same bounded
+        # external-change window the conditions cache already accepts. Only
+        # success payloads (plain dicts) are stored; _fs_stat's 404/503 branches
+        # return _error -> JSONResponse and are always recomputed.
+        from fused_render.shell.mounts import is_mount_backed
+
+        cached = _STAT_CACHE.get(path)
+        if cached is not None and time.monotonic() - cached[0] < _STAT_TTL_S:
+            return cached[1]
+        # Snapshot the invalidation generation BEFORE the (slow) stat. _fs_stat
+        # releases the GIL on its cold mount LIST, so a concurrent mutation can
+        # complete _invalidate_stat_cache — popping this key AND bumping the
+        # generation — while we're in flight. Caching unconditionally here would
+        # write our now-stale payload back, undoing that invalidation and
+        # handing the editor's post-write optimistic-lock re-stat pre-mutation
+        # metadata (a real clobber bug). So only cache if the generation is
+        # UNCHANGED: the bump happens-before this check for any invalidation
+        # that finished before our write, closing the TOCTOU window. If it
+        # moved, return the fresh result WITHOUT caching it.
+        gen = _STAT_CACHE_GEN
+        result = _fs_stat(path)
+        if isinstance(result, dict) and is_mount_backed(path) and _STAT_CACHE_GEN == gen:
+            _STAT_CACHE[path] = (time.monotonic(), result)
+        return result
 
     @app.get("/api/fs/conditions")
     def api_fs_conditions(path: str):
@@ -2835,7 +3002,18 @@ def create_app(start_dir: str) -> FastAPI:
         # (Preview.tsx `useConditions`) and renders every unconditional
         # template while the verdict is still `null` — the gated ones just show
         # a spinner until it lands. So no change on the render path is needed.
-        return _conditions_payload(path)
+        #
+        # Re-navigating to the same directory would otherwise re-pay the full
+        # gate-evaluation cost, so a short check-on-read TTL cache serves a
+        # recent verdict. Only success payloads (plain dicts) are cached; error
+        # responses (_error -> JSONResponse) are always recomputed.
+        cached = _CONDITIONS_CACHE.get(path)
+        if cached is not None and time.monotonic() - cached[0] < _CONDITIONS_TTL_S:
+            return cached[1]
+        result = _conditions_payload(path)
+        if isinstance(result, dict):
+            _CONDITIONS_CACHE[path] = (time.monotonic(), result)
+        return result
 
     @app.get("/api/fs/list")
     def api_fs_list(path: str, cursor: str | None = None):
@@ -3337,25 +3515,49 @@ def create_app(start_dir: str) -> FastAPI:
         subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return JSONResponse({"ok": True})
 
+    # Every mutation endpoint invalidates the /api/fs/stat cache for the paths it
+    # touches (and their parents, via _invalidate_stat_cache) so the editor's
+    # immediate post-mutation stat re-reads fresh metadata. Invalidation runs
+    # unconditionally after the handler — a no-op on error/409 costs nothing, and
+    # doing it here (not inside each _fs_* helper's many return branches) keeps
+    # the contract in one obvious place per route.
+    #
+    # RESIDUAL: a RECURSIVE delete / overwriting rename of a directory does not
+    # walk the (now-gone) subtree to evict individually-cached child stats. Those
+    # entries simply age out within _STAT_TTL_S — the same bounded staleness the
+    # cache accepts for out-of-band changes — and the editor navigates top-down,
+    # so it re-lists the parent (fresh) before it would re-stat a vanished child.
     @app.post("/api/fs/write")
     def api_fs_write(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-        return _fs_write(body, x_fused)
+        result = _fs_write(body, x_fused)
+        _invalidate_stat_cache(body.get("path"))
+        return result
 
     @app.post("/api/fs/mkdir")
     def api_fs_mkdir(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-        return _fs_mkdir(body, x_fused)
+        result = _fs_mkdir(body, x_fused)
+        _invalidate_stat_cache(body.get("path"))
+        return result
 
     @app.post("/api/fs/delete")
     def api_fs_delete(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-        return _fs_delete(body, x_fused)
+        result = _fs_delete(body, x_fused)
+        _invalidate_stat_cache(body.get("path"))
+        return result
 
     @app.post("/api/fs/rename")
     def api_fs_rename(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-        return _fs_rename(body, x_fused)
+        result = _fs_rename(body, x_fused)
+        # A move changes both ends: src disappears, dst appears.
+        _invalidate_stat_cache(body.get("src"), body.get("dst"))
+        return result
 
     @app.post("/api/fs/copy")
     def api_fs_copy(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-        return _fs_copy(body, x_fused)
+        result = _fs_copy(body, x_fused)
+        # A copy only writes dst; src is untouched, so its cached stat stays valid.
+        _invalidate_stat_cache(body.get("dst"))
+        return result
 
     @app.get("/render")
     def render(path: str):
