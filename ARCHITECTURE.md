@@ -225,7 +225,7 @@ Header actions always include `Raw` (opens raw endpoint in new tab). Iframe fill
 Layout: `#app` becomes two-column flex — fixed sidebar (~220px, `--bg-alt`, right border) + existing content column (breadcrumb + content).
 
 - **Home entry:** icon + "Home"; click → `navigate(config.home)`. `/api/config` response gains `"home": os.path.expanduser("~")`.
-- **Bookmark capture:** "+ Bookmark" button right-aligned in the breadcrumb bar (present on every view); shows accent "starred" state when the current URL is already bookmarked. On click: `{id: crypto.randomUUID(), name: basename(currentFsPath), url: location.pathname + location.search, created_at: Date.now()}` appended to store; sidebar re-renders.
+- **Bookmark capture:** "+ Bookmark" button right-aligned in the breadcrumb bar (present on every view); shows accent "starred" state when the current URL is already bookmarked. On click: `{id: crypto.randomUUID(), name: renderedTitle || basename(currentFsPath), url: location.pathname + location.search, created_at: Date.now()}` appended to store; sidebar re-renders. `renderedTitle` is the previewed page's own `<title>` when known (StatView, threaded through `Breadcrumb`) — preferred over the file's basename so a page's authored title wins.
 - **Store (D75):** server-side `~/.fused-render/bookmarks.json`, JSON array (tree). Backend in `fused_render/shell/` — `storage.py` (home dir via `home_dir()`/`FUSED_RENDER_HOME`, atomic `read_json`/`write_json`) + `bookmarks.py` (`APIRouter`: `GET /api/bookmarks` → `{exists, bookmarks}`; `PUT` whole-tree, atomic, last-write-wins, `X-Fused` guard). Frontend `bookmarks.ts` keeps an in-memory cache (`loadBookmarks()`/`allBookmarks()` sync off it), hydrated once at boot by `hydrateBookmarks()`; each mutation clones → `await`s the PUT → advances the cache (no optimism/rollback — cache never holds unpersisted state). The one-time legacy `localStorage["fused.bookmarks"]` import (D75) has been removed (D104) — every pre-D75 install has long since migrated. A 30 s `setInterval` in `main.tsx` calls `refreshBookmarks()` (a `GET` through the same serial queue, re-rendering only on a real diff) so another tab's/window's edits converge (D77 — eventual ≤30 s, last-write-wins on simultaneous writes). Hydration, every mutation, and the poll all run through one `enqueue` chain, so no read/write ever interleaves (closes the hydration/mutation race Bugbot flagged). `shell/` is the seam for future shell-state backends, kept out of `server.py`'s fs/render internals (and acyclic — it never imports `server`).
 - **Bookmark row:** name ellipsized, rendered as a real `<a href="<url>">` (verbatim URL per D20; href kept for middle-click/copy-link). Plain click is intercepted: it **arms** the bookmark for update tracking and routes in-shell via `navigateUrl(url)` (pushState that preserves the query string, unlike `navigate()`). Hover shows a floating card beside the sidebar: decoded target path + saved params as a key/value grid ("no params" when none); card hides during rename/delete. Hover also reveals ✎ rename (inline `<input>`, Enter/blur commits, Escape cancels) and ✕ delete (no confirm). Active bookmark (url == current URL) is highlighted.
 - Order: creation time. Duplicates allowed.
@@ -235,24 +235,26 @@ Layout: `#app` becomes two-column flex — fixed sidebar (~220px, `--bg-alt`, ri
 
 Sidebar section listing the last 3 files opened, each with the params they last
 had. Backend `shell/recents.py` (beside bookmarks/prefs): `~/.fused-render/recents.json`
-holds `{collapsed, entries: [{url, openedAt}]}` — urls verbatim incl. query
+holds `{collapsed, entries: [{url, openedAt, title?}]}` — urls verbatim incl. query
 (D20 posture), newest first, deduped by target fs path, capped at 20; `GET
 /api/recents` filters entries whose file no longer exists (without deleting
-them), `POST /api/recents/open {url}` records (file-view `/view/` urls only —
+them), `POST /api/recents/open {url, title?}` records (file-view `/view/` urls only —
 directories and `_`-sentinels no-op), `PUT /api/recents/collapsed` persists the
 fold with the data (D44 posture). Frontend `lib/recents.ts` mirrors
 `bookmarks.ts` (sync cache, serial queue, `notifyRecentsChanged` signal); its
-`useRecentsTracking(fsPath, isDir)` is mounted in `App.tsx`'s StatView beside
-the session hooks — records the open once the stat confirms a file, then
-re-records the current url on every `fused:urlchange`/`popstate` (500 ms
-debounce), so the entry tracks live param changes. Display order is
+`useRecentsTracking(fsPath, isDir, title)` is mounted in `App.tsx`'s StatView
+beside the session hooks — records the open once the stat confirms a file,
+then re-records the current url (and the page's own `<title>`, once known)
+on every `fused:urlchange`/`popstate` (500 ms debounce) or title change, so
+the entry tracks live param and title changes. Display order is
 **stable-slot**, not raw MRU (RC-11): `displayRecents()` keeps session-scoped
 slots — a displayed file's row updates in place (rows keyed by fs path; the
 store notifies on visible changes only, urls included so hrefs stay fresh,
 and param churn moves nothing); only a not-displayed file entering at
 the top shifts rows, and a vanished file's slot fills from the bottom.
-Sidebar rows are basename
-labels (D22); click = `navigateUrl` (query-preserving), arms nothing; the
+Sidebar rows prefer the recorded
+`title` (the page's own `<title>`) and fall back to the basename otherwise
+(D22, extended); click = `navigateUrl` (query-preserving), arms nothing; the
 heading toggles the fold (count pill as the collapsed signal, no chevron — D44
 visual language); the section is hidden while empty.
 
@@ -278,6 +280,7 @@ visual language); the section is hidden while empty.
 - Template receives target file as read-only param `_file`. Templates are ordinary renderable HTML: same runtime, same powers. Templates reach the filesystem through the runtime IO helpers (`fused.rawUrl`/`stat`/`readFile`/`writeFile`), never by fetching `/api/fs/*` URLs directly — one code path, and the write guard/lock come for free. Helper files sit inside the folder as `reader.py` etc.; relative `runPython('./reader.py', …)` just works because the `html` path sent to `/api/run` is the template's real path. Each built-in folder also ships a **monochrome `icon.svg`** (single fill — `currentColor` or plain black, only alpha matters since the shell masks it; square viewBox, 24×24 suggested, legible at 16px).
 - Vendored JS libraries (marked, CodeMirror; and the sci decoders `geotiff.bundle.mjs`, `netcdfjs.bundle.mjs`, `zarrita.bundle.mjs`) live in `fused_render/templates/vendor/` and are served from a dedicated absolute mount `GET /template-assets/*` (a relative `<script src>`/`import` in a template would resolve against `/render`, not the templates dir). All committed local files — no CDN/network at runtime (D3). Regenerate the CodeMirror bundle via `scripts/vendor-codemirror/build.sh`, and the sci bundles via `scripts/vendor-sci/build.sh` (both Node 22; each emits a single self-contained ESM module).
 - The sciViz core shared by the `geotiff/`, `netcdf/`, and `zarr/` templates (colormap LUTs, stretch/stats/histogram, canvas draw, and the plain-DOM UI kit) is first-party, not vendored — it lives in `fused_render/templates/shared/sciviz.mjs` and is served from its own absolute mount `GET /template-shared/*` (kept separate from `/template-assets` so `vendor/` stays third-party-only; like `vendor/`, `shared/` has no `template.html` so it can never resolve as a template name).
+- `geotiff/`, `netcdf/`, `map/`, and `zarr_aoi/` each spin up a persistent localhost tile daemon (`tile_server.py` / `grid_tile_server.py` / `vector_tile_server.py`, bound to `127.0.0.1` on a random port) so MapLibre pan/zoom isn't capped by `runPython`'s ~700ms per-call subprocess cost; the daemon serves tiles/metadata straight to the template's iframe instead of through `/api/run`. Endpoints are read-only GETs (plus `map/`'s async `/open`) and answer `Access-Control-Allow-Origin: *` — the opposite CORS posture from the main server's D36 guard, and deliberately so (D122): the daemon's only client is a cross-port iframe that needs to read the response, unlike `/api/run`'s same-origin caller. Access is gated by a **per-daemon token** (not CORS, and not the loopback bind — a same-browser page can fetch loopback cross-origin): each daemon mints `secrets.token_urlsafe(32)` at startup, stores it in its state file, and returns it from `main("ensure")`; every endpoint except `/ping` requires `?t=<token>` (403 otherwise), and the templates thread it into their daemon URLs (the sci-viz `dURL()` chokepoint, `pyramid/`'s `/ltile` URL, and `map_render.py`'s tile/status/meta URLs).
 
 **M1 templates** (folder names per M8 renames — `table/`, `image/`, `text/`):
 

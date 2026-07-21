@@ -494,8 +494,14 @@ a.bookmark-name::after {
   text-align: center;
 }
 
-.icon-picker-cell:hover {
+.icon-picker-cell:hover,
+.icon-picker-cell.active {
   background: rgba(255, 255, 255, 0.09);
+}
+
+.icon-picker-cell.active {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .icon-picker-empty {
@@ -870,7 +876,8 @@ table.listing-table .icon {
 
 /* Per-filetype icons (components/FileIcons.tsx): monochrome inline SVGs tinted
    by a muted, desaturated per-category colour that sits calmly on the dark
-   shell — folder brightest, generic file dimmest, never the accent yellow. The
+   shell — folder brightest, generic file dimmest. Only html leans toward the
+   accent yellow: those files launch as apps, so they get to stand out. The
    SVG is a block so it has no inline-baseline gap; the parent .icon span lives
    in a flex row (td.name / .sidebar-item) that vertically centres it. */
 .file-icon {
@@ -882,7 +889,7 @@ table.listing-table .icon {
 .file-icon--code    { color: #7fb2a6; }
 .file-icon--data    { color: #a898cb; }
 .file-icon--json    { color: #c3a96b; }
-.file-icon--html    { color: #cd9d75; }
+.file-icon--html    { color: #c9d95e; } /* launchable app — leans toward --accent */
 .file-icon--image   { color: #cd93b6; }
 .file-icon--doc     { color: #9aa0a6; }
 .file-icon--media   { color: #d0939b; }
@@ -890,6 +897,19 @@ table.listing-table .icon {
 .file-icon--archive { color: #baa386; }
 .file-icon--db      { color: #82abbf; }
 .file-icon--file    { color: #868c93; }
+
+/* "App" chip on html rows (Listing + search results) — a small muted-accent
+   pill after the filename. Sized well under the 16px icon height so it never
+   changes row height. */
+.app-chip {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border: 1px solid rgba(229, 255, 68, 0.35);
+  border-radius: 7px;
+  font-size: 10px;
+  line-height: 14px;
+  color: #c9d95e;
+}
 
 table.listing-table td.size,
 table.listing-table td.mtime {
@@ -1783,6 +1803,100 @@ body.embed .preview-browse-chip:hover {
   font-size: 13px;
 }
 
+/* Canonical field controls inside modals and mount forms — ONE background
+   (--bg, recessed against the --bg-alt dialog surface), ONE padding, ONE
+   focus treatment. :where() keeps specificity at the scope class alone, so
+   composite frames that reset their inner input (.templates-key-input input,
+   .templates-chip-draft) and deliberate variants (.templates-rec-add-input)
+   still win. */
+.modal-body :where(input:not([type="checkbox"], [type="radio"], [type="file"]), select, textarea),
+.mount-form-row :where(input, select) {
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+}
+
+.modal-body :where(input:not([type="checkbox"], [type="radio"], [type="file"]), select, textarea):focus,
+.mount-form-row :where(input, select):focus {
+  outline: none;
+  border-color: var(--fg-muted);
+}
+
+/* ---- Field primitives (components/field/fields.tsx) ---------------------- */
+/* .field-control is the canonical field style above, extracted as an explicit
+   class so native controls (notably <select>) render identically everywhere.
+   The :where() rules stay as the safety net for unmigrated fields. */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg-muted);
+}
+
+.field-label .req {
+  color: var(--accent);
+}
+
+.field-hint {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.field-control {
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+}
+
+input.field-control,
+select.field-control {
+  height: 32px;
+}
+
+.field-control:focus {
+  outline: none;
+  border-color: var(--fg-muted);
+}
+
+.field-select-wrap {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.field-select-wrap > select {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* De-nativize the select: drop the platform chevron/metrics, draw our own
+   (muted-gray inline SVG) so it sits flush with sibling inputs. */
+select.field-control {
+  appearance: none;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5l3 3 3-3' fill='none' stroke='%239aa0a6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+
+/* Placeholder option selected → muted, matching input placeholders. */
+select.field-control:has(option[value=""]:checked) {
+  color: var(--fg-muted);
+}
+
 .deploy-body p {
   margin: 0;
 }
@@ -1816,27 +1930,6 @@ body.embed .preview-browse-chip:hover {
   cursor: default;
 }
 
-.deploy-body .deploy-primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #10131a;
-  font-weight: 600;
-}
-
-.deploy-body .deploy-primary:hover:not(:disabled) {
-  background: var(--accent);
-  filter: brightness(1.08);
-}
-
-.deploy-body .deploy-danger {
-  color: var(--error);
-  border-color: var(--error);
-}
-
-.deploy-body .deploy-danger:hover:not(:disabled) {
-  background: rgba(255, 107, 107, 0.12);
-}
-
 .deploy-section {
   display: flex;
   flex-direction: column;
@@ -1847,10 +1940,14 @@ body.embed .preview-browse-chip:hover {
   color: var(--fg-muted);
 }
 
-.deploy-error {
+/* Error card (also rendered by components/ErrorBanner.tsx as .error-banner):
+   full 1px error-tinted border + a subtle error-tinted wash, no left stripe. */
+.deploy-error,
+.error-banner {
   color: var(--error);
   border: 1px solid var(--error);
   border-radius: 6px;
+  background: rgba(255, 107, 107, 0.07);
   padding: 8px 10px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -1858,9 +1955,152 @@ body.embed .preview-browse-chip:hover {
   overflow-y: auto;
 }
 
+/* Quiet note/info card — a full bordered card (no side stripe). */
 .deploy-note {
-  border-left: 2px solid var(--border);
-  padding-left: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* ---- Unified button vocabulary + modal chassis -------------------------- */
+/* One .btn base and four variants for every modal/form action, with ONE
+   disabled treatment and ONE focus-visible ring. The selectors are grouped for
+   the bare, .deploy-body and .prefs-section contexts so .btn wins over the
+   generic `.deploy-body button` / `.prefs-section button` skins by specificity
+   (0,2,x) regardless of source order. */
+.btn,
+.deploy-body .btn,
+.prefs-section .btn {
+  font: inherit;
+  font-size: 13px;
+  height: 32px;
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+  white-space: nowrap;
+  align-self: auto;
+}
+
+.btn:disabled,
+.deploy-body .btn:disabled,
+.prefs-section .btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.btn:focus-visible,
+.deploy-body .btn:focus-visible,
+.prefs-section .btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Quiet primary: accent-tinted, not accent-filled — still the strongest button
+   in a footer, without the neon pop of a solid lime fill on the dark surface. */
+/* Neutral filled primary — reads strongest through contrast, not accent
+   (Akshil: accent buttons pop too much). Accent stays for focus/selection. */
+.btn-primary,
+.deploy-body .btn-primary,
+.prefs-section .btn-primary {
+  background: var(--fg);
+  border-color: transparent;
+  color: var(--bg);
+  font-weight: 600;
+}
+
+.btn-primary:hover:not(:disabled),
+.deploy-body .btn-primary:hover:not(:disabled),
+.prefs-section .btn-primary:hover:not(:disabled) {
+  background: #ffffff;
+  border-color: transparent;
+}
+
+.btn-secondary,
+.deploy-body .btn-secondary,
+.prefs-section .btn-secondary {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--fg);
+}
+
+.btn-secondary:hover:not(:disabled),
+.deploy-body .btn-secondary:hover:not(:disabled),
+.prefs-section .btn-secondary:hover:not(:disabled) {
+  background: transparent;
+  border-color: var(--fg-muted);
+}
+
+.btn-danger,
+.deploy-body .btn-danger,
+.prefs-section .btn-danger {
+  background: rgba(255, 107, 107, 0.1);
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.btn-danger:hover:not(:disabled),
+.deploy-body .btn-danger:hover:not(:disabled),
+.prefs-section .btn-danger:hover:not(:disabled) {
+  background: rgba(255, 107, 107, 0.18);
+  border-color: var(--error);
+}
+
+/* Text-only destructive action; margin-right:auto anchors it to the far left of
+   a footer row so the primary/cancel stay right-aligned. */
+.btn-danger-text,
+.deploy-body .btn-danger-text,
+.prefs-section .btn-danger-text {
+  background: none;
+  border-color: transparent;
+  color: var(--error);
+  margin-right: auto;
+}
+
+.btn-danger-text:hover:not(:disabled),
+.deploy-body .btn-danger-text:hover:not(:disabled),
+.prefs-section .btn-danger-text:hover:not(:disabled) {
+  background: rgba(255, 107, 107, 0.12);
+  border-color: transparent;
+}
+
+/* Shared modal chrome — .modal-* names alias the existing .deploy-* rules (the
+   Modal component applies both classes, so descendant .deploy-* skins keep
+   working). Footer row follows the footer grammar: destructive far left
+   (via .btn-danger-text margin-right:auto), Cancel then primary at the right. */
+.modal-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.modal-dirty-hint {
+  color: var(--fg-muted);
+  font-size: 12px;
+  margin-right: auto;
+}
+
+/* Quiet disclosure for always-on boilerplate (e.g. the deploy public-link
+   note) so it doesn't compete with the primary action. */
+.deploy-disclosure > summary {
+  cursor: pointer;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.deploy-disclosure > *:not(summary) {
+  margin-top: 6px;
 }
 
 /* Signed-in dot on the sidebar's Fused-account entry — same green as the
@@ -1968,13 +2208,21 @@ body.embed .preview-browse-chip:hover {
   color: var(--fg-muted);
 }
 
-.deploy-form-row select {
+.deploy-cache-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Safety net for unmigrated selects only (e.g. Account's workspace picker) —
+   .field-control selects carry their own canonical skin + custom chevron. */
+.deploy-form-row select:not(.field-control) {
   font: inherit;
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 5px 8px;
+  padding: 7px 10px;
   max-width: 100%;
 }
 
@@ -2243,25 +2491,17 @@ body.embed .preview-browse-chip:hover {
   cursor: default;
 }
 
-/* Busy/disabled primary keeps readable dark-on-accent contrast: the generic
-   button:disabled opacity darkened the accent under it into near-black-on-
-   black while "Deploying…" showed. Slight desaturation signals inactive
-   instead. */
-.deploy-body .deploy-primary:disabled {
-  opacity: 1;
-  background: var(--accent);
-  color: #10131a;
-  filter: saturate(0.45) brightness(0.85);
-}
-
+/* currentColor-based so it stays readable on any host: accent inside the
+   tinted .btn-primary, --fg/--fg-muted in plain rows (was dark-on-lime, tuned
+   for the old solid-accent primary). */
 .deploy-spinner {
   display: inline-block;
   width: 12px;
   height: 12px;
   margin-right: 7px;
   vertical-align: -1px;
-  border: 2px solid rgba(16, 19, 26, 0.35);
-  border-top-color: #10131a;
+  border: 2px solid rgba(154, 160, 166, 0.35);
+  border-top-color: currentColor;
   border-radius: 50%;
   animation: deploy-spin 0.8s linear infinite;
 }
@@ -2350,7 +2590,7 @@ body.embed .preview-browse-chip:hover {
    columns align across the publish and excluded lists. */
 .deploy-file {
   display: grid;
-  grid-template-columns: 1fr 56px 72px;
+  grid-template-columns: 1fr 68px 72px;
   align-items: center;
   column-gap: 8px;
   padding: 2px 4px;
@@ -2402,6 +2642,17 @@ body.embed .preview-browse-chip:hover {
 .deploy-file-tag.added {
   color: var(--accent);
   border-color: var(--accent);
+}
+
+/* rawUrl/readFile-exposed assets — a scanned literal reference ("rawUrl") or a
+   manifest-declared bundle file ("bundle"). Brighter than the muted run/page
+   pills so the list visibly flags which bundled files are web-fetchable via the
+   hosted `_asset` route. Casing is preserved (no uppercase) so "rawUrl" reads as
+   the fused.rawUrl API name rather than "RAWURL". */
+.deploy-file-tag.rawurl {
+  color: var(--fg);
+  text-transform: none;
+  letter-spacing: normal;
 }
 
 /* The action column: ✕ is centered, Restore fills it — both sit in the same
@@ -2504,18 +2755,18 @@ body.embed .preview-browse-chip:hover {
 /* ---- Preferences page (SPEC §20) ------------------------------------------ */
 
 /* Bottom-left entry: pinned to the sidebar's bottom edge, muted until hover. */
-/* Footer: Templates, Preferences, and the tour trigger as three equal columns,
-   each a centered icon over a small muted label. Deliberately understated
-   (D80) — the label just disambiguates the icons. */
+/* Footer: Templates, Mounts, and Preferences as three equal columns, each a
+   centered icon over a small muted label. Deliberately understated (D80) —
+   the label just disambiguates the icons. Fused account (D125) no longer
+   gets its own column — its signed-in dot moved onto Preferences — which is
+   what keeps this back down to a single row instead of the 2×2 grid a 4th
+   entry needed. */
 .sidebar-footer {
   margin-top: auto;
   padding: 6px;
   border-top: 1px solid var(--border);
   flex: 0 0 auto;
-  /* Four entries no longer fit one row of the ~220px sidebar without
-     truncating every label — a 2×2 grid keeps the labels readable. */
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
   gap: 4px;
 }
 
@@ -2635,6 +2886,41 @@ body.embed .preview-browse-chip:hover {
   font-size: 13px;
 }
 
+/* Render preferences / Fused account tabs (D125) — same look as the
+   Templates page's bindings/library tabs. */
+.prefs-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.prefs-tab {
+  font: inherit;
+  font-size: 13px;
+  padding: 9px 4px;
+  margin-right: 20px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.prefs-tab:hover {
+  color: var(--fg);
+}
+
+.prefs-tab.active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+
+.prefs-tabpanel {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
 .prefs-section {
   display: flex;
   flex-direction: column;
@@ -2683,22 +2969,126 @@ body.embed .preview-browse-chip:hover {
   cursor: default;
 }
 
-.prefs-section .deploy-danger {
-  color: var(--error);
-  border-color: var(--error);
-}
-
-.prefs-section .deploy-danger:hover:not(:disabled) {
-  background: rgba(255, 107, 107, 0.12);
-}
-
-.prefs-section select {
+/* Safety net for unmigrated selects only — .field-control selects carry their
+   own canonical skin + custom chevron. */
+.prefs-section select:not(.field-control) {
   font: inherit;
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 5px 8px;
+  padding: 7px 10px;
+}
+
+/* Add-mount / add-remote field rows (a <form> so Enter submits). */
+.mount-form-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+/* Paste-a-link fast path above the manual fields: a full-width input that
+   parses an S3/GCS URL and auto-fills Name/Remote/Path below. */
+.mount-paste {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mount-paste :where(input, select) {
+  width: 100%;
+}
+
+.mount-paste-hint {
+  margin: 0;
+  font-size: 0.8em;
+}
+
+.mount-paste-hint.warn {
+  color: var(--warning);
+}
+
+/* Page header — title + one-line intro on the left, global actions on the
+   right. Wraps on a narrow pane so the action drops below the title. */
+.mounts-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.mounts-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.mounts-subtitle {
+  margin: 4px 0 0;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+  max-width: 54ch;
+}
+
+.mounts-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* Refresh glyph in the Restart button — sized independently of the label. */
+.mounts-restart-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* Callout card — the rclone-not-found notice and the recovery prompt share
+   one chassis; `.warn` tints it for the "needs a restart" case. */
+.mount-callout {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+}
+
+.mount-callout.warn {
+  border-color: color-mix(in srgb, var(--warning) 50%, var(--border));
+  background: color-mix(in srgb, var(--warning) 9%, var(--bg-alt));
+}
+
+.mount-callout-title {
+  font-weight: 600;
+  margin: 0;
+}
+
+/* Normal block flow (NOT flex) so the not-found callout's inline text + <code>
+   chips + link wrap as one paragraph; flex-column would stack each inline
+   child on its own line. The recovery callout's multiple <p> lines get their
+   own spacing via the adjacent-sibling margin below. */
+.mount-callout-body {
+  color: var(--fg-muted);
+  font-size: 0.9em;
+  line-height: 1.5;
+}
+
+.mount-callout-body p {
+  margin: 0;
+}
+
+.mount-callout-body p + p {
+  margin-top: 3px;
+}
+
+.mount-callout-body code {
+  white-space: nowrap;
 }
 
 /* Mount cards — one bordered card per mounted/available mount. */
@@ -2716,12 +3106,66 @@ body.embed .preview-browse-chip:hover {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-alt);
+  transition: border-color 0.12s ease;
+}
+
+.mount-card:not(.mount-card--skeleton):hover {
+  border-color: var(--fg-muted);
+}
+
+/* Loading placeholder rows shown while getMounts() is in flight — a shimmer
+   sweep over an empty card, so the list area reserves its space instead of
+   the page jumping when data lands. */
+.mount-card--skeleton {
+  height: 60px;
+  position: relative;
+  overflow: hidden;
+}
+
+.mount-card--skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.04),
+    transparent
+  );
+  animation: mount-shimmer 1.2s ease-in-out infinite;
+}
+
+@keyframes mount-shimmer {
+  to {
+    transform: translateX(100%);
+  }
 }
 
 .mount-card-main {
   display: flex;
   align-items: center;
   gap: 12px;
+  /* Wrap on a narrow pane: the name block (flex:1) keeps the first row and the
+     action buttons drop to a second row rather than crushing the name. */
+  flex-wrap: wrap;
+  row-gap: 10px;
+}
+
+/* The name/remote block is the flexible column; never let it shrink to zero
+   (which would collapse the ellipsised remote spec to nothing). */
+.mount-card-main > .mount-card-info {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+/* Keep the action buttons together and pushed to the row's end; on wrap they
+   ride to the next line as a group. */
+.mount-card-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-left: auto;
 }
 
 .mount-card button {
@@ -2805,20 +3249,6 @@ body.embed .preview-browse-chip:hover {
 /* Labeled form field: a small uppercase caption over a native control, so
    the add-mount row and the custom-remote modal read as named fields rather
    than a line of bare placeholders. */
-.mount-field {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-.mount-field > span {
-  font-size: 0.7em;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--fg-muted);
-}
-.mount-field .req {
-  color: var(--accent);
-}
 
 /* Live preview of the rclone spec the Add button will mount. */
 .mount-spec {
@@ -2852,6 +3282,36 @@ body.embed .preview-browse-chip:hover {
 }
 .mount-link:hover {
   color: var(--fg);
+}
+
+/* Compact layout for narrow panes: tighten page padding, shrink the title, and
+   let the header action span the full width (so it doesn't get squeezed next to
+   a wrapping title). The mount-card / header flex-wrap rules handle the
+   in-between widths; this is the small-end polish. */
+@media (max-width: 560px) {
+  .prefs-page {
+    padding: 14px 14px 24px;
+    gap: 18px;
+  }
+
+  .mounts-title {
+    font-size: 16px;
+  }
+
+  .mounts-actions {
+    width: 100%;
+  }
+
+  .mounts-actions .mounts-restart {
+    width: 100%;
+    justify-content: center;
+  }
+
+  /* On a broken mount the Open/Reconnect + delete row wraps below the name;
+     stretch it full-width so the buttons aren't cramped against the edge. */
+  .mount-card-actions {
+    flex-wrap: wrap;
+  }
 }
 
 .prefs-radio {
@@ -3006,7 +3466,7 @@ body.embed .preview-browse-chip:hover {
 
 .templates-search:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--fg-muted);
 }
 
 .templates-toolbar select {
@@ -3058,49 +3518,6 @@ body.embed .preview-browse-chip:hover {
   color: var(--error);
 }
 
-/* Buttons. */
-.templates-btn-secondary {
-  font: inherit;
-  font-size: 13px;
-  height: 32px;
-  padding: 0 12px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg-alt);
-  color: var(--fg);
-  cursor: pointer;
-}
-
-.templates-btn-secondary:hover:not(:disabled) {
-  border-color: var(--fg-muted);
-}
-
-.templates-btn-secondary:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.templates-btn-primary {
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  height: 32px;
-  padding: 0 14px;
-  border: none;
-  border-radius: 6px;
-  background: var(--accent);
-  color: #111;
-  cursor: pointer;
-}
-
-.templates-btn-primary:hover:not(:disabled) {
-  filter: brightness(1.08);
-}
-
-.templates-btn-primary:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
 
 /* Delete-confirm modal options (D109): the two default-checked checkboxes. */
 .templates-delete-opts {
@@ -3284,13 +3701,13 @@ body.embed .preview-browse-chip:hover {
   gap: 16px;
 }
 
-/* The name field reuses .templates-search's visual, but that class is authored
-   for the toolbar's flex ROW (flex:1 1 200px). Inside .templates-field (a flex
-   COLUMN) that flex-basis lands on the block axis and grows the input into a
-   tall box — pin it back to a single-line control. */
-.templates-field .templates-search {
-  flex: none;
-  width: 100%;
+/* The row-editor / import step content is wrapped in a <form> (so Enter
+   submits); keep the fields laid out with the same column gap the body used. */
+.templates-editor .deploy-body > form,
+.templates-import .deploy-body > form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
 .templates-field-hint {
@@ -3348,11 +3765,11 @@ body.embed .preview-browse-chip:hover {
   padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--bg-alt);
+  background: var(--bg);
 }
 
 .templates-chip-input:focus-within {
-  border-color: var(--accent);
+  border-color: var(--fg-muted);
 }
 
 .templates-chip-draft {
@@ -3384,7 +3801,8 @@ body.embed .preview-browse-chip:hover {
   gap: 6px;
 }
 
-.templates-field > label {
+.templates-field > label,
+.templates-field-label {
   color: var(--fg-muted);
   font-size: 12px;
   font-weight: 500;
@@ -3407,7 +3825,7 @@ body.embed .preview-browse-chip:hover {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0 8px;
-  background: var(--bg-alt);
+  background: var(--bg);
   align-self: flex-start;
 }
 
@@ -3416,12 +3834,16 @@ body.embed .preview-browse-chip:hover {
   background: none;
   color: var(--fg);
   border: none;
-  padding: 6px 2px;
+  padding: 7px 2px;
   min-width: 120px;
 }
 
 .templates-key-input input:focus {
   outline: none;
+}
+
+.templates-key-input:focus-within {
+  border-color: var(--fg-muted);
 }
 
 .templates-key-fix {
@@ -3465,14 +3887,6 @@ body.embed .preview-browse-chip:hover {
 
 .templates-reorder-hint {
   font-size: 11px;
-}
-
-.templates-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-  justify-content: flex-end;
 }
 
 /* Add-template picker popover (row editor). */
@@ -3884,18 +4298,6 @@ body.embed .preview-browse-chip:hover {
   color: var(--error);
 }
 
-.deploy-body .templates-btn-primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #111;
-  font-weight: 600;
-}
-
-.deploy-body .templates-btn-primary:hover:not(:disabled) {
-  background: var(--accent);
-  filter: brightness(1.08);
-}
-
 .templates-inv-icon {
   display: inline-flex;
   margin-right: 8px;
@@ -3905,4 +4307,25 @@ body.embed .preview-browse-chip:hover {
 
 .templates-row:hover .templates-inv-icon {
   color: var(--fg);
+}
+
+/* ---- Reduced motion ------------------------------------------------------ */
+/* Honour prefers-reduced-motion: stop the infinite spinners (kept visible at a
+   static opacity) and collapse transition/animation durations. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .listing-search-spinner,
+  .deploy-spinner,
+  .mode-icon-spinner {
+    animation: none !important;
+    opacity: 0.6;
+  }
 }

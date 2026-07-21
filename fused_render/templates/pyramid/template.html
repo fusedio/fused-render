@@ -1,0 +1,1017 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Overview pyramid</title>
+<link href="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css" rel="stylesheet">
+<script src="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js" crossorigin="anonymous"></script>
+<style>
+  :root {
+    --bg: #16181d; --panel: #1e2128; --border: #2c313a;
+    --text: #e6e9ef; --dim: #9aa3b2; --accent: #4a9eff; --good: #4caf7d; --warn: #e6b34a; --bad: #e66;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--text); display: flex; flex-direction: column;
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .topbar { display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+    border-bottom: 1px solid var(--border); }
+  .topbar h1 { font-size: 15px; margin: 0; white-space: nowrap; }
+  #file-in { flex: 1; background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 7px 11px; font: 12px ui-monospace, Menlo, monospace; outline: none; }
+  #file-in:focus { border-color: var(--accent); }
+  button { background: var(--accent); color: #0c1016; border: none; border-radius: 8px;
+    padding: 7px 14px; font-weight: 600; cursor: pointer; font-size: 13px; }
+  #status { font-size: 12px; color: var(--dim); white-space: nowrap; }
+  #status.err { color: var(--bad); }
+  .main { flex: 1; display: grid; grid-template-columns: 430px 1fr; min-height: 0; }
+  .left { overflow: auto; border-right: 1px solid var(--border); padding: 12px;
+    display: flex; flex-direction: column; }
+  .left > * { flex: 0 0 auto; }
+  /* the ground-patch square absorbs whatever height is left → no scrolling */
+  #crop-flex { flex: 1 1 0; min-height: 150px; display: flex; justify-content: center;
+    align-items: flex-start; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .chip { background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 4px 10px; font-size: 12px; color: var(--dim); }
+  .chip b { color: var(--text); }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .5px; color: var(--dim); margin: 12px 0 6px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+  .err-panel { border-color: #5c2a2a; color: var(--bad); white-space: pre-wrap; word-break: break-word; }
+  .hint { color: var(--dim); font-size: 11.5px; margin-top: 8px; }
+
+  /* patch-in-context: dimmed full level around the sharp dashed patch */
+  #crop-wrap { position: relative; aspect-ratio: 1; overflow: hidden; border-radius: 8px;
+    border: 1.5px solid var(--c, var(--border)); background: #000;
+    height: 100%; max-height: 100%; max-width: 100%; }
+  #crop-wrap .ctx { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    filter: brightness(.32) saturate(.7); image-rendering: pixelated; max-width: none; }
+  #crop-big { position: absolute; left: 15%; top: 15%; width: 70%; height: 70%;
+    image-rendering: pixelated; outline: 2px dashed #fff; box-shadow: 0 0 24px #000; }
+  #crop-cap { font-size: 12px; color: var(--dim); margin-top: 6px; }
+  #crop-cap b { color: var(--text); }
+
+  /* byte bars */
+  .sb { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; cursor: pointer; }
+  .sb .track { flex: 1; height: 17px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 6px; overflow: hidden; position: relative; }
+  .sb .fill { position: absolute; inset: 0 auto 0 0; background: var(--c); opacity: .85; border-radius: 5px 0 0 5px; }
+  .sb .txt { position: absolute; left: 8px; top: 0; line-height: 17px; font-size: 10.5px; color: #fff;
+    text-shadow: 0 1px 3px #000; white-space: nowrap; }
+  .sb .lv { width: 26px; font-size: 11.5px; font-weight: 700; color: var(--c); text-align: right; }
+  .sb.sel .track { border-color: var(--c); }
+
+  table.kv { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  table.kv td { padding: 3px 6px 3px 0; vertical-align: top; }
+  table.kv td:first-child { color: var(--dim); white-space: nowrap; width: 118px; }
+  #bar { position: relative; height: 26px; border: 1px solid var(--border); border-radius: 8px;
+    overflow: hidden; background: var(--panel); }
+  #bar .seg { position: absolute; top: 0; height: 100%; min-width: 2px; cursor: pointer; opacity: .8; }
+  #bar .seg.sel { opacity: 1; outline: 2px solid #fff; outline-offset: -2px; z-index: 2; }
+
+  /* ---- right pane + tabs ---- */
+  .right { position: relative; overflow: hidden; min-height: 0; }
+  #tabs { position: absolute; top: 12px; left: 14px; z-index: 20; display: flex; gap: 6px; }
+  .tab-btn { background: var(--panel); border: 1px solid var(--border); color: var(--dim);
+    padding: 5px 13px; font-size: 12.5px; border-radius: 8px; }
+  .tab-btn.sel { color: #0c1016; background: var(--accent); border-color: var(--accent); }
+  .pane { position: absolute; inset: 0; }
+
+  /* ---- 3D pyramid pane ---- */
+  #tab-pyr { cursor: grab; user-select: none;
+    background: radial-gradient(ellipse 75% 60% at 50% 45%, #1c2230 0%, var(--bg) 78%); }
+  #tab-pyr.dragging { cursor: grabbing; }
+  #scene { position: absolute; inset: 0; perspective: 1500px; }
+  #stack { position: absolute; left: 50%; top: 50%; width: 0; height: 0;
+    transform-style: preserve-3d; will-change: transform; }
+  .layer { position: absolute; transform-style: preserve-3d; cursor: pointer;
+    transition: opacity .45s, filter .15s; }
+  .layer img { display: block; width: 100%; height: 100%; border-radius: 4px;
+    border: 1.5px solid var(--c);
+    box-shadow: 0 0 20px 1px color-mix(in srgb, var(--c) 40%, transparent); background: #000; }
+  .layer img.px { image-rendering: pixelated; }
+  /* remote file with no overviews: a full-res preview would decode the whole
+     image over the network, so the reader skips it — show a placeholder */
+  .layer .noimg { display: flex; align-items: center; justify-content: center; text-align: center;
+    width: 100%; height: 100%; border-radius: 4px; border: 1.5px dashed var(--c);
+    background: repeating-linear-gradient(45deg, #0e1116 0 10px, #14181f 10px 20px);
+    color: var(--dim); font-size: 12px; padding: 8px; box-sizing: border-box; }
+  #crop-wrap .noimg { position: absolute; inset: 0; }
+  .layer .grid { position: absolute; inset: 0; opacity: 0; transition: opacity .4s;
+    pointer-events: none; border-radius: 4px;
+    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--c) 90%, #fff);
+    background-image:
+      linear-gradient(to right, color-mix(in srgb, var(--c) 90%, #fff) 1.5px, transparent 1.5px),
+      linear-gradient(to bottom, color-mix(in srgb, var(--c) 90%, #fff) 1.5px, transparent 1.5px); }
+  .layer.zoomed .grid { opacity: .85; }
+  .layer .patch { position: absolute; opacity: 0; transition: opacity .4s; pointer-events: none;
+    border: 2px dashed #fff; box-shadow: 0 0 10px #000c, inset 0 0 10px #000c; }
+  .layer.zoomed .patch { opacity: .95; }
+  .layer.sel img { border-width: 2.5px;
+    box-shadow: 0 0 34px 5px color-mix(in srgb, var(--c) 70%, transparent); }
+  .layer:hover { filter: brightness(1.22); }
+  .layer.dim { opacity: .13; }                       /* focus mode: others stay clickable */
+  .layer.dim:hover { opacity: .45; filter: none; }
+  .layer.faded { opacity: .06; pointer-events: none; }  /* inspect mode: others inert */
+  .lbl { position: absolute; white-space: nowrap; font-size: 12px; color: var(--dim);
+    pointer-events: none; text-shadow: 0 1px 4px #000; transition: opacity .3s; z-index: 3; }
+  .lbl b { color: var(--text); font-size: 12.5px; }
+  .lbl .res { color: var(--c); font-weight: 600; }
+  .lbl::before { content: ""; position: absolute; right: 100%; top: 55%; width: 26px; height: 1px;
+    background: linear-gradient(to left, var(--dim), transparent); margin-right: 5px; opacity: .6; }
+  #scene-hint { position: absolute; left: 0; right: 0; bottom: 12px; text-align: center;
+    color: var(--dim); font-size: 12px; pointer-events: none; z-index: 4; }
+  #lvl-nav { position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 6px; z-index: 5; }
+  .lvl-chip { background: var(--panel); border: 1px solid var(--border); color: var(--dim);
+    padding: 4px 11px; font-size: 12px; border-radius: 8px; }
+  .lvl-chip.sel { color: #0c1016; background: var(--c); border-color: var(--c); }
+  #grid-cap { position: absolute; top: 46px; left: 50%; transform: translateX(-50%);
+    background: color-mix(in srgb, var(--panel) 88%, transparent); border: 1px solid var(--border);
+    border-radius: 8px; padding: 5px 12px; font-size: 12px; color: var(--dim);
+    display: none; z-index: 5; white-space: nowrap; }
+  #grid-cap b { color: var(--text); }
+  #zoom-btn, #reset-btn { position: absolute; right: 14px; bottom: 14px; z-index: 5; display: none;
+    background: var(--panel); color: var(--text); border: 1px solid var(--border); }
+
+  /* ---- map compare pane ---- */
+  #tab-map { display: none; }
+  #cmp { position: absolute; inset: 0; }
+  #mapA, #mapB { position: absolute; inset: 0; }
+  #mapB-wrap { position: absolute; inset: 0; pointer-events: none; }
+  #swipe { position: absolute; top: 0; bottom: 0; width: 26px; margin-left: -13px; z-index: 10;
+    cursor: ew-resize; }
+  #swipe::before { content: ""; position: absolute; left: 12px; top: 0; bottom: 0; width: 2px;
+    background: #fff; opacity: .85; box-shadow: 0 0 8px #000; }
+  #swipe::after { content: "⇔"; position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%);
+    background: #fff; color: #0c1016; border-radius: 50%; width: 30px; height: 30px;
+    line-height: 30px; text-align: center; font-size: 15px; font-weight: 700; box-shadow: 0 2px 8px #000a; }
+  .side-tag { position: absolute; top: 52px; z-index: 9; background: color-mix(in srgb, var(--panel) 90%, transparent);
+    border: 1px solid var(--border); border-radius: 8px; padding: 5px 11px; font-size: 12.5px; color: var(--dim); }
+  .side-tag b { color: var(--c); }
+  #map-ctl { position: absolute; left: 50%; transform: translateX(-50%); bottom: 14px; z-index: 11;
+    background: color-mix(in srgb, var(--panel) 94%, transparent); border: 1px solid var(--border);
+    border-radius: 10px; padding: 9px 13px; display: flex; flex-direction: column; gap: 7px; }
+  .ctl-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); }
+  .ctl-row .who { width: 78px; text-align: right; }
+  .mchip { background: var(--bg); border: 1px solid var(--border); color: var(--dim);
+    padding: 3px 9px; font-size: 11.5px; border-radius: 7px; }
+  .mchip.sel { color: #0c1016; background: var(--c); border-color: var(--c); }
+  .mchip:disabled { opacity: .4; cursor: default; }
+  #hud { font-size: 11.5px; color: var(--dim); text-align: center; min-height: 15px; }
+  #hud b { color: var(--accent); }
+  #map-err { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+    color: var(--dim); z-index: 12; }
+
+  /* ---- job modal (build / cogify progress) ---- */
+  #job-modal { position: fixed; inset: 0; z-index: 100; display: none;
+    align-items: center; justify-content: center; background: #000a;
+    backdrop-filter: blur(3px); }
+  #job-modal.on { display: flex; }
+  .jm-card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+    padding: 22px 26px; width: 440px; box-shadow: 0 14px 60px #000d; }
+  .jm-card h3 { margin: 0 0 3px; font-size: 15px; }
+  #jm-sub { color: var(--dim); font-size: 12.5px; margin-bottom: 16px;
+    font-family: ui-monospace, Menlo, monospace; }
+  .jm-track { height: 10px; border-radius: 6px; background: var(--bg);
+    border: 1px solid var(--border); overflow: hidden; }
+  #jm-fill { height: 100%; width: 0%; border-radius: 6px; transition: width .9s linear;
+    background: repeating-linear-gradient(-45deg, var(--accent) 0 12px, #6fb4ff 12px 24px);
+    background-size: 34px 100%; animation: jm-slide 1.2s linear infinite; }
+  @keyframes jm-slide { to { background-position: 34px 0; } }
+  #jm-txt { font-size: 12px; color: var(--text); margin-top: 9px; }
+  #jm-note { font-size: 11.5px; color: var(--dim); margin-top: 14px; }
+  #jm-hide { color: var(--accent); cursor: pointer; }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <h1>Overview pyramid</h1>
+  <input id="file-in" placeholder="/absolute/path/to/raster.tif (COG or plain GeoTIFF)" spellcheck="false">
+  <button id="an-btn">Analyze</button>
+  <span id="status"></span>
+</div>
+<div class="main">
+  <div class="left" id="left">
+    <div class="panel" style="color:var(--dim);font-size:13px">Every resolution level of a GeoTIFF.
+      <b>3D pyramid</b>: click a level to focus it (camera stays put), click again or hit the zoom
+      button to inspect it face-on; drag to orbit, scroll to zoom.
+      <b>On the map</b>: swipe two levels against each other at real resolution on a basemap.
+      First run installs rasterio (~1 min).</div>
+  </div>
+  <div class="right" id="right">
+    <div id="tabs">
+      <button class="tab-btn sel" data-t="pyr">3D pyramid</button>
+      <button class="tab-btn" data-t="map">On the map</button>
+    </div>
+
+    <div class="pane" id="tab-pyr">
+      <div id="scene-hint"></div>
+      <div id="lvl-nav"></div>
+      <div id="grid-cap"></div>
+      <div id="scene"><div id="stack"></div></div>
+      <button id="zoom-btn"></button>
+      <button id="reset-btn">↩ back to pyramid (Esc)</button>
+    </div>
+
+    <div class="pane" id="tab-map">
+      <div id="cmp">
+        <div id="mapA"></div>
+        <div id="mapB-wrap"><div id="mapB"></div></div>
+        <div id="swipe"></div>
+        <div class="side-tag" id="tag-a" style="left:14px"></div>
+        <div class="side-tag" id="tag-b" style="right:14px"></div>
+        <div id="map-ctl">
+          <div class="ctl-row"><span class="who">left of handle</span><span id="chips-a"></span>
+            <label style="margin-left:10px"><input type="checkbox" id="auto-a"> auto — pick like a COG reader</label></div>
+          <div class="ctl-row"><span class="who">right of handle</span><span id="chips-b"></span></div>
+          <div id="hud"></div>
+        </div>
+        <div id="map-err"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="job-modal"><div class="jm-card">
+  <h3 id="jm-title"></h3>
+  <div id="jm-sub"></div>
+  <div class="jm-track"><div id="jm-fill"></div></div>
+  <div id="jm-txt"></div>
+  <div id="jm-note">Runs in a detached local worker — leaving this page will <b>not</b> cancel it.
+    <span id="jm-hide">hide (keeps running)</span></div>
+</div></div>
+
+<script>
+window.addEventListener("error", (e) => {
+  const el = document.getElementById("status");
+  if (el) { el.textContent = "JS error: " + e.message + " @" + (e.lineno || "?"); el.className = "err"; }
+});
+const READER = "./overview_pyramid.py";
+// src = the server origin + the raw-bytes URL for a file. The reader trusts it
+// only for the origin (to reach /api/fs/stat + /api/fs/raw) and stays mount-
+// agnostic; every runPython call passes it so a mount-backed file is read over
+// HTTP range requests instead of the kernel NFS mount (mirrors the .tif viewer).
+const rawURL = (f) => `${location.origin}/api/fs/raw?path=${encodeURIComponent(f)}`;
+// the sibling geotiff template's daemon — the SAME copy the .tif viewer
+// ensures, so the two modes share one daemon instead of respawning each
+// other's (relative py paths resolve against this template's folder)
+const TILE_SERVER = "../geotiff/tile_server.py";
+const DEMO = "";
+const $ = (id) => document.getElementById(id);
+const setStatus = (m, err) => { $("status").textContent = m; $("status").className = err ? "err" : ""; };
+const human = (n) => { if (n == null) return "?"; for (const u of ["B","KB","MB","GB"]) { if (n < 1024 || u === "GB") return u === "B" ? n + " B" : n.toFixed(1) + " " + u; n /= 1024; } };
+function esc(s) { const d = document.createElement("span"); d.textContent = s ?? "";
+  return d.innerHTML.replaceAll('"', "&quot;").replaceAll("'", "&#39;"); }
+function showError(msg) { setStatus("error", true);
+  $("left").innerHTML = `<div class="panel err-panel">${esc(msg)}</div>`;
+  $("stack").innerHTML = ""; $("scene-hint").textContent = ""; $("lvl-nav").innerHTML = ""; }
+const COLORS = ["#4a9eff", "#5ac8d8", "#4caf7d", "#e6b34a", "#e88a4a", "#e66", "#b07ce8", "#e88ab0"];
+let R = null, sel = 0;
+let focused = -1;          // highlighted level, camera keeps its tilt
+let zoomed = -1;           // face-on inspect mode
+let orbit = null;          // camera snapshot to restore when leaving inspect
+let layerGeom = [], homeTz = 0, stackFile = null;
+const HOME = { rx: 62, rz: 45, s: 1 };
+let view = { ...HOME, tz: 0 };
+
+function metersPerPx(l) {
+  if (!R.bounds4326) return null;
+  const lat = (R.bounds4326[1] + R.bounds4326[3]) / 2;
+  if (l.unit && l.unit.startsWith("met")) return l.pixel_size;
+  if (R.crs === "EPSG:4326" || (l.unit || "").startsWith("deg"))
+    return l.pixel_size * 111320 * Math.cos(lat * Math.PI / 180);
+  return l.unit ? l.pixel_size : null;
+}
+const fmtRes = (l) => {
+  const m = metersPerPx(l);
+  if (m == null) return l.pixel_size.toPrecision(3) + (l.unit ? " " + l.unit : " units") + "/px";
+  return m >= 1000 ? (m / 1000).toPrecision(3) + " km/px" : m.toPrecision(3) + " m/px";
+};
+const zoomEq = (l) => {
+  const m = metersPerPx(l);
+  if (m == null || !R.bounds4326) return null;
+  const lat = (R.bounds4326[1] + R.bounds4326[3]) / 2;
+  return Math.log2(156543.03 * Math.cos(lat * Math.PI / 180) / m);
+};
+const groundKm = () => {
+  const m = metersPerPx(R.levels[0]);
+  if (m == null) return null;
+  const km = R.levels[0].crop_ground / R.levels[0].pixel_size * m / 1000;
+  return km >= 1 ? km.toFixed(1) + " km" : Math.round(km * 1000) + " m";
+};
+
+async function analyze(file) {
+  if (!file) { setStatus("no file — paste a path above", true); return; }
+  setStatus("reading levels… (first run installs rasterio)");
+  let res;
+  try { res = await fused.runPython(READER, { file, src: rawURL(file) }); }
+  catch (e) { showError("reader failed: " + (e.message || e)); return; }
+  if (res.error) { showError(res.error); return; }
+  R = res; sel = 0;
+  cmp.inited = false;
+  // as a template mode the shell owns the file (_file param) — writing our own
+  // file param there would fight it and pin the demo path into the URL
+  if (!fused.params.get("_file")) fused.params.set("file", file);
+  $("file-in").value = file;
+  setStatus("");
+  buildScene();
+  renderLeft();
+  // debug/deep-link (read-only): ?tab=map | ?level=N (focus) | &inspect=1 (fly onto it)
+  // | ?rx/rz/s camera | ?click=N synthetic chip click
+  if (fused.params.get("tab") === "map") switchTab("map");
+  const pl = parseInt(fused.params.get("level"), 10);
+  if (!Number.isNaN(pl) && pl >= 0 && pl < R.levels.length) {
+    if (fused.params.get("inspect") === "1") zoomTo(pl);
+    else focusLayer(pl);
+  }
+  let dirty = false;
+  for (const k of ["rx", "rz", "s"]) {
+    const v = parseFloat(fused.params.get(k));
+    if (!Number.isNaN(v)) { view[k] = v; dirty = true; }
+  }
+  if (dirty) applyView(false);
+  const ck = parseInt(fused.params.get("click"), 10);
+  if (!Number.isNaN(ck)) setTimeout(() => {
+    const el = document.querySelector(`.lvl-chip[data-i="${ck}"]`);
+    if (el) el.click();
+  }, 800);
+  // headless debug only: ?fix=build|cog exercises the real button path once
+  const fx = fused.params.get("fix");
+  if (fx && !window.__fixClicked) {
+    window.__fixClicked = true;
+    setTimeout(() => $(fx === "cog" ? "fix-cog-toggle" : "fix-build")?.click(), 800);
+  }
+}
+
+/* ================= tabs ================= */
+
+let tab = "pyr";
+function switchTab(t) {
+  tab = t;
+  document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("sel", b.dataset.t === t));
+  $("tab-pyr").style.display = t === "pyr" ? "block" : "none";
+  $("tab-map").style.display = t === "map" ? "block" : "none";
+  if (t === "map" && R) initCompare();
+}
+document.querySelectorAll(".tab-btn").forEach(b => b.addEventListener("click", () => switchTab(b.dataset.t)));
+
+/* ================= 3D pyramid ================= */
+
+function buildScene() {
+  const right = $("right");
+  const sw = right.clientWidth, sh = right.clientHeight;
+  const n = R.levels.length;
+  const W0 = Math.min(sw, sh) * 0.58;
+  const gap = Math.min(150, Math.max(70, (Math.min(sh, 760) * 0.62) / Math.max(1, n - 1)));
+  layerGeom = R.levels.map((l, i) => {
+    const scale = Math.pow(l.width / R.levels[0].width, 0.55);
+    const w = W0 * scale;
+    return { w, h: w * (l.height / l.width), z: i * gap };
+  });
+  homeTz = -(n - 1) * gap / 2;
+  if (stackFile !== R.file) {                 // new file → fresh state + camera
+    stackFile = R.file;
+    focused = -1; zoomed = -1; orbit = null;
+    view = { ...HOME, tz: homeTz };
+  } else if (zoomed >= 0) view = flyView(zoomed);
+  else view.tz = focused >= 0 ? -layerGeom[focused].z : homeTz;
+  if (!window.__urlCamDone)
+    for (const k of ["rx", "rz", "s"]) {
+      const v = parseFloat(fused.params.get(k));
+      if (!Number.isNaN(v)) view[k] = v;
+    }
+  $("scene-hint").innerHTML = `${esc(R.file.split("/").pop())} — click a level to focus · click again to zoom onto it · ↑/↓ to step levels · drag to orbit · scroll to zoom`;
+  $("lvl-nav").innerHTML = R.levels.map((l, i) =>
+    `<button class="lvl-chip" data-i="${i}" style="--c:${COLORS[i % COLORS.length]}">L${l.level}</button>`).join("");
+  $("lvl-nav").querySelectorAll(".lvl-chip").forEach(el =>
+    el.addEventListener("click", (e) => { e.stopPropagation(); focusLayer(+el.dataset.i); }));
+  $("stack").innerHTML = R.levels.map((l, i) => {
+    const g = layerGeom[i], c = COLORS[i % COLORS.length];
+    const N = Math.min(l.width, 800);
+    const Nh = N * (l.height / l.width);
+    const gx = N * l.block[1] / l.width, gy = Nh * l.block[0] / l.height;
+    return `
+      <div class="layer ${i === sel ? "sel" : ""}" data-i="${i}" style="--c:${c};width:${N}px;height:${Nh}px;
+        left:${-N / 2}px;top:${-Nh / 2}px;transform:translateZ(${g.z}px) scale(${g.w / N})">
+        ${l.thumb
+          ? `<img class="${l.width <= 800 ? "px" : ""}" src="data:image/png;base64,${l.thumb}" alt="level ${l.level}" draggable="false">`
+          : `<div class="noimg" title="${esc(l.thumb_skipped || "preview skipped")}">full-res preview skipped<br><span style="opacity:.7">(remote file, no overviews)</span></div>`}
+        ${l.tiled ? `<div class="grid" style="background-size:${gx}px ${gy}px"></div>` : ""}
+        <div class="patch" style="width:${N * l.crop_px / l.width}px;height:${Nh * l.crop_px / l.height}px;
+          left:${N * (1 - l.crop_px / l.width) / 2}px;top:${Nh * (1 - l.crop_px / l.height) / 2}px"></div>
+      </div>`;
+  }).join("");
+  document.querySelectorAll(".lbl").forEach(el => el.remove());
+  R.levels.forEach((l, i) => {
+    const el = document.createElement("div");
+    el.className = "lbl";
+    el.dataset.i = i;
+    el.style.setProperty("--c", COLORS[i % COLORS.length]);
+    el.innerHTML = `<b>L${l.level}</b> ${l.level === 0 ? "full res" : "overview"} · ${l.width.toLocaleString()}×${l.height.toLocaleString()}<br>
+      <span class="res">${fmtRes(l)}</span> · ${human(l.bytes)}${l.pct != null ? ` <span style="opacity:.7">(${l.pct}%)</span>` : ""}`;
+    $("tab-pyr").appendChild(el);
+  });
+  $("stack").querySelectorAll(".layer").forEach(el => {
+    el.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (justDragged) return;
+      const i = +el.dataset.i;
+      if (zoomed < 0 && focused === i) zoomTo(i);   // second click dives in
+      else focusLayer(i);
+    });
+  });
+  applyView(false);
+}
+
+function flyView(i) {
+  const right = $("right");
+  const g = layerGeom[i];
+  const fit = 0.74 * Math.min(right.clientWidth, right.clientHeight) / Math.max(g.w, g.h);
+  return { rx: 0, rz: 0, s: fit, tz: -g.z };
+}
+
+function updateGridCap(i) {
+  const l = R.levels[i];
+  const bw = l.block[1], bh = l.block[0];
+  const cols = Math.ceil(l.width / bw), rows = Math.ceil(l.height / bh);
+  const remW = l.width - (cols - 1) * bw, remH = l.height - (rows - 1) * bh;
+  const partial = (remW !== bw || remH !== bh)
+    ? ` · edge tiles are partial: only ${remW}×${remH} of their pixels are real` : "";
+  $("grid-cap").innerHTML = (l.tiled
+    ? `L${l.level} internal tiling (from the IFD): <b>${bw}×${bh}</b> px tiles →
+       <b>${cols}×${rows} = ${cols * rows}</b> tile${cols * rows === 1 ? "" : "s"}${partial}`
+    : `L${l.level} is stored as <b>strips</b>, not tiles`)
+    + ` · dashed square = the ${l.crop_px}×${l.crop_px}px patch at left`;
+  $("grid-cap").style.setProperty("--c", COLORS[i % COLORS.length]);
+}
+
+// focus: highlight a level WITHOUT moving the user's camera (only a gentle
+// slide along the stack axis so the focused level is centered)
+function focusLayer(i) {
+  select(i);
+  switchTab("pyr");
+  if (zoomed >= 0) {              // already inspecting → fly between levels
+    zoomed = i;
+    view = flyView(i);
+    applyView(true);
+    updateGridCap(i);
+    return;
+  }
+  focused = i;
+  view.tz = -layerGeom[i].z;
+  applyView(true);
+  updateGridCap(i);
+}
+
+function zoomTo(i) {
+  select(i);
+  if (zoomed < 0) orbit = { rx: view.rx, rz: view.rz, s: view.s };
+  focused = i;
+  zoomed = i;
+  view = flyView(i);
+  applyView(true);
+  updateGridCap(i);
+}
+
+function unzoom() {               // leave inspect → restore the orbit, keep focus
+  zoomed = -1;
+  const o = orbit || HOME;
+  view = { rx: o.rx, rz: o.rz, s: o.s, tz: focused >= 0 ? -layerGeom[focused].z : homeTz };
+  applyView(true);
+}
+
+function clearFocus() {
+  focused = -1;
+  view.tz = homeTz;
+  applyView(true);
+}
+
+function applyView(animate = true) {
+  const st = $("stack");
+  st.style.transition = animate ? "transform .6s cubic-bezier(.22,.85,.3,1)" : "none";
+  st.style.transform = `rotateX(${view.rx}deg) rotateZ(${view.rz}deg) scale(${view.s}) translateZ(${view.tz}px)`;
+  const hot = zoomed >= 0 ? zoomed : focused;
+  document.querySelectorAll(".layer").forEach(el => {
+    const i = +el.dataset.i;
+    el.classList.toggle("faded", zoomed >= 0 && i !== zoomed);
+    el.classList.toggle("dim", zoomed < 0 && focused >= 0 && i !== focused);
+    el.classList.toggle("zoomed", i === hot);
+  });
+  document.querySelectorAll(".lvl-chip").forEach(el =>
+    el.classList.toggle("sel", +el.dataset.i === hot));
+  $("grid-cap").style.display = hot >= 0 ? "block" : "none";
+  $("reset-btn").style.display = zoomed >= 0 ? "block" : "none";
+  const zb = $("zoom-btn");
+  zb.style.display = (zoomed < 0 && focused >= 0) ? "block" : "none";
+  if (focused >= 0) zb.textContent = `⤢ zoom into L${R.levels[focused].level}`;
+}
+
+let justDragged = false;
+{
+  const pane = $("tab-pyr");
+  let drag = null;
+  pane.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    // do NOT capture here: with capture active, Chrome dispatches the click
+    // to the pane instead of the chip/layer under the cursor — capture only
+    // once an actual drag starts (below)
+    drag = { x: e.clientX, y: e.clientY, moved: false, id: e.pointerId };
+  });
+  pane.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+    if (!drag.moved) { try { pane.setPointerCapture(drag.id); } catch (_) {} }
+    drag.moved = true;
+    window.__urlCamDone = true;
+    pane.classList.add("dragging");
+    view.rz += dx * 0.35;
+    view.rx = Math.max(0, Math.min(88, view.rx - dy * 0.3));
+    drag.x = e.clientX; drag.y = e.clientY;
+    applyView(false);
+  });
+  const back = () => { if (zoomed >= 0) unzoom(); else if (focused >= 0) clearFocus(); };
+  const end = (e) => {
+    justDragged = !!(drag && drag.moved);
+    if (drag && !drag.moved && e.target === pane) back();
+    drag = null;
+    pane.classList.remove("dragging");
+    setTimeout(() => { justDragged = false; }, 0);
+  };
+  pane.addEventListener("pointerup", end);
+  pane.addEventListener("pointercancel", () => { drag = null; pane.classList.remove("dragging"); });
+  pane.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    window.__urlCamDone = true;
+    view.s = Math.max(0.3, Math.min(30, view.s * Math.exp(-e.deltaY * 0.0015)));
+    applyView(false);
+  }, { passive: false });
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { back(); return; }
+    // ↑/↓ (or ←/→) step through the pyramid levels
+    if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) return;
+    if (!R || tab !== "pyr") return;
+    if (e.target && /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return;
+    e.preventDefault();
+    const dir = (e.key === "ArrowUp" || e.key === "ArrowRight") ? 1 : -1;
+    const cur = zoomed >= 0 ? zoomed : focused;
+    const start = cur >= 0 ? cur + dir : (dir > 0 ? 0 : R.levels.length - 1);
+    const nxt = Math.max(0, Math.min(R.levels.length - 1, start));
+    if (nxt !== cur) focusLayer(nxt);
+  });
+  $("reset-btn").addEventListener("click", unzoom);
+  $("zoom-btn").addEventListener("click", () => { if (focused >= 0) zoomTo(focused); });
+}
+
+(function labelLoop() {
+  if (R && tab === "pyr") {
+    const rr = $("tab-pyr").getBoundingClientRect();
+    document.querySelectorAll(".lbl").forEach(el => {
+      const i = +el.dataset.i;
+      const layer = document.querySelector(`.layer[data-i="${i}"]`);
+      if (!layer) { el.style.opacity = 0; return; }
+      const b = layer.getBoundingClientRect();
+      const show = zoomed >= 0 ? false : (focused >= 0 ? i === focused : true);
+      el.style.opacity = show ? 1 : 0;
+      el.style.left = Math.min(b.right - rr.left + 32, rr.width - 230) + "px";
+      el.style.top = Math.max(52, b.top - rr.top + b.height / 2 - 16) + "px";
+    });
+  }
+  requestAnimationFrame(labelLoop);
+})();
+
+/* ================= map compare ================= */
+
+const cmp = { inited: false, A: null, B: null, la: 0, lb: 0, auto: true, port: null, token: '' };
+
+async function ensureTileDaemon() {
+  if (cmp.port !== null) return cmp.port;
+  cmp.port = 0;
+  if (TILE_SERVER) {
+    try {
+      const r = await fused.runPython(TILE_SERVER, { action: "ensure" });
+      if (r && r.port) { cmp.port = r.port; cmp.token = r.token || ''; }
+    } catch (e) { /* fall back to thumbnails */ }
+  }
+  return cmp.port;
+}
+
+function ovlCoords() {
+  const b = R.bounds4326;
+  return [[b[0], b[3]], [b[2], b[3]], [b[2], b[1]], [b[0], b[1]]];
+}
+
+function setOverlay(map, idx) {
+  // real per-level tiles from the local daemon (honest resolution at any zoom);
+  // falls back to the ≤800px thumbnail overlay when the daemon is unavailable.
+  // Mount-backed files are safe now: /ltile detects a remote file from `src`
+  // (the origin of the raw-bytes endpoint) and opens it over ranged /api/fs/raw
+  // reads instead of kernel-opening the NFS mount. The template stays mount-
+  // agnostic — it always passes `src`, and the daemon decides remote vs local.
+  const old = map.getSource("ovl");
+  if (cmp.port) {
+    const src = encodeURIComponent(`${location.origin}/api/fs/raw?path=${encodeURIComponent(R.file)}`);
+    const tiles = [`http://127.0.0.1:${cmp.port}/ltile/{z}/{x}/{y}.png?file=${encodeURIComponent(R.file)}&level=${idx}&src=${src}&t=${encodeURIComponent(cmp.token)}`];
+    if (old && old.setTiles) { old.setTiles(tiles); return; }
+    if (old) { map.removeLayer("ovl"); map.removeSource("ovl"); }
+    map.addSource("ovl", { type: "raster", tiles, tileSize: 256 });
+    map.addLayer({ id: "ovl", type: "raster", source: "ovl",
+      paint: { "raster-resampling": "nearest", "raster-fade-duration": 0 } });
+  } else if (!R.levels[idx].thumb) {
+    // no daemon AND no thumbnail (remote file without overviews) — nothing to
+    // overlay without a full-res network decode; leave the basemap bare
+    if (old) { map.removeLayer("ovl"); map.removeSource("ovl"); }
+  } else {
+    const url = "data:image/png;base64," + R.levels[idx].thumb;
+    if (old && old.updateImage) { old.updateImage({ url, coordinates: ovlCoords() }); return; }
+    if (old) { map.removeLayer("ovl"); map.removeSource("ovl"); }
+    map.addSource("ovl", { type: "image", url, coordinates: ovlCoords() });
+    map.addLayer({ id: "ovl", type: "raster", source: "ovl",
+      paint: { "raster-resampling": "nearest", "raster-fade-duration": 0 } });
+  }
+}
+
+function sideTag(el, idx, autoNote) {
+  const l = R.levels[idx];
+  el.style.setProperty("--c", COLORS[idx % COLORS.length]);
+  el.innerHTML = `<b>L${l.level}</b> · ${l.width.toLocaleString()}×${l.height.toLocaleString()} · ${fmtRes(l)}${autoNote || ""}`;
+}
+
+function applySides() {
+  if (!cmp.A || !cmp.B) return;
+  setOverlay(cmp.A, cmp.la);
+  setOverlay(cmp.B, cmp.lb);
+  sideTag($("tag-a"), cmp.la, cmp.auto ? " (auto)" : "");
+  sideTag($("tag-b"), cmp.lb);
+  ["a", "b"].forEach(s => {
+    const cur = s === "a" ? cmp.la : cmp.lb;
+    $("chips-" + s).querySelectorAll(".mchip").forEach(el => {
+      el.classList.toggle("sel", +el.dataset.i === cur);
+      el.style.setProperty("--c", COLORS[+el.dataset.i % COLORS.length]);
+      if (s === "a") el.disabled = cmp.auto;
+    });
+  });
+}
+
+function autoPick() {
+  if (!cmp.auto || !cmp.A) return;
+  const z = cmp.A.getZoom();
+  let best = 0, bd = 1e9;
+  R.levels.forEach((l, i) => {
+    const ze = zoomEq(l);
+    if (ze == null) return;
+    const d = Math.abs(ze - z);
+    if (d < bd - 1e-9) { bd = d; best = i; }
+  });
+  const zeBest = zoomEq(R.levels[best]);
+  $("hud").innerHTML = `map is at z<b>${z.toFixed(1)}</b> → a COG reader fetches
+    <b style="color:${COLORS[best % COLORS.length]}">L${R.levels[best].level}</b>
+    (${fmtRes(R.levels[best])} ≈ z${zeBest.toFixed(0)}) — zoom in/out to watch it switch`;
+  if (best !== cmp.la) { cmp.la = best; applySides(); }
+}
+
+function initCompare() {
+  if (cmp.inited) { setTimeout(() => { cmp.A && cmp.A.resize(); cmp.B && cmp.B.resize(); }, 0); return; }
+  if (typeof maplibregl === "undefined") {
+    $("map-err").style.display = "flex";
+    $("map-err").textContent = "Map library unavailable (no network to unpkg.com).";
+    return;
+  }
+  if (!R.bounds4326) {
+    $("map-err").style.display = "flex";
+    $("map-err").textContent = "This file has no usable CRS — cannot place it on a map.";
+    return;
+  }
+  cmp.inited = true;
+  cmp.la = 0;
+  cmp.lb = R.levels.length - 1;
+  const pla = parseInt(fused.params.get("la"), 10);
+  const plb = parseInt(fused.params.get("lb"), 10);
+  if (pla >= 0 && pla < R.levels.length) cmp.la = pla;
+  if (plb >= 0 && plb < R.levels.length) cmp.lb = plb;
+  if (fused.params.get("auto") === "0") cmp.auto = false;
+  const style = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
+  const b = R.bounds4326;
+  const opts = { style, bounds: [[b[0], b[1]], [b[2], b[3]]], fitBoundsOptions: { padding: 60 },
+                 attributionControl: false };
+  if (cmp.A) { cmp.A.remove(); cmp.B.remove(); cmp.A = cmp.B = null; }
+  try {
+    cmp.A = new maplibregl.Map({ container: "mapA", ...opts });
+    cmp.B = new maplibregl.Map({ container: "mapB", ...opts, interactive: false });
+  } catch (e) {
+    $("map-err").style.display = "flex";
+    $("map-err").textContent = "Map cannot start (WebGL unavailable): " + (e.message || e);
+    cmp.A = cmp.B = null;
+    return;
+  }
+  cmp.A.addControl(new maplibregl.NavigationControl({ showCompass: false }));
+  let ready = 0;
+  const onReady = () => {
+    if (++ready !== 2) return;
+    const mz = parseFloat(fused.params.get("mz"));
+    if (!Number.isNaN(mz)) cmp.A.jumpTo({ center: [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2], zoom: mz });
+    applySides();      // thumbnails paint immediately…
+    autoPick();
+    ensureTileDaemon().then(p => { if (p) applySides(); });   // …then upgrade to real tiles
+  };
+  cmp.A.on("load", onReady);
+  cmp.B.on("load", onReady);
+  cmp.A.on("move", () => {
+    cmp.B.jumpTo({ center: cmp.A.getCenter(), zoom: cmp.A.getZoom(),
+                   bearing: cmp.A.getBearing(), pitch: cmp.A.getPitch() });
+    autoPick();
+  });
+  for (const s of ["a", "b"]) {
+    $("chips-" + s).innerHTML = R.levels.map((l, i) =>
+      `<button class="mchip" data-i="${i}">L${l.level}</button>`).join(" ");
+    $("chips-" + s).querySelectorAll(".mchip").forEach(el =>
+      el.addEventListener("click", () => {
+        if (s === "a") { cmp.la = +el.dataset.i; } else { cmp.lb = +el.dataset.i; }
+        applySides();
+      }));
+  }
+  $("auto-a").checked = cmp.auto;
+  $("auto-a").addEventListener("change", () => {
+    cmp.auto = $("auto-a").checked;
+    applySides();
+    autoPick();
+    if (!cmp.auto) $("hud").textContent = "";
+  });
+  const cmpEl = $("cmp"), sw = $("swipe"), wrap = $("mapB-wrap");
+  const setX = (frac) => {
+    const w = cmpEl.clientWidth;
+    const x = Math.max(40, Math.min(w - 40, frac * w));
+    sw.style.left = x + "px";
+    wrap.style.clipPath = `inset(0 0 0 ${x}px)`;
+    sw.dataset.frac = x / w;
+  };
+  setX(0.5);
+  let dragging = false;
+  sw.addEventListener("pointerdown", (e) => { dragging = true; sw.setPointerCapture(e.pointerId); });
+  window.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    setX((e.clientX - cmpEl.getBoundingClientRect().left) / cmpEl.clientWidth);
+  });
+  window.addEventListener("pointerup", () => { dragging = false; });
+  window.addEventListener("resize", () => setX(parseFloat(sw.dataset.frac || "0.5")));
+}
+
+/* ================= build / cogify panel ================= */
+
+const RESAMPLINGS = ["average", "nearest", "bilinear", "cubic", "gauss", "mode"];
+const cogOut = () => R.file.replace(/\.tiff?$/i, "") + "_cog.tif";
+
+function cogSectionHtml() {
+  return `
+    <div id="fix-cog" style="display:none;margin-top:10px;border-top:1px solid var(--border);padding-top:10px">
+      <div class="hint" style="margin:0 0 8px">Full rewrite to <b>${esc(cogOut().split("/").pop())}</b>
+        with a proper COG layout — original untouched. The codec changes the size a lot:</div>
+      <div id="predict-out" class="hint" style="margin:0 0 8px">measuring real blocks…</div>
+      <div style="display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--dim)">
+        codec <select id="fix-prof"></select>
+        <button id="fix-run-cog">Create COG copy</button>
+      </div>
+    </div>
+    <div id="fix-prog" class="hint" style="margin-top:8px"></div>`;
+}
+
+function fixPanelHtml() {
+  if (R.fix) {
+    const mpx = (R.levels[0].width * R.levels[0].height / 1e6).toFixed(0);
+    return `
+    <div class="panel" id="fix-panel" style="border-color:#5c4a22;margin-bottom:14px">
+      <div style="font-weight:700;color:var(--warn);margin-bottom:4px">No overview pyramid</div>
+      <div class="hint" style="margin:0 0 8px">Every zoomed-out view has to chew through all
+        <b>${mpx} Mpx</b> of L0 — that's why this file feels slow on a map.</div>
+      <table class="kv">
+        <tr><td>would add</td><td><b>${R.fix.n_new_levels}</b> level${R.fix.n_new_levels === 1 ? "" : "s"} (÷${R.fix.factors.join(", ÷")})</td></tr>
+        <tr><td>estimated cost</td><td>≈ <b>+${human(R.fix.est_extra_bytes)}</b>
+          (${human(R.file_size)} → ~${human(R.file_size + R.fix.est_extra_bytes)})</td></tr>
+        <tr><td>resampling</td><td><select id="fix-rs">${RESAMPLINGS.map(r =>
+          `<option>${r}</option>`).join("")}</select></td></tr>
+      </table>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button id="fix-build">⚒ Add overviews in place</button>
+        <button id="fix-cog-toggle" style="background:var(--bg);color:var(--text);border:1px solid var(--border)">COG copy…</button>
+      </div>
+      ${cogSectionHtml()}
+    </div>`;
+  }
+  if (R.cog && R.cog.valid === false) {
+    // pyramid exists (map + pyramid work fine locally) but the layout can't
+    // serve cheap HTTP range reads — typical after an in-place overview append
+    return `
+    <div class="panel" id="fix-panel" style="margin-bottom:14px">
+      <div style="font-weight:700;color:var(--warn);margin-bottom:4px">Pyramid ✓ — but not a valid COG layout</div>
+      <div class="hint" style="margin:0 0 8px">All levels are present, so local viewing is fast.
+        The layout just isn't ordered for cheap HTTP range reads (typical after an in-place
+        overview append) — only matters when serving from object storage.</div>
+      <details style="margin:0 0 10px">
+        <summary class="hint" style="cursor:pointer;margin:0">validator findings (${(R.cog.errors || []).length})</summary>
+        <div class="hint" style="margin:6px 0 0;color:var(--dim)">${
+          (R.cog.errors || []).map(e => `· ${esc(e)}`).join("<br>")}</div>
+      </details>
+      <button id="fix-cog-toggle" style="background:var(--bg);color:var(--text);border:1px solid var(--border)">Write a proper COG copy…</button>
+      ${cogSectionHtml()}
+    </div>`;
+  }
+  return "";
+}
+
+// progress modal — visible focus while a job runs, but never a real block:
+// the worker is detached, so hiding the modal or leaving the page is safe
+const jm = {
+  hidden: false,
+  open(title, sub) {
+    this.hidden = false;
+    $("jm-title").textContent = title;
+    $("jm-sub").textContent = sub;
+    $("jm-fill").style.width = "2%";
+    $("jm-txt").textContent = "starting…";
+    $("job-modal").classList.add("on");
+  },
+  progress(frac, txt) {
+    $("jm-fill").style.width = Math.min(98, Math.max(2, frac * 100)).toFixed(1) + "%";
+    $("jm-txt").textContent = txt;
+  },
+  close() { $("job-modal").classList.remove("on"); },
+};
+$("jm-hide").addEventListener("click", () => { jm.hidden = true; jm.close(); });
+
+// launch a detached reader job (build/cogify escape the app's 30s budget) and
+// poll its status file until it reports done
+async function runJob(params, onProgress) {
+  const r = await fused.runPython(READER, { ...params, src: rawURL(params.file) });
+  if (r.error) throw new Error(r.error);
+  if (!r.started) return r;
+  for (;;) {
+    await new Promise(res => setTimeout(res, 2000));
+    const st = await fused.runPython(READER,
+      { file: params.file, action: "status", out: r.status_key, src: rawURL(params.file) });
+    if (st.state === "done") return st;
+    if (st.state === "error" || st.error) throw new Error(st.error || "job failed");
+    if (onProgress) onProgress(st.cur_size || 0, st.before || 0);
+  }
+}
+
+function wireFixPanel() {
+  const panel = $("fix-panel");
+  if (!panel) return;
+  const prog = (m, err) => { const el = $("fix-prog");
+    el.innerHTML = m; el.style.color = err ? "var(--bad)" : "var(--dim)"; };
+  const busy = (on) => panel.querySelectorAll("button, select").forEach(b => { b.disabled = on; });
+
+  if ($("fix-build")) $("fix-build").addEventListener("click", async () => {
+    const base = R.file_size, extra = R.fix.est_extra_bytes;
+    busy(true);
+    jm.open("Adding overviews in place",
+      `${R.file.split("/").pop()} · ${$("fix-rs").value} resampling · ≈ +${human(extra)}`);
+    try {
+      const res = await runJob({ file: R.file, action: "build", resampling: $("fix-rs").value },
+        (cur) => {
+          const done = Math.max(0, cur - base);
+          jm.progress(done / extra, `${human(done)} of ~${human(extra)} overview data written`);
+          prog(`building overviews in place… ${human(done)} of ~${human(extra)}`);
+        });
+      jm.close();
+      await analyze(R.file);
+      setStatus(`added ${res.factors.length} overview level${res.factors.length === 1 ? "" : "s"} in place: ${human(res.before)} → ${human(res.after)} (estimate was ~${human(base + extra)})`);
+    } catch (e) { jm.close(); busy(false); prog("build failed: " + esc(e.message || e), true); }
+  });
+
+  $("fix-cog-toggle").addEventListener("click", () => {
+    const box = $("fix-cog");
+    box.style.display = box.style.display === "none" ? "block" : "none";
+    if (box.style.display === "block" && !box.dataset.predicted) {
+      box.dataset.predicted = "1";
+      loadPredict();
+    }
+  });
+
+  async function loadPredict() {
+    try {
+      const p = await fused.runPython(READER, { file: R.file, action: "predict", src: rawURL(R.file) });
+      if (p.error) throw new Error(p.error);
+      window.__predict = p;
+      $("predict-out").innerHTML = `<table class="kv">` + p.rows.map(row => `
+        <tr><td>${esc(row.profile)}</td><td><b>~${human(row.est_total)}</b>
+          <span style="opacity:.7">(${(row.est_total / R.file_size).toFixed(2)}× current, sampled from real blocks)</span></td></tr>`).join("")
+        + `</table><div style="margin-top:4px;opacity:.8">estimates ±20% — resampled overview data compresses worse than the base image</div>`;
+      $("fix-prof").innerHTML = p.rows.map(row => `<option>${esc(row.profile)}</option>`).join("");
+    } catch (e) { $("predict-out").textContent = "size prediction failed: " + (e.message || e); }
+  }
+
+  $("fix-run-cog").addEventListener("click", () => doCogify(false));
+  async function doCogify(overwrite) {
+    const profSel = $("fix-prof").value || "deflate";
+    const row = (window.__predict?.rows || []).find(r => r.profile === profSel);
+    busy(true);
+    try {
+      jm.open("Writing COG copy",
+        `${cogOut().split("/").pop()} · ${profSel}${row ? ` · ~${human(row.est_total)}` : ""}`);
+      const res = await runJob(
+        { file: R.file, action: "cogify", profile: profSel,
+          resampling: $("fix-rs") ? $("fix-rs").value : "average",
+          ...(overwrite ? { overwrite: "1" } : {}) },
+        (cur) => {
+          jm.progress(row ? cur / row.est_total : 0.5,
+            `${human(cur)}${row ? ` of ~${human(row.est_total)}` : ""} written`);
+          prog(`writing COG copy… ${human(cur)}${row ? ` of ~${human(row.est_total)}` : ""}`);
+        });
+      jm.close();
+      const orig = R.file;
+      await analyze(res.out);
+      setStatus(`wrote ${res.out.split("/").pop()}: ${human(res.before)} → ${human(res.after)} · ` +
+        (res.valid ? "valid COG ✓" : "validation FAILED") + ` · now viewing it (original ${orig.split("/").pop()} untouched)`);
+    } catch (e) {
+      jm.close();
+      busy(false);
+      const msg = String(e.message || e);
+      if (msg.includes("already exists")) {
+        prog(`${esc(msg)} — <a href="#" id="fix-ow" style="color:var(--accent)">overwrite it</a>`, true);
+        $("fix-ow").addEventListener("click", (ev) => { ev.preventDefault(); doCogify(true); });
+      } else prog("cogify failed: " + esc(msg), true);
+    }
+  }
+}
+
+/* ================= left panel ================= */
+
+function renderLeft() {
+  const l = R.levels[sel];
+  const c = COLORS[sel % COLORS.length];
+  const km = groundKm();
+  const maxBytes = Math.max(...R.levels.map(x => x.bytes || 0), 1);
+  $("left").innerHTML = `
+    <div class="chips">
+      <span class="chip"><b>${esc(R.file.split("/").pop())}</b> · ${human(R.file_size)}</span>
+      <span class="chip"><b>${R.bands}</b> × ${esc(R.dtype)}</span>
+      ${R.crs ? `<span class="chip" title="${esc(R.crs)}">${esc(R.crs_name || R.crs)}${
+        R.crs_name && !R.crs_name.startsWith("EPSG:") ? ' <span style="opacity:.65">· custom CRS</span>' : ""}</span>` : ""}
+      <span class="chip"><b>${R.n_overviews}</b> overview${R.n_overviews === 1 ? "" : "s"}${R.n_overviews === 0 ? ' <span style="color:var(--bad)">— no pyramid!</span>' : ""}</span>
+      ${R.cog ? `<span class="chip"
+        style="color:${R.cog.valid ? "var(--good)" : R.cog.valid === false ? "var(--warn)" : "var(--dim)"}">${
+        R.cog.valid ? "✓ valid COG" : R.cog.valid === false ? "✗ not a valid COG" : "COG validator n/a"}</span>` : ""}
+    </div>
+    ${fixPanelHtml()}
+
+    <h2>Bytes on disk per level <span style="text-transform:none;letter-spacing:0;opacity:.8">— click to select</span></h2>
+    ${R.levels.map((x, i) => [x, i]).reverse().map(([x, i]) => `
+      <div class="sb ${i === sel ? "sel" : ""}" data-i="${i}" style="--c:${COLORS[i % COLORS.length]}">
+        <span class="lv">L${x.level}</span>
+        <div class="track">
+          <div class="fill" style="width:${Math.max(1, 100 * (x.bytes || 0) / maxBytes)}%"></div>
+          <span class="txt">${human(x.bytes)}${x.pct != null ? ` · ${x.pct}% of file` : ""} · ${x.n_blocks.toLocaleString()} tile${x.n_blocks === 1 ? "" : "s"}</span>
+        </div>
+      </div>`).join("")}
+    <div class="hint" style="margin-top:4px">Each level has ¼ the pixels of the one below — the whole pyramid above
+      L0 costs only ~${(100 * R.levels.slice(1).reduce((a, x) => a + (x.bytes || 0), 0) / Math.max(1, R.levels[0].bytes || 1)).toFixed(0)}% extra.</div>
+
+    <h2>Same ${km ? km + " " : ""}ground patch — L${l.level} of ${R.levels.length - 1 ? "L0–L" + R.levels[R.levels.length - 1].level : "L0"}</h2>
+    <div id="crop-flex">
+      <div id="crop-wrap" style="--c:${c}">
+        ${l.thumb ? `<img class="ctx" src="data:image/png;base64,${l.thumb}"
+          style="width:${(70 * l.width / l.crop_px).toFixed(1)}%">` : ""}
+        <img id="crop-big" src="data:image/png;base64,${l.crop}">
+      </div>
+    </div>
+    <div id="crop-cap"><b style="color:${c}">L${l.level}</b> stores this patch as
+      <b>${l.crop_px} × ${l.crop_px}</b> real pixels (${fmtRes(l)}${zoomEq(l) != null ? ` ≈ z${Math.round(zoomEq(l))}` : ""})${sel === 0 ? "" : ` — ${(R.levels[0].width / l.width).toFixed(0)}× fewer per side than L0`};
+      the dimmed surroundings are the rest of the level.<br>
+      <span style="opacity:.8">whole level: ${l.width.toLocaleString()} × ${l.height.toLocaleString()} px ·
+      ${l.tiled ? `tiled ${l.block[1]}×${l.block[0]}` : `<span style="color:var(--warn)">strips (not tiled)</span>`} ·
+      ${l.n_blocks.toLocaleString()} block${l.n_blocks === 1 ? "" : "s"} · ${esc(l.compression || "?")}</span></div>
+
+    <h2>Where each level lives in the file</h2>
+    <div id="bar"></div>
+    <div class="hint">A proper COG stores the coarse levels near the header for a cheap first paint.</div>`;
+  wireFixPanel();
+  $("left").querySelectorAll(".sb").forEach(el =>
+    el.addEventListener("click", () => focusLayer(+el.dataset.i)));
+  const bar = $("bar");
+  bar.innerHTML = R.levels.map((x, i) => x.offset == null ? "" :
+    `<div class="seg ${i === sel ? "sel" : ""}" data-i="${i}" title="L${x.level} — ${human(x.bytes)}"
+      style="left:${100 * x.offset / R.file_size}%;width:${100 * (x.bytes || 0) / R.file_size}%;
+      background:${COLORS[i % COLORS.length]}"></div>`).join("");
+  bar.querySelectorAll(".seg").forEach(el =>
+    el.addEventListener("click", () => focusLayer(+el.dataset.i)));
+}
+
+function select(i) {
+  sel = i;
+  document.querySelectorAll(".layer").forEach(el => el.classList.toggle("sel", +el.dataset.i === i));
+  renderLeft();
+}
+
+$("an-btn").addEventListener("click", () => analyze($("file-in").value.trim()));
+$("file-in").addEventListener("keydown", (e) => { if (e.key === "Enter") analyze($("file-in").value.trim()); });
+window.addEventListener("resize", () => { if (R && tab === "pyr") { buildScene(); applyView(false); } });
+// _file first: in template-mode views the shell owns it, and any file= param
+// alongside it is stale pollution from an older version of this tool
+const initial = fused.params.get("_file") || fused.params.get("file") || DEMO;
+$("file-in").value = initial;
+analyze(initial);
+</script>
+</body>
+</html>

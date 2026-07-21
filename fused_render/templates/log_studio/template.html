@@ -1113,7 +1113,10 @@
     pickerError.hidden = true;
     pickerList.innerHTML = `<div class="picker-empty">Loading…</div>`;
     try {
-      renderPickerDir(await runReader("list", currentState(), { path: path || "" }));
+      // src (origin only) lets the reader route a mount-backed dir via
+      // /api/fs/list instead of a kernel scan that could drop the mount.
+      renderPickerDir(await runReader("list", currentState(), { path: path || "",
+        src: `${location.origin}/api/fs/raw?path=${encodeURIComponent(path || "")}` }));
     } catch (error) {
       pickerList.innerHTML = "";
       showPickerError(errorMessage(error));

@@ -269,9 +269,15 @@
   }
 
   // ---- data -------------------------------------------------------------
+  // src = the server origin + the raw-bytes URL for `file`. The reader trusts
+  // it only for the origin (to reach /api/fs/stat + /api/fs/list) and stays
+  // mount-agnostic; passing it lets the reader discover that the toml's
+  // directory is mount-backed and list its siblings over HTTP instead of a
+  // kernel os.listdir that could enumerate a huge S3 prefix and drop the mount.
+  function rawURL(f) { return location.origin + "/api/fs/raw?path=" + encodeURIComponent(f); }
   // No try/catch: a reader rejection carries a `.traceback` and the runtime's
   // unhandledrejection overlay shows it (SPEC §28). Header is already painted.
-  var data = await fused.runPython("./reader.py", { file: file });
+  var data = await fused.runPython("./reader.py", { file: file, src: rawURL(file) });
   data = data || {};
   var nodes = Array.isArray(data.nodes) ? data.nodes : [];
   var folders = Array.isArray(data.folders) ? data.folders : [];

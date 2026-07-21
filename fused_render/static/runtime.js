@@ -427,9 +427,19 @@
   }
 
   // Synchronous URL of the raw-bytes endpoint for a file — for <img>/<embed>
-  // src, "open raw" links, etc.
+  // src, "open raw" links, etc. A RELATIVE path is resolved page-relative
+  // (SPEC RH-1): we pass the page's own absolute path as `base` and the server
+  // joins them (the same contract runPython uses via `html`), so a page can say
+  // fused.rawUrl("data/x.json") and have it work here AND, when hosted, resolve
+  // against the bundle's _asset route by the same key. An absolute path needs no
+  // base and is sent unchanged.
   function rawUrl(path) {
-    return "/api/fs/raw?path=" + encodeURIComponent(path);
+    let url = "/api/fs/raw?path=" + encodeURIComponent(path);
+    if (path && path[0] !== "/") {
+      const ownPath = new URLSearchParams(window.location.search).get("path");
+      if (ownPath) url += "&base=" + encodeURIComponent(ownPath);
+    }
+    return url;
   }
 
   // Fetch file metadata (same shape as /api/fs/stat). Rejects with an Error

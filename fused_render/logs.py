@@ -98,12 +98,7 @@ def _log_boot_context() -> None:
     debugging a broken install, answered before anyone has to ask."""
     log = logging.getLogger("fused_render")
     try:
-        from importlib.metadata import PackageNotFoundError, version
-
-        try:
-            fr_version = version("fused-render")
-        except PackageNotFoundError:
-            fr_version = "not installed"
+        from fused_render import __version__ as fr_version
 
         log.info(
             "boot: fused-render=%s python=%s (%s) platform=%s sys.prefix=%s",

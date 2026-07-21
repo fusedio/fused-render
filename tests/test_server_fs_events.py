@@ -134,16 +134,67 @@ def test_duplicate_watchers_share_one_stat_stream(home, tmp_path, monkeypatch):
     assert 1 <= count["n"] <= 5
 
 
-def test_mount_paths_tick_slowly_local_paths_tick_fast(home, tmp_path):
-    # (d) Classification fixes the poll interval once: mount-backed paths poll
-    # every 5s (rc API, low remote pressure), local paths every 200ms.
-    mount_entry = server._WatchEntry(str(home / "mounts" / "m" / "f.parquet"))
+def test_mount_paths_tick_slowly_local_paths_tick_fast(home, tmp_path, monkeypatch):
+    # (d) Classification fixes the poll interval once. A direct_list_capable
+    # mount (bounded unsigned page) polls every 5s; a non-direct-capable mount
+    # (change detection needs a full rc_list_dir) polls far more rarely to cut
+    # standing remote pressure (P1 #4); local paths every 200ms.
+    monkeypatch.setattr(mounts_mod, "direct_list_capable", lambda p: True)
+    direct_entry = server._WatchEntry(str(home / "mounts" / "open" / "f.parquet"))
+    monkeypatch.setattr(mounts_mod, "direct_list_capable", lambda p: False)
+    slow_entry = server._WatchEntry(str(home / "mounts" / "m" / "f.parquet"))
     local_entry = server._WatchEntry(str(tmp_path / "local.html"))
 
-    assert mount_entry.is_mount is True
-    assert mount_entry.interval == server._MOUNT_POLL_S == 5.0
+    assert direct_entry.is_mount is True
+    assert direct_entry.interval == server._MOUNT_POLL_S == 5.0
+    assert slow_entry.is_mount is True
+    assert slow_entry.interval == server._MOUNT_SLOW_POLL_S == 60.0
     assert local_entry.is_mount is False
     assert local_entry.interval == server._LOCAL_POLL_S == 0.2
+
+
+def test_non_direct_mount_root_never_lists(home, monkeypatch):
+    # (P1 #4) The mount ROOT of a non-direct-capable remote (e.g. source.coop's
+    # custom S3 endpoint) must NOT be periodically enumerated: an rc_list_dir of
+    # the whole top prefix every tick, for the life of an open pane, is the
+    # standing background listing this fix removes. _mount_signal returns
+    # _UNCHANGED (best-effort: no live child-change events for the root) and
+    # never touches rc_list_dir / direct_list_page.
+    monkeypatch.setattr(mounts_mod, "direct_list_capable", lambda p: False)
+    monkeypatch.setattr(mounts_mod, "is_mount_root", lambda p: True)
+    entry = server._WatchEntry(str(home / "mounts" / "sourcecoop"))
+    assert entry.is_mount is True
+    assert entry._is_mount_root is True
+    assert entry._direct_capable is False
+
+    monkeypatch.setattr(mounts_mod, "rc_list_dir",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("rc_list_dir called on a mount root")))
+    monkeypatch.setattr(mounts_mod, "direct_list_page",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("direct_list_page called on a mount root")))
+    assert entry._mount_signal() is server._UNCHANGED
+
+
+def test_direct_mount_root_still_lists_one_bounded_page(home, monkeypatch):
+    # (P1 #4) A direct_list_capable mount ROOT is cheaply listable (ONE bounded
+    # unsigned page), so it keeps its change signal — the fix only suppresses the
+    # expensive rc_list_dir enumeration, never the cheap direct page.
+    monkeypatch.setattr(mounts_mod, "direct_list_capable", lambda p: True)
+    monkeypatch.setattr(mounts_mod, "is_mount_root", lambda p: True)
+    entry = server._WatchEntry(str(home / "mounts" / "openbucket"))
+    assert entry._is_mount_root is True and entry._direct_capable is True
+
+    calls = []
+
+    def fake_page(path, *, max_keys, continuation=None, timeout=None):
+        calls.append(max_keys)
+        return ([{"Name": "x", "Size": 1, "ModTime": "t"}], None)
+
+    monkeypatch.setattr(mounts_mod, "s3_direct_capable", lambda p: True)
+    monkeypatch.setattr(mounts_mod, "s3_list_page", fake_page)
+    sig = entry._mount_signal()
+    assert sig.startswith("L") and calls == [1000]  # one bounded page, still signalled
 
 
 def test_mount_dir_signal_hashes_listing_and_detects_change(home, monkeypatch):
@@ -190,6 +241,37 @@ def test_mount_file_signal_falls_back_to_modtime(home, monkeypatch):
                             mounts_mod.RcListError("not a directory")))
     monkeypatch.setattr(mounts_mod, "rc_mtime_for", lambda p: "2024-01-02T03:04:05Z")
     assert entry._mount_signal() == "2024-01-02T03:04:05Z"
+
+
+def test_mount_file_signal_direct_capable_empty_page_uses_modtime(home, monkeypatch):
+    # (3.2) A FILE under an anonymous S3/GCS mount is direct_list_capable (a pure
+    # path/config check that can't tell a file from a dir). direct_list_page on a
+    # file key returns an EMPTY page (its own key != the "<key>/" listing prefix),
+    # so a hash of that empty listing is CONSTANT and content changes go
+    # undetected. The empty page must fall back to the file's rc ModTime, which
+    # moves when the file content changes.
+    entry = server._WatchEntry(str(home / "mounts" / "open" / "f.parquet"))
+    monkeypatch.setattr(mounts_mod, "s3_direct_capable", lambda p: True)
+    monkeypatch.setattr(mounts_mod, "s3_list_page",
+                        lambda path, *, max_keys, continuation=None, timeout=None: ([], None))
+    mtimes = iter(["2024-01-02T03:04:05Z", "2024-01-02T09:09:09Z"])
+    monkeypatch.setattr(mounts_mod, "rc_mtime_for", lambda p: next(mtimes))
+
+    sig1 = entry._mount_signal()
+    assert sig1 == "2024-01-02T03:04:05Z"           # real ModTime, not empty-hash
+    assert not sig1.startswith("L")                 # not a listing hash
+    assert entry._mount_signal() == "2024-01-02T09:09:09Z"  # content change -> CHANGED
+
+
+def test_mount_file_signal_direct_capable_empty_page_none_modtime_unchanged(home, monkeypatch):
+    # (3.2) When the empty-page ModTime fallback returns None, report _UNCHANGED
+    # (matching the RcListError file arm) rather than a constant empty-hash.
+    entry = server._WatchEntry(str(home / "mounts" / "open" / "f.parquet"))
+    monkeypatch.setattr(mounts_mod, "s3_direct_capable", lambda p: True)
+    monkeypatch.setattr(mounts_mod, "s3_list_page",
+                        lambda path, *, max_keys, continuation=None, timeout=None: ([], None))
+    monkeypatch.setattr(mounts_mod, "rc_mtime_for", lambda p: None)
+    assert entry._mount_signal() is server._UNCHANGED
 
 
 def test_mount_dir_signal_unchanged_on_failure(home, monkeypatch):

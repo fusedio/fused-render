@@ -7,6 +7,8 @@ import {
 } from "../../lib/api";
 import type { InventoryTemplate, TemplateInventory } from "../../lib/api";
 import { navigate } from "../../lib/router";
+import { Modal } from "../../components/modal/Modal";
+import { ErrorBanner } from "../../components/ErrorBanner";
 
 type UseFilter = "all" | "used" | "unused";
 
@@ -124,15 +126,15 @@ export function InventoryPanel({
           ))}
         </select>
         <div className="templates-toolbar-actions">
-          <button type="button" className="templates-btn-secondary" onClick={onNewTemplate}>
+          <button type="button" className="btn btn-secondary" onClick={onNewTemplate}>
             New template
           </button>
-          <button type="button" className="templates-btn-secondary" onClick={onImport}>
+          <button type="button" className="btn btn-secondary" onClick={onImport}>
             Import zip
           </button>
           <button
             type="button"
-            className="templates-btn-primary"
+            className="btn btn-primary"
             disabled={selectedNames.length === 0}
             onClick={() => runExport(selectedNames)}
             title={
@@ -145,7 +147,7 @@ export function InventoryPanel({
           </button>
         </div>
       </div>
-      {error && <div className="deploy-error">{error}</div>}
+      {error && <ErrorBanner>{error}</ErrorBanner>}
       {groups.length === 0 ? (
         <div className="deploy-muted">No templates match.</div>
       ) : (
@@ -207,11 +209,11 @@ export function InventoryPanel({
   );
 }
 
-// Confirm modal for deleting a user template (TV-16 / SPEC §2.8, D109): two
-// default-checked checkboxes — export a recovery zip first (the delete only
-// proceeds after the export download resolves, D92's export-first guarantee)
-// and sweep the user registry of bindings referencing the name (TV-19's
-// cleanRegistry) — plus exactly two buttons, Delete and Cancel. Core templates
+// Confirm modal for deleting a user template (TV-16 / SPEC §2.8, D109). No
+// accent/safe-looking button in a destructive dialog: the recommended path
+// ("Export & delete") carries honest danger styling, and the riskier
+// "Delete without export" is a text-only danger action anchored far left.
+// A checkbox controls the orthogonal registry-bindings cleanup. Core templates
 // never reach here (no Delete action rendered for a read-only source).
 function DeleteConfirm({
   t,
@@ -224,7 +226,6 @@ function DeleteConfirm({
   onClose: () => void;
   onDeleted: () => void;
 }) {
-  const [exportFirst, setExportFirst] = useState(true);
   const [cleanBindings, setCleanBindings] = useState(true);
   const [busy, setBusy] = useState<"export" | "delete" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -236,10 +237,11 @@ function DeleteConfirm({
     [],
   );
 
-  const run = async () => {
+  const run = async (withExport: boolean) => {
+    if (busy !== null) return;
     setError(null);
     try {
-      if (exportFirst) {
+      if (withExport) {
         setBusy("export");
         await onExport(); // must succeed before we destroy the folder
       }
@@ -255,67 +257,59 @@ function DeleteConfirm({
   };
 
   return (
-    <div
-      className="deploy-overlay"
-      onMouseDown={(e) => {
-        if (busy === null && e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div
-        className="deploy-dialog templates-delete"
-        role="dialog"
-        aria-modal="true"
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <div className="deploy-head">
-          <h2>Delete “{t.name}”?</h2>
-          <button type="button" className="deploy-close" onClick={onClose} disabled={busy !== null}>
-            ✕
+    <Modal
+      title={`Delete “${t.name}”?`}
+      onClose={onClose}
+      busy={busy !== null}
+      dialogClassName="templates-delete"
+      footer={
+        <>
+          <button
+            type="button"
+            className="btn btn-danger-text"
+            onClick={() => void run(false)}
+            disabled={busy !== null}
+            title="Delete the folder without saving a recovery zip first"
+          >
+            Delete without export
           </button>
-        </div>
-        <div className="deploy-body">
-          <p className="deploy-muted">
-            This removes the user template folder for <code>{t.name}</code>. Without a bindings
-            cleanup, bindings that use it keep the name and show as broken until you rebind or
-            remove them.
-          </p>
-          <div className="templates-delete-opts">
-            <label className="templates-delete-opt">
-              <input
-                type="checkbox"
-                checked={exportFirst}
-                disabled={busy !== null}
-                onChange={(e) => setExportFirst(e.target.checked)}
-              />
-              <span>Export zip before deleting</span>
-            </label>
-            <label className="templates-delete-opt">
-              <input
-                type="checkbox"
-                checked={cleanBindings}
-                disabled={busy !== null}
-                onChange={(e) => setCleanBindings(e.target.checked)}
-              />
-              <span>Remove registry bindings for this template</span>
-            </label>
-          </div>
-          {error && <div className="deploy-error">{error}</div>}
-          <div className="templates-actions">
-            <button
-              type="button"
-              className="templates-btn-secondary"
-              onClick={onClose}
-              disabled={busy !== null}
-            >
-              Cancel
-            </button>
-            <button type="button" className="deploy-danger" onClick={run} disabled={busy !== null}>
-              {busy === "export" ? "Exporting…" : busy === "delete" ? "Deleting…" : "Delete"}
-            </button>
-          </div>
-        </div>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={onClose}
+            disabled={busy !== null}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn btn-danger"
+            onClick={() => void run(true)}
+            disabled={busy !== null}
+          >
+            {busy === "export" ? "Exporting…" : busy === "delete" ? "Deleting…" : "Export & delete"}
+          </button>
+        </>
+      }
+    >
+      <p className="deploy-muted">
+        This removes the user template folder for <code>{t.name}</code>. Without a bindings
+        cleanup, bindings that use it keep the name and show as broken until you rebind or remove
+        them.
+      </p>
+      <div className="templates-delete-opts">
+        <label className="templates-delete-opt">
+          <input
+            type="checkbox"
+            checked={cleanBindings}
+            disabled={busy !== null}
+            onChange={(e) => setCleanBindings(e.target.checked)}
+          />
+          <span>Remove registry bindings for this template</span>
+        </label>
       </div>
-    </div>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </Modal>
   );
 }
 

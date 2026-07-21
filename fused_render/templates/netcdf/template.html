@@ -163,7 +163,9 @@ async function ensureDaemon(){
   if (r && r.port) daemon = r;
   return daemon;
 }
-const dURL = p => `http://127.0.0.1:${daemon.port}${p}`;
+// every daemon request carries the per-daemon token (from ensure()) so a
+// foreign page that guessed the port can't read tiles cross-origin
+const dURL = p => `http://127.0.0.1:${daemon.port}${p}${p.includes('?') ? '&' : '?'}t=${encodeURIComponent(daemon.token || '')}`;
 
 function sliceQuery(){
   return new URLSearchParams({ file: P.file(), var: P.vr(), index: P.index() });
@@ -387,9 +389,10 @@ els.browse.onclick = async () => {
   if (!open) refreshExplorer();
 };
 els.showAll.onchange = () => { fused.params.set('showall', els.showAll.checked ? '1' : ''); refreshExplorer(); };
+const rawURL = f => `${location.origin}/api/fs/raw?path=${encodeURIComponent(f)}`;
 async function refreshExplorer(dir){
   dir = dir || P.dir();
-  const r = await fused.runPython('./browse.py', { dir, exts: EXTS, show_all: P.showAll() ? 'true' : 'false' }).catch(() => null);
+  const r = await fused.runPython('./browse.py', { dir, exts: EXTS, show_all: P.showAll() ? 'true' : 'false', src: rawURL(dir) }).catch(() => null);
   if (!r || r.error) return;
   els.crumbs.innerHTML = r.crumbs.map(c =>
     `<a data-p="${c.path}">${c.label || '/'}</a>`).join('<span style="color:#4b5058"> / </span>');

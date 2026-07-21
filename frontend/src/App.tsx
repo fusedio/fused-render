@@ -7,7 +7,7 @@
 // which is the React equivalent of the vanilla shell rebuilding the view DOM
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
 import { useEffect, useState } from "react";
-import { IS_EMBED, fsPathFromLocation, urlForFsPath } from "./lib/router";
+import { IS_EMBED, fsPathFromLocation, urlForFsPath, navHintIsDir } from "./lib/router";
 import { useSessionRestore, useSessionTracking } from "./lib/session";
 import { useRecentsTracking } from "./lib/recents";
 import { statPath, getMounts, reconnectMount, type Config, type Mount, type StatResult } from "./lib/api";
@@ -23,7 +23,6 @@ import Tabs from "./views/Tabs";
 import Preferences from "./views/Preferences";
 import Templates from "./views/Templates";
 import Mounts from "./views/Mounts";
-import Account from "./views/Account";
 import BookmarkOpen from "./views/BookmarkOpen";
 
 type StatState =
@@ -134,12 +133,55 @@ function StatErrorView({
   );
 }
 
+// First paint while `stat` is still in flight (~1.6s on a cold remote mount),
+// so a navigation shows a populated scaffold instead of a blank screen. The
+// breadcrumb is already rendered by StatView; here the preview header shows the
+// folder/file name (from the URL) with a spinner where the template
+// ModeSwitcher will land once stat resolves. When the nav hint says this is a
+// directory, the real Listing mounts NOW — its /api/fs/list runs in parallel
+// with stat rather than serialized behind it, and the same fetch is reused
+// (api.prefetchListDir) when stat resolves and the preview remounts the
+// listing. Without a directory hint we can't safely show a listing (a file's
+// list would 404), so only the header + a neutral loading body paint.
+function LoadingScaffold({ fsPath, isDir }: { fsPath: string; isDir: boolean }) {
+  return (
+    <>
+      <div className="preview-header">
+        <h1 title={fsPath}>{basename(fsPath)}</h1>
+        <div className="preview-actions">
+          <span className="mode-icon-spinner" aria-label="Loading" />
+        </div>
+      </div>
+      <div className="preview-body">
+        {isDir ? (
+          // provisional: the hint could be stale (file, not dir). Suppress
+          // Listing's hard "Failed to list" error while stat resolves — a 404
+          // here just means the hint was wrong; stat will paint the file view.
+          <Listing fsPath={fsPath} provisional />
+        ) : (
+          <div className="preview-resolving">
+            <span className="mode-icon-spinner" />
+            Loading…
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
 // Stat-backed views (listing/preview): breadcrumb + content under one hook
 // component so useStat only runs when the pathname is a real fs path, not a
 // sentinel.
 function StatView({ fsPath, epoch, home }: { fsPath: string; epoch: number; home: string }) {
   // Bumped by StatErrorView to re-stat in place after reconnecting a mount.
   const [reloadKey, setReloadKey] = useState(0);
+  // Directory hint from the navigation that mounted this view (see router
+  // navHintIsDir). Captured ONCE at mount — StatView is keyed by epoch+fsPath
+  // so it remounts per navigation. In-place param syncs go through
+  // router.replaceSearch, which preserves history.state, so the hint survives
+  // for Back/Forward; capturing once here is belt-and-braces (and correct even
+  // if some future caller forgets to preserve it).
+  const [navIsDir] = useState<boolean | null>(() => navHintIsDir());
   const stat = useStat(fsPath, epoch, reloadKey);
   // null until the stat resolves — the session hooks opt out for anything that
   // is not a confirmed file, so a directory never gets a restore/track before
@@ -151,12 +193,24 @@ function StatView({ fsPath, epoch, home }: { fsPath: string; epoch: number; home
   // already on the shell URL (no param flash from defaults -> restored).
   const ready = useSessionRestore(fsPath, isDir);
   useSessionTracking(fsPath, isDir);
-  // Sidebar "Recents": record the open, then keep the entry's url live as
-  // params change (same confirmed-file gate as session tracking).
-  useRecentsTracking(fsPath, isDir);
-  useDocumentTitle(fsPath === "/" ? null : basename(fsPath));
+  // A "_render" preview (the file's own HTML, no template) reports its
+  // authored <title> here (Preview -> TemplatePreview); everything else
+  // (templates, listings, fallback cards) has no better name than the
+  // file's own, so this stays null and the basename wins below. Local state
+  // is safe to reset only on remount (StatView is keyed by fsPath in App),
+  // not on a `_mode` switch within the same file — TemplatePreview owns that.
+  const [renderedTitle, setRenderedTitle] = useState<string | null>(null);
+  useDocumentTitle(fsPath === "/" ? null : renderedTitle || basename(fsPath));
+  // Sidebar "Recents": record the open, then keep the entry's url (and its
+  // title, once known) live as params/title change — same confirmed-file
+  // gate as session tracking.
+  useRecentsTracking(fsPath, isDir, renderedTitle);
   let content = null;
-  if (stat.status === "error") {
+  if (stat.status === "loading") {
+    // Not a blank screen: paint the scaffold immediately (Fix #1). A directory
+    // nav also starts its listing fetch now, parallel with stat (Fix #2).
+    content = <LoadingScaffold fsPath={fsPath} isDir={navIsDir === true} />;
+  } else if (stat.status === "error") {
     content = (
       <StatErrorView
         fsPath={fsPath}
@@ -181,13 +235,13 @@ function StatView({ fsPath, epoch, home }: { fsPath: string; epoch: number; home
       // synchronously (useSessionRestore), so no flash on those paths.
       content = <div className="status-message">Loading…</div>;
     } else {
-      content = <Preview fsPath={fsPath} stat={s} />;
+      content = <Preview fsPath={fsPath} stat={s} onRenderedTitle={setRenderedTitle} />;
     }
   }
   return (
     <>
       <div id="breadcrumb">
-        <Breadcrumb fsPath={fsPath} home={home} />
+        <Breadcrumb fsPath={fsPath} home={home} renderedTitle={renderedTitle} />
       </div>
       <div id="content">{content}</div>
     </>
@@ -212,6 +266,13 @@ export default function App({ config }: { config: Config }) {
   if (location.pathname === "/") {
     history.replaceState(null, "", urlForFsPath(config.start_dir));
   }
+  // The old standalone Fused-account page folded into Preferences as a tab
+  // (D125) — redirect its sentinel the same render-time way so existing
+  // bookmarks and the Deploy modal's "Set up hosted environment" link still
+  // land somewhere real instead of a dead route.
+  if (location.pathname === "/view/_account") {
+    history.replaceState(null, "", "/view/_prefs?tab=account");
+  }
 
   const pathname = location.pathname;
   const isPanel = pathname === "/view/_panel" || pathname === "/embed/_panel";
@@ -220,10 +281,9 @@ export default function App({ config }: { config: Config }) {
   const isTemplates = pathname === "/view/_templates";
   // PROTOTYPE: mounts sentinel (see views/Mounts.tsx).
   const isMounts = pathname === "/view/_mounts";
-  const isAccount = pathname === "/view/_account";
   const isBookmark = pathname === "/view/_bookmark";
   const fsPath =
-    isPanel || isTabs || isPrefs || isTemplates || isMounts || isAccount || isBookmark
+    isPanel || isTabs || isPrefs || isTemplates || isMounts || isBookmark
       ? null
       : fsPathFromLocation();
   // Browsing to a `.bookmark` file in the explorer opens it like a Finder
@@ -242,10 +302,8 @@ export default function App({ config }: { config: Config }) {
             ? "Templates"
             : isMounts
               ? "Mounts"
-              : isAccount
-                ? "Fused account"
-                : isBookmark || bookmarkFile
-                  ? "Bookmark"
+              : isBookmark || bookmarkFile
+                ? "Bookmark"
                 : fsPath
                   ? undefined
                   : null
@@ -310,19 +368,6 @@ export default function App({ config }: { config: Config }) {
         </div>
         <div id="content">
           <Mounts key={epoch} />
-        </div>
-      </>
-    );
-  } else if (isAccount) {
-    // Fused account (SPEC §27, AC-1): in-app sign-in/out for
-    // the fused CLI — same sentinel pattern as _prefs. /view only.
-    main = (
-      <>
-        <div id="breadcrumb">
-          <StaticBreadcrumb label="Fused account" />
-        </div>
-        <div id="content">
-          <Account key={epoch} />
         </div>
       </>
     );

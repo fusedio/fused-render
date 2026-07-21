@@ -17,16 +17,20 @@ Endpoints (all GET, CORS *):
         &stretch=&vlo=&vhi=    -> PNG tile (transparent where no data)
   /hist?file=&bbox=w,s,e,n(3857)&bins=&band=&mode=  -> viewport stats+hist
   /value?file=&lon=&lat=&band= -> raw value under cursor
+  /ltile/{z}/{x}/{y}.png?file=&level=N -> PNG tile rendered ONLY from pyramid
+        level N (0 = full res) via rasterio — used by the pyramid template
 
-Only pure-decodable TIFFs (uncompressed/deflate) are served; /meta returns
-supported=false otherwise and the page falls back to tiff_reader.py.
+/tile tries the native pure-python engine first (uncompressed/deflate TIFFs);
+local files it can't read (BigTIFF, user-defined CRS, exotic compression)
+fall back to a rasterio WarpedVRT render instead of the runPython image path.
 Idle shutdown after 30 min. The state file embeds this file's mtime, so
 editing the module auto-respawns a fresh daemon on the next ensure().
 """
 # /// script
-# dependencies = ["numpy", "pyproj", "imagecodecs"]
+# dependencies = ["numpy", "pyproj", "imagecodecs", "rasterio"]
 # ///
 
+import io
 import json
 import math
 import os
@@ -74,6 +78,78 @@ class _RangeReader:
         return body
 
 
+class _HttpRangeFile(io.RawIOBase):
+    """A seekable, read-only binary file object over /api/fs/raw, for handing to
+    rasterio via `opener=` on the /ltile path. rasterio/GDAL walk many small
+    offsets (IFD tags, tile indices); reads are served from fixed-size blocks
+    with a tiny LRU so a burst of nearby small reads collapses into a few Range
+    GETs. `size` comes from /api/fs/stat, so we never kernel-stat the NFS mount
+    to learn the length. Unlike the native /tile engine's mmap+_RangeReader
+    path, this lets rasterio open a mount-backed file with zero kernel I/O."""
+
+    def __init__(self, url, size, block=65536):
+        self._r = _RangeReader(url)
+        self._size = int(size)
+        self._pos = 0
+        self._block = int(block)
+        self._cache = {}
+        self._order = []
+
+    def readable(self):
+        return True
+
+    def seekable(self):
+        return True
+
+    def tell(self):
+        return self._pos
+
+    def seek(self, off, whence=io.SEEK_SET):
+        if whence == io.SEEK_SET:
+            self._pos = off
+        elif whence == io.SEEK_CUR:
+            self._pos += off
+        elif whence == io.SEEK_END:
+            self._pos = self._size + off
+        else:
+            raise ValueError(f"bad whence: {whence}")
+        return self._pos
+
+    def _fetch_block(self, bi):
+        blk = self._cache.get(bi)
+        if blk is not None:
+            return blk
+        off = bi * self._block
+        n = min(self._block, self._size - off)
+        if n <= 0:
+            return b""
+        blk = self._r.read(off, n)
+        self._cache[bi] = blk
+        self._order.append(bi)
+        if len(self._order) > 64:  # tiny LRU — keep memory bounded
+            self._cache.pop(self._order.pop(0), None)
+        return blk
+
+    def readinto(self, b):
+        if self._pos >= self._size:
+            return 0
+        want = min(len(b), self._size - self._pos)
+        out = bytearray()
+        p = self._pos
+        while len(out) < want:
+            bi = p // self._block
+            blk = self._fetch_block(bi)
+            start = p - bi * self._block
+            take = min(len(blk) - start, want - len(out))
+            if take <= 0:
+                break
+            out += blk[start:start + take]
+            p += take
+        b[:len(out)] = out
+        self._pos += len(out)
+        return len(out)
+
+
 def _server_url(src, endpoint, path):
     """Server URL built from `src`'s origin and the daemon's own normalized
     `path`. src is trusted only for the origin: its ?path= carries the
@@ -99,6 +175,69 @@ def _stat_remote(src, path):
         return None
 
 
+def _stat_payload(src, path):
+    """Full /api/fs/stat payload (has bool `remote` and int `size`), or None
+    when the server can't be reached / errors. The /ltile path needs both the
+    remote flag AND the size (for the HTTP opener) in one probe, without ever
+    kernel-statting the mount."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(_server_url(src, "/api/fs/stat", path),
+                                    timeout=10) as r:
+            return json.load(r)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _ltile_remote(src, file):
+    """None for a LOCAL file (unchanged fast kernel path). For a MOUNT-backed
+    file, a descriptor {raw_url, size, key} so /ltile opens it over HTTP range
+    reads instead of kernel-statting (getmtime) or kernel-opening/mmapping the
+    NFS mount — which stalls 18–30s or drops the mount. `file` is the abspath
+    (mirrors _tile_native's use of the expanded path for both stat and raw).
+    Server unreachable / no src -> None -> presumed-local kernel fallback."""
+    if not src:
+        return None
+    payload = _stat_payload(src, file)
+    if not payload or not payload.get("remote"):
+        return None
+    raw_url = _server_url(src, "/api/fs/raw", file)
+    size = payload.get("size")
+    return {"raw_url": raw_url, "size": size, "key": f"{raw_url}|{size}"}
+
+
+def _lvl_tok(file, rem):
+    """Cache token for the /ltile VRT/meta/stretch caches: for a remote file,
+    raw URL + size (NO kernel getmtime); for a local file, the file mtime."""
+    return rem["key"] if rem is not None else os.path.getmtime(file)
+
+
+def _rio_open(file, rem, **kw):
+    """rasterio.open for the /ltile chain, mount-safe. Local (rem None) -> plain
+    kernel open, unchanged. Remote -> a GDAL `opener=` that range-reads
+    /api/fs/raw, so no kernel open/mmap ever touches the NFS mount (GDAL uses
+    INTERNAL overviews for decimated reads, so overview_level= works)."""
+    import rasterio
+    if rem is None:
+        return rasterio.open(file, **kw)
+    raw_url, size = rem["raw_url"], rem["size"]
+
+    def _http_opener(p, mode="rb", **_kw):
+        # GDAL calls the opener not just for the dataset but for sidecar probes:
+        # p.ovr, p.msk, p.aux.xml, a directory 'test', etc. Serving the main
+        # bytes for a '.ovr' probe makes GDAL read the base image as a bogus
+        # EXTERNAL overview (a file with NO overviews then reports dozens of
+        # phantom levels). Serve raw_url ONLY for the exact identifier and raise
+        # FileNotFoundError for every other path, so GDAL sees no sidecars.
+        # `file` (the abspath) is the identifier — unique per file, so concurrent
+        # handles never conflate.
+        if str(p) != file:
+            raise FileNotFoundError(p)
+        return _HttpRangeFile(raw_url, size)
+
+    return rasterio.open(file, opener=_http_opener, **kw)
+
+
 def _me():
     if "__file__" in globals():
         return os.path.abspath(__file__)
@@ -113,7 +252,27 @@ def _version():
 
 
 DAEMON_VENV = os.path.expanduser("~/.cache/fused-render-geotiff-v2/venv")
-DAEMON_DEPS = ["numpy", "pyproj", "imagecodecs"]
+DAEMON_DEPS = ["numpy", "pyproj", "imagecodecs", "rasterio"]
+
+
+def _upgrade_deps(vp):
+    """Older venvs predate rasterio (needed by /ltile and the /tile fallback)
+    — install it in place instead of rebuilding the venv."""
+    import shutil
+    import subprocess
+    try:
+        subprocess.run([vp, "-c", "import rasterio"], check=True,
+                       capture_output=True, timeout=60)
+        return
+    except Exception:
+        pass
+    uv = shutil.which("uv") or os.path.expanduser("~/.local/bin/uv")
+    if os.path.exists(uv):
+        try:
+            subprocess.run([uv, "pip", "install", "-p", vp, "rasterio"],
+                           check=True, capture_output=True, timeout=300)
+        except Exception:
+            pass
 
 
 def _daemon_python():
@@ -159,12 +318,14 @@ def main(action: str = "ensure"):
         with open(STATE) as f:
             st = json.load(f)
         if _alive(st.get("port"), version):
-            return {"port": st["port"], "reused": True, "version": version}
+            return {"port": st["port"], "token": st.get("token"),
+                    "reused": True, "version": version}
         # stale daemon (old version or dead) — ask it to quit, then respawn
         try:
             import urllib.request
             urllib.request.urlopen(
-                f"http://127.0.0.1:{st.get('port')}/quit", timeout=1).read()
+                f"http://127.0.0.1:{st.get('port')}/quit?t={st.get('token', '')}",
+                timeout=1).read()
         except Exception:
             pass
     except (OSError, ValueError):
@@ -172,9 +333,17 @@ def main(action: str = "ensure"):
 
     os.makedirs(os.path.dirname(STATE), exist_ok=True)
     log = os.path.join(os.path.dirname(STATE), "daemon.log")
+    dp = _daemon_python()
+    if dp != sys.executable:
+        _upgrade_deps(dp)
+    # scrub the app's interpreter env — inherited PYTHONPATH/PYTHONHOME makes
+    # the venv python import the APP BUNDLE's packages (mixed-install imports
+    # fail randomly under concurrency, e.g. bundle rasterio vs venv rasterio)
+    denv = {k: v for k, v in os.environ.items()
+            if k not in ("PYTHONPATH", "PYTHONHOME")}
     with open(log, "ab") as lf:
-        subprocess.Popen([_daemon_python(), _me(), "--serve"],
-                         stdout=lf, stderr=lf,
+        subprocess.Popen([dp, _me(), "--serve"],
+                         stdout=lf, stderr=lf, env=denv,
                          start_new_session=True, cwd=os.path.dirname(_me()))
     # wait for the state file to appear with a live port
     for _ in range(100):
@@ -183,7 +352,8 @@ def main(action: str = "ensure"):
             with open(STATE) as f:
                 st = json.load(f)
             if st.get("version") == version and _alive(st.get("port"), version):
-                return {"port": st["port"], "reused": False, "version": version}
+                return {"port": st["port"], "token": st.get("token"),
+                        "reused": False, "version": version}
         except (OSError, ValueError):
             continue
     return {"error": f"daemon did not start — see {log}"}
@@ -199,9 +369,18 @@ except ImportError:
 # ================================================================ daemon
 def _serve():
     import numpy as np
+    import secrets
     from concurrent.futures import ThreadPoolExecutor
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from urllib.parse import urlparse, parse_qs
+
+    # Per-daemon secret. The daemon binds a random loopback port and answers
+    # with open CORS so the template's cross-port iframe can read tiles; that
+    # alone leaves it readable by any page in the same browser that guesses the
+    # port. Requiring this token on every data endpoint closes that gap — the
+    # template gets the token from ensure() and threads it in as ?t=. /ping
+    # (version only) stays token-free so liveness probes need no secret.
+    TOKEN = secrets.token_urlsafe(32)
 
     sys.path.insert(0, os.path.dirname(_me()))
     import _tiff_core as T
@@ -258,7 +437,15 @@ def _serve():
         I/O — so it's safe to call under files_lock. The caller closes the
         returned old buffer outside the lock and spawns _prefetch_overviews
         once f is visible to other threads."""
-        f["reader"] = _RangeReader(_server_url(src, "/api/fs/raw", path))
+        # &pooled=1: this reader does one Range GET per ~64KB block over the
+        # server's /api/fs/raw. On a cold mount that endpoint 307-redirects to
+        # the store's signed URL, and urllib would re-follow it (fresh TLS) on
+        # every block. The flag opts this read into the server's pooled proxy
+        # so those range reads share keep-alive sockets to the store. Just a
+        # query param on the endpoint we already use — the template stays
+        # mount-agnostic.
+        f["reader"] = _RangeReader(
+            _server_url(src, "/api/fs/raw", path) + "&pooled=1")
         old, f["buf"] = f["buf"], None
         return old
 
@@ -671,9 +858,22 @@ def _serve():
         return get_stretch(f, idx, robust)
 
     def do_tile(q, z, x, y):
+        # native pure-python engine first; LOCAL files it can't read (BigTIFF,
+        # user-defined CRS, exotic compression) fall back to rasterio below.
+        # Mount-backed files keep the old 404 (rasterio can't range-read them
+        # through /api/fs/raw) so the page falls back to tiff_reader.py.
+        try:
+            return _tile_native(q, z, x, y)
+        except Exception:
+            f = os.path.abspath(os.path.expanduser(q1(q, "file") or ""))
+            if not os.path.exists(f):
+                return 404, b"unsupported", "text/plain"
+            return _tile_rio(q, z, x, y)
+
+    def _tile_native(q, z, x, y):
         f = open_file(q1(q, "file"), q1(q, "src"))
         if not f["supported"]:
-            return 404, b"unsupported", "text/plain"
+            raise ValueError("unsupported by native engine")
         want_rgb, idx = render_params(q, f)
         st = parse_stretch(q, f, idx, want_rgb)
         mx0, my0, mx1, my1 = tile_bbox(z, x, y)
@@ -872,6 +1072,154 @@ def _serve():
                 for k in range(count)]
         return 200, json.dumps({"values": vals}).encode(), "application/json"
 
+    # ------------- forced-level tiles (rasterio — any compression) -------
+    # /ltile/{z}/{x}/{y}.png?file=&level=N renders ONLY from pyramid level N
+    # (0 = full res), reprojected to web mercator. Used by the overview-
+    # pyramid template to compare levels honestly on a basemap.
+    _lvl_cache = {}
+    _lvl_lock = threading.Lock()
+    # rasterio dataset handles are NOT thread-safe: concurrent vrt.read() from
+    # the threaded server corrupts libtiff state (TIFFReadEncodedTile failures,
+    # then a dead process). All reads through cached VRTs go through this lock.
+    _rio_read_lock = threading.Lock()
+
+    def _lvl_vrt(file, level, rem=None):
+        from rasterio.enums import Resampling
+        from rasterio.vrt import WarpedVRT
+        key = (file, level, _lvl_tok(file, rem))
+        with _lvl_lock:
+            if key in _lvl_cache:
+                return _lvl_cache[key]
+            kw = {} if level <= 0 else {"overview_level": level - 1}
+            src = _rio_open(file, rem, **kw)
+            vrt = WarpedVRT(src, crs="EPSG:3857", resampling=Resampling.nearest)
+            _lvl_cache[key] = vrt
+            return vrt
+
+    def _render_level(file, level, z, x, y, stretch=None, cmap=None, rem=None):
+        from rasterio.enums import Resampling
+        from rasterio.windows import Window
+        vrt = _lvl_vrt(file, level, rem)
+        mx0, my0, mx1, my1 = tile_bbox(z, x, y)
+        rgba = np.zeros((TILE, TILE, 4), "uint8")
+        # nearest SOURCE pixel per output pixel, computed in source index
+        # space: pasting a fractionally-rounded resampled window instead puts
+        # pixel edges in different places per tile (non-square pixels when
+        # zoomed past the level's resolution)
+        T = vrt.transform
+        xs = mx0 + (np.arange(TILE) + 0.5) * (mx1 - mx0) / TILE
+        ys = my1 + (np.arange(TILE) + 0.5) * (my0 - my1) / TILE
+        cols = np.floor((xs - T.c) / T.a).astype("int64")
+        rows = np.floor((ys - T.f) / T.e).astype("int64")
+        okc = (cols >= 0) & (cols < vrt.width)
+        okr = (rows >= 0) & (rows < vrt.height)
+        if okc.any() and okr.any():
+            c0, c1 = int(cols[okc].min()), int(cols[okc].max()) + 1
+            r0, r1 = int(rows[okr].min()), int(rows[okr].max()) + 1
+            ow, oh = min(c1 - c0, TILE), min(r1 - r0, TILE)
+            win = Window(c0, r0, c1 - c0, r1 - r0)
+            n = min(3, vrt.count)
+            with _rio_read_lock:
+                data = vrt.read(indexes=list(range(1, n + 1)), window=win,
+                                out_shape=(n, oh, ow), resampling=Resampling.nearest)
+                msk = vrt.read_masks(1, window=win, out_shape=(oh, ow),
+                                     resampling=Resampling.nearest)
+            ci = np.clip((cols - c0) * ow // (c1 - c0), 0, ow - 1)
+            ri = np.clip((rows - r0) * oh // (r1 - r0), 0, oh - 1)
+            sub = data[:, ri[:, None], ci[None, :]]
+            m2 = msk[ri[:, None], ci[None, :]].copy()
+            m2[~okr, :] = 0
+            m2[:, ~okc] = 0
+            if n == 1 and cmap:
+                vals = sub[0].astype("float64")
+                lo, hi = stretch[0] if stretch else (
+                    np.percentile(vals[m2 > 0], [2, 98]) if (m2 > 0).any()
+                    else (0.0, 1.0))
+                lut = R._lut(cmap)
+                t = np.clip((vals - lo) / max(hi - lo, 1e-9), 0, 1)
+                rgba[:, :, :3] = lut[(t * 255).astype("uint8")]
+            else:
+                if sub.dtype != np.uint8:  # 2–98% stretch for non-8-bit
+                    d = sub.astype("float64")
+                    good = np.broadcast_to(m2 > 0, d.shape)
+                    for k in range(n):
+                        if stretch:
+                            lo, hi = stretch[k if k < len(stretch) else 0]
+                        else:
+                            g = d[k][good[k]]
+                            lo, hi = (np.percentile(g, [2, 98]) if g.size
+                                      else (0.0, 1.0))
+                        d[k] = np.clip((d[k] - lo) / max(hi - lo, 1e-9), 0, 1) * 255
+                    sub = d.astype("uint8")
+                px = np.transpose(sub, (1, 2, 0))
+                if n < 3:
+                    px = np.repeat(px[:, :, :1], 3, axis=2)
+                rgba[:, :, :3] = px
+            rgba[:, :, 3] = np.where(m2 > 0, 255, 0)
+        return 200, R.encode_png(np.ascontiguousarray(rgba)), "image/png"
+
+    def do_ltile(q, z, x, y):
+        file = os.path.abspath(os.path.expanduser(q1(q, "file")))
+        # `src` (server origin + /api/fs/raw?path=) is set by the UI per request;
+        # rem is None for local files (unchanged fast path) or a range-read
+        # descriptor for a mount-backed file, so nothing kernel-opens the mount.
+        rem = _ltile_remote(q1(q, "src"), file)
+        # global stretch (sampled once, coarsest level) — a per-tile stretch
+        # gives every tile its own contrast and the map shows seams
+        return _render_level(file, int(q1(q, "level", "0")), z, x, y,
+                             stretch=_rio_stretch(file, rem), rem=rem)
+
+    def _rio_meta(file, rem=None):
+        key = ("meta", file, _lvl_tok(file, rem))
+        with _lvl_lock:
+            if key in _lvl_cache:
+                return _lvl_cache[key]
+        with _rio_open(file, rem) as src:
+            factors = [1] + list(src.overviews(1))
+        meta = {"factors": factors, "res0": _lvl_vrt(file, 0, rem).transform.a}
+        with _lvl_lock:
+            _lvl_cache[key] = meta
+        return meta
+
+    def _rio_stretch(file, rem=None):
+        """Global 2–98% stretch sampled once from the coarsest level, so every
+        tile shares the same contrast (no per-tile seams)."""
+        key = ("stretch", file, _lvl_tok(file, rem))
+        with _lvl_lock:
+            if key in _lvl_cache:
+                return _lvl_cache[key]
+        m = _rio_meta(file, rem)
+        vrt = _lvl_vrt(file, len(m["factors"]) - 1, rem)
+        n = min(3, vrt.count)
+        oh, ow = max(1, min(512, vrt.height)), max(1, min(512, vrt.width))
+        with _rio_read_lock:
+            data = vrt.read(indexes=list(range(1, n + 1)), out_shape=(n, oh, ow))
+            msk = vrt.read_masks(1, out_shape=(oh, ow))
+        st = []
+        d = data.astype("float64")
+        for k in range(n):
+            g = d[k][msk > 0]
+            lo, hi = (np.percentile(g, [2, 98]) if g.size else (0.0, 1.0))
+            st.append((float(lo), float(hi if hi > lo else lo + 1)))
+        with _lvl_lock:
+            _lvl_cache[key] = st
+        return st
+
+    def _tile_rio(q, z, x, y):
+        """Rasterio fallback for local files the native engine can't read:
+        picks the overview level a COG reader would and renders through the
+        WarpedVRT."""
+        file = os.path.abspath(os.path.expanduser(q1(q, "file")))
+        m = _rio_meta(file)
+        mx0, my0, mx1, my1 = tile_bbox(z, x, y)
+        target = (mx1 - mx0) / TILE
+        level = 0
+        for i, fac in enumerate(m["factors"]):
+            if m["res0"] * fac <= target:
+                level = i
+        return _render_level(file, level, z, x, y, stretch=_rio_stretch(file),
+                             cmap=q1(q, "cmap", "viridis"))
+
     # ---------------- HTTP ----------------
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -881,6 +1229,9 @@ def _serve():
             last_hit[0] = time.time()
             u = urlparse(self.path)
             q = parse_qs(u.query)
+            if u.path != "/ping" and q.get("t", [""])[0] != TOKEN:
+                self._send(403, b"forbidden", "text/plain")
+                return
             try:
                 if u.path == "/ping":
                     code, body, ct = 200, json.dumps(
@@ -894,6 +1245,11 @@ def _serve():
                     z, x = int(parts[2]), int(parts[3])
                     y = int(parts[4].split(".")[0])
                     code, body, ct = do_tile(q, z, x, y)
+                elif u.path.startswith("/ltile/"):
+                    parts = u.path.split("/")   # '', 'ltile', z, x, 'y.png'
+                    z, x = int(parts[2]), int(parts[3])
+                    y = int(parts[4].split(".")[0])
+                    code, body, ct = do_ltile(q, z, x, y)
                 elif u.path == "/meta":
                     code, body, ct = do_meta(q)
                 elif u.path == "/hist":
@@ -924,7 +1280,8 @@ def _serve():
     port = srv.server_address[1]
     os.makedirs(os.path.dirname(STATE), exist_ok=True)
     with open(STATE, "w") as fh:
-        json.dump({"port": port, "pid": os.getpid(), "version": VERSION}, fh)
+        json.dump({"port": port, "token": TOKEN,
+                   "pid": os.getpid(), "version": VERSION}, fh)
 
     def reaper():
         while True:

@@ -1,6 +1,7 @@
 """Tests for the api/template.html inspector (static AST parsing only)."""
 import importlib.util
 import os
+import sys
 
 import pytest
 
@@ -62,6 +63,9 @@ def test_no_entrypoint_at_all(tmp_path):
     assert info["static_result"] is False
 
 
+@pytest.mark.skipif(
+    sys.version_info < (3, 11), reason="PEP 723 dependency parsing needs tomllib (Python 3.11+)"
+)
 def test_fused_engine_reports_pep723_dependencies(tmp_path):
     src = (
         "# /// script\n"

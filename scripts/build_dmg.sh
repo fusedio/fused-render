@@ -32,10 +32,14 @@ REF="$(PYTHONPATH="$REPO_ROOT" python3 -m fused_render._branch ref)"
 SUFFIX="$(PYTHONPATH="$REPO_ROOT" python3 -m fused_render._branch suffix)"
 APP_NAME="FusedRender${SUFFIX}"
 
+# Single source of truth is fused_render/__init__.py's __version__ (pyproject
+# derives it dynamically via [tool.hatch.version], so it has no literal version
+# line to grep). Regex the file rather than importing the package — no import
+# side effects, and it works before deps are installed.
 VERSION="$(python3 -c "
 import re
-text = open('${REPO_ROOT}/pyproject.toml').read()
-print(re.search(r'(?m)^version\s*=\s*\"([^\"]+)\"', text).group(1))
+text = open('${REPO_ROOT}/fused_render/__init__.py').read()
+print(re.search(r'(?m)^__version__\s*=\s*\"([^\"]+)\"', text).group(1))
 ")"
 
 BUILD_DIR="$REPO_ROOT/build"
@@ -273,6 +277,64 @@ rm -rf "$PY2APP_DIST" "$BUILD_DIR/py2app-build"
 test -d "$APP_DIR"
 
 # ---------------------------------------------------------------------------
+# 4a. Prune dead weight from the bundle (D116). py2app's `packages` option
+#     (setup_py2app.py) whole-copies each package, which drags along package
+#     test suites (~100 MB: numpy/pandas/scipy/pyarrow/... ship `tests`
+#     directories full of fixtures), stale `__pycache__` trees (~160 MB —
+#     the .pyc files double every .py, and the bundle recompiles on first
+#     run anyway), and the copied Python.framework's developer-only stdlib
+#     corners (test suite, idlelib, ensurepip, lib2to3, tkinter — the GUI is
+#     rumps/pyobjc, nothing imports tkinter) plus C headers. None of this is
+#     importable by the app or by user scripts in any supported path; grep
+#     of fused_render confirms nothing imports from a `tests` package.
+#
+#     MUST run before the smoke tests below (they validate the PRUNED
+#     bundle) and before codesign (step 5 — deleting files after signing
+#     would break the bundle seal).
+# ---------------------------------------------------------------------------
+
+echo "==> pruning bundle dead weight"
+PRUNE_PYLIB="$APP_DIR/Contents/Resources/lib/python3.12"
+PRUNE_FRAMEWORK="$APP_DIR/Contents/Frameworks/Python.framework"
+
+# Package test suites: only directories literally named `tests` or `test`.
+find "$PRUNE_PYLIB" -type d \( -name tests -o -name test \) -prune \
+  -exec rm -rf {} +
+# Stale bytecode caches (regenerated lazily at runtime in the user's
+# __pycache__-less bundle are simply skipped — python falls back to source).
+find "$APP_DIR/Contents/Resources/lib" -type d -name __pycache__ -prune \
+  -exec rm -rf {} +
+# Installer/dev tooling the app never runs: no pip in the bundle by design
+# (SPEC §19 DP-3 — the Deploy surface uses the baked-in CLI, not pip).
+rm -rf "$PRUNE_PYLIB/pip" "$PRUNE_PYLIB/setuptools" "$PRUNE_PYLIB/wheel" \
+       "$PRUNE_PYLIB/pkg_resources" "$PRUNE_PYLIB/PyObjCTest"
+# The copied Python.framework: stdlib test suite + developer-only modules +
+# C headers. The app's own stdlib lives here (Resources/lib holds packages),
+# so prune surgically, never wholesale.
+FW_LIB="$PRUNE_FRAMEWORK/Versions/3.12/lib/python3.12"
+rm -rf "$FW_LIB/test" "$FW_LIB/idlelib" "$FW_LIB/ensurepip" \
+       "$FW_LIB/lib2to3" "$FW_LIB/tkinter" \
+       "$FW_LIB/site-packages/pip" "$FW_LIB/site-packages/setuptools" \
+       "$FW_LIB/site-packages/wheel"
+rm -rf "$PRUNE_FRAMEWORK/Versions/3.12/include" \
+       "$PRUNE_FRAMEWORK/Versions/3.12/Headers" \
+       "$PRUNE_FRAMEWORK/Versions/3.12/share" \
+       "$PRUNE_FRAMEWORK/Headers"
+find "$PRUNE_FRAMEWORK" -type d -name __pycache__ -prune -exec rm -rf {} +
+
+# Strip debug + local symbols from every bundled native library (D118).
+# Wheels ship unstripped dylibs (pxr's libusd_ms alone carries ~96k symbols);
+# -S drops debug info, -x drops local symbols, globals stay so dlopen/linking
+# is untouched. Per-file `|| true`: find matches by extension, and a stray
+# non-Mach-O .so (text stub, universal file strip dislikes) must not fail the
+# build. MUST run before codesign (step 5) — stripping re-writes the file and
+# would invalidate an existing signature.
+echo "==> stripping debug symbols from bundled dylibs"
+find "$APP_DIR" -type f \( -name '*.so' -o -name '*.dylib' \) \
+  -exec sh -c 'for f do strip -S -x "$f" 2>/dev/null || true; done' _ {} +
+echo "    pruned; app now $(du -sh "$APP_DIR" | cut -f1)"
+
+# ---------------------------------------------------------------------------
 # 4b. Bundle sanity checks.
 #     a) No Mach-O binary masquerading as a .py: py2app's `packages` option
 #        mis-copies a bare C-extension module (e.g. _duckdb) to
@@ -405,6 +467,39 @@ if ! echo "$RCLONE_SMOKE_OUT" | head -1 | grep -q "rclone ${RCLONE_VERSION}"; th
 fi
 echo "    $(echo "$RCLONE_SMOKE_OUT" | head -1)"
 
+# ---------------------------------------------------------------------------
+# 4e. Bundle learn.zip (D123): the repo's learn/ content ships as a single
+#     zip at Contents/Resources/learn.zip, and shell/mounts.py's
+#     ensure_learn_mount() mounts it read-only at startup via rclone's
+#     archive backend (:archive:<path>, new in v1.74) — the bundled default
+#     content is presented through the exact same mounts surface as remote
+#     data. Built fresh every run (a stale zip from a previous build must
+#     never ship). MUST run before signing (step 5): Resources content has
+#     to exist before the bundle seal.
+# ---------------------------------------------------------------------------
+
+echo "==> bundling learn.zip"
+LEARN_SRC="$REPO_ROOT/learn"
+if [[ ! -d "$LEARN_SRC" ]]; then
+  echo "FATAL: $LEARN_SRC does not exist — the learn/ content is part of the app." >&2
+  exit 1
+fi
+LEARN_DEST="$APP_DIR/Contents/Resources/learn.zip"
+rm -f "$LEARN_DEST"
+# -X drops resource-fork/extended-attr entries; .DS_Store excluded so a
+# Finder-visited checkout builds the same zip as CI.
+(cd "$LEARN_SRC" && zip -qr -X "$LEARN_DEST" . -x '.DS_Store' -x '*/.DS_Store')
+
+# Smoke test with the just-bundled rclone: the exact binary the app ships
+# must be able to list the exact zip the app ships — catches an rclone
+# version bump that drops/renames the archive backend before it reaches a
+# user's first launch.
+if ! LEARN_SMOKE_OUT="$("$RCLONE_DEST" lsf ":archive:${LEARN_DEST}" 2>&1)"; then
+  echo "FATAL: bundled rclone cannot read the bundled learn.zip via :archive: :" >&2
+  echo "$LEARN_SMOKE_OUT" >&2
+  exit 1
+fi
+echo "    learn.zip OK ($(echo "$LEARN_SMOKE_OUT" | wc -l | tr -d ' ') top-level entries)"
 
 # ---------------------------------------------------------------------------
 # 5. Code signing (D73, realizes the D35 hook). Two modes:
@@ -435,6 +530,18 @@ echo "    $(echo "$RCLONE_SMOKE_OUT" | head -1)"
 #                                      (a dedicated, unlocked keychain in CI).
 #                                      Path must not contain spaces.
 # ---------------------------------------------------------------------------
+
+# Escape hatch for size-measurement / dev iteration builds: skip signing
+# entirely (both Developer ID and ad-hoc). The resulting app may not LAUNCH
+# on Apple Silicon (unsigned binaries are refused), but the DMG is byte-for-
+# byte comparable for size work and the pre-sign smoke tests above still
+# validate the bundle. Never use for a distributable build.
+# Enabled only by the exact value "1" — a leftover "0"/"false" in the
+# environment must not silently ship an unsigned build.
+if [[ "${FUSED_RENDER_SKIP_CODESIGN:-}" == "1" ]]; then
+  echo "==> FUSED_RENDER_SKIP_CODESIGN set -> skipping codesign (measurement build)"
+  SIGN_IDENTITY=""
+else
 
 KC_PATH="${FUSED_RENDER_CODESIGN_KEYCHAIN:-}"
 KC_OPT=""
@@ -531,8 +638,10 @@ else
   codesign --force --deep -s - "$APP_DIR"
 fi
 
+fi  # FUSED_RENDER_SKIP_CODESIGN
+
 # ---------------------------------------------------------------------------
-# 6. DMG via dmgbuild: app + Applications symlink, compressed UDZO
+# 6. DMG via dmgbuild: app + Applications symlink, compressed ULFO
 # ---------------------------------------------------------------------------
 
 echo "==> building dmg"
@@ -546,7 +655,10 @@ appname = os.path.basename(application)
 
 files = [application]
 symlinks = {"Applications": "/Applications"}
-format = "UDZO"
+# ULFO (LZFSE) compresses this bundle notably tighter than the classic UDZO
+# (zlib) and mounts faster; needs macOS 10.11+ to open, well under the app's
+# own LSMinimumSystemVersion of 11.0 (setup_py2app.py).
+format = "ULFO"
 PYEOF
 
 rm -f "$DMG_PATH"
@@ -569,6 +681,11 @@ rm -f "$DMG_PATH"
 # ---------------------------------------------------------------------------
 
 if [[ -n "${FUSED_RENDER_NOTARY_PROFILE:-}" ]]; then
+  if [[ "${FUSED_RENDER_SKIP_CODESIGN:-}" == "1" ]]; then
+    echo "FATAL: FUSED_RENDER_NOTARY_PROFILE and FUSED_RENDER_SKIP_CODESIGN are both set —" >&2
+    echo "       the app is completely unsigned; there is nothing to notarize." >&2
+    exit 1
+  fi
   if [[ -z "$SIGN_IDENTITY" ]]; then
     echo "FATAL: FUSED_RENDER_NOTARY_PROFILE is set but the app was signed ad-hoc." >&2
     echo "       Notarization requires a Developer ID signature — configure" >&2

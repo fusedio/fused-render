@@ -19,13 +19,17 @@ instead of orphaning them. Unmount is an explicit user action.
 Store: home_dir()/mounts.json, whole-file last-write-wins like
 shell/bookmarks.py. Same acyclic-router + X-Fused-guard conventions.
 """
+import collections
 import configparser
+import email.utils
 import json
 import logging
 import os
 import re
 import shutil
+import signal
 import socket
+import stat as stat_mod
 import subprocess
 import sys
 import threading
@@ -162,7 +166,15 @@ SERVE_VFS_OPT = _serve_params(VFS_OPT)
 # forwards verbatim as `-o` flags to the macOS `mount` command (verified in
 # the rcd -vv log). nfsmount only — the Linux path uses FUSE `mount`, which
 # ignores these NFS options.
-NFS_MOUNT_OPT = {"ExtraOptions": ["timeo=600", "retrans=2"]}
+#
+# "nobrowse" is a standard macOS mount flag (`mount_nfs -o nobrowse`): it keeps
+# the volume out of Finder's sidebar/desktop and off Spotlight's auto-scan
+# radar. Without it, Finder browsing or Spotlight indexing walks the mount with
+# readdir, which on an S3-backed remote turns into a full prefix enumeration —
+# a latent mount-wedge trigger even when no app touches the mount. Harmless on
+# Linux (FUSE ignores it), but only ever passed on darwin anyway (see
+# _nfs_mount_opt / attach_mount).
+NFS_MOUNT_OPT = {"ExtraOptions": ["timeo=600", "retrans=2", "nobrowse"]}
 
 
 # INCIDENT (2026-07-16): a mount recorded read_only=true in mounts.json still
@@ -262,6 +274,29 @@ def mounts_dir() -> str:
     return os.path.join(storage.home_dir(), "mounts")
 
 
+def ensure_mounts_dir() -> str:
+    """Create the mounts root and mark it so macOS Spotlight never indexes it,
+    returning the path. A `.metadata_never_index` marker in a directory tells
+    mds (the Spotlight daemon) to skip the whole subtree — the simplest,
+    permission-safe, no-subprocess way to keep Spotlight from auto-walking the
+    S3-backed mounts with readdir (a prefix-enumeration mount-wedge trigger,
+    the browse-side companion to the "nobrowse" mount flag above). Dropped at
+    the root, not per-mount, so it covers mountpoints created later too. A
+    best-effort `mdutil -i off` would need privileges and often no-ops, so the
+    marker is the primary mechanism; we don't shell out. Idempotent."""
+    root = mounts_dir()
+    os.makedirs(root, exist_ok=True)
+    marker = os.path.join(root, ".metadata_never_index")
+    if not os.path.exists(marker):
+        try:
+            with open(marker, "w"):
+                pass
+        except OSError:
+            # Non-fatal: the mount still works, it just isn't Spotlight-excluded.
+            pass
+    return root
+
+
 def list_mounts() -> list:
     data = storage.read_json(_path())
     return data if isinstance(data, list) else []
@@ -350,6 +385,145 @@ def _rcd_state_path() -> str:
     return os.path.join(storage.home_dir(), "rcd.json")
 
 
+def _rcd_registry_path() -> str:
+    """Path to the central registry of every rcd this machine has spawned,
+    one entry per home (state) dir.
+
+    Unlike rcd.json — which lives INSIDE home_dir() and so vanishes with the
+    dir when a pytest temp home is rmtree'd or a git worktree is deleted, taking
+    the only record of that daemon's pid with it — the registry lives at the
+    BASELINE home (never branch-nested). One registry is shared by the baseline
+    run and every per-branch/worktree run, so reap_stale_rcd() on any run can
+    still see, and reap, a daemon whose own (now-deleted) home would otherwise
+    leave no trace. This is the ONLY place we learn the pid of a daemon whose
+    home dir is already gone."""
+    base = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
+    return os.path.join(base, "rcd-registry.json")
+
+
+def _register_rcd(pid: int, port: int) -> None:
+    """Record a freshly spawned daemon in the central registry, keyed by its
+    home dir (a new daemon for the same home replaces the old record). Purely
+    additive breadcrumb for reap_stale_rcd — a failure here must never fail a
+    mount, so it's swallowed."""
+    try:
+        home = storage.home_dir()
+        reg = storage.read_json(_rcd_registry_path())
+        entries = [e for e in reg if isinstance(e, dict)] if isinstance(reg, list) else []
+        entries = [e for e in entries if e.get("dir") != home]  # dedupe by home
+        entries.append({"pid": pid, "port": port, "dir": home})
+        storage.write_json(_rcd_registry_path(), entries)
+    except OSError:
+        logger.warning("rcd registry write failed", exc_info=True)
+
+
+def _pid_alive(pid: int) -> bool:
+    """True if a process with `pid` currently exists. Signal 0 probes without
+    delivering anything; EPERM means it exists but is owned by someone else."""
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _pid_looks_like_rcd(pid: int) -> bool:
+    """True only when pid's command line is recognisably an `rclone ... rcd`.
+
+    A conservative identity guard: the reaper must NEVER signal a process that
+    merely inherited a pid we once recorded (pids are recycled). Best-effort —
+    any ps failure is treated as 'not confirmed', so we fail closed (don't
+    kill on doubt)."""
+    if not pid or pid <= 0:
+        return False
+    try:
+        out = subprocess.run(
+            ["ps", "-o", "command=", "-p", str(pid)],
+            capture_output=True, text=True, timeout=3,
+        ).stdout.lower()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "rclone" in out and "rcd" in out
+
+
+def _confirmed_our_rcd(entry: dict) -> bool:
+    """Proof that entry's pid IS the rclone rcd we recorded, gating a kill.
+    Two independent checks, either suffices: (1) the recorded rc port still
+    answers core/pid with the recorded pid; (2) the pid's command line is an
+    rclone rcd. Both fail closed."""
+    pid = entry.get("pid") or 0
+    port = entry.get("port")
+    if port:
+        try:
+            if _rc(int(port), "core/pid", timeout=3).get("pid") == pid:
+                return True
+        except (RuntimeError, ValueError, TypeError):
+            pass
+    return _pid_looks_like_rcd(pid)
+
+
+def reap_stale_rcd() -> None:
+    """Kill rcd daemons that outlived the home/worktree that spawned them, and
+    prune dead entries from the registry. Best-effort and deliberately
+    CONSERVATIVE — the rcd is spawned detached and 'outlives the server on
+    purpose', so nothing else ever reaps it; days-old orphans from finished
+    pytest runs and deleted worktrees are the observed failure mode.
+
+    An entry is only ever killed when BOTH hold:
+      * its recorded home (state) dir no longer exists  -> orphaned, AND
+      * the pid is still alive AND provably our rclone rcd (_confirmed_our_rcd).
+    Then it gets a SIGTERM (rcd unmounts cleanly on SIGTERM) and its registry
+    entry is dropped.
+
+    Everything else is left as safe as possible:
+      * home dir still present            -> assumed in use, untouched (this is
+                                             also the daemon we're about to
+                                             reuse/spawn);
+      * pid already dead                  -> just drop the stale registry entry;
+      * orphaned but NOT provably ours    -> left in the registry, never
+                                             blind-killed, for a later run to
+                                             reconsider.
+
+    Wired into the (rare) spawn path of _ensure_rcd_locked, not a timer."""
+    reg = storage.read_json(_rcd_registry_path())
+    if not isinstance(reg, list):
+        return
+    kept: list = []
+    changed = False
+    for e in reg:
+        if not isinstance(e, dict):
+            changed = True
+            continue
+        pid = e.get("pid") or 0
+        home = e.get("dir")
+        home_present = isinstance(home, str) and os.path.isdir(home)
+        if home_present:
+            kept.append(e)  # dir present -> in use, leave alone
+            continue
+        # home dir is gone -> candidate orphan
+        if not _pid_alive(pid):
+            changed = True  # already dead: drop the stale record
+            continue
+        if _confirmed_our_rcd(e):
+            try:
+                os.kill(pid, signal.SIGTERM)
+                logger.info("reaped orphaned rcd pid=%s (home %s gone)", pid, home)
+            except OSError:
+                logger.warning("failed to signal orphaned rcd pid=%s", pid, exc_info=True)
+            changed = True  # drop after signalling
+        else:
+            kept.append(e)  # alive but unidentifiable -> never blind-kill
+    if changed:
+        try:
+            storage.write_json(_rcd_registry_path(), kept)
+        except OSError:
+            logger.warning("rcd registry prune failed", exc_info=True)
+
+
 def _rcd_log_path() -> str:
     return os.path.join(storage.home_dir(), "rcd.log")
 
@@ -413,6 +587,10 @@ def write_rcd_state(port: int, pid: int, log_path: str | None = None) -> None:
         _rcd_state_path(),
         {"port": port, "pid": pid, "log": log_path or _rcd_log_path()},
     )
+    # Also record in the central registry so a future run can reap this daemon
+    # even after its home dir (and this rcd.json) is deleted (INCIDENT: leaked
+    # rcd daemons outliving pytest runs / deleted worktrees for days).
+    _register_rcd(pid, port)
 
 
 def _rc(port: int, method: str, params: dict | None = None, timeout: float = 30):
@@ -436,6 +614,90 @@ def _rc(port: int, method: str, params: dict | None = None, timeout: float = 30)
         raise RuntimeError(detail or f"rclone rc {method}: HTTP {e.code}") from e
     except OSError as e:
         raise RuntimeError(f"rclone rc {method}: {e}") from e
+
+
+# Poll cadence for a cancellable async job. A job/status round trip is cheap, so
+# a tight interval keeps the added latency of the async path (vs. a synchronous
+# _rc) down to one poll for a fast-finishing call — the list/stat hot path pays
+# ~this, not a full second.
+_RC_JOB_POLL_S = 0.05
+
+
+def _rc_cancellable(port: int, method: str, params: dict | None = None,
+                    timeout: float = 30):
+    """Like _rc, but runs `method` as a CANCELLABLE rclone job so a timed-out
+    call actually stops rclone's server-side work instead of orphaning it.
+
+    Why this exists (the 14h-runaway INCIDENT): operations/list and
+    operations/stat make rclone run an UNBOUNDED ListObjectsV2 over the whole
+    prefix (see rc_list_dir / _rc_stat_item). A plain urlopen socket timeout
+    only abandons the CLIENT socket — rclone KEEPS enumerating, and repeated
+    timed-out calls pile up orphaned walks that pinned a CPU for 14h. Submitting
+    with `_async=true` returns a {"jobid": N} immediately; we poll job/status
+    until the job finishes or the deadline passes, and on timeout call job/stop
+    so rclone's context cancellation propagates into the S3 lister and the walk
+    STOPS.
+
+    Returns the job's `output` dict — the SAME shape the synchronous _rc call
+    returns for this method (operations/list -> {"list": [...]}, operations/stat
+    -> {"item": ...}). Raises RuntimeError exactly where _rc would, so callers
+    keep their existing except handling:
+      - deadline exceeded -> raised FROM a TimeoutError, so _rc_timed_out()
+        recognizes it (rc_list_dir maps it to RcListTimeout; _rc_stat_item to
+        the indeterminate sentinel);
+      - a failed job      -> raised with rclone's own error message and NO
+        timeout cause (rc_list_dir maps it to RcListError, same as the sync
+        HTTPError path)."""
+    deadline = time.monotonic() + timeout
+    p = dict(params or {})
+    p["_async"] = True
+    # Submitting a job returns at once (only the enumeration is slow), so cap the
+    # submit round trip modestly rather than granting it the whole budget.
+    submit = _rc(port, method, p, timeout=min(timeout, 10))
+    jobid = submit.get("jobid") if isinstance(submit, dict) else None
+    if jobid is None:
+        # No jobid handed back. If the peer IGNORED _async and ran the command
+        # synchronously, `submit` already holds the full payload (operations/list
+        # -> {"list": [...]}, operations/stat -> {"item": ...}) — return it rather
+        # than re-issuing the same unbounded enumeration a second time. Only a
+        # truly empty/absent ack falls back to a fresh sync call on the remaining
+        # budget, so behavior still degrades to the old path when there's nothing
+        # to reuse.
+        if isinstance(submit, dict) and submit:
+            return submit
+        remaining = deadline - time.monotonic()
+        return _rc(port, method, params, timeout=max(remaining, 0.1))
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            status = _rc(port, "job/status", {"jobid": jobid},
+                         timeout=min(remaining, 10))
+        except RuntimeError:
+            # Polling itself failed — common near the deadline when the budget
+            # (min(remaining, 10)) is tiny, or when a busy rcd is slow to answer.
+            # Do NOT let it propagate uncancelled: break out and stop the job
+            # below so the in-flight enumeration can't outlive us (the INCIDENT).
+            logger.warning("rc job/status failed for job %s; cancelling",
+                           jobid, exc_info=True)
+            break
+        if isinstance(status, dict) and status.get("finished"):
+            if status.get("error"):
+                raise RuntimeError(status["error"])  # sync error path equivalent
+            out = status.get("output")
+            return out if isinstance(out, dict) else {}
+        time.sleep(min(_RC_JOB_POLL_S, max(deadline - time.monotonic(), 0)))
+    # Deadline passed (or polling failed) with the job still running: cancel it
+    # server-side so rclone stops enumerating (the whole point), then raise a
+    # timeout the callers recognize. job/stop failing is non-fatal — we still raise.
+    try:
+        _rc(port, "job/stop", {"jobid": jobid}, timeout=3)
+    except RuntimeError:
+        logger.warning("rc job/stop failed for job %s", jobid, exc_info=True)
+    raise RuntimeError(
+        f"rc {method} timed out after {timeout:g}s (job {jobid} cancelled)"
+    ) from TimeoutError()
 
 
 # A live-port probe (core/pid over the loopback rc port, timeout=3) runs on
@@ -510,6 +772,13 @@ def _ensure_rcd_locked() -> int:
     port = _live_rcd_port()
     if port is not None:
         return port
+    # About to spawn a fresh daemon — a natural, rare moment to opportunistically
+    # reap any rcd that outlived a deleted home/worktree (best-effort, never
+    # blocks the spawn; NOT on a timer). The hot reuse path above skips this.
+    try:
+        reap_stale_rcd()
+    except Exception:
+        logger.warning("reap_stale_rcd failed", exc_info=True)
     bin_ = rclone_bin()
     if not bin_:
         raise RuntimeError("rclone is not installed")
@@ -548,6 +817,85 @@ def _ensure_rcd_locked() -> int:
         except RuntimeError:
             time.sleep(0.2)
     raise RuntimeError("rclone rcd did not come up within 10s")
+
+
+# How long _kill_current_rcd waits for a signalled daemon to actually exit
+# before escalating / giving up, mirroring the bounded poll ensure_rcd uses on
+# the way up.
+_KILL_TIMEOUT_S = 5.0
+
+
+def _kill_current_rcd() -> None:
+    """Terminate the recorded rcd daemon, if there is one to terminate.
+
+    Safety invariant (the single most important constraint here): only ever
+    signal a pid we can PROVE is our rclone rcd. Reuses the exact gates
+    reap_stale_rcd trusts — _pid_alive + _confirmed_our_rcd (which itself folds
+    in the rc core/pid check and _pid_looks_like_rcd). A recorded pid that is
+    alive but NOT confirmed ours raises rather than risk killing an unrelated
+    process that inherited a recycled pid.
+
+    No recorded daemon / a dead pid is a clean no-op: the caller's fresh spawn
+    just starts one. SIGTERM first (rcd unmounts cleanly on it), escalating to
+    SIGKILL only if it won't exit within _KILL_TIMEOUT_S; we poll until the
+    daemon's port stops answering AND the pid is gone."""
+    entry = storage.read_json(_rcd_state_path())
+    if not isinstance(entry, dict):
+        return  # no daemon on record — nothing to kill
+    pid = entry.get("pid") or 0
+    if not _pid_alive(pid):
+        return  # already gone; the stale rcd.json is harmless (spawn overwrites)
+    if not _confirmed_our_rcd(entry):
+        # Alive but unprovable: pids get recycled, so this could be anything.
+        # Fail loud instead of blind-killing (the critical safety invariant).
+        raise RuntimeError(
+            f"refusing to kill pid {pid}: not confirmed to be our rclone rcd"
+        )
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            return  # raced us and exited between the check and the signal
+        except OSError as e:
+            raise RuntimeError(f"failed to signal rcd pid {pid}: {e}") from e
+        deadline = time.time() + _KILL_TIMEOUT_S
+        while time.time() < deadline:
+            if _live_rcd_port() is None and not _pid_alive(pid):
+                return  # daemon gone
+            time.sleep(0.1)
+    raise RuntimeError(f"rcd pid {pid} did not exit after SIGKILL")
+
+
+def restart_rcd() -> None:
+    """Clean restart of the rcd daemon plus a full re-mount of everything.
+
+    Recovers wedged/disconnected mounts, applies changed mount params, and —
+    the credential-expiry fix — forces a brand-new daemon to re-read the static
+    credentials (e.g. ~/.aws/credentials): the long-lived rcd reads them ONCE at
+    fs instantiation and never again, so a refreshed SSO/STS token only reaches
+    a mount after the daemon itself is replaced (neither Reconnect nor a server
+    restart helps — the rcd survives both).
+
+    Sequence, serialized against ensure_rcd via _rcd_lock:
+      1. force-detach every kernel NFS mount FIRST, so killing rcd can't strand
+         a wedged mount (best-effort — a mount already gone is fine);
+      2. kill the current daemon (only if confirmed ours — see _kill_current_rcd);
+      3. spawn a fresh daemon via the already-locked body (we hold _rcd_lock, so
+         calling ensure_rcd() would deadlock the non-reentrant Lock).
+    run_automount() (which re-mounts every mount and rebuilds serves.json via
+    sync_serves) runs OUTSIDE _rcd_lock — it takes its own _serves_lock, and
+    holding both would invert the lock order. A spawn failure propagates: the
+    endpoint maps it to a 500 and mounts are left honestly unmounted."""
+    with _rcd_lock:
+        for m in list_mounts():
+            try:
+                detach_mount(m, force=True)
+            except Exception:
+                logger.warning("restart: detach of %r failed",
+                               m.get("name"), exc_info=True)
+        _kill_current_rcd()
+        _ensure_rcd_locked()
+    run_automount()
 
 
 def rcd_mount_map() -> dict:
@@ -656,12 +1004,21 @@ def _s3_without_credentials(cfg: dict) -> bool:
                      or cfg.get("session_token")))
 
 
+def _gcs_anonymous(cfg: dict) -> bool:
+    """A GCS remote configured anonymous=true (the built-in gcs-open
+    suggestion) — rclone sends unauthenticated requests, which GCS accepts
+    for public-bucket reads only, so writes can never be accepted."""
+    return (cfg.get("type") == "google cloud storage"
+            and str(cfg.get("anonymous", "")).lower() == "true")
+
+
 def _detect_read_only(port: int, fs: str) -> bool | None:
     """Best-effort, NON-MUTATING read-onlyness probe for a remote. Never
     writes a probe object into the user's store; instead:
       - operations/fsinfo: a backend advertising no write feature at all
         (Put/PutStream/Copy — e.g. http) can never take a write.
-      - config/get: an anonymous S3 remote (see _s3_without_credentials).
+      - config/get: an anonymous S3 or GCS remote (see
+        _s3_without_credentials / _gcs_anonymous).
     Returns None when the probe is INCONCLUSIVE — an rc call failed, or the
     reply didn't carry the expected shape (absence of a Features map is
     version skew, not evidence of read-onlyness) — so the caller persists
@@ -683,7 +1040,7 @@ def _detect_read_only(port: int, fs: str) -> bool | None:
         return None
     if not isinstance(cfg, dict):
         return None
-    return _s3_without_credentials(cfg)
+    return _s3_without_credentials(cfg) or _gcs_anonymous(cfg)
 
 
 def _refresh_read_only_flag(m: dict, port: int | None = None) -> None:
@@ -741,8 +1098,38 @@ def is_mounts_root(path: str) -> bool:
     the root is kept off the kernel like any remote path; but the root is under
     no single mount record, so the rc/S3 listing routes have nothing to list.
     Callers list the root by enumerating mount records instead (no kernel or
-    remote I/O)."""
-    return os.path.abspath(path) == os.path.abspath(mounts_dir())
+    remote I/O).
+
+    Mirrors is_mount_backed's symlink handling: a symlink whose TARGET is the
+    mounts root looks mount-backed (via that function's realpath branch) yet
+    would fail a pure abspath match here, so the guard that keeps the root off
+    the rc/S3 routes would miss it. So a path that does NOT resolve within the
+    container by abspath is re-checked through os.path.realpath, which follows
+    the symlink to the root. The real root matches on abspath and never reaches
+    realpath; a path already UNDER the container is a mountpoint (or deeper),
+    never the root itself, and is settled by string so realpath never gets to
+    kernel-stat a live mount. Only an outside-looking symlink pays one realpath
+    (a local resolve, off any mount)."""
+    root = os.path.abspath(mounts_dir())
+    ap = os.path.abspath(path)
+    if ap == root:
+        return True
+    if ap.startswith(root + os.sep):
+        return False
+    return os.path.realpath(path) == os.path.realpath(mounts_dir())
+
+
+def is_mount_root(path: str) -> bool:
+    """True when `path` is the ROOT of an individual mount (its mountpoint), as
+    opposed to a subpath inside it. A single-level listing of a mount root is a
+    listing of the remote's top prefix — or the whole bucket for a bucket-root
+    mount — which on a world-scale remote is enormous. Callers use this to avoid
+    a standing periodic enumeration of such a prefix (fs/events P1 #4). The
+    mounts container itself counts as a root too. Pure string/abspath — no I/O."""
+    if is_mounts_root(path):
+        return True
+    m, rel = _mount_for(path)
+    return m is not None and rel == "."
 
 
 def rc_mtime_for(path: str) -> str | None:
@@ -768,26 +1155,211 @@ def rc_mtime_for(path: str) -> str | None:
     (path not under a mount, rcd unreachable, rc error/timeout, or missing
     item). Callers MUST treat None as "unchanged" and MUST NOT fall back to
     os.stat — that fallback is the exact GETATTR that killed the mount."""
+    item = _rc_stat_item(path)
+    # Both "missing" (None) and "indeterminate" (the sentinel) collapse to None
+    # here — this preserves rc_mtime_for's documented contract. A caller that
+    # must distinguish a confirmed deletion from a transient failure uses
+    # rc_stat_for instead.
+    if not isinstance(item, dict):
+        return None
+    return item.get("ModTime") or None
+
+
+# Sentinel returned by _rc_stat_item when operations/stat could not be answered
+# at all (no mount record, no live rcd, rc error/timeout, malformed response) —
+# as opposed to None, which is a healthy rcd's TRUSTWORTHY "the item is gone".
+_STAT_INDETERMINATE = object()
+
+# Default per-call ceiling for a single rc operations/stat. operations/stat has
+# NO S3 point lookup — rclone answers a negative or a directory probe with an
+# UNBOUNDED ListObjectsV2 of the whole parent prefix, so on a flat world-scale
+# prefix (source.coop/earthgenome/...) every probe burns this full timeout. The
+# ceiling caps ONE probe; the per-gate budget (_mount_gate_builtins) shrinks it
+# further so a gate's serialized probes can't stack to N*ceiling. Direct-capable
+# mounts skip this path entirely (see _stat_item -> direct_head/direct_is_dir).
+RC_STAT_TIMEOUT_S = 10.0
+
+# A direct stat may run TWO probes back-to-back (a HeadObject, then a max-keys=1
+# list) and, on a direct miss, fall back to operations/stat. All of them share
+# the caller's SINGLE `timeout` via one deadline (see _stat_item), so a slow
+# first probe can't hand the next one a fresh full budget — which is how one
+# logical stat used to burn up to 2x the cap. This floor is the smallest slice
+# worth spending on a follow-on probe: below it there is no plausible round trip
+# left, so we stop and report indeterminate rather than overrun the deadline.
+_DIRECT_PROBE_MIN_S = 0.5
+
+
+def _rc_stat_item(path: str, *, timeout: float = RC_STAT_TIMEOUT_S):
+    """The raw operations/stat `item` for a mount-backed path, off the kernel:
+      - a dict          -> the item exists (its ModTime may or may not be set);
+      - None            -> a healthy rcd answered {"item": null}: the file is
+                           GONE (a trustworthy negative);
+      - _STAT_INDETERMINATE -> the stat could not be taken (path under no mount,
+                           no live rcd port, rc RuntimeError/timeout, or a
+                           malformed response). Callers MUST fail open on this
+                           and MUST NOT fall back to os.stat — that GETATTR is
+                           the exact call that wedged the mount.
+    Shared by rc_mtime_for and rc_stat_for so both speak to the rcd once and
+    agree on what each outcome means."""
     m, rel = _mount_for(path)
     if m is None:
-        return None
+        return _STAT_INDETERMINATE
     port = _live_rcd_port()
     if port is None:
-        return None
+        return _STAT_INDETERMINATE
     # _mount_for returns "." for the mountpoint itself; operations/stat wants ""
     # for the fs root (remote "." returns {"item": null}, so the mount-ROOT
     # watch would never prime — same quirk operations/list has, normalized in
     # rc_list_dir).
     remote = "" if rel == "." else rel
     try:
-        resp = _rc(port, "operations/stat",
-                   {"fs": m["remote"], "remote": remote}, timeout=10)
+        # Cancellable: operations/stat runs an UNBOUNDED ListObjectsV2 on a
+        # negative/dir probe, so a timed-out sync call would orphan that walk.
+        resp = _rc_cancellable(port, "operations/stat",
+                               {"fs": m["remote"], "remote": remote},
+                               timeout=timeout)
     except RuntimeError:
-        return None
-    item = resp.get("item") if isinstance(resp, dict) else None
+        return _STAT_INDETERMINATE
+    if not isinstance(resp, dict) or "item" not in resp:
+        return _STAT_INDETERMINATE  # malformed answer -> fail open
+    item = resp["item"]
+    if item is None:
+        return None  # healthy rcd: file confirmed gone
     if not isinstance(item, dict):
-        return None
-    return item.get("ModTime") or None
+        return _STAT_INDETERMINATE
+    return item
+
+
+def _stat_item(path: str, *, timeout: float = RC_STAT_TIMEOUT_S):
+    """Normalized stat outcome for a mount-backed path, DIRECT-PROBE-FIRST:
+      - a dict {"IsDir", "Size", "MtimeEpoch"} -> the path exists;
+      - None                                   -> confirmed missing;
+      - _STAT_INDETERMINATE                    -> could not be determined.
+
+    operations/stat has no S3 point lookup: a negative file probe or a directory
+    probe makes rclone run an UNBOUNDED ListObjectsV2 of the whole parent prefix,
+    so on a flat world-scale prefix every probe burns the full rc timeout. But
+    S3/GCS expose true point lookups — HeadObject answers exists/size/mtime in
+    one round trip and a max-keys=1 list answers dir-ness in another — so for the
+    anonymous backends we already list unsigned (direct_list_capable) we probe
+    the store DIRECTLY and never touch operations/stat. Any direct failure
+    (403/301/network — DirectProbeError) falls back to the rc path so a
+    misconfigured remote still degrades to the slow-but-correct route.
+
+    Shared by rc_stat_for / rc_kind_for / rc_stat_result so all three speak the
+    same direct-first path and agree on what each outcome means. rc_mtime_for
+    stays on _rc_stat_item directly (its raw-ModTime-string contract predates
+    this and no world-scale caller relies on it)."""
+    deadline = time.monotonic() + timeout
+    if direct_list_capable(path):
+        try:
+            return _direct_stat_item(path, deadline=deadline)
+        except DirectProbeError:
+            pass  # fall through to the slow rc route, on the SAME deadline
+    # The rc fallback shares the direct probes' deadline so an indeterminate
+    # direct outcome can't add a fresh full timeout on top; below the floor
+    # there is no plausible round trip left, so fail open to indeterminate
+    # rather than overrun the caller's timeout (the floor is a bail-out
+    # threshold, never a grant).
+    remaining = deadline - time.monotonic()
+    if remaining < _DIRECT_PROBE_MIN_S:
+        return _STAT_INDETERMINATE
+    item = _rc_stat_item(path, timeout=remaining)
+    if not isinstance(item, dict):
+        return item  # None (missing) or _STAT_INDETERMINATE pass straight through
+    return {"IsDir": bool(item.get("IsDir")), "Size": item.get("Size"),
+            "MtimeEpoch": rc_modtime_epoch(item.get("ModTime"))}
+
+
+def rc_stat_for(path: str, *, timeout: float = RC_STAT_TIMEOUT_S) -> str:
+    """Tri-state existence of a mount-backed path, never the kernel: "exists",
+    "missing", or "indeterminate".
+
+    Splits apart what rc_mtime_for collapses into None, so a caller can filter a
+    genuinely-deleted mount file (a healthy rcd's {"item": null}) while still
+    failing open on any transient failure. "missing" is the ONLY outcome that
+    proves absence; treat "indeterminate" as "keep / unchanged". Answered by a
+    direct point probe where the backend supports it, else operations/stat."""
+    item = _stat_item(path, timeout=timeout)
+    if item is _STAT_INDETERMINATE:
+        return "indeterminate"
+    if item is None:
+        return "missing"
+    return "exists"
+
+
+def rc_kind_for(path: str, *, timeout: float = RC_STAT_TIMEOUT_S) -> str:
+    """Four-state kind of a mount-backed path, never the kernel: "dir", "file",
+    "missing", or "indeterminate".
+
+    Extends rc_stat_for's present/absent with the IsDir bit, so a caller can tell
+    os.path.isfile from os.path.isdir without a kernel LOOKUP. That LOOKUP is the
+    whole point: a cold NEGATIVE os.path.isfile over an rclone-NFS mount forces
+    rclone to LIST the entire parent S3 prefix to resolve the miss (~18-24s on a
+    world-scale store), which trips the macOS NFS deadman and the mount is
+    declared dead. Same "kernel NFS is the enemy, route via a bounded probe"
+    hardening rc_list_dir / api_fs_list got.
+
+    "file"/"dir" prove presence; "missing" is the ONLY outcome that proves
+    absence; "indeterminate" (backend unreachable / no mount / malformed answer)
+    must be treated as "don't know" and MUST NOT fall back to the kernel."""
+    item = _stat_item(path, timeout=timeout)
+    if item is _STAT_INDETERMINATE:
+        return "indeterminate"
+    if item is None:
+        return "missing"
+    return "dir" if item["IsDir"] else "file"
+
+
+def rc_stat_result(path: str, *, timeout: float = RC_STAT_TIMEOUT_S) -> os.stat_result:
+    """A synthesized os.stat_result for a mount-backed path, off the kernel
+    GETATTR (the stat-storm/deadman class — see rc_mtime_for).
+
+    Only the fields callers actually read are meaningful — st_mode's dir/file
+    bit, st_size, and st_mtime; the rest are zero-filled. Raises
+    FileNotFoundError when the backend confirms the item is gone and OSError when
+    the stat is indeterminate, so a mount stat fails EXACTLY like the kernel
+    os.stat it replaces and callers' existing OSError->404 handling holds — and
+    it NEVER falls back to that kernel GETATTR, which is the call that wedged the
+    mount."""
+    item = _stat_item(path, timeout=timeout)
+    if item is _STAT_INDETERMINATE:
+        raise OSError(f"rc stat unavailable for {path}")
+    if item is None:
+        raise FileNotFoundError(path)
+    size = item["Size"]
+    # rclone reports -1 for a directory / unknown size; clamp to 0.
+    size = int(size) if isinstance(size, (int, float)) and size >= 0 else 0
+    mtime = item["MtimeEpoch"] or 0.0
+    mode = (stat_mod.S_IFDIR | 0o755) if item["IsDir"] else (stat_mod.S_IFREG | 0o644)
+    # (mode, ino, dev, nlink, uid, gid, size, atime, mtime, ctime)
+    return os.stat_result((mode, 0, 0, 1, 0, 0, size, mtime, mtime, mtime))
+
+
+# A shim'd condition gate reads exactly one small known file (the zarr.json
+# node_type probe). Cap it so a surprise huge file can't stream unbounded
+# through the serve — a store's zarr.json is a few KB; 1 MiB is generous.
+_GATE_READ_CAP = 1 << 20
+
+
+def rc_read_bounded(path: str, cap: int = _GATE_READ_CAP, timeout: float = 10) -> bytes:
+    """Up to `cap` bytes of a mount-backed file, fetched over the mount's
+    localhost HTTP serve (serve_url_for) instead of a kernel open()/read.
+
+    The condition-gate shim uses this for the one bounded zarr.json read: a
+    kernel open of a mount file is the same GETATTR/READ class that wedges the
+    mount, while a ranged GET over the serve is at worst slow, never fatal.
+    Raises OSError on no live serve / transport error / timeout so the gate fails
+    closed (urllib.error.URLError and socket timeouts are already OSError)."""
+    url = serve_url_for(path)
+    if url is None:
+        raise OSError(f"no HTTP serve for {path}")
+    req = urllib.request.Request(url, headers={"Range": f"bytes=0-{cap - 1}"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read(cap)
+    except OSError as e:  # URLError/HTTPError/socket timeout are all OSError
+        raise OSError(f"serve read failed for {path}: {e}") from e
 
 
 # operations/list can't be paginated at any rclone layer (verified: `rclone lsf
@@ -866,9 +1438,11 @@ def rc_list_dir(path: str, timeout: float | None = None) -> list:
     # operations/stat has).
     remote = "" if rel == "." else rel
     try:
-        resp = _rc(port, "operations/list",
-                   {"fs": m["remote"], "remote": remote,
-                    "opt": {"noMimeType": True}}, timeout=timeout)
+        # Cancellable: operations/list enumerates the WHOLE prefix (the mur-sst
+        # runaway), so on timeout we job/stop it instead of orphaning the walk.
+        resp = _rc_cancellable(port, "operations/list",
+                               {"fs": m["remote"], "remote": remote,
+                                "opt": {"noMimeType": True}}, timeout=timeout)
     except RuntimeError as e:
         if _rc_timed_out(e):
             raise RcListTimeout(f"listing {path} timed out after {timeout:g}s") from e
@@ -978,6 +1552,15 @@ def _anonymous_s3(cfg: dict | None) -> bool:
             and not cfg.get("endpoint"))
 
 
+def _cannot_presign(cfg: dict | None) -> bool:
+    """True when the remote is anonymous S3 or anonymous GCS — the backend
+    classes that can never presign (S3's "unsupported signer type noAuth", and
+    anonymous GCS carrying no signing key at all) but reach their public
+    objects by a plain unsigned URL instead. Lets _upstream_url_for skip the
+    wasted publiclink rc call for either backend."""
+    return cfg is not None and (_anonymous_s3(cfg) or _gcs_anonymous(cfg))
+
+
 def _mount_for(path: str) -> tuple[dict | None, str]:
     """(mount record, remote-relative path) for a path under a mountpoint."""
     p = os.path.abspath(path)
@@ -1052,6 +1635,25 @@ def _public_object_url(fs: str, rel: str) -> str | None:
     return _s3_base_url(bucket, region) + "/" + urllib.parse.quote(key)
 
 
+def _gcs_public_object_url(fs: str, rel: str) -> str | None:
+    """Plain https URL for an object on an ANONYMOUS GCS remote — the GCS
+    analog of _public_object_url. GCS always path-addresses the bucket
+    (storage.googleapis.com/<bucket>/<key>), so there is no region and no
+    dotted-bucket rule. Credentialed or non-GCS remotes return None (their
+    objects aren't reachable unsigned). Pure string building once
+    _remote_config has memoized the config — no rc round trip per object."""
+    cfg = _remote_config(fs.partition(":")[0])
+    if not _gcs_anonymous(cfg or {}):
+        return None
+    derived = _gcs_bucket_prefix(fs)
+    if derived is None:
+        return None
+    bucket, prefix = derived
+    key = (prefix + "/" if prefix else "") + rel
+    # Match _public_object_url's key quoting (same default safe chars).
+    return f"https://storage.googleapis.com/{bucket}/{urllib.parse.quote(key)}"
+
+
 # ------------------------------------------------------- direct S3 pagination
 # rclone can't paginate operations/list at any layer (see rc_list_dir), so a
 # flat S3 prefix with millions of keys (aws-open:mur-sst/zarr-v1 ->
@@ -1065,11 +1667,17 @@ S3_LIST_TIMEOUT_S = 15.0
 _S3_XMLNS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
 
 
-class S3ListError(Exception):
-    """A direct ListObjectsV2 page failed — an HTTP status (403 needs auth, 301
-    wrong region), a network error, or unparseable XML. The caller falls back
-    to rc_list_dir; kept distinct from the RcList* family so the fallback ladder
-    (S3-direct -> rc -> 503) reads cleanly."""
+class DirectListError(Exception):
+    """A direct (unsigned) S3/GCS listing page failed — an HTTP status (403
+    needs auth, 301 wrong region), a network error, or an unparseable body
+    (S3 XML / GCS JSON). The caller falls back to rc_list_dir; kept distinct
+    from the RcList* family so the fallback ladder (direct -> rc -> 503) reads
+    cleanly."""
+
+
+# Back-compat alias: the direct-listing path started S3-only. Kept so callers
+# (and tests) that still import S3ListError keep working.
+S3ListError = DirectListError
 
 
 def s3_direct_capable(path: str) -> bool:
@@ -1180,6 +1788,348 @@ def s3_list_page(path: str, *, max_keys: int, continuation: str | None = None,
     return entries, next_token
 
 
+# ------------------------------------------------------ direct GCS pagination
+# The GCS analog of the S3-direct path above. rclone can't paginate a listing
+# at any layer either, so a flat GCS prefix with hundreds of thousands of
+# children times out on the rc route exactly as an S3 one does. But GCS's own
+# JSON API (objects.list) paginates fine, and anonymous GCS (the gcs-open
+# suggestion, _gcs_anonymous) serves it with a plain unsigned GET — so fetch a
+# single page at a time straight from GCS, unsigned. There is no dotted-bucket
+# / virtual-host rule here: the GCS JSON endpoint always carries the bucket in
+# the path, and there is no region.
+GCS_LIST_TIMEOUT_S = 15.0
+_GCS_LIST_URL = "https://storage.googleapis.com/storage/v1/b/{bucket}/o"
+
+
+def gcs_direct_capable(path: str) -> bool:
+    """True when `path` is mount-backed by an anonymous GCS remote — the one
+    GCS backend class gcs_list_page can enumerate unsigned. Mirrors
+    s3_direct_capable for the GCS side."""
+    m, _ = _mount_for(path)
+    if m is None:
+        return False
+    return _gcs_anonymous(_remote_config(m["remote"].partition(":")[0]) or {})
+
+
+def _gcs_bucket_prefix(fs: str) -> tuple[str, str] | None:
+    """(bucket, key prefix) for a GCS remote's fs string
+    (e.g. "gcs-open:mur-sst/zarr-v1" -> ("mur-sst", "zarr-v1")). The key prefix
+    is stripped of any trailing slash. None when the fs carries no bucket. The
+    GCS analog of _s3_bucket_prefix_region — no region (GCS has none)."""
+    _, _, root = fs.partition(":")
+    bucket, _, prefix = root.partition("/")
+    if not bucket:
+        return None
+    return bucket, prefix.rstrip("/")
+
+
+def gcs_list_page(path: str, *, max_keys: int, continuation: str | None = None,
+                  timeout: float | None = None) -> tuple[list, str | None]:
+    """One objects.list page for a mount-backed directory on an anonymous GCS
+    remote, fetched by a plain unsigned HTTPS GET against the GCS JSON API — no
+    kernel I/O on the mount, no rclone, no google SDK.
+
+    Returns (entries, next_token) in the identical shape to s3_list_page:
+    entries are Name/Size/IsDir/ModTime dicts (so downstream mapping is shared),
+    and next_token the GCS pageToken when the listing is truncated, else None.
+    `prefixes` become synthetic directories (Size/ModTime None); `items` become
+    files; the zero-byte placeholder object whose name IS the prefix (a GCS
+    "directory" marker) is skipped, exactly as s3_list_page skips the key ==
+    prefix.
+
+    Raises DirectListError on any HTTP/network/JSON failure so the caller can
+    fall back to rc_list_dir; a 403 (needs auth) raises too, never crashes."""
+    if timeout is None:
+        timeout = GCS_LIST_TIMEOUT_S
+    m, rel = _mount_for(path)
+    if m is None:
+        raise DirectListError(f"{path} is under no known mount")
+    fs = m["remote"]
+    cfg = _remote_config(fs.partition(":")[0])
+    if not _gcs_anonymous(cfg or {}):
+        raise DirectListError(f"{path}: remote {fs!r} is not anonymous GCS")
+    derived = _gcs_bucket_prefix(fs)
+    if derived is None:
+        raise DirectListError(f"{path}: remote {fs!r} carries no bucket")
+    bucket, store_prefix = derived
+    # _s3_listing_prefix is backend-agnostic (prefix/delimiter join) — reuse it.
+    prefix = _s3_listing_prefix(store_prefix, rel)
+    params = {"delimiter": "/", "prefix": prefix, "maxResults": str(max_keys)}
+    if continuation:
+        params["pageToken"] = continuation
+    query = urllib.parse.urlencode(params)
+    url = f"{_GCS_LIST_URL.format(bucket=bucket)}?{query}"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            body = resp.read()
+    except urllib.error.HTTPError as e:
+        raise DirectListError(f"GCS list {path}: HTTP {e.code}") from e
+    except (urllib.error.URLError, OSError) as e:
+        raise DirectListError(f"GCS list {path}: {e}") from e
+    try:
+        doc = json.loads(body)
+    except (ValueError, TypeError) as e:
+        raise DirectListError(f"GCS list {path}: unparseable JSON") from e
+    entries: list = []
+    for p in doc.get("prefixes") or []:
+        name = str(p)[len(prefix):].rstrip("/")
+        if name:
+            entries.append({"Name": name, "Size": None, "IsDir": True,
+                            "ModTime": None})
+    for obj in doc.get("items") or []:
+        key = obj.get("name") or ""
+        # The zero-byte object whose name IS the prefix is the directory
+        # placeholder GCS consoles create — it's this directory, not an entry.
+        if key == prefix:
+            continue
+        name = key[len(prefix):]
+        if not name:
+            continue
+        size_txt = obj.get("size")
+        entries.append({
+            "Name": name,
+            "Size": int(size_txt) if isinstance(size_txt, str)
+            and size_txt.isdigit() else None,
+            "IsDir": False,
+            # RFC3339 already; the mapping site runs rc_modtime_epoch on it.
+            "ModTime": obj.get("updated"),
+        })
+    return entries, doc.get("nextPageToken") or None
+
+
+# ------------------------------------------- unified direct-listing dispatch
+# The server routes every listing through these two so a call site need not
+# know whether the mount is S3 or GCS. direct_list_page re-derives the backend
+# from `path`, so a continuation token always feeds back to the backend that
+# produced it (an S3 continuation-token and a GCS pageToken never cross).
+
+
+def direct_list_capable(path: str) -> bool:
+    """True when `path` is mount-backed by ANY backend the direct (unsigned)
+    pager can enumerate — anonymous plain AWS S3 or anonymous GCS."""
+    return s3_direct_capable(path) or gcs_direct_capable(path)
+
+
+def direct_list_page(path: str, *, max_keys: int, continuation: str | None = None,
+                     timeout: float | None = None) -> tuple[list, str | None]:
+    """One direct (unsigned) listing page for `path`, routed to the S3 or GCS
+    pager by the backend the path resolves to. Returns (entries, next_token) in
+    the shared rc/direct shape; raises DirectListError when the path is backed
+    by neither direct-listable backend (or the chosen pager fails)."""
+    if s3_direct_capable(path):
+        return s3_list_page(path, max_keys=max_keys,
+                            continuation=continuation, timeout=timeout)
+    if gcs_direct_capable(path):
+        return gcs_list_page(path, max_keys=max_keys,
+                            continuation=continuation, timeout=timeout)
+    raise DirectListError(f"{path}: no direct-listable backend")
+
+
+# ------------------------------------------------- direct point probes (stat)
+# The stat analog of the direct-listing path above. operations/stat has no S3
+# point lookup — rclone resolves a negative file probe or a directory probe by
+# an UNBOUNDED ListObjectsV2 of the whole parent prefix, so on a flat
+# world-scale prefix (source.coop/earthgenome/sentinel2-temporal-mosaics) every
+# probe burns the full rc timeout, and an existing directory even 404s after the
+# timeout expires. But S3/GCS expose real point lookups: HeadObject answers
+# exists/size/mtime, and a max-keys=1 list answers dir-ness — each in ~one round
+# trip. For the anonymous backends we already list unsigned, probe those
+# directly and never touch the rc path. Path-style S3 URLs come from the shared
+# _s3_base_url (its dotted-bucket rule; see there) via _public_object_url.
+_HEAD_TIMEOUT_S = 5.0
+# objects.get (metadata) is the GCS analog of S3 HeadObject; the list endpoint
+# (_GCS_LIST_URL) answers dir-ness. Both carry the bucket in the path (no region).
+_GCS_OBJ_URL = "https://storage.googleapis.com/storage/v1/b/{bucket}/o/{key}"
+
+# (exists, size, mtime) for one object; mtime is RFC3339 (rc_modtime_epoch parses
+# it) so a direct head and an rc item feed rc_modtime_epoch identically.
+DirectHead = collections.namedtuple("DirectHead", ["exists", "size", "mtime"])
+
+
+class DirectProbeError(Exception):
+    """A direct (unsigned) S3/GCS point probe could not decide — an HTTP status
+    other than 404 (403 needs auth, 301 wrong region), a network error, or an
+    unparseable body. Distinct from a 404, which is a TRUSTWORTHY "the object is
+    not there". The caller falls back to operations/stat; kept separate from
+    DirectListError so the two fallback ladders read independently."""
+
+
+def _http_date_epoch(value: str | None) -> str | None:
+    """An HTTP-date Last-Modified header ("Wed, 21 Oct 2015 07:28:00 GMT") ->
+    RFC3339, so a direct S3 head yields the same ModTime shape rc_modtime_epoch
+    already parses off an rc item. None when absent/unparseable."""
+    if not value:
+        return None
+    try:
+        return email.utils.parsedate_to_datetime(value).isoformat()
+    except (TypeError, ValueError):
+        return None
+
+
+def direct_head(path: str, *, timeout: float = _HEAD_TIMEOUT_S) -> DirectHead:
+    """Point existence+metadata probe for a mount-backed FILE via an unsigned
+    S3 HeadObject / GCS objects.get — the fast alternative to operations/stat's
+    parent-prefix list. Returns DirectHead(exists, size, mtime): exists=False on
+    a definitive 404 (the object is not there). The mountpoint itself (rel ".")
+    is never an object -> exists=False. Raises DirectProbeError on any
+    indeterminate outcome (non-404 HTTP, network, unparseable) so the caller can
+    fall back to rc, and when `path` is under no direct-probe-capable backend."""
+    if s3_direct_capable(path):
+        return _s3_head(path, timeout)
+    if gcs_direct_capable(path):
+        return _gcs_head(path, timeout)
+    raise DirectProbeError(f"{path}: no direct-probe backend")
+
+
+def direct_is_dir(path: str, *, timeout: float = _HEAD_TIMEOUT_S) -> bool:
+    """Whether any key lives under `path`'s prefix — the point dir-ness probe, a
+    max-keys=1 S3 ListObjectsV2 / GCS objects.list. True even when only the
+    zero-byte directory-marker object exists (that marker IS the directory).
+    Raises DirectProbeError on any indeterminate outcome (so the caller falls
+    back to rc) and when the backend is not direct-probe-capable."""
+    if s3_direct_capable(path):
+        return _s3_has_children(path, timeout)
+    if gcs_direct_capable(path):
+        return _gcs_has_children(path, timeout)
+    raise DirectProbeError(f"{path}: no direct-probe backend")
+
+
+def _direct_stat_item(path: str, *, deadline: float):
+    """The _stat_item dict|None outcome via direct probes: a HeadObject decides
+    FILE, else a max-keys=1 list decides DIR, else confirmed missing (None). Any
+    probe raising DirectProbeError propagates so _stat_item falls back to rc.
+    Two round trips at worst (dir/miss); one for the common file hit.
+
+    Both probes share the caller's single `deadline` (monotonic seconds): the
+    head gets the whole remaining budget, the dir list only what the head left,
+    so one logical stat never spends up to 2x the timeout. If the head consumed
+    the budget the dir probe can't fit -> raise so _stat_item treats it as
+    indeterminate (and its own rc fallback is bounded by the same deadline)."""
+    remaining = deadline - time.monotonic()
+    if remaining < _DIRECT_PROBE_MIN_S:
+        raise DirectProbeError(f"{path}: budget spent before head probe")
+    head = direct_head(path, timeout=remaining)
+    if head.exists:
+        return {"IsDir": False, "Size": head.size,
+                "MtimeEpoch": rc_modtime_epoch(head.mtime)}
+    if deadline - time.monotonic() < _DIRECT_PROBE_MIN_S:
+        raise DirectProbeError(f"{path}: budget spent before dir probe")
+    if direct_is_dir(path, timeout=deadline - time.monotonic()):
+        # S3/GCS have no real directories; a present prefix (or marker) is a dir.
+        return {"IsDir": True, "Size": None, "MtimeEpoch": None}
+    return None  # no object, no children -> a trustworthy miss
+
+
+def _s3_head(path: str, timeout: float) -> DirectHead:
+    m, rel = _mount_for(path)
+    if rel == ".":
+        return DirectHead(False, None, None)  # the mountpoint is not an object
+    url = _public_object_url(m["remote"], rel)
+    if url is None:  # not anonymous S3 after all — let the caller fall back
+        raise DirectProbeError(f"{path}: no unsigned S3 object URL")
+    req = urllib.request.Request(url, method="HEAD")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            size = resp.headers.get("Content-Length")
+            return DirectHead(
+                True,
+                int(size) if size and size.isdigit() else None,
+                _http_date_epoch(resp.headers.get("Last-Modified")))
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return DirectHead(False, None, None)  # trustworthy negative
+        raise DirectProbeError(f"S3 head {path}: HTTP {e.code}") from e
+    except (urllib.error.URLError, OSError) as e:
+        raise DirectProbeError(f"S3 head {path}: {e}") from e
+
+
+def _gcs_head(path: str, timeout: float) -> DirectHead:
+    m, rel = _mount_for(path)
+    if rel == ".":
+        return DirectHead(False, None, None)  # the mountpoint is not an object
+    fs = m["remote"]
+    derived = _gcs_bucket_prefix(fs)
+    if derived is None:
+        raise DirectProbeError(f"{path}: remote {fs!r} carries no bucket")
+    bucket, store_prefix = derived
+    key = (store_prefix + "/" if store_prefix else "") + rel
+    url = _GCS_OBJ_URL.format(bucket=bucket,
+                              key=urllib.parse.quote(key, safe=""))
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            body = resp.read()
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return DirectHead(False, None, None)  # trustworthy negative
+        raise DirectProbeError(f"GCS head {path}: HTTP {e.code}") from e
+    except (urllib.error.URLError, OSError) as e:
+        raise DirectProbeError(f"GCS head {path}: {e}") from e
+    try:
+        doc = json.loads(body)
+    except (ValueError, TypeError) as e:
+        raise DirectProbeError(f"GCS head {path}: unparseable JSON") from e
+    size = doc.get("size")
+    return DirectHead(
+        True,
+        int(size) if isinstance(size, str) and size.isdigit() else None,
+        doc.get("updated"))  # RFC3339 already
+
+
+def _s3_has_children(path: str, timeout: float) -> bool:
+    m, rel = _mount_for(path)
+    fs = m["remote"]
+    cfg = _remote_config(fs.partition(":")[0])
+    derived = _s3_bucket_prefix_region(fs, cfg or {})
+    if derived is None:
+        raise DirectProbeError(f"{path}: remote {fs!r} carries no bucket")
+    bucket, store_prefix, region = derived
+    prefix = _s3_listing_prefix(store_prefix, rel)
+    # NO delimiter and max-keys=1: cheapest "does anything live here" — one key
+    # (the marker included) proves the directory. delimiter would only add
+    # CommonPrefixes work we don't need for a boolean.
+    params = {"list-type": "2", "prefix": prefix, "max-keys": "1"}
+    query = urllib.parse.urlencode(params)
+    base = _s3_base_url(bucket, region)
+    url = f"{base}?{query}" if "." in bucket else f"{base}/?{query}"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            body = resp.read()
+    except urllib.error.HTTPError as e:
+        raise DirectProbeError(f"S3 list {path}: HTTP {e.code}") from e
+    except (urllib.error.URLError, OSError) as e:
+        raise DirectProbeError(f"S3 list {path}: {e}") from e
+    try:
+        root_el = ElementTree.fromstring(body)
+    except ElementTree.ParseError as e:
+        raise DirectProbeError(f"S3 list {path}: unparseable XML") from e
+    return root_el.find(f"{_S3_XMLNS}Contents") is not None
+
+
+def _gcs_has_children(path: str, timeout: float) -> bool:
+    m, rel = _mount_for(path)
+    fs = m["remote"]
+    derived = _gcs_bucket_prefix(fs)
+    if derived is None:
+        raise DirectProbeError(f"{path}: remote {fs!r} carries no bucket")
+    bucket, store_prefix = derived
+    prefix = _s3_listing_prefix(store_prefix, rel)  # backend-agnostic join
+    params = {"prefix": prefix, "maxResults": "1"}
+    query = urllib.parse.urlencode(params)
+    url = f"{_GCS_LIST_URL.format(bucket=bucket)}?{query}"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            body = resp.read()
+    except urllib.error.HTTPError as e:
+        raise DirectProbeError(f"GCS list {path}: HTTP {e.code}") from e
+    except (urllib.error.URLError, OSError) as e:
+        raise DirectProbeError(f"GCS list {path}: {e}") from e
+    try:
+        doc = json.loads(body)
+    except (ValueError, TypeError) as e:
+        raise DirectProbeError(f"GCS list {path}: unparseable JSON") from e
+    return bool(doc.get("items") or doc.get("prefixes"))
+
+
 def upstream_url_for(path: str) -> str | None:
     """Direct store URL for a mount-backed file, or None when the backend has
     no reachable one (the caller then stays on the serve). Never raises —
@@ -1204,9 +2154,10 @@ def _upstream_url_for(path: str) -> str | None:
         mode = _upstream_mode.get(fs)
     if mode == "none":
         return None
-    if mode is None and _anonymous_s3(_remote_config(fs.partition(":")[0])):
-        # Anonymous S3 can never presign — don't burn an rc call per remote
-        # learning that from publiclink's "unsupported signer type" error.
+    if mode is None and _cannot_presign(_remote_config(fs.partition(":")[0])):
+        # Anonymous S3 or GCS can never presign — don't burn an rc call per
+        # remote learning that from publiclink's "unsupported signer type"
+        # error.
         mode = "public"
     url = None
     if mode in (None, "link"):
@@ -1226,7 +2177,9 @@ def _upstream_url_for(path: str) -> str | None:
         if url is not None:
             mode = "link"
     if url is None:
-        url = _public_object_url(fs, rel)
+        # Dispatch by backend, mirroring direct_list_page: whichever object-URL
+        # builder recognizes the remote returns a non-None URL, the rest None.
+        url = _public_object_url(fs, rel) or _gcs_public_object_url(fs, rel)
         mode = "public" if url else "none"
     with _upstream_lock:
         _upstream_mode[fs] = mode
@@ -1300,6 +2253,10 @@ def _sync_serves_locked() -> None:
 def attach_mount(m: dict) -> str | None:
     """Mount via rcd; returns an error string or None."""
     mp = mountpoint(m)
+    # Create the mounts root (with its Spotlight-exclusion marker) before the
+    # per-mount mountpoint, so the marker is in place the moment the mount goes
+    # live and Spotlight never gets a chance to scan it.
+    ensure_mounts_dir()
     os.makedirs(mp, exist_ok=True)
     if os.path.ismount(mp):
         # Already a kernel mount — but is it OURS? A stale mount left by a
@@ -1383,9 +2340,15 @@ def _quit_tile_daemons() -> None:
         state = storage.read_json(state_file)
         if not isinstance(state, dict) or not state.get("port"):
             continue
+        # /quit is token-gated (D122); the state file carries the daemon's
+        # token, so forward it or the daemon 403s, keeps the mount files open,
+        # and the EBUSY retry never releases them. Token-less state = a daemon
+        # predating the token, which accepts a plain /quit.
+        tok = state.get("token")
+        path = f"/quit?t={tok}" if tok else "/quit"
         try:
             urllib.request.urlopen(
-                f"http://127.0.0.1:{state['port']}/quit", timeout=3).read()
+                f"http://127.0.0.1:{state['port']}{path}", timeout=3).read()
         except OSError:
             continue
 
@@ -1571,7 +2534,64 @@ def mount_state(m: dict, rcd_mounts: set, timeout: float = PROBE_TIMEOUT) -> str
     return out.get("state", "disconnected")  # no answer in time == wedged
 
 
-def mount_view(m: dict, rcd_mounts: set | None = None, state: str | None = None) -> dict:
+# Sentinel: distinguishes "caller already ran the credential probe, here is its
+# tri-state result" from "no result supplied, run the probe if the credentials
+# branch is reached". A plain None default couldn't tell them apart.
+_UNSET = object()
+
+
+def mount_restart_reason(m: dict, rcd_mounts: set | None = None,
+                         state: str | None = None, cred_status=_UNSET) -> str | None:
+    """Why restarting rclone would help this mount, or None. Surfaced on
+    mount_view so the UI can prompt (both reasons route to the SAME global
+    Restart button):
+
+      "params"      — the mount is live but its RUNNING options differ from what
+                      the record now wants, so a restart is needed to apply them.
+                      Conservative subset: read_only is the one mount param the
+                      UI can change, and mounted_read_only records what was
+                      actually baked into the live VFS (rcd never echoes vfsOpt
+                      back — same signal attach_mount's adopt branch remounts on).
+                      A MISSING mounted_read_only (a legacy record adopted via
+                      listmounts that never went through attach_mount) is
+                      "unknown, assume no drift" — never a false prompt.
+                      Broader vfsOpt/mountOpt diffing is deliberately deferred.
+      "credentials" — a disconnected/stale mount on an env_auth remote whose
+                      credentials probe POSITIVELY VALID again: the long-lived
+                      daemon still holds the pre-refresh keys, so Reconnect (and
+                      even a server restart) can't help — only replacing the
+                      daemon re-reads the refreshed creds (see restart_rcd).
+                      An inconclusive probe (timeout/network/AccessDenied) is NOT
+                      treated as valid, so a transient failure can't spam a false
+                      restart prompt.
+
+    `cred_status` lets a caller that already ran the probe (e.g. get_mounts,
+    which threads it off the serial view-building path) pass the tri-state
+    result in so we don't pay a second `rclone lsd`; left unset, the credentials
+    branch runs the probe itself. `mounted_paths()` is only fetched when `state`
+    isn't supplied — the error path passes state and never needs the rc call."""
+    if state is None:
+        if rcd_mounts is None:
+            rcd_mounts = mounted_paths()
+        state = mount_state(m, rcd_mounts)
+    if state == "mounted":
+        baked = m.get("mounted_read_only")
+        # Only a KNOWN-and-differing baked flag is drift; a missing key is an
+        # adopted legacy mount whose live vfsOpt we can't compare — not a prompt.
+        if baked is not None and bool(m.get("read_only")) != bool(baked):
+            return "params"
+        return None
+    if state in ("disconnected", "stale"):
+        if cred_status is _UNSET:
+            cred_status = _mount_credential_status(m)
+        # Only a POSITIVE "valid" means the daemon is holding stale-but-now-good
+        # keys; "bad"/"inconclusive"/"n/a" are Reconnect's or refresh's job.
+        return "credentials" if cred_status == "valid" else None
+    return None
+
+
+def mount_view(m: dict, rcd_mounts: set | None = None, state: str | None = None,
+               cred_status=_UNSET) -> dict:
     mp = mountpoint(m)
     listed = mounted_paths() if rcd_mounts is None else rcd_mounts
     if state is None:
@@ -1589,10 +2609,233 @@ def mount_view(m: dict, rcd_mounts: set | None = None, state: str | None = None)
         # Remote rejects writes (see mount_read_only); unflagged legacy
         # records read as rw, the pre-flag behavior.
         "read_only": bool(m.get("read_only")),
+        # Shipped-with-the-app mount (see ensure_learn_mount); the UI can
+        # treat it differently from a user-created mount (e.g. hide delete).
+        "builtin": bool(m.get("builtin")),
+        # Why a Restart rclone would help (params drift / re-authed creds), or
+        # None. Reuses the state just computed AND (on the get_mounts bulk path)
+        # a cred_status probed off the serial path, so building a view never
+        # blocks on a per-mount `rclone lsd`.
+        "restart_reason": mount_restart_reason(m, listed, state, cred_status),
     }
 
 
 # ---------------------------------------------------------- automount/startup
+
+
+LEARN_MOUNT_NAME = "learn"
+
+
+def learn_zip_path() -> str | None:
+    """Path to the bundled learn.zip, or None outside the packaged app.
+
+    FUSED_RENDER_LEARN_ZIP overrides for dev/testing (a dev checkout has the
+    loose learn/ dir, not a zip — build_dmg.sh only creates the zip at DMG
+    build time). Packaged (same sys.frozen check as rclone_bin) it lives at
+    Contents/Resources/learn.zip (build_dmg.sh step 4e). Existence-checked
+    either way so a stale env var or a hand-pruned bundle yields None, not a
+    mount record pointing at nothing."""
+    override = os.environ.get("FUSED_RENDER_LEARN_ZIP")
+    if override:
+        return override if os.path.isfile(override) else None
+    if getattr(sys, "frozen", None) == "macosx_app":
+        contents = os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))
+        bundled = os.path.join(contents, "Resources", "learn.zip")
+        if os.path.isfile(bundled):
+            return bundled
+    return None
+
+
+def ensure_learn_mount() -> None:
+    """Upsert the builtin "learn" mount record: rclone's archive backend
+    (v1.74) mounts the bundled learn.zip read-only through the same mounts
+    surface as any remote (D123).
+
+    Builtin records carry `"builtin": "learn"` so they're distinguishable
+    from a user-created mount that happens to be named "learn" — that user
+    mount is never touched. The remote embeds the zip's absolute path inside
+    the app bundle, which changes across versions/relocations, so an existing
+    record's remote is refreshed every startup; with no zip (dev checkout,
+    downgrade) the builtin record is removed so it can't linger as a broken
+    mount in the UI. read_only_user pins the flag: the archive backend is
+    inherently read-only, and pinning keeps attach-time detection from ever
+    reconsidering it — mount, serve, and kernel all get read-only baked in
+    via the existing read_only plumbing.
+
+    Never raises — this runs on the automount path and a storage failure
+    must not break the user's own mounts.
+
+    BUGBOT (2026-07-21): rcd survives server restarts (module docstring), so
+    an already-live mount at the learn mountpoint is never naturally
+    refreshed. Two staleness paths that opened:
+      - the bundle relocates (remote string changes) — a live mount still
+        serves the OLD fs, and attach_mount would then reject the new record
+        outright (fs mismatch — see attach_mount's already-mounted branch);
+      - an in-place app upgrade overwrites learn.zip at the SAME path — the
+        remote string never changes, so nothing signalled a refresh was
+        needed at all, and the live VFS + on-disk cache kept serving last
+        version's bytes indefinitely.
+    Fixed the same way for both: whenever a live rcd mount already sits at
+    the learn mountpoint, force-detach it here (best-effort) so run_automount's
+    normal per-mount loop right after this call does a fresh attach_mount —
+    unconditionally, not just when the remote string happens to differ, since
+    content can change under an unchanged path. Cheap: this is a small local
+    archive, not a network remote.
+
+    BUGBOT (2026-07-21): the force-detach talks to rcd (mounted_paths,
+    detach_mount's busy-unmount retry, _stop_serve_for) and can block for the
+    full rc timeout window. That must never happen while _store_lock is
+    held — every mount create/delete/update takes the same lock, and rcd I/O
+    under it would stall them all on every startup. So the store
+    read-modify-write happens entirely inside `with _store_lock`, and
+    whatever forced-detach is needed is only PLANNED there (captured as
+    `detach_target`) and executed after the `with` block exits."""
+    try:
+        path = learn_zip_path()
+        detach_target: tuple[dict, str] | None = None
+        with _store_lock:
+            mounts = list_mounts()
+            builtin = next(
+                (m for m in mounts if m.get("builtin") == LEARN_MOUNT_NAME), None
+            )
+            if path is None:
+                if builtin is not None:
+                    old_remote = builtin["remote"]
+                    _write([m for m in mounts if m is not builtin])
+                    detach_target = (builtin, old_remote)
+            else:
+                remote = f":archive:{path}"
+                if builtin is not None:
+                    # Captured BEFORE any mutation below: the live mount/serve
+                    # (if any) are keyed to whatever fs string was in effect
+                    # at the end of the LAST run, not the one we're about to
+                    # write.
+                    old_remote = builtin["remote"]
+                    if old_remote != remote:
+                        builtin["remote"] = remote
+                        _write(mounts)
+                    # Force a fresh mount every startup, changed or not (see
+                    # the upgrade-same-path staleness case above).
+                    detach_target = (builtin, old_remote)
+                elif any(m["name"] == LEARN_MOUNT_NAME for m in mounts):
+                    logger.warning(
+                        "not adding the builtin learn mount: a user mount "
+                        "named %r already exists", LEARN_MOUNT_NAME,
+                    )
+                else:
+                    mounts.append({
+                        "id": uuid.uuid4().hex[:12],
+                        "name": LEARN_MOUNT_NAME,
+                        "remote": remote,
+                        "read_only": True,
+                        "read_only_user": True,
+                        "builtin": LEARN_MOUNT_NAME,
+                    })
+                    _write(mounts)
+        if detach_target is not None:
+            _force_detach_learn_mount(*detach_target)
+    except Exception:
+        logger.exception("ensure_learn_mount failed")
+
+
+def learn_mount_ready() -> bool:
+    """True when the builtin learn mount is actually attached — both rcd and
+    the kernel agree the mountpoint is live — not merely when its record
+    exists in mounts.json.
+
+    The sidebar's Learn entry (Sidebar.tsx) uses this, surfaced through
+    /api/config, to decide whether to render at all.
+
+    BUGBOT (record-presence was not enough): ensure_learn_mount now
+    force-detaches and remounts the learn mountpoint on EVERY startup (see
+    its docstring) — including the common case where the record already
+    existed on disk from a prior run. A presence-only check would read
+    "ready" the instant that record is read off disk, well before
+    run_automount's attach_mount loop (which runs after ensure_learn_mount
+    returns, on the same background automount thread) has remounted it —
+    an early click would hit an empty mountpoint whose HTTP serve was just
+    stopped. Checking BOTH mounted_paths() (rcd's own bookkeeping) and
+    os.path.ismount() (the kernel mount table) is exactly attach_mount's own
+    signal for "there is nothing left to attach" (see its `os.path.ismount`
+    check), so this reads true only once that loop has actually succeeded."""
+    builtin = next(
+        (m for m in list_mounts() if m.get("builtin") == LEARN_MOUNT_NAME), None
+    )
+    if builtin is None:
+        return False
+    mp = mountpoint(builtin)
+    return mp in mounted_paths() and os.path.ismount(mp)
+
+
+def _force_detach_learn_mount(builtin: dict, old_remote: str) -> None:
+    """Best-effort unmount of the builtin learn mountpoint if rcd (or the
+    kernel) still has one live from a prior server run, so the caller's
+    upserted record gets a genuinely fresh mount/mount instead of being
+    silently adopted with stale fs/content — see ensure_learn_mount's BUGBOT
+    note. Runs OUTSIDE any lock the caller already holds being irrelevant
+    here since detach_mount only talks to rcd/the kernel, never mounts.json.
+
+    Also stops the HTTP serve for `old_remote` (BUGBOT: rcd shares ONE VFS
+    between a mount and its serve — mount/unmount tears that VFS down but
+    leaves the serve pointed at it, so a leftover serve is wedged exactly
+    like reconnect_mount's own _stop_serve_for call documents). Without
+    this, sync_serves sees the OLD remote/options still "in use" by that
+    wedged serve and reuses it instead of starting a fresh one bound to the
+    new mount, so /api/fs/raw reads of Learn hang. `old_remote` — not
+    `builtin["remote"]`, which may already have been rewritten to the NEW
+    fs by the time this runs — is what the live serve is actually keyed to.
+
+    Swallows everything: a failed detach/stop just means run_automount's
+    subsequent attach_mount adopts (or errors on) whatever is still there,
+    exactly like before this fix — never worse.
+
+    BUGBOT: detach_mount's default (force=False) deliberately leaves a
+    non-busy failure (rcd down but a kernel mount survives, a busy-retry
+    that still fails, ...) in place — "failing loudly beats corrupted
+    reads" is the right call for an explicit user unmount, but it defeats
+    the very point of THIS call: attach_mount treats a still-kernel-mounted
+    path with no matching rcd record as a foreign mount and adopts it
+    as-is, silently keeping stale content across the refresh this path
+    exists to guarantee. force=True escalates every dead end to
+    _force_unmount instead, so a genuinely fresh mount/mount follows.
+
+    BUGBOT: force=True alone still isn't enough — detach_mount only
+    escalates to _force_unmount when the rc `mount/unmount` call itself
+    FAILS; it never re-checks os.path.ismount after a call that reports
+    success. reconnect_mount already has to guard against exactly this on
+    macOS (learn is attached via nfsmount): rc's mount/unmount can report
+    success while the kernel NFS mount lingers, and reconnect_mount
+    re-checks os.path.ismount afterward for that reason. Mirror that same
+    re-check here, rather than trusting detach_mount's return value alone.
+
+    BUGBOT: _force_unmount operates purely at the kernel level (umount /
+    diskutil) — it never tells rcd anything, so a successful force-unmount
+    can leave rcd's OWN mount/listmounts bookkeeping still claiming the
+    mountpoint. run_automount's loop treats exactly that combination (rcd
+    still lists it, kernel does not) as the split-brain case and
+    `continue`s PAST attach_mount for it — leaving the builtin mount never
+    remounted after the very refresh this whole path exists to perform.
+    reconnect_mount avoids this by re-issuing rc mount/unmount a second
+    time after its own force-unmount, purely to clear rcd's bookkeeping (a
+    "mount not found" failure at that point is expected and fine, since the
+    kernel mount is already gone) — mirror that same follow-up call here."""
+    try:
+        mp = mountpoint(builtin)
+        live = mp in mounted_paths() or os.path.ismount(mp)
+        port = _live_rcd_port()
+        if live:
+            detach_mount(builtin, force=True)
+            if os.path.ismount(mp):
+                _force_unmount(mp)
+                if port is not None:
+                    try:
+                        _rc(port, "mount/unmount", {"mountPoint": mp})
+                    except RuntimeError:
+                        pass  # "mount not found" once the kernel mount is gone — fine
+        if port is not None:
+            _stop_serve_for(port, old_remote)
+    except Exception:
+        logger.warning("force-detach of builtin learn mount failed", exc_info=True)
 
 
 def run_automount() -> None:
@@ -1601,28 +2844,45 @@ def run_automount() -> None:
     mount/listmounts is the status source of truth, so mounts that survived a
     server restart just show up. Best-effort — a failure logs and moves on,
     never blocks startup."""
+    # Upsert the builtin learn mount BEFORE the snapshot below: a fresh
+    # install has zero user mounts, and skipping the attach loop below would
+    # otherwise skip the builtin's very first mount too.
+    ensure_learn_mount()
     mounts = list_mounts()
-    if not mounts:
-        return
-    live = mounted_paths()
-    for m in mounts:
-        mp = mountpoint(m)
-        if mp in live and not os.path.ismount(mp):
-            # Split-brain: rcd lists the mount but the kernel dropped it.
-            # mount/mount over rcd's own stale entry would fail — leave it
-            # for mount_state to surface as "stale" and Reconnect to heal.
-            continue
-        # A mount that survived the restart takes attach_mount's
-        # already-mounted branch, which re-runs read-only detection and
-        # remounts if the live VFS was created before the current
-        # read_only flag (adopted mounts keep their original vfsOpt) —
-        # otherwise a legacy writable VFS would outlive the flag forever.
-        err = attach_mount(m)
-        if err:
-            logger.warning("automount of %r failed: %s", m["name"], err)
-    # Mounts that survived a server restart skip attach_mount above, so their
-    # HTTP serves (lost with any rcd restart) get re-ensured here.
-    sync_serves()
+    if mounts:
+        live = mounted_paths()
+        for m in mounts:
+            mp = mountpoint(m)
+            if mp in live and not os.path.ismount(mp):
+                # Split-brain: rcd lists the mount but the kernel dropped it.
+                # mount/mount over rcd's own stale entry would fail — leave it
+                # for mount_state to surface as "stale" and Reconnect to heal.
+                continue
+            # A mount that survived the restart takes attach_mount's
+            # already-mounted branch, which re-runs read-only detection and
+            # remounts if the live VFS was created before the current
+            # read_only flag (adopted mounts keep their original vfsOpt) —
+            # otherwise a legacy writable VFS would outlive the flag forever.
+            err = attach_mount(m)
+            if err:
+                logger.warning("automount of %r failed: %s", m["name"], err)
+        # Mounts that survived a server restart skip attach_mount above, so
+        # their HTTP serves (lost with any rcd restart) get re-ensured here.
+        sync_serves()
+    elif os.path.exists(serves_path()):
+        # BUGBOT: `mounts` came back empty, which usually means a genuinely
+        # mount-less install (nothing to sync, and serves_path() was never
+        # written — skipping here keeps a fresh install from gaining a
+        # home_dir()/serves.json write it never needed). But it can ALSO
+        # mean ensure_learn_mount above just removed the builtin record
+        # (zip gone) and stopped its rc serve directly via
+        # _force_detach_learn_mount — and serves.json on disk is ONLY ever
+        # rewritten by sync_serves, so skipping unconditionally (the old
+        # behavior) would leave a stale {mountpoint: dead_url} entry that
+        # serve_url_for keeps resolving forever. The existence check tells
+        # the two cases apart: a serves.json only exists once some earlier
+        # run actually had something to serve.
+        sync_serves()
 
 
 def startup() -> None:
@@ -1677,11 +2937,12 @@ def _credential_suggestions() -> list[dict]:
     params) — the endpoint consumes these; the API view (below) exposes only
     id/label/remote_name/kind.
 
-    The first entry is always present: an anonymous S3 remote for public buckets
-    (AWS Open Data, etc.). It needs no credentials — env_auth=false with blank
-    keys makes rclone send unsigned requests — so it works even when the user
-    has no (or expired) AWS creds. region is just the endpoint rclone starts at;
-    it follows S3's region redirect to reach buckets in any region. The rest are
+    The first two entries are always present: anonymous S3 and anonymous GCS
+    remotes for public buckets (AWS Open Data, public GCS datasets, etc.).
+    They need no credentials — S3 via env_auth=false with blank keys (unsigned
+    requests), GCS via anonymous=true — so they work even when the user has no
+    (or expired) cloud creds. region is just the endpoint rclone starts at; it
+    follows S3's region redirect to reach buckets in any region. The rest are
     credential-backed (kind="detected", defaulted in _suggestions_view)."""
     out: list[dict] = [{
         "id": "aws-open-public",
@@ -1690,6 +2951,13 @@ def _credential_suggestions() -> list[dict]:
         "backend": "s3",
         "kind": "public",
         "params": {"provider": "AWS", "env_auth": "false", "region": "us-west-2"},
+    }, {
+        "id": "gcs-open-public",
+        "label": "Google Cloud Storage — public buckets (no credentials)",
+        "remote_name": "gcs-open",
+        "backend": "google cloud storage",
+        "kind": "public",
+        "params": {"anonymous": "true"},
     }]
     for prof in _aws_profiles():
         out.append({
@@ -1716,7 +2984,53 @@ def _credential_suggestions() -> list[dict]:
             "backend": "google cloud storage",
             "params": {"env_auth": "true"},
         })
+    if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+        out.append({
+            "id": "gcs-env",
+            "label": "Google Cloud Storage — environment credentials",
+            "remote_name": "gcs-env",
+            "backend": "google cloud storage",
+            "params": {"env_auth": "true"},
+        })
     return out
+
+
+def _rclone_config_dump(bin_: str) -> dict:
+    """Every remote's stored config as {bare_name: {"type": …, …params}} via
+    `rclone config dump` — a plain subprocess, no rcd daemon required (keeps
+    _rclone_state callable before any mount exists). {} on any failure, so
+    _remote_label just degrades to bare names rather than raising."""
+    try:
+        out = subprocess.run(
+            [bin_, "config", "dump"], capture_output=True, text=True, timeout=10
+        ).stdout
+        cfg = json.loads(out) if out.strip() else {}
+        return cfg if isinstance(cfg, dict) else {}
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return {}
+
+
+def _remote_label(remote: str, suggestions: list[dict], configs: dict) -> str:
+    """Friendly label for a materialized rclone remote, so it presents under the
+    SAME human name the suggestion used across its whole lifecycle (e.g. the
+    built-in public option shows as "AWS S3 — public buckets…", not the cryptic
+    "aws-open:" it materializes into). Match against the FULL suggestion set —
+    including ones already materialized, which _suggestions_view drops.
+
+    Matching is by PROVENANCE, not name alone: the remote's stored config (from
+    `rclone config dump`, keyed by bare name) must match the suggestion's backend
+    and every param it was created with. A user's own remote that merely happens
+    to be named `aws`/`gcs` therefore keeps its bare name instead of inheriting a
+    credential-source label it never came from. Values compare case-insensitively
+    (rclone normalizes booleans). No match (e.g. "myminio:") → the bare string."""
+    cfg = configs.get(remote.rstrip(":"), {})
+    for s in suggestions:
+        if (f'{s["remote_name"]}:' == remote
+                and str(cfg.get("type", "")).lower() == s["backend"].lower()
+                and all(str(cfg.get(k, "")).lower() == str(v).lower()
+                        for k, v in s["params"].items())):
+            return s["label"]
+    return remote
 
 
 def _suggestions_view(remotes: list[str]) -> list[dict]:
@@ -1732,22 +3046,61 @@ def _suggestions_view(remotes: list[str]) -> list[dict]:
     ]
 
 
+def _rclone_state_view(version: str | None, names: list[str],
+                       bin_: str | None) -> dict:
+    """Assemble the available:True payload from a version string and the remote
+    names (each carrying its verbatim rclone spec, incl trailing ':', used
+    unchanged as the mount base). Each remote also gets a friendly `label` so it
+    reads under one stable human name whatever its lifecycle stage. Compute the
+    suggestion set and the config dump once, then label every remote against them
+    (both do I/O, so a per-remote call would be O(N)). `bin_` may be None when a
+    live daemon vouched for rclone but the binary didn't resolve on PATH — the
+    config dump is then skipped and labels degrade to bare names."""
+    suggestions = _credential_suggestions()
+    configs = _rclone_config_dump(bin_) if bin_ else {}
+    remotes = [{"name": n, "label": _remote_label(n, suggestions, configs)}
+               for n in names]
+    return {"available": True, "version": version, "remotes": remotes,
+            "suggested": _suggestions_view(names)}
+
+
 def _rclone_state() -> dict:
     bin_ = rclone_bin()
-    if not bin_:
-        return {"available": False, "version": None, "remotes": [], "suggested": []}
-    try:
-        version = subprocess.run(
-            [bin_, "version"], capture_output=True, text=True, timeout=10
-        ).stdout.splitlines()[0]
-        remotes_out = subprocess.run(
-            [bin_, "listremotes"], capture_output=True, text=True, timeout=10
-        ).stdout
-        remotes = [r.strip() for r in remotes_out.splitlines() if r.strip()]
-    except (OSError, subprocess.TimeoutExpired, IndexError):
-        return {"available": False, "version": None, "remotes": [], "suggested": []}
-    return {"available": True, "version": version, "remotes": remotes,
-            "suggested": _suggestions_view(remotes)}
+    if bin_:
+        try:
+            version = subprocess.run(
+                [bin_, "version"], capture_output=True, text=True, timeout=10
+            ).stdout.splitlines()[0]
+            remotes_out = subprocess.run(
+                [bin_, "listremotes"], capture_output=True, text=True, timeout=10
+            ).stdout
+            names = [r.strip() for r in remotes_out.splitlines() if r.strip()]
+            return _rclone_state_view(version, names, bin_)
+        except (OSError, subprocess.TimeoutExpired, IndexError):
+            pass  # fall through to the daemon vouch below
+    # The direct probe couldn't confirm rclone — the binary didn't resolve on
+    # PATH, or the version/listremotes subprocess hiccupped. Observed on a fresh
+    # server launch: the first probe reports unavailable while an already-running
+    # rcd is happily serving mounts, so the Mounts page shows a spurious "rclone
+    # not found" until the process is bounced. A live rcd daemon is itself proof
+    # rclone works, so ask IT for version/remotes rather than reporting a false
+    # "not installed". Only when there's no daemon either do we report unavailable.
+    port = _live_rcd_port()
+    if port is not None:
+        # The daemon's liveness already settles availability; fetch version and
+        # remotes INDEPENDENTLY so one rc call failing doesn't discard what the
+        # other returned (a shared try would drop a good version when only
+        # listremotes hiccups). Each degrades to its own empty on failure.
+        try:
+            version = _rc(port, "core/version").get("version")
+        except RuntimeError:
+            version = None
+        try:
+            names = [f"{n}:" for n in _rc(port, "config/listremotes").get("remotes", [])]
+        except RuntimeError:
+            names = []
+        return _rclone_state_view(version, names, bin_)
+    return {"available": False, "version": None, "remotes": [], "suggested": []}
 
 
 def broken_mount_error(path: str) -> str | None:
@@ -1771,6 +3124,25 @@ def broken_mount_error(path: str) -> str | None:
     state = mount_state(m, mounted_paths())
     if state == "mounted":
         return None
+    # A mount backed by detected (env_auth) credentials that have since
+    # expired stops flowing with an opaque kernel I/O error — same
+    # "disconnected" symptom as a dead daemon, but "reconnect" can't fix an
+    # expired SSO token. When the remote probes credential-shaped, tell the
+    # user to refresh their credentials instead of pointing them at reconnect.
+    if state in ("disconnected", "stale"):
+        # One probe, three outcomes (see _credential_probe):
+        cred_status = _mount_credential_status(m)
+        if cred_status == "bad":
+            return f"mount '{name}' — {_CRED_EXPIRED_MSG}"
+        # "valid": the user re-authed, but the long-lived daemon still holds the
+        # pre-refresh keys, so Reconnect (which reuses that daemon) can't help —
+        # only a daemon restart re-reads them. "inconclusive"/"n/a" fall through
+        # to the generic reconnect message (a transient failure or a
+        # non-credential remote must NOT suggest a restart).
+        if cred_status == "valid":
+            return (f"mount '{name}' — your credentials look refreshed; restart "
+                    f"rclone from the Mounts page in the sidebar to pick up the "
+                    f"new credentials")
     # "stale" (the INCIDENT split-brain) and "disconnected" both mean a mount
     # that was there and stopped flowing — same user-facing wording; only a
     # never-mounted mount reads as "not mounted".
@@ -1783,23 +3155,37 @@ def broken_mount_error(path: str) -> str | None:
 def get_mounts():
     live = mounted_paths()
     mounts = list_mounts()
-    # Probe states concurrently: each disconnected/wedged mount blocks its
-    # probe for the full PROBE_TIMEOUT, and serially those would stack.
+    bin_ = rclone_bin()
+    # Probe states — AND, for a broken mount, its credential status — concurrently:
+    # each disconnected/wedged mount blocks its state probe for the full
+    # PROBE_TIMEOUT, and the credential `rclone lsd` can take ~10s more. Serially
+    # (states threaded but the credential probe left to the mount_view loop) a
+    # few broken aws mounts would stall the polled Mounts page for tens of
+    # seconds — exactly when the user is polling to recover. So do BOTH in the
+    # per-mount worker and hand the results to mount_view, which never probes.
     states: list[str | None] = [None] * len(mounts)
+    cred_statuses: list[str] = ["n/a"] * len(mounts)
     threads = []
     for i, m in enumerate(mounts):
         def probe(i=i, m=m):
-            states[i] = mount_state(m, live)
+            st = mount_state(m, live)
+            states[i] = st
+            # Credentials only matter for a broken mount; a healthy/unmounted
+            # one never pays the lsd probe.
+            if st in ("disconnected", "stale"):
+                cred_statuses[i] = _mount_credential_status(m, bin_)
         t = threading.Thread(target=probe, daemon=True)
         t.start()
         threads.append(t)
     for t in threads:
-        t.join(PROBE_TIMEOUT + 1)
+        # Allow for the state probe PLUS the credential lsd (30s cap) so a slow
+        # probe still lands in this listing rather than defaulting to unknown.
+        t.join(PROBE_TIMEOUT + 31)
     return {
         "rclone": _rclone_state(),
         "mounts": [
-            mount_view(m, live, state=s or "disconnected")
-            for m, s in zip(mounts, states)
+            mount_view(m, live, state=s or "disconnected", cred_status=cs)
+            for m, s, cs in zip(mounts, states, cred_statuses)
         ],
     }
 
@@ -1854,6 +3240,23 @@ def reconnect_endpoint(cid: str, x_fused: str | None = Header(default=None)):
     return mount_view(m)
 
 
+@router.post("/api/mounts/restart")
+def restart_endpoint(x_fused: str | None = Header(default=None, alias="X-Fused")):
+    """Global recovery: restart the rcd daemon and re-mount everything. The one
+    tool that fixes a stale-credential daemon (a fresh daemon re-reads refreshed
+    keys) and applies changed mount params — see restart_rcd. Sync def so the
+    multi-second unmount+kill+spawn+remount runs in the threadpool, never the
+    event loop. Returns the same payload as GET /api/mounts."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    try:
+        restart_rcd()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    return get_mounts()
+
+
 @router.post("/api/mounts/{cid}/unmount")
 def unmount_endpoint(cid: str, force: str = "0",
                      x_fused: str | None = Header(default=None)):
@@ -1877,6 +3280,19 @@ def delete_mount(cid: str, x_fused: str | None = Header(default=None)):
     m = get_mount(cid)
     if m is None:
         return JSONResponse({"error": "unknown mount"}, status_code=404)
+    if m.get("builtin"):
+        # BUGBOT: nothing stopped this — a deleted builtin record only
+        # reappears at the next full SERVER restart (ensure_learn_mount runs
+        # once, from run_automount at startup), while the already-open
+        # Sidebar's learnMountReady state never rechecks once true, leaving
+        # a dead Learn link for the rest of the session. Bundled read-only
+        # content isn't something a user action should be able to
+        # permanently remove out from under a running session anyway —
+        # unmounting (POST .../unmount) still works to free the mountpoint.
+        return JSONResponse(
+            {"error": "this is a bundled default mount and can't be deleted"},
+            status_code=400,
+        )
     err = detach_mount(m)
     mp = mountpoint(m)
     if err and os.path.ismount(mp):
@@ -1926,13 +3342,102 @@ def create_remote(body: dict = Body(...), x_fused: str | None = Header(default=N
     return {"ok": True, "name": name + ":"}
 
 
+# Errors that mean the credential material itself is bad — an expired STS/SSO
+# session, a revoked OAuth grant, a deleted access key — as opposed to valid
+# credentials that merely lack a permission (AccessDenied) or a transient
+# network failure. Matched case-insensitively against rclone's output.
+_BAD_CRED_MARKERS = (
+    "expiredtoken", "expired token", "token has expired", "token is expired",
+    # Google ADC/OAuth refresh failure: "Token has been expired or revoked."
+    # — matches neither "has expired" nor "is expired" above.
+    "has been expired or revoked",
+    "invalidaccesskeyid", "invalidclienttokenid", "signaturedoesnotmatch",
+    "no valid credential", "nocredentialproviders",
+    "invalid_grant", "unauthenticated", "401 unauthorized",
+    "could not find default credentials",
+)
+
+
+_CRED_EXPIRED_MSG = (
+    "the detected credentials appear expired or invalid — refresh them "
+    "(e.g. `aws sso login` or `gcloud auth application-default login`) "
+    "and try again"
+)
+
+
+def _credential_probe(bin_: str, name: str) -> str:
+    """Tri-state result of a top-level `lsd` against an env_auth remote:
+
+      "valid"        — the listing succeeded (returncode 0): the credentials
+                       positively work right now.
+      "bad"          — a credential-shaped failure (_BAD_CRED_MARKERS): expired
+                       SSO/STS token, revoked key, missing default creds.
+      "inconclusive" — the probe couldn't decide: a timeout, network error, or a
+                       non-credential failure like AccessDenied (valid keys that
+                       merely lack ListBuckets). NOT proof the creds work.
+
+    The three-way split matters because "not bad" is not the same as "good":
+    only a POSITIVE success may drive the "credentials refreshed → Restart"
+    prompt, or a transient failure would spam a false restart suggestion."""
+    try:
+        r = subprocess.run(
+            [bin_, "lsd", f"{name}:", "--max-depth", "1",
+             "--contimeout", "5s", "--timeout", "10s",
+             "--retries", "1", "--low-level-retries", "2"],
+            capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return "inconclusive"
+    if r.returncode == 0:
+        return "valid"
+    err = ((r.stderr or "") + (r.stdout or "")).lower()
+    if any(m in err for m in _BAD_CRED_MARKERS):
+        return "bad"
+    return "inconclusive"
+
+
+def _detected_credential_error(bin_: str, name: str) -> str | None:
+    """Probe a just-materialized env_auth remote with a top-level listing and
+    return a user-facing message when the underlying credentials are expired
+    or invalid, else None. Detection surfaces creds that merely EXIST in the
+    dotfiles — nothing proves they still work, and mounting with a stale SSO
+    token fails later with an opaque I/O error, so catch it here where the
+    fix is actionable. Only credential-shaped failures (_BAD_CRED_MARKERS)
+    reject: AccessDenied (valid keys without ListBuckets permission) and
+    transient/network errors pass — the check exists to catch stale keys
+    early, not to demand list permission."""
+    return _CRED_EXPIRED_MSG if _credential_probe(bin_, name) == "bad" else None
+
+
+def _mount_credential_status(m: dict, bin_: str | None = None) -> str:
+    """Tri-state credential health of a broken mount's remote, or "n/a":
+
+      "valid" / "bad" / "inconclusive" — the _credential_probe outcome, for an
+                       env_auth remote (see there).
+      "n/a"          — not an env_auth remote (anonymous/public or key-carrying
+                       remotes don't expire this way), or no rclone binary.
+
+    Only env_auth remotes are probed, and the probe (an rclone `lsd`) is paid
+    only on an already-broken mount, never on a healthy listing. Callers may
+    pass a resolved `bin_` to avoid re-resolving rclone per mount."""
+    if bin_ is None:
+        bin_ = rclone_bin()
+    if not bin_:
+        return "n/a"
+    name = m["remote"].partition(":")[0]
+    cfg = _remote_config(name)
+    if not isinstance(cfg, dict) or str(cfg.get("env_auth", "")).lower() != "true":
+        return "n/a"
+    return _credential_probe(bin_, name)
+
+
 @router.post("/api/mounts/remotes/detect")
 def create_detected_remote(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     """Materialize a keyless rclone remote from an auto-detected credential
     source (see _credential_suggestions). The spec comes from the server's own
     detection keyed by `id` — never from client-supplied rclone params — and
     env_auth=true means no keys are written. Idempotent: an already-created
-    remote is returned as-is."""
+    remote is returned as-is — but a detected (env_auth) one is re-probed
+    first, since its creds may have expired since creation."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -1944,7 +3449,21 @@ def create_detected_remote(body: dict = Body(...), x_fused: str | None = Header(
     if sugg is None:
         return JSONResponse({"error": f"unknown credential source {sid!r}"}, status_code=404)
     name = sugg["remote_name"]
-    if f"{name}:" in _rclone_state().get("remotes", []):
+    # Public (anonymous) remotes carry no credentials to go stale; only the
+    # detected, env_auth-backed ones get the validity probe (an rclone `lsd`).
+    detected = sugg.get("kind", "detected") == "detected"
+    # remotes are {name,label} objects now — match on the bare rclone spec.
+    if any(r["name"] == f"{name}:" for r in _rclone_state().get("remotes", [])):
+        # Idempotent re-entry: the remote already exists. Don't report it
+        # healthy on faith — a detected remote's creds may have expired since
+        # it was created, and returning {"ok": True} here would invite a doomed
+        # mount just as surely as a freshly created stale one. Re-probe (one
+        # `lsd`) so an expired detected remote is never reported ok; anonymous
+        # remotes carry nothing that expires and return quickly.
+        if detected:
+            cred_err = _detected_credential_error(bin_, name)
+            if cred_err:
+                return JSONResponse({"error": cred_err}, status_code=502)
         return {"ok": True, "name": name + ":"}
     cmd = [bin_, "config", "create", name, sugg["backend"]]
     for k, v in sugg["params"].items():
@@ -1955,4 +3474,25 @@ def create_detected_remote(body: dict = Body(...), x_fused: str | None = Header(
         return JSONResponse({"error": "rclone config create timed out (30s)"}, status_code=502)
     if r.returncode != 0:
         return JSONResponse({"error": (r.stderr or r.stdout or "").strip()[-500:]}, status_code=502)
+    # A detected remote whose creds turn out expired is rolled back so the
+    # broken thing doesn't linger under Remotes inviting doomed mounts.
+    if detected:
+        cred_err = _detected_credential_error(bin_, name)
+        if cred_err:
+            # Roll back the just-created remote. If the delete itself fails
+            # (non-zero exit or an OSError/timeout) the remote may still exist,
+            # so say so rather than returning the bare cred error as if cleanup
+            # succeeded — a silently-lingering remote would be reported ok on
+            # the next detect and re-invite the doomed mount.
+            try:
+                d = subprocess.run([bin_, "config", "delete", name],
+                                   capture_output=True, text=True, timeout=30)
+                removed = d.returncode == 0
+            except (OSError, subprocess.TimeoutExpired):
+                removed = False
+            if not removed:
+                cred_err += (" (the half-created remote could not be removed "
+                             "automatically — delete it manually before "
+                             "retrying)")
+            return JSONResponse({"error": cred_err}, status_code=502)
     return {"ok": True, "name": name + ":"}

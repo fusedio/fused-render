@@ -80,16 +80,22 @@ def available() -> bool:
 
 def get_backend():
     # Lazy singleton: importing the backend pulls in the fused package tree,
-    # and constructing it is only needed once per server process. 30s matches
-    # the built-in executor's per-run timeout.
+    # and constructing it is only needed once per server process. 60s matches
+    # the built-in executor's per-run timeout (executor.DEFAULT_TIMEOUT) — a
+    # cold overview read of a large remote COG legitimately takes ~30-40s, so
+    # the two engines must agree or the cold pyramid analyze dies at 30s here.
     global _backend
     if _backend is None:
         from fused.agent_core.backends.local.python_compute import LocalPythonComputeBackend
 
+        from fused_render.executor import DEFAULT_TIMEOUT
+
         # cache_storage=None disables result caching explicitly (PY-9: fresh
         # execution every call). It is the upstream default today, but we may
         # track a nightly wheel — don't rely on a default staying put.
-        _backend = LocalPythonComputeBackend(timeout_seconds=30, cache_storage=None)
+        _backend = LocalPythonComputeBackend(
+            timeout_seconds=int(DEFAULT_TIMEOUT), cache_storage=None
+        )
     return _backend
 
 
@@ -100,11 +106,15 @@ def script_requirements(text: str) -> list[str]:
     ValueError with the parse error so the caller can surface it to the page
     instead of 500ing.
     """
-    import tomllib  # 3.11+; the engine is only reachable when fused imports, which needs 3.11+
-
     for match in _PEP723_BLOCK.finditer(text):
         if match.group("type") != "script":
             continue
+        # Imported here, not at function top: tomllib is 3.11+, but this
+        # function must still return [] on 3.10 for the (overwhelmingly
+        # common) case of a script with no PEP 723 block at all — run_python
+        # calls this unconditionally, regardless of which engine is active.
+        import tomllib
+
         content = "".join(
             line[2:] if line.startswith("# ") else line[1:]
             for line in match.group("content").splitlines(keepends=True)

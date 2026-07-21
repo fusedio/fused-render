@@ -7,15 +7,16 @@
 //   1. loading  — config + (reconciled) status fetch in flight
 //   2. fused CLI missing — install panel (one-click when the server can pip
 //      install the pinned [fused] extra, else the manual hint)
-//   3. no hosted envs — sign in / route to the account page's setup panel
+//   3. no hosted envs — sign in / route to the account tab's setup panel
 //      (AWS env creation stays a named terminal flow, SPEC AC-9)
 //   4. the form — env picker (default: the managed fused-backend env),
 //      current deployment card (URL + copy/open), Deploy/Redeploy, Revoke.
 // The env-wide share list (every mount on an env, with revoke) lives on the
-// Fused account page's Deployments section (SPEC AC-11), not here — this
+// Fused account tab's Deployments section (SPEC AC-11), not here — this
 // modal is scoped to the current page.
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  clearCacheDeployment,
   deployPage,
   getDeployConfig,
   getDeployPreview,
@@ -24,17 +25,48 @@ import {
   revokeDeployment,
   walkDir,
 } from "../lib/api";
-import type { DeployConfig, DeployPreview, Deployment, WalkEntry } from "../lib/api";
+import type {
+  CacheClearResult,
+  DeployConfig,
+  DeployPreview,
+  Deployment,
+  WalkEntry,
+} from "../lib/api";
 import { useFusedLogin } from "../lib/account";
 import DeploymentErrors from "./DeploymentErrors";
 import { basename, dirname, formatSize } from "../lib/format";
 import { useRefreshOnReturn } from "../lib/hooks";
 import { navigateUrl } from "../lib/router";
+import { Modal } from "./modal/Modal";
+import { ErrorBanner } from "./ErrorBanner";
+import { Select } from "./field/fields";
 
 // A path's bundle key: what dedup/exclude match on. Mirrors the server's
 // _asset_key (export.py) for the common case — strip a leading "./"; the exact
 // literal is preserved elsewhere for display/tooltips.
 const relKey = (p: string) => p.replace(/^\.\//, "");
+
+// Caching duration presets (fused's cache_max_age format — a non-negative integer +
+// s/m/h/d unit; see fused/agent_core/caching.py's parse_cache_max_age). "0s" is off
+// and not itself an option here — the checkbox controls that axis.
+const CACHE_DURATION_PRESETS: { value: string; label: string }[] = [
+  { value: "1m", label: "1 minute" },
+  { value: "5m", label: "5 minutes" },
+  { value: "15m", label: "15 minutes" },
+  { value: "1h", label: "1 hour" },
+  { value: "6h", label: "6 hours" },
+  { value: "1d", label: "1 day" },
+];
+const DEFAULT_CACHE_DURATION = "1h";
+
+// The preset list, plus the current value as its own option when it isn't a preset
+// (e.g. a duration set via `share create --cache-max-age` outside this dialog) — so
+// the <select> always shows the TRUE value rather than silently falling back to
+// the first preset while a redeploy would still send the real, unlisted one.
+function cacheDurationOptions(current: string) {
+  if (CACHE_DURATION_PRESETS.some((o) => o.value === current)) return CACHE_DURATION_PRESETS;
+  return [{ value: current, label: current }, ...CACHE_DURATION_PRESETS];
+}
 
 interface DeployModalProps {
   fsPath: string;
@@ -197,12 +229,12 @@ function FileSelection({
     // `include` can error; `exclude` just filters, so it's not shown here.)
     return (
       <>
-        <div className="deploy-error">
+        <ErrorBanner>
           This page can't be deployed yet:
           {preview.errors.map((e, i) => (
             <div key={i}>• {e}</div>
           ))}
-        </div>
+        </ErrorBanner>
         {include.length > 0 && (
           <div className="deploy-files">
             <div className="deploy-files-body">
@@ -239,26 +271,53 @@ function FileSelection({
     );
   }
 
-  const rows = [
-    ...preview.entrypoints.map((e) => ({
-      path: e.path,
-      label: relKey(e.path),
-      title: `fused.runPython(${JSON.stringify(e.path)}) → route “${e.name}”`,
-      tag: "run" as const,
-    })),
-    ...preview.assets.map((a) => {
-      // "added" iff the file is NOT in the auto-detected set — a purely manual
-      // include. A file that's both referenced AND included reads as a normal
-      // asset (removing it must exclude, which the "added" affordance wouldn't
-      // convey), so auto-ness wins the label.
-      const manual = !autoKeys.has(relKey(a.path));
+  // A publish-list row. `tag` is the pill's CSS modifier class, `tagText` its
+  // (case-preserved) label — decoupled so the pill can read "rawUrl" while the
+  // class stays lowercase.
+  type Row = { path: string; label: string; title: string; tag: string; tagText: string };
+  const rows: Row[] = [
+    ...preview.entrypoints.map(
+      (e): Row => ({
+        path: e.path,
+        label: relKey(e.path),
+        title: `fused.runPython(${JSON.stringify(e.path)}) → route “${e.name}”`,
+        tag: "run",
+        tagText: "run",
+      }),
+    ),
+    ...preview.assets.map((a): Row => {
+      // Every asset is served read-only on the hosted `_asset` route — the surface
+      // fused.rawUrl()/readFile() fetch from. The pill mentions rawUrl/readFile
+      // exposure and names HOW the file got bundled (a.source, from the server):
+      //   reference → the page fetches it via a literal fused.rawUrl()/readFile()
+      //   manifest  → declared in the page's fused-bundle manifest to back a
+      //               *computed* rawUrl/readFile path (so it auto-shows here)
+      //   include   → added by hand (Add files / Add all in folder)
+      const served = `served read-only at _asset/${a.name} — the surface fused.rawUrl()/readFile() fetch from`;
+      if (a.source === "include") {
+        return {
+          path: a.path,
+          label: relKey(a.path),
+          title: `Added file — ${served} — ${a.path}`,
+          tag: "added",
+          tagText: "added",
+        };
+      }
+      if (a.source === "manifest") {
+        return {
+          path: a.path,
+          label: relKey(a.path),
+          title: `Declared in the page's fused-bundle manifest to back a computed fused.rawUrl()/readFile() path — ${served} — ${a.path}`,
+          tag: "rawurl",
+          tagText: "bundle",
+        };
+      }
       return {
         path: a.path,
         label: relKey(a.path),
-        title: manual
-          ? `included file — ${a.path}`
-          : `asset “${a.name}” (fused.rawUrl/readFile) — ${a.path}`,
-        tag: manual ? ("added" as const) : (null as null),
+        title: `Fetched by the page via fused.rawUrl()/readFile() — ${served} — ${a.path}`,
+        tag: "rawurl",
+        tagText: "rawUrl",
       };
     }),
   ];
@@ -310,11 +369,9 @@ function FileSelection({
               <span className="deploy-file-action" />
             </li>
             {rows.map((r) => (
-              <li key={(r.tag ?? "asset") + r.path} className="deploy-file">
+              <li key={r.tag + r.path} className="deploy-file">
                 <code title={r.title}>{r.label}</code>
-                <span className={"deploy-file-tag" + (r.tag ? " " + r.tag : " none")}>
-                  {r.tag ?? ""}
-                </span>
+                <span className={"deploy-file-tag " + r.tag}>{r.tagText}</span>
                 <button
                   type="button"
                   className="deploy-file-action deploy-file-remove"
@@ -365,7 +422,7 @@ function FileSelection({
                 </button>
               </div>
               {walkBusy && <div className="deploy-muted">Scanning folder…</div>}
-              {walkError && <div className="deploy-error">{walkError}</div>}
+              {walkError && <ErrorBanner>{walkError}</ErrorBanner>}
               {dirTruncated && (
                 <div className="deploy-note deploy-muted">
                   This folder is large — some files were omitted from the scan.
@@ -413,7 +470,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   const [live, setLive] = useState<"active" | "revoked" | "absent" | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedEnv, setSelectedEnv] = useState<string | null>(null);
-  const [busy, setBusy] = useState<"deploy" | "revoke" | "install" | null>(null);
+  const [busy, setBusy] = useState<"deploy" | "revoke" | "install" | "clear-cache" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   // The user's file selection, layered on the auto-detected set: `include` adds
   // extra files (as assets), `exclude` drops files. Seeded on open from the
@@ -421,6 +478,13 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   // sent back on Deploy. Both empty = the auto-detected default.
   const [include, setInclude] = useState<string[]>([]);
   const [exclude, setExclude] = useState<string[]>([]);
+  // The caching choice: "0s" (off, the default) or a duration like "5m"/"1h" —
+  // fused's cache_max_age. Seeded on open from the stored record (like include/
+  // exclude) and sent back on every Deploy; there is no "leave it as it was".
+  const [cacheMaxAge, setCacheMaxAge] = useState<string>("0s");
+  // The result of the last "Clear cache" click (deleted/scope), shown as a status
+  // line until the next load/action clears it.
+  const [clearCacheResult, setClearCacheResult] = useState<CacheClearResult | null>(null);
   // True while a preview fetch is in flight — the shown "Will publish" list may
   // not yet reflect the latest include/exclude edit, so Deploy is held until it
   // catches up (keeps the click WYSIWYG: never deploy a set the list doesn't show).
@@ -509,6 +573,8 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       // so clearing preview keeps it hidden until the new page's preview lands —
       // no stale rows, and no × / restore edit that could target the wrong page.
       setPreview(null);
+      // A stale "N cleared" note from the previous page must not linger.
+      setClearCacheResult(null);
     }
     try {
       const [cfg, status] = await Promise.all([
@@ -529,6 +595,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       if (!background) {
         setInclude(status.deployment?.include ?? []);
         setExclude(status.deployment?.exclude ?? []);
+        setCacheMaxAge(status.deployment?.cache_max_age ?? "0s");
         // Selection is now known — open the gate; this (with the seeded include/
         // exclude) triggers the effect to fetch the first, correct preview.
         setSelectionReady(true);
@@ -600,17 +667,6 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     if (busyRef.current === null) void loadRef.current(true);
   });
 
-  // Escape closes. Allowed even mid-action (#12): the action continues
-  // server-side and onChange still updates the header dot, so the user is
-  // never trapped waiting on a slow/hung CLI child.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   const envs = config?.envs ?? [];
   const env = useMemo(
     () => envs.find((e) => e.name === selectedEnv) ?? null,
@@ -620,12 +676,13 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   // Each handler applies its result (onChange always propagates to the header
   // dot), then guards the modal's OWN setState on `alive` — the dialog may
   // have been closed mid-action (#12).
-  const onDeploy = async () => {
+  const onDeploy = async (forceNew = false) => {
     if (!env) return;
     setBusy("deploy");
     setActionError(null);
+    setClearCacheResult(null); // a stale "N cleared" note must not survive a redeploy
     try {
-      const record = await deployPage(fsPath, env.name, include, exclude);
+      const record = await deployPage(fsPath, env.name, include, exclude, cacheMaxAge, forceNew);
       applyDeployment(record);
       if (!alive.current) return;
       setReconciled(true);
@@ -634,6 +691,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       // stored record (e.g. server-side dedup) rather than the raw local lists.
       setInclude(record.include ?? include);
       setExclude(record.exclude ?? exclude);
+      setCacheMaxAge(record.cache_max_age ?? cacheMaxAge);
     } catch (e) {
       // A deploy can fail AFTER the server mutated the pointer — the
       // failed-revive compensation path (deploy.py) persists status active or
@@ -668,6 +726,25 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     }
   };
 
+  // Forces cached results to be recomputed on next request, without touching the
+  // mount's status/URL/caching setting (deploy.py's clear_cache_deployment) — for
+  // "I changed the underlying data, not the code" (a redeploy dedupes to the same
+  // content-address and would otherwise keep serving the old cached result until
+  // cache_max_age expires).
+  const onClearCache = async () => {
+    setBusy("clear-cache");
+    setActionError(null);
+    setClearCacheResult(null);
+    try {
+      const result = await clearCacheDeployment(fsPath);
+      if (alive.current) setClearCacheResult(result);
+    } catch (e) {
+      if (alive.current) setActionError((e as Error).message);
+    } finally {
+      if (alive.current) setBusy(null);
+    }
+  };
+
   const onInstall = async () => {
     setBusy("install");
     setActionError(null);
@@ -682,34 +759,32 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     }
   };
 
-  // Deploy/Redeploy semantics for the button label. The URL promises are
-  // driven by `live` — the mount's VERIFIED `share list` classification —
-  // never by the stored pointer alone: an active mount repoints the SAME
-  // token (stable URL), a revoked tombstone is revived at the same URL, an
-  // ABSENT mount (nothing left to revive; the server does a fresh create)
-  // mints a fresh link, and when the check never ran (env unreachable at
-  // open, `live` null) the label is a plain "Redeploy" that promises
-  // nothing — the card's "unconfirmed" note explains why.
+  // Deploy/Redeploy: the button label stays stable ("Deploy" / "Redeploy" /
+  // "Deploying…"); the URL nuance (same link, restored link, fresh link,
+  // unconfirmed) moves to a single status line below, driven by `live` — the
+  // mount's VERIFIED `share list` classification. A redeploy is only when the
+  // pointer's env is the selected one AND the mount still exists; an absent
+  // mount does a fresh create, so it reads as "Deploy".
   const samePointerEnv = deployment !== null && deployment.env === selectedEnv;
   const mountAbsent = live === "absent";
-  const deployLabel =
-    busy === "deploy"
-      ? "Deploying…"
-      : !samePointerEnv
-        ? "Deploy"
-        : live === "active"
-          ? "Redeploy (same URL)"
-          : live === "revoked"
-            ? "Redeploy (restore URL)"
-            : mountAbsent
-              ? "Deploy"
-              : "Redeploy";
+  const isRedeploy = samePointerEnv && !mountAbsent;
+  const deployLabel = busy === "deploy" ? "Deploying…" : isRedeploy ? "Redeploy" : "Deploy";
+  // One status line for the same-env case, spelling out what happens to the URL.
+  const deployStatus = !samePointerEnv
+    ? null
+    : live === "active"
+      ? "Redeploying keeps the same URL."
+      : live === "revoked"
+        ? "Redeploying restores the previous URL."
+        : mountAbsent
+          ? "The recorded deployment no longer exists — deploying mints a new URL."
+          : "Environment unreachable — the current deployment couldn't be confirmed.";
 
   const body = () => {
     if (loadError) {
       return (
         <>
-          <div className="deploy-error">{loadError}</div>
+          <ErrorBanner>{loadError}</ErrorBanner>
           <button type="button" onClick={() => load()}>
             Retry
           </button>
@@ -729,7 +804,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
           {config.cli.installable ? (
             <button
               type="button"
-              className="deploy-primary"
+              className="btn btn-primary"
               onClick={onInstall}
               disabled={busy !== null}
             >
@@ -741,13 +816,13 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
               manually: <code>{config.cli.install_hint}</code>
             </p>
           )}
-          {actionError && <div className="deploy-error">{actionError}</div>}
+          {actionError && <ErrorBanner>{actionError}</ErrorBanner>}
         </div>
       );
     }
 
     if (envs.length === 0) {
-      // The setup flow itself lives on the Fused account page (M18b) — this
+      // The setup flow itself lives on the Fused account tab (M18b) — this
       // block routes there, handling the sign-in prerequisite in place.
       return (
         <div className="deploy-section">
@@ -775,24 +850,24 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
               ) : (
                 <button
                   type="button"
-                  className="deploy-primary"
+                  className="btn btn-primary"
                   onClick={() => void signin.begin()}
                 >
                   Sign in to Fused
                 </button>
               )}
-              {signin.error && <div className="deploy-error">{signin.error}</div>}
+              {signin.error && <ErrorBanner>{signin.error}</ErrorBanner>}
             </>
           ) : (
             <div className="deploy-form-row">
               <button
                 type="button"
-                className="deploy-primary"
-                onClick={() => navigateUrl("/view/_account")}
+                className="btn btn-primary"
+                onClick={() => navigateUrl("/view/_prefs?tab=account")}
               >
                 Set up hosted environment
               </button>
-              <span className="deploy-muted">opens the Fused account page</span>
+              <span className="deploy-muted">opens the Fused account tab in Preferences</span>
             </div>
           )}
           {/* Unconditional: an AWS-only user who is signed out must still be
@@ -840,6 +915,12 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
                 absolute URL; it is served under your environment's serving-plane base URL.
               </div>
             )}
+            <div className="deploy-muted">
+              Caching:{" "}
+              {(deployment.cache_max_age ?? "0s") === "0s"
+                ? "off"
+                : `on, ${deployment.cache_max_age}`}
+            </div>
           </div>
         )}
 
@@ -861,9 +942,48 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             setExclude={setExclude}
           />
         )}
+
+        <div className="deploy-form-row">
+          <label className="deploy-cache-toggle">
+            <input
+              type="checkbox"
+              checked={cacheMaxAge !== "0s"}
+              disabled={busy !== null}
+              onChange={(e) =>
+                setCacheMaxAge(e.target.checked ? DEFAULT_CACHE_DURATION : "0s")
+              }
+            />
+            Cache page results
+          </label>
+          {cacheMaxAge !== "0s" && (
+            <Select
+              aria-label="Cache duration"
+              value={cacheMaxAge}
+              onChange={(e) => setCacheMaxAge(e.target.value)}
+              disabled={busy !== null}
+            >
+              {cacheDurationOptions(cacheMaxAge).map((d) => (
+                <option key={d.value} value={d.value}>
+                  for {d.label}
+                </option>
+              ))}
+            </Select>
+          )}
+          {deployment?.status === "active" && (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={onClearCache}
+              disabled={busy !== null}
+              title="Force cached results to be recomputed on the next request, without redeploying or changing the URL"
+            >
+              {busy === "clear-cache" ? "Clearing cache…" : "Clear cache"}
+            </button>
+          )}
+        </div>
         <div className="deploy-form-row">
           <label htmlFor="deploy-env-select">Deploy to</label>
-          <select
+          <Select
             id="deploy-env-select"
             value={selectedEnv ?? ""}
             onChange={(e) => setSelectedEnv(e.target.value)}
@@ -874,11 +994,11 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
                 {e.name} ({e.backend === "fused" ? "fused — managed" : e.backend})
               </option>
             ))}
-          </select>
+          </Select>
           <button
             type="button"
-            className="deploy-primary"
-            onClick={onDeploy}
+            className="btn btn-primary"
+            onClick={() => onDeploy()}
             // Hold Deploy until the shown "Will publish" list matches the current
             // selection: preview === null (still resolving, or cleared on a page
             // switch) or previewPending (a refresh is in flight after an edit) both
@@ -905,7 +1025,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
           {deployment?.status === "active" && (
             <button
               type="button"
-              className="deploy-danger"
+              className="btn btn-danger"
               onClick={onRevoke}
               disabled={busy !== null}
               title="Take the URL down (the link stops working until you deploy again)"
@@ -914,43 +1034,45 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             </button>
           )}
         </div>
-        {deployment &&
-          selectedEnv !== null &&
-          deployment.env !== selectedEnv &&
-          envs.some((e) => e.name === deployment.env) && (
-            <div className="deploy-note">
-              This page is already deployed on <b>{deployment.env}</b> — deploying to{" "}
-              <b>{selectedEnv}</b> mints an independent new link and this dialog will track
-              that one instead (the old mount stays live until revoked from the CLI).
-            </div>
-          )}
-        {deployment && !envs.some((e) => e.name === deployment.env) && (
-          <div className="deploy-note">
-            This page was deployed to <b>{deployment.env}</b>, which is no longer a
-            configured environment. Deploying here starts a new mount on{" "}
-            <b>{selectedEnv}</b>; the old one is unmanaged from this dialog.
+        {/* One status line for the same-env case — the URL nuance that used to
+            live in the button label / a stack of notes. */}
+        {deployStatus && <div className="deploy-muted">{deployStatus}</div>}
+        {clearCacheResult && (
+          <div className="deploy-muted">
+            {clearCacheResult.deleted > 0
+              ? `Cleared ${clearCacheResult.deleted} cached result${clearCacheResult.deleted === 1 ? "" : "s"} — the next request recomputes.`
+              : "Nothing was cached — nothing to clear."}
           </div>
         )}
-        {samePointerEnv && mountAbsent && (
+        {/* One context-derived note for the cross-env cases (recorded env still
+            configured vs. removed) — mutually exclusive, collapsed into one. */}
+        {deployment && selectedEnv !== null && deployment.env !== selectedEnv && (
           <div className="deploy-note">
-            The recorded deployment no longer exists on <b>{deployment!.env}</b>
-            {/* Why it vanished is backend-specific: an AWS serving plane can be
-                torn down wholesale; a managed mount was removed on the server. */}
-            {env?.backend === "aws" ? " (e.g. after an infra teardown)" : ""} — deploying
-            mints a fresh link with a <b>new URL</b>.
+            {envs.some((e) => e.name === deployment.env) ? (
+              <>
+                This page is already deployed on <b>{deployment.env}</b> — deploying to{" "}
+                <b>{selectedEnv}</b> mints an independent new link and this dialog will track that
+                one instead (the old mount stays live until revoked from the CLI).
+              </>
+            ) : (
+              <>
+                This page was deployed to <b>{deployment.env}</b>, which is no longer a configured
+                environment. Deploying here starts a new mount on <b>{selectedEnv}</b>; the old one
+                is unmanaged from this dialog.
+              </>
+            )}
           </div>
         )}
         {env?.backend === "fused" && !config.fused_logged_in && (
           <div className="deploy-note">
             <div>
-              You aren't signed in to Fused — deploying to <b>{env.name}</b> needs a
-              one-time browser sign-in.
+              You aren't signed in to Fused — deploying to <b>{env.name}</b> needs a one-time
+              browser sign-in.
             </div>
             {signin.connecting ? (
               <div className="deploy-form-row">
                 <span className="deploy-muted">
-                  Waiting for the browser sign-in… finish signing in in the tab that just
-                  opened.
+                  Waiting for the browser sign-in… finish signing in in the tab that just opened.
                 </span>
                 <button type="button" onClick={() => void signin.cancel()}>
                   Cancel
@@ -959,53 +1081,41 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             ) : (
               <button
                 type="button"
-                className="deploy-primary"
+                className="btn btn-primary"
                 onClick={() => void signin.begin()}
                 disabled={busy !== null}
               >
                 Sign in to Fused
               </button>
             )}
-            {signin.error && <div className="deploy-error">{signin.error}</div>}
+            {signin.error && <ErrorBanner>{signin.error}</ErrorBanner>}
           </div>
         )}
-        <div className="deploy-note deploy-muted">
-          Deploys publish as a <b>public share link</b> — an unguessable URL; anyone with
-          the link can open it.
-        </div>
-        {actionError && <div className="deploy-error">{actionError}</div>}
+        {/* The always-on public-link boilerplate lives behind a disclosure so it
+            doesn't compete with the action every time. */}
+        <details className="deploy-disclosure">
+          <summary>About public links</summary>
+          <div className="deploy-muted">
+            Deploys publish as a <b>public share link</b> — an unguessable URL; anyone with the link
+            can open it.
+          </div>
+        </details>
+        {actionError && <ErrorBanner>{actionError}</ErrorBanner>}
       </>
     );
   };
 
   return (
-    <div
-      className="deploy-overlay"
-      onMouseDown={(e) => {
-        // Backdrop click closes. Guarded on `busy` so an accidental click-away
-        // doesn't abandon an in-flight action — the deliberate ✕/Escape still
-        // close mid-action (#12). Clicks inside the dialog don't bubble here
-        // because of the stopPropagation below.
-        if (busy === null && e.target === e.currentTarget) onClose();
-      }}
+    // busy is intentionally NOT passed to the Modal's close gate: the dialog
+    // stays closeable mid-action (#12) — the action continues server-side and
+    // onChange keeps the header dot correct, so a slow/hung CLI child can never
+    // trap the user. closeTitle reflects that.
+    <Modal
+      title={`Deploy ${basename(fsPath)}`}
+      onClose={onClose}
+      closeTitle={busy !== null ? "Close (the action keeps running)" : "Close"}
     >
-      <div className="deploy-dialog" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="deploy-head">
-          <h2>Deploy {basename(fsPath)}</h2>
-          {/* Always closeable, even mid-action (#12): the action continues
-              server-side and onChange keeps the header dot correct, so a slow
-              or hung CLI child can never trap the user. */}
-          <button
-            type="button"
-            className="deploy-close"
-            title={busy !== null ? "Close (the action keeps running)" : "Close"}
-            onClick={onClose}
-          >
-            ✕
-          </button>
-        </div>
-        <div className="deploy-body">{body()}</div>
-      </div>
-    </div>
+      {body()}
+    </Modal>
   );
 }

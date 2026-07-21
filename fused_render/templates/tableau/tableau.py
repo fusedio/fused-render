@@ -92,10 +92,73 @@ def _cache_dir(file):
     return os.path.join(SOURCES, f"{h}-{int(os.path.getmtime(file) * 1000)}")
 
 
+# --- mount-safe directory listing ------------------------------------------
+# A kernel listing (os.listdir/os.scandir/os.walk) on a path under a remote
+# rclone NFS mount forces rclone to enumerate the ENTIRE parent S3 prefix and
+# can DROP the mount, wedging the server. This template stays mount-AGNOSTIC:
+# it never imports shell.mounts and never matches mount paths. Instead the UI
+# passes a server origin (the `src` param) and we ask the server whether a path
+# is remote (/api/fs/stat); if so we list it via the mount-routed, paginated
+# /api/fs/list — never through the kernel. _server_url + _stat are copied
+# verbatim from pyramid/overview_pyramid.py.
+import urllib.error as _urlerr
+import urllib.parse as _urlparse
+import urllib.request as _urlreq
+
+
+def _server_url(origin, endpoint, path):
+    u = _urlparse.urlsplit(origin)
+    return (f"{u.scheme}://{u.netloc}{endpoint}?path="
+            + _urlparse.quote(path))
+
+
+def _stat(origin, path):
+    url = _server_url(origin, "/api/fs/stat", path)
+    try:
+        with _urlreq.urlopen(url, timeout=10) as r:
+            return ("ok", json.load(r))
+    except _urlerr.HTTPError as e:
+        if e.code == 404:
+            return ("missing", None)
+        return ("unreachable", None)
+    except Exception:  # noqa: BLE001 — any network error -> fall back to local
+        return ("unreachable", None)
+
+
+def _remote_dir(origin, path):
+    """True iff the server says `path` is a remote (mount-backed) directory.
+    No origin / unreachable / missing -> False (presume local, kernel OK)."""
+    if not origin or not path:
+        return False
+    status, meta = _stat(origin, path)
+    return status == "ok" and bool(meta.get("remote"))
+
+
+def _list_remote(origin, path, cap=5000):
+    """List `path` via the server's mount-routed, paginated /api/fs/list — never
+    the kernel. Follows the cursor up to `cap` entries so a huge S3 prefix
+    returns a bounded page set instead of tripping the NFS deadman."""
+    entries, cursor, truncated = [], "", False
+    while True:
+        url = _server_url(origin, "/api/fs/list", path)
+        if cursor:
+            url += "&cursor=" + _urlparse.quote(cursor)
+        with _urlreq.urlopen(url, timeout=30) as r:
+            payload = json.load(r)
+        entries.extend(payload.get("entries") or [])
+        truncated = bool(payload.get("truncated"))
+        cursor = payload.get("cursor") or ""
+        if len(entries) >= cap or not truncated or not cursor:
+            break
+    return entries, truncated
+
+
 def _clean_stale(keep_dir):
     if not os.path.isdir(SOURCES):
         return
     prefix = os.path.basename(keep_dir).split("-")[0]
+    # SOURCES is under CACHE_ROOT (~/.fused-render) — a local parquet cache,
+    # never a user mount path; this kernel listing is safe.
     for n in os.listdir(SOURCES):
         p = os.path.join(SOURCES, n)
         if n.startswith(prefix + "-") and p != keep_dir:
@@ -377,10 +440,14 @@ def _twb_pill(token, meta):
     return {"field": name}
 
 
-def _twb_data_file(root, twb_dir):
+def _twb_data_file(root, twb_dir, remote=False):
     """Resolve the first file-based data source. Returns (abs_path, ds_name):
     ds_name is the enclosing <datasource> name so the caller can tell which
-    worksheets bind to it (a workbook may have several data sources)."""
+    worksheets bind to it (a workbook may have several data sources).
+
+    `remote` True means twb_dir is a mount-backed directory (the .twb was opened
+    off a mount): the recursive os.walk fallback below would kernel-enumerate a
+    potentially huge S3 prefix and drop the mount, so it is skipped."""
     for ds in root.iter("datasource"):
         for conn in ds.iter("connection"):
             fn = conn.get("filename") or conn.get("dbname") or ""  # hyper uses dbname
@@ -392,11 +459,14 @@ def _twb_data_file(root, twb_dir):
             for cand in cands:
                 if os.path.exists(cand):
                     return os.path.abspath(cand), ds.get("name")
-            # zip layouts vary (Data/…/file) — fall back to a name search
+            # zip layouts vary (Data/…/file) — fall back to a name search.
+            # Never walk a remote mount dir (unbounded S3 enumeration = mount
+            # drop); local dirs only.
             base = os.path.basename(fn)
-            for dirpath, _, names in os.walk(twb_dir):
-                if base in names:
-                    return os.path.abspath(os.path.join(dirpath, base)), ds.get("name")
+            if not remote:
+                for dirpath, _, names in os.walk(twb_dir):
+                    if base in names:
+                        return os.path.abspath(os.path.join(dirpath, base)), ds.get("name")
             raise ValueError(
                 f"The workbook's data source “{fn}” was not found next to the file. "
                 f"Place the data file in the same folder and reopen."
@@ -405,12 +475,12 @@ def _twb_data_file(root, twb_dir):
                      "parquet/hyper connections are supported).")
 
 
-def _import_twb(file):
+def _import_twb(file, remote=False):
     import xml.etree.ElementTree as ET
 
     file = os.path.abspath(file)
     root = ET.parse(file).getroot()
-    src, primary_ds = _twb_data_file(root, os.path.dirname(file))
+    src, primary_ds = _twb_data_file(root, os.path.dirname(file), remote)
     meta = _ensure_cache(src)
 
     # A workbook can bind several data sources; we only load the first. When
@@ -496,6 +566,8 @@ def _extract_tableau_zip(file):
 
 
 def _find_by_ext(directory, ext):
+    # `directory` is always a local .twbx/.tdsx extraction dir under SOURCES
+    # (see _extract_tableau_zip) — never a user mount path; walk is safe.
     for dirpath, _, names in os.walk(directory):
         for n in names:
             if n.lower().endswith(ext):
@@ -503,23 +575,28 @@ def _find_by_ext(directory, ext):
     return None
 
 
-def _import_tds(file):
+def _import_tds(file, remote=False):
     import xml.etree.ElementTree as ET
 
     file = os.path.abspath(file)
     root = ET.parse(file).getroot()
-    src, _ = _twb_data_file(root, os.path.dirname(file))
+    src, _ = _twb_data_file(root, os.path.dirname(file), remote)
     return {"source": src.replace(os.sep, "/")}
 
 
-def _import_tableau(file):
+def _import_tableau(file, src=""):
     file = os.path.abspath(file)
     ext = os.path.splitext(file)[1].lower()
+    # A bare .twb/.tds is read from wherever the user opened it — possibly a
+    # mount; flag that so the data-file resolver skips its recursive kernel walk.
+    remote = _remote_dir(src, os.path.dirname(file))
     if ext == ".twb":
-        return _import_twb(file)
+        return _import_twb(file, remote)
     if ext == ".tds":
-        return _import_tds(file)
+        return _import_tds(file, remote)
     if ext in (".twbx", ".tdsx"):
+        # .twbx/.tdsx unpack into a local cache dir, so their inner resolution
+        # is always local (remote=False by default).
         d = _extract_tableau_zip(file)
         inner = _find_by_ext(d, ".twb" if ext == ".twbx" else ".tds")
         if not inner:
@@ -533,12 +610,43 @@ def _import_tableau(file):
 
 # ---------- file browsing / boot ----------
 
-def _listdir(path):
+def _listdir(path, origin=""):
     path = os.path.abspath(os.path.expanduser(path or "~"))
-    if not os.path.isdir(path):
-        path = os.path.dirname(path) or "/"
+    # Ask the server once: is this a remote (mount-backed) path, and is it a dir?
+    status, meta = _stat(origin, path) if origin else ("", None)
+    if status == "ok" and meta.get("remote"):
+        # Mount-backed: list via /api/fs/list, never a kernel scan. If `path` is a
+        # file (not a dir), descend to its parent with pure string ops — never a
+        # kernel os.path call on a remote path (that call wedges the NFS mount).
+        if not meta.get("is_dir"):
+            path = os.path.dirname(path) or "/"
+        # forward slashes on every platform: the browser's crumb/join logic is "/"-based
+        parent = (os.path.dirname(path) or path).replace(os.sep, "/")  # dirname(root) == root
+        fpath = path.replace(os.sep, "/")
+        dirs, files = [], []
+        try:
+            ents, _ = _list_remote(origin, path)
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc), "path": fpath, "parent": parent,
+                    "dirs": [], "files": []}
+        for ent in ents:
+            name = ent["name"]
+            if name.startswith("."):
+                continue
+            if ent.get("is_dir"):
+                dirs.append(name)
+            elif name.lower().endswith(TABLEAU_EXTS):
+                files.append({"name": name, "size": ent.get("size") or 0, "kind": "tableau"})
+            elif name.lower().endswith(".hyper"):
+                files.append({"name": name, "size": ent.get("size") or 0, "kind": "data"})
+        dirs.sort(key=str.lower)
+        files.sort(key=lambda f: f["name"].lower())
+        return {"path": fpath, "parent": parent, "dirs": dirs, "files": files}
     # forward slashes on every platform: the browser's crumb/join logic is "/"-based
     parent = (os.path.dirname(path) or path).replace(os.sep, "/")  # dirname(root) == root
+    if not os.path.isdir(path):
+        path = os.path.dirname(path) or "/"
+        parent = (os.path.dirname(path) or path).replace(os.sep, "/")
     path = path.replace(os.sep, "/")
     dirs, files = [], []
     try:
@@ -634,11 +742,13 @@ def main(
     raw: str = "",
     offset: int = 0,
     limit: int = 200,
+    src: str = "",
 ):
     if action == "boot":
         return _boot()
     if action == "listdir":
-        return _listdir(file)
+        # `src` carries the server ORIGIN for mount-safe routing.
+        return _listdir(file, src)
     if action == "open_data":
         meta = _ensure_cache(file)
         return {"file": meta["file"].replace(os.sep, "/"), "nrows": meta["nrows"],
@@ -650,7 +760,7 @@ def main(
     if action == "filter_domain":
         return _filter_domain(file, field)
     if action == "import_tableau":
-        return _import_tableau(file)
+        return _import_tableau(file, src)
     if action == "export":
         return _export(kind, name, file, json.loads(spec), raw=(raw == "1"))
     raise ValueError(f"unknown action {action!r}")
