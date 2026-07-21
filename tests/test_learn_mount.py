@@ -152,6 +152,35 @@ def test_force_unmounts_kernel_mount_surviving_a_successful_detach(
     assert calls == [mounts_mod.mountpoint(_learn_records()[0])]
 
 
+def test_clears_rcd_bookkeeping_after_force_unmount(home, learn_zip, monkeypatch):
+    # BUGBOT: _force_unmount operates purely at the kernel level (umount /
+    # diskutil) — it never tells rcd anything, so a successful force-unmount
+    # can leave rcd's OWN mount/listmounts bookkeeping still claiming the
+    # mountpoint. run_automount's loop treats exactly that combination (rcd
+    # still lists it, kernel does not) as split-brain and skips
+    # attach_mount entirely for it — the builtin mount would never get
+    # remounted after this very refresh. A follow-up rc mount/unmount call
+    # (mirroring reconnect_mount's own pattern) must clear rcd's
+    # bookkeeping too, so run_automount's next mounted_paths() snapshot no
+    # longer lists a mountpoint the kernel has already dropped.
+    mounts_mod.ensure_learn_mount()
+    mp = mounts_mod.mountpoint(_learn_records()[0])
+    monkeypatch.setattr(mounts_mod, "mounted_paths", lambda: {mp})
+    monkeypatch.setattr(mounts_mod, "detach_mount", lambda m, force=False: None)
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: True)
+    monkeypatch.setattr(mounts_mod, "_force_unmount", lambda p: None)
+    monkeypatch.setattr(mounts_mod, "_live_rcd_port", lambda: 12345)
+    rc_calls = []
+    monkeypatch.setattr(
+        mounts_mod, "_rc",
+        lambda port, method, params=None, timeout=30: (
+            rc_calls.append((port, method, params)) or {}
+        ),
+    )
+    mounts_mod.ensure_learn_mount()
+    assert (12345, "mount/unmount", {"mountPoint": mp}) in rc_calls
+
+
 def test_no_force_unmount_when_kernel_mount_already_gone(
         home, learn_zip, monkeypatch):
     mounts_mod.ensure_learn_mount()

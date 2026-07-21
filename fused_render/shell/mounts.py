@@ -2377,15 +2377,32 @@ def _force_detach_learn_mount(builtin: dict, old_remote: str) -> None:
     macOS (learn is attached via nfsmount): rc's mount/unmount can report
     success while the kernel NFS mount lingers, and reconnect_mount
     re-checks os.path.ismount afterward for that reason. Mirror that same
-    re-check here, rather than trusting detach_mount's return value alone."""
+    re-check here, rather than trusting detach_mount's return value alone.
+
+    BUGBOT: _force_unmount operates purely at the kernel level (umount /
+    diskutil) — it never tells rcd anything, so a successful force-unmount
+    can leave rcd's OWN mount/listmounts bookkeeping still claiming the
+    mountpoint. run_automount's loop treats exactly that combination (rcd
+    still lists it, kernel does not) as the split-brain case and
+    `continue`s PAST attach_mount for it — leaving the builtin mount never
+    remounted after the very refresh this whole path exists to perform.
+    reconnect_mount avoids this by re-issuing rc mount/unmount a second
+    time after its own force-unmount, purely to clear rcd's bookkeeping (a
+    "mount not found" failure at that point is expected and fine, since the
+    kernel mount is already gone) — mirror that same follow-up call here."""
     try:
         mp = mountpoint(builtin)
         live = mp in mounted_paths() or os.path.ismount(mp)
+        port = _live_rcd_port()
         if live:
             detach_mount(builtin, force=True)
             if os.path.ismount(mp):
                 _force_unmount(mp)
-        port = _live_rcd_port()
+                if port is not None:
+                    try:
+                        _rc(port, "mount/unmount", {"mountPoint": mp})
+                    except RuntimeError:
+                        pass  # "mount not found" once the kernel mount is gone — fine
         if port is not None:
             _stop_serve_for(port, old_remote)
     except Exception:
