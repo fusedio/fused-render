@@ -248,3 +248,98 @@ def test_v3_group_via_listing(monkeypatch, guard_kernel):
     r = _client().get("/api/fs/conditions", params={"path": STORE})
     assert r.status_code == 200
     assert r.json()["conditions"].get("zarr_aoi") is True
+
+
+# --------------------------------------------- Bugbot: indeterminate not seeded
+
+
+def test_indeterminate_kind_not_seeded_gate_reprobes(monkeypatch, guard_kernel):
+    # The endpoint's own is_dir probe can come back "indeterminate" (rcd blip /
+    # budget exhausted). That verdict must NOT be seeded: seeding it would make
+    # the gate's isdir(STORE) return False immediately and pin a spurious
+    # all-False verdict (worse: cached 60s). Instead the gate must do its OWN
+    # probe, which here recovers to "dir" and, with .zmetadata present, -> True.
+    calls = {"n": 0}
+    monkeypatch.setattr(mounts_mod, "is_mount_backed",
+                        lambda p: isinstance(p, str) and p.startswith(MOUNT_PREFIX))
+
+    def _kind(p, **k):
+        if p == STORE:
+            calls["n"] += 1
+            # 1st call is the endpoint probe (indeterminate); the gate's own
+            # reprobe recovers to "dir".
+            return "indeterminate" if calls["n"] == 1 else "dir"
+        if p == STORE + "/.zmetadata":
+            return "file"
+        return "missing"
+
+    monkeypatch.setattr(mounts_mod, "rc_kind_for", _kind)
+    monkeypatch.setattr(mounts_mod, "rc_read_bounded",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("no serve")))
+    # No direct listing: force the pure rc probe path so the gate reprobe shows.
+    _direct_list(monkeypatch, capable=False)
+
+    r = _client().get("/api/fs/conditions", params={"path": STORE})
+    assert r.status_code == 200
+    assert r.json()["conditions"].get("zarr_aoi") is True
+    assert calls["n"] >= 2, "gate must do its own probe when endpoint was indeterminate"
+
+
+# ------------------------------------------- Bugbot: present marker conclusive
+
+
+def test_truncated_listing_with_present_marker_true(monkeypatch, guard_kernel):
+    # A TRUNCATED listing (next_token set) that CONTAINS .zgroup is conclusive
+    # for .zgroup: presence proves it exists even though absence can't be proven
+    # from a partial page. So .zgroup is answered locally and must NEVER be rc
+    # probed (proven by _kind raising on it) — even though rc probing it would
+    # "miss" (returns missing). Earlier markers (.zmetadata, zarr.json), absent
+    # from the partial page, DO fall through to rc probes and come back missing.
+    monkeypatch.setattr(mounts_mod, "is_mount_backed",
+                        lambda p: isinstance(p, str) and p.startswith(MOUNT_PREFIX))
+
+    def _kind(p, **k):
+        if p == STORE:
+            return "dir"
+        if p == STORE + "/.zgroup":
+            raise AssertionError("present marker .zgroup was rc probed")
+        return "missing"  # .zmetadata / zarr.json legitimately probe -> missing
+
+    monkeypatch.setattr(mounts_mod, "rc_kind_for", _kind)
+    monkeypatch.setattr(mounts_mod, "rc_read_bounded",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("no serve")))
+    _direct_list(monkeypatch,
+                 result=([{"Name": ".zgroup", "IsDir": False}], "next-tok"))
+
+    r = _client().get("/api/fs/conditions", params={"path": STORE})
+    assert r.status_code == 200
+    assert r.json()["conditions"].get("zarr_aoi") is True
+
+
+# ----------------------------------------- efficiency: no gates -> no listing
+
+
+def test_no_gated_templates_skips_listing(monkeypatch, guard_kernel):
+    # The bounded listing is only worth its network cost if a gate will consume
+    # it. When the dir has no conditional template, direct_list_page must never
+    # be called.
+    monkeypatch.setattr(mounts_mod, "is_mount_backed",
+                        lambda p: isinstance(p, str) and p.startswith(MOUNT_PREFIX))
+    monkeypatch.setattr(mounts_mod, "rc_kind_for", lambda p, **k: "dir")
+    monkeypatch.setattr(server, "_templates_for", lambda path, is_dir: ([], None))
+
+    # Count calls rather than raise: a raised AssertionError would be swallowed
+    # by the listing's fail-open except and mask the wasted call.
+    calls = {"n": 0}
+
+    def _count(*a, **k):
+        calls["n"] += 1
+        return ([], None)
+
+    monkeypatch.setattr(mounts_mod, "direct_list_capable", lambda p: True)
+    monkeypatch.setattr(mounts_mod, "direct_list_page", _count)
+
+    r = _client().get("/api/fs/conditions", params={"path": STORE})
+    assert r.status_code == 200
+    assert r.json()["conditions"] == {}
+    assert calls["n"] == 0, "listing must be skipped when no gated templates exist"
