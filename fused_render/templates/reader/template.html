@@ -667,8 +667,18 @@
         stopKeepalive();
         try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (e) {}
       },
-      pause() { try { if (window.speechSynthesis) window.speechSynthesis.pause(); } catch (e) {} },
-      resume() { try { if (window.speechSynthesis) window.speechSynthesis.resume(); } catch (e) {} },
+      pause() {
+        // Kill the keepalive while paused: Chrome DROPS the synth.paused flag
+        // when the tab is hidden, so a live keepalive tick would see
+        // "speaking && !paused" and resume() a user pause on its own (ghost
+        // audio after a tab switch). No timer while paused = no vector.
+        stopKeepalive();
+        try { if (window.speechSynthesis) window.speechSynthesis.pause(); } catch (e) {}
+      },
+      resume() {
+        try { if (window.speechSynthesis) window.speechSynthesis.resume(); } catch (e) {}
+        if (current) startKeepalive(); // resumed utterance needs the nudge again
+      },
     };
   }
   const engine = createSpeechEngine();
