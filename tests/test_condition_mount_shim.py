@@ -27,6 +27,16 @@ STORE = "/fake-mounts/s3demo/store"
 ZARR_CONDITION = os.path.join(server.TEMPLATES_DIR, "zarr_aoi", "condition.py")
 
 
+@pytest.fixture(autouse=True)
+def _clear_conditions_cache():
+    # /api/fs/conditions now caches success payloads by path for a short TTL.
+    # These tests reuse a single STORE path across differing mount states and
+    # expect each call to recompute, so drop the cache between tests.
+    server._CONDITIONS_CACHE.clear()
+    yield
+    server._CONDITIONS_CACHE.clear()
+
+
 @pytest.fixture()
 def guard_kernel(monkeypatch):
     """Make every kernel os call on a mount-backed path explode, so a shim leak

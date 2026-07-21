@@ -723,6 +723,16 @@ def _error(message: str, status: int = 400) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status)
 
 
+# /api/fs/conditions evaluates template condition.py gates, which over a remote
+# mount costs ~6.8s and was recomputed on every call. A small check-on-read TTL
+# cache lets re-navigation to the same directory reuse the verdict. Only success
+# payloads (plain dicts) are cached; error/404 responses are JSONResponse and are
+# never stored. No background eviction — a stale entry is overwritten on the next
+# miss. _CONDITIONS_TTL_S is a module attribute so tests can monkeypatch it.
+_CONDITIONS_TTL_S = 60.0
+_CONDITIONS_CACHE: dict[str, tuple[float, dict]] = {}  # path -> (inserted_monotonic, payload)
+
+
 def _mount_list_error_response(path, exc):
     """Map an RcList* failure to the same HTTP response /api/fs/list returns, so
     fs/walk surfaces a failed ROOT listing identically (timeout/down rcd/broken
@@ -2835,7 +2845,18 @@ def create_app(start_dir: str) -> FastAPI:
         # (Preview.tsx `useConditions`) and renders every unconditional
         # template while the verdict is still `null` — the gated ones just show
         # a spinner until it lands. So no change on the render path is needed.
-        return _conditions_payload(path)
+        #
+        # Re-navigating to the same directory would otherwise re-pay the full
+        # gate-evaluation cost, so a short check-on-read TTL cache serves a
+        # recent verdict. Only success payloads (plain dicts) are cached; error
+        # responses (_error -> JSONResponse) are always recomputed.
+        cached = _CONDITIONS_CACHE.get(path)
+        if cached is not None and time.monotonic() - cached[0] < _CONDITIONS_TTL_S:
+            return cached[1]
+        result = _conditions_payload(path)
+        if isinstance(result, dict):
+            _CONDITIONS_CACHE[path] = (time.monotonic(), result)
+        return result
 
     @app.get("/api/fs/list")
     def api_fs_list(path: str, cursor: str | None = None):
