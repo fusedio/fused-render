@@ -15,16 +15,15 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from urllib.parse import quote
 
 import pythoncom
 import pywintypes
 import win32con
 import win32gui
 
+from fused_render._view_url_codec import view_url
 from fused_render.win_supervisor import instance, protocol, startup, tray
 from fused_render.win_supervisor.job import Job
-from fused_render.winopen import _view_url as _shared_view_url
 from fused_render.win_supervisor.paths import DesktopPaths
 
 _INSTANCE_ID = "desktop-v1"
@@ -40,7 +39,17 @@ def run(initial: protocol.Command) -> None:
     inst = instance.acquire(names)
 
     if isinstance(inst, instance.SecondaryInstance):
-        inst.send(initial, 75.0)
+        try:
+            inst.send(initial, 75.0)
+        except instance.CommandRejected:
+            # A healthy primary answered and rejected the specific command
+            # (e.g. Open on a bad/missing path) — the app did start; only
+            # this forwarded request failed. Report that accurately instead
+            # of letting __main__'s top-level handler show a "could not
+            # start" dialog for an app that is, in fact, running fine.
+            if isinstance(initial, protocol.Open):
+                _report_open_rejected(initial.path)
+            return
         if isinstance(initial, protocol.ShutdownForUpgrade):
             inst.wait_for_exit(20.0)
         return
@@ -247,6 +256,17 @@ def _confirm_exit() -> bool:
     return result == IDYES
 
 
+def _report_open_rejected(path: str) -> None:
+    # The primary already logged the underlying reason (paths.log via its
+    # own _safe_open) — this is just accurate user-facing feedback for a
+    # forwarded open that failed, not a launch failure.
+    MB_OK = 0x0
+    MB_ICONWARNING = 0x30
+    ctypes.windll.user32.MessageBoxW(
+        0, f"FusedRender could not open:\n\n{path}", "FusedRender", MB_OK | MB_ICONWARNING
+    )
+
+
 def _open_path(path: Path) -> None:
     os.startfile(str(path))  # noqa: S606 - local admin-installed path, not user input
 
@@ -269,19 +289,7 @@ def _view_url(port: int, path: Path) -> str:
     if not path.exists():
         raise FileNotFoundError(f"file not found: {path}")
     fs_path = str(path if path.is_absolute() else Path.cwd() / path)
-    if fs_path.lower().endswith(".bookmark"):
-        # Parity with app.py's view_url_path (SB-9, D99): a .bookmark file is
-        # not previewed directly — it routes through the _bookmark sentinel,
-        # which reads it server-side and redirects to the view it describes.
-        # Same drive-path normalization rule as the non-bookmark case below
-        # (winopen._view_url / deeplink._view_url_path): only a drive-letter
-        # path gets its backslashes normalized before encoding.
-        normalized = fs_path.replace("\\", "/") if len(fs_path) > 1 and fs_path[1] == ":" else fs_path
-        return f"http://127.0.0.1:{port}/view/_bookmark?file={quote(normalized, safe='')}"
-    # Everything else reuses winopen._view_url's segment/drive-path codec —
-    # the canonical Windows /view URL builder (also used by the Explorer
-    # "Open with" entry point) — rather than a second, driftable copy of it.
-    return _shared_view_url(port, fs_path)
+    return view_url(port, fs_path)
 
 
 def _open_browser(url: str) -> None:

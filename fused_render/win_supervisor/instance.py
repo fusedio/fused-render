@@ -53,6 +53,14 @@ class Request:
     response: "queue.Queue[int]"
 
 
+class CommandRejected(OSError):
+    """The primary supervisor received our command and answered with a
+    non-zero status (e.g. a forwarded Open failed) — distinct from a
+    communication/timeout failure. A healthy primary IS running in this
+    case; only the specific command failed, so callers must not report it
+    the same way as "the app could not start"."""
+
+
 class SecondaryInstance:
     def __init__(self, names: InstanceNames):
         self.names = names
@@ -67,7 +75,7 @@ class SecondaryInstance:
                     (status,) = struct.unpack("<I", data)
                     if status == 0:
                         return
-                    raise OSError("supervisor rejected the command")
+                    raise CommandRejected("supervisor rejected the command")
             except pywintypes.error:
                 pass
             if time.monotonic() >= deadline:
@@ -79,14 +87,23 @@ class SecondaryInstance:
             mutex = win32event.OpenMutex(_SYNCHRONIZE, False, self.names.mutex)
         except pywintypes.error:
             return  # primary already gone
-        result = win32event.WaitForSingleObject(mutex, int(timeout * 1000))
-        if result in (win32event.WAIT_OBJECT_0, win32con.WAIT_ABANDONED):
-            try:
-                win32event.ReleaseMutex(mutex)
-            except pywintypes.error:
-                pass
-            return
-        raise TimeoutError("supervisor did not exit")
+        try:
+            result = win32event.WaitForSingleObject(mutex, int(timeout * 1000))
+            # 0 = WAIT_OBJECT_0, 0x80 = WAIT_ABANDONED (repo convention: the
+            # raw value, as winopen.py already uses, rather than win32con's
+            # copy of the constant — not guaranteed present on every pywin32
+            # build). Abandoned is the NORMAL case here: the primary's
+            # upgrade-teardown path never calls release() itself, it just
+            # exits and lets Windows mark the mutex abandoned.
+            if result in (win32event.WAIT_OBJECT_0, 0x80):
+                try:
+                    win32event.ReleaseMutex(mutex)
+                except pywintypes.error:
+                    pass
+                return
+            raise TimeoutError("supervisor did not exit")
+        finally:
+            mutex.Close()
 
 
 class PrimaryInstance:
