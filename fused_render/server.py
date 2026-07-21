@@ -954,6 +954,13 @@ def _condition_file(template_path: str):
 # roughly one slow probe; direct-capable mounts probe in ~1s and rarely reach it.
 GATE_PROBE_BUDGET_S = 5.0
 
+# One bounded direct-listing page fed to the gate seed (fix #3/#4). All zarr
+# group-root markers are immediate children of the store dir, so a COMPLETE
+# (untruncated) page of the dir's children answers all three marker isfile
+# probes with zero extra network calls; 1000 keys comfortably covers a store
+# root's immediate children in one unsigned request.
+_GATE_LIST_MAX_KEYS = 1000
+
 
 class _GateSeed:
     """What `_conditions_payload` already knows about the target dir, threaded
@@ -1025,7 +1032,16 @@ def _mount_gate_builtins(target_path: str, seed=None):
     def _isfile(p):
         if not mounts.is_mount_backed(p):
             return real_os.path.isfile(p)
-        # A verdict the endpoint already took for this exact path (fix #2).
+        # A COMPLETE listing of the dir answers every marker isfile with no
+        # network call: for a child of the listed dir, an absent basename is
+        # PROVABLY absent (fix #3/#4). A truncated listing can't prove absence,
+        # so listing_complete gates this branch and we fall through to the rc
+        # probe below. real_os.path is the real (captured) os.path.
+        if (seed is not None and seed.listing_complete
+                and seed.file_children is not None
+                and real_os.path.dirname(p) == seed.dir_path):
+            return real_os.path.basename(p) in seed.file_children
+        # Else a verdict the endpoint already took for this exact path (fix #2).
         if seed is not None and p in seed.kinds:
             return seed.kinds[p] == "file"
         left = _probe_budget()
@@ -1241,7 +1257,12 @@ def _conditions_payload(path: str):
     carries the first gate error in list order (a broken gate reports False —
     fail closed — with the reason), matching stat's `template_error` posture.
     """
-    from fused_render.shell.mounts import is_mount_backed, rc_kind_for
+    from fused_render.shell.mounts import (
+        direct_list_capable,
+        direct_list_page,
+        is_mount_backed,
+        rc_kind_for,
+    )
 
     seed = None
     if is_mount_backed(path):
@@ -1263,6 +1284,23 @@ def _conditions_payload(path: str):
         # (fix #2). Fail-open: the seed is purely additive — an empty seed just
         # falls through to the existing rc probe path.
         seed = _GateSeed(kinds={path: kind})
+        # For a direct-list-capable mount (anonymous S3/GCS), one bounded
+        # unsigned listing of the dir's immediate children answers all three
+        # marker isfile probes locally (fix #3/#4) — the markers are always
+        # immediate children, so a COMPLETE page proves each present/absent
+        # without a per-marker rc probe. Fail-open: any error (not capable,
+        # transport, truncation is handled by listing_complete) leaves the seed
+        # marker-less and the gate falls back to today's per-marker probes.
+        if is_dir and direct_list_capable(path):
+            try:
+                entries, next_token = direct_list_page(
+                    path, max_keys=_GATE_LIST_MAX_KEYS, timeout=GATE_PROBE_BUDGET_S)
+                seed.file_children = {
+                    e["Name"] for e in entries if not e.get("IsDir")}
+                seed.listing_complete = next_token is None
+            except Exception:
+                pass  # never break the endpoint on a listing failure
+            seed.dir_path = path.rstrip("/")
     else:
         try:
             st = os.stat(path)
