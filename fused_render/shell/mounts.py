@@ -441,6 +441,75 @@ def _rc(port: int, method: str, params: dict | None = None, timeout: float = 30)
         raise RuntimeError(f"rclone rc {method}: {e}") from e
 
 
+# Poll cadence for a cancellable async job. A job/status round trip is cheap, so
+# a tight interval keeps the added latency of the async path (vs. a synchronous
+# _rc) down to one poll for a fast-finishing call — the list/stat hot path pays
+# ~this, not a full second.
+_RC_JOB_POLL_S = 0.05
+
+
+def _rc_cancellable(port: int, method: str, params: dict | None = None,
+                    timeout: float = 30):
+    """Like _rc, but runs `method` as a CANCELLABLE rclone job so a timed-out
+    call actually stops rclone's server-side work instead of orphaning it.
+
+    Why this exists (the 14h-runaway INCIDENT): operations/list and
+    operations/stat make rclone run an UNBOUNDED ListObjectsV2 over the whole
+    prefix (see rc_list_dir / _rc_stat_item). A plain urlopen socket timeout
+    only abandons the CLIENT socket — rclone KEEPS enumerating, and repeated
+    timed-out calls pile up orphaned walks that pinned a CPU for 14h. Submitting
+    with `_async=true` returns a {"jobid": N} immediately; we poll job/status
+    until the job finishes or the deadline passes, and on timeout call job/stop
+    so rclone's context cancellation propagates into the S3 lister and the walk
+    STOPS.
+
+    Returns the job's `output` dict — the SAME shape the synchronous _rc call
+    returns for this method (operations/list -> {"list": [...]}, operations/stat
+    -> {"item": ...}). Raises RuntimeError exactly where _rc would, so callers
+    keep their existing except handling:
+      - deadline exceeded -> raised FROM a TimeoutError, so _rc_timed_out()
+        recognizes it (rc_list_dir maps it to RcListTimeout; _rc_stat_item to
+        the indeterminate sentinel);
+      - a failed job      -> raised with rclone's own error message and NO
+        timeout cause (rc_list_dir maps it to RcListError, same as the sync
+        HTTPError path)."""
+    deadline = time.monotonic() + timeout
+    p = dict(params or {})
+    p["_async"] = True
+    # Submitting a job returns at once (only the enumeration is slow), so cap the
+    # submit round trip modestly rather than granting it the whole budget.
+    submit = _rc(port, method, p, timeout=min(timeout, 10))
+    jobid = submit.get("jobid") if isinstance(submit, dict) else None
+    if jobid is None:
+        # No jobid handed back (a command that doesn't honor _async, or an
+        # unexpected shape): fall back to a plain synchronous call on whatever
+        # budget remains, so behavior degrades to the old path rather than break.
+        remaining = deadline - time.monotonic()
+        return _rc(port, method, params, timeout=max(remaining, 0.1))
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        status = _rc(port, "job/status", {"jobid": jobid},
+                     timeout=min(remaining, 10))
+        if isinstance(status, dict) and status.get("finished"):
+            if status.get("error"):
+                raise RuntimeError(status["error"])  # sync error path equivalent
+            out = status.get("output")
+            return out if isinstance(out, dict) else {}
+        time.sleep(min(_RC_JOB_POLL_S, max(deadline - time.monotonic(), 0)))
+    # Deadline passed with the job still running: cancel it server-side so
+    # rclone stops enumerating (the whole point), then raise a timeout the
+    # callers recognize. job/stop failing is non-fatal — we still raise.
+    try:
+        _rc(port, "job/stop", {"jobid": jobid}, timeout=3)
+    except RuntimeError:
+        logger.warning("rc job/stop failed for job %s", jobid, exc_info=True)
+    raise RuntimeError(
+        f"rc {method} timed out after {timeout:g}s (job {jobid} cancelled)"
+    ) from TimeoutError()
+
+
 # A live-port probe (core/pid over the loopback rc port, timeout=3) runs on
 # EVERY rc-routed call — rc_list_dir, rc_mtime_for, _remote_config, the S3
 # capability check. A single fs/walk fans that probe out across every directory
@@ -838,8 +907,11 @@ def _rc_stat_item(path: str, *, timeout: float = RC_STAT_TIMEOUT_S):
     # rc_list_dir).
     remote = "" if rel == "." else rel
     try:
-        resp = _rc(port, "operations/stat",
-                   {"fs": m["remote"], "remote": remote}, timeout=timeout)
+        # Cancellable: operations/stat runs an UNBOUNDED ListObjectsV2 on a
+        # negative/dir probe, so a timed-out sync call would orphan that walk.
+        resp = _rc_cancellable(port, "operations/stat",
+                               {"fs": m["remote"], "remote": remote},
+                               timeout=timeout)
     except RuntimeError:
         return _STAT_INDETERMINATE
     if not isinstance(resp, dict) or "item" not in resp:
@@ -1060,9 +1132,11 @@ def rc_list_dir(path: str, timeout: float | None = None) -> list:
     # operations/stat has).
     remote = "" if rel == "." else rel
     try:
-        resp = _rc(port, "operations/list",
-                   {"fs": m["remote"], "remote": remote,
-                    "opt": {"noMimeType": True}}, timeout=timeout)
+        # Cancellable: operations/list enumerates the WHOLE prefix (the mur-sst
+        # runaway), so on timeout we job/stop it instead of orphaning the walk.
+        resp = _rc_cancellable(port, "operations/list",
+                               {"fs": m["remote"], "remote": remote,
+                                "opt": {"noMimeType": True}}, timeout=timeout)
     except RuntimeError as e:
         if _rc_timed_out(e):
             raise RcListTimeout(f"listing {path} timed out after {timeout:g}s") from e
