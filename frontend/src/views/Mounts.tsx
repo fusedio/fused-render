@@ -204,6 +204,28 @@ export function parseStorageUrl(raw: string): ParsedLink | null {
   return null;
 }
 
+// A trailing path segment that looks like a file (has a short extension), e.g.
+// "TCI.tif", "part-0001.parquet" — used to tell a link-to-a-file from a
+// link-to-a-prefix.
+const FILE_TAIL = /\.[A-Za-z0-9]{1,8}$/;
+
+// The path to actually mount for a pasted link. Pasting a deep link to a single
+// FILE — e.g. s3://sentinel-cogs/sentinel-s2-l2a-cogs/32/T/QR/2025/8/…/TCI.tif —
+// should not mount that one scene folder (let alone the file); the useful mount
+// is the dataset root, bucket + first prefix segment
+// (sentinel-cogs/sentinel-s2-l2a-cogs), which you then browse. A link to a
+// PREFIX (no file tail — a bucket root, a trailing-slash prefix, a console
+// ?prefix=) is kept verbatim, since navigating there was deliberate. Either way
+// the Path field stays editable, so this is only the starting suggestion.
+export function mountRootForLink(path: string): string {
+  const segs = path.split("/").filter(Boolean);
+  if (!segs.length || !FILE_TAIL.test(segs[segs.length - 1])) return path;
+  const [bucket, ...key] = segs;
+  // First prefix segment is the dataset/collection; if the file sits directly
+  // under the bucket (or that first segment IS the file), fall back to the bucket.
+  return key[0] && !FILE_TAIL.test(key[0]) ? `${bucket}/${key[0]}` : bucket;
+}
+
 function AddMount({
   remotes,
   suggested,
@@ -263,9 +285,11 @@ function AddMount({
   };
 
   // The <option> value (a raw remote spec or "suggest:<id>") to select for a
-  // pasted link's provider: prefer a credentialed remote over a public one, so
-  // s3://…/a-private-bucket lands on the user's own creds by default. undefined
-  // when nothing matches — the link still fills Path/Name and the user picks.
+  // pasted link's provider: prefer a PUBLIC (anonymous) remote over a
+  // credentialed one — pasted links are usually to open/public data, and an
+  // anonymous request works even when creds are absent or expired; the user can
+  // switch to their own remote for a private bucket. undefined when nothing
+  // matches — the link still fills Path/Name and the user picks.
   const pickRemote = (provider: "s3" | "gcs"): string | undefined => {
     const candidates = [
       ...remotes.map((r) => ({ value: r.name, ...classify(r.name, r.label) })),
@@ -275,7 +299,7 @@ function AddMount({
         isPublic: s.kind === "public",
       })),
     ].filter((c) => c.provider === provider);
-    return (candidates.find((c) => !c.isPublic) ?? candidates[0])?.value;
+    return (candidates.find((c) => c.isPublic) ?? candidates[0])?.value;
   };
 
   const parsedLink = parseStorageUrl(link);
@@ -286,10 +310,12 @@ function AddMount({
     if (!parsed) return;
     const rv = pickRemote(parsed.provider);
     if (rv) setRemote(rv);
-    setSubpath(parsed.path);
-    // Re-derive Name from the pasted path and let it keep tracking Path edits
-    // (the user hasn't hand-typed a name).
-    const seg = parsed.path.split("/").map((s) => s.trim()).filter(Boolean).pop() ?? "";
+    const rooted = mountRootForLink(parsed.path);
+    setSubpath(rooted);
+    // Name from the MOUNTED root's last segment (the dataset/collection), not a
+    // deep scene or file name — and keep it tracking Path edits (no hand-typed
+    // name yet).
+    const seg = rooted.split("/").map((s) => s.trim()).filter(Boolean).pop() ?? "";
     setName(folderSafe(seg));
     setNameTouched(false);
   };
@@ -354,7 +380,10 @@ function AddMount({
           (parsedLink ? (
             <p className="deploy-muted mount-paste-hint">
               Recognized {parsedLink.provider.toUpperCase()} link — filled the fields below
-              {pickRemote(parsedLink.provider) ? "" : "; pick a remote"}. Review, then mount.
+              {pickRemote(parsedLink.provider) ? "" : "; pick a remote"}.
+              {mountRootForLink(parsedLink.path) !== parsedLink.path
+                ? " Trimmed to the dataset root — edit Path to mount deeper."
+                : " Review, then mount."}
             </p>
           ) : (
             <p className="deploy-muted mount-paste-hint warn">
