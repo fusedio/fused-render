@@ -92,7 +92,8 @@ environment.
 
 ## Fused account / hosted deploy
 
-Signing in (`/view/_account`, D111/D112) shells out to the external `fused`
+Signing in (Preferences' Fused account tab, `/view/_prefs?tab=account` —
+D111/D112, D125) shells out to the external `fused`
 CLI (`fused cloud login`) rather than implementing OAuth in-process.
 fused-render never reads or writes a credential itself — the JWT and any
 data-plane keys live entirely in the CLI's own credential file and OS

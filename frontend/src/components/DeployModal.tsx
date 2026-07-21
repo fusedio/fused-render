@@ -862,11 +862,11 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
               <button
                 type="button"
                 className="btn btn-primary"
-                onClick={() => navigateUrl("/view/_account")}
+                onClick={() => navigateUrl("/view/_prefs?tab=account")}
               >
                 Set up hosted environment
               </button>
-              <span className="deploy-muted">opens the Fused account page</span>
+              <span className="deploy-muted">opens the Fused account tab in Preferences</span>
             </div>
           )}
           {/* Unconditional: an AWS-only user who is signed out must still be

@@ -730,7 +730,7 @@ the product gains network access.
   current-deployment card (status chip, URL with copy/open), a **"Will
   publish" preview** (DP-2a), Deploy/Redeploy, and Revoke. The modal is scoped
   to the current page; the **env-wide** deployment list (DP-13) lives on the
-  Fused account page's Deployments section (AC-11, moved from Preferences
+  Fused account tab's Deployments section (AC-11, moved from Preferences
   when the account surface landed), not in the modal.
 - **DP-2a** Before the click, the modal shows exactly what a deploy would
   publish (`POST /api/deploy/preview` → `preview_deploy`, the same pure
@@ -773,7 +773,7 @@ the product gains network access.
   and offers a working **Sign in to Fused** button — the AC-3/AC-4 in-app
   flow via the shared client hook, with a background config reload flipping
   the warning away on completion (AC-9). Likewise the no-envs state signs in
-  in place or routes to the account page's setup panel; no modal state
+  in place or routes to the account tab's setup panel; no modal state
   instructs a terminal command for the managed path anymore. After a failed
   action, CLI errors that name `fused cloud login` are still suffixed with
   the packaged app's real wrapper path (fusedcli.py's `cli_error` +
@@ -914,7 +914,7 @@ the product gains network access.
   **best-effort revokes the superseded mount** (last, after the new URL is
   live, so a create failure never takes the page down; a revoke failure is
   non-fatal — the new URL stands and the old mount lingers, revocable from the
-  account page's deployments list). The pointer therefore tracks the new mount,
+  account tab's deployments list). The pointer therefore tracks the new mount,
   so the modal's Revoke targets the new URL — no orphaned URL to chase.
 - **DP-18** **Clear cache** (`POST /api/deploy/clear-cache {"page"}` →
   `clear_cache_deployment` → `fused share cache-clear <token>`) forces every
@@ -973,7 +973,7 @@ the product gains network access.
   env" view: every mount from `share list --all`, joined back to the local
   page that deployed it via the pointer store (`page: null`, rendered "not
   from this app"), local pages first, live before revoked. Its consumer is the
-  **Fused account page's Deployments section** (AC-11; formerly Preferences'
+  **Fused account tab's Deployments section** (AC-11; formerly Preferences'
   PF-6) — a single env-wide list with Revoke — not the per-page Deploy modal. `share list` returns no URLs on
   either backend; each mount's URL is the pointer's recorded one, else
   **derived from the env's base URL**: every mount on one env serves as
@@ -1070,8 +1070,20 @@ never imports server).
   off.
 - **PF-6** *(moved by M18/§27 — see AC-11)* The per-env share list lived
   here before the account surface existed; Preferences keeps only the PF-8
-  Deploy-button toggle plus a link to the Fused account page, where the list
+  Deploy-button toggle plus a link to the Fused account tab, where the list
   now renders beside the environments table.
+
+### 20.6 Tabs (D125)
+
+- **PF-9** The page is split into two tabs, active tab in the URL
+  (`?tab=account`, default clean-URL tab is **Render preferences** —
+  Logs/Execution engine/Deployments/Tour, unchanged): **Render preferences**
+  and **Fused account** (§27's account panel, folded in here since it stopped
+  being its own sidebar-footer entry). The **Fused account** tab button is
+  offered only while the PF-8 Deploy toggle is on; requesting `?tab=account`
+  while it's off falls back to Render preferences rather than showing a tab
+  with nothing pointing at it. This is also where the sidebar footer's
+  signed-in dot now points — see AC-1.
 
 ### 20.5 Template registry view
 
@@ -1748,11 +1760,22 @@ provisioning stays a documented terminal flow.
 
 ### 27.1 Surface
 
-- **AC-1** `/view/_account` is a sentinel pathname like `_prefs` (no embed
-  variant), entered from a sidebar-footer entry between Mounts and
-  Preferences. The entry's icon carries a green **signed-in dot** (the
-  deploy-dot affordance): the presence-only `logged_in` signal, re-read on
-  focus/visibility regain, errors keeping the last-known value.
+- **AC-1** *(amended by D125)* The account panel is the **Fused account** tab
+  on the `/view/_prefs` Preferences page, alongside a **Render preferences**
+  tab (Logs/Engine/Deployments/Tour — SPEC §20), selected via `?tab=account`
+  (bookmarkable, same pattern as Templates' bindings/library tabs). The
+  account tab is offered only once the Deploy toggle (§20) is on — that's the
+  only reason this app cares about a Fused account. There is no longer a
+  standalone sidebar-footer entry for it: the green **signed-in dot** (the
+  deploy-dot affordance — the presence-only `logged_in` signal, re-read on
+  focus/visibility regain, errors keeping the last-known value) now rides the
+  **Preferences** entry's icon instead, shown only when Deploy is enabled
+  *and* signed in — the dot is not its own click target (too small to hit
+  reliably), so clicking it just opens Preferences like the rest of the
+  button. The old `/view/_account` sentinel still resolves: App.tsx redirects
+  it (render-time `history.replaceState`, same technique as the `/` → start-dir
+  redirect) to `/view/_prefs?tab=account`, so existing bookmarks and the
+  Deploy modal's "Set up hosted environment" link keep working.
 - **AC-2** `GET /api/account/status` composes: `cli` (DP-4's `cli_status`
   shape), `logged_in` (DP-2b's presence signal), `login_in_flight` (a login
   child is live), `creds_stamp` (the credentials file's mtime, or null — a
@@ -1848,9 +1871,9 @@ provisioning stays a documented terminal flow.
   merges it over its cached probe (env actions don't change org
   membership), so the signed-in summary never flickers away.
 
-### 27.4 Page & Deploy-modal behavior
+### 27.4 Tab & Deploy-modal behavior
 
-- **AC-8** The account page's states, in checking order (the DP-2 pattern):
+- **AC-8** The account tab's states, in checking order (the DP-2 pattern):
   CLI missing → the DP-4 install panel (same one-click/manual split);
   signed out → sign-in (waiting + Cancel while connecting; a sign-in
   started elsewhere — Deploy modal, another tab — is adopted read-only with
