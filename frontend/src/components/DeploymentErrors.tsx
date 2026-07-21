@@ -21,12 +21,17 @@ function fmtTime(iso: string): string {
 }
 
 // The command the hosted overlay also names — copyable so an owner can pull the
-// full record in a terminal too. The `--` before the positionals mirrors the
-// API path (`_errors_args` in deploy.py): it stops a token/err_id beginning
-// with '-' from being parsed as a Click option, so the pasted command behaves
-// identically to the UI.
-function cliCommand(token: string, errId: string): string {
-  return `fused share errors -- ${token} ${errId}`;
+// full record in a terminal too. `--env` targets the same named environment the
+// server itself uses here (deploy.py's `_run_share` sets OPENFUSED_ENV for the
+// child process) — without it, a bare `fused share errors` falls back to
+// whatever environment happens to be ambient/default in the terminal it's
+// pasted into, which can silently query the wrong environment (or none) when
+// inspecting a deployment on a non-default one. The `--` before the
+// positionals mirrors the API path (`_errors_args` in deploy.py): it stops a
+// token/err_id beginning with '-' from being parsed as a Click option, so the
+// pasted command behaves identically to the UI.
+function cliCommand(env: string, token: string, errId: string): string {
+  return `fused --env ${env} share errors -- ${token} ${errId}`;
 }
 
 function Field({ label, value }: { label: string; value: string }) {
@@ -174,11 +179,11 @@ export default function DeploymentErrors({ env, token }: { env: string; token: s
                 {open && (
                   <div className="deploy-err-body">
                     <div className="deploy-err-cmd">
-                      <code>{cliCommand(token, e.err_id)}</code>
+                      <code>{cliCommand(env, token, e.err_id)}</code>
                       <button
                         type="button"
                         onClick={() => {
-                          void navigator.clipboard?.writeText(cliCommand(token, e.err_id));
+                          void navigator.clipboard?.writeText(cliCommand(env, token, e.err_id));
                         }}
                       >
                         Copy command
