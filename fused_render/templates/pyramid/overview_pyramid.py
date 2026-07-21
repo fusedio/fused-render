@@ -695,10 +695,23 @@ def main(file: str = "", action: str = "analyze", resampling: str = "",
         st = {"state": "running", "pid": None, "action": action, "watch": watch,
               "before": os.path.getsize(file), "started": time.time()}
         json.dump(st, open(sf, "w"))
-        proc = subprocess.Popen([vpy, wfile, file, action, json.dumps(opts)],
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                start_new_session=True, env=env)
-        st["pid"] = proc.pid
+        # posix_spawn, NOT Popen's fork()+exec, for the same reason as the
+        # analyze branch below: this process has libproj resident with a live
+        # proj.db SQLite handle, and fork() would run PROJ's pthread_atfork
+        # child handler in the forked child and segfault before exec. setsid=True
+        # detaches this long-running build job into its own session (what
+        # start_new_session did) so it survives the parent; stdout/stderr are
+        # sent to /dev/null via file_actions. posix_spawn runs no atfork handlers.
+        _null = os.open(os.devnull, os.O_WRONLY)
+        try:
+            pid = os.posix_spawn(
+                vpy, [vpy, wfile, file, action, json.dumps(opts)], env,
+                file_actions=[(os.POSIX_SPAWN_DUP2, _null, 1),
+                              (os.POSIX_SPAWN_DUP2, _null, 2)],
+                setsid=True)
+        finally:
+            os.close(_null)
+        st["pid"] = pid
         json.dump(st, open(sf, "w"))
         return {"ok": True, "started": True, "status_key": key, "watch": watch,
                 "before": st["before"]}
@@ -707,8 +720,18 @@ def main(file: str = "", action: str = "analyze", resampling: str = "",
         f.write(_worker_source())
         wpath = f.name
     try:
+        # close_fds=False makes CPython spawn the worker via posix_spawn rather
+        # than fork()+exec. This process (the executor's _child.py running
+        # main()) has libproj resident with a live proj.db SQLite handle in
+        # PROJ's SQLiteHandleCache (pulled in transitively, e.g. via the
+        # module-level `import fused` below). On a fork() the child runs PROJ's
+        # registered pthread_atfork child handler, which sqlite3_close()es that
+        # now-invalid handle and segfaults (SIGSEGV, code -11) before it can
+        # exec the worker. posix_spawn runs no atfork handlers, so the crash
+        # path is gone. The worker is short-lived and needs no inherited fds.
         proc = subprocess.run([vpy, wpath, file, action, json.dumps(opts)],
-                              capture_output=True, text=True, timeout=900, env=env)
+                              capture_output=True, text=True, timeout=900,
+                              env=env, close_fds=False)
         if proc.returncode != 0:
             tail = (proc.stderr or "").strip().splitlines()
             return {"error": "worker failed: " + (tail[-1] if tail else "unknown error")}
