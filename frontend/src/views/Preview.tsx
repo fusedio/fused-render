@@ -6,7 +6,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   getDeployStatus,
-  getPrefs,
   rawUrl,
   resolveConditions,
   renameEntry,
@@ -18,6 +17,7 @@ import type { Deployment, StatResult, TemplateEntry } from "../lib/api";
 import { navigate, navigateUrl, urlForFsPath, replaceSearch } from "../lib/router";
 import { formatSize, formatMtime, basename } from "../lib/format";
 import { useRefreshOnReturn } from "../lib/hooks";
+import { useDeployEnabled } from "../lib/prefs";
 import {
   dirname,
   join,
@@ -365,29 +365,6 @@ function DeployButton({ fsPath }: { fsPath: string }) {
       )}
     </>
   );
-}
-
-// Whether the Deploy affordance is enabled (Preferences → Deployments; SPEC
-// §20). Deploy is opt-in, so the button stays hidden until the pref reads on —
-// default false while loading means it never flashes on for a user who left it
-// off. Re-read on focus/visibility so toggling it in the Preferences tab shows
-// through without a reload (same cheap-local-read posture as the deploy dot).
-function useDeployEnabled(): boolean {
-  const [enabled, setEnabled] = useState(false);
-  const alive = useRef(true);
-  useEffect(() => () => {
-    alive.current = false;
-  }, []);
-  const refresh = () => {
-    getPrefs()
-      .then((p) => {
-        if (alive.current) setEnabled(p.deploy.enabled);
-      })
-      .catch(() => {});
-  };
-  useEffect(refresh, []); // initial read
-  useRefreshOnReturn(refresh);
-  return enabled;
 }
 
 function TemplatePreview({

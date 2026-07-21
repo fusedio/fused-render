@@ -2590,18 +2590,18 @@ select.field-control:has(option[value=""]:checked) {
 /* ---- Preferences page (SPEC §20) ------------------------------------------ */
 
 /* Bottom-left entry: pinned to the sidebar's bottom edge, muted until hover. */
-/* Footer: Templates, Preferences, and the tour trigger as three equal columns,
-   each a centered icon over a small muted label. Deliberately understated
-   (D80) — the label just disambiguates the icons. */
+/* Footer: Templates, Mounts, and Preferences as three equal columns, each a
+   centered icon over a small muted label. Deliberately understated (D80) —
+   the label just disambiguates the icons. Fused account (D125) no longer
+   gets its own column — its signed-in dot moved onto Preferences — which is
+   what keeps this back down to a single row instead of the 2×2 grid a 4th
+   entry needed. */
 .sidebar-footer {
   margin-top: auto;
   padding: 6px;
   border-top: 1px solid var(--border);
   flex: 0 0 auto;
-  /* Four entries no longer fit one row of the ~220px sidebar without
-     truncating every label — a 2×2 grid keeps the labels readable. */
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
   gap: 4px;
 }
 
@@ -2719,6 +2719,41 @@ select.field-control:has(option[value=""]:checked) {
   gap: 24px;
   overflow-y: auto;
   font-size: 13px;
+}
+
+/* Render preferences / Fused account tabs (D125) — same look as the
+   Templates page's bindings/library tabs. */
+.prefs-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.prefs-tab {
+  font: inherit;
+  font-size: 13px;
+  padding: 9px 4px;
+  margin-right: 20px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.prefs-tab:hover {
+  color: var(--fg);
+}
+
+.prefs-tab.active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+
+.prefs-tabpanel {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
 }
 
 .prefs-section {

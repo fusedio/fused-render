@@ -39,6 +39,7 @@ import { splitShellSearch } from "../lib/layout-codec";
 import { fuzzyMatch, highlightSegments } from "../lib/fuzzy";
 import type { FuzzyResult } from "../lib/fuzzy";
 import { useAccountLoggedIn } from "../lib/account";
+import { useDeployEnabled } from "../lib/prefs";
 
 // The fs path a bookmark targets, decoded from its /view/ url (same rule as
 // the hover card). Used for search matching and the tooltip.
@@ -297,8 +298,12 @@ export default function Sidebar({ config }: SidebarProps) {
   useUrlVersion();
   useBookmarksVersion();
   useRecentsVersion();
-  // Signed-in dot on the footer's Fused-account entry (SPEC AC-1).
+  // Signed-in dot on the footer's Preferences entry (SPEC AC-1): shown only
+  // once Deploy is enabled, since that's the only reason this app cares about
+  // a Fused account at all — a dot for a feature the user hasn't turned on
+  // would just be a mystery indicator.
   const accountLoggedIn = useAccountLoggedIn();
+  const deployEnabled = useDeployEnabled();
 
   // BUGBOT: config (and its learn_mount_ready flag) is fetched exactly ONCE
   // at page load (main.tsx), well before the server's background automount
@@ -1025,7 +1030,8 @@ export default function Sidebar({ config }: SidebarProps) {
       )}
       {/* Preferences entry (SPEC §20) — pinned to the sidebar's bottom edge
           (margin-top: auto), deliberately unobtrusive: a muted gear row that
-          navigates to the /view/_prefs sentinel. */}
+          navigates to the /view/_prefs sentinel. Three equal columns —
+          Templates, Mounts, Preferences. */}
       <div className="sidebar-footer">
         <button
           type="button"
@@ -1063,28 +1069,6 @@ export default function Sidebar({ config }: SidebarProps) {
           </span>
           <span className="prefs-label">Mounts</span>
         </button>
-        {/* Fused account entry — in-app sign-in/out, /view/_account
-            (SPEC AC-1). The green dot is the
-            signed-in signal, same affordance as the preview header's
-            deploy dot. */}
-        <button
-          type="button"
-          title={accountLoggedIn ? "Fused account (signed in)" : "Fused account"}
-          aria-label="Fused account"
-          className={
-            "sidebar-item prefs-link" + (location.pathname === "/view/_account" ? " active" : "")
-          }
-          onClick={() => navigateUrl("/view/_account")}
-        >
-          <span className="icon">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-              <circle cx="12" cy="7" r="4" />
-            </svg>
-            {accountLoggedIn && <span className="account-signedin-dot" />}
-          </span>
-          <span className="prefs-label">Fused account</span>
-        </button>
         <button
           type="button"
           title="Preferences"
@@ -1099,6 +1083,14 @@ export default function Sidebar({ config }: SidebarProps) {
               <circle cx="12" cy="12" r="3" />
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
             </svg>
+            {/* Fused-account signed-in signal (SPEC AC-1), folded onto the
+                Preferences entry now that account management lives there as
+                a tab rather than its own sidebar entry. Gated on Deploy
+                being enabled — that's the only reason a Fused account
+                matters here, and the dot rides the button's existing click
+                target rather than being its own (too small to hit on its
+                own). */}
+            {deployEnabled && accountLoggedIn && <span className="account-signedin-dot" />}
           </span>
           <span className="prefs-label">Preferences</span>
         </button>

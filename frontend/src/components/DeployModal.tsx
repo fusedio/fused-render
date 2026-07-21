@@ -7,12 +7,12 @@
 //   1. loading  — config + (reconciled) status fetch in flight
 //   2. fused CLI missing — install panel (one-click when the server can pip
 //      install the pinned [fused] extra, else the manual hint)
-//   3. no hosted envs — sign in / route to the account page's setup panel
+//   3. no hosted envs — sign in / route to the account tab's setup panel
 //      (AWS env creation stays a named terminal flow, SPEC AC-9)
 //   4. the form — env picker (default: the managed fused-backend env),
 //      current deployment card (URL + copy/open), Deploy/Redeploy, Revoke.
 // The env-wide share list (every mount on an env, with revoke) lives on the
-// Fused account page's Deployments section (SPEC AC-11), not here — this
+// Fused account tab's Deployments section (SPEC AC-11), not here — this
 // modal is scoped to the current page.
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -821,7 +821,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     }
 
     if (envs.length === 0) {
-      // The setup flow itself lives on the Fused account page (M18b) — this
+      // The setup flow itself lives on the Fused account tab (M18b) — this
       // block routes there, handling the sign-in prerequisite in place.
       return (
         <div className="deploy-section">
@@ -862,11 +862,11 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
               <button
                 type="button"
                 className="btn btn-primary"
-                onClick={() => navigateUrl("/view/_account")}
+                onClick={() => navigateUrl("/view/_prefs?tab=account")}
               >
                 Set up hosted environment
               </button>
-              <span className="deploy-muted">opens the Fused account page</span>
+              <span className="deploy-muted">opens the Fused account tab in Preferences</span>
             </div>
           )}
           {/* Unconditional: an AWS-only user who is signed out must still be

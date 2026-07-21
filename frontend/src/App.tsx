@@ -23,7 +23,6 @@ import Tabs from "./views/Tabs";
 import Preferences from "./views/Preferences";
 import Templates from "./views/Templates";
 import Mounts from "./views/Mounts";
-import Account from "./views/Account";
 import BookmarkOpen from "./views/BookmarkOpen";
 
 type StatState =
@@ -267,6 +266,13 @@ export default function App({ config }: { config: Config }) {
   if (location.pathname === "/") {
     history.replaceState(null, "", urlForFsPath(config.start_dir));
   }
+  // The old standalone Fused-account page folded into Preferences as a tab
+  // (D125) — redirect its sentinel the same render-time way so existing
+  // bookmarks and the Deploy modal's "Set up hosted environment" link still
+  // land somewhere real instead of a dead route.
+  if (location.pathname === "/view/_account") {
+    history.replaceState(null, "", "/view/_prefs?tab=account");
+  }
 
   const pathname = location.pathname;
   const isPanel = pathname === "/view/_panel" || pathname === "/embed/_panel";
@@ -275,10 +281,9 @@ export default function App({ config }: { config: Config }) {
   const isTemplates = pathname === "/view/_templates";
   // PROTOTYPE: mounts sentinel (see views/Mounts.tsx).
   const isMounts = pathname === "/view/_mounts";
-  const isAccount = pathname === "/view/_account";
   const isBookmark = pathname === "/view/_bookmark";
   const fsPath =
-    isPanel || isTabs || isPrefs || isTemplates || isMounts || isAccount || isBookmark
+    isPanel || isTabs || isPrefs || isTemplates || isMounts || isBookmark
       ? null
       : fsPathFromLocation();
   // Browsing to a `.bookmark` file in the explorer opens it like a Finder
@@ -297,10 +302,8 @@ export default function App({ config }: { config: Config }) {
             ? "Templates"
             : isMounts
               ? "Mounts"
-              : isAccount
-                ? "Fused account"
-                : isBookmark || bookmarkFile
-                  ? "Bookmark"
+              : isBookmark || bookmarkFile
+                ? "Bookmark"
                 : fsPath
                   ? undefined
                   : null
@@ -365,19 +368,6 @@ export default function App({ config }: { config: Config }) {
         </div>
         <div id="content">
           <Mounts key={epoch} />
-        </div>
-      </>
-    );
-  } else if (isAccount) {
-    // Fused account (SPEC §27, AC-1): in-app sign-in/out for
-    // the fused CLI — same sentinel pattern as _prefs. /view only.
-    main = (
-      <>
-        <div id="breadcrumb">
-          <StaticBreadcrumb label="Fused account" />
-        </div>
-        <div id="content">
-          <Account key={epoch} />
         </div>
       </>
     );
