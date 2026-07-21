@@ -27,6 +27,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import socket
 import stat as stat_mod
 import subprocess
@@ -384,6 +385,145 @@ def _rcd_state_path() -> str:
     return os.path.join(storage.home_dir(), "rcd.json")
 
 
+def _rcd_registry_path() -> str:
+    """Path to the central registry of every rcd this machine has spawned,
+    one entry per home (state) dir.
+
+    Unlike rcd.json — which lives INSIDE home_dir() and so vanishes with the
+    dir when a pytest temp home is rmtree'd or a git worktree is deleted, taking
+    the only record of that daemon's pid with it — the registry lives at the
+    BASELINE home (never branch-nested). One registry is shared by the baseline
+    run and every per-branch/worktree run, so reap_stale_rcd() on any run can
+    still see, and reap, a daemon whose own (now-deleted) home would otherwise
+    leave no trace. This is the ONLY place we learn the pid of a daemon whose
+    home dir is already gone."""
+    base = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
+    return os.path.join(base, "rcd-registry.json")
+
+
+def _register_rcd(pid: int, port: int) -> None:
+    """Record a freshly spawned daemon in the central registry, keyed by its
+    home dir (a new daemon for the same home replaces the old record). Purely
+    additive breadcrumb for reap_stale_rcd — a failure here must never fail a
+    mount, so it's swallowed."""
+    try:
+        home = storage.home_dir()
+        reg = storage.read_json(_rcd_registry_path())
+        entries = [e for e in reg if isinstance(e, dict)] if isinstance(reg, list) else []
+        entries = [e for e in entries if e.get("dir") != home]  # dedupe by home
+        entries.append({"pid": pid, "port": port, "dir": home})
+        storage.write_json(_rcd_registry_path(), entries)
+    except OSError:
+        logger.warning("rcd registry write failed", exc_info=True)
+
+
+def _pid_alive(pid: int) -> bool:
+    """True if a process with `pid` currently exists. Signal 0 probes without
+    delivering anything; EPERM means it exists but is owned by someone else."""
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _pid_looks_like_rcd(pid: int) -> bool:
+    """True only when pid's command line is recognisably an `rclone ... rcd`.
+
+    A conservative identity guard: the reaper must NEVER signal a process that
+    merely inherited a pid we once recorded (pids are recycled). Best-effort —
+    any ps failure is treated as 'not confirmed', so we fail closed (don't
+    kill on doubt)."""
+    if not pid or pid <= 0:
+        return False
+    try:
+        out = subprocess.run(
+            ["ps", "-o", "command=", "-p", str(pid)],
+            capture_output=True, text=True, timeout=3,
+        ).stdout.lower()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "rclone" in out and "rcd" in out
+
+
+def _confirmed_our_rcd(entry: dict) -> bool:
+    """Proof that entry's pid IS the rclone rcd we recorded, gating a kill.
+    Two independent checks, either suffices: (1) the recorded rc port still
+    answers core/pid with the recorded pid; (2) the pid's command line is an
+    rclone rcd. Both fail closed."""
+    pid = entry.get("pid") or 0
+    port = entry.get("port")
+    if port:
+        try:
+            if _rc(int(port), "core/pid", timeout=3).get("pid") == pid:
+                return True
+        except (RuntimeError, ValueError, TypeError):
+            pass
+    return _pid_looks_like_rcd(pid)
+
+
+def reap_stale_rcd() -> None:
+    """Kill rcd daemons that outlived the home/worktree that spawned them, and
+    prune dead entries from the registry. Best-effort and deliberately
+    CONSERVATIVE — the rcd is spawned detached and 'outlives the server on
+    purpose', so nothing else ever reaps it; days-old orphans from finished
+    pytest runs and deleted worktrees are the observed failure mode.
+
+    An entry is only ever killed when BOTH hold:
+      * its recorded home (state) dir no longer exists  -> orphaned, AND
+      * the pid is still alive AND provably our rclone rcd (_confirmed_our_rcd).
+    Then it gets a SIGTERM (rcd unmounts cleanly on SIGTERM) and its registry
+    entry is dropped.
+
+    Everything else is left as safe as possible:
+      * home dir still present            -> assumed in use, untouched (this is
+                                             also the daemon we're about to
+                                             reuse/spawn);
+      * pid already dead                  -> just drop the stale registry entry;
+      * orphaned but NOT provably ours    -> left in the registry, never
+                                             blind-killed, for a later run to
+                                             reconsider.
+
+    Wired into the (rare) spawn path of _ensure_rcd_locked, not a timer."""
+    reg = storage.read_json(_rcd_registry_path())
+    if not isinstance(reg, list):
+        return
+    kept: list = []
+    changed = False
+    for e in reg:
+        if not isinstance(e, dict):
+            changed = True
+            continue
+        pid = e.get("pid") or 0
+        home = e.get("dir")
+        home_present = isinstance(home, str) and os.path.isdir(home)
+        if home_present:
+            kept.append(e)  # dir present -> in use, leave alone
+            continue
+        # home dir is gone -> candidate orphan
+        if not _pid_alive(pid):
+            changed = True  # already dead: drop the stale record
+            continue
+        if _confirmed_our_rcd(e):
+            try:
+                os.kill(pid, signal.SIGTERM)
+                logger.info("reaped orphaned rcd pid=%s (home %s gone)", pid, home)
+            except OSError:
+                logger.warning("failed to signal orphaned rcd pid=%s", pid, exc_info=True)
+            changed = True  # drop after signalling
+        else:
+            kept.append(e)  # alive but unidentifiable -> never blind-kill
+    if changed:
+        try:
+            storage.write_json(_rcd_registry_path(), kept)
+        except OSError:
+            logger.warning("rcd registry prune failed", exc_info=True)
+
+
 def _rcd_log_path() -> str:
     return os.path.join(storage.home_dir(), "rcd.log")
 
@@ -447,6 +587,10 @@ def write_rcd_state(port: int, pid: int, log_path: str | None = None) -> None:
         _rcd_state_path(),
         {"port": port, "pid": pid, "log": log_path or _rcd_log_path()},
     )
+    # Also record in the central registry so a future run can reap this daemon
+    # even after its home dir (and this rcd.json) is deleted (INCIDENT: leaked
+    # rcd daemons outliving pytest runs / deleted worktrees for days).
+    _register_rcd(pid, port)
 
 
 def _rc(port: int, method: str, params: dict | None = None, timeout: float = 30):
@@ -613,6 +757,13 @@ def _ensure_rcd_locked() -> int:
     port = _live_rcd_port()
     if port is not None:
         return port
+    # About to spawn a fresh daemon — a natural, rare moment to opportunistically
+    # reap any rcd that outlived a deleted home/worktree (best-effort, never
+    # blocks the spawn; NOT on a timer). The hot reuse path above skips this.
+    try:
+        reap_stale_rcd()
+    except Exception:
+        logger.warning("reap_stale_rcd failed", exc_info=True)
     bin_ = rclone_bin()
     if not bin_:
         raise RuntimeError("rclone is not installed")
