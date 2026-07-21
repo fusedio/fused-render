@@ -26,12 +26,20 @@ def launcher_exe() -> Path:
     must always name that launcher, never pythonw.exe directly, or the
     installer's uninstall sweep (which matches on the quoted launcher path)
     silently stops matching and leaves an orphaned Run entry (bugbot #6).
+
+    Raises FileNotFoundError if discovery is ambiguous — no guessed fallback
+    name, since any hardcoded name is wrong for at least one product build
+    and a wrong guess would silently write a broken Run key instead of
+    failing the way callers (tray.py's toggle handler) already expect.
     """
     payload_dir = Path(sys.executable).resolve().parent.parent
     candidates = list(payload_dir.glob("*.exe"))
-    if len(candidates) == 1:
-        return candidates[0]
-    return payload_dir / "FusedRender.exe"
+    if len(candidates) != 1:
+        raise FileNotFoundError(
+            f"could not identify the launcher exe in {payload_dir} "
+            f"(found {[c.name for c in candidates]})"
+        )
+    return candidates[0]
 
 
 def enabled() -> bool:

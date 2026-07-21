@@ -46,7 +46,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         swprintf_s(command_line + written, 32768 - written, L" %s", pCmdLine);
     }
 
-    BOOL shutdown_for_upgrade = (wcsstr(pCmdLine, L"--shutdown-for-upgrade") != NULL);
+    BOOL shutdown_for_upgrade = (pCmdLine != NULL &&
+                                  wcsstr(pCmdLine, L"--shutdown-for-upgrade") != NULL);
 
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;

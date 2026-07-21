@@ -16,7 +16,7 @@ _APP_USER_MODEL_ID = "Fused.FusedRender.Desktop"
 def main() -> None:
     try:
         os.environ.update(DesktopPaths.discover().self_environment())
-    except OSError:
+    except Exception:  # noqa: BLE001 - e.g. RuntimeError if LOCALAPPDATA is unset
         pass  # fall through with whatever env we were launched with
 
     try:
@@ -30,7 +30,7 @@ def main() -> None:
     except Exception as error:  # noqa: BLE001 - top-level: report, never crash silently
         try:
             DesktopPaths.discover().log(str(error))
-        except OSError:
+        except Exception:  # noqa: BLE001 - logging is best-effort, never the point of failure
             pass
         MB_OK = 0x0
         MB_ICONERROR = 0x10
