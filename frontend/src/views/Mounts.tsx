@@ -167,15 +167,20 @@ export function parseStorageUrl(raw: string): ParsedLink | null {
   const qsPrefix = u.searchParams.get("prefix") ?? "";
 
   // AWS S3 console: …/s3/buckets/<bucket>?prefix=a/b/&region=…
+  // ONLY the S3 console is a storage link — require the "buckets/<bucket>"
+  // marker so an unrelated AWS console page (ec2, iam, …) isn't mistaken for a
+  // bucket and doesn't auto-fill a bogus path from its last URL segment.
   if (host.endsWith("console.aws.amazon.com")) {
     const bi = segs.indexOf("buckets");
-    const bucket = bi >= 0 ? segs[bi + 1] : segs[segs.length - 1];
+    const bucket = bi >= 0 ? segs[bi + 1] : "";
     return bucket ? { provider: "s3", path: joinPath(bucket, qsPrefix) } : null;
   }
-  // GCP console: …/storage/browser/<bucket>/<prefix>
+  // GCP console: …/storage/browser/<bucket>/<prefix> — likewise require the
+  // "browser/<bucket>" marker; other cloud-console pages are not storage links.
   if (host.endsWith("console.cloud.google.com")) {
     const bi = segs.indexOf("browser");
-    const rest = bi >= 0 ? segs.slice(bi + 1) : segs;
+    if (bi < 0) return null;
+    const rest = segs.slice(bi + 1);
     return rest.length ? { provider: "gcs", path: rest.join("/") } : null;
   }
   // GCS path-style data hosts.
@@ -569,7 +574,16 @@ export default function Mounts() {
   const [restartError, setRestartError] = useState<string | null>(null);
 
   const reload = () => {
-    getMounts().then(setState, (e: Error) => setLoadError(e.message));
+    getMounts().then(
+      (r) => {
+        setState(r);
+        // Clear any prior load error — otherwise a stale "Failed to load mounts"
+        // banner lingers over an up-to-date list after a recovered fetch (e.g.
+        // the reload() a failed doRestart fires, or a transient error healing).
+        setLoadError(null);
+      },
+      (e: Error) => setLoadError(e.message),
+    );
   };
   useEffect(reload, []);
 

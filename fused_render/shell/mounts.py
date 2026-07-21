@@ -3430,15 +3430,6 @@ def _mount_credential_status(m: dict, bin_: str | None = None) -> str:
     return _credential_probe(bin_, name)
 
 
-def _mount_credential_error(m: dict) -> str | None:
-    """For a broken mount backed by detected (env_auth) credentials, the
-    'refresh your credentials' message when a top-level listing fails
-    credential-shaped — else None. broken_mount_error uses this to distinguish
-    an expired-credential mount (reconnect won't help; the user must re-auth)
-    from a merely dead daemon."""
-    return _CRED_EXPIRED_MSG if _mount_credential_status(m) == "bad" else None
-
-
 @router.post("/api/mounts/remotes/detect")
 def create_detected_remote(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     """Materialize a keyless rclone remote from an auto-detected credential
