@@ -1035,7 +1035,10 @@
       from: state.from,
       to: state.to,
       ...extra
-    });
+      // key:null — reader.py serves the 2s tail poll loop alongside view loads;
+      // default per-file cancellation would leave a superseded poll pending, so
+      // its finally never clears `tailPolling` and tailing stops forever (D114).
+    }, { key: null });
   }
 
   function overviewLevels(data) {

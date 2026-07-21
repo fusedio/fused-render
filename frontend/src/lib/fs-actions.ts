@@ -60,34 +60,72 @@ export function duplicateName(name: string, counter: number, isDir: boolean): st
   return name + suffix;
 }
 
+// Whether a path exists, via a stat probe. Used only to disambiguate a
+// candidate name when the folder listing was TRUNCATED (the 10k server cap), so
+// a colliding name PAST the cap — invisible to the listing — doesn't slip
+// through and 409. A stat that fails for any reason (404 or a network blip) is
+// treated as "free": the worst case falls back to the server's own 409, which
+// is exactly the pre-fix behaviour.
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await statPath(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Advance `candidate` past any name that exists on disk, probing one stat at a
+// time (bounded). Only invoked for a truncated listing, where the in-page
+// `taken` set is incomplete. `i` continues the "… copy N" counter.
+async function firstFreeProbed(
+  dir: string,
+  name: string,
+  isDir: boolean,
+  i: number,
+  candidate: string
+): Promise<string> {
+  for (let tries = 0; tries < 100 && (await pathExists(join(dir, candidate))); tries++) {
+    candidate = duplicateName(name, ++i, isDir);
+  }
+  return candidate;
+}
+
 // First free "… copy[/ n]" destination path for a Duplicate of `name` into
 // `parentDir`, chosen by listing the folder first so the copy never 409s on an
-// existing name.
+// existing name. When the listing is truncated (huge folder past the server
+// cap), the chosen candidate is verified with a stat probe so a collision past
+// the cap can't leak through as a bare 409.
 export async function freeDuplicatePath(
   parentDir: string,
   name: string,
   isDir: boolean
 ): Promise<string> {
   const dir = normDir(parentDir); // "" (root) would be rejected by listDir
-  const { entries } = await listDir(dir);
+  const { entries, truncated } = await listDir(dir);
   const taken = new Set(entries.map((e) => e.name));
   let i = 1;
   let candidate = duplicateName(name, i, isDir);
   while (taken.has(candidate)) candidate = duplicateName(name, ++i, isDir);
+  if (truncated) candidate = await firstFreeProbed(dir, name, isDir, i, candidate);
   return join(dir, candidate);
 }
 
 // Destination path for pasting `name` into `parentDir`: keeps the original
 // name when free, otherwise falls back to the first free "… copy[/ n]" name
-// (same dedupe as Duplicate) so a paste never 409s on an existing entry.
+// (same dedupe as Duplicate) so a paste never 409s on an existing entry. As
+// with Duplicate, a truncated listing verifies the choice with a stat probe.
 export async function freePastePath(parentDir: string, name: string, isDir: boolean): Promise<string> {
   const dir = normDir(parentDir);
-  const { entries } = await listDir(dir);
+  const { entries, truncated } = await listDir(dir);
   const taken = new Set(entries.map((e) => e.name));
-  if (!taken.has(name)) return join(dir, name);
+  if (!taken.has(name) && !(truncated && (await pathExists(join(dir, name))))) {
+    return join(dir, name);
+  }
   let i = 1;
   let candidate = duplicateName(name, i, isDir);
   while (taken.has(candidate)) candidate = duplicateName(name, ++i, isDir);
+  if (truncated) candidate = await firstFreeProbed(dir, name, isDir, i, candidate);
   return join(dir, candidate);
 }
 

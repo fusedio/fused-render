@@ -651,7 +651,10 @@
   // ------------------------------------------------------------------- app -----
   const S = { view: null, mode: "view", dirty: false, saving: false, savedMtime: 0, comments: {}, author: "", panelTab: "comments" };
   let fileMtime = null;   // arms the save conflict lock; re-armed after every save
-  const py = (params) => fused.runPython("./docs.py", params);
+  // key:null — every docs.py action (save/export writes, detached install,
+  // status poll, reads) shares this helper; the default per-file cancellation
+  // would abort in-flight writes or stall the poll loop (D114).
+  const py = (params) => fused.runPython("./docs.py", params, { key: null });
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   let toastTimer;
   function toast(msg, ms = 2800) { const t = $("toast"); t.textContent = msg; t.style.display = "block"; clearTimeout(toastTimer); toastTimer = setTimeout(() => t.style.display = "none", ms); }

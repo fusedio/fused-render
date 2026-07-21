@@ -303,6 +303,10 @@
 
 <script>
 const PY = "./reader.py";
+// key:null — reader.py serves a 4-wide thumbnail worker pool + neighbor prefetch
+// + lightbox display concurrently, all results needed; the default per-file
+// cancellation (D114) would collapse them to one. Route every call through this.
+const pyRun = (params) => fused.runPython(PY, params, { key: null });
 const q = (id) => document.getElementById(id);
 const P = fused.params;
 const getP = (k, d) => P.get(k) || d;
@@ -327,7 +331,7 @@ let gridCursor = -1, bannerDismissed = false, ready = false;
 
 // ---- boot ----------------------------------------------------------------
 async function boot() {
-  APP = await fused.runPython(PY, { action: "check_setup" });
+  APP = await pyRun( { action: "check_setup" });
   if (!LS.get("roots", []).length && APP.home) {
     LS.set("roots", [{ name: baseName(APP.home), path: APP.home }]);
   }
@@ -400,7 +404,7 @@ async function fillChildren(kids, path) {
   kids.dataset.loaded = "1";
   let dirs = childCache.get(path);
   if (!dirs) {
-    try { dirs = (await fused.runPython(PY, { action: "folders", path })).dirs; }
+    try { dirs = (await pyRun( { action: "folders", path })).dirs; }
     catch { dirs = []; }
     childCache.set(path, dirs);
   }
@@ -436,7 +440,7 @@ async function loadPicker(path) {
   const list = q("pkList");
   list.innerHTML = "Loading…";
   let res;
-  try { res = await fused.runPython(PY, { action: "folders", path }); }
+  try { res = await pyRun( { action: "folders", path }); }
   catch (e) { list.innerHTML = ""; const d = document.createElement("div"); d.className = "pk-item"; d.textContent = "Cannot open: " + (e.message || path); list.append(d); return; }
   pkPath = res.path || "";
   renderPkCrumbs();
@@ -485,7 +489,7 @@ function flushThumbs() {
   while (tinflight < 4 && tqueue.length) {
     const batch = tqueue.splice(0, 24);
     tinflight++;
-    fused.runPython(PY, { action: "thumbs", paths: JSON.stringify(batch) })
+    pyRun( { action: "thumbs", paths: JSON.stringify(batch) })
       .then((res) => {
         for (const r of res.results) {
           if (r.ok) { ratios.set(r.path, r.w && r.h ? r.w / r.h : 1); thumbUrl.set(r.path, fused.rawUrl(r.cache)); thumbState.set(r.path, "ok"); }
@@ -510,7 +514,7 @@ function showMsg(t) { q("empty").style.display = "none"; q("scroll").style.displ
 
 async function loadDir(path, opts, append) {
   const offset = append ? items.length : 0;
-  const res = await fused.runPython(PY, {
+  const res = await pyRun( {
     action: "list_dir", path, sort: opts.sort, offset: String(offset), limit: "200",
     q: opts.q, date_from: opts.from, date_to: opts.to,
   });
@@ -736,7 +740,7 @@ async function openLightbox(photo) {
     return;
   }
   let out;
-  try { out = await fused.runPython(PY, { action: "display", path: photoPath, size: "fit" }); }
+  try { out = await pyRun( { action: "display", path: photoPath, size: "fit" }); }
   catch (e) { if (myReq === lbReq) q("lbSpin").textContent = "Cannot display: " + (e.message || ""); return; }
   if (myReq !== lbReq) return;
   q("lbImg").src = fused.rawUrl(out.cache);
@@ -750,7 +754,7 @@ async function loadFull() {
   const photoPath = currentDir + "/" + P.get("photo");
   const myReq = lbReq;
   try {
-    const out = await fused.runPython(PY, { action: "display", path: photoPath, size: "full" });
+    const out = await pyRun( { action: "display", path: photoPath, size: "full" });
     if (myReq !== lbReq) return;
     q("lbImg").src = fused.rawUrl(out.cache);
   } catch {}
@@ -760,7 +764,7 @@ function preloadNeighbors(idx) {
   for (const j of [idx - 1, idx + 1]) {
     const it = items[j]; if (!it) continue;
     if (it.kind === "native") { new Image().src = fused.rawUrl(it.path); continue; }
-    fused.runPython(PY, { action: "display", path: it.path, size: "fit" })
+    pyRun( { action: "display", path: it.path, size: "fit" })
       .then((o) => { new Image().src = fused.rawUrl(o.cache); })
       .catch(() => {});
   }
@@ -769,7 +773,7 @@ function preloadNeighbors(idx) {
 const LABELS = { DateTimeOriginal: "Taken", Make: "Make", Model: "Model", LensModel: "Lens", FNumber: "Aperture", ExposureTime: "Exposure", ISOSpeedRatings: "ISO", FocalLength: "Focal length", GPSLatitude: "Latitude", GPSLongitude: "Longitude" };
 async function loadMeta(photoPath) {
   const myReq = lbReq;
-  let e; try { e = await fused.runPython(PY, { action: "exif", path: photoPath }); } catch { return; }
+  let e; try { e = await pyRun( { action: "exif", path: photoPath }); } catch { return; }
   if (myReq !== lbReq) return;
   renderCaption(e);
   renderInfo(e);
@@ -868,7 +872,7 @@ q("pkCancel").onclick = closePicker;
 q("pkAdd").onclick = async () => {
   const target = normInput(q("pkInput").value) || pkPath;
   if (!target) return;
-  try { await fused.runPython(PY, { action: "folders", path: target }); }
+  try { await pyRun( { action: "folders", path: target }); }
   catch (e) { q("pkList").innerHTML = '<div class="pk-item">Not a folder: ' + target + "</div>"; return; }
   addRoot(target); renderTree(); closePicker(); P.set("photo", ""); P.set("path", target);
 };

@@ -20,10 +20,14 @@ the minted URL. Manual export remains the path for driving the hosting layer
 yourself.
 
 `page` and `out` must both be absolute filesystem paths (same convention as
-every other endpoint). Two optional fields tune the file set (see "Choosing which
-files are bundled" below): `include` (extra page-relative files to bundle as
-assets) and `exclude` (files to drop from the bundle) — both arrays of relative
-paths, defaulting to empty. On success the response is
+every other endpoint). Export is **non-destructive** — it never deletes an existing
+file — so `out` must be **empty** (or not yet exist); a non-empty `out` is rejected.
+Re-export to a fresh directory (the Deploy flow always uses a new temp dir). Three
+optional fields tune the bundle: `include` (extra page-relative files to bundle as
+assets) and `exclude` (files to drop from the bundle) — see "Choosing which files
+are bundled" below, both arrays of relative paths defaulting to empty — and
+`cache_max_age` (a string, default `"0s"`; see "Caching" below). On success the
+response is
 `{"out", "entrypoints": [...], "assets": [...], "warnings": [...]}` — the same
 shape written into `manifest.json` below, plus the resolved `out` directory and
 any advisory warnings. On a blocking export problem (see "Rules the exporter
@@ -33,32 +37,88 @@ header is a `403`).
 
 ## What a bundle contains
 
+A bundle (format **v2**) is `manifest.json` plus a single `files/` payload dir mirroring
+the page's folder — every bundled file at its real page-relative path, no category dirs:
+
 ```
 bundle/
-  page.html         # the page, copied verbatim
   manifest.json     # the contract the hosting layer reads
-  code/<name>.py    # one file per fused.runPython() target
-  assets/<key>      # one file per fused.rawUrl()/readFile() target
+  files/            # the payload — mirrors the page's folder verbatim
+    page.html       # the page
+    sine.py         # a fused.runPython() target
+    logo.png        # a fused.rawUrl()/readFile() target
+    helpers.py      # a first-party module a bundled entrypoint imports
 ```
 
-`manifest.json`:
+`manifest.json` classifies each payload file by role (paths are relative to `root`):
 
 ```json
 {
-  "fused_render_bundle": 1,
+  "fused_render_bundle": 2,
+  "root": "files",
   "page": "page.html",
-  "entrypoints": [{ "path": "./sine.py", "name": "sine", "file": "code/sine.py" }],
-  "assets": [{ "path": "./logo.png", "name": "logo.png", "file": "assets/logo.png" }]
+  "entrypoints": [{ "path": "./sine.py", "name": "sine", "key": "sine.py" }],
+  "assets": [{ "path": "./logo.png", "name": "logo.png" }],
+  "resources": [{ "key": "helpers.py" }],
+  "cache_max_age": "0s"
 }
 ```
+
+Each file's bundle location is `root/<path>` and that same path is its runtime key — there
+is no separate `file` field. (The hosting layer also still reads legacy **v1** bundles —
+`code/`/`assets/`/`resources/` category dirs with explicit `file` fields.)
 
 - **entrypoints** map each `runPython` literal path to a served route name. When
   hosted, `fused.runPython("./sine.py", params)` becomes a `POST` to that route.
 - **assets** map each `rawUrl`/`readFile` literal path to an asset key served by a
-  read-only `_asset` route.
+  read-only `_asset` route. That route honours **HTTP Range** requests (`206` +
+  `Content-Range`, with `Accept-Ranges: bytes` on a full `200`), so a browser client can
+  stream a large bundled file — e.g. geotiff.js reading a Cloud-Optimized GeoTIFF
+  byte-range by byte-range — directly from a hosted page, with no local range daemon.
+- **resources** are sibling `.py` modules a bundled entrypoint `import`s, found by a
+  static scan of the entrypoint sources (transitively). They are shipped so the served
+  entrypoint's `import helpers` resolves, but — unlike an asset — a page never fetches
+  them, so they are **not** web-served. Only absolute imports resolving to a `<name>.py`
+  beside the page are bundled; stdlib/third-party imports and subpackages are left alone.
+  A relative import (`from . import x`) is skipped — a hosted entrypoint runs without
+  package context.
 
 The hosting layer uses the manifest to wire the served page's runtime — which
 literal path posts to which route — without re-parsing the HTML.
+
+## Caching
+
+`cache_max_age` is the deploy-time choice for how long the page's result may be
+served from cache instead of re-executed — `"0s"` (off, the default) or a
+duration like `"5m"`/`"1h"`/`"1d"` (a non-negative integer + `s`/`m`/`h`/`d` unit).
+It applies **page-wide** — to every served route uniformly (the page shell, each
+`runPython` route, and the `_asset` route), matching the managed backend's
+mount-wide caching. This is safe against a redeploy serving stale content: the
+hosting layer folds the full bundle into each route's cache key, so any content
+change re-hashes it (and the `_asset` route's HTTP Range reads cache correctly
+because the `Range` header is part of that key). The Deploy modal (SPEC §19,
+DP-17) exposes it as a checkbox + duration picker (default 1h) and re-exports on
+every deploy so the manifest always carries the current choice; a direct
+`POST /api/export` caller sets it the same way.
+
+The manifest field is only **one** of the two ways this choice reaches a hosting
+layer — see the fused repo's spec/serve/fused-render.md § Caching for the full
+picture. An **AWS** environment's `build_html_artifact` reads this manifest field
+directly, so it works on both a fresh `share create` and a later `share repoint`
+(redeploy). A managed **Fused** environment does not read the manifest field for
+caching at all — it is a mount-level control-plane setting, sent as an explicit
+`share create --cache-max-age` (the Deploy modal's `deploy_page` sends both, so
+either backend gets it correctly) — and it is fixed for the life of a mount
+token; a `repoint` cannot change it, so `deploy_page` withholds the flag on
+redeploys there and persists the setting that is actually live. To actually
+change caching on a managed environment, the Deploy modal offers a "Deploy as
+new URL" action (`force_new`) that mints a fresh `share create` with the new
+setting at a new URL.
+
+See spec/caching/serve.md for how the AWS dispatcher honors it (result caching,
+cache-key scoping, the `X-Openfused-Cache` hit/miss header) and
+`fused share cache-clear <token>` / the Deploy modal's "Clear cache" action (DP-18)
+for forcing a recompute on either backend without changing this setting.
 
 ## The portable subset of `window.fused`
 
@@ -67,13 +127,19 @@ runtime API is portable:
 
 | API | Hosted? | Notes |
 |---|---|---|
-| `fused.runPython(pyPath, params, opts?)` | ✅ | `pyPath` is bundled and served as a route the page posts to. The `opts.key`/`opts.signal` stale-request cancellation (SPEC RH-9) works identically on the hosted page. |
+| `fused.runPython(pyPath, params, opts?)` | ✅ | `pyPath` is bundled and served as a route the page posts to. Default stale-request cancellation (keyed by `pyPath`) and the `opts.key`/`opts.signal` controls (SPEC RH-9) work identically on the hosted page. |
 | `fused.rawUrl(path)` | ✅ | `path` is bundled as a read-only asset. |
 | `fused.readFile(path)` | ✅ | same bundling as `rawUrl`. |
 | `fused.params.*` | ✅ | pure client-side URL state — unchanged. |
+| `fused.env` | ✅ | runtime identity — `"local"` in the fused-render app, `"hosted"` here. Branch on it to gate local-only paths when deployed. |
 | `fused.writeFile(...)` | ❌ | a hosted artifact is immutable. |
 | `fused.stat(...)` | ❌ | no filesystem to stat. |
 | SSE live-reload | ❌ | the artifact does not change under the page. |
+
+`fused.env` is the recommended way to tell the two environments apart: it is a
+**positive** signal present in both runtimes (`"local"` vs `"hosted"`), not the
+absence of a method — `writeFile`/`stat` exist in the hosted runtime too (they
+throw), so sniffing for them misidentifies a hosted page as local.
 
 ## Rules the exporter enforces
 
@@ -91,9 +157,19 @@ faithfully, rather than shipping a page whose data calls 404 at request time:
 
 Some conditions are **warnings**, not errors — they don't block export:
 
-- **Computed `rawUrl`/`readFile` paths.** The exporter can't discover the target,
-  but you can bundle it yourself via `include` (below); the served `_asset` route
-  looks the file up by its bundle key, so a runtime-computed path resolves fine.
+- **Computed `rawUrl`/`readFile` paths.** The exporter can't discover the target from
+  the HTML, but once you bundle it — via the page's bundle manifest (below) or an
+  explicit `include` — the served `_asset` route looks the file up by its bundle key and
+  the hosted runtime resolves the computed path to that key, so `fused.rawUrl("data/" +
+  name)` resolves fine. (A call like that is a string *prefix* plus an expression, so it
+  is treated as computed — it is **not** mis-bundled as a literal `data/` target.)
+  This warning is **suppressed when a manifest-declared file actually lands as a
+  `bundle` asset** in the Deploy list — the list then shows what backs the call. It is
+  keyed on the surviving asset, not the raw manifest globs: a manifest file that is also
+  a literal `rawUrl`/`readFile` target counts as `rawUrl`, and one dropped by `exclude`
+  is gone — either way no `bundle` row remains, so the warning still fires. A
+  per-deployment `include` (Deploy modal / `/api/export`) never suppresses it, since that
+  selection isn't checked in with the page.
 - **Excluding a referenced file.** Dropping a file the page literally references is
   honored, but the page's call to it will 404 when hosted.
 
@@ -121,24 +197,75 @@ auto-detected default — and persists the selection on the deployment record so
 reopened modal reloads it. `/api/export` exposes the same two fields for driving a
 bundle by hand.
 
-### Reading a bundled file from a `runPython` entrypoint
+Each asset in the list is labelled by how it is exposed, so it is clear which
+bundled files are web-fetchable via `rawUrl`/`readFile`:
 
-Included data is not placed beside your `.py` at the top level of the served
-runtime — the hosting layer materializes every bundled asset under an `assets/`
-prefix in the entrypoint's working directory (keyed by the manifest `name`, the
-same key `fused.rawUrl`/`readFile` use). So from entrypoint Python, a bare
-`open("data.csv")` will **not** find it. Read it via the injected `openfused`
-helper, which anchors an absolute path at the runtime's project root:
+- **`rawUrl`** — a literal `fused.rawUrl()`/`readFile()` reference the scan found;
+  the page fetches it via rawUrl/readFile.
+- **`bundle`** — a file declared in the page's `<script type="application/fused-bundle">`
+  manifest (below). These **auto-show up** in the list — they back a *computed*
+  rawUrl/readFile path, so the manifest is how they get bundled without a literal.
+- **`added`** — a file you added by hand ("Add files" / "Add all in folder").
 
-```python
-import openfused
+All three are served read-only by the `_asset` route regardless of label.
 
-def main():
-    return open(openfused.asset_path("data.csv")).read()   # <root>/assets/data.csv
-    # a nested include works the same: openfused.asset_path("tiles", "0.png")
+### The page's own bundle manifest (checked in, reproducible)
+
+`include`/`exclude` above are the per-deployment selection (kept on the deployment
+record). To declare the bundle set **in the repo** — reviewable, reproducible, and
+travelling inside the single HTML file — add one embedded manifest block to the page:
+
+```html
+<script type="application/fused-bundle">
+{ "include": ["data/*.json", "boundaries/**/*.geojson"] }
+</script>
 ```
 
-`open("assets/data.csv")` (relative to the working directory) also resolves, but
-`asset_path(...)` is the stable form and matches how the `_asset` route serves the
-same bytes to the browser. This `assets/` location is set by the hosting layer's
-resource scheme, not by where the bundle physically stores the file.
+- **`include`** takes page-relative **globs** (`*`, `?`, `**` for recursion) and/or
+  literal paths — an entry with no `*`/`?` is a literal, so a real filename with brackets
+  (e.g. a `file[1].json` browser download) is taken as-is, not a character class. Globs are
+  expanded against the page dir at export time and each match runs
+  the same safety checks as any asset (`..`/absolute/symlink escapes are rejected). A glob
+  that matches nothing is a **warning**; a literal that isn't on disk is an **error**. The
+  manifest set is folded in **beneath** any `/api/export` `include`.
+- The block carries **no version** — the `type` attribute identifies it, and unknown keys
+  are ignored, so new directives can be added later without breaking older exports. It is
+  stripped from the HTML before the dependency scan, so its JSON body is never misread as a
+  `fused.*` call.
+- **`exclude` is not honored here** (it would publish the withheld file names in the served
+  page source) — it is warned about; drop files via the Deploy modal / `/api/export`
+  `exclude` instead.
+
+This is the clean way to back a **computed** asset call: declare `"include": ["data/*.json"]`
+and fetch with `fused.rawUrl("data/" + name)` — the glob bundles the files and the hosted
+`_asset` route resolves the computed name by key, so there is no `RAW_URLS`-style table to
+hand-maintain.
+
+### Reading a bundled file / importing a module from a `runPython` entrypoint
+
+The hosting layer materializes every bundled file at its **real page-relative path**
+under the entrypoint's working directory — the runtime's cwd **and** `sys.path[0]`. So
+from entrypoint Python your code reads and imports exactly as it did locally, with no
+rewriting:
+
+```python
+import helpers                      # bundled automatically (a "resource") — resolves
+
+def main():
+    data = open("data.csv").read()  # <root>/data.csv — a bare relative open() works
+    return helpers.process(data)
+```
+
+- **Data files** reached by `fused.rawUrl`/`readFile`, or added under "Include files"
+  (below), land at their key, so `open("data.csv")` / `open("tiles/0.png")` resolve.
+- **Modules** a bundled entrypoint imports are discovered and shipped automatically, so
+  `import helpers` works. Only absolute imports of a sibling `<name>.py` are bundled; a
+  relative import (`from . import x`) is not — a hosted entrypoint runs without package
+  context.
+
+Use a bare relative path — it is the form that matches both local and hosted. Do **not**
+use `openfused.asset_path("data.csv")` here: that helper anchors under `<root>/assets/`
+(the resource scheme the project/widget deploy path uses), whereas a hosted fused-render
+page's files sit at the project root, so `asset_path` would point at a file that isn't
+there. If you need an absolute path, anchor it yourself at the working directory, e.g.
+`os.path.join(os.getcwd(), "data.csv")`.

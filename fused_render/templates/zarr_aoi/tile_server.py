@@ -28,7 +28,7 @@ Endpoints (GET, CORS *):
   /stats?file=[&reset=1]       -> live counters + recent op log
 """
 # /// script
-# dependencies = ["numpy", "zarr>=3.0.8", "s3fs", "crc32c"]
+# dependencies = ["numpy", "zarr>=3.0.8", "s3fs", "gcsfs", "crc32c"]
 # ///
 
 import hashlib
@@ -46,7 +46,7 @@ DAEMON_ROOT = os.path.join(
 )
 STATE = os.path.join(DAEMON_ROOT, "daemon.json")
 DAEMON_VENV = os.path.join(DAEMON_ROOT, "venv")
-DAEMON_DEPS = ["numpy", "zarr>=3.0.8", "s3fs", "crc32c"]
+DAEMON_DEPS = ["numpy", "zarr>=3.0.8", "s3fs", "gcsfs", "crc32c"]
 IDLE_EXIT_S = 30 * 60
 TILE = 256
 MERC_R = 6378137.0
@@ -113,11 +113,12 @@ def main(action: str = "ensure"):
         with open(STATE) as f:
             st = json.load(f)
         if _alive(st.get("port"), version):
-            return {"port": st["port"], "reused": True}
+            return {"port": st["port"], "token": st.get("token"), "reused": True}
         try:
             import urllib.request
             urllib.request.urlopen(
-                f"http://127.0.0.1:{st.get('port')}/quit", timeout=1).read()
+                f"http://127.0.0.1:{st.get('port')}/quit?t={st.get('token', '')}",
+                timeout=1).read()
         except Exception:
             pass
     except (OSError, ValueError):
@@ -147,7 +148,8 @@ def main(action: str = "ensure"):
             with open(STATE) as f:
                 st = json.load(f)
             if st.get("version") == version and _alive(st.get("port"), version):
-                return {"port": st["port"], "reused": False}
+                return {"port": st["port"], "token": st.get("token"),
+                        "reused": False}
         except (OSError, ValueError):
             continue
     return {"error": f"zarr AOI daemon did not start — see {log}"}
@@ -163,11 +165,16 @@ except ImportError:
 # ================================================================ daemon
 def _serve():
     import numpy as np
+    import secrets
     import zarr
     from collections import OrderedDict, deque
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from urllib.parse import urlparse, parse_qs
     from zarr.storage import WrapperStore
+
+    # Per-daemon secret required on every data endpoint (except /ping), threaded
+    # in by the template as ?t=; see geotiff/tile_server.py for the rationale.
+    TOKEN = secrets.token_urlsafe(32)
 
     VERSION = _version()
     last_hit = [time.time()]
@@ -375,6 +382,14 @@ def _serve():
                     return {"kind": "s3", "url": "s3://" + key,
                             "storage_options": so,
                             "label": f"mount '{name}' → s3://{key}"
+                                     + (" (anonymous)" if anon else "")}
+                elif cfg.get("type") == "google cloud storage":
+                    # GCS analog of the s3 branch: gcsfs takes token="anon" for
+                    # anonymous public buckets, and needs no region/endpoint.
+                    anon = cfg.get("anonymous") == "true"
+                    return {"kind": "gcs", "url": "gcs://" + key,
+                            "storage_options": {"token": "anon"} if anon else {},
+                            "label": f"mount '{name}' → gcs://{key}"
                                      + (" (anonymous)" if anon else "")}
         return {"kind": "local", "url": path, "label": path + " (local)"}
 
@@ -978,6 +993,9 @@ def _serve():
             last_hit[0] = time.time()
             u = urlparse(self.path)
             q = parse_qs(u.query)
+            if u.path != "/ping" and q.get("t", [""])[0] != TOKEN:
+                self._send(403, b"forbidden", "text/plain")
+                return
             try:
                 if u.path == "/ping":
                     code, body, ct = 200, json.dumps(
@@ -1026,7 +1044,8 @@ def _serve():
     port = srv.server_address[1]
     os.makedirs(os.path.dirname(STATE), exist_ok=True)
     with open(STATE, "w") as fh:
-        json.dump({"port": port, "pid": os.getpid(), "version": VERSION}, fh)
+        json.dump({"port": port, "token": TOKEN,
+                   "pid": os.getpid(), "version": VERSION}, fh)
 
     def reaper():
         while True:

@@ -21,6 +21,11 @@ from fastapi.responses import JSONResponse
 from fused_render.server import _fs_stat as STAT
 from fused_render.server import _fs_write as WRITE
 
+# os.access always says yes for root, so the chmod-based gates can't trip.
+skip_root = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="read-only bits are ignored when running as root")
+
 
 def _status(resp) -> int:
     return resp.status_code if isinstance(resp, JSONResponse) else 200
@@ -58,11 +63,13 @@ def test_stat_writable_true_for_writable_file(target):
     assert out["writable"] is True
 
 
+@skip_root
 def test_stat_writable_false_for_readonly_file(readonly):
     out = _data(STAT(str(readonly)))
     assert out["writable"] is False
 
 
+@skip_root
 def test_stat_writable_on_directory(tmp_path):
     assert _data(STAT(str(tmp_path)))["writable"] is True
     os.chmod(tmp_path, stat.S_IRUSR | stat.S_IXUSR)
@@ -74,6 +81,7 @@ def test_stat_writable_on_directory(tmp_path):
 
 # --------------------------------------------------------- write guard (403)
 
+@skip_root
 def test_write_refuses_readonly_target(readonly):
     resp = _write(readonly, "clobbered")
     assert _status(resp) == 403
@@ -120,9 +128,18 @@ def test_write_create_ok_for_new_file(tmp_path):
 @pytest.fixture
 def mounted(tmp_path, monkeypatch):
     """A real file sitting under a fake mountpoint inside a redirected
-    FUSED_RENDER_HOME. Returns a factory: mounted(read_only=...) -> file path."""
+    FUSED_RENDER_HOME. Returns a factory: mounted(read_only=...) -> file path.
+
+    fs/stat routes a mount-backed stat through the rclone rc API instead of the
+    kernel (a kernel GETATTR over a mount can wedge it), so a live stub rcd must
+    answer operations/stat for the mounted file."""
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     import fused_render.shell.mounts as mounts
+    from test_shell_mounts import StubRcd
+
+    stub = StubRcd()
+    stub.responses["operations/stat"] = {"item": {"Size": len(b"original")}}
+    mounts.write_rcd_state(stub.port, 4242)
 
     def make(name, read_only):
         m = mounts.add_mount(name, f"{name}-remote:bucket", read_only=read_only)
@@ -133,7 +150,8 @@ def mounted(tmp_path, monkeypatch):
             fh.write("original")
         return f
 
-    return make
+    yield make
+    stub.close()
 
 
 def test_stat_not_writable_under_read_only_mount(mounted):

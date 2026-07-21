@@ -746,11 +746,14 @@ async function sendMessage(message) {
       session_id: fused.params.get("session_id") || "",
       model: fused.params.get("model") || DEFAULT_MODEL,
       effort: fused.params.get("effort") || DEFAULT_EFFORT,
-    });
+      // key:null — all agent.py calls opt out of default per-file cancellation
+      // (D114): start/poll/history/sessions share this file, and superseding an
+      // awaited poll would leave it pending and hang the streaming loop.
+    }, { key: null });
     if (error) throw new Error(error);
 
     while (true) {
-      const data = await fused.runPython("./agent.py", { action: "poll", run_id });
+      const data = await fused.runPython("./agent.py", { action: "poll", run_id }, { key: null });
       if (data.session_id) { fused.params.set("session_id", String(data.session_id)); showSession(); }
       // usage arrives only at message end; estimate from streamed text meanwhile
       const tokens = Math.max(data.tokens || 0, Math.round((data.text || "").length / 4));
@@ -835,7 +838,7 @@ async function loadHistory(session_id) {
   sending = true;
   log.innerHTML = "";  // replace the visible conversation, don't append to it
   try {
-    const { turns } = await fused.runPython("./agent.py", { action: "history", file: FILE, session_id });
+    const { turns } = await fused.runPython("./agent.py", { action: "history", file: FILE, session_id }, { key: null });
     for (const t of turns) {
       if (t.role === "user") addUser(t.text);
       else addAssistant("").lastChild.innerHTML = renderMd(t.text);
@@ -870,7 +873,7 @@ function addChatRow(list, s) {
 async function loadRecent() {
   const list = document.getElementById("recentlist");
   try {
-    const { sessions, error } = await fused.runPython("./agent.py", { action: "sessions", file: FILE });
+    const { sessions, error } = await fused.runPython("./agent.py", { action: "sessions", file: FILE }, { key: null });
     if (error) throw new Error(error);
     if (!sessions.length) {
       document.getElementById("recent").style.display = "none";

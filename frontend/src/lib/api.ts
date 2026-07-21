@@ -18,6 +18,14 @@ export interface FsEntry {
 export interface ListResult {
   path: string;
   entries: FsEntry[];
+  // The listing is a partial page: the directory has more entries than the
+  // server's LIST_MAX_ENTRIES cap (or the remote listing was capped). Older
+  // servers omit these two fields, so both are optional.
+  truncated?: boolean;
+  // Opaque continuation token for the next page — non-null only on the
+  // resumable S3-direct route (rclone and a local scandir can't resume). Pass
+  // it back to listDir to fetch the next page.
+  cursor?: string | null;
 }
 
 // One entry from GET /api/fs/walk. `rel` is a posix path relative to the
@@ -107,8 +115,10 @@ export function getConfig(): Promise<Config> {
   return getJson<Config>("/api/config");
 }
 
-export function listDir(fsPath: string): Promise<ListResult> {
-  return getJson<ListResult>("/api/fs/list?path=" + encodeURIComponent(fsPath));
+export function listDir(fsPath: string, cursor?: string | null): Promise<ListResult> {
+  let url = "/api/fs/list?path=" + encodeURIComponent(fsPath);
+  if (cursor) url += "&cursor=" + encodeURIComponent(cursor);
+  return getJson<ListResult>(url);
 }
 
 export function walkDir(fsPath: string, opts?: { hidden?: boolean }): Promise<WalkResult> {
@@ -292,6 +302,9 @@ export function putSession(fsPath: string, search: string): Promise<void> {
 export interface RecentEntry {
   url: string;
   openedAt: string;
+  // The page's own <title>, when one was known at record time — preferred
+  // over the file's basename for the sidebar row (see Sidebar.tsx).
+  title?: string;
 }
 
 export interface RecentsResult {
@@ -305,8 +318,11 @@ export function getRecents(): Promise<RecentsResult> {
 
 // Server no-ops (recorded: false) for directory/sentinel/missing-file urls,
 // so callers need not pre-classify the target.
-export function postRecentOpen(url: string): Promise<{ recorded: boolean }> {
-  return postJson<{ recorded: boolean }>("/api/recents/open", { url });
+export function postRecentOpen(url: string, title?: string | null): Promise<{ recorded: boolean }> {
+  return postJson<{ recorded: boolean }>(
+    "/api/recents/open",
+    title ? { url, title } : { url }
+  );
 }
 
 export function putRecentsCollapsed(collapsed: boolean): Promise<void> {
@@ -364,7 +380,21 @@ export interface Deployment {
   // Optional — records written before this feature omit them (read as []).
   include?: string[];
   exclude?: string[];
+  // The caching choice this deployment was published with — "0s" (off) or a
+  // duration like "5m"/"1h" (fused/agent_core/caching.py's cache_max_age format).
+  // Reopening the modal reloads it, same as include/exclude. Optional — records
+  // written before this feature omit it (read as "0s").
+  cache_max_age?: string;
   updated_at: string;
+}
+
+// `POST /api/deploy/clear-cache`'s result — the fused CLI's `share cache-clear`
+// output verbatim (see deploy.py's clear_cache_deployment).
+export interface CacheClearResult {
+  token: string;
+  deleted: number;
+  scope: string;
+  prefix?: string;
 }
 
 export interface DeployStatusResult {
@@ -391,13 +421,23 @@ export interface ShareMount {
   page: string | null;
 }
 
+// How a bundled asset is exposed / why it's in the bundle (export.Asset.source):
+//   reference — a literal fused.rawUrl()/readFile() the HTML scan resolved (the
+//               page fetches it via rawUrl/readFile)
+//   manifest  — declared in the page's <script type="application/fused-bundle">
+//               include, the reproducible way to back a *computed* rawUrl/readFile path
+//   include   — added by hand via the modal's include ("Add all in folder")
+// Every asset is served read-only on the hosted `_asset` route regardless; the
+// distinction drives the row's label so the list mentions rawUrl/readFile exposure.
+export type AssetSource = "reference" | "manifest" | "include";
+
 // What deploying a page would publish, resolved fresh from on-disk state —
 // shown BEFORE the Deploy click. Non-empty `errors` means the page cannot be
 // exported as-is (Deploy would fail with exactly these).
 export interface DeployPreview {
   page: string;
   entrypoints: { path: string; name: string }[];
-  assets: { path: string; name: string }[];
+  assets: { path: string; name: string; source: AssetSource }[];
   // The auto-detected default set (literal runPython/rawUrl/readFile paths, before
   // include/exclude). Lets the modal distinguish an auto file (removing → exclude,
   // shown under "Excluded" with restore) from a manual include (removing → just drop).
@@ -439,12 +479,29 @@ export function deployPage(
   env: string,
   include: string[],
   exclude: string[],
+  cacheMaxAge: string,
+  forceNew?: boolean,
 ): Promise<Deployment> {
-  return postJson<Deployment>("/api/deploy", { page: fsPath, env, include, exclude });
+  return postJson<Deployment>("/api/deploy", {
+    page: fsPath,
+    env,
+    include,
+    exclude,
+    cache_max_age: cacheMaxAge,
+    force_new: forceNew ?? false,
+  });
 }
 
 export function revokeDeployment(fsPath: string): Promise<Deployment> {
   return postJson<Deployment>("/api/deploy/revoke", { page: fsPath });
+}
+
+// Clears every cached result for the page's deployed mount (`fused share
+// cache-clear <token>`) — forces the next request to recompute instead of
+// waiting out cache_max_age. Doesn't change the deployment's status/URL/caching
+// setting.
+export function clearCacheDeployment(fsPath: string): Promise<CacheClearResult> {
+  return postJson<CacheClearResult>("/api/deploy/clear-cache", { page: fsPath });
 }
 
 export function installFused(): Promise<void> {
@@ -665,10 +722,14 @@ export interface Mount {
   name: string;
   remote: string;
   mountpoint: string;
-  // Health, not just presence: "disconnected" = a kernel mount is (or was)
-  // there but its rclone daemon no longer serves it — listings show stale or
-  // empty data. Repaired via reconnectMount (force unmount + fresh mount).
-  state: "mounted" | "disconnected" | "unmounted";
+  // Health, not just presence:
+  //  - "disconnected" = a kernel mount is (or was) there but its rclone daemon
+  //    no longer serves it — listings show stale or empty data.
+  //  - "stale" = the split-brain from the 2026-07-16 incident: rclone still
+  //    lists the mount but the kernel dropped it (e.g. the user hit
+  //    "Disconnect" on the macOS "Server connections interrupted" dialog).
+  // Both are repaired via reconnectMount (force unmount + fresh mount).
+  state: "mounted" | "stale" | "disconnected" | "unmounted";
   mounted: boolean; // state === "mounted"
   // The remote rejects writes (anonymous S3, an http backend, …), detected at
   // attach time. Files under the mountpoint stat as writable:false, so
@@ -688,11 +749,19 @@ export interface RemoteSuggestion {
   kind: "public" | "detected";
 }
 
+// An existing rclone remote. `name` is the verbatim rclone spec (incl trailing
+// ':') used unchanged as the mount base; `label` is the friendly name to show —
+// the same one its suggestion used, or the bare `name` for a custom remote.
+export interface RcloneRemote {
+  name: string;
+  label: string;
+}
+
 export interface MountsResult {
   rclone: {
     available: boolean;
     version: string | null;
-    remotes: string[];
+    remotes: RcloneRemote[];
     suggested: RemoteSuggestion[];
   };
   mounts: Mount[];

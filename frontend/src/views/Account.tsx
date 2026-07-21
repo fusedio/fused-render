@@ -29,6 +29,8 @@ import type { AccountSetupStatus, AccountStatus } from "../lib/api";
 import { notifyAccountChanged, useFusedLogin } from "../lib/account";
 import { useRefreshOnReturn } from "../lib/hooks";
 import DeploymentsList from "../components/DeploymentsList";
+import RowActionsMenu from "../components/RowActionsMenu";
+import type { MenuEntry } from "../components/ContextMenu";
 
 // The managed-env setup panel: pick the workspace (when the account has more
 // than one), name the env, run `fused cloud setup` as a tracked server job,
@@ -57,6 +59,10 @@ function SetupPanel({
   const [progress, setProgress] = useState<AccountSetupStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [doneName, setDoneName] = useState<string | null>(null);
+  // The local name is a nickname for this machine's env store, not something
+  // the user must know — so it stays hidden behind "Edit name" and the common
+  // path (import the discovered env under its default name) needs zero typing.
+  const [editingName, setEditingName] = useState(false);
 
   const chosen = orgs.length > 0 ? orgs[Math.min(pick, orgs.length - 1)] : null;
   // Mirror the server's default-name rule (flow's convention) so the field
@@ -165,16 +171,18 @@ function SetupPanel({
 
   // An account that already has a workspace doesn't get anything "created" —
   // `cloud setup --org --env` CONNECTS the existing environment (mints its
-  // access key, registers it locally). Say so, and show WHICH one, even when
-  // there is exactly one and no picker is needed.
+  // access key, registers it locally). Lead with WHICH environment that is
+  // (discovered from the server via `cloud orgs`) and make importing it one
+  // click; the local name is a nickname with a working default, so it hides
+  // behind "Edit name" rather than reading as required knowledge.
   const hasWorkspace = chosen !== null;
   return (
     <>
       <p className="deploy-muted">
         {hasWorkspace
-          ? "Your account already has a hosted environment — connecting stores its access " +
-            "key with the fused CLI on this machine and registers it as a deploy target. " +
-            "Nothing new is created."
+          ? "Your account already has a hosted environment. Connecting imports it to this " +
+            "machine — it stores the environment's access key with the fused CLI and " +
+            "registers it as a deploy target. Nothing new is created."
           : "One-time setup: creates the managed Fused environment, stores its access key " +
             "with the fused CLI, and registers it as a deploy target."}
         {orgs.length === 0 &&
@@ -184,10 +192,16 @@ function SetupPanel({
           (!probe || !probe.ok) &&
           " (Workspace discovery failed — setup will discover it itself.)"}
       </p>
-      <div className="deploy-form-row">
-        {orgs.length > 1 ? (
+      {/* The discovered environment(s): a picker when the account can target
+          more than one, else the single one shown read-only. Either way the
+          user never types the org/env — it comes from the server. */}
+      {orgs.length > 1 ? (
+        <div className="deploy-form-row">
+          <label htmlFor="account-workspace-select" className="deploy-muted">
+            Environment
+          </label>
           <select
-            aria-label="Workspace"
+            id="account-workspace-select"
             value={pick}
             onChange={(e) => {
               setPick(Number(e.target.value));
@@ -203,29 +217,54 @@ function SetupPanel({
               </option>
             ))}
           </select>
-        ) : chosen ? (
+        </div>
+      ) : chosen ? (
+        <div className="deploy-form-row">
+          <span className="deploy-muted">Environment</span>
+          <code>
+            {chosen.org} / {chosen.env}
+          </code>
+          {chosen.provision_state && chosen.provision_state !== "ready" && (
+            <span className="deploy-muted">({chosen.provision_state})</span>
+          )}
+        </div>
+      ) : null}
+      {/* Local nickname — demoted: a plain line + "Edit name", so the default
+          import path needs no typing. Shown up front only when there's no
+          workspace to import (a create, where naming is the point). */}
+      <div className="deploy-form-row">
+        {editingName || !hasWorkspace ? (
+          <>
+            <label htmlFor="account-env-name" className="deploy-muted">
+              Local name
+            </label>
+            <input
+              id="account-env-name"
+              type="text"
+              value={envName}
+              onChange={(e) => setNameOverride(e.target.value)}
+              size={14}
+            />
+          </>
+        ) : (
           <span className="deploy-muted">
-            Workspace:{" "}
-            <code>
-              {chosen.org} / {chosen.env}
-            </code>
+            Saved on this machine as <code>{envName}</code>.{" "}
+            <button
+              type="button"
+              className="link-button"
+              onClick={() => setEditingName(true)}
+            >
+              Edit name
+            </button>
           </span>
-        ) : null}
-        <label htmlFor="account-env-name" className="deploy-muted">
-          Environment name
-        </label>
-        <input
-          id="account-env-name"
-          type="text"
-          value={envName}
-          onChange={(e) => setNameOverride(e.target.value)}
-          size={14}
-        />
-        <button type="button" className="deploy-primary" onClick={begin} disabled={starting}>
+        )}
+      </div>
+      <div className="deploy-form-row">
+        <button type="button" className="btn btn-primary" onClick={begin} disabled={starting}>
           {starting
             ? "Starting…"
-            : hasWorkspace
-              ? "Connect environment"
+            : hasWorkspace && chosen
+              ? `Connect ${chosen.org} / ${chosen.env}`
               : "Set up hosted environment"}
         </button>
       </div>
@@ -483,7 +522,7 @@ export default function Account() {
           {status.cli.installable ? (
             <button
               type="button"
-              className="deploy-primary"
+              className="btn btn-primary"
               onClick={onInstall}
               disabled={busy !== null}
             >
@@ -532,40 +571,47 @@ export default function Account() {
                   </tr>
                 </thead>
                 <tbody>
-                  {status.store.envs.map((e) => (
-                    <tr key={e.name}>
-                      <td>{e.name}</td>
-                      <td>
-                        {e.backend === "fused" ? "fused — managed" : e.backend}
-                        {!e.hosted && <span className="deploy-muted"> (not a deploy target)</span>}
-                      </td>
-                      <td className="deploy-muted">
-                        {e.name === status.store.default ? "default" : ""}
-                      </td>
-                      <td>
-                        {e.name !== status.store.default && (
-                          <button
-                            type="button"
-                            className="deploy-muted"
-                            onClick={() => void onMakeDefault(e.name)}
-                            disabled={envBusy !== null}
-                            title="Make this the fused CLI's default environment"
-                          >
-                            {envBusy === "default:" + e.name ? "Setting…" : "Make default"}
-                          </button>
-                        )}{" "}
-                        <button
-                          type="button"
-                          className="deploy-danger"
-                          onClick={() => onDeleteEnv(e.name)}
-                          disabled={envBusy !== null}
-                          title="Remove the local entry only — cloud resources are not touched"
-                        >
-                          {envBusy === "delete:" + e.name ? "Forgetting…" : "Forget"}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  {status.store.envs.map((e) => {
+                    // Collapse Make default + Forget into one "⋯" per row —
+                    // fewer buttons on screen, destructive Forget behind an
+                    // intentional click (it still shows its own confirm).
+                    const isDefault = e.name === status.store.default;
+                    const items: MenuEntry[] = [];
+                    if (!isDefault) {
+                      items.push({
+                        label: "Make default",
+                        onClick: () => void onMakeDefault(e.name),
+                      });
+                    }
+                    items.push({
+                      label: "Forget…",
+                      danger: true,
+                      onClick: () => onDeleteEnv(e.name),
+                    });
+                    return (
+                      <tr key={e.name}>
+                        <td>{e.name}</td>
+                        <td>
+                          {e.backend === "fused" ? "fused — managed" : e.backend}
+                          {!e.hosted && <span className="deploy-muted"> (not a deploy target)</span>}
+                        </td>
+                        <td className="deploy-muted">{isDefault ? "default" : ""}</td>
+                        <td className="row-actions-cell">
+                          {envBusy === "default:" + e.name ? (
+                            <span className="deploy-muted">Setting…</span>
+                          ) : envBusy === "delete:" + e.name ? (
+                            <span className="deploy-muted">Forgetting…</span>
+                          ) : (
+                            <RowActionsMenu
+                              items={items}
+                              disabled={envBusy !== null}
+                              label={`Actions for ${e.name}`}
+                            />
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </>
@@ -610,7 +656,7 @@ export default function Account() {
               </button>
             </div>
           ) : (
-            <button type="button" className="deploy-primary" onClick={() => void signin.begin()}>
+            <button type="button" className="btn btn-primary" onClick={() => void signin.begin()}>
               Sign in to Fused
             </button>
           )}
@@ -672,7 +718,7 @@ export default function Account() {
           <div className="deploy-form-row">
             <button
               type="button"
-              className="deploy-danger"
+              className="btn btn-danger"
               onClick={onLogout}
               disabled={busy !== null}
               title="Removes the fused CLI's stored sign-in on this machine"

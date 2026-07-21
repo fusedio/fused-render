@@ -329,7 +329,7 @@
       bodyEl.innerHTML = `<div class="status-message">Loading preview…</div>`;
       const file = fused.params.get("_file");
       try {
-        const res = await fused.runPython("./reader.py", { file, action: "preview", entry });
+        const res = await fused.runPython("./reader.py", { file, action: "preview", entry }, { key: null });
         if (selected !== entry) return; // superseded by another click
         if (res.is_dir) { bodyEl.innerHTML = `<div class="status-message">That entry is a folder.</div>`; return; }
         const tmp = res.path;
@@ -363,7 +363,10 @@
       const label = action === "extract_all" ? "Extract all" : "Extract this file";
       notify(`${label}…`, false);
       try {
-        const res = await fused.runPython("./reader.py", { file, action, entry: entry || "" });
+        // key:null — reader.py's preview/list/extract share one channel and
+        // extract writes to disk; default per-file cancellation (D114) would let
+        // clicking another entry abort an in-flight extraction. Opt the file out.
+        const res = await fused.runPython("./reader.py", { file, action, entry: entry || "" }, { key: null });
         const what = action === "extract_all"
           ? `${res.count} file${res.count === 1 ? "" : "s"}`
           : (res.path ? "1 file" : "folder");
@@ -387,7 +390,7 @@
         return;
       }
       try {
-        const data = await fused.runPython("./reader.py", { file, action: "list" });
+        const data = await fused.runPython("./reader.py", { file, action: "list" }, { key: null });
         ENTRIES = data.entries || [];
         render();
       } catch (err) {

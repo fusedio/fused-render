@@ -755,7 +755,10 @@
       // countVal buffers the total in case the count resolves before the page
       // has been applied to `state`.
       let countVal, rendered = false;
-      fused.runPython("./reader.py", { ...args, mode: "count" })
+      // key:null — one grid load fans out count+schema+positions+N page batches
+      // on reader.py, all results needed; default per-file cancellation (D114)
+      // would keep only the last and leave the grid mostly empty.
+      fused.runPython("./reader.py", { ...args, mode: "count" }, { key: null })
         .then((c) => {
           if (seq !== loadSeq || !c || typeof c.total_rows !== "number") return;
           countVal = c.total_rows;
@@ -783,7 +786,7 @@
           let schema = schemaCache && schemaCache.key === file + "\n" + table
             ? schemaCache.schema : null;
           if (!schema) {
-            schema = await fused.runPython("./reader.py", { ...args, mode: "schema" });
+            schema = await fused.runPython("./reader.py", { ...args, mode: "schema" }, { key: null });
             if (seq !== loadSeq) return;
             schemaCache = { key: file + "\n" + table, schema };
           }
@@ -816,7 +819,7 @@
           let positions = null;
           if (args.sort || args.filters.length) {
             try {
-              const p = await fused.runPython("./reader.py", { ...args, mode: "positions" });
+              const p = await fused.runPython("./reader.py", { ...args, mode: "positions" }, { key: null });
               if (seq !== loadSeq) return;
               if (p && Array.isArray(p.positions)) {
                 positions = p.positions;
@@ -847,12 +850,12 @@
           for (const cols of packColumns(schema.columns, schema.col_sizes || {})) {
             const batchArgs = { ...args, mode: "page", columns: cols };
             if (positions) batchArgs.positions = positions;
-            fused.runPython("./reader.py", batchArgs)
+            fused.runPython("./reader.py", batchArgs, { key: null })
               .then((d) => applyBatch(seq, cols, d), () => applyBatch(seq, cols, null));
           }
           return;
         }
-        const data = await fused.runPython("./reader.py", { ...args, mode: "page" });
+        const data = await fused.runPython("./reader.py", { ...args, mode: "page" }, { key: null });
         if (seq !== loadSeq) return;
         staged = { edits: new Map(), deletes: new Set(), inserts: [] };
         state = data;
@@ -1013,7 +1016,7 @@
       try {
         await fused.runPython("./writer.py", {
           file, table: state.table || "", edits, deletes, inserts,
-        });
+        }, { key: null }); // never cancel an in-flight save (D114)
         await load(); // reflect the written file (clears staging)
       } catch (err) {
         // Batch is atomic server-side: on failure the file is untouched and the

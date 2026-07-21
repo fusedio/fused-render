@@ -3,11 +3,10 @@ import tempfile
 
 
 def state_dir() -> str:
-    from fused_render._branch import branch_ref
+    from fused_render._branch import branch_dir
 
     base = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
-    ref = branch_ref()
-    return os.path.join(base, ref) if ref else base
+    return branch_dir(base)
 
 
 def state_path(*parts: str) -> str:

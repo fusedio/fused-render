@@ -346,6 +346,10 @@ await loadScript("vendor/vega-lite.min.js");
 await loadScript("vendor/vega-embed.min.js");
 
 const PY = "./tableau.py";
+// key:null — tableau.py serves export/import writes alongside query/rows reads
+// on one channel; the default per-file cancellation (D114) would let a chart
+// interaction abort an in-flight export. Route every call through this.
+const pyRun = (params) => fused.runPython(PY, params, { key: null });
 const $ = id => document.getElementById(id);
 
 /* ================= palette (validated — see dataviz reference palette) ================= */
@@ -420,7 +424,7 @@ function makePill(name) {
 /* ================= schema / data pane ================= */
 async function openData(file, keepSheets) {
   setStatus("Opening data…");
-  const res = await fused.runPython(PY, { action: "open_data", file });
+  const res = await pyRun( { action: "open_data", file });
   schema = res;
   fieldsBy = {};
   for (const f of schema.fields) fieldsBy[f.name] = f;
@@ -636,7 +640,7 @@ async function openFilterEditor(fieldName, anchor) {
   const existing = S().filters.find(x => x.field === fieldName);
   setStatus("Loading values…");
   let dom;
-  try { dom = await fused.runPython(PY, { action: "filter_domain", file: schema.file, field: fieldName }); }
+  try { dom = await pyRun( { action: "filter_domain", file: schema.file, field: fieldName }); }
   catch (err) { setStatus(err.message, "err"); return; }
   setStatus("");
   const m = document.createElement("div"); m.className = "menu fedit";
@@ -1004,7 +1008,7 @@ async function doRenderChart() {
     if (chart === "table") { await renderTable(seq); return; }
     const q = buildQuerySpec(sh, chart);
     setStatus("Querying…");
-    const res = await fused.runPython(PY, {
+    const res = await pyRun( {
       action: "query", file: schema.file, spec: JSON.stringify(q),
     });
     if (seq !== renderSeq) return;
@@ -1042,7 +1046,7 @@ function renderStats(q, rec) {
 async function renderTable(seq) {
   const sh = S();
   setStatus("Loading rows…");
-  const res = await fused.runPython(PY, {
+  const res = await pyRun( {
     action: "rows", file: schema.file, offset: 0, limit: 200,
     filters: JSON.stringify(sh.filters),
   });
@@ -1106,7 +1110,7 @@ async function openAny(path) {
   try {
     if (/\.(twb|twbx|tds|tdsx)$/i.test(path)) {
       setStatus("Importing Tableau file…");
-      const res = await fused.runPython(PY, { action: "import_tableau", file: path });
+      const res = await pyRun( { action: "import_tableau", file: path });
       importFile = path;
       if (res.workbook) {
         wb = res.workbook;
@@ -1150,7 +1154,7 @@ async function filePicker() {
 
 async function listInto(m, path) {
   let res;
-  try { res = await fused.runPython(PY, { action: "listdir", file: path }); }
+  try { res = await pyRun( { action: "listdir", file: path }); }
   catch (err) { setStatus(err.message, "err"); return; }
   if (res.error) { setStatus(res.error, "err"); }
   browseDir = res.path;
@@ -1219,7 +1223,7 @@ async function exportData(kind) {
     const sh = S();
     const chart = resolveChart(sh);
     const q = buildQuerySpec(sh, chart);
-    const res = await fused.runPython(PY, {
+    const res = await pyRun( {
       action: "export", kind, raw: chart === "table" ? "1" : "",
       name: (wb.name + "-" + sh.name).toLowerCase().replace(/\s+/g, "-"),
       file: schema.file, spec: JSON.stringify(q),
@@ -1299,7 +1303,7 @@ window.addEventListener("resize", () => renderChart());
 /* ================= boot ================= */
 applyTheme((() => { try { return localStorage.getItem("tviz-theme") || "light"; } catch { return "light"; } })());
 try {
-  BOOT = await fused.runPython(PY, { action: "boot" });
+  BOOT = await pyRun( { action: "boot" });
 } catch (err) {
   $("chartMsg").textContent = "Backend error: " + err.message;
   return;

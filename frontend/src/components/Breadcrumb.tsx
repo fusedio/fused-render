@@ -190,7 +190,18 @@ function navigatePreservingMode(target: string): void {
   else navigate(target);
 }
 
-export function Breadcrumb({ fsPath, home }: { fsPath: string; home?: string }) {
+export function Breadcrumb({
+  fsPath,
+  home,
+  renderedTitle,
+}: {
+  fsPath: string;
+  home?: string;
+  // The previewed page's own <title>, when known (see StatView) — preferred
+  // over the file's basename for the default bookmark name (and, via
+  // Recents, for its sidebar row) so "My DB app" beats "index.html".
+  renderedTitle?: string | null;
+}) {
   // Strictly below home only — home itself shows its full path, not a lone "~".
   const underHome = home !== undefined && fsPath.startsWith(home + "/");
   const rest = underHome ? fsPath.slice(home.length) : fsPath;
@@ -251,7 +262,7 @@ export function Breadcrumb({ fsPath, home }: { fsPath: string; home?: string }) 
         {pieces}
         <RevealButton fsPath={fsPath} />
       </div>
-      <CrumbActions name={basename(fsPath)} onSplit={(dir) => enterPanel(fsPath, dir)} />
+      <CrumbActions name={renderedTitle || basename(fsPath)} onSplit={(dir) => enterPanel(fsPath, dir)} />
     </>
   );
 }

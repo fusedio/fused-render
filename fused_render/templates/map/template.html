@@ -684,7 +684,10 @@ async function loadTarget(target, name) {
     const desc = await fused.runPython("./map_render.py", {
       target, colormap: (L.style && L.style.colormap) || "viridis",
       rescale: (L.style && L.style.rescale) ? L.style.rescale.join(",") : "",
-    });
+      // key per target, not the default per-file (D114): re-rendering one layer
+      // supersedes its own stale render (restyle/reload), but adding a different
+      // target must not cancel another layer's in-flight render.
+    }, { key: "map_render:" + target });
     if (desc.kind === "vector_group") {
       state.layers.delete(target);
       loadGroup(target, name, desc);

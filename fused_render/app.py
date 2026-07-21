@@ -23,17 +23,15 @@ import webbrowser
 
 import uvicorn
 
-from fused_render._branch import branch_port, branch_ref
+from fused_render._branch import branch_dir, branch_port
 from fused_render.logs import log_path, setup_logging
 from fused_render.server import create_app
-from fused_render.shell.seed import ensure_fused_dir
+from fused_render.shell.seed import ensure_fused_dir_and_landing
 
 logger = logging.getLogger("fused_render")
 
 _APP_SUPPORT_BASE = os.path.expanduser("~/Library/Application Support/fused-render")
-APP_SUPPORT_DIR = (
-    _APP_SUPPORT_BASE if not branch_ref() else os.path.join(_APP_SUPPORT_BASE, branch_ref())
-)
+APP_SUPPORT_DIR = branch_dir(_APP_SUPPORT_BASE)
 PIDFILE = os.path.join(APP_SUPPORT_DIR, "server.pid")
 PORTFILE = os.path.join(APP_SUPPORT_DIR, "server.port")
 
@@ -166,16 +164,18 @@ def _remove_pidfile() -> None:
             pass
 
 
-def _start_server_thread(port: int) -> uvicorn.Server:
-    """Start uvicorn serving create_app(start_dir=Fused dir) on a daemon thread."""
+def _start_server_thread(port: int) -> tuple[uvicorn.Server, str | None]:
+    """Start uvicorn serving create_app(start_dir=Fused dir) on a daemon thread.
+    Also returns the first-launch landing path (the seeded showcase page's /view/
+    URL) when THIS run performed the one-time example seed, else None."""
     # First-run onboarding (D81): create ~/Documents/Fused and seed it once.
-    start_dir = ensure_fused_dir()
+    start_dir, landing = ensure_fused_dir_and_landing()
     app = create_app(start_dir=start_dir)
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
-    return server
+    return server, landing
 
 
 def main() -> None:
@@ -286,7 +286,7 @@ def main() -> None:
 
     def _bootstrap_server() -> None:
         logger.info("starting server on port %s", port)
-        server = _start_server_thread(port)
+        server, landing = _start_server_thread(port)
         state["server"] = server
         if not _wait_until_ready(port):
             # Log file, not print: Finder-launched apps have no visible stderr.
@@ -304,9 +304,11 @@ def main() -> None:
         pending, state["pending"] = state["pending"], []
         for target in pending:
             webbrowser.open(target)
-        # Home tab only when this launch wasn't a document double-click.
-        if not state["docs"]:
-            webbrowser.open(url)
+        # Home tab only when this launch wasn't a document double-click. A
+        # brand-new install's very first launch lands on the seeded showcase
+        # page instead of the workspace root.
+        if not state["docs"] and not os.environ.get("FUSED_RENDER_NO_BROWSER"):
+            webbrowser.open(f"http://127.0.0.1:{port}{landing}" if landing else url)
 
     class FusedRenderStatusApp(rumps.App):
         def __init__(self):

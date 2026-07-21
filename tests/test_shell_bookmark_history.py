@@ -8,6 +8,9 @@ keeps the module importable in venvs where starlette's TestClient is missing
 its httpx dependency.
 """
 import json
+import os
+
+import pytest
 
 from fused_render.shell import bookmarks
 
@@ -162,3 +165,30 @@ def test_embed_prefix_handled(tmp_path):
     resp = _post({"id": "bk-1", "url": "/embed" + str(f)})
     assert resp == {"recorded": True}
     assert (tmp_path / "sample.html.json").exists()
+
+
+# ------------------------------------------------- read-only remote mounts
+# Bookmarking a file inside a read-only S3 mount still stores the bookmark in
+# the global tree (bookmarks.json), but the per-file bookmarkHistory sidecar
+# mirror must be skipped: the mount can't take the write (CacheMode=full loops
+# the doomed PutObject — the sidecar-write incident).
+
+@pytest.fixture
+def ro_mount(tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    import fused_render.shell.mounts as mounts
+
+    m = mounts.add_mount("pub", "pub-remote:bucket", read_only=True)
+    mp = mounts.mountpoint(m)
+    os.makedirs(mp)
+    f = os.path.join(mp, "cog.tif")
+    with open(f, "w") as fh:
+        fh.write("x")
+    return f
+
+
+def test_history_skipped_under_read_only_mount(ro_mount):
+    resp = _post({"id": "bk-1", "name": "cog.tif",
+                  "url": "/view" + ro_mount + "?stretch=2,1471"})
+    assert resp == {"recorded": False}
+    assert not os.path.exists(ro_mount + ".json")

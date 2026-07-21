@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fused-render"
-version = "0.2.9"
+dynamic = ["version"]
 description = "Local file explorer with Python-powered renderable HTML previews"
 requires-python = ">=3.10"
 dependencies = [
@@ -45,12 +45,12 @@ bundled = [
     "openpyxl",
     "shapely",
     "geopandas",
-    # Preview-template backends. pandoc and typst are intentionally absent —
-    # they are large per-platform binaries fetched on demand at runtime (see
-    # docs/docs.py, docs/install_worker.py, latex/engine.py).
+    # Preview-template backends. pandoc, typst and usd-core are intentionally
+    # absent — they are large per-platform binaries fetched on demand at
+    # runtime (see docs/docs.py, docs/install_worker.py, latex/engine.py,
+    # usd/convert_worker.py's _ensure_pxr — D119).
     "python-pptx",
     "fpdf2>=2.8.7",
-    "usd-core>=24.5",
     "msgpack>=1.0",
     "rasterio",
     "zarr",
@@ -74,7 +74,7 @@ app = [
 # The wheel URL must match deploy.PINNED_FUSED_REQUIREMENT (the Deploy modal's
 # one-click install, SPEC DP-4) — a test pins the two together.
 fused = [
-    'fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post2-py3-none-any.whl ; python_version >= "3.11"',
+    'fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post7-py3-none-any.whl ; python_version >= "3.11"',
 ]
 
 [project.scripts]
@@ -85,6 +85,13 @@ fused-render-app = "fused_render.app:main"
 # exe because the Open With dialog displays a pythonw.exe command as "Python".
 [project.gui-scripts]
 fused-render-open = "fused_render.winopen:main"
+
+# Single source of truth for the version: fused_render/__init__.py's
+# __version__. Bump it there only — hatchling reads it at build time for the
+# wheel metadata, and the runtime importers (server.py, core_templates.py,
+# logs.py) all resolve to the same value.
+[tool.hatch.version]
+path = "fused_render/__init__.py"
 
 [tool.hatch.metadata]
 # The `fused` extra pins a direct wheel URL (not a PyPI dependency) — hatchling

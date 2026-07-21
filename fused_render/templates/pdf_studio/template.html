@@ -313,7 +313,9 @@ function py(params) {
     if (v === null || v === undefined) continue;
     clean[k] = typeof v === "string" ? v : (typeof v === "number" || typeof v === "boolean") ? v : String(v);
   }
-  return fused.runPython(PY, clean);
+  // key:null — every pdf.py action (save/undo/export/read) shares this helper;
+  // default per-file cancellation would abort in-flight saves/edits (D114).
+  return fused.runPython(PY, clean, { key: null });
 }
 let toastTimer = 0;
 function toast(msg, err = false) {

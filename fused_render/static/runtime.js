@@ -2,10 +2,16 @@
  * Injected into every rendered HTML file (see server.py `/render`).
  * Provides `window.fused`:
  *   fused.runPython(pyPath, params, opts?) -> Promise<result>
- *     opts.key    — a latest-wins request channel: a newer call on the same key
- *                   aborts the prior in-flight one (D113 — cancel stale scrubs).
- *     opts.signal — a caller AbortSignal; composes with the channel abort.
+ *     Stale-request cancellation is ON by default (D114): a new call for a .py
+ *     supersedes (aborts) the prior in-flight call for that same file — cancels
+ *     stale slider scrubs with no author effort. opts.key regroups the channel;
+ *     opts.key:null opts out (fully concurrent); opts.signal is a caller
+ *     AbortSignal that composes.
  *   fused.params.get(key) / getAll() / set(key, value) / onChange(cb) -> unsubscribe
+ *   fused.env -> "local" — the runtime identity. This is the local fused-render app;
+ *                the hosted/exported runtime (fused wheel) sets "hosted" instead, so a
+ *                page can branch on where it runs and gate any local-only behaviour
+ *                when deployed. See docs/EXPORT.md.
  *
  * Same-origin iframe model: this script talks to an ancestor window's URL
  * directly (no postMessage bridge — see DECISIONS.md D3/D4). The param target
@@ -315,30 +321,41 @@
     }
   });
 
-  // ---- stale-request cancellation (D113) ------------------------------------
-  // Requests sharing an `opts.key` form a latest-wins channel: firing a newer
-  // call on a key ABORTS the prior in-flight call on that same key. This is the
-  // slider primitive — scrubbing through many values leaves only the last
-  // value's request alive; each superseded fetch is cancelled, freeing the
-  // browser connection and letting the server abandon the now-irrelevant
-  // subprocess once it notices the dropped socket. RH-4 is preserved: with NO
-  // key, calls never cancel each other, so unrelated concurrent fetches and
-  // same-file polling loops are untouched. An author-supplied `opts.signal`
-  // composes — the fetch aborts on whichever fires first. A superseded/aborted
-  // call rejects with a standard AbortError (DOMException, name "AbortError");
-  // the unhandledrejection handler below treats that as benign, so a
-  // fire-and-forget re-render that loses the race neither shows the traceback
-  // overlay nor logs an "uncaught (in promise)" to the console.
+  // ---- stale-request cancellation (RH-9 / D114) -----------------------------
+  // Every runPython call belongs to a "latest-wins channel". By DEFAULT the
+  // channel is the .py path, so firing a new call for a file ABORTS the prior
+  // in-flight call for that same file — the slider primitive, on by default:
+  // scrubbing through values leaves only the last one's request alive (each
+  // superseded fetch is cancelled, freeing the browser connection and letting
+  // the server drop the now-irrelevant subprocess when it sees the closed
+  // socket). Callers that genuinely need several concurrent calls to the SAME
+  // file — polling loops, per-tile fetches, writes that must finish — pass
+  // `opts.key: null` to opt OUT (fully concurrent, D113's old default), or a
+  // distinct `opts.key` string to group differently. `opts.signal` (a standard
+  // AbortSignal) composes — the fetch aborts on whichever fires first.
+  //
+  // A call SUPERSEDED by a newer same-channel call is stale by definition: its
+  // result would only be overwritten, so its promise NEVER settles and the
+  // caller's continuation (its await / .then — even inside a try/catch) simply
+  // stops, drawing nothing. That keeps a scrub silent for every page shape: no
+  // AbortError surfaces through the page's own catch (which would otherwise
+  // flash a stale error while the latest value is still computing). An abort
+  // from the caller's OWN signal instead rejects with a standard AbortError,
+  // which the unhandledrejection handler below treats as benign.
   const inflightByKey = new Map();
 
   function runPython(pyPath, params, opts) {
     opts = opts || {};
-    const key = opts.key;
-    const keyed = key !== undefined && key !== null;
+    // Default channel = the .py path; opts.key === null opts out, a string regroups.
+    const key = opts.key === undefined ? pyPath : opts.key;
+    const keyed = key !== null;
     const controller = new AbortController();
     if (keyed) {
       const prev = inflightByKey.get(key);
-      if (prev) prev.abort(); // supersede the now-stale request on this channel
+      if (prev) {
+        prev._supersededByKey = true; // its impending abort is supersession, not an error
+        prev.abort();
+      }
       inflightByKey.set(key, controller);
     }
     let detachSignal = null;
@@ -350,10 +367,10 @@
         detachSignal = () => opts.signal.removeEventListener("abort", onAbort);
       }
     }
-    // On settle: detach the caller's abort listener (reusing one long-lived
-    // signal across many calls must not accumulate listeners / pin controllers)
-    // and free the channel slot — the latter only if it is still ours (a newer
-    // same-key call may have already replaced us in the map).
+    // Detach the caller's abort listener (reusing one long-lived signal across
+    // many calls must not accumulate listeners / pin controllers) and free the
+    // channel slot — the latter only if it is still ours (a newer same-key call
+    // may have already replaced us in the map).
     const cleanup = () => {
       if (detachSignal) detachSignal();
       if (keyed && inflightByKey.get(key) === controller) inflightByKey.delete(key);
@@ -385,13 +402,44 @@
         }
         return data.result;
       })
-      .finally(cleanup);
+      .then(
+        (result) => {
+          cleanup();
+          // A newer same-channel call superseded us after the response arrived
+          // but before this ran — honor never-settle so the stale continuation
+          // still doesn't run.
+          if (controller._supersededByKey) return new Promise(() => {});
+          return result;
+        },
+        (err) => {
+          cleanup();
+          // The caller's OWN signal aborting takes precedence: they asked to
+          // cancel, so reject with the standard AbortError (their catch/finally
+          // must run) — even in the common abort-then-new-call idiom where a
+          // newer same-channel call also marked us superseded.
+          if (opts.signal && opts.signal.aborted) throw err;
+          // Otherwise, superseded by a newer same-channel call → hang forever so
+          // the stale continuation never runs. Real errors propagate.
+          if (controller._supersededByKey) return new Promise(() => {});
+          throw err;
+        }
+      );
   }
 
   // Synchronous URL of the raw-bytes endpoint for a file — for <img>/<embed>
-  // src, "open raw" links, etc.
+  // src, "open raw" links, etc. A RELATIVE path is resolved page-relative
+  // (SPEC RH-1): we pass the page's own absolute path as `base` and the server
+  // joins them (the same contract runPython uses via `html`), so a page can say
+  // fused.rawUrl("data/x.json") and have it work here AND, when hosted, resolve
+  // against the bundle's _asset route by the same key. An absolute path needs no
+  // base and is sent unchanged.
   function rawUrl(path) {
-    return "/api/fs/raw?path=" + encodeURIComponent(path);
+    let url = "/api/fs/raw?path=" + encodeURIComponent(path);
+    if (path && path[0] !== "/") {
+      const ownPath = new URLSearchParams(window.location.search).get("path");
+      if (ownPath) url += "&base=" + encodeURIComponent(ownPath);
+    }
+    return url;
   }
 
   // Fetch file metadata (same shape as /api/fs/stat). Rejects with an Error
@@ -459,6 +507,19 @@
   let resubscribeTimer = null;
   let reloadTimer = null;
 
+  // Root of the mounts dir, fetched once from /api/config at start. Paths under
+  // it are mount-backed: their bytes come from a read-only remote bucket that
+  // never changes, so watching them for auto-reload buys nothing while every
+  // poll is remote traffic. That traffic is exactly what killed a mount in the
+  // fs/events stat-storm incident (a preview pane watching its mounted data
+  // file, plus a huge .zarr). We drop those from the watch set entirely; the
+  // template/py code that CAN change is always local and stays watched.
+  // Kept mount-agnostic in the template: the server hands us the prefix.
+  let mountsRoot = null;
+  function isMountBacked(p) {
+    return !!(mountsRoot && p && p.indexOf(mountsRoot + "/") === 0);
+  }
+
   function resubscribe() {
     // A reconnect timer may be pending (onclose below); a direct call must
     // cancel it or the stale timer would close and reopen the fresh socket.
@@ -503,6 +564,9 @@
 
   function watchPath(p) {
     if (!p || watched.has(p)) return;
+    // Never watch mount-backed data files (see mountsRoot): read-only remote
+    // bytes don't change, and the poll traffic is the mount-killing hazard.
+    if (isMountBacked(p)) return;
     watched.add(p);
     if (!autoReloadEnabled || !started) return; // before start, paths just accumulate
     // Debounce resubscribe so a page firing several runPython calls on load
@@ -527,16 +591,38 @@
 
   function startAutoReload() {
     started = true;
-    // Union of: this page's own rendered file, _file if present (LR-1).
-    const params = new URLSearchParams(window.location.search);
-    const own = params.get("path");
-    if (own) watched.add(own);
-    const file = params.get("_file");
-    if (file) watched.add(file);
-    if (autoReloadEnabled) resubscribe();
+    // Learn the mounts root before opening any socket, so a mount-backed
+    // _file is never watched even for the first subscribe. The `path` template
+    // and any `_file` are added here (LR-1); watchPath callers (runPython's
+    // resolved_py, template code) come later and are always local, so they're
+    // safe even if this fetch is still in flight. On fetch failure we keep the
+    // prior behavior (watch everything) — the server-side registry (items 1-4)
+    // already makes a mount stat non-fatal, so this is defense in depth.
+    const begin = () => {
+      // Drop anything mount-backed that accumulated before we knew the root.
+      for (const p of [...watched]) {
+        if (isMountBacked(p)) watched.delete(p);
+      }
+      const params = new URLSearchParams(window.location.search);
+      const own = params.get("path");
+      if (own && !isMountBacked(own)) watched.add(own);
+      const file = params.get("_file");
+      if (file && !isMountBacked(file)) watched.add(file);
+      if (autoReloadEnabled) resubscribe();
+    };
+    fetch("/api/config")
+      .then((res) => res.json())
+      .then((cfg) => {
+        if (cfg && typeof cfg.mounts_root === "string") mountsRoot = cfg.mounts_root;
+      })
+      .catch(() => {})
+      .then(begin);
   }
 
   window.fused = {
+    // Runtime identity: "local" here (the fused-render app). The hosted/exported
+    // runtime sets "hosted", so a page can branch on where it runs (EXPORT.md).
+    env: "local",
     runPython,
     rawUrl,
     stat,

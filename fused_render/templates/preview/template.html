@@ -143,6 +143,13 @@
 
   .status-message { padding: 24px 16px; color: var(--fg-muted); }
   .status-message.error { color: var(--error); }
+  #load-more-btn {
+    margin-left: 8px; padding: 2px 10px; font: inherit; font-size: 12px;
+    color: var(--fg); background: var(--bg); border: 1px solid var(--border);
+    border-radius: 4px; cursor: pointer;
+  }
+  #load-more-btn:hover:not(:disabled) { background: var(--bg-alt); }
+  #load-more-btn:disabled { opacity: .6; cursor: default; }
 
   /* Placeholder / folder card shown in the preview pane. */
   .pane-center { margin: auto; text-align: center; color: var(--fg-muted); padding: 32px; }
@@ -292,6 +299,12 @@
     }
 
     let ENTRIES = [];       // [{name, path, is_dir, size, mtime, ignored}]
+    // fs/list truncation contract (mirrors views/Listing.tsx): TRUNCATED means
+    // the listing is a partial page (server cap), CURSOR a continuation token
+    // to append the next page when the route is resumable.
+    let TRUNCATED = false;
+    let CURSOR = null;
+    let loadingMore = false;
     let selectedPath = null;
     let sortKey = "name";   // name | size | mtime
     let sortOrder = "asc";
@@ -476,9 +489,22 @@
     function renderList() {
       currentRows = sortedEntries();
       const head = `<thead><tr>${COLUMNS.map(([k, l]) => th(k, l)).join("")}</tr></thead>`;
-      const body = currentRows.length === 0
+      let body = currentRows.length === 0 && !TRUNCATED
         ? `<tr><td colspan="3" class="status-message">Empty directory</td></tr>`
         : currentRows.map((r) => rowHtml(r, `<span class="label">${escapeHtml(r.name)}</span>`)).join("");
+      // A truncated listing gets a slim banner row after the entries (mirrors
+      // views/Listing.tsx): the directory has more entries than the server
+      // cap. When the route is resumable (cursor non-null) it carries a Load
+      // more button that appends the next page.
+      if (TRUNCATED) {
+        body += `<tr><td colspan="3" class="status-message">` +
+          `Showing first ${currentRows.length} entries — directory listing is partial. ` +
+          (CURSOR
+            ? `<button type="button" id="load-more-btn"${loadingMore ? " disabled" : ""}>` +
+              `${loadingMore ? "Loading…" : "Load more"}</button>`
+            : "") +
+          `</td></tr>`;
+      }
       listBodyEl.innerHTML = `<table class="listing-table">${head}<tbody>${body}</tbody></table>`;
 
       listBodyEl.querySelectorAll("th[data-key]").forEach((el) => {
@@ -489,7 +515,41 @@
           renderList();
         });
       });
+      const moreBtn = document.getElementById("load-more-btn");
+      if (moreBtn) moreBtn.addEventListener("click", loadMore);
       bindRows();
+    }
+
+    // Fetch the next page of a truncated resumable listing and APPEND it
+    // (dedupe by name — a rename between pages could repeat an entry). A
+    // navigation while the fetch is in flight changes baseDir; the stale page
+    // is discarded, not merged (mirrors views/Listing.tsx loadMore).
+    async function loadMore() {
+      if (!CURSOR || loadingMore) return;
+      const dirAtStart = baseDir, cursor = CURSOR;
+      loadingMore = true;
+      renderList();
+      try {
+        const res = await fetch("/api/fs/list?path=" + encodeURIComponent(dirAtStart) +
+          "&cursor=" + encodeURIComponent(cursor));
+        const data = await res.json();
+        if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
+        if (baseDir !== dirAtStart || CURSOR !== cursor) return; // superseded
+        const seen = new Set(ENTRIES.map((e) => e.name));
+        for (const e of data.entries || []) {
+          if (seen.has(e.name)) continue;
+          ENTRIES.push({ ...e, path: dirAtStart + "/" + e.name });
+        }
+        TRUNCATED = !!data.truncated;
+        CURSOR = data.cursor || null;
+      } catch (err) {
+        // Leave the partial listing in place; the button just re-arms so the
+        // user can retry (a continuation failure is a retryable 503).
+        console.error("load more failed:", err);
+      } finally {
+        loadingMore = false;
+        if (baseDir === dirAtStart) render();
+      }
     }
 
     // A dot-leading query (".foo" or "sub/.foo") is explicit intent to include
@@ -690,6 +750,9 @@
         // Give each entry an absolute path (the endpoint returns bare names);
         // everything downstream keys on `path`.
         ENTRIES = (data.entries || []).map((e) => ({ ...e, path: baseDir + "/" + e.name }));
+        TRUNCATED = !!data.truncated;
+        CURSOR = data.cursor || null;
+        loadingMore = false;
         render();
         // Restore a previously-selected child if it still exists.
         const sel = fused.params.get("sel");

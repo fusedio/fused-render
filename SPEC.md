@@ -108,24 +108,41 @@ The server serves the HTML with a small runtime `<script>` injected (or the ifra
 
 ```js
 // Execute main() of a Python file
-const result = await fused.runPython(pathToPy, paramsObject);
-const result = await fused.runPython(pathToPy, paramsObject, { key: "chan" }); // latest-wins (RH-9)
+const result = await fused.runPython(pathToPy, paramsObject);          // stale calls to this file auto-cancel (RH-9)
+const result = await fused.runPython(pathToPy, paramsObject, { key: null }); // opt out: run fully concurrent
+
+// Read-only file access. `path` is relative to the HTML file's own location or
+// absolute (RH-1). A relative path resolves page-relative in BOTH runtimes: locally the
+// runtime passes the page's own path as `base` to /api/fs/raw (mirroring runPython's
+// `html`); when hosted, the same key hits the bundle's `_asset` route (§18). So one
+// `fused.rawUrl("data/" + name)` works everywhere — no local/hosted branch.
+const url  = fused.rawUrl(path);        // synchronous URL of the raw bytes (for <img> src, links)
+const text = await fused.readFile(path); // fetch the file's text (via rawUrl)
 
 // Params (see §6)
 fused.params.get(name)
 fused.params.set(name, value)          // strings only; always replaceState
 fused.params.getAll()
 fused.params.onChange(callback)   // fires whenever params change; author re-runs Python here
+
+// Runtime identity — "local" here, "hosted" on a deployed artifact (§18, RH-10)
+fused.env
 ```
+
+- **RH-10** `fused.env` is the **runtime identity**: `"local"` in the fused-render app,
+  `"hosted"` on a deployed/exported artifact (set by the fused wheel's serve runtime,
+  §18). It lets a page branch on where it runs — gating any local-only behaviour when
+  `fused.env === "local"` and degrading gracefully when `"hosted"`. Both runtimes expose
+  it, so the check is a positive signal, not the absence of an API.
 
 ### 4.2 `runPython(path, params)`
 
 - **RH-1** **DECIDED:** `path` may be **relative to the HTML file's own location** or **absolute** (anywhere on the machine — whole filesystem is in scope, consistent with FS-3).
 - **RH-2** `params` is a flat JSON object; keys map to the Python function's keyword arguments (§5.2).
 - **RH-3** Returns a Promise. Resolves with the deserialized return value; rejects with a structured error `{ type, message, traceback }` on Python exception, missing file, missing `main` function, or timeout.
-- **RH-4** Concurrent calls are allowed (e.g. a page fires 3 data fetches on load). Server may queue or parallelize; ordering is not guaranteed. Opt-in supersession (RH-9) is the only thing that cancels a call — by default no call ever cancels another.
+- **RH-4** Concurrent calls to **different** `.py` files are independent (e.g. a page fires 3 data fetches on load); the server may queue or parallelize, and ordering is not guaranteed. Concurrent calls to the **same** file are, by default, a latest-wins channel (RH-9): the newer supersedes the older. A caller that needs several concurrent calls to one file to all complete opts out with `opts.key: null`.
 - **RH-5** Calls have a configurable timeout (default e.g. 30 s), after which the worker is killed and the promise rejects.
-- **RH-9** **DECIDED (D113):** an optional third argument `opts` carries **stale-request cancellation**. `opts.key` (a string) names a **latest-wins channel**: firing a new `runPython` on a key **aborts** the prior in-flight call on that same key, so a slider scrubbed through many values leaves only the last value's request alive — the superseded fetches are cancelled (browser connection freed; the server abandons the now-irrelevant subprocess when it sees the dropped socket). Without a key, calls are independent (RH-4 unchanged) — same-file polling loops and unrelated concurrent fetches are never auto-cancelled, so keying is a deliberate author choice. `opts.signal` (a standard `AbortSignal`) composes with the channel: the fetch aborts on whichever fires first. A superseded/aborted call rejects with a standard **AbortError** (`DOMException`, `name === "AbortError"`); the runtime's unhandledrejection handler treats that as benign — no traceback overlay (RH-3/D17), no console noise — so a fire-and-forget `onChange` re-render that loses the race needs no try/catch. Applies identically to the hosted/exported runtime (§18).
+- **RH-9** **DECIDED (D114, supersedes D113's opt-in):** stale-request cancellation is **on by default**. Every call belongs to a **latest-wins channel**; the default channel key is the **`.py` path**, so firing a new `runPython` for a file **aborts the prior in-flight call for that same file** — a slider scrubbed through many values leaves only the last value's request alive (superseded fetches are cancelled: browser connection freed, and the server drops the now-irrelevant subprocess when it sees the closed socket). The optional third argument `opts` tunes this: `opts.key` (a string) **regroups** the channel (e.g. share one channel across several files, or split one file into several); `opts.key: null` **opts out** entirely (fully concurrent — required for same-file polling loops, per-tile fetches, and writes that must finish); `opts.signal` (a standard `AbortSignal`) **composes** with the channel, aborting the fetch on whichever fires first. A call **superseded** by a newer same-channel call **never settles** — its promise neither resolves nor rejects, so the caller's stale continuation (its `await`/`.then`, even inside a `try/catch`) simply stops and draws nothing; this keeps a scrub silent for every page shape, with no `AbortError` flashing through the page's own error handling while the latest value is still computing. An abort from the caller's **own** `opts.signal` instead rejects with a standard **AbortError** (`DOMException`, `name === "AbortError"`), which the runtime's unhandledrejection handler treats as benign (no overlay per RH-3/D17, no console noise). Applies identically to the hosted/exported runtime (§18).
 
 ### 4.3 Isolation — DESCOPED (v1)
 
@@ -225,7 +242,7 @@ const page = await fused.runPython("./reader.py",
 
 ### 7.2 Template set — modes per extension
 
-**Shell dispatch is exactly two-way: `templates` non-empty > fallback.** No file-type special-casing in the shell — image, text, and (via the `_render` sentinel, PT-12) HTML handling all arrive through the `templates` list like any other mode. Directories dispatch the same way: every directory resolves through the registry too, so the built-in listing is itself a mode — the `_listing` sentinel (PT-12), default of the universal `/` directory key (D81). A `.zarr` store previews via its `templates` (`["zarr", "_listing"]`) with the listing as a peer mode reachable through `_mode` (PT-13).
+**Shell dispatch is exactly two-way: `templates` non-empty > fallback.** No file-type special-casing in the shell — image, text, and (via the `_render` sentinel, PT-12) HTML handling all arrive through the `templates` list like any other mode. Directories dispatch the same way: every directory resolves through the registry too, so the built-in listing is itself a mode — the `_listing` sentinel (PT-12), default of the universal `/` directory key (D81). A `.zarr` store previews via its `templates` (`["zarr_aoi", "_listing"]`); the map (`zarr_aoi`) is a `condition.py`-gated mode (CT-12), so the built-in listing is the immediate default and the map joins as a peer once its background gate confirms the store (PT-13).
 
 - **PT-7** The built-in bindings live in **`fused_render/templates/registry.json`** (D73) — data, not code, in **exactly the user-registry format** (§16): dot-anchored suffix-pattern keys (compound `.xyz.json`, wildcard `.*.json`, trailing-`/` directory keys — CT-3) mapping to an **ordered list of template names**. Each entry is a **mode**; the **first entry is the default**. One matcher and one value grammar serve both registries; the only asymmetry is precedence (user match wins, CT-3). Rule of thumb: `code` (the editable CodeMirror buffer) appears as a secondary mode only for text formats where raw text is meaningful — never for binary formats (a code view of `.parquet` is garbage).
 
@@ -245,7 +262,7 @@ const page = await fused.runPython("./reader.py",
 | `.txt .log` | `text`, `code` | `<pre>` |
 | `.tif .tiff` | `geotiff` | GeoTIFF/COG via vendored geotiff (in-browser decode, no reader.py); full metadata + dump, photometric routing (RGB/palette/YCbCr), band select + RGB stretch + colormaps, histogram, hover. Small files full-fetched; >32 MiB range-request `fromUrl` |
 | `.nc .nc4 .cdf` | `netcdf` | NetCDF-3 via vendored netcdfjs (HDF5/NetCDF-4 → graceful card); leading-dim sliders, colormaps + stretch, histogram, hover |
-| `.zarr/` (directory) | `zarr`, `_listing` | Zarr v2/v3 store — a *directory*, bound by the trailing-`/` directory key (PT-13); vendored zarrita (in-browser decode, members fetched per-key); group tree + array select, colormaps + stretch, histogram, hover. `_listing` (PT-12) rides as the secondary mode — the raw member listing, replacing the old "Browse contents" escape hatch (D81) |
+| `.zarr/` (directory) | `zarr_aoi`, `_listing` | Zarr v2/v3 store — a *directory*, bound by the trailing-`/` directory key (PT-13). `zarr_aoi` is the server-side AOI tile-streaming map viewer (opened via zarr-python, tiles streamed as PNG); it ships a `condition.py` store-detection gate (CT-12), so it is a conditional peer rather than the immediate default — the built-in `_listing` (PT-12) shows first and the map joins the switcher when the background gate confirms the store. `_listing` also stays reachable as the raw member listing, replacing the old "Browse contents" escape hatch (D81) |
 | `/` (any directory) | `_listing` | The **universal directory key** (CT-3) — the built-in default for *every* folder. `_listing` is a sentinel (PT-12), not a template folder: the shell's built-in directory listing (sortable columns, in-folder search, FS-1). Zero segments, so any dot-anchored directory key (`.zarr/`) beats it (D81) |
 | `.html .htm` | `_render`, `code` | defaults shipped in the built-in registry like any other key — user-rebindable since D73 (CT-4 revised); `_render` is a shell sentinel (PT-12) rendering the file itself live (§4) |
 | unknown | shell fallback | metadata + raw/download link (built into shell, not a template) |
@@ -256,10 +273,10 @@ const page = await fused.runPython("./reader.py",
 - **PT-11** **Icons:** a template folder may ship `icon.svg` — **monochrome** (single fill; the shell tints it via CSS `mask-image` + `currentColor`, so only alpha matters), square viewBox (24×24 suggested), legible at 16px. `icon` in the stat entry is the abs path of the `icon.svg` sitting next to the *resolved* `template.html` (the user folder's icon when a user template resolved), or `null`. The shell loads it through the existing `/api/fs/raw` endpoint — no new routes. Every built-in folder ships one. Sentinel modes (`_render`, `_listing`) have no folder, so the shell bakes their icons in (PT-12).
 - **PT-12** **Sentinel modes:** a mode name starting with `_` is a **shell sentinel** — no template folder backs it; the shell knows what it means. Server resolution special-cases sentinels: the stat entry is emitted as `{"mode": "_<name>", "path": null, "icon": null}` without touching the filesystem. The `_` prefix matches the reserved-param convention (`_mode`, `_file`). The sentinel namespace is **shell-owned**; since D73 the server keeps a **known-sentinel set** (`KNOWN_SENTINELS = {"_render", "_listing"}`, D81) and a name in that set is referenceable from **any** registry list, built-in or user — any other `_`-prefixed name is invalid (dropped + `template_error`, CT-6). Two sentinels exist:
   - **`_render`** — "render the file itself" — the default mode of the built-in `.html`/`.htm` list `["_render", "code"]`. Shell handling: iframe src `/render?path=<the file itself>` (no `_file`), shell-baked eye icon.
-  - **`_listing`** — "the shell's built-in directory listing" (sortable columns + in-folder search, FS-1/§13.4) — the default of the universal `/` directory key (PT-13, D81), and a peer mode of `.zarr/`'s `["zarr", "_listing"]`. It backs no folder and takes no `_file`: when it is the active mode the shell **mounts its Listing component in place of the preview iframe** (no iframe at all). Shell-baked list icon.
+  - **`_listing`** — "the shell's built-in directory listing" (sortable columns + in-folder search, FS-1/§13.4) — the default of the universal `/` directory key (PT-13, D81), and a peer mode of `.zarr/`'s `["zarr_aoi", "_listing"]`. It backs no folder and takes no `_file`: when it is the active mode the shell **mounts its Listing component in place of the preview iframe** (no iframe at all). Shell-baked list icon.
 
-  Users **can** rebind any registry key — including `.html`/`.htm` (CT-4 revised, D73) and the directory keys (D81) — dropping a sentinel, then listing it explicitly brings it back. Unknown sentinel entries (path `null`, mode not in the set) are filtered out defensively. Non-sentinel entries in the same list (e.g. `code`, `zarr`) work exactly like any template mode. Future modes are added to the server-side registry and flow through the framework normally.
-- **PT-13** **Directory views (D65, revised by D73 and D81):** a preview target may be a **directory**. Directories resolve through the **same registry** as files (PT-7, CT-3): a key with a **trailing `/`** binds a directory's basename, and the **universal `/` key** (zero segments, CT-3) matches *every* directory at lowest specificity. The built-in registry ships `"/": ["_listing"]` and `".zarr/": ["zarr", "_listing"]` — so **every** directory carries a non-empty `templates` list (≥ `["_listing"]`), and dispatch is uniform: a directory previews its default mode exactly like a file. The built-in **listing is itself a mode** — the `_listing` sentinel (PT-12) — so it rides the ordinary mode switcher (PT-10) and `_mode` selection (PT-9): a plain folder's single-mode `["_listing"]` shows the listing with no switcher; a `.zarr` store shows the zarr map by default with `_listing` as a switchable peer (`_mode=_listing`). This replaces D65's one-way `?listing=1` "Browse contents" escape hatch, which is **removed** (D81) — the only way to the listing is now the `_listing` mode. In **embed** (the preview header, hence the switcher, is hidden), a corner chip toggles the `_listing` mode (writing/deleting `_mode`) so an embedded directory preview can still reach its members. Annotate (§17) is not offered for `_listing` (no iframe to overlay). A directory resolves to an **empty** list only when a `null` binding disables it (CT-2); the shell then falls back to the built-in listing regardless (a folder must always render something). Users bind directory views like any other key — `"/": ["_listing", "gallery"]` lists the built-in listing plus a gallery mode for every folder (built-in names are listed explicitly — there is no splice, D94); dropping `_listing` from a list forgoes the file listing for those directories (owner call, same "user can shoot themselves" posture as D73's `.html` rebind). Accepted break: old `?listing=1` bookmarks ignore the dropped param — a plain folder still lists (its default), a `.zarr` bookmark now opens the zarr map instead of members.
+  Users **can** rebind any registry key — including `.html`/`.htm` (CT-4 revised, D73) and the directory keys (D81) — dropping a sentinel, then listing it explicitly brings it back. Unknown sentinel entries (path `null`, mode not in the set) are filtered out defensively. Non-sentinel entries in the same list (e.g. `code`, `zarr_aoi`) work exactly like any template mode. Future modes are added to the server-side registry and flow through the framework normally.
+- **PT-13** **Directory views (D65, revised by D73 and D81):** a preview target may be a **directory**. Directories resolve through the **same registry** as files (PT-7, CT-3): a key with a **trailing `/`** binds a directory's basename, and the **universal `/` key** (zero segments, CT-3) matches *every* directory at lowest specificity. The built-in registry ships `"/": ["_listing", "preview", "zarr_aoi"]` and `".zarr/": ["zarr_aoi", "_listing"]` — so **every** directory carries a non-empty `templates` list (≥ `["_listing"]`), and dispatch is uniform: a directory previews its default mode exactly like a file. The built-in **listing is itself a mode** — the `_listing` sentinel (PT-12) — so it rides the ordinary mode switcher (PT-10) and `_mode` selection (PT-9): a plain folder's single-mode `["_listing"]` shows the listing with no switcher; a `.zarr` store shows the listing by default with the `zarr_aoi` map joining as a `condition.py`-gated peer (CT-12) once its background verdict confirms the store (`_mode=zarr_aoi` selects it). This replaces D65's one-way `?listing=1` "Browse contents" escape hatch, which is **removed** (D81) — the only way to the listing is now the `_listing` mode. In **embed** (the preview header, hence the switcher, is hidden), a corner chip toggles the `_listing` mode (writing/deleting `_mode`) so an embedded directory preview can still reach its members. Annotate (§17) is not offered for `_listing` (no iframe to overlay). A directory resolves to an **empty** list only when a `null` binding disables it (CT-2); the shell then falls back to the built-in listing regardless (a folder must always render something). Users bind directory views like any other key — `"/": ["_listing", "gallery"]` lists the built-in listing plus a gallery mode for every folder (built-in names are listed explicitly — there is no splice, D94); dropping `_listing` from a list forgoes the file listing for those directories (owner call, same "user can shoot themselves" posture as D73's `.html` rebind). Accepted break: old `?listing=1` bookmarks ignore the dropped param — a plain folder still lists (its default), and a `.zarr` bookmark also lists by default now (the `zarr_aoi` map is a gated peer reached via `_mode=zarr_aoi`, not the default).
 - **PT-5** **User overrides:** DECIDED and specced as §16 (M7, extended by M8) — user template folders under `~/.fused-render/templates/` bound to extensions by `~/.fused-render/templates/registry.json`, replacing or extending the built-in mode list, using the exact same mechanism.
 
 ---
@@ -572,14 +589,23 @@ nothing. Full detail: `docs/EXPORT.md`.
 
 ### 18.1 Bundle format
 
-- **EX-1** A bundle is a directory holding `page.html` (the page verbatim),
-  `manifest.json` (the hosting contract), `code/<name>.py` (one per `runPython`
-  target), and `assets/<key>` (one per `rawUrl`/`readFile` target).
-- **EX-2** `manifest.json` (`{"fused_render_bundle": 1, "page", "entrypoints",
-  "assets"}`) maps each `runPython` literal path to a served route name + bundled
-  file, and each `rawUrl`/`readFile` literal path to an asset key + bundled file. The
-  hosting layer wires the served page's runtime from this map — it never re-parses
-  the HTML.
+- **EX-1** A bundle (format **v2**) is a directory holding `manifest.json` (the hosting
+  contract) and a single **`files/` payload dir** mirroring the page's folder — the page,
+  each `runPython` target, each `rawUrl`/`readFile` target, and each first-party module a
+  bundled entrypoint imports (EX-7), all at their real page-relative path. There are no
+  `code/`/`assets/`/`resources/` category dirs; the bundle layout equals the author's
+  folder equals the served runtime tree (docs/bundle-v2-design.md).
+- **EX-2** `manifest.json` (`{"fused_render_bundle": 2, "root", "page", "entrypoints",
+  "assets", "resources"}`) classifies each payload file by role: `page` (the shell), each
+  `entrypoint` (`path` = the page's literal string for the runtime's seed map, `name` = the
+  served route, `key` = payload-relative path), each `asset` (`path` = literal, `name` =
+  payload-relative key + `_asset` allow-list entry), each `resource` (`key` = payload-
+  relative path). The hosting layer wires the runtime from this map — it never re-parses the
+  HTML. Every file's bundle location is `root/<payload-relative path>`, and that same path
+  is its runtime key: it lands under the served project root (the runtime's cwd +
+  `sys.path[0]`), so a page's own `open("data.csv")` / `import helpers` resolve unchanged.
+  (The hosting layer's `load_html_bundle` still reads legacy **v1** bundles — category dirs
+  + explicit `file` fields — for version-skew tolerance.)
 
 ### 18.2 Portable subset
 
@@ -599,10 +625,22 @@ nothing. Full detail: `docs/EXPORT.md`.
   path (including a symlink resolving outside the page dir), or a **missing target**
   (a referenced file, or an `include` file, not on disk).
 - **EX-4a** Warnings — advisory, never blocking: a **computed `rawUrl`/`readFile`
-  path** (the exporter can't resolve it, but the author can bundle its target via
-  `include` — EX-6 — and the served `_asset` route resolves it by key at request
-  time), and an **`exclude` that drops a literally-referenced file** (honored, but
-  that call 404s when hosted).
+  path** (the exporter can't discover the target from the HTML, but once the target is
+  bundled — via an `include` glob in the page's manifest (EX-8) or an explicit `include`
+  (EX-6) — the served `_asset` route resolves it by key at request time, and the hosted
+  runtime resolves the computed path to that key; a call `fused.rawUrl("data/" + name)`
+  is a string *prefix* + expression, so it is counted here as computed, **not**
+  mis-collected as a literal `data/` target). This warning is **suppressed when a
+  `manifest`-source asset (EX-6/EX-8) survives into the final bundle** — a `bundle`
+  provenance pill in §19's list (DP-2a) that shows the user what backs the call, so the
+  nag would be redundant. It keys on the *surviving* asset, evaluated after dedup and
+  exclude, **not** the raw manifest globs: a manifest entry that is also a literal
+  reference is deduped to a `reference` asset, and any manifest file can be dropped by
+  `exclude` — in both cases no `bundle` row remains and the warning still fires. A
+  per-deployment `include` (EX-6, source `include`) never suppresses it: that selection
+  is not checked in with the page, so a fresh export without it would still 404. Also
+  warned: an **`exclude` that drops a literally-referenced file** (honored, but that call
+  404s when hosted).
 - **EX-5** Route names derive from the `.py` stem (`sine.py` → `sine`), are prefixed
   `run-` when they'd collide with a reserved serve route (`data`, `health`, the
   `_`-prefixed control/shell/asset routes), and are suffixed `-2`, `-3`, … on
@@ -612,7 +650,52 @@ nothing. Full detail: `docs/EXPORT.md`.
   bundled as assets beyond the literal scan (for a computed-path target or data a
   bundled `.py` reads at runtime), each validated like a scanned asset and deduped by
   key; and `exclude` — files dropped from the final set by literal path or bundle
-  key. Both default empty (auto-only).
+  key. Both default empty (auto-only). Each bundled asset carries a `source` —
+  `reference` (a literal `rawUrl`/`readFile` the scan resolved), `manifest`
+  (declared in the page's EX-8 manifest), or `include` (added out-of-band via the
+  selection) — attributed to the strongest claim in that order when a file is
+  reachable more than one way, and surfaced on `/api/deploy/preview` so §19's list
+  can label how each file is exposed (DP-2a). It is an in-process/preview
+  classification only: `manifest.json` (EX-2) does not carry it — the hosting
+  layer treats every asset the same.
+- **EX-7** First-party **modules** a bundled entrypoint imports are discovered by a
+  static AST scan of the entrypoint sources (transitively) and shipped as `resources`,
+  so a served entrypoint's `import helpers` resolves without hand-listing. Only an
+  absolute import resolving to a `<name>.py` **beside the page** is bundled (stdlib /
+  third-party / subpackage imports are left alone; a relative `from . import x` is
+  skipped — a hosted entrypoint runs flattened with no package context). Unlike an
+  asset, a resource is runtime-only: it ships into the tree so `import` works but is
+  **not** on the `_asset` allow-list, so its source is not web-served. A module already
+  carried as an asset (assets land at the same real key) is not bundled twice; excluding
+  a module a bundled entrypoint imports is honored but warned (the import will fail).
+  Under v2 (EX-1) a discovered module is stored at `files/<key>` like every other payload
+  file; it is still enumerated in the manifest's `resources` so the hosting layer knows to
+  ship it (and to keep it off the `_asset` allow-list). Full design + rationale:
+  [`docs/bundle-v2-design.md`](docs/bundle-v2-design.md).
+- **EX-8** A page may declare its own bundle set **in the repo**, reproducibly, via a
+  single embedded `<script type="application/fused-bundle">` block holding a JSON object.
+  Only **`include`** is read today: an array of page-relative **globs** (`data/*.json`,
+  `tiles/**/*.png`) and/or literal paths, expanded against the page dir through the same
+  safety gauntlet as any asset (`..`/absolute/symlink-escape rejected) and folded in
+  **beneath** the caller's EX-6 `include`. A glob matching nothing is a **warning**, a
+  missing literal a **blocking error**. The block is **unversioned and forward-lenient**
+  — the `type` attribute is the discriminator, and unknown keys are ignored so new
+  directives can be added later without breaking an older exporter. It is **stripped
+  before the dependency scan**, so its JSON body can never be misread as a `fused.*`
+  call. `exclude` is **not** honored in the manifest (it would publish the withheld file
+  names in the served page source) — it is warned about; drop files via EX-6 `exclude`
+  (kept on the deployment record, off the artifact). This is what collapses a
+  hand-maintained `RAW_URLS`-style table (or a fake `_bundle*()` scanner-bait function)
+  down to `fused.rawUrl("data/" + name)` against a `data/*.json` glob.
+- **EX-9** `manifest.json` carries a top-level **`cache_max_age`** (`"0s"` off by
+  default; a duration like `"5m"`/`"1h"` — the same format the fused repo's
+  `openfused.caching.parse_cache_max_age` accepts) — the Deploy modal's caching
+  choice (DP-17), written fresh on every export so a redeploy always re-asserts
+  the current setting. The hosting layer's `build_html_artifact` applies it
+  **page-wide** — to every route uniformly (the shell, each `runPython` route,
+  and the asset route), matching the managed backend's mount-wide caching; see
+  the fused repo's spec/serve/fused-render.md § Caching. A bundle exported before
+  this field existed omits it, which the hosting layer reads as off.
 
 ## 19. Deploy — Hosted Publish through the fused CLI (M11)
 
@@ -653,7 +736,14 @@ the product gains network access.
   publish (`POST /api/deploy/preview` → `preview_deploy`, the same pure
   `plan_export` scan the real export runs, resolved fresh with the current
   selection, no files written): the page plus each `runPython` target (and its
-  served route name) and each `rawUrl`/`readFile` or included asset. Export
+  served route name) and each asset. Every asset row carries a **provenance
+  pill** driven by the preview's per-asset `source` (EX-6) so the list *mentions
+  how a bundled file is exposed*: `rawUrl` — a scanned literal
+  `fused.rawUrl()`/`readFile()` reference (the page fetches it via
+  rawUrl/readFile); `bundle` — a file declared in the page's fused-bundle
+  manifest (EX-8), which auto-shows here to back a computed rawUrl/readFile path;
+  `added` — a hand-added include. All three are served read-only on the hosted
+  `_asset` route (the pill's tooltip says so). Export
   blockers (EX-4) come back in the same response and **disable Deploy** with the
   full list — an unexportable page reads as "fix these" up front, never as a
   failed deploy; warnings (EX-4a) show alongside but never block. A preview
@@ -793,12 +883,56 @@ the product gains network access.
   `share create` on AWS envs and lists the managed backend's inline-upload
   bundle classification as a follow-up. fused-render passes the CLI's own
   error through verbatim rather than second-guessing the installed version.
+- **DP-17** The modal carries a **caching control**: a checkbox ("Cache page
+  results") plus a duration select (1m/5m/15m/1h/6h/1d presets, default **1h**,
+  plus the current value verbatim when it isn't one of them — e.g. set by a
+  direct `share create --cache-max-age` outside this dialog), seeded on open
+  from the stored deployment record like `include`/`exclude` (DP-2c) and
+  re-sent as `cache_max_age` on every Deploy — there is no "leave it as it
+  was". It reaches the two backends **differently**, because they model
+  caching differently (fused repo's spec/serve/fused-render.md § Caching /
+  spec/serve/share-links.md §8): it travels in the export bundle's manifest
+  (EX-9) for an AWS environment (read by `build_html_artifact`, so a later
+  `repoint`/redeploy can change it too — `deploy_page` sends it both ways
+  there, harmlessly redundant); for a managed `fused` environment the manifest
+  field is not read at all — only the explicit `--cache-max-age` on the
+  `share create` call is, as the mount's own `cache_settings` (a control-plane
+  concept independent of the bundle, `application` repo spec `021` §3.1). That
+  field is **fixed for the life of a token**: a `repoint` carries no cache
+  fields at all, and a revoked-token revive (`recreate --same-token`) preserves
+  it verbatim — so `deploy_page` deliberately withholds `--cache-max-age` on
+  those two calls (sending it would either be ignored or, on `repoint`,
+  rejected outright) and persists the setting that is **actually** live, not
+  the one requested (`_record_from`'s `effective_cache_max_age`), so the
+  deployment card never claims a setting the mount doesn't have. When the
+  modal detects the checkbox/duration no longer matches what's live on a
+  `fused`-backend redeploy, it shows this inline (naming the live value) with
+  a **"Deploy as new URL"** action (`deploy_page(..., force_new=True)`) — the
+  only way to actually change caching on that backend. It **replaces** the
+  deployment: skips token reuse, mints a fresh `share create` with the
+  requested setting at a new URL, repoints the page pointer to it, then
+  **best-effort revokes the superseded mount** (last, after the new URL is
+  live, so a create failure never takes the page down; a revoke failure is
+  non-fatal — the new URL stands and the old mount lingers, revocable from the
+  account page's deployments list). The pointer therefore tracks the new mount,
+  so the modal's Revoke targets the new URL — no orphaned URL to chase.
+- **DP-18** **Clear cache** (`POST /api/deploy/clear-cache {"page"}` →
+  `clear_cache_deployment` → `fused share cache-clear <token>`) forces every
+  cached result for the deployment's mount to be recomputed on the next
+  request, without touching its status, URL, or caching setting — for "the
+  underlying data changed, not the code" (a redeploy dedupes to the same
+  content address and would otherwise keep serving the old cached result until
+  `cache_max_age` expires). Shown in the caching row (next to the duration
+  control) whenever the deployment is active; its result (`{deleted, scope}`)
+  renders as a one-line status ("Cleared N cached results…" / "Nothing was
+  cached…").
 
 ### 19.5 State & truth
 
 - **DP-12** A thin per-page pointer at `~/.fused-render/deployments.json`
   (shell/storage; keyed by absolute page path — env, backend, token, url,
-  status, entrypoints, updated_at) lets the shell mark deployed files, re-show
+  status, entrypoints, `cache_max_age` (DP-17), updated_at) lets the shell mark
+  deployed files, re-show
   the URL (`create` returns it exactly once; `share list` never carries one),
   and redeploy to the same token. **`share list` on the env stays the
   authority**: the modal reconciles status against it on open (`--all`, so an
@@ -850,7 +984,8 @@ the product gains network access.
 - **DP-14** Endpoints (`fused_render/deploy.py`, an APIRouter like
   shell/bookmarks): `GET /api/deploy/config`, `GET /api/deploy/status`,
   `GET /api/deploy/preview`, `GET /api/deploy/shares`, `POST /api/deploy`,
-  `POST /api/deploy/revoke`, `POST /api/deploy/install`; the POSTs carry the
+  `POST /api/deploy/revoke`, `POST /api/deploy/clear-cache` (DP-18),
+  `POST /api/deploy/install`; the POSTs carry the
   `X-Fused` guard (D36). CLI failures surface their last stderr line verbatim
   (click's `Error: ` prefix stripped) — the fused CLI's messages already name
   the fix (`fused cloud login`, `fused infra serve`, …).
@@ -1721,13 +1856,20 @@ provisioning stays a documented terminal flow.
   started elsewhere — Deploy modal, another tab — is adopted read-only with
   its own Cancel); signed in → account summary (probe orgs/roles table,
   not-admitted note), the environments management table (default marker,
-  make-default, forget-with-confirm), and the setup panel — presented
+  with make-default and forget-with-confirm behind a per-row overflow
+  ("⋯") menu — one quiet control per row instead of a button pair), and
+  the setup panel — presented
   as CONNECT when the account already has a workspace (`cloud setup
   --org --env` connects the existing environment; nothing is created) and
   as create-your-workspace when it has none: workspace picker when >1
   org/env, the single workspace shown read-only when exactly one (the
-  user must see WHICH environment will be connected), prefilled editable
-  env name, live progress log; prominent while no managed env exists, else collapsed
+  user must see WHICH environment will be connected). The CONNECT path is
+  a one-click import of the discovered environment — the primary button
+  names it ("Connect <org> / <env>") and the local env name (a nickname
+  for this machine's store, prefilled by convention) is demoted behind an
+  "Edit name" reveal so the common path needs no typing; the create path
+  (no workspace) shows the editable name up front, since naming is the
+  point there. Live progress log; prominent while no managed env exists, else collapsed
   behind an "Add managed environment" toggle. The deep probe is CACHED:
   focus/visibility refreshes re-read only the cheap presence status and
   keep the orgs view they have, re-probing only when it is missing (initial
@@ -1740,7 +1882,11 @@ provisioning stays a documented terminal flow.
 - **AC-11** The page also hosts the **Deployments** section — the env-wide
   `fused share list` view with per-mount Revoke that PF-6 previously placed
   on Preferences (semantics unchanged: `/api/deploy/shares` joined to local
-  pages, revoke by env+token via `deploy.revoke_mount`). Environments and
+  pages, revoke by env+token via `deploy.revoke_mount`). Each row's actions
+  (Open ↗ / Copy link, and the destructive Revoke behind a separator) live in
+  the same per-row overflow ("⋯") menu as the environments table, so the
+  section shows one control per row rather than an Open link + Revoke button
+  pair; a row with no link and nothing to revoke shows a muted "—". Environments and
   Deployments render in BOTH auth states: the env store and an AWS env's
   share list need the CLI, not a managed-Fused sign-in — an AWS-only user
   must not pass through an irrelevant sign-in to revoke a link. Only the

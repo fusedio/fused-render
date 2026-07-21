@@ -72,6 +72,24 @@ def _sidecar_path(file: str) -> str:
     return file + ".json"
 
 
+def _mount_read_only(file: str) -> bool:
+    """True when `file` sits under a read-only remote mount, where the sidecar
+    write can never be accepted — with CacheMode=full the doomed upload lands
+    in the VFS cache and 403-loops forever (the sidecar-write incident).
+
+    Guarded lazy import: in the app this reads the mount store; a standalone
+    copy of this template (no fused_render on the path) degrades to False, the
+    pre-guard behavior. Deliberately not the stdlib-only rule the rest of this
+    file follows (cf. templates/zarr_aoi/tile_server.py, which also reaches for
+    a fused_render internal) — os.access(W_OK) can't see a remote's read-only
+    -ness, so only the shell's flag can answer this."""
+    try:
+        from fused_render.shell.mounts import mount_read_only
+        return mount_read_only(file)
+    except Exception:
+        return False
+
+
 def _load_sidecar(file: str) -> dict:
     # Preserve every key we don't own (bookmarkHistory, lastSession, ...) so a
     # claude turn round-trips them instead of clobbering them off disk. Only the
@@ -115,7 +133,15 @@ def _record_session(file: str, session_id: str, message: str,
     old entry's id in place (keeping created_at/preview) so one conversation
     stays one row. `cwd` tracks where the transcript lives so a moved file
     can migrate it (see _migrate_session); refreshed every turn.
+
+    No-op when `file` is inside a read-only remote mount: the sidecar write
+    can't be accepted there (the sidecar-write incident). The chat and its
+    transcript (~/.claude/projects) are unaffected — only this file's session
+    list stays empty, so past conversations won't be listed/resumable from the
+    template UI for a mounted file.
     """
+    if _mount_read_only(file):
+        return
     data = _load_sidecar(file)
     now = time.time()
     cwd = os.path.dirname(file)

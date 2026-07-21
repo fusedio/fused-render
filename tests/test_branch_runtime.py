@@ -60,12 +60,12 @@ def test_branch_ref_foo(monkeypatch):
     server, app, cli = _reload_with_ref("foo")
     import fused_render.shell.storage as storage
 
-    # Ref "foo": the whole shell home nests under foo/ (templates, bookmarks,
-    # prefs all follow home_dir), and App Support + port shift too.
+    # Ref "foo": the whole shell home nests under branches/foo/ (templates,
+    # bookmarks, prefs all follow home_dir), and App Support + port shift too.
     base = os.environ["FUSED_RENDER_HOME"]
-    assert storage.home_dir() == os.path.join(base, "foo")
-    assert server.USER_TEMPLATES_DIR == os.path.join(base, "foo", "templates")
-    assert app.APP_SUPPORT_DIR.endswith("Application Support/fused-render/foo")
+    assert storage.home_dir() == os.path.join(base, "branches", "foo")
+    assert server.USER_TEMPLATES_DIR == os.path.join(base, "branches", "foo", "templates")
+    assert app.APP_SUPPORT_DIR.endswith("Application Support/fused-render/branches/foo")
     assert app.DEFAULT_PORT == _branch.branch_port("foo")
     assert app.MAX_PORT == app.DEFAULT_PORT + 10
     assert cli.DEFAULT_PORT == app.DEFAULT_PORT

@@ -223,7 +223,7 @@
     // store), but when the `<file>.json` history log can't be written, say so
     // instead of losing history silently. Probe failure itself stays silent —
     // same best-effort posture as the record call below.
-    fused.runPython("./annotate.py", { action: "status", file }).then((st) => {
+    fused.runPython("./annotate.py", { action: "status", file }, { key: null }).then((st) => {
       if (st && st.writable === false) {
         fusedRoBadge.update(document.getElementById("ro"), "History not saved",
           "The file's sidecar (" + file.split("/").pop() + ".json) isn't " +
@@ -352,7 +352,10 @@
       fused.runPython("./annotate.py", {
         action: "record", comments: arr, file,
         deleted_ids: deletedIds && deletedIds.length ? deletedIds : undefined,
-      }).catch(() => {});
+        // key:null — two quick saves must both land; default per-file cancellation
+        // (D114) would let the newer record abort the older and silently drop a
+        // history write (this call is fire-and-forget, so no error would surface).
+      }, { key: null }).catch(() => {});
       render();
     }
 

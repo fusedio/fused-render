@@ -351,7 +351,10 @@
   const HTML_PATH = new URLSearchParams(location.search).get("path") || "";
   const BASE_DIR = HTML_PATH.slice(0, Math.max(HTML_PATH.lastIndexOf("/"), HTML_PATH.lastIndexOf("\\")) + 1);
   const assetUrl = (rel) => fused.rawUrl(BASE_DIR + rel);
-  const py = (params) => fused.runPython("./reader.py", params);
+  // key:null — reader.py serves the detached-conversion kickoff + its status
+  // poll loop alongside inspect/browse reads; default per-file cancellation
+  // would stall the conversion poll (its promise would never settle) (D114).
+  const py = (params) => fused.runPython("./reader.py", params, { key: null });
   // The target file arrives as the read-only _file param (template contract).
   // It becomes the first scene unless the URL already carries an explicit
   // "files" list (a bookmark, or one already reconciled earlier in this tab).

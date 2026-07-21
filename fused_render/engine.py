@@ -100,11 +100,15 @@ def script_requirements(text: str) -> list[str]:
     ValueError with the parse error so the caller can surface it to the page
     instead of 500ing.
     """
-    import tomllib  # 3.11+; the engine is only reachable when fused imports, which needs 3.11+
-
     for match in _PEP723_BLOCK.finditer(text):
         if match.group("type") != "script":
             continue
+        # Imported here, not at function top: tomllib is 3.11+, but this
+        # function must still return [] on 3.10 for the (overwhelmingly
+        # common) case of a script with no PEP 723 block at all — run_python
+        # calls this unconditionally, regardless of which engine is active.
+        import tomllib
+
         content = "".join(
             line[2:] if line.startswith("# ") else line[1:]
             for line in match.group("content").splitlines(keepends=True)

@@ -19,9 +19,9 @@ def home_dir() -> str:
     ~/.fused-render — tests set it so they never touch the real home dir.
 
     When a branch ref is set (FUSED_RENDER_BRANCH, see fused_render._branch),
-    all shell state (templates, bookmarks, prefs) nests under a per-branch
-    subdir so parallel branches don't collide; baseline (no ref) is the
-    unnested dir, byte-identical to today."""
+    all shell state (templates, bookmarks, prefs) nests under
+    ~/.fused-render/branches/<ref>/ so parallel branches don't collide; baseline
+    (no ref) is the unnested dir, byte-identical to today."""
     from fused_render.paths import state_dir
 
     return state_dir()
