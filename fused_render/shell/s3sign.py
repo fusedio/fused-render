@@ -1,0 +1,179 @@
+"""Stdlib AWS SigV4 query presigner + local S3 credential resolver.
+
+Private-bucket S3 mounts get the same fast direct reads and paginated
+listings the anonymous/public ones already have, by signing the store's own
+URLs locally instead of round-tripping rcd's operations/publiclink per object.
+SigV4 query presigning is a well-specified ~80-line HMAC computation with
+published test vectors, so it lives here in pure stdlib (hmac/hashlib/
+urllib.parse) — no botocore/boto3 dependency to bundle into the DMG.
+
+Two concerns, kept separate:
+  - presign_url: given a URL + credentials + region, return the same URL with
+    the X-Amz-* query parameters that make S3 accept it unauthenticated for
+    the URL's expiry window. Method-aware (a presigned GET rejects a HEAD, so
+    probes must sign HEAD explicitly); session-token aware; UNSIGNED-PAYLOAD
+    with host the only signed header. The timestamp is a parameter so the
+    output is reproducible under test.
+  - resolve_credentials: the three cheap credential sources (remote config
+    keys, environment, shared credentials file). SSO/IMDS/credential_process
+    return None — the caller keeps its existing publiclink path for those.
+
+This module is PURE: no caching, no rc calls, no logging of URLs. Caching and
+the one-time signature validation live in shell/mounts.py, which composes the
+store URL (path-style via _s3_base_url) and hands it here to sign.
+"""
+import configparser
+import datetime
+import hashlib
+import hmac
+import os
+import urllib.parse
+from collections import namedtuple
+
+_ALGORITHM = "AWS4-HMAC-SHA256"
+# S3 accepts a signature computed over the literal "UNSIGNED-PAYLOAD" for a
+# presigned URL — the body is never hashed, which is what lets us sign without
+# reading the object.
+_UNSIGNED_PAYLOAD = "UNSIGNED-PAYLOAD"
+_SERVICE = "s3"
+
+# Static AWS credentials. session_token is None unless the source carries an
+# STS token (env / shared-file / config session_token) — when present it must
+# ride along as X-Amz-Security-Token or S3 rejects the signature.
+Credentials = namedtuple("Credentials", ["access_key", "secret_key",
+                                          "session_token"])
+
+
+def _uri_encode(value: str) -> str:
+    """RFC3986 percent-encoding for a query key/value: only the unreserved set
+    A-Za-z0-9-_.~ stays literal (so '/' in X-Amz-Credential becomes %2F and a
+    space becomes %20, never '+') — exactly what SigV4 canonicalization and the
+    final query string both require."""
+    return urllib.parse.quote(str(value), safe="-_.~")
+
+
+def _sign(key: bytes, msg: str) -> bytes:
+    return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
+
+
+def _signing_key(secret: str, date_stamp: str, region: str) -> bytes:
+    k_date = _sign(("AWS4" + secret).encode("utf-8"), date_stamp)
+    k_region = _sign(k_date, region)
+    k_service = _sign(k_region, _SERVICE)
+    return _sign(k_service, "aws4_request")
+
+
+def presign_url(url: str, *, method: str, region: str,
+                credentials: Credentials, expires: int = 900,
+                extra_query: dict | None = None,
+                timestamp: datetime.datetime | None = None) -> str:
+    """Return `url` with the SigV4 query parameters that authorize `method` on
+    it for `expires` seconds. The host is taken from `url` verbatim, so the
+    caller controls virtual-hosted vs path-style addressing (private dotted
+    buckets go path-style via _s3_base_url, which SigV4 handles because only
+    the Host header — not the bucket-in-path — is signed).
+
+    `extra_query` (e.g. ListObjectsV2's list-type/prefix/delimiter/max-keys)
+    is merged in and signed, so those parameters are canonicalized in this one
+    place. The path in `url` is used as the canonical URI unchanged: S3 signs a
+    single-encoded key, and callers pass keys already quoted with '/' kept."""
+    if timestamp is None:
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+    amz_date = timestamp.strftime("%Y%m%dT%H%M%SZ")
+    date_stamp = timestamp.strftime("%Y%m%d")
+
+    parts = urllib.parse.urlsplit(url)
+    host = parts.netloc
+    canonical_uri = parts.path or "/"
+    scope = f"{date_stamp}/{region}/{_SERVICE}/aws4_request"
+
+    # Every query parameter is part of the signature except the signature
+    # itself. Start from any params already on the URL, then the caller's
+    # extras, then the fixed X-Amz-* set.
+    query: dict = dict(urllib.parse.parse_qsl(parts.query,
+                                              keep_blank_values=True))
+    if extra_query:
+        query.update(extra_query)
+    query["X-Amz-Algorithm"] = _ALGORITHM
+    query["X-Amz-Credential"] = f"{credentials.access_key}/{scope}"
+    query["X-Amz-Date"] = amz_date
+    query["X-Amz-Expires"] = str(int(expires))
+    query["X-Amz-SignedHeaders"] = "host"
+    if credentials.session_token:
+        query["X-Amz-Security-Token"] = credentials.session_token
+
+    canonical_qs = "&".join(f"{_uri_encode(k)}={_uri_encode(v)}"
+                            for k, v in sorted(query.items()))
+    canonical_headers = f"host:{host}\n"
+    canonical_request = "\n".join([
+        method.upper(), canonical_uri, canonical_qs,
+        canonical_headers, "host", _UNSIGNED_PAYLOAD])
+    string_to_sign = "\n".join([
+        _ALGORITHM, amz_date, scope,
+        hashlib.sha256(canonical_request.encode("utf-8")).hexdigest()])
+    signature = hmac.new(_signing_key(credentials.secret_key, date_stamp,
+                                      region),
+                         string_to_sign.encode("utf-8"),
+                         hashlib.sha256).hexdigest()
+    query["X-Amz-Signature"] = signature
+
+    final_qs = "&".join(f"{_uri_encode(k)}={_uri_encode(v)}"
+                        for k, v in sorted(query.items()))
+    return urllib.parse.urlunsplit(
+        (parts.scheme, parts.netloc, canonical_uri, final_qs, ""))
+
+
+def _from_shared_file(cfg: dict) -> Credentials | None:
+    """Static keys from an AWS shared-credentials file. Path: cfg's
+    shared_credentials_file, else AWS_SHARED_CREDENTIALS_FILE, else
+    ~/.aws/credentials. Profile: cfg's profile, else AWS_PROFILE, else
+    'default'. None when the file/section/keys are absent."""
+    path = (cfg.get("shared_credentials_file")
+            or os.environ.get("AWS_SHARED_CREDENTIALS_FILE")
+            or os.path.expanduser("~/.aws/credentials"))
+    if not os.path.isfile(path):
+        return None
+    parser = configparser.ConfigParser()
+    try:
+        parser.read(path)
+    except configparser.Error:
+        return None
+    profile = cfg.get("profile") or os.environ.get("AWS_PROFILE") or "default"
+    if not parser.has_section(profile):
+        return None
+    section = parser[profile]
+    access = section.get("aws_access_key_id")
+    secret = section.get("aws_secret_access_key")
+    if access and secret:
+        return Credentials(access, secret,
+                           section.get("aws_session_token") or None)
+    return None
+
+
+def resolve_credentials(cfg: dict | None) -> Credentials | None:
+    """Resolve static AWS credentials for an S3 remote config, cheapest source
+    first, or None when only out-of-scope sources exist (SSO / IMDS /
+    credential_process) — then the caller keeps today's publiclink path:
+      1. explicit access_key_id/secret_access_key in the remote config
+         (rclone's config/get returns the plaintext secret on the pinned
+         version, so no config-dump fallback is needed);
+      2. environment (AWS_ACCESS_KEY_ID/SECRET/SESSION_TOKEN) when env_auth;
+      3. the shared credentials file when env_auth or a profile /
+         shared_credentials_file is configured.
+    Non-S3 or empty configs return None."""
+    if not isinstance(cfg, dict) or cfg.get("type") != "s3":
+        return None
+    access = cfg.get("access_key_id")
+    secret = cfg.get("secret_access_key")
+    if access and secret:
+        return Credentials(access, secret, cfg.get("session_token") or None)
+    env_auth = str(cfg.get("env_auth", "")).lower() == "true"
+    if env_auth:
+        access = os.environ.get("AWS_ACCESS_KEY_ID")
+        secret = os.environ.get("AWS_SECRET_ACCESS_KEY")
+        if access and secret:
+            return Credentials(access, secret,
+                               os.environ.get("AWS_SESSION_TOKEN") or None)
+    if env_auth or cfg.get("profile") or cfg.get("shared_credentials_file"):
+        return _from_shared_file(cfg)
+    return None
