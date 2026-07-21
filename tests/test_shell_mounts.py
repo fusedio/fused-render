@@ -3329,3 +3329,91 @@ def test_mount_view_includes_restart_reason(home, rcd):
     view = mounts_mod.mount_view(c)
     assert "restart_reason" in view
     assert view["restart_reason"] is None  # healthy/unmounted -> nothing to prompt
+
+
+# -- review fixes: tri-state credential probe, drift + perf guards ----------
+
+
+def test_mount_restart_reason_inconclusive_probe_is_not_credentials(
+        home, rcd, monkeypatch, fresh_upstream):
+    # A non-credential failure (AccessDenied = valid keys, no list perm) is
+    # INCONCLUSIVE, not proof the creds work — no false "credentials" prompt.
+    m = mounts_mod.add_mount("data", "corp:bucket")
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
+    _stub_lsd(monkeypatch, rc=1, lsd_stderr="AccessDenied: not authorized")
+    assert mounts_mod.mount_restart_reason(
+        m, rcd_mounts=set(), state="disconnected") is None
+
+    # A timeout is likewise inconclusive (config/get is already memoized).
+    def timeout_run(cmd, **kw):
+        raise mounts_mod.subprocess.TimeoutExpired(cmd, 30)
+
+    monkeypatch.setattr(mounts_mod.subprocess, "run", timeout_run)
+    assert mounts_mod.mount_restart_reason(
+        m, rcd_mounts=set(), state="disconnected") is None
+
+
+def test_broken_mount_error_inconclusive_creds_falls_through_to_reconnect(
+        home, rcd, monkeypatch, fresh_upstream):
+    # env_auth + a transient/non-credential failure: neither "refresh" nor
+    # "restart" — fall through to the plain reconnect guidance.
+    c, mp = _disconnected_mount(home, rcd, monkeypatch)
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
+    _stub_lsd(monkeypatch, rc=1, lsd_stderr="AccessDenied: not authorized")
+    err = mounts_mod.broken_mount_error(_os.path.join(mp, "data"))
+    assert err is not None
+    assert "reconnect" in err.lower()
+    assert "restart" not in err.lower()
+    assert "refresh" not in err.lower()
+
+
+def test_mount_restart_reason_no_params_for_adopted_legacy_read_only(home, rcd):
+    # A read_only mount adopted via listmounts (no mounted_read_only key, so we
+    # can't know what the live VFS was baked with) must NOT show a false
+    # "params changed" prompt.
+    m = {"id": "x", "name": "data", "remote": "r:bucket", "read_only": True}
+    assert mounts_mod.mount_restart_reason(
+        m, rcd_mounts=set(), state="mounted") is None
+
+
+def test_mount_restart_reason_skips_mounted_paths_when_state_supplied(
+        home, monkeypatch):
+    # The error path passes state, so the rc round-trip mounted_paths() must be
+    # skipped entirely.
+    def boom():
+        raise AssertionError("mounted_paths() called on the state-supplied path")
+
+    monkeypatch.setattr(mounts_mod, "mounted_paths", boom)
+    m = {"id": "x", "name": "data", "remote": "r:bucket",
+         "read_only": False, "mounted_read_only": False}
+    assert mounts_mod.mount_restart_reason(m, state="mounted") is None
+
+
+def test_get_mounts_probes_credentials_off_serial_path(
+        client, rcd, home, monkeypatch):
+    # Several broken env_auth mounts must NOT stall the polled Mounts page: the
+    # credential probe runs once per mount, in PARALLEL with the state probes,
+    # off the serial view-building path.
+    mps = []
+    for i in range(4):
+        _c, mp = _make_mount(home, rcd, name=f"m{i}",
+                             remote=f"corp{i}:bucket", served=False)
+        mps.append(mp)
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p in mps)
+    calls = []
+
+    def slow_status(m, bin_=None):
+        calls.append(m["name"])
+        time.sleep(0.5)
+        return "valid"
+
+    monkeypatch.setattr(mounts_mod, "_mount_credential_status", slow_status)
+    t0 = time.monotonic()
+    data = client.get("/api/mounts").json()
+    elapsed = time.monotonic() - t0
+
+    # Exactly one probe per broken mount — no second probe from mount_view.
+    assert sorted(calls) == ["m0", "m1", "m2", "m3"]
+    # 4 x 0.5s SERIALLY would be >= 2s; parallel is ~0.5s.
+    assert elapsed < 1.3, f"credential probes ran serially ({elapsed:.2f}s)"
+    assert all(mv["restart_reason"] == "credentials" for mv in data["mounts"])
