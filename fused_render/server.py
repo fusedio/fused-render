@@ -2652,6 +2652,13 @@ def create_app(start_dir: str) -> FastAPI:
             # fs/events incident. Templates stay mount-agnostic; the skip lives
             # in runtime internals, keyed off this server-provided prefix.
             "mounts_root": os.path.abspath(shell_mounts.mounts_dir()),
+            # Whether the builtin learn mount record exists (D123) — the
+            # sidebar's Learn entry only renders when this is true, so it's
+            # never a dead link (BUGBOT: an unpackaged run with no
+            # FUSED_RENDER_LEARN_ZIP, or the brief window before the
+            # background automount thread upserts the record on a packaged
+            # run, would otherwise show a link to a path that doesn't exist).
+            "learn_mount_ready": shell_mounts.learn_mount_ready(),
         }
 
     # GET /api/templates/registry moved to templates_api.py (extended §2.2

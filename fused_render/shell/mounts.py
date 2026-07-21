@@ -2251,9 +2251,19 @@ def ensure_learn_mount() -> None:
     normal per-mount loop right after this call does a fresh attach_mount —
     unconditionally, not just when the remote string happens to differ, since
     content can change under an unchanged path. Cheap: this is a small local
-    archive, not a network remote."""
+    archive, not a network remote.
+
+    BUGBOT (2026-07-21): the force-detach talks to rcd (mounted_paths,
+    detach_mount's busy-unmount retry, _stop_serve_for) and can block for the
+    full rc timeout window. That must never happen while _store_lock is
+    held — every mount create/delete/update takes the same lock, and rcd I/O
+    under it would stall them all on every startup. So the store
+    read-modify-write happens entirely inside `with _store_lock`, and
+    whatever forced-detach is needed is only PLANNED there (captured as
+    `detach_target`) and executed after the `with` block exits."""
     try:
         path = learn_zip_path()
+        detach_target: tuple[dict, str] | None = None
         with _store_lock:
             mounts = list_mounts()
             builtin = next(
@@ -2263,38 +2273,54 @@ def ensure_learn_mount() -> None:
                 if builtin is not None:
                     old_remote = builtin["remote"]
                     _write([m for m in mounts if m is not builtin])
-                    _force_detach_learn_mount(builtin, old_remote)
-                return
-            remote = f":archive:{path}"
-            if builtin is not None:
-                # Captured BEFORE any mutation below: the live mount/serve
-                # (if any) are keyed to whatever fs string was in effect at
-                # the end of the LAST run, not the one we're about to write.
-                old_remote = builtin["remote"]
-                if old_remote != remote:
-                    builtin["remote"] = remote
+                    detach_target = (builtin, old_remote)
+            else:
+                remote = f":archive:{path}"
+                if builtin is not None:
+                    # Captured BEFORE any mutation below: the live mount/serve
+                    # (if any) are keyed to whatever fs string was in effect
+                    # at the end of the LAST run, not the one we're about to
+                    # write.
+                    old_remote = builtin["remote"]
+                    if old_remote != remote:
+                        builtin["remote"] = remote
+                        _write(mounts)
+                    # Force a fresh mount every startup, changed or not (see
+                    # the upgrade-same-path staleness case above).
+                    detach_target = (builtin, old_remote)
+                elif any(m["name"] == LEARN_MOUNT_NAME for m in mounts):
+                    logger.warning(
+                        "not adding the builtin learn mount: a user mount "
+                        "named %r already exists", LEARN_MOUNT_NAME,
+                    )
+                else:
+                    mounts.append({
+                        "id": uuid.uuid4().hex[:12],
+                        "name": LEARN_MOUNT_NAME,
+                        "remote": remote,
+                        "read_only": True,
+                        "read_only_user": True,
+                        "builtin": LEARN_MOUNT_NAME,
+                    })
                     _write(mounts)
-                # Force a fresh mount every startup, changed or not (see the
-                # upgrade-same-path staleness case above).
-                _force_detach_learn_mount(builtin, old_remote)
-                return
-            if any(m["name"] == LEARN_MOUNT_NAME for m in mounts):
-                logger.warning(
-                    "not adding the builtin learn mount: a user mount named "
-                    "%r already exists", LEARN_MOUNT_NAME,
-                )
-                return
-            mounts.append({
-                "id": uuid.uuid4().hex[:12],
-                "name": LEARN_MOUNT_NAME,
-                "remote": remote,
-                "read_only": True,
-                "read_only_user": True,
-                "builtin": LEARN_MOUNT_NAME,
-            })
-            _write(mounts)
+        if detach_target is not None:
+            _force_detach_learn_mount(*detach_target)
     except Exception:
         logger.exception("ensure_learn_mount failed")
+
+
+def learn_mount_ready() -> bool:
+    """True when the builtin learn mount record exists in mounts.json.
+
+    The sidebar's Learn entry (Sidebar.tsx) uses this, surfaced through
+    /api/config, to decide whether to render at all — BUGBOT: without it the
+    entry always renders and navigates to `${mounts_root}/learn`, which is a
+    dead link in an unpackaged run with no FUSED_RENDER_LEARN_ZIP, and
+    briefly dead on a packaged run too until the background automount thread
+    (shell/mounts.startup) has upserted the record. This checks record
+    presence only, not live mount health — the same looseness the existing
+    Fused entry has against fused_dir actually existing on disk."""
+    return any(m.get("builtin") == LEARN_MOUNT_NAME for m in list_mounts())
 
 
 def _force_detach_learn_mount(builtin: dict, old_remote: str) -> None:

@@ -217,6 +217,46 @@ def test_never_raises_on_storage_failure(home, learn_zip, monkeypatch):
     mounts_mod.ensure_learn_mount()  # must swallow, not raise
 
 
+def test_force_detach_runs_outside_store_lock(home, learn_zip, monkeypatch):
+    # BUGBOT: rcd I/O (detach_mount, _stop_serve_for) must never run while
+    # _store_lock is held — every mount create/delete/update takes the same
+    # lock, and rcd I/O under it would stall them for the full rc timeout.
+    mounts_mod.ensure_learn_mount()
+    monkeypatch.setattr(mounts_mod, "mounted_paths",
+                        lambda: {mounts_mod.mountpoint(_learn_records()[0])})
+
+    def fake_detach(m, force=False):
+        # Locked() has no public accessor; RLock would silently allow
+        # reentry and mask the bug, but _store_lock is a plain Lock, so
+        # acquire(blocking=False) genuinely fails only if something else
+        # (this very call, if still under the lock) already holds it.
+        assert mounts_mod._store_lock.acquire(blocking=False), (
+            "_store_lock was still held during force-detach I/O"
+        )
+        mounts_mod._store_lock.release()
+
+    monkeypatch.setattr(mounts_mod, "detach_mount", fake_detach)
+    mounts_mod.ensure_learn_mount()
+
+
+# -- learn_mount_ready --------------------------------------------------------
+
+
+def test_learn_mount_ready_true_once_created(home, learn_zip):
+    assert mounts_mod.learn_mount_ready() is False
+    mounts_mod.ensure_learn_mount()
+    assert mounts_mod.learn_mount_ready() is True
+
+
+def test_learn_mount_ready_false_without_zip(home):
+    assert mounts_mod.learn_mount_ready() is False
+
+
+def test_learn_mount_ready_false_for_user_mount_named_learn(home):
+    mounts_mod.add_mount("learn", "s3remote:my-learn-bucket")
+    assert mounts_mod.learn_mount_ready() is False
+
+
 # -- mount_view --------------------------------------------------------------
 
 

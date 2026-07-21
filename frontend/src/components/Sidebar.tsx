@@ -831,9 +831,11 @@ export default function Sidebar({ config }: SidebarProps) {
         <a href="#" id="fused-link" className="sidebar-item" onClick={onFusedClick}>
           <span className="icon"><FolderIcon /></span> Fused
         </a>
-        <a href="#" id="learn-link" className="sidebar-item" onClick={onLearnClick}>
-          <span className="icon"><LearnIcon /></span> Learn
-        </a>
+        {config.learn_mount_ready && (
+          <a href="#" id="learn-link" className="sidebar-item" onClick={onLearnClick}>
+            <span className="icon"><LearnIcon /></span> Learn
+          </a>
+        )}
       </div>
       <div className="sidebar-section sidebar-bookmarks">
         <div className="sidebar-heading">Bookmarks</div>
