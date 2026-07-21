@@ -932,22 +932,25 @@ table.listing-table td.mtime {
 }
 
 /* Sits between the directory name and the mode switcher (D81's `_listing`
-   header) — shown only when the folder holds exactly one HTML file. */
+   header) — shown only when the folder holds exactly one HTML file. Same
+   accent tint the old per-row "App" chip used, so the launchable-app
+   language carries over to its replacement. */
 .open-as-app-btn {
   flex: 0 0 auto;
   font: inherit;
   font-size: 12px;
   padding: 5px 10px;
-  border: 1px solid var(--border);
+  border: 1px solid rgba(229, 255, 68, 0.35);
   border-radius: 6px;
-  background: var(--bg);
-  color: var(--fg);
+  background: rgba(229, 255, 68, 0.08);
+  color: #c9d95e;
   cursor: pointer;
 }
 
 .open-as-app-btn:hover {
-  background: var(--bg-alt);
+  background: rgba(229, 255, 68, 0.16);
   border-color: var(--accent);
+  color: var(--accent);
 }
 
 .preview-actions {
