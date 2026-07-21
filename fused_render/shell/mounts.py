@@ -1442,6 +1442,9 @@ _SIGN_EXPIRY_S = 15 * 60
 _SIGN_VALIDATE_TIMEOUT_S = 5.0
 _CRED_TTL_S = 60.0  # re-read env / ~/.aws so a rotated key / STS refresh lands
 _UPSTREAM_LINKS_CAP = 4096  # bound the publiclink cache (sign mode never inserts)
+# A publiclink URL minted under a dying STS token shouldn't stay replayable for
+# the full half hour, so a session-token remote gets a shorter link TTL.
+_SESSION_TOKEN_LINK_TTL_S = 5 * 60.0
 _upstream_lock = threading.Lock()
 _upstream_links: dict = {}  # (fs, rel) -> (url, monotonic expiry)
 _upstream_mode: dict = {}   # fs -> "link" | "public" | "none" | "sign"
@@ -1485,6 +1488,44 @@ def _remote_config(name: str) -> dict | None:
     with _upstream_lock:
         _upstream_cfg[name] = cfg
     return cfg
+
+
+def _invalidate_upstream_caches() -> None:
+    """Drop every memoized upstream fact — config, resolved mode/region,
+    credentials, and per-object links. Called on remote create/delete: those
+    change a remote's config or credentials out from under the memoization
+    (config/get is otherwise cached for the process lifetime), and a changed
+    key must be picked up without a restart. Wholesale, not per-name — these
+    are rare, user-initiated events, and for anonymous remotes it only forces a
+    cheap re-derivation of the public mode."""
+    with _upstream_lock:
+        _upstream_cfg.clear()
+        _upstream_mode.clear()
+        _upstream_region.clear()
+        _cred_cache.clear()
+        _upstream_links.clear()
+
+
+def _store_upstream_link(key, url: str, expiry: float, now: float) -> None:
+    """Insert into the bounded publiclink cache (caller holds _upstream_lock).
+    At the cap, evict expired entries first, then the oldest by expiry. Sign
+    mode never inserts, so this only guards the publiclink path."""
+    if key not in _upstream_links and len(_upstream_links) >= _UPSTREAM_LINKS_CAP:
+        for k in [k for k, (_u, exp) in _upstream_links.items() if exp <= now]:
+            del _upstream_links[k]
+        while len(_upstream_links) >= _UPSTREAM_LINKS_CAP:
+            del _upstream_links[min(_upstream_links,
+                                    key=lambda k: _upstream_links[k][1])]
+    _upstream_links[key] = (url, expiry)
+
+
+def _link_ttl(fs: str) -> float:
+    """publiclink cache TTL for `fs`: the short session-token clamp when the
+    remote carries an STS session_token, else _LINK_TTL_S. Must be called
+    WITHOUT _upstream_lock held (_remote_config takes it)."""
+    if (_remote_config(fs.partition(":")[0]) or {}).get("session_token"):
+        return _SESSION_TOKEN_LINK_TTL_S
+    return _LINK_TTL_S
 
 
 def _anonymous_s3(cfg: dict | None) -> bool:
@@ -2288,11 +2329,12 @@ def _upstream_url_for(path: str) -> str | None:
         # builder recognizes the remote returns a non-None URL, the rest None.
         url = _public_object_url(fs, rel) or _gcs_public_object_url(fs, rel)
         mode = "public" if url else "none"
+    # _link_ttl reads config (takes _upstream_lock), so resolve it first.
+    ttl = (_link_ttl(fs) if mode == "link" else 3600.0) if url is not None else 0.0
     with _upstream_lock:
         _upstream_mode[fs] = mode
         if url is not None:
-            ttl = _LINK_TTL_S if mode == "link" else 3600.0
-            _upstream_links[(fs, rel)] = (url, now + ttl)
+            _store_upstream_link((fs, rel), url, now + ttl, now)
     return url
 
 
@@ -3307,6 +3349,7 @@ def delete_mount(cid: str, x_fused: str | None = Header(default=None)):
         os.rmdir(mp)
     remove_mount(cid)
     sync_serves()  # stop the deleted mount's HTTP serve, drop its map entry
+    _invalidate_upstream_caches()  # the gone remote's memoized facts mustn't linger
     return {"ok": True}
 
 
@@ -3343,6 +3386,7 @@ def create_remote(body: dict = Body(...), x_fused: str | None = Header(default=N
         return JSONResponse({"error": "rclone config create timed out (30s)"}, status_code=502)
     if r.returncode != 0:
         return JSONResponse({"error": (r.stderr or r.stdout or "").strip()[-500:]}, status_code=502)
+    _invalidate_upstream_caches()  # new/changed keys must be picked up without restart
     return {"ok": True, "name": name + ":"}
 
 
@@ -3474,4 +3518,5 @@ def create_detected_remote(body: dict = Body(...), x_fused: str | None = Header(
                              "automatically — delete it manually before "
                              "retrying)")
             return JSONResponse({"error": cred_err}, status_code=502)
+    _invalidate_upstream_caches()  # new/changed keys must be picked up without restart
     return {"ok": True, "name": name + ":"}

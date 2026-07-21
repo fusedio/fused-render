@@ -2384,6 +2384,99 @@ def test_upstream_anonymous_s3_unchanged_and_never_resolves(home, rcd, fresh_ups
     assert mounts_mod._upstream_mode["aws-open:bucket/pre fix"] == "public"
 
 
+# -- upstream cache hygiene (Task 4) -----------------------------------------
+
+
+def test_create_remote_invalidates_upstream_caches(client, fresh_upstream, monkeypatch):
+    # The stale-_upstream_cfg bug: a changed key must be picked up without a
+    # restart. Creating a remote clears every memoized upstream fact.
+    mounts_mod._upstream_cfg["mys3"] = {"type": "s3", "stale": True}
+    mounts_mod._upstream_mode["mys3:bucket"] = "link"
+    mounts_mod._upstream_links[("mys3:bucket", "x")] = ("u", 9e18)
+    mounts_mod._cred_cache["mys3"] = (None, 9e18)
+    mounts_mod._upstream_region["mys3:bucket"] = "us-east-1"
+
+    class _R:
+        returncode, stdout, stderr = 0, "", ""
+
+    monkeypatch.setattr(mounts_mod.subprocess, "run", lambda cmd, **kw: _R())
+    monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: "/usr/bin/rclone")
+    r = client.post("/api/mounts/remotes", json={
+        "name": "mys3",
+        "params": {"access_key_id": "AK", "secret_access_key": "SK"}},
+        headers=FUSED)
+    assert r.status_code == 200
+    assert mounts_mod._upstream_cfg == {}
+    assert mounts_mod._upstream_mode == {}
+    assert mounts_mod._upstream_links == {}
+    assert mounts_mod._cred_cache == {}
+    assert mounts_mod._upstream_region == {}
+
+
+def test_delete_mount_invalidates_upstream_caches(client, rcd, fresh_upstream, monkeypatch):
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mounts_mod._upstream_cfg["remote"] = {"type": "s3"}
+    mounts_mod._upstream_mode["remote:bucket"] = "link"
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: False)
+    r = client.delete(f"/api/mounts/{c['id']}", headers=FUSED)
+    assert r.status_code == 200
+    assert mounts_mod._upstream_cfg == {}
+    assert mounts_mod._upstream_mode == {}
+
+
+def test_link_cache_cap_holds_under_many_inserts(home, fresh_upstream):
+    now = time.monotonic()
+    with mounts_mod._upstream_lock:
+        for i in range(5000):
+            mounts_mod._store_upstream_link((f"fs{i}", "r"), f"u{i}",
+                                            now + 1800, now)
+    assert len(mounts_mod._upstream_links) <= mounts_mod._UPSTREAM_LINKS_CAP
+
+
+def test_link_cache_evicts_expired_before_oldest(home, fresh_upstream):
+    now = time.monotonic()
+    cap = mounts_mod._UPSTREAM_LINKS_CAP
+    with mounts_mod._upstream_lock:
+        for i in range(cap):  # fill to the cap with already-expired entries
+            mounts_mod._store_upstream_link((f"old{i}", "r"), "u", now - 1, now)
+        # One insert past the cap drops the expired ones, keeping the fresh one.
+        mounts_mod._store_upstream_link(("fresh", "r"), "keep", now + 1800, now)
+    assert ("fresh", "r") in mounts_mod._upstream_links
+    assert len(mounts_mod._upstream_links) < cap
+
+
+def test_session_token_remote_gets_short_link_ttl(home, rcd, fresh_upstream):
+    import os
+
+    # A custom-endpoint S3 remote carrying an STS session_token: not signable
+    # (endpoint excluded), so it takes the publiclink path — and its link is
+    # cached for the 5-minute clamp, not the 30-minute default.
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "false",
+                                   "endpoint": "https://r2.example.com",
+                                   "session_token": "TOK"}
+    rcd.responses["operations/publiclink"] = {"url": "https://signed.example/x?sig=1"}
+    c = mounts_mod.add_mount("corp", "corp:bucket")
+    f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")
+    before = time.monotonic()
+    assert mounts_mod.upstream_url_for(f) == "https://signed.example/x?sig=1"
+    _url, expiry = mounts_mod._upstream_links[("corp:bucket", "a.parquet")]
+    # Clamped to ~5 min, far below the 30-min default (small slack: `before` is
+    # captured just before the function's own monotonic `now`).
+    assert 240 < expiry - before < mounts_mod._SESSION_TOKEN_LINK_TTL_S + 60
+
+
+def test_no_session_token_remote_keeps_default_link_ttl(home, rcd, fresh_upstream):
+    import os
+
+    rcd.responses["operations/publiclink"] = {"url": "https://signed.example/x?sig=1"}
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")
+    before = time.monotonic()
+    mounts_mod.upstream_url_for(f)
+    _url, expiry = mounts_mod._upstream_links[("remote:bucket", "a.parquet")]
+    assert expiry - before > mounts_mod._SESSION_TOKEN_LINK_TTL_S
+
+
 def test_fs_raw_redirects_cold_native_range_reads(client, home, rcd, fresh_upstream):
     """A GET from a native client (no Sec-Fetch-Mode) on a cold mount-backed
     file 307s to the store's direct URL — ranged or whole-file alike (zarr
