@@ -175,9 +175,6 @@ class Job:
 
         return SupervisedProcess(h_process, pid)
 
-    def contains(self, process: SupervisedProcess) -> bool:
-        return bool(win32job.IsProcessInJob(process.handle, self._handle))
-
     def close(self) -> None:
         """Deterministically close the job handle, firing
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE against everything the job owns.

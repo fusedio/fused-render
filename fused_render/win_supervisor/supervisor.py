@@ -84,9 +84,9 @@ def run(initial: protocol.Command) -> None:
             elif action is tray.TrayAction.OPEN_FILE:
                 _spawn_file_dialog(port, paths)
             elif action is tray.TrayAction.OPEN_LOGS:
-                _open_path(paths.logs)
+                _safe_call(paths, lambda: _open_path(paths.logs))
             elif action is tray.TrayAction.DEFAULT_APPS:
-                _open_uri("ms-settings:defaultapps")
+                _safe_call(paths, lambda: _open_uri("ms-settings:defaultapps"))
             elif action is tray.TrayAction.EXIT:
                 if _confirm_exit():
                     tray_handle.stop()
@@ -117,6 +117,11 @@ def run(initial: protocol.Command) -> None:
 
     if server_died:
         _stop_pipe(inst, pipe_requests, pipe_thread)
+        # The child itself already died, but any Job-assigned grandchildren
+        # (spawned processes it left behind) must not be left to PyHANDLE GC
+        # timing — close deterministically before raising, same rule as the
+        # normal teardown path below.
+        job.close()
         raise RuntimeError("Python server exited unexpectedly")
 
     if stop_pipe_locally:
@@ -176,6 +181,17 @@ def _safe_open(port: int, command: protocol.Command, paths: DesktopPaths) -> boo
     except OSError as error:
         paths.log(f"open failed: {error}")
         return False
+
+
+def _safe_call(paths: DesktopPaths, action) -> None:
+    """Run a tray action (Open logs, Default apps, ...) without letting an
+    `OSError` from `os.startfile` unwind `run()` — a routine tray click must
+    never tear down the already-running Job-owned server (same rule as
+    `_safe_open`, generalized to actions that aren't a browser open)."""
+    try:
+        action()
+    except OSError as error:
+        paths.log(f"tray action failed: {error}")
 
 
 def _safe_graceful_shutdown(port: int, token: str, paths: DesktopPaths) -> None:
@@ -253,6 +269,11 @@ def _view_url(port: int, path: Path) -> str:
     absolute = path if path.is_absolute() else Path.cwd() / path
     raw = str(absolute)
     normalized = raw.replace("\\", "/") if len(raw) > 1 and raw[1] == ":" else raw
+    if normalized.lower().endswith(".bookmark"):
+        # Parity with app.py's view_url_path (SB-9, D99): a .bookmark file is
+        # not previewed directly — it routes through the _bookmark sentinel,
+        # which reads it server-side and redirects to the view it describes.
+        return f"http://127.0.0.1:{port}/view/_bookmark?file={_percent_encode(normalized)}"
     segments = "/".join(
         _percent_encode(segment)
         for segment in normalized.strip("/").split("/")
