@@ -230,3 +230,55 @@ def test_stop_pipe_answers_genuine_concurrent_upgrade_with_zero():
     supervisor._stop_pipe(_FakePrimary(), requests, t)
     assert answered.get(timeout=1) == 0
     assert not t.is_alive()
+
+
+def test_forwarded_open_never_blocks_the_loop_thread(monkeypatch):
+    # Bugbot: a forwarded Open ran Path.exists()/os.startfile inline on the
+    # loop, so a hung UNC stat stalled pipe servicing and a concurrent
+    # ShutdownForUpgrade timed out. The open must run on a worker; its pipe
+    # response is put from that worker once the open finishes.
+    release_open = threading.Event()
+    open_started = threading.Event()
+
+    def hung_open(port, command):
+        open_started.set()
+        release_open.wait(30)  # stands in for a disconnected-UNC Path.exists()
+        raise OSError("host unreachable")
+
+    monkeypatch.setattr(supervisor, "_open_command", hung_open)
+
+    class _Process:
+        def wait(self, timeout_ms):
+            return False
+
+    class _Paths:
+        @staticmethod
+        def log(message):
+            pass
+
+    tray_actions: "queue.Queue" = queue.Queue()
+    pipe_requests: "queue.Queue[instance.Request]" = queue.Queue()
+    open_resp: "queue.Queue[int]" = queue.Queue(maxsize=1)
+    upgrade_resp: "queue.Queue[int]" = queue.Queue(maxsize=1)
+    result: "queue.Queue" = queue.Queue()
+
+    loop = threading.Thread(
+        target=lambda: result.put(
+            supervisor._event_loop(1, _Process(), _Paths(), tray_actions, pipe_requests)
+        ),
+        daemon=True,
+    )
+    loop.start()
+
+    pipe_requests.put(instance.Request(protocol.Open(r"\dead-host\share\x.csv"), open_resp))
+    assert open_started.wait(5)  # the open is in flight — and hung — on its worker
+    pipe_requests.put(instance.Request(protocol.ShutdownForUpgrade(), upgrade_resp))
+
+    reason, response = result.get(timeout=2)  # loop answered while the open still hangs
+    assert reason is supervisor._ExitReason.UPGRADE
+    assert response is upgrade_resp
+    assert open_resp.empty()  # no premature answer for the stuck open
+
+    release_open.set()
+    assert open_resp.get(timeout=5) == 1  # worker still answers the pipe when done
+    loop.join(timeout=1)

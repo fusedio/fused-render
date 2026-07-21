@@ -136,7 +136,12 @@ def _event_loop(
     Ordering per iteration is load-bearing: pipe requests are checked even
     while an exit-confirm dialog sits unanswered (confirmed is absent, not
     blocking), so ShutdownForUpgrade pre-empts the dialog — it returns
-    immediately and the dangling daemon-thread dialog vanishes at exit."""
+    immediately and the dangling daemon-thread dialog vanishes at exit.
+    Forwarded opens are likewise dispatched via _spawn_open, never awaited
+    here — their pipe response is put from the worker once the open
+    actually finishes, so a hung Path.exists() (a disconnected UNC path)
+    can't stall this loop's ability to answer a concurrent
+    ShutdownForUpgrade inside the pipe server's 20s window."""
     exit_confirm: "queue.Queue[bool]" = queue.Queue()
     while True:
         while True:
@@ -145,7 +150,7 @@ def _event_loop(
             except queue.Empty:
                 break
             if action is tray.TrayAction.OPEN:
-                _safe_open(port, protocol.OpenHome(), paths)
+                _spawn_open(port, protocol.OpenHome(), paths)
             elif action is tray.TrayAction.OPEN_FILE:
                 _spawn_file_dialog(port, paths)
             elif action is tray.TrayAction.OPEN_LOGS:
@@ -169,8 +174,7 @@ def _event_loop(
         if request is not None:
             if isinstance(request.command, protocol.ShutdownForUpgrade):
                 return _ExitReason.UPGRADE, request.response
-            ok = _safe_open(port, request.command, paths)
-            request.response.put(0 if ok else 1)
+            _spawn_open(port, request.command, paths, request.response)
         elif process.wait(0):
             return _ExitReason.SERVER_DIED, None
 
@@ -275,6 +279,29 @@ def _safe_graceful_shutdown(port: int, token: str, paths: DesktopPaths) -> None:
         _graceful_shutdown(port, token)
     except OSError as error:
         paths.log(f"graceful shutdown request failed: {error}")
+
+
+def _spawn_open(
+    port: int,
+    command: protocol.Command,
+    paths: DesktopPaths,
+    response: "queue.Queue[int] | None" = None,
+) -> None:
+    """Open on a dedicated thread (same idiom as `_spawn_file_dialog`):
+    `_open_command` can hang the caller — `Path.exists()` stalls on a
+    disconnected UNC path, `os.startfile` on a stuck shell association —
+    and the loop must keep servicing pipe_requests so a concurrent
+    ShutdownForUpgrade is answered inside `_serve_pipe`'s 20s window. For a
+    pipe-forwarded command the response is put from this worker once the
+    open actually finishes: a hung open makes THAT client's pipe call time
+    out client-side, not the whole loop."""
+
+    def worker():
+        ok = _safe_open(port, command, paths)
+        if response is not None:
+            response.put(0 if ok else 1)
+
+    threading.Thread(target=worker, daemon=True, name="fused-render-open").start()
 
 
 def _spawn_file_dialog(port: int, paths: DesktopPaths) -> None:
