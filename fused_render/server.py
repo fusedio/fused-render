@@ -34,6 +34,8 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
+import httpx
+
 from fastapi import Body, FastAPI, Header, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import (
     FileResponse,
@@ -1684,6 +1686,40 @@ def _proxy_raw(upstream: str, request: Request):
     return StreamingResponse(body(), status_code=r.status, headers=out)
 
 
+async def _proxy_raw_pooled(client: httpx.AsyncClient, upstream: str,
+                            request: Request):
+    """Opt-in pooled proxy of a store's *signed* URL (TASK F). Same forwarded
+    header set (_PROXY_HEADERS) and status pass-through (206/416/404) as
+    _proxy_raw, but streams through a shared keep-alive httpx pool so a burst of
+    range reads reuses sockets to the store instead of paying urllib's fresh
+    TLS handshake + redirect round trip per block. Returns None only when the
+    store is unreachable at the connection level — the caller then falls back to
+    the 307 so the read still completes. Async (awaited on the event loop): the
+    pool is the point, and to_thread'ing a sync client would defeat it."""
+    headers = {}
+    rng = request.headers.get("range")
+    if rng:
+        headers["Range"] = rng
+    req = client.build_request(request.method, upstream, headers=headers)
+    try:
+        r = await client.send(req, stream=True)
+    except httpx.HTTPError:
+        return None
+    out = {k: v for k, v in r.headers.items() if k.lower() in _PROXY_HEADERS}
+    if request.method == "HEAD":
+        await r.aclose()
+        return Response(status_code=r.status_code, headers=out)
+
+    async def body():
+        try:
+            async for chunk in r.aiter_bytes(256 * 1024):
+                yield chunk
+        finally:
+            await r.aclose()
+
+    return StreamingResponse(body(), status_code=r.status_code, headers=out)
+
+
 def _stat_or_none(path: str) -> os.stat_result | None:
     """stat() for /api/fs/raw's 404 gate: None for missing paths and
     non-regular files alike (a directory has no raw bytes to serve)."""
@@ -2555,6 +2591,27 @@ def create_app(start_dir: str) -> FastAPI:
 
     app = FastAPI(title="fused-render")
 
+    # Shared keep-alive HTTP pool for the opt-in pooled /api/fs/raw proxy
+    # (TASK F). The pyramid/geotiff workers range-read a store's signed URL one
+    # ~64KB block at a time; a per-block urllib GET (and, before this, a 307
+    # they re-followed per block) pays a fresh TLS handshake every read — serial,
+    # multi-second cold. One AsyncClient with a connection pool lets those range
+    # reads reuse sockets to the store. Created at startup, closed at shutdown,
+    # stashed on app.state so api_fs_raw can await through it.
+    @app.on_event("startup")
+    async def _open_pooled_client():
+        app.state.pooled_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(120.0),
+            limits=httpx.Limits(max_keepalive_connections=32,
+                                max_connections=64),
+        )
+
+    @app.on_event("shutdown")
+    async def _close_pooled_client():
+        client = getattr(app.state, "pooled_client", None)
+        if client is not None:
+            await client.aclose()
+
     @app.exception_handler(Exception)
     async def unhandled_exception(request, exc):
         # A bare "Internal Server Error" with an empty body is undebuggable on
@@ -3021,7 +3078,8 @@ def create_app(start_dir: str) -> FastAPI:
         return StreamingResponse(ndjson(), media_type="application/x-ndjson")
 
     @app.api_route("/api/fs/raw", methods=["GET", "HEAD"])
-    async def api_fs_raw(path: str, request: Request, base: str | None = None):
+    async def api_fs_raw(path: str, request: Request, base: str | None = None,
+                         pooled: str | None = None):
         # Page-relative resolution (SPEC RH-1): a *relative* `path` is resolved against
         # the directory of `base` — the page's own absolute path, sent by the runtime's
         # fused.rawUrl(), the same contract /api/run uses via `html` (see the resolve at
@@ -3114,6 +3172,22 @@ def create_app(start_dir: str) -> FastAPI:
                 direct = await asyncio.to_thread(
                     shell_mounts.upstream_url_for, path)
                 if direct:
+                    # OPT-IN pooled proxy (TASK F): the pyramid/geotiff workers
+                    # read this file with a plain per-block urllib GET and would
+                    # otherwise re-follow the 307 to the store on EVERY ~64KB
+                    # block — a fresh TLS handshake + redirect round trip per
+                    # read, serial, multi-second cold. When they set &pooled=1
+                    # we stream the same signed URL back through a shared
+                    # keep-alive httpx pool (sockets reused across range reads).
+                    # duckdb/parquet never set the flag, so they still get the
+                    # 307 and their own pooled parallel connections — no
+                    # regression. A pooled fetch that can't reach the store
+                    # returns None and falls through to the 307.
+                    if pooled:
+                        resp = await _proxy_raw_pooled(
+                            request.app.state.pooled_client, direct, request)
+                        if resp is not None:
+                            return resp
                     return RedirectResponse(direct, status_code=307)
             # Not redirected (browser, warm read, or no direct URL): proxy the
             # bytes. Guard non-files here — the cold redirect path above is the
