@@ -1,24 +1,36 @@
 """Entry point: `pythonw.exe -I -m fused_render.win_supervisor <args>` — port
 of windows/supervisor/src/main.rs (feat/windows-desktop-foundation, PR #162).
+
+The desktop env (branch opt-out, state/cache/log dirs) is applied at the very
+top of this module body, before the `protocol`/`supervisor` import statement
+runs — Python executes a module body strictly top-to-bottom, and an `import`
+statement runs the imported module's own top-level code at that point, so
+sequencing the env update above the import genuinely runs it first, not just
+earlier on the page. fused_render._branch caches the first ref it resolves
+for the process lifetime, so nothing from fused_render may load before the
+inherited FUSED_RENDER_BRANCH is overridden. `paths` is a stdlib-only leaf
+module (no fused_render imports of its own), safe to import before that.
 """
 from __future__ import annotations
 
-import ctypes
 import os
-import sys
 
-from fused_render.win_supervisor import protocol, supervisor
 from fused_render.win_supervisor.paths import DesktopPaths
+
+try:
+    os.environ.update(DesktopPaths.discover().self_environment())
+except Exception:  # noqa: BLE001 - e.g. RuntimeError if LOCALAPPDATA is unset
+    pass  # fall through with whatever env we were launched with
+
+import ctypes  # noqa: E402
+import sys  # noqa: E402
+
+from fused_render.win_supervisor import protocol, supervisor  # noqa: E402
 
 _APP_USER_MODEL_ID = "Fused.FusedRender.Desktop"
 
 
 def main() -> None:
-    try:
-        os.environ.update(DesktopPaths.discover().self_environment())
-    except Exception:  # noqa: BLE001 - e.g. RuntimeError if LOCALAPPDATA is unset
-        pass  # fall through with whatever env we were launched with
-
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(_APP_USER_MODEL_ID)
     except OSError:

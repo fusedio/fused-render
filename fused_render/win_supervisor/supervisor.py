@@ -457,13 +457,20 @@ def _start_ready_server(paths: DesktopPaths, token: str):
     for _attempt in range(3):
         port = _available_port()
         job = Job()
-        process = _start_server(job, paths, port, token)
+        process = None
         try:
+            # _start_server (job.spawn) must be inside this try too: its
+            # failure modes (pywintypes.error from AssignProcessToJobObject/
+            # ResumeThread, FileNotFoundError if the runtime is missing) are
+            # neither RuntimeError nor TimeoutError, so they used to escape
+            # this loop entirely and skip job.close() below.
+            process = _start_server(job, paths, port, token)
             _wait_until_ready(process, port, token, _READY_TIMEOUT_S)
             return job, process, port
-        except (RuntimeError, TimeoutError) as error:
+        except (OSError, RuntimeError, TimeoutError, pywintypes.error) as error:
             job.close()
-            process.wait(5000)
+            if process is not None:
+                process.wait(5000)
             last_error = error
     raise last_error or RuntimeError("Python server failed to start")
 

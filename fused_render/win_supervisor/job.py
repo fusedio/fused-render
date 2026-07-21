@@ -14,15 +14,17 @@ gotten wrong (see the design doc / PYTHON_SUPERVISOR_SPEC.md):
    must be kept alive for the supervisor's entire process lifetime (owned by
    `supervisor.run()`'s top-level frame) — if it were a short-lived local, its
    GC would fire KILL_ON_JOB_CLOSE against a healthy running server.
-2. The job handle itself must stay non-inheritable. `CreateJobObject(None,
-   "")` gives a non-inheritable handle; do not change that, even though the
-   child process is created with `bInheritHandles=True` (required for the
-   redirected stdio handles) — an inherited job handle would let the child
-   keep the job alive past the supervisor's own death.
+2. The job handle itself must stay non-inheritable. `CreateJobObjectW(NULL,
+   NULL)` gives a non-inheritable anonymous handle; do not change that, even
+   though the child process is created with `bInheritHandles=True` (required
+   for the redirected stdio handles) — an inherited job handle would let the
+   child keep the job alive past the supervisor's own death.
 """
 from __future__ import annotations
 
+import ctypes
 import os
+from ctypes import wintypes
 from pathlib import Path
 
 import pywintypes
@@ -32,6 +34,10 @@ import win32event
 import win32file
 import win32job
 import win32process
+
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+_kernel32.CreateJobObjectW.argtypes = (wintypes.LPVOID, wintypes.LPCWSTR)
 
 CREATE_NO_WINDOW = 0x08000000
 FILE_APPEND_DATA = 0x0004
@@ -105,7 +111,18 @@ class SupervisedProcess:
 
 class Job:
     def __init__(self):
-        handle = win32job.CreateJobObject(None, "")
+        # pywin32's CreateJobObject cannot pass a NULL name (None raises
+        # TypeError), so go through ctypes for a truly anonymous job object.
+        # An empty-string name ("") is NOT the same thing to the kernel — it
+        # is a distinct, valid object name, not documented as "unnamed", so
+        # a future CreateJobObject with that same name could open an
+        # existing job instead of creating a private one.
+        raw = _kernel32.CreateJobObjectW(None, None)
+        if not raw:
+            raise pywintypes.error(
+                ctypes.get_last_error(), "CreateJobObjectW", "could not create job object"
+            )
+        handle = pywintypes.HANDLE(raw)
         info = win32job.QueryInformationJobObject(handle, win32job.JobObjectExtendedLimitInformation)
         info["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         win32job.SetInformationJobObject(handle, win32job.JobObjectExtendedLimitInformation, info)
@@ -164,11 +181,13 @@ class Job:
         except pywintypes.error:
             win32process.TerminateProcess(h_process, 1)
             h_thread.Close()
+            h_process.Close()
             raise
         try:
             win32process.ResumeThread(h_thread)
         except pywintypes.error:
             win32process.TerminateProcess(h_process, 1)
+            h_process.Close()
             raise
         finally:
             h_thread.Close()

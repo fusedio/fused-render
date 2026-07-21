@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import queue
 import threading
-import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
@@ -54,12 +53,17 @@ class TrayHandle:
     loop drains; `stop()` removes the tray icon (Windows' NIM_DELETE) when
     the supervisor has decided to actually exit — without it, the icon
     lingers in the notification area (ghost icon) until Explorer next
-    refreshes, since nothing else tells pystray to tear it down."""
+    refreshes, since nothing else tells pystray to tear it down. `_stopped`
+    also ends the retry loop in `start()`: if `stop()` lands while the loop
+    is backing off between attempts (no icon exists yet), the event keeps a
+    later retry from showing a brand-new icon after shutdown began."""
 
     actions: "queue.Queue[TrayAction]"
     _current_icon: list = field(default_factory=list)  # 0 or 1 pystray.Icon
+    _stopped: threading.Event = field(default_factory=threading.Event)
 
     def stop(self) -> None:
+        self._stopped.set()
         for icon in self._current_icon:
             try:
                 icon.stop()
@@ -79,7 +83,7 @@ def start(port: int, login_enabled: bool, paths: DesktopPaths) -> TrayHandle:
     def loop():
         delay = _RETRY_START
         attempt = 0
-        while True:
+        while not handle._stopped.is_set():
             attempt += 1
             try:
                 _run(port, state, handle, paths)
@@ -87,7 +91,8 @@ def start(port: int, login_enabled: bool, paths: DesktopPaths) -> TrayHandle:
             except Exception as error:  # noqa: BLE001 - must never kill the supervisor
                 if attempt == _LOG_AFTER_ATTEMPTS:
                     paths.log(f"tray icon still not up after {attempt} attempts, retrying: {error}")
-            time.sleep(delay)
+            if handle._stopped.wait(delay):
+                return
             delay = min(delay * 2, _RETRY_CAP)
 
     threading.Thread(target=loop, daemon=True, name="fused-render-tray").start()
@@ -144,6 +149,8 @@ def _run(port: int, state: _State, handle: TrayHandle, paths: DesktopPaths) -> N
     icon = pystray.Icon("FusedRender", image, f"FusedRender (port {port})", menu)
     handle._current_icon.append(icon)
     try:
+        if handle._stopped.is_set():
+            return
         icon.run()
     finally:
         handle._current_icon.remove(icon)

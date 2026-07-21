@@ -146,3 +146,24 @@ def test_startup_failure_dialog_still_says_could_not_start(monkeypatch):
     assert exc.value.code == 1
     [(_, text, _, _)] = dialogs
     assert "could not start" in text
+
+
+def test_start_ready_server_closes_job_when_spawn_raises(monkeypatch):
+    import pywintypes
+
+    closed = []
+
+    class _FakeJob:
+        def close(self):
+            closed.append(self)
+
+    monkeypatch.setattr(supervisor, "Job", _FakeJob)
+    monkeypatch.setattr(supervisor, "_available_port", lambda: 12345)
+
+    def failing_start(job, paths, port, token):
+        raise pywintypes.error(5, "AssignProcessToJobObject", "access denied")
+
+    monkeypatch.setattr(supervisor, "_start_server", failing_start)
+    with pytest.raises(pywintypes.error):
+        supervisor._start_ready_server(object(), "tok")
+    assert len(closed) == 3  # every retry attempt's job was closed
