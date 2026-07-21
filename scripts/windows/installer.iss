@@ -218,10 +218,12 @@ var
 begin
   if CurUninstallStep = usUninstall then
   begin
+    { startup.rs writes '"<exe>" --startup' — match on the quoted exe prefix so
+      the entry is removed whatever arguments follow it. }
     Supervisor := ExpandConstant('{app}\payload\FusedRender.exe');
     if RegQueryStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run',
       'FusedRenderDesktop', StartupCommand) and
-      (CompareText(StartupCommand, '"' + Supervisor + '"') = 0) then
+      (Pos(Lowercase('"' + Supervisor + '"'), Lowercase(StartupCommand)) = 1) then
       RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run',
         'FusedRenderDesktop');
   end;
