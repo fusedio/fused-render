@@ -824,11 +824,13 @@ def _is_file_mount_safe(path: str) -> bool:
     """os.path.isfile, but NEVER a kernel stat on a mount-backed path — a cold
     os.path.isfile there is the GETATTR that lists the whole parent prefix and
     wedges the mount (the /api/session + /api/recents open-flow wedge). Mount
-    paths answered via rc_kind_for; fail OPEN on an indeterminate rc probe so a
-    transient rcd hiccup never 404s a file the user just opened."""
+    paths answered via rc_kind_for; only a confirmed "file" passes (a "dir" is
+    not a file, matching os.path.isfile), while an "indeterminate" rc probe
+    fails OPEN so a transient rcd hiccup never 404s a file the user just
+    opened."""
     from fused_render.shell.mounts import is_mount_backed, rc_kind_for
     if is_mount_backed(path):
-        return rc_kind_for(path) != "missing"
+        return rc_kind_for(path) in ("file", "indeterminate")
     return os.path.isfile(path)
 
 

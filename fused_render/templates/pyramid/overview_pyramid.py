@@ -98,6 +98,12 @@ class _HttpRangeFile(_io.RawIOBase):
         self._block = int(block)
         self._cache = {}
         self._order = []
+        # LRU bounded by BYTES, not block count: the block size is now 4MiB (was
+        # 64KiB), so a fixed 64-block cap would balloon to 256MiB per handle.
+        # Cap the resident set at ~32MiB instead — enough blocks to keep the
+        # scattered IFD/tile-index reads collapsing into a few Range GETs, while
+        # the memory bound stays flat regardless of the block size.
+        self._max_blocks = max(4, (32 << 20) // self._block)
 
     def readable(self):
         return True
@@ -130,7 +136,7 @@ class _HttpRangeFile(_io.RawIOBase):
         blk = self._r.read(off, n)
         self._cache[bi] = blk
         self._order.append(bi)
-        if len(self._order) > 64:  # tiny LRU — keep memory bounded
+        if len(self._order) > self._max_blocks:  # LRU — byte-bounded (~32MiB)
             self._cache.pop(self._order.pop(0), None)
         return blk
 
