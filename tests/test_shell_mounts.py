@@ -731,7 +731,7 @@ def test_mount_view_has_no_automount_field(client, rcd):
     # automount is implicit for every mount now — the field is gone.
     assert "automount" not in m
     assert set(m) == {"id", "name", "remote", "mountpoint", "mounted", "state",
-                      "read_only", "builtin"}
+                      "read_only", "builtin", "restart_reason"}
 
 
 def test_delete_unmounts_and_removes(client, rcd):
@@ -3254,3 +3254,73 @@ def test_restart_endpoint_500_on_failure(client, rcd, monkeypatch):
     r = client.post("/api/mounts/restart", headers=FUSED)
     assert r.status_code == 500
     assert "did not come up" in r.json()["error"]
+
+
+# -- mount_restart_reason: params drift + credential-refresh ----------------
+#
+# A REASON STRING surfaced on mount_view so the UI can prompt a restart:
+#   "params"      — live+mounted but the running mount was baked with different
+#                   params than the record now wants (conservative subset:
+#                   read_only, the one param the UI changes).
+#   "credentials" — a disconnected/stale env_auth mount whose creds probe VALID
+#                   again: the daemon still holds the pre-refresh keys, so only
+#                   a restart re-reads them (Reconnect can't).
+
+
+def test_mount_restart_reason_params_on_read_only_drift(home, rcd):
+    m = {"id": "x", "name": "data", "remote": "r:bucket",
+         "read_only": True, "mounted_read_only": False}
+    # mounted + the live VFS was baked read_write but the record now wants
+    # read_only -> a restart is needed to apply it.
+    assert mounts_mod.mount_restart_reason(
+        m, rcd_mounts=set(), state="mounted") == "params"
+    # in agreement -> no drift
+    m["mounted_read_only"] = True
+    assert mounts_mod.mount_restart_reason(
+        m, rcd_mounts=set(), state="mounted") is None
+    # params drift is only meaningful for a live mount
+    m["mounted_read_only"] = False
+    assert mounts_mod.mount_restart_reason(
+        m, rcd_mounts=set(), state="disconnected") is None
+
+
+def test_mount_restart_reason_credentials_when_reauthed(
+        home, rcd, monkeypatch, fresh_upstream):
+    m = mounts_mod.add_mount("data", "corp:bucket")
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
+    _stub_lsd(monkeypatch, rc=0)  # creds probe VALID again (user re-authed)
+    assert mounts_mod.mount_restart_reason(
+        m, rcd_mounts=set(), state="disconnected") == "credentials"
+    # stale is healed the same way
+    assert mounts_mod.mount_restart_reason(
+        m, rcd_mounts=set(), state="stale") == "credentials"
+
+
+def test_mount_restart_reason_none_when_creds_still_expired(
+        home, rcd, monkeypatch, fresh_upstream):
+    m = mounts_mod.add_mount("data", "corp:bucket")
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
+    _stub_lsd(monkeypatch, rc=1, lsd_stderr="ExpiredToken")  # genuinely expired
+    # Genuinely-expired creds: a restart won't help, so no prompt.
+    assert mounts_mod.mount_restart_reason(
+        m, rcd_mounts=set(), state="disconnected") is None
+
+
+def test_mount_restart_reason_none_for_non_env_auth(
+        home, rcd, monkeypatch, fresh_upstream):
+    m = mounts_mod.add_mount("data", "corp:bucket")
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "false",
+                                   "access_key_id": "AKIA"}
+    calls = []
+    _stub_lsd(monkeypatch, rc=0, record=calls)
+    assert mounts_mod.mount_restart_reason(
+        m, rcd_mounts=set(), state="disconnected") is None
+    # A non-env_auth remote never gets the (latency-costing) lsd probe.
+    assert not any("lsd" in cmd for cmd in calls)
+
+
+def test_mount_view_includes_restart_reason(home, rcd):
+    c = mounts_mod.add_mount("data", "r:bucket")
+    view = mounts_mod.mount_view(c)
+    assert "restart_reason" in view
+    assert view["restart_reason"] is None  # healthy/unmounted -> nothing to prompt

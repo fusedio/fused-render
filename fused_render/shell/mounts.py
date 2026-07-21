@@ -2534,6 +2534,58 @@ def mount_state(m: dict, rcd_mounts: set, timeout: float = PROBE_TIMEOUT) -> str
     return out.get("state", "disconnected")  # no answer in time == wedged
 
 
+# Sentinel: distinguishes "caller already ran the credential probe, here is its
+# result (possibly None = valid)" from "no probe result supplied, run one if the
+# credentials branch is reached". A plain None default couldn't tell them apart.
+_UNSET = object()
+
+
+def mount_restart_reason(m: dict, rcd_mounts: set | None = None,
+                         state: str | None = None, cred_err=_UNSET) -> str | None:
+    """Why restarting rclone would help this mount, or None. Surfaced on
+    mount_view so the UI can prompt (both reasons route to the SAME global
+    Restart button):
+
+      "params"      — the mount is live but its RUNNING options differ from what
+                      the record now wants, so a restart is needed to apply them.
+                      Conservative subset: read_only is the one mount param the
+                      UI can change, and mounted_read_only records what was
+                      actually baked into the live VFS (rcd never echoes vfsOpt
+                      back — same signal attach_mount's adopt branch remounts on).
+                      Broader vfsOpt/mountOpt diffing is deliberately deferred.
+      "credentials" — a disconnected/stale mount on an env_auth remote whose
+                      credentials probe VALID again: the long-lived daemon still
+                      holds the pre-refresh keys, so Reconnect (and even a server
+                      restart) can't help — only replacing the daemon re-reads
+                      the refreshed creds (see restart_rcd / the module docstring).
+
+    `cred_err` lets a caller that already ran the credential probe (e.g.
+    broken_mount_error) thread its result in so we don't pay a second `rclone
+    lsd`; left unset, the credentials branch runs the probe itself."""
+    if rcd_mounts is None:
+        rcd_mounts = mounted_paths()
+    if state is None:
+        state = mount_state(m, rcd_mounts)
+    if state == "mounted":
+        if bool(m.get("read_only")) != bool(m.get("mounted_read_only")):
+            return "params"
+        return None
+    if state in ("disconnected", "stale"):
+        # Only env_auth remotes expire this way; a non-cred remote disconnected
+        # is Reconnect's job, not a restart's (decision table). Check the stored
+        # config BEFORE probing so a non-env_auth remote never pays the lsd.
+        name = m["remote"].partition(":")[0]
+        cfg = _remote_config(name)
+        if not (isinstance(cfg, dict)
+                and str(cfg.get("env_auth", "")).lower() == "true"):
+            return None
+        if cred_err is _UNSET:
+            cred_err = _mount_credential_error(m)
+        # cred_err None == creds probe VALID now == daemon is holding stale keys.
+        return "credentials" if cred_err is None else None
+    return None
+
+
 def mount_view(m: dict, rcd_mounts: set | None = None, state: str | None = None) -> dict:
     mp = mountpoint(m)
     listed = mounted_paths() if rcd_mounts is None else rcd_mounts
@@ -2555,6 +2607,9 @@ def mount_view(m: dict, rcd_mounts: set | None = None, state: str | None = None)
         # Shipped-with-the-app mount (see ensure_learn_mount); the UI can
         # treat it differently from a user-created mount (e.g. hide delete).
         "builtin": bool(m.get("builtin")),
+        # Why a Restart rclone would help (params drift / re-authed creds), or
+        # None. Reuses the state just computed so no extra probe (mount_state).
+        "restart_reason": mount_restart_reason(m, listed, state),
     }
 
 
