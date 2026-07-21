@@ -731,7 +731,7 @@ def test_mount_view_has_no_automount_field(client, rcd):
     # automount is implicit for every mount now — the field is gone.
     assert "automount" not in m
     assert set(m) == {"id", "name", "remote", "mountpoint", "mounted", "state",
-                      "read_only"}
+                      "read_only", "builtin"}
 
 
 def test_delete_unmounts_and_removes(client, rcd):
@@ -741,6 +741,24 @@ def test_delete_unmounts_and_removes(client, rcd):
     assert client.delete(f"/api/mounts/{cid}", headers=FUSED).status_code == 200
     assert client.get("/api/mounts").json()["mounts"] == []
     assert any(m == "mount/unmount" for m, _ in rcd.calls)
+
+
+def test_delete_rejects_builtin_mount(client, rcd, tmp_path, monkeypatch):
+    # BUGBOT: nothing stopped the shipped Learn mount from being deleted like
+    # any other mount — the record only reappears at the next full SERVER
+    # restart, while the already-open Sidebar's learnMountReady state never
+    # rechecks once true, leaving a dead Learn link for the rest of the
+    # session. Bundled read-only content shouldn't be removable by a user
+    # action in the first place.
+    zp = tmp_path / "learn.zip"
+    zp.write_bytes(b"PK\x05\x06" + b"\x00" * 18)  # empty-zip EOCD; content unused
+    monkeypatch.setenv("FUSED_RENDER_LEARN_ZIP", str(zp))
+    mounts_mod.ensure_learn_mount()
+    builtin = next(m for m in mounts_mod.list_mounts() if m.get("builtin"))
+    r = client.delete(f"/api/mounts/{builtin['id']}", headers=FUSED)
+    assert r.status_code == 400
+    assert "bundled" in r.json()["error"].lower()
+    assert any(m["id"] == builtin["id"] for m in mounts_mod.list_mounts())
 
 
 def test_create_s3_remote_builds_rclone_argv(client, monkeypatch):
@@ -1562,6 +1580,28 @@ def test_run_automount_skips_already_mounted(home, rcd):
         "mountPoints": [{"Fs": "r:one", "MountPoint": mounts_mod.mountpoint(c)}]}
     mounts_mod.run_automount()
     assert not any(m == "mount/mount" for m, _ in rcd.calls)
+
+
+def test_run_automount_syncs_serves_after_learn_removal(home, rcd, tmp_path, monkeypatch):
+    # BUGBOT: when the learn zip disappears and it was the only mount,
+    # ensure_learn_mount removes the record (and stops its rc serve
+    # directly via _force_detach_learn_mount), but serves.json on disk is
+    # ONLY ever rewritten by sync_serves — an early return before it (the
+    # old run_automount behavior, taken because list_mounts() is now empty)
+    # would leave a stale {mountpoint: dead_url} entry that serve_url_for
+    # keeps resolving forever.
+    zp = tmp_path / "learn.zip"
+    zp.write_bytes(b"PK\x05\x06" + b"\x00" * 18)  # empty-zip EOCD; content unused
+    monkeypatch.setenv("FUSED_RENDER_LEARN_ZIP", str(zp))
+    mounts_mod.run_automount()
+    learn_mp = mounts_mod.mountpoint({"name": "learn"})
+    with open(mounts_mod.serves_path()) as f:
+        assert learn_mp in json.load(f)
+
+    monkeypatch.delenv("FUSED_RENDER_LEARN_ZIP")
+    mounts_mod.run_automount()  # learn was the only mount -> list_mounts() is now empty
+    with open(mounts_mod.serves_path()) as f:
+        assert learn_mp not in json.load(f)
 
 
 # -- http serves (the duckdb reader's mounted-parquet fast path) -----------------

@@ -356,6 +356,13 @@ def test_fs_raw_schedules_prefetch_for_mount_backed_file(
     (home).mkdir(exist_ok=True)
     (home / "serves.json").write_text(json.dumps(
         {str(mp): stub.url.rsplit("/", 1)[0]}))
+    # This test seeds serves.json directly and never creates a mounts.json
+    # record for `mp` (no rclone/mount involved at all, per the module
+    # docstring) — real automount would rightly treat that as a stale entry
+    # with no backing mount and wipe it (D123's stale-serve cleanup).
+    # Disable the background automount thread create_app spawns so it can't
+    # race with/clobber this test's manual serves.json setup.
+    monkeypatch.setattr(mounts_mod, "startup", lambda: None)
 
     scheduled = []
     monkeypatch.setattr(prefetch_mod, "schedule",

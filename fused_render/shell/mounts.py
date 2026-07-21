@@ -2473,10 +2473,228 @@ def mount_view(m: dict, rcd_mounts: set | None = None, state: str | None = None)
         # Remote rejects writes (see mount_read_only); unflagged legacy
         # records read as rw, the pre-flag behavior.
         "read_only": bool(m.get("read_only")),
+        # Shipped-with-the-app mount (see ensure_learn_mount); the UI can
+        # treat it differently from a user-created mount (e.g. hide delete).
+        "builtin": bool(m.get("builtin")),
     }
 
 
 # ---------------------------------------------------------- automount/startup
+
+
+LEARN_MOUNT_NAME = "learn"
+
+
+def learn_zip_path() -> str | None:
+    """Path to the bundled learn.zip, or None outside the packaged app.
+
+    FUSED_RENDER_LEARN_ZIP overrides for dev/testing (a dev checkout has the
+    loose learn/ dir, not a zip — build_dmg.sh only creates the zip at DMG
+    build time). Packaged (same sys.frozen check as rclone_bin) it lives at
+    Contents/Resources/learn.zip (build_dmg.sh step 4e). Existence-checked
+    either way so a stale env var or a hand-pruned bundle yields None, not a
+    mount record pointing at nothing."""
+    override = os.environ.get("FUSED_RENDER_LEARN_ZIP")
+    if override:
+        return override if os.path.isfile(override) else None
+    if getattr(sys, "frozen", None) == "macosx_app":
+        contents = os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))
+        bundled = os.path.join(contents, "Resources", "learn.zip")
+        if os.path.isfile(bundled):
+            return bundled
+    return None
+
+
+def ensure_learn_mount() -> None:
+    """Upsert the builtin "learn" mount record: rclone's archive backend
+    (v1.74) mounts the bundled learn.zip read-only through the same mounts
+    surface as any remote (D123).
+
+    Builtin records carry `"builtin": "learn"` so they're distinguishable
+    from a user-created mount that happens to be named "learn" — that user
+    mount is never touched. The remote embeds the zip's absolute path inside
+    the app bundle, which changes across versions/relocations, so an existing
+    record's remote is refreshed every startup; with no zip (dev checkout,
+    downgrade) the builtin record is removed so it can't linger as a broken
+    mount in the UI. read_only_user pins the flag: the archive backend is
+    inherently read-only, and pinning keeps attach-time detection from ever
+    reconsidering it — mount, serve, and kernel all get read-only baked in
+    via the existing read_only plumbing.
+
+    Never raises — this runs on the automount path and a storage failure
+    must not break the user's own mounts.
+
+    BUGBOT (2026-07-21): rcd survives server restarts (module docstring), so
+    an already-live mount at the learn mountpoint is never naturally
+    refreshed. Two staleness paths that opened:
+      - the bundle relocates (remote string changes) — a live mount still
+        serves the OLD fs, and attach_mount would then reject the new record
+        outright (fs mismatch — see attach_mount's already-mounted branch);
+      - an in-place app upgrade overwrites learn.zip at the SAME path — the
+        remote string never changes, so nothing signalled a refresh was
+        needed at all, and the live VFS + on-disk cache kept serving last
+        version's bytes indefinitely.
+    Fixed the same way for both: whenever a live rcd mount already sits at
+    the learn mountpoint, force-detach it here (best-effort) so run_automount's
+    normal per-mount loop right after this call does a fresh attach_mount —
+    unconditionally, not just when the remote string happens to differ, since
+    content can change under an unchanged path. Cheap: this is a small local
+    archive, not a network remote.
+
+    BUGBOT (2026-07-21): the force-detach talks to rcd (mounted_paths,
+    detach_mount's busy-unmount retry, _stop_serve_for) and can block for the
+    full rc timeout window. That must never happen while _store_lock is
+    held — every mount create/delete/update takes the same lock, and rcd I/O
+    under it would stall them all on every startup. So the store
+    read-modify-write happens entirely inside `with _store_lock`, and
+    whatever forced-detach is needed is only PLANNED there (captured as
+    `detach_target`) and executed after the `with` block exits."""
+    try:
+        path = learn_zip_path()
+        detach_target: tuple[dict, str] | None = None
+        with _store_lock:
+            mounts = list_mounts()
+            builtin = next(
+                (m for m in mounts if m.get("builtin") == LEARN_MOUNT_NAME), None
+            )
+            if path is None:
+                if builtin is not None:
+                    old_remote = builtin["remote"]
+                    _write([m for m in mounts if m is not builtin])
+                    detach_target = (builtin, old_remote)
+            else:
+                remote = f":archive:{path}"
+                if builtin is not None:
+                    # Captured BEFORE any mutation below: the live mount/serve
+                    # (if any) are keyed to whatever fs string was in effect
+                    # at the end of the LAST run, not the one we're about to
+                    # write.
+                    old_remote = builtin["remote"]
+                    if old_remote != remote:
+                        builtin["remote"] = remote
+                        _write(mounts)
+                    # Force a fresh mount every startup, changed or not (see
+                    # the upgrade-same-path staleness case above).
+                    detach_target = (builtin, old_remote)
+                elif any(m["name"] == LEARN_MOUNT_NAME for m in mounts):
+                    logger.warning(
+                        "not adding the builtin learn mount: a user mount "
+                        "named %r already exists", LEARN_MOUNT_NAME,
+                    )
+                else:
+                    mounts.append({
+                        "id": uuid.uuid4().hex[:12],
+                        "name": LEARN_MOUNT_NAME,
+                        "remote": remote,
+                        "read_only": True,
+                        "read_only_user": True,
+                        "builtin": LEARN_MOUNT_NAME,
+                    })
+                    _write(mounts)
+        if detach_target is not None:
+            _force_detach_learn_mount(*detach_target)
+    except Exception:
+        logger.exception("ensure_learn_mount failed")
+
+
+def learn_mount_ready() -> bool:
+    """True when the builtin learn mount is actually attached — both rcd and
+    the kernel agree the mountpoint is live — not merely when its record
+    exists in mounts.json.
+
+    The sidebar's Learn entry (Sidebar.tsx) uses this, surfaced through
+    /api/config, to decide whether to render at all.
+
+    BUGBOT (record-presence was not enough): ensure_learn_mount now
+    force-detaches and remounts the learn mountpoint on EVERY startup (see
+    its docstring) — including the common case where the record already
+    existed on disk from a prior run. A presence-only check would read
+    "ready" the instant that record is read off disk, well before
+    run_automount's attach_mount loop (which runs after ensure_learn_mount
+    returns, on the same background automount thread) has remounted it —
+    an early click would hit an empty mountpoint whose HTTP serve was just
+    stopped. Checking BOTH mounted_paths() (rcd's own bookkeeping) and
+    os.path.ismount() (the kernel mount table) is exactly attach_mount's own
+    signal for "there is nothing left to attach" (see its `os.path.ismount`
+    check), so this reads true only once that loop has actually succeeded."""
+    builtin = next(
+        (m for m in list_mounts() if m.get("builtin") == LEARN_MOUNT_NAME), None
+    )
+    if builtin is None:
+        return False
+    mp = mountpoint(builtin)
+    return mp in mounted_paths() and os.path.ismount(mp)
+
+
+def _force_detach_learn_mount(builtin: dict, old_remote: str) -> None:
+    """Best-effort unmount of the builtin learn mountpoint if rcd (or the
+    kernel) still has one live from a prior server run, so the caller's
+    upserted record gets a genuinely fresh mount/mount instead of being
+    silently adopted with stale fs/content — see ensure_learn_mount's BUGBOT
+    note. Runs OUTSIDE any lock the caller already holds being irrelevant
+    here since detach_mount only talks to rcd/the kernel, never mounts.json.
+
+    Also stops the HTTP serve for `old_remote` (BUGBOT: rcd shares ONE VFS
+    between a mount and its serve — mount/unmount tears that VFS down but
+    leaves the serve pointed at it, so a leftover serve is wedged exactly
+    like reconnect_mount's own _stop_serve_for call documents). Without
+    this, sync_serves sees the OLD remote/options still "in use" by that
+    wedged serve and reuses it instead of starting a fresh one bound to the
+    new mount, so /api/fs/raw reads of Learn hang. `old_remote` — not
+    `builtin["remote"]`, which may already have been rewritten to the NEW
+    fs by the time this runs — is what the live serve is actually keyed to.
+
+    Swallows everything: a failed detach/stop just means run_automount's
+    subsequent attach_mount adopts (or errors on) whatever is still there,
+    exactly like before this fix — never worse.
+
+    BUGBOT: detach_mount's default (force=False) deliberately leaves a
+    non-busy failure (rcd down but a kernel mount survives, a busy-retry
+    that still fails, ...) in place — "failing loudly beats corrupted
+    reads" is the right call for an explicit user unmount, but it defeats
+    the very point of THIS call: attach_mount treats a still-kernel-mounted
+    path with no matching rcd record as a foreign mount and adopts it
+    as-is, silently keeping stale content across the refresh this path
+    exists to guarantee. force=True escalates every dead end to
+    _force_unmount instead, so a genuinely fresh mount/mount follows.
+
+    BUGBOT: force=True alone still isn't enough — detach_mount only
+    escalates to _force_unmount when the rc `mount/unmount` call itself
+    FAILS; it never re-checks os.path.ismount after a call that reports
+    success. reconnect_mount already has to guard against exactly this on
+    macOS (learn is attached via nfsmount): rc's mount/unmount can report
+    success while the kernel NFS mount lingers, and reconnect_mount
+    re-checks os.path.ismount afterward for that reason. Mirror that same
+    re-check here, rather than trusting detach_mount's return value alone.
+
+    BUGBOT: _force_unmount operates purely at the kernel level (umount /
+    diskutil) — it never tells rcd anything, so a successful force-unmount
+    can leave rcd's OWN mount/listmounts bookkeeping still claiming the
+    mountpoint. run_automount's loop treats exactly that combination (rcd
+    still lists it, kernel does not) as the split-brain case and
+    `continue`s PAST attach_mount for it — leaving the builtin mount never
+    remounted after the very refresh this whole path exists to perform.
+    reconnect_mount avoids this by re-issuing rc mount/unmount a second
+    time after its own force-unmount, purely to clear rcd's bookkeeping (a
+    "mount not found" failure at that point is expected and fine, since the
+    kernel mount is already gone) — mirror that same follow-up call here."""
+    try:
+        mp = mountpoint(builtin)
+        live = mp in mounted_paths() or os.path.ismount(mp)
+        port = _live_rcd_port()
+        if live:
+            detach_mount(builtin, force=True)
+            if os.path.ismount(mp):
+                _force_unmount(mp)
+                if port is not None:
+                    try:
+                        _rc(port, "mount/unmount", {"mountPoint": mp})
+                    except RuntimeError:
+                        pass  # "mount not found" once the kernel mount is gone — fine
+        if port is not None:
+            _stop_serve_for(port, old_remote)
+    except Exception:
+        logger.warning("force-detach of builtin learn mount failed", exc_info=True)
 
 
 def run_automount() -> None:
@@ -2485,28 +2703,45 @@ def run_automount() -> None:
     mount/listmounts is the status source of truth, so mounts that survived a
     server restart just show up. Best-effort — a failure logs and moves on,
     never blocks startup."""
+    # Upsert the builtin learn mount BEFORE the snapshot below: a fresh
+    # install has zero user mounts, and skipping the attach loop below would
+    # otherwise skip the builtin's very first mount too.
+    ensure_learn_mount()
     mounts = list_mounts()
-    if not mounts:
-        return
-    live = mounted_paths()
-    for m in mounts:
-        mp = mountpoint(m)
-        if mp in live and not os.path.ismount(mp):
-            # Split-brain: rcd lists the mount but the kernel dropped it.
-            # mount/mount over rcd's own stale entry would fail — leave it
-            # for mount_state to surface as "stale" and Reconnect to heal.
-            continue
-        # A mount that survived the restart takes attach_mount's
-        # already-mounted branch, which re-runs read-only detection and
-        # remounts if the live VFS was created before the current
-        # read_only flag (adopted mounts keep their original vfsOpt) —
-        # otherwise a legacy writable VFS would outlive the flag forever.
-        err = attach_mount(m)
-        if err:
-            logger.warning("automount of %r failed: %s", m["name"], err)
-    # Mounts that survived a server restart skip attach_mount above, so their
-    # HTTP serves (lost with any rcd restart) get re-ensured here.
-    sync_serves()
+    if mounts:
+        live = mounted_paths()
+        for m in mounts:
+            mp = mountpoint(m)
+            if mp in live and not os.path.ismount(mp):
+                # Split-brain: rcd lists the mount but the kernel dropped it.
+                # mount/mount over rcd's own stale entry would fail — leave it
+                # for mount_state to surface as "stale" and Reconnect to heal.
+                continue
+            # A mount that survived the restart takes attach_mount's
+            # already-mounted branch, which re-runs read-only detection and
+            # remounts if the live VFS was created before the current
+            # read_only flag (adopted mounts keep their original vfsOpt) —
+            # otherwise a legacy writable VFS would outlive the flag forever.
+            err = attach_mount(m)
+            if err:
+                logger.warning("automount of %r failed: %s", m["name"], err)
+        # Mounts that survived a server restart skip attach_mount above, so
+        # their HTTP serves (lost with any rcd restart) get re-ensured here.
+        sync_serves()
+    elif os.path.exists(serves_path()):
+        # BUGBOT: `mounts` came back empty, which usually means a genuinely
+        # mount-less install (nothing to sync, and serves_path() was never
+        # written — skipping here keeps a fresh install from gaining a
+        # home_dir()/serves.json write it never needed). But it can ALSO
+        # mean ensure_learn_mount above just removed the builtin record
+        # (zip gone) and stopped its rc serve directly via
+        # _force_detach_learn_mount — and serves.json on disk is ONLY ever
+        # rewritten by sync_serves, so skipping unconditionally (the old
+        # behavior) would leave a stale {mountpoint: dead_url} entry that
+        # serve_url_for keeps resolving forever. The existence check tells
+        # the two cases apart: a serves.json only exists once some earlier
+        # run actually had something to serve.
+        sync_serves()
 
 
 def startup() -> None:
@@ -2863,6 +3098,19 @@ def delete_mount(cid: str, x_fused: str | None = Header(default=None)):
     m = get_mount(cid)
     if m is None:
         return JSONResponse({"error": "unknown mount"}, status_code=404)
+    if m.get("builtin"):
+        # BUGBOT: nothing stopped this — a deleted builtin record only
+        # reappears at the next full SERVER restart (ensure_learn_mount runs
+        # once, from run_automount at startup), while the already-open
+        # Sidebar's learnMountReady state never rechecks once true, leaving
+        # a dead Learn link for the rest of the session. Bundled read-only
+        # content isn't something a user action should be able to
+        # permanently remove out from under a running session anyway —
+        # unmounting (POST .../unmount) still works to free the mountpoint.
+        return JSONResponse(
+            {"error": "this is a bundled default mount and can't be deleted"},
+            status_code=400,
+        )
     err = detach_mount(m)
     mp = mountpoint(m)
     if err and os.path.ismount(mp):

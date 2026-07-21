@@ -22,9 +22,9 @@ import {
   setBookmarkIcon,
 } from "../lib/bookmarks";
 import { bookmarkSaveTarget } from "../lib/bookmark-file";
-import { exportBookmarkFile } from "../lib/api";
+import { exportBookmarkFile, getConfig } from "../lib/api";
 import IconPicker from "./IconPicker";
-import { FolderIcon } from "./FileIcons";
+import { FolderIcon, LearnIcon } from "./FileIcons";
 import type { Bookmark, BookmarkFolder, BookmarkItem } from "../lib/bookmarks";
 import { loadRecents, displayRecents, setRecentsCollapsed } from "../lib/recents";
 import { basename } from "../lib/format";
@@ -300,6 +300,78 @@ export default function Sidebar({ config }: SidebarProps) {
   // Signed-in dot on the footer's Fused-account entry (SPEC AC-1).
   const accountLoggedIn = useAccountLoggedIn();
 
+  // BUGBOT: config (and its learn_mount_ready flag) is fetched exactly ONCE
+  // at page load (main.tsx), well before the server's background automount
+  // thread has finished attaching the learn mount — ensure_learn_mount now
+  // force-detaches and remounts it on every startup, so the one-shot fetch
+  // essentially always sees false and the Learn entry would never appear
+  // for the whole session. Re-poll /api/config on a short bounded interval
+  // (mirrors main.tsx's own bookmark-poll pattern) until it flips true;
+  // capped at MAX_ATTEMPTS so a dev checkout with no bundled learn.zip
+  // (never becomes ready) doesn't poll forever.
+  //
+  // BUGBOT: the bound must comfortably exceed attach_mount's own worst case
+  // — up to ~10s for ensure_rcd to spawn/confirm the rclone daemon, plus a
+  // full 60s mount/mount rc timeout (shell/mounts.py) — or a slow-but-
+  // eventually-successful mount finishes after the poll gives up and the
+  // entry never appears without a full page reload. 2s x 60 = 120s, safely
+  // past that ~70s worst case with margin.
+  //
+  // BUGBOT: gating the poll on "only start if the INITIAL fetch saw false"
+  // was itself racy — rcd survives server restarts, so the boot-time
+  // /api/config fetch can catch a still-live mount from the PRIOR run and
+  // report true, moments before ensure_learn_mount's own forced detach (see
+  // its docstring) rips that very mount out from under it. Polling would
+  // then never engage at all, and the entry would point at an empty
+  // mountpoint for the remount window — or the whole session, if the
+  // remount fails. So this always re-verifies via a live poll after mount,
+  // regardless of the seeded initial value, and follows whatever the fresh
+  // answer says (including back to not-ready, if the detach window is
+  // caught mid-poll) rather than trusting the one-shot snapshot as final.
+  const [learnMountReady, setLearnMountReady] = useState(config.learn_mount_ready);
+  useEffect(() => {
+    let cancelled = false;
+    let attempts = 0;
+    // BUGBOT: setInterval fires a new getConfig() every tick without
+    // waiting for the previous one to settle, so responses can arrive
+    // out of order (a slow earlier request resolving AFTER a faster later
+    // one). Unconditionally applying whatever resolves most recently in
+    // WALL-CLOCK order let a stale `false` from an earlier in-flight
+    // request overwrite a `true` a later request already reported —
+    // permanently, since that `true` had already cleared the interval.
+    // latestRequestId tracks which tick's request is the newest ISSUED
+    // one; only that request's response is applied, so a straggler from
+    // an earlier tick is discarded as stale rather than overwriting it.
+    let latestRequestId = 0;
+    const MAX_ATTEMPTS = 60;
+    const POLL_MS = 2000;
+    const timer = window.setInterval(() => {
+      attempts += 1;
+      const requestId = ++latestRequestId;
+      getConfig().then(
+        (fresh) => {
+          if (cancelled || requestId !== latestRequestId) return;
+          setLearnMountReady(fresh.learn_mount_ready);
+          if (fresh.learn_mount_ready || attempts >= MAX_ATTEMPTS) {
+            window.clearInterval(timer);
+          }
+        },
+        () => {
+          if (cancelled || requestId !== latestRequestId) return;
+          // Transient fetch failure — just try again next tick.
+          if (attempts >= MAX_ATTEMPTS) window.clearInterval(timer);
+        }
+      );
+    }, POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+    // Deliberately empty deps: run once on mount only. Depending on
+    // learnMountReady here would restart the whole bounded poll window
+    // from zero every time it changes.
+  }, []);
+
   const [renamingId, setRenamingId] = useState<string | null>(null);
   // Bookmark just exported to disk: its save button shows ✓ for a moment.
   const [savedId, setSavedId] = useState<string | null>(null);
@@ -441,6 +513,16 @@ export default function Sidebar({ config }: SidebarProps) {
   const onFusedClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
     e.preventDefault();
     if (config && config.fused_dir) navigate(config.fused_dir);
+  };
+
+  // D123: the bundled learn.zip is mounted read-only at `${mounts_root}/learn`
+  // (LEARN_MOUNT_NAME in shell/mounts.py — always "learn"), so no separate
+  // /api/mounts round trip is needed, same as the Fused entry above.
+  const onLearnClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    e.preventDefault();
+    if (config && config.mounts_root) {
+      navigate(`${config.mounts_root.replace(/\/+$/, "")}/learn`);
+    }
   };
 
   // --- bookmark row handlers -------------------------------------------------
@@ -821,6 +903,11 @@ export default function Sidebar({ config }: SidebarProps) {
         <a href="#" id="fused-link" className="sidebar-item" onClick={onFusedClick}>
           <span className="icon"><FolderIcon /></span> Fused
         </a>
+        {learnMountReady && (
+          <a href="#" id="learn-link" className="sidebar-item" onClick={onLearnClick}>
+            <span className="icon"><LearnIcon /></span> Learn
+          </a>
+        )}
       </div>
       <div className="sidebar-section sidebar-bookmarks">
         <div className="sidebar-heading">Bookmarks</div>
