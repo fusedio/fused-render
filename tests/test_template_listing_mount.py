@@ -25,6 +25,8 @@ from fused_render.templates.log_studio import reader as logstudio
 from fused_render.templates.excel import reader as excel
 from fused_render.templates.docs import docs
 from fused_render.templates.latex import engine
+from fused_render.templates.pdf_studio import pdf as pdf_studio
+from fused_render.templates.tableau import tableau
 
 
 class _FakeFS:
@@ -312,3 +314,118 @@ def test_latex_browse_remote_file_descends_to_parent(pathfs):
     assert res["dir"] == _DIR
     names = {e["name"] for e in res["entries"]}
     assert names == {"sub", "main.tex"}
+
+
+def test_pdf_studio_listdir_remote_file_descends_to_parent(pathfs):
+    fp = _DIR + "/doc.pdf"
+    s = pathfs(_DIR, [_ent("sub", is_dir=True), _ent("doc.pdf", size=10)], fp)
+    res = pdf_studio._listdir(fp, origin=s.src)
+    assert "error" not in res
+    assert res["path"] == _DIR
+    assert res["dirs"] == ["sub"]
+    assert [f["name"] for f in res["files"]] == ["doc.pdf"]
+
+
+def test_tableau_listdir_remote_file_descends_to_parent(pathfs):
+    fp = _DIR + "/wb.twb"
+    s = pathfs(_DIR, [_ent("sub", is_dir=True), _ent("wb.twb", size=10)], fp)
+    res = tableau._listdir(fp, origin=s.src)
+    assert "error" not in res
+    assert res["path"] == _DIR
+    assert res["dirs"] == ["sub"]
+    assert [f["name"] for f in res["files"]] == ["wb.twb"]
+
+
+@pytest.fixture
+def slides_mod():
+    """slides.py is a runPython target that does a bare `import engine` — load it
+    via importlib with a stub engine (same trick as test_slides_readonly.py)."""
+    import importlib.util
+    import os
+    import sys
+    import types
+
+    slides_py = os.path.join(os.path.dirname(__file__), "..",
+                             "fused_render", "templates", "slides", "slides.py")
+    saved = sys.modules.get("engine")
+    sys.modules["engine"] = types.ModuleType("engine")
+    try:
+        spec = importlib.util.spec_from_file_location("slides_listing_target", slides_py)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        yield mod
+    finally:
+        if saved is not None:
+            sys.modules["engine"] = saved
+        else:
+            sys.modules.pop("engine", None)
+
+
+def test_slides_listdir_remote_file_descends_to_parent(pathfs, slides_mod):
+    fp = _DIR + "/deck.pptx"
+    s = pathfs(_DIR, [_ent("sub", is_dir=True), _ent("deck.pptx", size=10)], fp)
+    res = slides_mod.main(action="listdir", path=fp, src=s.src)
+    assert "error" not in res
+    assert res["path"] == _DIR
+    assert res["dirs"] == ["sub"]
+    assert res["files"] == ["deck.pptx"]
+
+
+# --------------------------------------------------------------------------
+# A remote listing whose /api/fs/list call fails at the HTTP layer must be
+# turned into a structured error, not raised out of the action (which would
+# break the folder picker/tree). stat says remote-dir; /api/fs/list 500s.
+# --------------------------------------------------------------------------
+
+class _ListFailsFS:
+    def __init__(self):
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                parts = urlsplit(self.path)
+                if parts.path == "/api/fs/stat":
+                    body = json.dumps({"remote": True, "is_dir": True,
+                                       "size": None, "name": "d"}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                # /api/fs/list (and anything else) fails hard
+                self.send_response(500)
+                self.end_headers()
+
+        self._srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.port = self._srv.server_address[1]
+        self._t = threading.Thread(target=self._srv.serve_forever, daemon=True)
+        self._t.start()
+
+    @property
+    def src(self):
+        return f"http://127.0.0.1:{self.port}/api/fs/raw?path=%2Fmnt%2Fd"
+
+    def close(self):
+        self._srv.shutdown()
+
+
+@pytest.fixture
+def listfailsfs():
+    s = _ListFailsFS()
+    yield s
+    s.close()
+
+
+def test_photos_folders_list_failure_returns_structured_error(listfailsfs):
+    res = photos.folders(REMOTE_DIR, src=listfailsfs.src)
+    assert res["ok"] is False
+    assert res["error"] == "list-failed"
+    assert res["dirs"] == []
+
+
+def test_photos_list_dir_list_failure_returns_structured_error(listfailsfs):
+    res = photos.list_dir(REMOTE_DIR, "new", 0, 200, "", "", "", src=listfailsfs.src)
+    assert res["ok"] is False
+    assert res["error"] == "list-failed"

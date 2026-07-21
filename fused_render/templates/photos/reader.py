@@ -289,8 +289,17 @@ def folders(path: str, src: str = "") -> dict:
 
     d = os.path.abspath(os.path.expanduser(path))
     if _remote_dir(src, d):
-        # Mount-backed dir: never kernel-scan it. List via /api/fs/list.
-        ents, _ = _list_remote(src, d)
+        # Mount-backed dir: never kernel-scan it. List via /api/fs/list. A network
+        # or HTTP hiccup returns a structured error instead of raising out of the
+        # action (matches the other templates' picker error handling).
+        try:
+            ents, _ = _list_remote(src, d)
+        except Exception as exc:  # noqa: BLE001
+            parent = os.path.dirname(d)
+            return {"ok": False, "error": "list-failed", "detail": str(exc)[:200],
+                    "path": _fwd(d),
+                    "parent": _fwd(parent) if parent and parent != d else "",
+                    "photos": 0, "dirs": []}
         dirs = [{"name": e["name"], "path": _fwd(os.path.join(d, e["name"]))}
                 for e in ents
                 if e.get("is_dir") and not e["name"].startswith(".")]
@@ -358,8 +367,14 @@ def list_dir(path: str, sort: str, offset: int, limit: int, q: str, date_from: s
     subdirs = []
     if _remote_dir(src, d):
         # Mount-backed dir: list via /api/fs/list; mtime/size come from the
-        # server payload so no per-entry kernel stat touches the mount.
-        ents, _ = _list_remote(src, d)
+        # server payload so no per-entry kernel stat touches the mount. A network
+        # or HTTP hiccup returns a structured error instead of raising out of the
+        # action (matches the other templates' picker error handling).
+        try:
+            ents, _ = _list_remote(src, d)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": "list-failed", "detail": str(exc)[:200],
+                    "dir": _fwd(d)}
         for e in ents:
             name = e["name"]
             if name.startswith("."):
