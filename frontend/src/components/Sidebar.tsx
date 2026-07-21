@@ -309,13 +309,20 @@ export default function Sidebar({ config }: SidebarProps) {
   // (mirrors main.tsx's own bookmark-poll pattern) until it flips true;
   // capped at MAX_ATTEMPTS so a dev checkout with no bundled learn.zip
   // (never becomes ready) doesn't poll forever.
+  //
+  // BUGBOT: the bound must comfortably exceed attach_mount's own worst case
+  // — up to ~10s for ensure_rcd to spawn/confirm the rclone daemon, plus a
+  // full 60s mount/mount rc timeout (shell/mounts.py) — or a slow-but-
+  // eventually-successful mount finishes after the poll gives up and the
+  // entry never appears without a full page reload. 2s x 60 = 120s, safely
+  // past that ~70s worst case with margin.
   const [learnMountReady, setLearnMountReady] = useState(config.learn_mount_ready);
   useEffect(() => {
     if (learnMountReady) return;
     let cancelled = false;
     let attempts = 0;
-    const MAX_ATTEMPTS = 30;
-    const POLL_MS = 1000;
+    const MAX_ATTEMPTS = 60;
+    const POLL_MS = 2000;
     const timer = window.setInterval(() => {
       attempts += 1;
       getConfig().then(

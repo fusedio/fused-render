@@ -2358,12 +2358,22 @@ def _force_detach_learn_mount(builtin: dict, old_remote: str) -> None:
 
     Swallows everything: a failed detach/stop just means run_automount's
     subsequent attach_mount adopts (or errors on) whatever is still there,
-    exactly like before this fix — never worse."""
+    exactly like before this fix — never worse.
+
+    BUGBOT: detach_mount's default (force=False) deliberately leaves a
+    non-busy failure (rcd down but a kernel mount survives, a busy-retry
+    that still fails, ...) in place — "failing loudly beats corrupted
+    reads" is the right call for an explicit user unmount, but it defeats
+    the very point of THIS call: attach_mount treats a still-kernel-mounted
+    path with no matching rcd record as a foreign mount and adopts it
+    as-is, silently keeping stale content across the refresh this path
+    exists to guarantee. force=True escalates every dead end to
+    _force_unmount instead, so a genuinely fresh mount/mount follows."""
     try:
         mp = mountpoint(builtin)
         live = mp in mounted_paths() or os.path.ismount(mp)
         if live:
-            detach_mount(builtin)
+            detach_mount(builtin, force=True)
         port = _live_rcd_port()
         if port is not None:
             _stop_serve_for(port, old_remote)

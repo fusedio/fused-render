@@ -109,9 +109,26 @@ def test_forces_detach_when_remote_unchanged(home, learn_zip, monkeypatch):
     monkeypatch.setattr(mounts_mod, "mounted_paths",
                         lambda: {mounts_mod.mountpoint(_learn_records()[0])})
     monkeypatch.setattr(mounts_mod, "detach_mount",
-                        lambda m, force=False: calls.append(m["id"]))
+                        lambda m, force=False: calls.append((m["id"], force)))
     mounts_mod.ensure_learn_mount()  # same zip, same remote, still live
-    assert calls == [_learn_records()[0]["id"]]
+    assert calls == [(_learn_records()[0]["id"], True)]
+
+
+def test_force_detach_passes_force_true(home, learn_zip, monkeypatch):
+    # BUGBOT: detach_mount's default (force=False) deliberately leaves a
+    # non-busy failure in place (rcd down but the kernel mount survives, a
+    # busy-retry that still fails, ...) — right for an explicit user
+    # unmount, but it would let attach_mount adopt that stale kernel mount
+    # as a "foreign" one instead of remounting, defeating the whole point
+    # of this forced-refresh path.
+    mounts_mod.ensure_learn_mount()
+    calls = []
+    monkeypatch.setattr(mounts_mod, "mounted_paths",
+                        lambda: {mounts_mod.mountpoint(_learn_records()[0])})
+    monkeypatch.setattr(mounts_mod, "detach_mount",
+                        lambda m, force=False: calls.append(force))
+    mounts_mod.ensure_learn_mount()
+    assert calls == [True]
 
 
 def test_stops_serve_for_old_remote_on_relocation(home, learn_zip, tmp_path, monkeypatch):
