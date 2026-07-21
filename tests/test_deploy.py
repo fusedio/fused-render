@@ -460,11 +460,11 @@ def test_deploy_rejects_invalid_cache_max_age(tmp_path, monkeypatch):
     assert h.calls() == []  # rejected before any CLI shellout
 
 
-def test_repoint_on_fused_backend_keeps_previous_cache_max_age(tmp_path, monkeypatch):
-    # A managed Fused mount's cache_settings are fixed at `create` (021 §3.1) —
-    # `repoint` carries no cache fields at all, so a redeploy requesting a
-    # DIFFERENT duration must not claim it took effect: the record has to keep
-    # reporting the value that's actually live.
+def test_repoint_on_fused_backend_applies_the_new_cache_max_age(tmp_path, monkeypatch):
+    # 021 §3.1, amended: a managed Fused mount's cache_settings is changeable in
+    # place via repoint, not just fixed at create — a redeploy requesting a
+    # DIFFERENT duration on the same token now actually takes effect, and the
+    # record reports the value that's actually live.
     h = _harness(tmp_path, monkeypatch)
     h.set_scenario(
         {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
@@ -487,16 +487,17 @@ def test_repoint_on_fused_backend_keeps_previous_cache_max_age(tmp_path, monkeyp
         headers=FUSED,
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["cache_max_age"] == "5m"
-    assert h.pointer()["cache_max_age"] == "5m"
+    assert resp.json()["cache_max_age"] == "1h"
+    assert h.pointer()["cache_max_age"] == "1h"
     repoint_call = h.calls()[-1]
     assert repoint_call["argv"][1] == "repoint"
-    assert "--cache-max-age" not in repoint_call["argv"]
+    assert repoint_call["argv"][-2:] == ["--cache-max-age", "1h"]
 
 
-def test_recreate_revive_on_fused_backend_keeps_previous_cache_max_age(tmp_path, monkeypatch):
-    # Same guarantee on the revoked-tombstone revive path (recreate --same-token
-    # + repoint): neither call can change cache_settings on a managed env.
+def test_recreate_revive_on_fused_backend_applies_the_new_cache_max_age(tmp_path, monkeypatch):
+    # Same on the revoked-tombstone revive path (recreate --same-token + repoint):
+    # the follow-up repoint now carries --cache-max-age too, so reviving with a
+    # different duration actually changes it, same as the plain-repoint case above.
     h = _harness(tmp_path, monkeypatch)
     h.set_scenario(
         {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
@@ -520,15 +521,17 @@ def test_recreate_revive_on_fused_backend_keeps_previous_cache_max_age(tmp_path,
         headers=FUSED,
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["cache_max_age"] == "5m"
+    assert resp.json()["cache_max_age"] == "1h"
     verbs_and_flags = [(c["argv"][1], "--cache-max-age" in c["argv"]) for c in h.calls()[-2:]]
-    assert verbs_and_flags == [("recreate", False), ("repoint", False)]
+    assert verbs_and_flags == [("recreate", False), ("repoint", True)]
 
 
 def test_repoint_on_aws_backend_applies_the_new_cache_max_age(tmp_path, monkeypatch):
-    # AWS is unaffected by the fused-backend carve-out above: build_html_artifact
-    # re-reads the bundle's own manifest on every repoint, so a redeploy's request
-    # really does take effect there.
+    # AWS applies a redeploy's cache_max_age two ways: build_html_artifact re-reads
+    # the bundle's own manifest on every repoint, AND deploy_page now also passes
+    # --cache-max-age explicitly on the repoint call (same as the managed backend) —
+    # a no-op-equivalent restatement of the same value there, but it means a
+    # redeploy's request really does take effect either way.
     h = _harness(tmp_path, monkeypatch)
     h.set_scenario({"create": {"token": "abc123", "status": "active"}})
     h.client.post(
@@ -550,12 +553,15 @@ def test_repoint_on_aws_backend_applies_the_new_cache_max_age(tmp_path, monkeypa
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["cache_max_age"] == "1h"
+    repoint_call = h.calls()[-1]
+    assert repoint_call["argv"][-2:] == ["--cache-max-age", "1h"]
 
 
 def test_force_new_replaces_the_deployment_and_revokes_the_old_mount(tmp_path, monkeypatch):
-    # The only way to actually change caching on a managed Fused mount: skip token
-    # reuse and mint a brand-new mount via `create`, then take the OLD mount down so
-    # the page isn't left serving at two URLs the pointer can't both track.
+    # force_new skips token reuse and mints a brand-new mount via `create`, then
+    # takes the OLD mount down so the page isn't left serving at two URLs the
+    # pointer can't both track — used when the user wants a fresh URL outright,
+    # not merely to change caching (repoint can do that in place now).
     h = _harness(tmp_path, monkeypatch)
     h.set_scenario(
         {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}

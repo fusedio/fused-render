@@ -7,12 +7,12 @@
 //   1. loading  — config + (reconciled) status fetch in flight
 //   2. fused CLI missing — install panel (one-click when the server can pip
 //      install the pinned [fused] extra, else the manual hint)
-//   3. no hosted envs — sign in / route to the account page's setup panel
+//   3. no hosted envs — sign in / route to the account tab's setup panel
 //      (AWS env creation stays a named terminal flow, SPEC AC-9)
 //   4. the form — env picker (default: the managed fused-backend env),
 //      current deployment card (URL + copy/open), Deploy/Redeploy, Revoke.
 // The env-wide share list (every mount on an env, with revoke) lives on the
-// Fused account page's Deployments section (SPEC AC-11), not here — this
+// Fused account tab's Deployments section (SPEC AC-11), not here — this
 // modal is scoped to the current page.
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -821,7 +821,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     }
 
     if (envs.length === 0) {
-      // The setup flow itself lives on the Fused account page (M18b) — this
+      // The setup flow itself lives on the Fused account tab (M18b) — this
       // block routes there, handling the sign-in prerequisite in place.
       return (
         <div className="deploy-section">
@@ -973,35 +973,6 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             </button>
           )}
         </div>
-        {env?.backend === "fused" &&
-          isRedeploy &&
-          cacheMaxAge !== (deployment?.cache_max_age ?? "0s") && (
-            <div className="deploy-note">
-              Managed Fused environments fix caching at first deploy — redeploying this URL
-              keeps its current setting (
-              {(deployment?.cache_max_age ?? "0s") === "0s"
-                ? "off"
-                : `on, ${deployment?.cache_max_age}`}
-              ), not the one just chosen above. Deploying as a new URL replaces this
-              deployment: it mints a fresh URL with the setting above and takes the old one
-              down.{" "}
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => onDeploy(true)}
-                disabled={
-                  busy !== null ||
-                  preview === null ||
-                  previewPending ||
-                  (preview?.errors.length ?? 0) > 0
-                }
-                title="Mint a fresh URL with the setting chosen above and switch this page to it — the old URL is taken down (existing links to it stop working)"
-              >
-                Deploy as new URL
-              </button>
-            </div>
-          )}
-
         <div className="deploy-form-row">
           <label htmlFor="deploy-env-select">Deploy to</label>
           <Select

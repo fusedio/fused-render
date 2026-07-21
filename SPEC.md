@@ -893,29 +893,20 @@ the product gains network access.
   caching differently (fused repo's spec/serve/fused-render.md § Caching /
   spec/serve/share-links.md §8): it travels in the export bundle's manifest
   (EX-9) for an AWS environment (read by `build_html_artifact`, so a later
-  `repoint`/redeploy can change it too — `deploy_page` sends it both ways
-  there, harmlessly redundant); for a managed `fused` environment the manifest
-  field is not read at all — only the explicit `--cache-max-age` on the
-  `share create` call is, as the mount's own `cache_settings` (a control-plane
-  concept independent of the bundle, `application` repo spec `021` §3.1). That
-  field is **fixed for the life of a token**: a `repoint` carries no cache
-  fields at all, and a revoked-token revive (`recreate --same-token`) preserves
-  it verbatim — so `deploy_page` deliberately withholds `--cache-max-age` on
-  those two calls (sending it would either be ignored or, on `repoint`,
-  rejected outright) and persists the setting that is **actually** live, not
-  the one requested (`_record_from`'s `effective_cache_max_age`), so the
-  deployment card never claims a setting the mount doesn't have. When the
-  modal detects the checkbox/duration no longer matches what's live on a
-  `fused`-backend redeploy, it shows this inline (naming the live value) with
-  a **"Deploy as new URL"** action (`deploy_page(..., force_new=True)`) — the
-  only way to actually change caching on that backend. It **replaces** the
-  deployment: skips token reuse, mints a fresh `share create` with the
-  requested setting at a new URL, repoints the page pointer to it, then
-  **best-effort revokes the superseded mount** (last, after the new URL is
-  live, so a create failure never takes the page down; a revoke failure is
-  non-fatal — the new URL stands and the old mount lingers, revocable from the
-  account tab's deployments list). The pointer therefore tracks the new mount,
-  so the modal's Revoke targets the new URL — no orphaned URL to chase.
+  `repoint`/redeploy can change it too); for a managed `fused` environment the
+  manifest field is not read at all — only the explicit `--cache-max-age` flag
+  is, as the mount's own `cache_settings` (a control-plane concept independent
+  of the bundle, `application` repo spec `021` §3.1, amended). `deploy_page`
+  now sends `--cache-max-age` on every path — `create`, `repoint`, and the
+  follow-up `repoint` after a revoked-token `recreate --same-token` — so a
+  redeploy on either backend applies whatever the dialog's checkbox/duration
+  currently says, same token/URL, no "Deploy as new URL" workaround needed. A
+  `force_new=True` `deploy_page` call still exists as a general "mint an
+  entirely fresh URL and take the old one down" action (skip token reuse,
+  `share create` at a new token, repoint the page pointer to it, then
+  **best-effort revoke the superseded mount** last so a create failure never
+  takes the page down) — the modal just no longer needs to surface it as a
+  caching-change escape hatch.
 - **DP-18** **Clear cache** (`POST /api/deploy/clear-cache {"page"}` →
   `clear_cache_deployment` → `fused share cache-clear <token>`) forces every
   cached result for the deployment's mount to be recomputed on the next
