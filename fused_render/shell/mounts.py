@@ -819,6 +819,85 @@ def _ensure_rcd_locked() -> int:
     raise RuntimeError("rclone rcd did not come up within 10s")
 
 
+# How long _kill_current_rcd waits for a signalled daemon to actually exit
+# before escalating / giving up, mirroring the bounded poll ensure_rcd uses on
+# the way up.
+_KILL_TIMEOUT_S = 5.0
+
+
+def _kill_current_rcd() -> None:
+    """Terminate the recorded rcd daemon, if there is one to terminate.
+
+    Safety invariant (the single most important constraint here): only ever
+    signal a pid we can PROVE is our rclone rcd. Reuses the exact gates
+    reap_stale_rcd trusts — _pid_alive + _confirmed_our_rcd (which itself folds
+    in the rc core/pid check and _pid_looks_like_rcd). A recorded pid that is
+    alive but NOT confirmed ours raises rather than risk killing an unrelated
+    process that inherited a recycled pid.
+
+    No recorded daemon / a dead pid is a clean no-op: the caller's fresh spawn
+    just starts one. SIGTERM first (rcd unmounts cleanly on it), escalating to
+    SIGKILL only if it won't exit within _KILL_TIMEOUT_S; we poll until the
+    daemon's port stops answering AND the pid is gone."""
+    entry = storage.read_json(_rcd_state_path())
+    if not isinstance(entry, dict):
+        return  # no daemon on record — nothing to kill
+    pid = entry.get("pid") or 0
+    if not _pid_alive(pid):
+        return  # already gone; the stale rcd.json is harmless (spawn overwrites)
+    if not _confirmed_our_rcd(entry):
+        # Alive but unprovable: pids get recycled, so this could be anything.
+        # Fail loud instead of blind-killing (the critical safety invariant).
+        raise RuntimeError(
+            f"refusing to kill pid {pid}: not confirmed to be our rclone rcd"
+        )
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            return  # raced us and exited between the check and the signal
+        except OSError as e:
+            raise RuntimeError(f"failed to signal rcd pid {pid}: {e}") from e
+        deadline = time.time() + _KILL_TIMEOUT_S
+        while time.time() < deadline:
+            if _live_rcd_port() is None and not _pid_alive(pid):
+                return  # daemon gone
+            time.sleep(0.1)
+    raise RuntimeError(f"rcd pid {pid} did not exit after SIGKILL")
+
+
+def restart_rcd() -> None:
+    """Clean restart of the rcd daemon plus a full re-mount of everything.
+
+    Recovers wedged/disconnected mounts, applies changed mount params, and —
+    the credential-expiry fix — forces a brand-new daemon to re-read the static
+    credentials (e.g. ~/.aws/credentials): the long-lived rcd reads them ONCE at
+    fs instantiation and never again, so a refreshed SSO/STS token only reaches
+    a mount after the daemon itself is replaced (neither Reconnect nor a server
+    restart helps — the rcd survives both).
+
+    Sequence, serialized against ensure_rcd via _rcd_lock:
+      1. force-detach every kernel NFS mount FIRST, so killing rcd can't strand
+         a wedged mount (best-effort — a mount already gone is fine);
+      2. kill the current daemon (only if confirmed ours — see _kill_current_rcd);
+      3. spawn a fresh daemon via the already-locked body (we hold _rcd_lock, so
+         calling ensure_rcd() would deadlock the non-reentrant Lock).
+    run_automount() (which re-mounts every mount and rebuilds serves.json via
+    sync_serves) runs OUTSIDE _rcd_lock — it takes its own _serves_lock, and
+    holding both would invert the lock order. A spawn failure propagates: the
+    endpoint maps it to a 500 and mounts are left honestly unmounted."""
+    with _rcd_lock:
+        for m in list_mounts():
+            try:
+                detach_mount(m, force=True)
+            except Exception:
+                logger.warning("restart: detach of %r failed",
+                               m.get("name"), exc_info=True)
+        _kill_current_rcd()
+        _ensure_rcd_locked()
+    run_automount()
+
+
 def rcd_mount_map() -> dict:
     """{mountpoint: remote fs} for every mount rcd currently serves (empty
     when no daemon is live). Read-only: never spawns a daemon just to answer

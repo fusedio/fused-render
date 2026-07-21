@@ -3093,3 +3093,137 @@ def test_probe_floor_never_exceeds_caller_timeout(home, rcd, fresh_upstream, dir
     assert kind == "indeterminate"
     assert elapsed < 0.19, (
         f"sub-floor budget still ran probes for {elapsed:.2f}s (floor granted, not bailed)")
+
+
+# -- restart_rcd / _kill_current_rcd: clean daemon restart -----------------
+#
+# The global "Restart rclone" recovery: tear down every kernel mount, kill the
+# confirmed daemon, spawn a fresh one (which re-reads ~/.aws/credentials — the
+# credential-expiry fix), then re-mount everything. _kill_current_rcd carries
+# the critical safety invariant: it must NEVER signal a pid it can't confirm is
+# our rcd.
+
+
+def test_restart_rcd_teardown_then_respawn_then_automount(home, rcd, monkeypatch):
+    mounts_mod.add_mount("a", "r:one")
+    mounts_mod.add_mount("b", "r:two")
+    events = []
+    monkeypatch.setattr(mounts_mod, "detach_mount",
+                        lambda m, force=False: events.append(("detach", m["name"], force)))
+    monkeypatch.setattr(mounts_mod, "_kill_current_rcd",
+                        lambda: events.append(("kill",)))
+    monkeypatch.setattr(mounts_mod, "_ensure_rcd_locked",
+                        lambda: events.append(("spawn",)))
+    monkeypatch.setattr(mounts_mod, "run_automount",
+                        lambda: events.append(("automount",)))
+
+    mounts_mod.restart_rcd()
+
+    # Every mount is force-detached FIRST, then kill, then spawn, then automount.
+    assert events == [
+        ("detach", "a", True),
+        ("detach", "b", True),
+        ("kill",),
+        ("spawn",),
+        ("automount",),
+    ]
+
+
+def test_restart_rcd_propagates_spawn_failure_after_teardown(home, rcd, monkeypatch):
+    mounts_mod.add_mount("a", "r:one")
+    events = []
+    monkeypatch.setattr(mounts_mod, "detach_mount",
+                        lambda m, force=False: events.append("detach"))
+    monkeypatch.setattr(mounts_mod, "_kill_current_rcd",
+                        lambda: events.append("kill"))
+
+    def boom():
+        events.append("spawn")
+        raise RuntimeError("rclone rcd did not come up within 10s")
+
+    monkeypatch.setattr(mounts_mod, "_ensure_rcd_locked", boom)
+    monkeypatch.setattr(mounts_mod, "run_automount",
+                        lambda: events.append("automount"))
+
+    with pytest.raises(RuntimeError, match="did not come up"):
+        mounts_mod.restart_rcd()
+    # Teardown + kill + failed spawn ran; automount did NOT (honest half-state).
+    assert events == ["detach", "kill", "spawn"]
+
+
+def test_restart_rcd_detach_failure_is_best_effort(home, rcd, monkeypatch):
+    # A wedged mount whose detach raises must not abort the restart — the whole
+    # point is to recover from wedged mounts.
+    mounts_mod.add_mount("a", "r:one")
+    events = []
+
+    def bad_detach(m, force=False):
+        raise OSError("wedged")
+
+    monkeypatch.setattr(mounts_mod, "detach_mount", bad_detach)
+    monkeypatch.setattr(mounts_mod, "_kill_current_rcd",
+                        lambda: events.append("kill"))
+    monkeypatch.setattr(mounts_mod, "_ensure_rcd_locked",
+                        lambda: events.append("spawn"))
+    monkeypatch.setattr(mounts_mod, "run_automount",
+                        lambda: events.append("automount"))
+
+    mounts_mod.restart_rcd()
+    assert events == ["kill", "spawn", "automount"]
+
+
+def test_kill_current_rcd_refuses_unconfirmed_pid(home, monkeypatch):
+    # THE safety invariant: an alive pid we can't confirm is our rcd is NEVER
+    # signalled — raise instead of murdering an unrelated process.
+    mounts_mod.write_rcd_state(12345, 999)
+    monkeypatch.setattr(mounts_mod, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(mounts_mod, "_confirmed_our_rcd", lambda e: False)
+    killed = []
+    monkeypatch.setattr(mounts_mod.os, "kill",
+                        lambda pid, sig: killed.append((pid, sig)))
+
+    with pytest.raises(RuntimeError):
+        mounts_mod._kill_current_rcd()
+    assert killed == []
+
+
+def test_kill_current_rcd_noops_without_state(home, monkeypatch):
+    # No rcd.json at all -> nothing to kill (the fresh spawn will just start one).
+    killed = []
+    monkeypatch.setattr(mounts_mod.os, "kill",
+                        lambda pid, sig: killed.append(pid))
+    mounts_mod._kill_current_rcd()
+    assert killed == []
+
+
+def test_kill_current_rcd_noops_when_pid_already_dead(home, monkeypatch):
+    # Dead pid short-circuits BEFORE the confirm check: already gone, drop it.
+    mounts_mod.write_rcd_state(12345, 999)
+    monkeypatch.setattr(mounts_mod, "_pid_alive", lambda pid: False)
+    confirmed = []
+    monkeypatch.setattr(mounts_mod, "_confirmed_our_rcd",
+                        lambda e: confirmed.append(e) or True)
+    killed = []
+    monkeypatch.setattr(mounts_mod.os, "kill",
+                        lambda pid, sig: killed.append(pid))
+    mounts_mod._kill_current_rcd()
+    assert killed == []
+    assert confirmed == []
+
+
+def test_kill_current_rcd_signals_confirmed_pid(home, monkeypatch):
+    mounts_mod.write_rcd_state(12345, 999)
+    alive = {"v": True}
+    monkeypatch.setattr(mounts_mod, "_pid_alive", lambda pid: alive["v"])
+    monkeypatch.setattr(mounts_mod, "_confirmed_our_rcd", lambda e: True)
+    monkeypatch.setattr(mounts_mod, "_live_rcd_port", lambda: None)
+    sigs = []
+
+    def fake_kill(pid, sig):
+        sigs.append((pid, sig))
+        alive["v"] = False  # dies on the first (graceful) signal
+
+    monkeypatch.setattr(mounts_mod.os, "kill", fake_kill)
+    mounts_mod._kill_current_rcd()
+    # One SIGTERM was enough; no SIGKILL escalation.
+    assert sigs == [(999, mounts_mod.signal.SIGTERM)]
