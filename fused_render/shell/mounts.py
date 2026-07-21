@@ -826,6 +826,19 @@ def is_mounts_root(path: str) -> bool:
     return os.path.abspath(path) == os.path.abspath(mounts_dir())
 
 
+def is_mount_root(path: str) -> bool:
+    """True when `path` is the ROOT of an individual mount (its mountpoint), as
+    opposed to a subpath inside it. A single-level listing of a mount root is a
+    listing of the remote's top prefix — or the whole bucket for a bucket-root
+    mount — which on a world-scale remote is enormous. Callers use this to avoid
+    a standing periodic enumeration of such a prefix (fs/events P1 #4). The
+    mounts container itself counts as a root too. Pure string/abspath — no I/O."""
+    if is_mounts_root(path):
+        return True
+    m, rel = _mount_for(path)
+    return m is not None and rel == "."
+
+
 def rc_mtime_for(path: str) -> str | None:
     """ModTime of a mount-backed file, answered by the rclone rcd rc API
     (operations/stat) instead of the kernel NFS mount.

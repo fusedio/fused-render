@@ -1933,6 +1933,12 @@ def _fs_write(body: dict, x_fused: str | None):
 
 _LOCAL_POLL_S = 0.2   # local files: cheap os.stat, snappy reload
 _MOUNT_POLL_S = 5.0   # mount-backed files: rc stat, far less remote pressure
+# Mount-backed paths on a remote that is NOT direct_list_capable (e.g.
+# source.coop's custom S3 endpoint, not recognized as plain AWS S3): change
+# detection there costs a full rc_list_dir of the prefix, not a bounded unsigned
+# page. Poll such paths far less often to cut standing remote pressure, and skip
+# listing a mount ROOT entirely (see _mount_signal) — fs/events P1 #4.
+_MOUNT_SLOW_POLL_S = 60.0
 _STAT_TIMEOUT_S = 4.0  # a stat outliving this reports "unchanged" for this tick
 
 # Sentinel distinct from every real mtime signal (float, RFC3339 str, or None
@@ -1973,7 +1979,23 @@ class _WatchEntry:
 
         self.path = path
         self.is_mount = shell_mounts.is_mount_backed(path)
-        self.interval = _MOUNT_POLL_S if self.is_mount else _LOCAL_POLL_S
+        # Both flags below are pure path/config checks (no remote I/O): they fix
+        # the poll interval and the change-detection strategy once, at creation.
+        if self.is_mount:
+            # direct_list_capable: the remote can be enumerated by a cheap,
+            # bounded unsigned page (anonymous AWS S3 / GCS). When it CAN'T, a
+            # directory child-change signal would require a full rc_list_dir of
+            # the prefix — the standing enumeration we avoid (see _mount_signal).
+            self._direct_capable = shell_mounts.direct_list_capable(path)
+            # A mount ROOT lists the remote's top prefix (or the whole bucket):
+            # never poll-list it on a non-direct remote.
+            self._is_mount_root = shell_mounts.is_mount_root(path)
+            self.interval = (_MOUNT_POLL_S if self._direct_capable
+                             else _MOUNT_SLOW_POLL_S)
+        else:
+            self._direct_capable = False
+            self._is_mount_root = False
+            self.interval = _LOCAL_POLL_S
         self.subscribers: set = set()  # asyncio.Queue per socket
         self.last = _UNCHANGED  # primed by the first successful read
         self._inflight = None   # in-progress stat task; guards against pile-up
@@ -2015,6 +2037,21 @@ class _WatchEntry:
             which likewise falls back to operations/stat ModTime.
         Any failure/timeout -> _UNCHANGED (never an error storm)."""
         from fused_render.shell import mounts as shell_mounts
+
+        # A mount ROOT lists the remote's top prefix — or the whole bucket for a
+        # bucket-root mount — which on a world-scale remote is enormous. When the
+        # remote is NOT direct_list_capable (e.g. source.coop's custom S3
+        # endpoint, not recognized as plain AWS S3), the only way to hash its
+        # listing is an rc_list_dir of that entire prefix. Running that on every
+        # tick for the life of an open pane is a standing background enumeration
+        # (fs/events P1 #4), so we refuse it: change detection for such a root is
+        # best-effort (no live child-change events). Direct-capable roots keep
+        # their bounded single unsigned page below; non-root paths (which the
+        # widened _MOUNT_SLOW_POLL_S interval already de-pressurizes) are
+        # unaffected. self._direct_capable is the init-time classification; the
+        # branch below re-derives it live so tests can stub the backend check.
+        if self._is_mount_root and not self._direct_capable:
+            return _UNCHANGED
 
         try:
             if shell_mounts.direct_list_capable(self.path):
