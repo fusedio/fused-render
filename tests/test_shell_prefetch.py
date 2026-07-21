@@ -364,6 +364,14 @@ def test_fs_raw_schedules_prefetch_for_mount_backed_file(
     # race with/clobber this test's manual serves.json setup.
     monkeypatch.setattr(mounts_mod, "startup", lambda: None)
 
+    # The warm-read fallthrough resolves a mount-backed path's shape through the
+    # rcd (_mount_probe), never a kernel stat — stub the parent listing so the
+    # file reads as a present regular object and the proxy is reached.
+    monkeypatch.setattr(mounts_mod, "rc_list_dir",
+                        lambda p, timeout=None: [{"Name": "table.parquet",
+                                                  "IsDir": False, "Size": 23,
+                                                  "ModTime": "2024-01-02T03:04:05Z"}])
+
     scheduled = []
     monkeypatch.setattr(prefetch_mod, "schedule",
                         lambda path, url: scheduled.append((path, url)))

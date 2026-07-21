@@ -112,9 +112,16 @@ def _file_path_from_url(url: str) -> str | None:
     FILE right now (recents record files only, D22-style basename rows) —
     the gate for accepting a record and for the GET response filter."""
     fs_path = _decoded_fs_path(url)
-    if fs_path is None or not os.path.isfile(fs_path):
+    if fs_path is None:
         return None
-    return fs_path
+    # NEVER a raw os.path.isfile on a mount-backed path: a cold GETATTR there
+    # lists the whole parent prefix and wedges the mount (the open-flow wedge —
+    # POST /api/recents/open resolves the just-opened file through here). Route
+    # mounts via the rc API (_mount_exists), locals via the kernel (_local_exists).
+    from fused_render.shell import mounts as shell_mounts
+    exists = (_mount_exists(fs_path) if shell_mounts.is_mount_backed(fs_path)
+              else _local_exists(fs_path))
+    return fs_path if exists else None
 
 
 def _local_exists(fs_path: str) -> bool:
@@ -128,20 +135,21 @@ def _local_exists(fs_path: str) -> bool:
 
 
 def _mount_exists(fs_path: str) -> bool:
-    """Existence of a MOUNT-BACKED path, answered by the rclone rc API
-    (mounts.rc_stat_for) — NEVER os.path.isfile. A raw os.stat/isfile on a hung
-    NFS mount is the exact GETATTR that wedges it (see rc_stat_for/rc_mtime_for
-    in mounts.py); the rc route keeps the kernel out of the loop entirely.
+    """Whether a MOUNT-BACKED path is an existing FILE, answered by the rclone
+    rc API (mounts.rc_kind_for) — NEVER os.path.isfile. A raw os.stat/isfile on
+    a hung NFS mount is the exact GETATTR that wedges it (see rc_kind_for/
+    rc_mtime_for in mounts.py); the rc route keeps the kernel out of the loop
+    entirely.
 
-    The only outcome that filters the entry is a healthy rcd's confirmed
-    "missing" (operations/stat returned {"item": null}). "exists" keeps it, and
-    "indeterminate" (rcd down / timed out / errored — rc can't prove absence)
-    also keeps it: we fail open rather than hide a live recent on a transient
-    rc hiccup."""
+    Files only, matching recents' D22 files-only contract (and _local_exists'
+    os.path.isfile): a confirmed "dir" filters the entry just like a "missing"
+    would. Only a "file" or an "indeterminate" probe (rcd down / timed out /
+    errored — rc can't prove anything) keeps it: we fail open rather than hide a
+    live recent on a transient rc hiccup."""
     from fused_render.shell import mounts as shell_mounts
 
     try:
-        return shell_mounts.rc_stat_for(fs_path) != "missing"
+        return shell_mounts.rc_kind_for(fs_path) in ("file", "indeterminate")
     except Exception:
         return True  # unexpected error -> fail open, keep the entry
 

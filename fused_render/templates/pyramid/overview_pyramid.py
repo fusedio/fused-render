@@ -91,13 +91,24 @@ class _HttpRangeFile(_io.RawIOBase):
     one round-trip per read. `size` comes from /api/fs/stat, so we never kernel-
     stat the mount to learn the length."""
 
-    def __init__(self, url, size, block=65536):
+    def __init__(self, url, size, block=4 << 20):
         self._r = _RangeReader(url)
         self._size = int(size)
         self._pos = 0
         self._block = int(block)
         self._cache = {}
         self._order = []
+        # LRU bounded by BYTES, not a raw block count, so the cap tracks the
+        # block size instead of silently scaling with it. The budget is large
+        # (256MiB) ON PURPOSE: tifffile/GDAL walk tile-offset tables scattered
+        # across the WHOLE file, and at 4MiB granularity each tiny scattered
+        # read pulls a full block, so the working set for a ~150-230MiB COG is
+        # itself ~150-250MiB. A smaller cap thrashes catastrophically —
+        # measured: a 32MiB budget turned a 42MiB COG's cold analyze from
+        # seconds into a >180s timeout (evict-then-refetch storm). The budget
+        # is transient: one bounded analyze in a short-lived worker, freed on
+        # exit. For 4MiB blocks this yields the proven-working 64-block set.
+        self._max_blocks = max(4, (256 << 20) // self._block)
 
     def readable(self):
         return True
@@ -130,7 +141,7 @@ class _HttpRangeFile(_io.RawIOBase):
         blk = self._r.read(off, n)
         self._cache[bi] = blk
         self._order.append(bi)
-        if len(self._order) > 64:  # tiny LRU — keep memory bounded
+        if len(self._order) > self._max_blocks:  # LRU — byte-bounded (~256MiB)
             self._cache.pop(self._order.pop(0), None)
         return blk
 
@@ -684,10 +695,23 @@ def main(file: str = "", action: str = "analyze", resampling: str = "",
         st = {"state": "running", "pid": None, "action": action, "watch": watch,
               "before": os.path.getsize(file), "started": time.time()}
         json.dump(st, open(sf, "w"))
-        proc = subprocess.Popen([vpy, wfile, file, action, json.dumps(opts)],
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                start_new_session=True, env=env)
-        st["pid"] = proc.pid
+        # posix_spawn, NOT Popen's fork()+exec, for the same reason as the
+        # analyze branch below: this process has libproj resident with a live
+        # proj.db SQLite handle, and fork() would run PROJ's pthread_atfork
+        # child handler in the forked child and segfault before exec. setsid=True
+        # detaches this long-running build job into its own session (what
+        # start_new_session did) so it survives the parent; stdout/stderr are
+        # sent to /dev/null via file_actions. posix_spawn runs no atfork handlers.
+        _null = os.open(os.devnull, os.O_WRONLY)
+        try:
+            pid = os.posix_spawn(
+                vpy, [vpy, wfile, file, action, json.dumps(opts)], env,
+                file_actions=[(os.POSIX_SPAWN_DUP2, _null, 1),
+                              (os.POSIX_SPAWN_DUP2, _null, 2)],
+                setsid=True)
+        finally:
+            os.close(_null)
+        st["pid"] = pid
         json.dump(st, open(sf, "w"))
         return {"ok": True, "started": True, "status_key": key, "watch": watch,
                 "before": st["before"]}
@@ -696,8 +720,18 @@ def main(file: str = "", action: str = "analyze", resampling: str = "",
         f.write(_worker_source())
         wpath = f.name
     try:
+        # close_fds=False makes CPython spawn the worker via posix_spawn rather
+        # than fork()+exec. This process (the executor's _child.py running
+        # main()) has libproj resident with a live proj.db SQLite handle in
+        # PROJ's SQLiteHandleCache (pulled in transitively, e.g. via the
+        # module-level `import fused` below). On a fork() the child runs PROJ's
+        # registered pthread_atfork child handler, which sqlite3_close()es that
+        # now-invalid handle and segfaults (SIGSEGV, code -11) before it can
+        # exec the worker. posix_spawn runs no atfork handlers, so the crash
+        # path is gone. The worker is short-lived and needs no inherited fds.
         proc = subprocess.run([vpy, wpath, file, action, json.dumps(opts)],
-                              capture_output=True, text=True, timeout=900, env=env)
+                              capture_output=True, text=True, timeout=900,
+                              env=env, close_fds=False)
         if proc.returncode != 0:
             tail = (proc.stderr or "").strip().splitlines()
             return {"error": "worker failed: " + (tail[-1] if tail else "unknown error")}
