@@ -31,6 +31,8 @@ class StubRcd:
     def __init__(self):
         self.calls = []
         self.delay = {}  # method -> seconds to sleep before responding (timeouts)
+        self.jobs = {}   # jobid -> job dict (for the _async / job/* path)
+        self._next_jobid = 1
         self.responses = {
             "core/pid": {"pid": 4242},
             "mount/mount": {},
@@ -46,28 +48,78 @@ class StubRcd:
             def log_message(self, *a):
                 pass
 
-            def do_POST(self):
-                length = int(self.headers.get("Content-Length") or 0)
-                body = json.loads(self.rfile.read(length) or b"{}")
-                method = self.path.lstrip("/")
-                stub.calls.append((method, body))
-                if method in stub.delay:
-                    time.sleep(stub.delay[method])
+            def _resolve(self, method):
+                """The (code, payload) this stub would answer `method` with,
+                from the canned per-method responses."""
                 resp = stub.responses.get(method)
                 if isinstance(resp, list):  # per-call sequence; last repeats
                     resp = resp.pop(0) if len(resp) > 1 else resp[0]
                 if resp is None:
-                    payload, code = {"error": f"unknown method {method}"}, 404
-                elif isinstance(resp, tuple):
-                    code, payload = resp
-                else:
-                    payload, code = resp, 200
+                    return 404, {"error": f"unknown method {method}"}
+                if isinstance(resp, tuple):
+                    return resp
+                return 200, resp
+
+            def _reply(self, code, payload):
                 raw = json.dumps(payload).encode()
                 self.send_response(code)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(raw)))
                 self.end_headers()
                 self.wfile.write(raw)
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(length) or b"{}")
+                method = self.path.lstrip("/")
+
+                # job/status and job/stop drive the _async cancellation path.
+                if method == "job/status":
+                    stub.calls.append((method, body))
+                    job = stub.jobs.get(body.get("jobid"))
+                    if job is None:
+                        return self._reply(500, {"error": "job not found"})
+                    finished = (job["ready_at"] is not None
+                                and time.monotonic() >= job["ready_at"])
+                    out = {"id": body["jobid"], "finished": finished,
+                           "success": finished and not job["error"],
+                           "error": job["error"] if finished else ""}
+                    if finished and not job["error"]:
+                        out["output"] = job["output"]
+                    return self._reply(200, out)
+                if method == "job/stop":
+                    stub.calls.append((method, body))
+                    job = stub.jobs.get(body.get("jobid"))
+                    if job is None:
+                        return self._reply(500, {"error": "job not found"})
+                    job["stopped"] = True
+                    return self._reply(200, {})
+
+                # Async submit: record the logical call (minus the _async control
+                # key), stash the eventual result as a job keyed by delay, and
+                # hand back a jobid immediately — exactly like rclone rcd.
+                if body.pop("_async", None):
+                    stub.calls.append((method, body))
+                    code, payload = self._resolve(method)
+                    jobid = stub._next_jobid
+                    stub._next_jobid += 1
+                    # A never-ending job: delay is None => ready_at never arrives.
+                    d = stub.delay.get(method)
+                    stub.jobs[jobid] = {
+                        "ready_at": (None if d == float("inf")
+                                     else time.monotonic() + (d or 0)),
+                        "output": payload if code == 200 else {},
+                        "error": "" if code == 200 else str(payload.get("error", "err")),
+                        "stopped": False,
+                    }
+                    return self._reply(200, {"jobid": jobid})
+
+                # Synchronous path (core/pid, mount/*, and any non-async caller).
+                stub.calls.append((method, body))
+                if method in stub.delay:
+                    time.sleep(stub.delay[method])
+                code, payload = self._resolve(method)
+                self._reply(code, payload)
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
         self.port = self.server.server_address[1]
@@ -679,7 +731,7 @@ def test_mount_view_has_no_automount_field(client, rcd):
     # automount is implicit for every mount now — the field is gone.
     assert "automount" not in m
     assert set(m) == {"id", "name", "remote", "mountpoint", "mounted", "state",
-                      "read_only"}
+                      "read_only", "builtin"}
 
 
 def test_delete_unmounts_and_removes(client, rcd):
@@ -689,6 +741,24 @@ def test_delete_unmounts_and_removes(client, rcd):
     assert client.delete(f"/api/mounts/{cid}", headers=FUSED).status_code == 200
     assert client.get("/api/mounts").json()["mounts"] == []
     assert any(m == "mount/unmount" for m, _ in rcd.calls)
+
+
+def test_delete_rejects_builtin_mount(client, rcd, tmp_path, monkeypatch):
+    # BUGBOT: nothing stopped the shipped Learn mount from being deleted like
+    # any other mount — the record only reappears at the next full SERVER
+    # restart, while the already-open Sidebar's learnMountReady state never
+    # rechecks once true, leaving a dead Learn link for the rest of the
+    # session. Bundled read-only content shouldn't be removable by a user
+    # action in the first place.
+    zp = tmp_path / "learn.zip"
+    zp.write_bytes(b"PK\x05\x06" + b"\x00" * 18)  # empty-zip EOCD; content unused
+    monkeypatch.setenv("FUSED_RENDER_LEARN_ZIP", str(zp))
+    mounts_mod.ensure_learn_mount()
+    builtin = next(m for m in mounts_mod.list_mounts() if m.get("builtin"))
+    r = client.delete(f"/api/mounts/{builtin['id']}", headers=FUSED)
+    assert r.status_code == 400
+    assert "bundled" in r.json()["error"].lower()
+    assert any(m["id"] == builtin["id"] for m in mounts_mod.list_mounts())
 
 
 def test_create_s3_remote_builds_rclone_argv(client, monkeypatch):
@@ -1510,6 +1580,28 @@ def test_run_automount_skips_already_mounted(home, rcd):
         "mountPoints": [{"Fs": "r:one", "MountPoint": mounts_mod.mountpoint(c)}]}
     mounts_mod.run_automount()
     assert not any(m == "mount/mount" for m, _ in rcd.calls)
+
+
+def test_run_automount_syncs_serves_after_learn_removal(home, rcd, tmp_path, monkeypatch):
+    # BUGBOT: when the learn zip disappears and it was the only mount,
+    # ensure_learn_mount removes the record (and stops its rc serve
+    # directly via _force_detach_learn_mount), but serves.json on disk is
+    # ONLY ever rewritten by sync_serves — an early return before it (the
+    # old run_automount behavior, taken because list_mounts() is now empty)
+    # would leave a stale {mountpoint: dead_url} entry that serve_url_for
+    # keeps resolving forever.
+    zp = tmp_path / "learn.zip"
+    zp.write_bytes(b"PK\x05\x06" + b"\x00" * 18)  # empty-zip EOCD; content unused
+    monkeypatch.setenv("FUSED_RENDER_LEARN_ZIP", str(zp))
+    mounts_mod.run_automount()
+    learn_mp = mounts_mod.mountpoint({"name": "learn"})
+    with open(mounts_mod.serves_path()) as f:
+        assert learn_mp in json.load(f)
+
+    monkeypatch.delenv("FUSED_RENDER_LEARN_ZIP")
+    mounts_mod.run_automount()  # learn was the only mount -> list_mounts() is now empty
+    with open(mounts_mod.serves_path()) as f:
+        assert learn_mp not in json.load(f)
 
 
 # -- http serves (the duckdb reader's mounted-parquet fast path) -----------------

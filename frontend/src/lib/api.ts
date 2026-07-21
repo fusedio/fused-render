@@ -5,6 +5,15 @@ export interface Config {
   // The Fused workspace dir (~/Documents/Fused) — the sidebar's "Fused" entry.
   fused_dir: string;
   version: string;
+  // Root of the mounts dir (~/.fused-render/mounts). The sidebar's "Learn"
+  // entry navigates to `${mounts_root}/learn`, the builtin read-only mount
+  // of the bundled learn.zip (D123) — same dir every mount lives under.
+  mounts_root: string;
+  // Whether the builtin learn mount record exists yet — the sidebar only
+  // renders the Learn entry when this is true, so it's never a dead link
+  // (unpackaged dev run with no zip, or the brief window before startup's
+  // background automount thread has upserted the record).
+  learn_mount_ready: boolean;
 }
 
 export interface FsEntry {
@@ -735,6 +744,10 @@ export interface Mount {
   // attach time. Files under the mountpoint stat as writable:false, so
   // templates open them read-only.
   read_only: boolean;
+  // True for a bundled default mount (currently only Learn, D123) that the
+  // server re-creates on every startup — the API rejects deleting it, so the
+  // Mounts view hides Delete for it too (unmount still works).
+  builtin: boolean;
 }
 
 // A remote we can offer from credentials already present in the user's

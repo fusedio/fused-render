@@ -621,7 +621,13 @@ def main(file: str = "", action: str = "analyze", resampling: str = "",
         # here) + size, so every rasterio/tifffile open goes over HTTP range
         # reads. Never a kernel open/mmap of a file the server called remote.
         opts["remote"] = True
-        opts["raw_url"] = _server_url(src, "/api/fs/raw", file)
+        # &pooled=1: the worker's _HttpRangeFile does one Range GET per ~64KB
+        # block. On a cold mount /api/fs/raw 307-redirects to the store's signed
+        # URL and urllib re-follows it (fresh TLS) every block. The flag opts
+        # this read into the server's pooled proxy so the range reads share
+        # keep-alive sockets to the store — just a query param on the endpoint
+        # the template already uses (stays mount-agnostic).
+        opts["raw_url"] = _server_url(src, "/api/fs/raw", file) + "&pooled=1"
         if remote_size is not None:
             opts["size"] = remote_size
 

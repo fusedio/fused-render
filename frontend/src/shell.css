@@ -876,7 +876,8 @@ table.listing-table .icon {
 
 /* Per-filetype icons (components/FileIcons.tsx): monochrome inline SVGs tinted
    by a muted, desaturated per-category colour that sits calmly on the dark
-   shell — folder brightest, generic file dimmest, never the accent yellow. The
+   shell — folder brightest, generic file dimmest. Only html leans toward the
+   accent yellow: those files launch as apps, so they get to stand out. The
    SVG is a block so it has no inline-baseline gap; the parent .icon span lives
    in a flex row (td.name / .sidebar-item) that vertically centres it. */
 .file-icon {
@@ -888,7 +889,7 @@ table.listing-table .icon {
 .file-icon--code    { color: #7fb2a6; }
 .file-icon--data    { color: #a898cb; }
 .file-icon--json    { color: #c3a96b; }
-.file-icon--html    { color: #cd9d75; }
+.file-icon--html    { color: #c9d95e; } /* launchable app — leans toward --accent */
 .file-icon--image   { color: #cd93b6; }
 .file-icon--doc     { color: #9aa0a6; }
 .file-icon--media   { color: #d0939b; }
@@ -896,6 +897,19 @@ table.listing-table .icon {
 .file-icon--archive { color: #baa386; }
 .file-icon--db      { color: #82abbf; }
 .file-icon--file    { color: #868c93; }
+
+/* "App" chip on html rows (Listing + search results) — a small muted-accent
+   pill after the filename. Sized well under the 16px icon height so it never
+   changes row height. */
+.app-chip {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border: 1px solid rgba(229, 255, 68, 0.35);
+  border-radius: 7px;
+  font-size: 10px;
+  line-height: 14px;
+  color: #c9d95e;
+}
 
 table.listing-table td.size,
 table.listing-table td.mtime {

@@ -39,7 +39,7 @@ import {
 import { acquireOverlay, releaseOverlay, isOverlayOpen } from "../lib/ui-overlay";
 import { formatSize, formatMtime, basename } from "../lib/format";
 import { fuzzyMatch, highlightSegments } from "../lib/fuzzy";
-import { iconForEntry } from "../components/FileIcons";
+import { iconForEntry, isAppEntry } from "../components/FileIcons";
 import { getViewState, setViewState } from "../lib/viewstate";
 import { getClipboard, setClipboard, useClipboard } from "../lib/fs-clipboard";
 import ContextMenu, { type MenuEntry, type MenuItem } from "../components/ContextMenu";
@@ -1088,7 +1088,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   const rowMenu = (row: RowCtx): MenuEntry[] => {
     const dir = targetDirOf(row);
     return [
-      { label: "Open", icon: MenuIcons.open, onClick: () => navigate(row.path) },
+      { label: isAppEntry(row.name, row.isDir) ? "Open App" : "Open", icon: MenuIcons.open, onClick: () => navigate(row.path) },
       { label: "Open With", icon: MenuIcons.openWith, submenu: loadOpenWith(row.path) },
       "separator",
       { label: "Move to Bin", icon: MenuIcons.trash, onClick: () => doTrash(row) },
@@ -1225,6 +1225,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
                   <td className="name">
                     <span className="icon">{iconForEntry(entry.rel.split("/").pop() ?? entry.rel, entry.is_dir)}</span>
                     <span className="search-path">{renderHighlight(entry.rel, positions)}</span>
+                    {isAppEntry(entry.rel, entry.is_dir) && <span className="app-chip">App</span>}
                   </td>
                   <td className="size">{entry.is_dir ? "" : formatSize(entry.size)}</td>
                   <td className="mtime">{formatMtime(entry.mtime)}</td>
@@ -1308,6 +1309,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
           <td className="name">
             <span className="icon">{iconForEntry(entry.name, entry.is_dir)}</span>
             {entry.name}
+            {isAppEntry(entry.name, entry.is_dir) && <span className="app-chip">App</span>}
           </td>
           <td className="size">{entry.is_dir ? "" : formatSize(entry.size)}</td>
           <td className="mtime">{formatMtime(entry.mtime)}</td>
