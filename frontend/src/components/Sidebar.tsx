@@ -524,16 +524,17 @@ export default function Sidebar({ config }: SidebarProps) {
     const root = `${config.mounts_root.replace(/\/+$/, "")}/learn`;
     // Prefer the bundled index.html as the landing page when it exists;
     // fall back to the mount folder otherwise (older learn.zip builds).
+    // The stat can be slow (mount-backed read); if the user navigated
+    // elsewhere while it was in flight, don't yank them back.
+    const before = currentUrl();
+    let dest = root;
     try {
       const st = await statPath(`${root}/index.html`);
-      if (!st.is_dir) {
-        navigate(`${root}/index.html`);
-        return;
-      }
+      if (!st.is_dir) dest = `${root}/index.html`;
     } catch {
       // stat 404s (or the mount is briefly not attached) — open the folder.
     }
-    navigate(root);
+    if (currentUrl() === before) navigate(dest);
   };
 
   // --- bookmark row handlers -------------------------------------------------
