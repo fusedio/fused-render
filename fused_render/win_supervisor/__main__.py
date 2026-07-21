@@ -37,14 +37,16 @@ def main() -> None:
             # The installer execs --shutdown-for-upgrade with
             # ewWaitUntilTerminated and reports failure itself from the exit
             # code — a blocking dialog here would stall a silent upgrade
-            # until someone dismisses it, and "could not start" is also the
-            # wrong message for a teardown that failed on an already-running
-            # app.
+            # until someone dismisses it.
+            if isinstance(error, supervisor.SupervisorStoppedError):
+                # The app DID start (server was ready, tray was up) and then
+                # broke — "could not start" would misreport the failure mode.
+                message = f"FusedRender stopped unexpectedly:\n\n{error}"
+            else:
+                message = f"FusedRender could not start:\n\n{error}"
             MB_OK = 0x0
             MB_ICONERROR = 0x10
-            ctypes.windll.user32.MessageBoxW(
-                0, f"FusedRender could not start:\n\n{error}", "FusedRender", MB_OK | MB_ICONERROR
-            )
+            ctypes.windll.user32.MessageBoxW(0, message, "FusedRender", MB_OK | MB_ICONERROR)
         sys.exit(1)
 
 

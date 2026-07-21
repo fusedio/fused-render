@@ -31,6 +31,14 @@ _READY_TIMEOUT_S = 20.0
 _SHUTDOWN_TIMEOUT_S = 5.0
 
 _dialog_lock = threading.Lock()
+_exit_dialog_lock = threading.Lock()
+
+
+class SupervisorStoppedError(RuntimeError):
+    """run() got past startup — the server was ready and the tray was up —
+    and then failed (the server died mid-session, or its process tree would
+    not stop during teardown). Callers must not report this as "could not
+    start": the app DID start; the accurate story is that it stopped."""
 
 
 def run(initial: protocol.Command) -> None:
@@ -89,6 +97,7 @@ def run(initial: protocol.Command) -> None:
     stop_pipe_locally = False
     shutdown_response = None
     server_died = False
+    exit_confirm: "queue.Queue[bool]" = queue.Queue()
 
     running = True
     while running:
@@ -106,13 +115,16 @@ def run(initial: protocol.Command) -> None:
             elif action is tray.TrayAction.DEFAULT_APPS:
                 _safe_call(paths, lambda: _open_uri("ms-settings:defaultapps"))
             elif action is tray.TrayAction.EXIT:
-                if _confirm_exit():
-                    tray_handle.stop()
-                    _safe_graceful_shutdown(port, token, paths)
-                    stop_pipe_locally = True
-                    running = False
-                    break
-        if not running:
+                _spawn_exit_confirm(exit_confirm)
+
+        try:
+            confirmed = exit_confirm.get_nowait()
+        except queue.Empty:
+            confirmed = None
+        if confirmed:
+            tray_handle.stop()
+            _safe_graceful_shutdown(port, token, paths)
+            stop_pipe_locally = True
             break
 
         try:
@@ -140,7 +152,7 @@ def run(initial: protocol.Command) -> None:
         # timing — close deterministically before raising, same rule as the
         # normal teardown path below.
         job.close()
-        raise RuntimeError("Python server exited unexpectedly")
+        raise SupervisorStoppedError("Python server exited unexpectedly")
 
     if stop_pipe_locally:
         _stop_pipe(inst, pipe_requests, pipe_thread)
@@ -149,7 +161,7 @@ def run(initial: protocol.Command) -> None:
     if not process.wait(int(_SHUTDOWN_TIMEOUT_S * 1000)):
         job.close()
         if not process.wait(int(_SHUTDOWN_TIMEOUT_S * 1000)):
-            teardown_error = RuntimeError("Python process tree did not stop")
+            teardown_error = SupervisorStoppedError("Python process tree did not stop")
     else:
         job.close()
 
@@ -248,6 +260,31 @@ def _spawn_file_dialog(port: int, paths: DesktopPaths) -> None:
             _safe_open(port, protocol.Open(path), paths)
 
     threading.Thread(target=worker, daemon=True, name="fused-render-open-file").start()
+
+
+def _spawn_exit_confirm(results: "queue.Queue[bool]") -> None:
+    """Exit confirmation on a dedicated thread (same idiom as
+    `_spawn_file_dialog`): `MessageBoxW` is modal and would otherwise block
+    the loop that services tray actions and pipe requests — if a
+    ShutdownForUpgrade arrives while the dialog is up, it must still be
+    answered within the pipe server's 20s window, or the upgrade fails even
+    though the app is running fine (just waiting on an unanswered dialog).
+    The upgrade wins that race: it gets serviced immediately and the process
+    exits, so the still-open dialog (on its own daemon thread) simply
+    vanishes — no attempt to dismiss it first. The lock drops a second Exit
+    click while one confirmation is already open, same as the file dialog
+    (kept as a separate lock: sharing `_dialog_lock` would make Exit
+    silently unclickable whenever a file picker happens to be open)."""
+    if not _exit_dialog_lock.acquire(blocking=False):
+        return
+
+    def worker():
+        try:
+            results.put(_confirm_exit())
+        finally:
+            _exit_dialog_lock.release()
+
+    threading.Thread(target=worker, daemon=True, name="fused-render-exit-confirm").start()
 
 
 def _confirm_exit() -> bool:

@@ -2,7 +2,9 @@
 installer's ShutdownSupervisor() requires a non-zero exit whenever teardown
 did not actually happen, and must never block on a dialog."""
 import ctypes
+import queue
 import sys
+import threading
 
 import pytest
 
@@ -81,3 +83,66 @@ def test_main_exits_nonzero_without_dialog_on_rejected_shutdown(monkeypatch):
         entry.main()
     assert exc.value.code == 1
     assert dialogs == []  # ewWaitUntilTerminated must never block on a dialog
+
+
+def test_exit_confirm_never_blocks_the_loop_thread(monkeypatch):
+    # Bugbot: a modal exit-confirm on the loop thread starved pipe_requests,
+    # so ShutdownForUpgrade timed out (status 1) and failed the installer.
+    # The dialog must run off-thread: the spawn call returns immediately,
+    # a second Exit click while the dialog is up is dropped, and the answer
+    # arrives via the queue once the user responds.
+    answered = threading.Event()
+
+    def fake_messagebox(hwnd, text, caption, flags):
+        answered.wait(5)
+        return 6  # IDYES
+
+    monkeypatch.setattr(ctypes.windll.user32, "MessageBoxW", fake_messagebox)
+    results: "queue.Queue[bool]" = queue.Queue()
+
+    supervisor._spawn_exit_confirm(results)  # returns without blocking
+    supervisor._spawn_exit_confirm(results)  # dropped: dialog already open
+    assert results.empty()  # loop thread is free while the dialog is up
+
+    answered.set()
+    assert results.get(timeout=5) is True
+    assert results.empty()  # the dropped second click produced no result
+
+
+def test_mid_session_failure_dialog_says_stopped_not_could_not_start(monkeypatch):
+    # Bugbot: a server that died AFTER a successful startup was reported as
+    # "FusedRender could not start", misreporting the failure mode.
+    def dying_run(command):
+        raise supervisor.SupervisorStoppedError("Python server exited unexpectedly")
+
+    monkeypatch.setattr(supervisor, "run", dying_run)
+    monkeypatch.setattr(entry, "DesktopPaths", _NoPaths)
+    monkeypatch.setattr(sys, "argv", ["win_supervisor"])
+    dialogs = []
+    monkeypatch.setattr(
+        ctypes.windll.user32, "MessageBoxW", lambda *a: dialogs.append(a) or 1
+    )
+    with pytest.raises(SystemExit) as exc:
+        entry.main()
+    assert exc.value.code == 1
+    [(_, text, _, _)] = dialogs
+    assert "stopped unexpectedly" in text
+    assert "could not start" not in text
+
+
+def test_startup_failure_dialog_still_says_could_not_start(monkeypatch):
+    def failing_run(command):
+        raise TimeoutError("Python server did not become ready")
+
+    monkeypatch.setattr(supervisor, "run", failing_run)
+    monkeypatch.setattr(entry, "DesktopPaths", _NoPaths)
+    monkeypatch.setattr(sys, "argv", ["win_supervisor"])
+    dialogs = []
+    monkeypatch.setattr(
+        ctypes.windll.user32, "MessageBoxW", lambda *a: dialogs.append(a) or 1
+    )
+    with pytest.raises(SystemExit) as exc:
+        entry.main()
+    assert exc.value.code == 1
+    [(_, text, _, _)] = dialogs
+    assert "could not start" in text
