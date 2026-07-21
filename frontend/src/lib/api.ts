@@ -744,6 +744,10 @@ export interface Mount {
   // attach time. Files under the mountpoint stat as writable:false, so
   // templates open them read-only.
   read_only: boolean;
+  // True for a bundled default mount (currently only Learn, D123) that the
+  // server re-creates on every startup — the API rejects deleting it, so the
+  // Mounts view hides Delete for it too (unmount still works).
+  builtin: boolean;
 }
 
 // A remote we can offer from credentials already present in the user's

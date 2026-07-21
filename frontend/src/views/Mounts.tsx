@@ -106,16 +106,18 @@ function MountRow({
             </button>
           )}
         </div>
-        <button
-          type="button"
-          className="mount-delete"
-          disabled={busy}
-          title="Delete mount"
-          aria-label="Delete mount"
-          onClick={() => act(() => deleteMount(conn.id))}
-        >
-          ✕
-        </button>
+        {!conn.builtin && (
+          <button
+            type="button"
+            className="mount-delete"
+            disabled={busy}
+            title="Delete mount"
+            aria-label="Delete mount"
+            onClick={() => act(() => deleteMount(conn.id))}
+          >
+            ✕
+          </button>
+        )}
       </div>
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </div>

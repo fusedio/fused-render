@@ -691,6 +691,24 @@ def test_delete_unmounts_and_removes(client, rcd):
     assert any(m == "mount/unmount" for m, _ in rcd.calls)
 
 
+def test_delete_rejects_builtin_mount(client, rcd, tmp_path, monkeypatch):
+    # BUGBOT: nothing stopped the shipped Learn mount from being deleted like
+    # any other mount — the record only reappears at the next full SERVER
+    # restart, while the already-open Sidebar's learnMountReady state never
+    # rechecks once true, leaving a dead Learn link for the rest of the
+    # session. Bundled read-only content shouldn't be removable by a user
+    # action in the first place.
+    zp = tmp_path / "learn.zip"
+    zp.write_bytes(b"PK\x05\x06" + b"\x00" * 18)  # empty-zip EOCD; content unused
+    monkeypatch.setenv("FUSED_RENDER_LEARN_ZIP", str(zp))
+    mounts_mod.ensure_learn_mount()
+    builtin = next(m for m in mounts_mod.list_mounts() if m.get("builtin"))
+    r = client.delete(f"/api/mounts/{builtin['id']}", headers=FUSED)
+    assert r.status_code == 400
+    assert "bundled" in r.json()["error"].lower()
+    assert any(m["id"] == builtin["id"] for m in mounts_mod.list_mounts())
+
+
 def test_create_s3_remote_builds_rclone_argv(client, monkeypatch):
     seen = {}
 

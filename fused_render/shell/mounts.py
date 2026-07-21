@@ -2782,6 +2782,19 @@ def delete_mount(cid: str, x_fused: str | None = Header(default=None)):
     m = get_mount(cid)
     if m is None:
         return JSONResponse({"error": "unknown mount"}, status_code=404)
+    if m.get("builtin"):
+        # BUGBOT: nothing stopped this — a deleted builtin record only
+        # reappears at the next full SERVER restart (ensure_learn_mount runs
+        # once, from run_automount at startup), while the already-open
+        # Sidebar's learnMountReady state never rechecks once true, leaving
+        # a dead Learn link for the rest of the session. Bundled read-only
+        # content isn't something a user action should be able to
+        # permanently remove out from under a running session anyway —
+        # unmounting (POST .../unmount) still works to free the mountpoint.
+        return JSONResponse(
+            {"error": "this is a bundled default mount and can't be deleted"},
+            status_code=400,
+        )
     err = detach_mount(m)
     mp = mountpoint(m)
     if err and os.path.ismount(mp):
