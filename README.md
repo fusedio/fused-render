@@ -210,8 +210,9 @@ split into a **Render preferences** tab and — once Deploy is enabled — a
   and applied to the next run, no restart; a set `FUSED_RENDER_ENGINE`
   pins the engine for the whole process and locks the switch.
 - **Logs** — this run's log file path, with an "Open logs location" action.
-- **Deployments** — the opt-in toggle for the preview header's Deploy button
-  (the per-environment share list lives on the **Fused account** tab).
+- **Deploy to Fused account** — the opt-in toggle for the preview header's
+  Deploy button (the per-environment share list lives on the **Fused
+  account** tab).
 - **Template registry** — the merged extension → templates bindings (built-in
   plus your `~/.fused-render/templates/registry.json` overrides), read-only.
 

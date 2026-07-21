@@ -1,10 +1,12 @@
 // The env-wide deployments list (SPEC DP-13 / AC-11): everything
 // `fused share list` reports on a chosen hosted environment, joined back to
 // the local pages that deployed it, with per-mount Revoke. Lives on the Fused
-// account page beside the environments table (moved from Preferences, where
-// it predated the account surface — Preferences keeps only the Deploy-button
-// toggle). Works signed-out too: an AWS env's share list needs AWS
-// credentials, not a managed-Fused sign-in.
+// account tab beside the environments table (moved from Preferences, where
+// it predated the account surface — Preferences keeps only the "Deploy to
+// Fused account" toggle). Works signed-out too for an AWS env, which only
+// needs AWS credentials, not a managed-Fused sign-in — a `fused`-backend
+// env's list does need that sign-in, so being signed out there surfaces as
+// an expected quiet note rather than an error (see the `error` render below).
 import { useEffect, useRef, useState } from "react";
 import { getDeployConfig, listShares, revokeMount } from "../lib/api";
 import type { DeployConfig, ShareMount } from "../lib/api";
@@ -106,7 +108,17 @@ export default function DeploymentsList() {
         </div>
       )}
       {loading && <div className="deploy-muted">Loading share list…</div>}
-      {error && <div className="deploy-error">{error}</div>}
+      {error &&
+        // A `fused`-backend env's share list needs the managed-Fused sign-in
+        // (unlike an AWS env's, which only needs AWS credentials — see the
+        // module comment); being signed out is an expected, not-yet-set-up
+        // state here, not a failure, so it gets the quiet note treatment
+        // rather than the red error card.
+        (/not logged in/i.test(error) ? (
+          <div className="deploy-note">{error}</div>
+        ) : (
+          <div className="deploy-error">{error}</div>
+        ))}
       {mounts && mounts.length === 0 && (
         <div className="deploy-muted">Nothing is deployed on this environment.</div>
       )}

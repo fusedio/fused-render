@@ -717,7 +717,7 @@ the product gains network access.
   extension-gated, and the button must never open a modal that cannot deploy.
   Additionally gated on the opt-in `deploy_enabled` pref (PF-8): Deploy is off
   by default, so the button is hidden entirely until enabled from Preferences
-  → Deployments (re-read on focus/visibility, so a toggle shows through
+  → Deploy to Fused account (re-read on focus/visibility, so a toggle shows through
   without a remount).
   A green dot marks a page whose stored deployment reads active (a local
   pointer read — opening a preview never spawns the CLI; re-read on tab
@@ -1001,7 +1001,7 @@ never imports server).
   `deploy_enabled`, or a body naming no known preference → 400; the file merges
   (future prefs are new keys, not new files).
 - **PF-1a** The page renders its sections in this order: **Template registry**,
-  **Logs**, **Execution engine**, **Deployments** (the spec subsection
+  **Logs**, **Execution engine**, **Deploy to Fused account** (the spec subsection
   numbering below is organizational, not the visual order).
 - **PF-2** The page is a thin client over existing backends everywhere else:
   logs reveal via `POST /api/fs/reveal`, deployments via `GET
@@ -1048,7 +1048,7 @@ never imports server).
   manager through the existing reveal endpoint — the web-UI twin of the
   menu-bar app's "Open logs".
 
-### 20.4 Deployments
+### 20.4 Deploy to Fused account
 
 - **PF-8** The section leads with an **opt-in toggle** for the Deploy
   affordance: the persisted `deploy_enabled` pref (default **off**), PUT via
@@ -1068,7 +1068,7 @@ never imports server).
 
 - **PF-9** The page is split into two tabs, active tab in the URL
   (`?tab=account`, default clean-URL tab is **Render preferences** —
-  Logs/Execution engine/Deployments/Tour, unchanged): **Render preferences**
+  Logs/Execution engine/Deploy to Fused account/Tour, unchanged): **Render preferences**
   and **Fused account** (§27's account panel, folded in here since it stopped
   being its own sidebar-footer entry). The **Fused account** tab button is
   offered only while the PF-8 Deploy toggle is on; requesting `?tab=account`
@@ -1753,7 +1753,7 @@ provisioning stays a documented terminal flow.
 
 - **AC-1** *(amended by D125)* The account panel is the **Fused account** tab
   on the `/view/_prefs` Preferences page, alongside a **Render preferences**
-  tab (Logs/Engine/Deployments/Tour — SPEC §20), selected via `?tab=account`
+  tab (Logs/Engine/Deploy to Fused account/Tour — SPEC §20), selected via `?tab=account`
   (bookmarkable, same pattern as Templates' bindings/library tabs). The
   account tab is offered only once the Deploy toggle (§20) is on — that's the
   only reason this app cares about a Fused account. There is no longer a

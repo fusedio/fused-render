@@ -186,7 +186,7 @@ function DeploymentsSection({
 }) {
   return (
     <section className="prefs-section">
-      <h2>Deployments</h2>
+      <h2>Deploy to Fused account</h2>
       <DeployToggle prefs={prefs} onChange={onChange} />
       {prefs.deploy.enabled && (
         <p className="deploy-muted">
