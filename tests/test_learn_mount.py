@@ -131,6 +131,41 @@ def test_force_detach_passes_force_true(home, learn_zip, monkeypatch):
     assert calls == [True]
 
 
+def test_force_unmounts_kernel_mount_surviving_a_successful_detach(
+        home, learn_zip, monkeypatch):
+    # BUGBOT: detach_mount(force=True) only escalates to _force_unmount when
+    # the rc mount/unmount call itself FAILS — it never rechecks
+    # os.path.ismount after a call that reports success. On macOS (nfsmount),
+    # rc can report success while the kernel NFS mount lingers regardless
+    # (reconnect_mount already guards against exactly this). Simulate that:
+    # detach_mount "succeeds" (returns None) but the kernel mount is still
+    # there afterward — _force_detach_learn_mount must force-unmount it too.
+    mounts_mod.ensure_learn_mount()
+    monkeypatch.setattr(mounts_mod, "mounted_paths",
+                        lambda: {mounts_mod.mountpoint(_learn_records()[0])})
+    monkeypatch.setattr(mounts_mod, "detach_mount", lambda m, force=False: None)
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: True)
+    calls = []
+    monkeypatch.setattr(mounts_mod, "_force_unmount",
+                        lambda mp: calls.append(mp))
+    mounts_mod.ensure_learn_mount()
+    assert calls == [mounts_mod.mountpoint(_learn_records()[0])]
+
+
+def test_no_force_unmount_when_kernel_mount_already_gone(
+        home, learn_zip, monkeypatch):
+    mounts_mod.ensure_learn_mount()
+    monkeypatch.setattr(mounts_mod, "mounted_paths",
+                        lambda: {mounts_mod.mountpoint(_learn_records()[0])})
+    monkeypatch.setattr(mounts_mod, "detach_mount", lambda m, force=False: None)
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: False)
+    calls = []
+    monkeypatch.setattr(mounts_mod, "_force_unmount",
+                        lambda mp: calls.append(mp))
+    mounts_mod.ensure_learn_mount()
+    assert calls == []
+
+
 def test_stops_serve_for_old_remote_on_relocation(home, learn_zip, tmp_path, monkeypatch):
     # BUGBOT: rcd shares one VFS between a mount and its HTTP serve; a
     # detach-only fix leaves the serve wedged on the OLD fs, and sync_serves

@@ -2368,12 +2368,23 @@ def _force_detach_learn_mount(builtin: dict, old_remote: str) -> None:
     path with no matching rcd record as a foreign mount and adopts it
     as-is, silently keeping stale content across the refresh this path
     exists to guarantee. force=True escalates every dead end to
-    _force_unmount instead, so a genuinely fresh mount/mount follows."""
+    _force_unmount instead, so a genuinely fresh mount/mount follows.
+
+    BUGBOT: force=True alone still isn't enough — detach_mount only
+    escalates to _force_unmount when the rc `mount/unmount` call itself
+    FAILS; it never re-checks os.path.ismount after a call that reports
+    success. reconnect_mount already has to guard against exactly this on
+    macOS (learn is attached via nfsmount): rc's mount/unmount can report
+    success while the kernel NFS mount lingers, and reconnect_mount
+    re-checks os.path.ismount afterward for that reason. Mirror that same
+    re-check here, rather than trusting detach_mount's return value alone."""
     try:
         mp = mountpoint(builtin)
         live = mp in mounted_paths() or os.path.ismount(mp)
         if live:
             detach_mount(builtin, force=True)
+            if os.path.ismount(mp):
+                _force_unmount(mp)
         port = _live_rcd_port()
         if port is not None:
             _stop_serve_for(port, old_remote)

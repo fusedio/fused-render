@@ -316,9 +316,20 @@ export default function Sidebar({ config }: SidebarProps) {
   // eventually-successful mount finishes after the poll gives up and the
   // entry never appears without a full page reload. 2s x 60 = 120s, safely
   // past that ~70s worst case with margin.
+  //
+  // BUGBOT: gating the poll on "only start if the INITIAL fetch saw false"
+  // was itself racy — rcd survives server restarts, so the boot-time
+  // /api/config fetch can catch a still-live mount from the PRIOR run and
+  // report true, moments before ensure_learn_mount's own forced detach (see
+  // its docstring) rips that very mount out from under it. Polling would
+  // then never engage at all, and the entry would point at an empty
+  // mountpoint for the remount window — or the whole session, if the
+  // remount fails. So this always re-verifies via a live poll after mount,
+  // regardless of the seeded initial value, and follows whatever the fresh
+  // answer says (including back to not-ready, if the detach window is
+  // caught mid-poll) rather than trusting the one-shot snapshot as final.
   const [learnMountReady, setLearnMountReady] = useState(config.learn_mount_ready);
   useEffect(() => {
-    if (learnMountReady) return;
     let cancelled = false;
     let attempts = 0;
     const MAX_ATTEMPTS = 60;
@@ -328,10 +339,8 @@ export default function Sidebar({ config }: SidebarProps) {
       getConfig().then(
         (fresh) => {
           if (cancelled) return;
-          if (fresh.learn_mount_ready) {
-            setLearnMountReady(true);
-            window.clearInterval(timer);
-          } else if (attempts >= MAX_ATTEMPTS) {
+          setLearnMountReady(fresh.learn_mount_ready);
+          if (fresh.learn_mount_ready || attempts >= MAX_ATTEMPTS) {
             window.clearInterval(timer);
           }
         },
@@ -345,7 +354,10 @@ export default function Sidebar({ config }: SidebarProps) {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [learnMountReady]);
+    // Deliberately empty deps: run once on mount only. Depending on
+    // learnMountReady here would restart the whole bounded poll window
+    // from zero every time it changes.
+  }, []);
 
   const [renamingId, setRenamingId] = useState<string | null>(null);
   // Bookmark just exported to disk: its save button shows ✓ for a moment.
