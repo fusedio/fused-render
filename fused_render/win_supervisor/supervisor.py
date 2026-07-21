@@ -42,14 +42,21 @@ def run(initial: protocol.Command) -> None:
         try:
             inst.send(initial, 75.0)
         except instance.CommandRejected:
-            # A healthy primary answered and rejected the specific command
-            # (e.g. Open on a bad/missing path) — the app did start; only
-            # this forwarded request failed. Report that accurately instead
-            # of letting __main__'s top-level handler show a "could not
-            # start" dialog for an app that is, in fact, running fine.
+            # A healthy primary answered and rejected the specific command.
+            # Only an Open is safe to swallow this way (e.g. a bad/missing
+            # forwarded path — the app did start, just not that file): report
+            # it accurately instead of the generic "could not start" dialog.
+            # Anything else (crucially ShutdownForUpgrade) must re-raise —
+            # the installer's upgrade/uninstall step execs us with
+            # --shutdown-for-upgrade and requires a non-zero exit code on
+            # failure to know teardown didn't actually happen; swallowing a
+            # rejection there would report a clean shutdown that never
+            # occurred and let the installer proceed over a still-running
+            # supervisor.
             if isinstance(initial, protocol.Open):
                 _report_open_rejected(initial.path)
-            return
+                return
+            raise
         if isinstance(initial, protocol.ShutdownForUpgrade):
             inst.wait_for_exit(20.0)
         return
