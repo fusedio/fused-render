@@ -91,7 +91,7 @@ class _HttpRangeFile(_io.RawIOBase):
     one round-trip per read. `size` comes from /api/fs/stat, so we never kernel-
     stat the mount to learn the length."""
 
-    def __init__(self, url, size, block=65536):
+    def __init__(self, url, size, block=4 << 20):
         self._r = _RangeReader(url)
         self._size = int(size)
         self._pos = 0

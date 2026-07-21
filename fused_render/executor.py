@@ -38,7 +38,11 @@ CHILD = os.path.join(os.path.dirname(__file__), "_child.py")
 # Built-in helpers run from the staged core-templates copy, not the bundle, so
 # the allowlist realpaths must point there too (see core_templates).
 _TEMPLATES_DIR = os.path.realpath(ensure_core_templates())
-DEFAULT_TIMEOUT = 30.0
+# 60s (not 30): a cold overview read of a large remote COG over the mount's HTTP
+# serve legitimately takes ~30-40s on first open (the pyramid analyze; the
+# template's own worker already allows 900s). 30s killed those mid-read. Still
+# well short of a runaway-guard — a genuinely hung script is caught, just later.
+DEFAULT_TIMEOUT = 60.0
 
 # Explicit allowlist of first-party helpers that run IN-PROCESS (D72): each is
 # bounded, self-contained, and never imports or executes user code — the
