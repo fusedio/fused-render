@@ -3126,6 +3126,15 @@ def broken_mount_error(path: str) -> str | None:
         cred_err = _mount_credential_error(m)
         if cred_err:
             return f"mount '{name}' — {cred_err}"
+        # env_auth remote whose creds probe VALID now (cred_err is None): the
+        # user re-authed, but the long-lived daemon still holds the pre-refresh
+        # keys, so Reconnect (which reuses that daemon) can't help — only a
+        # daemon restart re-reads the refreshed credentials. Reuse the probe
+        # result just computed so mount_restart_reason doesn't run a second lsd.
+        if mount_restart_reason(m, state=state, cred_err=cred_err) == "credentials":
+            return (f"mount '{name}' — your credentials look refreshed; restart "
+                    f"rclone from the Mounts page in the sidebar to pick up the "
+                    f"new credentials")
     # "stale" (the INCIDENT split-brain) and "disconnected" both mean a mount
     # that was there and stopped flowing — same user-facing wording; only a
     # never-mounted mount reads as "not mounted".

@@ -1402,16 +1402,21 @@ def test_broken_mount_error_reports_expired_credentials(
     assert "reconnect" not in err.lower()
 
 
-def test_broken_mount_error_reconnect_when_creds_still_valid(
+def test_broken_mount_error_routes_reauthed_creds_to_restart(
         home, rcd, monkeypatch, fresh_upstream):
-    # env_auth remote, but the probe succeeds: the disconnection is a dead
-    # daemon, not stale creds — keep the generic "reconnect" guidance.
+    # env_auth remote, disconnected, but the creds probe SUCCEEDS: the user
+    # re-authed and the long-lived daemon is still holding the stale keys.
+    # Reconnect can't fix that — only a restart re-reads the refreshed creds.
+    # Regression guard for the exact credential-expiry bug being fixed.
     c, mp = _disconnected_mount(home, rcd, monkeypatch)
     rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
     _stub_lsd(monkeypatch, rc=0)
 
     err = mounts_mod.broken_mount_error(_os.path.join(mp, "data"))
-    assert err is not None and "reconnect" in err.lower()
+    assert err is not None
+    assert "restart" in err.lower()
+    # Must NOT send the user to Reconnect — it hits the same stale daemon.
+    assert "reconnect" not in err.lower()
 
 
 def test_broken_mount_error_skips_cred_probe_for_non_env_auth(
