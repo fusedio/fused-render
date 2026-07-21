@@ -644,27 +644,79 @@
         if (s && s.speaking && !s.paused) s.resume();
       }, 10000);
     }
+    let pendingSpeak = null; // deferred-speak timer (see cancel-race note)
+    let lastCancelAt = -Infinity;
+    const now = () => (window.performance ? performance.now() : Date.now());
     return {
       speak(text, opts) {
         opts = opts || {};
         const synth = window.speechSynthesis;
         const U = window.SpeechSynthesisUtterance;
         if (!synth || !U) { if (opts.onError) opts.onError(); return; }
-        const u = new U(text);
-        if (opts.rate) u.rate = opts.rate;
-        if (opts.voice) u.voice = opts.voice;
-        u.onboundary = (e) => { if (opts.onBoundary) opts.onBoundary(e); };
-        u.onend = () => { stopKeepalive(); if (opts.onEnd) opts.onEnd(); };
-        u.onerror = (e) => { stopKeepalive(); if (opts.onError) opts.onError(e); };
-        current = u;
-        synth.speak(u);
-        startKeepalive();
+        const token = {}; // identity for cancel checks across the async hops
+        current = token;
+
+        const launch = (retriesLeft) => {
+          if (current !== token) return;
+          const u = new U(text);
+          if (opts.rate) u.rate = opts.rate;
+          if (opts.voice) u.voice = opts.voice;
+          let started = false;
+          u.onstart = () => { started = true; };
+          u.onboundary = (e) => { started = true; if (opts.onBoundary) opts.onBoundary(e); };
+          u.onend = () => {
+            if (current !== token) return;
+            // A swallowed utterance can fire a bare end without ever starting
+            // — treat it like a non-start, not a finished sentence.
+            if (!started && retriesLeft > 0) return;
+            current = null; stopKeepalive();
+            if (opts.onEnd) opts.onEnd();
+          };
+          u.onerror = (e) => {
+            if (current !== token) return;
+            current = null; stopKeepalive();
+            if (opts.onError) opts.onError(e);
+          };
+          token.u = u;
+          synth.speak(u);
+          startKeepalive();
+          // Watchdog: Chrome sometimes never starts an utterance (stuck synth,
+          // network voices). Nudge, then rebuild once, then give up via onError
+          // so the document keeps advancing instead of going silent.
+          setTimeout(() => {
+            if (current !== token || started) return;
+            try { synth.resume(); } catch (e) {}
+            setTimeout(() => {
+              if (current !== token || started) return;
+              u.onend = u.onerror = u.onboundary = u.onstart = null;
+              try { synth.cancel(); } catch (e) {}
+              if (retriesLeft > 0) {
+                setTimeout(() => launch(retriesLeft - 1), 120);
+              } else {
+                current = null; stopKeepalive();
+                if (opts.onError) opts.onError();
+              }
+            }, 400);
+          }, 1200);
+        };
+
+        // Chrome race: a speak() issued right after cancel() is silently
+        // swallowed (worst with network voices). Give the synth a beat.
+        const wait = Math.max(0, 100 - (now() - lastCancelAt));
+        if (pendingSpeak) clearTimeout(pendingSpeak);
+        pendingSpeak = setTimeout(() => { pendingSpeak = null; launch(1); }, wait);
       },
       cancel() {
         // Detach handlers BEFORE cancelling so the synthetic end/error a
         // cancel() fires can't trigger auto-advance.
-        if (current) { current.onend = current.onerror = current.onboundary = null; current = null; }
+        if (pendingSpeak) { clearTimeout(pendingSpeak); pendingSpeak = null; }
+        if (current) {
+          const u = current.u;
+          if (u) u.onend = u.onerror = u.onboundary = u.onstart = null;
+          current = null;
+        }
         stopKeepalive();
+        lastCancelAt = now();
         try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (e) {}
       },
       // No pause()/resume() on purpose: Chrome's synth pause state is shared
