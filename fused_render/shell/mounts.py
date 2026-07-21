@@ -1762,22 +1762,39 @@ def _s3_request_url(fs: str, rel: str, *, method: str = "GET",
                               extra_query=query, expires=_SIGN_EXPIRY_S)
 
 
-def _adopt_region_on_301(fs: str, code: int, headers) -> bool:
+def _signing_region(fs: str, cfg: dict | None) -> str | None:
+    """The region _s3_request_url would presign `fs` for right now: the adopted
+    (self-corrected) region if one exists, else the config default. A caller
+    captures this just before it signs so it can tell _adopt_region_on_301 what
+    region THIS request actually used (see that function)."""
+    derived = _s3_bucket_prefix_region(fs, cfg or {})
+    if derived is None:
+        return None
+    with _upstream_lock:
+        return _upstream_region.get(fs, derived[2])
+
+
+def _adopt_region_on_301(fs: str, code: int, headers,
+                         signed_region: str | None) -> bool:
     """A wrong-region S3 response (301/400) carries the bucket's true region in
-    x-amz-bucket-region. When it does and it differs from what we signed with,
-    adopt it (under _upstream_lock) so a re-sign targets the right region, and
-    report True so the caller retries once. Mirrors _validate_and_sign's rule
-    so signed listings/probes region-correct exactly as signed raw reads do."""
+    x-amz-bucket-region. When it does, adopt it into the shared map (under
+    _upstream_lock) so later requests sign for the right region, and report
+    whether THIS request should retry — which it must whenever the hint differs
+    from the region it actually signed with (`signed_region`), NOT whether the
+    shared map already holds the correction. Keying the retry off the shared map
+    would let a concurrent request that still signed with the stale region see a
+    sibling's correction already applied and skip its own needed re-sign/retry,
+    failing it into the slow rc path. Mirrors _validate_and_sign's rule so
+    signed listings/probes region-correct exactly as signed raw reads do."""
     if code not in (301, 400):
         return False
     corrected = headers.get("x-amz-bucket-region") if headers else None
     if not corrected:
         return False
     with _upstream_lock:
-        if _upstream_region.get(fs) == corrected:
-            return False
-        _upstream_region[fs] = corrected
-    return True
+        if _upstream_region.get(fs) != corrected:
+            _upstream_region[fs] = corrected
+    return corrected != signed_region
 
 
 def _s3_get_direct(fs: str, rel: str, *, query: dict | None = None,
@@ -1805,6 +1822,7 @@ def _s3_get_direct(fs: str, rel: str, *, query: dict | None = None,
         with urllib.request.urlopen(url, timeout=timeout) as resp:
             return resp.read()
     for attempt in (1, 2):
+        signed_region = _signing_region(fs, cfg)
         url = _s3_request_url(fs, rel, method=method, query=query)
         if url is None:
             raise urllib.error.URLError(f"{fs}: no direct S3 URL")
@@ -1813,7 +1831,8 @@ def _s3_get_direct(fs: str, rel: str, *, query: dict | None = None,
             with _NO_REDIRECT_OPENER.open(req, timeout=timeout) as resp:
                 return resp.read()
         except urllib.error.HTTPError as e:
-            if attempt == 1 and _adopt_region_on_301(fs, e.code, e.headers):
+            if attempt == 1 and _adopt_region_on_301(
+                    fs, e.code, e.headers, signed_region):
                 continue
             raise
     raise urllib.error.URLError(f"{fs}: no direct S3 URL")  # unreachable
@@ -2196,8 +2215,10 @@ def _s3_head(path: str, timeout: float) -> DirectHead:
     # Signable: presigned HEAD (signed explicitly — a presigned GET rejects a
     # HEAD) through the non-redirect opener, self-correcting the region once on
     # a wrong-region 301/400 so a probe doesn't wedge on an unset/wrong region.
-    anonymous = _anonymous_s3(_remote_config(fs.partition(":")[0]))
+    cfg = _remote_config(fs.partition(":")[0])
+    anonymous = _anonymous_s3(cfg)
     for attempt in (1, 2):
+        signed_region = None if anonymous else _signing_region(fs, cfg)
         url = _s3_request_url(fs, rel, method="HEAD")
         if url is None:  # neither anonymous nor signable — caller falls back
             raise DirectProbeError(f"{path}: no direct S3 object URL")
@@ -2215,7 +2236,8 @@ def _s3_head(path: str, timeout: float) -> DirectHead:
             if e.code == 404:
                 return DirectHead(False, None, None)  # trustworthy negative
             if (not anonymous and attempt == 1
-                    and _adopt_region_on_301(fs, e.code, e.headers)):
+                    and _adopt_region_on_301(
+                        fs, e.code, e.headers, signed_region)):
                 continue
             raise DirectProbeError(f"S3 head {path}: HTTP {e.code}") from e
         except (urllib.error.URLError, OSError) as e:

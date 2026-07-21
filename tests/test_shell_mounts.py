@@ -2364,6 +2364,25 @@ def test_upstream_sign_region_self_corrects(home, rcd, fresh_upstream, monkeypat
     assert url2.startswith("https://bucket.s3.eu-west-1.amazonaws.com/")
 
 
+def test_adopt_region_retries_when_this_request_signed_stale(fresh_upstream):
+    # A sibling listing/probe already adopted the corrected region into the
+    # shared map, but THIS request signed with the stale region — it must still
+    # re-sign and retry once, not skip the retry because the map is already
+    # right (which would fail it into the slow rc path).
+    headers = {"x-amz-bucket-region": "eu-west-1"}
+    mounts_mod._upstream_region["corp:bucket"] = "eu-west-1"
+    assert mounts_mod._adopt_region_on_301(
+        "corp:bucket", 301, headers, "us-east-1") is True
+    # A request that already signed with the corrected region does not retry.
+    assert mounts_mod._adopt_region_on_301(
+        "corp:bucket", 301, headers, "eu-west-1") is False
+    # No hint / non-correctable status -> never retries.
+    assert mounts_mod._adopt_region_on_301(
+        "corp:bucket", 301, {}, "us-east-1") is False
+    assert mounts_mod._adopt_region_on_301(
+        "corp:bucket", 403, headers, "us-east-1") is False
+
+
 def test_upstream_anonymous_s3_unchanged_and_never_resolves(home, rcd, fresh_upstream, monkeypatch):
     # INVARIANT: an anonymous S3 mount is byte-identical to today — the
     # resolver is never called, no validation GET is issued, the URL carries no
