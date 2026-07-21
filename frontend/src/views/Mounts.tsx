@@ -88,7 +88,7 @@ function MountRow({
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {conn.state === "mounted" ? (
-            <button type="button" disabled={busy} onClick={() => navigate(conn.mountpoint)}>
+            <button type="button" disabled={busy} onClick={() => navigate(conn.mountpoint, { isDir: true })}>
               Open
             </button>
           ) : (

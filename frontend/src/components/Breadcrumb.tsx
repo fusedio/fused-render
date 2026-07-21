@@ -187,7 +187,7 @@ function enterPanel(fsPath: string, dir: "row" | "col"): void {
 function navigatePreservingMode(target: string): void {
   const mode = new URLSearchParams(location.search).get("_mode");
   if (mode) navigateUrl(urlForFsPath(target, "?_mode=" + encodeURIComponent(mode)));
-  else navigate(target);
+  else navigate(target, { isDir: true }); // breadcrumb targets are always dirs
 }
 
 export function Breadcrumb({

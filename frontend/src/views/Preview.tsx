@@ -140,7 +140,7 @@ function usePreviewFileMenu(
         deleteEntry(fsPath, stat.is_dir).then(
           () => {
             clearClipboardIfDeleted(fsPath);
-            navigate(parent); // the open file is gone — leave for the parent listing
+            navigate(parent, { isDir: true }); // the open file is gone — leave for the parent listing
           },
           (e: Error) => setToast({ msg: friendlyFsError(e, { verb: "delete", name: stat.name }), tone: "error" })
         );
@@ -151,7 +151,7 @@ function usePreviewFileMenu(
     trashEntry(fsPath, stat.is_dir).then((r) => {
       if (r.status === "trashed") {
         clearClipboardIfDeleted(fsPath);
-        navigate(parent);
+        navigate(parent, { isDir: true });
       } else if (r.status === "unsupported") {
         startDelete();
       } else {
