@@ -922,6 +922,18 @@ table.listing-table td.mtime {
   gap: 12px;
 }
 
+/* Groups the name with whatever renders right after it (e.g. the directory
+   listing's "Open as app" button, D81's `_listing` header) — min-width:0 so
+   the group (and h1's own ellipsis) can still shrink to make room for
+   .preview-actions on narrow windows. */
+.preview-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
 .preview-header h1 {
   font-size: 15px;
   font-weight: 600;
@@ -931,10 +943,10 @@ table.listing-table td.mtime {
   white-space: nowrap;
 }
 
-/* Sits between the directory name and the mode switcher (D81's `_listing`
-   header) — shown only when the folder holds exactly one HTML file. Same
-   accent tint the old per-row "App" chip used, so the launchable-app
-   language carries over to its replacement. */
+/* Rendered right after the directory name (D81's `_listing` header) — shown
+   only when the folder holds exactly one HTML file. Same accent tint the old
+   per-row "App" chip used, so the launchable-app language carries over to
+   its replacement. */
 .open-as-app-btn {
   flex: 0 0 auto;
   font: inherit;

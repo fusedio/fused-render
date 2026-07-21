@@ -43,20 +43,22 @@ interface HeaderProps {
   fsPath: string;
   stat: StatResult;
   children?: ReactNode;
-  // Sits between the name and the right-side actions (e.g. the directory
+  // Rendered right after the name, in the same group (e.g. the directory
   // listing's "Open as app" button) — nothing renders there by default.
-  center?: ReactNode;
+  afterName?: ReactNode;
   // Right-click on the header chrome opens the file context menu for the open
   // file (views hosting a real preview wire this; transient resolving/loading
   // headers leave it undefined).
   onContextMenu?: (e: React.MouseEvent) => void;
 }
 
-function Header({ fsPath, stat, children, center, onContextMenu }: HeaderProps) {
+function Header({ fsPath, stat, children, afterName, onContextMenu }: HeaderProps) {
   return (
     <div className="preview-header" onContextMenu={onContextMenu}>
-      <h1 title={fsPath}>{stat.name}</h1>
-      {center}
+      <div className="preview-title">
+        <h1 title={fsPath}>{stat.name}</h1>
+        {afterName}
+      </div>
       <div className="preview-actions">{children}</div>
     </div>
   );
@@ -558,7 +560,7 @@ function TemplatePreview({
         fsPath={fsPath}
         stat={stat}
         onContextMenu={fileMenu.onContextMenu}
-        center={
+        afterName={
           isListing && singleAppPath ? (
             <button
               type="button"
