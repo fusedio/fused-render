@@ -49,7 +49,6 @@
        font-size:13px; color:var(--dim); text-decoration:none; }
   .nav a.top:hover { color:var(--text); background:var(--panel); }
   .nav a.top.cur { color:var(--text); background:var(--panel); border-color:var(--border); font-weight:600; }
-  .nav a.top .ix { color:var(--yellow); font-weight:700; margin-right:8px; font-size:12px; }
   .nav a.top .beta { font-size:9px; color:var(--yellow); border:1px solid #4a4a2a; border-radius:4px;
        padding:1px 4px; margin-left:6px; vertical-align:1px; }
   .subnav { margin:1px 0 6px 6px; padding-left:10px; border-left:1px solid var(--border); display:none; }
@@ -118,9 +117,6 @@
         display:flex; flex-direction:column; align-items:center; justify-content:center;
         text-align:center; color:var(--yellow); margin:0 0 16px; padding:20px; }
   .ph.r16 { aspect-ratio:16/9; }
-  .ph.r21 { aspect-ratio:21/9; }
-  .ph.sq  { aspect-ratio:4/3; }
-  .ph.tall { min-height:520px; }
   .ph .ic { font-size:30px; margin-bottom:8px; opacity:.85; }
   .ph .lab { font-size:12.5px; font-weight:700; letter-spacing:.3px; }
   .ph .hint { font-size:11px; color:var(--mut); margin-top:5px; max-width:520px; }
@@ -266,16 +262,6 @@
   .browser .go { flex-shrink:0; font-size:11.5px; color:var(--yellow); }
   .browser img { display:block; width:100%; height:auto; }
 
-  /* deployed-app card */
-  .deploy-card { display:flex; gap:14px; align-items:flex-start; text-decoration:none; background:var(--panel);
-       border:1px solid var(--border); border-radius:14px; padding:16px 18px; margin:0 0 14px; }
-  .deploy-card:hover { border-color:var(--yellow); }
-  .deploy-card .dc-ic { font-size:30px; line-height:1; }
-  .deploy-card .dc-t { font-size:14.5px; font-weight:600; color:var(--text); display:flex; align-items:baseline; gap:8px; }
-  .deploy-card .dc-n { font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:11px; color:var(--mut); font-weight:400; }
-  .deploy-card .dc-d { font-size:12.5px; color:var(--dim); margin:4px 0 8px; }
-  .deploy-card .dc-u { font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:11.5px; color:var(--yellow); }
-
   .steps { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:0 0 14px; }
   .step { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:16px 18px; }
   .step .num { width:22px; height:22px; border-radius:7px; background:var(--panel2); border:1px solid var(--border);
@@ -380,12 +366,12 @@
     <h2><span class="n">2</span>UI guide</h2>
     <h3>Bookmarks</h3>
     <p class="sub">Pin any page you're working on so it's one click away — the <b>+ Bookmark</b> button, top right. Bookmarks live in the left sidebar (and group into folders); each stores the file <em>and</em> its query params, so you return to the exact state.</p>
-    <figure class="figure"><img data-shot="assets/shot_bookmarks.png" alt="Bookmarks sidebar in the Fused Render shell">
+    <figure class="figure"><img data-shot="assets/shot_bookmarks.webp" alt="Bookmarks sidebar in the Fused Render shell">
       <figcaption><b>The shell sidebar</b> — bookmarks and folders on the left, the <b>+ Bookmark</b> button top right.</figcaption></figure>
 
     <h3>Split view</h3>
     <p class="sub">Open two files side by side — a page and its Python, or two previews — and work across them without losing either. Each pane keeps its own URL and state.</p>
-    <figure class="figure"><img data-shot="assets/shot_splitview.png" alt="Two panes side by side in Fused Render">
+    <figure class="figure"><img data-shot="assets/shot_splitview.webp" alt="Two panes side by side in Fused Render">
       <figcaption><b>Split view</b> — two panes, each an independent preview.</figcaption></figure>
 
     <h2><span class="n">3</span>Opening local files with templates</h2>
@@ -400,13 +386,12 @@
       <div class="step"><div class="num">2</div><h4>Drop in two files</h4><p>An <code>index.html</code> for what you see, a <code>tool.py</code> for the work.</p></div>
       <div class="step"><div class="num">3</div><h4>Click the HTML file</h4><p>It renders as a live page. Edit either file and the page reloads itself.</p></div>
     </div>
-    <p class="sub">Or let <a href="?page=claude">Claude Code</a> scaffold it for you. Copy this prompt and paste it into the Claude panel:</p>
+    <p class="sub">Or hand it to <b>Claude Code</b> — copy this prompt to scaffold a project:</p>
     <div class="promptbox">
       <button class="copybtn" data-copy="prompt1">Copy</button>
       <pre id="prompt1">Create a new Fused Render project that shows my computer's CPU and memory usage as live gauges, refreshing every second.</pre>
     </div>
     <p class="sub">No need to mention HTML or Python — Claude knows the Fused Render layout. Swap in your own idea after <em>“…that”</em>: a treemap of my Downloads folder, a searchable table from a CSV I pick, a world-clock for three timezones.</p>
-    <p class="sub">More on the Claude Code workflow in the <a href="?page=claude">Claude Code integration</a> section.</p>
 
     <h2><span class="n">5</span>See what's possible</h2>
     <p class="sub">Ready for real examples? The <a href="?page=showcase">Showcase</a> has working projects — local tools and geospatial — you can clone into your workspace with one click.</p>
@@ -456,7 +441,7 @@
         <p style="margin:0;font-size:12.5px">Your own HTML template, bound to a type or path. Let Claude read the existing templates to build on top of them.</p></div>
     </div>
     <p class="sub">The <b>Templates</b> page (bottom-left of the app) is where these bindings live — every file type maps to an ordered list of templates, and the first is the default.</p>
-    <figure class="figure"><img data-shot="assets/shot_templates.png" alt="The Fused Render Templates bindings page">
+    <figure class="figure"><img data-shot="assets/shot_templates.webp" alt="The Fused Render Templates bindings page">
       <figcaption><b>Templates → File bindings</b> — search a pattern, reorder templates, or add your own.</figcaption></figure>
 
     <h2><span class="n">2</span>Templates on your machine</h2>
@@ -526,7 +511,7 @@
       </div>
       <div class="mf-note">Region <code>us-west-2</code> is already set by that remote — nothing else to configure.</div>
     </div>
-    <figure class="figure"><img data-shot="assets/shot_mount.png" alt="The Fused Render Mounts page with the Add mount form and existing mounts">
+    <figure class="figure"><img data-shot="assets/shot_mount.webp" alt="The Fused Render Mounts page with the Add mount form and existing mounts">
       <figcaption><b>The Mounts page</b> — the <em>Add mount</em> form (name · remote · path) plus mounts already connected, like open datasets on source.coop and CMIP6.</figcaption></figure>
 
     <h2><span class="n">2</span>Navigate & open</h2>
@@ -536,7 +521,7 @@
       <li>In the file tree, expand <b>source_coop</b> → the <code>country_iso=AND</code> folder.</li>
       <li>Click <code>AND.pmtiles</code> → it opens as a map.</li>
     </ol>
-    <figure class="figure"><img data-shot="assets/shot_mount_open.png" alt="AND.pmtiles from the mounted source.coop bucket, rendered as a building-footprint map">
+    <figure class="figure"><img data-shot="assets/shot_mount_open.webp" alt="AND.pmtiles from the mounted source.coop bucket, rendered as a building-footprint map">
       <figcaption><b>Andorra building footprints</b>, opened straight from the mounted <code>source coop</code> bucket (see the breadcrumb) — rendered by the <code>pmtiles</code> template.</figcaption></figure>
   </section>
 
@@ -557,7 +542,7 @@
 
     <h2><span class="n">2</span>Deploying</h2>
     <p class="sub">Hit <b>Deploy</b> on any page. Pick which files ship (the page, its Python, and any bundled data), choose a managed Fused environment, and you get a shareable <code>open.fused.io</code> URL — redeploying keeps the same link.</p>
-    <figure class="figure"><img data-shot="assets/shot_deploy.png" alt="The Deploy dialog: active URL, the files that will publish, and Redeploy / Revoke">
+    <figure class="figure"><img data-shot="assets/shot_deploy.webp" alt="The Deploy dialog: active URL, the files that will publish, and Redeploy / Revoke">
       <figcaption><b>The Deploy dialog</b> — the live URL, the files that will publish, and Redeploy / Revoke.</figcaption></figure>
 
     <h2><span class="n">3</span>See a live one</h2>
@@ -568,7 +553,7 @@
         <div class="url">open.fused.io/5p5yp52aolmwqks63j7l4e7x3u</div>
         <span class="go">open ↗</span>
       </div>
-      <img data-shot="assets/shot_cog_pyramid.png" alt="Deployed COG Overview Pyramid running in the browser, on a Maxar optical scene">
+      <img data-shot="assets/shot_cog_pyramid.webp" alt="Deployed COG Overview Pyramid running in the browser, on a Maxar optical scene">
     </a>
     <p class="sub" style="font-size:12px;color:var(--mut)">Deployed straight from the <a href="https://github.com/fusedio/fused-render-examples/tree/main/geospatial/cog_overview_pyramid" target="_blank" rel="noopener">cog_overview_pyramid</a> example — hosted it runs in a read-only mode on a bundled sample COG (a Maxar optical scene of Manila).</p>
   </section>
@@ -710,6 +695,13 @@ function currentParams(){
   return { get: k => u.get(k) };
 }
 function setPageParam(slug, hash){
+  // In the app, write through fused.params so the page survives refresh /
+  // bookmark / share (the read path uses fused.params too). Plain history for
+  // file:// where there's no shell.
+  if (hasFused && fused.params && fused.params.set) {
+    fused.params.set("page", slug);
+    return;
+  }
   const u = new URLSearchParams(location.search);
   u.set("page", slug);
   const url = location.pathname + "?" + u.toString() + (hash ? "#"+hash : "");
@@ -854,10 +846,14 @@ if (hasFused && demoPath) $("#demoOpen").href = viewUrl(demoPath);
 else $("#demoOpen").style.display = "none";
 
 /* hello.py round trip */
+function sayGreeting(text){   // set the greeting as TEXT (never HTML) inside the yellow span
+  const s = document.createElement("span"); s.className = "y"; s.textContent = text;
+  const o = $("#helloOut"); o.textContent = ""; o.appendChild(s);
+}
 async function hello(){
   const name = $("#nameInput").value.trim() || "world";
   if (!hasFused) {
-    $("#helloOut").innerHTML = '<span class="y">Hello, '+name+'!</span>';
+    sayGreeting("Hello, " + name + "!");
     $("#helloStatus").textContent = "(preview — open in Fused Render to run the real Python)";
     return;
   }
@@ -866,7 +862,7 @@ async function hello(){
   const t0 = performance.now();
   try {
     const data = await fused.runPython("./hello.py", { name });
-    $("#helloOut").innerHTML = '<span class="y">'+data.greeting+'</span>';
+    sayGreeting(data.greeting);
     $("#helloStatus").innerHTML = '✓ Python '+(data.python||"")+' answered in '+Math.round(performance.now()-t0)+' ms';
   } catch(err){ $("#helloStatus").textContent = "error: " + err.message; }
   $("#helloBtn").disabled = false;
