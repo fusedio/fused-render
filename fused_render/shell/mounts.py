@@ -656,26 +656,41 @@ def _rc_cancellable(port: int, method: str, params: dict | None = None,
     submit = _rc(port, method, p, timeout=min(timeout, 10))
     jobid = submit.get("jobid") if isinstance(submit, dict) else None
     if jobid is None:
-        # No jobid handed back (a command that doesn't honor _async, or an
-        # unexpected shape): fall back to a plain synchronous call on whatever
-        # budget remains, so behavior degrades to the old path rather than break.
+        # No jobid handed back. If the peer IGNORED _async and ran the command
+        # synchronously, `submit` already holds the full payload (operations/list
+        # -> {"list": [...]}, operations/stat -> {"item": ...}) — return it rather
+        # than re-issuing the same unbounded enumeration a second time. Only a
+        # truly empty/absent ack falls back to a fresh sync call on the remaining
+        # budget, so behavior still degrades to the old path when there's nothing
+        # to reuse.
+        if isinstance(submit, dict) and submit:
+            return submit
         remaining = deadline - time.monotonic()
         return _rc(port, method, params, timeout=max(remaining, 0.1))
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
-        status = _rc(port, "job/status", {"jobid": jobid},
-                     timeout=min(remaining, 10))
+        try:
+            status = _rc(port, "job/status", {"jobid": jobid},
+                         timeout=min(remaining, 10))
+        except RuntimeError:
+            # Polling itself failed — common near the deadline when the budget
+            # (min(remaining, 10)) is tiny, or when a busy rcd is slow to answer.
+            # Do NOT let it propagate uncancelled: break out and stop the job
+            # below so the in-flight enumeration can't outlive us (the INCIDENT).
+            logger.warning("rc job/status failed for job %s; cancelling",
+                           jobid, exc_info=True)
+            break
         if isinstance(status, dict) and status.get("finished"):
             if status.get("error"):
                 raise RuntimeError(status["error"])  # sync error path equivalent
             out = status.get("output")
             return out if isinstance(out, dict) else {}
         time.sleep(min(_RC_JOB_POLL_S, max(deadline - time.monotonic(), 0)))
-    # Deadline passed with the job still running: cancel it server-side so
-    # rclone stops enumerating (the whole point), then raise a timeout the
-    # callers recognize. job/stop failing is non-fatal — we still raise.
+    # Deadline passed (or polling failed) with the job still running: cancel it
+    # server-side so rclone stops enumerating (the whole point), then raise a
+    # timeout the callers recognize. job/stop failing is non-fatal — we still raise.
     try:
         _rc(port, "job/stop", {"jobid": jobid}, timeout=3)
     except RuntimeError:

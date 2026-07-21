@@ -83,10 +83,9 @@ def test_failed_job_maps_to_rc_list_error_not_timeout(home, rcd):
     assert not any(m == "job/stop" for (m, _) in rcd.calls)
 
 
-def test_rc_cancellable_falls_back_when_no_jobid(home, monkeypatch):
-    # A command that doesn't honor _async (no jobid in the reply) must degrade
-    # to a plain synchronous _rc rather than break. Stub _rc to always answer
-    # without a jobid and record the second (fallback) call has no _async.
+def _one_shot_server(reply_for):
+    """Spin a localhost HTTP server that answers each POST with reply_for(body),
+    recording the request bodies it saw. Returns (port, seen, shutdown)."""
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     import json as _json
@@ -100,9 +99,10 @@ def test_rc_cancellable_falls_back_when_no_jobid(home, monkeypatch):
         def do_POST(self):
             n = int(self.headers.get("Content-Length") or 0)
             body = _json.loads(self.rfile.read(n) or b"{}")
-            seen.append(body)
-            raw = _json.dumps({"list": [{"Name": "x"}]}).encode()  # never a jobid
-            self.send_response(200)
+            seen.append((self.path.lstrip("/"), body))
+            code, payload = reply_for(self.path.lstrip("/"), body)
+            raw = _json.dumps(payload).encode()
+            self.send_response(code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(raw)))
             self.end_headers()
@@ -111,13 +111,74 @@ def test_rc_cancellable_falls_back_when_no_jobid(home, monkeypatch):
     srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
     port = srv.server_address[1]
     threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return port, seen, srv.shutdown
+
+
+def test_rc_cancellable_reuses_sync_payload_when_no_jobid(home):
+    # Peer IGNORED _async and ran the command synchronously, handing back the
+    # full payload with no jobid. _rc_cancellable must RETURN that result — not
+    # re-issue the same unbounded enumeration a second time (Bugbot: "fallback
+    # re-lists after sync result").
+    def reply(method, body):
+        return 200, {"list": [{"Name": "x"}]}  # never a jobid
+
+    port, seen, shutdown = _one_shot_server(reply)
     try:
         out = mounts_mod._rc_cancellable(port, "operations/list", {"fs": "r:"},
                                          timeout=2)
     finally:
-        srv.shutdown()
+        shutdown()
 
     assert out == {"list": [{"Name": "x"}]}
-    # First call carried _async (the submit attempt); the fallback retry did not.
-    assert seen[0].get("_async") is True
-    assert "_async" not in seen[1]
+    # Exactly ONE call — the submit result was reused, not thrown away + redone.
+    assert len(seen) == 1
+    assert seen[0][1].get("_async") is True
+
+
+def test_rc_cancellable_falls_back_on_empty_ack(home):
+    # A truly empty/absent ack (no jobid, nothing to reuse) still degrades to a
+    # plain synchronous _rc so behavior doesn't break.
+    replies = iter([(200, {}), (200, {"list": [{"Name": "y"}]})])
+
+    def reply(method, body):
+        return next(replies)
+
+    port, seen, shutdown = _one_shot_server(reply)
+    try:
+        out = mounts_mod._rc_cancellable(port, "operations/list", {"fs": "r:"},
+                                         timeout=2)
+    finally:
+        shutdown()
+
+    assert out == {"list": [{"Name": "y"}]}
+    # Submit (with _async) returned empty -> a second, plain sync call was made.
+    assert len(seen) == 2
+    assert seen[0][1].get("_async") is True
+    assert "_async" not in seen[1][1]
+
+
+def test_rc_cancellable_stops_job_when_polling_fails(home):
+    # If job/status itself raises (a busy/slow rcd near the deadline), the job
+    # must STILL be cancelled server-side rather than left enumerating — the
+    # exact runaway this path exists to prevent (Bugbot: "poll failure skips job
+    # cancellation"). The raised error must read as a timeout to callers.
+    def reply(method, body):
+        if method == "job/status":
+            return 500, {"error": "server busy"}   # _rc -> RuntimeError
+        if method == "job/stop":
+            return 200, {}
+        return 200, {"jobid": 1}                    # the async submit
+
+    port, seen, shutdown = _one_shot_server(reply)
+    try:
+        with pytest.raises(RuntimeError) as exc:
+            mounts_mod._rc_cancellable(port, "operations/list", {"fs": "r:"},
+                                       timeout=2)
+    finally:
+        shutdown()
+
+    # job/stop was issued for the submitted job despite the poll failure...
+    stops = [b for (m, b) in seen if m == "job/stop"]
+    assert stops and stops[0]["jobid"] == 1
+    # ...and the surfaced error reads as a timeout (so rc_list_dir -> RcListTimeout).
+    assert mounts_mod._rc_timed_out(exc.value)
