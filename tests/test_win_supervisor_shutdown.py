@@ -282,3 +282,66 @@ def test_forwarded_open_never_blocks_the_loop_thread(monkeypatch):
     release_open.set()
     assert open_resp.get(timeout=5) == 1  # worker still answers the pipe when done
     loop.join(timeout=1)
+
+
+def test_initial_open_never_blocks_startup(monkeypatch):
+    # Bugbot: the initial Open ran _safe_open inline in run() before tray.start
+    # and inst.serve, so a hung Path.exists() (disconnected UNC path) left the
+    # supervisor with no tray and no pipe server — the Job-owned server alive
+    # but the app undiscoverable and unable to answer ShutdownForUpgrade.
+    release_open = threading.Event()
+    open_started = threading.Event()
+
+    def hung_open(port, command):
+        open_started.set()
+        release_open.wait(30)  # stands in for a disconnected-UNC Path.exists()
+        raise OSError("host unreachable")
+
+    monkeypatch.setattr(supervisor, "_open_command", hung_open)
+
+    class _Paths:
+        @staticmethod
+        def discover():
+            return _Paths()
+
+        def create(self):
+            pass
+
+        @staticmethod
+        def log(message):
+            pass
+
+    class _Primary:
+        def serve(self, requests, log):
+            t = threading.Thread(target=lambda: None, daemon=True)
+            t.start()
+            return t
+
+    class _Tray:
+        actions: "queue.Queue" = queue.Queue()
+
+    monkeypatch.setattr(instance, "acquire", lambda names: _Primary())
+    monkeypatch.setattr(supervisor, "DesktopPaths", _Paths)
+    monkeypatch.setattr(
+        supervisor, "_start_ready_server", lambda paths, token: (object(), object(), 1)
+    )
+    monkeypatch.setattr(supervisor.startup, "enabled", lambda: False)
+    monkeypatch.setattr(supervisor.tray, "start", lambda port, enabled, paths: _Tray())
+    stages = []
+    monkeypatch.setattr(
+        supervisor, "_event_loop",
+        lambda *a: stages.append("loop") or (supervisor._ExitReason.TRAY_EXIT, None),
+    )
+    monkeypatch.setattr(supervisor, "_teardown", lambda *a, **k: stages.append("teardown"))
+
+    done = threading.Event()
+
+    def run_supervisor():
+        supervisor.run(protocol.Open(r"\dead-host\share\x.csv"))
+        done.set()
+
+    threading.Thread(target=run_supervisor, daemon=True).start()
+    assert done.wait(5)  # startup reached the loop while the open still hangs
+    assert open_started.wait(5)  # the open really was dispatched, on its worker
+    assert stages == ["loop", "teardown"]
+    release_open.set()

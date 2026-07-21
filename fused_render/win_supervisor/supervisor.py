@@ -87,9 +87,13 @@ def run(initial: protocol.Command) -> None:
     token = _launch_token()
     job, process, port = _start_ready_server(paths, token)
 
-    # A failed initial open is logged by _safe_open and deliberately ignored:
-    # it must never tear down the already-running Job-owned server (bugbot #7).
-    _safe_open(port, initial, paths)
+    # The initial open is dispatched off-thread like every other open: a hung
+    # Path.exists()/os.startfile (disconnected UNC path) must not stall run()
+    # here, before the tray and pipe server exist — the supervisor would be
+    # alive but undiscoverable and unable to answer ShutdownForUpgrade. A
+    # failed open is logged by _safe_open inside the worker and deliberately
+    # ignored: it must never tear down the Job-owned server (bugbot #7).
+    _spawn_open(port, initial, paths)
 
     try:
         login_enabled = startup.enabled()
