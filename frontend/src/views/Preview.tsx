@@ -15,7 +15,7 @@ import {
   deleteEntry,
 } from "../lib/api";
 import type { Deployment, StatResult, TemplateEntry } from "../lib/api";
-import { navigate, navigateUrl, urlForFsPath } from "../lib/router";
+import { navigate, navigateUrl, urlForFsPath, replaceSearch } from "../lib/router";
 import { formatSize, formatMtime, basename } from "../lib/format";
 import { useRefreshOnReturn } from "../lib/hooks";
 import {
@@ -527,7 +527,7 @@ function TemplatePreview({
     if (next === defaultEntry.mode) params.delete("_mode");
     else params.set("_mode", next);
     const search = params.toString();
-    history.replaceState(null, "", location.pathname + (search ? "?" + search : ""));
+    replaceSearch(location.pathname + (search ? "?" + search : ""));
     setModeState(next);
   };
 

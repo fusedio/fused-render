@@ -175,8 +175,10 @@ function StatView({ fsPath, epoch, home }: { fsPath: string; epoch: number; home
   const [reloadKey, setReloadKey] = useState(0);
   // Directory hint from the navigation that mounted this view (see router
   // navHintIsDir). Captured ONCE at mount — StatView is keyed by epoch+fsPath
-  // so it remounts per navigation, and reading it live would be clobbered by
-  // the listing's own sort/search replaceState (which pass null state).
+  // so it remounts per navigation. In-place param syncs go through
+  // router.replaceSearch, which preserves history.state, so the hint survives
+  // for Back/Forward; capturing once here is belt-and-braces (and correct even
+  // if some future caller forgets to preserve it).
   const [navIsDir] = useState<boolean | null>(() => navHintIsDir());
   const stat = useStat(fsPath, epoch, reloadKey);
   // null until the stat resolves — the session hooks opt out for anything that

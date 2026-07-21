@@ -9,7 +9,7 @@
 // on first focus (or a URL-seeded query) and is cached until the dir watch
 // fires.
 import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { navigate, navigateUrl, urlForFsPath } from "../lib/router";
+import { navigate, navigateUrl, urlForFsPath, replaceSearch } from "../lib/router";
 import {
   listDir,
   prefetchListDir,
@@ -273,7 +273,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     const params = new URLSearchParams(location.search);
     params.set("sort", s.get("sort") || "name");
     params.set("order", s.get("order") === "desc" ? "desc" : "asc");
-    history.replaceState(null, "", location.pathname + "?" + params.toString());
+    replaceSearch(location.pathname + "?" + params.toString());
   }, [fsPath]);
   const [refresh, setRefresh] = useState(0); // bumped by the dir watch socket
   // loadMore captures the refresh generation it started in; a dir-watch refresh
@@ -658,7 +658,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
       if (value) params.set("q", value);
       else params.delete("q");
       const qs = params.toString();
-      history.replaceState(null, "", location.pathname + (qs ? "?" + qs : ""));
+      replaceSearch(location.pathname + (qs ? "?" + qs : ""));
     }, URL_SYNC_MS);
   };
 
@@ -670,7 +670,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     const params = new URLSearchParams(location.search);
     params.set("sort", next.sort);
     params.set("order", next.order);
-    history.replaceState(null, "", location.pathname + "?" + params.toString());
+    replaceSearch(location.pathname + "?" + params.toString());
     setSortState(next);
     // Remember this folder's choice so returning to it later restores this sort.
     // Only sort/order are persisted — the in-folder search `q` stays transient.
