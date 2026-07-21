@@ -49,7 +49,12 @@ pub fn run(initial: Command) -> io::Result<()> {
             paths.create()?;
             let token = launch_token()?;
             let (job, process, port) = start_ready_server(&paths, &token)?;
-            open_command(port, initial)?;
+            // The server is up; a failed initial open (missing file, browser
+            // launch error) must not tear it down — the tray stays available,
+            // matching how tray and pipe-forwarded opens treat the same error.
+            if let Err(error) = open_command(port, initial) {
+                paths.log(&format!("initial open failed: {error}"));
+            }
             let login_enabled = startup::enabled().unwrap_or_else(|error| {
                 paths.log(&format!(
                     "could not read sign-in setting, defaulting to off: {error}"
