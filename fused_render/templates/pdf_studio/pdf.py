@@ -725,11 +725,100 @@ def _import_url(url, name):
     return {"name": os.path.basename(dest), "path": _fwd(dest)}
 
 
-def _listdir(path):
+# --- mount-safe directory listing ------------------------------------------
+# A kernel listing (os.listdir/os.scandir/os.walk) on a path under a remote
+# rclone NFS mount forces rclone to enumerate the ENTIRE parent S3 prefix and
+# can DROP the mount, wedging the server. This template stays mount-AGNOSTIC:
+# it never imports shell.mounts and never matches mount paths. Instead the UI
+# passes a server origin (as the `src` param on the listdir action) and we ask
+# the server whether a path is remote (/api/fs/stat); if so we list it via the
+# mount-routed, paginated /api/fs/list — never through the kernel. _server_url +
+# _stat are copied verbatim from pyramid/overview_pyramid.py.
+import urllib.error as _urlerr
+import urllib.parse as _urlparse
+import urllib.request as _urlreq
+
+
+def _server_url(origin, endpoint, path):
+    u = _urlparse.urlsplit(origin)
+    return (f"{u.scheme}://{u.netloc}{endpoint}?path="
+            + _urlparse.quote(path))
+
+
+def _stat(origin, path):
+    url = _server_url(origin, "/api/fs/stat", path)
+    try:
+        with _urlreq.urlopen(url, timeout=10) as r:
+            return ("ok", json.load(r))
+    except _urlerr.HTTPError as e:
+        if e.code == 404:
+            return ("missing", None)
+        return ("unreachable", None)
+    except Exception:  # noqa: BLE001 — any network error -> fall back to local
+        return ("unreachable", None)
+
+
+def _remote_dir(origin, path):
+    """True iff the server says `path` is a remote (mount-backed) directory.
+    No origin / unreachable / missing -> False (presume local, kernel OK)."""
+    if not origin or not path:
+        return False
+    status, meta = _stat(origin, path)
+    return status == "ok" and bool(meta.get("remote"))
+
+
+def _list_remote(origin, path, cap=5000):
+    """List `path` via the server's mount-routed, paginated /api/fs/list — never
+    the kernel. Follows the cursor up to `cap` entries so a huge S3 prefix
+    returns a bounded page set instead of tripping the NFS deadman."""
+    entries, cursor, truncated = [], "", False
+    while True:
+        url = _server_url(origin, "/api/fs/list", path)
+        if cursor:
+            url += "&cursor=" + _urlparse.quote(cursor)
+        with _urlreq.urlopen(url, timeout=30) as r:
+            payload = json.load(r)
+        entries.extend(payload.get("entries") or [])
+        truncated = bool(payload.get("truncated"))
+        cursor = payload.get("cursor") or ""
+        if len(entries) >= cap or not truncated or not cursor:
+            break
+    return entries, truncated
+
+
+def _listdir(path, origin=""):
     path = os.path.abspath(os.path.expanduser(path or "~"))
+    # Ask the server once: is this a remote (mount-backed) path, and is it a dir?
+    status, meta = _stat(origin, path) if origin else ("", None)
+    if status == "ok" and meta.get("remote"):
+        # Mount-backed: list via /api/fs/list, never a kernel scan. If `path` is a
+        # file (not a dir), descend to its parent with pure string ops — never a
+        # kernel os.path call on a remote path (that call wedges the NFS mount).
+        if not meta.get("is_dir"):
+            path = os.path.dirname(path) or "/"
+        parent = (os.path.dirname(path) or path).replace(os.sep, "/")
+        fpath = path.replace(os.sep, "/")
+        dirs, files = [], []
+        try:
+            ents, _ = _list_remote(origin, path)
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc), "path": fpath, "parent": parent,
+                    "dirs": [], "files": []}
+        for ent in ents:
+            name = ent["name"]
+            if name.startswith("."):
+                continue
+            if ent.get("is_dir"):
+                dirs.append(name)
+            elif name.lower().endswith(".pdf"):
+                files.append({"name": name, "size": ent.get("size") or 0})
+        dirs.sort(key=str.lower)
+        files.sort(key=lambda f: f["name"].lower())
+        return {"path": fpath, "parent": parent, "dirs": dirs, "files": files}
+    parent = (os.path.dirname(path) or path).replace(os.sep, "/")  # dirname(root) == root
     if not os.path.isdir(path):
         path = os.path.dirname(path) or "/"
-    parent = (os.path.dirname(path) or path).replace(os.sep, "/")
+        parent = (os.path.dirname(path) or path).replace(os.sep, "/")
     path = path.replace(os.sep, "/")
     dirs, files = [], []
     try:
@@ -882,7 +971,9 @@ def main(
             "Use Save a copy.")
         return info
     if action == "listdir":
-        return _listdir(path)
+        # `src` on the listdir action carries the server ORIGIN (mount-safe
+        # routing), distinct from its add_to_library meaning (a file path).
+        return _listdir(path, src)
     if action == "import_url":
         return _import_url(url, name)
     if action == "rename_doc":

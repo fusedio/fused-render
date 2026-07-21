@@ -1277,7 +1277,10 @@
     let curDir = FILE.slice(0, Math.max(FILE.lastIndexOf("/"), FILE.lastIndexOf("\\")));
     async function render(p) {
       let d;
-      try { d = await py({ action: "listdir", path: p || "" }); } catch (e) { toast("Cannot list folder: " + e.message); return; }
+      // src (origin only) lets the worker route a mount-backed dir via
+      // /api/fs/list instead of a kernel scan that could drop the mount.
+      const src = `${location.origin}/api/fs/raw?path=${encodeURIComponent(p || "")}`;
+      try { d = await py({ action: "listdir", path: p || "", src }); } catch (e) { toast("Cannot list folder: " + e.message); return; }
       curDir = d.path;
       const segs = d.path.split("/").filter(Boolean);
       const winRoot = /^[A-Za-z]:$/.test(segs[0] || "");   // "C:" drive paths take no leading "/"

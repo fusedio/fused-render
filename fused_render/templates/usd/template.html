@@ -355,6 +355,9 @@
   // poll loop alongside inspect/browse reads; default per-file cancellation
   // would stall the conversion poll (its promise would never settle) (D114).
   const py = (params) => fused.runPython("./reader.py", params, { key: null });
+  // Mount-safe listing: origin so the worker can route a mount-backed dir
+  // through /api/fs/list instead of a kernel scan. Origin only; mount-agnostic.
+  const rawURL = (f) => `${location.origin}/api/fs/raw?path=${encodeURIComponent(f || "")}`;
   // The target file arrives as the read-only _file param (template contract).
   // It becomes the first scene unless the URL already carries an explicit
   // "files" list (a bookmark, or one already reconciled earlier in this tab).
@@ -1659,7 +1662,7 @@
     let res;
     try {
       res = await py({ action: "browse", file: filesList().slice(-1)[0] || "",
-                       dir: dir || "" });
+                       dir: dir || "", src: rawURL(dir || "") });
     } catch (err) {
       el.fmList.innerHTML = `<div class="fmEmpty">${err.message}</div>`;
       return;

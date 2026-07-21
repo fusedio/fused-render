@@ -1686,9 +1686,18 @@ def _mount_safe_stat(path: str) -> os.stat_result:
     FileNotFoundError exactly like the kernel os.stat it replaces, so callers'
     existing OSError->404 handling holds — and it NEVER falls back to that kernel
     GETATTR, which is the call that killed the mount."""
-    from fused_render.shell.mounts import is_mount_backed, rc_stat_result
+    from fused_render.shell.mounts import (
+        is_mount_backed, is_mounts_root, rc_stat_result)
 
-    if is_mount_backed(path):
+    # The mounts CONTAINER itself is a LOCAL directory the shell created to host
+    # each mountpoint as a subdir; it is is_mount_backed (kept off the kernel
+    # like any remote path) but sits under NO single mount record, so
+    # rc_stat_result finds nothing to stat and reports it indeterminate — which
+    # _fs_stat then turns into a spurious 503 "mount is slow or unresponsive".
+    # A kernel os.stat on the container reads that local dir and never traverses
+    # into a mountpoint, so it is safe — matching _mount_probe's is_mounts_root
+    # shortcut for the listing/mutation paths.
+    if is_mount_backed(path) and not is_mounts_root(path):
         return rc_stat_result(path)
     return os.stat(path)
 
