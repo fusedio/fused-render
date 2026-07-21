@@ -432,6 +432,11 @@ export default function Mounts() {
       setConfirmRestart(false);
     } catch (e) {
       setRestartError((e as Error).message);
+      // A failed restart isn't a no-op: the server may already have force-detached
+      // mounts (or killed the daemon) before failing, so the last MountsResult is
+      // stale. Re-fetch so the page shows the true post-attempt state instead of a
+      // healthy view that no longer matches reality.
+      reload();
     } finally {
       setRestartBusy(false);
     }
@@ -474,6 +479,8 @@ export default function Mounts() {
         const paramsMounts = state.mounts.filter((m) => m.restart_reason === "params");
         const credMounts = state.mounts.filter((m) => m.restart_reason === "credentials");
         if (paramsMounts.length === 0 && credMounts.length === 0) return null;
+        // Explanatory callout only — the single Restart rclone button below is
+        // the one action, so we don't stack a second identical button here.
         return (
           <div className="deploy-note mount-callout">
             <div className="mount-callout-title">Restart rclone to recover</div>
@@ -487,14 +494,7 @@ export default function Mounts() {
                   {credMounts.map((m) => m.name).join(", ")}.
                 </div>
               )}
-              <button
-                type="button"
-                style={{ marginTop: 8 }}
-                disabled={restartBusy}
-                onClick={() => setConfirmRestart(true)}
-              >
-                {restartBusy ? "Restarting…" : "Restart rclone"}
-              </button>
+              <div style={{ marginTop: 4 }}>Use the Restart rclone button below.</div>
             </div>
           </div>
         );
