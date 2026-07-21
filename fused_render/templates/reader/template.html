@@ -667,18 +667,9 @@
         stopKeepalive();
         try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (e) {}
       },
-      pause() {
-        // Kill the keepalive while paused: Chrome DROPS the synth.paused flag
-        // when the tab is hidden, so a live keepalive tick would see
-        // "speaking && !paused" and resume() a user pause on its own (ghost
-        // audio after a tab switch). No timer while paused = no vector.
-        stopKeepalive();
-        try { if (window.speechSynthesis) window.speechSynthesis.pause(); } catch (e) {}
-      },
-      resume() {
-        try { if (window.speechSynthesis) window.speechSynthesis.resume(); } catch (e) {}
-        if (current) startKeepalive(); // resumed utterance needs the nudge again
-      },
+      // No pause()/resume() on purpose: Chrome's synth pause state is shared
+      // browser-wide, so touching it from one tab bleeds into others. The
+      // template pauses by cancel() and replays the current sentence.
     };
   }
   const engine = createSpeechEngine();
@@ -1059,28 +1050,43 @@
     btnPlay.innerHTML = playing ? PAUSE_ICON : PLAY_ICON;
     btnPlay.setAttribute("aria-label", playing ? "Pause" : "Play");
   }
+  // Chrome's speechSynthesis queue and paused flag are BROWSER-global, not
+  // per-tab: two readers speak into one interleaved queue, and one tab's
+  // resume() un-pauses another tab's pause. So (a) pause is CANCEL-based —
+  // this template never leaves a paused utterance in the shared synth, at the
+  // cost of restarting the current sentence on play — and (b) a broadcast
+  // channel makes readers mutually exclusive: whoever plays silences the rest.
+  const audioBus = "BroadcastChannel" in window ? new BroadcastChannel("fused-reader-audio") : null;
+  const audioTabId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  function claimAudio() {
+    if (audioBus) { try { audioBus.postMessage(audioTabId); } catch (e) {} }
+  }
+  if (audioBus) {
+    audioBus.onmessage = (e) => {
+      if (e.data === audioTabId) return;
+      speakGen++; // kills an in-flight selection speech too
+      engine.cancel();
+      clearHL("reader-word");
+      if (playing) { playing = false; updatePlayUI(); }
+    };
+  }
+
   function play() {
     if (!engineReady()) { toast("Speech not available on this browser"); return; }
     if (playing || !blocks.length) return;
     playing = true;
     updatePlayUI();
-    const s = window.speechSynthesis;
-    if (s && s.paused && s.speaking) {
-      engine.resume(); // continue the paused sentence mid-word
-    } else {
-      // A pause can land BETWEEN utterances (paused=true, speaking=false).
-      // Speaking into a paused synth queues silently — clear the paused
-      // state first or play() produces nothing.
-      engine.cancel();
-      if (s && s.paused) engine.resume();
-      speakFromCursor();
-    }
+    claimAudio();
+    engine.cancel(); // clean slate in the shared queue
+    speakFromCursor();
   }
   function pause() {
     if (!playing) return;
     playing = false;
     updatePlayUI();
-    engine.pause();
+    // cancel, not synth.pause() — see the shared-synth note above
+    engine.cancel();
+    clearHL("reader-word");
   }
   function toggle() { playing ? pause() : play(); }
   function finish() {
@@ -1133,6 +1139,7 @@
   function speakSelection(text) {
     const sents = chunkSentences(text);
     if (!sents.length || !engineReady()) return;
+    claimAudio();
     engine.cancel();
     playing = false;
     updatePlayUI();
