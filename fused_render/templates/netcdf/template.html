@@ -163,7 +163,9 @@ async function ensureDaemon(){
   if (r && r.port) daemon = r;
   return daemon;
 }
-const dURL = p => `http://127.0.0.1:${daemon.port}${p}`;
+// every daemon request carries the per-daemon token (from ensure()) so a
+// foreign page that guessed the port can't read tiles cross-origin
+const dURL = p => `http://127.0.0.1:${daemon.port}${p}${p.includes('?') ? '&' : '?'}t=${encodeURIComponent(daemon.token || '')}`;
 
 function sliceQuery(){
   return new URLSearchParams({ file: P.file(), var: P.vr(), index: P.index() });

@@ -3249,8 +3249,12 @@ def create_app(start_dir: str) -> FastAPI:
             if not isinstance(value, list) or any(not isinstance(v, str) for v in value):
                 return _error(f"'{name}' must be an array of relative file paths")
 
+        cache_max_age = body.get("cache_max_age") or "0s"
+
         try:
-            plan = export_page(page, out, include=include, exclude=exclude)
+            plan = export_page(
+                page, out, include=include, exclude=exclude, cache_max_age=cache_max_age
+            )
         except ExportError as e:
             return _error(str(e))
 

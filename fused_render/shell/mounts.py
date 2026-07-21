@@ -1973,9 +1973,15 @@ def _quit_tile_daemons() -> None:
         state = storage.read_json(state_file)
         if not isinstance(state, dict) or not state.get("port"):
             continue
+        # /quit is token-gated (D122); the state file carries the daemon's
+        # token, so forward it or the daemon 403s, keeps the mount files open,
+        # and the EBUSY retry never releases them. Token-less state = a daemon
+        # predating the token, which accepts a plain /quit.
+        tok = state.get("token")
+        path = f"/quit?t={tok}" if tok else "/quit"
         try:
             urllib.request.urlopen(
-                f"http://127.0.0.1:{state['port']}/quit", timeout=3).read()
+                f"http://127.0.0.1:{state['port']}{path}", timeout=3).read()
         except OSError:
             continue
 

@@ -21,6 +21,11 @@ from fastapi.responses import JSONResponse
 from fused_render.server import _fs_stat as STAT
 from fused_render.server import _fs_write as WRITE
 
+# os.access always says yes for root, so the chmod-based gates can't trip.
+skip_root = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="read-only bits are ignored when running as root")
+
 
 def _status(resp) -> int:
     return resp.status_code if isinstance(resp, JSONResponse) else 200
@@ -58,11 +63,13 @@ def test_stat_writable_true_for_writable_file(target):
     assert out["writable"] is True
 
 
+@skip_root
 def test_stat_writable_false_for_readonly_file(readonly):
     out = _data(STAT(str(readonly)))
     assert out["writable"] is False
 
 
+@skip_root
 def test_stat_writable_on_directory(tmp_path):
     assert _data(STAT(str(tmp_path)))["writable"] is True
     os.chmod(tmp_path, stat.S_IRUSR | stat.S_IXUSR)
@@ -74,6 +81,7 @@ def test_stat_writable_on_directory(tmp_path):
 
 # --------------------------------------------------------- write guard (403)
 
+@skip_root
 def test_write_refuses_readonly_target(readonly):
     resp = _write(readonly, "clobbered")
     assert _status(resp) == 403

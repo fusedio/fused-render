@@ -425,26 +425,31 @@ function TemplatePreview({
   // dirs.
   const isListing = entry.mode === "_listing";
 
-  // Tab title (App's StatView owns the actual document.title write): only a
-  // "_render" entry is the file's OWN html, so only it can carry an authored
-  // <title> worth showing over the filename — a template's title is a fixed
-  // generic string ("CSV preview") that's strictly worse than the filename
-  // StatView already falls back to. Reset on mode change AND on unmount (the
-  // cleanup covers TemplatePreview being swapped out entirely — the resolving
-  // spinner, FallbackPreview, a re-stat that errors — cases the mode-keyed
-  // effect alone never observes) so a stale title never outlives the preview
-  // that set it; the "_render" branch overwrites it once its iframe loads.
-  // Same-origin iframe (D3/D4 — /render always serves same-origin), so a
-  // direct contentDocument read is safe and needs no postMessage round trip.
+  // Tab title (App's StatView owns the actual document.title write, and it
+  // also feeds the default bookmark name and the Recents row — see
+  // Breadcrumb.tsx / recents.ts): only a "_render" entry is the file's OWN
+  // html, so only it can carry an authored <title> worth showing over the
+  // filename — a template's title is a fixed generic string ("CSV preview")
+  // that's strictly worse than the filename StatView falls back to. So a
+  // known title must OUTLIVE a mode switch away from "_render": switching
+  // modes is local state on this same TemplatePreview instance (`mode`),
+  // not a remount, and the filename is often undescriptive ("index.html") —
+  // clearing a real title back to that on every switch would be a strict
+  // downgrade. Only reset on true unmount (TemplatePreview swapped out
+  // entirely — the resolving spinner, FallbackPreview, a re-stat that
+  // errors), so a title never outlives the file whose page set it; the
+  // "_render" branch overwrites it (to a fresh value, or null if genuinely
+  // absent) once its iframe loads. Same-origin iframe (D3/D4 — /render
+  // always serves same-origin), so a direct contentDocument read is safe and
+  // needs no postMessage round trip.
   const titleObserverRef = useRef<MutationObserver | null>(null);
   useEffect(() => {
-    onRenderedTitle?.(null);
     return () => {
       titleObserverRef.current?.disconnect();
       titleObserverRef.current = null;
       onRenderedTitle?.(null);
     };
-  }, [mode, onRenderedTitle]);
+  }, [onRenderedTitle]);
   const onRenderFrameLoad = (e: React.SyntheticEvent<HTMLIFrameElement>) => {
     if (entry.mode !== "_render") return;
     // Guards a slow "_render" iframe's load firing AFTER a switch away from

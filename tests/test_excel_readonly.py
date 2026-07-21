@@ -22,6 +22,11 @@ import stat
 
 import pytest
 
+# os.access always says yes for root, so the chmod-based gates can't trip.
+skip_root = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="read-only bits are ignored when running as root")
+
 
 def _load_reader():
     path = os.path.join("fused_render", "templates", "excel", "reader.py")
@@ -44,6 +49,7 @@ def _small_payload():
     return [{"name": "data", "big": False, "rows": [["x", "y"], ["9", "8"]]}]
 
 
+@skip_root
 def test_save_readonly_csv_raises_and_leaves_bytes_untouched(tmp_path):
     rd = _load_reader()
     f = _csv(tmp_path)
@@ -78,6 +84,7 @@ def test_load_writable_csv_is_editable(tmp_path):
     assert res["readonly_tooltip"] == ""
 
 
+@skip_root
 def test_load_readonly_csv_reports_readonly_verdict(tmp_path):
     rd = _load_reader()
     f = _csv(tmp_path)

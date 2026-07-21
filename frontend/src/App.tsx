@@ -151,9 +151,6 @@ function StatView({ fsPath, epoch, home }: { fsPath: string; epoch: number; home
   // already on the shell URL (no param flash from defaults -> restored).
   const ready = useSessionRestore(fsPath, isDir);
   useSessionTracking(fsPath, isDir);
-  // Sidebar "Recents": record the open, then keep the entry's url live as
-  // params change (same confirmed-file gate as session tracking).
-  useRecentsTracking(fsPath, isDir);
   // A "_render" preview (the file's own HTML, no template) reports its
   // authored <title> here (Preview -> TemplatePreview); everything else
   // (templates, listings, fallback cards) has no better name than the
@@ -162,6 +159,10 @@ function StatView({ fsPath, epoch, home }: { fsPath: string; epoch: number; home
   // not on a `_mode` switch within the same file — TemplatePreview owns that.
   const [renderedTitle, setRenderedTitle] = useState<string | null>(null);
   useDocumentTitle(fsPath === "/" ? null : renderedTitle || basename(fsPath));
+  // Sidebar "Recents": record the open, then keep the entry's url (and its
+  // title, once known) live as params/title change — same confirmed-file
+  // gate as session tracking.
+  useRecentsTracking(fsPath, isDir, renderedTitle);
   let content = null;
   if (stat.status === "error") {
     content = (
@@ -194,7 +195,7 @@ function StatView({ fsPath, epoch, home }: { fsPath: string; epoch: number; home
   return (
     <>
       <div id="breadcrumb">
-        <Breadcrumb fsPath={fsPath} home={home} />
+        <Breadcrumb fsPath={fsPath} home={home} renderedTitle={renderedTitle} />
       </div>
       <div id="content">{content}</div>
     </>

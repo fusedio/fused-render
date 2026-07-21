@@ -88,13 +88,23 @@ function enqueue<T>(op: () => Promise<T>): Promise<T> {
 }
 
 // What the sidebar actually renders from this store: the collapse flag plus
-// each displayed slot's (path, latest url). Urls are INCLUDED — a stale href
-// is a real bug (middle-click/copy-link navigates to outdated params, RC-3);
-// with stable slots + path-keyed rows a url-only notify re-renders the anchor
-// attributes in place with zero movement and zero remounts.
+// each displayed slot's (path, latest url, latest title). Urls are INCLUDED —
+// a stale href is a real bug (middle-click/copy-link navigates to outdated
+// params, RC-3); with stable slots + path-keyed rows a url-only notify
+// re-renders the anchor attributes in place with zero movement and zero
+// remounts. Title is included for the same reason: the open-record and the
+// title-report re-record that follows it share the same url (only the title
+// differs), so a url-only signature would miss that change entirely and the
+// row would keep showing the basename after the cache already has the title.
 function displaySignature(slots: string[], entries: RecentEntry[], collapsed: boolean): string {
   const byPath = new Map(entries.map((e) => [recentFsPath(e.url), e]));
-  return JSON.stringify([collapsed, slots.map((p) => [p, byPath.get(p)?.url])]);
+  return JSON.stringify([
+    collapsed,
+    slots.map((p) => {
+      const e = byPath.get(p);
+      return [p, e?.url, e?.title];
+    }),
+  ]);
 }
 
 async function refresh(): Promise<void> {
@@ -119,11 +129,13 @@ export function hydrateRecents(): Promise<void> {
 // server dedupes by target fs path — a re-record of an already-listed file
 // moves it to the top and replaces its url — and no-ops for anything that is
 // not an existing file's /view/ url, so the caller stays dumb about the
-// target's kind.
-export function recordRecentOpen(url: string): Promise<void> {
+// target's kind. `title`, when known (the page's own <title>, see App.tsx's
+// StatView), is stored alongside the url so the sidebar row can prefer it
+// over the file's basename — same posture as bookmark naming.
+export function recordRecentOpen(url: string, title?: string | null): Promise<void> {
   return enqueue(async () => {
     try {
-      await postRecentOpen(url);
+      await postRecentOpen(url, title);
       await refresh();
     } catch (e) {
       console.error("[fused] failed to record recent open:", e);
@@ -150,7 +162,11 @@ export function setRecentsCollapsed(collapsed: boolean): Promise<void> {
 // with a 500 ms debounce against slider-style param churn. Embed panes,
 // directories, and not-yet-stat'd opens (isDir null) opt out, mirroring
 // session tracking; the server rejects non-file urls anyway.
-export function useRecentsTracking(fsPath: string, isDir: boolean | null): void {
+// `title` is the previewed page's own <title>, when known — it arrives async
+// (after the iframe loads), so it is also a dependency: once it resolves, the
+// effect re-runs and re-records the current url with the now-known title,
+// same as a live param update would.
+export function useRecentsTracking(fsPath: string, isDir: boolean | null, title: string | null): void {
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => {
     if (IS_EMBED || isDir !== false) return;
@@ -162,13 +178,13 @@ export function useRecentsTracking(fsPath: string, isDir: boolean | null): void 
     const flush = () => {
       window.clearTimeout(timer.current);
       if (pending !== null) {
-        void recordRecentOpen(pending);
+        void recordRecentOpen(pending, title);
         pending = null;
       }
     };
     // The open itself (session restore's replaceState re-records with the
     // restored params). Guarded against a same-tick navigation race.
-    if (fsPathFromLocation() === fsPath) void recordRecentOpen(currentUrl());
+    if (fsPathFromLocation() === fsPath) void recordRecentOpen(currentUrl(), title);
     const onUrlChange = () => {
       if (fsPathFromLocation() !== fsPath) return; // navigated away — not ours
       pending = currentUrl();
@@ -184,7 +200,8 @@ export function useRecentsTracking(fsPath: string, isDir: boolean | null): void 
       // param state — flush the captured url instead of dropping it.
       flush();
     };
-    // fsPath + isDir identify the open, like useSessionTracking.
+    // fsPath + isDir identify the open, like useSessionTracking; title is
+    // included so its late arrival triggers a re-record.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fsPath, isDir]);
+  }, [fsPath, isDir, title]);
 }

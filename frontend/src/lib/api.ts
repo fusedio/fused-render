@@ -302,6 +302,9 @@ export function putSession(fsPath: string, search: string): Promise<void> {
 export interface RecentEntry {
   url: string;
   openedAt: string;
+  // The page's own <title>, when one was known at record time — preferred
+  // over the file's basename for the sidebar row (see Sidebar.tsx).
+  title?: string;
 }
 
 export interface RecentsResult {
@@ -315,8 +318,11 @@ export function getRecents(): Promise<RecentsResult> {
 
 // Server no-ops (recorded: false) for directory/sentinel/missing-file urls,
 // so callers need not pre-classify the target.
-export function postRecentOpen(url: string): Promise<{ recorded: boolean }> {
-  return postJson<{ recorded: boolean }>("/api/recents/open", { url });
+export function postRecentOpen(url: string, title?: string | null): Promise<{ recorded: boolean }> {
+  return postJson<{ recorded: boolean }>(
+    "/api/recents/open",
+    title ? { url, title } : { url }
+  );
 }
 
 export function putRecentsCollapsed(collapsed: boolean): Promise<void> {
@@ -374,7 +380,21 @@ export interface Deployment {
   // Optional — records written before this feature omit them (read as []).
   include?: string[];
   exclude?: string[];
+  // The caching choice this deployment was published with — "0s" (off) or a
+  // duration like "5m"/"1h" (fused/agent_core/caching.py's cache_max_age format).
+  // Reopening the modal reloads it, same as include/exclude. Optional — records
+  // written before this feature omit it (read as "0s").
+  cache_max_age?: string;
   updated_at: string;
+}
+
+// `POST /api/deploy/clear-cache`'s result — the fused CLI's `share cache-clear`
+// output verbatim (see deploy.py's clear_cache_deployment).
+export interface CacheClearResult {
+  token: string;
+  deleted: number;
+  scope: string;
+  prefix?: string;
 }
 
 export interface DeployStatusResult {
@@ -459,12 +479,29 @@ export function deployPage(
   env: string,
   include: string[],
   exclude: string[],
+  cacheMaxAge: string,
+  forceNew?: boolean,
 ): Promise<Deployment> {
-  return postJson<Deployment>("/api/deploy", { page: fsPath, env, include, exclude });
+  return postJson<Deployment>("/api/deploy", {
+    page: fsPath,
+    env,
+    include,
+    exclude,
+    cache_max_age: cacheMaxAge,
+    force_new: forceNew ?? false,
+  });
 }
 
 export function revokeDeployment(fsPath: string): Promise<Deployment> {
   return postJson<Deployment>("/api/deploy/revoke", { page: fsPath });
+}
+
+// Clears every cached result for the page's deployed mount (`fused share
+// cache-clear <token>`) — forces the next request to recompute instead of
+// waiting out cache_max_age. Doesn't change the deployment's status/URL/caching
+// setting.
+export function clearCacheDeployment(fsPath: string): Promise<CacheClearResult> {
+  return postJson<CacheClearResult>("/api/deploy/clear-cache", { page: fsPath });
 }
 
 export function installFused(): Promise<void> {

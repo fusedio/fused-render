@@ -914,7 +914,7 @@ export default function Sidebar({ config }: SidebarProps) {
                       <path d="M8 4.8V8l2.3 1.6" />
                     </svg>
                   </span>
-                  <span className="bookmark-name">{basename(fsPath)}</span>
+                  <span className="bookmark-name">{r.title || basename(fsPath)}</span>
                 </a>
               );
             })}
