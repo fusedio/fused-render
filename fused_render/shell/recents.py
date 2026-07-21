@@ -112,9 +112,16 @@ def _file_path_from_url(url: str) -> str | None:
     FILE right now (recents record files only, D22-style basename rows) —
     the gate for accepting a record and for the GET response filter."""
     fs_path = _decoded_fs_path(url)
-    if fs_path is None or not os.path.isfile(fs_path):
+    if fs_path is None:
         return None
-    return fs_path
+    # NEVER a raw os.path.isfile on a mount-backed path: a cold GETATTR there
+    # lists the whole parent prefix and wedges the mount (the open-flow wedge —
+    # POST /api/recents/open resolves the just-opened file through here). Route
+    # mounts via the rc API (_mount_exists), locals via the kernel (_local_exists).
+    from fused_render.shell import mounts as shell_mounts
+    exists = (_mount_exists(fs_path) if shell_mounts.is_mount_backed(fs_path)
+              else _local_exists(fs_path))
+    return fs_path if exists else None
 
 
 def _local_exists(fs_path: str) -> bool:

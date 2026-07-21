@@ -820,8 +820,20 @@ def _has_non_mode_param(search: str) -> bool:
     return any(k != "_mode" for k, _ in parse_qsl(search, keep_blank_values=True))
 
 
+def _is_file_mount_safe(path: str) -> bool:
+    """os.path.isfile, but NEVER a kernel stat on a mount-backed path — a cold
+    os.path.isfile there is the GETATTR that lists the whole parent prefix and
+    wedges the mount (the /api/session + /api/recents open-flow wedge). Mount
+    paths answered via rc_kind_for; fail OPEN on an indeterminate rc probe so a
+    transient rcd hiccup never 404s a file the user just opened."""
+    from fused_render.shell.mounts import is_mount_backed, rc_kind_for
+    if is_mount_backed(path):
+        return rc_kind_for(path) != "missing"
+    return os.path.isfile(path)
+
+
 def _session_get(path: str):
-    if not os.path.isfile(path):
+    if not _is_file_mount_safe(path):
         return _error(f"no such file: {path}", status=404)
     last = _read_sidecar(path).get("lastSession")
     return {"lastSession": last if isinstance(last, dict) else None}
@@ -835,7 +847,7 @@ def _session_put(body: dict, x_fused: str | None):
     search = body.get("search")
     if not path or not os.path.isabs(path):
         return _error("'path' must be an absolute filesystem path")
-    if not os.path.isfile(path):
+    if not _is_file_mount_safe(path):
         return _error(f"no such file: {path}", status=404)
     if not isinstance(search, str):
         return _error("'search' must be a string")
