@@ -70,10 +70,21 @@ def test_executor_spawn_runs_no_atfork_child_handler(tmp_path, monkeypatch):
     NOT run on posix_spawn (the fix). This test FAILS before the fix."""
     import ctypes
 
+    libc = ctypes.CDLL(None)
+    # pthread_atfork is a plain exported symbol on macOS libSystem, but on glibc
+    # it is a static-only wrapper around __register_atfork and is NOT resolvable
+    # through CDLL(None) ("undefined symbol: pthread_atfork"). Where we can't
+    # register a probe handler, skip — the close_fds=False assertion in
+    # test_executor_child_spawn_disables_fork already covers the fix portably,
+    # and the crash this behavioral guard mirrors is macOS-specific anyway.
+    try:
+        register_atfork = libc.pthread_atfork
+    except AttributeError:
+        pytest.skip("pthread_atfork not dynamically resolvable here (e.g. glibc)")
+
     marker = tmp_path / "atfork_child_ran"
     monkeypatch.setenv("FR_ATFORK_MARKER", str(marker))
 
-    libc = ctypes.CDLL(None)
     HANDLER = ctypes.CFUNCTYPE(None)
 
     def _child_handler():
@@ -92,7 +103,7 @@ def test_executor_spawn_runs_no_atfork_child_handler(tmp_path, monkeypatch):
     _cb = HANDLER(_child_handler)
     # keep a ref alive for the life of the process (handler is never unregistered)
     globals().setdefault("_atfork_cbs", []).append(_cb)
-    libc.pthread_atfork(None, None, _cb)
+    register_atfork(None, None, _cb)
 
     script = tmp_path / "trivial.py"
     script.write_text("def main():\n    return {'ok': 1}\n")
