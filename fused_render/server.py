@@ -3199,13 +3199,27 @@ def create_app(start_dir: str) -> FastAPI:
                             return resp
                     return RedirectResponse(direct, status_code=307)
             # Not redirected (browser, warm read, or no direct URL): proxy the
-            # bytes. Guard non-files here — the cold redirect path above is the
-            # never-listed-object hot path and stays stat-free, but a directory
-            # proxied through rclone serve comes back as a 200 HTML listing, so
-            # stat before serving (warm getattr is cheap; a directory 404s).
-            st = await asyncio.to_thread(_stat_or_none, path)
-            if st is None:
-                return _error(f"no such file: {path}", status=404)
+            # bytes. Guard non-files here — a directory proxied through rclone
+            # serve comes back as a 200 HTML listing, so resolve shape before
+            # serving. But NOT with a kernel os.stat on a mount-backed path: this
+            # branch is reached once the prefetch has landed (is_done) or for a
+            # browser read, and a cold GETATTR on a never-listed object forces
+            # rclone to enumerate the whole parent prefix (~28s on a 44k-entry
+            # dir), past the NFS deadman -> the mount is dropped. Answer
+            # existence/shape through the rcd (_mount_probe) like the HEAD branch
+            # above; only a local path stats the kernel.
+            if shell_mounts.is_mount_backed(path):
+                try:
+                    pr = await asyncio.to_thread(_mount_probe, path)
+                except (shell_mounts.RcListUnavailable,
+                        shell_mounts.RcListTimeout) as e:
+                    return _mount_list_error_response(os.path.dirname(path), e)
+                if not pr.exists or pr.is_dir:
+                    return _error(f"no such file: {path}", status=404)
+            else:
+                st = await asyncio.to_thread(_stat_or_none, path)
+                if st is None:
+                    return _error(f"no such file: {path}", status=404)
             resp = await asyncio.to_thread(_proxy_raw, upstream, request)
             if resp is not None:
                 return resp  # upstream unreachable -> plain file read below

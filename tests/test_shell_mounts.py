@@ -2017,7 +2017,7 @@ def test_fs_raw_serve_dead_returns_503_never_kernel_reads_mount(client, home):
     assert r.status_code == 503
 
 
-def test_fs_raw_proxy_error_keeps_range_headers(client, home):
+def test_fs_raw_proxy_error_keeps_range_headers(client, home, monkeypatch):
     """An HTTP error from a live serve passes through WITH its protocol
     headers — a 416's `Content-Range: bytes */<size>` is how a range client
     (DuckDB httpfs) learns the file length."""
@@ -2030,6 +2030,13 @@ def test_fs_raw_proxy_error_keeps_range_headers(client, home):
     os.makedirs(mp)
     f = os.path.join(mp, "x.bin")
     open(f, "wb").write(b"LOCAL-BYTES")
+    # The warm-read fallthrough resolves a mount-backed path's shape through the
+    # rcd (_mount_probe), never a kernel stat — stub the parent listing so the
+    # file reads as a present regular object and the proxy is reached.
+    monkeypatch.setattr(mounts_mod, "rc_list_dir",
+                        lambda p, timeout=None: [{"Name": "x.bin", "IsDir": False,
+                                                  "Size": 11,
+                                                  "ModTime": "2024-01-02T03:04:05Z"}])
 
     class H(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
