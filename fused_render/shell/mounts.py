@@ -3154,6 +3154,23 @@ def reconnect_endpoint(cid: str, x_fused: str | None = Header(default=None)):
     return mount_view(m)
 
 
+@router.post("/api/mounts/restart")
+def restart_endpoint(x_fused: str | None = Header(default=None, alias="X-Fused")):
+    """Global recovery: restart the rcd daemon and re-mount everything. The one
+    tool that fixes a stale-credential daemon (a fresh daemon re-reads refreshed
+    keys) and applies changed mount params — see restart_rcd. Sync def so the
+    multi-second unmount+kill+spawn+remount runs in the threadpool, never the
+    event loop. Returns the same payload as GET /api/mounts."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    try:
+        restart_rcd()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    return get_mounts()
+
+
 @router.post("/api/mounts/{cid}/unmount")
 def unmount_endpoint(cid: str, force: str = "0",
                      x_fused: str | None = Header(default=None)):

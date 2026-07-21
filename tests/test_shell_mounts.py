@@ -3227,3 +3227,30 @@ def test_kill_current_rcd_signals_confirmed_pid(home, monkeypatch):
     mounts_mod._kill_current_rcd()
     # One SIGTERM was enough; no SIGKILL escalation.
     assert sigs == [(999, mounts_mod.signal.SIGTERM)]
+
+
+# -- POST /api/mounts/restart ----------------------------------------------
+
+
+def test_restart_endpoint_requires_fused_and_returns_mounts(client, rcd, monkeypatch):
+    # Write guard: no X-Fused -> 403, and restart_rcd is never invoked.
+    called = []
+    monkeypatch.setattr(mounts_mod, "restart_rcd", lambda: called.append(True))
+    assert client.post("/api/mounts/restart").status_code == 403
+    assert called == []
+
+    r = client.post("/api/mounts/restart", headers=FUSED)
+    assert r.status_code == 200
+    assert called == [True]
+    # Same payload as GET /api/mounts, so the client refreshes in one shot.
+    assert set(r.json()) == {"rclone", "mounts"}
+
+
+def test_restart_endpoint_500_on_failure(client, rcd, monkeypatch):
+    def boom():
+        raise RuntimeError("rclone rcd did not come up within 10s")
+
+    monkeypatch.setattr(mounts_mod, "restart_rcd", boom)
+    r = client.post("/api/mounts/restart", headers=FUSED)
+    assert r.status_code == 500
+    assert "did not come up" in r.json()["error"]
