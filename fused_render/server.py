@@ -733,6 +733,34 @@ _CONDITIONS_TTL_S = 60.0
 _CONDITIONS_CACHE: dict[str, tuple[float, dict]] = {}  # path -> (inserted_monotonic, payload)
 
 
+# /api/fs/stat on a MOUNT path goes _mount_safe_stat -> _mount_probe ->
+# rc_list_dir(parent), a full cold LIST of the parent prefix over rclone/S3
+# (~1.6s) just to describe one child; opening a folder fires it, and
+# re-navigating to a sibling repaid it uncached. A short check-on-read TTL cache
+# (same shape as _CONDITIONS_CACHE) serves a recent stat instead. Only
+# MOUNT-backed success payloads are cached — see api_fs_stat for the scope
+# rationale and mutation-invalidation contract. Separate TTL from conditions so
+# each can be tuned/monkeypatched on its own; kept a module attribute so tests
+# can override it.
+_STAT_TTL_S = 60.0
+_STAT_CACHE: dict[str, tuple[float, dict]] = {}  # path -> (inserted_monotonic, payload)
+
+
+def _invalidate_stat_cache(*paths: object) -> None:
+    # Drop cached /api/fs/stat entries for paths a mutation just touched, plus
+    # their parent directories (creating/deleting a child moves the parent's
+    # mtime on many backends). The editor re-stats a path right after
+    # write/rename/copy/mkdir to re-arm its optimistic lock, so a stale hit here
+    # would be a real clobber bug — invalidation is the correctness backbone of
+    # this cache, not an optimization. Popping a key that was never cached (or a
+    # non-string/None body field) is a harmless no-op, so callers can pass raw
+    # body values and invalidate unconditionally without inspecting the result.
+    for p in paths:
+        if isinstance(p, str) and p:
+            _STAT_CACHE.pop(p, None)
+            _STAT_CACHE.pop(os.path.dirname(p), None)
+
+
 def _mount_list_error_response(path, exc):
     """Map an RcList* failure to the same HTTP response /api/fs/list returns, so
     fs/walk surfaces a failed ROOT listing identically (timeout/down rcd/broken
@@ -2913,7 +2941,27 @@ def create_app(start_dir: str) -> FastAPI:
 
     @app.get("/api/fs/stat")
     def api_fs_stat(path: str):
-        return _fs_stat(path)
+        # Short check-on-read TTL cache (mirrors api_fs_conditions) to avoid
+        # re-paying the ~1.6s cold parent-prefix LIST that a mount stat costs
+        # (see _STAT_CACHE). Only MOUNT-backed paths are cached: a local stat is
+        # a cheap kernel call, and a local file can be mutated out-of-band (git,
+        # another editor) with no hook for us to invalidate — caching those
+        # would risk handing back a stale mtime the editor's optimistic lock
+        # trusts, for no latency win. Mount paths are mutated only through this
+        # server's fs/write|rename|copy|delete|mkdir handlers, which call
+        # _invalidate_stat_cache, so their only staleness is the same bounded
+        # external-change window the conditions cache already accepts. Only
+        # success payloads (plain dicts) are stored; _fs_stat's 404/503 branches
+        # return _error -> JSONResponse and are always recomputed.
+        from fused_render.shell.mounts import is_mount_backed
+
+        cached = _STAT_CACHE.get(path)
+        if cached is not None and time.monotonic() - cached[0] < _STAT_TTL_S:
+            return cached[1]
+        result = _fs_stat(path)
+        if isinstance(result, dict) and is_mount_backed(path):
+            _STAT_CACHE[path] = (time.monotonic(), result)
+        return result
 
     @app.get("/api/fs/conditions")
     def api_fs_conditions(path: str):
@@ -3441,25 +3489,49 @@ def create_app(start_dir: str) -> FastAPI:
         subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return JSONResponse({"ok": True})
 
+    # Every mutation endpoint invalidates the /api/fs/stat cache for the paths it
+    # touches (and their parents, via _invalidate_stat_cache) so the editor's
+    # immediate post-mutation stat re-reads fresh metadata. Invalidation runs
+    # unconditionally after the handler — a no-op on error/409 costs nothing, and
+    # doing it here (not inside each _fs_* helper's many return branches) keeps
+    # the contract in one obvious place per route.
+    #
+    # RESIDUAL: a RECURSIVE delete / overwriting rename of a directory does not
+    # walk the (now-gone) subtree to evict individually-cached child stats. Those
+    # entries simply age out within _STAT_TTL_S — the same bounded staleness the
+    # cache accepts for out-of-band changes — and the editor navigates top-down,
+    # so it re-lists the parent (fresh) before it would re-stat a vanished child.
     @app.post("/api/fs/write")
     def api_fs_write(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-        return _fs_write(body, x_fused)
+        result = _fs_write(body, x_fused)
+        _invalidate_stat_cache(body.get("path"))
+        return result
 
     @app.post("/api/fs/mkdir")
     def api_fs_mkdir(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-        return _fs_mkdir(body, x_fused)
+        result = _fs_mkdir(body, x_fused)
+        _invalidate_stat_cache(body.get("path"))
+        return result
 
     @app.post("/api/fs/delete")
     def api_fs_delete(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-        return _fs_delete(body, x_fused)
+        result = _fs_delete(body, x_fused)
+        _invalidate_stat_cache(body.get("path"))
+        return result
 
     @app.post("/api/fs/rename")
     def api_fs_rename(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-        return _fs_rename(body, x_fused)
+        result = _fs_rename(body, x_fused)
+        # A move changes both ends: src disappears, dst appears.
+        _invalidate_stat_cache(body.get("src"), body.get("dst"))
+        return result
 
     @app.post("/api/fs/copy")
     def api_fs_copy(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-        return _fs_copy(body, x_fused)
+        result = _fs_copy(body, x_fused)
+        # A copy only writes dst; src is untouched, so its cached stat stays valid.
+        _invalidate_stat_cache(body.get("dst"))
+        return result
 
     @app.get("/render")
     def render(path: str):
