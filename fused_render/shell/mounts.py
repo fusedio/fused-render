@@ -1635,6 +1635,26 @@ def _s3_bucket_prefix_region(fs: str, cfg: dict) -> tuple[str, str, str] | None:
     return bucket, prefix.rstrip("/"), cfg.get("region") or "us-east-1"
 
 
+def _s3_object_url(bucket: str, prefix: str, rel: str, region: str) -> str:
+    """One S3 object URL: prefix-join then percent-quote the key, applying the
+    dotted-bucket path-style rule via _s3_base_url. The single builder both the
+    anonymous (unsigned) and signable (presigned-input) branches of
+    _s3_request_url join their key through, so the two can't diverge on the
+    prefix-join or the quoting."""
+    key = (prefix + "/" if prefix else "") + rel
+    return _s3_base_url(bucket, region) + "/" + urllib.parse.quote(key)
+
+
+def _s3_list_root(bucket: str, region: str) -> str:
+    """The bucket-root URL a ListObjectsV2 query hangs off, applying the
+    dotted-bucket rule once: a dotted bucket is already path-style (root has no
+    trailing slash — "s3.<r>.amazonaws.com/<bucket>?..."), a virtual-hosted one
+    needs the "/" before the "?". Shared by the anonymous (base?query) and
+    signable (presigned) branches so the dotted-bucket handling can't diverge."""
+    base = _s3_base_url(bucket, region)
+    return base if "." in bucket else base + "/"
+
+
 def _public_object_url(fs: str, rel: str) -> str | None:
     """Plain https URL for an object on an ANONYMOUS AWS S3 remote — the one
     backend class that can't presign but doesn't need to. Credentialed or
@@ -1649,9 +1669,7 @@ def _public_object_url(fs: str, rel: str) -> str | None:
     if derived is None:
         return None
     bucket, prefix, region = derived
-    key = (prefix + "/" if prefix else "") + rel
-    # _s3_base_url applies the dotted-bucket path-style rule (see there).
-    return _s3_base_url(bucket, region) + "/" + urllib.parse.quote(key)
+    return _s3_object_url(bucket, prefix, rel, region)
 
 
 def _gcs_public_object_url(fs: str, rel: str) -> str | None:
@@ -1719,9 +1737,7 @@ def _s3_request_url(fs: str, rel: str, *, method: str = "GET",
         if derived is None:
             return None
         bucket, _prefix, region = derived
-        base = _s3_base_url(bucket, region)
-        qs = urllib.parse.urlencode(query)
-        return f"{base}?{qs}" if "." in bucket else f"{base}/?{qs}"
+        return f"{_s3_list_root(bucket, region)}?{urllib.parse.urlencode(query)}"
     # Cheap uncached shape gate, then ONE cached credential resolution (the
     # single source of the sign/no-sign decision on this path — no separate
     # uncached pre-gate that could disagree with it within the TTL window).
@@ -1738,15 +1754,12 @@ def _s3_request_url(fs: str, rel: str, *, method: str = "GET",
         with _upstream_lock:
             region = _upstream_region.get(fs, cfg_region)  # adopted region wins
     if query is None:
-        key = (prefix + "/" if prefix else "") + rel
-        url = _s3_base_url(bucket, region) + "/" + urllib.parse.quote(key)
+        url = _s3_object_url(bucket, prefix, rel, region)
         return s3sign.presign_url(url, method=method, region=region,
                                   credentials=creds, expires=_SIGN_EXPIRY_S)
-    base = _s3_base_url(bucket, region)
-    root = base if "." in bucket else base + "/"
-    return s3sign.presign_url(root, method=method, region=region,
-                              credentials=creds, extra_query=query,
-                              expires=_SIGN_EXPIRY_S)
+    return s3sign.presign_url(_s3_list_root(bucket, region), method=method,
+                              region=region, credentials=creds,
+                              extra_query=query, expires=_SIGN_EXPIRY_S)
 
 
 def _adopt_region_on_301(fs: str, code: int, headers) -> bool:
