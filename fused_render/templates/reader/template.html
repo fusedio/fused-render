@@ -232,7 +232,9 @@
   @supports not (backdrop-filter: blur(1px)) {
     #controls { background: var(--panel); }
   }
-  #controls button {
+  /* direct children only — the voice popover's rows are buttons too and must
+     keep their own flex layout (the old `#controls button` grid squashed them) */
+  #controls > button {
     display: grid;
     place-items: center;
     height: 34px;
@@ -245,7 +247,7 @@
     cursor: pointer;
     transition: color 110ms, background-color 110ms;
   }
-  #controls button:hover {
+  #controls > button:hover {
     color: var(--ink);
     background: color-mix(in oklab, var(--ink) 9%, transparent);
   }
@@ -299,6 +301,128 @@
     transition: transform 200ms cubic-bezier(0.2, 0, 0, 1);
   }
   #controls svg { display: block; }
+
+  /* ===================== voice picker (custom searchable dropdown) =====
+     Replaces the flat 100+ entry <select>. A button in the bar opens a glass
+     popover UPWARD (the bar is sticky-bottom, so a native menu would open
+     off-screen). Anchored to a position:relative wrapper so it tracks the
+     button even as the bar flex-wraps. */
+  #voicewrap { position: relative; display: inline-flex; }
+  /* Button reads like the sibling <select> (border/bg/height), NOT like the
+     transparent icon buttons — hence the id override of #controls button. */
+  #controls #voicebtn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 30px;
+    min-width: 0;
+    max-width: 200px;
+    padding: 0 8px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--ink);
+    font: inherit;
+    cursor: pointer;
+    transition: color 110ms, border-color 110ms;
+  }
+  #controls #voicebtn:hover:not(:disabled) { color: var(--ink); border-color: var(--line-2); }
+  #controls #voicebtn:disabled { color: var(--ink-3); cursor: default; }
+  #voicebtn .vlabel {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
+  }
+  #voicebtn .vchev { flex: 0 0 auto; opacity: 0.65; }
+
+  /* popover: opens upward, right-aligned to the button — same glass tokens as
+     #controls so it reads as one surface. */
+  #voicepop {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 8px);
+    z-index: 40;
+    width: 280px;
+    max-height: 320px;
+    display: none;
+    flex-direction: column;
+    overflow: hidden;
+    border-radius: 14px;
+    /* more opaque than the bar — the popover floats over body TEXT, and a 62%
+       wash lets it bleed through the option rows */
+    background: color-mix(in oklab, var(--panel) 92%, transparent);
+    border: 1px solid color-mix(in oklab, white 12%, transparent);
+    box-shadow: 0 10px 34px rgba(0, 0, 0, 0.5),
+                inset 0 1px 0 0 color-mix(in oklab, white 10%, transparent);
+    backdrop-filter: blur(22px) saturate(160%);
+    -webkit-backdrop-filter: blur(22px) saturate(160%);
+  }
+  @supports not (backdrop-filter: blur(1px)) {
+    #voicepop { background: var(--panel); }
+  }
+  #voicepop.open { display: flex; }
+  #voicesearch {
+    font: inherit;
+    margin: 8px 8px 4px;
+    padding: 6px 8px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--ink);
+  }
+  #voicesearch::placeholder { color: var(--ink-3); }
+  /* neutral focus border on fields — accent rings are for buttons only */
+  #voicesearch:focus { outline: none; border-color: var(--ink-2); }
+  #voicelist {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 2px 6px;
+  }
+  .vopt {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 7px 8px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--ink);
+    cursor: pointer;
+    text-align: left;
+    font: inherit;
+  }
+  .vopt:hover, .vopt.hi { background: color-mix(in oklab, var(--ink) 9%, transparent); }
+  .vopt .vname { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .vopt .vlang { flex: 0 0 auto; font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+  /* check reserves its slot (visibility, not display) so rows stay aligned */
+  .vopt .vcheck { flex: 0 0 auto; width: 12px; color: var(--accent); visibility: hidden; }
+  .vopt.on .vcheck { visibility: visible; }
+  .vopt.on .vname { color: var(--accent); }
+  .vgroup {
+    padding: 8px 8px 3px;
+    font-size: 11px;
+    color: var(--ink-3);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .vempty { padding: 14px 8px; color: var(--ink-3); text-align: center; }
+  .vfoot { flex: 0 0 auto; border-top: 1px solid var(--line); padding: 6px; }
+  #voiceall {
+    width: 100%;
+    padding: 6px 8px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--ink-2);
+    cursor: pointer;
+    font: inherit;
+    text-align: center;
+  }
+  #voiceall:hover { color: var(--ink); background: color-mix(in oklab, var(--ink) 9%, transparent); }
 
   /* ===================== toast ===================== */
   #toast {
@@ -375,7 +499,17 @@
     </button>
     <span class="sep"></span>
     <select id="ratesel" title="Speed" aria-label="Speed"></select>
-    <select id="voicesel" title="Voice" aria-label="Voice"></select>
+    <span id="voicewrap">
+      <button id="voicebtn" title="Voice" aria-label="Voice" aria-haspopup="listbox" aria-expanded="false">
+        <span class="vlabel">Voice</span>
+        <svg class="vchev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>
+      </button>
+      <div id="voicepop" role="listbox" aria-label="Voice">
+        <input id="voicesearch" type="text" placeholder="Search voices…" autocomplete="off" spellcheck="false" />
+        <div id="voicelist"></div>
+        <div class="vfoot"><button id="voiceall" type="button">Show all voices</button></div>
+      </div>
+    </span>
     <span class="sep"></span>
     <div class="prog">
       <span class="lbl" id="prog-lbl">–</span>
@@ -418,7 +552,13 @@
   const docEl = document.getElementById("doc");
   const viewSel = document.getElementById("viewsel");
   const rateSel = document.getElementById("ratesel");
-  const voiceSel = document.getElementById("voicesel");
+  // Voice picker: custom searchable dropdown (replaces the flat <select>).
+  const voiceWrap = document.getElementById("voicewrap");
+  const voiceBtn = document.getElementById("voicebtn");
+  const voicePop = document.getElementById("voicepop");
+  const voiceSearch = document.getElementById("voicesearch");
+  const voiceList = document.getElementById("voicelist");
+  const voiceAll = document.getElementById("voiceall");
   const metaEl = document.getElementById("meta");
   const fnameEl = document.getElementById("fname");
   const pill = document.getElementById("pill");
@@ -734,7 +874,11 @@
   let errCount = 0;         // consecutive utterance errors
   let curRate = 1;
   let curVoice = null;      // SpeechSynthesisVoice | null
-  let voices = [];
+  let voices = [];          // ALL system voices
+  let curatedVoices = [];   // the curated short list (family + quality-ranked)
+  let popOpen = false;      // voice popover open?
+  let showAll = false;      // popover showing ALL voices (grouped) vs curated?
+  let hiIndex = -1;         // roving keyboard highlight into the rendered list
   let curEl = null;
   let lastWrittenPos = -1;
 
@@ -911,8 +1055,16 @@
     playing = true;
     updatePlayUI();
     const s = window.speechSynthesis;
-    if (s && s.paused && s.speaking) engine.resume(); // continue the paused sentence
-    else speakFromCursor();
+    if (s && s.paused && s.speaking) {
+      engine.resume(); // continue the paused sentence mid-word
+    } else {
+      // A pause can land BETWEEN utterances (paused=true, speaking=false).
+      // Speaking into a paused synth queues silently — clear the paused
+      // state first or play() produces nothing.
+      engine.cancel();
+      if (s && s.paused) engine.resume();
+      speakFromCursor();
+    }
   }
   function pause() {
     if (!playing) return;
@@ -1042,21 +1194,95 @@
     });
   }
 
+  // ---- voice curation ------------------------------------------------------
+  // WHY: real macOS Chrome exposes 100+ voices — most are other languages or
+  // novelty voices nobody wants to listen to a document in. We show a short,
+  // quality-ranked list of the UI language's voices, with an escape hatch to
+  // ALL of them. Curation is pure (voices in → curated out) so it's testable.
+
+  // macOS novelty/legacy voices, matched case-insensitively on the name's
+  // leading token(s). Multi-word entries ("Bad News") match as a phrase prefix,
+  // so "Fred" and "Fred (Enhanced)" both drop, but "Florian" never does.
+  const NOVELTY = [
+    "albert", "bad news", "bahh", "bells", "boing", "bubbles", "cellos",
+    "deranged", "good news", "jester", "organ", "superstar", "trinoids",
+    "whisper", "wobble", "zarvox", "eddy", "flo", "grandma", "grandpa",
+    "reed", "rocko", "sandy", "shelley", "ralph", "fred", "junior", "kathy",
+  ];
+  function isNovelty(name) {
+    const n = collapse(name).toLowerCase();
+    for (const bad of NOVELTY) {
+      if (n === bad || n.startsWith(bad + " ")) return true;
+    }
+    return false;
+  }
+  // Names hinting a higher-quality synthesis tier — ranked above plain voices.
+  const QUALITY_RE = /siri|\(enhanced\)|\(premium\)|natural|neural/i;
+  // lower rank = shown first
+  function voiceRank(v) {
+    let r = 0;
+    if (v.default) r -= 1000;              // the system default leads
+    if (QUALITY_RE.test(v.name || "")) r -= 100; // then the quality tier
+    if (v.localService) r -= 10;           // local before network
+    return r;
+  }
+  function langFamily(v) {
+    return String(v.lang || "").replace(/_/g, "-").split("-")[0].toLowerCase();
+  }
+  function curateVoices(all) {
+    const ui = (navigator.language || "en").split("-")[0].toLowerCase();
+    const inFamily = (v) => langFamily(v) === ui;
+
+    // 1) UI language family, novelty dropped.
+    let list = all.filter((v) => inFamily(v) && !isNovelty(v.name));
+    // 2) fallbacks so a non-English system never sees an empty menu.
+    if (!list.length) list = all.filter(inFamily);
+    if (!list.length) list = all.slice();
+
+    // 3) dedupe by name+lang, keeping the highest-ranked instance.
+    const byKey = new Map();
+    for (const v of list) {
+      const key = v.name + "|" + v.lang;
+      const prev = byKey.get(key);
+      if (!prev || voiceRank(v) < voiceRank(prev)) byKey.set(key, v);
+    }
+    list = Array.from(byKey.values());
+
+    // 4) rank, then alphabetical.
+    list.sort((a, b) => voiceRank(a) - voiceRank(b) || (a.name || "").localeCompare(b.name || ""));
+    return list;
+  }
+  // The curated list, plus the active voice pinned in if curation dropped it —
+  // so the UI never hides which voice is actually speaking.
+  function curatedWithCurrent() {
+    const list = curatedVoices.slice();
+    if (curVoice && !list.some((v) => v.voiceURI === curVoice.voiceURI)) {
+      list.unshift(curVoice);
+    }
+    return list;
+  }
+
+  // ---- voice picker UI -----------------------------------------------------
+  function setVoiceLabel(txt) {
+    const l = voiceBtn.querySelector(".vlabel");
+    if (l) l.textContent = txt;
+    voiceBtn.title = txt;
+  }
+  // Rebuild the button + curated list. Called on voice (re)load.
   function populateVoices() {
     const banner = document.getElementById("novoice");
+    curatedVoices = curateVoices(voices);
     if (!voices.length) {
-      voiceSel.innerHTML = '<option value="">No voices</option>';
-      voiceSel.disabled = true;
+      voiceBtn.disabled = true;
+      setVoiceLabel("No voices");
       banner.classList.add("show");
+      closeVoicePop();
       return;
     }
     banner.classList.remove("show");
-    voiceSel.disabled = false;
-    voiceSel.innerHTML = voices
-      .map((v) => '<option value="' + encodeURIComponent(v.voiceURI) + '">' +
-        (v.name + (v.lang ? " (" + v.lang + ")" : "")) + "</option>")
-      .join("");
-    if (curVoice) voiceSel.value = encodeURIComponent(curVoice.voiceURI);
+    voiceBtn.disabled = false;
+    setVoiceLabel(curVoice ? curVoice.name : "Voice");
+    if (popOpen) renderVoiceOptions();
   }
   function resolveVoice() {
     if (!voices.length) { curVoice = null; return; }
@@ -1073,12 +1299,146 @@
     resolveVoice();
     populateVoices();
   }
-  voiceSel.addEventListener("change", () => {
-    const uri = decodeURIComponent(voiceSel.value || "");
-    curVoice = voices.find((v) => v.voiceURI === uri) || null;
-    if (curVoice) { try { fused.params.set("voice", curVoice.voiceURI); } catch (e) {} }
+
+  // Render the popover option rows for the current search + showAll state.
+  function renderVoiceOptions() {
+    const q = collapse(voiceSearch.value).toLowerCase();
+    const match = (v) => !q || (v.name + " " + (v.lang || "")).toLowerCase().indexOf(q) !== -1;
+    const frag = document.createDocumentFragment();
+    let rows = 0;
+
+    const addOpt = (v) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "vopt" + (curVoice && v.voiceURI === curVoice.voiceURI ? " on" : "");
+      b.dataset.uri = v.voiceURI;             // E2E hook: identify the row's voice
+      const name = document.createElement("span");
+      name.className = "vname";
+      name.textContent = v.name;
+      const lang = document.createElement("span");
+      lang.className = "vlang";
+      lang.textContent = v.lang || "";
+      const chk = document.createElement("span");
+      chk.className = "vcheck";
+      chk.textContent = "✓";
+      b.appendChild(name);
+      b.appendChild(lang);
+      b.appendChild(chk);
+      b.addEventListener("click", () => selectVoice(v.voiceURI));
+      frag.appendChild(b);
+      rows++;
+    };
+
+    if (showAll) {
+      // ALL voices, grouped by language (non-interactive header per group).
+      const groups = new Map();
+      for (const v of voices) {
+        if (!match(v)) continue;
+        const g = v.lang || "—";
+        if (!groups.has(g)) groups.set(g, []);
+        groups.get(g).push(v);
+      }
+      const keys = Array.from(groups.keys()).sort((a, b) => a.localeCompare(b));
+      for (const g of keys) {
+        const h = document.createElement("div");
+        h.className = "vgroup";
+        h.textContent = g;
+        frag.appendChild(h);
+        groups.get(g)
+          .sort((a, b) => (a.name || "").localeCompare(b.name || ""))
+          .forEach(addOpt);
+      }
+    } else {
+      curatedWithCurrent().filter(match).forEach(addOpt);
+    }
+
+    if (!rows) {
+      const e = document.createElement("div");
+      e.className = "vempty";
+      e.textContent = "No matches";
+      frag.appendChild(e);
+    }
+    voiceList.textContent = "";
+    voiceList.appendChild(frag);
+    voiceAll.textContent = showAll ? "Show fewer" : ("Show all voices (" + voices.length + ")");
+    hiIndex = -1; // list changed — drop any roving highlight
+  }
+
+  // Selection: EXACTLY the old <select> change behavior (curVoice + param +
+  // reseat), plus label update and closing the popover.
+  function selectVoice(uri) {
+    const v = voices.find((x) => x.voiceURI === uri);
+    if (!v) return;
+    curVoice = v;
+    try { fused.params.set("voice", v.voiceURI); } catch (e) {}
+    setVoiceLabel(v.name);
+    closeVoicePop();
     reseat();
+  }
+
+  function openVoicePop() {
+    if (voiceBtn.disabled) return;
+    popOpen = true;
+    voicePop.classList.add("open");
+    voiceBtn.setAttribute("aria-expanded", "true");
+    voiceSearch.value = "";
+    renderVoiceOptions();
+    // Focus the search field but never scroll the page or touch playback.
+    setTimeout(() => {
+      try { voiceSearch.focus({ preventScroll: true }); } catch (e) { voiceSearch.focus(); }
+    }, 0);
+  }
+  function closeVoicePop() {
+    if (!popOpen) return;
+    popOpen = false;
+    voicePop.classList.remove("open");
+    voiceBtn.setAttribute("aria-expanded", "false");
+    hiIndex = -1;
+  }
+  function toggleVoicePop() { popOpen ? closeVoicePop() : openVoicePop(); }
+
+  // roving keyboard highlight over the currently rendered .vopt rows
+  function moveHi(dir) {
+    const opts = Array.prototype.slice.call(voiceList.querySelectorAll(".vopt"));
+    if (!opts.length) return;
+    opts.forEach((o) => o.classList.remove("hi"));
+    hiIndex += dir;
+    if (hiIndex < 0) hiIndex = opts.length - 1;
+    if (hiIndex >= opts.length) hiIndex = 0;
+    const el = opts[hiIndex];
+    el.classList.add("hi");
+    try { el.scrollIntoView({ block: "nearest" }); } catch (e) {}
+  }
+
+  voiceBtn.addEventListener("click", (e) => { e.stopPropagation(); toggleVoicePop(); });
+  voiceSearch.addEventListener("input", renderVoiceOptions);
+  voiceAll.addEventListener("click", (e) => {
+    e.stopPropagation();
+    showAll = !showAll;
+    renderVoiceOptions();
+    try { voiceSearch.focus({ preventScroll: true }); } catch (e2) {}
   });
+  // Click outside the wrapper closes (mousedown, so it beats the button's click).
+  document.addEventListener("mousedown", (e) => {
+    if (popOpen && !voiceWrap.contains(e.target)) closeVoicePop();
+  });
+  // Esc + arrow/enter nav: CAPTURE phase + stopPropagation. House rule — a
+  // bubble-phase Esc loses to document listeners registered earlier, so capture
+  // guarantees the popover eats the key first.
+  document.addEventListener("keydown", (e) => {
+    if (!popOpen) return;
+    if (e.key === "Escape") {
+      e.preventDefault(); e.stopPropagation();
+      closeVoicePop(); voiceBtn.focus();
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault(); e.stopPropagation(); moveHi(1);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault(); e.stopPropagation(); moveHi(-1);
+    } else if (e.key === "Enter") {
+      const opts = voiceList.querySelectorAll(".vopt");
+      if (hiIndex >= 0 && opts[hiIndex]) { e.preventDefault(); e.stopPropagation(); opts[hiIndex].click(); }
+    }
+  }, true);
 
   function updateMeta() {
     const mins = Math.max(1, Math.round(totalWords / (WPM * curRate)));
@@ -1105,7 +1465,8 @@
       const match = voices.find((vc) => vc.voiceURI === uri);
       if (match) {
         curVoice = match;
-        voiceSel.value = encodeURIComponent(uri);
+        setVoiceLabel(match.name);
+        if (popOpen) renderVoiceOptions();
         reseat();
       }
     }
