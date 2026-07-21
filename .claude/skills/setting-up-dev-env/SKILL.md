@@ -19,7 +19,16 @@ uv pip install --python .venv/bin/python -e ".[dev,bundled,fused]" pytest-xdist
 cd frontend && bun install && bun run build && cd ..                         # builds fused_render/static/shell-dist/
 ```
 
-Verify: `ls fused_render/static/shell-dist/index.html` and `.venv/bin/python -m pytest -q` (~1150 pass).
+Verify: `ls fused_render/static/shell-dist/index.html` and `.venv/bin/python -m pytest -q` (~1170 pass).
+
+## Running the Dev Server
+
+Use `scripts/dev.sh` — never launch `python -m fused_render.cli` (or uvicorn) directly. It wires up the pieces a raw launch skips: `vite build --watch` for live frontend rebuilds, Python auto-reload, per-worktree port/state isolation, and reading templates straight from the repo. It also bootstraps a repo-local `.venv` (with `fused` + `bundled`) if one is missing.
+
+```bash
+scripts/dev.sh                 # defaults
+scripts/dev.sh --port 9000     # extra args pass through to the server
+```
 
 ## Reference
 
