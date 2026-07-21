@@ -429,3 +429,8 @@ def test_photos_list_dir_list_failure_returns_structured_error(listfailsfs):
     res = photos.list_dir(REMOTE_DIR, "new", 0, 200, "", "", "", src=listfailsfs.src)
     assert res["ok"] is False
     assert res["error"] == "list-failed"
+    # Must carry the full success shape so the frontend's loadDir/buildTiles
+    # never dereference undefined items/total and crash (Bugbot High finding).
+    assert res["items"] == []
+    assert res["total"] == 0
+    assert res["subdirs"] == []

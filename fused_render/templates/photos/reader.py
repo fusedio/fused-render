@@ -373,8 +373,12 @@ def list_dir(path: str, sort: str, offset: int, limit: int, q: str, date_from: s
         try:
             ents, _ = _list_remote(src, d)
         except Exception as exc:  # noqa: BLE001
+            # Carry the full success shape (items/total/offset/subdirs) so the
+            # frontend's loadDir/buildTiles never touch undefined fields — it
+            # keys off `ok:false` to surface the error instead of crashing.
             return {"ok": False, "error": "list-failed", "detail": str(exc)[:200],
-                    "dir": _fwd(d)}
+                    "dir": _fwd(d), "total": 0, "offset": offset,
+                    "items": [], "subdirs": []}
         for e in ents:
             name = e["name"]
             if name.startswith("."):

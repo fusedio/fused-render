@@ -522,8 +522,13 @@ async function loadDir(path, opts, append) {
     action: "list_dir", path, sort: opts.sort, offset: String(offset), limit: "200",
     q: opts.q, date_from: opts.from, date_to: opts.to, src: rawURL(path),
   });
-  currentDir = res.dir; total = res.total;
-  items = append ? items.concat(res.items) : res.items;
+  // A structured failure ({ok:false}) from the backend (e.g. a mount /api/fs/list
+  // hiccup) is surfaced via render()'s try/catch rather than crashing on the
+  // missing items/total below.
+  if (res && res.ok === false) throw new Error(res.detail || res.error || "Cannot list folder");
+  currentDir = res.dir; total = res.total || 0;
+  const got = res.items || [];
+  items = append ? items.concat(got) : got;
   return res;
 }
 
