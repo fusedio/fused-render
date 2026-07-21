@@ -9,10 +9,12 @@ Returns:
       "custom": [{"name","title","extensions":[...]}, ...],   # [] if none
     }
 
-Core templates live under ~/.fused-render/.core-templates/ (one subdir each).
-The extension->template map is registry.json; we reverse it so each template
-lists the extensions it handles. Custom templates are the non-dotfile
-top-level dirs in ~/.fused-render/ that contain a template.html.
+Core templates ship inside the `fused_render` package (`.../templates/`); user
+("custom") templates live under `~/.fused-render/templates/` (decision D76).
+Each is a folder containing a `template.html`. The extension->template map is
+`registry.json` (core registry beside the core templates, user registry beside
+the user templates); we reverse it so each template lists the extensions it
+handles.
 """
 
 
@@ -22,7 +24,30 @@ def main():
 
     home = os.path.expanduser("~")
     root = os.path.join(home, ".fused-render")
-    core_dir = os.path.join(root, ".core-templates")
+
+    # Core templates ship with the package — locate them from the import path
+    # (works in any install), falling back to the app's local mirror.
+    core_dir = None
+    try:
+        import fused_render  # noqa: F401
+        cand = os.path.join(os.path.dirname(fused_render.__file__), "templates")
+        if os.path.isdir(cand):
+            core_dir = cand
+    except Exception:
+        pass
+    if not core_dir:
+        for cand in (os.path.join(root, ".core-templates"),):
+            if os.path.isdir(cand):
+                core_dir = cand
+                break
+        else:
+            core_dir = os.path.join(root, ".core-templates")
+
+    # User templates + their registry (D76: nested under templates/); fall back
+    # to the pre-D76 flat home root for users who haven't migrated.
+    user_dir = os.path.join(root, "templates")
+    if not os.path.isdir(user_dir):
+        user_dir = root
 
     # Acronyms / brand names that title-case badly. Everything else just gets
     # underscores -> spaces and Title Case.
@@ -56,22 +81,22 @@ def main():
         return name.replace("_", " ").replace("-", " ").title()
 
     def load_ext_map():
-        """template name -> sorted list of extensions it handles."""
-        candidates = [
-            os.path.join(core_dir, "registry.json"),
-            "/Users/maximelenormand/Library/CloudStorage/Dropbox/Documents/"
-            "repos/fused-render/fused_render/templates/registry.json",
-        ]
-        registry = None
-        for p in candidates:
+        """template name -> sorted list of extensions it handles.
+
+        Merges the core registry (beside the core templates) with the user
+        registry (beside the user templates), so custom templates also show
+        the extensions they're bound to.
+        """
+        rev = {}
+        for p in (os.path.join(core_dir, "registry.json"),
+                  os.path.join(user_dir, "registry.json")):
             try:
                 with open(p) as f:
                     registry = json.load(f)
-                break
             except Exception:
                 continue
-        rev = {}
-        if isinstance(registry, dict):
+            if not isinstance(registry, dict):
+                continue
             for ext, tmpls in registry.items():
                 if not isinstance(tmpls, list):
                     continue
@@ -108,15 +133,15 @@ def main():
     core.sort(key=lambda e: e["name"].lower())
 
     # --- Custom templates -------------------------------------------------
-    # Top-level dirs (or symlinks to dirs) directly under ~/.fused-render/
-    # that are not dot-dirs and that contain a template.html.
-    EXCLUDE = {".core-templates", ".import-staging"}
+    # Folders (or symlinks to folders) under the user templates dir that
+    # contain a template.html. Skip dot-dirs and known non-template siblings.
+    EXCLUDE = {".core-templates", ".import-staging", "spec", "vendor", "shared"}
     custom = []
     try:
-        for name in sorted(os.listdir(root), key=str.lower):
+        for name in sorted(os.listdir(user_dir), key=str.lower):
             if name.startswith(".") or name in EXCLUDE:
                 continue
-            full = os.path.join(root, name)
+            full = os.path.join(user_dir, name)
             if os.path.isdir(full) and is_template_dir(full):
                 custom.append(entry(name))
     except Exception:

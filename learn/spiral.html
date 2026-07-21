@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Prime spiral</title>
+<style>
+  :root { color-scheme: dark; --yellow:#E5FF44; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:20px; background:#131417; color:#e8eaed;
+         font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  #controls { display:flex; align-items:center; gap:12px; margin-bottom:14px; flex-wrap:wrap; }
+  #controls label { color:#9aa0a6; font-size:13px; }
+  #count { width:240px; accent-color:var(--yellow); }
+  #countVal { font-variant-numeric:tabular-nums; min-width:4em; color:var(--yellow); font-weight:600; }
+  .stat { color:#77777c; font-size:12.5px; }
+  .stat b { color:#e8eaed; font-variant-numeric:tabular-nums; }
+  .stat .y { color:var(--yellow); }
+  #wrap { border:1px solid #2a2d33; border-radius:10px; background:#0f0f10; overflow:hidden; }
+  canvas { display:block; width:100%; height:auto; }
+</style>
+</head>
+<body>
+  <div id="controls">
+    <label for="count">numbers</label>
+    <input id="count" type="range" min="500" max="40000" step="500" value="8000" />
+    <span id="countVal"></span>
+    <span class="stat" id="stat"></span>
+  </div>
+  <div id="wrap"><canvas id="c" width="720" height="720"></canvas></div>
+
+<script>
+  const slider = document.getElementById("count");
+  const countVal = document.getElementById("countVal");
+  const statEl = document.getElementById("stat");
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d");
+  const SIZE = 720;
+
+  function currentN(){
+    const raw = fused.params.get("n");
+    return raw !== undefined ? parseInt(raw, 10) : 8000;
+  }
+
+  function draw(data){
+    const { primes, extent } = data;
+    ctx.fillStyle = "#0f0f10";
+    ctx.fillRect(0, 0, SIZE, SIZE);
+    // Fit the spiral (from -extent..+extent) into the canvas with a small margin.
+    const span = extent * 2 + 1;
+    const scale = (SIZE - 24) / span;
+    const cx = SIZE / 2, cy = SIZE / 2;
+    const r = Math.max(0.6, scale * 0.42);
+    ctx.fillStyle = "#E5FF44";
+    for (let i = 0; i < primes.length; i++){
+      const px = cx + primes[i][0] * scale;
+      const py = cy - primes[i][1] * scale;   // flip y so it grows upward
+      ctx.beginPath();
+      ctx.arc(px, py, r, 0, 6.283185);
+      ctx.fill();
+    }
+  }
+
+  async function render(){
+    const n = currentN();
+    slider.value = String(n);
+    countVal.textContent = n.toLocaleString();
+    statEl.textContent = "computing…";
+    // Stale-request cancellation (keyed by the .py path) means fast scrubbing
+    // only draws the value the slider lands on.
+    const data = await fused.runPython("./spiral.py", { n: String(n) });
+    draw(data);
+    statEl.innerHTML = '<b>' + data.n_primes.toLocaleString() + '</b> primes up to <b>' +
+      data.n.toLocaleString() + '</b> · <span class="y">' + data.ms + ' ms</span> in local Python';
+  }
+
+  slider.addEventListener("input", () => fused.params.set("n", slider.value));
+  fused.params.onChange(render);
+  render();
+</script>
+</body>
+</html>

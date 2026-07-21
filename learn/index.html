@@ -314,18 +314,18 @@
     <p class="lede">Fused Render turns folders on your machine into <b>live pages</b>. Any HTML file renders as an app, and a <span class="y mono">fused</span> global lets that page run the Python sitting right next to it — <b>no server, no build step</b>.</p>
 
     <h2><span class="n">1</span>The basics</h2>
-    <p class="sub">A project is just a folder with a page and a Python file. Here's the <code>sine/</code> example embedded live — drag its slider and the Python next to it recomputes the curve.</p>
-    <div class="frame short" id="sineFrame">
+    <p class="sub">A project is just a folder with a page and a Python file. Here's one embedded live — drag the slider and the Python next to it re-sieves the primes and redraws the <a href="https://en.wikipedia.org/wiki/Ulam_spiral" target="_blank" rel="noopener">Ulam spiral</a> (watch the diagonal streaks appear).</p>
+    <div class="frame tall" id="spiralFrame">
       <div class="framebar">
-        <span class="cap"><b>sine.html</b> — a slider, an SVG, and eight lines of Python</span>
-        <a id="sineOpen" target="_blank" rel="noopener">open in the app ↗</a>
+        <span class="cap"><b>spiral.html</b> — a slider, a canvas, and a prime sieve in Python</span>
+        <a id="spiralOpen" target="_blank" rel="noopener">open in the app ↗</a>
       </div>
-      <iframe id="sineIf" title="Sine example, embedded live"></iframe>
+      <iframe id="spiralIf" title="Prime spiral, embedded live"></iframe>
       <div class="ph r16 miss">
         <span class="tagn">live embed · fallback</span>
-        <div class="ic">🎚️</div>
+        <div class="ic">🌀</div>
         <div class="lab">Live preview loads inside Fused Render</div>
-        <div class="hint">This embeds the bundled <code>sine.html</code> demo. Open this page in the app to see it run.</div>
+        <div class="hint">This embeds the bundled <code>spiral.html</code> demo. Open this page in the app to see it run.</div>
       </div>
     </div>
 
@@ -783,8 +783,10 @@ document.addEventListener("click", e => {
   const a = e.target.closest('a[href^="?page="]');
   if (!a || a.closest("#nav") || a.closest("#pager")) return;
   e.preventDefault();
-  const u = new URLSearchParams(a.getAttribute("href").slice(1));
-  goto(u.get("page"), a.hash ? a.hash.slice(1) : null);
+  // Split the hash off before parsing the query, else "?page=x#sec" parses the
+  // slug as "x#sec" and matches no page.
+  const [qs, hash] = a.getAttribute("href").slice(1).split("#");
+  goto(new URLSearchParams(qs).get("page"), hash || null);
 });
 
 /* mobile menu */
@@ -818,12 +820,12 @@ function mountFrame(frameSel, ifSel, absPath, useShell){
     $(ifSel).src = useShell ? viewUrl(absPath) : embedUrl(absPath);
   }).catch(() => { frame.querySelector("iframe").style.display="none"; frame.querySelector(".miss").style.display="flex"; });
 }
-// A local copy of the sine demo lives in this folder, so the embed works
-// wherever the Learn page is opened (no dependency on a sibling example).
-const sinePath = ownDir ? ownDir + "/sine.html" : null;
-mountFrame("#sineFrame", "#sineIf", sinePath, false);
-if (hasFused && sinePath) $("#sineOpen").href = viewUrl(sinePath);
-else $("#sineOpen").style.display = "none";
+// The prime-spiral demo lives in this folder, so the embed works wherever the
+// Learn page is opened (no dependency on a sibling example).
+const spiralPath = ownDir ? ownDir + "/spiral.html" : null;
+mountFrame("#spiralFrame", "#spiralIf", spiralPath, false);
+if (hasFused && spiralPath) $("#spiralOpen").href = viewUrl(spiralPath);
+else $("#spiralOpen").style.display = "none";
 
 /* hello.py round trip */
 async function hello(){
