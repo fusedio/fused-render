@@ -290,7 +290,10 @@ def test_main_remote_analyze_passes_raw_url_to_worker(fs, monkeypatch):
     opts = json.loads(captured["argv"][4])
     assert opts.get("remote") is True
     assert opts.get("size") == len(s.blob)
-    assert opts["raw_url"].endswith("/api/fs/raw?path=/mnt/x.tif")
+    # The worker's raw_url opts into the server's pooled proxy (&pooled=1) so a
+    # cold COG range-read streams through one keep-alive pool instead of a fresh
+    # TLS handshake per block.
+    assert opts["raw_url"].endswith("/api/fs/raw?path=/mnt/x.tif&pooled=1")
     assert "/api/fs/raw" in opts["raw_url"]
 
 
