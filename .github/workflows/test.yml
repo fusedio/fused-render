@@ -124,6 +124,10 @@ jobs:
             htmlcov/
             coverage.xml
           retention-days: 30
+          # Default "warn" would let this step succeed even if pytest's --cov
+          # never wrote htmlcov/coverage.xml — fail loudly instead of quietly
+          # shipping an empty coverage artifact.
+          if-no-files-found: error
 
   test-status:
     name: Test Status
