@@ -36,6 +36,49 @@ The installed layout will be:
 The supervisor source is in `windows/supervisor`. It is a Windows GUI-subsystem binary, so it
 does not allocate a console.
 
+## Why a native supervisor (and what stays Python)
+
+Most of the supervisor is portable orchestration — ephemeral-port pick, `/api/config`
+readiness probe, launch-token generation, browser open, graceful-shutdown call — and `app.py`
+already implements all of it in Python for macOS. That part does not need a new language.
+
+Two responsibilities carry the native binary:
+
+- **Job Object process-tree kill.** `KILL_ON_JOB_CLOSE` plus the suspended-create → assign →
+  resume sequence guarantees the entire private-Python tree (server, tile daemons, compile
+  workers) dies when the supervisor exits — even on a hard crash — with no orphans. This is
+  the "closes properly / no orphans" contract above.
+- **A windowless owner decoupled from the interpreter it supervises.** A static native `.exe`
+  can still show an error and clean up when the bundled Python is broken; a `pythonw.exe`
+  supervisor could not.
+
+Single-instance election and Open-With forwarding are *not* free the way they are on macOS,
+where LaunchServices routes every open to the one running `.app` and AppKit re-delivers it.
+Windows spawns a fresh process per Open-With, so the mutex + named-pipe IPC is net-new work in
+any language — it is not macOS Python that was skipped.
+
+A full-Python alternative is viable (thin launcher + `pywin32` for the job object / pipe /
+mutex, `pystray` for the tray) and would remove the second toolchain. It is being prototyped
+on a branch off `main` and validated against the same lifecycle gates below before any switch;
+the Rust supervisor stays the shipping path until that proves out. A half-native/half-Python
+split is deliberately avoided: the tray, single-instance election, and job ownership must live
+in one surviving process, so splitting them only adds an IPC seam.
+
+### macOS (`app.py`) vs Windows supervisor
+
+| Aspect | macOS (Python) | Windows (this PR, Rust) |
+|---|---|---|
+| Server process | uvicorn in-process, daemon thread | separate private `pythonw.exe` child |
+| Process cleanup | idle-exit + `_quit_tile_daemons` | Job Object `KILL_ON_JOB_CLOSE` |
+| Single-instance | pidfile + portfile + HTTP probe | named mutex |
+| Open-file forwarding | AppKit `openFiles:`/`openURLs:` | named-pipe IPC |
+| Readiness / security | untokened `/api/config` probe | token + instance-id-gated `/api/config` |
+| State isolation | `branch_dir`/`branch_port` | `FUSED_RENDER_*` env via `paths.py` |
+| In-app UI | tray + WKWebView popover | tray → default browser |
+
+These divergences are intentional for now (macOS gets OS-level routing Windows lacks); if
+`paths.py` becomes the shared isolation system, macOS should eventually route through it too.
+
 ## Lifecycle
 
 `FusedRender.exe` is the only Start Menu and Explorer command target.
