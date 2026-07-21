@@ -1,0 +1,44 @@
+"""Entry point: `pythonw.exe -I -m fused_render.win_supervisor <args>` — port
+of windows/supervisor/src/main.rs (feat/windows-desktop-foundation, PR #162).
+"""
+from __future__ import annotations
+
+import ctypes
+import os
+import sys
+
+from fused_render.win_supervisor import protocol, supervisor
+from fused_render.win_supervisor.paths import DesktopPaths
+
+_APP_USER_MODEL_ID = "Fused.FusedRender.Desktop"
+
+
+def main() -> None:
+    try:
+        os.environ.update(DesktopPaths.discover().self_environment())
+    except OSError:
+        pass  # fall through with whatever env we were launched with
+
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(_APP_USER_MODEL_ID)
+    except OSError:
+        pass  # cosmetic (tray/taskbar identity) — never fatal
+
+    try:
+        command = protocol.parse_args(sys.argv[1:])
+        supervisor.run(command)
+    except Exception as error:  # noqa: BLE001 - top-level: report, never crash silently
+        try:
+            DesktopPaths.discover().log(str(error))
+        except OSError:
+            pass
+        MB_OK = 0x0
+        MB_ICONERROR = 0x10
+        ctypes.windll.user32.MessageBoxW(
+            0, f"FusedRender could not start:\n\n{error}", "FusedRender", MB_OK | MB_ICONERROR
+        )
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

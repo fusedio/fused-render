@@ -82,6 +82,15 @@ app = [
 fused = [
     'fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post7-py3-none-any.whl ; python_version >= "3.11"',
 ]
+# Windows desktop supervisor shell (experiment/python-supervisor,
+# docs/PYTHON_SUPERVISOR_SPEC.md). Windows-only; not a core dependency so
+# `pip install fused-render` stays cross-platform. Only the packaged desktop
+# build (scripts/build_windows_installer.ps1) installs this extra.
+windows-desktop = [
+    'pywin32>=306 ; sys_platform == "win32"',
+    'pystray>=0.19 ; sys_platform == "win32"',
+    'pillow ; sys_platform == "win32"',
+]
 
 [project.scripts]
 fused-render = "fused_render.cli:main"
