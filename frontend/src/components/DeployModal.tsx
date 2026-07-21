@@ -485,6 +485,12 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   // The result of the last "Clear cache" click (deleted/scope), shown as a status
   // line until the next load/action clears it.
   const [clearCacheResult, setClearCacheResult] = useState<CacheClearResult | null>(null);
+  // Progressive disclosure: both start collapsed — a summary line is enough
+  // until the user asks for more (caching's edit controls; the diagnostics
+  // panel, which is also the mount switch for whether DeploymentErrors is
+  // mounted at all, so it never fetches until opened).
+  const [cachingOpen, setCachingOpen] = useState(false);
+  const [errorsOpen, setErrorsOpen] = useState(false);
   // True while a preview fetch is in flight — the shown "Will publish" list may
   // not yet reflect the latest include/exclude edit, so Deploy is held until it
   // catches up (keeps the click WYSIWYG: never deploy a set the list doesn't show).
@@ -575,6 +581,11 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       setPreview(null);
       // A stale "N cleared" note from the previous page must not linger.
       setClearCacheResult(null);
+      // A fresh open (including an fsPath switch) starts collapsed — an
+      // expanded state from the previous page shouldn't carry over onto one
+      // that hasn't been asked about yet.
+      setCachingOpen(false);
+      setErrorsOpen(false);
     }
     try {
       const [cfg, status] = await Promise.all([
@@ -915,20 +926,31 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
                 absolute URL; it is served under your environment's serving-plane base URL.
               </div>
             )}
-            <div className="deploy-muted">
-              Caching:{" "}
-              {(deployment.cache_max_age ?? "0s") === "0s"
-                ? "off"
-                : `on, ${deployment.cache_max_age}`}
-            </div>
           </div>
         )}
 
         {/* Owner-only diagnostics for this deployed page: the recent captured
-            failures behind its opaque 500s (fused share errors). Auto-loads for
-            the single deployed mount; viewers of the page never see any of it. */}
+            failures behind its opaque 500s (fused share errors). Collapsed by
+            default — DeploymentErrors is only mounted (and so only fetches)
+            once opened, mirroring the account Deployments list's per-row
+            toggle; viewers of the page never see any of this either way. */}
         {deployment?.env && deployment?.token && (
-          <DeploymentErrors env={deployment.env} token={deployment.token} />
+          <div className="deploy-files">
+            <button
+              type="button"
+              className="deploy-files-head"
+              aria-expanded={errorsOpen}
+              onClick={() => setErrorsOpen((o) => !o)}
+            >
+              <span className="deploy-files-chevron" aria-hidden="true">
+                {errorsOpen ? "▾" : "▸"}
+              </span>
+              <span className="deploy-files-title">
+                {errorsOpen ? "Hide recent errors" : "Recent errors"}
+              </span>
+            </button>
+            {errorsOpen && <DeploymentErrors env={deployment.env} token={deployment.token} />}
+          </div>
         )}
 
         {preview && (
@@ -943,42 +965,69 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
           />
         )}
 
-        <div className="deploy-form-row">
-          <label className="deploy-cache-toggle">
-            <input
-              type="checkbox"
-              checked={cacheMaxAge !== "0s"}
-              disabled={busy !== null}
-              onChange={(e) =>
-                setCacheMaxAge(e.target.checked ? DEFAULT_CACHE_DURATION : "0s")
-              }
-            />
-            Cache page results
-          </label>
-          {cacheMaxAge !== "0s" && (
-            <Select
-              aria-label="Cache duration"
-              value={cacheMaxAge}
-              onChange={(e) => setCacheMaxAge(e.target.value)}
-              disabled={busy !== null}
-            >
-              {cacheDurationOptions(cacheMaxAge).map((d) => (
-                <option key={d.value} value={d.value}>
-                  for {d.label}
-                </option>
-              ))}
-            </Select>
+        <div className="deploy-files">
+          <button
+            type="button"
+            className="deploy-files-head"
+            aria-expanded={cachingOpen}
+            onClick={() => setCachingOpen((o) => !o)}
+          >
+            <span className="deploy-files-chevron" aria-hidden="true">
+              {cachingOpen ? "▾" : "▸"}
+            </span>
+            <span className="deploy-files-title">Caching</span>
+            <span className="deploy-files-count">
+              {cacheMaxAge === "0s" ? "off" : `on, ${cacheMaxAge}`}
+            </span>
+          </button>
+          {cachingOpen && (
+            <div className="deploy-files-body">
+              <div className="deploy-form-row">
+                <label className="deploy-cache-toggle">
+                  <input
+                    type="checkbox"
+                    checked={cacheMaxAge !== "0s"}
+                    disabled={busy !== null}
+                    onChange={(e) =>
+                      setCacheMaxAge(e.target.checked ? DEFAULT_CACHE_DURATION : "0s")
+                    }
+                  />
+                  Cache page results
+                </label>
+                {cacheMaxAge !== "0s" && (
+                  <Select
+                    aria-label="Cache duration"
+                    value={cacheMaxAge}
+                    onChange={(e) => setCacheMaxAge(e.target.value)}
+                    disabled={busy !== null}
+                  >
+                    {cacheDurationOptions(cacheMaxAge).map((d) => (
+                      <option key={d.value} value={d.value}>
+                        for {d.label}
+                      </option>
+                    ))}
+                  </Select>
+                )}
+                {deployment?.status === "active" && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={onClearCache}
+                    disabled={busy !== null}
+                    title="Force cached results to be recomputed on the next request, without redeploying or changing the URL"
+                  >
+                    {busy === "clear-cache" ? "Clearing cache…" : "Clear cache"}
+                  </button>
+                )}
+              </div>
+            </div>
           )}
-          {deployment?.status === "active" && (
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={onClearCache}
-              disabled={busy !== null}
-              title="Force cached results to be recomputed on the next request, without redeploying or changing the URL"
-            >
-              {busy === "clear-cache" ? "Clearing cache…" : "Clear cache"}
-            </button>
+          {clearCacheResult && (
+            <div className="deploy-muted deploy-files-body">
+              {clearCacheResult.deleted > 0
+                ? `Cleared ${clearCacheResult.deleted} cached result${clearCacheResult.deleted === 1 ? "" : "s"} — the next request recomputes.`
+                : "Nothing was cached — nothing to clear."}
+            </div>
           )}
         </div>
         <div className="deploy-form-row">
@@ -1037,13 +1086,6 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
         {/* One status line for the same-env case — the URL nuance that used to
             live in the button label / a stack of notes. */}
         {deployStatus && <div className="deploy-muted">{deployStatus}</div>}
-        {clearCacheResult && (
-          <div className="deploy-muted">
-            {clearCacheResult.deleted > 0
-              ? `Cleared ${clearCacheResult.deleted} cached result${clearCacheResult.deleted === 1 ? "" : "s"} — the next request recomputes.`
-              : "Nothing was cached — nothing to clear."}
-          </div>
-        )}
         {/* One context-derived note for the cross-env cases (recorded env still
             configured vs. removed) — mutually exclusive, collapsed into one. */}
         {deployment && selectedEnv !== null && deployment.env !== selectedEnv && (

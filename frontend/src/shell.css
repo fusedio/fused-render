@@ -2337,6 +2337,16 @@ select.field-control:has(option[value=""]:checked) {
   border-top-right-radius: 0;
 }
 
+/* Nested under the Deploy modal's collapse toggle (DeployModal.tsx), not a
+   shares-table row: drop the border/radius/padding entirely so the outer
+   .deploy-files box reads as the only border, matching FileSelection's body
+   instead of nesting a second boxed panel inside it. */
+.deploy-files > .deploy-errors {
+  border: none;
+  border-radius: 0;
+  padding: 4px 12px 12px;
+}
+
 .deploy-err-list {
   list-style: none;
   margin: 0;
