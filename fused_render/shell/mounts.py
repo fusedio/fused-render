@@ -1704,13 +1704,16 @@ S3ListError = DirectListError
 
 
 def s3_direct_capable(path: str) -> bool:
-    """True when `path` is mount-backed by an anonymous plain-AWS-S3 remote —
-    the one backend class s3_list_page can enumerate unsigned. Lets the server
-    pick the fast path without re-deriving the _anonymous_s3 test."""
+    """True when `path` is mount-backed by a plain-AWS-S3 remote s3_list_page
+    can enumerate directly — anonymous (unsigned) OR signable (locally
+    presigned). Lets the server pick the fast path without re-deriving the
+    predicates. _anonymous_s3 is tested first, so an anonymous remote never
+    reaches the credential resolver."""
     m, _ = _mount_for(path)
     if m is None:
         return False
-    return _anonymous_s3(_remote_config(m["remote"].partition(":")[0]))
+    cfg = _remote_config(m["remote"].partition(":")[0])
+    return _anonymous_s3(cfg) or _s3_signable(cfg)
 
 
 def _s3_listing_prefix(store_prefix: str, rel: str) -> str:
@@ -1731,9 +1734,9 @@ def _s3_listing_prefix(store_prefix: str, rel: str) -> str:
 
 def s3_list_page(path: str, *, max_keys: int, continuation: str | None = None,
                  timeout: float | None = None) -> tuple[list, str | None]:
-    """One ListObjectsV2 page for a mount-backed directory on an anonymous AWS
-    S3 remote, fetched by a plain unsigned HTTPS GET — no kernel I/O on the
-    mount, no rclone, no boto3.
+    """One ListObjectsV2 page for a mount-backed directory on a direct-listable
+    AWS S3 remote — anonymous (plain unsigned GET) or signable (locally
+    presigned GET) — off the kernel mount, no rclone, no boto3.
 
     Returns (entries, next_token): entries shaped exactly like rc_list_dir
     output (Name/Size/IsDir/ModTime dicts) so downstream mapping is shared, and
@@ -1752,24 +1755,25 @@ def s3_list_page(path: str, *, max_keys: int, continuation: str | None = None,
         raise S3ListError(f"{path} is under no known mount")
     fs = m["remote"]
     cfg = _remote_config(fs.partition(":")[0])
-    if not _anonymous_s3(cfg):
-        raise S3ListError(f"{path}: remote {fs!r} is not anonymous AWS S3")
+    if not (_anonymous_s3(cfg) or _s3_signable(cfg)):
+        raise S3ListError(f"{path}: remote {fs!r} is not direct-listable S3")
     assert cfg is not None
     derived = _s3_bucket_prefix_region(fs, cfg)
     if derived is None:
         raise S3ListError(f"{path}: remote {fs!r} carries no bucket")
-    bucket, store_prefix, region = derived
+    _bucket, store_prefix, _region = derived
     prefix = _s3_listing_prefix(store_prefix, rel)
     params = {"list-type": "2", "delimiter": "/", "prefix": prefix,
               "max-keys": str(max_keys)}
     if continuation:
         params["continuation-token"] = continuation
-    query = urllib.parse.urlencode(params)
-    # _s3_base_url applies the dotted-bucket path-style rule. Path-style
-    # addresses the bucket in the path already; virtual-hosted style needs the
-    # root "/" before the query string.
-    base = _s3_base_url(bucket, region)
-    url = f"{base}?{query}" if "." in bucket else f"{base}/?{query}"
+    # _s3_request_url builds the unsigned URL (anonymous — byte-identical to the
+    # old base?query with the dotted-bucket path-style rule) or the presigned
+    # URL (signable — the list params ride through the presigner). None is
+    # unreachable here (the remote is anonymous-or-signable per the gate above).
+    url = _s3_request_url(fs, rel, method="GET", query=params)
+    if url is None:
+        raise S3ListError(f"{path}: remote {fs!r} has no direct list URL")
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
             body = resp.read()
@@ -2047,9 +2051,11 @@ def _s3_head(path: str, timeout: float) -> DirectHead:
     m, rel = _mount_for(path)
     if rel == ".":
         return DirectHead(False, None, None)  # the mountpoint is not an object
-    url = _public_object_url(m["remote"], rel)
-    if url is None:  # not anonymous S3 after all — let the caller fall back
-        raise DirectProbeError(f"{path}: no unsigned S3 object URL")
+    # Unsigned public URL for anonymous, presigned HEAD URL for signable. HEAD
+    # is signed explicitly: a presigned GET rejects a HEAD request.
+    url = _s3_request_url(m["remote"], rel, method="HEAD")
+    if url is None:  # neither anonymous nor signable — let the caller fall back
+        raise DirectProbeError(f"{path}: no direct S3 object URL")
     req = urllib.request.Request(url, method="HEAD")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -2101,19 +2107,21 @@ def _gcs_head(path: str, timeout: float) -> DirectHead:
 def _s3_has_children(path: str, timeout: float) -> bool:
     m, rel = _mount_for(path)
     fs = m["remote"]
-    cfg = _remote_config(fs.partition(":")[0])
-    derived = _s3_bucket_prefix_region(fs, cfg or {})
+    derived = _s3_bucket_prefix_region(
+        fs, _remote_config(fs.partition(":")[0]) or {})
     if derived is None:
         raise DirectProbeError(f"{path}: remote {fs!r} carries no bucket")
-    bucket, store_prefix, region = derived
+    _bucket, store_prefix, _region = derived
     prefix = _s3_listing_prefix(store_prefix, rel)
     # NO delimiter and max-keys=1: cheapest "does anything live here" — one key
     # (the marker included) proves the directory. delimiter would only add
     # CommonPrefixes work we don't need for a boolean.
     params = {"list-type": "2", "prefix": prefix, "max-keys": "1"}
-    query = urllib.parse.urlencode(params)
-    base = _s3_base_url(bucket, region)
-    url = f"{base}?{query}" if "." in bucket else f"{base}/?{query}"
+    # Unsigned for anonymous (byte-identical to the old base?query), presigned
+    # for signable — routed through the same helper the pager uses.
+    url = _s3_request_url(fs, rel, method="GET", query=params)
+    if url is None:
+        raise DirectProbeError(f"{path}: no direct S3 list URL")
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
             body = resp.read()

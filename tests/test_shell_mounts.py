@@ -2814,6 +2814,71 @@ def test_s3_list_page_non_anonymous_raises_s3listerror(home, rcd, fresh_upstream
         mounts_mod.s3_list_page(mounts_mod.mountpoint(c), max_keys=1000)
 
 
+# -- signable S3: direct listing for credentialed remotes -------------------
+
+
+def test_s3_direct_capable_true_for_signable(home, rcd, fresh_upstream):
+    rcd.responses["config/get"] = _CRED_S3_CFG
+    c = mounts_mod.add_mount("corp", "corp:bucket/pre")
+    assert mounts_mod.s3_direct_capable(mounts_mod.mountpoint(c) + "/x")
+
+
+def test_s3_list_page_signable_presigns(home, rcd, fresh_upstream, s3_urlopen):
+    import urllib.parse as up
+
+    calls, box = s3_urlopen
+    rcd.responses["config/get"] = {**_CRED_S3_CFG, "region": "us-west-2"}
+    box["body"] = _s3_list_xml(
+        contents=[("pre/f.txt", 5, "2024-01-02T03:04:05Z")])
+    c = mounts_mod.add_mount("corp", "corp:bucket/pre")
+    entries, token = mounts_mod.s3_list_page(
+        mounts_mod.mountpoint(c), max_keys=1000)
+    [(url, _t)] = calls
+    q = up.parse_qs(up.urlsplit(url).query)
+    # ListObjectsV2 params AND the SigV4 signature are both present — the list
+    # params ride through the presigner, canonicalized in one place.
+    assert q["list-type"] == ["2"] and q["prefix"] == ["pre/"]
+    assert q["max-keys"] == ["1000"] and q["delimiter"] == ["/"]
+    assert q["X-Amz-Algorithm"] == ["AWS4-HMAC-SHA256"]
+    assert "X-Amz-Signature" in q
+    assert url.startswith("https://bucket.s3.us-west-2.amazonaws.com/?")
+    assert [e["Name"] for e in entries] == ["f.txt"]
+    assert token is None
+
+
+def test_s3_list_page_signable_continuation_roundtrips(home, rcd, fresh_upstream, s3_urlopen):
+    import urllib.parse as up
+
+    calls, _box = s3_urlopen
+    rcd.responses["config/get"] = _CRED_S3_CFG
+    c = mounts_mod.add_mount("corp", "corp:bucket/pre")
+    mounts_mod.s3_list_page(mounts_mod.mountpoint(c), max_keys=1000,
+                            continuation="a b/c+d=")
+    q = up.parse_qs(up.urlsplit(calls[0][0]).query)
+    assert q["continuation-token"] == ["a b/c+d="]
+    assert "X-Amz-Signature" in q
+
+
+def test_s3_list_page_signable_403_raises(home, rcd, fresh_upstream, s3_urlopen):
+    _calls, box = s3_urlopen
+    rcd.responses["config/get"] = _CRED_S3_CFG
+    c = mounts_mod.add_mount("corp", "corp:bucket/pre")
+    box["raise"] = mounts_mod.urllib.error.HTTPError(
+        "https://x", 403, "Forbidden", {}, None)
+    with pytest.raises(mounts_mod.S3ListError):
+        mounts_mod.s3_list_page(mounts_mod.mountpoint(c), max_keys=1000)
+
+
+def test_s3_list_page_anonymous_url_has_no_xamz(home, rcd, fresh_upstream, s3_urlopen):
+    # INVARIANT: an anonymous listing URL is byte-identical to today — no
+    # X-Amz-* parameters, resolver never consulted (only _anonymous_s3 matches).
+    calls, _box = s3_urlopen
+    rcd.responses["config/get"] = _ANON_S3_CFG
+    c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
+    mounts_mod.s3_list_page(mounts_mod.mountpoint(c), max_keys=1000)
+    assert "X-Amz" not in calls[0][0]
+
+
 # -- gcs_list_page / gcs_direct_capable -------------------------------------
 #
 # Anonymous GCS (the gcs-open shape) is the GCS analog of anonymous plain AWS
@@ -3172,6 +3237,38 @@ def test_direct_head_gcs_exists_and_dir(home, rcd, fresh_upstream, direct_stub):
     assert got.mtime == "2015-10-21T07:28:00Z"
     direct_stub.listing = (200, _gcs_list_json(items=[("zarr-v1/analysed_sst/x", 1, "2024-01-01T00:00:00Z")]))
     assert mounts_mod.direct_is_dir(mounts_mod.mountpoint(c) + "/analysed_sst") is True
+
+
+def test_direct_head_signable_signs_head_method(home, rcd, fresh_upstream, direct_stub):
+    # A signable (credentialed) remote probes via a presigned HEAD — signed as
+    # HEAD, not GET (a presigned GET rejects a HEAD request).
+    rcd.responses["config/get"] = _CRED_S3_CFG
+    direct_stub.head = (200, {"Content-Length": "10",
+                              "Last-Modified": "Wed, 21 Oct 2015 07:28:00 GMT"})
+    c = mounts_mod.add_mount("corp", "corp:bucket/pre")
+    got = mounts_mod.direct_head(mounts_mod.mountpoint(c) + "/x.json")
+    assert got.exists is True and got.size == 10
+    method, _p, query = direct_stub.calls[-1]
+    assert method == "HEAD"
+    assert "X-Amz-Signature" in query
+
+
+def test_direct_head_signable_404_is_definitive(home, rcd, fresh_upstream, direct_stub):
+    rcd.responses["config/get"] = _CRED_S3_CFG
+    direct_stub.head = (404, {})
+    c = mounts_mod.add_mount("corp", "corp:bucket/pre")
+    assert mounts_mod.direct_head(
+        mounts_mod.mountpoint(c) + "/nope.json").exists is False
+
+
+def test_direct_is_dir_signable_presigns_list(home, rcd, fresh_upstream, direct_stub):
+    rcd.responses["config/get"] = _CRED_S3_CFG
+    direct_stub.listing = (200, _s3_list_xml(
+        contents=[("pre/sub/x", 1, "2024-01-01T00:00:00Z")]))
+    c = mounts_mod.add_mount("corp", "corp:bucket/pre")
+    assert mounts_mod.direct_is_dir(mounts_mod.mountpoint(c) + "/sub") is True
+    _method, _p, query = direct_stub.calls[-1]
+    assert "max-keys=1" in query and "X-Amz-Signature" in query
 
 
 # -- rc stat helpers route direct-first (no operations/stat when capable) ----
