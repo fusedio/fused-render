@@ -73,12 +73,25 @@ export function navigate(fsPath: string, opts?: { isDir?: boolean }): void {
 
 // The directory hint carried by the navigation that landed on the current URL
 // (see navigate). null = unknown: a fresh page load, a typed URL, or a caller
-// that didn't pass one. Read once at the destination view's mount — later
-// param-sync replaceState calls (sort/search) pass null state and would wipe
-// it, so callers must not re-read it after mount.
+// that didn't pass one. Read once at the destination view's mount (StatView),
+// which is why in-place param syncs must go through replaceSearch below — a
+// raw history.replaceState(null, …) would wipe the hint off the current entry
+// and Back/Forward to it would lose the scaffold.
 export function navHintIsDir(): boolean | null {
   const s = history.state as { fsDir?: boolean } | null;
   return s && typeof s.fsDir === "boolean" ? s.fsDir : null;
+}
+
+// In-place view-param sync (sort/search/_mode/session replay) on the CURRENT
+// history entry. Unlike navigate(), this MUST NOT create a history entry and
+// MUST preserve the existing state — nulling it (a plain
+// history.replaceState(null, …)) drops the { fsDir } hint navigate() stashed,
+// so a later Back/Forward to this entry loses its directory scaffold and paints
+// a blank/header-only view. Passing history.state through keeps the hint intact.
+// Still routes through the main.tsx-wrapped replaceState, so fused:urlchange
+// (bookmark buttons, hooks) fires exactly as before.
+export function replaceSearch(url: string): void {
+  history.replaceState(history.state, "", url);
 }
 
 export function navigateUrl(url: string): void {

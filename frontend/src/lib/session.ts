@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { getSession, putSession } from "./api";
-import { IS_EMBED } from "./router";
+import { IS_EMBED, replaceSearch } from "./router";
 
 function stripQ(): string {
   return location.search.replace(/^\?/, "");
@@ -32,7 +32,7 @@ export function useSessionRestore(fsPath: string, isDir: boolean | null): boolea
       (r) => {
         if (!alive) return;
         const s = r.lastSession?.search;
-        if (s) history.replaceState(null, "", location.pathname + "?" + s);
+        if (s) replaceSearch(location.pathname + "?" + s);
         setRestored(true);
       },
       () => {

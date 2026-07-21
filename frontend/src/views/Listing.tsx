@@ -9,7 +9,7 @@
 // on first focus (or a URL-seeded query) and is cached until the dir watch
 // fires.
 import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { navigate, navigateUrl, urlForFsPath } from "../lib/router";
+import { navigate, navigateUrl, urlForFsPath, replaceSearch } from "../lib/router";
 import {
   listDir,
   prefetchListDir,
@@ -253,7 +253,15 @@ type WalkState =
 
 const IDLE_WALK: WalkState = { status: "idle" };
 
-export default function Listing({ fsPath }: { fsPath: string }) {
+// `provisional`: this Listing is rendering inside the pre-stat loading scaffold
+// (App LoadingScaffold), mounted off a directory NAV HINT rather than a
+// confirmed stat. The hint is authoritative in practice but can be stale — if
+// the path is actually a file, /api/fs/list 404s. In that provisional phase a
+// failed listing must NOT paint the hard "Failed to list" error: stat is still
+// resolving and will drive the correct final view (a file <Preview>) a beat
+// later, so we show the neutral loading body and let stat commit the real view.
+// Absent/false (the committed post-stat render), errors show normally.
+export default function Listing({ fsPath, provisional = false }: { fsPath: string; provisional?: boolean }) {
   const [state, setState] = useState<ListingState>({ status: "loading" });
   // Sort lives in the URL; mirror it in state so clicks re-render without a
   // navigation (vanilla re-ran renderListing after its replaceState).
@@ -273,7 +281,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     const params = new URLSearchParams(location.search);
     params.set("sort", s.get("sort") || "name");
     params.set("order", s.get("order") === "desc" ? "desc" : "asc");
-    history.replaceState(null, "", location.pathname + "?" + params.toString());
+    replaceSearch(location.pathname + "?" + params.toString());
   }, [fsPath]);
   const [refresh, setRefresh] = useState(0); // bumped by the dir watch socket
   // loadMore captures the refresh generation it started in; a dir-watch refresh
@@ -658,7 +666,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
       if (value) params.set("q", value);
       else params.delete("q");
       const qs = params.toString();
-      history.replaceState(null, "", location.pathname + (qs ? "?" + qs : ""));
+      replaceSearch(location.pathname + (qs ? "?" + qs : ""));
     }, URL_SYNC_MS);
   };
 
@@ -670,7 +678,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     const params = new URLSearchParams(location.search);
     params.set("sort", next.sort);
     params.set("order", next.order);
-    history.replaceState(null, "", location.pathname + "?" + params.toString());
+    replaceSearch(location.pathname + "?" + params.toString());
     setSortState(next);
     // Remember this folder's choice so returning to it later restores this sort.
     // Only sort/order are persisted — the in-folder search `q` stays transient.
@@ -1289,7 +1297,18 @@ export default function Listing({ fsPath }: { fsPath: string }) {
       </tr>
     );
   } else if (state.status === "error") {
-    body = (
+    // In the provisional scaffold phase a list failure is most likely a stale
+    // dir hint pointing at a file (its /api/fs/list 404s); suppress the hard
+    // error and show neutral loading — stat is still resolving and will replace
+    // this scaffold with the correct file view. Post-stat (committed render),
+    // a genuine list failure surfaces normally.
+    body = provisional ? (
+      <tr>
+        <td colSpan={3} className="status-message">
+          Loading…
+        </td>
+      </tr>
+    ) : (
       <tr>
         <td colSpan={3} className="status-message error">
           Failed to list {fsPath}: {state.message}
