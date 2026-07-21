@@ -22,7 +22,7 @@ import {
   setBookmarkIcon,
 } from "../lib/bookmarks";
 import { bookmarkSaveTarget } from "../lib/bookmark-file";
-import { exportBookmarkFile } from "../lib/api";
+import { exportBookmarkFile, getConfig } from "../lib/api";
 import IconPicker from "./IconPicker";
 import { FolderIcon, LearnIcon } from "./FileIcons";
 import type { Bookmark, BookmarkFolder, BookmarkItem } from "../lib/bookmarks";
@@ -299,6 +299,46 @@ export default function Sidebar({ config }: SidebarProps) {
   useRecentsVersion();
   // Signed-in dot on the footer's Fused-account entry (SPEC AC-1).
   const accountLoggedIn = useAccountLoggedIn();
+
+  // BUGBOT: config (and its learn_mount_ready flag) is fetched exactly ONCE
+  // at page load (main.tsx), well before the server's background automount
+  // thread has finished attaching the learn mount — ensure_learn_mount now
+  // force-detaches and remounts it on every startup, so the one-shot fetch
+  // essentially always sees false and the Learn entry would never appear
+  // for the whole session. Re-poll /api/config on a short bounded interval
+  // (mirrors main.tsx's own bookmark-poll pattern) until it flips true;
+  // capped at MAX_ATTEMPTS so a dev checkout with no bundled learn.zip
+  // (never becomes ready) doesn't poll forever.
+  const [learnMountReady, setLearnMountReady] = useState(config.learn_mount_ready);
+  useEffect(() => {
+    if (learnMountReady) return;
+    let cancelled = false;
+    let attempts = 0;
+    const MAX_ATTEMPTS = 30;
+    const POLL_MS = 1000;
+    const timer = window.setInterval(() => {
+      attempts += 1;
+      getConfig().then(
+        (fresh) => {
+          if (cancelled) return;
+          if (fresh.learn_mount_ready) {
+            setLearnMountReady(true);
+            window.clearInterval(timer);
+          } else if (attempts >= MAX_ATTEMPTS) {
+            window.clearInterval(timer);
+          }
+        },
+        () => {
+          // Transient fetch failure — just try again next tick.
+          if (attempts >= MAX_ATTEMPTS) window.clearInterval(timer);
+        }
+      );
+    }, POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [learnMountReady]);
 
   const [renamingId, setRenamingId] = useState<string | null>(null);
   // Bookmark just exported to disk: its save button shows ✓ for a moment.
@@ -831,7 +871,7 @@ export default function Sidebar({ config }: SidebarProps) {
         <a href="#" id="fused-link" className="sidebar-item" onClick={onFusedClick}>
           <span className="icon"><FolderIcon /></span> Fused
         </a>
-        {config.learn_mount_ready && (
+        {learnMountReady && (
           <a href="#" id="learn-link" className="sidebar-item" onClick={onLearnClick}>
             <span className="icon"><LearnIcon /></span> Learn
           </a>
