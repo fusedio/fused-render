@@ -512,7 +512,7 @@ export default function Sidebar({ config }: SidebarProps) {
 
   const onFusedClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
     e.preventDefault();
-    if (config && config.fused_dir) navigate(config.fused_dir);
+    if (config && config.fused_dir) navigate(config.fused_dir, { isDir: true });
   };
 
   // D123: the bundled learn.zip is mounted read-only at `${mounts_root}/learn`
@@ -528,13 +528,17 @@ export default function Sidebar({ config }: SidebarProps) {
     // elsewhere while it was in flight, don't yank them back.
     const before = currentUrl();
     let dest = root;
+    let destIsDir = true;
     try {
       const st = await statPath(`${root}/index.html`);
-      if (!st.is_dir) dest = `${root}/index.html`;
+      if (!st.is_dir) {
+        dest = `${root}/index.html`;
+        destIsDir = false;
+      }
     } catch {
       // stat 404s (or the mount is briefly not attached) — open the folder.
     }
-    if (currentUrl() === before) navigate(dest);
+    if (currentUrl() === before) navigate(dest, { isDir: destIsDir });
   };
 
   // --- bookmark row handlers -------------------------------------------------

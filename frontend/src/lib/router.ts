@@ -57,10 +57,28 @@ export function urlForFsPath(fsPath: string, search?: string): string {
   return PREFIX + encoded + (search || "");
 }
 
-export function navigate(fsPath: string): void {
+export function navigate(fsPath: string, opts?: { isDir?: boolean }): void {
   // Navigating between files/dirs drops old view params (fresh query string).
-  history.pushState(null, "", urlForFsPath(fsPath));
+  // `opts.isDir` is a nav hint (the clicked listing row / breadcrumb already
+  // knows whether the target is a directory): it rides in history.state so the
+  // destination view can paint the right scaffold — a directory's listing plus
+  // a template-strip spinner — BEFORE the ~1.6s stat resolves, instead of a
+  // blank screen. Restored on back/forward (popstate carries the state), and
+  // simply absent (null) for callers that don't know, which falls back to a
+  // plain header scaffold. See navHintIsDir below.
+  const state = opts && typeof opts.isDir === "boolean" ? { fsDir: opts.isDir } : null;
+  history.pushState(state, "", urlForFsPath(fsPath));
   notifyNavigate();
+}
+
+// The directory hint carried by the navigation that landed on the current URL
+// (see navigate). null = unknown: a fresh page load, a typed URL, or a caller
+// that didn't pass one. Read once at the destination view's mount — later
+// param-sync replaceState calls (sort/search) pass null state and would wipe
+// it, so callers must not re-read it after mount.
+export function navHintIsDir(): boolean | null {
+  const s = history.state as { fsDir?: boolean } | null;
+  return s && typeof s.fsDir === "boolean" ? s.fsDir : null;
 }
 
 export function navigateUrl(url: string): void {

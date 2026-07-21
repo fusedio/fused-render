@@ -12,6 +12,7 @@ import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState
 import { navigate, navigateUrl, urlForFsPath } from "../lib/router";
 import {
   listDir,
+  prefetchListDir,
   walkDirStream,
   revealPath,
   writeFile,
@@ -332,6 +333,10 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   const navRowsRef = useRef<string[]>([]);
   const selectedPathRef = useRef<string | null>(null);
   selectedPathRef.current = selectedPath;
+  // Path -> RowCtx for the rendered rows, read by the once-registered keydown
+  // handler so Enter can pass the row's is_dir as a nav hint (see rowCtxByPath
+  // below, which assigns this each render).
+  const rowCtxByPathRef = useRef<Map<string, RowCtx>>(new Map());
   // True while a context menu or a modal dialog is open. The document-level nav
   // and shortcut handlers (registered once, reading refs) hard-guard on this so
   // an open overlay owns the keyboard — a stray Enter can't navigate a row and
@@ -407,7 +412,8 @@ export default function Listing({ fsPath }: { fsPath: string }) {
         if (!rows.length) return;
         const idx = rows.indexOf(selectedPathRef.current ?? "");
         e.preventDefault();
-        navigate(idx === -1 ? rows[0] : rows[idx]);
+        const target = idx === -1 ? rows[0] : rows[idx];
+        navigate(target, { isDir: rowCtxByPathRef.current.get(target)?.isDir });
         return;
       }
       // Start typing → focus the search box so the character lands there. Only
@@ -440,7 +446,11 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     // A fresh fetch (navigation or dir-watch refresh) resets any accumulated
     // Load more pages: the new listing replaces the array wholesale.
     setLoadingMore(false);
-    listDir(fsPath).then(
+    // Initial mount goes through the prefetch cache so a listing kicked off by
+    // the loading scaffold (in parallel with stat) is reused when the real
+    // preview remounts this component for the same path — no duplicate request.
+    // A dir-watch refresh (refresh > 0) must see live data, so it bypasses.
+    (refresh === 0 ? prefetchListDir(fsPath) : listDir(fsPath)).then(
       (data) =>
         alive &&
         setState({
@@ -863,6 +873,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     }
     return m;
   }, [searching, visibleHits, sortedEntries, base]);
+  rowCtxByPathRef.current = rowCtxByPath;
 
   const refetch = () => setRefresh((n) => n + 1);
 
@@ -1088,7 +1099,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   const rowMenu = (row: RowCtx): MenuEntry[] => {
     const dir = targetDirOf(row);
     return [
-      { label: isAppEntry(row.name, row.isDir) ? "Open App" : "Open", icon: MenuIcons.open, onClick: () => navigate(row.path) },
+      { label: isAppEntry(row.name, row.isDir) ? "Open App" : "Open", icon: MenuIcons.open, onClick: () => navigate(row.path, { isDir: row.isDir }) },
       { label: "Open With", icon: MenuIcons.openWith, submenu: loadOpenWith(row.path) },
       "separator",
       { label: "Move to Bin", icon: MenuIcons.trash, onClick: () => doTrash(row) },
@@ -1212,7 +1223,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
                     (childPath === selectedPath ? " selected" : "") +
                     (childPath === cutPath ? " cut" : "")
                   }
-                  onClick={() => navigate(childPath)}
+                  onClick={() => navigate(childPath, { isDir: entry.is_dir })}
                   onContextMenu={(e) =>
                     openRowMenu(e, {
                       path: childPath,
@@ -1296,7 +1307,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
             (childPath === selectedPath ? " selected" : "") +
             (childPath === cutPath ? " cut" : "")
           }
-          onClick={() => navigate(childPath)}
+          onClick={() => navigate(childPath, { isDir: entry.is_dir })}
           onContextMenu={(e) =>
             openRowMenu(e, {
               path: childPath,
