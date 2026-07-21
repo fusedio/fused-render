@@ -117,6 +117,13 @@ def acquire(names: InstanceNames) -> PrimaryInstance | SecondaryInstance:
     mutex = win32event.CreateMutex(sa, True, names.mutex)
     already_exists = win32api.GetLastError() == winerror.ERROR_ALREADY_EXISTS
     if already_exists:
+        # Close explicitly rather than let refcounting/GC time this — the
+        # named mutex is a kernel object shared with the primary and stays
+        # alive as long as ANY handle references it; a lingering secondary
+        # handle would keep it alive past the primary's own exit, making a
+        # later launch also see ERROR_ALREADY_EXISTS and burn its pipe
+        # timeout as a secondary instead of taking over as primary.
+        mutex.Close()
         return SecondaryInstance(names)
     return PrimaryInstance(mutex, names)
 

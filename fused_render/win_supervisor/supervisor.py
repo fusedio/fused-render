@@ -15,6 +15,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import quote
 
 import pythoncom
 import pywintypes
@@ -23,6 +24,7 @@ import win32gui
 
 from fused_render.win_supervisor import instance, protocol, startup, tray
 from fused_render.win_supervisor.job import Job
+from fused_render.winopen import _view_url as _shared_view_url
 from fused_render.win_supervisor.paths import DesktopPaths
 
 _INSTANCE_ID = "desktop-v1"
@@ -266,31 +268,20 @@ def _open_command(port: int, command: protocol.Command) -> None:
 def _view_url(port: int, path: Path) -> str:
     if not path.exists():
         raise FileNotFoundError(f"file not found: {path}")
-    absolute = path if path.is_absolute() else Path.cwd() / path
-    raw = str(absolute)
-    normalized = raw.replace("\\", "/") if len(raw) > 1 and raw[1] == ":" else raw
-    if normalized.lower().endswith(".bookmark"):
+    fs_path = str(path if path.is_absolute() else Path.cwd() / path)
+    if fs_path.lower().endswith(".bookmark"):
         # Parity with app.py's view_url_path (SB-9, D99): a .bookmark file is
         # not previewed directly — it routes through the _bookmark sentinel,
         # which reads it server-side and redirects to the view it describes.
-        return f"http://127.0.0.1:{port}/view/_bookmark?file={_percent_encode(normalized)}"
-    segments = "/".join(
-        _percent_encode(segment)
-        for segment in normalized.strip("/").split("/")
-        if segment
-    )
-    return f"http://127.0.0.1:{port}/view/{segments}"
-
-
-def _percent_encode(value: str) -> str:
-    encoded = []
-    for byte in value.encode("utf-8"):
-        ch = chr(byte)
-        if ch.isalnum() and ch.isascii() or ch in "-._~":
-            encoded.append(ch)
-        else:
-            encoded.append(f"%{byte:02X}")
-    return "".join(encoded)
+        # Same drive-path normalization rule as the non-bookmark case below
+        # (winopen._view_url / deeplink._view_url_path): only a drive-letter
+        # path gets its backslashes normalized before encoding.
+        normalized = fs_path.replace("\\", "/") if len(fs_path) > 1 and fs_path[1] == ":" else fs_path
+        return f"http://127.0.0.1:{port}/view/_bookmark?file={quote(normalized, safe='')}"
+    # Everything else reuses winopen._view_url's segment/drive-path codec —
+    # the canonical Windows /view URL builder (also used by the Explorer
+    # "Open with" entry point) — rather than a second, driftable copy of it.
+    return _shared_view_url(port, fs_path)
 
 
 def _open_browser(url: str) -> None:
