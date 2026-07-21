@@ -151,6 +151,35 @@ def test_write_invalidates_cache(client, monkeypatch):
     assert calls["n"] == 2
 
 
+def test_midflight_invalidation_is_not_refilled(client, monkeypatch):
+    # TOCTOU race guard: a slow _fs_stat (cold mount LIST, GIL released during
+    # I/O) can start BEFORE a concurrent mutation, then finish AFTER that
+    # mutation's _invalidate_stat_cache popped the key. Without a generation
+    # guard, api_fs_stat would unconditionally write its pre-mutation payload
+    # back, undoing the invalidation and serving stale metadata to the editor's
+    # post-write optimistic-lock re-stat. We reproduce it deterministically with
+    # no real threads: the stub invalidates DURING its own call (as a mutation
+    # completing mid-flight would), then returns a stale payload.
+    path = "/mnt/proj/main.py"
+    calls = {"n": 0}
+
+    def racing_stub(p):
+        calls["n"] += 1
+        # A mutation lands and invalidates while this stat is "in flight".
+        server._invalidate_stat_cache(p)
+        return {"path": p, "is_dir": False, "mtime": float(calls["n"])}
+
+    monkeypatch.setattr(server, "_fs_stat", racing_stub)
+
+    r = client.get("/api/fs/stat", params={"path": path})
+    assert r.status_code == 200
+    # The raced result must NOT be cached — the invalidation wins.
+    assert path not in server._STAT_CACHE
+    # And a subsequent stat recomputes rather than serving a stale hit.
+    client.get("/api/fs/stat", params={"path": path})
+    assert calls["n"] == 2
+
+
 def test_rename_invalidates_src_and_dst(client, monkeypatch):
     src = "/mnt/proj/old.py"
     dst = "/mnt/proj/new.py"

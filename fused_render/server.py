@@ -744,6 +744,14 @@ _CONDITIONS_CACHE: dict[str, tuple[float, dict]] = {}  # path -> (inserted_monot
 # can override it.
 _STAT_TTL_S = 60.0
 _STAT_CACHE: dict[str, tuple[float, dict]] = {}  # path -> (inserted_monotonic, payload)
+# Monotonic invalidation counter for the TOCTOU guard in api_fs_stat. Every
+# _invalidate_stat_cache bump happens-before the post-compute check in a stat
+# that reads the generation first, so any mutation that completes while a slow
+# _fs_stat is in flight is observed and blocks that stale result from refilling
+# the cache. A single global counter is deliberately conservative: a concurrent
+# mutation to ANY path just skips caching this one in-flight stat (rare and
+# harmless) rather than requiring per-path bookkeeping.
+_STAT_CACHE_GEN = 0
 
 
 def _invalidate_stat_cache(*paths: object) -> None:
@@ -755,6 +763,13 @@ def _invalidate_stat_cache(*paths: object) -> None:
     # this cache, not an optimization. Popping a key that was never cached (or a
     # non-string/None body field) is a harmless no-op, so callers can pass raw
     # body values and invalidate unconditionally without inspecting the result.
+    #
+    # Bump the generation UNCONDITIONALLY (even for a no-op pop): a stat for a
+    # not-yet-cached path may be mid-flight, and the bump is what tells its
+    # post-compute check that a mutation raced it so it must not cache a
+    # pre-mutation payload. See api_fs_stat for the guard.
+    global _STAT_CACHE_GEN
+    _STAT_CACHE_GEN += 1
     for p in paths:
         if isinstance(p, str) and p:
             _STAT_CACHE.pop(p, None)
@@ -2958,8 +2973,19 @@ def create_app(start_dir: str) -> FastAPI:
         cached = _STAT_CACHE.get(path)
         if cached is not None and time.monotonic() - cached[0] < _STAT_TTL_S:
             return cached[1]
+        # Snapshot the invalidation generation BEFORE the (slow) stat. _fs_stat
+        # releases the GIL on its cold mount LIST, so a concurrent mutation can
+        # complete _invalidate_stat_cache — popping this key AND bumping the
+        # generation — while we're in flight. Caching unconditionally here would
+        # write our now-stale payload back, undoing that invalidation and
+        # handing the editor's post-write optimistic-lock re-stat pre-mutation
+        # metadata (a real clobber bug). So only cache if the generation is
+        # UNCHANGED: the bump happens-before this check for any invalidation
+        # that finished before our write, closing the TOCTOU window. If it
+        # moved, return the fresh result WITHOUT caching it.
+        gen = _STAT_CACHE_GEN
         result = _fs_stat(path)
-        if isinstance(result, dict) and is_mount_backed(path):
+        if isinstance(result, dict) and is_mount_backed(path) and _STAT_CACHE_GEN == gen:
             _STAT_CACHE[path] = (time.monotonic(), result)
         return result
 
