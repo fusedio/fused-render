@@ -22,7 +22,7 @@ import {
   setBookmarkIcon,
 } from "../lib/bookmarks";
 import { bookmarkSaveTarget } from "../lib/bookmark-file";
-import { exportBookmarkFile, getConfig } from "../lib/api";
+import { exportBookmarkFile, getConfig, statPath } from "../lib/api";
 import IconPicker from "./IconPicker";
 import { FolderIcon, LearnIcon } from "./FileIcons";
 import type { Bookmark, BookmarkFolder, BookmarkItem } from "../lib/bookmarks";
@@ -518,11 +518,22 @@ export default function Sidebar({ config }: SidebarProps) {
   // D123: the bundled learn.zip is mounted read-only at `${mounts_root}/learn`
   // (LEARN_MOUNT_NAME in shell/mounts.py — always "learn"), so no separate
   // /api/mounts round trip is needed, same as the Fused entry above.
-  const onLearnClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+  const onLearnClick = async (e: React.MouseEvent<HTMLAnchorElement>) => {
     e.preventDefault();
-    if (config && config.mounts_root) {
-      navigate(`${config.mounts_root.replace(/\/+$/, "")}/learn`);
+    if (!config || !config.mounts_root) return;
+    const root = `${config.mounts_root.replace(/\/+$/, "")}/learn`;
+    // Prefer the bundled index.html as the landing page when it exists;
+    // fall back to the mount folder otherwise (older learn.zip builds).
+    try {
+      const st = await statPath(`${root}/index.html`);
+      if (!st.is_dir) {
+        navigate(`${root}/index.html`);
+        return;
+      }
+    } catch {
+      // stat 404s (or the mount is briefly not attached) — open the folder.
     }
+    navigate(root);
   };
 
   // --- bookmark row handlers -------------------------------------------------
