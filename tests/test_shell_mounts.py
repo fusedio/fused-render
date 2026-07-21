@@ -2128,12 +2128,16 @@ def fresh_upstream():
     mounts_mod._upstream_cfg.clear()
     mounts_mod._upstream_region.clear()
     mounts_mod._cred_cache.clear()
+    mounts_mod._sign_neg_cache.clear()
+    mounts_mod._validation_locks.clear()
     yield
     mounts_mod._upstream_links.clear()
     mounts_mod._upstream_mode.clear()
     mounts_mod._upstream_cfg.clear()
     mounts_mod._upstream_region.clear()
     mounts_mod._cred_cache.clear()
+    mounts_mod._sign_neg_cache.clear()
+    mounts_mod._validation_locks.clear()
 
 
 def test_upstream_url_prefers_presigned_link(home, rcd, fresh_upstream):
@@ -2382,6 +2386,91 @@ def test_upstream_anonymous_s3_unchanged_and_never_resolves(home, rcd, fresh_ups
     assert resolver_calls == []
     assert validated == []
     assert mounts_mod._upstream_mode["aws-open:bucket/pre fix"] == "public"
+
+
+def test_upstream_sign_demotes_to_link_when_creds_vanish(home, rcd, fresh_upstream, monkeypatch):
+    # Finding 4: once sign mode is active, if creds stop resolving (rotated-away
+    # key) the request must fall through to the publiclink ladder AND the mode
+    # demote to "link" — not return None per-request forever.
+    import os
+
+    rcd.responses["config/get"] = _CRED_S3_CFG
+    rcd.responses["operations/publiclink"] = {"url": "https://signed.example/x?sig=1"}
+    monkeypatch.setattr(mounts_mod, "_sign_validation_status",
+                        lambda url: (206, None))
+    c = mounts_mod.add_mount("corp", "corp:bucket/pre")
+    first = mounts_mod.upstream_url_for(
+        os.path.join(mounts_mod.mountpoint(c), "a.parquet"))
+    assert first.startswith("https://bucket.s3.")  # presigned
+    assert mounts_mod._upstream_mode["corp:bucket/pre"] == "sign"
+    # Creds rotate away: the resolver now returns None and the cache expires.
+    monkeypatch.setattr(mounts_mod.s3sign, "resolve_credentials", lambda cfg: None)
+    mounts_mod._cred_cache.clear()
+    got = mounts_mod.upstream_url_for(
+        os.path.join(mounts_mod.mountpoint(c), "b.parquet"))
+    assert got == "https://signed.example/x?sig=1"  # fell back to publiclink
+    assert mounts_mod._upstream_mode["corp:bucket/pre"] == "link"
+
+
+def test_upstream_sign_negative_cache_skips_revalidation(home, rcd, fresh_upstream, monkeypatch):
+    # Finding 5: when validation fails and no fallback can commit (publiclink
+    # also failing), the failed validation is negative-cached so a second read
+    # in the window doesn't re-run the blocking validation GET.
+    import os
+
+    rcd.responses["config/get"] = _CRED_S3_CFG
+    rcd.responses["operations/publiclink"] = (500, {"error": "boom"})
+    calls = []
+    monkeypatch.setattr(mounts_mod, "_sign_validation_status",
+                        lambda url: calls.append(url) or (0, None))  # network fail
+    c = mounts_mod.add_mount("corp", "corp:bucket/pre")
+    mp = mounts_mod.mountpoint(c)
+    assert mounts_mod.upstream_url_for(os.path.join(mp, "a.parquet")) is None
+    assert len(calls) == 1
+    # Second request within the negative-cache window: no re-validation.
+    assert mounts_mod.upstream_url_for(os.path.join(mp, "b.parquet")) is None
+    assert len(calls) == 1
+    # Mode was NOT permanently pinned to link on the inconclusive failure.
+    assert mounts_mod._upstream_mode.get("corp:bucket/pre") != "sign"
+
+
+def test_upstream_sign_single_flight_validates_once(home, rcd, fresh_upstream, monkeypatch):
+    # Finding 2: N concurrent first reads must issue ONE validation, not N, and
+    # the losing racer's fallback must never erase the winner's adopted region.
+    import os
+
+    rcd.responses["config/get"] = _CRED_S3_CFG
+    rcd.responses["operations/publiclink"] = {"url": "https://pl.example/x"}
+    calls = []
+    calls_lock = threading.Lock()
+
+    def slow_validate(url):
+        with calls_lock:
+            calls.append(url)
+        time.sleep(0.25)  # hold the flight so siblings pile up
+        return (206, None)
+
+    monkeypatch.setattr(mounts_mod, "_sign_validation_status", slow_validate)
+    c = mounts_mod.add_mount("corp", "corp:bucket/pre")
+    mp = mounts_mod.mountpoint(c)
+    results = []
+    res_lock = threading.Lock()
+
+    def worker(i):
+        u = mounts_mod.upstream_url_for(os.path.join(mp, f"obj{i}.parquet"))
+        with res_lock:
+            results.append(u)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(calls) == 1  # exactly one validation across all threads
+    assert mounts_mod._upstream_mode["corp:bucket/pre"] == "sign"
+    # Every request got a usable URL — signed (winner + latecomers) or the
+    # publiclink fallback (racers that didn't win the flight).
+    assert all(r is not None for r in results)
 
 
 # -- upstream cache hygiene (Task 4) -----------------------------------------
@@ -2770,6 +2859,9 @@ def s3_urlopen(monkeypatch):
         return _FakeS3Resp(box["body"])
 
     monkeypatch.setattr(mounts_mod.urllib.request, "urlopen", fake)
+    # Signable listings go through the non-redirect opener (so a wrong-region
+    # 301 is observable); intercept it too so it never hits real S3.
+    monkeypatch.setattr(mounts_mod._NO_REDIRECT_OPENER, "open", fake)
     return calls, box
 
 
@@ -2960,6 +3052,32 @@ def test_s3_list_page_signable_403_raises(home, rcd, fresh_upstream, s3_urlopen)
         "https://x", 403, "Forbidden", {}, None)
     with pytest.raises(mounts_mod.S3ListError):
         mounts_mod.s3_list_page(mounts_mod.mountpoint(c), max_keys=1000)
+
+
+def test_s3_list_page_signable_region_self_corrects(home, rcd, fresh_upstream, monkeypatch):
+    # A signable listing on a wrong/unset-region remote must observe the 301
+    # (non-redirect opener), adopt x-amz-bucket-region, re-sign and retry — so a
+    # direct list/probe (and the watcher) works instead of a followed 301 -> 403.
+    rcd.responses["config/get"] = {**_CRED_S3_CFG, "region": "us-east-1"}
+    c = mounts_mod.add_mount("corp", "corp:bucket/pre")
+    body = _s3_list_xml(contents=[("pre/f.txt", 5, "2024-01-02T03:04:05Z")])
+    seen = []
+
+    def fake_open(req, timeout=None):
+        url = req if isinstance(req, str) else req.get_full_url()
+        seen.append(url)
+        if len(seen) == 1:  # first try in the (wrong) config region -> 301
+            raise mounts_mod.urllib.error.HTTPError(
+                url, 301, "Moved", {"x-amz-bucket-region": "eu-west-1"}, None)
+        return _FakeS3Resp(body)
+
+    monkeypatch.setattr(mounts_mod._NO_REDIRECT_OPENER, "open", fake_open)
+    entries, _tok = mounts_mod.s3_list_page(mounts_mod.mountpoint(c), max_keys=1000)
+    assert [e["Name"] for e in entries] == ["f.txt"]
+    assert len(seen) == 2  # one wrong-region 301 + one retry
+    assert seen[0].startswith("https://bucket.s3.us-east-1.amazonaws.com/")
+    assert seen[1].startswith("https://bucket.s3.eu-west-1.amazonaws.com/")
+    assert mounts_mod._upstream_region["corp:bucket/pre"] == "eu-west-1"
 
 
 def test_s3_list_page_anonymous_url_has_no_xamz(home, rcd, fresh_upstream, s3_urlopen):
@@ -3261,6 +3379,8 @@ def direct_stub(monkeypatch):
                     timeout=timeout)
 
     monkeypatch.setattr(mounts_mod.urllib.request, "urlopen", fake)
+    # Signable probes go through the non-redirect opener; redirect it too.
+    monkeypatch.setattr(mounts_mod._NO_REDIRECT_OPENER, "open", fake)
     yield stub
     stub.close()
 
