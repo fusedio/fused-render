@@ -64,7 +64,7 @@ function MountRow({
     <div className="mount-card">
       <div className="mount-card-main">
         <span className={`mount-dot ${conn.state}`} role="img" aria-label={dotLabel} title={dotLabel} />
-        <div style={{ flex: 1, minWidth: 0 }}>
+        <div className="mount-card-info">
           <div style={{ fontWeight: 600 }}>
             {conn.name}
             {conn.read_only && (
@@ -87,7 +87,7 @@ function MountRow({
             {conn.remote}
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <div className="mount-card-actions">
           {conn.state === "mounted" ? (
             <button type="button" disabled={busy} onClick={() => navigate(conn.mountpoint)}>
               Open
@@ -125,6 +125,80 @@ function MountRow({
   );
 }
 
+// A storage location pasted as a URL, reduced to the rclone-relative form the
+// Path field wants: a provider ("s3" | "gcs") and a `bucket/prefix` string (the
+// key path an rclone S3/GCS remote is addressed by). null when the input isn't a
+// recognized storage link, so the caller leaves the manual fields untouched.
+type ParsedLink = { provider: "s3" | "gcs"; path: string };
+
+// Strip leading slashes and trailing whitespace; rclone paths are relative to
+// the remote and never start with "/".
+const stripLead = (p: string) => p.replace(/^\/+/, "").replace(/\s+$/, "");
+const joinPath = (bucket: string, rest: string) => {
+  const r = stripLead(rest);
+  return r ? `${bucket}/${r}` : bucket;
+};
+
+export function parseStorageUrl(raw: string): ParsedLink | null {
+  const s = raw.trim();
+  if (!s) return null;
+
+  // Scheme URIs: s3://bucket/prefix, gs://bucket/prefix (gcs:// tolerated too).
+  let m = /^s3:\/\/(.+)$/i.exec(s);
+  if (m) return { provider: "s3", path: stripLead(m[1]) };
+  m = /^gc?s:\/\/(.+)$/i.exec(s);
+  if (m) return { provider: "gcs", path: stripLead(m[1]) };
+
+  let u: URL;
+  try {
+    u = new URL(s);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+  const host = u.hostname.toLowerCase();
+  const segs = u.pathname.split("/").filter(Boolean).map((x) => {
+    try {
+      return decodeURIComponent(x);
+    } catch {
+      return x;
+    }
+  });
+  const qsPrefix = u.searchParams.get("prefix") ?? "";
+
+  // AWS S3 console: …/s3/buckets/<bucket>?prefix=a/b/&region=…
+  if (host.endsWith("console.aws.amazon.com")) {
+    const bi = segs.indexOf("buckets");
+    const bucket = bi >= 0 ? segs[bi + 1] : segs[segs.length - 1];
+    return bucket ? { provider: "s3", path: joinPath(bucket, qsPrefix) } : null;
+  }
+  // GCP console: …/storage/browser/<bucket>/<prefix>
+  if (host.endsWith("console.cloud.google.com")) {
+    const bi = segs.indexOf("browser");
+    const rest = bi >= 0 ? segs.slice(bi + 1) : segs;
+    return rest.length ? { provider: "gcs", path: rest.join("/") } : null;
+  }
+  // GCS path-style data hosts.
+  if (host === "storage.googleapis.com" || host === "storage.cloud.google.com") {
+    return segs.length ? { provider: "gcs", path: segs.join("/") } : null;
+  }
+  // GCS virtual-hosted: <bucket>.storage.googleapis.com/<prefix>
+  if (host.endsWith(".storage.googleapis.com")) {
+    const bucket = host.slice(0, -".storage.googleapis.com".length);
+    return { provider: "gcs", path: joinPath(bucket, segs.join("/")) };
+  }
+  if (host.endsWith(".amazonaws.com")) {
+    // Path-style: s3.amazonaws.com/<bucket>/… or s3.<region>.amazonaws.com/<bucket>/…
+    if (host === "s3.amazonaws.com" || /^s3[.-]/.test(host)) {
+      return segs.length ? { provider: "s3", path: segs.join("/") } : null;
+    }
+    // Virtual-hosted: <bucket>.s3.<region>.amazonaws.com/<prefix> (also s3-<region>).
+    const vm = /^(.+?)\.s3[.-]/.exec(host);
+    if (vm) return { provider: "s3", path: joinPath(vm[1], segs.join("/")) };
+  }
+  return null;
+}
+
 function AddMount({
   remotes,
   suggested,
@@ -159,6 +233,62 @@ function AddMount({
     }
   };
 
+  // A pasted S3/GCS link (see parseStorageUrl) that auto-fills the fields below.
+  const [link, setLink] = useState("");
+
+  // Classify an available remote/suggestion so a pasted link can pick a matching
+  // one: which cloud, and whether it's a public (no-credentials) remote. Names +
+  // labels are the only client-side signal (e.g. "aws:" + "AWS S3 — default
+  // profile", or "aws-open:" + "… public buckets (no credentials)").
+  const classify = (nameRaw: string, labelRaw: string) => {
+    const n = nameRaw.toLowerCase();
+    const l = labelRaw.toLowerCase();
+    const provider =
+      n.startsWith("gcs") || l.includes("google cloud")
+        ? "gcs"
+        : n.startsWith("aws") || l.includes("s3")
+          ? "s3"
+          : "other";
+    const isPublic =
+      n.includes("open") ||
+      l.includes("public") ||
+      l.includes("no credentials") ||
+      l.includes("anon");
+    return { provider, isPublic };
+  };
+
+  // The <option> value (a raw remote spec or "suggest:<id>") to select for a
+  // pasted link's provider: prefer a credentialed remote over a public one, so
+  // s3://…/a-private-bucket lands on the user's own creds by default. undefined
+  // when nothing matches — the link still fills Path/Name and the user picks.
+  const pickRemote = (provider: "s3" | "gcs"): string | undefined => {
+    const candidates = [
+      ...remotes.map((r) => ({ value: r.name, ...classify(r.name, r.label) })),
+      ...suggested.map((s) => ({
+        value: `suggest:${s.id}`,
+        ...classify(s.remote_name, s.label),
+        isPublic: s.kind === "public",
+      })),
+    ].filter((c) => c.provider === provider);
+    return (candidates.find((c) => !c.isPublic) ?? candidates[0])?.value;
+  };
+
+  const parsedLink = parseStorageUrl(link);
+
+  const applyLink = (raw: string) => {
+    setLink(raw);
+    const parsed = parseStorageUrl(raw);
+    if (!parsed) return;
+    const rv = pickRemote(parsed.provider);
+    if (rv) setRemote(rv);
+    setSubpath(parsed.path);
+    // Re-derive Name from the pasted path and let it keep tracking Path edits
+    // (the user hasn't hand-typed a name).
+    const seg = parsed.path.split("/").map((s) => s.trim()).filter(Boolean).pop() ?? "";
+    setName(folderSafe(seg));
+    setNameTouched(false);
+  };
+
   // The rclone spec the Add button will mount, previewed live so it matches
   // what the mounted card then shows. A "suggest:<id>" selection resolves to
   // its real remote name at submit; use the suggestion's name for the preview.
@@ -189,6 +319,7 @@ function AddMount({
       setName("");
       setSubpath("");
       setRemote("");
+      setLink("");
       setNameTouched(false);
       onChanged();
     } catch (e) {
@@ -202,10 +333,30 @@ function AddMount({
     <section className="prefs-section">
       <h2>Add mount</h2>
       <p className="deploy-muted">
-        Surface an rclone remote as a local folder. Pick a remote you created, one under{" "}
+        Surface a remote as a local folder. Pick a remote you created, one under{" "}
         <b>Detected credentials</b> (from your AWS / gcloud config — no keys stored), or{" "}
         <b>Public buckets</b> for anonymous access to open data (no credentials needed).
       </p>
+      <div className="mount-paste">
+        <Field label="Paste a link">
+          <TextInput
+            placeholder="s3://bucket/prefix, gs://bucket/prefix, or an S3/GCS console URL"
+            value={link}
+            onChange={(e) => applyLink(e.target.value)}
+          />
+        </Field>
+        {link.trim() &&
+          (parsedLink ? (
+            <p className="deploy-muted mount-paste-hint">
+              Recognized {parsedLink.provider.toUpperCase()} link — filled the fields below
+              {pickRemote(parsedLink.provider) ? "" : "; pick a remote"}. Review, then mount.
+            </p>
+          ) : (
+            <p className="deploy-muted mount-paste-hint warn">
+              Not a recognized S3/GCS link — fill the fields below manually.
+            </p>
+          ))}
+      </div>
       <form
         className="mount-form-row"
         onSubmit={(e) => {
@@ -411,7 +562,7 @@ export default function Mounts() {
   // Lifted from AddRemote so the modal can gate its Esc/backdrop/✕ close while a
   // create is in flight (previously the backdrop close was ungated).
   const [remoteBusy, setRemoteBusy] = useState(false);
-  // Global "Restart rclone": a confirm modal (it briefly disconnects ALL
+  // Global "Restart all mounts": a confirm modal (it briefly disconnects ALL
   // mounts) gating the multi-second daemon restart + re-mount.
   const [confirmRestart, setConfirmRestart] = useState(false);
   const [restartBusy, setRestartBusy] = useState(false);
@@ -442,113 +593,109 @@ export default function Mounts() {
     }
   };
 
-  if (loadError) {
-    return <div className="status-message error">Failed to load mounts: {loadError}</div>;
-  }
-  if (!state) {
-    return <div className="status-message">Loading…</div>;
-  }
+  // Recovery prompt: some mounts signal that a restart would fix them (settings
+  // drifted, or credentials were refreshed under a still-stale connection).
+  const paramsMounts = state?.mounts.filter((m) => m.restart_reason === "params") ?? [];
+  const credMounts = state?.mounts.filter((m) => m.restart_reason === "credentials") ?? [];
+  const needsRestart = paramsMounts.length > 0 || credMounts.length > 0;
 
+  // The page chrome (heading, intro, actions) renders immediately; only the
+  // mount list itself waits on the async getMounts() — a blocking full-page
+  // "Loading…" made the whole page feel slow when just the list is pending.
   return (
-    <div className="prefs-page">
-      {!state.rclone.available && (
-        <div className="deploy-note mount-callout">
+    <div className="prefs-page mounts-page">
+      <header className="mounts-head">
+        <div>
+          <h1 className="mounts-title">Mounts</h1>
+          <p className="mounts-subtitle">
+            Browse remote storage as local folders. Large files are cached locally after the
+            first open.
+          </p>
+        </div>
+        {state?.rclone.available && (
+          <div className="mounts-actions">
+            <button
+              type="button"
+              className="btn btn-secondary mounts-restart"
+              disabled={restartBusy}
+              onClick={() => setConfirmRestart(true)}
+              title="Reconnect all mounts — recovers stuck mounts and picks up refreshed credentials"
+            >
+              <span className="mounts-restart-icon" aria-hidden="true">
+                ↻
+              </span>
+              {restartBusy ? "Restarting…" : "Restart all mounts"}
+            </button>
+          </div>
+        )}
+      </header>
+
+      {loadError && <ErrorBanner>Failed to load mounts: {loadError}</ErrorBanner>}
+
+      {!state && !loadError && (
+        <div className="mount-list" aria-busy="true" aria-label="Loading mounts">
+          <div className="mount-card mount-card--skeleton" />
+          <div className="mount-card mount-card--skeleton" />
+        </div>
+      )}
+
+      {state && !state.rclone.available && (
+        <div className="mount-callout">
           <div className="mount-callout-title">rclone not found</div>
-          <div style={{ fontSize: "0.9em" }}>
+          <div className="mount-callout-body">
             rclone must be installed and on your <code>PATH</code> for mounts to work. Install it
             with <code>brew install rclone</code> (macOS), <code>apt install rclone</code> /{" "}
             <code>dnf install rclone</code> (Linux), or the{" "}
             <a href="https://rclone.org/install/" target="_blank" rel="noreferrer">
               official installer
             </a>
-            , then reload this page. Distro packages can be outdated, so a recent rclone is
+            , then reload this page. Distro packages can be outdated, so a recent version is
             recommended.
           </div>
         </div>
       )}
-      <p className="deploy-muted" style={{ marginTop: 0 }}>
-        Remote storage mounted as local folders
-        {state.rclone.version ? ` (${state.rclone.version})` : ""}. The <b>first</b> open of a
-        large remote file downloads what it needs and can be slow; repeat opens are served from
-        a local cache and are fast. Mounts stay up automatically, including across restarts;
-        if one stops responding, use <b>Reconnect</b>.
-      </p>
-      {(() => {
-        // A restart is a daemon-wide recovery: re-reads refreshed credentials
-        // and applies changed mount params. Prompt when any mount signals it.
-        const paramsMounts = state.mounts.filter((m) => m.restart_reason === "params");
-        const credMounts = state.mounts.filter((m) => m.restart_reason === "credentials");
-        if (paramsMounts.length === 0 && credMounts.length === 0) return null;
-        // Explanatory callout only — the single Restart rclone button below is
-        // the one action, so we don't stack a second identical button here.
-        return (
-          <div className="deploy-note mount-callout">
-            <div className="mount-callout-title">Restart rclone to recover</div>
-            <div style={{ fontSize: "0.9em" }}>
-              {paramsMounts.length > 0 && (
-                <div>Mount params changed — restart rclone to apply them.</div>
-              )}
-              {credMounts.length > 0 && (
-                <div>
-                  Credentials look refreshed — restart rclone to reconnect{" "}
-                  {credMounts.map((m) => m.name).join(", ")}.
-                </div>
-              )}
-              <div style={{ marginTop: 4 }}>Use the Restart rclone button below.</div>
-            </div>
+
+      {state && needsRestart && (
+        <div className="mount-callout warn">
+          <div className="mount-callout-title">Some mounts need a restart</div>
+          <div className="mount-callout-body">
+            {paramsMounts.length > 0 && <p>Settings changed — restart to apply them.</p>}
+            {credMounts.length > 0 && (
+              <p>
+                Credentials were refreshed — restart to reconnect{" "}
+                {credMounts.map((m) => m.name).join(", ")}.
+              </p>
+            )}
           </div>
-        );
-      })()}
-      {state.rclone.available && (
-        <div style={{ marginBottom: 12 }}>
-          <button type="button" disabled={restartBusy} onClick={() => setConfirmRestart(true)}>
-            {restartBusy ? "Restarting…" : "Restart rclone"}
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={restartBusy}
+            onClick={() => setConfirmRestart(true)}
+          >
+            {restartBusy ? "Restarting…" : "Restart all mounts"}
           </button>
         </div>
       )}
+
       {restartError && <ErrorBanner>{restartError}</ErrorBanner>}
-      {confirmRestart && (
-        <Modal
-          title="Restart rclone?"
-          busy={restartBusy}
-          onClose={() => setConfirmRestart(false)}
-          footer={
-            <>
-              <button
-                type="button"
-                disabled={restartBusy}
-                onClick={() => setConfirmRestart(false)}
-              >
-                Cancel
-              </button>
-              <button type="button" disabled={restartBusy} onClick={doRestart}>
-                {restartBusy ? "Restarting…" : "Restart rclone"}
-              </button>
-            </>
-          }
-        >
-          <p>
-            This restarts the rclone daemon and re-mounts everything. <b>All</b>{" "}
-            mounts — including healthy ones — are briefly disconnected while it
-            happens, and files currently open from a mount may need to be
-            reopened.
-          </p>
-        </Modal>
-      )}
-      {state.mounts.length > 0 ? (
-        <div className="mount-list">
-          {state.mounts.map((c) => (
-            <MountRow key={c.id} conn={c} onChanged={reload} />
-          ))}
-        </div>
-      ) : (
-        state.rclone.available && (
-          <div className="mount-empty">
-            No mounts yet — add one below to browse remote storage as local folders.
+
+      {state &&
+        (state.mounts.length > 0 ? (
+          <div className="mount-list">
+            {state.mounts.map((c) => (
+              <MountRow key={c.id} conn={c} onChanged={reload} />
+            ))}
           </div>
-        )
-      )}
-      {state.rclone.available && (
+        ) : (
+          state.rclone.available && (
+            <div className="mount-empty">
+              No mounts yet — add one below to browse remote storage as local folders.
+            </div>
+          )
+        ))}
+
+      {state?.rclone.available && (
         <>
           <AddMount
             remotes={state.rclone.remotes}
@@ -574,6 +721,40 @@ export default function Mounts() {
             </Modal>
           )}
         </>
+      )}
+
+      {confirmRestart && (
+        <Modal
+          title="Restart all mounts?"
+          busy={restartBusy}
+          onClose={() => setConfirmRestart(false)}
+          footer={
+            <>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={restartBusy}
+                onClick={() => setConfirmRestart(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={restartBusy}
+                onClick={doRestart}
+              >
+                {restartBusy ? "Restarting…" : "Restart all mounts"}
+              </button>
+            </>
+          }
+        >
+          <p>
+            This reconnects every mount and re-reads storage credentials. <b>All</b> mounts —
+            including healthy ones — briefly disconnect while it happens, and files currently open
+            from a mount may need to be reopened.
+          </p>
+        </Modal>
       )}
     </div>
   );

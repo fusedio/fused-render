@@ -2788,10 +2788,107 @@ select.field-control:has(option[value=""]:checked) {
   flex-wrap: wrap;
 }
 
-/* rclone-not-found callout — a full-bordered card (no side stripe). */
+/* Paste-a-link fast path above the manual fields: a full-width input that
+   parses an S3/GCS URL and auto-fills Name/Remote/Path below. */
+.mount-paste {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mount-paste :where(input, select) {
+  width: 100%;
+}
+
+.mount-paste-hint {
+  margin: 0;
+  font-size: 0.8em;
+}
+
+.mount-paste-hint.warn {
+  color: var(--warning);
+}
+
+/* Page header — title + one-line intro on the left, global actions on the
+   right. Wraps on a narrow pane so the action drops below the title. */
+.mounts-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.mounts-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.mounts-subtitle {
+  margin: 4px 0 0;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+  max-width: 54ch;
+}
+
+.mounts-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* Refresh glyph in the Restart button — sized independently of the label. */
+.mounts-restart-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* Callout card — the rclone-not-found notice and the recovery prompt share
+   one chassis; `.warn` tints it for the "needs a restart" case. */
+.mount-callout {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+}
+
+.mount-callout.warn {
+  border-color: color-mix(in srgb, var(--warning) 50%, var(--border));
+  background: color-mix(in srgb, var(--warning) 9%, var(--bg-alt));
+}
+
 .mount-callout-title {
-  font-weight: 700;
-  margin-bottom: 4px;
+  font-weight: 600;
+  margin: 0;
+}
+
+/* Normal block flow (NOT flex) so the not-found callout's inline text + <code>
+   chips + link wrap as one paragraph; flex-column would stack each inline
+   child on its own line. The recovery callout's multiple <p> lines get their
+   own spacing via the adjacent-sibling margin below. */
+.mount-callout-body {
+  color: var(--fg-muted);
+  font-size: 0.9em;
+  line-height: 1.5;
+}
+
+.mount-callout-body p {
+  margin: 0;
+}
+
+.mount-callout-body p + p {
+  margin-top: 3px;
+}
+
+.mount-callout-body code {
+  white-space: nowrap;
 }
 
 /* Mount cards — one bordered card per mounted/available mount. */
@@ -2809,12 +2906,66 @@ select.field-control:has(option[value=""]:checked) {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-alt);
+  transition: border-color 0.12s ease;
+}
+
+.mount-card:not(.mount-card--skeleton):hover {
+  border-color: var(--fg-muted);
+}
+
+/* Loading placeholder rows shown while getMounts() is in flight — a shimmer
+   sweep over an empty card, so the list area reserves its space instead of
+   the page jumping when data lands. */
+.mount-card--skeleton {
+  height: 60px;
+  position: relative;
+  overflow: hidden;
+}
+
+.mount-card--skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.04),
+    transparent
+  );
+  animation: mount-shimmer 1.2s ease-in-out infinite;
+}
+
+@keyframes mount-shimmer {
+  to {
+    transform: translateX(100%);
+  }
 }
 
 .mount-card-main {
   display: flex;
   align-items: center;
   gap: 12px;
+  /* Wrap on a narrow pane: the name block (flex:1) keeps the first row and the
+     action buttons drop to a second row rather than crushing the name. */
+  flex-wrap: wrap;
+  row-gap: 10px;
+}
+
+/* The name/remote block is the flexible column; never let it shrink to zero
+   (which would collapse the ellipsised remote spec to nothing). */
+.mount-card-main > .mount-card-info {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+/* Keep the action buttons together and pushed to the row's end; on wrap they
+   ride to the next line as a group. */
+.mount-card-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-left: auto;
 }
 
 .mount-card button {
@@ -2931,6 +3082,36 @@ select.field-control:has(option[value=""]:checked) {
 }
 .mount-link:hover {
   color: var(--fg);
+}
+
+/* Compact layout for narrow panes: tighten page padding, shrink the title, and
+   let the header action span the full width (so it doesn't get squeezed next to
+   a wrapping title). The mount-card / header flex-wrap rules handle the
+   in-between widths; this is the small-end polish. */
+@media (max-width: 560px) {
+  .prefs-page {
+    padding: 14px 14px 24px;
+    gap: 18px;
+  }
+
+  .mounts-title {
+    font-size: 16px;
+  }
+
+  .mounts-actions {
+    width: 100%;
+  }
+
+  .mounts-actions .mounts-restart {
+    width: 100%;
+    justify-content: center;
+  }
+
+  /* On a broken mount the Open/Reconnect + delete row wraps below the name;
+     stretch it full-width so the buttons aren't cramped against the edge. */
+  .mount-card-actions {
+    flex-wrap: wrap;
+  }
 }
 
 .prefs-radio {
