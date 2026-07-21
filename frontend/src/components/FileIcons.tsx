@@ -101,13 +101,13 @@ function JsonIcon() {
   );
 }
 
-// HTML / htm — a globe (browser/web).
+// HTML / htm — a rounded app tile with a play triangle: html files are
+// launchable apps here, so the icon reads "run me", not "web document".
 function HtmlIcon() {
   return (
     <Glyph variant="html">
-      <circle cx="12" cy="12" r="10" />
-      <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" />
-      <path d="M2 12h20" />
+      <rect width="18" height="18" x="3" y="3" rx="4" />
+      <path d="M10 8.5v7l6-3.5Z" />
     </Glyph>
   );
 }
@@ -260,4 +260,10 @@ const RENDER: Record<Variant, () => JSX.Element> = {
 export function iconForEntry(name: string, isDir: boolean): JSX.Element {
   const variant: Variant = isDir ? "folder" : EXT_VARIANT[extOf(name)] ?? "file";
   return RENDER[variant]();
+}
+
+// html/htm files open as launchable apps — callers use this to badge rows and
+// switch "Open" wording to "Open App".
+export function isAppEntry(name: string, isDir: boolean): boolean {
+  return !isDir && EXT_VARIANT[extOf(name)] === "html";
 }
