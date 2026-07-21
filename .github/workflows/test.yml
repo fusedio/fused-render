@@ -97,7 +97,33 @@ jobs:
           sudo apt-get install -y rclone
 
       - name: Run tests
-        run: python -m pytest tests/ -v
+        run: >
+          python -m pytest tests/ -v
+          --cov=fused_render --cov-report=term-missing --cov-report=xml --cov-report=html
+
+      # One representative version avoids 4 duplicate reports/artifacts for
+      # the same source tree; 3.11 is the floor for the optional fused engine
+      # (D69) so it exercises the most code paths of the matrix.
+      - name: Coverage summary
+        if: matrix.python-version == '3.11'
+        run: |
+          echo "## Coverage Report (Python ${{ matrix.python-version }})" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          python -m coverage report -m >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          TOTAL=$(python -m coverage report --format=total)
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Total coverage: ${TOTAL}%**" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        if: matrix.python-version == '3.11'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html-${{ github.sha }}
+          path: |
+            htmlcov/
+            coverage.xml
+          retention-days: 30
 
   test-status:
     name: Test Status

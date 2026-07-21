@@ -36,6 +36,9 @@ dev = [
     # servers bind 127.0.0.1:0. Process-based only — os.chdir / importlib.reload
     # would race under a threaded runner.
     "pytest-xdist",
+    # Coverage reporting (pytest --cov=fused_render). Combines per-worker data
+    # under -n auto (xdist) automatically — no extra config needed there.
+    "pytest-cov",
 ]
 # Baked into the bundled CPython of the .app (SPEC DM-2): users of the packaged
 # app cannot pip install, so the interpreter ships with the popular data stack.
@@ -97,6 +100,23 @@ fused-render-open = "fused_render.winopen:main"
 # comment). To debug a single test serially, override: `pytest -n0 -x path::test`.
 [tool.pytest.ini_options]
 addopts = "-n auto"
+
+[tool.coverage.run]
+source = ["fused_render"]
+# Store paths relative to the repo root rather than absolute, so coverage.xml
+# stays meaningful if it's read from a different checkout path than the one
+# that produced it (e.g. a CI runner vs. a contributor's machine).
+relative_files = true
+
+[tool.coverage.report]
+# Defensive-only lines that a normal test run can't reach (platform guards,
+# "this should never happen" branches) — excluding them keeps the percentage
+# meaningful instead of chasing untestable lines.
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]
 
 # Single source of truth for the version: fused_render/__init__.py's
 # __version__. Bump it there only — hatchling reads it at build time for the
