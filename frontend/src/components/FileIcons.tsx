@@ -55,6 +55,17 @@ export function FolderIcon() {
   );
 }
 
+// Open book — the sidebar's "Learn" entry (bundled learn.zip mount).
+export function LearnIcon() {
+  return (
+    <Glyph variant="doc">
+      <path d="M12 7v13" />
+      <path d="M3 6a2 2 0 0 1 2-2h4a3 3 0 0 1 3 3v13a2.5 2.5 0 0 0-2.5-2.5H3Z" />
+      <path d="M21 6a2 2 0 0 0-2-2h-4a3 3 0 0 0-3 3v13a2.5 2.5 0 0 1 2.5-2.5H21Z" />
+    </Glyph>
+  );
+}
+
 // Code / config / shell / stylesheet — file with a </> glyph inside.
 function CodeIcon() {
   return (

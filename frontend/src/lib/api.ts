@@ -5,6 +5,10 @@ export interface Config {
   // The Fused workspace dir (~/Documents/Fused) — the sidebar's "Fused" entry.
   fused_dir: string;
   version: string;
+  // Root of the mounts dir (~/.fused-render/mounts). The sidebar's "Learn"
+  // entry navigates to `${mounts_root}/learn`, the builtin read-only mount
+  // of the bundled learn.zip (D123) — same dir every mount lives under.
+  mounts_root: string;
 }
 
 export interface FsEntry {

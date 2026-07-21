@@ -24,7 +24,7 @@ import {
 import { bookmarkSaveTarget } from "../lib/bookmark-file";
 import { exportBookmarkFile } from "../lib/api";
 import IconPicker from "./IconPicker";
-import { FolderIcon } from "./FileIcons";
+import { FolderIcon, LearnIcon } from "./FileIcons";
 import type { Bookmark, BookmarkFolder, BookmarkItem } from "../lib/bookmarks";
 import { loadRecents, displayRecents, setRecentsCollapsed } from "../lib/recents";
 import { basename } from "../lib/format";
@@ -443,6 +443,16 @@ export default function Sidebar({ config }: SidebarProps) {
     if (config && config.fused_dir) navigate(config.fused_dir);
   };
 
+  // D123: the bundled learn.zip is mounted read-only at `${mounts_root}/learn`
+  // (LEARN_MOUNT_NAME in shell/mounts.py — always "learn"), so no separate
+  // /api/mounts round trip is needed, same as the Fused entry above.
+  const onLearnClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    e.preventDefault();
+    if (config && config.mounts_root) {
+      navigate(`${config.mounts_root.replace(/\/+$/, "")}/learn`);
+    }
+  };
+
   // --- bookmark row handlers -------------------------------------------------
 
   const onBookmarkNameClick = (e: React.MouseEvent<HTMLAnchorElement>, b: Bookmark) => {
@@ -820,6 +830,9 @@ export default function Sidebar({ config }: SidebarProps) {
       <div className="sidebar-section">
         <a href="#" id="fused-link" className="sidebar-item" onClick={onFusedClick}>
           <span className="icon"><FolderIcon /></span> Fused
+        </a>
+        <a href="#" id="learn-link" className="sidebar-item" onClick={onLearnClick}>
+          <span className="icon"><LearnIcon /></span> Learn
         </a>
       </div>
       <div className="sidebar-section sidebar-bookmarks">
