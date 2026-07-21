@@ -242,9 +242,23 @@ def test_force_detach_runs_outside_store_lock(home, learn_zip, monkeypatch):
 # -- learn_mount_ready --------------------------------------------------------
 
 
-def test_learn_mount_ready_true_once_created(home, learn_zip):
+def test_learn_mount_ready_false_until_actually_mounted(home, learn_zip, monkeypatch):
+    # BUGBOT: record presence alone isn't "ready" — ensure_learn_mount
+    # force-detaches on every startup, so a record can exist while the
+    # mountpoint is momentarily empty (between the detach and the
+    # subsequent attach_mount in run_automount's loop).
     assert mounts_mod.learn_mount_ready() is False
     mounts_mod.ensure_learn_mount()
+    monkeypatch.setattr(mounts_mod, "mounted_paths", lambda: set())
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: False)
+    assert mounts_mod.learn_mount_ready() is False  # record exists, not attached
+
+
+def test_learn_mount_ready_true_once_actually_mounted(home, learn_zip, monkeypatch):
+    mounts_mod.ensure_learn_mount()
+    mp = mounts_mod.mountpoint(_learn_records()[0])
+    monkeypatch.setattr(mounts_mod, "mounted_paths", lambda: {mp})
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
     assert mounts_mod.learn_mount_ready() is True
 
 
@@ -252,8 +266,11 @@ def test_learn_mount_ready_false_without_zip(home):
     assert mounts_mod.learn_mount_ready() is False
 
 
-def test_learn_mount_ready_false_for_user_mount_named_learn(home):
+def test_learn_mount_ready_false_for_user_mount_named_learn(home, monkeypatch):
     mounts_mod.add_mount("learn", "s3remote:my-learn-bucket")
+    monkeypatch.setattr(mounts_mod, "mounted_paths",
+                        lambda: {mounts_mod.mountpoint({"name": "learn"})})
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: True)
     assert mounts_mod.learn_mount_ready() is False
 
 

@@ -2310,17 +2310,32 @@ def ensure_learn_mount() -> None:
 
 
 def learn_mount_ready() -> bool:
-    """True when the builtin learn mount record exists in mounts.json.
+    """True when the builtin learn mount is actually attached — both rcd and
+    the kernel agree the mountpoint is live — not merely when its record
+    exists in mounts.json.
 
     The sidebar's Learn entry (Sidebar.tsx) uses this, surfaced through
-    /api/config, to decide whether to render at all — BUGBOT: without it the
-    entry always renders and navigates to `${mounts_root}/learn`, which is a
-    dead link in an unpackaged run with no FUSED_RENDER_LEARN_ZIP, and
-    briefly dead on a packaged run too until the background automount thread
-    (shell/mounts.startup) has upserted the record. This checks record
-    presence only, not live mount health — the same looseness the existing
-    Fused entry has against fused_dir actually existing on disk."""
-    return any(m.get("builtin") == LEARN_MOUNT_NAME for m in list_mounts())
+    /api/config, to decide whether to render at all.
+
+    BUGBOT (record-presence was not enough): ensure_learn_mount now
+    force-detaches and remounts the learn mountpoint on EVERY startup (see
+    its docstring) — including the common case where the record already
+    existed on disk from a prior run. A presence-only check would read
+    "ready" the instant that record is read off disk, well before
+    run_automount's attach_mount loop (which runs after ensure_learn_mount
+    returns, on the same background automount thread) has remounted it —
+    an early click would hit an empty mountpoint whose HTTP serve was just
+    stopped. Checking BOTH mounted_paths() (rcd's own bookkeeping) and
+    os.path.ismount() (the kernel mount table) is exactly attach_mount's own
+    signal for "there is nothing left to attach" (see its `os.path.ismount`
+    check), so this reads true only once that loop has actually succeeded."""
+    builtin = next(
+        (m for m in list_mounts() if m.get("builtin") == LEARN_MOUNT_NAME), None
+    )
+    if builtin is None:
+        return False
+    mp = mountpoint(builtin)
+    return mp in mounted_paths() and os.path.ismount(mp)
 
 
 def _force_detach_learn_mount(builtin: dict, old_remote: str) -> None:
@@ -2363,31 +2378,44 @@ def run_automount() -> None:
     server restart just show up. Best-effort — a failure logs and moves on,
     never blocks startup."""
     # Upsert the builtin learn mount BEFORE the snapshot below: a fresh
-    # install has zero user mounts, and the early return would otherwise
-    # skip the builtin's very first mount.
+    # install has zero user mounts, and skipping the attach loop below would
+    # otherwise skip the builtin's very first mount too.
     ensure_learn_mount()
     mounts = list_mounts()
-    if not mounts:
-        return
-    live = mounted_paths()
-    for m in mounts:
-        mp = mountpoint(m)
-        if mp in live and not os.path.ismount(mp):
-            # Split-brain: rcd lists the mount but the kernel dropped it.
-            # mount/mount over rcd's own stale entry would fail — leave it
-            # for mount_state to surface as "stale" and Reconnect to heal.
-            continue
-        # A mount that survived the restart takes attach_mount's
-        # already-mounted branch, which re-runs read-only detection and
-        # remounts if the live VFS was created before the current
-        # read_only flag (adopted mounts keep their original vfsOpt) —
-        # otherwise a legacy writable VFS would outlive the flag forever.
-        err = attach_mount(m)
-        if err:
-            logger.warning("automount of %r failed: %s", m["name"], err)
-    # Mounts that survived a server restart skip attach_mount above, so their
-    # HTTP serves (lost with any rcd restart) get re-ensured here.
-    sync_serves()
+    if mounts:
+        live = mounted_paths()
+        for m in mounts:
+            mp = mountpoint(m)
+            if mp in live and not os.path.ismount(mp):
+                # Split-brain: rcd lists the mount but the kernel dropped it.
+                # mount/mount over rcd's own stale entry would fail — leave it
+                # for mount_state to surface as "stale" and Reconnect to heal.
+                continue
+            # A mount that survived the restart takes attach_mount's
+            # already-mounted branch, which re-runs read-only detection and
+            # remounts if the live VFS was created before the current
+            # read_only flag (adopted mounts keep their original vfsOpt) —
+            # otherwise a legacy writable VFS would outlive the flag forever.
+            err = attach_mount(m)
+            if err:
+                logger.warning("automount of %r failed: %s", m["name"], err)
+        # Mounts that survived a server restart skip attach_mount above, so
+        # their HTTP serves (lost with any rcd restart) get re-ensured here.
+        sync_serves()
+    elif os.path.exists(serves_path()):
+        # BUGBOT: `mounts` came back empty, which usually means a genuinely
+        # mount-less install (nothing to sync, and serves_path() was never
+        # written — skipping here keeps a fresh install from gaining a
+        # home_dir()/serves.json write it never needed). But it can ALSO
+        # mean ensure_learn_mount above just removed the builtin record
+        # (zip gone) and stopped its rc serve directly via
+        # _force_detach_learn_mount — and serves.json on disk is ONLY ever
+        # rewritten by sync_serves, so skipping unconditionally (the old
+        # behavior) would leave a stale {mountpoint: dead_url} entry that
+        # serve_url_for keeps resolving forever. The existence check tells
+        # the two cases apart: a serves.json only exists once some earlier
+        # run actually had something to serve.
+        sync_serves()
 
 
 def startup() -> None:

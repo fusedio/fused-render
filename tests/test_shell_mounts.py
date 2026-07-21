@@ -1512,6 +1512,28 @@ def test_run_automount_skips_already_mounted(home, rcd):
     assert not any(m == "mount/mount" for m, _ in rcd.calls)
 
 
+def test_run_automount_syncs_serves_after_learn_removal(home, rcd, tmp_path, monkeypatch):
+    # BUGBOT: when the learn zip disappears and it was the only mount,
+    # ensure_learn_mount removes the record (and stops its rc serve
+    # directly via _force_detach_learn_mount), but serves.json on disk is
+    # ONLY ever rewritten by sync_serves — an early return before it (the
+    # old run_automount behavior, taken because list_mounts() is now empty)
+    # would leave a stale {mountpoint: dead_url} entry that serve_url_for
+    # keeps resolving forever.
+    zp = tmp_path / "learn.zip"
+    zp.write_bytes(b"PK\x05\x06" + b"\x00" * 18)  # empty-zip EOCD; content unused
+    monkeypatch.setenv("FUSED_RENDER_LEARN_ZIP", str(zp))
+    mounts_mod.run_automount()
+    learn_mp = mounts_mod.mountpoint({"name": "learn"})
+    with open(mounts_mod.serves_path()) as f:
+        assert learn_mp in json.load(f)
+
+    monkeypatch.delenv("FUSED_RENDER_LEARN_ZIP")
+    mounts_mod.run_automount()  # learn was the only mount -> list_mounts() is now empty
+    with open(mounts_mod.serves_path()) as f:
+        assert learn_mp not in json.load(f)
+
+
 # -- http serves (the duckdb reader's mounted-parquet fast path) -----------------
 
 
