@@ -8,8 +8,15 @@ Uses rasterio + pillow + tifffile in the shared raster venv
 compression playground, one install between the three tools).
 """
 
+import os as _os
+
 VENV_DIR_NAME = "fused-render-compressbench"
 VENV_DEPS = ["rasterio", "numpy", "pillow", "rio-cogeo", "tifffile"]
+CACHE_ROOT = _os.path.join(
+    _os.path.expanduser(_os.environ["FUSED_RENDER_CACHE_DIR"]), "daemons", "compressbench"
+) if _os.environ.get("FUSED_RENDER_CACHE_DIR") else _os.path.expanduser(
+    f"~/.cache/{VENV_DIR_NAME}"
+)
 
 # ---------------------------------------------------------------------------
 # Mount-safe byte access (mirrors geotiff/tile_server.py). Files under a
@@ -538,8 +545,9 @@ def _venv_python():
     import os
     import shutil
     import subprocess
-    cache = os.path.expanduser(f"~/.cache/{VENV_DIR_NAME}")
-    vpy = os.path.join(cache, "venv", "bin", "python")
+    cache = CACHE_ROOT
+    vpy = (os.path.join(cache, "venv", "Scripts", "python.exe") if os.name == "nt"
+           else os.path.join(cache, "venv", "bin", "python"))
     marker = os.path.join(cache, "deps_ok_pyramid")
     if os.path.exists(vpy) and os.path.exists(marker):
         return vpy
@@ -632,7 +640,7 @@ def main(file: str = "", action: str = "analyze", resampling: str = "",
         except Exception:
             return False
 
-    jobs = os.path.expanduser(f"~/.cache/{VENV_DIR_NAME}/jobs")
+    jobs = os.path.join(CACHE_ROOT, "jobs")
     import hashlib
     key = hashlib.md5(f"{file}|{action}|{opts.get('out', '')}".encode()).hexdigest()[:16]
 

@@ -41,8 +41,8 @@ function Resolve-Tool([string]$Name, [string[]]$Candidates) {
 
 $Uv = Resolve-Tool "uv" @()
 $Cargo = Resolve-Tool "cargo" @((Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"))
-$pyproject = Get-Content (Join-Path $RepoRoot "pyproject.toml") -Raw
-if ($pyproject -notmatch '(?m)^version\s*=\s*"([^"]+)"') {
+$initPy = Get-Content (Join-Path $RepoRoot "fused_render\__init__.py") -Raw
+if ($initPy -notmatch '(?m)^__version__\s*=\s*"([^"]+)"') {
     throw "project version not found"
 }
 $Version = $Matches[1]
