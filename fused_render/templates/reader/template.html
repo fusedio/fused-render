@@ -656,11 +656,11 @@
         const token = {}; // identity for cancel checks across the async hops
         current = token;
 
-        const launch = (retriesLeft) => {
+        const launch = (retriesLeft, dropVoice) => {
           if (current !== token) return;
           const u = new U(text);
           if (opts.rate) u.rate = opts.rate;
-          if (opts.voice) u.voice = opts.voice;
+          if (opts.voice && !dropVoice) u.voice = opts.voice;
           let started = false;
           u.onstart = () => { started = true; };
           u.onboundary = (e) => { started = true; if (opts.onBoundary) opts.onBoundary(e); };
@@ -691,7 +691,13 @@
               u.onend = u.onerror = u.onboundary = u.onstart = null;
               try { synth.cancel(); } catch (e) {}
               if (retriesLeft > 0) {
-                setTimeout(() => launch(retriesLeft - 1), 120);
+                setTimeout(() => launch(retriesLeft - 1, dropVoice), 120);
+              } else if (opts.voice && !dropVoice) {
+                // The pinned voice never starts (network voices do this
+                // silently) — try once more with the system default so the
+                // reader degrades to a different voice, not to silence.
+                if (opts.onVoiceFallback) opts.onVoiceFallback();
+                setTimeout(() => launch(0, true), 120);
               } else {
                 current = null; stopKeepalive();
                 if (opts.onError) opts.onError();
@@ -1058,6 +1064,15 @@
     pos = np; sent = 0; return true;
   }
 
+  // One toast per session — the fallback fires per sentence otherwise.
+  let voiceFallbackToasted = false;
+  function noteVoiceFallback() {
+    if (voiceFallbackToasted) return;
+    voiceFallbackToasted = true;
+    const name = curVoice ? curVoice.name : "Selected voice";
+    toast(name + " isn't responding — using the system voice");
+  }
+
   function speakFromCursor() {
     if (!engineReady() || pos >= blocks.length) { finish(); return; }
     const b = blocks[pos];
@@ -1073,6 +1088,7 @@
     engine.speak(s.text, {
       rate: curRate,
       voice: curVoice,
+      onVoiceFallback: noteVoiceFallback,
       onBoundary: (e) => { if (gen === speakGen) paintWord(b, s, e); },
       onEnd: () => {
         if (gen !== speakGen) return;
@@ -1203,6 +1219,7 @@
       engine.speak(sents[i].text, {
         rate: curRate,
         voice: curVoice,
+        onVoiceFallback: noteVoiceFallback,
         onEnd: () => { if (gen === speakGen) { i++; step(); } },
         onError: () => { if (gen === speakGen) { i++; step(); } },
       });
