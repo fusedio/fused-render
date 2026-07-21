@@ -217,20 +217,22 @@ def test_http_range_file_default_block_is_4mib(fs):
 
 
 @pytest.mark.parametrize("block,expected", [
-    (4 << 20, 8),        # 4MiB blocks -> 8 resident (32MiB budget)
-    (1 << 20, 32),       # 1MiB blocks -> 32 resident
-    (64 << 20, 4),       # block larger than the budget -> floor of 4
+    (4 << 20, 64),        # 4MiB blocks -> 64 resident (256MiB budget)
+    (1 << 20, 256),       # 1MiB blocks -> 256 resident
+    (512 << 20, 4),       # block larger than the budget -> floor of 4
 ])
 def test_http_range_file_cache_is_byte_bounded(fs, block, expected):
-    # The LRU is bounded by BYTES (~32MiB), not a fixed block count: with 4MiB
-    # blocks a 64-block cap (the old constant) would balloon to 256MiB/handle.
+    # The LRU is bounded by BYTES (256MiB), not a fixed block count, so the cap
+    # tracks the block size rather than silently scaling with it. The budget is
+    # deliberately large: a COG's scattered tile-offset reads span the whole
+    # file at block granularity, so a too-small cap thrashes (evict/re-fetch).
     # max_blocks scales inversely with block size, with a floor of 4.
     s = fs(blob=b"x")
     f = op._HttpRangeFile(op._server_url(s.src, "/api/fs/raw", "/x.tif"), 1,
                           block=block)
     assert f._max_blocks == expected
     # Memory bound holds except where the floor dominates (huge blocks).
-    assert f._max_blocks * f._block <= (32 << 20) or f._max_blocks == 4
+    assert f._max_blocks * f._block <= (256 << 20) or f._max_blocks == 4
 
 
 def test_http_range_file_evicts_beyond_max_blocks(fs):

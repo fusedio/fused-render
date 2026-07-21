@@ -98,12 +98,17 @@ class _HttpRangeFile(_io.RawIOBase):
         self._block = int(block)
         self._cache = {}
         self._order = []
-        # LRU bounded by BYTES, not block count: the block size is now 4MiB (was
-        # 64KiB), so a fixed 64-block cap would balloon to 256MiB per handle.
-        # Cap the resident set at ~32MiB instead — enough blocks to keep the
-        # scattered IFD/tile-index reads collapsing into a few Range GETs, while
-        # the memory bound stays flat regardless of the block size.
-        self._max_blocks = max(4, (32 << 20) // self._block)
+        # LRU bounded by BYTES, not a raw block count, so the cap tracks the
+        # block size instead of silently scaling with it. The budget is large
+        # (256MiB) ON PURPOSE: tifffile/GDAL walk tile-offset tables scattered
+        # across the WHOLE file, and at 4MiB granularity each tiny scattered
+        # read pulls a full block, so the working set for a ~150-230MiB COG is
+        # itself ~150-250MiB. A smaller cap thrashes catastrophically —
+        # measured: a 32MiB budget turned a 42MiB COG's cold analyze from
+        # seconds into a >180s timeout (evict-then-refetch storm). The budget
+        # is transient: one bounded analyze in a short-lived worker, freed on
+        # exit. For 4MiB blocks this yields the proven-working 64-block set.
+        self._max_blocks = max(4, (256 << 20) // self._block)
 
     def readable(self):
         return True
@@ -136,7 +141,7 @@ class _HttpRangeFile(_io.RawIOBase):
         blk = self._r.read(off, n)
         self._cache[bi] = blk
         self._order.append(bi)
-        if len(self._order) > self._max_blocks:  # LRU — byte-bounded (~32MiB)
+        if len(self._order) > self._max_blocks:  # LRU — byte-bounded (~256MiB)
             self._cache.pop(self._order.pop(0), None)
         return blk
 
