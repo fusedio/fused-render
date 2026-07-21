@@ -1776,17 +1776,19 @@ def _signing_region(fs: str, cfg: dict | None) -> str | None:
 
 def _adopt_region_on_301(fs: str, code: int, headers,
                          signed_region: str | None) -> bool:
-    """A wrong-region S3 response (301/400) carries the bucket's true region in
-    x-amz-bucket-region. When it does, adopt it into the shared map (under
-    _upstream_lock) so later requests sign for the right region, and report
-    whether THIS request should retry — which it must whenever the hint differs
-    from the region it actually signed with (`signed_region`), NOT whether the
-    shared map already holds the correction. Keying the retry off the shared map
-    would let a concurrent request that still signed with the stale region see a
-    sibling's correction already applied and skip its own needed re-sign/retry,
-    failing it into the slow rc path. Mirrors _validate_and_sign's rule so
-    signed listings/probes region-correct exactly as signed raw reads do."""
-    if code not in (301, 400):
+    """A wrong-region S3 response (301/307/400) carries the bucket's true region
+    in x-amz-bucket-region (307 Temporary Redirect is what S3 returns for a
+    newly created bucket whose region hasn't propagated). When it does, adopt it
+    into the shared map (under _upstream_lock) so later requests sign for the
+    right region, and report whether THIS request should retry — which it must
+    whenever the hint differs from the region it actually signed with
+    (`signed_region`), NOT whether the shared map already holds the correction.
+    Keying the retry off the shared map would let a concurrent request that still
+    signed with the stale region see a sibling's correction already applied and
+    skip its own needed re-sign/retry, failing it into the slow rc path. Mirrors
+    _validate_and_sign's rule so signed listings/probes region-correct exactly
+    as signed raw reads do."""
+    if code not in (301, 307, 400):
         return False
     corrected = headers.get("x-amz-bucket-region") if headers else None
     if not corrected:
@@ -1807,7 +1809,7 @@ def _s3_get_direct(fs: str, rel: str, *, query: dict | None = None,
     followed exactly as before).
 
     SIGNABLE remote: the presigned URL fetched through the NON-redirect opener
-    so a wrong/unset-region 301/400 is observable (the default opener would
+    so a wrong/unset-region 301/307/400 is observable (the default opener would
     chase it to a host the SigV4 signature — which covers Host — doesn't match,
     turning a correctable region hint into an opaque 403). On such a response
     carrying x-amz-bucket-region, adopt the region, re-sign and retry ONCE.
@@ -1933,7 +1935,7 @@ def s3_list_page(path: str, *, max_keys: int, continuation: str | None = None,
     # _s3_get_direct builds the unsigned URL (anonymous — byte-identical to the
     # old base?query with the dotted-bucket path-style rule) or the presigned
     # URL (signable — the list params ride through the presigner), and for a
-    # signable remote self-corrects the region on a wrong-region 301/400.
+    # signable remote self-corrects the region on a wrong-region 301/307/400.
     try:
         body = _s3_get_direct(fs, rel, query=params, timeout=timeout)
     except urllib.error.HTTPError as e:
@@ -2214,7 +2216,7 @@ def _s3_head(path: str, timeout: float) -> DirectHead:
     # Anonymous: plain urlopen on the unsigned URL, byte-identical to before.
     # Signable: presigned HEAD (signed explicitly — a presigned GET rejects a
     # HEAD) through the non-redirect opener, self-correcting the region once on
-    # a wrong-region 301/400 so a probe doesn't wedge on an unset/wrong region.
+    # a wrong-region 301/307/400 so a probe doesn't wedge on an unset/wrong region.
     cfg = _remote_config(fs.partition(":")[0])
     anonymous = _anonymous_s3(cfg)
     for attempt in (1, 2):
@@ -2365,15 +2367,16 @@ def _validate_and_sign(fs: str, rel: str, cfg: dict) -> tuple[str | None, str]:
       - (url, "ok")            S3 accepted the signature (200/206/404/416 — a
                                404 means accepted, object merely absent);
       - (None, "reject")       S3 definitively rejected it (403, or an
-                               uncorrectable 301/400) — sign mode can't serve
-                               this remote; the caller settles on publiclink;
+                               uncorrectable 301/307/400) — sign mode can't
+                               serve this remote; caller settles on publiclink;
       - (None, "inconclusive") network error / 5xx — transient; the caller must
                                NOT pin a mode so sign is re-attempted later.
     The trial region is passed via region_override and NEVER published to
     _upstream_region until the signature is accepted — so a losing racer can't
-    erase a winner's adopted region. Self-corrects the region ONCE on a 301/400
-    carrying x-amz-bucket-region and re-signs; on success writes
-    _upstream_region[fs] exactly once."""
+    erase a winner's adopted region. Self-corrects the region ONCE on a
+    301/307/400 carrying x-amz-bucket-region and re-signs (307 is S3's
+    newly-created-bucket redirect); on success writes _upstream_region[fs]
+    exactly once."""
     derived = _s3_bucket_prefix_region(fs, cfg)
     if derived is None:
         return None, "reject"
@@ -2389,11 +2392,11 @@ def _validate_and_sign(fs: str, rel: str, cfg: dict) -> tuple[str | None, str]:
             with _upstream_lock:
                 _upstream_region[fs] = region  # publish once, on success only
             return url, "ok"
-        if (attempt == 1 and status in (301, 400)
+        if (attempt == 1 and status in (301, 307, 400)
                 and corrected and corrected != region):
             region = corrected
             continue
-        # 403 / uncorrectable 301/400 (< 500) is a definite reject; a network
+        # 403 / uncorrectable 301/307/400 (< 500) is a definite reject; a network
         # error (status 0) or 5xx is inconclusive — don't let a transient blip
         # permanently pin the remote to the slow link path (finding 7).
         verdict = "reject" if 0 < status < 500 else "inconclusive"

@@ -2383,6 +2383,32 @@ def test_adopt_region_retries_when_this_request_signed_stale(fresh_upstream):
         "corp:bucket", 403, headers, "us-east-1") is False
 
 
+def test_adopt_region_on_307_temporary_redirect(fresh_upstream):
+    # S3 answers a newly created bucket with 307 (Temporary Redirect) carrying
+    # x-amz-bucket-region — it must be treated as correctable exactly like 301.
+    headers = {"x-amz-bucket-region": "eu-west-1"}
+    assert mounts_mod._adopt_region_on_301(
+        "corp:bucket", 307, headers, "us-east-1") is True
+    assert mounts_mod._upstream_region["corp:bucket"] == "eu-west-1"
+
+
+def test_upstream_sign_region_self_corrects_on_307(home, rcd, fresh_upstream, monkeypatch):
+    # sign-mode validation must adopt the region from a 307 (new-bucket
+    # Temporary Redirect), not only a 301.
+    import os
+
+    rcd.responses["config/get"] = {**_CRED_S3_CFG, "region": "us-east-1"}
+    seq = [(307, "eu-west-1"), (206, None)]
+    monkeypatch.setattr(mounts_mod, "_sign_validation_status",
+                        lambda url: seq.pop(0))
+    c = mounts_mod.add_mount("corp", "corp:bucket")
+    f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")
+    url = mounts_mod.upstream_url_for(f)
+    assert url.startswith("https://bucket.s3.eu-west-1.amazonaws.com/")
+    assert mounts_mod._upstream_region["corp:bucket"] == "eu-west-1"
+    assert seq == []  # initial + one retry after the 307 correction
+
+
 def test_upstream_anonymous_s3_unchanged_and_never_resolves(home, rcd, fresh_upstream, monkeypatch):
     # INVARIANT: an anonymous S3 mount is byte-identical to today — the
     # resolver is never called, no validation GET is issued, the URL carries no
@@ -3095,6 +3121,31 @@ def test_s3_list_page_signable_region_self_corrects(home, rcd, fresh_upstream, m
     assert [e["Name"] for e in entries] == ["f.txt"]
     assert len(seen) == 2  # one wrong-region 301 + one retry
     assert seen[0].startswith("https://bucket.s3.us-east-1.amazonaws.com/")
+    assert seen[1].startswith("https://bucket.s3.eu-west-1.amazonaws.com/")
+    assert mounts_mod._upstream_region["corp:bucket/pre"] == "eu-west-1"
+
+
+def test_s3_list_page_signable_region_self_corrects_on_307(home, rcd, fresh_upstream, monkeypatch):
+    # Same as the 301 case but S3 returns a 307 Temporary Redirect (new bucket):
+    # the direct listing must observe it, adopt x-amz-bucket-region and retry.
+    rcd.responses["config/get"] = {**_CRED_S3_CFG, "region": "us-east-1"}
+    c = mounts_mod.add_mount("corp", "corp:bucket/pre")
+    body = _s3_list_xml(contents=[("pre/f.txt", 5, "2024-01-02T03:04:05Z")])
+    seen = []
+
+    def fake_open(req, timeout=None):
+        url = req if isinstance(req, str) else req.get_full_url()
+        seen.append(url)
+        if len(seen) == 1:  # first try in the (wrong) config region -> 307
+            raise mounts_mod.urllib.error.HTTPError(
+                url, 307, "Temporary Redirect",
+                {"x-amz-bucket-region": "eu-west-1"}, None)
+        return _FakeS3Resp(body)
+
+    monkeypatch.setattr(mounts_mod._NO_REDIRECT_OPENER, "open", fake_open)
+    entries, _tok = mounts_mod.s3_list_page(mounts_mod.mountpoint(c), max_keys=1000)
+    assert [e["Name"] for e in entries] == ["f.txt"]
+    assert len(seen) == 2  # one wrong-region 307 + one retry
     assert seen[1].startswith("https://bucket.s3.eu-west-1.amazonaws.com/")
     assert mounts_mod._upstream_region["corp:bucket/pre"] == "eu-west-1"
 
