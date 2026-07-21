@@ -1,7 +1,8 @@
 // Preferences page (SPEC §20) — the `/view/_prefs` sentinel route, entered
 // from the sidebar's bottom-left gear. Two tabs (D125):
-//   Render preferences — Logs, Execution engine, Deployments (the opt-in
-//     Deploy-button toggle), Tour. Always present; the default (clean URL).
+//   Render preferences — Logs, Execution engine, Deploy to Fused account
+//     (the opt-in Deploy-button toggle), Tour. Always present; the default
+//     (clean URL).
 //   Fused account       — the account/sign-in/environments panel (formerly
 //     its own `/view/_account` page, folded in once it stopped being a
 //     separate sidebar entry). Shown only once Deploy is enabled — that's
@@ -13,6 +14,7 @@ import { useEffect, useState } from "react";
 import { getPrefs, putDeployEnabled, putEnginePref, revealPath } from "../lib/api";
 import type { Prefs } from "../lib/api";
 import { navigateUrl } from "../lib/router";
+import { notifyPrefsChanged } from "../lib/prefs";
 import { startTour } from "../lib/tour";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { AccountPanel } from "./Account";
@@ -154,6 +156,10 @@ function DeployToggle({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) 
     setError(null);
     try {
       onChange(await putDeployEnabled(!enabled));
+      // The sidebar's signed-in dot (useDeployEnabled) is mounted alongside
+      // this page, not remounted by navigation — without this it would only
+      // pick up the flip on the next focus/visibility return.
+      notifyPrefsChanged();
     } catch (e) {
       setError((e as Error).message);
     } finally {
