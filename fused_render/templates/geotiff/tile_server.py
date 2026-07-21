@@ -437,7 +437,15 @@ def _serve():
         I/O — so it's safe to call under files_lock. The caller closes the
         returned old buffer outside the lock and spawns _prefetch_overviews
         once f is visible to other threads."""
-        f["reader"] = _RangeReader(_server_url(src, "/api/fs/raw", path))
+        # &pooled=1: this reader does one Range GET per ~64KB block over the
+        # server's /api/fs/raw. On a cold mount that endpoint 307-redirects to
+        # the store's signed URL, and urllib would re-follow it (fresh TLS) on
+        # every block. The flag opts this read into the server's pooled proxy
+        # so those range reads share keep-alive sockets to the store. Just a
+        # query param on the endpoint we already use — the template stays
+        # mount-agnostic.
+        f["reader"] = _RangeReader(
+            _server_url(src, "/api/fs/raw", path) + "&pooled=1")
         old, f["buf"] = f["buf"], None
         return old
 

@@ -27,6 +27,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import socket
 import stat as stat_mod
 import subprocess
@@ -165,7 +166,15 @@ SERVE_VFS_OPT = _serve_params(VFS_OPT)
 # forwards verbatim as `-o` flags to the macOS `mount` command (verified in
 # the rcd -vv log). nfsmount only — the Linux path uses FUSE `mount`, which
 # ignores these NFS options.
-NFS_MOUNT_OPT = {"ExtraOptions": ["timeo=600", "retrans=2"]}
+#
+# "nobrowse" is a standard macOS mount flag (`mount_nfs -o nobrowse`): it keeps
+# the volume out of Finder's sidebar/desktop and off Spotlight's auto-scan
+# radar. Without it, Finder browsing or Spotlight indexing walks the mount with
+# readdir, which on an S3-backed remote turns into a full prefix enumeration —
+# a latent mount-wedge trigger even when no app touches the mount. Harmless on
+# Linux (FUSE ignores it), but only ever passed on darwin anyway (see
+# _nfs_mount_opt / attach_mount).
+NFS_MOUNT_OPT = {"ExtraOptions": ["timeo=600", "retrans=2", "nobrowse"]}
 
 
 # INCIDENT (2026-07-16): a mount recorded read_only=true in mounts.json still
@@ -265,6 +274,29 @@ def mounts_dir() -> str:
     return os.path.join(storage.home_dir(), "mounts")
 
 
+def ensure_mounts_dir() -> str:
+    """Create the mounts root and mark it so macOS Spotlight never indexes it,
+    returning the path. A `.metadata_never_index` marker in a directory tells
+    mds (the Spotlight daemon) to skip the whole subtree — the simplest,
+    permission-safe, no-subprocess way to keep Spotlight from auto-walking the
+    S3-backed mounts with readdir (a prefix-enumeration mount-wedge trigger,
+    the browse-side companion to the "nobrowse" mount flag above). Dropped at
+    the root, not per-mount, so it covers mountpoints created later too. A
+    best-effort `mdutil -i off` would need privileges and often no-ops, so the
+    marker is the primary mechanism; we don't shell out. Idempotent."""
+    root = mounts_dir()
+    os.makedirs(root, exist_ok=True)
+    marker = os.path.join(root, ".metadata_never_index")
+    if not os.path.exists(marker):
+        try:
+            with open(marker, "w"):
+                pass
+        except OSError:
+            # Non-fatal: the mount still works, it just isn't Spotlight-excluded.
+            pass
+    return root
+
+
 def list_mounts() -> list:
     data = storage.read_json(_path())
     return data if isinstance(data, list) else []
@@ -353,6 +385,145 @@ def _rcd_state_path() -> str:
     return os.path.join(storage.home_dir(), "rcd.json")
 
 
+def _rcd_registry_path() -> str:
+    """Path to the central registry of every rcd this machine has spawned,
+    one entry per home (state) dir.
+
+    Unlike rcd.json — which lives INSIDE home_dir() and so vanishes with the
+    dir when a pytest temp home is rmtree'd or a git worktree is deleted, taking
+    the only record of that daemon's pid with it — the registry lives at the
+    BASELINE home (never branch-nested). One registry is shared by the baseline
+    run and every per-branch/worktree run, so reap_stale_rcd() on any run can
+    still see, and reap, a daemon whose own (now-deleted) home would otherwise
+    leave no trace. This is the ONLY place we learn the pid of a daemon whose
+    home dir is already gone."""
+    base = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
+    return os.path.join(base, "rcd-registry.json")
+
+
+def _register_rcd(pid: int, port: int) -> None:
+    """Record a freshly spawned daemon in the central registry, keyed by its
+    home dir (a new daemon for the same home replaces the old record). Purely
+    additive breadcrumb for reap_stale_rcd — a failure here must never fail a
+    mount, so it's swallowed."""
+    try:
+        home = storage.home_dir()
+        reg = storage.read_json(_rcd_registry_path())
+        entries = [e for e in reg if isinstance(e, dict)] if isinstance(reg, list) else []
+        entries = [e for e in entries if e.get("dir") != home]  # dedupe by home
+        entries.append({"pid": pid, "port": port, "dir": home})
+        storage.write_json(_rcd_registry_path(), entries)
+    except OSError:
+        logger.warning("rcd registry write failed", exc_info=True)
+
+
+def _pid_alive(pid: int) -> bool:
+    """True if a process with `pid` currently exists. Signal 0 probes without
+    delivering anything; EPERM means it exists but is owned by someone else."""
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _pid_looks_like_rcd(pid: int) -> bool:
+    """True only when pid's command line is recognisably an `rclone ... rcd`.
+
+    A conservative identity guard: the reaper must NEVER signal a process that
+    merely inherited a pid we once recorded (pids are recycled). Best-effort —
+    any ps failure is treated as 'not confirmed', so we fail closed (don't
+    kill on doubt)."""
+    if not pid or pid <= 0:
+        return False
+    try:
+        out = subprocess.run(
+            ["ps", "-o", "command=", "-p", str(pid)],
+            capture_output=True, text=True, timeout=3,
+        ).stdout.lower()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "rclone" in out and "rcd" in out
+
+
+def _confirmed_our_rcd(entry: dict) -> bool:
+    """Proof that entry's pid IS the rclone rcd we recorded, gating a kill.
+    Two independent checks, either suffices: (1) the recorded rc port still
+    answers core/pid with the recorded pid; (2) the pid's command line is an
+    rclone rcd. Both fail closed."""
+    pid = entry.get("pid") or 0
+    port = entry.get("port")
+    if port:
+        try:
+            if _rc(int(port), "core/pid", timeout=3).get("pid") == pid:
+                return True
+        except (RuntimeError, ValueError, TypeError):
+            pass
+    return _pid_looks_like_rcd(pid)
+
+
+def reap_stale_rcd() -> None:
+    """Kill rcd daemons that outlived the home/worktree that spawned them, and
+    prune dead entries from the registry. Best-effort and deliberately
+    CONSERVATIVE — the rcd is spawned detached and 'outlives the server on
+    purpose', so nothing else ever reaps it; days-old orphans from finished
+    pytest runs and deleted worktrees are the observed failure mode.
+
+    An entry is only ever killed when BOTH hold:
+      * its recorded home (state) dir no longer exists  -> orphaned, AND
+      * the pid is still alive AND provably our rclone rcd (_confirmed_our_rcd).
+    Then it gets a SIGTERM (rcd unmounts cleanly on SIGTERM) and its registry
+    entry is dropped.
+
+    Everything else is left as safe as possible:
+      * home dir still present            -> assumed in use, untouched (this is
+                                             also the daemon we're about to
+                                             reuse/spawn);
+      * pid already dead                  -> just drop the stale registry entry;
+      * orphaned but NOT provably ours    -> left in the registry, never
+                                             blind-killed, for a later run to
+                                             reconsider.
+
+    Wired into the (rare) spawn path of _ensure_rcd_locked, not a timer."""
+    reg = storage.read_json(_rcd_registry_path())
+    if not isinstance(reg, list):
+        return
+    kept: list = []
+    changed = False
+    for e in reg:
+        if not isinstance(e, dict):
+            changed = True
+            continue
+        pid = e.get("pid") or 0
+        home = e.get("dir")
+        home_present = isinstance(home, str) and os.path.isdir(home)
+        if home_present:
+            kept.append(e)  # dir present -> in use, leave alone
+            continue
+        # home dir is gone -> candidate orphan
+        if not _pid_alive(pid):
+            changed = True  # already dead: drop the stale record
+            continue
+        if _confirmed_our_rcd(e):
+            try:
+                os.kill(pid, signal.SIGTERM)
+                logger.info("reaped orphaned rcd pid=%s (home %s gone)", pid, home)
+            except OSError:
+                logger.warning("failed to signal orphaned rcd pid=%s", pid, exc_info=True)
+            changed = True  # drop after signalling
+        else:
+            kept.append(e)  # alive but unidentifiable -> never blind-kill
+    if changed:
+        try:
+            storage.write_json(_rcd_registry_path(), kept)
+        except OSError:
+            logger.warning("rcd registry prune failed", exc_info=True)
+
+
 def _rcd_log_path() -> str:
     return os.path.join(storage.home_dir(), "rcd.log")
 
@@ -416,6 +587,10 @@ def write_rcd_state(port: int, pid: int, log_path: str | None = None) -> None:
         _rcd_state_path(),
         {"port": port, "pid": pid, "log": log_path or _rcd_log_path()},
     )
+    # Also record in the central registry so a future run can reap this daemon
+    # even after its home dir (and this rcd.json) is deleted (INCIDENT: leaked
+    # rcd daemons outliving pytest runs / deleted worktrees for days).
+    _register_rcd(pid, port)
 
 
 def _rc(port: int, method: str, params: dict | None = None, timeout: float = 30):
@@ -439,6 +614,90 @@ def _rc(port: int, method: str, params: dict | None = None, timeout: float = 30)
         raise RuntimeError(detail or f"rclone rc {method}: HTTP {e.code}") from e
     except OSError as e:
         raise RuntimeError(f"rclone rc {method}: {e}") from e
+
+
+# Poll cadence for a cancellable async job. A job/status round trip is cheap, so
+# a tight interval keeps the added latency of the async path (vs. a synchronous
+# _rc) down to one poll for a fast-finishing call — the list/stat hot path pays
+# ~this, not a full second.
+_RC_JOB_POLL_S = 0.05
+
+
+def _rc_cancellable(port: int, method: str, params: dict | None = None,
+                    timeout: float = 30):
+    """Like _rc, but runs `method` as a CANCELLABLE rclone job so a timed-out
+    call actually stops rclone's server-side work instead of orphaning it.
+
+    Why this exists (the 14h-runaway INCIDENT): operations/list and
+    operations/stat make rclone run an UNBOUNDED ListObjectsV2 over the whole
+    prefix (see rc_list_dir / _rc_stat_item). A plain urlopen socket timeout
+    only abandons the CLIENT socket — rclone KEEPS enumerating, and repeated
+    timed-out calls pile up orphaned walks that pinned a CPU for 14h. Submitting
+    with `_async=true` returns a {"jobid": N} immediately; we poll job/status
+    until the job finishes or the deadline passes, and on timeout call job/stop
+    so rclone's context cancellation propagates into the S3 lister and the walk
+    STOPS.
+
+    Returns the job's `output` dict — the SAME shape the synchronous _rc call
+    returns for this method (operations/list -> {"list": [...]}, operations/stat
+    -> {"item": ...}). Raises RuntimeError exactly where _rc would, so callers
+    keep their existing except handling:
+      - deadline exceeded -> raised FROM a TimeoutError, so _rc_timed_out()
+        recognizes it (rc_list_dir maps it to RcListTimeout; _rc_stat_item to
+        the indeterminate sentinel);
+      - a failed job      -> raised with rclone's own error message and NO
+        timeout cause (rc_list_dir maps it to RcListError, same as the sync
+        HTTPError path)."""
+    deadline = time.monotonic() + timeout
+    p = dict(params or {})
+    p["_async"] = True
+    # Submitting a job returns at once (only the enumeration is slow), so cap the
+    # submit round trip modestly rather than granting it the whole budget.
+    submit = _rc(port, method, p, timeout=min(timeout, 10))
+    jobid = submit.get("jobid") if isinstance(submit, dict) else None
+    if jobid is None:
+        # No jobid handed back. If the peer IGNORED _async and ran the command
+        # synchronously, `submit` already holds the full payload (operations/list
+        # -> {"list": [...]}, operations/stat -> {"item": ...}) — return it rather
+        # than re-issuing the same unbounded enumeration a second time. Only a
+        # truly empty/absent ack falls back to a fresh sync call on the remaining
+        # budget, so behavior still degrades to the old path when there's nothing
+        # to reuse.
+        if isinstance(submit, dict) and submit:
+            return submit
+        remaining = deadline - time.monotonic()
+        return _rc(port, method, params, timeout=max(remaining, 0.1))
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            status = _rc(port, "job/status", {"jobid": jobid},
+                         timeout=min(remaining, 10))
+        except RuntimeError:
+            # Polling itself failed — common near the deadline when the budget
+            # (min(remaining, 10)) is tiny, or when a busy rcd is slow to answer.
+            # Do NOT let it propagate uncancelled: break out and stop the job
+            # below so the in-flight enumeration can't outlive us (the INCIDENT).
+            logger.warning("rc job/status failed for job %s; cancelling",
+                           jobid, exc_info=True)
+            break
+        if isinstance(status, dict) and status.get("finished"):
+            if status.get("error"):
+                raise RuntimeError(status["error"])  # sync error path equivalent
+            out = status.get("output")
+            return out if isinstance(out, dict) else {}
+        time.sleep(min(_RC_JOB_POLL_S, max(deadline - time.monotonic(), 0)))
+    # Deadline passed (or polling failed) with the job still running: cancel it
+    # server-side so rclone stops enumerating (the whole point), then raise a
+    # timeout the callers recognize. job/stop failing is non-fatal — we still raise.
+    try:
+        _rc(port, "job/stop", {"jobid": jobid}, timeout=3)
+    except RuntimeError:
+        logger.warning("rc job/stop failed for job %s", jobid, exc_info=True)
+    raise RuntimeError(
+        f"rc {method} timed out after {timeout:g}s (job {jobid} cancelled)"
+    ) from TimeoutError()
 
 
 # A live-port probe (core/pid over the loopback rc port, timeout=3) runs on
@@ -513,6 +772,13 @@ def _ensure_rcd_locked() -> int:
     port = _live_rcd_port()
     if port is not None:
         return port
+    # About to spawn a fresh daemon — a natural, rare moment to opportunistically
+    # reap any rcd that outlived a deleted home/worktree (best-effort, never
+    # blocks the spawn; NOT on a timer). The hot reuse path above skips this.
+    try:
+        reap_stale_rcd()
+    except Exception:
+        logger.warning("reap_stale_rcd failed", exc_info=True)
     bin_ = rclone_bin()
     if not bin_:
         raise RuntimeError("rclone is not installed")
@@ -774,6 +1040,19 @@ def is_mounts_root(path: str) -> bool:
     return os.path.realpath(path) == os.path.realpath(mounts_dir())
 
 
+def is_mount_root(path: str) -> bool:
+    """True when `path` is the ROOT of an individual mount (its mountpoint), as
+    opposed to a subpath inside it. A single-level listing of a mount root is a
+    listing of the remote's top prefix — or the whole bucket for a bucket-root
+    mount — which on a world-scale remote is enormous. Callers use this to avoid
+    a standing periodic enumeration of such a prefix (fs/events P1 #4). The
+    mounts container itself counts as a root too. Pure string/abspath — no I/O."""
+    if is_mounts_root(path):
+        return True
+    m, rel = _mount_for(path)
+    return m is not None and rel == "."
+
+
 def rc_mtime_for(path: str) -> str | None:
     """ModTime of a mount-backed file, answered by the rclone rcd rc API
     (operations/stat) instead of the kernel NFS mount.
@@ -855,8 +1134,11 @@ def _rc_stat_item(path: str, *, timeout: float = RC_STAT_TIMEOUT_S):
     # rc_list_dir).
     remote = "" if rel == "." else rel
     try:
-        resp = _rc(port, "operations/stat",
-                   {"fs": m["remote"], "remote": remote}, timeout=timeout)
+        # Cancellable: operations/stat runs an UNBOUNDED ListObjectsV2 on a
+        # negative/dir probe, so a timed-out sync call would orphan that walk.
+        resp = _rc_cancellable(port, "operations/stat",
+                               {"fs": m["remote"], "remote": remote},
+                               timeout=timeout)
     except RuntimeError:
         return _STAT_INDETERMINATE
     if not isinstance(resp, dict) or "item" not in resp:
@@ -1077,9 +1359,11 @@ def rc_list_dir(path: str, timeout: float | None = None) -> list:
     # operations/stat has).
     remote = "" if rel == "." else rel
     try:
-        resp = _rc(port, "operations/list",
-                   {"fs": m["remote"], "remote": remote,
-                    "opt": {"noMimeType": True}}, timeout=timeout)
+        # Cancellable: operations/list enumerates the WHOLE prefix (the mur-sst
+        # runaway), so on timeout we job/stop it instead of orphaning the walk.
+        resp = _rc_cancellable(port, "operations/list",
+                               {"fs": m["remote"], "remote": remote,
+                                "opt": {"noMimeType": True}}, timeout=timeout)
     except RuntimeError as e:
         if _rc_timed_out(e):
             raise RcListTimeout(f"listing {path} timed out after {timeout:g}s") from e
@@ -1890,6 +2174,10 @@ def _sync_serves_locked() -> None:
 def attach_mount(m: dict) -> str | None:
     """Mount via rcd; returns an error string or None."""
     mp = mountpoint(m)
+    # Create the mounts root (with its Spotlight-exclusion marker) before the
+    # per-mount mountpoint, so the marker is in place the moment the mount goes
+    # live and Spotlight never gets a chance to scan it.
+    ensure_mounts_dir()
     os.makedirs(mp, exist_ok=True)
     if os.path.ismount(mp):
         # Already a kernel mount — but is it OURS? A stale mount left by a

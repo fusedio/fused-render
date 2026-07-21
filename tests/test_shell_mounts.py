@@ -31,6 +31,8 @@ class StubRcd:
     def __init__(self):
         self.calls = []
         self.delay = {}  # method -> seconds to sleep before responding (timeouts)
+        self.jobs = {}   # jobid -> job dict (for the _async / job/* path)
+        self._next_jobid = 1
         self.responses = {
             "core/pid": {"pid": 4242},
             "mount/mount": {},
@@ -46,28 +48,78 @@ class StubRcd:
             def log_message(self, *a):
                 pass
 
-            def do_POST(self):
-                length = int(self.headers.get("Content-Length") or 0)
-                body = json.loads(self.rfile.read(length) or b"{}")
-                method = self.path.lstrip("/")
-                stub.calls.append((method, body))
-                if method in stub.delay:
-                    time.sleep(stub.delay[method])
+            def _resolve(self, method):
+                """The (code, payload) this stub would answer `method` with,
+                from the canned per-method responses."""
                 resp = stub.responses.get(method)
                 if isinstance(resp, list):  # per-call sequence; last repeats
                     resp = resp.pop(0) if len(resp) > 1 else resp[0]
                 if resp is None:
-                    payload, code = {"error": f"unknown method {method}"}, 404
-                elif isinstance(resp, tuple):
-                    code, payload = resp
-                else:
-                    payload, code = resp, 200
+                    return 404, {"error": f"unknown method {method}"}
+                if isinstance(resp, tuple):
+                    return resp
+                return 200, resp
+
+            def _reply(self, code, payload):
                 raw = json.dumps(payload).encode()
                 self.send_response(code)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(raw)))
                 self.end_headers()
                 self.wfile.write(raw)
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(length) or b"{}")
+                method = self.path.lstrip("/")
+
+                # job/status and job/stop drive the _async cancellation path.
+                if method == "job/status":
+                    stub.calls.append((method, body))
+                    job = stub.jobs.get(body.get("jobid"))
+                    if job is None:
+                        return self._reply(500, {"error": "job not found"})
+                    finished = (job["ready_at"] is not None
+                                and time.monotonic() >= job["ready_at"])
+                    out = {"id": body["jobid"], "finished": finished,
+                           "success": finished and not job["error"],
+                           "error": job["error"] if finished else ""}
+                    if finished and not job["error"]:
+                        out["output"] = job["output"]
+                    return self._reply(200, out)
+                if method == "job/stop":
+                    stub.calls.append((method, body))
+                    job = stub.jobs.get(body.get("jobid"))
+                    if job is None:
+                        return self._reply(500, {"error": "job not found"})
+                    job["stopped"] = True
+                    return self._reply(200, {})
+
+                # Async submit: record the logical call (minus the _async control
+                # key), stash the eventual result as a job keyed by delay, and
+                # hand back a jobid immediately — exactly like rclone rcd.
+                if body.pop("_async", None):
+                    stub.calls.append((method, body))
+                    code, payload = self._resolve(method)
+                    jobid = stub._next_jobid
+                    stub._next_jobid += 1
+                    # A never-ending job: delay is None => ready_at never arrives.
+                    d = stub.delay.get(method)
+                    stub.jobs[jobid] = {
+                        "ready_at": (None if d == float("inf")
+                                     else time.monotonic() + (d or 0)),
+                        "output": payload if code == 200 else {},
+                        "error": "" if code == 200 else str(payload.get("error", "err")),
+                        "stopped": False,
+                    }
+                    return self._reply(200, {"jobid": jobid})
+
+                # Synchronous path (core/pid, mount/*, and any non-async caller).
+                stub.calls.append((method, body))
+                if method in stub.delay:
+                    time.sleep(stub.delay[method])
+                code, payload = self._resolve(method)
+                self._reply(code, payload)
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
         self.port = self.server.server_address[1]
