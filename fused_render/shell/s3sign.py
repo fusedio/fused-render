@@ -128,9 +128,10 @@ def _from_shared_file(cfg: dict) -> Credentials | None:
     shared_credentials_file, else AWS_SHARED_CREDENTIALS_FILE, else
     ~/.aws/credentials. Profile: cfg's profile, else AWS_PROFILE, else
     'default'. None when the file/section/keys are absent."""
-    path = (cfg.get("shared_credentials_file")
-            or os.environ.get("AWS_SHARED_CREDENTIALS_FILE")
-            or os.path.expanduser("~/.aws/credentials"))
+    path = os.path.expanduser(
+        cfg.get("shared_credentials_file")
+        or os.environ.get("AWS_SHARED_CREDENTIALS_FILE")
+        or "~/.aws/credentials")
     if not os.path.isfile(path):
         return None
     parser = configparser.ConfigParser()

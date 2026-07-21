@@ -187,3 +187,26 @@ def test_resolver_env_auth_missing_env_falls_to_none(tmp_path, monkeypatch):
     monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
     monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(tmp_path / "absent"))
     assert s3sign.resolve_credentials({"type": "s3", "env_auth": "true"}) is None
+
+
+def test_resolver_expands_tilde_in_shared_credentials_file(tmp_path, monkeypatch):
+    # A ~-relative shared_credentials_file must be expanded, matching botocore
+    # and mounts._aws_profiles — a verbatim "~/..." path never resolves.
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+    monkeypatch.delenv("AWS_PROFILE", raising=False)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    (home / "creds").write_text(
+        "[default]\naws_access_key_id = AKIATILDE\n"
+        "aws_secret_access_key = TILDESEC\n", encoding="utf-8")
+    # cfg-supplied ~ path expands.
+    assert s3sign.resolve_credentials(
+        {"type": "s3", "shared_credentials_file": "~/creds"}) == \
+        s3sign.Credentials("AKIATILDE", "TILDESEC", None)
+    # env-supplied ~ path expands too.
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", "~/creds")
+    assert s3sign.resolve_credentials(
+        {"type": "s3", "env_auth": "true"}) == \
+        s3sign.Credentials("AKIATILDE", "TILDESEC", None)
