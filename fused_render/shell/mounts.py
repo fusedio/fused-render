@@ -165,7 +165,15 @@ SERVE_VFS_OPT = _serve_params(VFS_OPT)
 # forwards verbatim as `-o` flags to the macOS `mount` command (verified in
 # the rcd -vv log). nfsmount only — the Linux path uses FUSE `mount`, which
 # ignores these NFS options.
-NFS_MOUNT_OPT = {"ExtraOptions": ["timeo=600", "retrans=2"]}
+#
+# "nobrowse" is a standard macOS mount flag (`mount_nfs -o nobrowse`): it keeps
+# the volume out of Finder's sidebar/desktop and off Spotlight's auto-scan
+# radar. Without it, Finder browsing or Spotlight indexing walks the mount with
+# readdir, which on an S3-backed remote turns into a full prefix enumeration —
+# a latent mount-wedge trigger even when no app touches the mount. Harmless on
+# Linux (FUSE ignores it), but only ever passed on darwin anyway (see
+# _nfs_mount_opt / attach_mount).
+NFS_MOUNT_OPT = {"ExtraOptions": ["timeo=600", "retrans=2", "nobrowse"]}
 
 
 # INCIDENT (2026-07-16): a mount recorded read_only=true in mounts.json still
@@ -263,6 +271,29 @@ def _path() -> str:
 
 def mounts_dir() -> str:
     return os.path.join(storage.home_dir(), "mounts")
+
+
+def ensure_mounts_dir() -> str:
+    """Create the mounts root and mark it so macOS Spotlight never indexes it,
+    returning the path. A `.metadata_never_index` marker in a directory tells
+    mds (the Spotlight daemon) to skip the whole subtree — the simplest,
+    permission-safe, no-subprocess way to keep Spotlight from auto-walking the
+    S3-backed mounts with readdir (a prefix-enumeration mount-wedge trigger,
+    the browse-side companion to the "nobrowse" mount flag above). Dropped at
+    the root, not per-mount, so it covers mountpoints created later too. A
+    best-effort `mdutil -i off` would need privileges and often no-ops, so the
+    marker is the primary mechanism; we don't shell out. Idempotent."""
+    root = mounts_dir()
+    os.makedirs(root, exist_ok=True)
+    marker = os.path.join(root, ".metadata_never_index")
+    if not os.path.exists(marker):
+        try:
+            with open(marker, "w"):
+                pass
+        except OSError:
+            # Non-fatal: the mount still works, it just isn't Spotlight-excluded.
+            pass
+    return root
 
 
 def list_mounts() -> list:
@@ -1960,6 +1991,10 @@ def _sync_serves_locked() -> None:
 def attach_mount(m: dict) -> str | None:
     """Mount via rcd; returns an error string or None."""
     mp = mountpoint(m)
+    # Create the mounts root (with its Spotlight-exclusion marker) before the
+    # per-mount mountpoint, so the marker is in place the moment the mount goes
+    # live and Spotlight never gets a chance to scan it.
+    ensure_mounts_dir()
     os.makedirs(mp, exist_ok=True)
     if os.path.ismount(mp):
         # Already a kernel mount — but is it OURS? A stale mount left by a
