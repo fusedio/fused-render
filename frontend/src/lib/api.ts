@@ -748,6 +748,14 @@ export interface Mount {
   // server re-creates on every startup — the API rejects deleting it, so the
   // Mounts view hides Delete for it too (unmount still works).
   builtin: boolean;
+  // Why restarting the rclone daemon would help this mount, else null:
+  //  - "params" = the mount is live but its running options no longer match the
+  //    record (e.g. read_only flipped) — a restart re-mounts to apply them.
+  //  - "credentials" = a disconnected env_auth mount whose credentials probe
+  //    valid again; the long-lived daemon still holds the stale keys, so only a
+  //    restart (not Reconnect) re-reads the refreshed ones.
+  // Both route the user to the single global Restart rclone button.
+  restart_reason?: "params" | "credentials" | null;
 }
 
 // A remote we can offer from credentials already present in the user's
@@ -801,6 +809,14 @@ export function detachMount(id: string, force = false): Promise<Mount> {
 // Repair a disconnected mount: force-clear the dead mountpoint, remount.
 export function reconnectMount(id: string): Promise<Mount> {
   return postJson<Mount>(`/api/mounts/${id}/reconnect`, {});
+}
+
+// Global recovery: restart the rcd daemon and re-mount everything. Briefly
+// disconnects ALL mounts, but is the only fix for a stale-credential daemon
+// (a fresh daemon re-reads refreshed keys) and for applying changed mount
+// params. Returns the same shape as getMounts so the caller refreshes at once.
+export function restartRclone(): Promise<MountsResult> {
+  return postJson<MountsResult>("/api/mounts/restart", {});
 }
 
 export function deleteMount(id: string): Promise<void> {

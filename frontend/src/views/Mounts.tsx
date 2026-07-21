@@ -13,6 +13,7 @@ import {
   deleteMount,
   getMounts,
   reconnectMount,
+  restartRclone,
 } from "../lib/api";
 import type { Mount, MountsResult, RcloneRemote, RemoteSuggestion } from "../lib/api";
 import { navigate } from "../lib/router";
@@ -410,11 +411,31 @@ export default function Mounts() {
   // Lifted from AddRemote so the modal can gate its Esc/backdrop/✕ close while a
   // create is in flight (previously the backdrop close was ungated).
   const [remoteBusy, setRemoteBusy] = useState(false);
+  // Global "Restart rclone": a confirm modal (it briefly disconnects ALL
+  // mounts) gating the multi-second daemon restart + re-mount.
+  const [confirmRestart, setConfirmRestart] = useState(false);
+  const [restartBusy, setRestartBusy] = useState(false);
+  const [restartError, setRestartError] = useState<string | null>(null);
 
   const reload = () => {
     getMounts().then(setState, (e: Error) => setLoadError(e.message));
   };
   useEffect(reload, []);
+
+  const doRestart = async () => {
+    setRestartBusy(true);
+    setRestartError(null);
+    try {
+      // Returns the fresh MountsResult, so swap state in directly rather than
+      // firing a second GET.
+      setState(await restartRclone());
+      setConfirmRestart(false);
+    } catch (e) {
+      setRestartError((e as Error).message);
+    } finally {
+      setRestartBusy(false);
+    }
+  };
 
   if (loadError) {
     return <div className="status-message error">Failed to load mounts: {loadError}</div>;
@@ -447,6 +468,73 @@ export default function Mounts() {
         a local cache and are fast. Mounts stay up automatically, including across restarts;
         if one stops responding, use <b>Reconnect</b>.
       </p>
+      {(() => {
+        // A restart is a daemon-wide recovery: re-reads refreshed credentials
+        // and applies changed mount params. Prompt when any mount signals it.
+        const paramsMounts = state.mounts.filter((m) => m.restart_reason === "params");
+        const credMounts = state.mounts.filter((m) => m.restart_reason === "credentials");
+        if (paramsMounts.length === 0 && credMounts.length === 0) return null;
+        return (
+          <div className="deploy-note mount-callout">
+            <div className="mount-callout-title">Restart rclone to recover</div>
+            <div style={{ fontSize: "0.9em" }}>
+              {paramsMounts.length > 0 && (
+                <div>Mount params changed — restart rclone to apply them.</div>
+              )}
+              {credMounts.length > 0 && (
+                <div>
+                  Credentials look refreshed — restart rclone to reconnect{" "}
+                  {credMounts.map((m) => m.name).join(", ")}.
+                </div>
+              )}
+              <button
+                type="button"
+                style={{ marginTop: 8 }}
+                disabled={restartBusy}
+                onClick={() => setConfirmRestart(true)}
+              >
+                {restartBusy ? "Restarting…" : "Restart rclone"}
+              </button>
+            </div>
+          </div>
+        );
+      })()}
+      {state.rclone.available && (
+        <div style={{ marginBottom: 12 }}>
+          <button type="button" disabled={restartBusy} onClick={() => setConfirmRestart(true)}>
+            {restartBusy ? "Restarting…" : "Restart rclone"}
+          </button>
+        </div>
+      )}
+      {restartError && <ErrorBanner>{restartError}</ErrorBanner>}
+      {confirmRestart && (
+        <Modal
+          title="Restart rclone?"
+          busy={restartBusy}
+          onClose={() => setConfirmRestart(false)}
+          footer={
+            <>
+              <button
+                type="button"
+                disabled={restartBusy}
+                onClick={() => setConfirmRestart(false)}
+              >
+                Cancel
+              </button>
+              <button type="button" disabled={restartBusy} onClick={doRestart}>
+                {restartBusy ? "Restarting…" : "Restart rclone"}
+              </button>
+            </>
+          }
+        >
+          <p>
+            This restarts the rclone daemon and re-mounts everything. <b>All</b>{" "}
+            mounts — including healthy ones — are briefly disconnected while it
+            happens, and files currently open from a mount may need to be
+            reopened.
+          </p>
+        </Modal>
+      )}
       {state.mounts.length > 0 ? (
         <div className="mount-list">
           {state.mounts.map((c) => (
