@@ -166,14 +166,19 @@ export function parseStorageUrl(raw: string): ParsedLink | null {
   });
   const qsPrefix = u.searchParams.get("prefix") ?? "";
 
-  // AWS S3 console: …/s3/buckets/<bucket>?prefix=a/b/&region=…
-  // ONLY the S3 console is a storage link — require the "buckets/<bucket>"
-  // marker so an unrelated AWS console page (ec2, iam, …) isn't mistaken for a
-  // bucket and doesn't auto-fill a bogus path from its last URL segment.
+  // AWS S3 console link shapes: the bucket view …/s3/buckets/<bucket>?prefix=a/b/
+  // and the object view …/s3/object/<bucket>[/<key>]?prefix=<key>. Require one of
+  // those markers so an unrelated AWS console page (ec2, iam, …) isn't mistaken
+  // for a bucket and doesn't auto-fill a bogus path from its last URL segment.
   if (host.endsWith("console.aws.amazon.com")) {
     const bi = segs.indexOf("buckets");
-    const bucket = bi >= 0 ? segs[bi + 1] : "";
-    return bucket ? { provider: "s3", path: joinPath(bucket, qsPrefix) } : null;
+    const oi = segs.indexOf("object");
+    const bucket = bi >= 0 ? segs[bi + 1] : oi >= 0 ? segs[oi + 1] : "";
+    if (!bucket) return null;
+    // The object view may carry the key in the path after the bucket; both
+    // shapes may carry it in ?prefix=.
+    const inPath = oi >= 0 ? segs.slice(oi + 2).join("/") : "";
+    return { provider: "s3", path: joinPath(bucket, qsPrefix || inPath) };
   }
   // GCP console: …/storage/browser/<bucket>/<prefix> — likewise require the
   // "browser/<bucket>" marker; other cloud-console pages are not storage links.
@@ -204,26 +209,35 @@ export function parseStorageUrl(raw: string): ParsedLink | null {
   return null;
 }
 
-// A trailing path segment that looks like a file (has a short extension), e.g.
-// "TCI.tif", "part-0001.parquet" — used to tell a link-to-a-file from a
+// A trailing segment with a short extension (e.g. "TCI.tif", "part-0001.parquet")
+// — but NOT one whose extension names a directory this app browses as a folder
+// (.zarr, .gdb): those are prefixes, not objects, so a link ending in (or under)
+// one must keep the directory in the path. Used to tell a link-to-a-file from a
 // link-to-a-prefix.
-const FILE_TAIL = /\.[A-Za-z0-9]{1,8}$/;
+const FILE_EXT = /\.([A-Za-z0-9]{1,8})$/;
+const DIR_EXTS = new Set(["zarr", "gdb"]);
+function looksLikeFile(seg: string): boolean {
+  const m = FILE_EXT.exec(seg);
+  return !!m && !DIR_EXTS.has(m[1].toLowerCase());
+}
 
 // The path to actually mount for a pasted link. Pasting a deep link to a single
 // FILE — e.g. s3://sentinel-cogs/sentinel-s2-l2a-cogs/32/T/QR/2025/8/…/TCI.tif —
 // should not mount that one scene folder (let alone the file); the useful mount
 // is the dataset root, bucket + first prefix segment
 // (sentinel-cogs/sentinel-s2-l2a-cogs), which you then browse. A link to a
-// PREFIX (no file tail — a bucket root, a trailing-slash prefix, a console
-// ?prefix=) is kept verbatim, since navigating there was deliberate. Either way
-// the Path field stays editable, so this is only the starting suggestion.
+// PREFIX (no file tail — a bucket root, a trailing-slash prefix, a .zarr/.gdb
+// directory, a console ?prefix=) is kept verbatim, since navigating there was
+// deliberate. Either way the Path field stays editable, so this is only the
+// starting suggestion.
 export function mountRootForLink(path: string): string {
   const segs = path.split("/").filter(Boolean);
-  if (!segs.length || !FILE_TAIL.test(segs[segs.length - 1])) return path;
+  if (!segs.length || !looksLikeFile(segs[segs.length - 1])) return path;
   const [bucket, ...key] = segs;
-  // First prefix segment is the dataset/collection; if the file sits directly
-  // under the bucket (or that first segment IS the file), fall back to the bucket.
-  return key[0] && !FILE_TAIL.test(key[0]) ? `${bucket}/${key[0]}` : bucket;
+  // key.length > 1 ⇒ there's a prefix directory before the file — keep it (even
+  // a dotted one like "data.zarr", which is a directory, not the object). A lone
+  // key segment IS the file (sits directly under the bucket) ⇒ just the bucket.
+  return key.length > 1 ? `${bucket}/${key[0]}` : bucket;
 }
 
 function AddMount({
