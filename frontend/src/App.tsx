@@ -155,7 +155,10 @@ function LoadingScaffold({ fsPath, isDir }: { fsPath: string; isDir: boolean }) 
       </div>
       <div className="preview-body">
         {isDir ? (
-          <Listing fsPath={fsPath} />
+          // provisional: the hint could be stale (file, not dir). Suppress
+          // Listing's hard "Failed to list" error while stat resolves — a 404
+          // here just means the hint was wrong; stat will paint the file view.
+          <Listing fsPath={fsPath} provisional />
         ) : (
           <div className="preview-resolving">
             <span className="mode-icon-spinner" />

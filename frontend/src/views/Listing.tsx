@@ -253,7 +253,15 @@ type WalkState =
 
 const IDLE_WALK: WalkState = { status: "idle" };
 
-export default function Listing({ fsPath }: { fsPath: string }) {
+// `provisional`: this Listing is rendering inside the pre-stat loading scaffold
+// (App LoadingScaffold), mounted off a directory NAV HINT rather than a
+// confirmed stat. The hint is authoritative in practice but can be stale — if
+// the path is actually a file, /api/fs/list 404s. In that provisional phase a
+// failed listing must NOT paint the hard "Failed to list" error: stat is still
+// resolving and will drive the correct final view (a file <Preview>) a beat
+// later, so we show the neutral loading body and let stat commit the real view.
+// Absent/false (the committed post-stat render), errors show normally.
+export default function Listing({ fsPath, provisional = false }: { fsPath: string; provisional?: boolean }) {
   const [state, setState] = useState<ListingState>({ status: "loading" });
   // Sort lives in the URL; mirror it in state so clicks re-render without a
   // navigation (vanilla re-ran renderListing after its replaceState).
@@ -1289,7 +1297,18 @@ export default function Listing({ fsPath }: { fsPath: string }) {
       </tr>
     );
   } else if (state.status === "error") {
-    body = (
+    // In the provisional scaffold phase a list failure is most likely a stale
+    // dir hint pointing at a file (its /api/fs/list 404s); suppress the hard
+    // error and show neutral loading — stat is still resolving and will replace
+    // this scaffold with the correct file view. Post-stat (committed render),
+    // a genuine list failure surfaces normally.
+    body = provisional ? (
+      <tr>
+        <td colSpan={3} className="status-message">
+          Loading…
+        </td>
+      </tr>
+    ) : (
       <tr>
         <td colSpan={3} className="status-message error">
           Failed to list {fsPath}: {state.message}
