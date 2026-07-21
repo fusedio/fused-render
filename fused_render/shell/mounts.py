@@ -819,6 +819,85 @@ def _ensure_rcd_locked() -> int:
     raise RuntimeError("rclone rcd did not come up within 10s")
 
 
+# How long _kill_current_rcd waits for a signalled daemon to actually exit
+# before escalating / giving up, mirroring the bounded poll ensure_rcd uses on
+# the way up.
+_KILL_TIMEOUT_S = 5.0
+
+
+def _kill_current_rcd() -> None:
+    """Terminate the recorded rcd daemon, if there is one to terminate.
+
+    Safety invariant (the single most important constraint here): only ever
+    signal a pid we can PROVE is our rclone rcd. Reuses the exact gates
+    reap_stale_rcd trusts — _pid_alive + _confirmed_our_rcd (which itself folds
+    in the rc core/pid check and _pid_looks_like_rcd). A recorded pid that is
+    alive but NOT confirmed ours raises rather than risk killing an unrelated
+    process that inherited a recycled pid.
+
+    No recorded daemon / a dead pid is a clean no-op: the caller's fresh spawn
+    just starts one. SIGTERM first (rcd unmounts cleanly on it), escalating to
+    SIGKILL only if it won't exit within _KILL_TIMEOUT_S; we poll until the
+    daemon's port stops answering AND the pid is gone."""
+    entry = storage.read_json(_rcd_state_path())
+    if not isinstance(entry, dict):
+        return  # no daemon on record — nothing to kill
+    pid = entry.get("pid") or 0
+    if not _pid_alive(pid):
+        return  # already gone; the stale rcd.json is harmless (spawn overwrites)
+    if not _confirmed_our_rcd(entry):
+        # Alive but unprovable: pids get recycled, so this could be anything.
+        # Fail loud instead of blind-killing (the critical safety invariant).
+        raise RuntimeError(
+            f"refusing to kill pid {pid}: not confirmed to be our rclone rcd"
+        )
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            return  # raced us and exited between the check and the signal
+        except OSError as e:
+            raise RuntimeError(f"failed to signal rcd pid {pid}: {e}") from e
+        deadline = time.time() + _KILL_TIMEOUT_S
+        while time.time() < deadline:
+            if _live_rcd_port() is None and not _pid_alive(pid):
+                return  # daemon gone
+            time.sleep(0.1)
+    raise RuntimeError(f"rcd pid {pid} did not exit after SIGKILL")
+
+
+def restart_rcd() -> None:
+    """Clean restart of the rcd daemon plus a full re-mount of everything.
+
+    Recovers wedged/disconnected mounts, applies changed mount params, and —
+    the credential-expiry fix — forces a brand-new daemon to re-read the static
+    credentials (e.g. ~/.aws/credentials): the long-lived rcd reads them ONCE at
+    fs instantiation and never again, so a refreshed SSO/STS token only reaches
+    a mount after the daemon itself is replaced (neither Reconnect nor a server
+    restart helps — the rcd survives both).
+
+    Sequence, serialized against ensure_rcd via _rcd_lock:
+      1. force-detach every kernel NFS mount FIRST, so killing rcd can't strand
+         a wedged mount (best-effort — a mount already gone is fine);
+      2. kill the current daemon (only if confirmed ours — see _kill_current_rcd);
+      3. spawn a fresh daemon via the already-locked body (we hold _rcd_lock, so
+         calling ensure_rcd() would deadlock the non-reentrant Lock).
+    run_automount() (which re-mounts every mount and rebuilds serves.json via
+    sync_serves) runs OUTSIDE _rcd_lock — it takes its own _serves_lock, and
+    holding both would invert the lock order. A spawn failure propagates: the
+    endpoint maps it to a 500 and mounts are left honestly unmounted."""
+    with _rcd_lock:
+        for m in list_mounts():
+            try:
+                detach_mount(m, force=True)
+            except Exception:
+                logger.warning("restart: detach of %r failed",
+                               m.get("name"), exc_info=True)
+        _kill_current_rcd()
+        _ensure_rcd_locked()
+    run_automount()
+
+
 def rcd_mount_map() -> dict:
     """{mountpoint: remote fs} for every mount rcd currently serves (empty
     when no daemon is live). Read-only: never spawns a daemon just to answer
@@ -2455,7 +2534,64 @@ def mount_state(m: dict, rcd_mounts: set, timeout: float = PROBE_TIMEOUT) -> str
     return out.get("state", "disconnected")  # no answer in time == wedged
 
 
-def mount_view(m: dict, rcd_mounts: set | None = None, state: str | None = None) -> dict:
+# Sentinel: distinguishes "caller already ran the credential probe, here is its
+# tri-state result" from "no result supplied, run the probe if the credentials
+# branch is reached". A plain None default couldn't tell them apart.
+_UNSET = object()
+
+
+def mount_restart_reason(m: dict, rcd_mounts: set | None = None,
+                         state: str | None = None, cred_status=_UNSET) -> str | None:
+    """Why restarting rclone would help this mount, or None. Surfaced on
+    mount_view so the UI can prompt (both reasons route to the SAME global
+    Restart button):
+
+      "params"      — the mount is live but its RUNNING options differ from what
+                      the record now wants, so a restart is needed to apply them.
+                      Conservative subset: read_only is the one mount param the
+                      UI can change, and mounted_read_only records what was
+                      actually baked into the live VFS (rcd never echoes vfsOpt
+                      back — same signal attach_mount's adopt branch remounts on).
+                      A MISSING mounted_read_only (a legacy record adopted via
+                      listmounts that never went through attach_mount) is
+                      "unknown, assume no drift" — never a false prompt.
+                      Broader vfsOpt/mountOpt diffing is deliberately deferred.
+      "credentials" — a disconnected/stale mount on an env_auth remote whose
+                      credentials probe POSITIVELY VALID again: the long-lived
+                      daemon still holds the pre-refresh keys, so Reconnect (and
+                      even a server restart) can't help — only replacing the
+                      daemon re-reads the refreshed creds (see restart_rcd).
+                      An inconclusive probe (timeout/network/AccessDenied) is NOT
+                      treated as valid, so a transient failure can't spam a false
+                      restart prompt.
+
+    `cred_status` lets a caller that already ran the probe (e.g. get_mounts,
+    which threads it off the serial view-building path) pass the tri-state
+    result in so we don't pay a second `rclone lsd`; left unset, the credentials
+    branch runs the probe itself. `mounted_paths()` is only fetched when `state`
+    isn't supplied — the error path passes state and never needs the rc call."""
+    if state is None:
+        if rcd_mounts is None:
+            rcd_mounts = mounted_paths()
+        state = mount_state(m, rcd_mounts)
+    if state == "mounted":
+        baked = m.get("mounted_read_only")
+        # Only a KNOWN-and-differing baked flag is drift; a missing key is an
+        # adopted legacy mount whose live vfsOpt we can't compare — not a prompt.
+        if baked is not None and bool(m.get("read_only")) != bool(baked):
+            return "params"
+        return None
+    if state in ("disconnected", "stale"):
+        if cred_status is _UNSET:
+            cred_status = _mount_credential_status(m)
+        # Only a POSITIVE "valid" means the daemon is holding stale-but-now-good
+        # keys; "bad"/"inconclusive"/"n/a" are Reconnect's or refresh's job.
+        return "credentials" if cred_status == "valid" else None
+    return None
+
+
+def mount_view(m: dict, rcd_mounts: set | None = None, state: str | None = None,
+               cred_status=_UNSET) -> dict:
     mp = mountpoint(m)
     listed = mounted_paths() if rcd_mounts is None else rcd_mounts
     if state is None:
@@ -2476,6 +2612,11 @@ def mount_view(m: dict, rcd_mounts: set | None = None, state: str | None = None)
         # Shipped-with-the-app mount (see ensure_learn_mount); the UI can
         # treat it differently from a user-created mount (e.g. hide delete).
         "builtin": bool(m.get("builtin")),
+        # Why a Restart rclone would help (params drift / re-authed creds), or
+        # None. Reuses the state just computed AND (on the get_mounts bulk path)
+        # a cred_status probed off the serial path, so building a view never
+        # blocks on a per-mount `rclone lsd`.
+        "restart_reason": mount_restart_reason(m, listed, state, cred_status),
     }
 
 
@@ -2989,9 +3130,19 @@ def broken_mount_error(path: str) -> str | None:
     # expired SSO token. When the remote probes credential-shaped, tell the
     # user to refresh their credentials instead of pointing them at reconnect.
     if state in ("disconnected", "stale"):
-        cred_err = _mount_credential_error(m)
-        if cred_err:
-            return f"mount '{name}' — {cred_err}"
+        # One probe, three outcomes (see _credential_probe):
+        cred_status = _mount_credential_status(m)
+        if cred_status == "bad":
+            return f"mount '{name}' — {_CRED_EXPIRED_MSG}"
+        # "valid": the user re-authed, but the long-lived daemon still holds the
+        # pre-refresh keys, so Reconnect (which reuses that daemon) can't help —
+        # only a daemon restart re-reads them. "inconclusive"/"n/a" fall through
+        # to the generic reconnect message (a transient failure or a
+        # non-credential remote must NOT suggest a restart).
+        if cred_status == "valid":
+            return (f"mount '{name}' — your credentials look refreshed; restart "
+                    f"rclone from the Mounts page in the sidebar to pick up the "
+                    f"new credentials")
     # "stale" (the INCIDENT split-brain) and "disconnected" both mean a mount
     # that was there and stopped flowing — same user-facing wording; only a
     # never-mounted mount reads as "not mounted".
@@ -3004,23 +3155,37 @@ def broken_mount_error(path: str) -> str | None:
 def get_mounts():
     live = mounted_paths()
     mounts = list_mounts()
-    # Probe states concurrently: each disconnected/wedged mount blocks its
-    # probe for the full PROBE_TIMEOUT, and serially those would stack.
+    bin_ = rclone_bin()
+    # Probe states — AND, for a broken mount, its credential status — concurrently:
+    # each disconnected/wedged mount blocks its state probe for the full
+    # PROBE_TIMEOUT, and the credential `rclone lsd` can take ~10s more. Serially
+    # (states threaded but the credential probe left to the mount_view loop) a
+    # few broken aws mounts would stall the polled Mounts page for tens of
+    # seconds — exactly when the user is polling to recover. So do BOTH in the
+    # per-mount worker and hand the results to mount_view, which never probes.
     states: list[str | None] = [None] * len(mounts)
+    cred_statuses: list[str] = ["n/a"] * len(mounts)
     threads = []
     for i, m in enumerate(mounts):
         def probe(i=i, m=m):
-            states[i] = mount_state(m, live)
+            st = mount_state(m, live)
+            states[i] = st
+            # Credentials only matter for a broken mount; a healthy/unmounted
+            # one never pays the lsd probe.
+            if st in ("disconnected", "stale"):
+                cred_statuses[i] = _mount_credential_status(m, bin_)
         t = threading.Thread(target=probe, daemon=True)
         t.start()
         threads.append(t)
     for t in threads:
-        t.join(PROBE_TIMEOUT + 1)
+        # Allow for the state probe PLUS the credential lsd (30s cap) so a slow
+        # probe still lands in this listing rather than defaulting to unknown.
+        t.join(PROBE_TIMEOUT + 31)
     return {
         "rclone": _rclone_state(),
         "mounts": [
-            mount_view(m, live, state=s or "disconnected")
-            for m, s in zip(mounts, states)
+            mount_view(m, live, state=s or "disconnected", cred_status=cs)
+            for m, s, cs in zip(mounts, states, cred_statuses)
         ],
     }
 
@@ -3073,6 +3238,23 @@ def reconnect_endpoint(cid: str, x_fused: str | None = Header(default=None)):
     if err:
         return JSONResponse({"error": err}, status_code=502)
     return mount_view(m)
+
+
+@router.post("/api/mounts/restart")
+def restart_endpoint(x_fused: str | None = Header(default=None, alias="X-Fused")):
+    """Global recovery: restart the rcd daemon and re-mount everything. The one
+    tool that fixes a stale-credential daemon (a fresh daemon re-reads refreshed
+    keys) and applies changed mount params — see restart_rcd. Sync def so the
+    multi-second unmount+kill+spawn+remount runs in the threadpool, never the
+    event loop. Returns the same payload as GET /api/mounts."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    try:
+        restart_rcd()
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    return get_mounts()
 
 
 @router.post("/api/mounts/{cid}/unmount")
@@ -3176,6 +3358,43 @@ _BAD_CRED_MARKERS = (
 )
 
 
+_CRED_EXPIRED_MSG = (
+    "the detected credentials appear expired or invalid — refresh them "
+    "(e.g. `aws sso login` or `gcloud auth application-default login`) "
+    "and try again"
+)
+
+
+def _credential_probe(bin_: str, name: str) -> str:
+    """Tri-state result of a top-level `lsd` against an env_auth remote:
+
+      "valid"        — the listing succeeded (returncode 0): the credentials
+                       positively work right now.
+      "bad"          — a credential-shaped failure (_BAD_CRED_MARKERS): expired
+                       SSO/STS token, revoked key, missing default creds.
+      "inconclusive" — the probe couldn't decide: a timeout, network error, or a
+                       non-credential failure like AccessDenied (valid keys that
+                       merely lack ListBuckets). NOT proof the creds work.
+
+    The three-way split matters because "not bad" is not the same as "good":
+    only a POSITIVE success may drive the "credentials refreshed → Restart"
+    prompt, or a transient failure would spam a false restart suggestion."""
+    try:
+        r = subprocess.run(
+            [bin_, "lsd", f"{name}:", "--max-depth", "1",
+             "--contimeout", "5s", "--timeout", "10s",
+             "--retries", "1", "--low-level-retries", "2"],
+            capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return "inconclusive"
+    if r.returncode == 0:
+        return "valid"
+    err = ((r.stderr or "") + (r.stdout or "")).lower()
+    if any(m in err for m in _BAD_CRED_MARKERS):
+        return "bad"
+    return "inconclusive"
+
+
 def _detected_credential_error(bin_: str, name: str) -> str | None:
     """Probe a just-materialized env_auth remote with a top-level listing and
     return a user-facing message when the underlying credentials are expired
@@ -3186,41 +3405,29 @@ def _detected_credential_error(bin_: str, name: str) -> str | None:
     reject: AccessDenied (valid keys without ListBuckets permission) and
     transient/network errors pass — the check exists to catch stale keys
     early, not to demand list permission."""
-    try:
-        r = subprocess.run(
-            [bin_, "lsd", f"{name}:", "--max-depth", "1",
-             "--contimeout", "5s", "--timeout", "10s",
-             "--retries", "1", "--low-level-retries", "2"],
-            capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if r.returncode == 0:
-        return None
-    err = ((r.stderr or "") + (r.stdout or "")).lower()
-    if any(m in err for m in _BAD_CRED_MARKERS):
-        return ("the detected credentials appear expired or invalid — "
-                "refresh them (e.g. `aws sso login` or `gcloud auth "
-                "application-default login`) and try again")
-    return None
+    return _CRED_EXPIRED_MSG if _credential_probe(bin_, name) == "bad" else None
 
 
-def _mount_credential_error(m: dict) -> str | None:
-    """For a broken mount whose remote is backed by detected (env_auth)
-    credentials, the 'refresh your credentials' message when a top-level
-    listing now fails credential-shaped — else None. broken_mount_error uses
-    this to distinguish an expired-credential mount (reconnect won't help;
-    the user must re-auth) from a merely dead daemon. Only env_auth remotes
-    are probed: anonymous/public and key-carrying remotes don't expire this
-    way, and the probe (an rclone `lsd`) is paid only on the already-broken
-    fs/list path, never on a healthy listing."""
-    bin_ = rclone_bin()
+def _mount_credential_status(m: dict, bin_: str | None = None) -> str:
+    """Tri-state credential health of a broken mount's remote, or "n/a":
+
+      "valid" / "bad" / "inconclusive" — the _credential_probe outcome, for an
+                       env_auth remote (see there).
+      "n/a"          — not an env_auth remote (anonymous/public or key-carrying
+                       remotes don't expire this way), or no rclone binary.
+
+    Only env_auth remotes are probed, and the probe (an rclone `lsd`) is paid
+    only on an already-broken mount, never on a healthy listing. Callers may
+    pass a resolved `bin_` to avoid re-resolving rclone per mount."""
+    if bin_ is None:
+        bin_ = rclone_bin()
     if not bin_:
-        return None
+        return "n/a"
     name = m["remote"].partition(":")[0]
     cfg = _remote_config(name)
     if not isinstance(cfg, dict) or str(cfg.get("env_auth", "")).lower() != "true":
-        return None
-    return _detected_credential_error(bin_, name)
+        return "n/a"
+    return _credential_probe(bin_, name)
 
 
 @router.post("/api/mounts/remotes/detect")

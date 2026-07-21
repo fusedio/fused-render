@@ -731,7 +731,7 @@ def test_mount_view_has_no_automount_field(client, rcd):
     # automount is implicit for every mount now — the field is gone.
     assert "automount" not in m
     assert set(m) == {"id", "name", "remote", "mountpoint", "mounted", "state",
-                      "read_only", "builtin"}
+                      "read_only", "builtin", "restart_reason"}
 
 
 def test_delete_unmounts_and_removes(client, rcd):
@@ -1402,16 +1402,21 @@ def test_broken_mount_error_reports_expired_credentials(
     assert "reconnect" not in err.lower()
 
 
-def test_broken_mount_error_reconnect_when_creds_still_valid(
+def test_broken_mount_error_routes_reauthed_creds_to_restart(
         home, rcd, monkeypatch, fresh_upstream):
-    # env_auth remote, but the probe succeeds: the disconnection is a dead
-    # daemon, not stale creds — keep the generic "reconnect" guidance.
+    # env_auth remote, disconnected, but the creds probe SUCCEEDS: the user
+    # re-authed and the long-lived daemon is still holding the stale keys.
+    # Reconnect can't fix that — only a restart re-reads the refreshed creds.
+    # Regression guard for the exact credential-expiry bug being fixed.
     c, mp = _disconnected_mount(home, rcd, monkeypatch)
     rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
     _stub_lsd(monkeypatch, rc=0)
 
     err = mounts_mod.broken_mount_error(_os.path.join(mp, "data"))
-    assert err is not None and "reconnect" in err.lower()
+    assert err is not None
+    assert "restart" in err.lower()
+    # Must NOT send the user to Reconnect — it hits the same stale daemon.
+    assert "reconnect" not in err.lower()
 
 
 def test_broken_mount_error_skips_cred_probe_for_non_env_auth(
@@ -3093,3 +3098,322 @@ def test_probe_floor_never_exceeds_caller_timeout(home, rcd, fresh_upstream, dir
     assert kind == "indeterminate"
     assert elapsed < 0.19, (
         f"sub-floor budget still ran probes for {elapsed:.2f}s (floor granted, not bailed)")
+
+
+# -- restart_rcd / _kill_current_rcd: clean daemon restart -----------------
+#
+# The global "Restart rclone" recovery: tear down every kernel mount, kill the
+# confirmed daemon, spawn a fresh one (which re-reads ~/.aws/credentials — the
+# credential-expiry fix), then re-mount everything. _kill_current_rcd carries
+# the critical safety invariant: it must NEVER signal a pid it can't confirm is
+# our rcd.
+
+
+def test_restart_rcd_teardown_then_respawn_then_automount(home, rcd, monkeypatch):
+    mounts_mod.add_mount("a", "r:one")
+    mounts_mod.add_mount("b", "r:two")
+    events = []
+    monkeypatch.setattr(mounts_mod, "detach_mount",
+                        lambda m, force=False: events.append(("detach", m["name"], force)))
+    monkeypatch.setattr(mounts_mod, "_kill_current_rcd",
+                        lambda: events.append(("kill",)))
+    monkeypatch.setattr(mounts_mod, "_ensure_rcd_locked",
+                        lambda: events.append(("spawn",)))
+    monkeypatch.setattr(mounts_mod, "run_automount",
+                        lambda: events.append(("automount",)))
+
+    mounts_mod.restart_rcd()
+
+    # Every mount is force-detached FIRST, then kill, then spawn, then automount.
+    assert events == [
+        ("detach", "a", True),
+        ("detach", "b", True),
+        ("kill",),
+        ("spawn",),
+        ("automount",),
+    ]
+
+
+def test_restart_rcd_propagates_spawn_failure_after_teardown(home, rcd, monkeypatch):
+    mounts_mod.add_mount("a", "r:one")
+    events = []
+    monkeypatch.setattr(mounts_mod, "detach_mount",
+                        lambda m, force=False: events.append("detach"))
+    monkeypatch.setattr(mounts_mod, "_kill_current_rcd",
+                        lambda: events.append("kill"))
+
+    def boom():
+        events.append("spawn")
+        raise RuntimeError("rclone rcd did not come up within 10s")
+
+    monkeypatch.setattr(mounts_mod, "_ensure_rcd_locked", boom)
+    monkeypatch.setattr(mounts_mod, "run_automount",
+                        lambda: events.append("automount"))
+
+    with pytest.raises(RuntimeError, match="did not come up"):
+        mounts_mod.restart_rcd()
+    # Teardown + kill + failed spawn ran; automount did NOT (honest half-state).
+    assert events == ["detach", "kill", "spawn"]
+
+
+def test_restart_rcd_detach_failure_is_best_effort(home, rcd, monkeypatch):
+    # A wedged mount whose detach raises must not abort the restart — the whole
+    # point is to recover from wedged mounts.
+    mounts_mod.add_mount("a", "r:one")
+    events = []
+
+    def bad_detach(m, force=False):
+        raise OSError("wedged")
+
+    monkeypatch.setattr(mounts_mod, "detach_mount", bad_detach)
+    monkeypatch.setattr(mounts_mod, "_kill_current_rcd",
+                        lambda: events.append("kill"))
+    monkeypatch.setattr(mounts_mod, "_ensure_rcd_locked",
+                        lambda: events.append("spawn"))
+    monkeypatch.setattr(mounts_mod, "run_automount",
+                        lambda: events.append("automount"))
+
+    mounts_mod.restart_rcd()
+    assert events == ["kill", "spawn", "automount"]
+
+
+def test_kill_current_rcd_refuses_unconfirmed_pid(home, monkeypatch):
+    # THE safety invariant: an alive pid we can't confirm is our rcd is NEVER
+    # signalled — raise instead of murdering an unrelated process.
+    mounts_mod.write_rcd_state(12345, 999)
+    monkeypatch.setattr(mounts_mod, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(mounts_mod, "_confirmed_our_rcd", lambda e: False)
+    killed = []
+    monkeypatch.setattr(mounts_mod.os, "kill",
+                        lambda pid, sig: killed.append((pid, sig)))
+
+    with pytest.raises(RuntimeError):
+        mounts_mod._kill_current_rcd()
+    assert killed == []
+
+
+def test_kill_current_rcd_noops_without_state(home, monkeypatch):
+    # No rcd.json at all -> nothing to kill (the fresh spawn will just start one).
+    killed = []
+    monkeypatch.setattr(mounts_mod.os, "kill",
+                        lambda pid, sig: killed.append(pid))
+    mounts_mod._kill_current_rcd()
+    assert killed == []
+
+
+def test_kill_current_rcd_noops_when_pid_already_dead(home, monkeypatch):
+    # Dead pid short-circuits BEFORE the confirm check: already gone, drop it.
+    mounts_mod.write_rcd_state(12345, 999)
+    monkeypatch.setattr(mounts_mod, "_pid_alive", lambda pid: False)
+    confirmed = []
+    monkeypatch.setattr(mounts_mod, "_confirmed_our_rcd",
+                        lambda e: confirmed.append(e) or True)
+    killed = []
+    monkeypatch.setattr(mounts_mod.os, "kill",
+                        lambda pid, sig: killed.append(pid))
+    mounts_mod._kill_current_rcd()
+    assert killed == []
+    assert confirmed == []
+
+
+def test_kill_current_rcd_signals_confirmed_pid(home, monkeypatch):
+    mounts_mod.write_rcd_state(12345, 999)
+    alive = {"v": True}
+    monkeypatch.setattr(mounts_mod, "_pid_alive", lambda pid: alive["v"])
+    monkeypatch.setattr(mounts_mod, "_confirmed_our_rcd", lambda e: True)
+    monkeypatch.setattr(mounts_mod, "_live_rcd_port", lambda: None)
+    sigs = []
+
+    def fake_kill(pid, sig):
+        sigs.append((pid, sig))
+        alive["v"] = False  # dies on the first (graceful) signal
+
+    monkeypatch.setattr(mounts_mod.os, "kill", fake_kill)
+    mounts_mod._kill_current_rcd()
+    # One SIGTERM was enough; no SIGKILL escalation.
+    assert sigs == [(999, mounts_mod.signal.SIGTERM)]
+
+
+# -- POST /api/mounts/restart ----------------------------------------------
+
+
+def test_restart_endpoint_requires_fused_and_returns_mounts(client, rcd, monkeypatch):
+    # Write guard: no X-Fused -> 403, and restart_rcd is never invoked.
+    called = []
+    monkeypatch.setattr(mounts_mod, "restart_rcd", lambda: called.append(True))
+    assert client.post("/api/mounts/restart").status_code == 403
+    assert called == []
+
+    r = client.post("/api/mounts/restart", headers=FUSED)
+    assert r.status_code == 200
+    assert called == [True]
+    # Same payload as GET /api/mounts, so the client refreshes in one shot.
+    assert set(r.json()) == {"rclone", "mounts"}
+
+
+def test_restart_endpoint_500_on_failure(client, rcd, monkeypatch):
+    def boom():
+        raise RuntimeError("rclone rcd did not come up within 10s")
+
+    monkeypatch.setattr(mounts_mod, "restart_rcd", boom)
+    r = client.post("/api/mounts/restart", headers=FUSED)
+    assert r.status_code == 500
+    assert "did not come up" in r.json()["error"]
+
+
+# -- mount_restart_reason: params drift + credential-refresh ----------------
+#
+# A REASON STRING surfaced on mount_view so the UI can prompt a restart:
+#   "params"      — live+mounted but the running mount was baked with different
+#                   params than the record now wants (conservative subset:
+#                   read_only, the one param the UI changes).
+#   "credentials" — a disconnected/stale env_auth mount whose creds probe VALID
+#                   again: the daemon still holds the pre-refresh keys, so only
+#                   a restart re-reads them (Reconnect can't).
+
+
+def test_mount_restart_reason_params_on_read_only_drift(home, rcd):
+    m = {"id": "x", "name": "data", "remote": "r:bucket",
+         "read_only": True, "mounted_read_only": False}
+    # mounted + the live VFS was baked read_write but the record now wants
+    # read_only -> a restart is needed to apply it.
+    assert mounts_mod.mount_restart_reason(
+        m, rcd_mounts=set(), state="mounted") == "params"
+    # in agreement -> no drift
+    m["mounted_read_only"] = True
+    assert mounts_mod.mount_restart_reason(
+        m, rcd_mounts=set(), state="mounted") is None
+    # params drift is only meaningful for a live mount
+    m["mounted_read_only"] = False
+    assert mounts_mod.mount_restart_reason(
+        m, rcd_mounts=set(), state="disconnected") is None
+
+
+def test_mount_restart_reason_credentials_when_reauthed(
+        home, rcd, monkeypatch, fresh_upstream):
+    m = mounts_mod.add_mount("data", "corp:bucket")
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
+    _stub_lsd(monkeypatch, rc=0)  # creds probe VALID again (user re-authed)
+    assert mounts_mod.mount_restart_reason(
+        m, rcd_mounts=set(), state="disconnected") == "credentials"
+    # stale is healed the same way
+    assert mounts_mod.mount_restart_reason(
+        m, rcd_mounts=set(), state="stale") == "credentials"
+
+
+def test_mount_restart_reason_none_when_creds_still_expired(
+        home, rcd, monkeypatch, fresh_upstream):
+    m = mounts_mod.add_mount("data", "corp:bucket")
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
+    _stub_lsd(monkeypatch, rc=1, lsd_stderr="ExpiredToken")  # genuinely expired
+    # Genuinely-expired creds: a restart won't help, so no prompt.
+    assert mounts_mod.mount_restart_reason(
+        m, rcd_mounts=set(), state="disconnected") is None
+
+
+def test_mount_restart_reason_none_for_non_env_auth(
+        home, rcd, monkeypatch, fresh_upstream):
+    m = mounts_mod.add_mount("data", "corp:bucket")
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "false",
+                                   "access_key_id": "AKIA"}
+    calls = []
+    _stub_lsd(monkeypatch, rc=0, record=calls)
+    assert mounts_mod.mount_restart_reason(
+        m, rcd_mounts=set(), state="disconnected") is None
+    # A non-env_auth remote never gets the (latency-costing) lsd probe.
+    assert not any("lsd" in cmd for cmd in calls)
+
+
+def test_mount_view_includes_restart_reason(home, rcd):
+    c = mounts_mod.add_mount("data", "r:bucket")
+    view = mounts_mod.mount_view(c)
+    assert "restart_reason" in view
+    assert view["restart_reason"] is None  # healthy/unmounted -> nothing to prompt
+
+
+# -- review fixes: tri-state credential probe, drift + perf guards ----------
+
+
+def test_mount_restart_reason_inconclusive_probe_is_not_credentials(
+        home, rcd, monkeypatch, fresh_upstream):
+    # A non-credential failure (AccessDenied = valid keys, no list perm) is
+    # INCONCLUSIVE, not proof the creds work — no false "credentials" prompt.
+    m = mounts_mod.add_mount("data", "corp:bucket")
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
+    _stub_lsd(monkeypatch, rc=1, lsd_stderr="AccessDenied: not authorized")
+    assert mounts_mod.mount_restart_reason(
+        m, rcd_mounts=set(), state="disconnected") is None
+
+    # A timeout is likewise inconclusive (config/get is already memoized).
+    def timeout_run(cmd, **kw):
+        raise mounts_mod.subprocess.TimeoutExpired(cmd, 30)
+
+    monkeypatch.setattr(mounts_mod.subprocess, "run", timeout_run)
+    assert mounts_mod.mount_restart_reason(
+        m, rcd_mounts=set(), state="disconnected") is None
+
+
+def test_broken_mount_error_inconclusive_creds_falls_through_to_reconnect(
+        home, rcd, monkeypatch, fresh_upstream):
+    # env_auth + a transient/non-credential failure: neither "refresh" nor
+    # "restart" — fall through to the plain reconnect guidance.
+    c, mp = _disconnected_mount(home, rcd, monkeypatch)
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
+    _stub_lsd(monkeypatch, rc=1, lsd_stderr="AccessDenied: not authorized")
+    err = mounts_mod.broken_mount_error(_os.path.join(mp, "data"))
+    assert err is not None
+    assert "reconnect" in err.lower()
+    assert "restart" not in err.lower()
+    assert "refresh" not in err.lower()
+
+
+def test_mount_restart_reason_no_params_for_adopted_legacy_read_only(home, rcd):
+    # A read_only mount adopted via listmounts (no mounted_read_only key, so we
+    # can't know what the live VFS was baked with) must NOT show a false
+    # "params changed" prompt.
+    m = {"id": "x", "name": "data", "remote": "r:bucket", "read_only": True}
+    assert mounts_mod.mount_restart_reason(
+        m, rcd_mounts=set(), state="mounted") is None
+
+
+def test_mount_restart_reason_skips_mounted_paths_when_state_supplied(
+        home, monkeypatch):
+    # The error path passes state, so the rc round-trip mounted_paths() must be
+    # skipped entirely.
+    def boom():
+        raise AssertionError("mounted_paths() called on the state-supplied path")
+
+    monkeypatch.setattr(mounts_mod, "mounted_paths", boom)
+    m = {"id": "x", "name": "data", "remote": "r:bucket",
+         "read_only": False, "mounted_read_only": False}
+    assert mounts_mod.mount_restart_reason(m, state="mounted") is None
+
+
+def test_get_mounts_probes_credentials_off_serial_path(
+        client, rcd, home, monkeypatch):
+    # Several broken env_auth mounts must NOT stall the polled Mounts page: the
+    # credential probe runs once per mount, in PARALLEL with the state probes,
+    # off the serial view-building path.
+    mps = []
+    for i in range(4):
+        _c, mp = _make_mount(home, rcd, name=f"m{i}",
+                             remote=f"corp{i}:bucket", served=False)
+        mps.append(mp)
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p in mps)
+    calls = []
+
+    def slow_status(m, bin_=None):
+        calls.append(m["name"])
+        time.sleep(0.5)
+        return "valid"
+
+    monkeypatch.setattr(mounts_mod, "_mount_credential_status", slow_status)
+    t0 = time.monotonic()
+    data = client.get("/api/mounts").json()
+    elapsed = time.monotonic() - t0
+
+    # Exactly one probe per broken mount — no second probe from mount_view.
+    assert sorted(calls) == ["m0", "m1", "m2", "m3"]
+    # 4 x 0.5s SERIALLY would be >= 2s; parallel is ~0.5s.
+    assert elapsed < 1.3, f"credential probes ran serially ({elapsed:.2f}s)"
+    assert all(mv["restart_reason"] == "credentials" for mv in data["mounts"])
