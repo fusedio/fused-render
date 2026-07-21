@@ -114,6 +114,30 @@ def test_forces_detach_when_remote_unchanged(home, learn_zip, monkeypatch):
     assert calls == [_learn_records()[0]["id"]]
 
 
+def test_stops_serve_for_old_remote_on_relocation(home, learn_zip, tmp_path, monkeypatch):
+    # BUGBOT: rcd shares one VFS between a mount and its HTTP serve; a
+    # detach-only fix leaves the serve wedged on the OLD fs, and sync_serves
+    # would then reuse it instead of starting fresh — /api/fs/raw hangs.
+    # _force_detach_learn_mount must stop the serve for the OLD remote
+    # (pre-rewrite), not whatever the record's remote reads as afterward.
+    mounts_mod.ensure_learn_mount()
+    old_remote = _learn_records()[0]["remote"]
+    monkeypatch.setattr(mounts_mod, "mounted_paths",
+                        lambda: {mounts_mod.mountpoint(_learn_records()[0])})
+    monkeypatch.setattr(mounts_mod, "detach_mount", lambda m, force=False: None)
+    monkeypatch.setattr(mounts_mod, "_live_rcd_port", lambda: 12345)
+    stopped = []
+    monkeypatch.setattr(mounts_mod, "_stop_serve_for",
+                        lambda port, fs: stopped.append((port, fs)))
+    moved = tmp_path / "elsewhere" / "learn.zip"
+    moved.parent.mkdir()
+    moved.write_bytes(learn_zip.read_bytes())
+    monkeypatch.setenv("FUSED_RENDER_LEARN_ZIP", str(moved))
+    mounts_mod.ensure_learn_mount()
+    assert stopped == [(12345, old_remote)]
+    assert _learn_records()[0]["remote"] != old_remote
+
+
 def test_forces_detach_on_remote_change(home, learn_zip, tmp_path, monkeypatch):
     mounts_mod.ensure_learn_mount()
     calls = []

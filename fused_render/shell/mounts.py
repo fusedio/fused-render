@@ -2261,17 +2261,22 @@ def ensure_learn_mount() -> None:
             )
             if path is None:
                 if builtin is not None:
+                    old_remote = builtin["remote"]
                     _write([m for m in mounts if m is not builtin])
-                    _force_detach_learn_mount(builtin)
+                    _force_detach_learn_mount(builtin, old_remote)
                 return
             remote = f":archive:{path}"
             if builtin is not None:
-                if builtin["remote"] != remote:
+                # Captured BEFORE any mutation below: the live mount/serve
+                # (if any) are keyed to whatever fs string was in effect at
+                # the end of the LAST run, not the one we're about to write.
+                old_remote = builtin["remote"]
+                if old_remote != remote:
                     builtin["remote"] = remote
                     _write(mounts)
                 # Force a fresh mount every startup, changed or not (see the
                 # upgrade-same-path staleness case above).
-                _force_detach_learn_mount(builtin)
+                _force_detach_learn_mount(builtin, old_remote)
                 return
             if any(m["name"] == LEARN_MOUNT_NAME for m in mounts):
                 logger.warning(
@@ -2292,20 +2297,35 @@ def ensure_learn_mount() -> None:
         logger.exception("ensure_learn_mount failed")
 
 
-def _force_detach_learn_mount(builtin: dict) -> None:
+def _force_detach_learn_mount(builtin: dict, old_remote: str) -> None:
     """Best-effort unmount of the builtin learn mountpoint if rcd (or the
     kernel) still has one live from a prior server run, so the caller's
     upserted record gets a genuinely fresh mount/mount instead of being
     silently adopted with stale fs/content — see ensure_learn_mount's BUGBOT
     note. Runs OUTSIDE any lock the caller already holds being irrelevant
     here since detach_mount only talks to rcd/the kernel, never mounts.json.
-    Swallows everything: a failed detach just means run_automount's
+
+    Also stops the HTTP serve for `old_remote` (BUGBOT: rcd shares ONE VFS
+    between a mount and its serve — mount/unmount tears that VFS down but
+    leaves the serve pointed at it, so a leftover serve is wedged exactly
+    like reconnect_mount's own _stop_serve_for call documents). Without
+    this, sync_serves sees the OLD remote/options still "in use" by that
+    wedged serve and reuses it instead of starting a fresh one bound to the
+    new mount, so /api/fs/raw reads of Learn hang. `old_remote` — not
+    `builtin["remote"]`, which may already have been rewritten to the NEW
+    fs by the time this runs — is what the live serve is actually keyed to.
+
+    Swallows everything: a failed detach/stop just means run_automount's
     subsequent attach_mount adopts (or errors on) whatever is still there,
     exactly like before this fix — never worse."""
     try:
         mp = mountpoint(builtin)
-        if mp in mounted_paths() or os.path.ismount(mp):
+        live = mp in mounted_paths() or os.path.ismount(mp)
+        if live:
             detach_mount(builtin)
+        port = _live_rcd_port()
+        if port is not None:
+            _stop_serve_for(port, old_remote)
     except Exception:
         logger.warning("force-detach of builtin learn mount failed", exc_info=True)
 
