@@ -746,6 +746,21 @@ _STAT_TTL_S = 60.0
 _STAT_CACHE: dict[str, tuple[float, dict]] = {}  # path -> (inserted_monotonic, payload)
 
 
+def _invalidate_stat_cache(*paths: object) -> None:
+    # Drop cached /api/fs/stat entries for paths a mutation just touched, plus
+    # their parent directories (creating/deleting a child moves the parent's
+    # mtime on many backends). The editor re-stats a path right after
+    # write/rename/copy/mkdir to re-arm its optimistic lock, so a stale hit here
+    # would be a real clobber bug — invalidation is the correctness backbone of
+    # this cache, not an optimization. Popping a key that was never cached (or a
+    # non-string/None body field) is a harmless no-op, so callers can pass raw
+    # body values and invalidate unconditionally without inspecting the result.
+    for p in paths:
+        if isinstance(p, str) and p:
+            _STAT_CACHE.pop(p, None)
+            _STAT_CACHE.pop(os.path.dirname(p), None)
+
+
 def _mount_list_error_response(path, exc):
     """Map an RcList* failure to the same HTTP response /api/fs/list returns, so
     fs/walk surfaces a failed ROOT listing identically (timeout/down rcd/broken
@@ -3474,25 +3489,49 @@ def create_app(start_dir: str) -> FastAPI:
         subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return JSONResponse({"ok": True})
 
+    # Every mutation endpoint invalidates the /api/fs/stat cache for the paths it
+    # touches (and their parents, via _invalidate_stat_cache) so the editor's
+    # immediate post-mutation stat re-reads fresh metadata. Invalidation runs
+    # unconditionally after the handler — a no-op on error/409 costs nothing, and
+    # doing it here (not inside each _fs_* helper's many return branches) keeps
+    # the contract in one obvious place per route.
+    #
+    # RESIDUAL: a RECURSIVE delete / overwriting rename of a directory does not
+    # walk the (now-gone) subtree to evict individually-cached child stats. Those
+    # entries simply age out within _STAT_TTL_S — the same bounded staleness the
+    # cache accepts for out-of-band changes — and the editor navigates top-down,
+    # so it re-lists the parent (fresh) before it would re-stat a vanished child.
     @app.post("/api/fs/write")
     def api_fs_write(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-        return _fs_write(body, x_fused)
+        result = _fs_write(body, x_fused)
+        _invalidate_stat_cache(body.get("path"))
+        return result
 
     @app.post("/api/fs/mkdir")
     def api_fs_mkdir(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-        return _fs_mkdir(body, x_fused)
+        result = _fs_mkdir(body, x_fused)
+        _invalidate_stat_cache(body.get("path"))
+        return result
 
     @app.post("/api/fs/delete")
     def api_fs_delete(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-        return _fs_delete(body, x_fused)
+        result = _fs_delete(body, x_fused)
+        _invalidate_stat_cache(body.get("path"))
+        return result
 
     @app.post("/api/fs/rename")
     def api_fs_rename(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-        return _fs_rename(body, x_fused)
+        result = _fs_rename(body, x_fused)
+        # A move changes both ends: src disappears, dst appears.
+        _invalidate_stat_cache(body.get("src"), body.get("dst"))
+        return result
 
     @app.post("/api/fs/copy")
     def api_fs_copy(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-        return _fs_copy(body, x_fused)
+        result = _fs_copy(body, x_fused)
+        # A copy only writes dst; src is untouched, so its cached stat stays valid.
+        _invalidate_stat_cache(body.get("dst"))
+        return result
 
     @app.get("/render")
     def render(path: str):

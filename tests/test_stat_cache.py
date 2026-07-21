@@ -119,3 +119,57 @@ def test_non_mount_paths_not_cached(client, monkeypatch):
     client.get("/api/fs/stat", params={"path": "/local/dir"})
 
     assert calls["n"] == 2
+
+
+def test_write_invalidates_cache(client, monkeypatch):
+    path = "/mnt/proj/main.py"
+    calls = {"n": 0}
+
+    def stat_stub(p):
+        calls["n"] += 1
+        return {"path": p, "is_dir": False, "mtime": float(calls["n"])}
+
+    monkeypatch.setattr(server, "_fs_stat", stat_stub)
+
+    # Prime the cache.
+    client.get("/api/fs/stat", params={"path": path})
+    assert calls["n"] == 1
+    assert path in server._STAT_CACHE
+
+    # A write must drop the entry so the editor's post-write stat re-reads the
+    # fresh mtime instead of the stale cached one. Monkeypatching _fs_write
+    # bypasses the auth guard and the actual filesystem mutation.
+    monkeypatch.setattr(
+        server, "_fs_write", lambda body, x_fused: {"path": body["path"], "mtime": 99.0}
+    )
+    r = client.post("/api/fs/write", json={"path": path, "content": "x"})
+    assert r.status_code == 200
+    assert path not in server._STAT_CACHE
+
+    # Subsequent stat recomputes.
+    client.get("/api/fs/stat", params={"path": path})
+    assert calls["n"] == 2
+
+
+def test_rename_invalidates_src_and_dst(client, monkeypatch):
+    src = "/mnt/proj/old.py"
+    dst = "/mnt/proj/new.py"
+
+    def stat_stub(p):
+        return {"path": p, "is_dir": False, "mtime": 1.0}
+
+    monkeypatch.setattr(server, "_fs_stat", stat_stub)
+
+    # Prime both.
+    client.get("/api/fs/stat", params={"path": src})
+    client.get("/api/fs/stat", params={"path": dst})
+    assert src in server._STAT_CACHE
+    assert dst in server._STAT_CACHE
+
+    monkeypatch.setattr(
+        server, "_fs_rename", lambda body, x_fused: {"path": body["dst"], "mtime": 5.0}
+    )
+    r = client.post("/api/fs/rename", json={"src": src, "dst": dst})
+    assert r.status_code == 200
+    assert src not in server._STAT_CACHE
+    assert dst not in server._STAT_CACHE
