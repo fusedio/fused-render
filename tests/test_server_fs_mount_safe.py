@@ -36,6 +36,7 @@ from fused_render.server import _fs_copy as COPY
 from fused_render.server import _fs_delete as DELETE
 from fused_render.server import _fs_mkdir as MKDIR
 from fused_render.server import _fs_rename as RENAME
+from fused_render.server import _fs_stat as STAT
 from fused_render.server import _fs_write as WRITE
 from _mount_safe_helpers import (  # noqa: F401 — `home` is a reused fixture
     _entry,
@@ -372,6 +373,42 @@ def test_mounts_root_unknown_child_mkdir_not_conflict(home, monkeypatch):
     _list_raises(monkeypatch, AssertionError("rc_list_dir consulted for a mounts-root child"))
     resp = MKDIR({"path": os.path.join(mounts_mod.mounts_dir(), "phantom")}, x_fused="1")
     assert _status(resp) != 409
+
+
+def test_stat_mounts_root_is_local_dir_not_indeterminate_503(home, monkeypatch):
+    # /api/fs/stat on the mounts CONTAINER itself must return the local dir's
+    # stat (200, is_dir=True), NOT route through rc_stat_result — the container
+    # has no single mount record, so the rc stat is indeterminate and _fs_stat
+    # would map it to a spurious 503 "mount is slow or unresponsive". The rc
+    # stat path must never be consulted for the root.
+    def _boom(*a, **k):
+        raise AssertionError("rc_stat_result consulted for the mounts root")
+    monkeypatch.setattr(mounts_mod, "rc_stat_result", _boom)
+    resp = STAT(mounts_mod.mounts_dir())
+    assert _status(resp) == 200
+    out = _data(resp)
+    assert out["is_dir"] is True
+    assert out["path"] == mounts_mod.mounts_dir()
+
+
+def test_stat_symlink_to_mounts_root_treated_as_root_not_503(home, monkeypatch, tmp_path):
+    # A symlink whose TARGET is the mounts container root is is_mount_backed
+    # (via its realpath branch), so it must ALSO read as is_mounts_root — else
+    # the _mount_safe_stat guard `is_mount_backed and not is_mounts_root` sends
+    # it through rc_stat_result, which finds no mount record for the container
+    # and surfaces the exact spurious 503 the root guard exists to prevent.
+    link = tmp_path / "mounts-link"
+    os.symlink(mounts_mod.mounts_dir(), link)
+    # is_mounts_root must resolve the symlink TO the root (mirrors is_mount_backed).
+    assert mounts_mod.is_mounts_root(str(link)) is True
+
+    def _boom(*a, **k):
+        raise AssertionError("rc_stat_result consulted for a symlink to the mounts root")
+    monkeypatch.setattr(mounts_mod, "rc_stat_result", _boom)
+    resp = STAT(str(link))
+    assert _status(resp) == 200
+    out = _data(resp)
+    assert out["is_dir"] is True
 
 
 def test_mounts_root_known_mount_name_still_exists_mkdir_409(home, monkeypatch):

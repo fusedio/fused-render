@@ -1110,7 +1110,10 @@ async function openAny(path) {
   try {
     if (/\.(twb|twbx|tds|tdsx)$/i.test(path)) {
       setStatus("Importing Tableau file…");
-      const res = await pyRun( { action: "import_tableau", file: path });
+      // src (origin only) tells the worker the .twb is mount-backed so it
+      // skips the recursive kernel walk that could drop the mount.
+      const res = await pyRun( { action: "import_tableau", file: path,
+        src: `${location.origin}/api/fs/raw?path=${encodeURIComponent(path || "")}` });
       importFile = path;
       if (res.workbook) {
         wb = res.workbook;
@@ -1154,7 +1157,8 @@ async function filePicker() {
 
 async function listInto(m, path) {
   let res;
-  try { res = await pyRun( { action: "listdir", file: path }); }
+  try { res = await pyRun( { action: "listdir", file: path,
+    src: `${location.origin}/api/fs/raw?path=${encodeURIComponent(path || "")}` }); }
   catch (err) { setStatus(err.message, "err"); return; }
   if (res.error) { setStatus(res.error, "err"); }
   browseDir = res.path;

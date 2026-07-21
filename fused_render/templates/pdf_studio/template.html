@@ -410,7 +410,10 @@ function browseModal({ title, okText = "Open", pickDir = false, dirOnly = false,
   }
   async function show(path) {
     if (/^[A-Za-z]:$/.test(path)) path += "/";
-    const res = await py({ action: "listdir", path });
+    // src (origin only) lets the worker route a mount-backed dir via
+    // /api/fs/list instead of a kernel scan that could drop the mount.
+    const res = await py({ action: "listdir", path,
+      src: `${location.origin}/api/fs/raw?path=${encodeURIComponent(path || "")}` });
     if (res.error) { toast(res.error, true); return; }
     cur = res.path;
     pathInp.value = res.path;

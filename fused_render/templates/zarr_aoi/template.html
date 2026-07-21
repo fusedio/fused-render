@@ -471,9 +471,10 @@ els.browse.onclick = async () => {
   if (!open) refreshExplorer();
 };
 els.showAll.onchange = () => { fused.params.set('showall', els.showAll.checked ? '1' : ''); refreshExplorer(); };
+const rawURL = f => `${location.origin}/api/fs/raw?path=${encodeURIComponent(f)}`;
 async function refreshExplorer(dir){
   dir = dir || P.dir();
-  const r = await fused.runPython('./browse.py', { dir, exts: EXTS, show_all: P.showAll() ? 'true' : 'false' }).catch(() => null);
+  const r = await fused.runPython('./browse.py', { dir, exts: EXTS, show_all: P.showAll() ? 'true' : 'false', src: rawURL(dir) }).catch(() => null);
   if (!r || r.error) return;
   els.crumbs.innerHTML = r.crumbs.map(c =>
     `<a data-p="${c.path}">${c.label || '/'}</a>`).join('<span style="color:#4b5058"> / </span>');

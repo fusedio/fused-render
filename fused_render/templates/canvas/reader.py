@@ -11,7 +11,9 @@ One `tomllib` pass turns the canvas definition into
   * edges   — [[srcUdfName, dstUdfName], …] pairs, malformed ones dropped.
   * viewport / viewportBounds — the stored camera, when present.
   * siblings — udfName → the sibling file extensions (`.py`/`.json`/`.md`/
-              `.html`) present next to the toml, from one os.listdir of its dir.
+              `.html`) present next to the toml, from one listing of its dir
+              (kernel os.listdir locally; /api/fs/list when `src` marks the dir
+              mount-backed, so a remote listing never wedges the NFS mount).
 
 Malformed node/edge entries are skipped, never fatal — a hand-edited canvas
 with one broken node still previews the rest. A whole-file parse failure is
@@ -25,11 +27,67 @@ Called by `fused.runPython("./reader.py", {file})`.
 # re-exec'd in isolation from this module's globals, so EVERY helper and
 # constant lives INSIDE main() and every import is done inside main(). Nothing
 # is referenced at module level except the entrypoint and its registration shim.
-def main(file: str = "") -> dict:
+def main(file: str = "", src: str = "") -> dict:
     import os
     import tomllib
 
     SIBLING_EXTS = (".py", ".json", ".md", ".html")
+
+    # ---- mount-safe directory listing (mirrors pyramid/overview_pyramid.py) --
+    # Files under a read-only rclone NFS mount stall or DROP the mount on a
+    # kernel directory listing (os.listdir/os.scandir enumerates the entire
+    # parent S3 prefix). This template stays mount-AGNOSTIC: it never imports
+    # shell.mounts and never matches mount paths. Instead the browser passes a
+    # `src` = server-origin + /api/fs/raw?path=; we use ONLY its scheme+host and
+    # ask the server whether a path is `remote`. When it is, we list via
+    # /api/fs/list (the server routes that through rclone's rc, never the
+    # kernel) rather than os.listdir. `_server_url` and `_stat` are copied
+    # verbatim from that template's _SHARED block.
+    import json as _json
+    import urllib.error as _urlerr
+    import urllib.parse as _urlparse
+    import urllib.request as _urlreq
+
+    def _server_url(src, endpoint, path):
+        """Server URL built from `src`'s ORIGIN and our own normalized `path`.
+        src is trusted only for scheme+netloc; we quote OUR path onto the
+        endpoint, ignoring src's ?path."""
+        u = _urlparse.urlsplit(src)
+        return (f"{u.scheme}://{u.netloc}{endpoint}?path="
+                + _urlparse.quote(path))
+
+    def _stat(src, path):
+        """Ask /api/fs/stat about `path`. Returns:
+          ("ok", payload)      — payload has bool `remote`
+          ("missing", None)    — server says the path does not exist (404)
+          ("unreachable", None)— server unreachable/errored; caller falls back
+                                 to a local kernel probe (presumed local)."""
+        url = _server_url(src, "/api/fs/stat", path)
+        try:
+            with _urlreq.urlopen(url, timeout=10) as r:
+                return ("ok", _json.load(r))
+        except _urlerr.HTTPError as e:
+            if e.code == 404:
+                return ("missing", None)
+            return ("unreachable", None)
+        except Exception:  # noqa: BLE001 — any network error -> local fallback
+            return ("unreachable", None)
+
+    def _remote_listdir(src, path):
+        """First page of /api/fs/list for a remote dir; returns the set of entry
+        names. NEVER kernel-lists. The page is capped server-side; if it is
+        `truncated`, a matching sibling may hide beyond the cap for a huge
+        remote dir — we accept a missing badge over wedging the mount, so the
+        `truncated`/`cursor` fields are intentionally not followed here."""
+        url = _server_url(src, "/api/fs/list", path)
+        try:
+            with _urlreq.urlopen(url, timeout=10) as r:
+                payload = _json.load(r)
+        except Exception:  # noqa: BLE001 — treat any error as an empty listing
+            return set()
+        entries = payload.get("entries") if isinstance(payload, dict) else None
+        return {e.get("name") for e in (entries or [])
+                if isinstance(e, dict) and e.get("name")}
 
     def is_num(v):
         # bool is an int subclass in Python — reject it as a coordinate.
@@ -134,14 +192,28 @@ def main(file: str = "") -> dict:
     viewport_bounds = raw_vb if isinstance(raw_vb, dict) else None
 
     # ---- siblings ---------------------------------------------------------
-    # One listdir of the toml's dir; for each UDF node report which of the
-    # known sibling extensions exist as `{udfName}<ext>` next to the toml.
+    # For each UDF node report which known sibling extensions exist as
+    # `{udfName}<ext>` next to the toml. This needs one listing of the toml's
+    # dir. os.path.abspath/dirname are pure string ops (no kernel I/O) so they
+    # are safe on a mount path; os.listdir is NOT — a kernel listing of a
+    # remote rclone NFS dir enumerates the whole S3 prefix and can drop the
+    # mount. So when `src` says the dir is remote, list via /api/fs/list; only
+    # a local (or presumed-local) dir is listed through the kernel.
+    parent_dir = os.path.dirname(os.path.abspath(file))
     present = set()
-    try:
-        for name in os.listdir(os.path.dirname(os.path.abspath(file))):
-            present.add(name)
-    except OSError:
-        pass
+    kernel_listing = True
+    if src:
+        status, payload = _stat(src, parent_dir)
+        if status == "ok" and payload.get("remote"):
+            present = _remote_listdir(src, parent_dir)
+            kernel_listing = False  # NEVER kernel-list a remote dir
+        # remote False -> kernel listdir below; missing/unreachable ->
+        # presume local and fall back to the kernel probe.
+    if kernel_listing:
+        try:
+            present = set(os.listdir(parent_dir))
+        except OSError:
+            present = set()
     siblings = {}
     for node in nodes:
         name = node["udfName"]

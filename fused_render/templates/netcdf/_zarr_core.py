@@ -35,6 +35,66 @@ class Unsupported(Exception):
     pass
 
 
+# ---------------------------------------------------------------- mount safety
+# fused-render zarr stores can live under a read-only rclone NFS mount. The
+# FATAL operation on such a mount is DIRECTORY ENUMERATION (os.walk /
+# os.scandir / os.listdir): rclone services a single readdir by listing the
+# ENTIRE parent S3 prefix, and on a flat zarr array (millions of chunk files,
+# e.g. MUR SST) that trips the macOS NFS deadman and DROPS THE MOUNT, wedging
+# the server. Reading a file by its EXACT path (open()) is a single round-trip
+# and is SAFE. So this reader never enumerates a chunk directory; where a chunk
+# COUNT is wanted (cosmetic) it is skipped for remote stores. Remote-ness is
+# judged by the server's /api/fs/stat via a caller-supplied `src` origin, so
+# mount knowledge stays behind the HTTP API (no mount-path string matching).
+# _server_url/_stat are copied verbatim from templates/pyramid/overview_pyramid
+# (the accepted per-template-duplication style; no shared module).
+import urllib.error as _urlerr
+import urllib.parse as _urlparse
+import urllib.request as _urlreq
+
+
+def _server_url(src, endpoint, path):
+    """Server URL built from `src`'s ORIGIN and our own normalized `path`. src
+    is trusted only for scheme+netloc: its ?path= carries the browser's raw
+    file param (possibly ~-prefixed / relative) and the fs endpoints do no
+    expansion — judging remote-ness on one path string and range-reading another
+    would 404. So we quote OUR path onto the endpoint, ignoring src's path."""
+    u = _urlparse.urlsplit(src)
+    return (f"{u.scheme}://{u.netloc}{endpoint}?path="
+            + _urlparse.quote(path))
+
+
+def _stat(src, path):
+    """Ask /api/fs/stat about `path`. Returns:
+      ("ok", payload)      — payload has bool `remote` and int `size`
+      ("missing", None)    — server says the path does not exist (404)
+      ("unreachable", None)— server could not be reached / errored; the caller
+                             falls back to a local kernel probe (presumed local).
+    """
+    url = _server_url(src, "/api/fs/stat", path)
+    try:
+        with _urlreq.urlopen(url, timeout=10) as r:
+            return ("ok", json.load(r))
+    except _urlerr.HTTPError as e:
+        if e.code == 404:
+            return ("missing", None)
+        return ("unreachable", None)
+    except Exception:  # noqa: BLE001 — any network error -> fall back to local
+        return ("unreachable", None)
+
+
+def _is_remote(src, path):
+    """True iff the server says `path` lives on a remote mount. No `src` (legacy
+    caller) or an unreachable server -> presume local (matches pyramid). Even
+    when this presumes wrong, the structural no-enumeration fix in _load_meta
+    keeps the metadata scan safe; only the cosmetic chunk-count enumerations
+    (_chunk_stats/_store_summary) rely on this flag being correct."""
+    if not src:
+        return False
+    status, payload = _stat(src, path)
+    return status == "ok" and bool(payload.get("remote"))
+
+
 # ------------------------------------------------------------ blosc + lz4 (pure)
 def _lz4_block(src, dest_size):
     out = bytearray(); i = 0; n = len(src)
@@ -149,18 +209,45 @@ def _load_meta(store):
                 name = k[: -len("/.zattrs")]
                 arrays.setdefault(name, {})["zattrs"] = v
         return arrays, root_attrs
-    # walk
+    # Non-consolidated fallback: discover arrays WITHOUT ever enumerating a
+    # chunk directory. INVARIANT — never os.walk/os.scandir an ARRAY dir: a
+    # flat array holds millions of chunk files and one listing over a remote
+    # rclone NFS mount lists the whole S3 prefix and DROPS THE MOUNT. Zarr
+    # layout lets us avoid it: a directory is an ARRAY iff it contains a
+    # `.zarray` (learned by ONE os.path.isfile stat, not a listing), and an
+    # array dir holds only chunks below it — so we read its metadata by exact
+    # path and REFUSE to descend. Only GROUP dirs (a handful of child nodes,
+    # never chunks) are ever listed. This is reached live from the grid daemon
+    # (grid_tile_server load_zarr_pure -> Z._load_meta) which has no `src`, so
+    # the guarantee here must be structural, not stat-gated.
     ra = os.path.join(store, ".zattrs")
     if os.path.isfile(ra):
         root_attrs = json.load(open(ra))
-    for dirpath, _, files in os.walk(store):
-        if ".zarray" in files:
-            name = os.path.relpath(dirpath, store).replace(os.sep, "/")
-            za = json.load(open(os.path.join(dirpath, ".zarray")))
+    MAX_GROUP_DIRS = 10000          # belt-and-suspenders cap on group listings
+    stack = [store]
+    listed = 0
+    while stack:
+        d = stack.pop()
+        zarray = os.path.join(d, ".zarray")
+        if os.path.isfile(zarray):          # ARRAY dir: read meta, do NOT list
+            name = os.path.relpath(d, store).replace(os.sep, "/")
+            za = json.load(open(zarray))
             at = {}
-            if ".zattrs" in files:
-                at = json.load(open(os.path.join(dirpath, ".zattrs")))
+            zattrs = os.path.join(d, ".zattrs")
+            if os.path.isfile(zattrs):
+                at = json.load(open(zattrs))
             arrays[name] = {"zarray": za, "zattrs": at}
+            continue
+        listed += 1
+        if listed > MAX_GROUP_DIRS:
+            break
+        try:                                # GROUP dir: safe to list (small)
+            with os.scandir(d) as it:
+                for e in it:
+                    if not e.name.startswith(".") and e.is_dir():
+                        stack.append(e.path)
+        except OSError:
+            pass
     return arrays, root_attrs
 
 
@@ -171,11 +258,21 @@ def _dims_of(name, info):
     return [f"dim{i}" for i in range(len(info["zarray"]["shape"]))]
 
 
-def _chunk_stats(store, name, za):
-    """(chunk files present on disk, total expected) for one array."""
+def _chunk_stats(store, name, za, remote=False):
+    """(chunk files present on disk, total expected) for one array.
+
+    INVARIANT: the os.scandir below enumerates every chunk of an array; on a
+    remote rclone NFS mount that lists the whole S3 prefix and DROPS THE MOUNT
+    (a flat array has millions of chunks). So for a remote store we DO NOT
+    count — return (None, total). This function is reached ONLY from the legacy
+    _zarr_core.main() 'pure' path; the grid daemon (grid_tile_server) does not
+    call it. Guard + comment kept so a future re-wiring cannot silently
+    re-expose the scandir on a mount."""
     total = 1
     for s, c in zip(za["shape"], za["chunks"]):
         total *= max(1, -(-int(s) // max(1, int(c))))   # ceil div
+    if remote:
+        return None, total
     present = 0
     try:
         for e in os.scandir(os.path.join(store, name)):
@@ -186,10 +283,21 @@ def _chunk_stats(store, name, za):
     return present, total
 
 
-def _store_summary(store):
-    """Total bytes + file count on disk (walk capped by count AND wall time:
-    on a remote mount every listing/stat is a network round-trip, so a large
-    store would otherwise stall for minutes long before any file-count cap)."""
+def _store_summary(store, remote=False):
+    """Total bytes + file count on disk.
+
+    INVARIANT: for a remote store we return WITHOUT walking. os.walk builds a
+    whole directory's file list at once, so a single flat million-chunk dir
+    blows up building that list inside the FIRST iteration — long before the
+    count/deadline caps below are ever consulted — and DROPS THE MOUNT. The
+    caps only protect against a slow-but-finite tree, never against the fatal
+    one-shot enumeration. Reached ONLY from the legacy _zarr_core.main() ->
+    _finish path.
+
+    The count/wall-time caps remain for large LOCAL stores (every listing/stat
+    is still a round-trip; give up rather than stall)."""
+    if remote:
+        return {"size": None, "files": None, "approx": True, "remote": True}
     import time
     size = files = 0
     deadline = time.time() + 2.0
@@ -271,7 +379,7 @@ def _read_2d_slice(store, name, za, ypos, xpos, fixed):
 
 
 # ------------------------------------------------------------ pure engine
-def _read_pure(store, var, index, bins, max_cells):
+def _read_pure(store, var, index, bins, max_cells, remote=False):
     import numpy as np
     arrays, root_attrs = _load_meta(store)
     if not arrays:
@@ -374,7 +482,7 @@ def _read_pure(store, var, index, bins, max_cells):
     vars_meta = []
     for n in band_names:
         zan = arrays[n]["zarray"]
-        present, total = _chunk_stats(store, n, zan)
+        present, total = _chunk_stats(store, n, zan, remote)
         filters = zan.get("filters") or []
         vars_meta.append({
             "name": n, "dims": _dims_of(n, arrays[n]),
@@ -622,7 +730,8 @@ def _read_system(store, var, index, bins, max_cells):
 
 # ------------------------------------------------------------ entry point
 def main(file: str = "", var: str = "", index: int = 0,
-         bins: int = 40, max_cells: int = 160000, engine: str = "auto"):
+         bins: int = 40, max_cells: int = 160000, engine: str = "auto",
+         src: str = ""):
     # New runner passes params untyped (HTML sends them as strings); coerce the
     # numeric ones the old runner used to convert via the annotations.
     index, bins, max_cells = int(index), int(bins), int(max_cells)
@@ -632,26 +741,32 @@ def main(file: str = "", var: str = "", index: int = 0,
     if not os.path.isdir(store):
         return {"error": f"not a zarr store (directory): {store}"}
 
+    # `src` (server origin, passed by the UI as ${origin}/api/fs/raw?path=...)
+    # lets us ask /api/fs/stat whether the store is on a remote mount. When
+    # remote, the cosmetic chunk-count enumerations are skipped. No src ->
+    # presume local (the metadata scan in _load_meta is safe either way).
+    remote = _is_remote(src, store)
+
     if engine == "system":
         out = _read_system(store, var, index, bins, max_cells)
-        return _finish(out, store)
+        return _finish(out, store, remote)
     try:
-        out = _read_pure(store, var, index, bins, max_cells)
+        out = _read_pure(store, var, index, bins, max_cells, remote)
     except Unsupported as e:
         if engine == "auto":
             sysout = _read_system(store, var, index, bins, max_cells)
             if "error" not in sysout:
                 sysout.setdefault("note", f"pure engine: {e}")
-                return _finish(sysout, store)
+                return _finish(sysout, store, remote)
         return {"error": str(e), "hint": "enable the system engine (zarr) for this store"}
-    return _finish(out, store)
+    return _finish(out, store, remote)
 
 
-def _finish(out, store):
+def _finish(out, store, remote=False):
     if "error" in out:
         return out
     out["file"] = store
-    s = _store_summary(store)
+    s = _store_summary(store, remote)
     s["consolidated"] = os.path.isfile(os.path.join(store, ".zmetadata"))
     s["zarr_format"] = 3 if os.path.isfile(os.path.join(store, "zarr.json")) else 2
     out["store"] = s
