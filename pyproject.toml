@@ -126,3 +126,10 @@ artifacts = [
 # installs skip it — see scripts/hatch_build.py.
 [tool.hatch.build.targets.wheel.hooks.custom]
 path = "scripts/hatch_build.py"
+
+# Seed examples live at the repo root (examples_seed/) but ship inside the
+# package at fused_render/examples_seed/ so seed.py finds them in an
+# installed wheel. Editable installs skip force-include; seed.py falls back
+# to the repo-root copy.
+[tool.hatch.build.targets.wheel.force-include]
+"examples_seed" = "fused_render/examples_seed"

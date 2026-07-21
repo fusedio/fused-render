@@ -23,12 +23,15 @@ from urllib.parse import quote
 
 from fused_render.shell import storage
 
-# Seed examples ship inside the wheel at fused_render/examples_seed/, packaged
-# by the same mechanism as fused_render/templates/ (pyproject packages =
-# ["fused_render"] — every committed file under the package ships).
-PACKAGE_SEED_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples_seed"
-)
+# Seed examples live at the repo root (examples_seed/) and are force-included
+# into the wheel at fused_render/examples_seed/ (pyproject
+# [tool.hatch.build.targets.wheel.force-include]). Installed wheels find them
+# inside the package; editable/dev installs (where force-include does not
+# materialize files) fall back to the repo-root copy.
+_PKG_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_IN_PACKAGE = os.path.join(_PKG_DIR, "examples_seed")
+_REPO_ROOT = os.path.join(os.path.dirname(_PKG_DIR), "examples_seed")
+PACKAGE_SEED_DIR = _IN_PACKAGE if os.path.isdir(_IN_PACKAGE) else _REPO_ROOT
 
 # The example pages the starter bookmarks point at; any of them existing is
 # the "examples are present" signal that gates bookmark seeding, and each
