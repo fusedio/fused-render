@@ -679,7 +679,7 @@ def test_mount_view_has_no_automount_field(client, rcd):
     # automount is implicit for every mount now — the field is gone.
     assert "automount" not in m
     assert set(m) == {"id", "name", "remote", "mountpoint", "mounted", "state",
-                      "read_only"}
+                      "read_only", "builtin"}
 
 
 def test_delete_unmounts_and_removes(client, rcd):

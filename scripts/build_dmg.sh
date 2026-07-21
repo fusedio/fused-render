@@ -467,6 +467,39 @@ if ! echo "$RCLONE_SMOKE_OUT" | head -1 | grep -q "rclone ${RCLONE_VERSION}"; th
 fi
 echo "    $(echo "$RCLONE_SMOKE_OUT" | head -1)"
 
+# ---------------------------------------------------------------------------
+# 4e. Bundle learn.zip (D123): the repo's learn/ content ships as a single
+#     zip at Contents/Resources/learn.zip, and shell/mounts.py's
+#     ensure_learn_mount() mounts it read-only at startup via rclone's
+#     archive backend (:archive:<path>, new in v1.74) — the bundled default
+#     content is presented through the exact same mounts surface as remote
+#     data. Built fresh every run (a stale zip from a previous build must
+#     never ship). MUST run before signing (step 5): Resources content has
+#     to exist before the bundle seal.
+# ---------------------------------------------------------------------------
+
+echo "==> bundling learn.zip"
+LEARN_SRC="$REPO_ROOT/learn"
+if [[ ! -d "$LEARN_SRC" ]]; then
+  echo "FATAL: $LEARN_SRC does not exist — the learn/ content is part of the app." >&2
+  exit 1
+fi
+LEARN_DEST="$APP_DIR/Contents/Resources/learn.zip"
+rm -f "$LEARN_DEST"
+# -X drops resource-fork/extended-attr entries; .DS_Store excluded so a
+# Finder-visited checkout builds the same zip as CI.
+(cd "$LEARN_SRC" && zip -qr -X "$LEARN_DEST" . -x '.DS_Store' -x '*/.DS_Store')
+
+# Smoke test with the just-bundled rclone: the exact binary the app ships
+# must be able to list the exact zip the app ships — catches an rclone
+# version bump that drops/renames the archive backend before it reaches a
+# user's first launch.
+if ! LEARN_SMOKE_OUT="$("$RCLONE_DEST" lsf ":archive:${LEARN_DEST}" 2>&1)"; then
+  echo "FATAL: bundled rclone cannot read the bundled learn.zip via :archive: :" >&2
+  echo "$LEARN_SMOKE_OUT" >&2
+  exit 1
+fi
+echo "    learn.zip OK ($(echo "$LEARN_SMOKE_OUT" | wc -l | tr -d ' ') top-level entries)"
 
 # ---------------------------------------------------------------------------
 # 5. Code signing (D73, realizes the D35 hook). Two modes:

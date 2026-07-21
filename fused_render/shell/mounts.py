@@ -2185,10 +2185,90 @@ def mount_view(m: dict, rcd_mounts: set | None = None, state: str | None = None)
         # Remote rejects writes (see mount_read_only); unflagged legacy
         # records read as rw, the pre-flag behavior.
         "read_only": bool(m.get("read_only")),
+        # Shipped-with-the-app mount (see ensure_learn_mount); the UI can
+        # treat it differently from a user-created mount (e.g. hide delete).
+        "builtin": bool(m.get("builtin")),
     }
 
 
 # ---------------------------------------------------------- automount/startup
+
+
+LEARN_MOUNT_NAME = "learn"
+
+
+def learn_zip_path() -> str | None:
+    """Path to the bundled learn.zip, or None outside the packaged app.
+
+    FUSED_RENDER_LEARN_ZIP overrides for dev/testing (a dev checkout has the
+    loose learn/ dir, not a zip — build_dmg.sh only creates the zip at DMG
+    build time). Packaged (same sys.frozen check as rclone_bin) it lives at
+    Contents/Resources/learn.zip (build_dmg.sh step 4e). Existence-checked
+    either way so a stale env var or a hand-pruned bundle yields None, not a
+    mount record pointing at nothing."""
+    override = os.environ.get("FUSED_RENDER_LEARN_ZIP")
+    if override:
+        return override if os.path.isfile(override) else None
+    if getattr(sys, "frozen", None) == "macosx_app":
+        contents = os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))
+        bundled = os.path.join(contents, "Resources", "learn.zip")
+        if os.path.isfile(bundled):
+            return bundled
+    return None
+
+
+def ensure_learn_mount() -> None:
+    """Upsert the builtin "learn" mount record: rclone's archive backend
+    (v1.74) mounts the bundled learn.zip read-only through the same mounts
+    surface as any remote (D123).
+
+    Builtin records carry `"builtin": "learn"` so they're distinguishable
+    from a user-created mount that happens to be named "learn" — that user
+    mount is never touched. The remote embeds the zip's absolute path inside
+    the app bundle, which changes across versions/relocations, so an existing
+    record's remote is refreshed every startup; with no zip (dev checkout,
+    downgrade) the builtin record is removed so it can't linger as a broken
+    mount in the UI. read_only_user pins the flag: the archive backend is
+    inherently read-only, and pinning keeps attach-time detection from ever
+    reconsidering it — mount, serve, and kernel all get read-only baked in
+    via the existing read_only plumbing.
+
+    Never raises — this runs on the automount path and a storage failure
+    must not break the user's own mounts."""
+    try:
+        path = learn_zip_path()
+        with _store_lock:
+            mounts = list_mounts()
+            builtin = next(
+                (m for m in mounts if m.get("builtin") == LEARN_MOUNT_NAME), None
+            )
+            if path is None:
+                if builtin is not None:
+                    _write([m for m in mounts if m is not builtin])
+                return
+            remote = f":archive:{path}"
+            if builtin is not None:
+                if builtin["remote"] != remote:
+                    builtin["remote"] = remote
+                    _write(mounts)
+                return
+            if any(m["name"] == LEARN_MOUNT_NAME for m in mounts):
+                logger.warning(
+                    "not adding the builtin learn mount: a user mount named "
+                    "%r already exists", LEARN_MOUNT_NAME,
+                )
+                return
+            mounts.append({
+                "id": uuid.uuid4().hex[:12],
+                "name": LEARN_MOUNT_NAME,
+                "remote": remote,
+                "read_only": True,
+                "read_only_user": True,
+                "builtin": LEARN_MOUNT_NAME,
+            })
+            _write(mounts)
+    except Exception:
+        logger.exception("ensure_learn_mount failed")
 
 
 def run_automount() -> None:
@@ -2197,6 +2277,10 @@ def run_automount() -> None:
     mount/listmounts is the status source of truth, so mounts that survived a
     server restart just show up. Best-effort — a failure logs and moves on,
     never blocks startup."""
+    # Upsert the builtin learn mount BEFORE the snapshot below: a fresh
+    # install has zero user mounts, and the early return would otherwise
+    # skip the builtin's very first mount.
+    ensure_learn_mount()
     mounts = list_mounts()
     if not mounts:
         return
