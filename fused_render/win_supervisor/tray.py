@@ -18,7 +18,7 @@ from __future__ import annotations
 import queue
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
 
@@ -48,13 +48,32 @@ class _State:
     login_enabled: bool
 
 
-def start(port: int, login_enabled: bool, paths: DesktopPaths) -> "queue.Queue[TrayAction]":
+@dataclass
+class TrayHandle:
+    """Returned by `start()`. `actions` is the queue the supervisor's main
+    loop drains; `stop()` removes the tray icon (Windows' NIM_DELETE) when
+    the supervisor has decided to actually exit — without it, the icon
+    lingers in the notification area (ghost icon) until Explorer next
+    refreshes, since nothing else tells pystray to tear it down."""
+
+    actions: "queue.Queue[TrayAction]"
+    _current_icon: list = field(default_factory=list)  # 0 or 1 pystray.Icon
+
+    def stop(self) -> None:
+        for icon in self._current_icon:
+            try:
+                icon.stop()
+            except Exception:  # noqa: BLE001 - best-effort, process is exiting anyway
+                pass
+
+
+def start(port: int, login_enabled: bool, paths: DesktopPaths) -> TrayHandle:
     """Spawns the tray on its own daemon thread and returns immediately — the
     Job/Python server lifecycle must never depend on tray success. If
     Explorer's notification-area infrastructure isn't up yet (launched from
     the sign-in Run key before Explorer's tray is ready), retry with backoff
     until it succeeds: the icon shows up late, never "not at all.\""""
-    actions: "queue.Queue[TrayAction]" = queue.Queue()
+    handle = TrayHandle(actions=queue.Queue())
     state = _State(login_enabled=login_enabled)
 
     def loop():
@@ -63,7 +82,7 @@ def start(port: int, login_enabled: bool, paths: DesktopPaths) -> "queue.Queue[T
         while True:
             attempt += 1
             try:
-                _run(port, state, actions, paths)
+                _run(port, state, handle, paths)
                 return  # icon.stop() was called deliberately (supervisor exiting)
             except Exception as error:  # noqa: BLE001 - must never kill the supervisor
                 if attempt == _LOG_AFTER_ATTEMPTS:
@@ -72,10 +91,11 @@ def start(port: int, login_enabled: bool, paths: DesktopPaths) -> "queue.Queue[T
             delay = min(delay * 2, _RETRY_CAP)
 
     threading.Thread(target=loop, daemon=True, name="fused-render-tray").start()
-    return actions
+    return handle
 
 
-def _run(port: int, state: _State, actions: "queue.Queue[TrayAction]", paths: DesktopPaths) -> None:
+def _run(port: int, state: _State, handle: TrayHandle, paths: DesktopPaths) -> None:
+    actions = handle.actions
     image = Image.open(_ICON_PATH)
 
     def emit(action: TrayAction):
@@ -122,4 +142,8 @@ def _run(port: int, state: _State, actions: "queue.Queue[TrayAction]", paths: De
         pystray.MenuItem("Exit", on_exit),
     )
     icon = pystray.Icon("FusedRender", image, f"FusedRender (port {port})", menu)
-    icon.run()
+    handle._current_icon.append(icon)
+    try:
+        icon.run()
+    finally:
+        handle._current_icon.remove(icon)

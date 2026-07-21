@@ -63,7 +63,8 @@ def run(initial: protocol.Command) -> None:
         paths.log(f"could not read sign-in setting, defaulting to off: {error}")
         login_enabled = False
 
-    tray_actions = tray.start(port, login_enabled, paths)
+    tray_handle = tray.start(port, login_enabled, paths)
+    tray_actions = tray_handle.actions
     pipe_requests: "queue.Queue[instance.Request]" = queue.Queue()
     pipe_thread = inst.serve(pipe_requests)
 
@@ -88,6 +89,7 @@ def run(initial: protocol.Command) -> None:
                 _open_uri("ms-settings:defaultapps")
             elif action is tray.TrayAction.EXIT:
                 if _confirm_exit():
+                    tray_handle.stop()
                     _safe_graceful_shutdown(port, token, paths)
                     stop_pipe_locally = True
                     running = False
@@ -102,6 +104,7 @@ def run(initial: protocol.Command) -> None:
 
         if request is not None:
             if isinstance(request.command, protocol.ShutdownForUpgrade):
+                tray_handle.stop()
                 _safe_graceful_shutdown(port, token, paths)
                 shutdown_response = request.response
                 running = False
@@ -151,7 +154,13 @@ def _stop_pipe(
     sender = threading.Thread(target=send_stop, daemon=True)
     sender.start()
     while True:
-        request = pipe_requests.get(timeout=5)
+        try:
+            request = pipe_requests.get(timeout=5)
+        except queue.Empty:
+            # The self-sent ShutdownForUpgrade never arrived (pipe server
+            # stuck/gone) — teardown must proceed regardless, or job.close()
+            # never runs and __main__ surfaces a false start-failure dialog.
+            break
         is_shutdown = isinstance(request.command, protocol.ShutdownForUpgrade)
         request.response.put(0 if is_shutdown else 1)
         if is_shutdown:
