@@ -22,11 +22,12 @@ yourself.
 `page` and `out` must both be absolute filesystem paths (same convention as
 every other endpoint). Export is **non-destructive** — it never deletes an existing
 file — so `out` must be **empty** (or not yet exist); a non-empty `out` is rejected.
-Re-export to a fresh directory (the Deploy flow always uses a new temp dir). Two
-optional fields tune the file set (see "Choosing which
-files are bundled" below): `include` (extra page-relative files to bundle as
-assets) and `exclude` (files to drop from the bundle) — both arrays of relative
-paths, defaulting to empty. On success the response is
+Re-export to a fresh directory (the Deploy flow always uses a new temp dir). Three
+optional fields tune the bundle: `include` (extra page-relative files to bundle as
+assets) and `exclude` (files to drop from the bundle) — see "Choosing which files
+are bundled" below, both arrays of relative paths defaulting to empty — and
+`cache_max_age` (a string, default `"0s"`; see "Caching" below). On success the
+response is
 `{"out", "entrypoints": [...], "assets": [...], "warnings": [...]}` — the same
 shape written into `manifest.json` below, plus the resolved `out` directory and
 any advisory warnings. On a blocking export problem (see "Rules the exporter
@@ -58,7 +59,8 @@ bundle/
   "page": "page.html",
   "entrypoints": [{ "path": "./sine.py", "name": "sine", "key": "sine.py" }],
   "assets": [{ "path": "./logo.png", "name": "logo.png" }],
-  "resources": [{ "key": "helpers.py" }]
+  "resources": [{ "key": "helpers.py" }],
+  "cache_max_age": "0s"
 }
 ```
 
@@ -83,6 +85,40 @@ is no separate `file` field. (The hosting layer also still reads legacy **v1** b
 
 The hosting layer uses the manifest to wire the served page's runtime — which
 literal path posts to which route — without re-parsing the HTML.
+
+## Caching
+
+`cache_max_age` is the deploy-time choice for how long the page's result may be
+served from cache instead of re-executed — `"0s"` (off, the default) or a
+duration like `"5m"`/`"1h"`/`"1d"` (a non-negative integer + `s`/`m`/`h`/`d` unit).
+It applies **page-wide** — to every served route uniformly (the page shell, each
+`runPython` route, and the `_asset` route), matching the managed backend's
+mount-wide caching. This is safe against a redeploy serving stale content: the
+hosting layer folds the full bundle into each route's cache key, so any content
+change re-hashes it (and the `_asset` route's HTTP Range reads cache correctly
+because the `Range` header is part of that key). The Deploy modal (SPEC §19,
+DP-17) exposes it as a checkbox + duration picker (default 1h) and re-exports on
+every deploy so the manifest always carries the current choice; a direct
+`POST /api/export` caller sets it the same way.
+
+The manifest field is only **one** of the two ways this choice reaches a hosting
+layer — see the fused repo's spec/serve/fused-render.md § Caching for the full
+picture. An **AWS** environment's `build_html_artifact` reads this manifest field
+directly, so it works on both a fresh `share create` and a later `share repoint`
+(redeploy). A managed **Fused** environment does not read the manifest field for
+caching at all — it is a mount-level control-plane setting, sent as an explicit
+`share create --cache-max-age` (the Deploy modal's `deploy_page` sends both, so
+either backend gets it correctly) — and it is fixed for the life of a mount
+token; a `repoint` cannot change it, so `deploy_page` withholds the flag on
+redeploys there and persists the setting that is actually live. To actually
+change caching on a managed environment, the Deploy modal offers a "Deploy as
+new URL" action (`force_new`) that mints a fresh `share create` with the new
+setting at a new URL.
+
+See spec/caching/serve.md for how the AWS dispatcher honors it (result caching,
+cache-key scoping, the `X-Openfused-Cache` hit/miss header) and
+`fused share cache-clear <token>` / the Deploy modal's "Clear cache" action (DP-18)
+for forcing a recompute on either backend without changing this setting.
 
 ## The portable subset of `window.fused`
 
