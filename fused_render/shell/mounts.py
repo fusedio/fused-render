@@ -1530,9 +1530,20 @@ def _store_upstream_link(key, url: str, expiry: float, now: float) -> None:
 
 def _link_ttl(fs: str) -> float:
     """publiclink cache TTL for `fs`: the short session-token clamp when the
-    remote carries an STS session_token, else _LINK_TTL_S. Must be called
-    WITHOUT _upstream_lock held (_remote_config takes it)."""
-    if (_remote_config(fs.partition(":")[0]) or {}).get("session_token"):
+    remote's credentials carry an STS session token, else _LINK_TTL_S. The token
+    can arrive three ways and all three must clamp so a dying token isn't
+    replayable for the full half hour: a config `session_token`, or — via
+    resolve_credentials — `AWS_SESSION_TOKEN` in the env or `aws_session_token`
+    in ~/.aws/credentials on an env_auth/profile remote (e.g. a non-signable
+    custom-endpoint S3). Rides the cached _signable_credentials so this adds no
+    per-call env/file parsing on the link path. Must be called WITHOUT
+    _upstream_lock held (_remote_config / _signable_credentials take it)."""
+    name = fs.partition(":")[0]
+    cfg = _remote_config(name)
+    if (cfg or {}).get("session_token"):
+        return _SESSION_TOKEN_LINK_TTL_S
+    creds = _signable_credentials(name, cfg)
+    if creds is not None and creds.session_token:
         return _SESSION_TOKEN_LINK_TTL_S
     return _LINK_TTL_S
 

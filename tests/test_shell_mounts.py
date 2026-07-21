@@ -2599,6 +2599,27 @@ def test_session_token_remote_gets_short_link_ttl(home, rcd, fresh_upstream):
     assert 240 < expiry - before < mounts_mod._SESSION_TOKEN_LINK_TTL_S + 60
 
 
+def test_env_session_token_remote_gets_short_link_ttl(home, rcd, fresh_upstream, monkeypatch):
+    import os
+
+    # An STS token arriving via AWS_SESSION_TOKEN (not a config session_token)
+    # on a non-signable custom-endpoint remote must clamp the link TTL too — the
+    # resolved credentials carry the token even though the config doesn't.
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY",
+                       "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+    monkeypatch.setenv("AWS_SESSION_TOKEN", "FQoGZ//envtoken")
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true",
+                                   "endpoint": "https://r2.example.com"}
+    rcd.responses["operations/publiclink"] = {"url": "https://signed.example/x?sig=1"}
+    c = mounts_mod.add_mount("corp", "corp:bucket")
+    f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")
+    before = time.monotonic()
+    assert mounts_mod.upstream_url_for(f) == "https://signed.example/x?sig=1"
+    _url, expiry = mounts_mod._upstream_links[("corp:bucket", "a.parquet")]
+    assert 240 < expiry - before < mounts_mod._SESSION_TOKEN_LINK_TTL_S + 60
+
+
 def test_no_session_token_remote_keeps_default_link_ttl(home, rcd, fresh_upstream):
     import os
 
