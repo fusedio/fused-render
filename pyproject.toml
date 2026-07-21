@@ -80,7 +80,7 @@ app = [
 # The wheel URL must match deploy.PINNED_FUSED_REQUIREMENT (the Deploy modal's
 # one-click install, SPEC DP-4) — a test pins the two together.
 fused = [
-    'fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post7-py3-none-any.whl ; python_version >= "3.11"',
+    'fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post9-py3-none-any.whl ; python_version >= "3.11"',
 ]
 
 [project.scripts]

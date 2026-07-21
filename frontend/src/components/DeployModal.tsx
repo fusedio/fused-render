@@ -973,35 +973,6 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             </button>
           )}
         </div>
-        {env?.backend === "fused" &&
-          isRedeploy &&
-          cacheMaxAge !== (deployment?.cache_max_age ?? "0s") && (
-            <div className="deploy-note">
-              Managed Fused environments fix caching at first deploy — redeploying this URL
-              keeps its current setting (
-              {(deployment?.cache_max_age ?? "0s") === "0s"
-                ? "off"
-                : `on, ${deployment?.cache_max_age}`}
-              ), not the one just chosen above. Deploying as a new URL replaces this
-              deployment: it mints a fresh URL with the setting above and takes the old one
-              down.{" "}
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => onDeploy(true)}
-                disabled={
-                  busy !== null ||
-                  preview === null ||
-                  previewPending ||
-                  (preview?.errors.length ?? 0) > 0
-                }
-                title="Mint a fresh URL with the setting chosen above and switch this page to it — the old URL is taken down (existing links to it stop working)"
-              >
-                Deploy as new URL
-              </button>
-            </div>
-          )}
-
         <div className="deploy-form-row">
           <label htmlFor="deploy-env-select">Deploy to</label>
           <Select
