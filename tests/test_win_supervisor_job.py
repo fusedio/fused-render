@@ -59,3 +59,43 @@ def test_spawn_failure_closes_process_handle(monkeypatch):
         job.close()
     [h] = captured
     assert int(h) == 0  # h_process.Close() ran in the failure branch
+
+
+def test_spawn_cleanup_survives_terminate_failure(monkeypatch):
+    # Double-fault path: AssignProcessToJobObject fails AND the fallback
+    # TerminateProcess fails — the handle closes must still run.
+    import win32api
+    import win32con
+    import win32process
+
+    real_terminate = win32process.TerminateProcess
+    captured = {}
+
+    def failing_assign(job_handle, h_process):
+        captured["pid"] = win32process.GetProcessId(h_process)
+        captured["h_process"] = h_process
+        raise pywintypes.error(5, "AssignProcessToJobObject", "denied")
+
+    def failing_terminate(h_process, code):
+        captured["terminate_attempted"] = True
+        raise pywintypes.error(5, "TerminateProcess", "denied")
+
+    monkeypatch.setattr(win32job, "AssignProcessToJobObject", failing_assign)
+    monkeypatch.setattr(win32process, "TerminateProcess", failing_terminate)
+    job = Job()
+    try:
+        with pytest.raises(pywintypes.error) as exc:
+            job.spawn(Path(sys.executable), ["-c", "pass"])
+    finally:
+        job.close()
+        # The deliberately-failed terminate left a real suspended child
+        # behind — kill it for real so the test suite doesn't leak it.
+        h = win32api.OpenProcess(win32con.PROCESS_TERMINATE, False, captured["pid"])
+        try:
+            real_terminate(h, 1)
+        finally:
+            h.Close()
+
+    assert exc.value.funcname == "AssignProcessToJobObject"  # original error wins
+    assert captured["terminate_attempted"]
+    assert int(captured["h_process"]) == 0  # Close() ran despite terminate failing

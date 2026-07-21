@@ -30,6 +30,7 @@ from fused_render.win_supervisor.paths import DesktopPaths
 _INSTANCE_ID = "desktop-v1"
 _READY_TIMEOUT_S = 20.0
 _SHUTDOWN_TIMEOUT_S = 5.0
+_STOP_PIPE_TIMEOUT_S = 10.0
 
 _dialog_lock = threading.Lock()
 _exit_dialog_lock = threading.Lock()
@@ -227,30 +228,26 @@ def _stop_pipe(
     pipe_requests: "queue.Queue[instance.Request]",
     pipe_thread: threading.Thread,
 ) -> None:
-    client = inst.client()
-
-    def send_stop():
+    """Stop the pipe server under one overall deadline. `stop_serving()` is
+    retried each iteration because a single poke can race the gap between
+    `_serve_pipe`'s stop check and its `CreateNamedPipe`. Requests drained
+    here are genuine external traffic (the self-unblock never enters the
+    queue — it's rejected with status 1 inside `_serve_pipe`): a real
+    ShutdownForUpgrade gets 0 — teardown is in progress and completes right
+    after this returns — everything else gets 1. At the deadline, give up:
+    the pipe thread is a daemon, process exit reaps it, and blocking any
+    longer would stall job.close() indefinitely (bugbot: an uncapped flood
+    of forwarded commands during teardown used to hang this forever)."""
+    deadline = time.monotonic() + _STOP_PIPE_TIMEOUT_S
+    while pipe_thread.is_alive() and time.monotonic() < deadline:
+        inst.stop_serving()
         try:
-            client.send(protocol.ShutdownForUpgrade(), 5.0)
-        except (OSError, TimeoutError):
-            pass
-
-    sender = threading.Thread(target=send_stop, daemon=True)
-    sender.start()
-    while True:
-        try:
-            request = pipe_requests.get(timeout=5)
+            request = pipe_requests.get(timeout=0.25)
         except queue.Empty:
-            # The self-sent ShutdownForUpgrade never arrived (pipe server
-            # stuck/gone) — teardown must proceed regardless, or job.close()
-            # never runs and __main__ surfaces a false start-failure dialog.
-            break
+            continue
         is_shutdown = isinstance(request.command, protocol.ShutdownForUpgrade)
         request.response.put(0 if is_shutdown else 1)
-        if is_shutdown:
-            break
-    sender.join(timeout=5)
-    pipe_thread.join(timeout=5)
+    pipe_thread.join(timeout=max(0.0, deadline - time.monotonic()))
 
 
 def _safe_open(port: int, command: protocol.Command, paths: DesktopPaths) -> bool:

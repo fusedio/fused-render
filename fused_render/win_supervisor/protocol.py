@@ -77,7 +77,10 @@ def decode(frame: bytes) -> Command:
     if n_units > _MAX_PATH_UNITS or len(frame) != _HEADER_LEN + n_units * 2:
         raise ProtocolError("invalid command payload length")
 
-    payload = frame[_HEADER_LEN:].decode("utf-16-le")
+    try:
+        payload = frame[_HEADER_LEN:].decode("utf-16-le")
+    except UnicodeDecodeError as error:
+        raise ProtocolError("invalid command payload encoding") from error
     if opcode == _Opcode.OPEN and payload:
         return Open(payload)
     if opcode == _Opcode.OPEN_HOME and not payload:

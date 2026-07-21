@@ -125,8 +125,19 @@ class PrimaryInstance:
         thread.start()
         return thread
 
-    def client(self) -> SecondaryInstance:
-        return SecondaryInstance(self.names)
+    def stop_serving(self) -> None:
+        """Idempotent stop for the pipe thread. Sets the stop flag first,
+        then pokes the pipe with a single non-protocol byte purely to
+        unblock a ConnectNamedPipe parked in _serve_pipe — deliberately NOT
+        a ShutdownForUpgrade frame, so a genuine installer request racing a
+        TRAY_EXIT/SERVER_DIED teardown stays distinguishable from this
+        self-unblock (the poke is answered with status 1 inside _serve_pipe
+        and never reaches the requests queue)."""
+        self._stop.set()
+        try:
+            win32pipe.CallNamedPipe(self.names.pipe, b"\x00", 4, 250)
+        except pywintypes.error:
+            pass
 
     def release(self) -> None:
         try:
@@ -196,59 +207,67 @@ def _serve_pipe(
         delay = _RETRY_START
         try:
             try:
-                win32pipe.ConnectNamedPipe(handle, None)
-            except pywintypes.error as e:
-                if e.winerror != winerror.ERROR_PIPE_CONNECTED:
-                    raise
-
-            # Deliberate NOWAIT + poll loop (not a blocking ReadFile): bounds a
-            # slow/hung client to a 5s deadline instead of stalling this
-            # thread's accept loop indefinitely — a DoS guard, not a style
-            # choice. Do not "simplify" to a blocking read.
-            win32pipe.SetNamedPipeHandleState(
-                handle, win32pipe.PIPE_READMODE_MESSAGE | win32pipe.PIPE_NOWAIT, None, None
-            )
-            deadline = time.monotonic() + 5.0
-            frame = b""
-            while True:
                 try:
-                    _, frame = win32file.ReadFile(handle, _PIPE_BUFFER_SIZE)
-                    break
+                    win32pipe.ConnectNamedPipe(handle, None)
                 except pywintypes.error as e:
-                    if e.winerror != winerror.ERROR_NO_DATA:
+                    if e.winerror != winerror.ERROR_PIPE_CONNECTED:
+                        raise
+
+                # Deliberate NOWAIT + poll loop (not a blocking ReadFile): bounds a
+                # slow/hung client to a 5s deadline instead of stalling this
+                # thread's accept loop indefinitely — a DoS guard, not a style
+                # choice. Do not "simplify" to a blocking read.
+                win32pipe.SetNamedPipeHandleState(
+                    handle, win32pipe.PIPE_READMODE_MESSAGE | win32pipe.PIPE_NOWAIT, None, None
+                )
+                deadline = time.monotonic() + 5.0
+                frame = b""
+                while True:
+                    try:
+                        _, frame = win32file.ReadFile(handle, _PIPE_BUFFER_SIZE)
+                        break
+                    except pywintypes.error as e:
+                        if e.winerror != winerror.ERROR_NO_DATA:
+                            frame = b""
+                            break
+                    if time.monotonic() >= deadline:
                         frame = b""
                         break
-                if time.monotonic() >= deadline:
-                    frame = b""
-                    break
-                time.sleep(0.025)
+                    time.sleep(0.025)
 
-            command = None
-            if frame:
-                try:
-                    command = protocol.decode(frame)
-                except protocol.ProtocolError:
-                    command = None
+                command = None
+                if frame:
+                    try:
+                        command = protocol.decode(frame)
+                    except protocol.ProtocolError:
+                        command = None
 
-            should_stop = isinstance(command, protocol.ShutdownForUpgrade)
-            if command is not None:
-                response: "queue.Queue[int]" = queue.Queue(maxsize=1)
-                requests.put(Request(command, response))
-                try:
-                    status = response.get(timeout=20)
-                except queue.Empty:
+                should_stop = isinstance(command, protocol.ShutdownForUpgrade)
+                if command is not None:
+                    response: "queue.Queue[int]" = queue.Queue(maxsize=1)
+                    requests.put(Request(command, response))
+                    try:
+                        status = response.get(timeout=20)
+                    except queue.Empty:
+                        status = 1
+                else:
                     status = 1
-            else:
-                status = 1
 
-            try:
-                win32file.WriteFile(handle, struct.pack("<I", status))
-            except pywintypes.error:
-                pass
-            win32pipe.DisconnectNamedPipe(handle)
-            if should_stop:
-                stop.set()
-                return
+                try:
+                    win32file.WriteFile(handle, struct.pack("<I", status))
+                except pywintypes.error:
+                    pass
+                win32pipe.DisconnectNamedPipe(handle)
+                if should_stop:
+                    stop.set()
+                    return
+            except Exception as error:  # noqa: BLE001 - one broken client must not kill IPC
+                # This boundary's job is "handle one client, however
+                # malformed, then take the next" — the thread has no caller
+                # to re-raise to, so an uncaught exception here is silently
+                # fatal to single-instance IPC for the rest of the session.
+                if log is not None:
+                    log(f"pipe client handling failed: {error}")
         finally:
             win32file.CloseHandle(handle)
 

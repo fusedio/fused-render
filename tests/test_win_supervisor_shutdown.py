@@ -5,6 +5,7 @@ import ctypes
 import queue
 import sys
 import threading
+import time
 
 import pytest
 
@@ -167,3 +168,65 @@ def test_start_ready_server_closes_job_when_spawn_raises(monkeypatch):
     with pytest.raises(pywintypes.error):
         supervisor._start_ready_server(object(), "tok")
     assert len(closed) == 3  # every retry attempt's job was closed
+
+
+class _FakePrimary:
+    """Stands in for PrimaryInstance in _stop_pipe tests: records that the
+    stop-event/poke path was used instead of a self-sent protocol frame."""
+    def __init__(self):
+        self.stop_calls = 0
+
+    def stop_serving(self):
+        self.stop_calls += 1
+
+
+def test_stop_pipe_has_an_overall_deadline_under_request_flood(monkeypatch):
+    # Finding: every non-shutdown request reset the 5s get() timer, so a
+    # steady stream of secondary launches during teardown hung _stop_pipe
+    # (and therefore job.close()) forever.
+    monkeypatch.setattr(supervisor, "_STOP_PIPE_TIMEOUT_S", 1.0)
+    requests: "queue.Queue[instance.Request]" = queue.Queue()
+    stop_feeding = threading.Event()
+    responses = []
+
+    def feed():
+        while not stop_feeding.is_set():
+            resp: "queue.Queue[int]" = queue.Queue(maxsize=1)
+            responses.append(resp)
+            requests.put(instance.Request(protocol.Open(r"C:\x.csv"), resp))
+            time.sleep(0.05)
+
+    feeder = threading.Thread(target=feed, daemon=True)
+    feeder.start()
+    stuck_pipe_thread = threading.Thread(target=lambda: threading.Event().wait(30), daemon=True)
+    stuck_pipe_thread.start()
+
+    primary = _FakePrimary()
+    started = time.monotonic()
+    supervisor._stop_pipe(primary, requests, stuck_pipe_thread)
+    elapsed = time.monotonic() - started
+    stop_feeding.set()
+
+    assert elapsed < 5.0  # deadline honored despite the flood
+    assert primary.stop_calls >= 1
+    assert responses[0].get_nowait() == 1  # drained opens are rejected, not dropped
+
+
+def test_stop_pipe_answers_genuine_concurrent_upgrade_with_zero():
+    # Finding: the old self-sent ShutdownForUpgrade frame was indistinguishable
+    # from a real installer request. Now nothing is self-sent through the
+    # queue, so a ShutdownForUpgrade seen here IS the installer — answered 0
+    # because teardown is in progress and completes right after.
+    requests: "queue.Queue[instance.Request]" = queue.Queue()
+    resp: "queue.Queue[int]" = queue.Queue(maxsize=1)
+    answered: "queue.Queue[int]" = queue.Queue()
+
+    def fake_pipe_thread():
+        requests.put(instance.Request(protocol.ShutdownForUpgrade(), resp))
+        answered.put(resp.get(timeout=10))
+
+    t = threading.Thread(target=fake_pipe_thread, daemon=True)
+    t.start()
+    supervisor._stop_pipe(_FakePrimary(), requests, t)
+    assert answered.get(timeout=1) == 0
+    assert not t.is_alive()

@@ -179,14 +179,24 @@ class Job:
         try:
             win32job.AssignProcessToJobObject(self._handle, h_process)
         except pywintypes.error:
-            win32process.TerminateProcess(h_process, 1)
+            # Best-effort: the child is suspended and NOT job-owned here, so a
+            # TerminateProcess failure must not also skip the handle closes.
+            try:
+                win32process.TerminateProcess(h_process, 1)
+            except pywintypes.error:
+                pass
             h_thread.Close()
             h_process.Close()
             raise
         try:
             win32process.ResumeThread(h_thread)
         except pywintypes.error:
-            win32process.TerminateProcess(h_process, 1)
+            # Job-owned by now — even if this terminate fails, job.close()
+            # kills it; just make sure the handle close still runs.
+            try:
+                win32process.TerminateProcess(h_process, 1)
+            except pywintypes.error:
+                pass
             h_process.Close()
             raise
         finally:
