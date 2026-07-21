@@ -207,6 +207,45 @@ def test_http_range_file_seek_and_partial_reads(fs):
     assert f.read() == blob[-10:]
 
 
+def test_http_range_file_default_block_is_4mib(fs):
+    # Perf: the default block grew 64KiB -> 4MiB so a cold remote-COG analyze
+    # collapses hundreds of scattered IFD/tile reads into a few Range GETs
+    # (measured ~195s -> ~31s). Pin the default so it can't silently regress.
+    s = fs(blob=b"x")
+    f = op._HttpRangeFile(op._server_url(s.src, "/api/fs/raw", "/x.tif"), 1)
+    assert f._block == 4 << 20
+
+
+@pytest.mark.parametrize("block,expected", [
+    (4 << 20, 8),        # 4MiB blocks -> 8 resident (32MiB budget)
+    (1 << 20, 32),       # 1MiB blocks -> 32 resident
+    (64 << 20, 4),       # block larger than the budget -> floor of 4
+])
+def test_http_range_file_cache_is_byte_bounded(fs, block, expected):
+    # The LRU is bounded by BYTES (~32MiB), not a fixed block count: with 4MiB
+    # blocks a 64-block cap (the old constant) would balloon to 256MiB/handle.
+    # max_blocks scales inversely with block size, with a floor of 4.
+    s = fs(blob=b"x")
+    f = op._HttpRangeFile(op._server_url(s.src, "/api/fs/raw", "/x.tif"), 1,
+                          block=block)
+    assert f._max_blocks == expected
+    # Memory bound holds except where the floor dominates (huge blocks).
+    assert f._max_blocks * f._block <= (32 << 20) or f._max_blocks == 4
+
+
+def test_http_range_file_evicts_beyond_max_blocks(fs):
+    # The eviction loop honors _max_blocks: reading across more blocks than the
+    # cap keeps only the cap-many most-recent, and the bytes are still correct.
+    blob = bytes((i * 13) % 256 for i in range(5000))
+    s = fs(blob=blob)
+    f = op._HttpRangeFile(op._server_url(s.src, "/api/fs/raw", "/x.tif"),
+                          len(blob), block=512)  # 10 blocks over the blob
+    f._max_blocks = 3  # force eviction with a tiny cap
+    assert f.read() == blob  # sequential read touches all 10 blocks
+    assert len(f._cache) <= 3
+    assert len(f._order) == len(f._cache)  # order list stays in lockstep
+
+
 # --------------------------------------------------------------------------
 # main() remote gating
 # --------------------------------------------------------------------------

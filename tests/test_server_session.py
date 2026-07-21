@@ -169,3 +169,54 @@ def test_put_skips_under_read_only_mount(ro_mount):
     assert not os.path.exists(ro_mount + ".json")
     # And GET reports no session for it.
     assert GET(path=ro_mount)["lastSession"] is None
+
+
+# --- mount-safe existence gate (_is_file_mount_safe) ----------------------
+# GET/PUT gate on _is_file_mount_safe. On a mount-backed path it MUST answer
+# via the rclone rc API (rc_kind_for), NEVER a kernel os.path.isfile — a cold
+# GETATTR there enumerates the whole parent S3 prefix and wedges the mount.
+# The gate is files-only, matching os.path.isfile: "file" passes, "dir" and
+# "missing" 404, and an "indeterminate" rc probe fails OPEN (never 404s a file
+# the user just opened on a transient rcd hiccup).
+
+@pytest.fixture
+def mount_gate(monkeypatch):
+    """Force every path mount-backed, make any kernel os.path.isfile on it fail
+    loudly, and let each test dictate rc_kind_for's answer. Returns a setter."""
+    import fused_render.shell.mounts as mounts
+
+    monkeypatch.setattr(mounts, "is_mount_backed", lambda p: True)
+
+    def _no_isfile(path):
+        raise AssertionError(f"kernel os.path.isfile({path}) touched the mount")
+
+    monkeypatch.setattr(os.path, "isfile", _no_isfile)
+
+    def _set(kind):
+        monkeypatch.setattr(mounts, "rc_kind_for", lambda path, **kw: kind)
+
+    return _set
+
+
+@pytest.mark.parametrize("kind,ok", [
+    ("file", True),           # a real file -> gate passes
+    ("indeterminate", True),  # rcd down/timeout -> fail open, gate passes
+    ("dir", False),           # a directory is not a file -> 404
+    ("missing", False),       # confirmed absent -> 404
+])
+def test_get_gate_is_files_only_via_rc(mount_gate, kind, ok):
+    mount_gate(kind)
+    resp = GET(path="/mnt/pub/big-prefix/cog.tif")
+    if ok:
+        assert _status(resp) == 200
+        assert resp == {"lastSession": None}
+    else:
+        assert _status(resp) == 404
+
+
+def test_put_gate_rejects_mount_directory_via_rc(mount_gate):
+    # A mount-backed DIRECTORY must 404 at the existence gate before any write,
+    # answered by rc_kind_for — regression for the gate accepting dirs.
+    mount_gate("dir")
+    resp = PUT(body={"path": "/mnt/pub/big-prefix", "search": "a=1"}, x_fused="1")
+    assert _status(resp) == 404
