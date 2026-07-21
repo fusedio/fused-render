@@ -7,7 +7,7 @@ import asyncio
 from fastapi.testclient import TestClient
 
 from fused_render import server
-from fused_render.server import _WALK_TRUNCATED, _walk_bfs, create_app
+from fused_render.server import _walk_bfs, create_app
 
 
 def _client(tmp_path):
@@ -48,10 +48,17 @@ def test_walk_bfs_depth_cap_direct(tmp_path):
     # import caveat for the wiring, pins the sentinel contract).
     _make_deep_chain(tmp_path, 6)
     items = list(_walk_bfs(str(tmp_path), include_hidden=False, max_entries=None, max_depth=1))
-    entries = [e for e in items if e is not _WALK_TRUNCATED]
+    # Identify entries vs the truncation sentinel STRUCTURALLY (real entries are
+    # dicts; the sentinel is not), never by `is _WALK_TRUNCATED`: an
+    # importlib.reload of fused_render.server elsewhere in the suite
+    # (test_branch_runtime's autouse teardown) rebinds the module-level
+    # _WALK_TRUNCATED to a fresh object(), so the sentinel the reloaded generator
+    # yields is no longer the object THIS module imported — an identity filter
+    # would then fail to drop it (the CI-only failure this test file had).
+    entries = [e for e in items if isinstance(e, dict)]
     rels = {e["rel"] for e in entries}
     assert max(r.count("/") for r in rels) == 1  # depths 0 and 1 only
-    assert any(e is _WALK_TRUNCATED for e in items)  # partial-coverage signalled
+    assert any(not isinstance(e, dict) for e in items)  # partial-coverage signalled
 
 
 # --- (b) entry-count cap: the generator stops early, un-exhausted -----------
@@ -70,9 +77,18 @@ def test_walk_bfs_entry_cap_stops_generator(tmp_path):
 
     gen = _walk_bfs(str(tmp_path), include_hidden=False, max_entries=5, max_depth=None)
     collected = list(gen)  # generator terminates on its own — no manual break
-    entries = [e for e in collected if e is not _WALK_TRUNCATED]
+    # Real entries are dicts; the truncation sentinel is the sole non-dict.
+    # Filter STRUCTURALLY, not by `is _WALK_TRUNCATED`: an importlib.reload of
+    # fused_render.server elsewhere in the suite (test_branch_runtime's autouse
+    # teardown) rebinds the module-level _WALK_TRUNCATED to a fresh object(), so
+    # the sentinel the reloaded generator yields is no longer the object THIS
+    # module imported — an identity `is not` filter then leaves it in `entries`,
+    # which is exactly why this assertion counted 6 instead of 5 on CI.
+    entries = [e for e in collected if isinstance(e, dict)]
+    sentinels = [e for e in collected if not isinstance(e, dict)]
     assert len(entries) == 5  # stopped at the cap, did NOT drain 200+ entries
-    assert collected[-1] is _WALK_TRUNCATED  # cap emits the truncation sentinel
+    assert len(sentinels) == 1  # exactly one truncation signal, no double-yield
+    assert collected[-1] is sentinels[0]  # and it's the FINAL item emitted
     # Proof it never exhausted the tree: nothing from the later subtree leaked.
     assert not any(e["rel"].startswith("zzz_deep/") for e in entries)
 
