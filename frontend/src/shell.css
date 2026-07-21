@@ -898,19 +898,6 @@ table.listing-table .icon {
 .file-icon--db      { color: #82abbf; }
 .file-icon--file    { color: #868c93; }
 
-/* "App" chip on html rows (Listing + search results) — a small muted-accent
-   pill after the filename. Sized well under the 16px icon height so it never
-   changes row height. */
-.app-chip {
-  flex: 0 0 auto;
-  padding: 0 5px;
-  border: 1px solid rgba(229, 255, 68, 0.35);
-  border-radius: 7px;
-  font-size: 10px;
-  line-height: 14px;
-  color: #c9d95e;
-}
-
 table.listing-table td.size,
 table.listing-table td.mtime {
   color: var(--fg-muted);
@@ -942,6 +929,25 @@ table.listing-table td.mtime {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Sits between the directory name and the mode switcher (D81's `_listing`
+   header) — shown only when the folder holds exactly one HTML file. */
+.open-as-app-btn {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.open-as-app-btn:hover {
+  background: var(--bg-alt);
+  border-color: var(--accent);
 }
 
 .preview-actions {
