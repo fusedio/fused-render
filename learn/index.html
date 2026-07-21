@@ -211,6 +211,7 @@
   .tpl .tx { margin-top:5px; display:flex; flex-wrap:wrap; gap:4px; }
   .tpl .tx span { font-size:9.5px; color:var(--mut); font-family:"SF Mono",ui-monospace,Menlo,monospace;
        background:var(--panel2); border:1px solid var(--border); border-radius:4px; padding:1px 5px; }
+  .tpl .tx span.hit { color:#141414; background:var(--yellow); border-color:var(--yellow); font-weight:700; }
   .tpl .tx .more { border:0; background:none; }
 
   /* conditional-template interactive demo */
@@ -250,6 +251,20 @@
   .mount-steps { color:var(--dim); font-size:13px; margin:0 0 16px; padding-left:20px; }
   .mount-steps li { margin:5px 0; }
   .mount-steps code { font-size:11.5px; }
+
+  /* browser-frame mockup (deployed app preview) */
+  .browser { display:block; text-decoration:none; border:1px solid var(--border); border-radius:12px;
+       overflow:hidden; background:var(--panel); margin:0 0 8px; }
+  .browser:hover { border-color:#4a4a4e; }
+  .browser .bar { display:flex; align-items:center; gap:11px; padding:9px 13px; background:var(--panel2);
+       border-bottom:1px solid var(--border); }
+  .browser .dots { display:flex; gap:6px; flex-shrink:0; }
+  .browser .dots i { width:11px; height:11px; border-radius:50%; display:block; }
+  .browser .url { flex:1; min-width:0; background:var(--bg); border:1px solid var(--border); border-radius:7px;
+       padding:5px 11px; font:11.5px/1.4 "SF Mono",ui-monospace,Menlo,monospace; color:var(--dim);
+       white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .browser .go { flex-shrink:0; font-size:11.5px; color:var(--yellow); }
+  .browser img { display:block; width:100%; height:auto; }
 
   /* deployed-app card */
   .deploy-card { display:flex; gap:14px; align-items:flex-start; text-decoration:none; background:var(--panel);
@@ -314,18 +329,18 @@
     <p class="lede">Fused Render turns folders on your machine into <b>live pages</b>. Any HTML file renders as an app, and a <span class="y mono">fused</span> global lets that page run the Python sitting right next to it — <b>no server, no build step</b>.</p>
 
     <h2><span class="n">1</span>The basics</h2>
-    <p class="sub">A project is just a folder with a page and a Python file. Here's one embedded live — drag the slider and the Python next to it re-sieves the primes and redraws the <a href="https://en.wikipedia.org/wiki/Ulam_spiral" target="_blank" rel="noopener">Ulam spiral</a> (watch the diagonal streaks appear).</p>
-    <div class="frame tall" id="spiralFrame">
+    <p class="sub">A project is just a folder with a page and a Python file. Here's one embedded live — drag the slider to throw more darts, and the Python next to it estimates <b>π</b> from the share that land inside the circle.</p>
+    <div class="frame short" id="demoFrame">
       <div class="framebar">
-        <span class="cap"><b>spiral.html</b> — a slider, a canvas, and a prime sieve in Python</span>
-        <a id="spiralOpen" target="_blank" rel="noopener">open in the app ↗</a>
+        <span class="cap"><b>pi.html</b> — a slider, a canvas, and a few lines of Python</span>
+        <a id="demoOpen" target="_blank" rel="noopener">open in the app ↗</a>
       </div>
-      <iframe id="spiralIf" title="Prime spiral, embedded live"></iframe>
+      <iframe id="demoIf" title="Estimate π, embedded live"></iframe>
       <div class="ph r16 miss">
         <span class="tagn">live embed · fallback</span>
-        <div class="ic">🌀</div>
+        <div class="ic">🎯</div>
         <div class="lab">Live preview loads inside Fused Render</div>
-        <div class="hint">This embeds the bundled <code>spiral.html</code> demo. Open this page in the app to see it run.</div>
+        <div class="hint">This embeds the bundled <code>pi.html</code> demo. Open this page in the app to see it run.</div>
       </div>
     </div>
 
@@ -375,9 +390,8 @@
 
     <h2><span class="n">3</span>Opening local files with templates</h2>
     <p class="sub">Any file on your machine can render through a <b>template</b> — right-click it and pick <em>Open with FusedRender</em> (registered by the desktop app). See the <a href="?page=templates">Templates</a> section for how templates are chosen and customized.</p>
-    <div class="ph r21"><span class="tagn">gif</span><div class="ic">🎬</div>
-      <div class="lab">[ GIF: right-click a file → Open with FusedRender ]</div>
-      <div class="hint">If the recording gets too large, we'll swap in a trimmed clip or stills.</div></div>
+    <figure class="figure"><video data-shot="assets/open_with_right_click.mp4" autoplay muted loop playsinline style="width:100%;display:block"></video>
+      <figcaption><b>Right-click → Open with FusedRender</b> — any file renders through its matching template.</figcaption></figure>
 
     <h2><span class="n">4</span>Build your own</h2>
     <p class="sub">A project is a folder with a page and a Python file. That's the entire setup.</p>
@@ -462,8 +476,8 @@
 
     <h2><span class="n">3</span>Right-click to open</h2>
     <p class="sub">Right-click a file → <em>Open with FusedRender</em> renders it through the matching template. The OS-level menu entry is registered by the packaged macOS app; on Windows you register it once with <code>fused-render-open --register</code>.</p>
-    <div class="ph r21"><span class="tagn">gif</span><div class="ic">🎬</div>
-      <div class="lab">[ GIF: right-click a file → Open with FusedRender ]</div></div>
+    <figure class="figure"><video data-shot="assets/open_with_right_click.mp4" autoplay muted loop playsinline style="width:100%;display:block"></video>
+      <figcaption><b>Right-click → Open with FusedRender</b> — rendered through the matching template.</figcaption></figure>
 
     <h2 id="conditional"><span class="n">4</span>Conditional templates</h2>
     <p class="sub">Each template can <b>gate itself</b> for a given file. Drop a <code>condition.py</code> with <code>def main(path) -> bool</code> next to the template — return <code>True</code> and it offers to render that file. Try it below: this condition only accepts files whose name contains <code>special</code>.</p>
@@ -510,6 +524,8 @@
       </div>
       <div class="mf-note">Region <code>us-west-2</code> is already set by that remote — nothing else to configure.</div>
     </div>
+    <figure class="figure"><img data-shot="assets/shot_mount.png" alt="The Fused Render Mounts page with the Add mount form and existing mounts">
+      <figcaption><b>The Mounts page</b> — the <em>Add mount</em> form (name · remote · path) plus mounts already connected, like open datasets on source.coop and CMIP6.</figcaption></figure>
 
     <h2><span class="n">2</span>Navigate & open</h2>
     <p class="sub">Once mounted, <b>source_coop</b> appears in the file tree beside your local folders. Open it, click <code>AND.pmtiles</code>, and it renders through the <code>pmtiles</code> template as an interactive map of Andorra's buildings — nothing downloaded up front, just the byte ranges the map needs.</p>
@@ -545,16 +561,15 @@
 
     <h2><span class="n">3</span>See a live one</h2>
     <p class="sub">The <b>COG pyramid</b> viewer — it opens a cloud-optimized GeoTIFF and stacks its resolution levels into a 3D pyramid, streaming only the byte ranges it needs (the full image is never downloaded). Here it is on a Sentinel-2 optical scene:</p>
-    <figure class="figure"><img data-shot="assets/shot_cog_pyramid.png" alt="COG pyramid viewer stacking Sentinel-2 optical overview levels">
-      <figcaption><b>COG pyramid</b> — a self-contained page (no backend), deployable to a shareable <code>open.fused.io</code> URL.</figcaption></figure>
-    <a class="deploy-card" id="deployCard" href="https://open.fused.io/h4n7ha7vvz4r3yea6jyvrw57wm" target="_blank" rel="noopener">
-      <div class="dc-ic">🛰️</div>
-      <div class="dc-body">
-        <div class="dc-t">COG pyramid — optical <span class="dc-n">Sentinel-2</span></div>
-        <div class="dc-d">Open the deployed app in your browser — no install needed.</div>
-        <div class="dc-u">open.fused.io/h4n7ha7vvz4r3yea6jyvrw57wm ↗</div>
+    <a class="browser" href="https://open.fused.io/h4n7ha7vvz4r3yea6jyvrw57wm" target="_blank" rel="noopener">
+      <div class="bar">
+        <div class="dots"><i style="background:#ff5f56"></i><i style="background:#ffbd2e"></i><i style="background:#27c93f"></i></div>
+        <div class="url">open.fused.io/h4n7ha7vvz4r3yea6jyvrw57wm</div>
+        <span class="go">open ↗</span>
       </div>
+      <img data-shot="assets/shot_cog_pyramid.png" alt="Deployed COG pyramid viewer running in the browser">
     </a>
+    <p class="sub" style="font-size:12px;color:var(--mut)">A self-contained page (no backend) — it streams the COG straight from cloud storage, so it runs anywhere.</p>
   </section>
 
   <!-- ============================ 6 · SHOWCASE ============================ -->
@@ -793,7 +808,7 @@ document.addEventListener("click", e => {
 $("#menuBtn").addEventListener("click", () => $("#rail").classList.toggle("open"));
 
 /* wire real product screenshots (rawUrl needs the abs path we detected) */
-$$("img[data-shot]").forEach(img => { img.src = imgSrc(img.dataset.shot); img.addEventListener("error", () => { img.closest(".figure")?.remove(); }); });
+$$("img[data-shot], video[data-shot]").forEach(el => { el.src = imgSrc(el.dataset.shot); el.addEventListener("error", () => { el.closest(".figure")?.remove(); }); });
 
 /* copy buttons — copy the target element's text */
 $$(".copybtn").forEach(btn => btn.addEventListener("click", async () => {
@@ -820,12 +835,12 @@ function mountFrame(frameSel, ifSel, absPath, useShell){
     $(ifSel).src = useShell ? viewUrl(absPath) : embedUrl(absPath);
   }).catch(() => { frame.querySelector("iframe").style.display="none"; frame.querySelector(".miss").style.display="flex"; });
 }
-// The prime-spiral demo lives in this folder, so the embed works wherever the
-// Learn page is opened (no dependency on a sibling example).
-const spiralPath = ownDir ? ownDir + "/spiral.html" : null;
-mountFrame("#spiralFrame", "#spiralIf", spiralPath, false);
-if (hasFused && spiralPath) $("#spiralOpen").href = viewUrl(spiralPath);
-else $("#spiralOpen").style.display = "none";
+// The demo lives in this folder, so the embed works wherever the Learn page is
+// opened (no dependency on a sibling example).
+const demoPath = ownDir ? ownDir + "/pi.html" : null;
+mountFrame("#demoFrame", "#demoIf", demoPath, false);
+if (hasFused && demoPath) $("#demoOpen").href = viewUrl(demoPath);
+else $("#demoOpen").style.display = "none";
 
 /* hello.py round trip */
 async function hello(){
@@ -850,29 +865,38 @@ $("#nameInput").addEventListener("keydown", e => { if (e.key === "Enter") hello(
 
 /* live templates list (runs once, when the Templates page opens) */
 let tplLoaded = false, coreTpls = [], customTpls = [];
-function tplChip(list){
-  const shown = list.slice(0, 5);
-  return shown.map(x => '<span>'+x+'</span>').join("") + (list.length > 5 ? '<span class="more">+'+(list.length-5)+'</span>' : "");
+const bareExt = e => e.toLowerCase().replace(/^\./, "");
+const extHit = (e, bare) => bare && bareExt(e).includes(bare);
+function tplChip(list, bare){
+  // With a search term active, float the matching extensions to the front and
+  // highlight them, so the reason a template matched is always visible.
+  let exts = list;
+  if (bare) exts = [...list].sort((a, b) => (extHit(b, bare) ? 1 : 0) - (extHit(a, bare) ? 1 : 0));
+  const shown = exts.slice(0, 5);
+  const more = exts.length - shown.length;
+  return shown.map(x => '<span'+(extHit(x, bare) ? ' class="hit"' : '')+'>'+x+'</span>').join("")
+    + (more > 0 ? '<span class="more">+'+more+'</span>' : "");
 }
 function tplMatches(t, term){
   if (!term) return true;
-  const bare = term.replace(/^\./,"");
+  const bare = term.replace(/^\./, "");
   if (t.title.toLowerCase().includes(term) || t.name.toLowerCase().includes(term)) return true;
-  return (t.extensions||[]).some(e => e.toLowerCase().replace(/^\./,"").includes(bare));
+  return (t.extensions || []).some(e => extHit(e, bare));
 }
-function drawTemplates(el, list){
+function drawTemplates(el, list, bare){
   el.innerHTML = list.length ? list.map(t =>
     '<div class="tpl"><div class="tn">'+t.title+'</div>'+
-    (t.extensions && t.extensions.length ? '<div class="tx">'+tplChip(t.extensions)+'</div>' : '')+
+    (t.extensions && t.extensions.length ? '<div class="tx">'+tplChip(t.extensions, bare)+'</div>' : '')+
     '</div>').join("") : '<div class="tpl-empty">No match.</div>';
 }
 function filterTemplates(){
   const term = ($("#tplSearch").value || "").trim().toLowerCase();
+  const bare = term.replace(/^\./, "");
   const core = coreTpls.filter(t => tplMatches(t, term));
   const cust = customTpls.filter(t => tplMatches(t, term));
-  drawTemplates($("#coreTemplates"), core); $("#coreCount").textContent = core.length;
+  drawTemplates($("#coreTemplates"), core, bare); $("#coreCount").textContent = core.length;
   const custEl = $("#customTemplates");
-  if (customTpls.length) { custEl.style.display = ""; drawTemplates(custEl, cust); $("#customCount").textContent = cust.length; $("#customEmpty").style.display = "none"; }
+  if (customTpls.length) { custEl.style.display = ""; drawTemplates(custEl, cust, bare); $("#customCount").textContent = cust.length; $("#customEmpty").style.display = "none"; }
   else { custEl.style.display = "none"; $("#customEmpty").style.display = "block"; }
 }
 async function loadTemplates(){
