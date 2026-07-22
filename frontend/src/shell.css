@@ -2219,6 +2219,38 @@ select.field-control:has(option[value=""]:checked) {
   color: var(--error);
 }
 
+/* The random-vs-named link picker: a borderless fieldset (the enclosing
+   .deploy-files card already frames it) with a small caption and two stacked
+   radio rows. */
+.deploy-token-modes {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.deploy-token-modes > legend {
+  padding: 0;
+  color: var(--fg-muted);
+}
+
+.deploy-token-mode {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.deploy-token-mode input {
+  /* Keep the control aligned with the first text line of a wrapping label. */
+  margin: 0;
+  position: relative;
+  top: 2px;
+  flex: 0 0 auto;
+}
+
 /* Error card (also rendered by components/ErrorBanner.tsx as .error-banner):
    full 1px error-tinted border + a subtle error-tinted wash, no left stripe. */
 .deploy-error,

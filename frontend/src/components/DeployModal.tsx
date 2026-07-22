@@ -491,10 +491,14 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   // fused's cache_max_age. Seeded on open from the stored record (like include/
   // exclude) and sent back on every Deploy; there is no "leave it as it was".
   const [cacheMaxAge, setCacheMaxAge] = useState<string>("0s");
-  // A user-chosen link name for the NEXT create (blank = auto-generated opaque
-  // token, today's default). Only meaningful before a mount exists on the
-  // selected env — once deployed the token is fixed, so this is never seeded
-  // from the stored record and is reset on every fresh open (see `load`).
+  // How the NEXT create's link is named — an explicit either/or, not "blank =
+  // random" (which read as an unfinished field). "random" (the default, safe
+  // choice) mints the opaque unguessable token; "named" uses `customToken` as
+  // an explicit, deliberately guessable URL segment. Both are only meaningful
+  // before a mount exists on the selected env — once deployed the token is
+  // fixed — so neither is seeded from the stored record; both reset on a fresh
+  // open (see `load`).
+  const [tokenMode, setTokenMode] = useState<"random" | "named">("random");
   const [customToken, setCustomToken] = useState("");
   // The result of the last "Clear cache" click (deleted/scope), shown as a status
   // line until the next load/action clears it.
@@ -600,6 +604,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       // that hasn't been asked about yet.
       setCachingOpen(false);
       setErrorsOpen(false);
+      setTokenMode("random");
       setCustomToken("");
     }
     try {
@@ -706,21 +711,30 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   const samePointerEnv = deployment !== null && deployment.env === selectedEnv;
   const mountAbsent = live === "absent";
   const isRedeploy = samePointerEnv && !mountAbsent;
-  // The Link name field's own gate is deliberately NARROWER than isRedeploy:
+  // The link-name picker's gate is deliberately NARROWER than isRedeploy:
   // `live` is null both when reconcile never ran and when it ran but the env
   // was unreachable (deployStatus's "couldn't be confirmed" branch below) —
   // in that case we do NOT actually know yet whether the next Deploy click
   // will repoint or fall through to a fresh create (deploy_page re-checks
   // `share list` live, at click time, independent of this stale read). So
-  // only a CONFIRMED still-live mount (active or revoked) hides the field;
-  // an unconfirmed one leaves it up, and a name typed there is simply
+  // only a CONFIRMED still-live mount (active or revoked) hides the picker;
+  // an unconfirmed one leaves it up, and a name chosen there is simply
   // ignored server-side if the click turns out to repoint after all
   // (deploy_page only applies custom_token on its create branches).
   const confirmedRedeployToken = samePointerEnv && (live === "active" || live === "revoked");
-  const tokenError =
-    !confirmedRedeployToken && customToken && !TOKEN_RE.test(customToken)
+  const namedTokenActive = !confirmedRedeployToken && tokenMode === "named";
+  const trimmedToken = customToken.trim();
+  // Two distinct not-ready states for a named link, kept apart so the UI can
+  // treat them differently: a malformed name (non-empty but wrong shape) is a
+  // hard red error; a not-yet-typed name is a quiet prompt, so picking the
+  // "Custom name" radio doesn't flash red before the user has typed anything.
+  // Both block Deploy.
+  const tokenFormatError =
+    namedTokenActive && trimmedToken !== "" && !TOKEN_RE.test(trimmedToken)
       ? "Use lowercase letters, numbers, - and _ only, starting with a letter or number."
       : null;
+  const tokenIncomplete = namedTokenActive && trimmedToken === "";
+  const tokenBlocksDeploy = tokenFormatError !== null || tokenIncomplete;
 
   // Each handler applies its result (onChange always propagates to the header
   // dot), then guards the modal's OWN setState on `alive` — the dialog may
@@ -731,7 +745,9 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     setActionError(null);
     setClearCacheResult(null); // a stale "N cleared" note must not survive a redeploy
     try {
-      const wantsCustomToken = !confirmedRedeployToken && customToken.trim() !== "";
+      // A chosen name only rides along on the "named" path (and only for a
+      // fresh create — see confirmedRedeployToken); Deploy is disabled while
+      // that name is missing/malformed, so trimmedToken is a valid name here.
       const record = await deployPage(
         fsPath,
         env.name,
@@ -739,7 +755,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
         exclude,
         cacheMaxAge,
         forceNew,
-        wantsCustomToken ? customToken.trim() : undefined,
+        namedTokenActive ? trimmedToken : undefined,
       );
       applyDeployment(record);
       if (!alive.current) return;
@@ -1072,30 +1088,75 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             </div>
           )}
         </div>
-        {/* A chosen link name only applies to a FRESH create (see
+        {/* The link-name picker only applies to a FRESH create (see
             confirmedRedeployToken above) — hidden only once the existing
             mount's liveness is CONFIRMED (active/revoked), so an unreachable-
             env "unconfirmed" state (live === null) leaves it up rather than
-            hide a control that a subsequent fresh create could still use. */}
+            hide a control that a subsequent fresh create could still use.
+            An explicit random-vs-named choice, not a "blank = random" text
+            field: choosing a name is meant to be a deliberate act, and the
+            radios spell out the security trade-off per option. */}
         {!confirmedRedeployToken && (
           <div className="deploy-files">
             <div className="deploy-files-body">
-              <div className="deploy-form-row">
-                <label htmlFor="deploy-token-input">Link name</label>
-                <TextInput
-                  id="deploy-token-input"
-                  type="text"
-                  placeholder="auto-generated, unguessable"
-                  value={customToken}
-                  disabled={busy !== null}
-                  onChange={(e) => setCustomToken(e.target.value)}
-                />
-              </div>
-              <div className={"deploy-token-hint deploy-muted" + (tokenError ? " err" : "")}>
-                {tokenError ??
-                  "Leave blank for an unguessable public link (the default). Choosing a name " +
-                    "makes the URL guessable — anyone who knows or guesses it can open it."}
-              </div>
+              <fieldset className="deploy-token-modes">
+                <legend>Link</legend>
+                <label className="deploy-token-mode">
+                  <input
+                    type="radio"
+                    name="deploy-token-mode"
+                    checked={tokenMode === "random"}
+                    disabled={busy !== null}
+                    onChange={() => setTokenMode("random")}
+                  />
+                  <span>
+                    <b>Unguessable link</b>
+                    <span className="deploy-muted"> — a random URL nobody can guess (default)</span>
+                  </span>
+                </label>
+                <label className="deploy-token-mode">
+                  <input
+                    type="radio"
+                    name="deploy-token-mode"
+                    checked={tokenMode === "named"}
+                    disabled={busy !== null}
+                    onChange={() => setTokenMode("named")}
+                  />
+                  <span>
+                    <b>Custom name</b>
+                    <span className="deploy-muted">
+                      {" "}
+                      — you pick the URL; anyone who knows or guesses it can open it
+                    </span>
+                  </span>
+                </label>
+              </fieldset>
+              {namedTokenActive && (
+                <>
+                  <div className="deploy-form-row">
+                    <label htmlFor="deploy-token-input">Name</label>
+                    <TextInput
+                      id="deploy-token-input"
+                      type="text"
+                      placeholder="my-dashboard"
+                      value={customToken}
+                      disabled={busy !== null}
+                      autoFocus
+                      onChange={(e) => setCustomToken(e.target.value)}
+                    />
+                  </div>
+                  {(tokenFormatError || tokenIncomplete) && (
+                    <div
+                      className={
+                        "deploy-token-hint deploy-muted" + (tokenFormatError ? " err" : "")
+                      }
+                    >
+                      {tokenFormatError ??
+                        "Enter a name for the link, or switch to an unguessable link."}
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           </div>
         )}
@@ -1128,14 +1189,18 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
               preview === null ||
               previewPending ||
               preview.errors.length > 0 ||
-              tokenError !== null
+              tokenBlocksDeploy
             }
             title={
               preview === null || previewPending
                 ? "Preparing the publish preview…"
                 : preview.errors.length > 0
                   ? "Fix the export problems listed above first"
-                  : (tokenError ?? undefined)
+                  : tokenFormatError
+                    ? tokenFormatError
+                    : tokenIncomplete
+                      ? "Enter a name for the link, or switch to an unguessable link"
+                      : undefined
             }
           >
             {busy === "deploy" && <span className="deploy-spinner" />}
@@ -1208,10 +1273,10 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
         <details className="deploy-disclosure">
           <summary>About public links</summary>
           <div className="deploy-muted">
-            Deploys publish as a <b>public share link</b> — anyone with the link can open it. By
-            default the URL is an unguessable auto-generated token; the "Link name" field above
-            (fresh deploys only) lets you pick the URL's last segment instead, at the cost of it
-            becoming guessable.
+            Deploys publish as a <b>public share link</b> — anyone with the link can open it. The
+            "Link" choice above (fresh deploys only) sets the URL: an <b>unguessable</b> random one
+            (the default), or a <b>custom name</b> you pick — memorable, but guessable by anyone who
+            knows the pattern.
           </div>
         </details>
         {actionError && <ErrorBanner>{actionError}</ErrorBanner>}
