@@ -10,7 +10,7 @@ Returns:
     }
 
 Core templates ship inside the `fused_render` package (`.../templates/`); user
-("custom") templates live under `~/.fused-render/templates/` (decision D76).
+("custom") templates live under `~/.fused-render/templates/`.
 Each is a folder containing a `template.html`. The extension->template map is
 `registry.json` (core registry beside the core templates, user registry beside
 the user templates); we reverse it so each template lists the extensions it
@@ -43,8 +43,8 @@ def main():
         else:
             core_dir = os.path.join(root, ".core-templates")
 
-    # User templates + their registry (D76: nested under templates/); fall back
-    # to the pre-D76 flat home root for users who haven't migrated.
+    # User templates + their registry (nested under templates/); fall back
+    # to the older flat home root for users who haven't migrated.
     user_dir = os.path.join(root, "templates")
     if not os.path.isdir(user_dir):
         user_dir = root
