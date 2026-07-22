@@ -329,13 +329,9 @@ body:has(.sidebar-resize-handle.resizing) {
 }
 
 /* Missing-file flag (target confirmed gone from disk, server GET-time check):
-   the name tints toward --error and a small warning glyph sits between the
+   the name keeps its normal color; a small warning glyph sits between the
    name and the (hover-only) action buttons — always visible, unlike the
    actions, so a broken bookmark reads at a glance without hovering. */
-.bookmark-row.missing .bookmark-name {
-  color: var(--error);
-}
-
 .bookmark-missing-badge {
   flex: 0 0 auto;
   color: var(--error);

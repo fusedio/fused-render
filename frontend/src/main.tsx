@@ -41,9 +41,22 @@ getConfig().then(
     void hydrateRecents();
     // Poll every 30 s so another tab's/window's bookmark edits converge here
     // (D77). refreshBookmarks() re-renders only when the tree actually changed.
+    // In-flight guarded (mirrors ServerStatusBanner's probingRef, D126): both
+    // the interval and the focus listener below call the same pollBookmarks,
+    // and refreshBookmarks() shares bookmarks.ts's serial mutation queue — an
+    // unguarded burst of focus events (or a focus landing mid-tick) would
+    // stack redundant GETs on that queue and delay real bookmark edits behind
+    // them, not just waste a request.
     const BOOKMARK_POLL_MS = 30_000;
+    let bookmarkPollInFlight = false;
     const pollBookmarks = () => {
-      refreshBookmarks().then((changed) => changed && notifyBookmarksChanged());
+      if (bookmarkPollInFlight) return;
+      bookmarkPollInFlight = true;
+      refreshBookmarks()
+        .then((changed) => changed && notifyBookmarksChanged())
+        .finally(() => {
+          bookmarkPollInFlight = false;
+        });
     };
     setInterval(pollBookmarks, BOOKMARK_POLL_MS);
     // Also refresh the instant the window regains focus — the common case for
