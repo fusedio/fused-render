@@ -900,7 +900,7 @@ the product gains network access.
   `repoint`/redeploy can change it too); for a managed `fused` environment the
   manifest field is not read at all — only the explicit `--cache-max-age` flag
   is, as the mount's own `cache_settings` (a control-plane concept independent
-  of the bundle, `application` repo spec `021` §3.1, amended). `deploy_page`
+  of the bundle, defined by the managed Fused service, amended). `deploy_page`
   now sends `--cache-max-age` on every path — `create`, `repoint`, and the
   follow-up `repoint` after a revoked-token `recreate --same-token` — so a
   redeploy on either backend applies whatever the dialog's checkbox/duration

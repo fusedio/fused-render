@@ -1323,14 +1323,17 @@ async function checkClaude(){
   if (claudeChecked) return;
   claudeChecked = true;
   const el = $("#claudeCheck"); if (!el) return;
+  // Escape via the browser's own text→HTML encoding (not a hand-rolled
+  // replace-chain) for values that come from the local filesystem / subprocess.
+  const escHtml = (s) => { const d = document.createElement("div"); d.textContent = String(s); return d.innerHTML; };
   const set = (cls, ic, html) => { el.className = "envcheck "+cls; el.innerHTML = '<span class="ec-ic">'+ic+'</span><span class="ec-tx">'+html+'</span>'; };
   if (!hasFused) { set("", "○", "Open this page inside Fused Render to auto-check for the <code>claude</code> command."); return; }
   try {
     const r = await fused.runPython("./check_env.py", {});
     const c = r && r.claude;
     if (c && c.installed) {
-      set("ok", "✓", "Claude Code is installed" + (c.version ? " — <b>"+c.version.replace(/\s*\(.*\)/,"")+"</b>" : "") +
-        (c.path ? ' <span class="ec-path">'+c.path+'</span>' : "") + ". You're ready to go.");
+      set("ok", "✓", "Claude Code is installed" + (c.version ? " — <b>"+escHtml(c.version.replace(/\s*\(.*\)/,""))+"</b>" : "") +
+        (c.path ? ' <span class="ec-path">'+escHtml(c.path)+'</span>' : "") + ". You're ready to go.");
     } else {
       set("bad", "✗", "The <code>claude</code> command wasn't found on your PATH. Install Claude Code, then reload this page — <a href=\"https://claude.com/claude-code\" target=\"_blank\" rel=\"noopener\">get it here ↗</a>.");
     }

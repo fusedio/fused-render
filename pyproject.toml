@@ -112,7 +112,7 @@ app = [
 ]
 # Optional execution engine (D69): when installed, /api/run runs code through
 # the fused local compute backend; absent, the built-in executor runs. Pinned
-# to the same wheel `openfused_server` serves hosted pages from, so local and
+# to the same wheel the managed Fused service serves hosted pages from, so local and
 # hosted execution stay on one build. The engine needs 3.11+; on 3.10 the
 # marker skips it and the built-in executor runs.
 # The wheel URL must match deploy.PINNED_FUSED_REQUIREMENT (the Deploy modal's
