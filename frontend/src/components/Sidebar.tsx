@@ -23,6 +23,7 @@ import {
   setBookmarkIcon,
   sameSearch,
   splitBookmarkUrl,
+  isBookmarkMissing,
 } from "../lib/bookmarks";
 import { bookmarkSaveTarget } from "../lib/bookmark-file";
 import { exportBookmarkFile, getConfig, statPath } from "../lib/api";
@@ -84,7 +85,7 @@ const FOLDER_ICON = (
 // Hover card content: target fs path + saved params. The saved search is
 // split via splitShellSearch so the literal `&` inside the `_layout=(...)`
 // span doesn't leak bogus param rows (D51).
-function TooltipContent({ bookmark }: { bookmark: Bookmark }) {
+function TooltipContent({ bookmark, missing }: { bookmark: Bookmark; missing: boolean }) {
   const qIdx = bookmark.url.indexOf("?");
   const search = qIdx !== -1 ? bookmark.url.slice(qIdx) : "";
   const fsPath = bookmarkFsPath(bookmark.url);
@@ -95,6 +96,7 @@ function TooltipContent({ bookmark }: { bookmark: Bookmark }) {
   return (
     <>
       <div className="tip-path">{fsPath}</div>
+      {missing && <div className="tip-missing">⚠ File not found — the target was moved or deleted</div>}
       {params.length ? (
         <div className="tip-params">
           {params.map(([k, v], i) => (
@@ -175,6 +177,7 @@ interface BookmarkRowProps {
   parentId?: string;
   active: boolean;
   dirty: boolean; // active via armed AND current params differ from saved -> "*" suffix
+  missing: boolean; // target confirmed gone from disk (server's GET-time flag)
   isRenaming: boolean;
   justSaved: boolean; // transient ✓ on the save button after a successful export
   namePositions?: number[]; // search-match highlight positions in b.name
@@ -192,7 +195,7 @@ interface BookmarkRowProps {
 }
 
 // Template for a bookmark row (top-level or, with child=true, inside a folder).
-function BookmarkRow({ b, child, parentId, active, dirty, isRenaming, justSaved, namePositions, onNameClick, onSave, onRename, onDelete, onCommitRename, onCancelRename, onMouseEnter, onMouseLeave, onGlyphClick, registerRef, dragProps }: BookmarkRowProps) {
+function BookmarkRow({ b, child, parentId, active, dirty, missing, isRenaming, justSaved, namePositions, onNameClick, onSave, onRename, onDelete, onCommitRename, onCancelRename, onMouseEnter, onMouseLeave, onGlyphClick, registerRef, dragProps }: BookmarkRowProps) {
   // Where "Save to disk" would write — shown on the button itself (title) so
   // the destination is visible before the click; null disables the button.
   const saveTarget = bookmarkSaveTarget(b);
@@ -201,7 +204,7 @@ function BookmarkRow({ b, child, parentId, active, dirty, isRenaming, justSaved,
     : null;
   return (
     <div
-      className={"bookmark-row" + (child ? " child-row" : "") + (active ? " active" : "")}
+      className={"bookmark-row" + (child ? " child-row" : "") + (active ? " active" : "") + (missing ? " missing" : "")}
       data-id={b.id}
       data-parent={child ? parentId : undefined}
       draggable="true"
@@ -224,6 +227,11 @@ function BookmarkRow({ b, child, parentId, active, dirty, isRenaming, justSaved,
           {namePositions && namePositions.length ? renderHighlight(b.name, namePositions) : b.name}
           {dirty && "*"}
         </a>
+      )}
+      {missing && (
+        <span className="bookmark-missing-badge" title={`File not found: ${bookmarkFsPath(b.url)}`}>
+          ⚠
+        </span>
       )}
       <span className="bookmark-actions">
         <button
@@ -997,6 +1005,7 @@ export default function Sidebar({ config }: SidebarProps) {
           parentId={parentId ?? undefined}
           active={rowActive(it)}
           dirty={rowDirty(it)}
+          missing={isBookmarkMissing(it.id)}
           isRenaming={renamingId === it.id}
           justSaved={savedId === it.id}
           registerRef={registerRow(it.id)}
@@ -1107,6 +1116,7 @@ export default function Sidebar({ config }: SidebarProps) {
                     namePositions={namePositions}
                     active={rowActive(b)}
                     dirty={rowDirty(b)}
+                    missing={isBookmarkMissing(b.id)}
                     isRenaming={renamingId === b.id}
                     justSaved={savedId === b.id}
                     registerRef={() => {}}
@@ -1244,7 +1254,7 @@ export default function Sidebar({ config }: SidebarProps) {
         </button>
       </div>
       <div id="bookmark-tooltip" ref={tooltipRef} style={hover ? { display: "block" } : undefined}>
-        {hover && <TooltipContent bookmark={hover.bookmark} />}
+        {hover && <TooltipContent bookmark={hover.bookmark} missing={isBookmarkMissing(hover.bookmark.id)} />}
       </div>
       {iconPicker && (
         <IconPicker

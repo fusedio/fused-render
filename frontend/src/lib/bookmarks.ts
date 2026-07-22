@@ -37,8 +37,20 @@ export type BookmarkItem = Bookmark | BookmarkFolder;
 // read-only (mutators clone before changing).
 let cache: BookmarkItem[] = [];
 
+// Ids the server's last GET confirmed missing (target gone from disk) — a
+// side-channel, never part of `cache`/the persisted tree, so it can never leak
+// into a PUT. Refreshed by hydrate/refresh alongside the tree; NOT updated by
+// local mutations (a just-added/renamed bookmark reads as present until the
+// next hydrate/poll — same eventual-consistency posture as the tree poll
+// itself, D77).
+let missingIds = new Set<string>();
+
 export function loadBookmarks(): BookmarkItem[] {
   return cache;
+}
+
+export function isBookmarkMissing(id: string): boolean {
+  return missingIds.has(id);
 }
 
 const clone = (items: BookmarkItem[]): BookmarkItem[] =>
@@ -74,8 +86,9 @@ export function hydrateBookmarks(): Promise<void> {
   return enqueue(async () => {
     if (hydrated) return;
     try {
-      const { exists, bookmarks } = await getBookmarks();
+      const { exists, bookmarks, missing } = await getBookmarks();
       cache = exists ? (bookmarks as BookmarkItem[]) : [];
+      missingIds = new Set(missing);
       hydrated = true;
     } catch (e) {
       console.error("[fused] failed to load bookmarks:", e);
@@ -83,18 +96,25 @@ export function hydrateBookmarks(): Promise<void> {
   });
 }
 
-// Re-read the server tree to pick up another tab's writes (D77 poll). Enqueued
-// so it never overwrites an in-flight local mutation; resolves true only when
-// the tree actually changed, so the caller re-renders once every 30 s at most,
-// not on every tick. No import logic — plain GET (hydrate owns the one-time
-// import); a failed poll is logged and skipped.
+// Re-read the server tree to pick up another tab's writes (D77 poll), AND the
+// latest missing-file flags (a target can vanish/reappear between polls with
+// the tree itself unchanged). Enqueued so it never overwrites an in-flight
+// local mutation; resolves true only when the tree OR the missing set actually
+// changed, so the caller re-renders once every 30 s at most, not on every tick.
+// No import logic — plain GET (hydrate owns the one-time import); a failed
+// poll is logged and skipped.
 export function refreshBookmarks(): Promise<boolean> {
   return enqueue(async () => {
     try {
-      const { bookmarks } = await getBookmarks();
+      const { bookmarks, missing } = await getBookmarks();
       const next = bookmarks as BookmarkItem[];
-      if (JSON.stringify(next) === JSON.stringify(cache)) return false;
+      const nextMissing = new Set(missing);
+      const treeChanged = JSON.stringify(next) !== JSON.stringify(cache);
+      const missingChanged =
+        nextMissing.size !== missingIds.size || [...nextMissing].some((id) => !missingIds.has(id));
+      if (!treeChanged && !missingChanged) return false;
       cache = next;
+      missingIds = nextMissing;
       return true;
     } catch (e) {
       console.error("[fused] failed to refresh bookmarks:", e);

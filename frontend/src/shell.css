@@ -328,6 +328,21 @@ body:has(.sidebar-resize-handle.resizing) {
   color: var(--accent);
 }
 
+/* Missing-file flag (target confirmed gone from disk, server GET-time check):
+   the name tints toward --error and a small warning glyph sits between the
+   name and the (hover-only) action buttons — always visible, unlike the
+   actions, so a broken bookmark reads at a glance without hovering. */
+.bookmark-row.missing .bookmark-name {
+  color: var(--error);
+}
+
+.bookmark-missing-badge {
+  flex: 0 0 auto;
+  color: var(--error);
+  font-size: 11px;
+  cursor: help;
+}
+
 .bookmark-row.dragging {
   opacity: 0.4;
 }
@@ -484,6 +499,11 @@ a.bookmark-name::after {
 #bookmark-tooltip .tip-none {
   color: var(--fg-muted);
   font-style: italic;
+  margin-top: 6px;
+}
+
+#bookmark-tooltip .tip-missing {
+  color: var(--error);
   margin-top: 6px;
 }
 

@@ -268,10 +268,13 @@ export function rawUrl(fsPath: string): string {
 // Bookmark store (server-side, ~/.fused-render/bookmarks.json). The tree shape
 // is BookmarkItem[] (lib/bookmarks.ts); kept as unknown[] here so api.ts has no
 // dependency on the bookmark data layer. `exists` is false only until the file
-// is first written — the shell's one-time localStorage-import gate.
+// is first written — the shell's one-time localStorage-import gate. `missing`
+// is a side-channel, recomputed fresh on every GET: bookmark ids whose target
+// is confirmed gone from disk — display-only, never written back through PUT.
 export interface BookmarksResult {
   exists: boolean;
   bookmarks: unknown[];
+  missing: string[];
 }
 
 export function getBookmarks(): Promise<BookmarksResult> {
