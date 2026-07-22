@@ -118,13 +118,13 @@ windows-desktop = [
 ]
 # Linux desktop supervisor backend (fused_render/supervisor/_linux,
 # docs/LINUX_DESKTOP_SPEC.md). Linux-only; installed only by the packaged
-# AppImage build (scripts/build_linux_appimage.sh). PyGObject is deliberately
-# NOT bundled: pystray's AppIndicator backend uses the distro's `gi` at runtime
-# when present and falls back to X11 (python-xlib, a pystray dependency)
-# otherwise — bundling GTK bindings is the classic AppImage size/compat trap,
-# and tray absence is an accepted degraded mode (gate (c)).
+# AppImage build (scripts/build_linux_appimage.sh). The tray is a native
+# StatusNotifierItem exported over D-Bus via dbus-fast (pure-Python, manylinux
+# wheels → bundles cleanly, no GTK/X11); the icon is absent only where no
+# StatusNotifier host runs (stock GNOME w/o extension) — an accepted degraded
+# mode (gate (c)). pillow repacks the icon into the SNI ARGB32 pixmap.
 linux-desktop = [
-    'pystray>=0.19 ; sys_platform == "linux"',
+    'dbus-fast ; sys_platform == "linux"',
     'pillow ; sys_platform == "linux"',
 ]
 
