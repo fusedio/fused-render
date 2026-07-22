@@ -853,6 +853,35 @@ def test_redeploy_absent_mount_falls_back_to_fresh_create(tmp_path, monkeypatch)
     assert h.calls()[-1]["argv"][-2:] == ["--cache-max-age", "1h"]
 
 
+def test_redeploy_absent_mount_honors_a_custom_token(tmp_path, monkeypatch):
+    # The "absent" branch (a distinct create call site from the very-first-deploy
+    # one) must also thread a chosen link name through to `share create`.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
+    )
+    h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+
+    h.set_scenario(
+        {
+            "list": [],
+            "create": {
+                "token": "chosen-name",
+                "url": "https://serve.example/chosen-name",
+                "status": "active",
+            },
+        }
+    )
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "token": "chosen-name"},
+        headers=FUSED,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["token"] == "chosen-name"
+    assert h.calls()[-1]["argv"][-2:] == ["--token", "chosen-name"]
+
+
 def test_fresh_create_with_new_token_never_keeps_the_old_url(tmp_path, monkeypatch):
     # AWS-style create output carries no url. When the token CHANGED (absent
     # mount -> fresh create), the old pointer's url must be dropped, not kept —
