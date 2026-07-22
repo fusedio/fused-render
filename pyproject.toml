@@ -30,7 +30,7 @@ dependencies = [
     # The duckdb template reads AND edits every tabular file format (parquet,
     # csv/tsv, json) through one engine, so it's a core dependency, not an
     # optional extra — a plain `pip install fused-render` ships the viewer.
-    "duckdb>=1.1",
+    "duckdb>=1.5.5",
     # FastAPI's /api/templates/import endpoint accepts multipart form/file
     # uploads, which requires python-multipart at import time (FastAPI raises
     # at route registration otherwise).
