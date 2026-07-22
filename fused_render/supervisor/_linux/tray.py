@@ -129,3 +129,223 @@ def _dispatch_event(item_id, state: _State, handle: TrayHandle, paths: DesktopPa
         handle.actions.put_nowait(action)
     except Exception:  # noqa: BLE001
         pass
+
+
+# --- D-Bus layer -------------------------------------------------------------
+#
+# Thin glue over the pure helpers above. Everything below is imported/used only
+# on the tray daemon thread inside run(); the dbus_fast import is deferred so
+# `import fused_render.supervisor._linux.tray` stays cheap and dependency-light
+# for the pure-helper tests.
+
+_SNI_INTERFACE = "org.kde.StatusNotifierItem"
+_MENU_INTERFACE = "com.canonical.dbusmenu"
+_WATCHER_NAME = "org.kde.StatusNotifierWatcher"
+_WATCHER_PATH = "/StatusNotifierWatcher"
+_SNI_PATH = "/StatusNotifierItem"
+_MENU_PATH = "/MenuBar"
+
+# dbusmenu property → D-Bus variant type. Only the properties _menu_layout emits.
+_MENU_PROP_TYPES = {
+    "label": "s",
+    "enabled": "b",
+    "visible": "b",
+    "type": "s",
+    "toggle-type": "s",
+    "toggle-state": "i",
+}
+
+
+def _props_to_variants(properties: dict) -> dict:
+    from dbus_fast import Variant
+
+    return {key: Variant(_MENU_PROP_TYPES[key], value) for key, value in properties.items()}
+
+
+def _make_interfaces(port, state, handle, paths, set_enabled, revision_ref):
+    """Build the two ServiceInterface instances. Defined inside a function so the
+    dbus_fast import (and the ServiceInterface subclassing it drives) happens
+    only on the tray thread, never at module import."""
+    from dbus_fast import Variant
+    from dbus_fast.service import PropertyAccess, ServiceInterface, dbus_property, method, signal
+
+    icon_pixmap = _icon_pixmap(_ICON_PATH)
+
+    class StatusNotifierItem(ServiceInterface):
+        def __init__(self):
+            super().__init__(_SNI_INTERFACE)
+
+        @dbus_property(access=PropertyAccess.READ)
+        def Category(self) -> "s":  # noqa: N802,F821
+            return "ApplicationStatus"
+
+        @dbus_property(access=PropertyAccess.READ)
+        def Id(self) -> "s":  # noqa: N802,F821
+            return "FusedRender"
+
+        @dbus_property(access=PropertyAccess.READ)
+        def Title(self) -> "s":  # noqa: N802,F821
+            return "FusedRender"
+
+        @dbus_property(access=PropertyAccess.READ)
+        def Status(self) -> "s":  # noqa: N802,F821
+            return "Active"
+
+        @dbus_property(access=PropertyAccess.READ)
+        def IconName(self) -> "s":  # noqa: N802,F821
+            return ""
+
+        @dbus_property(access=PropertyAccess.READ)
+        def IconPixmap(self) -> "a(iiay)":  # noqa: N802,F821
+            width, height, data = icon_pixmap
+            return [[width, height, data]]
+
+        @dbus_property(access=PropertyAccess.READ)
+        def ToolTip(self) -> "(sa(iiay)ss)":  # noqa: N802,F821
+            return ["", [], "FusedRender", f"Running on port {port}"]
+
+        @dbus_property(access=PropertyAccess.READ)
+        def ItemIsMenu(self) -> "b":  # noqa: N802,F821
+            return False
+
+        @dbus_property(access=PropertyAccess.READ)
+        def Menu(self) -> "o":  # noqa: N802,F821
+            return _MENU_PATH
+
+        @method()
+        def Activate(self, x: "i", y: "i"):  # noqa: N802,F821
+            _dispatch_event(_ID_OPEN, state, handle, paths, set_enabled)
+
+        @method()
+        def SecondaryActivate(self, x: "i", y: "i"):  # noqa: N802,F821
+            _dispatch_event(_ID_OPEN, state, handle, paths, set_enabled)
+
+    class DBusMenu(ServiceInterface):
+        def __init__(self):
+            super().__init__(_MENU_INTERFACE)
+
+        @dbus_property(access=PropertyAccess.READ)
+        def Version(self) -> "u":  # noqa: N802,F821
+            return 3
+
+        @dbus_property(access=PropertyAccess.READ)
+        def Status(self) -> "s":  # noqa: N802,F821
+            return "normal"
+
+        @method()
+        def GetLayout(
+            self, parentId: "i", recursionDepth: "i", propertyNames: "as"  # noqa: N803,F821
+        ) -> "(u(ia{sv}av))":  # noqa: F821,N802
+            _root_id, children = _menu_layout(state.login_enabled, port)
+            child_nodes = [
+                Variant(
+                    "(ia{sv}av)",
+                    [child["id"], _props_to_variants(child["properties"]), []],
+                )
+                for child in children
+            ]
+            layout = [_ROOT_ID, {}, child_nodes]
+            return [revision_ref[0], layout]
+
+        @method()
+        def GetGroupProperties(
+            self, ids: "ai", propertyNames: "as"  # noqa: N803,F821
+        ) -> "a(ia{sv})":  # noqa: F821,N802
+            _root_id, children = _menu_layout(state.login_enabled, port)
+            return [
+                [child["id"], _props_to_variants(child["properties"])]
+                for child in children
+                if not ids or child["id"] in ids
+            ]
+
+        @method()
+        def GetProperty(self, id: "i", name: "s") -> "v":  # noqa: A002,N802,N803,F821
+            _root_id, children = _menu_layout(state.login_enabled, port)
+            for child in children:
+                if child["id"] == id and name in child["properties"]:
+                    return _props_to_variants(child["properties"])[name]
+            return Variant("s", "")
+
+        @method()
+        def Event(
+            self, id: "i", eventId: "s", data: "v", timestamp: "u"  # noqa: A002,N803,F821
+        ):  # noqa: N802
+            if eventId != "clicked":
+                return
+            _dispatch_event(id, state, handle, paths, set_enabled)
+            if id == _ID_LOGIN:
+                revision_ref[0] += 1
+                self.LayoutUpdated(revision_ref[0], _ROOT_ID)
+
+        @method()
+        def AboutToShow(self, id: "i") -> "b":  # noqa: A002,N802,F821
+            return False
+
+        @signal()
+        def LayoutUpdated(self, revision: "u", parent: "i") -> "ui":  # noqa: N802,F821
+            return [revision, parent]
+
+    return StatusNotifierItem(), DBusMenu()
+
+
+def run(port: int, state: _State, handle: TrayHandle, paths: DesktopPaths) -> None:
+    """Export the SNI + dbusmenu services on a fresh asyncio loop bound to this
+    (tray daemon) thread, register with the StatusNotifierWatcher, then run the
+    loop until stopped. `call_register_status_notifier_item` raises when no
+    watcher owns the name (stock GNOME) — that propagates out to the retry loop
+    in `tray.start()`, which backs off and retries so a late waybar is still
+    picked up. Teardown is the same `_current_icon` / `stop()` contract the
+    Windows backend uses: a stop-shim calls `loop.stop()` cross-thread, the loop
+    unwinds, the bus name drops and the icon vanishes."""
+    import asyncio
+    import os
+
+    from dbus_fast import BusType
+    from dbus_fast.aio import MessageBus
+
+    from fused_render.supervisor import _backend
+
+    set_enabled = _backend.startup.set_enabled
+    revision_ref = [0]
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    class _StopShim:
+        # Mirrors pystray's Icon.stop() shape so TrayHandle.stop() (unchanged)
+        # can iterate _current_icon and call .stop() cross-thread.
+        def stop(self) -> None:
+            loop.call_soon_threadsafe(loop.stop)
+
+    shim = _StopShim()
+    bus = None
+
+    async def _bringup() -> "MessageBus":
+        connection = await MessageBus(bus_type=BusType.SESSION).connect()
+        sni, menu = _make_interfaces(port, state, handle, paths, set_enabled, revision_ref)
+        connection.export(_SNI_PATH, sni)
+        connection.export(_MENU_PATH, menu)
+        await connection.request_name(f"org.kde.StatusNotifierItem-{os.getpid()}-1")
+        introspection = await connection.introspect(_WATCHER_NAME, _WATCHER_PATH)
+        watcher = connection.get_proxy_object(
+            _WATCHER_NAME, _WATCHER_PATH, introspection
+        ).get_interface(_WATCHER_NAME)
+        # Raises if no StatusNotifier host is running → out to the retry loop.
+        await watcher.call_register_status_notifier_item(_SNI_PATH)
+        return connection
+
+    try:
+        bus = loop.run_until_complete(_bringup())
+        handle._current_icon.append(shim)
+        if handle._stopped.is_set():  # stop() raced bring-up: don't start the loop
+            return
+        loop.run_forever()
+    finally:
+        if shim in handle._current_icon:
+            handle._current_icon.remove(shim)
+        if bus is not None:
+            try:
+                bus.disconnect()  # drops the bus name → icon vanishes
+            except Exception:  # noqa: BLE001 - best-effort, thread is ending
+                pass
+        loop.close()
