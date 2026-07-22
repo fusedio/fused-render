@@ -16,6 +16,7 @@ import os
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.request
 
 from cryptography.exceptions import InvalidSignature
@@ -52,6 +53,25 @@ _check_lock = threading.Lock()
 _prompted_versions: set[str] = set()
 
 
+class _HttpsOnlyRedirect(urllib.request.HTTPRedirectHandler):
+    """urlopen follows redirects by default; refuse any that leave HTTPS so a
+    compromised CDN can't 302 the download to http and bypass the https-only
+    control (integrity still rests on the signed sha256, but don't ship bytes
+    over cleartext)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not newurl.startswith("https://"):
+            raise urllib.error.URLError("refusing non-https redirect during update")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_opener = urllib.request.build_opener(_HttpsOnlyRedirect)
+
+
+def _urlopen(url: str, timeout: float):
+    return _opener.open(url, timeout=timeout)
+
+
 def start_auto_checks(paths: DesktopPaths) -> None:
     """Spawn the background check loop: after a startup delay (so it never
     competes with launch), check now and every _CHECK_INTERVAL_S. Silent unless
@@ -62,9 +82,12 @@ def start_auto_checks(paths: DesktopPaths) -> None:
 
     def loop():
         time.sleep(_STARTUP_DELAY_S)
-        _sweep_stale_downloads()
+        swept = False
         while True:
             try:
+                if not swept:  # once per session, but inside the safety net below
+                    _sweep_stale_downloads()
+                    swept = True
                 _auto_check(paths)
             except Exception as error:  # noqa: BLE001 - a tick must never kill the loop
                 paths.log(f"auto update tick failed: {error}")
@@ -155,7 +178,7 @@ def _fetch_manifest() -> dict:
     ed25519 signature is checked here — before any caller trusts `version` to
     decide "up to date" or to prompt — so a CDN/bucket compromise can't forge
     a version to suppress or fake an update."""
-    with urllib.request.urlopen(_MANIFEST_URL, timeout=_FETCH_TIMEOUT_S) as resp:
+    with _urlopen(_MANIFEST_URL, _FETCH_TIMEOUT_S) as resp:
         raw = resp.read(_MAX_MANIFEST_BYTES + 1)
     if len(raw) > _MAX_MANIFEST_BYTES:
         raise ValueError("update manifest is too large")
@@ -201,9 +224,7 @@ def _download_verified(manifest: dict) -> str:
     fd, path = tempfile.mkstemp(prefix=_STAGE_PREFIX, suffix=_STAGE_SUFFIX)
     ok = False
     try:
-        with os.fdopen(fd, "wb") as out, urllib.request.urlopen(
-            url, timeout=_DOWNLOAD_TIMEOUT_S
-        ) as resp:
+        with os.fdopen(fd, "wb") as out, _urlopen(url, _DOWNLOAD_TIMEOUT_S) as resp:
             while chunk := resp.read(_DOWNLOAD_CHUNK):
                 total += len(chunk)
                 if total > _MAX_INSTALLER_BYTES:

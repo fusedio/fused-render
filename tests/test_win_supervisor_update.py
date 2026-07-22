@@ -62,7 +62,7 @@ def test_is_newer(candidate, current, expected):
 
 
 def test_fetch_manifest_rejects_malformed(monkeypatch):
-    monkeypatch.setattr(update.urllib.request, "urlopen",
+    monkeypatch.setattr(update, "_urlopen",
                         lambda *a, **k: _Response(json.dumps({"schema": 2}).encode()))
     with pytest.raises(ValueError):
         update._fetch_manifest()
@@ -74,7 +74,7 @@ def test_download_verified_roundtrip(monkeypatch):
     sha256 = hashlib.sha256(installer).hexdigest()
     manifest = {"schema": 1, "version": "0.4.0", "url": "https://x/setup.exe",
                 "sha256": sha256, "signature": _sign(key, "0.4.0", sha256)}
-    monkeypatch.setattr(update.urllib.request, "urlopen", lambda *a, **k: _Response(installer))
+    monkeypatch.setattr(update, "_urlopen", lambda *a, **k: _Response(installer))
 
     path = update._download_verified(manifest)
     with open(path, "rb") as f:
@@ -88,7 +88,7 @@ def test_fetch_manifest_verifies_signature_before_returning(monkeypatch):
     sha256 = hashlib.sha256(b"x").hexdigest()
     manifest = {"schema": 1, "version": "0.4.0", "url": "https://x/setup.exe",
                 "sha256": sha256, "signature": base64.b64encode(b"\x00" * 64).decode()}
-    monkeypatch.setattr(update.urllib.request, "urlopen",
+    monkeypatch.setattr(update, "_urlopen",
                         lambda *a, **k: _Response(json.dumps(manifest).encode()))
     with pytest.raises(ValueError):
         update._fetch_manifest()
@@ -99,7 +99,7 @@ def test_fetch_manifest_accepts_valid_signature(monkeypatch):
     sha256 = hashlib.sha256(b"x").hexdigest()
     manifest = {"schema": 1, "version": "0.4.0", "url": "https://x/setup.exe",
                 "sha256": sha256, "signature": _sign(key, "0.4.0", sha256)}
-    monkeypatch.setattr(update.urllib.request, "urlopen",
+    monkeypatch.setattr(update, "_urlopen",
                         lambda *a, **k: _Response(json.dumps(manifest).encode()))
     assert update._fetch_manifest()["version"] == "0.4.0"
 
@@ -107,7 +107,7 @@ def test_fetch_manifest_accepts_valid_signature(monkeypatch):
 @pytest.mark.parametrize("payload", ["null", "[]", "42", '"a string"'])
 def test_fetch_manifest_rejects_non_object(monkeypatch, payload):
     # Valid JSON that isn't an object must not crash with AttributeError.
-    monkeypatch.setattr(update.urllib.request, "urlopen",
+    monkeypatch.setattr(update, "_urlopen",
                         lambda *a, **k: _Response(payload.encode()))
     with pytest.raises(ValueError):
         update._fetch_manifest()
@@ -118,7 +118,7 @@ def test_download_verified_rejects_tampered_binary(monkeypatch):
     sha256 = hashlib.sha256(b"the signed installer").hexdigest()
     manifest = {"schema": 1, "version": "0.4.0", "url": "https://x/setup.exe",
                 "sha256": sha256, "signature": _sign(key, "0.4.0", sha256)}
-    monkeypatch.setattr(update.urllib.request, "urlopen",
+    monkeypatch.setattr(update, "_urlopen",
                         lambda *a, **k: _Response(b"a different, swapped installer"))
     with pytest.raises(ValueError):
         update._download_verified(manifest)
@@ -150,7 +150,7 @@ def _wire(monkeypatch, *, current, available, decision, installer="C:/tmp/setup.
     monkeypatch.setattr(update, "_sha256_file", lambda path: "ok")  # pre-launch re-verify passes
     monkeypatch.setattr(update, "_prompt_install", lambda version: prompts.append(version) or decision)
     monkeypatch.setattr(update, "_alert", lambda text, icon: alerts.append(text))
-    monkeypatch.setattr(update.os, "startfile", lambda path: started.append(path))
+    monkeypatch.setattr(update.os, "startfile", lambda path: started.append(path), raising=False)
     return started, prompts, alerts
 
 
@@ -216,6 +216,13 @@ def test_manual_check_busy_reports_in_progress(monkeypatch, paths):
     assert alerts and "in progress" in alerts[0]
 
 
+def test_redirect_handler_refuses_https_to_http_downgrade():
+    handler = update._HttpsOnlyRedirect()
+    req = update.urllib.request.Request("https://cdn/x")
+    with pytest.raises(update.urllib.error.URLError):
+        handler.redirect_request(req, None, 302, "Found", {}, "http://evil/x")
+
+
 def test_download_verified_rejects_non_https(monkeypatch):
     key = _install_key(monkeypatch)
     sha256 = hashlib.sha256(b"x").hexdigest()
@@ -247,7 +254,7 @@ def test_offer_install_accept_but_launch_fails_reoffers(monkeypatch, paths):
     def boom(path):
         raise OSError("no shell association")
 
-    monkeypatch.setattr(update.os, "startfile", boom)
+    monkeypatch.setattr(update.os, "startfile", boom, raising=False)
     # announce_errors=False (the background path) — a post-accept failure must
     # still alert, since the user clicked Install.
     update._offer_install(paths, {"version": "0.4.0", "sha256": sha256}, announce_errors=False)
@@ -262,7 +269,7 @@ def test_offer_install_rejects_binary_swapped_during_prompt(monkeypatch, paths):
     started, alerts = [], []
     monkeypatch.setattr(update, "_download_verified", lambda manifest: staged)
     monkeypatch.setattr(update, "_prompt_install", lambda version: update._IDYES)
-    monkeypatch.setattr(update.os, "startfile", lambda path: started.append(path))
+    monkeypatch.setattr(update.os, "startfile", lambda path: started.append(path), raising=False)
     monkeypatch.setattr(update, "_alert", lambda text, icon: alerts.append(text))
     # manifest sha256 is for different bytes → the pre-launch re-verify fails.
     update._offer_install(paths, {"version": "0.4.0", "sha256": hashlib.sha256(b"original").hexdigest()},
