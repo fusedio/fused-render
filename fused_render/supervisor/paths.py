@@ -51,13 +51,35 @@ class DesktopPaths:
 
     @classmethod
     def discover(cls) -> "DesktopPaths":
-        # LOCALAPPDATA-only for now (Windows). The per-OS root directory
-        # (e.g. XDG base dirs on Linux) lands with each backend as it is
-        # written; no speculative cross-platform layout here until then.
+        if sys.platform.startswith("linux"):
+            return cls.discover_linux()
+        # LOCALAPPDATA (Windows). Other platforms have no desktop layout yet.
         local_app_data = os.environ.get("LOCALAPPDATA")
         if not local_app_data:
             raise RuntimeError("LOCALAPPDATA is not set")
         return cls.under(Path(local_app_data) / "FusedRender" / "Desktop")
+
+    @classmethod
+    def discover_linux(cls) -> "DesktopPaths":
+        """XDG base-directory layout. Unlike the flat Windows root, state and
+        cache live under different XDG bases: state under $XDG_DATA_HOME
+        (~/.local/share), cache under $XDG_CACHE_HOME (~/.cache), runtime under
+        $XDG_RUNTIME_DIR (see linux_runtime_dir). child_environment() is
+        contract-identical to Windows regardless — same FUSED_RENDER_* keys.
+
+        Exposed as its own classmethod (not folded into discover) so the pure
+        path computation is unit-testable on any platform, not only Linux.
+        """
+        data_root = _xdg_home("XDG_DATA_HOME", ".local/share") / "fused-render" / "desktop"
+        cache_root = _xdg_home("XDG_CACHE_HOME", ".cache") / "fused-render" / "desktop"
+        return cls(
+            root=data_root,
+            state=data_root / "state",
+            cache=cache_root,
+            runtime=linux_runtime_dir(),
+            temp=cache_root / "temp",
+            logs=data_root / "logs",
+        )
 
     @classmethod
     def under(cls, root: Path) -> "DesktopPaths":
