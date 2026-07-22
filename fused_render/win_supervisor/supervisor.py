@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import ctypes
-import json
 import os
 import queue
 import secrets
@@ -12,7 +11,6 @@ import socket
 import sys
 import threading
 import time
-import urllib.error
 import urllib.request
 from enum import Enum, auto
 from pathlib import Path
@@ -22,12 +20,13 @@ import pywintypes
 import win32con
 import win32gui
 
+from fused_render import desktop_probe
 from fused_render._view_url_codec import view_url
+from fused_render.desktop_probe import DESKTOP_INSTANCE_ID as _INSTANCE_ID
 from fused_render.win_supervisor import instance, protocol, startup, tray
 from fused_render.win_supervisor.job import Job
 from fused_render.win_supervisor.paths import DesktopPaths
 
-_INSTANCE_ID = "desktop-v1"
 _READY_TIMEOUT_S = 20.0
 _SHUTDOWN_TIMEOUT_S = 5.0
 _STOP_PIPE_TIMEOUT_S = 10.0
@@ -453,31 +452,15 @@ def _start_server(job: Job, paths: DesktopPaths, port: int, token: str):
     )
 
 
-def _matching_server(port: int, token: str) -> bool:
-    req = urllib.request.Request(
-        f"http://127.0.0.1:{port}/api/config",
-        headers={"X-Fused-Desktop-Token": token},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=0.5) as resp:
-            if resp.status != 200:
-                return False
-            payload = json.loads(resp.read())
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
-        return False
-    instance_info = payload.get("desktop_instance") or {}
-    return instance_info.get("id") == _INSTANCE_ID and instance_info.get("token") == token
-
-
 def _wait_until_ready(process, port: int, token: str, timeout_s: float) -> None:
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
+    def _fail_fast_if_child_died() -> None:
         if process.wait(0):
             raise RuntimeError("Python server failed during startup")
-        if _matching_server(port, token):
-            return
-        time.sleep(0.1)
-    raise TimeoutError("Python server did not become ready")
+
+    if not desktop_probe.wait_until_ready(
+        port, token, timeout_s, instance_id=_INSTANCE_ID, on_poll=_fail_fast_if_child_died
+    ):
+        raise TimeoutError("Python server did not become ready")
 
 
 def _start_ready_server(paths: DesktopPaths, token: str):

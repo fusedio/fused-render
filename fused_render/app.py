@@ -13,16 +13,17 @@ pyproject.toml) — it is imported lazily, inside `main()`, so that
 import json
 import logging
 import os
+import secrets
 import socket
 import subprocess
 import threading
-import time
 import urllib.error
 import urllib.request
 import webbrowser
 
 import uvicorn
 
+from fused_render import desktop_probe
 from fused_render._branch import branch_dir, branch_port
 from fused_render.logs import log_path, setup_logging
 from fused_render.server import create_app
@@ -138,17 +139,19 @@ def pick_port(start: int = DEFAULT_PORT, end: int = MAX_PORT) -> int:
     raise RuntimeError(f"no free port between {start} and {end}; is something hogging the whole range?")
 
 
-def _wait_until_ready(port: int, timeout: float = 15.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/config", timeout=1) as resp:
-                if resp.status == 200:
-                    return True
-        except (urllib.error.URLError, OSError):
-            pass
-        time.sleep(0.2)
-    return False
+def configure_desktop_instance() -> tuple[str, str]:
+    """Publish this launch's desktop instance id + a fresh 256-bit token into
+    the environment. The in-process server reads them lazily per request via
+    `fused_render.paths.desktop_instance()`, so `/api/config` echoes the id
+    (and the token, only to a caller that already knows it) and the token-gated
+    `POST /api/desktop/shutdown` endpoint becomes available — parity with the
+    Windows supervisor's child server. Readiness is then verified against this
+    exact token (shared `desktop_probe`), so a decoy server on the port cannot
+    fool startup. Module-level (AppKit-free) so it is testable."""
+    token = secrets.token_hex(32)  # 32 bytes == 256 bits, 64 hex chars
+    os.environ["FUSED_RENDER_DESKTOP_INSTANCE_ID"] = desktop_probe.DESKTOP_INSTANCE_ID
+    os.environ["FUSED_RENDER_DESKTOP_INSTANCE_TOKEN"] = token
+    return desktop_probe.DESKTOP_INSTANCE_ID, token
 
 
 def _write_pidfile(port: int) -> None:
@@ -197,6 +200,11 @@ def main() -> None:
 
     port = pick_port()
     url = f"http://127.0.0.1:{port}/"
+
+    # Publish this launch's instance id + token before the server thread starts
+    # so the in-process server echoes them from /api/config; readiness is then
+    # verified against this token (a decoy server on the port can't satisfy it).
+    _, desktop_token = configure_desktop_instance()
 
     import rumps  # macOS-only; see module docstring
 
@@ -291,7 +299,7 @@ def main() -> None:
         logger.info("starting server on port %s", port)
         server, landing = _start_server_thread(port)
         state["server"] = server
-        if not _wait_until_ready(port):
+        if not desktop_probe.wait_until_ready(port, desktop_token, 15.0, poll_interval=0.2):
             # Log file, not print: Finder-launched apps have no visible stderr.
             logger.error("server did not become ready on port %s", port)
             rumps.quit_application()
