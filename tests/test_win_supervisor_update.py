@@ -81,15 +81,36 @@ def test_download_verified_roundtrip(monkeypatch):
         assert f.read() == installer
 
 
-def test_download_verified_rejects_bad_signature(monkeypatch):
+def test_fetch_manifest_verifies_signature_before_returning(monkeypatch):
+    # The version is only trusted after the signature checks out, so a bad
+    # signature is rejected at fetch — before any "up to date"/prompt decision.
     _install_key(monkeypatch)
-    installer = b"installer"
-    sha256 = hashlib.sha256(installer).hexdigest()
+    sha256 = hashlib.sha256(b"x").hexdigest()
     manifest = {"schema": 1, "version": "0.4.0", "url": "https://x/setup.exe",
                 "sha256": sha256, "signature": base64.b64encode(b"\x00" * 64).decode()}
-    monkeypatch.setattr(update.urllib.request, "urlopen", lambda *a, **k: _Response(installer))
+    monkeypatch.setattr(update.urllib.request, "urlopen",
+                        lambda *a, **k: _Response(json.dumps(manifest).encode()))
     with pytest.raises(ValueError):
-        update._download_verified(manifest)
+        update._fetch_manifest()
+
+
+def test_fetch_manifest_accepts_valid_signature(monkeypatch):
+    key = _install_key(monkeypatch)
+    sha256 = hashlib.sha256(b"x").hexdigest()
+    manifest = {"schema": 1, "version": "0.4.0", "url": "https://x/setup.exe",
+                "sha256": sha256, "signature": _sign(key, "0.4.0", sha256)}
+    monkeypatch.setattr(update.urllib.request, "urlopen",
+                        lambda *a, **k: _Response(json.dumps(manifest).encode()))
+    assert update._fetch_manifest()["version"] == "0.4.0"
+
+
+@pytest.mark.parametrize("payload", ["null", "[]", "42", '"a string"'])
+def test_fetch_manifest_rejects_non_object(monkeypatch, payload):
+    # Valid JSON that isn't an object must not crash with AttributeError.
+    monkeypatch.setattr(update.urllib.request, "urlopen",
+                        lambda *a, **k: _Response(payload.encode()))
+    with pytest.raises(ValueError):
+        update._fetch_manifest()
 
 
 def test_download_verified_rejects_tampered_binary(monkeypatch):
@@ -124,8 +145,9 @@ def _reset_prompted(monkeypatch):
 def _wire(monkeypatch, *, current, available, decision, installer="C:/tmp/setup.exe"):
     started, prompts, alerts = [], [], []
     monkeypatch.setattr(update, "__version__", current)
-    monkeypatch.setattr(update, "_fetch_manifest", lambda: {"version": available})
+    monkeypatch.setattr(update, "_fetch_manifest", lambda: {"version": available, "sha256": "ok"})
     monkeypatch.setattr(update, "_download_verified", lambda manifest: installer)
+    monkeypatch.setattr(update, "_sha256_file", lambda path: "ok")  # pre-launch re-verify passes
     monkeypatch.setattr(update, "_prompt_install", lambda version: prompts.append(version) or decision)
     monkeypatch.setattr(update, "_alert", lambda text, icon: alerts.append(text))
     monkeypatch.setattr(update.os, "startfile", lambda path: started.append(path))
@@ -214,7 +236,9 @@ def test_offer_install_declined_is_remembered_and_cleaned(monkeypatch, paths):
 
 def test_offer_install_accept_but_launch_fails_reoffers(monkeypatch, paths):
     fd, staged = tempfile.mkstemp(prefix="FusedRenderPy-", suffix="-setup.exe")
-    os.close(fd)
+    with os.fdopen(fd, "wb") as f:
+        f.write(b"installer bytes")
+    sha256 = hashlib.sha256(b"installer bytes").hexdigest()
     monkeypatch.setattr(update, "_download_verified", lambda manifest: staged)
     monkeypatch.setattr(update, "_prompt_install", lambda version: update._IDYES)
 
@@ -222,9 +246,23 @@ def test_offer_install_accept_but_launch_fails_reoffers(monkeypatch, paths):
         raise OSError("no shell association")
 
     monkeypatch.setattr(update.os, "startfile", boom)
-    update._offer_install(paths, {"version": "0.4.0"}, announce_errors=False)
+    update._offer_install(paths, {"version": "0.4.0", "sha256": sha256}, announce_errors=False)
     # An accepted-but-failed launch must NOT be suppressed — it retries later.
     assert "0.4.0" not in update._prompted_versions and not os.path.exists(staged)
+
+
+def test_offer_install_rejects_binary_swapped_during_prompt(monkeypatch, paths):
+    fd, staged = tempfile.mkstemp(prefix="FusedRenderPy-", suffix="-setup.exe")
+    with os.fdopen(fd, "wb") as f:
+        f.write(b"swapped after verify")
+    started = []
+    monkeypatch.setattr(update, "_download_verified", lambda manifest: staged)
+    monkeypatch.setattr(update, "_prompt_install", lambda version: update._IDYES)
+    monkeypatch.setattr(update.os, "startfile", lambda path: started.append(path))
+    # manifest sha256 is for different bytes → the pre-launch re-verify fails.
+    update._offer_install(paths, {"version": "0.4.0", "sha256": hashlib.sha256(b"original").hexdigest()},
+                          announce_errors=False)
+    assert not started and not os.path.exists(staged)
 
 
 def test_start_auto_checks_disabled_by_env(monkeypatch, paths):

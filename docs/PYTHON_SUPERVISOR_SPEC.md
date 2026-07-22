@@ -123,16 +123,20 @@ worker-thread pattern) plus one daemon timer thread.
    - **Manual** — the `TrayAction.CHECK_UPDATES` tray item runs the same flow
      on demand, but reports its result either way ("up to date" / an error
      dialog).
-   - Both, when `manifest.version` > `fused_render.__version__`: download the
-     installer to `%TEMP%` (**not** `Desktop\temp` — the installer's
-     `[InstallDelete]` wipes that), verify the ed25519 signature over the
-     manifest, then verify the download's SHA-256 equals `manifest.sha256`
-     (either check fails → refuse, report/log, never run an unverified exe),
-     then `MessageBoxW` MB_YESNO "FusedRender X.Y.Z is ready to install…". Yes
-     → `os.startfile(installer)` and return; the installer takes over. A
-     declined version is remembered in `_prompted_versions` so the background
-     loop won't re-prompt it this session (a restart or manual check offers it
-     again).
+   - The ed25519 signature is verified in `_fetch_manifest`, **before** the
+     `version` is trusted for the "up to date"/prompt decision — a CDN/bucket
+     compromise can't forge a version to suppress or fake an update. When
+     `manifest.version` > `fused_render.__version__`: download the installer to
+     `%TEMP%` (**not** `Desktop\temp` — the installer's `[InstallDelete]` wipes
+     that), streaming it under a size cap while confirming its SHA-256 equals
+     the signed `manifest.sha256` (mismatch → refuse, report/log, never run an
+     unverified exe), then `MessageBoxW` MB_YESNO "FusedRender X.Y.Z is ready to
+     install…". On Yes, **re-hash the staged file one last time** (it sat in
+     `%TEMP%` while the prompt was open) and only then `os.startfile(installer)`
+     and return; the installer takes over. A declined version is remembered in
+     `_prompted_versions` so the background loop won't re-prompt it this session
+     (a restart or manual check offers it again); an accepted-but-failed launch
+     is not remembered, so it retries.
 2. **Manifest** — `latest.json` published next to the installer on the CDN
    (`https://d2ic19jpchjovp.cloudfront.net/fused-render-windows/latest.json`):
    ```json

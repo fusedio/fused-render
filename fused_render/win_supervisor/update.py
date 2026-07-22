@@ -10,6 +10,7 @@ import base64
 import ctypes
 import glob
 import hashlib
+import http.client
 import json
 import os
 import tempfile
@@ -83,7 +84,7 @@ def check(paths: DesktopPaths) -> None:
         try:
             manifest = _fetch_manifest()
             newer = _is_newer(manifest["version"], __version__)
-        except (OSError, ValueError) as error:
+        except (OSError, ValueError, http.client.HTTPException) as error:
             paths.log(f"update check failed: {error}")
             _alert("FusedRender could not check for updates right now.", _MB_ICONWARNING)
             return
@@ -106,7 +107,7 @@ def _auto_check(paths: DesktopPaths) -> None:
             manifest = _fetch_manifest()
             if not _is_newer(manifest["version"], __version__):
                 return
-        except (OSError, ValueError) as error:
+        except (OSError, ValueError, http.client.HTTPException) as error:
             paths.log(f"auto update check failed: {error}")
             return
         if manifest["version"] in _prompted_versions:
@@ -125,7 +126,7 @@ def _offer_install(paths: DesktopPaths, manifest: dict, announce_errors: bool) -
     version = manifest["version"]
     try:
         installer = _download_verified(manifest)
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, http.client.HTTPException) as error:
         paths.log(f"update download failed: {error}")
         if announce_errors:
             _alert("The update could not be downloaded or verified.", _MB_ICONERROR)
@@ -136,8 +137,12 @@ def _offer_install(paths: DesktopPaths, manifest: dict, announce_errors: bool) -
         _discard(installer)
         return
     try:
+        # The file sat in %TEMP% while the prompt was open — re-hash right
+        # before launch so we never run bytes that were swapped after verify.
+        if _sha256_file(installer) != manifest["sha256"]:
+            raise ValueError("staged installer changed after verification")
         os.startfile(installer)
-    except OSError as error:
+    except (OSError, ValueError, http.client.HTTPException) as error:
         paths.log(f"update launch failed: {error}")
         _discard(installer)
         if announce_errors:
@@ -145,17 +150,32 @@ def _offer_install(paths: DesktopPaths, manifest: dict, announce_errors: bool) -
 
 
 def _fetch_manifest() -> dict:
+    """Fetch, validate, and cryptographically verify the manifest. The
+    ed25519 signature is checked here — before any caller trusts `version` to
+    decide "up to date" or to prompt — so a CDN/bucket compromise can't forge
+    a version to suppress or fake an update."""
     with urllib.request.urlopen(_MANIFEST_URL, timeout=_FETCH_TIMEOUT_S) as resp:
         raw = resp.read(_MAX_MANIFEST_BYTES + 1)
     if len(raw) > _MAX_MANIFEST_BYTES:
         raise ValueError("update manifest is too large")
     manifest = json.loads(raw)
-    if manifest.get("schema") != 1 or not all(
+    if not isinstance(manifest, dict) or manifest.get("schema") != 1 or not all(
         isinstance(manifest.get(key), str)
         for key in ("version", "url", "sha256", "signature")
     ):
         raise ValueError("malformed update manifest")
+    _verify_signature(manifest["version"], manifest["sha256"], manifest["signature"])
     return manifest
+
+
+def _verify_signature(version: str, sha256: str, signature: str) -> None:
+    message = f"{_SIGNING_CONTEXT}\n{version}\n{sha256}\n".encode("utf-8")
+    try:
+        Ed25519PublicKey.from_public_bytes(_PUBLIC_KEY).verify(
+            base64.b64decode(signature), message
+        )
+    except InvalidSignature as error:
+        raise ValueError("update manifest signature is invalid") from error
 
 
 def _is_newer(candidate: str, current: str) -> bool:
@@ -166,22 +186,15 @@ def _is_newer(candidate: str, current: str) -> bool:
 
 
 def _download_verified(manifest: dict) -> str:
-    """Verify the manifest signature, stream the installer to %TEMP% (never the
-    supervisor's temp dir, which the installer's [InstallDelete] wipes) while
-    hashing it, and confirm its SHA-256 matches the signed value. The URL must
-    be HTTPS — it is not itself covered by the signature."""
+    """Stream the installer to %TEMP% (never the supervisor's temp dir, which
+    the installer's [InstallDelete] wipes) while hashing it, and confirm its
+    SHA-256 matches the signed value. The manifest signature (over version +
+    sha256) is already verified in _fetch_manifest; the URL is not signed, so
+    require HTTPS."""
     url = manifest["url"]
     if not url.startswith("https://"):
         raise ValueError("update manifest url is not https")
-    version, sha256 = manifest["version"], manifest["sha256"]
-    message = f"{_SIGNING_CONTEXT}\n{version}\n{sha256}\n".encode("utf-8")
-    try:
-        Ed25519PublicKey.from_public_bytes(_PUBLIC_KEY).verify(
-            base64.b64decode(manifest["signature"]), message
-        )
-    except InvalidSignature as error:
-        raise ValueError("update manifest signature is invalid") from error
-
+    sha256 = manifest["sha256"]
     digest = hashlib.sha256()
     total = 0
     fd, path = tempfile.mkstemp(prefix=_STAGE_PREFIX, suffix=_STAGE_SUFFIX)
@@ -211,6 +224,14 @@ def _sweep_stale_downloads() -> None:
     still holds open won't delete — that's fine, unlink just fails."""
     for stale in glob.glob(os.path.join(tempfile.gettempdir(), f"{_STAGE_PREFIX}*{_STAGE_SUFFIX}")):
         _discard(stale)
+
+
+def _sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(_DOWNLOAD_CHUNK):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _discard(path: str) -> None:

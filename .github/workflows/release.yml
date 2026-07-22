@@ -8,6 +8,9 @@ on:
 jobs:
   build-sign-notarize-release:
     runs-on: macos-14
+    outputs:
+      version: ${{ steps.artifacts.outputs.version }}
+      dmg_sha256: ${{ steps.artifacts.outputs.dmg_sha256 }}
     permissions:
       contents: write # needed to attach the DMG to a GitHub Release
       id-token: write # needed to assume the AWS role via OIDC
@@ -90,6 +93,7 @@ jobs:
           aws-region: us-west-2
 
       - name: Upload DMG + wheel to S3
+        id: artifacts
         run: |
           set -euo pipefail
           # Not `brew install awscli`: GH's macos-14 image doesn't have the
@@ -106,6 +110,9 @@ jobs:
           echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
           echo "DMG_SHA256=$DMG_SHA256" >> "$GITHUB_ENV"
           echo "WHL_PATH=$WHL_PATH" >> "$GITHUB_ENV"
+          # Exposed as job outputs for the split-out bump-homebrew job.
+          echo "version=$(basename "$DMG_PATH" .dmg | sed 's/^FusedRender-//')" >> "$GITHUB_OUTPUT"
+          echo "dmg_sha256=$DMG_SHA256" >> "$GITHUB_OUTPUT"
           # Served via CloudFront (public bucket behind the CDN).
           echo "DMG_URL=https://${CDN_DOMAIN}/fused-render-dmgs/$(basename "$DMG_PATH")" >> "$GITHUB_ENV"
           echo "WHL_URL=https://${CDN_DOMAIN}/fused-render-wheels/$(basename "$WHL_PATH")" >> "$GITHUB_ENV"
@@ -148,30 +155,6 @@ jobs:
             - [Wheel](${{ env.WHL_URL }})
           generate_release_notes: true
           previous_tag: ${{ steps.prev_tag.outputs.tag }}
-
-      - name: Bump homebrew-tap cask
-        env:
-          TAP_PUSH_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
-        run: |
-          set -euo pipefail
-          # Version comes from the DMG that was actually built+uploaded+hashed
-          # above, not the git tag — keeps cask version/sha256 tied to one
-          # artifact even if a tag is pushed before pyproject.toml is bumped.
-          VERSION="$(basename "$DMG_PATH" .dmg | sed 's/^FusedRender-//')"
-
-          git clone --depth 1 "https://x-access-token:${TAP_PUSH_TOKEN}@github.com/fusedio/homebrew-tap.git" /tmp/homebrew-tap
-          cd /tmp/homebrew-tap
-
-          sed -i '' \
-            -e "s/^  version \".*\"/  version \"${VERSION}\"/" \
-            -e "s/^  sha256 \".*\"/  sha256 \"${DMG_SHA256}\"/" \
-            Casks/fused-render.rb
-
-          git config user.name "fused-render-ci"
-          git config user.email "ci@fused.io"
-          git add Casks/fused-render.rb
-          git commit -m "fused-render ${VERSION}"
-          git push origin main
 
   build-windows-release:
     # Runs after the DMG job so the GitHub Release already exists — this job
@@ -234,3 +217,33 @@ jobs:
             --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
             --paths "/${WINDOWS_PREFIX}/*"
           gh release upload "$GITHUB_REF_NAME" "$INSTALLER" --clobber
+
+  bump-homebrew:
+    # Was the DMG job's last step; split into its own job so a tap-push failure
+    # (which happens after the Release + DMG already published) can't fail that
+    # job and, through `needs`, block build-windows-release from publishing.
+    needs: build-sign-notarize-release
+    runs-on: ubuntu-latest
+    permissions: {} # uses the tap PAT only; no GITHUB_TOKEN scopes needed
+    steps:
+      - name: Bump homebrew-tap cask
+        env:
+          TAP_PUSH_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
+          # From the DMG that was actually built+hashed, not the git tag — keeps
+          # cask version/sha256 tied to one artifact.
+          VERSION: ${{ needs.build-sign-notarize-release.outputs.version }}
+          DMG_SHA256: ${{ needs.build-sign-notarize-release.outputs.dmg_sha256 }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "https://x-access-token:${TAP_PUSH_TOKEN}@github.com/fusedio/homebrew-tap.git" /tmp/homebrew-tap
+          cd /tmp/homebrew-tap
+          # GNU sed on ubuntu (was BSD `sed -i ''` on the macOS runner).
+          sed -i \
+            -e "s/^  version \".*\"/  version \"${VERSION}\"/" \
+            -e "s/^  sha256 \".*\"/  sha256 \"${DMG_SHA256}\"/" \
+            Casks/fused-render.rb
+          git config user.name "fused-render-ci"
+          git config user.email "ci@fused.io"
+          git add Casks/fused-render.rb
+          git commit -m "fused-render ${VERSION}"
+          git push origin main
