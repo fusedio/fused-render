@@ -500,15 +500,24 @@ def _list_direct(path, cursor):
     deliberately small per-request cap, since this route is resumable (Load more
     pages in the rest). Returns (entries, next_token); a non-None token means the
     listing is partial and resumable. Raises shell_mounts.DirectListError on any
-    page failure so the caller can fall back to the rc route."""
-    raw, token = _accumulate_direct_pages(
-        path, cursor, S3_LIST_MAX_ENTRIES,
-        overall_timeout=S3_LIST_OVERALL_TIMEOUT_S)
+    page failure so the caller can fall back to the rc route.
+
+    The direct→rc ladder itself lives in pathops.list_mount_dir (single-sourced
+    with the fs/walk); here we drive its DIRECT route only (allow_rc_fallback
+    False) so api_fs_list keeps its own rc handling — the warning and the
+    cursor-specific 503 are HTTP response shaping. This route is reached only
+    after the caller has confirmed direct_list_capable(path)."""
+    from fused_render.shell import pathops
+
+    listing = pathops.list_mount_dir(
+        path, cursor=cursor, max_entries=S3_LIST_MAX_ENTRIES,
+        overall_timeout=S3_LIST_OVERALL_TIMEOUT_S, allow_rc_fallback=False)
     # Sorted over what was fetched, not the whole directory — a truncated
     # listing is honestly partial (see the endpoint's sort caveat). Skip any
     # entry missing a Name (a malformed page must not 500 the request).
-    entries = _sort_entries([_mount_list_item(de) for de in raw if de.get("Name")])
-    return entries, token
+    entries = _sort_entries(
+        [_mount_list_item(de) for de in listing.entries if de.get("Name")])
+    return entries, listing.token
 
 
 # Yielded by _walk_bfs when a directory's listing was cut short (direct S3/GCS
