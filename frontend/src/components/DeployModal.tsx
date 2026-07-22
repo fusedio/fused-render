@@ -706,8 +706,19 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   const samePointerEnv = deployment !== null && deployment.env === selectedEnv;
   const mountAbsent = live === "absent";
   const isRedeploy = samePointerEnv && !mountAbsent;
+  // The Link name field's own gate is deliberately NARROWER than isRedeploy:
+  // `live` is null both when reconcile never ran and when it ran but the env
+  // was unreachable (deployStatus's "couldn't be confirmed" branch below) —
+  // in that case we do NOT actually know yet whether the next Deploy click
+  // will repoint or fall through to a fresh create (deploy_page re-checks
+  // `share list` live, at click time, independent of this stale read). So
+  // only a CONFIRMED still-live mount (active or revoked) hides the field;
+  // an unconfirmed one leaves it up, and a name typed there is simply
+  // ignored server-side if the click turns out to repoint after all
+  // (deploy_page only applies custom_token on its create branches).
+  const confirmedRedeployToken = samePointerEnv && (live === "active" || live === "revoked");
   const tokenError =
-    !isRedeploy && customToken && !TOKEN_RE.test(customToken)
+    !confirmedRedeployToken && customToken && !TOKEN_RE.test(customToken)
       ? "Use lowercase letters, numbers, - and _ only, starting with a letter or number."
       : null;
 
@@ -720,7 +731,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     setActionError(null);
     setClearCacheResult(null); // a stale "N cleared" note must not survive a redeploy
     try {
-      const wantsCustomToken = !isRedeploy && customToken.trim() !== "";
+      const wantsCustomToken = !confirmedRedeployToken && customToken.trim() !== "";
       const record = await deployPage(
         fsPath,
         env.name,
@@ -1061,10 +1072,12 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             </div>
           )}
         </div>
-        {/* A chosen link name only applies to a FRESH create (see isRedeploy
-            above) — once a mount exists its token is fixed, so this control
-            hides on a redeploy rather than imply an edit that can't happen. */}
-        {!isRedeploy && (
+        {/* A chosen link name only applies to a FRESH create (see
+            confirmedRedeployToken above) — hidden only once the existing
+            mount's liveness is CONFIRMED (active/revoked), so an unreachable-
+            env "unconfirmed" state (live === null) leaves it up rather than
+            hide a control that a subsequent fresh create could still use. */}
+        {!confirmedRedeployToken && (
           <div className="deploy-files">
             <div className="deploy-files-body">
               <div className="deploy-form-row">
