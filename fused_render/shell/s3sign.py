@@ -15,8 +15,11 @@ Two concerns, kept separate:
     with host the only signed header. The timestamp is a parameter so the
     output is reproducible under test.
   - resolve_credentials: the three cheap credential sources (remote config
-    keys, environment, shared credentials file). SSO/IMDS/credential_process
-    return None — the caller keeps its existing publiclink path for those.
+    keys, environment, shared credentials file), then — for a remote that opted
+    into ambient auth (env_auth / profile) — an optional last rung that consults
+    botocore's full provider chain (SSO / IMDS / credential_process /
+    assume-role) when [cloud-auth] is installed. With botocore absent, or when
+    it resolves nothing, the caller keeps its existing publiclink path.
 
 This module is PURE: no caching, no rc calls, no logging of URLs. Caching and
 the one-time signature validation live in shell/mounts.py, which composes the
@@ -151,16 +154,52 @@ def _from_shared_file(cfg: dict) -> Credentials | None:
     return None
 
 
+def _from_botocore(cfg: dict) -> Credentials | None:
+    """The optional last rung: botocore's full provider chain (SSO, IMDS,
+    credential_process, assume-role, container). Lazily imported so a plain
+    `pip install fused-render` — without the [cloud-auth] extra — never needs
+    botocore; ImportError -> None. Honors the remote's profile /
+    shared_credentials_file when set, then freezes the resolved credentials into
+    the local namedtuple (a frozen STS credential carries its session token so
+    the mounts-side link-TTL clamp still fires). ANY failure — library absent,
+    expired SSO login, no providers, an IMDS timeout — returns None so the
+    caller keeps today's publiclink path. Never logs credential values."""
+    try:
+        import botocore.session
+    except ImportError:
+        return None
+    try:
+        session = botocore.session.Session(profile=cfg.get("profile") or None)
+        shared = cfg.get("shared_credentials_file")
+        if shared:
+            session.set_config_variable(
+                "credentials_file", os.path.expanduser(shared))
+        creds = session.get_credentials()
+        if creds is None:
+            return None
+        frozen = creds.get_frozen_credentials()
+        if not frozen.access_key or not frozen.secret_key:
+            return None
+        return Credentials(frozen.access_key, frozen.secret_key,
+                           frozen.token or None)
+    except Exception:
+        return None
+
+
 def resolve_credentials(cfg: dict | None) -> Credentials | None:
-    """Resolve static AWS credentials for an S3 remote config, cheapest source
-    first, or None when only out-of-scope sources exist (SSO / IMDS /
-    credential_process) — then the caller keeps today's publiclink path:
+    """Resolve AWS credentials for an S3 remote config, cheapest source first,
+    or None when nothing resolves — then the caller keeps today's publiclink
+    path:
       1. explicit access_key_id/secret_access_key in the remote config
          (rclone's config/get returns the plaintext secret on the pinned
          version, so no config-dump fallback is needed);
       2. environment (AWS_ACCESS_KEY_ID/SECRET/SESSION_TOKEN) when env_auth;
       3. the shared credentials file when env_auth or a profile /
-         shared_credentials_file is configured.
+         shared_credentials_file is configured;
+      4. botocore's full provider chain (SSO / IMDS / credential_process) via
+         _from_botocore, resolved when installed [cloud-auth], else None — same
+         ambient-auth gate as source 3, so a plain keyed remote never triggers
+         an ambient-credential lookup.
     Non-S3 or empty configs return None."""
     if not isinstance(cfg, dict) or cfg.get("type") != "s3":
         return None
@@ -176,5 +215,8 @@ def resolve_credentials(cfg: dict | None) -> Credentials | None:
             return Credentials(access, secret,
                                os.environ.get("AWS_SESSION_TOKEN") or None)
     if env_auth or cfg.get("profile") or cfg.get("shared_credentials_file"):
-        return _from_shared_file(cfg)
+        from_file = _from_shared_file(cfg)
+        if from_file is not None:
+            return from_file
+        return _from_botocore(cfg)
     return None

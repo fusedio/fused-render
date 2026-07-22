@@ -67,6 +67,17 @@ bundled = [
     "pikepdf>=9",
     "drain3>=0.9.11",
 ]
+# Private-cloud credential chains (optional). botocore buys the AWS provider
+# chain (SSO / credential_process / assume-role / IMDS) for s3sign's resolver
+# rung; google-auth buys the GCS bearer-token chain (SA key / ADC) for gcssign.
+# requests is google-auth's refresh transport. The signing math stays in-repo
+# (s3sign/gcssign are pure stdlib), so a plain install still serves public
+# buckets with the libs absent — this extra only lights up private ones.
+cloud-auth = [
+    "botocore",
+    "google-auth",
+    "requests",
+]
 # Menu-bar app shell (SPEC DM-3/DM-7). macOS-only; not a core dependency so
 # `pip install fused-render` stays cross-platform. Only the packaged .app
 # build (scripts/build_dmg.sh) installs this extra.
