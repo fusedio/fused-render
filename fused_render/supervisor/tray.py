@@ -1,37 +1,35 @@
-"""Tray icon — port of windows/supervisor/src/tray.rs (feat/windows-desktop-
-foundation, PR #162), using pystray instead of the tray-icon crate.
+"""Tray icon — platform-neutral seam over the per-OS tray backends.
 
-Bugbot fixes carried over from the Rust review (PR #162):
-- #1/#3 "Start at sign in" checkbox desync / registry failure kills the
-  supervisor: pystray's `checked=` menu-item argument is a *callable*,
-  re-evaluated every time the menu opens, so the checkbox is always derived
-  from `_State.login_enabled` — there is no "created once, stale forever"
-  state to desync. `_on_toggle_login` only flips `_State.login_enabled` on a
-  *successful* registry write; a failure is caught, logged via
-  `paths.log(...)`, and simply doesn't change state (which reads as the
-  checkbox "reverting"). The supervisor process itself is never at risk:
-  pystray dispatches each menu action on its own thread, and every handler
-  here is also wrapped so an unexpected exception can't propagate.
+Port of windows/supervisor/src/tray.rs (feat/windows-desktop-foundation, PR
+#162). This module owns everything that is *not* platform-specific — the
+`TrayAction` queue contract, `_State`, `TrayHandle` (icon lifetime + stop
+signal), `start()` and its retry-with-backoff loop. The one function that talks
+to a concrete tray, `_run()`, is a thin dispatcher that lazily imports the
+matching backend for `sys.platform` (`._win32.tray` on Windows via pystray,
+`._linux.tray` on Linux via StatusNotifierItem over D-Bus) and forwards to its
+`run(port, state, handle, paths)`.
+
+The lazy import is deliberate: importing this module on Linux must never import
+pystray (Windows-only), and the Windows backend must never load off-Windows.
+The backend imports the shared types (`TrayAction`, `_State`, `TrayHandle`)
+back from here at call time, when this module is fully initialized — no cycle.
+Keeping the whole `TrayHandle`/`start()`/retry contract here means `core.py`
+does not change when a new platform backend is added, mirroring `_backend`.
 """
 from __future__ import annotations
 
+import importlib
 import queue
+import sys
 import threading
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from pathlib import Path
 
-import pystray
-from PIL import Image
-
-from fused_render.supervisor import _backend
 from fused_render.supervisor.paths import DesktopPaths
 
 _RETRY_START = 0.5
 _RETRY_CAP = 30.0
 _LOG_AFTER_ATTEMPTS = 10
-
-_ICON_PATH = Path(__file__).resolve().parent.parent / "assets" / "fused-render.ico"
 
 
 class TrayAction(Enum):
@@ -59,7 +57,9 @@ class TrayHandle:
     later retry from showing a brand-new icon after shutdown began."""
 
     actions: "queue.Queue[TrayAction]"
-    _current_icon: list = field(default_factory=list)  # 0 or 1 pystray.Icon
+    # 0 or 1 backend icon handle — a pystray.Icon on Windows, a stop-shim on
+    # Linux. Whatever it is, `stop()` only needs `.stop()` on it.
+    _current_icon: list = field(default_factory=list)
     _stopped: threading.Event = field(default_factory=threading.Event)
 
     def stop(self) -> None:
@@ -100,57 +100,15 @@ def start(port: int, login_enabled: bool, paths: DesktopPaths) -> TrayHandle:
 
 
 def _run(port: int, state: _State, handle: TrayHandle, paths: DesktopPaths) -> None:
-    actions = handle.actions
-    image = Image.open(_ICON_PATH)
-
-    def emit(action: TrayAction):
-        try:
-            actions.put_nowait(action)
-        except Exception:  # noqa: BLE001
-            pass
-
-    def on_open(icon, item):
-        emit(TrayAction.OPEN)
-
-    def on_open_file(icon, item):
-        emit(TrayAction.OPEN_FILE)
-
-    def on_open_logs(icon, item):
-        emit(TrayAction.OPEN_LOGS)
-
-    def on_default_apps(icon, item):
-        emit(TrayAction.DEFAULT_APPS)
-
-    def on_exit(icon, item):
-        emit(TrayAction.EXIT)
-
-    def on_toggle_login(icon, item):
-        want = not state.login_enabled
-        try:
-            _backend.startup.set_enabled(want)
-            state.login_enabled = want
-        except OSError as error:
-            paths.log(f"could not update sign-in setting: {error}")
-        icon.update_menu()
-
-    menu = pystray.Menu(
-        pystray.MenuItem("Open FusedRender", on_open, default=True),
-        pystray.MenuItem("Open file...", on_open_file),
-        pystray.Menu.SEPARATOR,
-        pystray.MenuItem(f"Running on port {port}", None, enabled=False),
-        pystray.MenuItem("Open logs", on_open_logs),
-        pystray.MenuItem("Default apps...", on_default_apps),
-        pystray.MenuItem(
-            "Start at sign in", on_toggle_login, checked=lambda item: state.login_enabled
-        ),
-        pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Exit", on_exit),
-    )
-    icon = pystray.Icon("FusedRender", image, f"FusedRender (port {port})", menu)
-    handle._current_icon.append(icon)
-    try:
-        if handle._stopped.is_set():
-            return
-        icon.run()
-    finally:
-        handle._current_icon.remove(icon)
+    """Dispatch to the per-OS tray backend, lazily. Kept a module attribute so
+    the retry-loop test can monkeypatch `tray._run`. The backend's `run()` has
+    the identical signature and the identical "returns on deliberate stop,
+    raises to trigger a retry" contract the retry loop in `start()` expects."""
+    if sys.platform == "win32":
+        backend_name = "fused_render.supervisor._win32.tray"
+    elif sys.platform.startswith("linux"):
+        backend_name = "fused_render.supervisor._linux.tray"
+    else:
+        raise RuntimeError(f"no tray backend for {sys.platform!r}")
+    backend = importlib.import_module(backend_name)
+    backend.run(port, state, handle, paths)
