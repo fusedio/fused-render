@@ -95,7 +95,7 @@ def test_bookmarks_created_when_absent_with_view_urls(tmp_path, monkeypatch):
     assert marks[1]["url"] == "/view" + _encoded(
         str(fdir / "showcase" / "index.html")
     )
-    sine = str(fdir / "sine" / "sine.html")
+    sine = (fdir / "sine" / "sine.html").as_posix()
     assert marks[2]["url"] == f"/view/_panel?_layout=({sine},{sine}?_mode=code)"
     assert marks[3]["url"] == "/view" + _encoded(
         str(fdir / "how_it_works" / "explainer.html")
