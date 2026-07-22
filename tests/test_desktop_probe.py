@@ -112,6 +112,41 @@ def test_wait_until_ready_times_out_on_dead_port():
     )
 
 
+def test_matching_server_false_for_non_http_process_on_port():
+    # A non-HTTP process holding the port answers with garbage, which urllib
+    # raises as http.client.BadStatusLine (an HTTPException, not a URLError).
+    # The "any failure -> False" contract must cover it, or it escapes and
+    # (in core._start_ready_server) skips job.close(), orphaning the child.
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    stop = threading.Event()
+
+    def answer_garbage():
+        while not stop.is_set():
+            try:
+                listener.settimeout(0.2)
+                conn, _ = listener.accept()
+            except OSError:
+                continue
+            with conn:
+                try:
+                    conn.recv(1024)
+                    conn.sendall(b"i am not http\r\n\r\n")
+                except OSError:
+                    pass
+
+    server = threading.Thread(target=answer_garbage, daemon=True)
+    server.start()
+    try:
+        assert desktop_probe.matching_server(port, "any-token") is False
+    finally:
+        stop.set()
+        listener.close()
+        server.join(timeout=5)
+
+
 def test_wait_until_ready_aborts_when_on_poll_raises():
     def boom():
         raise RuntimeError("child process exited")

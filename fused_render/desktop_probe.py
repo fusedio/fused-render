@@ -15,6 +15,7 @@ importable and testable on every platform.
 """
 from __future__ import annotations
 
+import http.client
 import json
 import time
 import urllib.error
@@ -40,7 +41,12 @@ def matching_server(port: int, token: str, instance_id: str = DESKTOP_INSTANCE_I
             if resp.status != 200:
                 return False
             payload = json.loads(resp.read())
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError, ValueError):
+        # http.client.HTTPException covers BadStatusLine etc.: a non-HTTP
+        # process holding the port answers garbage that urllib surfaces here,
+        # and it must be a plain False like every other failure — not escape
+        # and (via core._start_ready_server) skip job.close(), orphaning the
+        # child.
         return False
     instance_info = payload.get("desktop_instance") or {}
     return instance_info.get("id") == instance_id and instance_info.get("token") == token
