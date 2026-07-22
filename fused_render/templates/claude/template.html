@@ -843,9 +843,40 @@ async function resumeRun(run_id) {
     }
     const users = log.querySelectorAll(".user");
     const lastUser = users[users.length - 1];
-    if (lastUser && lastUser.textContent === probe.message) {
-      // this run's turn is (partially) in the restored history: keep the user
-      // line, drop the partial assistant rows — pollLoop re-streams them all
+    const matches = !!lastUser && lastUser.textContent === probe.message;
+    if (probe.done) {
+      // Run finished with no frame attached. The transcript owns finished
+      // turns, so only repair what it can provably be missing: its tail
+      // flushes a beat after the result row, so a just-finished turn may lack
+      // its last assistant rows — when the restored log still ends at this
+      // run's user line, re-render the turn from the authoritative poll text.
+      // When history has clearly moved past this run (a stale bookmarked
+      // `run` param on a session that kept going), touch nothing — appending
+      // here is what duplicated old turns.
+      fused.params.set("run", "");
+      if (probe.error) {
+        if (matches || !users.length) addError(probe.error);
+        return;
+      }
+      if (matches) {
+        while (lastUser.nextElementSibling) lastUser.nextElementSibling.remove();
+        if (probe.text) addAssistant("").lastChild.innerHTML = renderMd(probe.text);
+      } else if (!users.length && probe.message) {
+        // frame died before the transcript had any rows AND the run finished
+        // while away: rebuild the whole turn
+        addUser(probe.message);
+        if (probe.text) addAssistant("").lastChild.innerHTML = renderMd(probe.text);
+      }
+      log.scrollTop = log.scrollHeight;
+      return;
+    }
+    if (matches) {
+      // In flight and this turn's user line is on screen: keep it, drop the
+      // partial assistant rows — pollLoop re-streams the whole turn. (Known
+      // ambiguity: an OLDER turn with the exact same words, when this run's
+      // user row hadn't reached the transcript yet — a sub-second overlap —
+      // gets its reply trimmed from view; a reload restores it from the
+      // transcript.)
       while (lastUser.nextElementSibling) lastUser.nextElementSibling.remove();
     } else if (probe.message) {
       // frame died before the transcript had any rows: restore the user turn

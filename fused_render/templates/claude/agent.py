@@ -422,8 +422,9 @@ def _history(file: str, session_id: str) -> dict:
                              if isinstance(b, dict) and b.get("type") == "text")
             if text.strip():
                 # consecutive assistant rows are one streamed turn; keep merged
+                # (blank line between rows, matching _poll's stream separator)
                 if turns and turns[-1]["role"] == "assistant":
-                    turns[-1]["text"] += "\n" + text
+                    turns[-1]["text"] += "\n\n" + text
                 else:
                     turns.append({"role": "assistant", "text": text})
     return {"turns": turns}
